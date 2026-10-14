@@ -8,7 +8,7 @@ use std::pin::pin;
 use std::task::Poll;
 
 use block::{Block, Pool};
-use env::files::{Error, File, Files, Mode, Operation};
+use env::files::{Absolute, Error, File, Files, Mode, Operation};
 
 use crate::disk::{KIB, Scratch, files, opened};
 
@@ -22,6 +22,11 @@ fn run<F: Future<Output = ()>>(body: impl FnOnce(Files, PathBuf) -> F) {
         .unwrap();
     runtime.block_on(body(files, scratch.0.join("data")));
     thread.join().unwrap();
+}
+
+/// `path` as the absolute path that `open_absolute` takes.
+fn absolute(path: &Path) -> Absolute {
+    Absolute::new(path.to_str().unwrap()).unwrap()
 }
 
 fn pool() -> Pool {
@@ -230,10 +235,10 @@ fn open_absolute_reads_a_file_outside_the_data_directory() {
     run(|files, data| async move {
         let path = data.parent().unwrap().join("token");
         std::fs::write(&path, b"abc").unwrap();
-        let file = files.open_absolute(&path).await.unwrap();
+        let file = files.open_absolute(&absolute(&path)).await.unwrap();
         assert_eq!(read(&file, &pool(), 0, 3).await, b"abc");
         let gone = data.parent().unwrap().join("gone");
-        let found = files.open_absolute(&gone).await.unwrap_err();
+        let found = files.open_absolute(&absolute(&gone)).await.unwrap_err();
         assert_eq!(found, Error::NotFound { path: gone });
     });
 }
@@ -248,8 +253,8 @@ fn open_absolute_opens_to_read_only_with_no_lock() {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444))
             .unwrap();
         let (other, thread) = self::files(data.parent().unwrap(), "other");
-        let held = files.open_absolute(&path).await.unwrap();
-        let second = other.open_absolute(&path).await.unwrap();
+        let held = files.open_absolute(&absolute(&path)).await.unwrap();
+        let second = other.open_absolute(&absolute(&path)).await.unwrap();
         let pool = pool();
         assert_eq!(read(&held, &pool, 0, 3).await, b"abc");
         assert_eq!(read(&second, &pool, 0, 3).await, b"abc");
@@ -278,7 +283,7 @@ fn open_absolute_refuses_a_file_that_is_not_regular_and_waits_for_no_writer() {
         runtime.block_on(async {
             let mut found = Vec::new();
             for path in [dir.join("fifo"), dir.clone(), PathBuf::from("/dev/null")] {
-                found.push(files.open_absolute(&path).await.map(drop));
+                found.push(files.open_absolute(&absolute(&path)).await.map(drop));
             }
             files.free().await.unwrap();
             done.send(found).unwrap();

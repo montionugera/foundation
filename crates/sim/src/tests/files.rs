@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
 
 use block::{Block, Pool};
-use env::files::{Error, File, Mode, Operation};
+use env::files::{Absolute, Error, File, Mode, Operation};
 use env::tasks::Tasks;
 use env::thread::Handle;
 use types::time::{Monotonic, Span};
@@ -21,6 +21,11 @@ use crate::node;
 
 pub(super) const KIB: u64 = 1 << 10;
 pub(super) const MIB: u64 = 1 << 20;
+
+/// `path` as the absolute path that `open_absolute` takes.
+fn absolute(path: &Path) -> Absolute {
+    Absolute::new(path.to_str().unwrap()).unwrap()
+}
 
 /// Runs `body` on a shard of a node with a disk of `disk_bytes`, and returns what it
 /// gives.
@@ -115,7 +120,7 @@ fn open_absolute_reads_the_host_file_at_once_and_keeps_its_bytes() {
         let (paths, path) = (node.paths(), Path::new("/run/secrets/token"));
         paths.write(path, b"abc").unwrap();
         let start = node.clock().now();
-        let file = node.files().open_absolute(path).await.unwrap();
+        let file = node.files().open_absolute(&absolute(path)).await.unwrap();
         let span = node.clock().now() - start;
         paths.write(path, b"xyz").unwrap();
         let (pool, len) = (pool(), usize::try_from(file.len()).unwrap());
@@ -141,15 +146,19 @@ fn open_absolute_and_its_reads_take_the_time_of_a_call_and_take_faults() {
         let mut spans = Vec::new();
         for _ in 0..16 {
             let start = clock.now();
-            let file = files.open_absolute(path).await.unwrap();
+            let file = files.open_absolute(&absolute(path)).await.unwrap();
             spans.push(clock.now() - start);
             let start = clock.now();
             read(&file, &pool, 0, 3).await;
             spans.push(clock.now() - start);
         }
         node.fail_file(path, Operation::Open);
-        let opened = files.open_absolute(path).await.map(drop).unwrap_err();
-        let file = files.open_absolute(path).await.unwrap();
+        let opened = files
+            .open_absolute(&absolute(path))
+            .await
+            .map(drop)
+            .unwrap_err();
+        let file = files.open_absolute(&absolute(path)).await.unwrap();
         node.fail_file(path, Operation::ReadAt);
         let read = file.read_at(0, pool.alloc(3).unwrap()).await.map(drop);
         (spans, [opened, read.unwrap_err()])
@@ -170,7 +179,8 @@ fn open_absolute_outside_the_sim_panics() {
     let mut sim = sim(0);
     let node = sim.node(node::Config::default());
     let files = node.files();
-    let mut opened = pin!(files.open_absolute(Path::new("/a")));
+    let path = absolute(Path::new("/a"));
+    let mut opened = pin!(files.open_absolute(&path));
     drop(
         opened
             .as_mut()
@@ -187,7 +197,7 @@ fn open_absolute_reports_each_failure() {
         let files = node.files();
         let mut found = Vec::new();
         for path in ["/run/secrets/gone", "/run/secrets", "/run/secrets/a"] {
-            let opened = files.open_absolute(Path::new(path)).await;
+            let opened = files.open_absolute(&absolute(Path::new(path))).await;
             found.push(opened.map(drop).unwrap_err());
         }
         found

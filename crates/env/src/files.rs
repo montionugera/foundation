@@ -21,9 +21,9 @@ pub type Request<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + 'a>>;
 pub const SECTOR: usize = 512;
 
 /// The files under one data directory. Paths are relative to it: a call panics on an
-/// absolute path or a `..` segment, other than [`Files::open_absolute`], which panics
-/// on a relative path or a `..` segment. The handle cannot leave the thread that made
-/// it, so each shard has its own. Clones use the same directory and driver, and each
+/// absolute path or a `..` segment, other than [`Files::open_absolute`], which takes an
+/// [`Absolute`] path. The handle cannot leave the thread that made it, so each shard
+/// has its own. Clones use the same directory and driver, and each
 /// rule on the calls of this `Files` holds for its clones too.
 ///
 /// A call whose future drops can still run, and then it ends as it would have. Where a
@@ -132,32 +132,19 @@ impl Files {
     /// neither a regular file nor a directory, such as a FIFO or a device. The open
     /// does not wait for a writer of a FIFO.
     ///
-    /// # Panics
-    ///
-    /// When `path` is relative or has a `..` segment.
-    ///
     /// ```
-    /// use std::path::Path;
+    /// use env::files::Absolute;
     ///
     /// async fn token(files: &env::files::Files) -> Option<env::files::File> {
-    ///     files.open_absolute(Path::new("/run/secrets/token")).await.ok()
+    ///     let path = Absolute::new("/run/secrets/token")?;
+    ///     files.open_absolute(&path).await.ok()
     /// }
     /// ```
-    pub async fn open_absolute(&self, path: &Path) -> Result<File, Error> {
-        assert!(
-            path.is_absolute(),
-            "path {} is relative; give the whole path from the root",
-            path.display()
-        );
-        assert!(
-            !path.components().any(|part| part == Component::ParentDir),
-            "path {} has a `..` segment; give the path with none",
-            path.display()
-        );
-        let descriptor = self.0.open_absolute(path).await?;
+    pub async fn open_absolute(&self, path: &Absolute) -> Result<File, Error> {
+        let descriptor = self.0.open_absolute(path.as_path()).await?;
         Ok(File {
             descriptor,
-            path: path.to_path_buf(),
+            path: path.0.clone(),
             mode: Mode::Read,
             poisoned: Cell::new(false),
         })
@@ -661,6 +648,36 @@ fn check(path: &Path) {
             ),
             Component::CurDir | Component::Normal(_) => {}
         }
+    }
+}
+
+/// A path that starts with `/`, has no NUL, and has no `..` segment between `/` or
+/// `\`, by the same text rule on every host: the path that [`Files::open_absolute`]
+/// takes.
+///
+/// ```
+/// use env::files::Absolute;
+///
+/// assert!(Absolute::new("/run/secrets/token").is_some());
+/// assert!(Absolute::new("/run/../etc/shadow").is_none());
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Absolute(PathBuf);
+
+impl Absolute {
+    /// `text` as an absolute path, or `None` when it breaks the rule.
+    #[must_use]
+    pub fn new(text: &str) -> Option<Self> {
+        let allowed = text.starts_with('/')
+            && !text.contains('\0')
+            && !text.split(['/', '\\']).any(|segment| segment == "..");
+        allowed.then(|| Self(text.into()))
+    }
+
+    /// The path.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.0
     }
 }
 
@@ -1216,7 +1233,7 @@ mod tests {
         #[test]
         fn open_absolute_opens_to_read() {
             let (files, calls) = Fixed::files(3);
-            let file = ready(files.open_absolute(Path::new("/run/secrets/token")));
+            let file = ready(files.open_absolute(&token()));
             assert_eq!(file.map(|file| file.len()), Ok(3));
             assert_eq!(*calls.borrow(), ["open /run/secrets/token Read"]);
         }
@@ -1227,7 +1244,7 @@ mod tests {
         )]
         fn open_absolute_gives_a_file_that_panics_on_a_write() {
             let (files, _) = Fixed::files(3);
-            let file = ready(files.open_absolute(Path::new("/run/secrets/token")));
+            let file = ready(files.open_absolute(&token()));
             drop(ready(file.unwrap().write_at(0, &[])));
         }
 
@@ -1237,28 +1254,61 @@ mod tests {
         )]
         fn open_absolute_gives_a_file_that_panics_on_a_remove() {
             let (files, _) = Fixed::files(3);
-            let file = ready(files.open_absolute(Path::new("/run/secrets/token")));
+            let file = ready(files.open_absolute(&token()));
             drop(ready(file.unwrap().remove()));
         }
 
-        #[test]
-        #[should_panic(
-            expected = "path run/secrets/token is relative; give the whole path from \
-                        the root"
-        )]
-        fn open_absolute_panics_on_a_relative_path() {
-            let (files, _) = Fixed::files(0);
-            drop(ready(files.open_absolute(Path::new("run/secrets/token"))));
+        fn token() -> Absolute {
+            Absolute::new("/run/secrets/token").unwrap()
         }
 
         #[test]
-        #[should_panic(
-            expected = "path /run/../etc/shadow has a `..` segment; give the path with \
-                        none"
-        )]
-        fn open_absolute_panics_on_a_parent_segment() {
-            let (files, _) = Fixed::files(0);
-            drop(ready(files.open_absolute(Path::new("/run/../etc/shadow"))));
+        fn absolute_takes_a_path_from_the_root_with_no_parent_segment() {
+            for text in ["/run/secrets/x", "/a/..b", "/"] {
+                let path = Absolute::new(text).unwrap();
+                assert_eq!(path.as_path(), Path::new(text));
+            }
+        }
+
+        #[test]
+        fn absolute_refuses_a_relative_path_or_one_with_a_parent_segment_or_nul() {
+            for text in [
+                "",
+                "token",
+                "./token",
+                "secrets/token",
+                "/run/../etc/shadow",
+                "/a/..",
+                "C:\\x",
+                "x",
+                "/a\\..\\b",
+                "\\a\\b",
+                "/run/a\0b",
+            ] {
+                assert_eq!(Absolute::new(text), None, "{text:?}");
+            }
+        }
+
+        #[cfg(unix)]
+        proptest::proptest! {
+            // Miri has no file access for the failure files.
+            #![proptest_config(proptest::test_runner::Config {
+                cases: if cfg!(miri) { 16 } else { 256 },
+                failure_persistence: None,
+                ..proptest::test_runner::Config::default()
+            })]
+
+            #[test]
+            fn absolute_is_a_path_from_the_root_with_no_parent_segment(
+                text in "[/\\\\.a\0]{0,12}",
+            ) {
+                if let Some(path) = Absolute::new(&text) {
+                    let path = path.as_path();
+                    proptest::prop_assert!(path.is_absolute());
+                    let parent = path.components().any(|part| part == Component::ParentDir);
+                    proptest::prop_assert!(!parent);
+                }
+            }
         }
 
         #[test]
