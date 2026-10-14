@@ -175,26 +175,46 @@ fn a_lone_node_at_200_ppm_with_a_growing_os_bound_is_near() {
     }
 }
 
-#[test]
-fn mesh_time_past_the_last_stamp_is_apart() {
+/// The times of a line on a node whose OS wall clock starts at `wall`, with one
+/// source that puts mesh time at `mesh` ns. The sim clocks do not move.
+fn near_the_last_stamp(wall: Stamp, mesh: i128) -> Time {
     let mut sim = sim::Sim::new(sim::Config::default());
-    let wall = Stamp::from_nanos(i64::MAX - MS);
     let node = sim.node(sim::node::Config {
         wall,
         ..sim::node::Config::default()
     });
-    let (mut clock, mesh) = Clock::new(node.clock());
+    let (mut clock, reader) = Clock::new(node.clock());
     let source = clock.add();
     let at = node.clock().now();
-    let monotonic = i64::try_from(at.0).expect("fits");
-    let offset = Span::from_nanos(i64::MAX - monotonic + Span::HOUR.nanos());
-    let measurement = Measurement::new(at, offset, ms(2)).expect("at most 36500 days");
+    let offset = i64::try_from(mesh - i128::from(at.0)).expect("fits");
+    let measurement = Measurement::new(at, Span::from_nanos(offset), ms(2))
+        .expect("at most 36500 days");
     clock.push(source, measurement);
+    Reader::new(node.wall(), reader).now()
+}
+
+#[test]
+fn mesh_time_past_the_last_stamp_is_apart() {
+    let wall = Stamp::from_nanos(i64::MAX - MS);
+    let past = i128::from(i64::MAX) + i128::from(Span::HOUR.nanos());
     assert_eq!(
-        Reader::new(node.wall(), mesh).now(),
+        near_the_last_stamp(wall, past),
         Time {
             wall,
             mesh: Mesh::Apart(Stamp::from_nanos(i64::MAX))
+        }
+    );
+}
+
+#[test]
+fn a_wall_time_at_the_last_stamp_is_apart() {
+    let wall = Stamp::from_nanos(i64::MAX);
+    let best = i64::MAX - MS;
+    assert_eq!(
+        near_the_last_stamp(wall, i128::from(best)),
+        Time {
+            wall,
+            mesh: Mesh::Apart(Stamp::from_nanos(best))
         }
     );
 }
