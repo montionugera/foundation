@@ -162,8 +162,7 @@ impl Status {
     pub(crate) fn new(counts: Vec<Name>) -> Self {
         Self(Rc::new(Values {
             counts: counts.into_iter().map(|n| (n, Cell::new(0))).collect(),
-            shown: RefCell::default(),
-            note: RefCell::default(),
+            run: RefCell::default(),
             staged: Cell::new(false),
             waker: Cell::new(None),
         }))
@@ -208,28 +207,23 @@ impl Status {
     /// Shows `note`, cut to [`TEXT_MAX`] bytes, from the next write until the end of
     /// the run, unless the run shows it already or no run runs.
     pub(crate) fn note(&self, note: &dyn fmt::Display) {
-        if matches!(*self.0.shown.borrow(), Shown::Ended) {
-            return;
-        }
+        let mut run = self.0.run.borrow_mut();
+        let Some(run) = run.as_mut() else { return };
         let note = cut(&note.to_string());
-        let mut shown = self.0.note.borrow_mut();
-        if *shown == note {
-            return;
+        if run.note != note {
+            run.note = note;
+            self.0.stage();
         }
-        *shown = note;
-        drop(shown);
-        self.0.stage();
     }
 
     /// Stages `new`, unless it is the value that the run shows, or no run runs.
     fn set(&self, new: Shown) {
-        let mut shown = self.0.shown.borrow_mut();
-        if matches!(*shown, Shown::Ended) || *shown == new {
-            return;
+        let mut run = self.0.run.borrow_mut();
+        let Some(run) = run.as_mut() else { return };
+        if run.shown != new {
+            run.shown = new;
+            self.0.stage();
         }
-        *shown = new;
-        drop(shown);
-        self.0.stage();
     }
 }
 
@@ -357,13 +351,12 @@ impl Class {
     }
 }
 
-/// The last value of each count, the error and the note that the run shows, and
-/// whether the status waits for a write.
+/// The last value of each count, what the run shows, and whether the status waits
+/// for a write.
 struct Values {
     counts: Box<[(Name, Cell<u64>)]>,
-    shown: RefCell<Shown>,
-    /// Empty when the run shows no note.
-    note: RefCell<String>,
+    /// `None` while no run runs: what a task of the last run shows is not written.
+    run: RefCell<Option<Run>>,
     staged: Cell<bool>,
     /// The flush, while it waits for a staged count of an open session, so that a set
     /// after the close wakes nothing.
@@ -381,13 +374,19 @@ impl Values {
     }
 }
 
+/// What one run of the kind shows. The run starts with nothing and ends with it.
+#[derive(Debug, Default)]
+struct Run {
+    shown: Shown,
+    /// Empty when the run shows no note.
+    note: String,
+}
+
 /// The error that the running kind shows.
 #[derive(Debug, Default, PartialEq, Eq)]
 enum Shown {
-    /// No run runs: an error that a task of the last run shows is not written.
-    #[default]
-    Ended,
     /// The run showed nothing yet, so the status keeps the end of the last run.
+    #[default]
     Nothing,
     /// The run cleared the error last.
     Cleared,
@@ -399,8 +398,7 @@ impl fmt::Debug for Values {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Values")
             .field("counts", &self.counts)
-            .field("shown", &self.shown.borrow())
-            .field("note", &self.note.borrow())
+            .field("run", &self.run.borrow())
             .field("staged", &self.staged.get())
             .finish_non_exhaustive()
     }
@@ -506,7 +504,7 @@ impl Writer {
             session.started = true;
             session.phase = Phase::Running;
         });
-        self.values.shown.replace(Shown::Nothing);
+        self.values.run.replace(Some(Run::default()));
         true
     }
 
@@ -517,8 +515,7 @@ impl Writer {
         &self,
         end: &Result<(), kind::Error>,
     ) -> impl Future<Output = ()> + use<'_> {
-        self.values.shown.replace(Shown::Ended);
-        self.values.note.take();
+        self.values.run.take();
         let (class, error) = Class::with_text(end);
         self.set(move |session| {
             session.class = class;
@@ -695,24 +692,24 @@ impl Session {
     /// than the largest block of the pool.
     fn write(&mut self, values: &Values, now: Monotonic) {
         values.staged.set(false);
-        match &*values.shown.borrow() {
-            Shown::Ended | Shown::Nothing => {}
-            Shown::Cleared => {
-                self.class = None;
-                self.error.set(&mut self.series, String::new());
-            }
-            Shown::Error(text) => {
-                self.class = Some(Class::Retry);
-                if self.error.value != *text {
-                    self.error.set(&mut self.series, text.clone());
+        if let Some(run) = &*values.run.borrow() {
+            match &run.shown {
+                Shown::Nothing => {}
+                Shown::Cleared => {
+                    self.class = None;
+                    self.error.set(&mut self.series, String::new());
+                }
+                Shown::Error(text) => {
+                    self.class = Some(Class::Retry);
+                    if self.error.value != *text {
+                        self.error.set(&mut self.series, text.clone());
+                    }
                 }
             }
+            if self.note.value != run.note {
+                self.note.set(&mut self.series, run.note.clone());
+            }
         }
-        let note = values.note.borrow();
-        if self.note.value != *note {
-            self.note.set(&mut self.series, note.clone());
-        }
-        drop(note);
         if self.closed {
             self.unapplied = false;
             return;
@@ -1114,8 +1111,8 @@ mod tests {
         let status = Status::new(vec![name("samples")]);
         status.count("samples").set(3);
         let want = "Status(Values { counts: \
-                    [(Name(\"samples\"), Cell { value: 3 })], shown: Ended, note: \
-                    \"\", staged: true, .. })";
+                    [(Name(\"samples\"), Cell { value: 3 })], run: None, staged: \
+                    true, .. })";
         assert_eq!(format!("{status:?}"), want);
     }
 
