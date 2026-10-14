@@ -17,6 +17,10 @@ mod batch;
 pub mod bench;
 pub mod gap;
 pub mod line;
+#[cfg_attr(
+    not(feature = "sim"),
+    expect(unreachable_pub, reason = "only the sim feature exports it")
+)]
 mod send;
 #[cfg(feature = "sim")]
 pub mod sim;
