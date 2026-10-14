@@ -150,9 +150,10 @@ impl Server {
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
     }
 
-    /// Adds the scalar variable `node` of the `DataType` `BaseDataType`, and answers
-    /// each read of a client with the value and the status that `answer` gives, on the
-    /// thread that drives the server.
+    /// Adds the Double variable `node`, and answers each read of a client with the
+    /// value and the status that `answer` gives, on the thread that drives the server.
+    /// open62541 checks only the Double that the add reads, so `answer` can give a
+    /// value of any type.
     ///
     /// # Panics
     ///
