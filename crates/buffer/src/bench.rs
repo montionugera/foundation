@@ -193,7 +193,7 @@ impl Logs {
     /// tail, then carries the durable end of each index in the next record.
     pub fn mark(&mut self) {
         if let Some(kept) = self.inner.kept() {
-            let landing = self.inner.land(kept);
+            let landing = self.inner.marked().land(kept);
             self.inner.hide(landing);
         }
         for (slot, header) in &self.headers {
@@ -340,8 +340,8 @@ mod tests {
         for _ in 0..3 {
             logs.mark();
         }
-        assert_eq!(logs.inner.land(3 * BLOCK), 3 * BLOCK);
-        assert_eq!(logs.inner.land(5 * BLOCK), 4 * BLOCK);
+        assert_eq!(logs.inner.marked().land(3 * BLOCK), 3 * BLOCK);
+        assert_eq!(logs.inner.marked().land(5 * BLOCK), 4 * BLOCK);
         assert_eq!(logs.inner.kept(), Some(6 * BLOCK));
         for n in 0..2 {
             let runs = logs.inner.runs(Slot::new(n), Path::Live);
