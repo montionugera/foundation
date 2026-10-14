@@ -1,6 +1,6 @@
 - **STAMP (#435)** `connector::stamp::Stamps` stamps the frames of one index of a
   kind that reads by request. The stamp of a frame is the midpoint of the mesh times
-  before and after the request that read its samples, or 1 ns after the stamp before
+  before and after the requests that read its samples, or 1 ns after the stamp before
   it when that is later, so no stamp is at or before the stamp before it. The first
   stamp of a run has no stamp before it, so the home can refuse the first frame of a
   run as backwards when the run before it wrote a stamp at or after it on the same
