@@ -69,24 +69,24 @@ fn a_child_does_not_hold_a_file_that_open_absolute_opened() {
     std::fs::write(&path, b"abc").unwrap();
     let absolute = Absolute::new(path.to_str().unwrap()).unwrap();
     let file = runtime.block_on(files.open_absolute(&absolute)).unwrap();
-    let made = std::fs::metadata(&path).unwrap();
+    // On macOS, a stat of `/dev/fd/N` gives the inode of the file, but the device of
+    // `/dev/fd`, so only the inodes are compared.
+    let inode = std::fs::metadata(&path).unwrap().ino();
     let fd = (0..1_024)
         .find(|fd| {
             let found = std::fs::metadata(format!("/dev/fd/{fd}"));
-            found.is_ok_and(|found| {
-                (found.dev(), found.ino()) == (made.dev(), made.ino())
-            })
+            found.is_ok_and(|found| found.ino() == inode)
         })
         .expect("the file is open");
-    let held = Command::new("sh")
-        .arg("-c")
-        .arg(format!("[ /dev/fd/{fd} -ef \"$1\" ]"))
-        .arg("sh")
-        .arg(&path)
-        .status()
+    let listed = Command::new("ls")
+        .arg("-iLd")
+        .arg(format!("/dev/fd/{fd}"))
+        .output()
         .unwrap();
     drop(file);
-    assert!(!held.success(), "the child holds descriptor {fd}");
+    let listed = String::from_utf8(listed.stdout).unwrap();
+    let held = listed.split_whitespace().next() == Some(&inode.to_string());
+    assert!(!held, "the child holds descriptor {fd}: {listed}");
     drop(files);
     thread.join().unwrap();
 }
