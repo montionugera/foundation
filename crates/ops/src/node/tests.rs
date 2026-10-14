@@ -11,9 +11,9 @@ use serde_json::{Value, json};
 
 use crate::apply::{Applied, Effect};
 use crate::common::{
-    ADMIN, Fixture, NODE, create_kinds, create_node, create_node_reading,
-    create_node_with, fail_sync, founded, front_ends, name, placed_site, plan, plant,
-    shown, solo,
+    ADMIN, Fixture, NODE, create_config, create_kinds, create_node,
+    create_node_reading, create_node_with, fail_sync, founded, front_ends, name,
+    placed_site, plan, plant, shown, solo,
 };
 use crate::error::Error;
 use crate::front_end::{File, FrontEnd, FrontEnds};
@@ -154,6 +154,12 @@ fn debug_names_each_front_end() {
         let node = create_node(&fixture, mesh);
         let expected = r#"Node { front_ends: FrontEnds(["hcl"]), .. }"#;
         assert_eq!(format!("{node:?}"), expected);
+        let secrets = connector::testing::create_secrets(fixture.sim.files());
+        let config =
+            create_config(&fixture, node.mesh().clone(), front_ends(), secrets);
+        let expected =
+            r#"Config { front_ends: FrontEnds(["hcl"]), name: Name("edge"), .. }"#;
+        assert_eq!(format!("{config:?}"), expected);
         assert_eq!(
             format!(
                 "{:?}",

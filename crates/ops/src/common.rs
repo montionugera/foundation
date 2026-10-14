@@ -153,12 +153,22 @@ pub(crate) fn create_node_with(
     front_ends: FrontEnds,
     secrets: secret::Resolver,
 ) -> Node {
+    Node::new(create_config(fixture, mesh, front_ends, secrets))
+}
+
+/// The config of a node of `mesh` on `fixture`, as [`create_node_with`] makes it.
+pub(crate) fn create_config(
+    fixture: &Fixture,
+    mesh: Mesh,
+    front_ends: FrontEnds,
+    secrets: secret::Resolver,
+) -> Config {
     let made = Cell::new(0);
     let key = move || {
         made.set(made.get() + 1);
         Key::from_u128(made.get())
     };
-    Node::new(Config {
+    Config {
         mesh,
         keys: Box::new(key),
         front_ends,
@@ -167,7 +177,7 @@ pub(crate) fn create_node_with(
         clock: fixture.sim.clock(),
         name: fixture.name.clone(),
         secrets,
-    })
+    }
 }
 
 /// The plan of `files` on `applied` at `base`, as `Node::plan` makes it with no read
