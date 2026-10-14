@@ -4569,3 +4569,24 @@ fn reads_the_issue_that_github_links_when_a_span_follows_its_digits() {
         );
     }
 }
+
+#[test]
+fn fails_an_old_round_with_a_footnote_inside_a_footnote_after_search() {
+    let text = "Confirmed a finding [^b].\n\n[^a]: x\n    <search>\n    \
+                [^b]: Hot path: `send`";
+    conditions(text).unwrap_err();
+    let round = old(&format!(
+        "## Review round 1\n\nReviewers: reviewer, architecture, breaker\n\
+         Range: `a..b`\nFindings: none\n\n{text}"
+    ));
+    assert_eq!(
+        check(&record(vec![round, bot(ROUND)])),
+        vec![
+            "review round 1 has a footnote inside a footnote, which the check cannot \
+             read as GitHub shows it, in the line `[^b]: Hot path: `send``. Move it \
+             out of the other footnote, in the format of \
+             .claude/skills/review/SKILL.md, \"Round comment\"."
+                .to_string()
+        ]
+    );
+}

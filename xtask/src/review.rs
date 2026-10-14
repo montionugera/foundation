@@ -1165,7 +1165,7 @@ impl<'a> Shown<'a> {
         let root = parse_document(&arena, body, &options());
         // The code blocks of a footnote that GitHub does not show still hold its lines.
         let codes = code_blocks(root, body, &starts);
-        let nested = nested(root);
+        let nested = nested(respelled(&arena, body));
         append_notes(root);
         // Whether each top-level block so far is a paragraph. So it is false at a
         // paragraph inside another block.
