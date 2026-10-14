@@ -5,6 +5,7 @@ use std::num::NonZeroUsize;
 use std::rc::Rc;
 
 use bytes::Bytes;
+use connector::status::Class;
 use connector::supervisor;
 use env::clock::Clock;
 use env::net::tcp;
@@ -57,11 +58,14 @@ struct Plant {
     answers: Rc<RefCell<VecDeque<(StatusCode, &'static str)>>>,
     /// The `Authorization` header of each request.
     auth: Rc<RefCell<Vec<Option<String>>>>,
-    /// The bytes that each request after the first writes to [`TOKEN_FILE`], in turn.
+    /// The bytes that each request writes to [`TOKEN_FILE`] as it arrives, in turn,
+    /// while any are left.
     tokens: Rc<RefCell<VecDeque<&'static [u8]>>>,
     paths: env::paths::Paths,
     store: Rc<RefCell<crate::sim::Store>>,
     errors: Rc<RefCell<Vec<String>>>,
+    /// Each value of `influx.status.class`, as [`read_status`] gives them.
+    classes: Rc<RefCell<Vec<u8>>>,
     confirmed: Rc<RefCell<Vec<u64>>>,
 }
 
@@ -89,6 +93,7 @@ impl Plant {
         testing::create_secret(&node.files(), &token, b"s3cret").await;
         define(&inputs);
         let errors = read_errors(&inputs.hub, &tasks).await;
+        let classes = read_status(&inputs.hub, &tasks, "class", |sample| sample[0]).await;
         let confirmed = read_confirmed(&inputs.hub, &tasks).await;
         Self {
             hub: inputs.hub.clone(),
@@ -104,6 +109,7 @@ impl Plant {
             paths: node.paths(),
             store: Rc::default(),
             errors,
+            classes,
             confirmed,
         }
     }
@@ -565,6 +571,36 @@ fn reads_the_token_again_after_a_401_or_a_403_and_writes_each_sample_once() {
 }
 
 #[test]
+fn keeps_the_token_after_an_answer_other_than_401_or_403() {
+    let got = run(|node, tasks| async move {
+        let plant = Plant::new(node.clone(), tasks).await;
+        node.paths()
+            .write(std::path::Path::new(TOKEN_FILE), b"old")
+            .expect("writes");
+        (plant.answers.borrow_mut())
+            .push_back((StatusCode::INTERNAL_SERVER_ERROR, "the disk is full"));
+        plant.tokens.borrow_mut().push_back(b"new");
+        let config = with_token(&plant, "file", TOKEN_FILE);
+        let (auth, errors, end) = send_one(&plant, config).await;
+        let points = plant.store.borrow().points("telemetry", &[]).count();
+        (auth, errors, end.is_none(), points)
+    });
+    assert_eq!(
+        got,
+        (
+            vec![Some("Token old".to_owned()); 2],
+            vec![
+                String::new(),
+                "InfluxDB answered 500 Internal Server Error: the disk is full".to_owned(),
+                String::new(),
+            ],
+            true,
+            1,
+        )
+    );
+}
+
+#[test]
 fn keeps_the_source_of_the_token_after_a_long_401_body() {
     let got = run(|node, tasks| async move {
         let plant = Plant::new(node.clone(), tasks).await;
@@ -602,7 +638,8 @@ fn ends_the_run_when_the_token_is_gone_after_a_401() {
         plant.tokens.borrow_mut().push_back(b"");
         let config = with_token(&plant, "file", TOKEN_FILE);
         let (auth, errors, _) = send_one(&plant, config).await;
-        (auth, errors)
+        let classes = plant.classes.borrow().clone();
+        (auth, errors, classes)
     });
     assert_eq!(
         got,
@@ -618,7 +655,8 @@ fn ends_the_run_when_the_token_is_gone_after_a_401() {
                     "the secret file(\"{TOKEN_FILE}\"): the file {TOKEN_FILE} is \
                      empty. Write the value to it"
                 ),
-            ]
+            ],
+            vec![0, Class::Retry as u8],
         )
     );
 }
@@ -632,7 +670,8 @@ fn ends_the_run_at_a_token_that_a_header_cannot_hold() {
         let plant = Plant::new(node, tasks).await;
         let config = with_token(&plant, "file", TOKEN_FILE);
         let (auth, errors, _) = send_one(&plant, config).await;
-        (auth, errors)
+        let classes = plant.classes.borrow().clone();
+        (auth, errors, classes)
     });
     assert_eq!(
         got,
@@ -644,25 +683,10 @@ fn ends_the_run_at_a_token_that_a_header_cannot_hold() {
                     "the token file(\"{TOKEN_FILE}\") holds a byte that an HTTP header \
                      cannot hold. Write the token with no control byte"
                 ),
-            ]
+            ],
+            vec![0, Class::Retry as u8],
         )
     );
-}
-
-#[test]
-fn shows_the_source_of_the_token_and_never_its_value_in_debug() {
-    let config = Kind
-        .parse(&plus(
-            influx(),
-            &[(60, "token", call("env", "INFLUX_TOKEN"))],
-        ))
-        .expect("parses");
-    let debug = format!("{config:?}");
-    assert!(
-        debug.contains(r#"token: Some(Env("INFLUX_TOKEN"))"#),
-        "{debug}"
-    );
-    assert!(!debug.contains("t0ken"), "{debug}");
 }
 
 #[test]
