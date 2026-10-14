@@ -60,7 +60,10 @@
   0644. A local `plan` reads each source of each connector of the planning node. A
   remote `plan` reads them only for each connector that its subject may apply (`apply`
   and `admin` on its name), through a clone of the resolver of the shard, as a run
-  does, and drops the value. A remote `plan` reads no source of another connector, so
+  does, and drops the value. Until #2694, a subject with `apply` and `admin` on the
+  name of a new connector but not on its status channels learns from a remote `plan`
+  whether each source gives a value. A remote `plan` reads no source of another
+  connector, so
   a subject that may only plan learns nothing of the files and the
   environment of the node. Each source that gives no value, `BadName` too, is a
   `secret.unresolved` problem at its call, with the text `the secret <source>: <error>`.
