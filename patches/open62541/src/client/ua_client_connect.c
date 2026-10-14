@@ -1483,6 +1483,7 @@ responseGetEndpoints(UA_Client *client, void *userdata,
                     "A different SecurityMode or SecurityPolicy is defined "
                     "by the selected Endpoint. Close the SecureChannel "
                     "and reconnect.");
+        client->reconnecting = true;
         closeSecureChannel(client);
         return;
     }
@@ -1498,6 +1499,7 @@ responseGetEndpoints(UA_Client *client, void *userdata,
                     "GetEndpoints. Close the SecureChannel and reconnect with "
                     "the new EndpointUrl to ensure the Endpoint is available.",
                     client->discoveryUrl, client->endpoint.endpointUrl);
+        client->reconnecting = true;
         closeSecureChannel(client);
         return;
     }
@@ -1524,6 +1526,7 @@ responseGetEndpoints(UA_Client *client, void *userdata,
                         "The selected endpoint defines a different server certificate "
                         "from then one used by the server for the initial SecureChannel "
                         "(to call GetEndpoints). Close the SecureChannel and reconnect.");
+            client->reconnecting = true;
             closeSecureChannel(client);
             return;
         }
@@ -1634,6 +1637,7 @@ responseFindServers(UA_Client *client, void *userdata,
             /* Close the SecureChannel to build it up new with the correct
              * EndpointURL in the HEL/ACK handshake. In closeSecureChannel the
              * received client->endpoint is reset also. */
+            client->reconnecting = true;
             closeSecureChannel(client);
             return;
         }
@@ -2169,6 +2173,14 @@ __Client_networkCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
         if(oldState == UA_SECURECHANNELSTATE_CONNECTING &&
            client->connectStatus == UA_STATUSCODE_GOOD)
             setConnectStatus(client, fallbackEndpointUrl(client));
+        /* Only a switch of the endpoint dials again. A close by the peer (each
+         * close of the client is CLOSING) or by the client with a good status
+         * ends the connect: the caller paces the next one. */
+        else if(oldState != UA_SECURECHANNELSTATE_CLOSING ||
+                (client->connectStatus == UA_STATUSCODE_GOOD &&
+                 !client->reconnecting))
+            setConnectStatus(client, UA_STATUSCODE_BADCONNECTIONCLOSED);
+        client->reconnecting = false;
 
         /* Try to reconnect. Duplicate the code instead of continue_connect to
          * pacify compiler warnings. */
@@ -2245,7 +2257,7 @@ __Client_networkCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
          * StatusCode.
          *
          * If the connectStatus is still good (the SecureChannel was fully
-         * opened before), then a reconnect is attempted. */
+         * opened before), then that callback ends the connect. */
         closeSecureChannel(client);
         unlockClient(client);
         return;
