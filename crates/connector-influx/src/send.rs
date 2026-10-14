@@ -59,7 +59,7 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
         body_max: BODY_MAX,
     });
     let uri = write_uri(&config.address, &config.target);
-    let token = RefCell::new(Token::first(ctx).await?);
+    let token = RefCell::new(Token::read(ctx).await?);
     let confirmed = ctx.count(CONFIRMED);
     let mut batch = Batch::new(&config.measurement);
     let mut cancelled = pin!(ctx.cancel().wait());
@@ -148,11 +148,9 @@ async fn send(
             Ok(answer) => {
                 let status = answer.status();
                 let text = String::from_utf8_lossy(answer.body());
-                let refused = [StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN]
-                    .contains(&status)
-                    .then_some(token.borrow())
-                    .and_then(|token| Some(token.as_ref()?.source.clone()));
-                match &refused {
+                let refused =
+                    matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
+                match ctx.config().token.as_ref().filter(|_| refused) {
                     Some(source) => ctx.error(&format_args!(
                         "InfluxDB answered {status}: {}. Check the token {source}",
                         text.trim()
@@ -168,7 +166,7 @@ async fn send(
             }
             Err(error) => {
                 ctx.error(&format_args!("the write to InfluxDB failed: {error}"));
-                None
+                false
             }
         };
         let backoff =
@@ -176,43 +174,29 @@ async fn send(
         if !backoff.wait(ctx.cancel()).await {
             future::pending::<()>().await;
         }
-        if let Some(source) = refused {
-            let read = Token::read(ctx, &source).await?;
-            *token.borrow_mut() = Some(read);
+        if refused {
+            *token.borrow_mut() = Token::read(ctx).await?;
         }
     }
 }
 
 /// The token of a run, as the value of its `Authorization` header.
 struct Token {
-    source: secret::Source,
     /// `Token <value>`, which a header holds.
     header: secret::Value,
 }
 
 impl Token {
-    /// Reads the token of the run's config, when it has one.
-    ///
-    /// # Errors
-    ///
-    /// As [`Token::read`].
-    async fn first(ctx: &Context<Config>) -> Result<Option<Self>, Error> {
-        match &ctx.config().token {
-            Some(source) => Ok(Some(Self::read(ctx, source).await?)),
-            None => Ok(None),
-        }
-    }
-
-    /// Reads the value of `source`.
+    /// Reads the token of the run's config, or gives `None` when it has none.
     ///
     /// # Errors
     ///
     /// The error of [`Context::secret`], and [`Error::Retry`] when the value holds a
     /// byte that a header cannot hold.
-    async fn read(
-        ctx: &Context<Config>,
-        source: &secret::Source,
-    ) -> Result<Self, Error> {
+    async fn read(ctx: &Context<Config>) -> Result<Option<Self>, Error> {
+        let Some(source) = &ctx.config().token else {
+            return Ok(None);
+        };
         let value = ctx.secret(source).await?;
         let mut header = Vec::with_capacity(value.expose().len().saturating_add(6));
         header.extend_from_slice(b"Token ");
@@ -227,8 +211,7 @@ impl Token {
                 .into(),
             ));
         }
-        let source = source.clone();
-        Ok(Self { source, header })
+        Ok(Some(Self { header }))
     }
 
     /// The `Authorization` header, marked sensitive.
