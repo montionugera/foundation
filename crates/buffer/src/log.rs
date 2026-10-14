@@ -428,6 +428,24 @@ impl Logs {
         self.log(slot, path).map_or_default(|log| log.durable.tail)
     }
 
+    /// The durable end of `path` of the index at `slot`, as a carry record holds
+    /// it.
+    ///
+    /// # Panics
+    ///
+    /// When the path has no log.
+    #[cfg(feature = "sim")]
+    pub(crate) fn end(&self, slot: Slot, path: Path) -> carry::Tail {
+        let log = self.log(slot, path).expect("a log of the path");
+        carry::Tail {
+            index: log.index,
+            path,
+            seq: log.durable.tail.seq,
+            given: log.durable.given,
+            stamp: log.durable.tail.stamp,
+        }
+    }
+
     /// The records that the log of `path` of the index at `slot` keeps, oldest
     /// first.
     #[cfg(test)]

@@ -147,18 +147,11 @@ impl Logs {
             self.inner
                 .sync(*slot, header, self.offset)
                 .expect("entries in order");
-            header.first += 1;
+            header.first += u64::from(header.len);
         }
         self.offset += BLOCK;
         for (slot, header) in &self.headers {
-            let durable = self.inner.durable(*slot, header.path);
-            let tail = crate::carry::Tail {
-                index: header.index,
-                path: header.path,
-                seq: durable.seq,
-                given: 0,
-                stamp: durable.stamp,
-            };
+            let tail = self.inner.end(*slot, header.path);
             self.inner
                 .carry(*slot, &tail, self.offset)
                 .expect("the durable tail");
@@ -170,7 +163,7 @@ impl Logs {
     pub fn append(&mut self) {
         for (slot, header) in &mut self.headers {
             self.inner.append(*slot, header).expect("entries in order");
-            header.first += 1;
+            header.first += u64::from(header.len);
         }
     }
 
@@ -297,6 +290,20 @@ mod tests {
         for n in 0..2 {
             let slot = Slot::new(n);
             assert_eq!(logs.inner.durable(slot, Path::Live).seq, 2, "index {n}");
+        }
+        assert_eq!(logs.inner.kept(), Some(4 * BLOCK));
+    }
+
+    /// On logs whose entries have no samples, each carry record holds the durable
+    /// given of each index, which grows past 0.
+    #[test]
+    fn a_carry_of_logs_with_no_samples_holds_the_tail_of_each_index() {
+        let mut logs = Logs::empty(2);
+        logs.carry();
+        logs.carry();
+        for n in 0..2 {
+            let tail = logs.inner.end(Slot::new(n), Path::Live);
+            assert_eq!((tail.seq, tail.given), (0, 2), "index {n}");
         }
         assert_eq!(logs.inner.kept(), Some(4 * BLOCK));
     }
