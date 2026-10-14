@@ -6,7 +6,12 @@
 #![cfg(target_os = "linux")]
 
 #[path = "../../env/tests/common/log.rs"]
-#[expect(dead_code, reason = "this binary uses only the log and its guard")]
+#[expect(
+    dead_code,
+    unused_imports,
+    unused_macros,
+    reason = "this binary uses only the log and its guard"
+)]
 mod recorded;
 #[path = "common/seccomp.rs"]
 mod seccomp;
