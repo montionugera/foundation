@@ -5,7 +5,7 @@
   `wall`, `Apart(best guess)` when it is further, and `Unsynced` before a majority of
   the node's sources first agree. The best guess is `estimate::Measurement::time`, not
   the midpoint of the interval, which moves far from it when an edge stops at the end of
-  a stamp. A line whose best guess or `wall` is at the last stamp is `Apart`, because
+  a stamp. A line whose best guess is at the last stamp is `Apart`, because
   the distance is not known. `now` reads the two clocks one after the other, so the time
   between the reads counts toward the 2 ms. Each line is for a person who reads the log,
   never for a data stamp (BQ20), so `clock::log::Reader::now` is in
@@ -39,7 +39,9 @@
   gives `mesh_time=none`: `laptop.architect-2`, 2026-10-14T04:35:24Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6160981810. The last
   stamp: `laptop.architect-2`, 2026-10-14T04:40:25Z,
-  https://github.com/synnaxlabs/foundation/pull/2666#issuecomment-6161038475. The
+  https://github.com/synnaxlabs/foundation/pull/2666#issuecomment-6161038475, with only
+  the best guess at the last stamp: `laptop.architect-2`, 2026-10-14T04:52:27Z,
+  https://github.com/synnaxlabs/foundation/pull/2666#issuecomment-6161174402. The
   `#[expect]` in `node`, a departure from
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155413393
   (2026-10-13T21:19:14Z): `laptop.architect`, 2026-10-14T04:47:51Z,
