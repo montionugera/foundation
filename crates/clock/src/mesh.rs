@@ -147,23 +147,25 @@ impl Reader {
     /// 2162 with an unknown error).
     #[must_use]
     pub fn now(&self) -> Time {
-        self.cell.read(|discipline| {
-            let monotonic = self.monotonic.now();
-            let mesh = discipline
-                .slew()
-                .map(|slew| slew.at(monotonic, DRIFT).interval());
-            Time { monotonic, mesh }
-        })
+        let (monotonic, mesh) = self.measure(Measurement::interval);
+        Time { monotonic, mesh }
     }
 
     /// The best guess of mesh time now ([`Measurement::time`]), or `None` before the
     /// first mesh time.
     pub(crate) fn best(&self) -> Option<Stamp> {
+        self.measure(Measurement::time).1
+    }
+
+    /// Reads the monotonic clock inside the cell read, so that a retry reads it again,
+    /// and gives `pick` of mesh time at that reading.
+    fn measure<T>(&self, pick: impl Fn(Measurement) -> T) -> (Monotonic, Option<T>) {
         self.cell.read(|discipline| {
             let monotonic = self.monotonic.now();
-            discipline
+            let mesh = discipline
                 .slew()
-                .map(|slew| slew.at(monotonic, DRIFT).time())
+                .map(|slew| pick(slew.at(monotonic, DRIFT)));
+            (monotonic, mesh)
         })
     }
 
