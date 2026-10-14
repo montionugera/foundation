@@ -84,10 +84,9 @@ impl Variables {
         state.quality = quality;
     }
 
-    /// Sets the value of the variable of `text` in [`Variables::new`]. The variable
-    /// stays a Double variable and serves the value as it is. A value that is not a
-    /// Double keeps its value at [`Variables::change`], and its reads are served but
-    /// not recorded, since a [`Served`] holds an `f64`.
+    /// Sets the value of the variable of `text` in [`Variables::new`]. A value that is
+    /// not a Double keeps its value at [`Variables::change`], and its reads are served
+    /// but not recorded, since a [`Served`] holds an `f64`.
     ///
     /// # Panics
     ///

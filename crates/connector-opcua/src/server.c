@@ -154,12 +154,13 @@ static UA_StatusCode shim_source_read(UA_Server *server, const UA_NodeId *sessio
     return status;
 }
 
-/* Adds to `server` the Double variable `node` under the Objects folder, whose reads
- * `source` answers. `source` lives until the server is deleted. */
+/* Adds to `server` the scalar variable `node` of the DataType BaseDataType under the
+ * Objects folder, whose reads `source` answers. `source` lives until the server is
+ * deleted. */
 UA_StatusCode shim_server_add_source(UA_Server *server, shim_node node,
                                      shim_source *source) {
     UA_VariableAttributes attributes = UA_VariableAttributes_default;
-    attributes.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
+    attributes.dataType = UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATATYPE);
     attributes.valueRank = UA_VALUERANK_SCALAR;
     attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
     UA_CallbackValueSource callbacks = {.read = shim_source_read, .write = NULL};
