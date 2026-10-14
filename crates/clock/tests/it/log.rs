@@ -209,14 +209,13 @@ fn mesh_time_past_the_last_stamp_is_apart() {
 }
 
 #[test]
-fn a_wall_time_at_the_last_stamp_is_apart() {
+fn a_wall_time_at_the_last_stamp_is_near() {
     let wall = Stamp::from_nanos(i64::MAX);
-    let best = i64::MAX - MS_NS;
     assert_eq!(
-        near_the_last_stamp(wall, i128::from(best)),
+        near_the_last_stamp(wall, i128::from(i64::MAX - MS_NS)),
         Time {
             wall,
-            mesh: Mesh::Apart(Stamp::from_nanos(best))
+            mesh: Mesh::Near
         }
     );
 }
