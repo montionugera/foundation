@@ -29,6 +29,7 @@ impl Reader {
         let wall = self.wall.now().time;
         let mesh = match self.mesh.best() {
             None => Mesh::Unsynced,
+            Some(best) if best.nanos() == i64::MAX => Mesh::Apart(best),
             Some(best) if best.nanos().abs_diff(wall.nanos()) <= NEAR => Mesh::Near,
             Some(best) => Mesh::Apart(best),
         };
@@ -51,7 +52,8 @@ pub enum Mesh {
     /// The best guess is at most 2 ms from the wall time. The two clocks are read one
     /// after the other, so the time between the reads counts toward the 2 ms.
     Near,
-    /// Mesh time's best guess, which is more than 2 ms from the wall time.
+    /// Mesh time's best guess, which is more than 2 ms from the wall time, or which
+    /// stops at the last stamp, so that its distance is not known.
     Apart(Stamp),
     /// No majority of the sources has agreed yet.
     Unsynced,
