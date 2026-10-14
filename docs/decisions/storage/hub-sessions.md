@@ -57,7 +57,10 @@
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159325971 and
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159349684). The hub
   `sim` test `ends_a_complete_reader_that_sleeps_past_its_window_or_its_ring_as_behind`
-  checks it. A seq lost for no room stays a miss under the catch-up of #274 B1: a
+  checks the lost frame, and the `delivery` tests
+  `lose::misses_the_frame_that_a_session_waits_for_a_grant_on` and
+  `lose::misses_a_held_frame_at_the_release_that_reaches_the_lost_samples` check the
+  frame that waits for a grant then. A seq lost for no room stays a miss under the catch-up of #274 B1: a
   reader that reaches it ends with `Behind`, never a gap, and the B1 plan states how it
   knows that seq. Supersedes item 4 of
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159325971
