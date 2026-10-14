@@ -31,8 +31,14 @@ use document::{Document, read};
 use http::Uri;
 
 const BAD_ADDRESS: Code = Code::new("influx.bad-address");
+const BAD_BUCKET: Code = Code::new("influx.bad-bucket");
 const BAD_DATABASE: Code = Code::new("influx.bad-database");
 const BAD_MEASUREMENT: Code = Code::new("influx.bad-measurement");
+const BAD_ORG: Code = Code::new("influx.bad-org");
+const ORG_WITH_DATABASE: Code = Code::new("influx.org-with-database");
+const TWO_TARGETS: Code = Code::new("influx.two-targets");
+/// The keys of the config, other than the reader settings.
+const KEYS: [&str; 5] = ["address", "database", "bucket", "org", "measurement"];
 /// The count of the samples that InfluxDB confirmed with a 204, across the runs of
 /// one supervisor call.
 const CONFIRMED: &str = "confirmed";
@@ -49,8 +55,8 @@ pub struct Config {
     /// The InfluxDB endpoint: a URI that [`connector::http::uri`] takes, with a path
     /// of `/` or none, and no query.
     pub address: Uri,
-    /// The InfluxDB 1 database it writes to. Not empty.
-    pub database: String,
+    /// Where it writes.
+    pub target: Target,
     /// The measurement of each line: a name that [`line::Measurement::new`] takes,
     /// other than [`gap::MEASUREMENT`].
     pub measurement: String,
@@ -58,13 +64,29 @@ pub struct Config {
     pub reader: reader::Settings,
 }
 
+/// Where a connector writes. Each name has 1 to 4,096 bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Target {
+    /// The database of InfluxDB 1, written with `POST /write?db=<database>`.
+    Database(String),
+    /// The bucket of InfluxDB 2, or the database of InfluxDB 3, in `org`, written
+    /// with `POST /api/v2/write?org=<org>&bucket=<name>`. InfluxDB 3 takes any `org`.
+    Bucket {
+        /// The bucket, or the InfluxDB 3 database.
+        name: String,
+        /// The organization.
+        org: String,
+    },
+}
+
 impl kind::Kind for Kind {
     type Config = Config;
 
-    /// Reads `address`, `database`, `measurement`, the settings of [`reader::read`],
-    /// and no other key.
+    /// Reads `address`, `database` or `bucket` and `org`, `measurement`, the settings
+    /// of [`reader::read`], and no other key.
     fn parse(&self, config: &Document) -> Result<Config, Vec<Diagnostic>> {
-        let reader = reader::read(config, &["address", "database", "measurement"], &[]);
+        let reader = reader::read(config, &KEYS, &[]);
         let address = read::required(
             config,
             kind::NOUN,
@@ -75,15 +97,7 @@ impl kind::Kind for Kind {
              \"http://influx:8086\""
                 .into(),
         );
-        let database = read::required(
-            config,
-            kind::NOUN,
-            None,
-            "database",
-            database,
-            "Add a `database` attribute with the InfluxDB database, such as \"plant\""
-                .into(),
-        );
+        let target = target(config);
         let measurement = read::required(
             config,
             kind::NOUN,
@@ -94,17 +108,17 @@ impl kind::Kind for Kind {
              \"telemetry\""
                 .into(),
         );
-        match (reader, address, database, measurement) {
-            (Ok(reader), Ok(address), Ok(database), Ok(measurement)) => Ok(Config {
+        match (reader, address, target, measurement) {
+            (Ok(reader), Ok(address), Ok(target), Ok(measurement)) => Ok(Config {
                 address,
-                database,
+                target,
                 measurement,
                 reader,
             }),
-            (reader, address, database, measurement) => {
+            (reader, address, target, measurement) => {
                 let mut diagnostics = reader.err().unwrap_or_default();
                 diagnostics.extend(address.err());
-                diagnostics.extend(database.err());
+                diagnostics.extend(target.err().into_iter().flatten());
                 diagnostics.extend(measurement.err());
                 Err(diagnostics)
             }
@@ -130,7 +144,7 @@ impl kind::Kind for Kind {
         future::ready(Ok(Vec::new()))
     }
 
-    /// Writes the samples of its reader to InfluxDB 1, one line for each sample time
+    /// Writes the samples of its reader to InfluxDB, one line for each sample time
     /// with a field for each channel, keyed by the channel's name. It keeps one
     /// request in flight, and acks a batch only after InfluxDB answers 204, when it
     /// adds the batch's fields to the count `confirmed`. It shows each other answer as
@@ -163,22 +177,79 @@ fn address(value: &Value) -> Result<Uri, Diagnostic> {
     ))
 }
 
-/// Reads a database name: a string that is not empty.
-fn database(value: &Value) -> Result<String, Diagnostic> {
+/// Reads `database`, or `bucket` and `org`.
+fn target(config: &Document) -> Result<Target, Vec<Diagnostic>> {
+    let get = |key| config.attributes.get(key);
+    match (get("database"), get("bucket"), get("org")) {
+        (Some(_), Some(bucket), _) => Err(vec![Diagnostic::new(
+            TWO_TARGETS,
+            bucket.key_span,
+            "the connector has a `database` and a `bucket`".into(),
+            "Keep `database` for InfluxDB 1, or `bucket` and `org` for InfluxDB 2 and 3"
+                .into(),
+        )]),
+        (Some(_), None, Some(org)) => Err(vec![Diagnostic::new(
+            ORG_WITH_DATABASE,
+            org.key_span,
+            "the connector has an `org`, which only a `bucket` takes".into(),
+            "Remove it, or write a `bucket` in place of the `database`".into(),
+        )]),
+        (Some(database), None, None) => {
+            let database = name(&database.value, BAD_DATABASE, "database");
+            database.map(Target::Database).map_err(|error| vec![error])
+        }
+        (None, None, _) => Err(vec![read::missing(
+            kind::NOUN,
+            None,
+            &["database", "bucket"],
+            "Add a `bucket` attribute and an `org` attribute, such as \"plant\", or a \
+             `database` attribute for InfluxDB 1"
+                .into(),
+        )]),
+        (None, Some(bucket), _) => {
+            let bucket = name(&bucket.value, BAD_BUCKET, "bucket");
+            let org = read::required(
+                config,
+                kind::NOUN,
+                None,
+                "org",
+                |value| name(value, BAD_ORG, "org"),
+                "Add an `org` attribute with the InfluxDB organization, such as \
+                 \"plant\". InfluxDB 3 takes any name"
+                    .into(),
+            );
+            match (bucket, org) {
+                (Ok(name), Ok(org)) => Ok(Target::Bucket { name, org }),
+                (bucket, org) => {
+                    Err(bucket.err().into_iter().chain(org.err()).collect())
+                }
+            }
+        }
+    }
+}
+
+/// Reads the name of an InfluxDB `noun`, such as a database: a string of 1 to
+/// [`send::NAME_MAX`] bytes.
+fn name(value: &Value, code: Code, noun: &str) -> Result<String, Diagnostic> {
     let bad = |message: String| {
         Diagnostic::new(
-            BAD_DATABASE,
+            code,
             value.span,
             message,
-            "Write the name of an InfluxDB database, such as \"plant\"".into(),
+            format!("Write the name of an InfluxDB {noun}, such as \"plant\""),
         )
     };
     match &value.kind {
         value::Kind::String(text) if text.is_empty() => {
-            Err(bad("the database name is empty".into()))
+            Err(bad(format!("the {noun} name is empty")))
         }
+        value::Kind::String(text) if text.len() > send::NAME_MAX => Err(bad(format!(
+            "the {noun} name has {} bytes, over {}",
+            text.len(),
+            send::NAME_MAX
+        ))),
         value::Kind::String(text) => Ok(text.to_string()),
-        kind => Err(bad(format!("a database is a string, not {}", kind.noun()))),
+        kind => Err(bad(format!("`{noun}` is a string, not {}", kind.noun()))),
     }
 }
 

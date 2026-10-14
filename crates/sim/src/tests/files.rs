@@ -215,6 +215,17 @@ fn open_absolute_reports_each_failure() {
 }
 
 #[test]
+fn shown_joins_to_a_fixed_root_and_takes_no_time() {
+    let (shown, span) = run(0, MIB, |node, _| async move {
+        let start = node.clock().now();
+        let shown = node.files().shown(Path::new("secrets/a.b"));
+        (shown, node.clock().now() - start)
+    });
+    assert_eq!(shown, Path::new("/data/secrets/a.b"));
+    assert_eq!(span, Span::ZERO);
+}
+
+#[test]
 fn each_call_takes_up_to_100_us() {
     let spans = run(0, MIB, |node, _| async move {
         let (files, clock) = (node.files(), node.clock());

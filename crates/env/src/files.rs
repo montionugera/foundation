@@ -276,6 +276,24 @@ impl Files {
     pub async fn free(&self) -> Result<u64, Error> {
         self.0.free().await
     }
+
+    /// The path that a person sees for `path`, for a text that tells a person where a
+    /// file is. On `os`, the absolute path under the data directory.
+    ///
+    /// # Panics
+    ///
+    /// When `path` is absolute or has a `..` segment.
+    ///
+    /// ```
+    /// fn tell(files: &env::files::Files) -> String {
+    ///     format!("write it to {}", files.shown("key".as_ref()).display())
+    /// }
+    /// ```
+    #[must_use]
+    pub fn shown(&self, path: &Path) -> PathBuf {
+        check(path);
+        self.0.shown(path)
+    }
 }
 
 impl fmt::Debug for Files {
@@ -887,6 +905,10 @@ pub trait Driver {
 
     /// The bytes free on the disk of the data directory.
     fn free(&self) -> Request<'_, u64>;
+
+    /// The path that a person sees for `path`, such as the absolute path on the real
+    /// disk. It only joins paths and does not ask the disk.
+    fn shown(&self, path: &Path) -> PathBuf;
 }
 
 /// One open file as a driver holds it, run through a [`File`]. Only `os` and `sim`
@@ -1047,6 +1069,10 @@ mod tests {
 
         fn free(&self) -> Request<'_, u64> {
             Box::pin(async { Ok(7) })
+        }
+
+        fn shown(&self, path: &Path) -> PathBuf {
+            path.into()
         }
     }
 
@@ -1333,6 +1359,13 @@ mod tests {
         }
 
         #[test]
+        #[should_panic(expected = "path /etc/key is absolute")]
+        fn shown_panics_on_an_absolute_path() {
+            let (files, _) = Fixed::files(0);
+            drop(files.shown(Path::new("/etc/key")));
+        }
+
+        #[test]
         #[should_panic(expected = "path /segments is absolute")]
         fn sync_dir_panics_on_an_absolute_path() {
             let (files, _) = Fixed::files(0);
@@ -1501,6 +1534,18 @@ mod tests {
         fn gives_the_bytes_that_the_driver_finds() {
             let (files, _) = Fixed::files(0);
             assert_eq!(ready(files.free()), Ok(7));
+        }
+    }
+
+    mod shown {
+        use super::*;
+
+        #[test]
+        fn gives_the_path_that_the_driver_shows() {
+            let (files, calls) = Fixed::files(0);
+            let shown = files.shown(Path::new("secrets/a.b"));
+            assert_eq!(shown, Path::new("secrets/a.b"));
+            assert!(calls.borrow().is_empty());
         }
     }
 

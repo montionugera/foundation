@@ -167,6 +167,10 @@ impl Driver for Slow {
     fn free(&self) -> Request<'_, u64> {
         self.0.free()
     }
+
+    fn shown(&self, path: &Path) -> PathBuf {
+        self.0.shown(path)
+    }
 }
 
 /// Takes the lock of the data directory as soon as no node holds it.

@@ -17,12 +17,15 @@
 
 #include "shim.h"
 
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 /* The reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
  * open62541` needs encryption off. */
@@ -36,12 +39,46 @@ UA_DateTime UA_DateTime_now(void) { return 0; }
 UA_DateTime UA_DateTime_nowMonotonic(void) { return 0; }
 UA_Int64 UA_DateTime_localTimeUtcOffset(void) { return 0; }
 
-/* The library calls these only when a config has no event loop, and ours always has
- * one, so a call is a defect. */
-static void refuse(const char *name) {
-    fprintf(stderr, "connector-opcua: open62541 called %s, which is not built\n", name);
+/* The bytes of a line to stderr, with its newline. */
+#define LINE_BYTES 512
+
+/* Writes `connector-opcua: open62541 `, then `level` and `: ` when `level` is not NULL,
+ * then `format` with `args`, to stderr as one line of at most `LINE_BYTES` bytes, in
+ * one call, with the same bytes on each OS. So a line takes no `stdio` lock and does
+ * not mix with a line of another thread. */
+static void put_line(const char *level, const char *format, va_list args) {
+    char line[LINE_BYTES];
+    /* `mp_vsnprintf`, not `vsnprintf`: open62541 formats `%S` and `%N`. */
+    int length = mp_snprintf(line, sizeof(line), "connector-opcua: open62541 %s%s",
+                             level ? level : "", level ? ": " : "");
+    length += mp_vsnprintf(line + length, sizeof(line) - (size_t)length, format, args);
+    if(length > LINE_BYTES - 1)
+        length = LINE_BYTES - 1;
+    line[length] = '\n';
+    /* A failed write of a line to stderr has nowhere to go. */
+#ifdef _WIN32
+    /* `write` puts a CR before each LF of fd 2, which is in text mode. */
+    DWORD written;
+    HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
+    WriteFile(err, line, (DWORD)length + 1, &written, NULL);
+#else
+    ssize_t written = write(STDERR_FILENO, line, (size_t)length + 1);
+#endif
+    (void)written;
+}
+
+/* Writes `format` with its arguments to stderr with `put_line`, and aborts. */
+static void die(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    put_line(NULL, format, args);
+    va_end(args);
     abort();
 }
+
+/* The library calls these only when a config has no event loop, and ours always has
+ * one, so a call is a defect. */
+static void refuse(const char *name) { die("called %s, which is not built", name); }
 
 UA_EventLoop *UA_EventLoop_new_POSIX(const UA_Logger *logger) {
     (void)logger;
@@ -81,7 +118,22 @@ _Static_assert(offsetof(UA_DecodeBinaryOptions, decodedLength) == 32,
                "decodedLength moved");
 _Static_assert(sizeof(shim_node) == 24, "shim_node changed");
 _Static_assert(offsetof(shim_node, name) == 8, "shim_node.name moved");
+_Static_assert(sizeof(shim_scalar) == 8, "shim_scalar changed");
 _Static_assert(UA_TYPES_COUNT == 388, "UA_TYPES changed");
+_Static_assert(UA_TYPES_BOOLEAN == 0 && UA_TYPES_SBYTE == 1 &&
+                   UA_TYPES_BYTE == 2 && UA_TYPES_INT16 == 3 &&
+                   UA_TYPES_UINT16 == 4 && UA_TYPES_INT32 == 5 &&
+                   UA_TYPES_UINT32 == 6 && UA_TYPES_INT64 == 7 &&
+                   UA_TYPES_UINT64 == 8 && UA_TYPES_FLOAT == 9 &&
+                   UA_TYPES_DOUBLE == 10,
+               "the scalar types of UA_TYPES moved");
+_Static_assert(UA_DATATYPEKIND_BOOLEAN == 0 && UA_DATATYPEKIND_SBYTE == 1 &&
+                   UA_DATATYPEKIND_BYTE == 2 && UA_DATATYPEKIND_INT16 == 3 &&
+                   UA_DATATYPEKIND_UINT16 == 4 && UA_DATATYPEKIND_INT32 == 5 &&
+                   UA_DATATYPEKIND_UINT32 == 6 && UA_DATATYPEKIND_INT64 == 7 &&
+                   UA_DATATYPEKIND_UINT64 == 8 && UA_DATATYPEKIND_FLOAT == 9 &&
+                   UA_DATATYPEKIND_DOUBLE == 10,
+               "the kinds of the scalar types moved");
 _Static_assert(UA_TYPES_BYTESTRING == 14, "UA_TYPES_BYTESTRING moved");
 _Static_assert(UA_TYPES_VARIANT == 23, "UA_TYPES_VARIANT moved");
 _Static_assert(UA_NS0ID_SERVER_SERVERSTATUS_CURRENTTIME == 2258,
@@ -334,36 +386,20 @@ static void el_remove_delayed(UA_EventLoop *el, UA_DelayedCallback *dc) {
 static const char *const LEVELS[] = {"trace", "debug", "info", "warning", "error",
                                      "fatal"};
 
-/* The bytes of a log line, with its newline. */
-#define LOG_BYTES 512
-
-/* Writes each message of level warning and up to fd 2, in one `write`, so a line takes
- * no `stdio` lock and does not mix with a line of another thread. A line longer than
- * `LOG_BYTES` is cut. It allocates nothing. */
+/* Writes each message of level warning and up to stderr. It allocates nothing. */
 static void log_message(void *context, UA_LogLevel level, UA_LogCategory category,
                         const char *msg, va_list args) {
     (void)context;
     (void)category;
     if(level < UA_LOGLEVEL_WARNING)
         return;
-    char line[LOG_BYTES];
-    /* `mp_vsnprintf`, not `vsnprintf`: open62541 formats `%S` and `%N`. */
-    int prefix = mp_snprintf(line, sizeof(line), "connector-opcua: open62541 %s: ",
-                             LEVELS[level / 100 - 1]);
-    int text = mp_vsnprintf(line + prefix, sizeof(line) - (size_t)prefix, msg, args);
-    size_t length = (size_t)prefix + (size_t)text;
-    if(length > LOG_BYTES - 1)
-        length = LOG_BYTES - 1;
-    line[length] = '\n';
-    /* A failed write of a log line has nowhere to go. */
-    ssize_t written = write(STDERR_FILENO, line, length + 1);
-    (void)written;
+    put_line(LEVELS[level / 100 - 1], msg, args);
 }
 
 /* Logs the `length` bytes at `message` as a warning through the logger of `el`.
  * `length` is above 0: mp_printf reads a precision of 0 as none, and reads to a NUL. */
 void shim_log_warning(UA_EventLoop *el, const char *message, size_t length) {
-    int bytes = length < LOG_BYTES ? (int)length : LOG_BYTES;
+    int bytes = length < LINE_BYTES ? (int)length : LINE_BYTES;
     UA_LOG_WARNING(el->logger, UA_LOGCATEGORY_NETWORK, "%.*s", bytes, message);
 }
 
@@ -417,11 +453,8 @@ const int shim_free_passes = FREE_PASSES;
 void shim_loop_free(UA_EventLoop *el) {
     struct shim_loop *loop = loop_of(el);
     for(int pass = 0; loop->queued; pass++) {
-        if(pass == FREE_PASSES) {
-            fprintf(stderr, "connector-opcua: open62541 queued delayed callbacks for "
-                            "%d passes of a loop free\n", FREE_PASSES);
-            abort();
-        }
+        if(pass == FREE_PASSES)
+            die("queued delayed callbacks for %d passes of a loop free", FREE_PASSES);
         run_delayed(loop);
     }
     UA_Timer_clear(&loop->timer);
@@ -753,8 +786,8 @@ size_t shim_read_ask(const UA_ReadRequest *request, size_t token) {
 }
 
 /* Gives the most bytes of the body of the message of a good answer of a read of `count`
- * nodes that each hold a Double, with each field of each value, or `SIZE_MAX` past
- * it. */
+ * nodes that each hold a Double, the largest scalar of `shim_value_scalar`, with each
+ * field of each value, or `SIZE_MAX` past it. */
 size_t shim_read_answer(size_t count) {
     const UA_DataType *type = &UA_TYPES[UA_TYPES_READRESPONSE];
     UA_ReadResponse response;
@@ -789,24 +822,42 @@ const UA_DataValue *shim_read_result(const UA_ReadResponse *response, size_t ind
     return &response->results[index];
 }
 
-/* Gives the status of `value`, an answer of a read: `BadNoData` when it holds no
- * value. A read callback gets `Good` whatever the answer holds. */
+/* Gives the status of `value`, an answer of a read: its status when it is not Good,
+ * else `BadNoData` when it holds no value, else `Good`, also for a Good with a subcode.
+ * A read callback gets `Good` whatever the answer holds. */
 UA_StatusCode shim_value_status(const void *value) {
     const UA_DataValue *answer = (const UA_DataValue *)value;
-    if(answer->hasStatus && answer->status != UA_STATUSCODE_GOOD)
+    if(answer->hasStatus && !UA_StatusCode_isGood(answer->status))
         return answer->status;
     return answer->hasValue ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNODATA;
 }
 
-/* Writes the scalar Double of `value`, an answer of a read, to `out`, or gives the
- * status of `shim_value_status`, or `BadTypeMismatch` for another value. */
-UA_StatusCode shim_value_double(const void *value, UA_Double *out) {
+/* Writes the scalar of `value`, an answer of a read, to `out`, and its kind to `kind`.
+ * Else gives the status of `shim_value_status`, or `BadTypeMismatch` for an array or a
+ * kind that `shim_scalar` does not hold. */
+UA_StatusCode shim_value_scalar(const void *value, shim_scalar *out, UA_UInt16 *kind) {
     UA_StatusCode status = shim_value_status(value);
     if(status != UA_STATUSCODE_GOOD)
         return status;
     const UA_Variant *variant = &((const UA_DataValue *)value)->value;
-    if(!UA_Variant_hasScalarType(variant, &UA_TYPES[UA_TYPES_DOUBLE]))
+    if(!UA_Variant_isScalar(variant))
         return UA_STATUSCODE_BADTYPEMISMATCH;
-    *out = *(const UA_Double *)variant->data;
+    /* A load of fixed size for each kind, since a `memcpy` of `memSize` calls glibc. */
+    const void *data = variant->data;
+    switch(variant->type->typeKind) {
+    case UA_DATATYPEKIND_BOOLEAN: out->boolean = *(const UA_Boolean *)data; break;
+    case UA_DATATYPEKIND_SBYTE: out->sbyte = *(const UA_SByte *)data; break;
+    case UA_DATATYPEKIND_BYTE: out->byte = *(const UA_Byte *)data; break;
+    case UA_DATATYPEKIND_INT16: out->int16 = *(const UA_Int16 *)data; break;
+    case UA_DATATYPEKIND_UINT16: out->uint16 = *(const UA_UInt16 *)data; break;
+    case UA_DATATYPEKIND_INT32: out->int32 = *(const UA_Int32 *)data; break;
+    case UA_DATATYPEKIND_UINT32: out->uint32 = *(const UA_UInt32 *)data; break;
+    case UA_DATATYPEKIND_INT64: out->int64 = *(const UA_Int64 *)data; break;
+    case UA_DATATYPEKIND_UINT64: out->uint64 = *(const UA_UInt64 *)data; break;
+    case UA_DATATYPEKIND_FLOAT: out->float_ = *(const UA_Float *)data; break;
+    case UA_DATATYPEKIND_DOUBLE: out->double_ = *(const UA_Double *)data; break;
+    default: return UA_STATUSCODE_BADTYPEMISMATCH;
+    }
+    *kind = (UA_UInt16)variant->type->typeKind;
     return UA_STATUSCODE_GOOD;
 }

@@ -9,16 +9,15 @@ use crate::Failure;
 use crate::apply::Applied;
 use crate::error::{self, Error, Unread};
 use crate::front_end::{self, File};
-use crate::operation::DATA;
 use crate::plan::Output;
 use crate::{serve, status};
 
 #[cfg(test)]
 mod tests;
 
-/// Plans on the node the change from the config files at `files`, read through
-/// `paths`, and writes the plan file to `out` when it is given. `reach` gives what
-/// sends the request.
+/// Plans on the node that `reach` reaches the change from the config files at `files`,
+/// read through `paths`, and writes the plan file to `out` when it is given. `reach`
+/// gives what sends the request.
 ///
 /// # Errors
 ///
@@ -32,7 +31,7 @@ pub(crate) async fn plan<C>(
     files: &[PathBuf],
     out: Option<&Path>,
     paths: &Paths,
-    reach: impl AsyncFnMut(&Path) -> Result<C, Failure>,
+    reach: impl AsyncFnOnce() -> Result<C, Failure>,
 ) -> Result<Output, Error>
 where
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
@@ -73,8 +72,8 @@ where
     Ok(output)
 }
 
-/// Applies on the node the plan file at `plan`, read through `paths`. `reach` gives
-/// what sends the request.
+/// Applies on the node that `reach` reaches the plan file at `plan`, read through
+/// `paths`. `reach` gives what sends the request.
 ///
 /// # Errors
 ///
@@ -86,7 +85,7 @@ where
 pub(crate) async fn apply<C>(
     plan: &Path,
     paths: &Paths,
-    reach: impl AsyncFnMut(&Path) -> Result<C, Failure>,
+    reach: impl AsyncFnOnce() -> Result<C, Failure>,
 ) -> Result<Applied, Error>
 where
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
@@ -104,14 +103,15 @@ where
     })
 }
 
-/// The status of each connector on the node. `reach` gives what sends the request.
+/// The status of each connector on the node that `reach` reaches. `reach` gives what
+/// sends the request.
 ///
 /// # Errors
 ///
 /// - [`Error::Node`] with the failure of `reach` or of the request.
 /// - Each error of [`serve::reply`].
 pub(crate) async fn status<C>(
-    reach: impl AsyncFnMut(&Path) -> Result<C, Failure>,
+    reach: impl AsyncFnOnce() -> Result<C, Failure>,
 ) -> Result<status::Output, Error>
 where
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
@@ -141,14 +141,14 @@ fn file(paths: &Paths, path: &Path) -> Result<Vec<u8>, Error> {
     }
 }
 
-/// The reply of the node of [`DATA`] to `body`.
+/// The reply of the node that `reach` reaches to `body`.
 async fn request<C>(
     body: &[u8],
-    mut reach: impl AsyncFnMut(&Path) -> Result<C, Failure>,
+    reach: impl AsyncFnOnce() -> Result<C, Failure>,
 ) -> Result<Vec<u8>, Error>
 where
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
 {
-    let send = reach(Path::new(DATA)).await.map_err(Error::Node)?;
+    let send = reach().await.map_err(Error::Node)?;
     send(body).await.map_err(Error::Node)
 }

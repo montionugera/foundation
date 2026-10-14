@@ -14,6 +14,7 @@ use crate::client::Nodes;
 use crate::connection;
 use crate::event;
 use crate::node::{Key, Name, Node};
+use crate::value::Value;
 
 /// The Double variable of a [`Server`].
 const VALUE: Node = Node {
@@ -84,8 +85,8 @@ impl Server {
             rng: RefCell::new(rng),
         };
         let add = |server: &mut crate::server::Server| {
-            server.add_double(&VALUE, DOUBLE);
-            server.add_double(&named(), DOUBLE);
+            server.add_scalar(&VALUE, Value::F64(DOUBLE));
+            server.add_scalar(&named(), Value::F64(DOUBLE));
         };
         crate::server::Server::serve(manager, SESSIONS, add, body(&this)).await
     }
@@ -165,9 +166,10 @@ impl Client {
         };
         for value in values {
             match value {
-                Ok(value) => {
+                Ok(Value::F64(value)) => {
                     assert!(value.to_bits() == DOUBLE.to_bits(), "read {value}");
                 }
+                Ok(value) => panic!("read {value:?}"),
                 Err(status) => panic!("a read failed: {status:?}"),
             }
         }

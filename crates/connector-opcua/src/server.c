@@ -52,19 +52,35 @@ const UA_String *shim_server_discovery_url(UA_Server *server, size_t index) {
     return &description->discoveryUrls[index];
 }
 
-/* Adds to `server` the variable `node`, which holds the Double `value`, under the
- * Objects folder. */
-UA_StatusCode shim_server_add_double(UA_Server *server, shim_node node,
-                                     UA_Double value) {
+/* Adds to `server` the variable `node`, which holds `value` of the kind `kind`, under
+ * the Objects folder. */
+UA_StatusCode shim_server_add_scalar(UA_Server *server, shim_node node,
+                                     const shim_scalar *value, UA_UInt16 kind) {
     UA_VariableAttributes attributes = UA_VariableAttributes_default;
-    UA_Variant_setScalar(&attributes.value, &value, &UA_TYPES[UA_TYPES_DOUBLE]);
-    attributes.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
+    UA_Variant_setScalar(&attributes.value, (void *)(uintptr_t)value, &UA_TYPES[kind]);
+    attributes.dataType = UA_TYPES[kind].typeId;
     attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
     return UA_Server_addVariableNode(
         server, shim_node_id(node),
         UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
         UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
         UA_QUALIFIEDNAME(node.namespace, "value"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
+}
+
+/* Adds to `server` the variable `node`, which holds an array of two Doubles, under the
+ * Objects folder. */
+UA_StatusCode shim_server_add_doubles(UA_Server *server, shim_node node) {
+    UA_Double doubles[2] = {1.5, 2.5};
+    UA_VariableAttributes attributes = UA_VariableAttributes_default;
+    UA_Variant_setArray(&attributes.value, doubles, 2, &UA_TYPES[UA_TYPES_DOUBLE]);
+    attributes.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
+    attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
+    return UA_Server_addVariableNode(
+        server, shim_node_id(node),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+        UA_QUALIFIEDNAME(node.namespace, "doubles"),
         UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
 }
 
