@@ -345,7 +345,8 @@
   dependency on `spec`, whose `Definition` the helper gives. A test that runs a
   connector defines them through `connector::testing::Rig`. `Rig::define` adds to each
   definition that the rig holds and sets all of them on the hub, so a call never
-  replaces what a test defined (`laptop.architect-2`, 2026-10-14T00:43:36Z:
+  replaces what a test defined through the rig (`laptop.architect-2`,
+  2026-10-14T00:43:36Z:
   https://github.com/synnaxlabs/foundation/issues/2247#issuecomment-6158296533). This
   supersedes the lost helper of
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6087430425

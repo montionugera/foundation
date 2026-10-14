@@ -72,7 +72,7 @@ impl Rig {
 
     /// The hub, for a reader or a write that the rig does not give. The rig does not
     /// see a call of [`Hub::set_definitions`] on it, so a later [`Self::define`] sets
-    /// each definition that the rig holds again.
+    /// only the definitions that the rig holds, and the hub removes each other channel.
     #[must_use]
     pub fn hub(&self) -> &Hub {
         &self.hub
@@ -83,9 +83,10 @@ impl Rig {
     ///
     /// # Panics
     ///
-    /// When the hub refuses them, such as a key that is already in use. The rig gives
-    /// the status channels of each connector that it opens the next keys from 2^64
-    /// on, as [`create_status`] orders them.
+    /// As [`Hub::set_definitions`] on each definition that the rig holds, such as a key
+    /// or a name that an earlier call used. The rig gives the status channels of each
+    /// connector that it opens the next keys from 2^64 on, as [`create_status`] orders
+    /// them.
     pub fn define(&mut self, definitions: Vec<(Name, Definition)>) {
         self.definitions.extend(definitions);
         let definitions = self.definitions.iter();
