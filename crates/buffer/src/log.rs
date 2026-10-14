@@ -233,9 +233,10 @@ struct Log {
     appended: Position,
     durable: Position,
     runs: VecDeque<Run>,
-    /// The offset of the newest record from which a walk rebuilds the durable
-    /// position: a data record whose entry alone gives it, or a carry record with
-    /// its tail. `None` before the first synced entry.
+    /// The offset of the newest record of the path that alone gives its durable
+    /// position, stamp included: a data record whose entry of the path, advanced
+    /// from the start, gives it, or a carry record of the path. A walk from it
+    /// rebuilds that position. `None` before the first synced entry.
     holder: Option<u64>,
     /// The seq at which the first synced entry starts. `None` before it, and after a
     /// carried tail: its count is exact, and no trim passed an entry after it.
@@ -473,8 +474,8 @@ impl Logs {
         landing
     }
 
-    /// The oldest record that holds the durable tail of a path, which no trim may
-    /// pass. `None` when no path has a synced entry.
+    /// The oldest holder of a path, which no trim may pass. `None` when no path has
+    /// a synced entry.
     #[cfg_attr(
         not(any(test, feature = "sim")),
         expect(dead_code, reason = "a commit calls it")
@@ -644,9 +645,10 @@ impl Logs {
     }
 
     /// Moves the durable tail of the header's path past the entry, as
-    /// [`Tail::advance`], and adds the record at `offset` to the path's runs, as
-    /// its holder, when it is not the newest. A new run whose first entry has no
-    /// samples and comes after others at its seq marks the range from after the
+    /// [`Tail::advance`], and adds the record at `offset` to the path's runs when it
+    /// is not the newest. The record becomes the path's holder when the entry alone
+    /// gives the durable position, stamp included. A new run whose first entry has
+    /// no samples and comes after others at its seq marks the range from after the
     /// previous record of the path up to and with `offset`, in which
     /// [`land`](Self::land) lands no trim. A nonzero tag makes `offset` the newest
     /// record of its tag on the path.
@@ -657,8 +659,8 @@ impl Logs {
     ///
     /// # Panics
     ///
-    /// When `offset` is below the newest run or the holder of the path: records
-    /// come in ring order.
+    /// When `offset` is below the newest run or the holder of the path, or when the
+    /// slot holds another index.
     pub(crate) fn sync(
         &mut self,
         slot: Slot,
