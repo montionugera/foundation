@@ -12,7 +12,7 @@ use connector::kind::{Context, Error};
 use connector::retry::{self, Backoff};
 use connector::secret;
 use http::header::{AUTHORIZATION, HeaderValue};
-use http::{Request, StatusCode, Uri};
+use http::{Method, Request, StatusCode, Uri};
 use hub::reader::{Ended, Position, Received};
 use types::time::Span;
 
@@ -135,11 +135,7 @@ async fn send(
 ) -> Result<(), Error> {
     let mut backoff = None;
     loop {
-        let request = Request::post(uri.clone()).body(body.clone());
-        let mut request = request.expect("invariant: a URI and a body make a request");
-        if let Some(token) = &*token.borrow() {
-            request.headers_mut().insert(AUTHORIZATION, token.header());
-        }
+        let request = request(uri, &body, token.borrow().as_ref());
         let refused = match client.send(request).await {
             Ok(answer) if answer.status() == StatusCode::NO_CONTENT => {
                 ctx.clear_error();
@@ -182,12 +178,36 @@ async fn send(
 }
 
 /// The token of a run, as the value of its `Authorization` header.
-struct Token {
+/// The request of one attempt to write `body` to `uri`, with the header of `token`.
+pub fn request(uri: &Uri, body: &Bytes, token: Option<&Token>) -> Request<Bytes> {
+    let mut request = Request::new(body.clone());
+    *request.method_mut() = Method::POST;
+    *request.uri_mut() = uri.clone();
+    if let Some(token) = token {
+        request.headers_mut().insert(AUTHORIZATION, token.header());
+    }
+    request
+}
+
+/// The token that each request of a run sends in its `Authorization` header.
+#[derive(Debug)]
+pub struct Token {
     /// `Token <value>`, which a header holds.
     header: secret::Value,
 }
 
 impl Token {
+    /// The token of `value`, or `None` when it holds a byte that a header cannot hold.
+    #[must_use]
+    pub fn new(value: &secret::Value) -> Option<Self> {
+        let mut header = Vec::with_capacity(value.expose().len().saturating_add(6));
+        header.extend_from_slice(b"Token ");
+        header.extend_from_slice(value.expose());
+        let header = secret::Value::new(header);
+        HeaderValue::from_bytes(header.expose()).ok()?;
+        Some(Self { header })
+    }
+
     /// Reads the token of the run's config, or gives `None` when it has none.
     ///
     /// # Errors
@@ -199,20 +219,16 @@ impl Token {
             return Ok(None);
         };
         let value = ctx.secret(source).await?;
-        let mut header = Vec::with_capacity(value.expose().len().saturating_add(6));
-        header.extend_from_slice(b"Token ");
-        header.extend_from_slice(value.expose());
-        let header = secret::Value::new(header);
-        if HeaderValue::from_bytes(header.expose()).is_err() {
-            return Err(Error::Retry(
+        let token = Self::new(&value).ok_or_else(|| {
+            Error::Retry(
                 format!(
                     "the token {source} holds a byte that an HTTP header cannot hold. \
                      Write the token with no control byte"
                 )
                 .into(),
-            ));
-        }
-        Ok(Some(Self { header }))
+            )
+        })?;
+        Ok(Some(token))
     }
 
     /// The `Authorization` header, marked sensitive.
