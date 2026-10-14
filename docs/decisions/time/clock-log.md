@@ -1,12 +1,12 @@
 - **CLOCK LOG (2026-10-14)** `clock::log::Reader` gives the times of each log line of a
-  node: `Reader::new(wall: env::wall::Wall, mesh: clock::Reader)`, and `now() -> Time {
-  wall: Stamp, mesh: Mesh }`. `wall` is the OS wall time, the stamp of the line.
-  `Mesh` is `Near` when the best guess of mesh time is at most 2 ms from `wall`,
-  `Apart(best guess)` when it is further, and `Unsynced` before a majority of the
-  node's sources first agree. The best guess is `estimate::Measurement::time`, not the
-  midpoint of the interval, which moves far from it when an edge stops at the end of a
-  stamp. A line whose best guess or `wall` is at the last stamp is `Apart`, because the
-  distance is not known. `now` reads the two clocks one after the other, so the time
+  node: `Reader::new(wall: env::wall::Wall, mesh: clock::Reader)`, and
+  `now() -> Time { wall: Stamp, mesh: Mesh }`. `wall` is the OS wall time, the stamp of
+  the line. `Mesh` is `Near` when the best guess of mesh time is at most 2 ms from
+  `wall`, `Apart(best guess)` when it is further, and `Unsynced` before a majority of
+  the node's sources first agree. The best guess is `estimate::Measurement::time`, not
+  the midpoint of the interval, which moves far from it when an edge stops at the end of
+  a stamp. A line whose best guess or `wall` is at the last stamp is `Apart`, because
+  the distance is not known. `now` reads the two clocks one after the other, so the time
   between the reads counts toward the 2 ms. Each line is for a person who reads the log,
   never for a data stamp (BQ20), so `clock::log::Reader::now` is in
   `disallowed-methods`, and its one call site, in the log of `node`, has an `#[expect]`
