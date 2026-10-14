@@ -77,9 +77,8 @@ impl kind::Kind for Kind {
 
     /// Connects to the server, and reads each node once per tick of the rate until
     /// the cancel. Each tick writes one frame, stamped at the midpoint of the read.
-    /// The connect is not raced with the cancel: it ends within four request timeouts
-    /// of the client (20 s), one for the session, one for the read of the
-    /// `MaxNodesPerRead` of the server, and two for the close after a failure. Each end
+    /// The connect is not raced with the cancel: with the close after a failed
+    /// connect, it ends within four request timeouts of the client (20 s). Each end
     /// closes the session.
     ///
     /// # Errors
