@@ -217,6 +217,16 @@ fn define_keeps_what_an_earlier_call_defined() {
 }
 
 #[test]
+#[should_panic(expected = "two channels are named plant.a.status.time")]
+fn define_panics_on_a_name_that_an_earlier_call_defined() {
+    on_rig(Table::new, |mut rig, _| async move {
+        let a = name("plant.a");
+        rig.define(create_status(&a, &[], channel::Key::from_u128(1)));
+        rig.define(create_status(&a, &[], channel::Key::from_u128(10)));
+    });
+}
+
+#[test]
 fn two_connectors_of_one_rig_both_run() {
     on_rig(
         || Table::new().with("ticks", Ticks::default()),
