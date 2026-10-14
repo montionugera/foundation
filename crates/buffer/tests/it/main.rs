@@ -3726,12 +3726,13 @@ fn an_open_refuses_a_carry_record_of_the_wrong_shape() {
     }
 }
 
-/// A trim passed the record with the first entry with no samples that index 1 has at
-/// seq 3, and kept a record with two more. A carry record after the kept ones gives
-/// the count. Each case: the seqs of the entries with no samples of each record, the
-/// count of a carry record at seq 3 in place of the first kept record, the carried
-/// count, and whether the open takes it. The landing rule keeps each walked count
-/// exact, so a carried count that is not the walked one is a wrong shape.
+/// A ring made by hand: its tail passes the record with the first entry with no
+/// samples that index 1 has at seq 3, and keeps a record with two more, which the
+/// landing rule lets no trim do. So the walk counts two, and a carry record after the
+/// kept ones gives a count. Each case: the seqs of the entries with no samples of each
+/// record, the count of a carry record at seq 3 in place of the first kept record, the
+/// carried count, and whether the open takes it. The open takes only the walked count,
+/// and then gives the two walked entries.
 #[test]
 fn an_open_takes_a_carried_count_only_when_it_is_the_walked_one() {
     type Records = &'static [&'static [u64]];
