@@ -57,12 +57,16 @@ pub fn create_secret_store(files: Files) -> Box<dyn secret::store::Store> {
 ///
 /// # Panics
 ///
-/// When a call of `files` fails.
+/// When a call of `files` fails, or another call for `name` runs at once.
 pub async fn create_secret(files: &Files, name: &Name, value: &[u8]) {
     let dir = Path::new(SECRETS);
     files.create_dir(dir).await.expect("makes the directory");
     // No name starts with `.`, so the store never reads the staged file.
-    let staged = dir.join(".staged");
+    let staged = dir.join(format!(".{name}"));
+    files
+        .remove(&staged)
+        .await
+        .expect("removes a dropped value");
     let len = u64::try_from(value.len()).expect("invariant: usize fits u64");
     let file = files.open(&staged, Mode::Create { len }).await;
     let mut file = file.expect("makes the file");
