@@ -293,7 +293,7 @@ fn the_second_connector_of_a_rig_gets_the_status_keys_after_the_first() {
                 received.set().entries().iter().map(|e| e.key).collect();
             keys.sort_unstable();
             let first = 1_u128 << 64;
-            let want: Vec<_> = (first + 7..first + 14)
+            let want: Vec<_> = (first + 8..first + 16)
                 .map(channel::Key::from_u128)
                 .collect();
             assert_eq!(keys, want);
