@@ -650,7 +650,7 @@ fn keeps_the_answer_of_influx_after_a_401_with_a_long_source_and_body() {
     assert!(want.starts_with(
         "InfluxDB answered 401 Unauthorized. Check the token file(\"/run/secrets/"
     ));
-    assert!(want.ends_with(&body[..510]));
+    assert!(want.ends_with(&"y".repeat(510)));
     assert_eq!(
         got,
         (
