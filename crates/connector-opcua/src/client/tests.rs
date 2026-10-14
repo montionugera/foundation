@@ -1419,13 +1419,14 @@ fn read_per(most: u32, count: u32) -> (Vec<usize>, Read, Values) {
 }
 
 /// A read takes at most the `MaxNodesPerRead` of the server in one request, and gives
-/// the value of each node in order. A limit of 0 is no limit.
+/// the value of each node in order. A limit of 0 is no limit. No nodes take no request.
 #[test]
 fn a_request_takes_at_most_the_max_nodes_per_read_of_the_server() {
     let (counts, read, values) = read_per(10, 24);
     assert_eq!((counts, read), (vec![10, 10, 5], Ok(values)));
     let (counts, read, values) = read_per(0, 24);
     assert_eq!((counts, read), (vec![25], Ok(values)));
+    assert_eq!(read_per(10, 0), (vec![], Ok(vec![]), vec![]));
 }
 
 /// A read of more requests than the reads in flight sends each next request when one

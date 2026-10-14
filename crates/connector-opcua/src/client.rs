@@ -259,10 +259,7 @@ impl Client {
             let item = unsafe { ffi::shim_read_item(node.into()) };
             let full = self.per_read.is_some_and(|most| count == most.get());
             if full || self.past(ask + item, count + 1).is_some() {
-                if count > 0 {
-                    counts.push(count);
-                    (ask, count) = (empty, 0);
-                }
+                // Only the first node gets here at a count of 0, and then it fails.
                 if let Some((bytes, most)) = self.past(empty + item, 1) {
                     return Err(Large {
                         node: index,
@@ -270,6 +267,8 @@ impl Client {
                         most,
                     });
                 }
+                counts.push(count);
+                (ask, count) = (empty, 0);
             }
             ask += item;
             count += 1;
