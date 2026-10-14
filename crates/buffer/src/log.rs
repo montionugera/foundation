@@ -279,15 +279,16 @@ impl Log {
         }
     }
 
-    /// Drops the oldest run when it is of the record at `offset`. Then, when the runs
-    /// fill less than a quarter of their room, shrinks it to twice the runs: room
-    /// for at most four times the runs stays, and none when no run is left.
+    /// Drops the oldest run when it is of the record at `offset`. Then, when the room
+    /// is over four times the runs, or over four with no run, shrinks it to twice the
+    /// runs, or to two. So a path that a trim empties keeps room for its next run.
     fn trim(&mut self, offset: u64) {
         if self.runs.front().is_some_and(|run| run.offset == offset) {
             self.runs.pop_front();
         }
-        if self.runs.capacity() > self.runs.len().saturating_mul(4) {
-            self.runs.shrink_to(self.runs.len().saturating_mul(2));
+        let keep = self.runs.len().max(1);
+        if self.runs.capacity() > keep.saturating_mul(4) {
+            self.runs.shrink_to(keep.saturating_mul(2));
         }
     }
 
@@ -2301,7 +2302,7 @@ mod tests {
     }
 
     /// The room and the count of the runs of the path of index 1, which no call of
-    /// `Logs` shows.
+    /// `Logs` shows. The `memory` test checks the room through the bytes of the heap.
     fn room(logs: &Logs) -> (usize, usize) {
         let log = logs.log(slot(1), Path::Live).expect("the path has a log");
         (log.runs.capacity(), log.runs.len())
@@ -2322,49 +2323,75 @@ mod tests {
         assert_eq!(room(&logs), (6, 3));
     }
 
+    /// Gives the tail of each idle path a carry record at `offset`, as a commit does.
+    fn carry_idle(logs: &mut Logs, offset: u64, indexes: u32) {
+        let mut tails = Vec::new();
+        logs.idle(offset, usize::MAX, &mut tails);
+        for tail in &tails {
+            let index = (1..=indexes)
+                .find(|&i| channel::Key::from_u128(u128::from(i)) == tail.index)
+                .expect("a fed index");
+            logs.carry(slot(index), tail, offset).expect("carries");
+        }
+    }
+
     #[test]
-    fn a_trim_frees_the_room_of_a_path_it_empties() {
-        let mut logs = one_path_with_runs(1);
-        logs.hide(8192);
-        assert_eq!(room(&logs), (0, 0));
-        let entry = header(1, Path::Live, 1, 1, Some(1));
+    fn a_trim_keeps_room_for_two_runs_of_a_path_it_empties() {
+        let mut logs = one_path_with_runs(8);
+        carry_idle(&mut logs, 4096 * 9, 1);
+        logs.hide(4096 * 9);
+        assert_eq!(room(&logs), (2, 0));
+        let entry = header(1, Path::Live, 8, 1, Some(1));
         logs.append(slot(1), &entry).expect("appends");
-        logs.sync(slot(1), &entry, 8192).expect("syncs");
+        logs.sync(slot(1), &entry, 4096 * 10).expect("syncs");
+        assert_eq!(room(&logs), (2, 1));
         assert_eq!(
             logs.runs(slot(1), Path::Live).collect::<Vec<_>>(),
-            [run(1, 0, 8192)]
+            [run(8, 0, 4096 * 10)]
         );
     }
 
     proptest! {
-        /// Records of a block each hold an entry of some of 8 paths, and a trim may
-        /// follow each, up to the oldest holder. After each trim, each path has room
-        /// for at most four times its runs, and none with no run.
+        /// Records of a block each hold an entry of some of 8 paths, or the carried
+        /// tails of the idle paths, and a trim may follow each, up to the oldest
+        /// holder. After each trim, each path has room for at most four times its
+        /// runs, or four with no run.
         #[test]
         fn a_trim_keeps_the_room_of_each_path_in_four_times_its_runs(
             records in prop::collection::vec(
                 (
                     prop::collection::vec(1..=8u32, 0..6),
-                    prop::option::of(0..40u64),
+                    any::<bool>(),
+                    prop::option::of(0..80u64),
                 ),
-                1..40,
+                1..60,
             ),
         ) {
             let mut logs = Logs::default();
-            for (record, (indexes, trim)) in (1..).zip(&records) {
-                for &index in indexes {
-                    let at = slot(index);
-                    let first = logs.appended(at, Path::Live).seq;
-                    let entry = header(index, Path::Live, first, 1, Some(1));
-                    prop_assert_eq!(logs.append(at, &entry), Ok(()));
-                    prop_assert_eq!(logs.sync(at, &entry, 4096 * record), Ok(()));
+            for (record, (indexes, carried, trim)) in (1..).zip(&records) {
+                let offset = 4096 * record;
+                if *carried {
+                    carry_idle(&mut logs, offset, 8);
+                } else {
+                    for &index in indexes {
+                        let at = slot(index);
+                        let first = logs.appended(at, Path::Live).seq;
+                        let entry = header(index, Path::Live, first, 1, Some(1));
+                        prop_assert_eq!(logs.append(at, &entry), Ok(()));
+                        prop_assert_eq!(logs.sync(at, &entry, offset), Ok(()));
+                    }
                 }
                 let Some(trim) = trim else { continue };
                 let Some(kept) = logs.kept() else { continue };
                 logs.hide(logs.hidden.max((4096 * trim).min(kept)));
                 for log in &logs.paths {
                     let (room, runs) = (log.runs.capacity(), log.runs.len());
-                    prop_assert!(room <= 4 * runs, "room {} for {} runs", room, runs);
+                    prop_assert!(
+                        room <= 4 * runs.max(1),
+                        "room {} for {} runs",
+                        room,
+                        runs
+                    );
                 }
             }
         }
