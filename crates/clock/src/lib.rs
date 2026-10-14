@@ -2,6 +2,7 @@
 //! time as an interval.
 
 mod cell;
+pub mod log;
 mod mesh;
 #[cfg_attr(not(test), expect(dead_code, reason = "the peer source is #145"))]
 mod peer;
