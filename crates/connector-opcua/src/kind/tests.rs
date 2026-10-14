@@ -39,14 +39,14 @@ const DATA: &[&str] = &["plant.a", "plant.b", "plant.c"];
 const PLC: &str = "plant.plc";
 
 /// The first key of the status channels of [`PLC`]: the index, then `state`,
-/// `class`, `restarts`, `backoff`, `error`, `in`, `missed`, and `lost`.
+/// `class`, `restarts`, `backoff`, `error`, `note`, `in`, `missed`, and `lost`.
 const STATUS: u128 = 100;
 const CLASS: u128 = STATUS + 2;
 const RESTARTS: u128 = STATUS + 3;
 const ERROR: u128 = STATUS + 5;
-const IN: u128 = STATUS + 6;
-const MISSED: u128 = STATUS + 7;
-const LOST: u128 = STATUS + 8;
+const IN: u128 = STATUS + 7;
+const MISSED: u128 = STATUS + 8;
+const LOST: u128 = STATUS + 9;
 
 /// The class of a device error in the status.
 const DEVICE: u64 = 2;

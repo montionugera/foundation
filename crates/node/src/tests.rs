@@ -7025,7 +7025,7 @@ mod port {
                 r#""state":"stopped","address":"http://influx:8086","restarts":0,"#,
                 r#""counts":{"confirmed":0},"error":{"class":"config","text":"#,
                 r#""the selector matches no channel. Select a channel that the spec "#,
-                r#"defines"}}]}}"#,
+                r#"defines"},"note":null}]}}"#,
                 "\n",
             );
             assert_eq!(reply, connectors);

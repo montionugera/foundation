@@ -61,7 +61,7 @@ fn applies_with_each_connector_kind_of_the_node() {
             effect: Effect {
                 pointer: Pointer::from(mesh.pointer()),
                 counts: Counts {
-                    added: 22,
+                    added: 24,
                     changed: 0,
                     removed: 0,
                 },

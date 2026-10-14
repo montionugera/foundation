@@ -150,7 +150,7 @@ async fn send(
                 match source {
                     Some(source) => {
                         ctx.error(&format_args!(
-                            "Check the token {source}. InfluxDB answered {status}: {}",
+                            "InfluxDB answered {status}. Check the token {source}: {}",
                             text.trim()
                         ));
                     }

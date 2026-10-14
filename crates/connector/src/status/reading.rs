@@ -24,6 +24,8 @@ pub struct Reading {
     /// error that ended the last run. `None` when the running kind cleared the error
     /// last, or when it shows none and the last run returned `Ok` or no run ended.
     pub error: Option<(Class, String)>,
+    /// The note that the running kind shows, or `None` when it shows none.
+    pub note: Option<String>,
     /// Each count, by the last segment of its name.
     pub counts: BTreeMap<Name, u64>,
 }
@@ -50,6 +52,7 @@ impl Reading {
             state: State::of(samples.state?)?,
             restarts: samples.restarts?,
             error,
+            note: samples.note.filter(|note| !note.is_empty()),
             counts: samples.counts,
         })
     }
@@ -61,6 +64,7 @@ struct Samples {
     class: Option<u64>,
     restarts: Option<u64>,
     text: Option<String>,
+    note: Option<String>,
     counts: BTreeMap<Name, u64>,
 }
 
@@ -78,6 +82,7 @@ impl Samples {
             class: None,
             restarts: None,
             text: None,
+            note: None,
             counts: BTreeMap::new(),
         };
         for (entry, bytes) in view.iter() {
@@ -92,10 +97,8 @@ impl Samples {
                 segment::STATE => samples.state = Some(number(&sample())),
                 segment::CLASS => samples.class = Some(number(&sample())),
                 segment::RESTARTS => samples.restarts = Some(number(&sample())),
-                segment::ERROR => {
-                    let text = String::from_utf8(sample());
-                    samples.text = Some(text.expect("invariant: decode checks UTF-8"));
-                }
+                segment::ERROR => samples.text = Some(text(sample())),
+                segment::NOTE => samples.note = Some(text(sample())),
                 _ => {
                     let name = last.parse().expect("invariant: a segment of a name");
                     samples.counts.insert(name, number(&sample()));
@@ -104,6 +107,11 @@ impl Samples {
         }
         samples
     }
+}
+
+/// The text of the sample `bytes` of a `String` channel.
+fn text(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes).expect("invariant: decode checks UTF-8")
 }
 
 /// The bytes of the last of the `count` samples of the encoded series `bytes` of
