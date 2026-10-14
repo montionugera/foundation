@@ -62,7 +62,8 @@ doc that the PR adds or changes and that states what a crate does, when that cra
 other crate that the text names, the crate whose public doc holds it, and the crates
 that the PR changes are not all on one architect's list (`docs/factory.md`,
 "Architects"; a folder of `docs/decisions/` is a topic, not a crate). One with no link
-on the PR to the approval of `laptop.architect` (Round 1 of the `review` skill) is a
+on the PR to the approval of `laptop.architect`, or of `laptop.architect-2` when
+`laptop.architect` wrote the PR (Round 1 of the `review` skill), is a
 finding. Read that approval: one that does not name the text, or whose approved SHA
 comes before a commit that changes what the text states, counts as missing. Read each
 architect review and ruling on the PR, on a PR that it replaces, on each issue that it

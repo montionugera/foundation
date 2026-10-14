@@ -181,11 +181,13 @@ unsafe extern "C" {
         chunks: u32,
     ) -> *mut Server;
     pub(crate) fn UA_Server_run_startup(server: *mut Server) -> u32;
-    pub(crate) fn shim_server_add_double(
+    pub(crate) fn shim_server_add_scalar(
         server: *mut Server,
         node: Node<'_>,
-        value: f64,
+        value: *const super::Scalar,
+        kind: u16,
     ) -> u32;
+    pub(crate) fn shim_server_add_doubles(server: *mut Server, node: Node<'_>) -> u32;
     pub(crate) fn shim_server_add_bytes(
         server: *mut Server,
         node: Node<'_>,
