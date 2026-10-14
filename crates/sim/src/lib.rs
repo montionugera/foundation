@@ -20,6 +20,7 @@ mod chance;
 mod disk;
 mod drivers;
 mod files;
+mod log;
 mod net;
 mod paths;
 mod serial;
@@ -101,8 +102,8 @@ impl Default for Config {
 /// and each thread that has not started, and a task or thread that one of these drops
 /// starts is dropped in that drop. When one of these drops panics, the others still
 /// run, and then the drop panics once with each message, as [`Error::Panicked`] gives
-/// them: those of the tasks first, then those of the threads, each in start order. It
-/// does not panic while the thread already panics.
+/// them: those of the timer wakers first, then those of the tasks, then those of the
+/// threads, each in start order. It does not panic while the thread already panics.
 pub struct Sim {
     config: Config,
     shared: Shared,
@@ -240,9 +241,10 @@ impl Sim {
     /// # Panics
     ///
     /// - When `node` belongs to another run.
-    /// - When the drop of a future or of a thread that has not run panics. The crash
-    ///   still ends, and the panic gives each message as [`Error::Panicked`] does:
-    ///   those of the futures first, then those of the threads, each in start order.
+    /// - When the drop of a timer waker, of a future, or of a thread that has not run
+    ///   panics. The crash still ends, and the panic gives each message as
+    ///   [`Error::Panicked`] does: those of the timer wakers first, then those of the
+    ///   futures, then those of the threads, each in start order.
     pub fn crash(&mut self, node: &Node, crash: Crash) {
         let node = self.own(node);
         let wakers = {
@@ -251,11 +253,8 @@ impl Sim {
             state.net().crash(now, node, crash)
         };
         let panics = self.stop(|key| key == node);
-        // No thread owns these wakers, so their drops go to no log.
-        let unowned = Dispatch::none();
-        tracing::dispatcher::with_default(&unowned, || drop(wakers));
-        let ended = lock(&self.shared).crash(node, crash);
-        tracing::dispatcher::with_default(&unowned, || drop(ended));
+        drop(wakers);
+        drop(lock(&self.shared).crash(node, crash));
         assert!(panics.is_empty(), "{}", panics.join(THEN));
     }
 
@@ -389,9 +388,7 @@ impl Sim {
                 Next::Poll => self.step()?,
                 Next::Advance(at) => {
                     let (wakers, orphans) = lock(&self.shared).advance(at);
-                    for (waker, log) in wakers {
-                        tracing::dispatcher::with_default(&log, || waker.wake());
-                    }
+                    wakers.into_iter().for_each(log::Waker::wake);
                     drop(orphans);
                 }
             }
@@ -629,9 +626,9 @@ pub enum Error {
     Panicked {
         /// The thread's name.
         thread: String,
-        /// The panic message. When drops of the thread's futures or of a panic
-        /// payload panic after it, the message of each follows, after ", then a drop
-        /// panicked: ".
+        /// The panic message. When drops of a panic payload, of the thread's timer
+        /// wakers, or of its futures panic after it, the message of each follows, in
+        /// that order, after ", then a drop panicked: ".
         message: String,
         /// The seed that replays the run.
         seed: u64,

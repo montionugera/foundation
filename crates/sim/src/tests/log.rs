@@ -190,6 +190,42 @@ impl Drop for PanicsInDrop {
     }
 }
 
+/// A waker, or a value of a future, whose drop panics with its message.
+struct Panics(&'static str);
+
+#[expect(clippy::manual_noop_waker, reason = "the waker exists for its drop")]
+impl Wake for Panics {
+    fn wake(self: Arc<Self>) {}
+}
+
+impl Drop for Panics {
+    fn drop(&mut self) {
+        panic!("{}", self.0);
+    }
+}
+
+#[test]
+fn a_crash_gives_the_panic_of_a_timer_waker_before_that_of_a_future() {
+    let mut sim = sim(0);
+    let a = sim.node(node::Config::default());
+    let clock = a.clock();
+    let _a = a.shards().start(shard("a"), |_| async move {
+        let _future = Panics("a future");
+        let sleep = pin!(clock.sleep(Span::SECOND));
+        let waker = Waker::from(Arc::new(Panics("a timer waker")));
+        assert!(sleep.poll(&mut Context::from_waker(&waker)).is_pending());
+        drop(waker);
+        pending::<()>().await;
+    });
+    sim.run_for(Span::from_nanos(1_000_000)).unwrap();
+    let crash = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        sim.crash(&a, Crash::Process);
+    }));
+    let payload = crash.unwrap_err();
+    let message = payload.downcast_ref::<String>().unwrap();
+    assert_eq!(message, "a timer waker, then a drop panicked: a future");
+}
+
 #[test]
 fn a_crash_drops_a_timer_waker_with_the_log_of_its_node() {
     for seed in 0..32 {
@@ -272,7 +308,7 @@ fn a_timer_wakes_a_waker_with_the_log_of_its_node() {
 }
 
 #[test]
-fn the_end_of_a_file_call_wakes_its_waker_with_no_log() {
+fn the_end_of_a_file_call_wakes_its_waker_with_the_log_of_its_node() {
     let mut sim = sim(0);
     let a = sim.node(node::Config::default());
     let (log, caller) = (Log::default(), Log::default());
@@ -289,11 +325,11 @@ fn the_end_of_a_file_call_wakes_its_waker_with_no_log() {
         });
     sim.run_for(Span::from_nanos(1_000_000_000)).unwrap();
     assert_eq!(caller.messages(), Vec::<String>::new());
-    assert_eq!(log.messages(), Vec::<String>::new());
+    assert_eq!(log.messages(), ["a waker woken", "a waker dropped"]);
 }
 
 #[test]
-fn a_power_cut_drops_the_waker_of_a_listener_with_no_log() {
+fn a_power_cut_drops_the_waker_of_a_listener_with_the_log_of_its_node() {
     let mut sim = sim(0);
     let a = sim.node(node::Config::default());
     let (log, caller) = (Log::default(), Log::default());
@@ -320,11 +356,11 @@ fn a_power_cut_drops_the_waker_of_a_listener_with_no_log() {
     sim.run_for(Span::from_nanos(1_000_000)).unwrap();
     sim.crash(&a, Crash::Power);
     assert_eq!(caller.messages(), Vec::<String>::new());
-    assert_eq!(log.messages(), Vec::<String>::new());
+    assert_eq!(log.messages(), ["a waker dropped"]);
 }
 
 #[test]
-fn a_crash_drops_the_waker_of_a_leaked_port_with_no_log() {
+fn a_crash_drops_the_waker_of_a_leaked_port_with_the_log_of_its_node() {
     let mut sim = sim(0);
     let a = sim.node(node::Config::default());
     let b = sim.node(node::Config::default());
@@ -358,7 +394,7 @@ fn a_crash_drops_the_waker_of_a_leaked_port_with_no_log() {
     sim.run().unwrap();
     sim.crash(&a, Crash::Process);
     assert_eq!(caller.messages(), Vec::<String>::new());
-    assert_eq!(log.messages(), Vec::<String>::new());
+    assert_eq!(log.messages(), ["a waker dropped"]);
 }
 
 #[test]
@@ -488,5 +524,131 @@ fn a_start_in_the_drop_of_a_crash_drops_with_its_own_log() {
         assert_eq!(caller.messages(), Vec::<String>::new(), "seed {seed}");
         assert_eq!(log.messages(), Vec::<String>::new(), "seed {seed}");
         assert_eq!(other.messages(), ["a start dropped"], "seed {seed}");
+    }
+}
+
+/// Opens port `/dev/ttyS0` of `a`, joined to `b`, on a shard with `log`, and leaves
+/// a read of it pending with a [`Wakes`] waker.
+fn wait_on_port(sim: &mut crate::Sim, a: &crate::Node, b: &crate::Node, log: &Log) {
+    let path = Path::new("/dev/ttyS0");
+    sim.line(
+        a,
+        path,
+        b,
+        Path::new("/dev/ttyUSB0"),
+        line::Config::default(),
+    );
+    let config = serial::Config {
+        path: path.into(),
+        settings: serial::Settings {
+            baud: NonZeroU32::new(9_600).unwrap(),
+            parity: None,
+            stop_bits: serial::StopBits::One,
+        },
+    };
+    let serial = a.serial();
+    let started = a
+        .shards()
+        .logged(log.dispatch())
+        .start(shard("a"), |_| async move {
+            let port = Box::leak(Box::new(serial.open(&config).await.unwrap()));
+            let mut buffer = [0; 8];
+            poll_with_own_waker(pin!(poll_fn(|cx| port.poll_read(cx, &mut buffer))));
+            pending::<()>().await;
+        });
+    drop(started);
+    sim.run_for(Span::from_nanos(1_000_000)).unwrap();
+}
+
+/// Memory of node code: it logs when it drops.
+struct LoggedMemory(block::Heap);
+
+#[expect(unsafe_code, reason = "a test memory that only wraps `Heap`")]
+// SAFETY: each call goes to `Heap`.
+unsafe impl block::Memory for LoggedMemory {
+    fn base(&self) -> std::ptr::NonNull<u8> {
+        self.0.base()
+    }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn commit(&self, offset: usize, len: usize) -> Result<(), block::Refused> {
+        self.0.commit(offset, len)
+    }
+    fn purge(&self, offset: usize, len: usize) {
+        self.0.purge(offset, len);
+    }
+}
+
+impl Drop for LoggedMemory {
+    fn drop(&mut self) {
+        tracing::info!("a memory dropped");
+    }
+}
+
+#[test]
+fn the_end_of_an_orphan_read_drops_its_block_with_the_log_of_its_node() {
+    let mut sim = sim(0);
+    let a = sim.node(node::Config::default());
+    let (log, caller) = (Log::default(), Log::default());
+    let _caller = tracing::dispatcher::set_default(&caller.dispatch());
+    let own = a.clone();
+    let _a = a
+        .shards()
+        .logged(log.dispatch())
+        .start(shard("a"), |_| async move {
+            let files = own.files();
+            let file = files
+                .open(Path::new("a"), env::files::Mode::Create { len: 1_024 })
+                .await
+                .unwrap();
+            let config = block::Config::new(64 << 10).unwrap();
+            let memory = LoggedMemory(block::Heap::new(config.reservation()));
+            let pool = block::Pool::new(config, memory);
+            let mut read = Box::pin(file.read_at(0, pool.alloc(1_024).unwrap()));
+            poll_with_own_waker(read.as_mut());
+            drop(read);
+            drop(pool);
+            pending::<()>().await;
+        });
+    sim.run_for(Span::from_nanos(1_000_000_000)).unwrap();
+    assert_eq!(caller.messages(), Vec::<String>::new());
+    assert_eq!(log.messages(), ["a waker dropped", "a memory dropped"]);
+}
+
+#[test]
+fn a_port_fault_from_the_caller_wakes_its_waker_with_the_log_of_its_node() {
+    let mut sim = sim(0);
+    let a = sim.node(node::Config::default());
+    let b = sim.node(node::Config::default());
+    let (log, caller) = (Log::default(), Log::default());
+    let _caller = tracing::dispatcher::set_default(&caller.dispatch());
+    wait_on_port(&mut sim, &a, &b, &log);
+    a.fail_serial(Path::new("/dev/ttyS0"));
+    assert_eq!(caller.messages(), Vec::<String>::new());
+    assert_eq!(log.messages(), ["a waker woken", "a waker dropped"]);
+}
+
+#[test]
+fn a_port_fault_from_another_node_wakes_its_waker_with_the_log_of_its_node() {
+    for seed in 0..32 {
+        let mut sim = sim(seed);
+        let a = sim.node(node::Config::default());
+        let b = sim.node(node::Config::default());
+        let (log, b_log, caller) = (Log::default(), Log::default(), Log::default());
+        let _caller = tracing::dispatcher::set_default(&caller.dispatch());
+        wait_on_port(&mut sim, &a, &b, &log);
+        let faulted = a.clone();
+        let _b = b.shards().logged(b_log.dispatch()).start(
+            shard("b"),
+            move |_| async move {
+                faulted.fail_serial(Path::new("/dev/ttyS0"));
+            },
+        );
+        sim.run_for(Span::from_nanos(1_000_000)).unwrap();
+        assert_eq!(b_log.messages(), Vec::<String>::new(), "seed {seed}");
+        assert_eq!(caller.messages(), Vec::<String>::new(), "seed {seed}");
+        let woken = ["a waker woken", "a waker dropped"];
+        assert_eq!(log.messages(), woken, "seed {seed}");
     }
 }

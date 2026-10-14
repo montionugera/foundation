@@ -18,6 +18,7 @@ use tracing::Dispatch;
 use types::time::{Monotonic, Span, Stamp};
 
 use crate::files::{Files, Held};
+use crate::log::{self, Kept};
 use crate::net::{self, Network};
 use crate::paths::Paths;
 use crate::serial::Serial;
@@ -536,13 +537,13 @@ impl State {
     /// Moves true time to `at`, delivers the datagrams and bytes that arrive by then,
     /// and ends the file calls due by then. Returns the wakers of the timers due, each
     /// with the log of its thread, then those of the sockets and ports that the
-    /// arrivals wake and of the file calls that end, with no log, and the blocks of
-    /// the file calls whose futures dropped, for the caller to drop after it releases
-    /// the lock.
+    /// arrivals wake and of the file calls that end, and the blocks of the file calls
+    /// whose futures dropped, for the caller to wake and drop after it releases the
+    /// lock.
     pub(crate) fn advance(
         &mut self,
         at: Monotonic,
-    ) -> (Vec<(Waker, Dispatch)>, Vec<Held>) {
+    ) -> (Vec<log::Waker>, Vec<Kept<Held>>) {
         self.now = at;
         let mut wakers = Vec::new();
         while let Some(timer) = self.timers.first_entry() {
@@ -550,13 +551,13 @@ impl State {
                 break;
             }
             let (thread, waker) = timer.remove();
-            wakers.push((waker, self.threads[&thread].log.clone()));
+            let log = self.threads[&thread].log.clone();
+            wakers.push(log::Waker::logged(waker, log));
         }
-        let mut unowned = self.net.deliver(at);
-        unowned.extend(self.serial.deliver(at));
+        wakers.extend(self.net.deliver(at));
+        wakers.extend(self.serial.deliver(at));
         let (ended, orphans) = self.files.end(at);
-        unowned.extend(ended);
-        wakers.extend(unowned.into_iter().map(|waker| (waker, Dispatch::none())));
+        wakers.extend(ended);
         (wakers, orphans)
     }
 
@@ -597,7 +598,7 @@ impl State {
         &mut self,
         node: usize,
         crash: Crash,
-    ) -> (Vec<Waker>, Vec<Held>) {
+    ) -> (Vec<log::Waker>, Vec<Kept<Held>>) {
         self.nodes[node].crashing = false;
         self.nodes[node].life += 1;
         let mut wakers = self.serial.crash(node);

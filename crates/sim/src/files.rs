@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::mem;
 use std::path::{Path, PathBuf};
-use std::task::{Poll, Waker};
+use std::task::Poll;
 
 use block::{Block, Unique};
 use env::files::{Error, Mode, Operation};
@@ -12,6 +12,7 @@ use env::rng::Rng;
 use types::time::Monotonic;
 
 use crate::disk::{self, Cause, Disk, Handle};
+use crate::log::{Kept, Waker};
 use crate::{Crash, EIO};
 
 /// The count of call delays in nanoseconds: a call takes 0 to 100 us.
@@ -156,7 +157,7 @@ pub(crate) enum Held {
 /// A call that ended.
 pub(crate) struct Ended {
     pub(crate) result: Result<Done, Error>,
-    pub(crate) held: Option<Held>,
+    pub(crate) held: Option<Kept<Held>>,
 }
 
 /// What a crash leaves of a [`Mode::Create`] open in flight that makes a file. The
@@ -174,7 +175,7 @@ struct Flight {
     /// The path of the call, or of the file for a call on an open file.
     path: PathBuf,
     call: Call,
-    held: Option<Held>,
+    held: Option<Kept<Held>>,
     /// A fault fails the call when it ends.
     failed: bool,
     /// A read's bytes when it started. Empty for other calls.
@@ -248,7 +249,7 @@ impl Files {
         node: usize,
         path: PathBuf,
         call: Call,
-        held: Option<Held>,
+        held: Option<Kept<Held>>,
     ) -> u64 {
         let key = self.tick();
         let delay = self.rng.below(DELAYS);
@@ -330,7 +331,7 @@ impl Files {
 
     /// Ends the calls due by true time `at`, in order. Returns the wakers of their
     /// futures, and the blocks of the calls whose futures dropped.
-    pub(crate) fn end(&mut self, at: Monotonic) -> (Vec<Waker>, Vec<Held>) {
+    pub(crate) fn end(&mut self, at: Monotonic) -> (Vec<Waker>, Vec<Kept<Held>>) {
         let (mut wakers, mut orphans) = (Vec::new(), Vec::new());
         while let Some(&(due, key)) = self.queue.first() {
             if due > at {
@@ -439,7 +440,7 @@ impl Files {
 
     /// The future of call `key` dropped before it took the result. A call in flight
     /// still ends. Returns what to drop after the lock is released.
-    pub(crate) fn abandon(&mut self, key: u64) -> (Option<Waker>, Option<Held>) {
+    pub(crate) fn abandon(&mut self, key: u64) -> (Option<Waker>, Option<Kept<Held>>) {
         if let Some(flight) = self.flights.get_mut(&key) {
             flight.dropped = true;
             return (flight.waker.take(), None);
@@ -452,7 +453,7 @@ impl Files {
     /// Drops call `ended` of `node`, whose future dropped: an open releases the file
     /// it opened. Returns the blocks of the call, for the caller to drop after it
     /// releases the lock.
-    fn discard(&mut self, node: usize, ended: Ended) -> Option<Held> {
+    fn discard(&mut self, node: usize, ended: Ended) -> Option<Kept<Held>> {
         if let Ok(Done::Open { handle, .. }) = ended.result {
             self.disks[node].release(handle);
         }
@@ -471,7 +472,7 @@ impl Files {
         node: usize,
         at: Monotonic,
         crash: Crash,
-    ) -> (Vec<Waker>, Vec<Held>) {
+    ) -> (Vec<Waker>, Vec<Kept<Held>>) {
         let flights = &self.flights;
         let (cut, queue): (BTreeSet<_>, _) = mem::take(&mut self.queue)
             .into_iter()

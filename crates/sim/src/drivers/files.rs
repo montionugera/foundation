@@ -10,6 +10,7 @@ use env::files::{Mode, Request};
 use super::Node;
 use crate::disk::Handle;
 use crate::files::{Call, Done, Ended, Held};
+use crate::log::{self, Kept};
 use crate::state::lock;
 
 /// The data directory that [`env::files::Driver::shown`] joins to, as `os` gives an
@@ -26,7 +27,9 @@ impl Node {
         self.running("a file call");
         let mut state = lock(&self.shared);
         let now = state.now();
-        let key = state.files().submit(now, self.node, path, call, held);
+        let key = state
+            .files()
+            .submit(now, self.node, path, call, held.map(Kept::new));
         drop(state);
         Wait {
             node: self.clone(),
@@ -112,7 +115,7 @@ impl Future for Wait {
     type Output = Ended;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Ended> {
-        let waker = cx.waker().clone();
+        let waker = log::Waker::new(cx.waker().clone());
         let (poll, unused) = lock(&self.node.shared).files().poll(self.key, waker);
         drop(unused);
         self.taken = poll.is_ready();
@@ -173,6 +176,7 @@ impl env::files::Descriptor for Descriptor {
         let wait = self.submit(call, Some(Held::Into(into)));
         Box::pin(async move {
             let Ended { result, held } = wait.await;
+            let held = held.map(Kept::into_inner);
             let (Done::Read(bytes), Some(Held::Into(mut into))) = (result?, held)
             else {
                 unreachable!("invariant: a read gives bytes and keeps its block")
@@ -237,7 +241,7 @@ impl Future for Close {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         let descriptor =
             (self.0.as_ref()).expect("invariant: a close is not polled after it ends");
-        let waker = cx.waker().clone();
+        let waker = log::Waker::new(cx.waker().clone());
         let (poll, unused) = lock(&descriptor.node.shared)
             .files()
             .poll_close(descriptor.handle, waker);
