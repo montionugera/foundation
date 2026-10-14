@@ -1393,9 +1393,17 @@ fn numbered(index: u32) -> Node {
 /// with the `MaxNodesPerRead` `most`, and gives the counts of the requests, the values,
 /// and the values that the server gives.
 fn read_per(most: u32, count: u32) -> (Vec<usize>, Read, Values) {
+    read_on(count, move |server| server.set_per_read(most))
+}
+
+/// As [`read_per`], on a server that `limit` gives its `MaxNodesPerRead`.
+fn read_on(
+    count: u32,
+    limit: impl FnOnce(&Server) + Send + 'static,
+) -> (Vec<usize>, Read, Values) {
     run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
-            peer.server.set_per_read(most);
+            limit(peer.server);
             let mut nodes = Vec::new();
             let mut values = Vec::new();
             for index in 0..count {
@@ -1427,6 +1435,21 @@ fn a_request_takes_at_most_the_max_nodes_per_read_of_the_server() {
     let (counts, read, values) = read_per(0, 24);
     assert_eq!((counts, read), (vec![25], Ok(values)));
     assert_eq!(read_per(10, 0), (vec![], Ok(vec![]), vec![]));
+}
+
+/// A `MaxNodesPerRead` that the server lacks, or that is not a `UInt32`, is no limit.
+#[test]
+fn a_max_nodes_per_read_that_is_absent_or_of_another_type_is_no_limit() {
+    let (counts, read, values) = read_on(24, |_| {});
+    assert_eq!((counts, read), (vec![25], Ok(values)));
+    let (counts, read, values) = read_on(24, |server| {
+        let node = Node {
+            namespace: 0,
+            key: Key::Number(ffi::MAX_NODES_PER_READ),
+        };
+        server.add_scalar(&node, Value::U64(1));
+    });
+    assert_eq!((counts, read), (vec![25], Ok(values)));
 }
 
 /// A read of more requests than the reads in flight sends each next request when one

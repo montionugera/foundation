@@ -10,13 +10,13 @@
   `UA_Client_getConnectionAttributeCopy` (`docs/dependencies.md`, "Local patches"). The
   client splits the nodes, in order, into requests that each fit one message both ways
   and hold at most the `MaxNodesPerRead` of the server (`ns=0;i=11705`, read once after
-  the activation; 0, or a status that is not Good, is no limit; a failed read of it
-  fails the connect). It refuses only a node whose Read alone does not fit. A read sends
-  each request, at most 16 (`READS`) in flight, and gives the values in node order. The
-  first failed answer ends the read with its status, and each later answer of that read
-  is dropped by its request number. A
-  lost session ends the run, so a session is a run, and the check is the first step of
-  each run. Its error is a config error (`kind::Error::Config`, #435 PR 4): the
+  the activation; 0, a value that is not a UInt32, or a status that is not Good, is no
+  limit; a failed read of it fails the connect). It refuses only a node whose Read
+  alone does not fit. A read sends each request, at most 16 (`READS`) in flight, and
+  gives the values in node order. The first failed answer ends the read with its
+  status, and each later answer of that read is dropped by its request number. A lost
+  session ends the run, so a session is a run, and the check is the first step of each
+  run. Its error is a config error (`kind::Error::Config`, #435 PR 4): the
   connector stops until the next change of its spec. A read of N nodes allocates a fixed
   count per request plus one per node, as the decoder of open62541 allocates the scalar
   of each value; zero per node is deferred to #2537 (trigger: exit test 1 of #1737
@@ -53,4 +53,6 @@
   https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6138683801.
   The split and `MaxNodesPerRead` (#2623): `laptop.architect-2` at
   2026-10-14T01:37:20Z,
-  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6158936229.
+  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6158936229, and a
+  value that is not a UInt32 at 2026-10-14T04:25:09Z,
+  https://github.com/synnaxlabs/foundation/pull/2674#issuecomment-6160861895.
