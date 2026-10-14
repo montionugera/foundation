@@ -54,7 +54,8 @@ pub struct Rig {
 
 impl Rig {
     /// Opens a hub on a new shard of `env`, whose connectors run the kinds of
-    /// `kinds` and reach devices through `net`.
+    /// `kinds`, reach devices through `net`, and read secrets from the store of
+    /// [`create_secret_store`] on `env.files`.
     ///
     /// # Panics
     ///

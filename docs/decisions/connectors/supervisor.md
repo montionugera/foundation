@@ -342,17 +342,18 @@
   call gives each name and type (ruling 6087144669). The tests define the status
   channels with `connector::testing::create_status`, behind `sim`, which gives their
   definitions with keys from a `channel::Key` on. `sim` also turns on the optional
-  dependency on `spec`, whose `Definition` the helper gives. `connector::testing::Rig`
-  defines them for each connector that it runs. `Rig::define` adds to each definition
-  that the rig holds and sets all of them on the hub, so a call never replaces what a
-  test defined through the rig (`laptop.architect-2`, 2026-10-13T21:22:43Z:
+  dependency on `spec`, whose `Definition` the helper gives (`laptop.architect-2`,
+  2026-10-09T19:04:30Z:
+  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6087430425).
+  `connector::testing::Rig` defines them for each connector that it supervises or
+  opens. `Rig::define` adds to each definition that the rig holds and sets all of them
+  on the hub, so a call never replaces what a test defined through the rig
+  (`laptop.architect-2`, 2026-10-13T21:22:43Z:
   https://github.com/synnaxlabs/foundation/issues/2247#issuecomment-6155477394,
   approved 2026-10-14T00:43:36Z:
-  https://github.com/synnaxlabs/foundation/issues/2247#issuecomment-6158296533). It
-  supersedes
-  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6087430425
-  (`laptop.architect-2`, 2026-10-09T19:04:30Z), whose lost helper replaced all
-  definitions at each call.
+  https://github.com/synnaxlabs/foundation/issues/2247#issuecomment-6158296533). It is
+  not the helper that 6087430425 refused: the rig holds the whole list, so a call adds
+  to it, and the refusal was of the replace.
   `connector::status::channels` gives `types::name::Error::Long` for the first status
   name over `Name::MAX_BYTES`, because the connector's name comes from the user's file.
   `config::plan` gives that error as a diagnostic at the connector's label (#1821).
