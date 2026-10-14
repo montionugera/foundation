@@ -16,7 +16,9 @@ use env::rng::Rng;
 use sim::{Sim, node};
 use types::time::Span;
 
-use super::{Client, Large, Nodes, READS, Reads, Request, SPLIT, UNREAD, answer, most};
+use super::{
+    Client, Large, Nodes, READS, Reads, Request, SPLIT, Slots, UNREAD, answer, most,
+};
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
 use crate::event;
@@ -809,8 +811,7 @@ fn a_drop_of_a_connected_client_ends_and_answers_each_read() {
             outside.pending.set(1);
             outside.requests.borrow_mut().push(Request {
                 key: request,
-                first: 0,
-                count: 1,
+                slots: Slots { first: 0, count: 1 },
             });
             outside.values.set(vec![UNREAD]);
             drop(client);
@@ -1821,7 +1822,8 @@ fn a_read_with_two_failed_answers_ends_with_the_status_of_the_first() {
     let mut held = Vec::new();
     let reads = read_split(move |index, mut message| match index {
         1 => {
-            message[40..44].copy_from_slice(&Status::BAD_INTERNAL_ERROR.0.to_le_bytes());
+            message[40..44]
+                .copy_from_slice(&Status::BAD_INTERNAL_ERROR.0.to_le_bytes());
             held = message;
             vec![]
         }

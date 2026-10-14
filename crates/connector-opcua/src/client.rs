@@ -99,9 +99,14 @@ struct Reads {
 struct Request {
     /// The number that open62541 gave it.
     key: u32,
-    /// The index of its first node in the read.
+    slots: Slots,
+}
+
+/// The nodes of one request of a read: the index of the first in the list, and their
+/// count.
+#[derive(Clone, Copy)]
+struct Slots {
     first: usize,
-    /// Its count of nodes.
     count: usize,
 }
 
@@ -375,7 +380,7 @@ impl Client {
     /// Sends the requests of `nodes` from the index `sent` while fewer than [`READS`]
     /// are in flight and no answer of this read failed, and moves `sent` past each.
     fn send(&self, nodes: &Nodes, sent: &mut usize) -> Result<(), Status> {
-        while let Some(&Part { raw, first, count }) = nodes.parts.get(*sent)
+        while let Some(&Part { raw, slots }) = nodes.parts.get(*sent)
             && self.reads.pending.get() < READS
             && self.reads.failed.get().is_none()
         {
@@ -394,7 +399,7 @@ impl Client {
                 return Err(status);
             }
             self.reads.pending.set(self.reads.pending.get() + 1);
-            (self.reads.requests.borrow_mut()).push(Request { key, first, count });
+            (self.reads.requests.borrow_mut()).push(Request { key, slots });
             *sent += 1;
         }
         Ok(())
@@ -511,10 +516,7 @@ pub(crate) struct Nodes {
 #[derive(Clone, Copy)]
 struct Part {
     raw: NonNull<ffi::ReadRequest>,
-    /// The index of its first node in the list.
-    first: usize,
-    /// Its count of nodes.
-    count: usize,
+    slots: Slots,
 }
 
 impl Nodes {
@@ -543,11 +545,11 @@ impl Nodes {
                 let Some(request) = NonNull::new(request) else {
                     alloc::exhausted()
                 };
+                let slots = Slots { first, count };
                 first += count;
                 Part {
                     raw: request,
-                    first: first - count,
-                    count,
+                    slots,
                 }
             })
             .collect();
@@ -559,13 +561,11 @@ impl Nodes {
         }
     }
 
-    /// Gives the count of nodes of each request, in order. Tests read this private
-    /// state for a reason: a server shows a wrong split only as a failed read or a
-    /// closed channel, and the counts name the split. Each such test also checks the
-    /// split by a read, so it is not the only kill.
+    /// Gives the count of nodes of each request, in order. A server shows a wrong split
+    /// only as a failed read, so tests read the split here.
     #[cfg(test)]
     fn counts(&self) -> Vec<usize> {
-        self.parts.iter().map(|part| part.count).collect()
+        self.parts.iter().map(|part| part.slots.count).collect()
     }
 
     /// Gives the one request of a [`Nodes::unchecked`], which lives while `self` does.
@@ -610,7 +610,7 @@ unsafe extern "C" fn answer(
     let Some(index) = requests.iter().position(|sent| sent.key == request) else {
         return;
     };
-    let Request { first, count, .. } = requests.swap_remove(index);
+    let Slots { first, count } = requests.swap_remove(index).slots;
     // SAFETY: open62541 gives a live response.
     let mut status = Status(unsafe { ffi::shim_response_result(response.cast()) });
     // SAFETY: open62541 gives a live response.
