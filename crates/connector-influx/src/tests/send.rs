@@ -1,8 +1,9 @@
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use bytes::Bytes;
 use connector::supervisor;
@@ -31,6 +32,8 @@ const OPTIONS: tcp::Options = tcp::Options {
 };
 /// The key of the first status channel of `influx`.
 const STATUS: u128 = 100;
+/// The file of the token of `file(TOKEN_FILE)`.
+const TOKEN_FILE: &str = "/run/secrets/influx";
 
 /// One request that the InfluxDB of a plant got: its path and query, and its body.
 type Got = (String, String);
@@ -42,7 +45,8 @@ type End = Rc<RefCell<Option<Result<(), Error>>>>;
 /// (2) and `edge.b` (3), the `i64` channel `edge.count` (4), the `f64` channel `time`
 /// (5), and the status channels of `influx`, and an InfluxDB that answers each
 /// request with the next answer of its list. After the last, it writes the body to its
-/// store, and answers 204, or 400 when the store refuses a line.
+/// store, and answers 204, or 400 when the store refuses a line. Its node has the
+/// variables `INFLUX_TOKEN` (`t0ken`) and `BROKEN` (with a line break).
 struct Plant {
     hub: hub::Hub,
     supervisor: Supervisor,
@@ -52,6 +56,11 @@ struct Plant {
     address: SocketAddr,
     got: Rc<RefCell<Vec<Got>>>,
     answers: Rc<RefCell<VecDeque<(StatusCode, &'static str)>>>,
+    /// The `Authorization` header of each request.
+    auth: Rc<RefCell<Vec<Option<String>>>>,
+    /// The bytes that each request after the first writes to [`TOKEN_FILE`], in turn.
+    tokens: Rc<RefCell<VecDeque<&'static [u8]>>>,
+    paths: env::paths::Paths,
     store: Rc<RefCell<crate::sim::Store>>,
     errors: Rc<RefCell<Vec<String>>>,
     confirmed: Rc<RefCell<Vec<u64>>>,
@@ -76,7 +85,13 @@ impl Plant {
             tasks: tasks.clone(),
         };
         let kinds = Table::new().with("influx", Kind);
-        let inputs = testing::create_config(env, node.net(), kinds).await;
+        let mut inputs = testing::create_config(env, node.net(), kinds).await;
+        let vars = BTreeMap::from([
+            ("INFLUX_TOKEN".into(), "t0ken".into()),
+            ("BROKEN".into(), "t0\nken".into()),
+        ]);
+        let secrets = std::path::Path::new("secrets");
+        inputs.secrets = secret::Resolver::new(Arc::new(vars), node.files(), secrets);
         define(&inputs);
         let errors = read_errors(&inputs.hub, &tasks).await;
         let confirmed = read_confirmed(&inputs.hub, &tasks).await;
@@ -89,6 +104,9 @@ impl Plant {
             address,
             got: Rc::default(),
             answers: Rc::default(),
+            auth: Rc::default(),
+            tokens: Rc::default(),
+            paths: node.paths(),
             store: Rc::default(),
             errors,
             confirmed,
@@ -108,9 +126,21 @@ impl Plant {
             Rc::clone(&self.answers),
             Rc::clone(&self.store),
         );
+        let (auth, tokens, paths) = (
+            Rc::clone(&self.auth),
+            Rc::clone(&self.tokens),
+            self.paths.clone(),
+        );
         let answer = move |request: Request<Bytes>| {
             let body = String::from_utf8(request.body().to_vec()).expect("UTF-8");
             got.borrow_mut().push((request.uri().to_string(), body));
+            let header = request.headers().get(http::header::AUTHORIZATION);
+            auth.borrow_mut()
+                .push(header.map(|header| header.to_str().expect("ASCII").to_owned()));
+            if let Some(token) = tokens.borrow_mut().pop_front() {
+                let path = std::path::Path::new(TOKEN_FILE);
+                paths.write(path, token).expect("writes the token");
+            }
             let next = next.borrow_mut().pop_front();
             let next = next.map(|(status, text)| (status, text.to_owned()));
             let (status, text) = next.unwrap_or_else(|| {
@@ -434,6 +464,181 @@ fn sends_a_batch_again_after_each_other_answer_and_shows_the_error_until_a_204()
             "",
         ]
     );
+}
+
+/// The config of `plant` with `token` set to a call of `function` with `argument`.
+fn with_token(plant: &Plant, function: &str, argument: &str) -> Document {
+    plus(plant.config(), &[(60, "token", call(function, argument))])
+}
+
+/// Runs `config` on `plant` with one sample written, until 20 s after it, and gives
+/// the `Authorization` header of each request, the errors, and the end of the run.
+async fn send_one(
+    plant: &Plant,
+    config: Document,
+) -> (Vec<Option<String>>, Vec<String>, Option<Result<(), Error>>) {
+    let run = plant.start(config);
+    let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+    plant.clock.sleep(Span::SECOND).await;
+    let first = writer.now().nanos();
+    write(&mut writer, first, &[(1.0, 2.0)]);
+    plant.clock.sleep(Span::from_nanos(20_000_000_000)).await;
+    let end = run.1.borrow_mut().take();
+    run.0.cancel();
+    plant.clock.sleep(Span::SECOND).await;
+    let auth = plant.auth.borrow().clone();
+    (auth, plant.errors.borrow().clone(), end)
+}
+
+#[test]
+fn sends_the_token_of_a_variable_or_a_file_in_each_request() {
+    let got =
+        [("env", "INFLUX_TOKEN"), ("file", TOKEN_FILE)].map(|(function, argument)| {
+            run(move |node, tasks| async move {
+                node.paths()
+                    .write(std::path::Path::new(TOKEN_FILE), b"f1le\n")
+                    .expect("writes");
+                let plant = Plant::new(node, tasks).await;
+                let config = with_token(&plant, function, argument);
+                let (auth, errors, end) = send_one(&plant, config).await;
+                let points = plant.store.borrow().points("telemetry", &[]).count();
+                (auth, errors, end.is_none(), points)
+            })
+        });
+    assert_eq!(
+        got,
+        [
+            (
+                vec![Some("Token t0ken".to_owned())],
+                vec![String::new()],
+                true,
+                1
+            ),
+            (
+                vec![Some("Token f1le".to_owned())],
+                vec![String::new()],
+                true,
+                1
+            ),
+        ]
+    );
+}
+
+#[test]
+fn reads_the_token_again_after_a_401_or_a_403_and_writes_each_sample_once() {
+    for (status, text) in [
+        (StatusCode::UNAUTHORIZED, "401 Unauthorized"),
+        (StatusCode::FORBIDDEN, "403 Forbidden"),
+    ] {
+        let got = run(move |node, tasks| async move {
+            let plant = Plant::new(node.clone(), tasks).await;
+            node.paths()
+                .write(std::path::Path::new(TOKEN_FILE), b"old")
+                .expect("writes");
+            let body = r#"{"code":"unauthorized","message":"unauthorized access"}"#;
+            plant.answers.borrow_mut().push_back((status, body));
+            plant.tokens.borrow_mut().push_back(b"new\n");
+            let config = with_token(&plant, "file", TOKEN_FILE);
+            let (auth, errors, end) = send_one(&plant, config).await;
+            (
+                auth,
+                errors,
+                end.is_none(),
+                plant.store.borrow().points("telemetry", &[]).count(),
+            )
+        });
+        assert_eq!(
+            got,
+            (
+                vec![Some("Token old".to_owned()), Some("Token new".to_owned())],
+                vec![
+                    String::new(),
+                    format!(
+                        "InfluxDB answered {text}: {{\"code\":\"unauthorized\",\
+                         \"message\":\"unauthorized access\"}}. Check the token \
+                         file(\"{TOKEN_FILE}\")"
+                    ),
+                    String::new(),
+                ],
+                true,
+                1,
+            ),
+            "{status}"
+        );
+    }
+}
+
+#[test]
+fn ends_the_run_when_the_token_is_gone_after_a_401() {
+    let got = run(|node, tasks| async move {
+        let plant = Plant::new(node.clone(), tasks).await;
+        node.paths()
+            .write(std::path::Path::new(TOKEN_FILE), b"old")
+            .expect("writes");
+        plant
+            .answers
+            .borrow_mut()
+            .push_back((StatusCode::UNAUTHORIZED, "no"));
+        plant.tokens.borrow_mut().push_back(b"");
+        let config = with_token(&plant, "file", TOKEN_FILE);
+        let (auth, errors, _) = send_one(&plant, config).await;
+        (auth, errors)
+    });
+    assert_eq!(
+        got,
+        (
+            vec![Some("Token old".to_owned())],
+            vec![
+                String::new(),
+                format!(
+                    "InfluxDB answered 401 Unauthorized: no. Check the token \
+                     file(\"{TOKEN_FILE}\")"
+                ),
+                format!(
+                    "the secret file(\"{TOKEN_FILE}\"): the file {TOKEN_FILE} is \
+                     empty. Write the value to it"
+                ),
+            ]
+        )
+    );
+}
+
+#[test]
+fn ends_the_run_at_a_token_that_a_header_cannot_hold() {
+    let got = run(|node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let config = with_token(&plant, "env", "BROKEN");
+        let (auth, errors, _) = send_one(&plant, config).await;
+        (auth, errors)
+    });
+    assert_eq!(
+        got,
+        (
+            vec![],
+            vec![
+                String::new(),
+                "the token env(\"BROKEN\") holds a byte that an HTTP header cannot \
+                 hold. Write the token with no control byte"
+                    .to_owned(),
+            ]
+        )
+    );
+}
+
+#[test]
+fn shows_the_source_of_the_token_and_never_its_value_in_debug() {
+    let config = Kind
+        .parse(&plus(
+            influx(),
+            &[(60, "token", call("env", "INFLUX_TOKEN"))],
+        ))
+        .expect("parses");
+    let debug = format!("{config:?}");
+    assert!(
+        debug.contains(r#"token: Some(Env("INFLUX_TOKEN"))"#),
+        "{debug}"
+    );
+    assert!(!debug.contains("t0ken"), "{debug}");
 }
 
 #[test]

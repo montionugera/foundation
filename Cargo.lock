@@ -441,6 +441,7 @@ dependencies = [
  "hub",
  "influxdb-line-protocol",
  "proptest",
+ "secret",
  "sim",
  "spec",
  "types",

@@ -38,7 +38,14 @@ const BAD_ORG: Code = Code::new("influx.bad-org");
 const ORG_WITH_DATABASE: Code = Code::new("influx.org-with-database");
 const TWO_TARGETS: Code = Code::new("influx.two-targets");
 /// The keys of the config, other than the reader settings.
-const KEYS: [&str; 5] = ["address", "database", "bucket", "org", "measurement"];
+const KEYS: [&str; 6] = [
+    "address",
+    "database",
+    "bucket",
+    "org",
+    "measurement",
+    "token",
+];
 /// The count of the samples that InfluxDB confirmed with a 204, across the runs of
 /// one supervisor call.
 const CONFIRMED: &str = "confirmed";
@@ -60,6 +67,10 @@ pub struct Config {
     /// The measurement of each line: a name that [`line::Measurement::new`] takes,
     /// other than [`gap::MEASUREMENT`].
     pub measurement: String,
+    /// Where the InfluxDB token comes from, sent as `Authorization: Token <value>`
+    /// on each request. `None` sends no `Authorization` header. `http` sends it in
+    /// clear until TLS.
+    pub token: Option<secret::Source>,
     /// The reader whose samples it writes.
     pub reader: reader::Settings,
 }
@@ -83,8 +94,9 @@ pub enum Target {
 impl kind::Kind for Kind {
     type Config = Config;
 
-    /// Reads `address`, `database` or `bucket` and `org`, `measurement`, the settings
-    /// of [`reader::read`], and no other key.
+    /// Reads `address`, `database` or `bucket` and `org`, `measurement`, an optional
+    /// `token` that [`secret::Source::read`] takes, the settings of
+    /// [`reader::read`], and no other key.
     fn parse(&self, config: &Document) -> Result<Config, Vec<Diagnostic>> {
         let reader = reader::read(config, &KEYS, &[]);
         let address = read::required(
@@ -108,18 +120,26 @@ impl kind::Kind for Kind {
              \"telemetry\""
                 .into(),
         );
-        match (reader, address, target, measurement) {
-            (Ok(reader), Ok(address), Ok(target), Ok(measurement)) => Ok(Config {
-                address,
-                target,
-                measurement,
-                reader,
-            }),
-            (reader, address, target, measurement) => {
+        let token = config.attributes.get("token");
+        let token = token
+            .map(|token| secret::Source::read(&token.value))
+            .transpose();
+        match (reader, address, target, measurement, token) {
+            (Ok(reader), Ok(address), Ok(target), Ok(measurement), Ok(token)) => {
+                Ok(Config {
+                    address,
+                    target,
+                    measurement,
+                    token,
+                    reader,
+                })
+            }
+            (reader, address, target, measurement, token) => {
                 let mut diagnostics = reader.err().unwrap_or_default();
                 diagnostics.extend(address.err());
                 diagnostics.extend(target.err().into_iter().flatten());
                 diagnostics.extend(measurement.err());
+                diagnostics.extend(token.err());
                 Err(diagnostics)
             }
         }
@@ -148,13 +168,16 @@ impl kind::Kind for Kind {
     /// with a field for each channel, keyed by the channel's name. It keeps one
     /// request in flight, and acks a batch only after InfluxDB answers 204, when it
     /// adds the batch's fields to the count `confirmed`. It shows each other answer as
-    /// its error and sends the batch again after a backoff.
+    /// its error and sends the batch again after a backoff. It reads the token at its
+    /// start, and again after a 401 or a 403 before the next attempt.
     ///
     /// # Errors
     ///
     /// [`Error::Config`] with `influx.sample-type` for a channel that does not hold
     /// `f64` samples, and with `influx.bad-channel` for a channel name that is not a
-    /// valid field key. The error of [`hub::reader::Ended`] when the reader ends.
+    /// valid field key. The error of [`hub::reader::Ended`] when the reader ends. The
+    /// error of [`Context::secret`] when a read of the token fails, and
+    /// [`Error::Retry`] when the token holds a byte that an HTTP header cannot hold.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         send::run(ctx)
     }
