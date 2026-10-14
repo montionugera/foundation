@@ -58,6 +58,38 @@ fn create_plant(hcl: &str) -> Plant {
     Plant { rig, opcua, influx }
 }
 
+/// The quickstart config, with the token of `influx` from `source`.
+fn with_token(source: &str) -> String {
+    let select = "  select      = \"plant.*\"\n";
+    let hcl =
+        plant().replacen(select, &format!("{select}  token       = {source}\n"), 1);
+    assert_ne!(hcl, plant(), "the quickstart config selects `plant.*`");
+    hcl
+}
+
+/// A node on [`with_token`] of `source`, with `INFLUX_TOKEN` set to `t0ken`, which
+/// pushes to an InfluxDB that takes only `t0ken`. It waits until the config applies.
+fn create_token_plant(source: impl FnOnce(&Rig) -> String) -> Plant {
+    let mut opcua = Opcua::default();
+    let mut influx = Influx::taking("t0ken");
+    let mut rig = Rig::new();
+    rig.var("INFLUX_TOKEN", "t0ken");
+    let hcl = with_token(&source(&rig));
+    rig.config(&served(&hcl, opcua.serve(), influx.serve()));
+    rig.start();
+    rig.apply();
+    Plant { rig, opcua, influx }
+}
+
+/// The error that `influx` shows, once it shows one.
+fn influx_error(rig: &Rig) -> Error {
+    rig.wait("`influx` shows an error", || {
+        let status = rig.status();
+        (status.get("influx").and_then(|influx| influx.error.clone()))
+            .ok_or_else(|| format!("{status:#?}"))
+    })
+}
+
 /// `hcl` with `opcua` in place of `localhost:50000` and `influx` in place of
 /// `localhost:8086`.
 fn served(hcl: &str, opcua: SocketAddr, influx: SocketAddr) -> String {
@@ -518,6 +550,46 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
     let reads = change(&plant.opcua, &VARIABLES, Quality::GOOD);
     plant.influx.serve();
     held(&plant, &reads);
+}
+
+#[test]
+fn a_token_from_the_environment_of_the_node_reaches_influxdb() {
+    let plant = create_token_plant(|_| "env(\"INFLUX_TOKEN\")".into());
+    first_stored(&plant, &VARIABLES);
+}
+
+#[test]
+fn a_token_file_shows_its_fix_until_it_holds_the_token() {
+    for named in [false, true] {
+        let mut given = None;
+        let plant = create_token_plant(|rig| {
+            let (source, path) = if named {
+                let path = rig.dir.join("foundation-data/data/secrets/plant.token");
+                ("secret(\"plant.token\")".to_owned(), path)
+            } else {
+                let path = rig.dir.join("token");
+                (format!("file({:?})", path.display().to_string()), path)
+            };
+            given = Some((source.clone(), path));
+            source
+        });
+        let (source, path) = given.expect("the plant names its source");
+        assert_eq!(
+            influx_error(&plant.rig),
+            Error {
+                class: "retry".into(),
+                text: format!(
+                    "the secret {source}: the file {} is not there. Write the value \
+                     to it",
+                    path.display()
+                ),
+            }
+        );
+        let dir = path.parent().expect("a directory");
+        std::fs::create_dir_all(dir).expect("makes the directory");
+        std::fs::write(&path, b"t0ken\n").expect("writes the token");
+        first_stored(&plant, &VARIABLES);
+    }
 }
 
 #[test]
