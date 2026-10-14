@@ -971,11 +971,10 @@ fn spend<'a>(
                 Outcome::Applied { slot, range }
             }
             Ok(accepted) => {
-                let range = range(&accepted.seq());
+                let seq = accepted.seq();
+                let range = range(&seq);
                 index.spend(accepted);
-                if let Some(frame) = frozen {
-                    readers.lost(claim.place, frame);
-                }
+                readers.lost(claim.place, frozen, seq);
                 Outcome::Lost { slot, range }
             }
             Err(refusal) => Outcome::Refused { slot, refusal },
@@ -1961,6 +1960,32 @@ mod tests {
                 Error::Full.to_string(),
                 "the ring or the pool has no room for the frame"
             );
+        });
+    }
+
+    /// A live frame that finds no room is a frame that a complete reader misses.
+    #[test]
+    fn ends_a_complete_reader_behind_after_a_live_frame_lost_for_no_room() {
+        run(6, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(1 << 16).await;
+            let reader = complete(&mut shard, Slot::new(0));
+            let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
+            let mut applied = Vec::new();
+            for n in 0..u32::MAX {
+                let at = u64::from(n);
+                let stamp = 10 + i64::from(n);
+                let write = frame(&test.pool, &set, &[(0, &[stamp]), (1, &[1])]);
+                let written = shard.write(a, LIVE, write).expect("written");
+                if written == [lost(0, at, 1)] {
+                    break;
+                }
+                assert_eq!(written, [self::applied(0, at, 1)]);
+                applied.push(seq(at, 1));
+                shard.committed().await.expect("the commit ends");
+            }
+            woken(&mut shard);
+            assert_eq!(missed(&mut shard, reader, 0), applied);
         });
     }
 
@@ -4128,7 +4153,7 @@ mod tests {
         }
 
         #[test]
-        fn gives_a_complete_reader_a_lost_group_as_a_gap_in_seq() {
+        fn ends_a_complete_reader_behind_at_a_lost_group_after_the_frames_before_it() {
             run(35, |test| async move {
                 let set = two_indexes();
                 let mut shard = test.shard(AREA).await;
@@ -4142,7 +4167,7 @@ mod tests {
                 write(&test, &mut shard, a, &[40]);
                 shard.committed().await.expect("the commit ends");
                 assert_eq!(woken(&mut shard), [reader]);
-                assert_eq!(taken(&mut shard, reader, 0), [seq(0, 1), seq(3, 1)]);
+                assert_eq!(missed(&mut shard, reader, 0), [seq(0, 1)]);
             });
         }
 

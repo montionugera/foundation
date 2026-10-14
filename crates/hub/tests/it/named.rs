@@ -189,7 +189,7 @@ fn ends_a_named_complete_reader_behind_on_a_frame_dropped_before_it_resumes() {
 }
 
 #[test]
-fn resumes_a_named_complete_reader_past_a_frame_lost_while_held() {
+fn ends_a_named_complete_reader_behind_past_a_frame_lost_while_held() {
     run(22, |test| async move {
         let open = named("a", "r", Mode::Complete, Span::SECOND);
         let first = test.hub.reader(open).await.expect("opens");
@@ -197,9 +197,8 @@ fn resumes_a_named_complete_reader_past_a_frame_lost_while_held() {
         let mut writer = test.writer("w", &["value"]).await;
         test.clock.sleep(SETTLE).await;
         drop(first);
-        // A frame that the pool cannot freeze never reaches the readers. Frees one
-        // block at a time until a write freezes the frame and still loses it, which
-        // the latest reader shows.
+        // Frees one block at a time until a write freezes the frame and still loses
+        // it, which the latest reader shows.
         let mut blocks = super::fill(&test.pool);
         let lost = loop {
             drop(blocks.pop().expect("a write that freezes its frame"));
@@ -219,8 +218,7 @@ fn resumes_a_named_complete_reader_past_a_frame_lost_while_held() {
         let open = named("a", "r", Mode::Complete, Span::SECOND);
         let mut reader = test.hub.reader(open).await.expect("opens");
         write(&mut writer, &[test.now()], &[8]);
-        let received = reader.next().await.expect("a frame");
-        assert_eq!(samples(&received, 2), [8]);
+        assert_eq!(reader.next().await.expect_err("behind"), Ended::Behind);
     });
 }
 
