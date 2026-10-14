@@ -515,7 +515,8 @@ unsafe extern "C" {
     pub(crate) fn shim_read_free(request: *mut ReadRequest);
     pub(crate) fn shim_read_ask(token: usize) -> usize;
     pub(crate) fn shim_read_item(node: Node<'_>) -> usize;
-    pub(crate) fn shim_read_answer(count: usize) -> usize;
+    pub(crate) fn shim_read_answer() -> usize;
+    pub(crate) fn shim_read_answer_item() -> usize;
     pub(crate) fn shim_client_read(
         client: *mut Client,
         request: *mut ReadRequest,

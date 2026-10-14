@@ -250,8 +250,20 @@ impl Client {
     ///
     /// If open62541 cannot allocate a request, as [`alloc::exhausted`] says.
     pub(crate) fn nodes(&self, nodes: &[Node]) -> Result<Nodes, Large> {
-        // SAFETY: it reads nothing.
-        let empty = unsafe { ffi::shim_read_ask(self.token) };
+        // SAFETY: each reads nothing.
+        let (empty, answer, result) = unsafe {
+            (
+                ffi::shim_read_ask(self.token),
+                ffi::shim_read_answer(),
+                ffi::shim_read_answer_item(),
+            )
+        };
+        let past = |ask: usize, count: usize| {
+            let answer = result.saturating_mul(count).saturating_add(answer);
+            [(ask, self.sends), (answer, self.takes)]
+                .into_iter()
+                .find(|&(bytes, most)| bytes > most)
+        };
         let mut counts: Vec<usize> = Vec::new();
         let mut ask = empty;
         for (index, node) in nodes.iter().enumerate() {
@@ -260,10 +272,10 @@ impl Client {
             let count = counts.last().copied();
             let next = count.is_none_or(|count| {
                 self.per_read.is_some_and(|most| count == most.get())
-                    || self.past(ask + item, count + 1).is_some()
+                    || past(ask + item, count + 1).is_some()
             });
             if next {
-                if let Some((bytes, most)) = self.past(empty + item, 1) {
+                if let Some((bytes, most)) = past(empty + item, 1) {
                     return Err(Large {
                         node: index,
                         bytes,
@@ -279,16 +291,6 @@ impl Client {
                 .expect("invariant: a request takes the node") += 1;
         }
         Ok(Nodes::new(nodes, &counts, Rc::clone(&self.key)))
-    }
-
-    /// Gives the bytes and the most bytes of the first of a request of `ask` bytes and
-    /// a good answer of `count` nodes that does not fit one message.
-    fn past(&self, ask: usize, count: usize) -> Option<(usize, usize)> {
-        // SAFETY: it reads nothing.
-        let answer = unsafe { ffi::shim_read_answer(count) };
-        [(ask, self.sends), (answer, self.takes)]
-            .into_iter()
-            .find(|&(bytes, most)| bytes > most)
     }
 
     /// Reads the Value of each node of `nodes`, and gives the value of each node in

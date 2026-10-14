@@ -812,13 +812,19 @@ size_t shim_read_item(shim_node node) {
     return UA_calcSizeBinary(&read, &UA_TYPES[UA_TYPES_READVALUEID], NULL);
 }
 
-/* Gives the most bytes of the body of the message of a good answer of a read of `count`
- * nodes that each hold a Double, the largest scalar of `shim_value_scalar`, with each
- * field of each value, or `SIZE_MAX` past it. */
-size_t shim_read_answer(size_t count) {
+/* Gives the bytes of the body of the message of a good answer of a read of no nodes. A
+ * good answer of nodes adds `shim_read_answer_item` of each. */
+size_t shim_read_answer(void) {
     const UA_DataType *type = &UA_TYPES[UA_TYPES_READRESPONSE];
     UA_ReadResponse response;
     UA_ReadResponse_init(&response);
+    return UA_calcSizeBinary(&type->binaryEncodingId, &UA_TYPES[UA_TYPES_NODEID], NULL) +
+           UA_calcSizeBinary(&response, type, NULL);
+}
+
+/* Gives the most bytes of the value of one node in a good answer: a Double, the largest
+ * scalar of `shim_value_scalar`, with each field of the value. */
+size_t shim_read_answer_item(void) {
     UA_Double value = 0;
     UA_DataValue result;
     UA_DataValue_init(&result);
@@ -829,13 +835,7 @@ size_t shim_read_answer(size_t count) {
     result.hasServerTimestamp = true;
     result.hasSourcePicoseconds = true;
     result.hasServerPicoseconds = true;
-    size_t fixed =
-        UA_calcSizeBinary(&type->binaryEncodingId, &UA_TYPES[UA_TYPES_NODEID], NULL) +
-        UA_calcSizeBinary(&response, type, NULL);
-    size_t each = UA_calcSizeBinary(&result, &UA_TYPES[UA_TYPES_DATAVALUE], NULL);
-    if(count > (SIZE_MAX - fixed) / each)
-        return SIZE_MAX;
-    return fixed + count * each;
+    return UA_calcSizeBinary(&result, &UA_TYPES[UA_TYPES_DATAVALUE], NULL);
 }
 
 /* Gives the count of results of `response`, a Read response. */

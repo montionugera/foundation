@@ -28,7 +28,8 @@
   each tick); one request at a time (a tick costs one round trip per request). The
   check sizes each answer value as a Double and each chunk header for the security
   mode None: the change that reads a value larger than a Double also changes
-  `shim_read_answer` and `SPLIT`, and the change that adds a mode also changes `HEADER`.
+  `shim_read_answer_item` and `SPLIT`, and the change that adds a mode also changes
+  `HEADER`.
   open62541 moves a value of a fixed size that does not fit whole to the next chunk, and
   splits a string. The largest such value of a Read today is a Double (8 bytes), so the
   check takes 7 bytes off each chunk but the last (`SPLIT`). The answer takes it on
