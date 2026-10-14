@@ -43,8 +43,8 @@
   HTTP header cannot hold gives `Error::Retry`. Approved by
   `laptop.architect-2` on 2026-10-14T04:16:45Z
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6160767913); the
-  401 and 403 text on 2026-10-14T19:50:51Z
-  (https://github.com/synnaxlabs/foundation/pull/2687#issuecomment-6176991169).
+  401 and 403 text on 2026-10-14T20:02:29Z
+  (https://github.com/synnaxlabs/foundation/pull/2687#issuecomment-6177206734).
   Supersedes the key choice of no `Authorization` until this token
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6156072634).
   Approved by the person (2026-10-13T16:24:35Z, relayed in
