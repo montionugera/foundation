@@ -16,5 +16,7 @@
   clock; `node` reads and compares both clocks, which needs an `#[expect]` of BQ20 in
   `node`; `Apart` with the whole `Interval`, which the line does not show. Decided by
   `laptop.architect-2` after the person's words "Yeah I agree. System clock first"
-  (https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155377794), in
-  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155519701, item 3.
+  (2026-10-13T21:17:21Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155377794), in
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155519701
+  (2026-10-13T21:25:00Z), item 3.
