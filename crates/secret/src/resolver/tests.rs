@@ -5,6 +5,7 @@ use std::task::{Context, Poll, Wake, Waker};
 
 use env::files::{Absolute, Mode};
 use types::name::Name;
+use types::time::Span;
 
 use super::*;
 
@@ -247,8 +248,16 @@ fn a_file_read_waits_for_a_store_read_on_the_same_reads() {
         .await;
         let count = Arc::new(Count::default());
         let waker = Waker::from(Arc::clone(&count));
-        let polled = second.as_mut().poll(&mut Context::from_waker(&waker));
-        assert!(polled.is_pending(), "the file read waits for its turn");
+        for _ in 0..3 {
+            let polled = second.as_mut().poll(&mut Context::from_waker(&waker));
+            assert!(polled.is_pending(), "the file read waits for its turn");
+            node.clock().sleep(Span::SECOND).await;
+        }
+        assert_eq!(
+            count.0.load(Ordering::Relaxed),
+            0,
+            "the file read waits while the store reads"
+        );
         assert_eq!(first.await, Ok(b"s".to_vec()));
         assert_eq!(
             count.0.load(Ordering::Relaxed),
