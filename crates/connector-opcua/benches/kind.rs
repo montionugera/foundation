@@ -10,6 +10,7 @@
 use std::time::Instant;
 
 use connector::kind::Kind as _;
+use connector_opcua::bench::kind::SCALARS;
 use types::sample::{Scalar, Type};
 
 #[path = "../tests/common/kind.rs"]
@@ -17,20 +18,6 @@ mod kind;
 
 /// The node counts of the reads of a tick.
 const COUNTS: [usize; 2] = [1, 256];
-/// Each type of a sample that the kind reads.
-const MIXED: &[Scalar] = &[
-    Scalar::Bool,
-    Scalar::I8,
-    Scalar::U8,
-    Scalar::I16,
-    Scalar::U16,
-    Scalar::I32,
-    Scalar::U32,
-    Scalar::I64,
-    Scalar::U64,
-    Scalar::F32,
-    Scalar::F64,
-];
 /// The node counts and the sample types, in turn, of the channels of the writes of a
 /// frame.
 const WRITES: [(usize, &[Scalar]); 5] = [
@@ -38,7 +25,7 @@ const WRITES: [(usize, &[Scalar]); 5] = [
     (256, &[Scalar::F64]),
     (256, &[Scalar::I16]),
     (256, &[Scalar::Bool]),
-    (256, MIXED),
+    (256, SCALARS),
 ];
 /// The ticks or writes before the timed ones. Tick 1 connects. The test home grows the
 /// `Vec`s of its groups in its first two commits, then reuses each group. 20 covers two
