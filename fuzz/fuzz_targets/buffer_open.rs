@@ -53,9 +53,9 @@ use types::time::{Span, Stamp};
 const BLOCK: usize = 4096;
 /// The largest record, in blocks.
 const RECORD_BLOCKS: usize = 4;
-/// Blocks in the area: four of the largest record, the least area of a ring. A power
-/// of two, so the last lap of the offsets holds all of the area but its last byte.
-const BLOCKS: usize = 4 * RECORD_BLOCKS;
+/// Blocks in the area: four of the largest record and the two blocks that each record
+/// leaves free, the least area of a ring.
+const BLOCKS: usize = 4 * RECORD_BLOCKS + 2;
 const AREA: u64 = (BLOCKS * BLOCK) as u64;
 /// The first block of the area: the two header blocks come before it.
 const AREA_START: usize = 2;
@@ -98,8 +98,9 @@ const CHECK_LAST: Stamp = Stamp::from_nanos(9);
 /// share a tag differ in `first`.
 const BUILD_TAG: u8 = 0x01;
 const CHECK_TAG: u8 = 0x81;
-/// The last lap of the area that a `u64` offset holds.
-const LAP_LAST: u64 = u64::MAX / AREA;
+/// The last lap whose every block a `u64` offset holds. The lap after it holds
+/// only its first blocks, since the area is no power of two.
+const LAP_LAST: u64 = (u64::MAX - (AREA - BLOCK as u64)) / AREA;
 /// The last offset of a ring.
 const OFFSET_LAST: u128 = u64::MAX as u128;
 
@@ -289,12 +290,15 @@ struct Offsets {
 
 impl Offsets {
     /// The bytes that a record of `size` bytes at `at` takes with the rest of the
-    /// area it skips, as `Writer::cost` of `buffer` gives them.
-    fn cost(self, at: u128, size: u128) -> std::result::Result<u128, Fit> {
+    /// area it skips, and leaves `kept` bytes free, as `Writer::cost` of `buffer`
+    /// gives them.
+    fn cost(self, at: u128, size: u128, kept: u128) -> std::result::Result<u128, Fit> {
         let area = u128::from(AREA);
         let rest = area - at % area;
         let skipped = if size > rest { rest } else { 0 };
-        let free = (area - (at - self.tail)).min(OFFSET_LAST - at);
+        let free = (area - (at - self.tail))
+            .min(OFFSET_LAST - at)
+            .saturating_sub(kept);
         let needed = skipped + size;
         let bytes = |bytes| u64::try_from(bytes).expect("invariant: under an area");
         if needed > free {
@@ -352,7 +356,7 @@ impl Room {
         if offsets.end > OFFSET_LAST {
             return Fit::Past;
         }
-        match offsets.cost(offsets.data, BLOCK as u128) {
+        match offsets.cost(offsets.data, BLOCK as u128, 0) {
             Ok(needed) => {
                 offsets.end = offsets.data + needed;
                 Fit::Fits
@@ -361,12 +365,14 @@ impl Room {
         }
     }
 
-    /// An append of a record of `blocks` blocks after the last record.
+    /// An append of a record of `blocks` blocks after the last record. It leaves
+    /// two blocks free: one for the carry record of the next commit and one for
+    /// the restart record of the next open.
     fn take(&mut self, blocks: usize) -> Fit {
         let Some(offsets) = &mut self.0 else {
             return Fit::Unknown;
         };
-        match offsets.cost(offsets.end, (blocks * BLOCK) as u128) {
+        match offsets.cost(offsets.end, (blocks * BLOCK) as u128, 2 * BLOCK as u128) {
             Ok(needed) => {
                 offsets.end += needed;
                 offsets.data = offsets.end;

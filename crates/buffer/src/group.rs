@@ -827,9 +827,9 @@ mod tests {
         );
     }
 
-    /// Ten records of three blocks follow the restart block, so a record of two
-    /// blocks does not fit in the last block and wraps once the tail moves past
-    /// the first record.
+    /// Ten records of three blocks follow the restart block, with the tail past the
+    /// first record, so a record of two blocks does not fit in the last block and
+    /// wraps.
     #[test]
     fn a_closed_group_holds_the_wrap_header_when_the_record_wraps() {
         let mut area = Area::new();
@@ -843,12 +843,12 @@ mod tests {
             area.writer.synced(sealed.ends());
             if first == 0 {
                 tail = sealed.ends().record;
+                area.writer.release(tail.offset());
             }
             group = sealed.clear();
         }
         assert_eq!(area.writer.head(), 31 * 4096);
         assert_eq!(tail.offset(), 4 * 4096);
-        area.writer.release(tail.offset());
         let part = block(&area.pool, &[7; 4096]);
         area.push(&mut group, header(1, Path::Live, 100), part.into());
         let closed = group.close(&mut area.writer);
@@ -980,11 +980,11 @@ mod tests {
                 Err(rejected) => break rejected,
             }
         };
-        // Ten records of three blocks follow the restart block and leave one block,
-        // which the next record skips to wrap.
+        // Nine records of three blocks follow the restart block and leave four, of
+        // which two stay free for the carry and restart records.
         let full = Full {
-            needed: 4 * 4096,
-            free: 4096,
+            needed: 3 * 4096,
+            free: 2 * 4096,
         };
         assert_eq!(rejected, Rejected::Ring(full));
         assert!(group.is_empty());
@@ -1301,21 +1301,28 @@ mod tests {
         assert_eq!(group.bytes, 2 * third);
     }
 
-    /// Ten records of three blocks follow the restart block. With the restart
-    /// block released, a one-block record fits the last block, but the group with a
-    /// second entry would skip it and not fit: the batch is not refused, the group
-    /// closes first.
+    /// Records of two blocks, nine times three blocks, and one block follow the
+    /// restart block. With the tail past the first record, a one-block record fits
+    /// the last block and leaves the two blocks that each record keeps free, but
+    /// the group with a second entry would skip it and not fit: the batch is not
+    /// refused, the group closes first.
     #[test]
     fn a_batch_that_fits_its_own_record_asks_for_a_close_before_full() {
         let mut area = Area::new();
         let mut group = Group::default();
-        for first in 0..10 {
-            let part = block(&area.pool, &vec![7; BODY_MAX - table_len(1)]);
+        let sizes = [4096].into_iter().chain([BODY_MAX - table_len(1); 9]);
+        for (first, size) in (0..).zip(sizes.chain([100])) {
+            let part = block(&area.pool, &vec![7; size]);
             area.push(&mut group, header(1, Path::Live, 2 * first), part.into());
             let closed = group.close(&mut area.writer);
-            group = area.commit(closed).clear();
+            let sealed = area.commit(closed);
+            area.writer.synced(sealed.ends());
+            if first == 0 {
+                area.writer.release(sealed.ends().record.offset());
+            }
+            group = sealed.clear();
         }
-        area.writer.release(4096);
+        assert_eq!(area.writer.head(), 31 * 4096);
         let big = block(&area.pool, &[7; 4000]);
         area.push(&mut group, header(1, Path::Live, 20), big.into());
         let small = block(&area.pool, &[7; 100]);

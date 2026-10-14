@@ -178,15 +178,18 @@ pub enum Rejected {
     /// The batch alone is over a [`Limit`], so this buffer never takes it. The
     /// limit is the first one it is over, in the order of [`Limit`].
     Large(Limit),
-    /// The ring has no room for the batch. Room returns only when records leave the
-    /// ring at its tail, and never when the offsets left before their end are under
-    /// `needed`. Nothing moves records out of the ring yet.
+    /// The ring has no room for the batch after the trim: one block stays free for
+    /// the carry record of the next commit, and one for the restart record of the
+    /// next open.
+    /// Room returns only when records leave the ring at its tail, and never when the
+    /// offsets left before their end are under `needed`. Nothing moves records out
+    /// of the ring yet.
     Full {
         /// Bytes of the area that the batch's record needs, with the rest of the
         /// area it must skip.
         needed: u64,
         /// Bytes the record may take: the area not in use, or the offsets left
-        /// before their end, whichever is less.
+        /// before their end, whichever is less, less the two blocks that stay free.
         free: u64,
     },
     /// The pool has no block for the record header.
@@ -1368,9 +1371,10 @@ mod tests {
             },
         );
         // The restart record and 60 records of one block are synced. The headroom
-        // is three records of two blocks.
+        // is three records of two blocks and the two blocks that each record keeps
+        // free.
         let tail = tail.lock().expect("no panic held the lock");
-        assert_eq!(tail.map(crate::wal::Position::offset), Some(3 * 4096));
+        assert_eq!(tail.map(crate::wal::Position::offset), Some(5 * 4096));
     }
 
     /// Three commits put [0, 3), [3, 6), and [6, 9) of one path in the records at
@@ -1570,7 +1574,7 @@ mod tests {
 
     /// A read from (0, 1) holds the record at 8192, whose entry with no samples at
     /// seq 0 comes after the one at 4096. A walk from 8192 would count it from
-    /// (0, 0), so the trim lands at 4096, though 60 more records want more room.
+    /// (0, 0), so the trim lands at 4096, though 58 more records want more room.
     /// No commit trims yet, so the test asks the writer.
     #[test]
     fn a_trim_held_after_entries_with_no_samples_at_a_seq_lands_before_them() {
@@ -1591,7 +1595,7 @@ mod tests {
                     ..entry(1, one, Path::Live, 0, &part)
                 };
                 let mut batches = vec![vec![empty.clone()], vec![empty]];
-                let more = (0..61)
+                let more = (0..59)
                     .map(|commit| vec![entry(1, one, Path::Live, 3 * commit, &part)]);
                 batches.extend(more);
                 for batch in batches {
@@ -1621,7 +1625,7 @@ mod tests {
         let tails = tails.lock().expect("no panic held the lock");
         assert_eq!(
             *tails,
-            [(Some(63 * 4096), Some(6 * 4096)), (Some(8192), Some(4096))]
+            [(Some(61 * 4096), Some(6 * 4096)), (Some(8192), Some(4096))]
         );
     }
 

@@ -24,8 +24,10 @@
   records its form on disk here. Decided by the architect (#160,
   https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6032697113).
   As built (#1222): the headroom is three times the larger of the largest record and the
-  records of the commit that trims, which are the records not yet synced. The space of a
-  trim is free only at its release, after its sync. From one trim to the release of the
+  records of the commit that trims, which are the records not yet synced, and the two
+  blocks that each record leaves free (#160): one for the carry record of the next
+  commit, and one for the restart record of the next open. The space of a trim is free
+  only at its release, after its sync. From one trim to the release of the
   next, the ring takes the records of two commits and the blocks that one wrap skips,
   which are less than one largest record. So after commits of `c` bytes, the next commit
   fits when it and the skip are at most `2c`, and the next two fit when they and the
@@ -42,20 +44,22 @@
   is not refused and a commit of 81 is, and two commits of 60 records are not refused
   and commits of 60 and 61 are. A commit of 20 records of four blocks is refused when it
   wraps, because the wrap skips 3 blocks, and a commit of 19 is not. On a new ring of
-  1024 blocks, with records of one block, a steady load of 341 records in each commit is
-  not refused and one of 342 is, at its third commit. A commit of twice the commits
-  before it is not refused after commits of 256 records of one block, and is refused
-  after commits of 257. After commits of 64 records of four blocks, which are a quarter
-  of the area, a commit of 128 and the commit of 64 after it are not refused when no
-  record from the commit two before the 128 to the commit after it must skip a block at
-  a wrap. When a record must skip 3 blocks at a wrap in one of those four, the 128 or
-  the commit after it is refused. With one record in each commit, three records and the
-  blocks of one wrap skip must fit in the area. Four of the largest record less one
-  block always hold them, and a smaller ring can refuse a live write under a steady
-  load: with a largest record of four blocks, commits of 2, 4, 4, and 4 blocks get
-  `Full` on a ring of 13 or 14 blocks. So `Layout::new` refuses an area under four of
-  the largest record (#1276), and a ring file with a smaller area does not open. That
-  minimum is for one record in each commit: on a ring of 16 blocks, a steady load of one
+  1024 blocks, with records of one block, a steady load of 340 records in each commit is
+  not refused and one of 341 is, at its third commit. A commit of twice the commits
+  before it is not refused after commits of 255 records of one block, and is refused
+  after commits of 256. Each of these two figures is one record less than before #160,
+  because of the two blocks that stay free. On a ring of 1028 blocks, after commits of
+  64 records of four blocks, which are a quarter of the area less four blocks, a commit
+  of 128 and the commit of 64 after it are not refused when no record from the commit
+  two before the 128 to the commit after it must skip a block at a wrap. When a record
+  must skip 3 blocks at a wrap in one of those four, the 128 or the commit after it is
+  refused. With one record in each commit, three records, the blocks of one wrap skip,
+  and the two blocks that stay free must fit in the area. Four of the largest record and
+  one block always hold them, and a smaller ring can refuse a live write under a steady
+  load: with a largest record of four blocks, commits of 4 blocks get `Full` on a ring
+  of 16 blocks. So `Layout::new` refuses an area under four of the largest record
+  (#1276) and two blocks (#160), and a ring file with a smaller area does not open. That
+  minimum is for one record in each commit: on a ring of 18 blocks, a steady load of one
   record of four blocks and one of two in each commit is refused at its third commit. A
   trim moves the tail to the boundary after a record of any kind: a wrap record and a
   restart record also end where a tail can go. Steady pressure in the ruling means a
@@ -76,4 +80,8 @@
   2026-10-07T11:26:39Z). The carried tail is a carry record, kind 4 at ring version 1,
   in the form of the carry body in S4. Decided by the architect (#160,
   https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6051990962,
-  2026-10-08T04:07:38Z).
+  2026-10-08T04:07:38Z). The two blocks that stay free and the area of four of the
+  largest record and two blocks, which move the figures above by those blocks, are
+  decided by the architect (#160,
+  https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6158992463,
+  2026-10-14T01:42:08Z).

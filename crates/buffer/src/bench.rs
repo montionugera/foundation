@@ -42,8 +42,8 @@ impl Ring {
     }
 
     /// One commit of `records` records, with bodies of 8 bytes, 8 bytes, one block, 8
-    /// bytes, and two blocks in turn: `append` for each, then `trimmed`, `synced` for
-    /// each, and `release` to the trimmed tail.
+    /// bytes, and two blocks in turn: `append` for each, then `trimmed`, and
+    /// `committed` with the records and the trimmed tail.
     ///
     /// # Panics
     ///
@@ -62,12 +62,7 @@ impl Ring {
             self.ends.push(Ends { wrap, record });
         }
         let tail = self.writer.trimmed(None, |offset| offset);
-        for ends in self.ends.drain(..) {
-            self.writer.synced(ends);
-        }
-        if let Some(tail) = tail {
-            self.writer.release(tail.offset());
-        }
+        self.writer.committed(self.ends.drain(..), tail);
     }
 }
 
@@ -227,17 +222,18 @@ mod tests {
     use super::*;
 
     /// The restart record and records of 1, 1, 2, 1, 3, 1, and 1 blocks fill 11 of
-    /// 12 blocks.
+    /// 14 blocks, and leave a block for the carry record and one for the restart
+    /// record.
     #[test]
-    fn a_ring_of_12_blocks_takes_a_commit_of_7_records() {
-        Ring::new(12).commit(7);
+    fn a_ring_of_14_blocks_takes_a_commit_of_7_records() {
+        Ring::new(14).commit(7);
     }
 
-    /// The 8th record, of 2 blocks, does not fit.
+    /// The 8th record, of 2 blocks, does not fit with those two blocks.
     #[test]
     #[should_panic(expected = "the ring has room")]
-    fn a_ring_of_12_blocks_refuses_a_commit_of_8_records() {
-        Ring::new(12).commit(8);
+    fn a_ring_of_14_blocks_refuses_a_commit_of_8_records() {
+        Ring::new(14).commit(8);
     }
 
     /// The ring has room for each commit only if each commit releases the space of
