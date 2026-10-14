@@ -533,8 +533,8 @@ impl Writer {
         let rest = self.layout.area - self.layout.place(self.head);
         // A record over the rest skips it, so it may take what is free after it.
         let size = free.min(rest).max(free.saturating_sub(rest));
-        let size = (size.min(self.layout.window) / BLOCK * BLOCK)
-            .saturating_sub(to_u64(HEADER_LEN));
+        // Near the end of the offsets, `free` is not whole blocks.
+        let size = (size / BLOCK * BLOCK).saturating_sub(to_u64(HEADER_LEN));
         let body = usize::try_from(size).expect("invariant: a record fits in memory");
         carry::count(body).min(self.layout.tails_max())
     }
@@ -2350,6 +2350,19 @@ mod tests {
             assert_eq!(writer.tails(), 97);
             writer.carry(1).expect("the owed block is free");
             assert_eq!(writer.tails(), 0);
+        }
+
+        /// Near the end of the offsets, the free bytes are not whole blocks, and
+        /// `tails` counts only the whole blocks.
+        #[test]
+        fn tails_counts_whole_blocks_at_the_end_of_the_offsets() {
+            let start = u64::MAX / 4096 * 4096 - 3 * 4096;
+            let mut writer = Writer::empty(layout(), start);
+            assert_eq!(u64::MAX - writer.head(), 3 * 4096 - 1);
+            assert_eq!(writer.tails(), 97);
+            writer
+                .carry(97)
+                .expect("one block is free for the carry record");
         }
 
         /// A writer of a ring of `blocks` blocks after each op of `ops`: a synced
