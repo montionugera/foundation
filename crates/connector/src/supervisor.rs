@@ -466,8 +466,8 @@ mod tests {
         /// Shows the note `polls` and the error `refused`, waits the span, shows the
         /// note again, waits the span, then returns `Ok`.
         Note(Span),
-        /// Shows a note of 1,100 bytes with a 2-byte char at byte 1,023, waits the
-        /// span, then returns `Ok`.
+        /// Shows a note of 1,111 bytes with a 2-byte char at bytes 510 and 511, waits
+        /// the span, then returns `Ok`.
         NoteWide(Span),
         /// Lends its context to a task that shows the note `late` at the cancel of the
         /// run, then returns `Ok` at once.
