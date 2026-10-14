@@ -467,10 +467,9 @@ impl Logs {
     #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
     pub(crate) fn land(&self, offset: u64) -> u64 {
         let at = self.marked.partition_point(|&(_, record)| record < offset);
-        match self.marked.get(at) {
-            Some(&(after, _)) if after < offset => after,
-            _ => offset,
-        }
+        self.marked
+            .get(at)
+            .map_or(offset, |&(after, _)| after.min(offset))
     }
 
     /// The oldest holder of a path, which no trim may pass. `None` when no path has
