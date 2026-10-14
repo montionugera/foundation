@@ -201,7 +201,7 @@ fn gives_a_failed_file_call_as_unavailable() {
             let failed = Err(Error::Unavailable {
                 detail: format!(
                     "the {call} of the file /data/secrets/plant.token failed with OS \
-                     error 5. Check the path and the file, then retry"
+                     error 5. Check the path and the file"
                 ),
             });
             assert_eq!(get(&store, "plant.token").await, failed);

@@ -243,7 +243,7 @@ fn says_to_check_the_path_and_the_file_at_another_os_error() {
                 Err(Error::Unavailable {
                     detail: format!(
                         "the open of the file /run/secrets/token failed with OS error \
-                         {code}. Check the path and the file, then retry"
+                         {code}. Check the path and the file"
                     ),
                 }),
             );
