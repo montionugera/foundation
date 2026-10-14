@@ -1,10 +1,10 @@
 //! The times of each log line of a node.
 
-use types::time::Stamp;
+use types::time::{Span, Stamp};
 
-/// The most that the best guess of mesh time can be from the wall time, in
-/// nanoseconds, for [`Mesh::Near`].
-const NEAR: u64 = 2_000_000;
+/// The most that the best guess of mesh time can be from the wall time, for
+/// [`Mesh::Near`].
+const NEAR: Span = Span::from_nanos(2 * Span::MILLISECOND.nanos());
 
 /// Reads the times of each log line of a node: its OS wall time, and mesh time
 /// beside it. For a person who reads the log, never for a data stamp. Clones read
@@ -32,7 +32,12 @@ impl Reader {
             Some(best) if best.nanos() == i64::MAX || wall.nanos() == i64::MAX => {
                 Mesh::Apart(best)
             }
-            Some(best) if best.nanos().abs_diff(wall.nanos()) <= NEAR => Mesh::Near,
+            Some(best)
+                if best.nanos().abs_diff(wall.nanos())
+                    <= NEAR.nanos().unsigned_abs() =>
+            {
+                Mesh::Near
+            }
             Some(best) => Mesh::Apart(best),
         };
         Time { wall, mesh }
