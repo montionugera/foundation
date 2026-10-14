@@ -57,6 +57,7 @@ fn main() {
     check_stamps();
     status::check(status::Shows::Nothing);
     status::check(status::Shows::Error);
+    status::check(status::Shows::Note);
 }
 
 /// Checks that 64 ticks after two warm-up ticks allocate nothing in their polls. The
@@ -187,8 +188,9 @@ mod status {
     /// finds the status write due, and counts the allocations of the sets from the
     /// third time on. It holds `steady` from the third time on until it ends its last
     /// sleep, and counts in `slept` what its sleeps allocate meanwhile. With
-    /// `Shows::Error`, it shows an error before its first set, so each status write
-    /// after the start of the run and before its end holds that error.
+    /// `Shows::Error` or `Shows::Note`, it shows an error or a note before its first
+    /// set, so each status write after the start of the run and before its end holds
+    /// it.
     struct Sets {
         allocations: Arc<AtomicU64>,
         steady: Arc<AtomicBool>,
@@ -202,6 +204,8 @@ mod status {
         Nothing,
         /// An error, so the status write compares its text at each write.
         Error,
+        /// A note, so the status write compares it at each write.
+        Note,
     }
 
     impl Kind for Sets {
@@ -228,8 +232,10 @@ mod status {
 
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
             let count = ctx.count("samples");
-            if let Shows::Error = self.shows {
-                ctx.error(&"refused");
+            match self.shows {
+                Shows::Nothing => {}
+                Shows::Error => ctx.error(&"refused"),
+                Shows::Note => ctx.note(&"polls"),
             }
             let allocations = Cell::new(0);
             // The first wakes of the flush grow the simulator's lists.
@@ -273,8 +279,8 @@ mod status {
     /// Checks that a set of a status count allocates nothing, also the set that wakes
     /// the status writer, and that so does each poll of the supervisor while the kind
     /// sets its count, with the write of the status, but for the kind's sleeps. With
-    /// `Shows::Error`, the run shows an error, so a clone of its text at each write
-    /// fails the check.
+    /// `Shows::Error` or `Shows::Note`, the run shows an error or a note, so a clone
+    /// of its text at each write fails the check.
     pub(super) fn check(shows: Shows) {
         let allocations = Arc::new(AtomicU64::new(1));
         let steady = Arc::new(AtomicBool::new(false));
