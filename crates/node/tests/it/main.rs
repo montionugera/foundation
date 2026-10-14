@@ -18,32 +18,45 @@ use std::collections::BTreeMap;
 
 use rig::Rig;
 
-/// The refusal of `status` on a node that places no connector.
-const REFUSED: &str = concat!(
-    "error[ops.denied]: no access policy gives `@admin` the action `read` on a ",
-    "request that names no definition\n",
-    "fix: Ask an admin of the region for an access policy that allows it\n",
-);
+/// The output of `status` on a node that places no connector.
+const EMPTY: &str = "You can read no connector on this node.\n";
 
 fn text(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes).expect("UTF-8")
 }
 
+/// The commit of `HEAD` that `git` reads here, or `None` when it fails.
+fn head() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| text(&output.stdout).trim().to_owned())
+}
+
 #[test]
 fn an_operation_prints_its_output_and_exits_0() {
-    let output = Rig::new().run(&["version"], b"");
-    assert_eq!(
-        (
-            output.status.code(),
-            text(&output.stdout),
-            text(&output.stderr)
-        ),
-        (
-            Some(0),
-            format!("{}\n", env!("CARGO_PKG_VERSION")).as_str(),
-            ""
-        )
-    );
+    let commit = head();
+    let short = commit.as_deref().map_or("unknown", |commit| &commit[..12]);
+    let line = format!("{} ({short})\n", env!("CARGO_PKG_VERSION"));
+    for args in [&["version"][..], &["--version"]] {
+        let output = Rig::new().run(args, b"");
+        assert_eq!(
+            (
+                output.status.code(),
+                text(&output.stdout),
+                text(&output.stderr)
+            ),
+            (Some(0), line.as_str(), ""),
+            "{args:?}"
+        );
+    }
+    let output = Rig::new().run(&["version", "--json"], b"");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(json["commit"].as_str(), commit.as_deref());
 }
 
 #[test]
@@ -141,7 +154,7 @@ fn status_gives_each_connector_as_json() {
     );
 }
 
-/// `status` reaches the running node, which refuses it while it places no connector.
+/// `status` reaches the running node, which places no connector.
 #[test]
 fn status_runs_on_the_node() {
     let mut rig = Rig::new();
@@ -153,7 +166,7 @@ fn status_runs_on_the_node() {
             text(&output.stdout),
             text(&output.stderr)
         ),
-        (Some(1), "", REFUSED)
+        (Some(0), EMPTY, "")
     );
 }
 
@@ -165,8 +178,8 @@ fn status_reaches_the_node_of_data() {
     rig.start_with(&["--name", "edge", "--data", "plant"]);
     let output = rig.run(&["status", "--data", "plant"], b"");
     assert_eq!(
-        (output.status.code(), text(&output.stderr)),
-        (Some(1), REFUSED)
+        (output.status.code(), text(&output.stdout)),
+        (Some(0), EMPTY)
     );
     let output = rig.run(&["status"], b"");
     assert_eq!(
