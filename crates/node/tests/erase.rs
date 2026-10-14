@@ -81,7 +81,7 @@ async fn cut(files: Files, data: PathBuf) {
     let failed = Err(Error::Unavailable {
         detail: format!(
             "the read_at of the file {} failed with OS error 5. Check the path and the \
-             file, then retry",
+             file",
             data.join("secrets/site.token").display()
         ),
     });

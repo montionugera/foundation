@@ -208,7 +208,7 @@ fn unavailable(error: &files::Error, path: &Path) -> Error {
             operation, code, ..
         } => format!(
             "the {operation} of the file {shown} failed with OS error {code}. Check \
-             the path and the file, then retry"
+             the path and the file"
         ),
         error => format!("{error}. Retrying may succeed"),
     };
