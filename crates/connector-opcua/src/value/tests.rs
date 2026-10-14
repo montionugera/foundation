@@ -137,3 +137,29 @@ fn the_variant_of_each_scalar_is_that_of_its_values_and_none_for_another_type() 
         assert_eq!(Value::variant(scalar), None, "{scalar:?}");
     }
 }
+
+#[cfg(feature = "sim")]
+#[test]
+fn one_is_1_of_each_scalar_and_panics_for_another_type() {
+    let ones = SCALARS.map(Value::one);
+    let expected = [
+        Value::Bool(true),
+        Value::I8(1),
+        Value::U8(1),
+        Value::I16(1),
+        Value::U16(1),
+        Value::I32(1),
+        Value::U32(1),
+        Value::I64(1),
+        Value::U64(1),
+        Value::F32(1.0),
+        Value::F64(1.0),
+    ];
+    assert_eq!(ones, expected);
+    let panic = std::panic::catch_unwind(|| Value::one(Scalar::Stamp));
+    let payload = panic.expect_err("a stamp is not one of `SCALARS`");
+    assert_eq!(
+        payload.downcast_ref::<String>().map(String::as_str),
+        Some("invariant: Stamp is not one of `SCALARS`")
+    );
+}
