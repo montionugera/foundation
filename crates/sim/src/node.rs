@@ -225,12 +225,13 @@ impl Node {
         env::files::Files::new(self.0.clone())
     }
 
-    /// The path of each file descriptor that the node closed or dropped, in order,
-    /// since the run started: the path of its open, or of the last rename that it made,
-    /// with only its names, and its root for a file of `open_absolute`. A crash closes
-    /// each descriptor of the node, a leaked one too. Those that the drops of its
-    /// futures close come first, in the order of the drops. The leaked ones come last,
-    /// in the order that their opens started.
+    /// The path of each file descriptor that the node closed or dropped, in order, from
+    /// the start of the run: the path of its open, or of the last rename that it made,
+    /// with only its names. That path is relative to the data directory, or absolute
+    /// for a file of `open_absolute`. A crash closes each descriptor of the node, a
+    /// leaked one too. Those that the drops of its futures close come first, in the
+    /// order of the drops. The leaked ones come last, in the order that their opens
+    /// started.
     #[must_use]
     pub fn file_closes(&self) -> Vec<PathBuf> {
         lock(&self.0.shared).files().closes(self.0.node)

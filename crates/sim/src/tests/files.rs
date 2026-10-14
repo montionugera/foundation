@@ -254,33 +254,37 @@ fn a_fault_on_a_host_file_never_fires_on_a_data_file_of_the_same_names() {
     );
 }
 
-/// The span of a `free` that starts beside a host open, whose future drops in flight
-/// or is awaited after the `free`.
-fn free_beside_host_open(seed: u64, dropped: bool) -> Span {
+/// The time at which a call on the data file `a` ends after an open of `/a` or of `a`
+/// pends: the awaited open, or a `free` after the drop of the open in flight.
+fn end(seed: u64, host: bool, dropped: bool) -> Monotonic {
     run(seed, MIB, move |node, _| async move {
         let (files, clock) = (node.files(), node.clock());
         node.paths().write(Path::new("/a"), b"abc").unwrap();
+        drop(create(&node, "a", 3).await);
         let path = absolute(Path::new("/a"));
-        let mut opened = Box::pin(files.open_absolute(&path));
-        pend(opened.as_mut()).await;
-        let start = clock.now();
+        let mut opened: Pin<Box<dyn Future<Output = Result<File, Error>>>> = if host {
+            Box::pin(files.open_absolute(&path))
+        } else {
+            Box::pin(files.open(Path::new("a"), Mode::Read))
+        };
+        pend(Pin::new(&mut opened)).await;
         if dropped {
             drop(opened);
             files.free().await.unwrap();
-            return clock.now() - start;
+        } else {
+            drop(opened.await.unwrap());
         }
-        files.free().await.unwrap();
-        let span = clock.now() - start;
-        drop(opened.await.unwrap());
-        span
+        clock.now()
     })
 }
 
 #[test]
-fn no_call_waits_for_a_dropped_host_call() {
-    for seed in 0..32 {
-        let dropped = free_beside_host_open(seed, true);
-        assert_eq!(dropped, free_beside_host_open(seed, false), "seed {seed}");
+fn a_free_waits_for_each_dropped_call() {
+    for host in [false, true] {
+        for seed in 0..32 {
+            let (open, free) = (end(seed, host, false), end(seed, host, true));
+            assert!(free >= open, "host {host} seed {seed}: {free:?} < {open:?}");
+        }
     }
 }
 
