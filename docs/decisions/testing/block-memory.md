@@ -31,3 +31,6 @@
   such as `os::memory::Memory` in `node` and `testing::Scarce` in a test (decided by the
   architect, 2026-10-07T08:55:57Z, #1294:
   https://github.com/synnaxlabs/foundation/issues/1294#issuecomment-6034509040).
+  `Pool::erased(config)` makes the same pool on heap memory that writes zero over each
+  byte a block held when the pool and its blocks have dropped, for secrets (#2650:
+  https://github.com/synnaxlabs/foundation/issues/2650#issuecomment-6159203859).
