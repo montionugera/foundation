@@ -419,8 +419,9 @@ state on `main`.
   ONE NODE, that person is the node's admin. Trigger for a limit that the node's
   operator sets, such as directories and variable names given at start: a spec applied
   by a subject that does not run the node.
-- The header of each request and the write buffer of hyper keep a copy of the token
-  of the `influx` kind, and their memory is freed without zeros
+- Each `HeaderValue` made from the token of the `influx` kind, one at each read of the
+  token and one for each request, and the write buffer of hyper keep a copy of it, and
+  their memory is freed without zeros
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6160767913).
   While a run lives, `secret::Value` holds the token in clear, so the copies add only
   the time until the allocator gives that memory again. Trigger for a request path
