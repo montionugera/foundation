@@ -1096,11 +1096,12 @@ fn breaker_counts_a_kind_change_as_the_plan_counts_it() {
              + channel site.plc.status.in\n\
              + channel site.plc.status.lost\n\
              + channel site.plc.status.missed\n\
+             + channel site.plc.status.note\n\
              + channel site.plc.status.restarts\n\
              + channel site.plc.status.state\n\
              + channel site.plc.status.time\n\
              - channel site.plc\n\
-             10 to add, 0 to change, 1 to remove.\n\
+             11 to add, 0 to change, 1 to remove.\n\
              note: 2 definitions that Foundation made are not in the files: \
              @admin.@access, @admin.@subject\n"
         );
@@ -1109,7 +1110,7 @@ fn breaker_counts_a_kind_change_as_the_plan_counts_it() {
             .expect("an apply");
         assert_eq!(
             applied.text(),
-            "Applied site.plan: 10 added, 1 removed, 2 homes listed.\n",
+            "Applied site.plan: 11 added, 1 removed, 2 homes listed.\n",
             "the plan showed:\n{}",
             output.text()
         );

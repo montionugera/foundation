@@ -160,7 +160,7 @@ fn fill(writer: &hub::writer::Writer) -> Vec<frame::Draft> {
 /// Keeps the pool full as [`Pool::Full`] states, with a writer of lower authority on
 /// the status channels of `plant.large`.
 async fn hog(hub: hub::Hub, clock: env::clock::Clock, runs: Arc<AtomicUsize>) {
-    let channels = ["state", "class", "restarts", "backoff", "error"]
+    let channels = ["state", "class", "restarts", "backoff", "error", "note"]
         .map(|c| {
             format!("plant.large.status.{c}")
                 .parse()

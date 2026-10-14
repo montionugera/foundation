@@ -463,6 +463,31 @@ mod tests {
         /// error when `cleared`, at the cancel of the run. Then returns `Ok` at once,
         /// or a device error when `failed`.
         Late { failed: bool, cleared: bool },
+        /// Shows the note `polls` and the error `refused`, waits the span, shows the
+        /// note again, waits the span, then returns `Ok`.
+        Note(Span),
+        /// Shows a note of 1,100 bytes with a 2-byte char at byte 1,023, waits the
+        /// span, then returns `Ok`.
+        NoteWide(Span),
+        /// Lends its context to a task that shows the note `late` at the cancel of the
+        /// run, then returns `Ok` at once.
+        NoteLate,
+        /// Shows a note whose text shows the error `refused` as it formats, waits the
+        /// span, then returns `Ok`.
+        NoteNested(Span),
+        /// Shows a note whose text is the debug of its context, waits the span, then
+        /// returns `Ok`.
+        NoteDebug(Span),
+    }
+
+    /// A note that shows the error `refused` on its context as it formats.
+    struct Nested<'a>(&'a Context<bool>);
+
+    impl fmt::Display for Nested<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            self.0.error(&"refused");
+            f.write_str("polls")
+        }
     }
 
     /// When each run started and ended.
@@ -584,11 +609,48 @@ mod tests {
                 Ok(())
             }
             Some(Step::Late { failed, cleared }) => show_late(lent, failed, cleared),
+            Some(step) => note(lent, step).await,
             None => {
                 ctx.cancel().wait().await;
                 Ok(())
             }
         }
+    }
+
+    /// Runs a step of a note: [`Step::Note`], [`Step::NoteWide`], [`Step::NoteLate`],
+    /// [`Step::NoteNested`], or [`Step::NoteDebug`].
+    async fn note(lent: &Rc<Context<bool>>, step: Step) -> Result<(), Error> {
+        let clock = lent.clock();
+        match step {
+            Step::Note(span) => {
+                lent.note(&"polls");
+                lent.error(&"refused");
+                clock.sleep(span).await;
+                lent.note(&"polls");
+                clock.sleep(span).await;
+            }
+            Step::NoteWide(span) => {
+                lent.note(&format!("{}é{}", "a".repeat(509), "a".repeat(600)));
+                clock.sleep(span).await;
+            }
+            Step::NoteLate => {
+                let late = Rc::clone(lent);
+                lent.tasks().spawn(async move {
+                    late.cancel().wait().await;
+                    late.note(&"late");
+                });
+            }
+            Step::NoteNested(span) => {
+                lent.note(&Nested(lent));
+                clock.sleep(span).await;
+            }
+            Step::NoteDebug(span) => {
+                lent.note(&format_args!("{lent:?}"));
+                clock.sleep(span).await;
+            }
+            _ => unreachable!("a step of a note"),
+        }
+        Ok(())
     }
 
     /// Runs [`Step::Late`].
@@ -660,9 +722,9 @@ mod tests {
     }
 
     /// One status frame: its stamp from the first, the sample of each status channel
-    /// but the index and `error`, in the order of [`status::channels`], and the text
-    /// of `error`.
-    type Written = (Span, Vec<i64>, String);
+    /// but the index, `error`, and `note`, in the order of [`status::channels`], the
+    /// text of `error`, and the text of `note`.
+    type Written = (Span, Vec<i64>, String, String);
 
     /// Opens a writer of `channels` as `subject` at `authority`, with no lease.
     async fn open_writer(
@@ -681,12 +743,12 @@ mod tests {
     }
 
     /// Writes one status frame of `plant.script` from another writer, stamped `lead`
-    /// after the hub's time, with an empty `error` and 9 in each other sample.
+    /// after the hub's time, with an empty text in `error` and `note`, and 9 in each
+    /// other sample.
     async fn write_ahead(hub: &hub::Hub, lead: Span) {
-        let channels = ["state", "class", "restarts", "backoff", "error"];
-        let channels = channels.map(|c| name(&format!("plant.script.status.{c}")));
+        let channels = status_names("plant.script", &[]);
         let mut other =
-            open_writer(hub, "plant.other", Authority::ABSOLUTE, channels.into()).await;
+            open_writer(hub, "plant.other", Authority::ABSOLUTE, channels).await;
         let entries = other.set().entries();
         let text = codec::Variable::of(Type::String).expect("a variable type");
         let series: Vec<_> = (entries.iter().enumerate())
@@ -728,14 +790,17 @@ mod tests {
         let connector = connector.parse().expect("a valid name");
         let names = status::channels(&connector, counts).expect("names");
         let (_, channels) = names;
-        let error = channels
-            .iter()
-            .position(|(name, _)| name.as_str().ends_with("error"));
-        let error =
-            STATUS.as_u128() + 1 + u128::try_from(error.expect("error")).expect("few");
+        let key = |last: &str| {
+            let at = channels
+                .iter()
+                .position(|(name, _)| name.as_str().ends_with(last));
+            STATUS.as_u128() + 1 + u128::try_from(at.expect(last)).expect("few")
+        };
+        let (error, note) = (key(".error"), key(".note"));
         let names: Vec<_> = channels.into_iter().map(|(name, _)| name).collect();
         let keys = 1..=u128::try_from(names.len()).expect("a few channels");
-        let keys = keys.filter(move |&key| STATUS.as_u128() + key != error);
+        let keys =
+            keys.filter(move |&key| ![error, note].contains(&(STATUS.as_u128() + key)));
         let open = hub::reader::Config {
             select: Selector::new(names.iter().map(Name::as_str)).expect("a selector"),
             mode: Mode::Complete,
@@ -760,13 +825,20 @@ mod tests {
                     .clone()
                     .map(|key| series(&received, STATUS.as_u128() + key))
                     .collect();
+                let mut notes = texts(&received, note).into_iter();
                 let mut texts = texts(&received, error).into_iter();
                 let mut into = into.borrow_mut();
                 for (i, stamp) in stamps.into_iter().enumerate() {
                     let first = *first.get_or_insert(stamp);
                     let at = Span::from_nanos(stamp - first);
                     let samples = samples.iter().map(|series| series[i]).collect();
-                    into.push((at, samples, texts.next().expect("a text")));
+                    let (text, note) = (texts.next(), notes.next());
+                    into.push((
+                        at,
+                        samples,
+                        text.expect("a text"),
+                        note.expect("a note"),
+                    ));
                 }
             }
         });
@@ -867,7 +939,7 @@ mod tests {
         };
         statuses
             .iter()
-            .map(|(_, samples, _)| state(samples))
+            .map(|(_, samples, ..)| state(samples))
             .collect()
     }
 
@@ -897,7 +969,7 @@ mod tests {
     fn errors(statuses: &[Written]) -> Vec<(Span, &str)> {
         statuses
             .iter()
-            .map(|(_, samples, text)| {
+            .map(|(_, samples, text, _)| {
                 let [.., backoff] = samples[..4] else {
                     panic!("the samples of the supervisor's channels: {samples:?}");
                 };
@@ -933,7 +1005,7 @@ mod tests {
         let out = supervise("script", steps, config(), Cancel::Never);
         let got: Vec<_> = (out.statuses.iter())
             .zip(states(&out.statuses))
-            .map(|((at, _, text), state)| (*at, state, text.as_str()))
+            .map(|((at, _, text, _), state)| (*at, state, text.as_str()))
             .collect();
         let want = [
             (Span::ZERO, (0, 0, 0), ""),
@@ -944,6 +1016,77 @@ mod tests {
         ];
         assert_eq!(got, want);
         out.result.expect("ok");
+    }
+
+    #[test]
+    fn writes_the_note_that_a_run_shows_beside_its_error_until_the_run_ends() {
+        let steps = vec![Step::Note(ms(2_000))];
+        let out = supervise("script", steps, config(), Cancel::Never);
+        let got: Vec<_> = (out.statuses.iter())
+            .zip(states(&out.statuses))
+            .map(|((at, _, text, note), state)| {
+                (*at, state, text.as_str(), note.as_str())
+            })
+            .collect();
+        let want = [
+            (Span::ZERO, (0, 0, 0), "", ""),
+            (ms(1_000), (0, 3, 0), "refused", "polls"),
+            (ms(4_000), (3, 0, 0), "", ""),
+            (Span::from_nanos(ms(4_000).nanos() + 1), (2, 0, 0), "", ""),
+        ];
+        assert_eq!(got, want);
+        out.result.expect("ok");
+    }
+
+    #[test]
+    fn cuts_a_long_note_that_a_run_shows_at_a_char_boundary() {
+        let steps = vec![Step::NoteWide(ms(2_000))];
+        let out = supervise("script", steps, config(), Cancel::Never);
+        let notes: Vec<_> = out.statuses.iter().map(|(.., note)| note.len()).collect();
+        assert_eq!(notes, [0, 1_022, 0, 0]);
+        assert_eq!(
+            out.statuses[1].3,
+            format!("{}…{}", "a".repeat(509), "a".repeat(510))
+        );
+    }
+
+    #[test]
+    fn shows_a_note_whose_text_shows_an_error_as_it_formats() {
+        let steps = vec![Step::NoteNested(ms(2_000))];
+        let out = supervise("script", steps, config(), Cancel::Never);
+        let got: Vec<_> = (out.statuses.iter())
+            .map(|(_, _, text, note)| (text.as_str(), note.as_str()))
+            .collect();
+        assert_eq!(got[1], ("refused", "polls"));
+        out.result.expect("ok");
+    }
+
+    #[test]
+    fn shows_a_note_whose_text_debugs_its_context() {
+        let steps = vec![Step::NoteDebug(ms(2_000))];
+        let out = supervise("script", steps, config(), Cancel::Never);
+        assert!(
+            out.statuses[1].3.starts_with("Context {"),
+            "{:?}",
+            out.statuses
+        );
+        out.result.expect("ok");
+    }
+
+    #[test]
+    fn writes_no_note_that_a_task_shows_after_the_run_returned() {
+        let out = supervise(
+            "script",
+            vec![Step::NoteLate],
+            config(),
+            Cancel::After(ms(500)),
+        );
+        out.result.expect("ok after a cancel");
+        let got: Vec<_> = (out.statuses.iter())
+            .zip(states(&out.statuses))
+            .map(|((.., note), state)| (state, note.as_str()))
+            .collect();
+        assert_eq!(got, [((0, 0, 0), ""), ((3, 0, 0), ""), ((2, 0, 0), "")]);
     }
 
     #[test]
@@ -973,7 +1116,7 @@ mod tests {
         let out = supervise("script", steps, config(), Cancel::Never);
         let got: Vec<_> = (states(&out.statuses).into_iter())
             .zip(&out.statuses)
-            .map(|(state, (_, _, text))| (state, text.as_str()))
+            .map(|(state, (_, _, text, _))| (state, text.as_str()))
             .collect();
         let cut = format!("{0}…{0}", "a".repeat(510));
         assert_eq!(got[1], ((0, 3, 0), cut.as_str()));
@@ -985,7 +1128,7 @@ mod tests {
         let out = supervise("script", steps, config(), Cancel::Never);
         let got: Vec<_> = (states(&out.statuses).into_iter())
             .zip(&out.statuses)
-            .map(|(state, (at, _, text))| (*at, state, text.as_str()))
+            .map(|(state, (at, _, text, _))| (*at, state, text.as_str()))
             .collect();
         let restart = got[3].0;
         let cleared = Span::from_nanos(restart.nanos() + ms(1_000).nanos());
@@ -1000,7 +1143,7 @@ mod tests {
         out.result.expect("ok after a cancel");
         (out.statuses.iter())
             .zip(states(&out.statuses))
-            .map(|((_, _, text), state)| (state, text.clone()))
+            .map(|((_, _, text, _), state)| (state, text.clone()))
             .collect()
     }
 
@@ -1055,7 +1198,7 @@ mod tests {
         let [_, again] = runs[..] else {
             panic!("two runs: {runs:?}");
         };
-        let (at, samples, _) = &statuses[2];
+        let (at, samples, ..) = &statuses[2];
         assert_eq!(samples[..2], [1, 2], "the wait: {statuses:?}");
         assert_eq!(*at, ms(3_000), "written again 1 s after the refusal at 2 s");
         assert_eq!(again, ms(3_000), "the run waits for the write");
@@ -1232,7 +1375,7 @@ mod tests {
             config(),
             Cancel::After(Span::from_nanos(1)),
         );
-        let states: Vec<_> = out.statuses.iter().map(|(_, s, _)| s[0]).collect();
+        let states: Vec<_> = out.statuses.iter().map(|(_, s, ..)| s[0]).collect();
         assert_eq!(states, [0, 3, 1, 2], "a cancel in the wait");
         assert!(out.statuses[2].1[3] > 0, "a wait: {:?}", out.statuses);
         assert_eq!(errors(&out.statuses)[3], (Span::ZERO, "no reply"));
@@ -1323,7 +1466,7 @@ mod tests {
         let [_, second, third] = runs[..] else {
             panic!("three runs: {runs:?}");
         };
-        let (at, samples, _) = &statuses[5];
+        let (at, samples, ..) = &statuses[5];
         assert_eq!(samples[..2], [1, 2], "the second wait: {statuses:?}");
         let again = Span::from_nanos(second.nanos() + ms(3_000).nanos());
         assert_eq!(*at, again, "written again 1 s after the refusal at the end");
@@ -1343,9 +1486,9 @@ mod tests {
     fn writes_the_backoff_that_is_left_after_a_wall_step_in_the_wait() {
         let steps = vec![Step::Device(Span::ZERO), Step::Hold(ms(2_000))];
         let (statuses, _) = refuse_the_last_wait(steps, ms(10_000));
-        let (at, samples, _) = &statuses[5];
+        let (at, samples, ..) = &statuses[5];
         assert_eq!(samples[..2], [1, 2], "the second wait: {statuses:?}");
-        let (run, again, _) = &statuses[6];
+        let (run, again, ..) = &statuses[6];
         assert_eq!(again[0], 0, "the next try: {statuses:?}");
         // `backoff` is the wait by the node's clock. After the step, the hub's time
         // slews toward the wall at the 500 ppm of MESH SLEW.
@@ -1691,10 +1834,25 @@ mod tests {
         // The other frame is at 1 s, and the frames of 0 s are written again after it,
         // where each is ahead of the mesh time until the flush of 1 s.
         let want = [
-            (Span::ZERO, vec![9, 9, 9, 9], String::new()),
-            (Span::from_nanos(2), vec![0, 0, 0, 0], String::new()),
-            (Span::from_nanos(3), vec![3, 0, 0, 0], String::new()),
-            (Span::from_nanos(4), vec![2, 0, 0, 0], String::new()),
+            (Span::ZERO, vec![9, 9, 9, 9], String::new(), String::new()),
+            (
+                Span::from_nanos(2),
+                vec![0, 0, 0, 0],
+                String::new(),
+                String::new(),
+            ),
+            (
+                Span::from_nanos(3),
+                vec![3, 0, 0, 0],
+                String::new(),
+                String::new(),
+            ),
+            (
+                Span::from_nanos(4),
+                vec![2, 0, 0, 0],
+                String::new(),
+                String::new(),
+            ),
         ];
         assert_eq!(statuses, want);
         assert_eq!(returned, Span::SECOND);
@@ -1742,7 +1900,7 @@ mod tests {
             let statuses = statuses.borrow().clone();
             (statuses, returned)
         });
-        let last = statuses.last().map(|(at, samples, _)| (*at, samples[0]));
+        let last = statuses.last().map(|(at, samples, ..)| (*at, samples[0]));
         assert_eq!(last, Some((ms(3_000), 2)), "{statuses:?}");
         assert_eq!(returned, ms(3_000), "returns once the home applied state 2");
     }
@@ -1826,11 +1984,8 @@ mod tests {
         let returned = timed(run, |scene| async move {
             let clock = scene.node.clock();
             clock.sleep(ms(100)).await;
-            let hog = rival(
-                &scene.hub,
-                &["state", "class", "restarts", "backoff", "error", "samples"],
-            )
-            .await;
+            let channels = status_names("plant.tally", &["samples"]);
+            let hog = rival(&scene.hub, channels).await;
             clock.sleep(ms(400)).await;
             scene.remove("samples");
             clock.sleep(ms(700)).await;
@@ -1853,11 +2008,8 @@ mod tests {
         let returned = timed(run, |scene| async move {
             let clock = scene.node.clock();
             clock.sleep(ms(100)).await;
-            let hog = rival(
-                &scene.hub,
-                &["state", "class", "restarts", "backoff", "error", "samples"],
-            )
-            .await;
+            let channels = status_names("plant.tally", &["samples"]);
+            let hog = rival(&scene.hub, channels).await;
             clock.sleep(ms(400)).await;
             scene
                 .node
@@ -1997,7 +2149,7 @@ mod tests {
             Ok(())
         };
         let returned = timed(run, |scene| async move {
-            let hog = rival(&scene.hub, &["state", "error"]).await;
+            let hog = rival(&scene.hub, tally_statuses(&["state", "error"])).await;
             scene.node.clock().sleep(ms(500)).await;
             let held = fill(&hog);
             scene.remove("samples");
@@ -2019,7 +2171,7 @@ mod tests {
         let returned = timed(run, |scene| async move {
             let clock = scene.node.clock();
             clock.sleep(ms(100)).await;
-            let mut hog = rival(&scene.hub, &["state", "error"]).await;
+            let mut hog = rival(&scene.hub, tally_statuses(&["state", "error"])).await;
             clock.sleep(ms(400)).await;
             scene
                 .node
@@ -2681,7 +2833,7 @@ mod tests {
         let statuses = tally(late(Some(2)));
         let got: Vec<_> = statuses
             .iter()
-            .map(|(at, samples, _)| (*at, samples[0], samples[4]))
+            .map(|(at, samples, ..)| (*at, samples[0], samples[4]))
             .collect();
         let want = [
             (Span::ZERO, 0, 0),
@@ -2697,7 +2849,7 @@ mod tests {
         let statuses = tally(late(None));
         let got: Vec<_> = statuses
             .iter()
-            .map(|(at, samples, _)| (*at, samples[0], samples[4]))
+            .map(|(at, samples, ..)| (*at, samples[0], samples[4]))
             .collect();
         let want = [(Span::ZERO, 0, 0), (ms(600), 3, 1), (ms(2_000), 2, 1)];
         assert_eq!(got, want);
@@ -2719,7 +2871,7 @@ mod tests {
         }));
         let last = statuses
             .last()
-            .map(|(_, samples, _)| (samples[2], samples[4]));
+            .map(|(_, samples, ..)| (samples[2], samples[4]));
         assert_eq!(last, Some((1, 5)), "one restart, then 2 + 3: {statuses:?}");
     }
 
@@ -2730,7 +2882,7 @@ mod tests {
             ctx.count("samples").add(4);
             Ok(())
         }));
-        let last = statuses.last().map(|(_, samples, _)| samples[4]);
+        let last = statuses.last().map(|(_, samples, ..)| samples[4]);
         assert_eq!(last, Some(7), "{statuses:?}");
     }
 
@@ -2744,7 +2896,7 @@ mod tests {
             clock.sleep(ms(3_000)).await;
             Ok(())
         }));
-        let first = statuses.iter().find(|(_, samples, _)| samples[4] == 7);
+        let first = statuses.iter().find(|(_, samples, ..)| samples[4] == 7);
         assert_eq!(first.map(|&(at, ..)| at), Some(ms(2_000)), "{statuses:?}");
     }
 
@@ -2761,7 +2913,9 @@ mod tests {
             },
         };
         let (statuses, _) = tally_until(kind, &["samples", "errors"], None);
-        let last = statuses.last().map(|(_, counts, _)| (counts[4], counts[5]));
+        let last = statuses
+            .last()
+            .map(|(_, counts, ..)| (counts[4], counts[5]));
         assert_eq!(last, Some((7, 1)), "samples, then errors: {statuses:?}");
     }
 
@@ -2772,7 +2926,7 @@ mod tests {
             ctx.count("samples").add(2);
             Ok(())
         }));
-        let last = statuses.last().map(|(_, samples, _)| samples[4]);
+        let last = statuses.last().map(|(_, samples, ..)| samples[4]);
         assert_eq!(last, Some(-1), "u64::MAX, read as i64: {statuses:?}");
     }
 
@@ -2812,7 +2966,7 @@ mod tests {
         let statuses = tally(relay(10_000, Span::from_nanos(1_000_001)));
         assert_eq!(statuses.len(), 13, "{statuses:?}");
         assert_eq!(
-            statuses.last().map(|(_, samples, _)| samples[4]),
+            statuses.last().map(|(_, samples, ..)| samples[4]),
             Some(10_000)
         );
         assert_eq!(states(&statuses)[11..], [(3, 0, 0), (2, 0, 0)]);
@@ -2825,10 +2979,7 @@ mod tests {
     /// 1 s. Else the home has no room to take that flush's frame, and loses it.
     fn hog(full: bool) -> impl Kind<Config = ()> {
         counted(move |ctx: Context<()>| async move {
-            let channels =
-                ["state", "class", "restarts", "backoff", "error", "samples"]
-                    .map(|c| name(&format!("plant.tally.status.{c}")))
-                    .into();
+            let channels = status_names("plant.tally", &["samples"]);
             let writer = ctx.writer(channels, Authority(1), None).await;
             let writer = writer.expect("the writer opens");
             let mut held = fill(&writer);
@@ -2868,10 +3019,7 @@ mod tests {
     /// returns `Ok`.
     fn hog_to_flush() -> impl Kind<Config = ()> {
         counted(|ctx: Context<()>| async move {
-            let channels =
-                ["state", "class", "restarts", "backoff", "error", "samples"]
-                    .map(|c| name(&format!("plant.tally.status.{c}")))
-                    .into();
+            let channels = status_names("plant.tally", &["samples"]);
             let writer = ctx.writer(channels, Authority(1), None).await;
             let writer = writer.expect("the writer opens");
             let mut held = fill(&writer);
@@ -2907,8 +3055,9 @@ mod tests {
 
     /// Takes frames of one sample for each channel of `writer` from the shard's pool
     /// until the pool has no room for a frame of any size up to 2 KiB, so that no
-    /// status frame and no copy of it in the home gets a block. `writer` has `error`,
-    /// whose text sets the size.
+    /// status frame and no copy of it in the home gets a block. `writer` has `error`
+    /// and `note`, whose texts set the size, so this holds only while the two texts
+    /// of a test are short.
     fn fill(writer: &hub::writer::Writer) -> Vec<frame::Draft> {
         let mut held = Vec::new();
         for text in (0..=2_048).rev().step_by(16) {
@@ -3013,12 +3162,8 @@ mod tests {
         })
     }
 
-    /// A writer of the subject `plant.other` with authority 1 on the status channels
-    /// of `plant.tally` that `suffixes` name.
-    async fn rival(hub: &hub::Hub, suffixes: &[&str]) -> hub::writer::Writer {
-        let channels = (suffixes.iter())
-            .map(|suffix| name(&format!("plant.tally.status.{suffix}")))
-            .collect();
+    /// A writer of the subject `plant.other` with authority 1 on `channels`.
+    async fn rival(hub: &hub::Hub, channels: Vec<Name>) -> hub::writer::Writer {
         open_writer(hub, "plant.other", Authority(1), channels).await
     }
 
@@ -3032,7 +3177,7 @@ mod tests {
         let statuses = tally(kind);
         statuses
             .iter()
-            .map(|(at, samples, _)| (*at, samples[0], samples[4]))
+            .map(|(at, samples, ..)| (*at, samples[0], samples[4]))
             .collect()
     }
 
@@ -3041,10 +3186,7 @@ mod tests {
     /// returns `Ok` at 200 ms.
     fn outlive() -> impl Kind<Config = ()> {
         counted(|ctx: Context<()>| async move {
-            let channels =
-                ["state", "class", "restarts", "backoff", "error", "samples"]
-                    .map(|c| name(&format!("plant.tally.status.{c}")))
-                    .into();
+            let channels = status_names("plant.tally", &["samples"]);
             let writer = ctx.writer(channels, Authority(1), None).await;
             let writer = writer.expect("the writer opens");
             let clock = ctx.clock().clone();
@@ -3061,7 +3203,7 @@ mod tests {
     #[test]
     fn returns_at_a_cancel_while_a_change_of_state_waits() {
         let (statuses, returned) = tally_until(outlive(), &["samples"], Some(ms(700)));
-        let states: Vec<_> = statuses.iter().map(|(at, s, _)| (*at, s[0])).collect();
+        let states: Vec<_> = statuses.iter().map(|(at, s, ..)| (*at, s[0])).collect();
         let want = [(Span::ZERO, 0), (ms(700), 2)];
         assert_eq!(
             states, want,
@@ -3073,7 +3215,7 @@ mod tests {
     #[test]
     fn writes_state_3_when_the_pool_is_full_at_the_end_of_a_run() {
         let statuses = tally(outlive());
-        let states: Vec<_> = statuses.iter().map(|(at, s, _)| (*at, s[0])).collect();
+        let states: Vec<_> = statuses.iter().map(|(at, s, ..)| (*at, s[0])).collect();
         let want = [
             (Span::ZERO, 0),
             (ms(1_200), 3),
@@ -3101,9 +3243,7 @@ mod tests {
             let (canceller, sleeper) = (token.clone(), clock.clone());
             tasks.spawn(async move {
                 sleeper.sleep(ms(500)).await;
-                let channels = ["state", "class", "restarts", "backoff", "error"]
-                    .map(|c| name(&format!("plant.script.status.{c}")))
-                    .into();
+                let channels = status_names("plant.script", &[]);
                 let hog =
                     open_writer(&hub, "plant.other", Authority(1), channels).await;
                 let held = fill(&hog);
@@ -3196,7 +3336,7 @@ mod tests {
         let mut want = vec![(Span::ZERO, 0)];
         want.extend((1..=9).map(|s| (ms(s * 1_000), s * 1_000)));
         want.extend([(end, 10_000), (Span::from_nanos(end.nanos() + 1), 10_000)]);
-        let got = statuses.iter().map(|(at, samples, _)| (*at, samples[4]));
+        let got = statuses.iter().map(|(at, samples, ..)| (*at, samples[4]));
         assert_eq!(got.collect::<Vec<_>>(), want);
         let states = states(&statuses);
         assert_eq!(states[..10], [(0, 0, 0); 10]);
@@ -3237,7 +3377,7 @@ mod tests {
             clock.sleep(Span::SECOND).await;
             statuses.borrow().clone()
         });
-        let got: Vec<_> = statuses.iter().map(|(at, s, _)| (*at, s[0])).collect();
+        let got: Vec<_> = statuses.iter().map(|(at, s, ..)| (*at, s[0])).collect();
         let ns = Span::from_nanos;
         let first = [(ns(0), 0), (ns(1), 3), (ns(2), 2)];
         let second = [(ns(3), 0), (ms(5_000), 3), (ns(5_000_000_001), 2)];
@@ -3257,7 +3397,7 @@ mod tests {
             (ms(10_000), 10_000),
             (Span::from_nanos(10_000_000_001), 10_000),
         ]);
-        let got = statuses.iter().map(|(at, samples, _)| (*at, samples[4]));
+        let got = statuses.iter().map(|(at, samples, ..)| (*at, samples[4]));
         assert_eq!(got.collect::<Vec<_>>(), want);
         assert_eq!(states(&statuses)[10..], [(3, 0, 0), (2, 0, 0)]);
     }
@@ -3572,6 +3712,21 @@ mod tests {
         text.parse().expect("a valid name")
     }
 
+    /// The status channels `plant.tally.status.<suffix>`, one for each of `suffixes`.
+    fn tally_statuses(suffixes: &[&str]) -> Vec<Name> {
+        (suffixes.iter())
+            .map(|suffix| name(&format!("plant.tally.status.{suffix}")))
+            .collect()
+    }
+
+    /// The names of the status channels of `connector` with `counts`, without their
+    /// index.
+    fn status_names(connector: &str, counts: &[&str]) -> Vec<Name> {
+        let counts: Vec<_> = counts.iter().map(|count| name(count)).collect();
+        let (_, channels) = status::channels(&name(connector), &counts).expect("names");
+        channels.into_iter().map(|(channel, _)| channel).collect()
+    }
+
     /// Writes `sample` at `stamp` to `plant.value` through `writer`, which writes
     /// `plant.value` and its index, and gives the outcomes.
     fn write_value(
@@ -3716,9 +3871,9 @@ mod tests {
             };
             (statuses.borrow().clone(), again - start)
         });
-        let (at, samples, _) = statuses
+        let (at, samples, ..) = statuses
             .iter()
-            .find(|(_, samples, _)| samples[0] == 1)
+            .find(|(_, samples, ..)| samples[0] == 1)
             .expect("a frame of state 1");
         // `statuses` gives each stamp from the first frame: the one 500 ms ahead.
         let next = Span::from_nanos(at.nanos() + samples[3]);
@@ -4386,7 +4541,8 @@ mod tests {
             assert_eq!(read.got, [], "no run: select {select}");
             let classes = states(&read.statuses);
             assert_eq!(classes, [(0, 0, 0), (3, 1, 0), (2, 1, 0)], "{select}");
-            let texts: Vec<_> = read.statuses.iter().map(|(.., text)| text).collect();
+            let texts: Vec<_> =
+                read.statuses.iter().map(|(_, _, text, _)| text).collect();
             assert_eq!(texts, ["", &text, &text], "select {select}");
         }
     }
