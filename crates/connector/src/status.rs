@@ -544,7 +544,7 @@ impl Writer {
                 self.write_staged().await;
             }
         };
-        let bound = Some(self.clock.sleep_until(until));
+        let bound = self.clock.sleep_until(until);
         self.cancel.race(deadline::before(writes, bound)).await;
     }
 

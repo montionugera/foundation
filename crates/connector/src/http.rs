@@ -127,10 +127,13 @@ impl Client {
         request: Request<Bytes>,
     ) -> Result<Response<Bytes>, Error> {
         let deadline = self.clock.now().checked_add(self.timeout);
-        let sleep = deadline.map(|deadline| self.clock.sleep_until(deadline));
-        before(Box::pin(self.exchange(request, deadline)), sleep)
-            .await
-            .unwrap_or(Err(Error::TimedOut))
+        let exchange = Box::pin(self.exchange(request, deadline));
+        match deadline {
+            Some(deadline) => (before(exchange, self.clock.sleep_until(deadline))
+                .await)
+                .unwrap_or(Err(Error::TimedOut)),
+            None => exchange.await,
+        }
     }
 
     async fn exchange(
@@ -234,11 +237,14 @@ impl Client {
             if deadline.is_some_and(|deadline| deadline <= now) {
                 return Err(Error::TimedOut);
             }
-            let sleep = deadline
-                .and_then(|deadline| share(now, deadline, left))
-                .map(|end| self.clock.sleep_until(end));
-            let connect = before(self.net.connect(&config), sleep).await;
-            match connect.unwrap_or(Err(net::Error::TimedOut { remote })) {
+            let connect = self.net.connect(&config);
+            let connect = match deadline.and_then(|deadline| share(now, deadline, left))
+            {
+                Some(end) => (before(connect, self.clock.sleep_until(end)).await)
+                    .unwrap_or(Err(net::Error::TimedOut { remote })),
+                None => connect.await,
+            };
+            match connect {
                 Ok(tcp) => return Ok(tcp),
                 Err(error) => {
                     first.get_or_insert(error);
