@@ -37,6 +37,13 @@ const READ_DIR: OFlags = OFlags::RDONLY
     .union(OFlags::DIRECTORY)
     .union(OFlags::CLOEXEC);
 
+/// The flags that open a file of the host to read, with no wait for a writer of a FIFO.
+/// `NOCTTY` keeps a terminal from becoming that of a node that leads its session.
+const READ_HOST: OFlags = OFlags::RDONLY
+    .union(OFlags::CLOEXEC)
+    .union(OFlags::NONBLOCK)
+    .union(OFlags::NOCTTY);
+
 /// The real disk under one data directory: the [`env::files::Driver`] that
 /// [`files`](crate::files) gives. It is `Send`, so one thread can make it and another
 /// wrap it with [`env::files::Files::new`].
@@ -109,14 +116,13 @@ impl fmt::Debug for Disk {
     }
 }
 
-impl env::files::Driver for Disk {
-    fn open<'a>(
-        &'a self,
+impl Disk {
+    /// The file at `path` that `opened` opens.
+    fn file<'a>(
+        &self,
         path: &'a Path,
-        mode: Mode,
+        opened: impl Future<Output = Result<(Opened, u64), Error>> + 'a,
     ) -> Request<'a, Box<dyn Descriptor>> {
-        let (data, owned) = (Arc::clone(&self.data), path.to_path_buf());
-        let opened = self.queue.run(move || open(&data, &owned, mode));
         let (data, queue) = (Arc::clone(&self.data), self.queue.clone());
         Box::pin(async move {
             let (fd, len) = opened.await?;
@@ -129,6 +135,22 @@ impl env::files::Driver for Disk {
             });
             Ok(file)
         })
+    }
+}
+
+impl env::files::Driver for Disk {
+    fn open<'a>(
+        &'a self,
+        path: &'a Path,
+        mode: Mode,
+    ) -> Request<'a, Box<dyn Descriptor>> {
+        let (data, owned) = (Arc::clone(&self.data), path.to_path_buf());
+        self.file(path, self.queue.run(move || open(&data, &owned, mode)))
+    }
+
+    fn open_absolute<'a>(&'a self, path: &'a Path) -> Request<'a, Box<dyn Descriptor>> {
+        let owned = path.to_path_buf();
+        self.file(path, self.queue.run(move || open_absolute(&owned)))
     }
 
     fn list<'a>(&'a self, dir: &'a Path) -> Request<'a, Vec<PathBuf>> {
@@ -387,6 +409,23 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(Opened, u64), Error>
     }
 }
 
+/// Opens the file at absolute `path` to read, and gives it and its length. The open
+/// does not wait for a writer of a FIFO, and gives 21 (`EISDIR`) for a directory and
+/// 22 (`EINVAL`) for any other file that is not a regular file.
+fn open_absolute(path: &Path) -> Result<(Opened, u64), Error> {
+    let failed = fail(path, Operation::Open);
+    let fd = Opened {
+        fd: fs::open(path, READ_HOST, fs::Mode::empty()).map_err(&failed)?,
+        locked: false,
+    };
+    let stat = fs::fstat(&fd).map_err(&failed)?;
+    match FileType::from_raw_mode(stat.st_mode) {
+        FileType::RegularFile => Ok((fd, stat.st_size.cast_unsigned())),
+        FileType::Directory => Err(failed(Errno::ISDIR)),
+        _ => Err(failed(Errno::INVAL)),
+    }
+}
+
 /// Opens `dir/data`, and first makes `dir` and `dir/data` when they are not there.
 fn data(dir: &Path) -> io::Result<OwnedFd> {
     let dir = make(fs::CWD, dir)?;
@@ -642,6 +681,13 @@ mod tests {
         let holder = fs::open("/sys/fs", READ_DIR, fs::Mode::empty()).unwrap();
         assert_eq!(sync_all(holder.as_fd()), Err(Errno::INVAL));
         make(fs::CWD, point).unwrap();
+    }
+
+    #[test]
+    fn open_absolute_closes_the_file_on_exec() {
+        let (opened, _) = open_absolute(&std::env::current_exe().unwrap()).unwrap();
+        let flags = rustix::io::fcntl_getfd(&opened.fd).unwrap();
+        assert!(flags.contains(rustix::io::FdFlags::CLOEXEC));
     }
 
     #[test]

@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
 
 use block::{Block, Pool};
-use env::files::{Error, File, Mode, Operation};
+use env::files::{Absolute, Error, File, Mode, Operation};
 use env::tasks::Tasks;
 use env::thread::Handle;
 use types::time::{Monotonic, Span};
@@ -21,6 +21,11 @@ use crate::node;
 
 pub(super) const KIB: u64 = 1 << 10;
 pub(super) const MIB: u64 = 1 << 20;
+
+/// `path` as the absolute path that `open_absolute` takes.
+fn absolute(path: &Path) -> Absolute {
+    Absolute::new(path.to_str().unwrap()).unwrap()
+}
 
 /// Runs `body` on a shard of a node with a disk of `disk_bytes`, and returns what it
 /// gives.
@@ -107,6 +112,106 @@ fn a_read_after_a_write_ends_sees_it_and_a_new_file_reads_zeros() {
     expected[100..1_100].copy_from_slice(&bytes);
     assert_eq!(whole, expected);
     assert_eq!(reopened, bytes);
+}
+
+#[test]
+fn open_absolute_reads_the_host_file_at_once_and_keeps_its_bytes() {
+    let (bytes, span, later) = run(0, MIB, |node, _| async move {
+        let (paths, path) = (node.paths(), Path::new("/run/secrets/token"));
+        paths.write(path, b"abc").unwrap();
+        let start = node.clock().now();
+        let file = node.files().open_absolute(&absolute(path)).await.unwrap();
+        let span = node.clock().now() - start;
+        paths.write(path, b"xyz").unwrap();
+        let (pool, len) = (pool(), usize::try_from(file.len()).unwrap());
+        let bytes = read(&file, &pool, 0, len).await;
+        let later = read(&file, &pool, 1, 2).await;
+        file.sync().await.unwrap();
+        file.close().await;
+        (bytes, span, later)
+    });
+    assert_eq!((bytes, later), (b"abc".to_vec(), b"bc".to_vec()));
+    assert!(
+        span <= Span::from_nanos(100 * Span::MICROSECOND.nanos()),
+        "{span:?}"
+    );
+}
+
+#[test]
+fn open_absolute_and_its_reads_take_the_time_of_a_call_and_take_faults() {
+    let (spans, found) = run(0, MIB, |node, _| async move {
+        let (files, clock, pool) = (node.files(), node.clock(), pool());
+        let path = Path::new("/run/secrets/a");
+        node.paths().write(path, b"abc").unwrap();
+        let mut spans = Vec::new();
+        for _ in 0..16 {
+            let start = clock.now();
+            let file = files.open_absolute(&absolute(path)).await.unwrap();
+            spans.push(clock.now() - start);
+            let start = clock.now();
+            read(&file, &pool, 0, 3).await;
+            spans.push(clock.now() - start);
+        }
+        node.fail_file(path, Operation::Open);
+        let opened = files
+            .open_absolute(&absolute(path))
+            .await
+            .map(drop)
+            .unwrap_err();
+        let file = files.open_absolute(&absolute(path)).await.unwrap();
+        node.fail_file(path, Operation::ReadAt);
+        let read = file.read_at(0, pool.alloc(3).unwrap()).await.map(drop);
+        (spans, [opened, read.unwrap_err()])
+    });
+    let range = Span::ZERO..=Span::from_nanos(100 * Span::MICROSECOND.nanos());
+    assert!(spans.iter().all(|span| range.contains(span)), "{spans:?}");
+    assert!(spans.iter().any(|&span| span > Span::ZERO), "{spans:?}");
+    let path = "/run/secrets/a";
+    assert_eq!(
+        found,
+        [io(path, Operation::Open, 5), io(path, Operation::ReadAt, 5)]
+    );
+}
+
+#[test]
+#[should_panic(expected = "a file call needs a thread that the sim started")]
+fn open_absolute_outside_the_sim_panics() {
+    let mut sim = sim(0);
+    let node = sim.node(node::Config::default());
+    let files = node.files();
+    let path = absolute(Path::new("/a"));
+    let mut opened = pin!(files.open_absolute(&path));
+    drop(
+        opened
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop())),
+    );
+}
+
+#[test]
+fn open_absolute_reports_each_failure() {
+    let found = run(0, MIB, |node, _| async move {
+        let paths = node.paths();
+        paths.write(Path::new("/run/secrets/a"), b"abc").unwrap();
+        node.fail_path(Path::new("/run/secrets/a"), 13);
+        let files = node.files();
+        let mut found = Vec::new();
+        for path in ["/run/secrets/gone", "/run/secrets", "/run/secrets/a"] {
+            let opened = files.open_absolute(&absolute(Path::new(path))).await;
+            found.push(opened.map(drop).unwrap_err());
+        }
+        found
+    });
+    assert_eq!(
+        found,
+        [
+            Error::NotFound {
+                path: "/run/secrets/gone".into()
+            },
+            io("/run/secrets", Operation::Open, 21),
+            io("/run/secrets/a", Operation::Open, 13),
+        ]
+    );
 }
 
 #[test]

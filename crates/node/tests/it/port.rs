@@ -144,6 +144,10 @@ impl Driver for Slow {
         })
     }
 
+    fn open_absolute<'a>(&'a self, path: &'a Path) -> Request<'a, Box<dyn Descriptor>> {
+        self.0.open_absolute(path)
+    }
+
     fn list<'a>(&'a self, dir: &'a Path) -> Request<'a, Vec<PathBuf>> {
         self.0.list(dir)
     }
