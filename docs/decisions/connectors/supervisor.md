@@ -268,14 +268,14 @@
   when the call returns (`laptop.architect-2`, 2026-10-08T19:07:43Z:
   https://github.com/synnaxlabs/foundation/issues/420#issuecomment-6067099903). A run
   whose last task ends T after its start gives at most 1 + ⌊T / 1 s⌋ + 2 frames: the
-  start, at most one frame of counts, a shown error, or a note in each second (the note by `laptop.architect-2`, 2026-10-13T23:48:35Z,
+  start, at most one frame of counts, a shown error, or a note in each second (the note
+  by `laptop.architect-2`, 2026-10-13T23:48:35Z,
   https://github.com/synnaxlabs/foundation/issues/2630#issuecomment-6157620934), then
   `state` 3 and the next state. So a kind that counts 10,000 samples over 10 s gives at
   most 13. When the run itself sets its last count and ends at the flush at 10 s, that
   flush writes no frame, and it gives 12. T runs to the end of the last task, because a
   task that outlives the run can set counts between `state` 3 and the next state
-  (`laptop.architect-2`,
-  2026-10-09T21:16:18Z:
+  (`laptop.architect-2`, 2026-10-09T21:16:18Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6089396653).
   Supersedes the bound of 12 frames of
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6088160535. `state`
