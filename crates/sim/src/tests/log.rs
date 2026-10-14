@@ -530,6 +530,19 @@ fn a_start_in_the_drop_of_a_crash_drops_with_its_own_log() {
 /// Opens port `/dev/ttyS0` of `a`, joined to `b`, on a shard with `log`, and leaves
 /// a read of it pending with a [`Wakes`] waker.
 fn wait_on_port(sim: &mut crate::Sim, a: &crate::Node, b: &crate::Node, log: &Log) {
+    let waker = Waker::from(Arc::new(Wakes("a waker")));
+    wait_on_port_with(sim, a, b, log, waker);
+}
+
+/// Opens port `/dev/ttyS0` of `a`, joined to `b`, on a shard with `log`, and leaves
+/// a read of it pending with `waker`, which only the read then holds.
+fn wait_on_port_with(
+    sim: &mut crate::Sim,
+    a: &crate::Node,
+    b: &crate::Node,
+    log: &Log,
+    waker: Waker,
+) {
     let path = Path::new("/dev/ttyS0");
     sim.line(
         a,
@@ -553,11 +566,51 @@ fn wait_on_port(sim: &mut crate::Sim, a: &crate::Node, b: &crate::Node, log: &Lo
         .start(shard("a"), |_| async move {
             let port = Box::leak(Box::new(serial.open(&config).await.unwrap()));
             let mut buffer = [0; 8];
-            poll_with_own_waker(pin!(poll_fn(|cx| port.poll_read(cx, &mut buffer))));
+            let read = pin!(poll_fn(|cx| port.poll_read(cx, &mut buffer)));
+            assert!(read.poll(&mut Context::from_waker(&waker)).is_pending());
+            drop(waker);
             pending::<()>().await;
         });
     drop(started);
     sim.run_for(Span::from_nanos(1_000_000)).unwrap();
+}
+
+/// A waker whose drop reads the clock of its node.
+struct ReadsClock(env::clock::Clock);
+
+#[expect(clippy::manual_noop_waker, reason = "the waker exists for its drop")]
+impl Wake for ReadsClock {
+    fn wake(self: Arc<Self>) {}
+}
+
+impl Drop for ReadsClock {
+    fn drop(&mut self) {
+        let _now = self.0.now();
+        tracing::info!("a clock read");
+    }
+}
+
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a thread with a timeout fails the test on a deadlock"
+)]
+fn a_crash_drops_a_port_waker_that_reads_the_clock() {
+    let (done, ended) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut sim = sim(0);
+        let a = sim.node(node::Config::default());
+        let b = sim.node(node::Config::default());
+        let log = Log::default();
+        let waker = Waker::from(Arc::new(ReadsClock(a.clock())));
+        wait_on_port_with(&mut sim, &a, &b, &log, waker);
+        sim.crash(&a, Crash::Process);
+        done.send(log.messages()).unwrap();
+    });
+    let messages = ended
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the crash ends");
+    assert_eq!(messages, ["a clock read"]);
 }
 
 /// Memory of node code: it logs when it drops.
