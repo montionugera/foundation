@@ -2,10 +2,11 @@
   value: `env("NAME")`, `file("/absolute/path")`, or `secret("full.name")`. `secret()`
   also takes its name as a reference, `secret(full.name)`, as each name in a config does
   (HCL REFERENCES). `secret::Source::read` reads each attribute that takes a secret,
-  once a kind reads one (#2583). A bare string, another function, a count of arguments
-  other than 1, an argument that is not a string, an empty variable name or one with `=`
-  or NUL, a `file()` path that does not start with `/`, that has NUL, or that has a `..`
-  segment between `/` or `\`, and a bad `secret()` name are `secret.source`. Its text
+  such as `token` of the `influx` kind. A bare string, another function, a count of
+  arguments other than 1, an argument that is not a string, an empty variable name or
+  one with `=` or NUL, a `file()` path that does not start with `/`, that has NUL, or
+  that has a `..` segment between `/` or `\`, and a bad `secret()` name are
+  `secret.source`. Its text
   never quotes what the user wrote, because that can be a pasted token. `Source`
   displays its call with the argument as a string, such as `secret("full.name")`, so
   `plan` and `status` show the source and never the value. The person decided this on
@@ -31,9 +32,9 @@
 
   `secret::Resolver` gives the value of a source on one shard. `env()` reads the
   environment of the node process, which `node` main reads once at start
-  (`std::env::vars_os()`) and gives in `node::Config::vars` from the PR of the first
-  kind that reads a secret (a later step of #2583). Until then `node` gives an empty
-  map. `laptop.architect-2` moved this read to that step on 2026-10-14T03:52:12Z
+  (`std::env::vars_os()`) and gives in `node::Config::vars`, since the `token` of the
+  `influx` kind. `laptop.architect-2` moved this read to that PR on
+  2026-10-14T03:52:12Z
   (https://github.com/synnaxlabs/foundation/pull/2662#issuecomment-6160488141). No code
   below `node` reads the OS environment.
   To change the value, restart the node. A value that is not UTF-8 gives its bytes.
@@ -66,3 +67,10 @@
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6155189112), with
   the surface that it approved on 2026-10-13T21:26:42Z
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6155552036).
+
+  A kind names `Source` and `Value` through `connector::secret`, which re-exports them
+  from `secret`. So a `connector-<kind>` crate does not depend on `secret`, and does
+  not see `Resolver`, the stores, or the seal, which no kind may call. Lost: `secret`
+  in the `connector-<kind>` line of the crate map. Decided by `laptop.architect-2` on
+  2026-10-14T04:40:48Z
+  (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6161042898).

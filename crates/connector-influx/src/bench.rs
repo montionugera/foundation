@@ -2,3 +2,4 @@
 //! crate.
 
 pub use crate::batch::{Batch, Taken};
+pub use crate::send::{Token, request};

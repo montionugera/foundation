@@ -218,8 +218,8 @@ fn places_the_problems_of_the_kind_in_source_order() {
                 "document.unknown-attribute",
                 "port",
                 "`port` is not an attribute of the connector",
-                "Use `select`, `address`, `database`, `bucket`, `org`, or \
-                 `measurement`, or remove it",
+                "Use `select`, `address`, `database`, `bucket`, `org`, `measurement`, \
+                 or `token`, or remove it",
             ),
         ]
     );

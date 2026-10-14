@@ -202,15 +202,16 @@
   (`laptop.architect-2`, 2026-10-08T06:29:21Z:
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186). The
   text of `error` is the text of the `Device` or `Retry` source, or the diagnostics of
-  `Config` joined with `"; "`, cut to at most 1024 bytes at a char boundary, so a long
-  device error does not make a frame too large. `backoff` is the wait that is left to
-  the next try by the node's clock at the write, less the time by which the frame is
-  stamped after the hub's time (below). So a frame written again later gives the wait
-  that is left, a frame stamped ahead gives a wait that ends at the next try, and a step
-  of the hub's time during the wait does not change it. The wait is by the node's
-  clock, so while the hub's time slews, the next try is up to 500 ppm (MESH SLEW) of
-  the wait from the frame's time plus `backoff`. Decided by the `connector` builder in
-  the plan on #420 (2026-10-10T03:22:36Z:
+  `Config` joined with `"; "`. A text of more than 1024 bytes keeps its first and last
+  510 bytes or less at char boundaries, joined by `…`, so a long device error does not
+  make a frame too large and keeps its reason at the end. `backoff` is the wait that is
+  left to the next try by the node's clock at the write, less the time by which the
+  frame is stamped after the hub's time (below). So a frame written again later gives
+  the wait that is left, a frame stamped ahead gives a wait that ends at the next try,
+  and a step of the hub's time during the wait does not change it. The wait is by the
+  node's clock, so while the hub's time slews, the next try is up to 500 ppm (MESH
+  SLEW) of the wait from the frame's time plus `backoff`. Decided by the `connector`
+  builder in the plan on #420 (2026-10-10T03:22:36Z:
   https://github.com/synnaxlabs/foundation/issues/420#issuecomment-6093259074),
   measured from the frame's time after round 1 of PR #2227 (finding 2,
   2026-10-10T03:55:58Z:
@@ -221,9 +222,12 @@
   (2026-10-10T05:38:31Z:
   https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6094282904) and with
   "next try" (2026-10-11T10:03:33Z:
-  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6107853141). The cut
-  and the join are approved by `laptop.architect-2` (2026-10-10T04:00:21Z:
-  https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6093545130). Each run
+  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6107853141). The join
+  is approved by `laptop.architect-2` (2026-10-10T04:00:21Z:
+  https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6093545130), and the
+  cut of the first and last 510 bytes on 2026-10-14T19:50:51Z
+  (https://github.com/synnaxlabs/foundation/pull/2687#issuecomment-6176991169), which
+  supersedes the cut of 6093545130. Each run
   opens its reader before its start status (`laptop.architect-2`, 2026-10-11T07:34:44Z:
   https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106726413). A try is
   the reader open of a restart, or, when `check` gives no reader settings, its start

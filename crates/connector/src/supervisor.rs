@@ -466,8 +466,8 @@ mod tests {
         /// Shows the note `polls` and the error `refused`, waits the span, shows the
         /// note again, waits the span, then returns `Ok`.
         Note(Span),
-        /// Shows a note of 1,100 bytes with a 2-byte char at byte 1,023, waits the
-        /// span, then returns `Ok`.
+        /// Shows a note of 1,111 bytes with a 2-byte char at bytes 510 and 511, waits
+        /// the span, then returns `Ok`.
         NoteWide(Span),
         /// Lends its context to a task that shows the note `late` at the cancel of the
         /// run, then returns `Ok` at once.
@@ -630,7 +630,7 @@ mod tests {
                 clock.sleep(span).await;
             }
             Step::NoteWide(span) => {
-                lent.note(&format!("{}é{}", "a".repeat(1_023), "a".repeat(75)));
+                lent.note(&format!("{}é{}", "a".repeat(509), "a".repeat(600)));
                 clock.sleep(span).await;
             }
             Step::NoteLate => {
@@ -1043,8 +1043,11 @@ mod tests {
         let steps = vec![Step::NoteWide(ms(2_000))];
         let out = supervise("script", steps, config(), Cancel::Never);
         let notes: Vec<_> = out.statuses.iter().map(|(.., note)| note.len()).collect();
-        assert_eq!(notes, [0, 1_023, 0, 0]);
-        assert_eq!(out.statuses[1].3, "a".repeat(1_023));
+        assert_eq!(notes, [0, 1_022, 0, 0]);
+        assert_eq!(
+            out.statuses[1].3,
+            format!("{}…{}", "a".repeat(509), "a".repeat(510))
+        );
     }
 
     #[test]
@@ -1108,14 +1111,15 @@ mod tests {
     }
 
     #[test]
-    fn cuts_a_long_error_that_a_run_shows_to_1024_bytes() {
+    fn cuts_the_middle_of_a_long_error_that_a_run_shows() {
         let steps = vec![Step::ShowWide(ms(2_000))];
         let out = supervise("script", steps, config(), Cancel::Never);
         let got: Vec<_> = (states(&out.statuses).into_iter())
             .zip(&out.statuses)
             .map(|(state, (_, _, text, _))| (state, text.as_str()))
             .collect();
-        assert_eq!(got[1], ((0, 3, 0), "a".repeat(1_024).as_str()));
+        let cut = format!("{0}…{0}", "a".repeat(510));
+        assert_eq!(got[1], ((0, 3, 0), cut.as_str()));
     }
 
     #[test]
@@ -1378,17 +1382,18 @@ mod tests {
     }
 
     #[test]
-    fn cuts_a_long_error_text_to_1024_bytes() {
+    fn cuts_the_middle_of_a_long_error_text() {
         let out = supervise(
             "script",
             vec![Step::Wide],
             config(),
             Cancel::After(ms(5_000)),
         );
-        assert_eq!(out.statuses[1].2, "a".repeat(1_024));
+        assert_eq!(out.statuses[1].2, format!("{0}…{0}", "a".repeat(510)));
     }
 
-    /// The 512th `é` takes bytes 1023 and 1024, across the bound of 1024 bytes.
+    /// The 255th `é` takes bytes 510 and 511, across the bound of 510 bytes of the
+    /// head.
     #[test]
     fn cuts_a_long_error_text_at_a_char_boundary() {
         let out = supervise(
@@ -1397,10 +1402,8 @@ mod tests {
             config(),
             Cancel::After(ms(5_000)),
         );
-        let cut = format!("a{}", "é".repeat(511));
-        assert_eq!(cut.len(), 1_023);
+        let cut = format!("a{}…{}", "é".repeat(254), "é".repeat(255));
         assert_eq!(out.statuses[1].2, cut);
-        assert!(long().starts_with(&cut));
     }
 
     /// Runs `steps` and fills the pool from 1.5 s after the start of the last run
