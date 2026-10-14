@@ -62,13 +62,15 @@
   resolver of the shard, as a run does, and drops the value. It reads no source of
   another connector, so a subject that may only plan learns nothing of the files and the
   environment of the node. Each source that gives no value, `BadName` too, is a
-  `secret.unresolved` problem at its call, with the text `the secret <source>: <error>`,
-  after the problems of `config::plan::plan` in one list, when `config::check` passes; a
-  plan that `config::check` refuses reads no source: the connectors in name order, and
-  the sources of each in the order of its config. This is the plan of item 7
+  `secret.unresolved` problem at its call, with the text `the secret <source>: <error>`.
+  These problems come after those of `config::plan::plan` in one list: the connectors in
+  name order, and the sources of each in the order of its config. A plan that
+  `config::check` refuses reads no source. A plan file that a subject who may not apply
+  a connector made has no read of its sources, also when a subject who may apply it
+  applies the file, until `apply` reads them (#2694). This is the plan of item 7
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6161179051), with
-  the fixes of round 1 of #2692
-  (https://github.com/synnaxlabs/foundation/pull/2692#issuecomment-6164799171). A
+  the filter by subject that `laptop.architect-2` approved on 2026-10-14T19:52:43Z
+  (https://github.com/synnaxlabs/foundation/pull/2692#issuecomment-6177025658). A
   connector on another node is not checked at plan until #239. A person who can apply a
   spec can make the node read any variable of its environment and any file that its user
   can read. The trigger for a limit that the operator of the node sets at start, such as
