@@ -46,8 +46,6 @@ const REMOVED: Span = Span::from_nanos(500_000_000);
 const CLOSED: Span = Span::from_nanos(3_000_000_000);
 /// The first key of the status channels, which the rig gives its first connector.
 const STATUS: channel::Key = channel::Key::from_u128(1 << 64);
-/// The key of the status channel `state`.
-const STATE: channel::Key = channel::Key::from_u128((1 << 64) + 1);
 
 fn main() {
     let lines = [
@@ -220,10 +218,10 @@ fn run(step: Step) -> Line {
         let opened = rig
             .open_connector("steps", connector, &document, &token)
             .await;
-        let mut state = open_state(&hub, &state).await;
+        let mut reader = open_state(&hub, &state).await;
         let result = opened.run().await;
         node.clock().sleep(Span::SECOND).await;
-        let last = last_state(&mut state).await;
+        let last = last_state(&mut reader, &state).await;
         (result, last)
     });
     let (result, last) = result.expect("the run ends");
@@ -259,11 +257,12 @@ async fn open_state(hub: &hub::Hub, state: &str) -> hub::reader::Reader {
     hub.reader(open).await.expect("the reader opens")
 }
 
-/// The last `state` sample of the newest status frame that `reader` holds.
-async fn last_state(reader: &mut hub::reader::Reader) -> Option<u8> {
+/// The last sample of the status channel `state` in the newest status frame that
+/// `reader` holds.
+async fn last_state(reader: &mut hub::reader::Reader, state: &str) -> Option<u8> {
     let received = reader.next().await.expect("a status frame");
     let entries = received.set().entries();
-    let at = entries.iter().position(|entry| entry.key == STATE);
+    let at = (0..entries.len()).position(|entry| received.name(entry) == state);
     let at = at.expect("the set holds `state`");
     let range = received.view().range(entries[at].group);
     let count = range.expect("the group is present").count;
