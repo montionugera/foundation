@@ -31,29 +31,37 @@ pub(crate) struct Server {
 #[cfg(feature = "sim")]
 #[repr(C)]
 struct Source {
-    read: unsafe extern "C" fn(*mut Source, *mut f64, *mut u32),
-    answer: Box<dyn FnMut() -> (f64, types::quality::Quality)>,
+    read: unsafe extern "C" fn(*mut Source, *mut ffi::Scalar, *mut u16, *mut u32),
+    answer: Box<dyn FnMut() -> (Value, types::quality::Quality)>,
     /// False while the add reads the variable to check its type.
     added: bool,
 }
 
-/// Answers a read of the variable of `source` into `value` and `status`.
+/// Answers a read of the variable of `source` into `value`, `kind`, and `status`.
 ///
 /// # Safety
 ///
-/// `source` is live, nothing else holds it, and `value` and `status` are places to
-/// write.
+/// `source` is live, nothing else holds it, and `value`, `kind`, and `status` are
+/// places to write.
 #[cfg(feature = "sim")]
-unsafe extern "C" fn read(source: *mut Source, value: *mut f64, status: *mut u32) {
+unsafe extern "C" fn read(
+    source: *mut Source,
+    value: *mut ffi::Scalar,
+    kind: *mut u16,
+    status: *mut u32,
+) {
     // SAFETY: as the caller ensures.
     let source = unsafe { &mut *source };
-    let (double, quality) = if source.added {
+    let (answer, quality) = if source.added {
         (source.answer)()
     } else {
-        (0.0, types::quality::Quality::GOOD)
+        (Value::F64(0.0), types::quality::Quality::GOOD)
     };
+    let (scalar, scalar_kind) = answer.raw();
     // SAFETY: as the caller ensures.
-    unsafe { value.write(double) };
+    unsafe { value.write(scalar) };
+    // SAFETY: as the caller ensures.
+    unsafe { kind.write(scalar_kind) };
     // SAFETY: as the caller ensures.
     unsafe { status.write(quality.0) };
 }
@@ -142,8 +150,9 @@ impl Server {
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
     }
 
-    /// Adds the Double variable `node`, and answers each read of a client with the
-    /// value and the status that `answer` gives, on the thread that drives the server.
+    /// Adds the scalar variable `node` of the `DataType` `BaseDataType`, and answers
+    /// each read of a client with the value and the status that `answer` gives, on the
+    /// thread that drives the server.
     ///
     /// # Panics
     ///
@@ -152,7 +161,7 @@ impl Server {
     pub(crate) fn add_source(
         &mut self,
         node: &Node,
-        answer: impl FnMut() -> (f64, types::quality::Quality) + 'static,
+        answer: impl FnMut() -> (Value, types::quality::Quality) + 'static,
     ) {
         let source = NonNull::from(Box::leak(Box::new(Source {
             read,
@@ -172,6 +181,23 @@ impl Server {
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
         // SAFETY: it lives, and the server reads it only while the loop runs.
         unsafe { (*source.as_ptr()).added = true };
+    }
+
+    /// The number of the `DataType` of the variable `node`, in namespace 0.
+    ///
+    /// # Panics
+    ///
+    /// If the server has no variable `node`, or its `DataType` is not a number of
+    /// namespace 0.
+    #[cfg(test)]
+    pub(crate) fn data_type(&self, node: &Node) -> u32 {
+        let mut id = 0;
+        // SAFETY: the server lives, and `id` is a place to write.
+        let status = Status(unsafe {
+            ffi::test::shim_server_data_type(self.raw(), node.into(), &raw mut id)
+        });
+        assert_eq!(status, Status::GOOD, "{node}: open62541 gives no DataType");
+        id
     }
 
     /// Adds the variable `node` with a `ByteString` of `length` zero bytes.

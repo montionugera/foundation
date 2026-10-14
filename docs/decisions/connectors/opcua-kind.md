@@ -14,9 +14,14 @@
   the sample type of the same width and sign (Float to `f32`, Int32 to `i32`, Boolean
   to `bool`), with no conversion. A channel of another type is a config error. A node
   whose value has another type than the sample type of its channel ends the run with
-  a device error. The `influx` kind writes the same types (#2555). String, DateTime, and
-  arrays come when a user needs them (question:
-  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6150342865). Time:
+  a device error. The kind reads each of these types since
+  https://github.com/synnaxlabs/foundation/pull/2635. The `influx` kind writes the same
+  types (#2555). String, DateTime, and arrays come when a user needs them (question:
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6150342865). A
+  lossless widening (an `i16` value into an `f64` channel) comes when a user's node
+  types do not match the channel types that the user wants (`laptop.architect-2`,
+  2026-10-14T00:36:21Z:
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6158211076). Time:
   each frame has the midpoint of the request on mesh time (STAMP). The SourceTimestamp
   comes with the device clock and its fit to mesh time, when a user needs the time of
   the measurement (question:
