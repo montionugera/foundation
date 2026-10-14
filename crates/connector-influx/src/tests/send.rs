@@ -558,8 +558,8 @@ fn reads_the_token_again_after_a_401_or_a_403_and_writes_each_sample_once() {
                 vec![
                     String::new(),
                     format!(
-                        "Check the token file(\"{TOKEN_FILE}\"). InfluxDB answered \
-                         {text}: {{\"code\":\"unauthorized\",\
+                        "InfluxDB answered {text}. Check the token \
+                         file(\"{TOKEN_FILE}\"): {{\"code\":\"unauthorized\",\
                          \"message\":\"unauthorized access\"}}"
                     ),
                     String::new(),
@@ -621,31 +621,36 @@ fn keeps_the_source_of_the_token_after_a_long_401_body() {
         errors
     });
     let head = format!(
-        "Check the token file(\"{TOKEN_FILE}\"). InfluxDB answered 401 Unauthorized: "
+        "InfluxDB answered 401 Unauthorized. Check the token file(\"{TOKEN_FILE}\"): "
     );
     let shown = format!("{head}{}…{}", "x".repeat(510 - head.len()), "x".repeat(510));
     assert_eq!(got, [String::new(), shown, String::new()]);
 }
 
 #[test]
-fn keeps_the_answer_of_influx_after_a_401_with_a_long_source() {
+fn keeps_the_answer_of_influx_after_a_401_with_a_long_source_and_body() {
     let path: &'static str = format!("/run/secrets/{}", "\u{1}".repeat(200)).leak();
+    let body: &'static str = "y".repeat(600).leak();
     let got = run(move |node, tasks| async move {
         let plant = Plant::new(node.clone(), tasks).await;
         node.paths()
             .write(std::path::Path::new(path), b"old")
             .expect("writes");
-        (plant.answers.borrow_mut()).push_back((StatusCode::UNAUTHORIZED, "no"));
+        (plant.answers.borrow_mut()).push_back((StatusCode::UNAUTHORIZED, body));
         let config = with_token(&plant, "file", path);
         let (auth, errors, _) = send_one(&plant, config).await;
         (auth, errors)
     });
     let full = format!(
-        "Check the token file({path:?}). InfluxDB answered 401 Unauthorized: no"
+        "InfluxDB answered 401 Unauthorized. Check the token file({path:?}): {body}"
     );
     let head: String = full.chars().take(510).collect();
     let tail: String = full.chars().skip(full.len() - 510).collect();
     let want = format!("{head}…{tail}");
+    assert!(want.starts_with(
+        "InfluxDB answered 401 Unauthorized. Check the token file(\"/run/secrets/"
+    ));
+    assert!(want.ends_with(&body[..510]));
     assert_eq!(
         got,
         (
@@ -679,8 +684,8 @@ fn ends_the_run_when_the_token_is_gone_after_a_401() {
             vec![
                 String::new(),
                 format!(
-                    "Check the token file(\"{TOKEN_FILE}\"). InfluxDB answered 401 \
-                     Unauthorized: no"
+                    "InfluxDB answered 401 Unauthorized. Check the token \
+                     file(\"{TOKEN_FILE}\"): no"
                 ),
                 format!(
                     "the secret file(\"{TOKEN_FILE}\"): the file {TOKEN_FILE} is \
