@@ -175,7 +175,8 @@ async fn send(
             future::pending::<()>().await;
         }
         if refused {
-            *token.borrow_mut() = Token::read(ctx).await?;
+            // Boxed, so this rare read does not grow the future of `send`.
+            *token.borrow_mut() = Box::pin(Token::read(ctx)).await?;
         }
     }
 }
