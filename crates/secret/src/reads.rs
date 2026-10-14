@@ -181,6 +181,11 @@ fn cut(bytes: &[u8]) -> &[u8] {
 /// The failed file call `error` on the file at `path`, as the path is shown.
 fn unavailable(error: &files::Error, path: &Path) -> Error {
     const EACCES: i32 = 13;
+    const ENOTDIR: i32 = 20;
+    const EISDIR: i32 = 21;
+    /// The `os` driver gives it for an open of a file that is not a regular file or
+    /// a directory.
+    const EINVAL: i32 = 22;
     let shown = path.display();
     let detail = match error {
         files::Error::Io {
@@ -190,6 +195,14 @@ fn unavailable(error: &files::Error, path: &Path) -> Error {
         } => format!(
             "the {operation} of the file {shown} failed with OS error {EACCES}. Make \
              the file readable by the user of the node"
+        ),
+        files::Error::Io {
+            operation: files::Operation::Open,
+            code: code @ (ENOTDIR | EISDIR | EINVAL),
+            ..
+        } => format!(
+            "the open of the file {shown} failed with OS error {code}. Make the path \
+             name a regular file"
         ),
         files::Error::Io {
             operation, code, ..

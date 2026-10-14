@@ -187,6 +187,43 @@ fn gives_a_failed_open_of_an_absolute_file_as_unavailable() {
 }
 
 #[test]
+fn says_to_name_a_regular_file_when_a_path_names_none() {
+    on_sim(|node, resolver| async move {
+        node.paths()
+            .write(Path::new("/run/secrets/token"), b"t")
+            .expect("writes");
+        for (path, code) in [("/run/secrets/token/x", 20), ("/run/secrets", 21)] {
+            assert_eq!(
+                get(&resolver, &file(path)).await,
+                Err(Error::Unavailable {
+                    detail: format!(
+                        "the open of the file {path} failed with OS error {code}. Make \
+                         the path name a regular file"
+                    ),
+                }),
+            );
+        }
+        let files = node.files();
+        for dir in ["secrets", "secrets/plant.token"] {
+            files.create_dir(Path::new(dir)).await.expect("makes it");
+        }
+        assert_eq!(
+            get(
+                &resolver,
+                &Source::Secret("plant.token".parse().expect("a name"))
+            )
+            .await,
+            Err(Error::Unavailable {
+                detail:
+                    "the open of the file /data/secrets/plant.token failed with OS \
+                         error 21. Make the path name a regular file"
+                        .into(),
+            }),
+        );
+    });
+}
+
+#[test]
 fn reads_a_named_secret_from_the_store() {
     on_sim(|node, resolver| async move {
         let name: Name = "plant.token".parse().expect("a name");
