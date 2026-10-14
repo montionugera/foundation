@@ -1,6 +1,6 @@
 //! A simulated OPC UA server for the tests of other crates: the open62541 test server,
-//! with no security, that serves Double variables and records each read that it
-//! answers.
+//! with no security, that serves variables of the `DataType` `BaseDataType`, each with
+//! a Double value, and records each read that it answers.
 
 use std::collections::BTreeMap;
 use std::ffi::CString;
@@ -21,8 +21,8 @@ use crate::value::Value;
 /// The sessions and secure channels of [`serve`].
 const SESSIONS: u16 = 4;
 
-/// The Double variables of [`serve`], each with its value and status, and each read
-/// that the server answered. Clones share them.
+/// The variables of [`serve`], each with its Double value and its status, and each
+/// read that the server answered. Clones share them.
 #[derive(Clone, Debug)]
 pub struct Variables(Arc<Mutex<State>>);
 

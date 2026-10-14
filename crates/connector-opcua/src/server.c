@@ -172,3 +172,19 @@ UA_StatusCode shim_server_add_source(UA_Server *server, shim_node node,
         UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, callbacks,
         source, NULL);
 }
+
+/* Gives in `id` the number of the DataType of the variable `node` of `server`.
+ * Returns `UA_STATUSCODE_BADTYPEMISMATCH` when the DataType is not a number of
+ * namespace 0. */
+UA_StatusCode shim_server_data_type(UA_Server *server, shim_node node, UA_UInt32 *id) {
+    UA_NodeId type;
+    UA_StatusCode status = UA_Server_readDataType(server, shim_node_id(node), &type);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    if(type.namespaceIndex != 0 || type.identifierType != UA_NODEIDTYPE_NUMERIC)
+        status = UA_STATUSCODE_BADTYPEMISMATCH;
+    else
+        *id = type.identifier.numeric;
+    UA_NodeId_clear(&type);
+    return status;
+}

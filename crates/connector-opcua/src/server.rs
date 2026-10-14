@@ -183,6 +183,23 @@ impl Server {
         unsafe { (*source.as_ptr()).added = true };
     }
 
+    /// The number of the `DataType` of the variable `node`, in namespace 0.
+    ///
+    /// # Panics
+    ///
+    /// If the server has no variable `node`, or its `DataType` is not a number of
+    /// namespace 0.
+    #[cfg(test)]
+    pub(crate) fn data_type(&self, node: &Node) -> u32 {
+        let mut id = 0;
+        // SAFETY: the server lives, and `id` is a place to write.
+        let status = Status(unsafe {
+            ffi::test::shim_server_data_type(self.raw(), node.into(), &raw mut id)
+        });
+        assert_eq!(status, Status::GOOD, "{node}: open62541 gives no DataType");
+        id
+    }
+
     /// Adds the variable `node` with a `ByteString` of `length` zero bytes.
     ///
     /// # Panics
