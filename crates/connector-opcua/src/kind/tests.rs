@@ -713,7 +713,7 @@ fn ends_the_run_with_a_device_error_on_a_bad_status() {
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
     let errors = errors(&outcome.statuses);
-    let bad = "the node ns=3;s=SpikeData of `plant.a` gives Bad";
+    let bad = "the node `ns=3;s=SpikeData` of the channel `plant.a` gives Bad";
     assert_eq!(errors, [(DEVICE, bad.to_owned())]);
     assert_eq!(outcome.frames.len(), 11);
 }
@@ -740,7 +740,8 @@ fn names_the_read_of_a_bad_status_past_the_first() {
     setup.reads[1].1 = "ns=3;s=Missing".into();
     let outcome = run(setup, |scene| async move { scene.supervise(ms(350)).await });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
-    let bad = "the node ns=3;s=Missing of `plant.b` gives BadNodeIdUnknown";
+    let bad =
+        "the node `ns=3;s=Missing` of the channel `plant.b` gives BadNodeIdUnknown";
     assert_eq!(errors(&outcome.statuses), [(DEVICE, bad.to_owned())]);
     assert_eq!(outcome.frames.len(), 0);
 }
@@ -891,12 +892,48 @@ fn extremes() -> [[crate::value::Value; 11]; 3] {
     ]
 }
 
-/// The sample of `value`, widened to 8 bytes as [`decode`] does.
-fn widened(value: crate::value::Value) -> u64 {
-    let mut sample = [0; 8];
-    value.put(&mut sample[..value.scalar().width()]);
-    u64::from_le_bytes(sample)
-}
+/// The samples of [`extremes`], each widened to 8 bytes as [`decode`] does.
+const EXTREMES: [[u64; 11]; 3] = [
+    [
+        0,
+        0x80,
+        0,
+        0x8000,
+        0,
+        0x8000_0000,
+        0,
+        0x8000_0000_0000_0000,
+        0,
+        0xff80_0000,
+        0xfff0_0000_0000_0000,
+    ],
+    [
+        1,
+        0x7f,
+        0xff,
+        0x7fff,
+        0xffff,
+        0x7fff_ffff,
+        0xffff_ffff,
+        0x7fff_ffff_ffff_ffff,
+        u64::MAX,
+        0x7f80_0000,
+        0x7ff0_0000_0000_0000,
+    ],
+    [
+        1,
+        0xff,
+        1,
+        0xffff,
+        1,
+        0xffff_ffff,
+        1,
+        u64::MAX,
+        1,
+        0xffc0_0000,
+        0xfff8_0000_0000_0000,
+    ],
+];
 
 #[test]
 fn writes_each_type_of_a_value_into_a_channel_of_its_type() {
@@ -922,10 +959,7 @@ fn writes_each_type_of_a_value_into_a_channel_of_its_type() {
         })
         .collect();
     written.dedup();
-    let expected: Vec<Vec<u64>> = (extremes().iter())
-        .map(|values| values.iter().copied().map(widened).collect())
-        .collect();
-    assert_eq!(written, expected);
+    assert_eq!(written, EXTREMES);
 }
 
 #[test]
@@ -941,6 +975,26 @@ fn ends_the_run_with_a_device_error_on_a_value_of_another_type_than_its_channel(
                and the channel has samples of type f64";
     assert_eq!(errors(&outcome.statuses), [(DEVICE, bad.to_owned())]);
     assert_eq!(outcome.frames.len(), 11);
+}
+
+#[test]
+fn ends_the_run_with_a_device_error_on_a_value_of_another_type_of_the_same_width() {
+    let outcome = run(typed(), |scene| async move {
+        let [_, _, values] = extremes();
+        for (node, value) in TYPED_NODES.iter().zip(values) {
+            scene.variables.set(node, value);
+        }
+        scene.after(ms(1_050), |scene| async move {
+            scene
+                .variables
+                .set(TYPED_NODES[9], crate::value::Value::I32(1));
+        });
+        scene.supervise(ms(1_550)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let bad = "the node `ns=2;i=10` of the channel `plant.f32` gives a value of type \
+               i32, and the channel has samples of type f32";
+    assert_eq!(errors(&outcome.statuses), [(DEVICE, bad.to_owned())]);
 }
 
 #[test]
@@ -1018,7 +1072,7 @@ fn closes_the_session_at_each_end_with_an_error() {
         scene.supervise(ms(30_050)).await
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
-    let bad = "the node ns=3;s=SpikeData of `plant.a` gives Bad";
+    let bad = "the node `ns=3;s=SpikeData` of the channel `plant.a` gives Bad";
     assert_eq!(errors(&outcome.statuses), [(DEVICE, bad.to_owned())]);
     assert_eq!(last(&outcome.statuses, RESTARTS), 5);
 }
@@ -1125,6 +1179,37 @@ fn panics_with_the_read_whose_value_is_bad() {
     Values(&values).get(2);
 }
 
+/// Each of `scalars` with its variant of [`Value`](crate::value::Value).
+fn types(scalars: &[Scalar]) -> Vec<(Scalar, Discriminant<crate::value::Value>)> {
+    let variant = |&scalar| {
+        (
+            scalar,
+            crate::value::Value::variant(scalar).expect("a type"),
+        )
+    };
+    scalars.iter().map(variant).collect()
+}
+
+#[test]
+fn refuses_each_value_of_another_type_than_its_channel() {
+    let [_, _, values] = extremes();
+    for value in values {
+        for sample in SCALARS {
+            let values = [Ok(value)];
+            let refused = Values::new(&values, &types(&[sample])).map(|_| ());
+            if value.scalar() == sample {
+                assert_eq!(refused, Ok(()));
+            } else {
+                let bad = Bad::Type {
+                    value: value.scalar(),
+                    sample,
+                };
+                assert_eq!(refused, Err((0, bad)), "{value:?} into {sample:?}");
+            }
+        }
+    }
+}
+
 #[test]
 fn gives_the_first_value_that_is_bad_or_of_another_type_than_its_channel() {
     use crate::value::Value;
@@ -1134,17 +1219,18 @@ fn gives_the_first_value_that_is_bad_or_of_another_type_than_its_channel() {
         Ok(Value::F32(1.0)),
         Err(Status::BAD_NOT_FOUND),
     ];
-    let refused = Values::new(&values, &scalars).map(|_| ());
+    let refused = Values::new(&values, &types(&scalars)).map(|_| ());
     let mismatch = Bad::Type {
         value: Scalar::F32,
         sample: Scalar::F64,
     };
     assert_eq!(refused, Err((1, mismatch)));
-    let refused = Values::new(&values[2..], &scalars[2..]).map(|_| ());
+    let refused = Values::new(&values[2..], &types(&scalars[2..])).map(|_| ());
     assert_eq!(refused, Err((0, Bad::Status(Status::BAD_NOT_FOUND))));
     let good = [Ok(Value::F64(1.0)), Ok(Value::I32(-1))];
     let scalars = [Scalar::F64, Scalar::I32];
-    let values = Values::new(&good, &scalars).expect("each value has its type");
+    let types = types(&scalars);
+    let values = Values::new(&good, &types).expect("each value has its type");
     assert_eq!(
         (values.get(0), values.get(1)),
         (Value::F64(1.0), Value::I32(-1))

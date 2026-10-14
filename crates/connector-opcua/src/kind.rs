@@ -1,6 +1,7 @@
 //! The `opcua` kind: reads OPC UA nodes at a fixed rate, and writes one frame per
 //! tick.
 
+use std::mem::{Discriminant, discriminant};
 use std::{fmt, future};
 
 use connector::kind::{self, Channels, Context, Error};
@@ -141,10 +142,10 @@ async fn read(
     Ok(())
 }
 
-/// Writes `count` frames of the reads of `ctx` with no server, each value 1 and each
-/// frame 1 ms of its clock after the last, and gives what `measure` gives for the
-/// check of the values and the write of each frame. `measure` calls the work that it
-/// gets once. For benchmarks.
+/// Writes `count` frames of the reads of `ctx` with no server, each value 1 in the
+/// sample type of its channel (`true` for `bool`) and each frame 1 ms of its clock
+/// after the last, and gives what `measure` gives for the check of the values and the
+/// write of each frame. `measure` calls the work that it gets once. For benchmarks.
 ///
 /// # Errors
 ///
@@ -161,8 +162,8 @@ pub async fn writes(
     mut measure: impl FnMut(&mut dyn FnMut()) -> u64,
 ) -> Result<Vec<u64>, Error> {
     let mut frames = Frames::open(ctx).await?;
-    let reads = &ctx.config().reads;
-    let values = vec![Ok(Value::F64(1.0)); reads.len()];
+    let types = frames.layout.types.iter();
+    let values: Vec<_> = types.map(|&(scalar, _)| Ok(Value::one(scalar))).collect();
     let mut measures = Vec::with_capacity(count);
     for _ in 0..count {
         ctx.clock().sleep(Span::from_nanos(1_000_000)).await;
@@ -192,8 +193,9 @@ struct Frames<'a> {
 
 /// The series of the frame of each tick, and what fills each.
 struct Layout {
-    /// The sample type of the channel of each read, in order.
-    scalars: Vec<Scalar>,
+    /// The sample type of the channel of each read, in order, and its variant of
+    /// [`Value`].
+    types: Vec<(Scalar, Discriminant<Value>)>,
     /// Each entry of the key set and the bytes of its series.
     series: Vec<(usize, usize)>,
     /// The sample of each entry of the key set.
@@ -224,13 +226,16 @@ impl<'a> Frames<'a> {
         let writer = ctx.writer(channels, Authority::ABSOLUTE, None).await?;
         let set = writer.set();
         let entries = set.entries();
-        let (mut scalars, mut wrong) = (Vec::with_capacity(reads.len()), Vec::new());
+        let (mut types, mut wrong) = (Vec::with_capacity(reads.len()), Vec::new());
         for (read, &entry) in reads.iter().zip(writer.entries()) {
-            match entries[entry].data_type {
-                Type::Scalar(scalar) if SCALARS.contains(&scalar) => {
-                    scalars.push(scalar);
-                }
-                other => wrong.push(sample_type(read, other)),
+            let data_type = entries[entry].data_type;
+            let variant = match data_type {
+                Type::Scalar(scalar) => Value::variant(scalar).map(|v| (scalar, v)),
+                _ => None,
+            };
+            match variant {
+                Some(pair) => types.push(pair),
+                None => wrong.push(sample_type(read, data_type)),
             }
         }
         if !wrong.is_empty() {
@@ -263,7 +268,7 @@ impl<'a> Frames<'a> {
             again: Vec::with_capacity(series.len()),
             backwards: Vec::with_capacity(samples.len()),
             layout: Layout {
-                scalars,
+                types,
                 series,
                 fills,
                 samples,
@@ -300,14 +305,13 @@ impl<'a> Frames<'a> {
         values: &[Result<Value, Status>],
         stamp: Stamp,
     ) -> Result<(), Error> {
-        let values =
-            Values::new(values, &self.layout.scalars).map_err(|(at, bad)| {
-                device(Failure::Value {
-                    channel: self.reads[at].channel.clone(),
-                    node: self.reads[at].node.clone(),
-                    bad,
-                })
-            })?;
+        let values = Values::new(values, &self.layout.types).map_err(|(at, bad)| {
+            device(Failure::Value {
+                channel: self.reads[at].channel.clone(),
+                node: self.reads[at].node.clone(),
+                bad,
+            })
+        })?;
         let Self {
             reads: _,
             layout,
@@ -456,26 +460,25 @@ enum Bad {
 }
 
 impl<'a> Values<'a> {
-    /// Gives `values`, or the position of the first bad one and why. `scalars` are the
-    /// sample types of the channels of the values, in order.
+    /// Gives `values`, or the position of the first bad one and why. `types` are the
+    /// sample types of the channels of the values, in order, each with its variant of
+    /// [`Value`].
     fn new(
         values: &'a [Result<Value, Status>],
-        scalars: &[Scalar],
+        types: &[(Scalar, Discriminant<Value>)],
     ) -> Result<Self, (usize, Bad)> {
         let bad =
-            (values.iter().zip(scalars).enumerate()).find_map(
-                |(at, pair)| match pair {
-                    (Ok(value), &sample) if value.scalar() == sample => None,
-                    (Ok(value), &sample) => Some((
-                        at,
-                        Bad::Type {
-                            value: value.scalar(),
-                            sample,
-                        },
-                    )),
-                    (Err(status), _) => Some((at, Bad::Status(*status))),
-                },
-            );
+            (values.iter().zip(types).enumerate()).find_map(|(at, pair)| match pair {
+                (Ok(value), &(_, variant)) if discriminant(value) == variant => None,
+                (Ok(value), &(sample, _)) => Some((
+                    at,
+                    Bad::Type {
+                        value: value.scalar(),
+                        sample,
+                    },
+                )),
+                (Err(status), _) => Some((at, Bad::Status(*status))),
+            });
         match bad {
             Some(bad) => Err(bad),
             None => Ok(Self(values)),
@@ -508,8 +511,8 @@ fn sample_type(read: &Read, data_type: Type) -> Diagnostic {
         SAMPLE_TYPE,
         None,
         format!(
-            "the channel `{}` has samples of type {data_type}, and the opcua kind reads \
-             only {}, and {last}",
+            "the channel `{}` has samples of type {data_type}, and the opcua kind \
+             reads only {}, and {last}",
             read.channel,
             others.join(", "),
         ),
@@ -547,12 +550,16 @@ impl fmt::Display for Failure {
             Self::Read(status) => write!(f, "the read failed with {}", status.name()),
             Self::Value { channel, node, bad } => match bad {
                 Bad::Status(status) => {
-                    write!(f, "the node {node} of `{channel}` gives {}", status.name())
+                    let status = status.name();
+                    write!(
+                        f,
+                        "the node `{node}` of the channel `{channel}` gives {status}"
+                    )
                 }
                 Bad::Type { value, sample } => write!(
                     f,
-                    "the node `{node}` of the channel `{channel}` gives a value of type \
-                     {}, and the channel has samples of type {}",
+                    "the node `{node}` of the channel `{channel}` gives a value of \
+                     type {}, and the channel has samples of type {}",
                     Type::Scalar(*value),
                     Type::Scalar(*sample),
                 ),
