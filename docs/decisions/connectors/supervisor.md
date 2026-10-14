@@ -307,6 +307,8 @@
   https://github.com/synnaxlabs/foundation/issues/2653#issuecomment-6159318680; the
   bound for each outage, `laptop.architect-2`, 2026-10-14T05:09:04Z:
   https://github.com/synnaxlabs/foundation/pull/2680#issuecomment-6161372464).
+  Supersedes the bound for each wait ("`SETTLE` after the wait started") of
+  https://github.com/synnaxlabs/foundation/issues/2653#issuecomment-6159318680.
   Supersedes the wait with no end of
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6089790301. A start
   whose wait a cancel ends writes nothing, and no run starts. After `Failure::Removed`
