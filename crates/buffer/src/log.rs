@@ -450,7 +450,11 @@ impl Logs {
         }
     }
 
-    /// The ranges in which no trim lands.
+    /// The ranges in which no trim lands. A trim never lands after the previous
+    /// record of a path up to and with a record whose first entry of the path has no
+    /// samples and comes after other entries with no samples at its seq: the walk
+    /// would count them from 0. [`Marked::land`] gives the newest offset at or before
+    /// an offset that is in no such range.
     #[cfg_attr(
         not(any(test, feature = "sim")),
         expect(dead_code, reason = "a commit calls it")
@@ -635,7 +639,7 @@ impl Logs {
     /// gives the durable position, stamp included. A new run whose first entry has
     /// no samples and comes after other entries with no samples at its seq marks the
     /// range from after the previous record of the path up to and with `offset`, in
-    /// which [`land`](Self::land) lands no trim. A nonzero tag makes `offset` the
+    /// which [`Marked::land`] lands no trim. A nonzero tag makes `offset` the
     /// newest record of its tag on the path.
     ///
     /// # Errors
@@ -731,13 +735,7 @@ impl Marked {
         self.0.push_back((first, record));
     }
 
-    /// The newest offset at or before `offset` at which a trim may land, so that a
-    /// walk from it rebuilds where each run starts. A trim never lands after the
-    /// previous record of a path up to and with a record whose first entry of the
-    /// path has no samples and comes after other entries with no samples at its seq:
-    /// the walk would count them from 0. Such a landing moves down to that previous
-    /// record, again until it is in no such range. It takes a binary search of the
-    /// ranges.
+    /// The start of the range that holds `offset`, else `offset`. One binary search.
     #[cfg_attr(
         not(any(test, feature = "sim")),
         expect(dead_code, reason = "a commit calls it")
