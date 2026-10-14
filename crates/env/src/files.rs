@@ -1,4 +1,4 @@
-//! Files under one data directory.
+//! Files under one data directory, and files on the host opened to read.
 
 use std::cell::Cell;
 use std::ffi::OsStr;
@@ -21,9 +21,10 @@ pub type Request<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + 'a>>;
 pub const SECTOR: usize = 512;
 
 /// The files under one data directory. Paths are relative to it: a call panics on an
-/// absolute path or a `..` segment. The handle cannot leave the thread that made it,
-/// so each shard has its own. Clones use the same directory and driver, and each rule
-/// on the calls of this `Files` holds for its clones too.
+/// absolute path or a `..` segment, other than [`Files::open_absolute`], which panics
+/// on a relative path or a `..` segment. The handle cannot leave the thread that made
+/// it, so each shard has its own. Clones use the same directory and driver, and each
+/// rule on the calls of this `Files` holds for its clones too.
 ///
 /// A call whose future drops can still run, and then it ends as it would have. Where a
 /// call first waits for the calls that a dropped future or handle left to run, the wait
@@ -127,7 +128,9 @@ impl Files {
     ///
     /// # Errors
     ///
-    /// As [`Files::open`].
+    /// As [`Files::open`], and [`Error::Io`] with code 22 (`EINVAL`) for a file that is
+    /// neither a regular file nor a directory, such as a FIFO or a device. The open
+    /// does not wait for a writer of a FIFO.
     ///
     /// # Panics
     ///
@@ -661,7 +664,8 @@ fn check(path: &Path) {
     }
 }
 
-/// Why a file call failed. Paths are relative to the data directory.
+/// Why a file call failed. Paths are relative to the data directory, other than those
+/// of [`Files::open_absolute`] and of the file it opens, which are absolute.
 ///
 /// ```
 /// use std::path::PathBuf;
@@ -812,16 +816,17 @@ impl fmt::Display for Operation {
 
 /// What `os` and `sim` implement to run [`Files`]. Only they implement it.
 ///
-/// Paths reach it checked and relative to the data directory. It opens, creates, and
-/// removes files with the rules of the [`Files`] calls; [`Files`] sorts and checks what
-/// it returns. A write open, a remove, and a rename to a path first wait for each call
-/// on the path that a dropped future or descriptor of the driver left to run, and for
-/// each remove of the path through a descriptor of the driver that has not ended. A
-/// list of a directory first waits for each call on a path directly in it that a
-/// dropped future or descriptor of the driver left to run. A `free` first waits for
-/// each call that a dropped future or descriptor of the driver left to run. Each wait
-/// for the calls that a dropped future or descriptor left to run is for a future or
-/// descriptor that dropped before the call that waits started.
+/// Paths reach it checked: relative to the data directory, or absolute for
+/// `open_absolute`. It opens, creates, and removes files with the rules of the
+/// [`Files`] calls; [`Files`] sorts and checks what it returns. A write open, a remove,
+/// and a rename to a path first wait for each call on the path that a dropped future or
+/// descriptor of the driver left to run, and for each remove of the path through a
+/// descriptor of the driver that has not ended. A list of a directory first waits for
+/// each call on a path directly in it that a dropped future or descriptor of the driver
+/// left to run. A `free` first waits for each call that a dropped future or descriptor
+/// of the driver left to run. Each wait for the calls that a dropped future or
+/// descriptor left to run is for a future or descriptor that dropped before the call
+/// that waits started.
 ///
 /// ```
 /// fn wrap(driver: impl env::files::Driver + 'static) -> env::files::Files {
@@ -846,7 +851,9 @@ pub trait Driver {
     ) -> Request<'a, Box<dyn Descriptor>>;
 
     /// Opens the file at `path`, an absolute path outside the data directory, to read
-    /// only. It makes no file.
+    /// only, with no wait for a writer of a FIFO. It makes no file, and gives
+    /// [`Error::Io`] with code 22 (`EINVAL`) for a file that is neither a regular file
+    /// nor a directory.
     fn open_absolute<'a>(&'a self, path: &'a Path) -> Request<'a, Box<dyn Descriptor>>;
 
     /// The bare names of the files and directories directly in `dir`, in any order.
@@ -1212,6 +1219,26 @@ mod tests {
             let file = ready(files.open_absolute(Path::new("/run/secrets/token")));
             assert_eq!(file.map(|file| file.len()), Ok(3));
             assert_eq!(*calls.borrow(), ["open /run/secrets/token Read"]);
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "write to /run/secrets/token, which was opened to read"
+        )]
+        fn open_absolute_gives_a_file_that_panics_on_a_write() {
+            let (files, _) = Fixed::files(3);
+            let file = ready(files.open_absolute(Path::new("/run/secrets/token")));
+            drop(ready(file.unwrap().write_at(0, &[])));
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "remove /run/secrets/token, which was opened to read"
+        )]
+        fn open_absolute_gives_a_file_that_panics_on_a_remove() {
+            let (files, _) = Fixed::files(3);
+            let file = ready(files.open_absolute(Path::new("/run/secrets/token")));
+            drop(ready(file.unwrap().remove()));
         }
 
         #[test]
