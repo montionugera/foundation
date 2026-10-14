@@ -22,7 +22,7 @@ use std::ptr::NonNull;
 use std::slice;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
-pub use memory::{Heap, Memory, Refused};
+pub use memory::{Erased, Heap, Memory, Refused};
 use sync::{AtomicUsize, Track};
 
 /// Byte alignment of every block.

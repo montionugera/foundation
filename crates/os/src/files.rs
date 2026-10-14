@@ -43,6 +43,8 @@ const READ_DIR: OFlags = OFlags::RDONLY
 pub struct Disk {
     /// The data directory.
     data: Arc<OwnedFd>,
+    /// The absolute path of `data`, which `shown` joins to.
+    path: PathBuf,
     queue: Queue,
 }
 
@@ -53,7 +55,7 @@ impl Disk {
         threads: &Threads,
         name: &str,
     ) -> Result<(Self, Handle), crate::Error> {
-        Self::start(data(dir), threads, name)
+        Self::start(dir, data(dir), threads, name)
     }
 
     /// Opens `dir/data`, which must be there, and starts I/O thread `name`.
@@ -63,20 +65,23 @@ impl Disk {
         name: &str,
     ) -> Result<(Self, Handle), crate::Error> {
         let data = fs::open(dir.join("data"), READ_DIR, fs::Mode::empty());
-        Self::start(data, threads, name)
+        Self::start(dir, data, threads, name)
     }
 
-    /// Starts I/O thread `name` on the data directory `data`.
+    /// Starts I/O thread `name` on the data directory `data` of `dir`.
     fn start(
+        dir: &Path,
         data: io::Result<OwnedFd>,
         threads: &Threads,
         name: &str,
     ) -> Result<(Self, Handle), crate::Error> {
         let data = data.map_err(|errno| crate::Error::Dir(errno.into()))?;
+        let path = std::path::absolute(dir.join("data")).map_err(crate::Error::Dir)?;
         let (queue, thread) =
             Queue::start(threads, name).map_err(crate::Error::Thread)?;
         let disk = Self {
             data: Arc::new(data),
+            path,
             queue,
         };
         Ok((disk, thread))
@@ -151,6 +156,10 @@ impl env::files::Driver for Disk {
         self.call(Path::new(""), Operation::Free, |data, _| {
             fs::fstatvfs(data).map(|stat| stat.f_bavail * stat.f_frsize)
         })
+    }
+
+    fn shown(&self, path: &Path) -> PathBuf {
+        self.path.join(path)
     }
 }
 

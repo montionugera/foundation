@@ -17,6 +17,7 @@ block = { path = "../block" }
 codec = { path = "../codec" }
 env = { path = "../env" }
 hub = { path = "../hub" }
+secret = { path = "../secret" }
 document = { path = "../document" }
 spec = { path = "../spec" }
 types = { path = "../types" }

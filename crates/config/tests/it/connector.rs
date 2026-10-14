@@ -95,7 +95,8 @@ fn checks_the_influx_fixture_into_one_connector_and_its_status() {
     let parsed = connector_influx::Kind::default().parse(config);
     let parsed = parsed.expect("a config");
     assert_eq!(parsed.address, "http://influx:8086");
-    assert_eq!(parsed.database, "edge");
+    let database = connector_influx::Target::Database("edge".into());
+    assert_eq!(parsed.target, database);
     assert_eq!(parsed.measurement, "telemetry");
     let select = Selector::new(["edge.*"]).expect("a selector");
     assert_eq!(parsed.reader.select, select);
@@ -173,8 +174,9 @@ fn refuses_a_connector_with_no_kind_or_no_node() {
         text,
         "document.missing-attribute",
         "\"influx\"",
-        "the connector has no `database`",
-        "Add a `database` attribute with the InfluxDB database, such as \"plant\"",
+        "the connector has no `database` or `bucket`",
+        "Add a `bucket` attribute and an `org` attribute, such as \"plant\", or a \
+         `database` attribute for InfluxDB 1",
     );
     let measurement = problem(
         text,
@@ -215,7 +217,8 @@ fn places_the_problems_of_the_kind_in_source_order() {
                 "document.unknown-attribute",
                 "port",
                 "`port` is not an attribute of the connector",
-                "Use `select`, `address`, `database`, or `measurement`, or remove it",
+                "Use `select`, `address`, `database`, `bucket`, `org`, or \
+                 `measurement`, or remove it",
             ),
         ]
     );
