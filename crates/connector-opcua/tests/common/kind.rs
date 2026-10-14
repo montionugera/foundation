@@ -3,15 +3,18 @@
 //! writes the frames of its reads with no server, with a measure of each write. For the
 //! `alloc` test and the `kind` bench.
 
+use std::cell::RefCell;
 use std::future::{Future as _, poll_fn};
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::pin::pin;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
 use connector::cancel::Token;
 use connector::kind::{self, Channels, Context, Error, Table};
+use connector::status::{self, Reading};
 use connector::supervisor::{self, Supervisor};
 use connector::testing;
 use connector_opcua::Config;
@@ -22,16 +25,20 @@ use document::value::{self, Value};
 use document::{Attribute, Block, Map};
 use env::net::tcp;
 use env::tasks::Group;
+use hub::reader::Mode;
 use spec::channel::{Channel, Data};
 use spec::data_type::DataType;
 use spec::definition::Definition;
 use types::channel;
-use types::name::Name;
+use types::name::{Name, Selector};
 use types::sample::{Scalar, Type};
 use types::time::{Monotonic, Span};
 
 /// The time between two ticks of the connector, at 10 Hz.
 const PERIOD: Span = Span::from_nanos(100_000_000);
+
+/// The counts of the `opcua` kind.
+const COUNTS: [&str; 3] = ["in", "missed", "lost"];
 
 /// What a measure gives for each poll of a run: the time of the poll and the value.
 type Polls = Arc<Mutex<Vec<(Monotonic, u64)>>>;
@@ -170,8 +177,9 @@ pub(crate) fn run(
 
 /// Writes `count` frames of a connector that reads `nodes` variables, with no server,
 /// and gives what `measure` gives for the check of the values and the write of each
-/// frame. Read `i` goes into a channel of the type `scalars[i % scalars.len()]`.
-/// `measure` calls the work that it gets once.
+/// frame, and each status of the connector that the home applied, in order. Read `i`
+/// goes into a channel of the type `scalars[i % scalars.len()]`. `measure` calls the
+/// work that it gets once.
 ///
 /// # Panics
 ///
@@ -181,7 +189,7 @@ pub(crate) fn writes(
     scalars: &'static [Scalar],
     count: usize,
     measure: impl Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static,
-) -> Vec<u64> {
+) -> (Vec<u64>, Vec<Reading>) {
     let measures = Arc::<Mutex<Vec<u64>>>::default();
     let kind = Measured {
         measure,
@@ -194,16 +202,43 @@ pub(crate) fn writes(
     let node = sim.node(sim::node::Config::default());
     let run = sim.run_on(&node, move |node, tasks| async move {
         let inputs = inputs(&node, &tasks, kind, nodes, scalars).await;
+        let mut status = status(&inputs.hub).await;
+        let readings = Rc::new(RefCell::new(Vec::new()));
+        let into = Rc::clone(&readings);
+        tasks.spawn(async move {
+            while let Ok(received) = status.next().await {
+                let reading = Reading::of(&received).expect("a whole status");
+                into.borrow_mut().push(reading);
+            }
+        });
         let supervisor = Supervisor::new(inputs);
         let config = config("opc.tcp://plc:4840", nodes);
         let token = Token::new();
         let open = supervisor.open("opcua", name("plant.plc"), &config, &token);
-        open.await.run().await
+        let result = open.await.run().await;
+        node.clock().sleep(Span::SECOND).await;
+        (result, readings.take())
     });
-    let result = run.expect("the run ends");
+    let (result, readings) = run.expect("the run ends");
     assert!(result.is_ok(), "the run ends ok: {result:?}");
     let measures = measures.lock().expect("no panic under the lock");
-    measures.clone()
+    (measures.clone(), readings)
+}
+
+/// A reader of the status channels of `plant.plc`.
+async fn status(hub: &hub::Hub) -> hub::reader::Reader {
+    let names = status::channels(&name("plant.plc"), &COUNTS.map(name));
+    let (time, channels) = names.expect("the status names are names");
+    let channels = channels.iter().map(|(name, _)| name.as_str());
+    let select = Selector::new(std::iter::once(time.as_str()).chain(channels));
+    let config = hub::reader::Config {
+        select: select.expect("the status names select"),
+        mode: Mode::Complete,
+        subject: name("rig"),
+        name: None,
+        hold: Span::ZERO,
+    };
+    hub.reader(config).await.expect("the status reader opens")
 }
 
 /// The inputs of a supervisor on `node` with `kind` as `opcua`, and the channels of
@@ -226,7 +261,7 @@ async fn inputs(
     };
     let kinds = Table::new().with("opcua", kind);
     let inputs = testing::create_config(env, node.net(), kinds).await;
-    let counts = ["in", "missed", "lost"].map(name);
+    let counts = COUNTS.map(name);
     let first = channel::Key::from_u128(1_000_000);
     let mut definitions = testing::create_status(&name("plant.plc"), &counts, first);
     definitions.push((name("plant.time"), index(1)));
