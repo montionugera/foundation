@@ -318,9 +318,9 @@ enum Synced {
     Same,
     /// It added a run.
     Run,
-    /// It added a run whose first entry has no samples and comes after others at
-    /// its seq. A walk from after the record at `after` up to and with this one
-    /// does not know their count.
+    /// It added a run whose first entry has no samples and comes after other
+    /// entries with no samples at its seq. A walk from after the record at `after`
+    /// up to and with this one does not know their count.
     Marked { after: u64 },
 }
 
@@ -460,9 +460,10 @@ impl Logs {
     /// The newest offset at or before `offset` at which a trim may land, so that a
     /// walk from it rebuilds where each run starts. A trim never lands after the
     /// previous record of a path up to and with a record whose first entry of the
-    /// path has no samples and comes after others at its seq: the walk would count
-    /// them from 0. Such a landing moves down to that previous record, again until
-    /// it is in no such range. It takes a binary search of the ranges.
+    /// path has no samples and comes after other entries with no samples at its seq:
+    /// the walk would count them from 0. Such a landing moves down to that previous
+    /// record, again until it is in no such range. It takes a binary search of the
+    /// ranges.
     #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
     pub(crate) fn land(&self, offset: u64) -> u64 {
         let at = self.marked.partition_point(|&(_, record)| record < offset);
@@ -646,10 +647,10 @@ impl Logs {
     /// [`Tail::advance`], and adds the record at `offset` to the path's runs when it
     /// is not the newest. The record becomes the path's holder when the entry alone
     /// gives the durable position, stamp included. A new run whose first entry has
-    /// no samples and comes after others at its seq marks the range from after the
-    /// previous record of the path up to and with `offset`, in which
-    /// [`land`](Self::land) lands no trim. A nonzero tag makes `offset` the newest
-    /// record of its tag on the path.
+    /// no samples and comes after other entries with no samples at its seq marks the
+    /// range from after the previous record of the path up to and with `offset`, in
+    /// which [`land`](Self::land) lands no trim. A nonzero tag makes `offset` the
+    /// newest record of its tag on the path.
     ///
     /// # Errors
     ///
