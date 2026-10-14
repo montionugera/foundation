@@ -1,6 +1,7 @@
 //! The inputs of a supervisor and the status channels of a connector, for the tests
 //! of `connector` and of the kinds.
 
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -61,8 +62,11 @@ pub fn create_secret_store(files: Files) -> Box<dyn secret::store::Store> {
 pub async fn create_secret(files: &Files, name: &Name, value: &[u8]) {
     let dir = Path::new(SECRETS);
     files.create_dir(dir).await.expect("makes the directory");
-    // No name starts with `.`, so the store never reads the staged file.
-    let staged = dir.join(format!(".{name}"));
+    // No name starts with `.`, so the store never reads the staged file. The hash
+    // keeps the staged name within 255 bytes for a name of `Name::MAX_BYTES`.
+    let mut hasher = DefaultHasher::new();
+    name.as_str().hash(&mut hasher);
+    let staged = dir.join(format!(".{:016x}", hasher.finish()));
     files
         .remove(&staged)
         .await
