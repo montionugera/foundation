@@ -28,6 +28,7 @@ workspace = true
 blob = { path = "../blob" }
 block = { path = "../block", features = ["sim"] }
 config-hcl = { path = "../config-hcl" }
+connector = { path = "../connector", features = ["sim"] }
 counting = { path = "../counting" }
 hub = { path = "../hub", features = ["sim"] }
 sim = { path = "../sim" }
