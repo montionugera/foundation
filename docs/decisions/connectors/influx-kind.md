@@ -31,10 +31,16 @@
   the query. An optional `token` is a source of a secret (SECRET SOURCES). Each
   request sends it as `Authorization: Token <value>`, which InfluxDB 2 and 3 take,
   and a request with no `token` has no `Authorization`. `run` reads the token at its
-  start, and again after a 401 or a 403 before the next attempt. A 401 or a 403 gives
-  "Check the token {source}. InfluxDB answered {status}: {body}", so that the cut
-  of a long error keeps the source, and a token that
-  holds a byte that an HTTP header cannot hold gives `Error::Retry`. Approved by
+  start, and again after a 401 or a 403 before the next attempt. This is option A of
+  key choice Q6
+  (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6154974514,
+  2026-10-13T20:52:58Z), which item 9 of the ruling of `laptop.architect-2` kept on
+  2026-10-13T21:05:46Z
+  (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6155189112).
+  With a `token`, a 401 or a 403 gives "Check the token {source}. InfluxDB answered
+  {status}: {body}", so that the cut of a long error keeps the source, and with no
+  `token`, "InfluxDB answered {status}: {body}". A token that holds a byte that an
+  HTTP header cannot hold gives `Error::Retry`. Approved by
   `laptop.architect-2` on 2026-10-14T04:16:45Z
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6160767913).
   Supersedes the key choice of no `Authorization` until this token
