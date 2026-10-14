@@ -1754,8 +1754,10 @@ mod tests {
         assert_eq!(logs.marked().land(8192), 8192, "no range is marked");
     }
 
-    /// S4 bounds the memory of the items by one entry per record. No call of `Logs`
-    /// shows the entries, so the test reads them.
+    /// S4 bounds the memory of the items by one entry per record. The `alloc` test
+    /// shows it only as a total: one `bench::Logs::commit` at 64 indexes counts 81
+    /// allocations, and 85 when each item adds an entry. A pin of that total fails
+    /// on each change of growth in another part, so the test reads the entries.
     #[test]
     fn the_items_of_a_record_share_its_entry() {
         let mut logs = Logs::new(AREA);
