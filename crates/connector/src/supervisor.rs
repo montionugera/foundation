@@ -469,6 +469,22 @@ mod tests {
         /// Lends its context to a task that shows the note `late` at the cancel of the
         /// run, then returns `Ok` at once.
         NoteLate,
+        /// Shows a note whose text shows the error `refused` as it formats, waits the
+        /// span, then returns `Ok`.
+        NoteNested(Span),
+        /// Shows a note whose text is the debug of its context, waits the span, then
+        /// returns `Ok`.
+        NoteDebug(Span),
+    }
+
+    /// A note that shows the error `refused` on its context as it formats.
+    struct Nested<'a>(&'a Context<bool>);
+
+    impl fmt::Display for Nested<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            self.0.error(&"refused");
+            f.write_str("polls")
+        }
     }
 
     /// When each run started and ended.
@@ -590,9 +606,7 @@ mod tests {
                 Ok(())
             }
             Some(Step::Late { failed, cleared }) => show_late(lent, failed, cleared),
-            Some(step @ (Step::Note(_) | Step::NoteWide(_) | Step::NoteLate)) => {
-                note(lent, step).await
-            }
+            Some(step) => note(lent, step).await,
             None => {
                 ctx.cancel().wait().await;
                 Ok(())
@@ -600,7 +614,8 @@ mod tests {
         }
     }
 
-    /// Runs [`Step::Note`], [`Step::NoteWide`], or [`Step::NoteLate`].
+    /// Runs a step of a note: [`Step::Note`], [`Step::NoteWide`], [`Step::NoteLate`],
+    /// [`Step::NoteNested`], or [`Step::NoteDebug`].
     async fn note(lent: &Rc<Context<bool>>, step: Step) -> Result<(), Error> {
         let clock = lent.clock();
         match step {
@@ -621,6 +636,14 @@ mod tests {
                     late.cancel().wait().await;
                     late.note(&"late");
                 });
+            }
+            Step::NoteNested(span) => {
+                lent.note(&Nested(lent));
+                clock.sleep(span).await;
+            }
+            Step::NoteDebug(span) => {
+                lent.note(&format_args!("{lent:?}"));
+                clock.sleep(span).await;
             }
             _ => unreachable!("a step of a note"),
         }
@@ -1018,6 +1041,29 @@ mod tests {
         let notes: Vec<_> = out.statuses.iter().map(|(.., note)| note.len()).collect();
         assert_eq!(notes, [0, 1_023, 0, 0]);
         assert_eq!(out.statuses[1].3, "a".repeat(1_023));
+    }
+
+    #[test]
+    fn shows_a_note_whose_text_shows_an_error_as_it_formats() {
+        let steps = vec![Step::NoteNested(ms(2_000))];
+        let out = supervise("script", steps, config(), Cancel::Never);
+        let got: Vec<_> = (out.statuses.iter())
+            .map(|(_, _, text, note)| (text.as_str(), note.as_str()))
+            .collect();
+        assert_eq!(got[1], ("refused", "polls"));
+        out.result.expect("ok");
+    }
+
+    #[test]
+    fn shows_a_note_whose_text_debugs_its_context() {
+        let steps = vec![Step::NoteDebug(ms(2_000))];
+        let out = supervise("script", steps, config(), Cancel::Never);
+        assert!(
+            out.statuses[1].3.starts_with("Context {"),
+            "{:?}",
+            out.statuses
+        );
+        out.result.expect("ok");
     }
 
     #[test]

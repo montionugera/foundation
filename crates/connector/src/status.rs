@@ -207,21 +207,28 @@ impl Status {
     /// Shows `note`, cut to [`TEXT_MAX`] bytes, from the next write until the end of
     /// the run, unless the run shows it already or no run runs.
     pub(crate) fn note(&self, note: &dyn fmt::Display) {
-        let mut run = self.0.run.borrow_mut();
-        let Some(run) = run.as_mut() else { return };
         let note = cut(&note.to_string());
-        if run.note != note {
+        self.change(|run| {
+            let changed = run.note != note;
             run.note = note;
-            self.0.stage();
-        }
+            changed
+        });
     }
 
     /// Stages `new`, unless it is the value that the run shows, or no run runs.
     fn set(&self, new: Shown) {
-        let mut run = self.0.run.borrow_mut();
-        let Some(run) = run.as_mut() else { return };
-        if run.shown != new {
+        self.change(|run| {
+            let changed = run.shown != new;
             run.shown = new;
+            changed
+        });
+    }
+
+    /// Applies `change` to the run, and stages the status when it gives `true`. With
+    /// no run, it does nothing. No borrow is held while it stages, which wakes.
+    fn change(&self, change: impl FnOnce(&mut Run) -> bool) {
+        let changed = self.0.run.borrow_mut().as_mut().is_some_and(change);
+        if changed {
             self.0.stage();
         }
     }
