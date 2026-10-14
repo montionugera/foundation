@@ -53,7 +53,7 @@ pub(crate) struct Disk {
     /// ended.
     log: Vec<Change>,
     /// The path of each open descriptor as its open or rename gave it, by the key of
-    /// its handle.
+    /// its open. A descriptor of a host file has its absolute path.
     descriptors: BTreeMap<u64, PathBuf>,
     /// The normal path of each descriptor closed, in order.
     closes: Vec<PathBuf>,
@@ -353,9 +353,9 @@ impl Disk {
         }
     }
 
-    /// Makes `handle`, which an open of `path` gave, a descriptor.
-    pub(crate) fn opened(&mut self, handle: Handle, path: &Path) {
-        self.descriptors.insert(handle.key, path.to_path_buf());
+    /// Makes the file that open `key` of `path` gave a descriptor.
+    pub(crate) fn opened(&mut self, key: u64, path: &Path) {
+        self.descriptors.insert(key, path.to_path_buf());
     }
 
     /// The path of descriptor `handle` now, as its open or rename gave it.
@@ -372,9 +372,15 @@ impl Disk {
     /// Closes descriptor `handle`: drops its hold and logs its path.
     pub(crate) fn close(&mut self, handle: Handle) {
         self.release(handle);
-        let path = normal(self.path(handle));
-        self.descriptors.remove(&handle.key);
-        self.closes.push(path);
+        self.closed(handle.key);
+    }
+
+    /// Logs the path of descriptor `key`, which no longer is open.
+    pub(crate) fn closed(&mut self, key: u64) {
+        let Some(path) = self.descriptors.remove(&key) else {
+            unreachable!("invariant: descriptor {key} has a path")
+        };
+        self.closes.push(normal(&path));
     }
 
     /// The path of each descriptor closed, in order.
@@ -844,9 +850,14 @@ fn slashed(path: &Path) -> bool {
     bytes.ends_with(b"/") || bytes.ends_with(b"/.")
 }
 
-/// The path of the same file as `path`, with only its names.
+/// The path of the same file as `path`, with only its root, if any, and its names. A
+/// file of the host has a root, and a file of the data directory has none.
 pub(crate) fn normal(path: &Path) -> PathBuf {
-    segments(path).into_iter().collect()
+    (path.components())
+        .filter(|component| {
+            matches!(component, Component::RootDir | Component::Normal(_))
+        })
+        .collect()
 }
 
 fn index(at: u64) -> usize {

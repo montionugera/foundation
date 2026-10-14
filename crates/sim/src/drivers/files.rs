@@ -73,6 +73,7 @@ impl env::files::Driver for Node {
         path: &'a Path,
     ) -> Request<'a, Box<dyn env::files::Descriptor>> {
         let wait = self.submit(path.to_path_buf(), Call::Host(Operation::Open), None);
+        let key = wait.key;
         Box::pin(async move {
             wait.await.result?;
             let found = lock(&self.shared).paths().read(self.node, path, usize::MAX);
@@ -83,8 +84,10 @@ impl env::files::Driver for Node {
             };
             match found {
                 Ok(Found::File(bytes)) => {
+                    lock(&self.shared).files().opened_host(self.node, key, path);
                     let descriptor: Box<dyn env::files::Descriptor> = Box::new(Host {
                         node: self.clone(),
+                        key,
                         path: path.to_path_buf(),
                         bytes,
                     });
@@ -269,6 +272,8 @@ impl Drop for Descriptor {
 /// never writes, renames, or removes it.
 struct Host {
     node: Node,
+    /// The key of its open, which keys its descriptor.
+    key: u64,
     path: PathBuf,
     bytes: Vec<u8>,
 }
@@ -316,6 +321,15 @@ impl env::files::Descriptor for Host {
         _: PathBuf,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>>>> {
         unreachable!("invariant: a host file is open to read")
+    }
+}
+
+impl Drop for Host {
+    fn drop(&mut self) {
+        // As for `Descriptor`, no drop follows the crash that closed it.
+        lock(&self.node.shared)
+            .files()
+            .close_host(self.node.node, self.key);
     }
 }
 

@@ -215,6 +215,99 @@ fn open_absolute_reports_each_failure() {
 }
 
 #[test]
+fn open_absolute_reads_the_tree_when_the_open_ends() {
+    let bytes = run(0, MIB, |node, _| async move {
+        let (paths, files) = (node.paths(), node.files());
+        paths.write(Path::new("/a"), b"abc").unwrap();
+        let path = absolute(Path::new("/a"));
+        let mut opened = pin!(files.open_absolute(&path));
+        pend(opened.as_mut()).await;
+        paths.write(Path::new("/a"), b"xyz").unwrap();
+        let file = opened.await.unwrap();
+        read(&file, &pool(), 0, 3).await
+    });
+    assert_eq!(bytes, b"xyz");
+}
+
+#[test]
+fn a_fault_on_a_host_file_never_fires_on_a_data_file_of_the_same_names() {
+    let found = run(0, MIB, |node, _| async move {
+        let files = node.files();
+        node.paths().write(Path::new("/a"), b"abc").unwrap();
+        drop(create(&node, "a", 3).await);
+        let mut found = Vec::new();
+        for aimed in ["a", "/a"] {
+            node.fail_file(Path::new(aimed), Operation::Open);
+            let path = absolute(Path::new("/a"));
+            let host = files.open_absolute(&path).await.map(drop);
+            let data = files.open(Path::new("a"), Mode::Read).await.map(drop);
+            found.push((host, data));
+        }
+        found
+    });
+    assert_eq!(
+        found,
+        [
+            (Ok(()), Err(io("a", Operation::Open, 5))),
+            (Err(io("/a", Operation::Open, 5)), Ok(())),
+        ]
+    );
+}
+
+/// The span of a `free` that starts beside a host open, whose future drops in flight
+/// or is awaited after the `free`.
+fn free_beside_host_open(seed: u64, dropped: bool) -> Span {
+    run(seed, MIB, move |node, _| async move {
+        let (files, clock) = (node.files(), node.clock());
+        node.paths().write(Path::new("/a"), b"abc").unwrap();
+        let path = absolute(Path::new("/a"));
+        let mut opened = Box::pin(files.open_absolute(&path));
+        pend(opened.as_mut()).await;
+        let start = clock.now();
+        if dropped {
+            drop(opened);
+            files.free().await.unwrap();
+            return clock.now() - start;
+        }
+        files.free().await.unwrap();
+        let span = clock.now() - start;
+        drop(opened.await.unwrap());
+        span
+    })
+}
+
+#[test]
+fn no_call_waits_for_a_dropped_host_call() {
+    for seed in 0..32 {
+        let dropped = free_beside_host_open(seed, true);
+        assert_eq!(dropped, free_beside_host_open(seed, false), "seed {seed}");
+    }
+}
+
+#[test]
+fn the_node_gives_the_absolute_path_of_each_host_file_that_it_closed() {
+    let mut sim = sim(0);
+    let node = sim.node(node::Config {
+        disk_bytes: MIB,
+        ..node::Config::default()
+    });
+    sim.run_on(&node, |node, _| async move {
+        let files = node.files();
+        node.paths().write(Path::new("/run/a"), b"abc").unwrap();
+        let path = absolute(Path::new("/run/a"));
+        let host = files.open_absolute(&path).await.unwrap();
+        drop(create(&node, "a", 0).await);
+        host.close().await;
+        drop(files.open_absolute(&path).await);
+    })
+    .unwrap();
+    assert_eq!(
+        node.file_closes(),
+        ["a", "/run/a", "/run/a"].map(PathBuf::from)
+    );
+}
+
+#[test]
 fn shown_joins_to_a_fixed_root_and_takes_no_time() {
     let (shown, span) = run(0, MIB, |node, _| async move {
         let start = node.clock().now();
