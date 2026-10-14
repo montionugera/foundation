@@ -280,15 +280,15 @@ impl Log {
     }
 
     /// Drops the oldest run when it is of the record at `offset`. Then, when the room
-    /// is over four times the runs, or over one with no run, shrinks it to twice the
-    /// runs, or to one. So a path that a trim empties keeps room for its next run.
+    /// is over four times the runs, or over four with no run, shrinks it to twice the
+    /// runs, or to two. So a path that a trim empties keeps room for its next run.
     fn trim(&mut self, offset: u64) {
         if self.runs.front().is_some_and(|run| run.offset == offset) {
             self.runs.pop_front();
         }
-        let runs = self.runs.len();
-        if self.runs.capacity() > runs.saturating_mul(4).max(1) {
-            self.runs.shrink_to(runs.saturating_mul(2).max(1));
+        let keep = self.runs.len().max(1);
+        if self.runs.capacity() > keep.saturating_mul(4) {
+            self.runs.shrink_to(keep.saturating_mul(2));
         }
     }
 
@@ -2336,15 +2336,15 @@ mod tests {
     }
 
     #[test]
-    fn a_trim_keeps_room_for_one_run_of_a_path_it_empties() {
+    fn a_trim_keeps_room_for_two_runs_of_a_path_it_empties() {
         let mut logs = one_path_with_runs(8);
         carry_idle(&mut logs, 4096 * 9, 1);
         logs.hide(4096 * 9);
-        assert_eq!(room(&logs), (1, 0));
+        assert_eq!(room(&logs), (2, 0));
         let entry = header(1, Path::Live, 8, 1, Some(1));
         logs.append(slot(1), &entry).expect("appends");
         logs.sync(slot(1), &entry, 4096 * 10).expect("syncs");
-        assert_eq!(room(&logs), (1, 1));
+        assert_eq!(room(&logs), (2, 1));
         assert_eq!(
             logs.runs(slot(1), Path::Live).collect::<Vec<_>>(),
             [run(8, 0, 4096 * 10)]
@@ -2355,7 +2355,7 @@ mod tests {
         /// Records of a block each hold an entry of some of 8 paths, or the carried
         /// tails of the idle paths, and a trim may follow each, up to the oldest
         /// holder. After each trim, each path has room for at most four times its
-        /// runs, or one with no run.
+        /// runs, or four with no run.
         #[test]
         fn a_trim_keeps_the_room_of_each_path_in_four_times_its_runs(
             records in prop::collection::vec(
@@ -2387,7 +2387,7 @@ mod tests {
                 for log in &logs.paths {
                     let (room, runs) = (log.runs.capacity(), log.runs.len());
                     prop_assert!(
-                        room <= (4 * runs).max(1),
+                        room <= 4 * runs.max(1),
                         "room {} for {} runs",
                         room,
                         runs
