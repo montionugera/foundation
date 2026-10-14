@@ -1601,8 +1601,9 @@ mod tests {
                 let trimmed = || {
                     let mut state = buffer.shared.state.borrow_mut();
                     let kept = state.kept();
-                    let tail =
-                        state.writer.trimmed(kept, |offset| state.logs.land(offset));
+                    let tail = state
+                        .writer
+                        .trimmed(kept, |offset| state.logs.marked().land(offset));
                     (kept, tail.map(crate::wal::Position::offset))
                 };
                 let mut tails = vec![trimmed()];

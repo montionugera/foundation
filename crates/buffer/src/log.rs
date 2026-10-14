@@ -350,10 +350,9 @@ pub(crate) struct Logs {
     stale: u64,
     /// An [`idle`](Self::idle) has passed each item before this number.
     scanned: u64,
-    /// The ranges in which no trim lands, in ring order: after the first record up
-    /// to and with the second. Each holds the range of each marked run, from the
-    /// previous record of its path to the run's record. A gap parts any two ranges.
-    marked: VecDeque<(u64, u64)>,
+    /// The ranges in which no trim lands. Each holds the range of each marked run,
+    /// from the previous record of its path to the run's record.
+    marked: Marked,
 }
 
 impl Logs {
@@ -440,13 +439,7 @@ impl Logs {
             self.hidden
         );
         self.hidden = tail;
-        while self
-            .marked
-            .front()
-            .is_some_and(|&(_, record)| record < tail)
-        {
-            self.marked.pop_front();
-        }
+        self.marked.hide(tail);
         while let Some((offset, places)) = self.items.pop(tail) {
             for at in places {
                 let runs = &mut nth_mut(&mut self.paths, at).runs;
@@ -457,19 +450,17 @@ impl Logs {
         }
     }
 
-    /// The newest offset at or before `offset` at which a trim may land, so that a
-    /// walk from it rebuilds where each run starts. A trim never lands after the
-    /// previous record of a path up to and with a record whose first entry of the
-    /// path has no samples and comes after other entries with no samples at its seq:
-    /// the walk would count them from 0. Such a landing moves down to that previous
-    /// record, again until it is in no such range. It takes a binary search of the
-    /// ranges.
-    #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
-    pub(crate) fn land(&self, offset: u64) -> u64 {
-        let at = self.marked.partition_point(|&(_, record)| record < offset);
-        self.marked
-            .get(at)
-            .map_or(offset, |&(after, _)| after.min(offset))
+    /// The ranges in which no trim lands. A trim never lands after the previous
+    /// record of a path up to and with a record whose first entry of the path has no
+    /// samples and comes after other entries with no samples at its seq: the walk
+    /// would count them from 0. [`Marked::land`] gives the newest offset at or before
+    /// an offset that is in no such range.
+    #[cfg_attr(
+        not(any(test, feature = "sim")),
+        expect(dead_code, reason = "a commit calls it")
+    )]
+    pub(crate) fn marked(&self) -> &Marked {
+        &self.marked
     }
 
     /// The oldest holder of a path, which no trim may pass. `None` when no path has
@@ -481,9 +472,9 @@ impl Logs {
     pub(crate) fn kept(&mut self) -> Option<u64> {
         let holding = self
             .items
-            .from(self.stale)
+            .since(self.stale)
             .find(|&(_, offset, at)| nth(&self.paths, at).holder == Some(offset));
-        self.stale = holding.map_or_else(|| self.items.next(), |(number, ..)| number);
+        self.stale = holding.map_or_else(|| self.items.added(), |(number, ..)| number);
         holding.map(|(_, offset, _)| offset)
     }
 
@@ -502,7 +493,7 @@ impl Logs {
         tails: &mut Vec<carry::Tail>,
     ) {
         let mut room = limit;
-        for (number, offset, at) in self.items.from(self.scanned) {
+        for (number, offset, at) in self.items.since(self.scanned) {
             if offset >= reach {
                 self.scanned = number;
                 return;
@@ -524,7 +515,7 @@ impl Logs {
                 stamp: log.durable.tail.stamp,
             });
         }
-        self.scanned = self.items.next();
+        self.scanned = self.items.added();
     }
 
     /// The log of `path` of the index at `slot`.
@@ -648,7 +639,7 @@ impl Logs {
     /// gives the durable position, stamp included. A new run whose first entry has
     /// no samples and comes after other entries with no samples at its seq marks the
     /// range from after the previous record of the path up to and with `offset`, in
-    /// which [`land`](Self::land) lands no trim. A nonzero tag makes `offset` the
+    /// which [`Marked::land`] lands no trim. A nonzero tag makes `offset` the
     /// newest record of its tag on the path.
     ///
     /// # Errors
@@ -670,15 +661,7 @@ impl Logs {
             self.items.push(offset, at);
         }
         if let Synced::Marked { after } = synced {
-            let mut first = after;
-            while let Some(&(before, last)) = self.marked.back() {
-                if last < first {
-                    break;
-                }
-                first = first.min(before);
-                self.marked.pop_back();
-            }
-            self.marked.push_back((first, offset));
+            self.marked.mark(after, offset);
         }
         if let Some(tag) = NonZeroU8::new(header.tag) {
             self.tags.insert((slot, header.path, tag), offset);
@@ -730,6 +713,48 @@ fn nth_mut(logs: &mut [Log], at: u32) -> &mut Log {
     logs.get_mut(at).expect("invariant: a place has its log")
 }
 
+/// The ranges of records in which no trim lands: each from after the record `after`
+/// up to and with a later record. They are sorted, with a gap between any two.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+pub(crate) struct Marked(VecDeque<(u64, u64)>);
+
+impl Marked {
+    /// Adds the range from after `after` up to and with `record`, which is at or
+    /// after the newest record of each range. Merges each range that it touches or
+    /// covers.
+    fn mark(&mut self, after: u64, record: u64) {
+        let mut first = after;
+        while let Some(&(before, last)) = self.0.back() {
+            if last < first {
+                break;
+            }
+            first = first.min(before);
+            self.0.pop_back();
+        }
+        self.0.push_back((first, record));
+    }
+
+    /// The start of the range that holds `offset`, else `offset`. One binary search.
+    #[cfg_attr(
+        not(any(test, feature = "sim")),
+        expect(dead_code, reason = "a commit calls it")
+    )]
+    pub(crate) fn land(&self, offset: u64) -> u64 {
+        let at = self.0.partition_point(|&(_, record)| record < offset);
+        self.0
+            .get(at)
+            .map_or(offset, |&(after, _)| after.min(offset))
+    }
+
+    /// Drops each range whose newest record is before `tail`.
+    fn hide(&mut self, tail: u64) {
+        while self.0.front().is_some_and(|&(_, record)| record < tail) {
+            self.0.pop_front();
+        }
+    }
+}
+
 /// The place in a `Vec` of logs of each item, grouped by record in ring order. Items
 /// are numbered from 0 in the order that they came, and no number is used twice.
 #[derive(Clone, Debug, Default)]
@@ -747,7 +772,7 @@ impl Items {
     /// Adds an item for the log at `at` in the record at `offset`, which is at or
     /// after the record of each item.
     fn push(&mut self, offset: u64, at: u32) {
-        let next = self.next().checked_add(1).expect("invariant: numbers fit");
+        let next = self.added().checked_add(1).expect("invariant: numbers fit");
         match self.records.back_mut() {
             Some((last, end)) if *last == offset => *end = next,
             _ => self.records.push_back((offset, next)),
@@ -755,8 +780,8 @@ impl Items {
         self.places.push_back(at);
     }
 
-    /// The number of the next item.
-    fn next(&self) -> u64 {
+    /// The number of the next item that `push` adds.
+    fn added(&self) -> u64 {
         self.records.back().map_or(self.base, |&(_, end)| end)
     }
 
@@ -773,7 +798,7 @@ impl Items {
 
     /// Each item from the number `from`, or from the front item when it is past, with
     /// its number and the offset of its record, oldest first.
-    fn from(&self, from: u64) -> impl Iterator<Item = (u64, u64, u32)> + '_ {
+    fn since(&self, from: u64) -> impl Iterator<Item = (u64, u64, u32)> + '_ {
         let mut start = from.max(self.base);
         let first = self.records.partition_point(|&(_, end)| end <= start);
         let skip = self.index(start);
@@ -1570,7 +1595,8 @@ mod tests {
         );
     }
 
-    /// S4 bounds the memory of the items by one entry per record.
+    /// S4 bounds the memory of the items by one entry per record. No call of `Logs`
+    /// shows the entries, so the test reads them.
     #[test]
     fn the_items_of_a_record_share_its_entry() {
         let mut logs = Logs::default();
@@ -1584,6 +1610,17 @@ mod tests {
             .expect("a new path takes any tail");
         assert_eq!(logs.items.records, [(4096, 3), (8192, 5)]);
         assert_eq!(logs.items.places.len(), 5);
+    }
+
+    #[test]
+    fn a_pop_gives_each_item_of_its_record() {
+        let mut items = Items::default();
+        items.push(4096, 1);
+        items.push(4096, 2);
+        items.push(8192, 3);
+        let (offset, places) = items.pop(8192).expect("a record before the tail");
+        assert_eq!((offset, places.collect::<Vec<_>>()), (4096, vec![1, 2]));
+        assert!(items.pop(8192).is_none(), "only the record at 8192 is left");
     }
 
     #[test]
@@ -2003,9 +2040,9 @@ mod tests {
         ];
         let mut logs = walk_from(&records, 0);
         assert_eq!(logs.kept(), Some(12288));
-        assert_eq!(logs.land(12288), 12288);
-        assert_eq!(logs.land(8192), 4096);
-        let walked = walk_from(&records, logs.land(8192));
+        assert_eq!(logs.marked.land(12288), 12288);
+        assert_eq!(logs.marked.land(8192), 4096);
+        let walked = walk_from(&records, logs.marked.land(8192));
         assert_eq!(
             walked.find(slot(1), Path::Live, mark(0, 1)),
             Found::Run(channel::Key::from_u128(1), run(0, 1, 8192))
@@ -2022,13 +2059,13 @@ mod tests {
         logs.sync(slot(1), &empty(1, 0), 8192).expect("syncs");
         logs.sync(slot(2), &empty(2, 5), 12288).expect("syncs");
         logs.sync(slot(1), &empty(1, 0), 16384).expect("syncs");
-        assert_eq!(logs.land(16384), 4096);
-        assert_eq!(logs.land(20480), 20480);
+        assert_eq!(logs.marked.land(16384), 4096);
+        assert_eq!(logs.marked.land(20480), 20480);
         logs.carry(slot(1), &carried(0, 2, None), 20480)
             .expect("the walk met the end");
         logs.sync(slot(1), &empty(1, 0), 24576).expect("syncs");
-        assert_eq!(logs.land(24576), 20480);
-        assert_eq!(logs.marked, [(4096, 16384), (20480, 24576)]);
+        assert_eq!(logs.marked.land(24576), 20480);
+        assert_eq!(logs.marked.land(8192), 4096);
     }
 
     /// A range that covers older ranges with a gap between them merges with each,
@@ -2043,21 +2080,20 @@ mod tests {
         logs.carry(slot(1), &carried(0, 2, None), 12288)
             .expect("the walk met the end");
         logs.sync(slot(1), &empty(1, 0), 16384).expect("syncs");
-        assert_eq!(logs.marked, [(4096, 8192), (12288, 16384)]);
-        assert_eq!(logs.land(12288), 12288);
-        assert_eq!(logs.land(16384), 12288);
+        assert_eq!(logs.marked.land(8192), 4096);
+        assert_eq!(logs.marked.land(12288), 12288);
+        assert_eq!(logs.marked.land(16384), 12288);
         logs.sync(slot(2), &empty(2, 5), 20480).expect("syncs");
-        assert_eq!(logs.marked, [(0, 20480)]);
         for offset in [4096, 8192, 12288, 16384, 20480] {
-            assert_eq!(logs.land(offset), 0, "a landing at {offset}");
+            assert_eq!(logs.marked.land(offset), 0, "a landing at {offset}");
         }
-        assert_eq!(logs.land(0), 0);
-        assert_eq!(logs.land(24576), 24576);
+        assert_eq!(logs.marked.land(0), 0);
+        assert_eq!(logs.marked.land(24576), 24576);
     }
 
-    /// No caller sees a range whose newest record a trim passed: `land` gives a
-    /// landing below the trim, which frees nothing, so only memory holds it. The
-    /// read of `marked` checks that it leaves.
+    /// A trim at the landing of a range keeps it, and a trim past its newest record
+    /// drops it. Here only memory holds a passed range, so the test reads `marked`;
+    /// `marked_trims_take_no_allocation` of the `alloc` test sees it from outside.
     #[test]
     fn a_range_leaves_when_a_trim_passes_its_newest_record() {
         let records = [
@@ -2066,12 +2102,66 @@ mod tests {
             (12288, header(1, Path::Live, 0, 0, None)),
         ];
         let mut logs = walk_from(&records, 0);
-        assert_eq!(logs.marked, [(4096, 12288)]);
-        logs.hide(12288);
-        assert_eq!(logs.marked, [(4096, 12288)]);
-        assert_eq!(logs.land(12288), 4096);
+        logs.hide(4096);
+        assert_eq!(logs.marked.land(12288), 4096);
+        assert_eq!(logs.marked.0, [(4096, 12288)]);
+        logs.carry(slot(1), &carried(0, 3, None), 16384)
+            .expect("the walk met the end");
+        assert_eq!(logs.kept(), Some(16384));
+        assert_eq!(logs.marked.land(16384), 16384);
         logs.hide(16384);
-        assert_eq!(logs.marked, []);
+        assert_eq!(logs.marked.0, []);
+    }
+
+    #[test]
+    fn a_mark_that_covers_an_older_range_takes_its_start() {
+        let mut marked = Marked::default();
+        marked.mark(8192, 12288);
+        marked.mark(4096, 16384);
+        for offset in [8192, 12288, 16384] {
+            assert_eq!(marked.land(offset), 4096, "a landing at {offset}");
+        }
+        assert_eq!(marked.land(20480), 20480);
+    }
+
+    #[test]
+    fn a_mark_from_the_end_of_a_range_merges_with_it() {
+        let mut marked = Marked::default();
+        marked.mark(4096, 8192);
+        marked.mark(8192, 12288);
+        assert_eq!(marked.land(12288), 4096);
+    }
+
+    #[test]
+    fn a_mark_after_a_gap_keeps_two_ranges() {
+        let mut marked = Marked::default();
+        marked.mark(4096, 8192);
+        marked.mark(12288, 16384);
+        assert_eq!(marked.land(8192), 4096);
+        assert_eq!(marked.land(12288), 12288);
+        assert_eq!(marked.land(16384), 12288);
+    }
+
+    #[test]
+    fn a_hide_drops_a_range_that_ends_before_the_tail() {
+        let mut marked = Marked::default();
+        marked.mark(4096, 8192);
+        marked.hide(8192);
+        assert_eq!(marked.land(8192), 4096);
+        marked.hide(12288);
+        assert_eq!(marked.land(8192), 8192);
+    }
+
+    #[test]
+    fn a_hide_keeps_each_range_that_ends_at_or_after_the_tail() {
+        let mut marked = Marked::default();
+        marked.mark(4096, 8192);
+        marked.mark(12288, 16384);
+        marked.hide(4096);
+        assert_eq!(marked.land(8192), 4096);
+        marked.hide(12288);
+        assert_eq!(marked.land(8192), 8192);
+        assert_eq!(marked.land(16384), 12288);
     }
 
     /// S4: "memory holds 28 bytes per record and path and 24 bytes per record, in
@@ -2098,7 +2188,7 @@ mod tests {
             .sum();
         let items = logs.items.places.capacity() * size_of::<u32>()
             + logs.items.records.capacity() * size_of::<(u64, u64)>();
-        let marked = logs.marked.capacity() * size_of::<(u64, u64)>();
+        let marked = logs.marked.0.capacity() * size_of::<(u64, u64)>();
         let held = u64::try_from(runs + items + marked).expect("fits");
         let area = 4096 * records;
         let bound = area * 56 / 51 + 48 * records;
@@ -2191,7 +2281,7 @@ mod tests {
                 }
                 if let Some(trim) = trim {
                     let bound = logs.kept().unwrap_or(synced_at + 4096);
-                    hidden = hidden.max(logs.land((8192 * trim).min(bound)));
+                    hidden = hidden.max(logs.marked.land((8192 * trim).min(bound)));
                     logs.hide(hidden);
                 }
             }
