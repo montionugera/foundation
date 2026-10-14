@@ -97,8 +97,8 @@ impl Rig {
             .set_definitions(definitions.map(|(name, definition)| (name, definition)));
     }
 
-    /// Opens a writer of `channels` as `subject`, with absolute authority and no
-    /// lease.
+    /// Opens a writer of `channels` as `subject`, with absolute authority and no limit
+    /// on its lease.
     ///
     /// # Panics
     ///
