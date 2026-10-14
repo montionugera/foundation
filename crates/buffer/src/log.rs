@@ -1593,9 +1593,7 @@ mod tests {
         );
     }
 
-    /// S4 bounds the memory of the items by one entry per record. No caller sees a
-    /// record that takes two entries: each read of the items gives the same items,
-    /// and only the bytes held change.
+    /// S4 bounds the memory of the items by one entry per record.
     #[test]
     fn the_items_of_a_record_share_its_entry() {
         let mut logs = Logs::default();
@@ -1609,6 +1607,17 @@ mod tests {
             .expect("a new path takes any tail");
         assert_eq!(logs.items.records, [(4096, 3), (8192, 5)]);
         assert_eq!(logs.items.places.len(), 5);
+    }
+
+    #[test]
+    fn a_pop_gives_each_item_of_its_record() {
+        let mut items = Items::default();
+        items.push(4096, 1);
+        items.push(4096, 2);
+        items.push(8192, 3);
+        let (offset, places) = items.pop(8192).expect("a record before the tail");
+        assert_eq!((offset, places.collect::<Vec<_>>()), (4096, vec![1, 2]));
+        assert!(items.pop(8192).is_none(), "only the record at 8192 is left");
     }
 
     #[test]
@@ -2124,6 +2133,16 @@ mod tests {
         assert_eq!(marked.land(8192), 4096);
         assert_eq!(marked.land(12288), 12288);
         assert_eq!(marked.land(16384), 12288);
+    }
+
+    #[test]
+    fn a_hide_drops_a_range_that_ends_before_the_tail() {
+        let mut marked = Marked::default();
+        marked.mark(4096, 8192);
+        marked.hide(8192);
+        assert_eq!(marked.land(8192), 4096);
+        marked.hide(12288);
+        assert_eq!(marked.land(8192), 8192);
     }
 
     #[test]

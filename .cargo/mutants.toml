@@ -172,13 +172,6 @@ exclude_re = [
   # `a_read_holds_the_record_it_waits_on_until_it_ends_or_drops` kill the mutants.
   'crates/buffer/src/buffer\.rs:.*replace State::kept -> Option<u64> with',
   'crates/buffer/src/buffer\.rs:.*replace <impl Drop for Hold<.*>>::drop with \(\)$',
-  # A trim lands only where `land` gives, and `land` never gives the newest record
-  # of a range, so `<=` there is the same as `<`.
-  'crates/buffer/src/log\.rs:.*replace < with <= in Marked::hide$',
-  # With the guard false, a record with two items takes two entries of `records`.
-  # Each call of `Items` gives the same items; only the bytes held change, and no
-  # test counts bytes. `the_items_of_a_record_share_its_entry` says why.
-  'crates/buffer/src/log\.rs:.*match guard \*last == offset with false in Items::push$',
   # A connector on another node runs here only in a mesh of two nodes, which no test of
   # `Node` starts yet (#2272, whose test removes this entry). The test of `Runs`
   # `a_connector_on_another_node_starts_no_run` kills it.
