@@ -623,7 +623,7 @@ fn keeps_the_source_of_the_token_after_a_long_401_body() {
     let head = format!(
         "Check the token file(\"{TOKEN_FILE}\"). InfluxDB answered 401 Unauthorized: "
     );
-    let shown = head.clone() + &"x".repeat(1024 - head.len());
+    let shown = format!("{head}{}…{}", "x".repeat(510 - head.len()), "x".repeat(510));
     assert_eq!(got, [String::new(), shown, String::new()]);
 }
 
@@ -640,10 +640,12 @@ fn keeps_the_answer_of_influx_after_a_401_with_a_long_source() {
         let (auth, errors, _) = send_one(&plant, config).await;
         (auth, errors)
     });
-    let mut source = format!("file({path:?})");
-    source.truncate(512);
-    let want =
-        format!("Check the token {source}. InfluxDB answered 401 Unauthorized: no");
+    let full = format!(
+        "Check the token file({path:?}). InfluxDB answered 401 Unauthorized: no"
+    );
+    let head: String = full.chars().take(510).collect();
+    let tail: String = full.chars().skip(full.len() - 510).collect();
+    let want = format!("{head}…{tail}");
     assert_eq!(
         got,
         (
@@ -716,6 +718,38 @@ fn ends_the_run_at_a_token_that_a_header_cannot_hold() {
             vec![0, RETRY],
         )
     );
+}
+
+/// The last error of a run with a token in a file at a path of 200 control bytes,
+/// which holds `value`.
+fn last_error_of_a_long_source(value: &'static [u8]) -> String {
+    let path: &'static str = format!("/run/secrets/{}", "\u{1}".repeat(200)).leak();
+    let errors = run(move |node, tasks| async move {
+        node.paths()
+            .write(std::path::Path::new(path), value)
+            .expect("writes");
+        let plant = Plant::new(node, tasks).await;
+        let config = with_token(&plant, "file", path);
+        send_one(&plant, config).await.1
+    });
+    errors.last().cloned().expect("an error")
+}
+
+#[test]
+fn keeps_the_reason_of_a_bad_token_with_a_long_source() {
+    let got = last_error_of_a_long_source(b"t0\nken\n");
+    assert!(got.starts_with("the token file(\"/run/secrets/"), "{got}");
+    assert!(
+        got.ends_with("cannot hold. Write the token with no control byte"),
+        "{got}"
+    );
+}
+
+#[test]
+fn keeps_the_reason_of_an_empty_token_file_with_a_long_source() {
+    let got = last_error_of_a_long_source(b"");
+    assert!(got.starts_with("the secret file(\"/run/secrets/"), "{got}");
+    assert!(got.ends_with("is empty. Write the value to it"), "{got}");
 }
 
 #[test]

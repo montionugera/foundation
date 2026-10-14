@@ -201,8 +201,9 @@
   (`laptop.architect-2`, 2026-10-08T06:29:21Z:
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186). The
   text of `error` is the text of the `Device` or `Retry` source, or the diagnostics of
-  `Config` joined with `"; "`, cut to at most 1024 bytes at a char boundary, so a long
-  device error does not make a frame too large. `backoff` is the wait that is left to
+  `Config` joined with `"; "`. A text of more than 1024 bytes keeps its first and last
+  510 bytes or less at char boundaries, joined by `…`, so a long device error does not
+  make a frame too large and keeps its reason at the end. `backoff` is the wait that is left to
   the next try by the node's clock at the write, less the time by which the frame is
   stamped after the hub's time (below). So a frame written again later gives the wait
   that is left, a frame stamped ahead gives a wait that ends at the next try, and a step

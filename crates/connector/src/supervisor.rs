@@ -968,14 +968,15 @@ mod tests {
     }
 
     #[test]
-    fn cuts_a_long_error_that_a_run_shows_to_1024_bytes() {
+    fn cuts_the_middle_of_a_long_error_that_a_run_shows() {
         let steps = vec![Step::ShowWide(ms(2_000))];
         let out = supervise("script", steps, config(), Cancel::Never);
         let got: Vec<_> = (states(&out.statuses).into_iter())
             .zip(&out.statuses)
             .map(|(state, (_, _, text))| (state, text.as_str()))
             .collect();
-        assert_eq!(got[1], ((0, 3, 0), "a".repeat(1_024).as_str()));
+        let cut = format!("{0}…{0}", "a".repeat(510));
+        assert_eq!(got[1], ((0, 3, 0), cut.as_str()));
     }
 
     #[test]
@@ -1238,17 +1239,18 @@ mod tests {
     }
 
     #[test]
-    fn cuts_a_long_error_text_to_1024_bytes() {
+    fn cuts_the_middle_of_a_long_error_text() {
         let out = supervise(
             "script",
             vec![Step::Wide],
             config(),
             Cancel::After(ms(5_000)),
         );
-        assert_eq!(out.statuses[1].2, "a".repeat(1_024));
+        assert_eq!(out.statuses[1].2, format!("{0}…{0}", "a".repeat(510)));
     }
 
-    /// The 512th `é` takes bytes 1023 and 1024, across the bound of 1024 bytes.
+    /// The 255th `é` takes bytes 510 and 511, across the bound of 510 bytes of the
+    /// head.
     #[test]
     fn cuts_a_long_error_text_at_a_char_boundary() {
         let out = supervise(
@@ -1257,10 +1259,8 @@ mod tests {
             config(),
             Cancel::After(ms(5_000)),
         );
-        let cut = format!("a{}", "é".repeat(511));
-        assert_eq!(cut.len(), 1_023);
+        let cut = format!("a{}…{}", "é".repeat(254), "é".repeat(255));
         assert_eq!(out.statuses[1].2, cut);
-        assert!(long().starts_with(&cut));
     }
 
     /// Runs `steps` and fills the pool from 1.5 s after the start of the last run

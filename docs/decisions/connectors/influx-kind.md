@@ -38,8 +38,7 @@
   2026-10-13T21:05:46Z
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6155189112).
   With a `token`, a 401 or a 403 gives "Check the token {source}. InfluxDB answered
-  {status}: {body}", so that the cut of a long error keeps the source. It shows at
-  most 512 bytes of the source, so that a long source keeps the answer. With no
+  {status}: {body}", so that the cut of a long error keeps the source. With no
   `token`, "InfluxDB answered {status}: {body}". A token that holds a byte that an
   HTTP header cannot hold gives `Error::Retry`. Approved by
   `laptop.architect-2` on 2026-10-14T04:16:45Z

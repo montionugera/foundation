@@ -67,6 +67,8 @@ const ERROR: usize = SUPERVISOR.len();
 
 /// The most bytes of the text of `error`.
 const ERROR_MAX: usize = 1024;
+/// The mark in place of the middle of a text of `error` that is too long.
+const MARK: &str = "…";
 /// The least time between two writes of a change of counts alone.
 const PERIOD: Span = Span::SECOND;
 
@@ -814,10 +816,17 @@ impl Session {
     }
 }
 
-/// The longest prefix of `text` of at most [`ERROR_MAX`] bytes that ends at a char
-/// boundary, in a string with no spare capacity.
+/// `text` when it fits in [`ERROR_MAX`] bytes. Else its head and its tail, cut at char
+/// boundaries and joined by [`MARK`], so that an error with a long subject keeps its
+/// reason at the end. No spare capacity.
 fn cut(text: &str) -> String {
-    text[..text.floor_char_boundary(ERROR_MAX)].to_owned()
+    if text.len() <= ERROR_MAX {
+        return text.to_owned();
+    }
+    let half = (ERROR_MAX - MARK.len()) / 2;
+    let head = &text[..text.floor_char_boundary(half)];
+    let tail = &text[text.ceil_char_boundary(text.len() - half)..];
+    [head, MARK, tail].concat()
 }
 
 /// Polls `run` to its end, and `side` after it while `run` is pending, so `side` sees
@@ -1030,15 +1039,24 @@ mod tests {
         /// difference of held bytes that a caller can measure, so only this one sees
         /// it.
         #[test]
-        fn cuts_a_text_to_the_longest_prefix_that_fits(
+        fn cuts_the_middle_of_a_text_that_does_not_fit(
             text in "(a|é|€|😀){0,1100}",
         ) {
             let got = cut(&text);
-            prop_assert!(text.starts_with(&got));
             prop_assert!(got.len() <= ERROR_MAX);
             prop_assert_eq!(got.capacity(), got.len());
-            let next = text[got.len()..].chars().next();
-            prop_assert!(next.is_none_or(|c| got.len() + c.len_utf8() > ERROR_MAX));
+            if text.len() <= ERROR_MAX {
+                prop_assert_eq!(got, text);
+            } else {
+                let half = (ERROR_MAX - MARK.len()) / 2;
+                let (head, tail) = got.split_once(MARK).expect("a mark");
+                prop_assert!(text.starts_with(head) && text.ends_with(tail));
+                let next = text[head.len()..].chars().next().expect("a cut char");
+                prop_assert!(head.len() + next.len_utf8() > half);
+                let last = text[..text.len() - tail.len()].chars().next_back();
+                let last = last.expect("a cut char");
+                prop_assert!(tail.len() + last.len_utf8() > half);
+            }
         }
     }
 
