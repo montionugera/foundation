@@ -59,12 +59,15 @@ enum Pool {
 }
 
 impl Pool {
-    /// The most bytes that run [`SHORT`] holds over its twin, as measured, so that a
-    /// spare capacity of the cut text fails the test.
+    /// The most bytes that run [`SHORT`] holds over its twin: the cut text of 1024
+    /// bytes less the twin's 1, then 32 bytes of room. With the pool free, the home
+    /// also writes the status frame, so its encode scratch grows to 1090 bytes in place
+    /// of 128. A spare capacity of 33 bytes or more in the cut text fails the test.
     fn over(self) -> usize {
+        let (text, room) = (1_023, 32);
         match self {
-            Self::Free => 1_985,
-            Self::Full => 1_023,
+            Self::Free => text + (1_090 - 128) + room,
+            Self::Full => text + room,
         }
     }
 }
