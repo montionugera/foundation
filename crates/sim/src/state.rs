@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::mem;
 use std::net::IpAddr;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -116,8 +117,9 @@ pub(crate) enum Outcome {
 /// lock.
 #[derive(Default)]
 pub(crate) struct Ended {
-    /// The tasks whose futures the caller drops, in key order.
-    pub(crate) tasks: Vec<u64>,
+    /// The tasks whose futures the caller drops, in key order, each with the log of
+    /// its thread.
+    pub(crate) tasks: Vec<(u64, Dispatch)>,
     /// The wakers of the timers of the threads.
     pub(crate) timers: Vec<Waker>,
 }
@@ -381,18 +383,22 @@ impl State {
 
     /// Adds a thread whose first task is ready, and returns the thread's key. On a
     /// crashing node the thread is born ended in the crash, and `start` comes back
-    /// for the caller to drop after it releases the lock.
+    /// with `log` for the caller to drop after it releases the lock.
     pub(crate) fn start(
         &mut self,
         node: usize,
         name: String,
         start: Start,
         log: Dispatch,
-    ) -> (u64, Option<Start>) {
+    ) -> (u64, Option<(Start, Dispatch)>) {
         let thread = self.key();
         let main = self.key();
         let crashing = self.nodes[node].crashing;
-        let outcome = crashing.then_some(Outcome::Crashed);
+        let (outcome, held) = if crashing {
+            (Some(Outcome::Crashed), Dispatch::none())
+        } else {
+            (None, log.clone())
+        };
         self.threads.insert(
             thread,
             Thread {
@@ -400,11 +406,11 @@ impl State {
                 node,
                 main,
                 outcome,
-                log,
+                log: held,
             },
         );
         if crashing {
-            return (thread, Some(start));
+            return (thread, Some((start, log)));
         }
         self.tasks.insert(main, thread);
         self.ready.insert(main);
@@ -499,21 +505,23 @@ impl State {
         self.tasks.remove(&task);
         self.ready.remove(&task);
         Ended {
-            tasks: vec![task],
+            tasks: vec![(task, self.threads[&thread].log.clone())],
             timers: Vec::new(),
         }
     }
 
-    /// Ends `thread` with `outcome`, and its timers, leaked ones too.
+    /// Ends `thread` with `outcome`, and its timers, leaked ones too. The thread's
+    /// log moves to its tasks in [`Ended`].
     pub(crate) fn end(&mut self, thread: u64, outcome: Outcome) -> Ended {
-        self.threads
-            .get_mut(&thread)
-            .expect("invariant: an ending thread exists")
-            .outcome = Some(outcome);
-        let tasks: Vec<u64> = (self.tasks.iter())
-            .filter_map(|(&task, &owner)| (owner == thread).then_some(task))
+        let ending = (self.threads.get_mut(&thread))
+            .expect("invariant: an ending thread exists");
+        ending.outcome = Some(outcome);
+        let log = mem::replace(&mut ending.log, Dispatch::none());
+        let tasks: Vec<(u64, Dispatch)> = (self.tasks.iter())
+            .filter(|&(_, &owner)| owner == thread)
+            .map(|(&task, _)| (task, log.clone()))
             .collect();
-        for task in &tasks {
+        for (task, _) in &tasks {
             self.tasks.remove(task);
             self.ready.remove(task);
         }
@@ -547,12 +555,13 @@ impl State {
 
     /// Ends each live thread of the nodes whose index `stopped` picks in a crash, and
     /// makes those nodes crashing until [`State::crash`]. Returns what the threads
-    /// leave, and the starts of the threads that had not run in start order, for the
+    /// leave, and the starts of the threads that had not run in start order with
+    /// their logs, for the
     /// caller to drop after it releases the lock.
     pub(crate) fn stop(
         &mut self,
         stopped: impl Fn(usize) -> bool,
-    ) -> (Ended, Vec<Start>) {
+    ) -> (Ended, Vec<(Start, Dispatch)>) {
         for (key, node) in self.nodes.iter_mut().enumerate() {
             node.crashing |= stopped(key);
         }
@@ -562,12 +571,14 @@ impl State {
             .collect();
         let (mut ended, mut starts) = (Ended::default(), Vec::new());
         for (thread, main) in live {
-            starts.extend(self.starts.remove(&main));
+            let start = self.starts.remove(&main);
+            starts
+                .extend(start.map(|start| (start, self.threads[&thread].log.clone())));
             let Ended { tasks, timers } = self.end(thread, Outcome::Crashed);
             ended.tasks.extend(tasks);
             ended.timers.extend(timers);
         }
-        ended.tasks.sort_unstable();
+        ended.tasks.sort_unstable_by_key(|&(task, _)| task);
         (ended, starts)
     }
 
@@ -665,11 +676,14 @@ impl Futures {
         entry.future = Some(future);
     }
 
-    /// Removes the entries of `tasks` and returns their futures, which the caller
-    /// drops after it releases the borrow.
-    pub(crate) fn remove(&mut self, tasks: &[u64]) -> Vec<Task> {
-        (tasks.iter())
-            .filter_map(|task| self.0.remove(task)?.future)
+    /// Removes the entries of `tasks` and returns their futures with the logs that
+    /// `tasks` gives, which the caller drops after it releases the borrow.
+    pub(crate) fn remove(
+        &mut self,
+        tasks: Vec<(u64, Dispatch)>,
+    ) -> Vec<(Task, Dispatch)> {
+        (tasks.into_iter())
+            .filter_map(|(task, log)| Some((self.0.remove(&task)?.future?, log)))
             .collect()
     }
 }

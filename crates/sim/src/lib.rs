@@ -39,6 +39,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::Instant;
 
 use env::rng::Rng;
+use tracing::Dispatch;
 use types::time::{Monotonic, Span};
 
 use crate::files::Files;
@@ -490,16 +491,21 @@ impl Sim {
     /// in order.
     fn drop_ended(&self, ended: Ended) -> Vec<String> {
         drop(ended.timers);
-        let futures = self.futures.borrow_mut().remove(&ended.tasks);
+        let futures = self.futures.borrow_mut().remove(ended.tasks);
         drop_each(futures)
     }
 }
 
-/// Drops each item on its own, as a second panic in one unwind aborts the process.
-/// Returns the [`messages`] of each drop that panicked, in order.
-fn drop_each<T>(items: impl IntoIterator<Item = T>) -> Vec<String> {
+/// Drops each item on its own, with its log as the default dispatch, as a second
+/// panic in one unwind aborts the process. Returns the [`messages`] of each drop that
+/// panicked, in order.
+fn drop_each<T>(items: impl IntoIterator<Item = (T, Dispatch)>) -> Vec<String> {
     (items.into_iter())
-        .filter_map(|item| panic::catch_unwind(AssertUnwindSafe(|| drop(item))).err())
+        .filter_map(|(item, log)| {
+            tracing::dispatcher::with_default(&log, || {
+                panic::catch_unwind(AssertUnwindSafe(|| drop(item))).err()
+            })
+        })
         .flat_map(messages)
         .collect()
 }

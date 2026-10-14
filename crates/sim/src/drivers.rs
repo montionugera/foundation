@@ -44,7 +44,9 @@ impl Node {
     fn thread(&self, name: String, start: Start, log: Dispatch) -> Handle {
         let (thread, crashed) = lock(&self.shared).start(self.node, name, start, log);
         // After the lock: the drop may start a thread.
-        drop(crashed);
+        if let Some((start, log)) = crashed {
+            tracing::dispatcher::with_default(&log, || drop(start));
+        }
         let (shared, node) = (Arc::clone(&self.shared), self.node);
         Handle::new(move || {
             let state = lock(&shared);
@@ -185,10 +187,12 @@ impl env::shards::Driver for Node {
         let main = match fault {
             None => main,
             Some((_, Fault::Start)) => {
+                tracing::dispatcher::with_default(&log, || drop(main));
                 let reason = "injected".into();
                 return Err(Error::Start { name, reason });
             }
             Some((core, Fault::Pin)) => {
+                tracing::dispatcher::with_default(&log, || drop(main));
                 let reason = "injected".into();
                 return Err(Error::Pin { name, core, reason });
             }
