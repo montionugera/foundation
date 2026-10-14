@@ -1043,7 +1043,7 @@ fn writes_a_table_of_each_count_then_the_note_and_the_error_of_each_connector() 
             Status {
                 counts: Some(BTreeMap::from(opcua)),
                 note: Some("polls: the server has no subscriptions".to_owned()),
-                ..line("plant.press", State::Restarting, None, Some(failure))
+                ..line("plant.press", State::Running, None, Some(failure))
             },
             Status {
                 address: None,
@@ -1052,10 +1052,10 @@ fn writes_a_table_of_each_count_then_the_note_and_the_error_of_each_connector() 
         ],
     };
     let expected = "\
-CONNECTOR    KIND    STATE       ADDRESS                     COUNTS
-lake         influx  running     http://lake                 confirmed=1200
-plant.press  opcua   restarting  opc.tcp://plant.press:4840  in=1200 lost=0 missed=0
-yard.meter   opcua   unknown     -                           -
+CONNECTOR    KIND    STATE    ADDRESS                     COUNTS
+lake         influx  running  http://lake                 confirmed=1200
+plant.press  opcua   running  opc.tcp://plant.press:4840  in=1200 lost=0 missed=0
+yard.meter   opcua   unknown  -                           -
 
 plant.press: note: polls: the server has no subscriptions
 plant.press: device error: no route to the device
