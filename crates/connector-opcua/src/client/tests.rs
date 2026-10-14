@@ -1813,6 +1813,33 @@ fn an_answer_of_a_failed_read_goes_into_no_later_read() {
     );
 }
 
+/// A read with two failed answers in one message ends with the status of the first:
+/// the answer of the node 2 has no values, then that of the node 1 has a bad service
+/// result.
+#[test]
+fn a_read_with_two_failed_answers_ends_with_the_status_of_the_first() {
+    let mut held = Vec::new();
+    let reads = read_split(move |index, mut message| match index {
+        1 => {
+            message[40..44].copy_from_slice(&Status::BAD_INTERNAL_ERROR.0.to_le_bytes());
+            held = message;
+            vec![]
+        }
+        2 => {
+            recount_of(&mut message, 0);
+            vec![message, mem::take(&mut held)]
+        }
+        _ => vec![message],
+    });
+    assert_eq!(
+        reads,
+        [
+            Err(Status::BAD_UNEXPECTED_ERROR),
+            Ok(vec![Ok(Value::U32(3)), Ok(Value::U32(4))])
+        ]
+    );
+}
+
 /// A read sends no request after an answer of it fails. With a `MaxNodesPerRead` of 1,
 /// the first answer fails while [`READS`] requests are in flight, and the server gets
 /// no more: it answers the connect and those.

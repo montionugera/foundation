@@ -618,7 +618,10 @@ unsafe extern "C" fn answer(
         status = Status::BAD_UNEXPECTED_ERROR;
     }
     if status != Status::GOOD {
-        reads.failed.set(Some(status));
+        // One run of the events can take more answers of the read after it fails.
+        if reads.failed.get().is_none() {
+            reads.failed.set(Some(status));
+        }
         return;
     }
     let mut values = reads.values.take();
