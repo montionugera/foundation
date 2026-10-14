@@ -158,8 +158,13 @@ impl Influx {
         self.address = Some(address);
         let store = Arc::clone(&self.store);
         let server = Server::start("InfluxDB", move |tasks, token| async move {
-            let serve =
-                connector_influx::sim::serve(listener, tasks, store, "plant".into());
+            let serve = connector_influx::sim::serve(
+                listener,
+                tasks,
+                store,
+                "plant".into(),
+                None,
+            );
             if let Some(error) = token.race(serve).await {
                 panic!("the simulated InfluxDB stopped: {error}");
             }
