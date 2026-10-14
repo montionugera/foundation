@@ -211,6 +211,7 @@ impl Logs {
         self.tails.clear();
         self.inner
             .idle(self.offset, self.headers.len(), &mut self.tails);
+        assert_eq!(self.tails.len(), self.headers.len(), "a tail of each index");
         for (tail, (slot, header)) in self.tails.iter().zip(&self.headers) {
             assert_eq!(tail.index, header.index, "a tail of each index, in order");
             self.inner
