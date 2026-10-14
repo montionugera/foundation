@@ -717,8 +717,9 @@ mod tests {
 
     /// Reads the status frames of `connector` with `counts`, whose status channels
     /// have keys from [`STATUS`] on, into the vector it gives, in a task on `tasks`.
-    /// Panics on a frame that lacks one of [`status::channels`]. A status frame that the
-    /// home loses ends the reader `Behind`, so the task opens it again at the live tail.
+    /// Panics on a frame that lacks one of [`status::channels`]. A status frame that
+    /// the home loses ends the reader `Behind`, so the task opens it again at the live
+    /// tail.
     async fn read_status(
         hub: &hub::Hub,
         connector: &str,
