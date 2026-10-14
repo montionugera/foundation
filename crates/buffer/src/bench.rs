@@ -65,7 +65,7 @@ impl Ring {
             let record = Position::new(plan.next, self.chain).expect("aligned");
             self.ends.push(Ends { wrap, record });
         }
-        let tail = self.writer.trimmed(None, |offset| offset);
+        let tail = self.writer.trimmed(|offset| offset);
         self.writer.committed(self.ends.drain(..), tail);
     }
 }
