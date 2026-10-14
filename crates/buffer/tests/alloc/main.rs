@@ -1,8 +1,9 @@
 //! `append` makes no heap allocation once the buffer has taken a batch of each
 //! shape: its slots, its entry count, and whether it closes the open record. Nor
 //! does a `Commit` that waits and drops, a commit of the logs that marks a range
-//! and trims, or the entry of a path that a trim emptied. This binary has no test harness: the count covers each thread, and a
-//! harness allocates on its own thread at any time.
+//! and trims, or the entry of a path that a trim emptied. This binary has no test
+//! harness: the count covers each thread, and a harness allocates on its own thread
+//! at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -115,19 +116,26 @@ fn commits(mut commit: impl FnMut(&mut buffer::bench::Logs)) -> u64 {
 }
 
 /// Each trim drops the range that the commit before marked, so the ranges stay in
-/// the memory that the warm-up gave them. A slow path gets one entry and a carry
-/// record of its tail, then commits with no entry follow, in which a trim empties
-/// its runs: the room that the trim keeps takes the next entry.
+/// the memory that the warm-up gave them. A slow path gets 1 to 4 entries, in turn,
+/// each in a record of its own that a read holds, with a carry record of its tail
+/// after the last. Then a commit with no entry trims to the carry record and empties
+/// its runs: the room that the trim keeps takes the next entries.
 fn logs_take_no_allocation() {
     let n = commits(buffer::bench::Logs::mark);
     assert_eq!(n, 0, "{n} allocations in 1024 marked trims");
+    let mut entries = 0;
     let n = commits(|logs| {
-        logs.carry();
-        for _ in 0..3 {
-            logs.commit(0);
+        entries = entries % 4 + 1;
+        for held in 1..entries {
+            logs.trim(1, held);
         }
+        logs.carry();
+        logs.commit(0);
     });
-    assert_eq!(n, 0, "{n} allocations in 1024 entries of 4 slow paths");
+    assert_eq!(
+        n, 0,
+        "{n} allocations in 1024 trims that empty 4 slow paths"
+    );
 }
 
 fn main() {
