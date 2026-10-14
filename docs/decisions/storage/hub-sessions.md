@@ -51,10 +51,8 @@
   no hub test reaches that wake, and the ruling of #1170 gave the two hub `sim` tests as
   they were before #2388. The ruling of #1718 above supersedes Q21 ("no change now") of
   the same #1133 comment.
-  Amended (#2649): a live frame that finds no room in the buffer is a miss too.
-  `delivery::Readers::lose` ends each complete session whose position it ends past
-  with `Next::Behind`, after the frames before it, in place of a silent gap in `seq`
-  (`laptop.architect`, 2026-10-14T02:10:24Z and 02:12:26Z:
+  Amended (#2649): a live frame that finds no room in the buffer is a miss too, as
+  READER RULES states (`laptop.architect`, 2026-10-14T02:10:24Z and 02:12:26Z:
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159325971 and
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159349684). The hub
   `sim` test `ends_a_complete_reader_that_sleeps_past_its_window_or_its_ring_as_behind`
