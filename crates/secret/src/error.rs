@@ -22,7 +22,8 @@ pub enum Error {
         detail: String,
     },
     /// The source gave no value now, such as a file over 64 KiB or a failed file
-    /// call. Retrying may succeed.
+    /// call. Retrying may succeed for a file or a store. For `env()`, restart the
+    /// node.
     Unavailable {
         /// The source's own text, which `Display` gives alone: what failed and the
         /// fix, as whole sentences.

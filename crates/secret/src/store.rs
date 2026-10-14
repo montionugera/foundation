@@ -1,4 +1,4 @@
-//! The seam each secret store implements: the sealed store, the file store, or an
+//! The seam that each store that reads no file implements: the sealed store or an
 //! outside secret manager.
 
 use std::fmt;
