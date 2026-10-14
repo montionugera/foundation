@@ -191,12 +191,6 @@ unsafe impl Memory for Erased {
     fn purge(&self, _offset: usize, _len: usize) {}
 }
 
-impl fmt::Debug for Erased {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Erased").field("len", &self.len()).finish()
-    }
-}
-
 impl Drop for Erased {
     fn drop(&mut self) {
         for range in self.committed.get_mut().drain(..) {
@@ -219,6 +213,8 @@ mod tests {
         memory.committed.borrow().clone()
     }
 
+    /// Reads `committed`, since the first `ALIGN` bytes hold only the header of the
+    /// region, which holds no byte of a block, so no caller can see their erase.
     #[test]
     fn erased_records_the_first_bytes_and_merges_a_commit_that_touches_a_range() {
         let memory = Erased::new(4096);
@@ -235,11 +231,6 @@ mod tests {
             memory.commit(offset, len).expect("heap memory commits");
             assert_eq!(committed(&memory), ranges, "after a commit at {offset}");
         }
-    }
-
-    #[test]
-    fn erased_prints_its_length() {
-        assert_eq!(format!("{:?}", Erased::new(64)), "Erased { len: 64 }");
     }
 
     #[test]
