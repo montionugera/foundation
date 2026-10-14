@@ -130,13 +130,14 @@ impl Opened<'_> {
     /// [`Supervisor::open`] too), and otherwise once the run returned. It returns, with
     /// `Ok` or an error, only once each task of its last run ended, and the home
     /// applied its last status frame, `cancel` is cancelled, or 10 s passed since the
-    /// write of its last state. So however late the home applies status frames, it
-    /// returns at most 30 s after its last run returned, or 20 s after the last task of
-    /// that run ended when that is later. Neither wait holds once the home refused a
-    /// status frame because the status channels were removed or its disk failed: after
-    /// it, the call writes no more status. A drop of the future cancels the run and
-    /// does not wait for its tasks: to wait, cancel `cancel` and await the future. The
-    /// future is not `Send`: call it on a shard.
+    /// write of its last state. So however late the home applies status frames, once
+    /// its last run returned `Ok` or a config error, it returns at most 30 s after that
+    /// run returned, or 10 s after the last task of that run ended when that is later.
+    /// Neither wait holds once the home refused a status frame because the status
+    /// channels were removed or its disk failed: after it, the call writes no more
+    /// status. A drop of the future cancels the run and does not wait for its tasks: to
+    /// wait, cancel `cancel` and await the future. The future is not `Send`: call it on
+    /// a shard.
     ///
     /// # Errors
     ///
