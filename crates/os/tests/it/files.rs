@@ -238,6 +238,75 @@ fn open_absolute_reads_a_file_outside_the_data_directory() {
     });
 }
 
+/// A write open of a mode 0444 file gives `EACCES` to a user other than root, and
+/// its lock gives `Busy` to a second open.
+#[test]
+fn open_absolute_opens_to_read_only_with_no_lock() {
+    run(|files, data| async move {
+        let path = data.parent().unwrap().join("token");
+        std::fs::write(&path, b"abc").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444))
+            .unwrap();
+        let (other, thread) = self::files(data.parent().unwrap(), "other");
+        let held = files.open_absolute(&path).await.unwrap();
+        let second = other.open_absolute(&path).await.unwrap();
+        let pool = pool();
+        assert_eq!(read(&held, &pool, 0, 3).await, b"abc");
+        assert_eq!(read(&second, &pool, 0, 3).await, b"abc");
+        drop((held, second, other));
+        thread.join().unwrap();
+    });
+}
+
+/// A FIFO with no writer would block an open with no `NONBLOCK`, and each later call
+/// with it, so the opens run on a thread that the test gives 5 s.
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a blocked open must not hang the test"
+)]
+fn open_absolute_refuses_a_file_that_is_not_regular_and_waits_for_no_writer() {
+    let scratch = Scratch::new();
+    let (fifo, dir) = (scratch.0.join("fifo"), scratch.0.clone());
+    mkfifo(&fifo);
+    let (done, ended) = std::sync::mpsc::channel();
+    let opens = std::thread::spawn(move || {
+        let (files, thread) = files(&dir, "files");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut found = Vec::new();
+            for path in [dir.join("fifo"), dir.clone(), PathBuf::from("/dev/null")] {
+                found.push(files.open_absolute(&path).await.map(drop));
+            }
+            files.free().await.unwrap();
+            done.send(found).unwrap();
+        });
+        drop(files);
+        thread.join().unwrap();
+    });
+    let found = ended.recv_timeout(std::time::Duration::from_secs(5));
+    if found.is_err() {
+        let flags = rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::NONBLOCK;
+        drop(rustix::fs::open(&fifo, flags, rustix::fs::Mode::empty()));
+    }
+    opens.join().unwrap();
+    let io = |path: PathBuf, code| {
+        Err(Error::Io {
+            path,
+            operation: Operation::Open,
+            code,
+        })
+    };
+    let expected = vec![
+        io(fifo, 22),
+        io(scratch.0.clone(), 21),
+        io("/dev/null".into(), 22),
+    ];
+    assert_eq!(found.expect("no open blocks"), expected);
+}
+
 #[test]
 fn a_write_open_of_a_held_file_gives_busy_and_a_read_open_does_not() {
     run(|files, data| async move {

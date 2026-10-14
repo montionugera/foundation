@@ -104,14 +104,13 @@ impl fmt::Debug for Disk {
     }
 }
 
-impl env::files::Driver for Disk {
-    fn open<'a>(
-        &'a self,
+impl Disk {
+    /// The file at `path` that `opened` opens.
+    fn file<'a>(
+        &self,
         path: &'a Path,
-        mode: Mode,
+        opened: impl Future<Output = Result<(Opened, u64), Error>> + 'a,
     ) -> Request<'a, Box<dyn Descriptor>> {
-        let (data, owned) = (Arc::clone(&self.data), path.to_path_buf());
-        let opened = self.queue.run(move || open(&data, &owned, mode));
         let (data, queue) = (Arc::clone(&self.data), self.queue.clone());
         Box::pin(async move {
             let (fd, len) = opened.await?;
@@ -125,10 +124,21 @@ impl env::files::Driver for Disk {
             Ok(file)
         })
     }
+}
 
-    /// `openat` ignores the data directory for an absolute path.
+impl env::files::Driver for Disk {
+    fn open<'a>(
+        &'a self,
+        path: &'a Path,
+        mode: Mode,
+    ) -> Request<'a, Box<dyn Descriptor>> {
+        let (data, owned) = (Arc::clone(&self.data), path.to_path_buf());
+        self.file(path, self.queue.run(move || open(&data, &owned, mode)))
+    }
+
     fn open_absolute<'a>(&'a self, path: &'a Path) -> Request<'a, Box<dyn Descriptor>> {
-        self.open(path, Mode::Read)
+        let owned = path.to_path_buf();
+        self.file(path, self.queue.run(move || open_absolute(&owned)))
     }
 
     fn list<'a>(&'a self, dir: &'a Path) -> Request<'a, Vec<PathBuf>> {
@@ -380,6 +390,24 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(Opened, u64), Error>
             Ok((fd, len))
         }
         _ => Ok((fd, found)),
+    }
+}
+
+/// Opens the file at absolute `path` to read, and gives it and its length. The open
+/// does not wait for a writer of a FIFO, and gives 21 (`EISDIR`) for a directory and
+/// 22 (`EINVAL`) for any other file that is not a regular file.
+fn open_absolute(path: &Path) -> Result<(Opened, u64), Error> {
+    let failed = fail(path, Operation::Open);
+    let flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK;
+    let fd = Opened {
+        fd: fs::open(path, flags, fs::Mode::empty()).map_err(&failed)?,
+        locked: false,
+    };
+    let stat = fs::fstat(&fd).map_err(&failed)?;
+    match FileType::from_raw_mode(stat.st_mode) {
+        FileType::RegularFile => Ok((fd, stat.st_size.cast_unsigned())),
+        FileType::Directory => Err(failed(Errno::ISDIR)),
+        _ => Err(failed(Errno::INVAL)),
     }
 }
 
