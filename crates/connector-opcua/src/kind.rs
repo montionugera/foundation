@@ -513,8 +513,7 @@ fn sample_type(read: &Read, data_type: Type) -> Diagnostic {
             read.channel,
             others.join(", "),
         ),
-        "Give the channel the sample type of its node, or remove its `read` block"
-            .into(),
+        "Give the channel one of these sample types, or remove its `read` block".into(),
     )
 }
 
@@ -546,18 +545,18 @@ impl fmt::Display for Failure {
                 write!(f, "the connect to {address} failed with {}", status.name())
             }
             Self::Read(status) => write!(f, "the read failed with {}", status.name()),
-            Self::Value { channel, node, bad } => {
-                write!(f, "the node {node} of `{channel}` gives ")?;
-                match bad {
-                    Bad::Status(status) => f.write_str(status.name()),
-                    Bad::Type { value, sample } => write!(
-                        f,
-                        "a value of type {}, and the channel has samples of type {}",
-                        Type::Scalar(*value),
-                        Type::Scalar(*sample),
-                    ),
+            Self::Value { channel, node, bad } => match bad {
+                Bad::Status(status) => {
+                    write!(f, "the node {node} of `{channel}` gives {}", status.name())
                 }
-            }
+                Bad::Type { value, sample } => write!(
+                    f,
+                    "the node `{node}` of the channel `{channel}` gives a value of type \
+                     {}, and the channel has samples of type {}",
+                    Type::Scalar(*value),
+                    Type::Scalar(*sample),
+                ),
+            },
         }
     }
 }

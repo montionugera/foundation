@@ -783,7 +783,7 @@ fn refuses_each_channel_whose_samples_are_not_a_scalar_of_a_value() {
                  opcua kind reads only bool, i8, u8, i16, u16, i32, u32, i64, u64, \
                  f32, and f64"
             ),
-            "Give the channel the sample type of its node, or remove its `read` block"
+            "Give the channel one of these sample types, or remove its `read` block"
                 .into(),
         )
     };
@@ -937,8 +937,8 @@ fn ends_the_run_with_a_device_error_on_a_value_of_another_type_than_its_channel(
         scene.supervise(ms(1_550)).await
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
-    let bad = "the node ns=3;i=7 of `plant.b` gives a value of type i32, and the \
-               channel has samples of type f64";
+    let bad = "the node `ns=3;i=7` of the channel `plant.b` gives a value of type i32, \
+               and the channel has samples of type f64";
     assert_eq!(errors(&outcome.statuses), [(DEVICE, bad.to_owned())]);
     assert_eq!(outcome.frames.len(), 11);
 }
