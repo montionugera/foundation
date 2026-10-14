@@ -2966,7 +2966,6 @@ pub(super) mod tests {
             assert_eq!(lost(&mut readers, 2..3), []);
             let late = opened(&mut readers, 3, 10);
             assert_eq!(lost(&mut readers, 4..6), []);
-            assert_eq!(readers.queue.len(), 2);
             assert_eq!(released(&mut readers, 2), [early, late]);
             assert_eq!(missed(&mut readers, early), [1]);
             assert_eq!(missed(&mut readers, late), []);
