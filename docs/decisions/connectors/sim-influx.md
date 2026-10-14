@@ -83,8 +83,9 @@
   supersedes the paired run against `77e13735` of
   https://github.com/synnaxlabs/foundation/pull/1448#issuecomment-6045453368, and
   turns on `sim` for the bench.
-  `connector_influx::sim::serve(listener, tasks, store, database)` is its HTTP front, on
-  `connector::http::sim::serve` (HTTP SIM SERVER). `POST /write?db=` (InfluxDB 1) and
+  `connector_influx::sim::serve(listener, tasks, store, database, token)` is its HTTP
+  front, on `connector::http::sim::serve` (HTTP SIM SERVER). `POST /write?db=`
+  (InfluxDB 1) and
   `POST /api/v2/write?bucket=` (InfluxDB 2 and 3) give 204 when the store takes each
   line, and 400 with the text of the store's error when it refuses one. A missing or
   empty `db` or `bucket`, or on `/api/v2/write` a missing or empty `org` and `orgID`,
@@ -94,8 +95,14 @@
   nanoseconds only and a wrong precision must fail loud. Another path gives 404, and
   another method on a write path 405. A `content-encoding` that names a coding other
   than `identity` gets 415 and stores nothing, as the store decodes no body. The HTTP
-  front checks the path, then the method, then the `content-encoding`, then the query,
-  and gives the answer of the first check that fails. It checks no token. `database`
+  front checks the path, then the method, then the token, then the
+  `content-encoding`, then the query, and gives the answer of the first check that
+  fails. `token`, when given, is the one token that it takes, as `Token <token>` in
+  `Authorization`: a write path gives 401 and stores nothing for a request with
+  another or no `Authorization`. It does not take `Bearer`, so a client that sends
+  only `Bearer` fails here (laptop.architect-2, 2026-10-14T04:16:45Z
+  https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6160767913).
+  `database`
   stays out of `Store`: the 404 is an answer of the HTTP front. The front compares names
   as the query writes them, with no percent-decoding, until the first PR of
   `connector-influx` that writes a name into a query (#1530). Decided by architect-2

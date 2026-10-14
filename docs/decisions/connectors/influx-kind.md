@@ -28,10 +28,16 @@
   `POST /write?db=<database>&precision=ns`, and a `bucket` with
   `POST /api/v2/write?org=<org>&bucket=<bucket>&precision=ns`, which InfluxDB 2 and
   InfluxDB 3 Core take. InfluxDB 3 takes any `org`. Each name is percent-encoded in
-  the query. Until the token of #2583, a request has no `Authorization`: the key
-  choice https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6156072634,
-  which `laptop.architect-2` accepted on 2026-10-13T21:59:25Z
-  (https://github.com/synnaxlabs/foundation/pull/2610#issuecomment-6156082448).
+  the query. An optional `token` is a source of a secret (SECRET SOURCES). Each
+  request sends it as `Authorization: Token <value>`, which InfluxDB 2 and 3 take,
+  and a request with no `token` has no `Authorization`. `run` reads the token at its
+  start, and again after a 401 or a 403 before the next attempt. A 401 or a 403 gives
+  "InfluxDB answered {status}: {body}. Check the token {source}", and a token that
+  holds a byte that an HTTP header cannot hold gives `Error::Retry`. Approved by
+  `laptop.architect-2` on 2026-10-14T04:16:45Z
+  (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6160767913).
+  Supersedes the key choice of no `Authorization` until this token
+  (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6156072634).
   Approved by the person (2026-10-13T16:24:35Z, relayed in
   https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150321949), and
   the plan that `laptop.architect-2` approved on 2026-10-13T16:53:54Z

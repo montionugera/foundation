@@ -304,7 +304,8 @@ state on `main`.
   reads the documents into definitions, and the influx kind reads the config of each
   `connector` block of kind `influx`. Fuzzed: `config_check`, which only the inputs
   `influx_*` take to the influx kind, through `connector::reader::read`,
-  `connector::http::uri`, and `connector_influx::Kind::parse` (#1817).
+  `connector::http::uri`, `secret::Source::read` (the inputs `influx_token_*`), and
+  `connector_influx::Kind::parse` (#1817).
 - A person or an agent reviews the files and the plan before `apply` (K3). Text
   that shows one thing and reads as another defeats that review. Questions for a
   decision, with no `security` label yet: #360 (a lone `\r` in a comment,
@@ -418,6 +419,13 @@ state on `main`.
   ONE NODE, that person is the node's admin. Trigger for a limit that the node's
   operator sets, such as directories and variable names given at start: a spec applied
   by a subject that does not run the node.
+- The header of each request and the write buffer of hyper keep a copy of the token
+  of the `influx` kind, and their memory is freed without zeros
+  (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6160767913).
+  While a run lives, `secret::Value` holds the token in clear, so the copies add only
+  the time until the allocator gives that memory again. Trigger for a request path
+  that clears them: an attacker who reads freed heap of the node and not its live
+  heap.
 - A join ticket is a secret (BQ11a).
 - Rule for every crate: no secret value in a log, a status channel, an error, or
   plan output.
@@ -502,8 +510,7 @@ not reached from the corpus: `transport::message` (#55), the QUIC hello
 (`transport::quic::hello::Hello::decode`), the file `founding` of the mesh directory
 (`mesh::region::Founding::decode`, with `mesh::Member::decode` in it, #2311), the join
 answer (`mesh::Member::decode` from a peer, #336 adds its target),
-each connector's protocol parser, the source of a secret in a config
-(`secret::Source::read`, which no kind reads until the token of #2583), the `node_id`
+each connector's protocol parser, the `node_id`
 text of the `opcua` kind
 (`connector_opcua::node`, #2523), its `address`, which `UA_parseEndpointUrl` of
 open62541 reads (`connector_opcua::Kind::parse`, #2523), the file `name` of the data
