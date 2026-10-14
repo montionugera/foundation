@@ -1357,7 +1357,12 @@ mod tests {
                     buffer.append(batch).expect("the ring has room");
                     buffer.committed().await.expect("commits");
                 }
-                let trimmed = buffer.shared.state.borrow().writer.trimmed(None);
+                let trimmed = buffer
+                    .shared
+                    .state
+                    .borrow()
+                    .writer
+                    .trimmed(None, |offset| offset);
                 *found.lock().expect("no panic held the lock") = trimmed;
                 buffer
             },
@@ -1561,6 +1566,62 @@ mod tests {
         let kept = kept.lock().expect("no panic held the lock");
         let expected = [12288, 4096, 12288, 8192, 12288, 4096, 12288, 4096, 12288];
         assert_eq!(*kept, expected.map(Some));
+    }
+
+    /// A read from (0, 1) holds the record at 8192, whose entry with no samples at
+    /// seq 0 comes after the one at 4096. A walk from 8192 would count it from
+    /// (0, 0), so the trim lands at 4096, though 60 more records want more room.
+    /// No commit trims yet, so the test asks the writer.
+    #[test]
+    fn a_trim_held_after_entries_with_no_samples_at_a_seq_lands_before_them() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config::default());
+        let tails = Arc::new(Mutex::new(Vec::new()));
+        let found = Arc::clone(&tails);
+        with_buffer(
+            &mut sim,
+            &node,
+            "write",
+            |buffer, mut slots, pool| async move {
+                let one = slots.index(channel::Key::from_u128(1));
+                let part = pool.alloc(100).expect("a block").freeze();
+                let empty = Entry {
+                    len: 0,
+                    last: None,
+                    ..entry(1, one, Path::Live, 0, &part)
+                };
+                let mut batches = vec![vec![empty.clone()], vec![empty]];
+                let more = (0..61)
+                    .map(|commit| vec![entry(1, one, Path::Live, 3 * commit, &part)]);
+                batches.extend(more);
+                for batch in batches {
+                    buffer.append(batch).expect("the ring has room");
+                    buffer.committed().await.expect("commits");
+                }
+                let trimmed = || {
+                    let mut state = buffer.shared.state.borrow_mut();
+                    let kept = state.kept();
+                    let tail =
+                        state.writer.trimmed(kept, |offset| state.logs.land(offset));
+                    (kept, tail.map(crate::wal::Position::offset))
+                };
+                let mut tails = vec![trimmed()];
+                {
+                    let from = Mark::at(0).after(0, 0);
+                    let mut read = pin!(buffer.read(one, Path::Live, from, usize::MAX));
+                    let first = poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
+                    assert!(first.is_pending(), "the read waits on a file read");
+                    tails.push(trimmed());
+                }
+                *found.lock().expect("no panic held the lock") = tails;
+                buffer
+            },
+        );
+        let tails = tails.lock().expect("no panic held the lock");
+        assert_eq!(
+            *tails,
+            [(Some(63 * 4096), Some(6 * 4096)), (Some(8192), Some(4096))]
+        );
     }
 
     /// The durable end counts the entries with no samples at its seq. A read that

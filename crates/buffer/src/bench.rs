@@ -60,7 +60,7 @@ impl Ring {
             let record = Position::new(plan.next, self.chain).expect("aligned");
             self.ends.push(Ends { wrap, record });
         }
-        let tail = self.writer.trimmed(None);
+        let tail = self.writer.trimmed(None, |offset| offset);
         for ends in self.ends.drain(..) {
             self.writer.synced(ends);
         }

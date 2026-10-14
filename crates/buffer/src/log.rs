@@ -280,26 +280,47 @@ impl Log {
 
     /// Moves the durable tail past the entry, and makes the record at `offset` the
     /// holder when the entry alone gives the durable position, stamp included.
-    /// When the record has no run of the path, adds one. Returns whether it did.
-    fn sync(&mut self, header: &Header, offset: u64) -> Result<bool, Invalid> {
+    /// When the record has no run of the path, adds one.
+    ///
+    /// # Panics
+    ///
+    /// When `offset` is below the newest record of the path.
+    fn sync(&mut self, header: &Header, offset: u64) -> Result<Synced, Invalid> {
         let start = self.durable.advance(header)?;
-        match self.holder {
+        let newest = self.runs.back().map(|run| run.offset).max(self.holder);
+        match newest {
             None => self.origin = Some(header.first),
-            Some(holder) => assert!(
-                holder <= offset,
-                "invariant: record {offset} comes after record {holder}"
+            Some(newest) => assert!(
+                newest <= offset,
+                "invariant: record {offset} comes after record {newest}"
             ),
         }
-        let alone = Mark::at(0).after(header.first, header.len);
-        if alone == self.durable.mark() && header.last == self.durable.tail.stamp {
+        let alone = Mark::at(0).after(header.first, header.len) == self.durable.mark();
+        if alone && header.last == self.durable.tail.stamp {
             self.holder = Some(offset);
         }
         if self.runs.back().is_some_and(|run| run.offset == offset) {
-            return Ok(false);
+            return Ok(Synced::Same);
         }
         self.runs.push_back(Run { start, offset });
-        Ok(true)
+        Ok(match newest {
+            Some(after) if !alone => Synced::Marked { after },
+            _ => Synced::Run,
+        })
     }
+}
+
+/// What [`Log::sync`] did to the runs of a path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Synced {
+    /// The record already had a run of the path.
+    Same,
+    /// It added a run.
+    Run,
+    /// It added a run whose first entry has no samples and comes after others at
+    /// its seq. A walk from after the record at `after` up to and with this one
+    /// does not know their count.
+    Marked { after: u64 },
 }
 
 /// Every path the buffer holds, by the node's slot of the index and the path.
@@ -328,6 +349,9 @@ pub(crate) struct Logs {
     stale: u64,
     /// An [`idle`](Self::idle) has passed each item before this number.
     scanned: u64,
+    /// For each marked run, in ring order, the previous record of its path and the
+    /// run's record. No trim lands after the first up to and with the second.
+    marked: VecDeque<(u64, u64)>,
 }
 
 impl Logs {
@@ -414,6 +438,13 @@ impl Logs {
             self.hidden
         );
         self.hidden = tail;
+        while self
+            .marked
+            .front()
+            .is_some_and(|&(_, record)| record < tail)
+        {
+            self.marked.pop_front();
+        }
         while let Some((offset, places)) = self.items.pop(tail) {
             for at in places {
                 let runs = &mut nth_mut(&mut self.paths, at).runs;
@@ -422,6 +453,24 @@ impl Logs {
                 }
             }
         }
+    }
+
+    /// The newest offset at or before `offset` at which a trim may land, so that a
+    /// walk from it rebuilds where each run starts. A trim never lands after the
+    /// previous record of a path up to and with a record whose first entry of the
+    /// path has no samples and comes after others at its seq: the walk would count
+    /// them from 0. Such a landing moves down to that previous record, again until
+    /// it is in no such range. It visits each such record at or after the result.
+    #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
+    pub(crate) fn land(&self, offset: u64) -> u64 {
+        let mut landing = offset;
+        for &(after, record) in self.marked.iter().rev() {
+            if record < landing {
+                break;
+            }
+            landing = landing.min(after);
+        }
+        landing
     }
 
     /// The oldest record that holds the durable tail of a path, which no trim may
@@ -596,8 +645,11 @@ impl Logs {
 
     /// Moves the durable tail of the header's path past the entry, as
     /// [`Tail::advance`], and adds the record at `offset` to the path's runs, as
-    /// its holder, when it is not the newest. A nonzero tag makes `offset` the
-    /// newest record of its tag on the path.
+    /// its holder, when it is not the newest. A new run whose first entry has no
+    /// samples and comes after others at its seq marks the range from after the
+    /// previous record of the path up to and with `offset`, in which
+    /// [`land`](Self::land) lands no trim. A nonzero tag makes `offset` the newest
+    /// record of its tag on the path.
     ///
     /// # Errors
     ///
@@ -605,16 +657,20 @@ impl Logs {
     ///
     /// # Panics
     ///
-    /// When `offset` is below the newest run: records come in ring order.
+    /// When `offset` is below the newest run or the holder of the path: records
+    /// come in ring order.
     pub(crate) fn sync(
         &mut self,
         slot: Slot,
         header: &Header,
         offset: u64,
     ) -> Result<(), Invalid> {
-        let (added, at) = self.change(slot, header, |log| log.sync(header, offset))?;
-        if added {
+        let (synced, at) = self.change(slot, header, |log| log.sync(header, offset))?;
+        if synced != Synced::Same {
             self.items.push(offset, at);
+        }
+        if let Synced::Marked { after } = synced {
+            self.marked.push_back((after, offset));
         }
         if let Some(tag) = NonZeroU8::new(header.tag) {
             self.tags.insert((slot, header.path, tag), offset);
@@ -1296,6 +1352,20 @@ mod tests {
             .expect("the invariant panics first");
     }
 
+    /// The holder stays at 4096, since the entries with no samples at 12288 do not
+    /// alone give the stamp, so the newest run checks the order.
+    #[test]
+    #[should_panic(expected = "invariant: record 8192 comes after record 12288")]
+    fn a_record_before_a_run_newer_than_the_holder_is_a_broken_invariant() {
+        let mut logs = Logs::default();
+        logs.sync(slot(1), &header(1, Path::Live, 0, 3, Some(30)), 4096)
+            .expect("syncs");
+        logs.sync(slot(1), &header(1, Path::Live, 3, 0, None), 12288)
+            .expect("syncs");
+        logs.sync(slot(1), &header(1, Path::Live, 3, 0, None), 8192)
+            .expect("the invariant panics first");
+    }
+
     #[test]
     #[should_panic(expected = "invariant: slot 1 holds index \
         00000000-0000-0000-0000-000000000001 and index \
@@ -1910,5 +1980,245 @@ mod tests {
             (12288, header(1, Path::Live, 3, 2, Some(50))),
         ];
         trim_to_the_holder(&records, 12288);
+    }
+
+    /// Records at 4096 and 8192 each hold an entry with no samples at seq 0, and the
+    /// one at 12288 holds [0, 1). A walk from 8192 would count the entry there as the
+    /// first at seq 0, so a landing there moves down to 4096, and a reader that got
+    /// the first entry still gets the second.
+    #[test]
+    fn a_landing_after_entries_with_no_samples_at_a_seq_moves_before_them() {
+        let records = [
+            (4096, header(1, Path::Live, 0, 0, None)),
+            (8192, header(1, Path::Live, 0, 0, None)),
+            (12288, header(1, Path::Live, 0, 1, None)),
+        ];
+        let mut logs = walk_from(&records, 0);
+        assert_eq!(logs.kept(), Some(12288));
+        assert_eq!(logs.land(12288), 12288);
+        assert_eq!(logs.land(8192), 4096);
+        let walked = walk_from(&records, logs.land(8192));
+        assert_eq!(
+            walked.find(slot(1), Path::Live, mark(0, 1)),
+            Found::Run(channel::Key::from_u128(1), run(0, 1, 8192))
+        );
+    }
+
+    /// A landing that moves down out of one range can land in a range of another
+    /// path, and moves down again. A carry record ends a range.
+    #[test]
+    fn a_landing_moves_down_out_of_each_range_it_lands_in() {
+        let mut logs = Logs::default();
+        let empty = |index, seq| header(index, Path::Live, seq, 0, None);
+        logs.sync(slot(2), &empty(2, 5), 4096).expect("syncs");
+        logs.sync(slot(1), &empty(1, 0), 8192).expect("syncs");
+        logs.sync(slot(2), &empty(2, 5), 12288).expect("syncs");
+        logs.sync(slot(1), &empty(1, 0), 16384).expect("syncs");
+        assert_eq!(logs.land(16384), 4096);
+        assert_eq!(logs.land(20480), 20480);
+        logs.carry(slot(1), &carried(0, 2, None), 20480)
+            .expect("the walk met the end");
+        logs.sync(slot(1), &empty(1, 0), 24576).expect("syncs");
+        assert_eq!(logs.land(24576), 20480);
+    }
+
+    /// No caller sees a range of a record that a trim passed: `land` stops before
+    /// it, so only memory holds it. The read of `marked` checks that it leaves.
+    #[test]
+    fn a_range_leaves_when_a_trim_passes_its_record() {
+        let records = [
+            (4096, header(1, Path::Live, 0, 0, None)),
+            (8192, header(1, Path::Live, 0, 0, None)),
+            (12288, header(1, Path::Live, 0, 0, None)),
+        ];
+        let mut logs = walk_from(&records, 0);
+        assert_eq!(logs.marked, [(4096, 8192), (8192, 12288)]);
+        logs.hide(8192);
+        assert_eq!(logs.marked, [(4096, 8192), (8192, 12288)]);
+        logs.hide(12288);
+        assert_eq!(logs.marked, [(8192, 12288)]);
+        assert_eq!(logs.land(12288), 8192);
+    }
+
+    /// A record of a model ring, at its offset: the tails a commit carried, or the
+    /// entries it synced.
+    #[derive(Clone, Debug)]
+    enum Written {
+        Carry(u64, Vec<carry::Tail>),
+        Data(u64, Vec<(u32, Header)>),
+    }
+
+    /// A `Next` with many entries with no samples at few seqs.
+    fn short_next() -> impl Strategy<Value = Next> {
+        (
+            0..3u32,
+            prop_oneof![Just(Path::Live), Just(Path::Backfill)],
+            0..2u64,
+            prop_oneof![Just(0u32), Just(0u32), Just(1u32), Just(2u32)],
+            prop::option::of(0..3i64),
+        )
+            .prop_map(|(index, path, skip, len, last)| Next {
+                index,
+                path,
+                skip,
+                len,
+                last,
+            })
+    }
+
+    proptest! {
+        /// Commits that carry the idle tails before their data record and trim to
+        /// a landing at or below `kept`, then a walk of the records left, as the
+        /// open does, gives each path its durable position and each read what it gets.
+        #[test]
+        fn a_walk_after_each_landing_gives_what_the_logs_give(
+            records in prop::collection::vec(
+                (
+                    prop::collection::vec(short_next(), 0..4),
+                    0..14u64,
+                    0..4usize,
+                    prop::option::of(0..14u64),
+                    any::<bool>(),
+                    prop::bool::weighted(0.2),
+                ),
+                1..16,
+            ),
+        ) {
+            let mut logs = Logs::default();
+            let mut ring = Vec::new();
+            let mut hidden = 0;
+            let numbered = records.iter().zip(1..);
+            for ((record, reach, limit, trim, carries, reopen), number) in numbered {
+                if *reopen {
+                    let walked = walk_ring(&ring, hidden)?;
+                    same_reads(&ring, &walked, &logs)?;
+                    logs = walked;
+                }
+                let carried_at = 8192 * number;
+                let synced_at = carried_at + 4096;
+                let mut queued = Vec::new();
+                for next in record {
+                    let at = slot(next.index);
+                    let first = logs.appended(at, next.path).seq + next.skip;
+                    let header =
+                        header(next.index, next.path, first, next.len, next.last);
+                    prop_assert_eq!(logs.append(at, &header), Ok(()));
+                    queued.push((next.index, header));
+                }
+                let mut tails = Vec::new();
+                logs.idle(8192 * *reach.min(&number), *limit, &mut tails);
+                if *carries && !tails.is_empty() {
+                    for tail in &tails {
+                        let at = slot(index_of(tail.index));
+                        prop_assert_eq!(logs.carry(at, tail, carried_at), Ok(()));
+                    }
+                    ring.push(Written::Carry(carried_at, tails));
+                }
+                for (index, header) in &queued {
+                    prop_assert_eq!(logs.sync(slot(*index), header, synced_at), Ok(()));
+                }
+                if !queued.is_empty() {
+                    ring.push(Written::Data(synced_at, queued));
+                }
+                if let Some(trim) = trim {
+                    let bound = logs.kept().unwrap_or(synced_at + 4096);
+                    hidden = hidden.max(logs.land((8192 * trim).min(bound)));
+                    logs.hide(hidden);
+                }
+            }
+            let walked = walk_ring(&ring, hidden)?;
+            same_reads(&ring, &walked, &logs)?;
+        }
+    }
+
+    /// The logs that a walk of the records of `ring` at or after `hidden` builds.
+    fn walk_ring(ring: &[Written], hidden: u64) -> Result<Logs, TestCaseError> {
+        let mut walked = Logs::default();
+        for record in ring {
+            match record {
+                Written::Carry(offset, tails) if *offset >= hidden => {
+                    for tail in tails {
+                        let at = slot(index_of(tail.index));
+                        prop_assert_eq!(walked.carry(at, tail, *offset), Ok(()));
+                    }
+                }
+                Written::Data(offset, entries) if *offset >= hidden => {
+                    for (index, header) in entries {
+                        let at = slot(*index);
+                        prop_assert_eq!(walked.append(at, header), Ok(()));
+                        prop_assert_eq!(walked.sync(at, header, *offset), Ok(()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(walked)
+    }
+
+    /// Checks that each path of `walked` has the durable position of `logs`, and
+    /// that a read from each mark of a small range gets from `walked` what it gets
+    /// from `logs`.
+    fn same_reads(
+        ring: &[Written],
+        walked: &Logs,
+        logs: &Logs,
+    ) -> Result<(), TestCaseError> {
+        for index in 0..3 {
+            for path in [Path::Live, Path::Backfill] {
+                let durable =
+                    |logs: &Logs| logs.log(slot(index), path).map(|log| log.durable);
+                prop_assert_eq!(durable(walked), durable(logs));
+                for seq in 0..14 {
+                    for given in 0..5 {
+                        let from = mark(seq, given);
+                        let found =
+                            |logs: &Logs| match logs.find(slot(index), path, from) {
+                                Found::Run(key, run) => {
+                                    Ok((run.offset, read(ring, key, path, run, from)))
+                                }
+                                Found::End(end) => Err(end),
+                            };
+                        prop_assert_eq!(
+                            found(walked),
+                            found(logs),
+                            "index {} path {:?} from {:?}",
+                            index,
+                            path,
+                            from
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Each entry of `key` on `path` in the data record of `run` in `ring` that a
+    /// read from `from` gets, with the mark after it, as the read's scan counts.
+    fn read(
+        ring: &[Written],
+        key: channel::Key,
+        path: Path,
+        run: Run,
+        from: Mark,
+    ) -> Vec<(Header, Mark)> {
+        let entries = ring
+            .iter()
+            .find_map(|record| match record {
+                Written::Data(offset, entries) if *offset == run.offset => {
+                    Some(entries)
+                }
+                _ => None,
+            })
+            .expect("a run names a data record");
+        let mut at = run.start;
+        entries
+            .iter()
+            .filter(|(_, header)| (header.index, header.path) == (key, path))
+            .filter_map(|&(_, header)| {
+                at = at.after(header.first, header.len);
+                (at > from).then_some((header, at))
+            })
+            .collect()
     }
 }
