@@ -70,7 +70,9 @@ impl Rig {
         }
     }
 
-    /// The hub, for a reader or a write that the rig does not give.
+    /// The hub, for a reader or a write that the rig does not give. The rig does not
+    /// see a call of [`Hub::set_definitions`] on it, so a later [`Self::define`] sets
+    /// each definition that the rig holds again.
     #[must_use]
     pub fn hub(&self) -> &Hub {
         &self.hub
@@ -309,8 +311,7 @@ pub async fn create_config(
 }
 
 /// The definitions of the status channels of `connector`, whose kind names `counts`,
-/// with keys from `first` on, the index first. A test passes them to
-/// [`hub::Hub::set_definitions`] with its own.
+/// with keys from `first` on, the index first. A test passes them to [`Rig::define`].
 ///
 /// # Panics
 ///
