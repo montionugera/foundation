@@ -316,6 +316,7 @@ async fn supervise(fixture: &Fixture, node: &Node, names: &[&str]) -> cancel::To
         net: fixture.sim.net(),
         tasks: fixture.tasks.clone(),
         hub: fixture.hub.clone(),
+        secrets: connector::testing::create_secret_store(fixture.sim.files()),
     });
     let spec = node.mesh().spec().await.expect("a spec");
     let cancel = cancel::Token::new();

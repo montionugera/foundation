@@ -12,6 +12,10 @@ use crate::disk::Handle;
 use crate::files::{Call, Done, Ended, Held};
 use crate::state::lock;
 
+/// The data directory that [`env::files::Driver::shown`] joins to, as `os` gives an
+/// absolute path.
+const ROOT: &str = "/data";
+
 impl Node {
     /// Starts `call` on `path` now, keeping `held` until it ends.
     ///
@@ -89,6 +93,10 @@ impl env::files::Driver for Node {
             };
             bytes
         })
+    }
+
+    fn shown(&self, path: &Path) -> PathBuf {
+        Path::new(ROOT).join(path)
     }
 }
 
