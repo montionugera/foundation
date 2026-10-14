@@ -1597,7 +1597,8 @@ mod tests {
         );
     }
 
-    /// S4 bounds the memory of the items by one entry per record.
+    /// S4 bounds the memory of the items by one entry per record. No call of `Logs`
+    /// shows the entries, so the test reads them.
     #[test]
     fn the_items_of_a_record_share_its_entry() {
         let mut logs = Logs::default();
