@@ -24,12 +24,15 @@ impl Repo {
     }
 
     /// A `git` command in the repository as `History` makes it, with an identity and
-    /// no global ignore file, so the machine's settings cannot change a test.
+    /// no global ignore file, so the machine's settings cannot change a test. No
+    /// commit starts a background `git maintenance`, which can write in `.git` while
+    /// `remove` deletes it.
     fn command(&self) -> Command {
         let mut command = command(&self.dir);
         command
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
-            .args(["-c", "core.excludesFile=/dev/null"]);
+            .args(["-c", "core.excludesFile=/dev/null"])
+            .args(["-c", "maintenance.auto=false"]);
         command
     }
 
@@ -131,6 +134,24 @@ impl Repo {
             panic!("remove {}: {e}", self.dir.display());
         }
     }
+}
+
+#[test]
+fn a_commit_starts_no_background_maintenance() {
+    let repo = Repo::new("maintenance");
+    std::fs::write(repo.dir.join("a.txt"), "a\n").unwrap();
+    repo.git(&["add", "a.txt"]);
+    let output = repo
+        .command()
+        .env("GIT_TRACE", "1")
+        .args(["commit", "--quiet", "-m", "a"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let trace = String::from_utf8(output.stderr).unwrap();
+    assert!(trace.contains("built-in: git commit"), "{trace}");
+    assert!(!trace.contains("git maintenance run"), "{trace}");
+    repo.remove();
 }
 
 #[test]
