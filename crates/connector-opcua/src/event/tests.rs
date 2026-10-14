@@ -848,14 +848,10 @@ fn drop_65_passes() {
 }
 
 #[test]
-#[cfg(unix)]
 fn the_drop_aborts_after_64_passes() {
-    assert_eq!(
-        String::from_utf8(child::aborted("event::tests::drop_65_passes", &[]).stderr)
-            .unwrap(),
-        "connector-opcua: open62541 queued delayed callbacks for 64 passes of a loop \
-         free\n"
-    );
+    let line = "connector-opcua: open62541 queued delayed callbacks for 64 passes of a loop \
+                free\n";
+    child::aborted_in_c("event::tests::drop_65_passes", &[], line);
 }
 
 #[test]

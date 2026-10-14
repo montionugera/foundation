@@ -1,5 +1,5 @@
-//! The body of a carry record: the durable tails of paths whose newest data record
-//! a later trim passes.
+//! The body of a carry record: the durable tails of paths whose holder a later trim
+//! passes.
 //!
 //! ```text
 //! [count: u32][count tails]

@@ -718,6 +718,21 @@ fn ends_the_run_with_a_device_error_on_a_bad_status() {
     assert_eq!(outcome.frames.len(), 11);
 }
 
+#[test]
+fn writes_the_value_of_a_good_status_with_a_subcode() {
+    let outcome = run(Setup::three(), |scene| async move {
+        scene.after(ms(1_050), |scene| async move {
+            scene.variables.change(Quality(0x0096_0000));
+        });
+        scene.supervise(ms(1_550)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(errors(&outcome.statuses), []);
+    let frames = &outcome.frames;
+    assert_eq!(frames.len(), 16);
+    assert_eq!(values(frames, 2), served(&outcome, A));
+}
+
 /// The error names the read of the first bad status, also past the first read.
 #[test]
 fn names_the_read_of_a_bad_status_past_the_first() {
@@ -945,10 +960,23 @@ fn stamps_each_frame_within_its_read() {
 /// that gives a value for a bad read in place of the panic.
 #[test]
 #[should_panic(
-    expected = "invariant: read 2 is BadNotFound, which `Values::new` refuses"
+    expected = "invariant: read 2 is Err(BadNotFound), which `Values::new` refuses"
 )]
 fn panics_with_the_read_whose_value_is_bad() {
+    use crate::value::Value;
     let bad = Err(Status::BAD_NOT_FOUND);
-    let values = [Ok(1.0), bad, bad];
+    let values = [Ok(Value::F64(1.0)), bad, bad];
     Values(&values).get(2);
+}
+
+#[test]
+fn refuses_a_value_that_is_not_a_double_as_a_type_mismatch() {
+    use crate::value::Value;
+    let values = [
+        Ok(Value::F64(1.0)),
+        Ok(Value::F32(1.0)),
+        Err(Status::BAD_NOT_FOUND),
+    ];
+    let refused = Values::new(&values).map(|_| ());
+    assert_eq!(refused, Err((1, Status::BAD_TYPE_MISMATCH)));
 }

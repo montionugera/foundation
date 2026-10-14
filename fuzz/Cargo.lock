@@ -142,6 +142,7 @@ name = "block"
 version = "0.0.0"
 dependencies = [
  "loom",
+ "zeroize",
 ]
 
 [[package]]
@@ -320,6 +321,7 @@ dependencies = [
  "hub",
  "hyper",
  "loom",
+ "secret",
  "spec",
  "types",
 ]
@@ -1251,6 +1253,7 @@ name = "secret"
 version = "0.0.0"
 dependencies = [
  "aws-lc-rs",
+ "block",
  "env",
  "types",
  "zeroize",

@@ -11,10 +11,21 @@ use crate::client::Client;
 use crate::event;
 use crate::ffi::Status;
 use crate::node::Node;
+use crate::value::Value;
 
 const SPIKE: &str = "ns=3;s=SpikeData";
 const DIP: &str = "ns=3;i=7";
 const BAD: Quality = Quality(0x8000_0000);
+const CLAMPED: Quality = Quality(0x0030_0000);
+const UNCERTAIN: Quality = Quality(0x4090_0000);
+const QUALITIES: [Quality; 4] = [Quality::GOOD, CLAMPED, UNCERTAIN, BAD];
+/// The reads of a variable with each of [`QUALITIES`] in turn.
+const READS: [Result<Value, Status>; 4] = [
+    Ok(Value::F64(1.0)),
+    Ok(Value::F64(2.0)),
+    Err(Status(UNCERTAIN.0)),
+    Err(Status(BAD.0)),
+];
 
 /// Binds a listener of `node` on its port 4840.
 fn listen(node: &node::Node) -> Listener {
@@ -54,7 +65,7 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
             ))
             .await
             .expect("connect");
-            for quality in [Quality::GOOD, BAD] {
+            for quality in QUALITIES {
                 variables.change(quality);
                 let before = clock.now();
                 reads.push(client.read_one(&spike).await);
@@ -73,14 +84,16 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
             until,
         )
         .await;
-        assert_eq!(reads, [Ok(1.0), Err(Status(BAD.0))]);
+        assert_eq!(reads, READS);
         let record = variables.served();
         assert_eq!(record[DIP], []);
         let spike = &record[SPIKE];
         let answers: Vec<_> = (spike.iter())
             .map(|served| (served.value, served.quality))
             .collect();
-        assert_eq!(answers, [(1.0, Quality::GOOD), (2.0, BAD)]);
+        let expected: Vec<_> =
+            [1.0, 2.0, 3.0, 4.0].into_iter().zip(QUALITIES).collect();
+        assert_eq!(answers, expected);
         for (Served { time, .. }, (before, after)) in spike.iter().zip(times) {
             assert!(
                 before <= *time && *time <= after,
@@ -151,8 +164,8 @@ fn a_server_has_room_for_4_sessions() {
             until,
         )
         .await;
-        assert_eq!(reads, [Ok(0.0); 4]);
-        assert_eq!(fifth, Some(Status::BAD_TIMEOUT));
+        assert_eq!(reads, [Ok(Value::F64(0.0)); 4]);
+        assert_eq!(fifth, Some(Status::BAD_CONNECTION_CLOSED));
         assert_eq!(variables.served()[SPIKE].len(), 4);
     })
     .expect("the run ends");

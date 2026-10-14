@@ -146,6 +146,16 @@ fn stored(dir: &Path, error: os::Error) -> Failure {
         os::Error::Dir(error) if error.kind() == io::ErrorKind::NotFound => {
             not_running(dir)
         }
+        os::Error::Dir(error) if error.kind() == io::ErrorKind::NotADirectory => {
+            Failure {
+                code: NOT_RUNNING,
+                message: format!(
+                    "no node runs in {}, which is not a data directory",
+                    dir.display()
+                ),
+                fix: "Give `--data` the data directory of a node that runs".to_owned(),
+            }
+        }
         os::Error::Dir(error) => unreadable(dir, error),
         error @ (os::Error::Thread(_)
         | os::Error::Cores(_)
@@ -157,40 +167,45 @@ fn stored(dir: &Path, error: os::Error) -> Failure {
 /// The failure of a reach of the node of the data directory `dir` that gave `error`.
 fn unreached(dir: &Path, error: node::client::Error) -> Failure {
     let data = dir.display();
-    let (code, message, fix) = match error {
+    let (code, message, fix): (_, _, String) = match error {
         node::client::Error::NotRunning => return not_running(dir),
         node::client::Error::Files(error) => return unreadable(dir, error),
         node::client::Error::Key => (
             ADMIN_KEY,
             format!("{data} holds no admin.key that a node wrote"),
-            "Put back the `admin.key` that the first start wrote",
+            "Put back the `admin.key` that the first start wrote".into(),
         ),
         node::client::Error::Transport(error) => (
             SOCKET,
             format!("the socket of this program failed: {error}"),
-            "Fix the cause in the message, then run the command again",
+            "Fix the cause in the message, then run the command again".into(),
         ),
         node::client::Error::Unanswered { at, error } => (
             UNANSWERED,
             format!("no node answers at {at}, the address in {data}: {error}"),
-            "Start the node again with `foundation start`",
+            match quoted(dir) {
+                Some(dir) => {
+                    format!("Start the node again with `foundation start --data={dir}`")
+                }
+                None => {
+                    "Start the node again with `foundation start` and `--data` set \
+                         to that directory"
+                        .into()
+                }
+            },
         ),
         node::client::Error::Session { at, error } => (
             SESSION,
             format!("the session with the node at {at} failed: {error}"),
-            "Read the log of the node, then run the command again",
+            "Fix the cause in the message, then run the command again".into(),
         ),
         node::client::Error::Refused(refusal) => (
             REFUSED,
             format!("the node refused the key in {data}/data/admin.key: {refusal}"),
-            "Use the key of a subject in the node's spec",
+            "Use the key of a subject in the node's spec".into(),
         ),
     };
-    Failure {
-        code,
-        message,
-        fix: fix.to_owned(),
-    }
+    Failure { code, message, fix }
 }
 
 /// The failure of a data directory `dir` where no node runs.
@@ -198,8 +213,36 @@ fn not_running(dir: &Path) -> Failure {
     Failure {
         code: NOT_RUNNING,
         message: format!("no node runs in {}", dir.display()),
-        fix: "Start one with `foundation start --name <name>`".to_owned(),
+        fix: match quoted(dir) {
+            Some(dir) => format!(
+                "Run `foundation start --data={dir}`, with `--name <name>` on its first \
+                 start, or give `--data` the data directory of a node that runs"
+            ),
+            None => "Run `foundation start` with `--data` set to that directory, with \
+                     `--name <name>` on its first start, or give `--data` the data \
+                     directory of a node that runs"
+                .to_owned(),
+        },
     }
+}
+
+/// `dir` as the end of the shell word `--data={dir}` that gives back `dir`, so that a
+/// command in a fix runs as printed: in single quotes unless it holds only safe
+/// characters. `None` when `dir` is not UTF-8 or holds
+/// a character that `char::escape_debug` escapes other than a quote, such as `\` or a
+/// newline, since the text of a fix escapes it.
+fn quoted(dir: &Path) -> Option<String> {
+    let dir = dir.to_str().filter(|dir| {
+        dir.chars()
+            .all(|c| matches!(c, '"' | '\'') || c.escape_debug().len() == 1)
+    })?;
+    // No `=` or `~`: zsh with `MAGIC_EQUAL_SUBST` expands either after `--data=`.
+    let safe = |c: char| c.is_ascii_alphanumeric() || "_./:@%+,-".contains(c);
+    Some(if !dir.is_empty() && dir.chars().all(safe) {
+        dir.to_owned()
+    } else {
+        format!("'{}'", dir.replace('\'', r#"'"'"'"#))
+    })
 }
 
 /// The failure of a data directory `dir` that this user cannot read.
@@ -1181,22 +1224,141 @@ mod tests {
         }
     }
 
-    const NOT_RUNNING_FIX: &str = "Start one with `foundation start --name <name>`";
+    const NOT_RUNNING_FIX: &str = "Run `foundation start --data=plant`, with `--name \
+                                   <name>` on its first start, or give `--data` the \
+                                   data directory of a node that runs";
     const UNREADABLE_FIX: &str = "Run the command as the user that started the node";
 
     #[test]
     fn a_directory_with_no_node_is_not_running() {
-        let not_running = of_reach(
-            NOT_RUNNING,
-            "no node runs in foundation-data",
-            NOT_RUNNING_FIX,
-        );
+        let plant = Path::new("plant");
+        let not_running =
+            of_reach(NOT_RUNNING, "no node runs in plant", NOT_RUNNING_FIX);
         assert_eq!(
-            unreached(dir(), node::client::Error::NotRunning),
+            unreached(plant, node::client::Error::NotRunning),
             not_running
         );
         let missing = io::Error::from(io::ErrorKind::NotFound);
-        assert_eq!(stored(dir(), os::Error::Dir(missing)), not_running);
+        assert_eq!(stored(plant, os::Error::Dir(missing)), not_running);
+    }
+
+    #[test]
+    fn a_file_as_the_data_directory_is_not_running() {
+        let file = io::Error::from(io::ErrorKind::NotADirectory);
+        assert_eq!(
+            stored(Path::new("plant.hcl"), os::Error::Dir(file)),
+            of_reach(
+                NOT_RUNNING,
+                "no node runs in plant.hcl, which is not a data directory",
+                "Give `--data` the data directory of a node that runs",
+            )
+        );
+    }
+
+    #[test]
+    fn the_fix_of_a_data_directory_where_no_node_runs_quotes_it_for_the_shell() {
+        let fix = |dir| not_running(Path::new(dir)).fix;
+        assert_eq!(
+            ["plant", "my plant", "it's", "-x", "=plant"].map(fix),
+            [
+                "Run `foundation start --data=plant`, with `--name <name>` on its first \
+                 start, or give `--data` the data directory of a node that runs",
+                "Run `foundation start --data='my plant'`, with `--name <name>` on its \
+                 first start, or give `--data` the data directory of a node that runs",
+                "Run `foundation start --data='it'\"'\"'s'`, with `--name <name>` on its \
+                 first start, or give `--data` the data directory of a node that runs",
+                "Run `foundation start --data=-x`, with `--name <name>` on its first \
+                 start, or give `--data` the data directory of a node that runs",
+                "Run `foundation start --data='=plant'`, with `--name <name>` on its \
+                 first start, or give `--data` the data directory of a node that runs",
+            ]
+        );
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn the_shell_gives_back_the_path_of_its_word(dir in "[\t\n -~é\u{301}\u{200b}]{0,24}") {
+            let Some(word) = quoted(Path::new(&dir)) else {
+                let escaped = ['\\', '\t', '\n', '\u{301}', '\u{200b}'];
+                proptest::prop_assert!(dir.contains(escaped), "{dir:?} has a word");
+                return Ok(());
+            };
+            let shells: [&[&str]; 3] = [&["sh"], &["zsh"], &["zsh", "-o", "magic_equal_subst"]];
+            for shell in shells {
+                let Ok(output) = std::process::Command::new(shell[0])
+                    .args(&shell[1..])
+                    .arg("-c")
+                    .arg(format!("printf %s --data={word}"))
+                    .output()
+                else {
+                    proptest::prop_assert_eq!(shell[0], "zsh", "{} is not there", shell[0]);
+                    continue;
+                };
+                let given = String::from_utf8_lossy(&output.stdout);
+                proptest::prop_assert_eq!(given.strip_prefix("--data="), Some(&*dir), "{:?}", shell);
+            }
+        }
+    }
+
+    #[test]
+    fn a_path_in_a_command_is_one_word_of_the_shell() {
+        let words = [
+            "plant",
+            "/var/lib/foundation-2.d",
+            "my plant",
+            "it's",
+            "",
+            "~/a",
+            "-x",
+            "-my x",
+            "=plant",
+            "=my plant",
+        ]
+        .map(|dir| quoted(Path::new(dir)).expect("a UTF-8 path has a word"));
+        assert_eq!(
+            words,
+            [
+                "plant",
+                "/var/lib/foundation-2.d",
+                "'my plant'",
+                "'it'\"'\"'s'",
+                "''",
+                "'~/a'",
+                "-x",
+                "'-my x'",
+                "'=plant'",
+                "'=my plant'",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_fix_names_no_data_directory_that_it_cannot_print() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = Path::new(std::ffi::OsStr::from_bytes(b"plant\xff"));
+        let words = [
+            dir,
+            Path::new("a\\b"),
+            Path::new("a\nb"),
+            Path::new("cafe\u{301}"),
+            Path::new("a\u{200b}b"),
+        ];
+        assert_eq!(words.map(quoted), [None, None, None, None, None]);
+        assert_eq!(
+            not_running(dir).fix,
+            "Run `foundation start` with `--data` set to that directory, with `--name \
+             <name>` on its first start, or give `--data` the data directory of a node \
+             that runs"
+        );
+        let error = node::client::Error::Unanswered {
+            at: at(),
+            error: transport::Error::TimedOut,
+        };
+        assert_eq!(
+            unreached(dir, error).fix,
+            "Start the node again with `foundation start` and `--data` set to that \
+             directory"
+        );
     }
 
     #[test]
@@ -1274,13 +1436,21 @@ mod tests {
             error: transport::Error::TimedOut,
         };
         assert_eq!(
-            unreached(dir(), error),
+            unreached(Path::new("plant"), error),
             of_reach(
                 UNANSWERED,
-                "no node answers at 127.0.0.1:54321, the address in foundation-data: \
-                 the peer stopped answering",
-                "Start the node again with `foundation start`",
+                "no node answers at 127.0.0.1:54321, the address in plant: the peer \
+                 stopped answering",
+                "Start the node again with `foundation start --data=plant`",
             )
+        );
+        let error = node::client::Error::Unanswered {
+            at: at(),
+            error: transport::Error::TimedOut,
+        };
+        assert_eq!(
+            unreached(Path::new("my plant"), error).fix,
+            "Start the node again with `foundation start --data='my plant'`"
         );
     }
 
@@ -1296,7 +1466,7 @@ mod tests {
                 SESSION,
                 "the session with the node at 127.0.0.1:54321 failed: the node \
                  finished a stream with no answer",
-                "Read the log of the node, then run the command again",
+                "Fix the cause in the message, then run the command again",
             )
         );
     }
