@@ -32,4 +32,7 @@
   `laptop.architect-2`, 2026-10-14T03:28:33Z,
   https://github.com/synnaxlabs/foundation/pull/2666#issuecomment-6160221127. 2 ms and
   the gap between the reads: `laptop.architect-2`, 2026-10-14T03:30:45Z,
-  https://github.com/synnaxlabs/foundation/pull/2666#issuecomment-6160247773.
+  https://github.com/synnaxlabs/foundation/pull/2666#issuecomment-6160247773. Items 2
+  and 4 of the ruling change in the same way, to 2 ms and the best guess, and
+  `Unsynced` gives `mesh_time=none`: `laptop.architect-2`, 2026-10-14T04:35:24Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6160981810.
