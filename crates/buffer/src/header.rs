@@ -88,7 +88,6 @@ impl Header {
     }
 
     /// The checkpoint after this one, with the tail moved to `tail`.
-    #[cfg_attr(not(test), expect(dead_code, reason = "trimming moves the tail"))]
     pub(crate) fn next(self, tail: Position) -> Self {
         Self {
             tail,
@@ -99,7 +98,6 @@ impl Header {
 
     /// The byte offset in the ring file of the block that holds this checkpoint:
     /// the two checkpoints alternate between the first two blocks.
-    #[cfg_attr(not(test), expect(dead_code, reason = "trimming moves the tail"))]
     pub(crate) fn place(&self) -> u64 {
         if self.seq.is_multiple_of(2) { 0 } else { BLOCK }
     }

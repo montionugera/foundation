@@ -8,6 +8,9 @@ publish.workspace = true
 [features]
 # Exposes `wal::Writer` and `log::Logs` to the benches. Off by default.
 sim = []
+# Turns on the trim and the carry records of each commit. Off until the open
+# trims too.
+trim = []
 
 [dependencies]
 block = { path = "../block" }

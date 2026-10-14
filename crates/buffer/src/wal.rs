@@ -249,7 +249,6 @@ impl Layout {
     /// The most tails that one carry record of this layout holds: the fewer of
     /// [`carry::TAILS_MAX`] and the tails that fit `body_max`. No other place
     /// computes it.
-    #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
     pub(crate) fn tails_max(self) -> usize {
         carry::count(self.body_max)
     }
@@ -519,7 +518,6 @@ impl Writer {
     /// # Panics
     ///
     /// When `tails` is more than [`Layout::tails_max`].
-    #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
     pub(crate) fn carry(&mut self, tails: usize) -> Result<Plan, Full> {
         self.plan(carry::body_len(tails), REOPEN)
     }
@@ -527,7 +525,6 @@ impl Writer {
     /// The most tails that a carry record planned now may hold: the fewer of
     /// [`Layout::tails_max`] and the tails whose record fits as
     /// [`carry`](Self::carry) checks it. Zero when no block is free for it.
-    #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
     pub(crate) fn tails(&self) -> usize {
         let free = self.free(REOPEN);
         let rest = self.layout.area - self.layout.place(self.head);
@@ -542,7 +539,6 @@ impl Writer {
     /// The offset that the trim of the next commit wants to move the tail to, when
     /// that commit is as large as the records not yet synced. A path whose holder
     /// is before it needs a carry now.
-    #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
     pub(crate) fn reach(&self) -> u64 {
         let queued = self.queued();
         self.want(self.head.saturating_add(queued), queued)
@@ -631,10 +627,6 @@ impl Writer {
     /// # Panics
     ///
     /// As [`synced`](Self::synced) and [`release`](Self::release).
-    #[cfg_attr(
-        not(any(test, feature = "sim")),
-        expect(dead_code, reason = "a commit calls it")
-    )]
     pub(crate) fn committed(
         &mut self,
         ends: impl IntoIterator<Item = Ends>,
@@ -661,10 +653,6 @@ impl Writer {
     /// The space of a trim is free only at its release. From one trim to the release
     /// of the next, the ring takes the records of two commits and the blocks that one
     /// wrap skips.
-    #[cfg_attr(
-        not(any(test, feature = "sim")),
-        expect(dead_code, reason = "a commit calls it")
-    )]
     pub(crate) fn trimmed(
         &self,
         kept: Option<u64>,

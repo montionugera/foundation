@@ -329,7 +329,6 @@ enum Synced {
 /// feed it with each record's entries, in ring order. A trim hides the records
 /// before its tail.
 #[derive(Clone, Debug, Default)]
-#[cfg_attr(test, derive(PartialEq, Eq))]
 pub(crate) struct Logs {
     /// The place of the log of each path in `paths`.
     places: hash::Map<(Slot, Path), u32>,
@@ -354,6 +353,33 @@ pub(crate) struct Logs {
     /// from the previous record of its path to the run's record.
     marked: Marked,
 }
+
+/// Compares what the logs hold. `stale` and `scanned` only skip work, so the syncs
+/// whose trims moved them and a walk of the same records may differ in them.
+#[cfg(test)]
+impl PartialEq for Logs {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            places,
+            paths,
+            tags,
+            hidden,
+            items,
+            stale: _,
+            scanned: _,
+            marked,
+        } = self;
+        *places == other.places
+            && *paths == other.paths
+            && *tags == other.tags
+            && *hidden == other.hidden
+            && *items == other.items
+            && *marked == other.marked
+    }
+}
+
+#[cfg(test)]
+impl Eq for Logs {}
 
 impl Logs {
     /// Where `path` of the index at `slot` stands with every appended entry:
@@ -428,10 +454,6 @@ impl Logs {
     /// # Panics
     ///
     /// When `tail` is before the tail of an earlier call.
-    #[cfg_attr(
-        not(any(test, feature = "sim")),
-        expect(dead_code, reason = "a commit calls it")
-    )]
     pub(crate) fn hide(&mut self, tail: u64) {
         assert!(
             self.hidden <= tail,
@@ -455,20 +477,12 @@ impl Logs {
     /// samples and comes after other entries with no samples at its seq: the walk
     /// would count them from 0. [`Marked::land`] gives the newest offset at or before
     /// an offset that is in no such range.
-    #[cfg_attr(
-        not(any(test, feature = "sim")),
-        expect(dead_code, reason = "a commit calls it")
-    )]
     pub(crate) fn marked(&self) -> &Marked {
         &self.marked
     }
 
     /// The oldest holder of a path, which no trim may pass. `None` when no path has
     /// a synced entry.
-    #[cfg_attr(
-        not(any(test, feature = "sim")),
-        expect(dead_code, reason = "a commit calls it")
-    )]
     pub(crate) fn kept(&mut self) -> Option<u64> {
         let holding = self
             .items
@@ -484,10 +498,6 @@ impl Logs {
     /// records of a commit: each appended entry is then in a taken record, so the
     /// tail is the end after those records, and the carry record goes right after
     /// them.
-    #[cfg_attr(
-        not(any(test, feature = "sim")),
-        expect(dead_code, reason = "a commit calls it")
-    )]
     pub(crate) fn idle(&mut self, reach: u64, limit: usize, carried: &mut Carried) {
         let mut room = limit;
         for (number, offset, at) in self.items.since(self.scanned) {
@@ -503,6 +513,9 @@ impl Logs {
                 self.scanned = number;
                 return;
             };
+            if carried.tails.is_empty() {
+                carried.first = number;
+            }
             room = left;
             carried.tails.push(carry::Tail {
                 index: log.index,
@@ -516,6 +529,16 @@ impl Logs {
         self.scanned = self.items.added();
     }
 
+    /// Takes back the [`idle`](Self::idle) call that filled `carried`, whose carry
+    /// record no commit writes, so that the next call gives its tails again.
+    /// Clears `carried`.
+    pub(crate) fn dropped(&mut self, carried: &mut Carried) {
+        if !carried.tails.is_empty() {
+            self.scanned = carried.first;
+        }
+        carried.clear();
+    }
+
     /// Makes the carry record at `offset` the holder of each path of `carried`, once
     /// the records before it are synced. A path with queued entries keeps its
     /// appended tail.
@@ -524,10 +547,6 @@ impl Logs {
     ///
     /// When a tail is not the durable end of its path, or `offset` is not after the
     /// newest record of the path.
-    #[cfg_attr(
-        not(any(test, feature = "sim")),
-        expect(dead_code, reason = "a commit calls it")
-    )]
     pub(crate) fn carried(&mut self, carried: &Carried, offset: u64) {
         for (tail, &at) in carried.tails.iter().zip(&carried.places) {
             let log = nth_mut(&mut self.paths, at);
@@ -743,23 +762,17 @@ impl Logs {
 pub(crate) struct Carried {
     tails: Vec<carry::Tail>,
     places: Vec<u32>,
+    /// The number of the item of the first tail.
+    first: u64,
 }
 
 impl Carried {
     /// The tails, in the order of the record body.
-    #[cfg_attr(
-        not(any(test, feature = "sim")),
-        expect(dead_code, reason = "a commit calls it")
-    )]
     pub(crate) fn tails(&self) -> &[carry::Tail] {
         &self.tails
     }
 
     /// Drops the tails and keeps the capacity.
-    #[cfg_attr(
-        not(any(test, feature = "sim")),
-        expect(dead_code, reason = "a commit calls it")
-    )]
     pub(crate) fn clear(&mut self) {
         self.tails.clear();
         self.places.clear();
@@ -801,10 +814,6 @@ impl Marked {
     }
 
     /// The start of the range that holds `offset`, else `offset`. One binary search.
-    #[cfg_attr(
-        not(any(test, feature = "sim")),
-        expect(dead_code, reason = "a commit calls it")
-    )]
     pub(crate) fn land(&self, offset: u64) -> u64 {
         let at = self.0.partition_point(|&(_, record)| record < offset);
         self.0
@@ -1872,6 +1881,27 @@ mod tests {
             logs.idle(16384, 2, &mut tails);
             assert_eq!(tails.tails(), [carried(5, 0, Some(20))]);
             assert_eq!(logs.kept(), Some(12288));
+        }
+
+        /// A commit with no blocks for its carry record drops it, and the next scan
+        /// gives the tail again. A scan that is not dropped goes on past it, and a
+        /// drop of no tails keeps the scan where it is.
+        #[test]
+        fn idle_after_a_dropped_carry_gives_its_tails_again() {
+            let mut logs = walked(Some(20));
+            let mut tails = Carried::default();
+            logs.idle(8192, 2, &mut tails);
+            assert_eq!(tails.tails(), [carried(3, 1, Some(20))]);
+            logs.dropped(&mut tails);
+            assert_eq!(tails.tails(), []);
+            logs.idle(8192, 2, &mut tails);
+            assert_eq!(tails.tails(), [carried(3, 1, Some(20))]);
+            tails.clear();
+            logs.idle(8192, 2, &mut tails);
+            assert_eq!(tails.tails(), []);
+            logs.dropped(&mut tails);
+            logs.idle(8192, 2, &mut tails);
+            assert_eq!(tails.tails(), []);
         }
 
         /// The entry of seq 5 came after the commit took its records.
