@@ -57,10 +57,11 @@
   of the node is not set. Start the node with it set to the value`, other than `BadName`
   of the store, which stays `Error::Config`. The mode check of #2596 is for the store of
   `secret()` only, because Docker and Kubernetes mount a secret file with mode 0444 or
-  0644. `plan` reads each source of each connector of the planning node that the subject
-  of the plan may apply (`apply` and `admin` on its name), through a clone of the
-  resolver of the shard, as a run does, and drops the value. It reads no source of
-  another connector, so a subject that may only plan learns nothing of the files and the
+  0644. A local `plan` reads each source of each connector of the planning node. A
+  remote `plan` reads them only for each connector that its subject may apply (`apply`
+  and `admin` on its name), through a clone of the resolver of the shard, as a run
+  does, and drops the value. A remote `plan` reads no source of another connector, so
+  a subject that may only plan learns nothing of the files and the
   environment of the node. Each source that gives no value, `BadName` too, is a
   `secret.unresolved` problem at its call, with the text `the secret <source>: <error>`.
   These problems come after those of `config::plan::plan` in one list: the connectors in
@@ -70,8 +71,8 @@
   applies the file, until `apply` reads them (#2694). This is the plan of item 7
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6161179051), with
   the filter by subject that `laptop.architect-2` approved on 2026-10-14T19:52:43Z
-  (https://github.com/synnaxlabs/foundation/pull/2692#issuecomment-6177025658). It
-  supersedes "each connector that the planning node runs" in item 7 of
+  (https://github.com/synnaxlabs/foundation/pull/2692#issuecomment-6177025658). For a
+  remote plan, it supersedes "each connector that the planning node runs" in item 7 of
   https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6155189112. A
   connector on another node is not checked at plan until #239. A person who can apply a
   spec can make the node read any variable of its environment and any file that its user
