@@ -63,8 +63,9 @@
   another connector, so a subject that may only plan learns nothing of the files and the
   environment of the node. Each source that gives no value, `BadName` too, is a
   `secret.unresolved` problem at its call, with the text `the secret <source>: <error>`,
-  after the problems of `config::plan::plan` in one list: the connectors in name order,
-  and the sources of each in the order of its config. This is the plan of item 7
+  after the problems of `config::plan::plan` in one list, when `config::check` passes; a
+  plan that `config::check` refuses reads no source: the connectors in name order, and
+  the sources of each in the order of its config. This is the plan of item 7
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6161179051), with
   the fixes of round 1 of #2692
   (https://github.com/synnaxlabs/foundation/pull/2692#issuecomment-6164799171). A

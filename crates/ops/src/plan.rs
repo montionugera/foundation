@@ -69,8 +69,9 @@ impl Documents {
     ///
     /// # Errors
     ///
-    /// [`Error::Config`] with each problem of [`config::plan::plan`], then
-    /// `secret.unresolved` at the call of each source that gives no value.
+    /// [`Error::Config`] with each problem of [`config::check`] and no read when it
+    /// fails; else each problem of [`config::plan::plan`], then `secret.unresolved` at
+    /// the call of each source that gives no value.
     pub(crate) async fn plan(
         &self,
         node: &Node,

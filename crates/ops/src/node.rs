@@ -47,7 +47,7 @@ pub struct Config {
     /// The name of the node.
     pub name: Name,
     /// The resolver through which `plan` reads each secret of each connector of the
-    /// node, as a run does.
+    /// node that the subject may apply, as a run does.
     pub secrets: secret::Resolver,
 }
 
