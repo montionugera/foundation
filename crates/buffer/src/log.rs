@@ -1749,7 +1749,9 @@ mod tests {
         let tag = NonZeroU8::new(2).expect("nonzero");
         let key = channel::Key::from_u128(1);
         assert_eq!(logs.tagged(Path::Live, tag), [(4096, slot(1), key)]);
-        assert_eq!(logs.items.records, [(4096, 1)]);
+        let mut carried = Carried::default();
+        logs.idle(8192, 2, &mut carried);
+        assert_eq!(carried.tails().len(), 1, "one item in the record");
     }
 
     /// An entry with no samples whose mark alone is the durable one, with no stamp,
@@ -1771,6 +1773,8 @@ mod tests {
     /// shows it only as a total: one `bench::Logs::commit` at 64 indexes counts 81
     /// allocations, and 85 when each item adds an entry. A pin of that total fails
     /// on each change of growth in another part, so the test reads the entries.
+    /// `tests/memory` `per_path(4097)` also fails: 2007152 bytes for 4097 paths, over
+    /// 1761710.
     #[test]
     fn the_items_of_a_record_share_its_entry() {
         let mut logs = Logs::new(AREA);
@@ -2376,7 +2380,10 @@ mod tests {
         marked.mark(4096, 12288);
         marked.mark(8192, 12288);
         marked.mark(4096, 12288);
-        assert_eq!(marked, Marked(VecDeque::from([(4096, 12288)])));
+        assert_eq!(marked.land(4096), 4096);
+        assert_eq!(marked.land(8192), 4096);
+        assert_eq!(marked.land(12288), 4096);
+        assert_eq!(marked.land(16384), 16384);
     }
 
     #[test]
@@ -2384,7 +2391,9 @@ mod tests {
         let mut marked = Marked::default();
         marked.mark(8192, 12288);
         marked.mark(4096, 12288);
-        assert_eq!(marked, Marked(VecDeque::from([(4096, 12288)])));
+        assert_eq!(marked.land(8192), 4096);
+        assert_eq!(marked.land(12288), 4096);
+        assert_eq!(marked.land(16384), 16384);
     }
 
     #[test]
