@@ -1146,7 +1146,7 @@ impl Serve {
                         let kinds = Arc::new(kinds());
                         let ops = Rc::new(ops::Node::new(ops::Config {
                             mesh: mesh.clone(),
-                            key: channel_keys(&time, &entropy),
+                            keys: channel_keys(&time, &entropy),
                             front_ends: front_ends(),
                             kinds: Arc::clone(&kinds),
                             hub: hub.clone(),

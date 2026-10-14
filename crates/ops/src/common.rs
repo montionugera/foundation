@@ -160,7 +160,7 @@ pub(crate) fn create_node_with(
     };
     Node::new(Config {
         mesh,
-        key: Box::new(key),
+        keys: Box::new(key),
         front_ends,
         kinds: Arc::new(create_kinds()),
         hub: fixture.hub.clone(),

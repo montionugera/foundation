@@ -20,7 +20,7 @@ mod tests;
 /// where the mesh of the node runs. It is not `Send`.
 pub struct Node {
     pub(crate) mesh: mesh::Mesh,
-    pub(crate) key: Box<dyn Fn() -> channel::Key>,
+    pub(crate) keys: Box<dyn Fn() -> channel::Key>,
     pub(crate) front_ends: FrontEnds,
     pub(crate) kinds: Arc<connector::kind::Table>,
     pub(crate) hub: hub::Hub,
@@ -35,7 +35,7 @@ pub struct Config {
     pub mesh: mesh::Mesh,
     /// Gives the key of each new channel: each call gives a key that no channel holds
     /// and no earlier call gave.
-    pub key: Box<dyn Fn() -> channel::Key>,
+    pub keys: Box<dyn Fn() -> channel::Key>,
     /// The syntax of each file extension.
     pub front_ends: FrontEnds,
     /// Each connector kind of the node.
@@ -57,7 +57,7 @@ impl Node {
     pub fn new(config: Config) -> Self {
         let Config {
             mesh,
-            key,
+            keys,
             front_ends,
             kinds,
             hub,
@@ -67,7 +67,7 @@ impl Node {
         } = config;
         Self {
             mesh,
-            key,
+            keys,
             front_ends,
             kinds,
             hub,
@@ -115,7 +115,7 @@ impl Node {
     ///
     /// The JSON error that `apply --json` writes.
     pub async fn apply(&self, path: &Path, bytes: &[u8]) -> Result<Value, Value> {
-        apply::file(path, bytes, &self.mesh, &self.kinds, &self.key)
+        apply::file(path, bytes, &self.mesh, &self.kinds, &self.keys)
             .await
             .map(|applied| crate::value(&applied))
             .map_err(|e| e.json())

@@ -4625,7 +4625,7 @@ mod port {
             let name = member.card.card().name.clone();
             Rc::new(ops::Node::new(ops::Config {
                 mesh: mesh.clone(),
-                key: crate::channel_keys(time, entropy),
+                keys: crate::channel_keys(time, entropy),
                 front_ends: crate::front_ends(),
                 kinds: Arc::new(crate::kinds()),
                 hub: hub.clone(),

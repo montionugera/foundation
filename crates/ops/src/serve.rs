@@ -484,7 +484,7 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Body, Error>
     if plan.changes.is_empty() && plan.homes.is_empty() {
         return Err(check.denied(Action::Apply, On::Nothing));
     }
-    let effect = apply::apply(plan, spec, &node.mesh, &node.kinds, &node.key).await?;
+    let effect = apply::apply(plan, spec, &node.mesh, &node.kinds, &node.keys).await?;
     Ok(Body::line(&Answer::Done { output: &effect })?)
 }
 

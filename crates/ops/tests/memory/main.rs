@@ -79,7 +79,7 @@ fn serve_large(text: &str) {
         );
         let node = Node::new(Config {
             mesh,
-            key: Box::new(|| Key::from_u128(1)),
+            keys: Box::new(|| Key::from_u128(1)),
             front_ends,
             kinds: Arc::new(connector::kind::Table::new()),
             hub,

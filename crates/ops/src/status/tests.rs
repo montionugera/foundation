@@ -267,7 +267,7 @@ fn create_node(fixture: &Fixture, mesh: mesh::Mesh) -> Node {
     };
     Node::new(Config {
         mesh,
-        key: Box::new(key),
+        keys: Box::new(key),
         front_ends: front_ends(),
         kinds: Arc::new(kinds()),
         hub: fixture.hub.clone(),
