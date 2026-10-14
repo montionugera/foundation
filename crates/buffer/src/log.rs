@@ -350,8 +350,9 @@ pub(crate) struct Logs {
     stale: u64,
     /// An [`idle`](Self::idle) has passed each item before this number.
     scanned: u64,
-    /// For each marked run, in ring order, the previous record of its path and the
-    /// run's record. No trim lands after the first up to and with the second.
+    /// The ranges in which no trim lands, in ring order: after the first record up
+    /// to and with the second. Each holds the range of each marked run, from the
+    /// previous record of its path to the run's record. A gap parts any two ranges.
     marked: VecDeque<(u64, u64)>,
 }
 
@@ -461,17 +462,14 @@ impl Logs {
     /// previous record of a path up to and with a record whose first entry of the
     /// path has no samples and comes after others at its seq: the walk would count
     /// them from 0. Such a landing moves down to that previous record, again until
-    /// it is in no such range. It visits each such record at or after the result.
+    /// it is in no such range. It takes a binary search of the ranges.
     #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
     pub(crate) fn land(&self, offset: u64) -> u64 {
-        let mut landing = offset;
-        for &(after, record) in self.marked.iter().rev() {
-            if record < landing {
-                break;
-            }
-            landing = landing.min(after);
+        let at = self.marked.partition_point(|&(_, record)| record < offset);
+        match self.marked.get(at) {
+            Some(&(after, _)) if after < offset => after,
+            _ => offset,
         }
-        landing
     }
 
     /// The oldest holder of a path, which no trim may pass. `None` when no path has
@@ -672,7 +670,15 @@ impl Logs {
             self.items.push(offset, at);
         }
         if let Synced::Marked { after } = synced {
-            self.marked.push_back((after, offset));
+            let mut first = after;
+            while let Some(&(before, last)) = self.marked.back() {
+                if last < first {
+                    break;
+                }
+                first = first.min(before);
+                self.marked.pop_back();
+            }
+            self.marked.push_back((first, offset));
         }
         if let Some(tag) = NonZeroU8::new(header.tag) {
             self.tags.insert((slot, header.path, tag), offset);
@@ -2022,24 +2028,85 @@ mod tests {
             .expect("the walk met the end");
         logs.sync(slot(1), &empty(1, 0), 24576).expect("syncs");
         assert_eq!(logs.land(24576), 20480);
+        assert_eq!(logs.marked, [(4096, 16384), (20480, 24576)]);
     }
 
-    /// No caller sees a range of a record that a trim passed: `land` stops before
-    /// it, so only memory holds it. The read of `marked` checks that it leaves.
+    /// A range that covers older ranges with a gap between them merges with each,
+    /// so a landing in any of them moves down to its start in one step.
     #[test]
-    fn a_range_leaves_when_a_trim_passes_its_record() {
+    fn a_landing_in_a_merged_range_moves_to_its_start() {
+        let mut logs = Logs::default();
+        let empty = |index, seq| header(index, Path::Live, seq, 0, None);
+        logs.sync(slot(2), &empty(2, 5), 0).expect("syncs");
+        logs.sync(slot(1), &empty(1, 0), 4096).expect("syncs");
+        logs.sync(slot(1), &empty(1, 0), 8192).expect("syncs");
+        logs.carry(slot(1), &carried(0, 2, None), 12288)
+            .expect("the walk met the end");
+        logs.sync(slot(1), &empty(1, 0), 16384).expect("syncs");
+        assert_eq!(logs.marked, [(4096, 8192), (12288, 16384)]);
+        assert_eq!(logs.land(12288), 12288);
+        assert_eq!(logs.land(16384), 12288);
+        logs.sync(slot(2), &empty(2, 5), 20480).expect("syncs");
+        assert_eq!(logs.marked, [(0, 20480)]);
+        for offset in [4096, 8192, 12288, 16384, 20480] {
+            assert_eq!(logs.land(offset), 0, "a landing at {offset}");
+        }
+        assert_eq!(logs.land(0), 0);
+        assert_eq!(logs.land(24576), 24576);
+    }
+
+    /// No caller sees a range whose newest record a trim passed: `land` gives a
+    /// landing below the trim, which frees nothing, so only memory holds it. The
+    /// read of `marked` checks that it leaves.
+    #[test]
+    fn a_range_leaves_when_a_trim_passes_its_newest_record() {
         let records = [
             (4096, header(1, Path::Live, 0, 0, None)),
             (8192, header(1, Path::Live, 0, 0, None)),
             (12288, header(1, Path::Live, 0, 0, None)),
         ];
         let mut logs = walk_from(&records, 0);
-        assert_eq!(logs.marked, [(4096, 8192), (8192, 12288)]);
-        logs.hide(8192);
-        assert_eq!(logs.marked, [(4096, 8192), (8192, 12288)]);
+        assert_eq!(logs.marked, [(4096, 12288)]);
         logs.hide(12288);
-        assert_eq!(logs.marked, [(8192, 12288)]);
-        assert_eq!(logs.land(12288), 8192);
+        assert_eq!(logs.marked, [(4096, 12288)]);
+        assert_eq!(logs.land(12288), 4096);
+        logs.hide(16384);
+        assert_eq!(logs.marked, []);
+    }
+
+    /// S4: "memory holds 28 bytes per record and path and 24 bytes per record, in
+    /// deques that double: at most 56/51 of the area, plus 48 bytes per record". 65
+    /// one-block data records each hold an entry with no samples at seq 0 for each of
+    /// 80 paths: 80 * 51 + 13 bytes fit in 4096.
+    #[test]
+    fn marked_runs_keep_memory_in_the_s4_bound() {
+        let records: u64 = 65;
+        let paths: u32 = 80;
+        let mut logs = Logs::default();
+        for record in 0..records {
+            let offset = 4096 * (record + 1);
+            for index in 1..=paths {
+                let entry = header(index, Path::Live, 0, 0, None);
+                logs.append(slot(index), &entry).expect("appends");
+                logs.sync(slot(index), &entry, offset).expect("syncs");
+            }
+        }
+        let runs: usize = logs
+            .paths
+            .iter()
+            .map(|log| log.runs.capacity() * size_of::<Run>())
+            .sum();
+        let items = logs.items.places.capacity() * size_of::<u32>()
+            + logs.items.records.capacity() * size_of::<(u64, u64)>();
+        let marked = logs.marked.capacity() * size_of::<(u64, u64)>();
+        let held = u64::try_from(runs + items + marked).expect("fits");
+        let area = 4096 * records;
+        let bound = area * 56 / 51 + 48 * records;
+        assert!(
+            held <= bound,
+            "runs {runs} + items {items} + marked {marked} = {held} bytes, over the \
+             bound of {bound} for an area of {area}"
+        );
     }
 
     /// A record of a model ring, at its offset: the tails a commit carried, or the
