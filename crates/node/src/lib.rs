@@ -310,6 +310,7 @@ impl Node {
             budget: config.budget,
             inbox,
             time: clock.clone(),
+            vars: Arc::new(config.vars),
         };
         let roles = Role::all(mesh, wall, first, bind, serve, config.name, cores);
         let mut started = Vec::new();
@@ -818,6 +819,8 @@ struct Serve {
     budget: Budget,
     inbox: task::Inbox<task::Task>,
     time: clock::Reader,
+    /// The environment of the node process, which the node's connectors read.
+    vars: Arc<BTreeMap<OsString, OsString>>,
 }
 
 /// What shard 0 binds the node's port with, once it claimed the data directory.
@@ -828,7 +831,6 @@ struct Bind {
     entropy: env::entropy::Entropy,
     net: env::net::Net,
     settings: Settings,
-    vars: Arc<BTreeMap<OsString, OsString>>,
 }
 
 impl Bind {
@@ -841,7 +843,6 @@ impl Bind {
             entropy: config.entropy.clone(),
             net: config.net.clone(),
             settings: config.settings,
-            vars: Arc::new(config.vars.clone()),
         }
     }
 
@@ -870,7 +871,6 @@ impl Bind {
             self.entropy,
             self.net,
             self.settings,
-            self.vars,
         ))
     }
 }
@@ -888,8 +888,6 @@ struct Endpoint {
     /// The network, which the node's connectors reach their devices and stores on.
     net: env::net::Net,
     settings: Settings,
-    /// The environment of the node process, which the node's connectors read.
-    vars: Arc<BTreeMap<OsString, OsString>>,
 }
 
 /// The region that shard 0 opens, with what it needs to found the root region.
@@ -950,7 +948,6 @@ impl Endpoint {
         entropy: env::entropy::Entropy,
         net: env::net::Net,
         settings: Settings,
-        vars: Arc<BTreeMap<OsString, OsString>>,
     ) -> Self {
         let bound = address::bound(&port);
         let mut parts = port.split(NonZeroUsize::MIN);
@@ -964,7 +961,6 @@ impl Endpoint {
             entropy,
             net,
             settings,
-            vars,
         }
     }
 
@@ -1108,7 +1104,7 @@ impl Serve {
         let (key, entropy) = (identity.key, endpoint.entropy.clone());
         let (clock, net) = (endpoint.clock.clone(), endpoint.net.clone());
         let address = endpoint.address(&identity);
-        let (settings, vars) = (endpoint.settings, Arc::clone(&endpoint.vars));
+        let (settings, vars) = (endpoint.settings, self.vars);
         let opened =
             endpoint.open(identity, files.clone(), pool, &self.time, tasks.clone());
         let Ok((transport, mesh)) = opened.await.map_err(&fail) else {

@@ -6222,9 +6222,8 @@ mod port {
                 };
                 let (opening, clock) = (Opening::Given(founding), own.clock());
                 let (entropy, settings) = (own.entropy(), crate::Settings::default());
-                let (vars, net) = (Arc::default(), own.net());
                 let endpoint =
-                    Endpoint::new(bound, opening, clock, entropy, net, settings, vars);
+                    Endpoint::new(bound, opening, clock, entropy, own.net(), settings);
                 let pool = super::pool();
                 let stop = crate::stop::Stop::default();
                 let (open, buffer, given, time) =
