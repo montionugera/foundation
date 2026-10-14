@@ -350,10 +350,9 @@ pub(crate) struct Logs {
     stale: u64,
     /// An [`idle`](Self::idle) has passed each item before this number.
     scanned: u64,
-    /// The ranges in which no trim lands, in ring order: after the first record up
-    /// to and with the second. Each holds the range of each marked run, from the
-    /// previous record of its path to the run's record. A gap parts any two ranges.
-    marked: VecDeque<(u64, u64)>,
+    /// The ranges in which no trim lands. Each holds the range of each marked run,
+    /// from the previous record of its path to the run's record.
+    marked: Ranges,
 }
 
 impl Logs {
@@ -440,13 +439,7 @@ impl Logs {
             self.hidden
         );
         self.hidden = tail;
-        while self
-            .marked
-            .front()
-            .is_some_and(|&(_, record)| record < tail)
-        {
-            self.marked.pop_front();
-        }
+        self.marked.hide(tail);
         while let Some((offset, places)) = self.items.pop(tail) {
             for at in places {
                 let runs = &mut nth_mut(&mut self.paths, at).runs;
@@ -466,10 +459,7 @@ impl Logs {
     /// ranges.
     #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
     pub(crate) fn land(&self, offset: u64) -> u64 {
-        let at = self.marked.partition_point(|&(_, record)| record < offset);
-        self.marked
-            .get(at)
-            .map_or(offset, |&(after, _)| after.min(offset))
+        self.marked.land(offset)
     }
 
     /// The oldest holder of a path, which no trim may pass. `None` when no path has
@@ -670,15 +660,7 @@ impl Logs {
             self.items.push(offset, at);
         }
         if let Synced::Marked { after } = synced {
-            let mut first = after;
-            while let Some(&(before, last)) = self.marked.back() {
-                if last < first {
-                    break;
-                }
-                first = first.min(before);
-                self.marked.pop_back();
-            }
-            self.marked.push_back((first, offset));
+            self.marked.mark(after, offset);
         }
         if let Some(tag) = NonZeroU8::new(header.tag) {
             self.tags.insert((slot, header.path, tag), offset);
@@ -728,6 +710,44 @@ fn nth(logs: &[Log], at: u32) -> &Log {
 fn nth_mut(logs: &mut [Log], at: u32) -> &mut Log {
     let at = usize::try_from(at).expect("invariant: u32 fits usize");
     logs.get_mut(at).expect("invariant: a place has its log")
+}
+
+/// The ranges of records in which no trim lands: each from after the record `after`
+/// up to and with a later record. They are sorted, with a gap between any two.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+struct Ranges(VecDeque<(u64, u64)>);
+
+impl Ranges {
+    /// Adds the range from after `after` up to and with `record`, which is at or
+    /// after the newest record of each range. Merges each range that it touches or
+    /// covers.
+    fn mark(&mut self, after: u64, record: u64) {
+        let mut first = after;
+        while let Some(&(before, last)) = self.0.back() {
+            if last < first {
+                break;
+            }
+            first = first.min(before);
+            self.0.pop_back();
+        }
+        self.0.push_back((first, record));
+    }
+
+    /// The start of the range that holds `offset`, else `offset`. One binary search.
+    fn land(&self, offset: u64) -> u64 {
+        let at = self.0.partition_point(|&(_, record)| record < offset);
+        self.0
+            .get(at)
+            .map_or(offset, |&(after, _)| after.min(offset))
+    }
+
+    /// Drops each range whose newest record is before `tail`.
+    fn hide(&mut self, tail: u64) {
+        while self.0.front().is_some_and(|&(_, record)| record < tail) {
+            self.0.pop_front();
+        }
+    }
 }
 
 /// The place in a `Vec` of logs of each item, grouped by record in ring order. Items
@@ -2028,7 +2048,7 @@ mod tests {
             .expect("the walk met the end");
         logs.sync(slot(1), &empty(1, 0), 24576).expect("syncs");
         assert_eq!(logs.land(24576), 20480);
-        assert_eq!(logs.marked, [(4096, 16384), (20480, 24576)]);
+        assert_eq!(logs.marked.0, [(4096, 16384), (20480, 24576)]);
     }
 
     /// A range that covers older ranges with a gap between them merges with each,
@@ -2043,11 +2063,11 @@ mod tests {
         logs.carry(slot(1), &carried(0, 2, None), 12288)
             .expect("the walk met the end");
         logs.sync(slot(1), &empty(1, 0), 16384).expect("syncs");
-        assert_eq!(logs.marked, [(4096, 8192), (12288, 16384)]);
+        assert_eq!(logs.marked.0, [(4096, 8192), (12288, 16384)]);
         assert_eq!(logs.land(12288), 12288);
         assert_eq!(logs.land(16384), 12288);
         logs.sync(slot(2), &empty(2, 5), 20480).expect("syncs");
-        assert_eq!(logs.marked, [(0, 20480)]);
+        assert_eq!(logs.marked.0, [(0, 20480)]);
         for offset in [4096, 8192, 12288, 16384, 20480] {
             assert_eq!(logs.land(offset), 0, "a landing at {offset}");
         }
@@ -2066,12 +2086,12 @@ mod tests {
             (12288, header(1, Path::Live, 0, 0, None)),
         ];
         let mut logs = walk_from(&records, 0);
-        assert_eq!(logs.marked, [(4096, 12288)]);
+        assert_eq!(logs.marked.0, [(4096, 12288)]);
         logs.hide(12288);
-        assert_eq!(logs.marked, [(4096, 12288)]);
+        assert_eq!(logs.marked.0, [(4096, 12288)]);
         assert_eq!(logs.land(12288), 4096);
         logs.hide(16384);
-        assert_eq!(logs.marked, []);
+        assert_eq!(logs.marked.0, []);
     }
 
     /// S4: "memory holds 28 bytes per record and path and 24 bytes per record, in
@@ -2098,7 +2118,7 @@ mod tests {
             .sum();
         let items = logs.items.places.capacity() * size_of::<u32>()
             + logs.items.records.capacity() * size_of::<(u64, u64)>();
-        let marked = logs.marked.capacity() * size_of::<(u64, u64)>();
+        let marked = logs.marked.0.capacity() * size_of::<(u64, u64)>();
         let held = u64::try_from(runs + items + marked).expect("fits");
         let area = 4096 * records;
         let bound = area * 56 / 51 + 48 * records;
