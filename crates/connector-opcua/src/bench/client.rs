@@ -96,8 +96,8 @@ impl Server {
     }
 
     /// Connects a client to the server, on its own connection manager, whose reads
-    /// each read `count` copies of a [`Variable`], in one request while they fit one
-    /// message of the session.
+    /// each read `count` copies of a [`Variable`], in one request while they number at
+    /// most [`PER_READ`] and fit one message of the session.
     ///
     /// # Panics
     ///
