@@ -91,7 +91,6 @@ fn config<M>(
         region: Region::Absent,
         name: "edge".parse().expect("a name"),
         settings: crate::Settings::default(),
-        vars: std::collections::BTreeMap::new(),
     }
 }
 
@@ -6222,17 +6221,16 @@ mod port {
                 };
                 let (opening, clock) = (Opening::Given(founding), own.clock());
                 let (entropy, settings) = (own.entropy(), crate::Settings::default());
-                let (vars, net) = (Arc::default(), own.net());
                 let endpoint =
-                    Endpoint::new(bound, opening, clock, entropy, net, settings, vars);
+                    Endpoint::new(bound, opening, clock, entropy, own.net(), settings);
                 let pool = super::pool();
                 let stop = crate::stop::Stop::default();
-                let (open, buffer, given, time) =
+                let (open, buffer, next, time) =
                     super::super::home::create_open(&own, &tasks, 0, stop);
                 let opened =
                     open.run(own.files(), Rc::new(buffer), tasks.clone()).await;
                 let home = opened.expect("the buffer opens");
-                let interner = given.await.expect("the open gives the interner");
+                let interner = next.await.expect("the open gives the interner");
                 let (key, entropy) = (identity.key, endpoint.entropy.clone());
                 let opened =
                     endpoint.open(identity, own.files(), pool, &time, tasks.clone());

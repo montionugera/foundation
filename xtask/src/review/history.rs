@@ -881,6 +881,10 @@ fn rust_path(path: &str) -> bool {
 /// values of `git` with no setting.
 fn command(root: &Path) -> Command {
     let mut command = Command::new("git");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the variables of git are removed"
+    )]
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("GIT_") {
             command.env_remove(key);

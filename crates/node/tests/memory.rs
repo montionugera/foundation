@@ -84,7 +84,6 @@ fn reach() {
         region: node::Region::Stored,
         name: "edge".parse().expect("a name"),
         settings: node::Settings::default(),
-        vars: std::collections::BTreeMap::new(),
     });
     assert_eq!(sim.run_for(Span::SECOND), Ok(()), "the node runs");
     sim.crash(&host, sim::Crash::Process);
