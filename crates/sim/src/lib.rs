@@ -103,7 +103,8 @@ impl Default for Config {
 /// starts is dropped in that drop. When one of these drops panics, the others still
 /// run, and then the drop panics once with each message, as [`Error::Panicked`] gives
 /// them: those of the timer wakers first, then those of the tasks, then those of the
-/// threads, each in start order. It does not panic while the thread already panics.
+/// threads, the tasks and the threads each in start order. It does not panic while the
+/// thread already panics.
 pub struct Sim {
     config: Config,
     shared: Shared,
@@ -244,7 +245,8 @@ impl Sim {
     /// - When the drop of a timer waker, of a future, or of a thread that has not run
     ///   panics. The crash still ends, and the panic gives each message as
     ///   [`Error::Panicked`] does: those of the timer wakers first, then those of the
-    ///   futures, then those of the threads, each in start order.
+    ///   futures, then those of the threads, the futures and the threads each in start
+    ///   order.
     pub fn crash(&mut self, node: &Node, crash: Crash) {
         let node = self.own(node);
         let wakers = {
