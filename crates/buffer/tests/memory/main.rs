@@ -36,6 +36,26 @@ fn freed(held: u64) -> usize {
     before - after
 }
 
+/// A read that holds 16 records keeps 17 runs of one path, in room for 32, for 300
+/// commits. Then no read holds a record. Gives the number of the commit, from the
+/// first, whose trim gives back bytes: the first trim at least one lap after the
+/// start of its lap.
+fn first_shrink() -> u32 {
+    let mut logs = buffer::bench::Logs::new(1);
+    for _ in 0..300 {
+        logs.trim(1, 16);
+    }
+    let mut commit = 300;
+    loop {
+        let before = ALLOCATOR.held();
+        logs.trim(1, 0);
+        commit += 1;
+        if ALLOCATOR.held() < before {
+            return commit;
+        }
+    }
+}
+
 /// S4: each path keeps at most 446 bytes, and room for four paths when there are
 /// fewer. A carry record takes the tail of each of `paths` paths, and a trim to it
 /// leaves each with no run. The holder items of the two records, 4 bytes each in a
@@ -59,6 +79,7 @@ fn per_path(paths: u32) {
 }
 
 fn main() {
+    assert_eq!(freed(6), 0, "a lap of at most 8 runs keeps room for 32");
     assert_eq!(
         freed(4),
         (32 - 12) * RUN,
@@ -73,6 +94,11 @@ fn main() {
         freed(0),
         (32 - 4) * RUN,
         "a lap of at most 2 runs keeps room for 4"
+    );
+    assert_eq!(
+        first_shrink(),
+        769,
+        "the lap that starts at 512 ends at 768"
     );
     for paths in [1, 2, 3, 4, 5, 3585, 4097] {
         per_path(paths);
