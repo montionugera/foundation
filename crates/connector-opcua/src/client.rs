@@ -83,7 +83,7 @@ pub(crate) struct Client {
 struct Reads {
     /// The requests of the last read that open62541 took and has not answered. The
     /// callback drops the answer of another request, so a read clears them when it
-    /// starts, and the first failed answer clears them.
+    /// starts.
     requests: RefCell<Vec<Request>>,
     /// The status of the first failed answer of the last read.
     failed: Cell<Option<Status>>,
@@ -252,14 +252,17 @@ impl Client {
     pub(crate) fn nodes(&self, nodes: &[Node]) -> Result<Nodes, Large> {
         // SAFETY: it reads nothing.
         let empty = unsafe { ffi::shim_read_ask(self.token) };
-        let mut counts = Vec::new();
-        let (mut ask, mut count) = (empty, 0);
+        let mut counts: Vec<usize> = Vec::new();
+        let mut ask = empty;
         for (index, node) in nodes.iter().enumerate() {
             // SAFETY: the name of `node` lives through the call.
             let item = unsafe { ffi::shim_read_item(node.into()) };
-            let full = self.per_read.is_some_and(|most| count == most.get());
-            if full || self.past(ask + item, count + 1).is_some() {
-                // Only the first node gets here at a count of 0, and then it fails.
+            let count = counts.last().copied();
+            let next = count.is_none_or(|count| {
+                self.per_read.is_some_and(|most| count == most.get())
+                    || self.past(ask + item, count + 1).is_some()
+            });
+            if next {
                 if let Some((bytes, most)) = self.past(empty + item, 1) {
                     return Err(Large {
                         node: index,
@@ -267,14 +270,13 @@ impl Client {
                         most,
                     });
                 }
-                counts.push(count);
-                (ask, count) = (empty, 0);
+                counts.push(0);
+                ask = empty;
             }
             ask += item;
-            count += 1;
-        }
-        if count > 0 {
-            counts.push(count);
+            *counts
+                .last_mut()
+                .expect("invariant: a request takes the node") += 1;
         }
         Ok(Nodes::new(nodes, &counts, Rc::clone(&self.key)))
     }
@@ -299,9 +301,9 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// `BadTooManyOperations` when no read ends in the request timeout of the client
-    /// (5 s) before the first request goes, as the server holds the requests of
-    /// [`READS`] reads: the client sends no more until the server answers one.
+    /// `BadTooManyOperations` when no request ends in the request timeout of the client
+    /// (5 s) before the first request goes, as the server holds [`READS`] requests:
+    /// the client sends no more until the server answers one.
     /// `BadTimeout` when a request has no answer after that timeout, the waits
     /// included. Else the first of: the status of open62541 when it refuses a request,
     /// the status of an answer, or `BadUnexpectedError` when an answer has a value for
@@ -495,7 +497,8 @@ impl Drop for Client {
     }
 }
 
-/// The Read requests of a list of nodes, built once.
+/// The Read requests of a list of nodes, built once. It holds at most one request per
+/// node: the `MaxNodesPerRead` of the server and the count of nodes set its length.
 pub(crate) struct Nodes {
     /// Each request, in node order.
     parts: Vec<Part>,
@@ -556,7 +559,10 @@ impl Nodes {
         }
     }
 
-    /// Gives the count of nodes of each request, in order.
+    /// Gives the count of nodes of each request, in order. Tests read this private
+    /// state for a reason: a server shows a wrong split only as a failed read or a
+    /// closed channel, and the counts name the split. Each such test also checks the
+    /// split by a read, so it is not the only kill.
     #[cfg(test)]
     fn counts(&self) -> Vec<usize> {
         self.parts.iter().map(|part| part.count).collect()
@@ -612,7 +618,6 @@ unsafe extern "C" fn answer(
         status = Status::BAD_UNEXPECTED_ERROR;
     }
     if status != Status::GOOD {
-        requests.clear();
         reads.failed.set(Some(status));
         return;
     }

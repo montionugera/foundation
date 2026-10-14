@@ -37,8 +37,8 @@ const LARGE_READ: Code = Code::new("opcua.large-read");
 /// the ticks that the timer skipped, and the samples that a frame lost.
 const COUNTS: [&str; 3] = ["in", "missed", "lost"];
 
-/// The `opcua` kind: reads the Value of OPC UA nodes at a fixed rate, one Read
-/// request of all of them per tick, and writes one frame per tick.
+/// The `opcua` kind: reads the Value of OPC UA nodes at a fixed rate, in Read requests
+/// that each fit one message of the server, and writes one frame per tick.
 #[derive(Debug, Default)]
 #[non_exhaustive]
 pub struct Kind;

@@ -1719,7 +1719,8 @@ fn an_answer_of_another_count_of_values_fails() {
 }
 
 /// Gives two reads by one client through a relay, on a server with a `MaxNodesPerRead`
-/// of 1: of the nodes 1 and 2 of [`numbered`] in two requests, then of the node 3.
+/// of 1: of the nodes 1 and 2 of [`numbered`] in two requests, then of the nodes 3 and
+/// 4.
 /// `rewrite` gets the index of each Read response after that of the connect, from 1,
 /// and the response, and gives the responses to send in its place. The relay gives
 /// them the next sequence numbers of the channel, which open62541 checks.
@@ -1729,7 +1730,7 @@ fn read_split(
     run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             peer.server.set_per_read(1);
-            for index in 1..=3 {
+            for index in 1..=4 {
                 peer.server.add_scalar(&numbered(index), Value::U32(index));
             }
             let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
@@ -1753,7 +1754,7 @@ fn read_split(
             relayed(&node, rewrite, async {
                 let mut client = peer.connect(&url).await.expect("the client connects");
                 let first = client.nodes(&[numbered(1), numbered(2)]).expect("2 fit");
-                let second = client.nodes(&[numbered(3)]).expect("one node fits");
+                let second = client.nodes(&[numbered(3), numbered(4)]).expect("2 fit");
                 let first = client.read(&first).await.map(<[_]>::to_vec);
                 let second = client.read(&second).await.map(<[_]>::to_vec);
                 client.close().await;
@@ -1780,10 +1781,14 @@ fn a_read_gives_its_values_in_node_order_whatever_the_order_of_its_answers() {
         _ => vec![message],
     });
     let value = |index| Ok(Value::U32(index));
-    assert_eq!(reads, [Ok(vec![value(1), value(2)]), Ok(vec![value(3)])]);
+    assert_eq!(
+        reads,
+        [Ok(vec![value(1), value(2)]), Ok(vec![value(3), value(4)])]
+    );
 }
 
-/// An answer of a request of a read that failed does not go into the next read.
+/// An answer of a request of a read that failed does not go into the next read: it
+/// comes after the answer of the node 3, and would put the value 1 in its place.
 #[test]
 fn an_answer_of_a_failed_read_goes_into_no_later_read() {
     let mut held = Vec::new();
@@ -1796,15 +1801,55 @@ fn an_answer_of_a_failed_read_goes_into_no_later_read() {
             recount_of(&mut message, 0);
             vec![message]
         }
-        3 => vec![mem::take(&mut held), message],
+        3 => vec![message, mem::take(&mut held)],
         _ => vec![message],
     });
     assert_eq!(
         reads,
         [
             Err(Status::BAD_UNEXPECTED_ERROR),
-            Ok(vec![Ok(Value::U32(3))])
+            Ok(vec![Ok(Value::U32(3)), Ok(Value::U32(4))])
         ]
+    );
+}
+
+/// A read sends no request after an answer of it fails. With a `MaxNodesPerRead` of 1,
+/// the first answer fails while [`READS`] requests are in flight, and the server gets
+/// no more: it answers the connect and those.
+#[test]
+fn a_read_sends_no_request_after_an_answer_of_it_fails() {
+    let ((read, responses), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            peer.server.set_per_read(1);
+            let nodes: Vec<_> = (0..u32::from(READS) + 4).map(numbered).collect();
+            for (index, node) in (0..).zip(&nodes) {
+                peer.server.add_scalar(node, Value::U32(index));
+            }
+            let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
+            let mut responses = 0;
+            let rewrite = |message: &mut Vec<u8>| {
+                if handle(message).is_some() {
+                    responses += 1;
+                    if responses == 2 {
+                        recount_of(message, 0);
+                    }
+                }
+            };
+            let read = relayed(&node, rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                let nodes = client.nodes(&nodes).expect("the nodes fit");
+                let read = client.read(&nodes).await.map(<[_]>::to_vec);
+                client.close().await;
+                read
+            })
+            .await;
+            (read, responses)
+        })
+        .await
+    });
+    assert_eq!(
+        (read, responses),
+        (Err(Status::BAD_UNEXPECTED_ERROR), 1 + usize::from(READS))
     );
 }
 
