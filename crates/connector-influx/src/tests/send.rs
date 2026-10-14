@@ -550,9 +550,9 @@ fn reads_the_token_again_after_a_401_or_a_403_and_writes_each_sample_once() {
                 vec![
                     String::new(),
                     format!(
-                        "InfluxDB answered {text}: {{\"code\":\"unauthorized\",\
-                         \"message\":\"unauthorized access\"}}. Check the token \
-                         file(\"{TOKEN_FILE}\")"
+                        "Check the token file(\"{TOKEN_FILE}\"). InfluxDB answered \
+                         {text}: {{\"code\":\"unauthorized\",\
+                         \"message\":\"unauthorized access\"}}"
                     ),
                     String::new(),
                 ],
@@ -562,6 +562,30 @@ fn reads_the_token_again_after_a_401_or_a_403_and_writes_each_sample_once() {
             "{status}"
         );
     }
+}
+
+#[test]
+fn keeps_the_source_of_the_token_after_a_long_401_body() {
+    let got = run(|node, tasks| async move {
+        let plant = Plant::new(node.clone(), tasks).await;
+        node.paths()
+            .write(std::path::Path::new(TOKEN_FILE), b"old")
+            .expect("writes");
+        let body: &'static str = "x".repeat(1100).leak();
+        plant
+            .answers
+            .borrow_mut()
+            .push_back((StatusCode::UNAUTHORIZED, body));
+        plant.tokens.borrow_mut().push_back(b"new");
+        let config = with_token(&plant, "file", TOKEN_FILE);
+        let (_, errors, _) = send_one(&plant, config).await;
+        errors
+    });
+    let head = format!(
+        "Check the token file(\"{TOKEN_FILE}\"). InfluxDB answered 401 Unauthorized: "
+    );
+    let shown = head.clone() + &"x".repeat(1024 - head.len());
+    assert_eq!(got, [String::new(), shown, String::new()]);
 }
 
 #[test]
@@ -587,8 +611,8 @@ fn ends_the_run_when_the_token_is_gone_after_a_401() {
             vec![
                 String::new(),
                 format!(
-                    "InfluxDB answered 401 Unauthorized: no. Check the token \
-                     file(\"{TOKEN_FILE}\")"
+                    "Check the token file(\"{TOKEN_FILE}\"). InfluxDB answered 401 \
+                     Unauthorized: no"
                 ),
                 format!(
                     "the secret file(\"{TOKEN_FILE}\"): the file {TOKEN_FILE} is \

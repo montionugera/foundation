@@ -152,7 +152,7 @@ async fn send(
                     matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
                 match ctx.config().token.as_ref().filter(|_| refused) {
                     Some(source) => ctx.error(&format_args!(
-                        "InfluxDB answered {status}: {}. Check the token {source}",
+                        "Check the token {source}. InfluxDB answered {status}: {}",
                         text.trim()
                     )),
                     None => {
