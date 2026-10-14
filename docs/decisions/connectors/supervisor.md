@@ -238,9 +238,9 @@
   Each write is one frame with the last value of every status channel. Each start of a
   run writes the whole status. A change of `state`, `class`, `restarts`, `backoff`, or
   `error` that the supervisor makes is written as soon as the home applied the state
-  before it (below). A change of counts alone is written at most once each second after
-  the last write, timed with the clock of `supervisor::Config` (`laptop.architect-2`,
-  2026-10-08T06:38:42Z:
+  before it, or after `SETTLE` (below). A change of counts alone is written at most
+  once each second after the last write, timed with the clock of `supervisor::Config`
+  (`laptop.architect-2`, 2026-10-08T06:38:42Z:
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6054035730, rules 1
   to 3). A running kind shows an error with `Context::error`, as an attempt that failed:
   `class` 3 and the text of the error, cut as above. `Context::clear_error` clears
@@ -256,8 +256,9 @@
   (`laptop.architect-2`, 2026-10-13T04:01:43Z:
   https://github.com/synnaxlabs/foundation/pull/2535#issuecomment-6137947506). When a
   run returns, `state` 3 with the class of that end is written as soon as
-  the home applied the state before it. When each task of the run ended, `state` 1, or 2
-  when the call returns (`laptop.architect-2`, 2026-10-08T19:07:43Z:
+  the home applied the state before it, or after `SETTLE`. When each task of the run
+  ended, `state` 1, or 2 when the call returns (`laptop.architect-2`,
+  2026-10-08T19:07:43Z:
   https://github.com/synnaxlabs/foundation/issues/420#issuecomment-6067099903). A run
   whose last task ends T after its start gives at most 1 + ⌊T / 1 s⌋ + 2 frames: the
   start, at most one frame of counts or a shown error in each second, then `state` 3
@@ -280,20 +281,29 @@
   shard's pool has no block now (`block::Error::Exhausted` or `Refused` in
   `frame::Error::Pool`), leaves the status staged, so it is written again one second
   later, also the last frame of a call: the call returns once the home applied it, once
-  `cancel` is cancelled, or after 10 s (`SETTLE`). The pool case is load, not a defect
+  `cancel` is cancelled, or 10 s (`SETTLE`) after it wrote the last state. The pool case
+  is load, not a defect
   (`laptop.architect-2`,
   2026-10-09T21:32:53Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6089614613). A
   status frame larger than the largest block of the pool (`block::Error::TooLarge`) is a
   defect, and panics (`laptop.architect-2`, 2026-10-09T21:40:46Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6089720287). A
-  change of state waits until the home applied the state before it, until `cancel` is
-  cancelled, or for at most 10 s (`SETTLE`), so no state replaces a state that the home
-  did not apply in normal load. After `SETTLE`, it goes on, and the next frame that the
-  home applies replaces the state that it did not apply, since each frame holds the
-  whole status. The status does not report the loss: the frames that would carry it are
-  the ones that the home drops (`laptop.architect-2`, 2026-10-14T02:09:48Z:
-  https://github.com/synnaxlabs/foundation/issues/2653#issuecomment-6159318680). A start
+  change of state waits until the home applied the state before it, or until `cancel` is
+  cancelled, so no state replaces a state that the home did not apply in normal load.
+  Each outage has one bound: the changes wait for at most 10 s (`SETTLE`) from the first
+  change that the home did not apply. After it, each change goes on at once, until a
+  frame that the home applies ends the outage, and the next outage gets its own
+  `SETTLE`. The next frame that the home applies replaces each state that went on,
+  because each frame holds the whole status. After the call returns, it writes nothing,
+  so the status keeps the last state that the home applied. The status does not report
+  the loss: the frames that would carry it are the ones that the home drops
+  (`laptop.architect-2`, 2026-10-14T02:09:48Z:
+  https://github.com/synnaxlabs/foundation/issues/2653#issuecomment-6159318680; the
+  bound for each outage, `laptop.architect-2`, 2026-10-14T05:09:04Z:
+  https://github.com/synnaxlabs/foundation/pull/2680#issuecomment-6161372464).
+  Supersedes the wait with no end of
+  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6089790301. A start
   whose wait a cancel ends writes nothing, and no run starts. After `Failure::Removed`
   or `home::Error::Disk`, no change of state waits (`laptop.architect-2`,
   2026-10-09T21:46:07Z:
@@ -310,10 +320,12 @@
   2026-10-09T19:41:05Z:
   https://github.com/synnaxlabs/foundation/pull/2173#issuecomment-6087998186). While the
   shard's pool gives no frame, a change of state waits also after its status channels
-  were removed or its disk failed, until the pool frees or `cancel` is cancelled
-  (`laptop.architect-2`, 2026-10-09T23:16:59Z and 2026-10-09T23:33:09Z:
+  were removed or its disk failed, until the pool frees, `cancel` is cancelled, or
+  `SETTLE` passed (above) (`laptop.architect-2`, 2026-10-09T23:16:59Z and
+  2026-10-09T23:33:09Z:
   https://github.com/synnaxlabs/foundation/pull/2173#issuecomment-6090887547 and
-  https://github.com/synnaxlabs/foundation/pull/2173#issuecomment-6091053596). A frame
+  https://github.com/synnaxlabs/foundation/pull/2173#issuecomment-6091053596). `SETTLE`
+  supersedes the wait with no end of these two rulings. A frame
   that the home refuses as `Backwards` is stamped again after the stamp that the refusal
   gives, and written again at once, one time. A writer starts with no last stamp, so its
   first frame can be at or before the last frame of the writer before it on the same
