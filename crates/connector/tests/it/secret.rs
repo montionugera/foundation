@@ -4,9 +4,18 @@ use std::cell::{Cell, RefCell};
 use std::future::poll_fn;
 use std::pin::pin;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
-use connector::testing::{create_secret, create_secret_store};
+use connector::cancel;
+use connector::kind::{Channels, Context, Error, Kind, Table};
+use connector::supervisor::Supervisor;
+use connector::testing::{
+    create_config, create_secret, create_secret_store, create_status,
+};
+use document::Document;
+use document::diagnostic::Diagnostic;
+use types::channel;
 use types::name::Name;
 use types::time::Span;
 
@@ -134,4 +143,91 @@ fn a_write_after_a_dropped_write_lands() {
             assert_eq!(got, Some(b"t2".to_vec()), "seed {seed} stop {stop}");
         }
     }
+}
+
+/// Reads `plant.token` until the store gives it, and records the value.
+struct Watch(Arc<Mutex<Vec<Vec<u8>>>>);
+
+impl Kind for Watch {
+    type Config = ();
+
+    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+        Ok(Channels::default())
+    }
+
+    fn discover(
+        &self,
+        _: &cancel::Token,
+    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+        std::future::ready(Ok(Vec::new()))
+    }
+
+    async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
+        loop {
+            match ctx.secret(&"plant.token".parse().unwrap()).await {
+                Ok(value) => {
+                    self.0.lock().unwrap().push(value.expose().to_vec());
+                    return Ok(());
+                }
+                Err(Error::Retry(_)) => {
+                    ctx.clock().sleep(Span::from_nanos(1_000)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+/// The values that a supervised connector reads of `plant.token` while a test
+/// writes `t1` to it.
+fn read_in_a_run(seed: u64) -> Vec<Vec<u8>> {
+    let got = Arc::new(Mutex::new(Vec::new()));
+    let into = Arc::clone(&got);
+    let mut sim = sim::Sim::new(sim::Config {
+        seed,
+        ..sim::Config::default()
+    });
+    let node = sim.node(sim::node::Config::default());
+    let result = sim.run_on(&node, move |node, tasks| async move {
+        let env = hub::testing::Env {
+            files: node.files(),
+            clock: node.clock(),
+            wall: node.wall(),
+            entropy: node.entropy(),
+            tasks: tasks.clone(),
+        };
+        let kinds = Table::new().with("watch", Watch(into));
+        let config = create_config(env, node.net(), kinds).await;
+        let connector: Name = "plant.watch".parse().unwrap();
+        let status = create_status(&connector, &[], channel::Key::from_u128(1 << 20));
+        config
+            .hub
+            .set_definitions(status.iter().map(|(name, def)| (name, def)));
+        let (files, clock) = (node.files(), node.clock());
+        tasks.spawn(async move {
+            clock.sleep(Span::from_nanos(50_000)).await;
+            create_secret(&files, &"plant.token".parse().unwrap(), b"t1").await;
+        });
+        let (token, document) = (cancel::Token::new(), Document::default());
+        let supervisor = Supervisor::new(config);
+        let opened = supervisor.open("watch", connector, &document, &token);
+        opened.await.run().await
+    });
+    result
+        .expect("the run ends")
+        .expect("the run ends with the value");
+    got.lock().unwrap().clone()
+}
+
+#[test]
+fn a_supervised_connector_reads_only_the_written_secret() {
+    let torn: Vec<_> = (0..64)
+        .map(|seed| (seed, read_in_a_run(seed)))
+        .filter(|(_, got)| got != &[b"t1".to_vec()])
+        .collect();
+    assert_eq!(torn, [], "{} of 64 seeds read another value", torn.len());
 }
