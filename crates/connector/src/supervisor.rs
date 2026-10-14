@@ -1845,8 +1845,7 @@ mod tests {
             let clock = scene.node.clock();
             clock.sleep(ms(100)).await;
             let channels = status_names("plant.tally", &["samples"]);
-            let hog =
-                open_writer(&scene.hub, "plant.other", Authority(1), channels).await;
+            let hog = rival(&scene.hub, channels).await;
             clock.sleep(ms(400)).await;
             scene.remove("samples");
             clock.sleep(ms(700)).await;
@@ -1870,8 +1869,7 @@ mod tests {
             let clock = scene.node.clock();
             clock.sleep(ms(100)).await;
             let channels = status_names("plant.tally", &["samples"]);
-            let hog =
-                open_writer(&scene.hub, "plant.other", Authority(1), channels).await;
+            let hog = rival(&scene.hub, channels).await;
             clock.sleep(ms(400)).await;
             scene
                 .node
@@ -2011,7 +2009,7 @@ mod tests {
             Ok(())
         };
         let returned = timed(run, |scene| async move {
-            let hog = rival(&scene.hub, &["state", "error"]).await;
+            let hog = rival(&scene.hub, tally_statuses(&["state", "error"])).await;
             scene.node.clock().sleep(ms(500)).await;
             let held = fill(&hog);
             scene.remove("samples");
@@ -2033,7 +2031,7 @@ mod tests {
         let returned = timed(run, |scene| async move {
             let clock = scene.node.clock();
             clock.sleep(ms(100)).await;
-            let mut hog = rival(&scene.hub, &["state", "error"]).await;
+            let mut hog = rival(&scene.hub, tally_statuses(&["state", "error"])).await;
             clock.sleep(ms(400)).await;
             scene
                 .node
@@ -3024,12 +3022,8 @@ mod tests {
         })
     }
 
-    /// A writer of the subject `plant.other` with authority 1 on the status channels
-    /// of `plant.tally` that `suffixes` name.
-    async fn rival(hub: &hub::Hub, suffixes: &[&str]) -> hub::writer::Writer {
-        let channels = (suffixes.iter())
-            .map(|suffix| name(&format!("plant.tally.status.{suffix}")))
-            .collect();
+    /// A writer of the subject `plant.other` with authority 1 on `channels`.
+    async fn rival(hub: &hub::Hub, channels: Vec<Name>) -> hub::writer::Writer {
         open_writer(hub, "plant.other", Authority(1), channels).await
     }
 
@@ -3574,6 +3568,13 @@ mod tests {
 
     fn name(text: &str) -> Name {
         text.parse().expect("a valid name")
+    }
+
+    /// The status channels `plant.tally.status.<suffix>`, one for each of `suffixes`.
+    fn tally_statuses(suffixes: &[&str]) -> Vec<Name> {
+        (suffixes.iter())
+            .map(|suffix| name(&format!("plant.tally.status.{suffix}")))
+            .collect()
     }
 
     /// The names of the status channels of `connector` with `counts`, without their
