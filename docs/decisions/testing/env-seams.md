@@ -70,8 +70,9 @@
   failure drops the node's code on the calling thread. `sim` enters it around each such
   call. Each waker of a net, serial, or file event wakes and drops with the log of the
   thread whose poll gave it, and so does the memory of its event. A waker given outside
-  a poll has no log. A `Shards` or `Threads` that is not logged drops each event
-  (`laptop.architect-2`, 2026-10-13T21:13:43Z, item 1 of
+  a poll keeps the default log where it is given: that of the thread in a drop of its
+  code, else that of the caller. A `Shards` or `Threads` that is not logged drops each
+  event (`laptop.architect-2`, 2026-10-13T21:13:43Z, item 1 of
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155317582; rule
   meaning: `laptop.director`, 2026-10-13T21:12:40Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155299486; the
@@ -81,7 +82,9 @@
   2026-10-14T03:43:43Z,
   https://github.com/synnaxlabs/foundation/pull/2657#issuecomment-6160393075; the wakers
   of events: `laptop.architect-2`, 2026-10-14T03:50:33Z,
-  https://github.com/synnaxlabs/foundation/pull/2657#issuecomment-6160469132).
+  https://github.com/synnaxlabs/foundation/pull/2657#issuecomment-6160469132; a waker
+  given outside a poll: `laptop.architect-2`, 2026-10-14T04:19:55Z,
+  https://github.com/synnaxlabs/foundation/pull/2657#issuecomment-6160804099).
   `env::files` (#37) gives files under one data directory, with owned blocks and a
   sync that poisons the file on failure (S4). One handle at a time holds a file open
   to write, until it drops and its calls end; another write open fails with `Busy`
