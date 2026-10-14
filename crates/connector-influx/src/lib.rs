@@ -175,9 +175,10 @@ impl kind::Kind for Kind {
     ///
     /// [`Error::Config`] with `influx.sample-type` for a channel that does not hold
     /// `f64` samples, and with `influx.bad-channel` for a channel name that is not a
-    /// valid field key. The error of [`hub::reader::Ended`] when the reader ends. The
-    /// error of [`Context::secret`] when a read of the token fails, and
-    /// [`Error::Retry`] when the token holds a byte that an HTTP header cannot hold.
+    /// valid field key. The error of [`hub::reader::Ended`] when the reader ends.
+    /// [`Error::Retry`] or [`Error::Config`] from [`Context::secret`] when a read
+    /// fails, and [`Error::Retry`] when the token holds a byte that an HTTP header
+    /// cannot hold.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         send::run(ctx)
     }

@@ -24,10 +24,9 @@ use super::Store;
 /// Any other path gives 404, and another method on a write path gives 405. A request
 /// whose `content-encoding` names a coding other than `identity` gets 415 and stores
 /// nothing. `token`, when given, is the one token that it takes, as `Token <token>`
-/// in `Authorization`: a write path gives 401 and stores nothing for a request with
-/// another or no `Authorization`. It checks the path, then the method, then the
-/// token, then the `content-encoding`, then the query, and gives the answer of the
-/// first check that fails.
+/// in `Authorization`. A request without it gets 401 and stores nothing. It checks
+/// the path, then the method, then the token, then the `content-encoding`, then the
+/// query, and gives the answer of the first check that fails.
 ///
 /// It runs until the listener fails, and returns that error.
 pub async fn serve(
