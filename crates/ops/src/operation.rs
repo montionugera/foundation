@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 use types::name::Name;
 
 use crate::Start;
-use crate::error::Error;
+use crate::error::{Among, Error};
 
 /// The data directory of a command that names none.
 pub(crate) const DATA: &str = "foundation-data";
@@ -61,13 +61,12 @@ enum Command {
     Run(Request),
     /// Start a node on a data directory, and run it until Ctrl-C.
     Start(StartArgs),
-    /// Show the change from config files to the spec of the node in
-    /// `foundation-data`.
+    /// Show the change from config files to the spec of the node of `--data`.
     Plan(PlanArgs),
-    /// Apply a plan file of `foundation plan --out` on the node in `foundation-data`.
+    /// Apply a plan file of `foundation plan --out` on the node of `--data`.
     Apply(ApplyArgs),
-    /// Show the state of each connector on the node in `foundation-data`.
-    Status,
+    /// Show the state of each connector on the node of `--data`.
+    Status(NodeArgs),
     /// Answer MCP messages on standard input, one JSON-RPC message per line, until it
     /// closes.
     Mcp,
@@ -100,12 +99,24 @@ struct PlanArgs {
     /// file.
     #[arg(long)]
     out: Option<PathBuf>,
+    #[command(flatten)]
+    node: NodeArgs,
 }
 
 #[derive(clap::Args)]
 struct ApplyArgs {
     /// The plan file.
     plan: PathBuf,
+    #[command(flatten)]
+    node: NodeArgs,
+}
+
+/// The arguments of a command that runs on a node.
+#[derive(clap::Args)]
+struct NodeArgs {
+    /// The data directory of the node.
+    #[arg(long, default_value = DATA)]
+    data: PathBuf,
 }
 
 /// The input of each operation. Clap and serde both name a variant in kebab case.
@@ -145,11 +156,15 @@ pub(crate) enum Parsed {
     Plan {
         files: Vec<PathBuf>,
         out: Option<PathBuf>,
+        data: PathBuf,
     },
     Apply {
         plan: PathBuf,
+        data: PathBuf,
     },
-    Status,
+    Status {
+        data: PathBuf,
+    },
     Help(String),
     Mcp,
 }
@@ -180,9 +195,16 @@ pub(crate) fn parse(args: &[OsString], json: bool) -> Result<Parsed, Error> {
             name,
             listen,
         })),
-        Command::Plan(PlanArgs { files, out }) => Ok(Parsed::Plan { files, out }),
-        Command::Apply(ApplyArgs { plan }) => Ok(Parsed::Apply { plan }),
-        Command::Status => Ok(Parsed::Status),
+        Command::Plan(PlanArgs { files, out, node }) => Ok(Parsed::Plan {
+            files,
+            out,
+            data: node.data,
+        }),
+        Command::Apply(ApplyArgs { plan, node }) => Ok(Parsed::Apply {
+            plan,
+            data: node.data,
+        }),
+        Command::Status(NodeArgs { data }) => Ok(Parsed::Status { data }),
         Command::Mcp => Ok(Parsed::Mcp),
         Command::Help { command } => help(command.as_deref()),
     }
@@ -194,21 +216,20 @@ fn help(name: Option<&str>) -> Result<Parsed, Error> {
     root.build();
     let command = match name {
         None => &mut root,
-        Some("help") => return Err(unknown("help")),
         Some(name) => root
             .find_subcommand_mut(name)
-            .ok_or_else(|| unknown(name))?,
+            .ok_or_else(|| unknown(name, Among::Commands))?,
     };
     Ok(Parsed::Help(command.render_help().to_string()))
 }
 
-/// Reads a request for the operation `name` from its JSON `arguments`.
+/// Reads the request of a `tools/call` of MCP for the tool `name` from its `arguments`.
 pub(crate) fn read(
     name: &str,
     arguments: Map<String, Value>,
 ) -> Result<Request, Error> {
     if !TABLE.iter().any(|spec| spec.name == name) {
-        return Err(unknown(name));
+        return Err(unknown(name, Among::Tools));
     }
     let tagged = Map::from_iter([(name.to_owned(), Value::Object(arguments))]);
     serde_json::from_value(Value::Object(tagged)).map_err(|e| Error::Argument {
@@ -217,7 +238,7 @@ pub(crate) fn read(
 }
 
 /// The unknown-operation error for `name`, with the closest operation name.
-fn unknown(name: &str) -> Error {
+fn unknown(name: &str, among: Among) -> Error {
     let operations = Request::augment_subcommands(clap::Command::new("foundation"))
         .disable_help_subcommand(true)
         .disable_help_flag(true);
@@ -228,6 +249,7 @@ fn unknown(name: &str) -> Error {
     Error::Unknown {
         name: name.to_owned(),
         closest,
+        among,
     }
 }
 
@@ -245,6 +267,7 @@ fn from_clap(e: &clap::Error) -> Error {
             name: context(e, ContextKind::InvalidSubcommand)
                 .expect("invariant: clap names an unknown subcommand"),
             closest: context(e, ContextKind::SuggestedSubcommand),
+            among: Among::Commands,
         };
     }
     let what = e
