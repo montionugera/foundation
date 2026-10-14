@@ -5,12 +5,12 @@
   `Apart(best guess)` when it is further, and `Unsynced` before a majority of the
   node's sources first agree. The best guess is `estimate::Measurement::time`, not the
   midpoint of the interval, which moves far from it when an edge stops at the end of a
-  stamp. A best guess at the last stamp is `Apart`, because its distance from `wall` is
-  not known. `now` reads the two clocks one after the other, so the time between the
-  reads counts toward the 2 ms. Each line is for a person who reads the log, never for a
-  data stamp (BQ20), so `clock::log::Reader::now` is in `disallowed-methods`, and its
-  one call site, in the log of `node`, has an `#[expect]` with the reason "only the log
-  stamps lines".
+  stamp. A line whose best guess or `wall` is at the last stamp is `Apart`, because the
+  distance is not known. `now` reads the two clocks one after the other, so the time
+  between the reads counts toward the 2 ms. Each line is for a person who reads the log,
+  never for a data stamp (BQ20), so `clock::log::Reader::now` is in
+  `disallowed-methods`, and its one call site, in the log of `node`, has an `#[expect]`
+  with the reason "only the log stamps lines".
   (1) The reader is in `clock` because only `clock` reads `env::wall::Wall::now`
   (`clippy.toml:48`), so `node` reads no OS clock and only formats the line. (2) 2 ms
   is above 200 ppm, the most drift that the clock allows for, times the age of the
