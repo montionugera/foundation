@@ -1,11 +1,11 @@
-//! `wal::Writer` and `log::Logs`, for the bench targets only. Not a stable surface.
+//! `wal::Writer` and `log::Logs`, for the bench targets and the `alloc` test only. Not
+//! a stable surface.
 
 use types::channel::{self, Slot};
 use types::frame::Path;
 use types::time::Stamp;
 
 use crate::entry::Header;
-use crate::log::{Found, Mark};
 use crate::record::{ALIGN, BLOCK};
 use crate::wal::{Ends, Layout, Position, Writer};
 
@@ -208,23 +208,13 @@ impl Logs {
                 .expect("entries in order");
         }
         self.offset += BLOCK;
-        for (slot, header) in &self.headers {
-            let past = Mark {
-                seq: u64::MAX,
-                given: u64::MAX,
-            };
-            let Found::End(end) = self.inner.find(*slot, header.path, past) else {
-                unreachable!("no run starts past the end");
-            };
-            let tail = crate::carry::Tail {
-                index: header.index,
-                path: header.path,
-                seq: end.seq,
-                given: end.given,
-                stamp: self.inner.durable(*slot, header.path).stamp,
-            };
+        self.tails.clear();
+        self.inner
+            .idle(self.offset, self.headers.len(), &mut self.tails);
+        for (tail, (slot, header)) in self.tails.iter().zip(&self.headers) {
+            assert_eq!(tail.index, header.index, "a tail of each index, in order");
             self.inner
-                .carry(*slot, &tail, self.offset)
+                .carry(*slot, tail, self.offset)
                 .expect("the durable end");
         }
         self.offset += BLOCK;
@@ -336,11 +326,11 @@ mod tests {
         assert_eq!(offsets, [5 * BLOCK, 6 * BLOCK, 7 * BLOCK]);
     }
 
-    /// Each call marks the range from its carry record to its data record, and the
-    /// trim of the next call passes it, so only the newest range stays. An entry
-    /// with no samples moves no stamp. It reads
-    /// the private logs: `mark` gives nothing back, and only the `logs` bench and
-    /// the `alloc` test call it.
+    /// Each call marks the range from the carry record of the call before to its data
+    /// record, and the trim of the next call passes it, so only the newest range
+    /// stays. An entry with no samples moves no stamp. It reads the private logs:
+    /// `mark` gives nothing back, and only the `logs` bench and the `alloc` test call
+    /// it.
     #[test]
     fn each_mark_of_the_logs_marks_one_range_and_hides_the_one_before() {
         let mut logs = Logs::new(2);
