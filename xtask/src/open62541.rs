@@ -2383,18 +2383,41 @@ End of search list.
         }
     }
 
+    /// A `git` command in `repo`, with an identity. No commit starts a background
+    /// `git maintenance`, which can write in `.git` while `remove` deletes it.
+    fn git(repo: &Path) -> Command {
+        let mut git = Command::new("git");
+        git.arg("-C")
+            .arg(repo)
+            .args(["-c", "user.name=x", "-c", "user.email=x@x"])
+            .args(["-c", "maintenance.auto=false"]);
+        git
+    }
+
     /// Commits each file in `repo` and tags the commit `tag`.
     fn tag(repo: &Path, tag: &str) {
-        let git = |args: &[&str]| {
-            let mut git = Command::new("git");
-            git.arg("-C")
-                .arg(repo)
-                .args(["-c", "user.name=x", "-c", "user.email=x@x"]);
-            exec(git.args(args)).unwrap()
-        };
+        let git = |args: &[&str]| exec(git(repo).args(args)).unwrap();
         git(&["add", "-A"]);
         git(&["commit", "-q", "-m", tag]);
         git(&["tag", tag]);
+    }
+
+    #[test]
+    fn a_commit_of_a_fixture_starts_no_background_maintenance() {
+        let repo = temp("maintenance");
+        exec(Command::new("git").arg("init").arg("-q").arg(&repo)).unwrap();
+        create_files(&repo, &[("a.txt", "a\n")]);
+        exec(git(&repo).args(["add", "-A"])).unwrap();
+        let output = git(&repo)
+            .env("GIT_TRACE", "1")
+            .args(["commit", "-q", "-m", "a"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let trace = String::from_utf8(output.stderr).unwrap();
+        assert!(trace.contains("built-in: git commit"), "{trace}");
+        assert!(!trace.contains("git maintenance run"), "{trace}");
+        remove(&repo).unwrap();
     }
 
     /// A statement that references `symbol`, in a function with an `int n`.

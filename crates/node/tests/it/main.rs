@@ -9,6 +9,8 @@ mod port;
 mod quickstart;
 mod rig;
 #[cfg(unix)]
+mod secret;
+#[cfg(unix)]
 mod start;
 mod status;
 

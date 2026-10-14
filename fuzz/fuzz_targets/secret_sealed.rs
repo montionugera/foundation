@@ -65,7 +65,9 @@ fuzz_target!(|input: &[u8]| {
     let value = if real {
         Ok(VALUE.to_vec())
     } else {
-        Err(store::Error::Missing)
+        Err(store::Error::Missing {
+            detail: "the region holds no sealed value of this name".into(),
+        })
     };
     assert_eq!(get(&empty, &name), value, "the empty store");
     assert_eq!(

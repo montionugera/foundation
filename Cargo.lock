@@ -164,9 +164,11 @@ dependencies = [
 name = "block"
 version = "0.0.0"
 dependencies = [
+ "counting",
  "divan",
  "loom",
  "proptest",
+ "zeroize",
 ]
 
 [[package]]
@@ -416,6 +418,7 @@ dependencies = [
  "hyper",
  "loom",
  "proptest",
+ "secret",
  "sim",
  "spec",
  "types",
@@ -1743,6 +1746,7 @@ name = "secret"
 version = "0.0.0"
 dependencies = [
  "aws-lc-rs",
+ "block",
  "counting",
  "env",
  "proptest",

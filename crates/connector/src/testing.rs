@@ -4,6 +4,7 @@
 use std::cell::Cell;
 use std::fmt;
 use std::future::poll_fn;
+use std::path::Path;
 use std::pin::pin;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -11,6 +12,7 @@ use std::task::Poll;
 
 use document::Document;
 use env::clock::Clock;
+use env::files::{self, Files};
 use env::net::Net;
 use env::tasks::Tasks;
 use hub::Hub;
@@ -288,8 +290,12 @@ impl Drop for Run {
     }
 }
 
+/// The directory of the files that holds the secrets of [`create_secret_store`].
+const SECRETS: &str = "secrets";
+
 /// A supervisor's inputs for the tests of `connector` and the kinds: `kinds`, the
-/// seams of `env` and `net`, and a hub on a new shard in `env`.
+/// seams of `env` and `net`, a hub on a new shard in `env`, and the store of
+/// [`create_secret_store`] on `env.files`.
 ///
 /// # Panics
 ///
@@ -301,6 +307,7 @@ pub async fn create_config(
 ) -> supervisor::Config {
     let (clock, entropy, tasks) =
         (env.clock.clone(), env.entropy.clone(), env.tasks.clone());
+    let files = env.files.clone();
     let (hub, _) = hub::testing::open(env).await;
     supervisor::Config {
         kinds: Arc::new(kinds),
@@ -309,7 +316,35 @@ pub async fn create_config(
         net,
         tasks,
         hub,
+        secrets: create_secret_store(files),
     }
+}
+
+/// A store of the secrets on `files` that [`create_secret`] writes.
+#[must_use]
+pub fn create_secret_store(files: Files) -> Box<dyn secret::store::Store> {
+    Box::new(secret::store::File::new(files, Path::new(SECRETS)))
+}
+
+/// Writes `value` as the secret `name` in the store that [`create_secret_store`]
+/// makes on `files`, in place of a value that it had.
+///
+/// # Panics
+///
+/// When a call of `files` fails.
+pub async fn create_secret(files: &Files, name: &Name, value: &[u8]) {
+    let dir = Path::new(SECRETS);
+    files.create_dir(dir).await.expect("makes the directory");
+    let path = dir.join(name.as_str());
+    files.remove(&path).await.expect("removes the old value");
+    let len = u64::try_from(value.len()).expect("invariant: usize fits u64");
+    let file = files.open(&path, files::Mode::Create { len }).await;
+    let file = file.expect("makes the file");
+    let pool = block::Config::new(1 << 18).expect("a budget that fits");
+    let block = block::Pool::heap(pool).copy(value);
+    let block = block.expect("the pool holds the value");
+    file.write_at(0, &[block]).await.expect("writes the value");
+    file.close().await;
 }
 
 /// The definitions of the status channels of `connector`, whose kind names `counts`,
