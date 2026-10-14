@@ -206,8 +206,8 @@ impl Status {
         self.set(Shown::Cleared);
     }
 
-    /// Shows `note`, cut to [`TEXT_MAX`] bytes, from the next write until the end of
-    /// the run, unless the run shows it already or no run runs.
+    /// Shows `note`, cut by [`cut`], from the next write until the end of the run,
+    /// unless the run shows it already or no run runs.
     pub(crate) fn note(&self, note: &dyn fmt::Display) {
         let note = cut(&note.to_string());
         self.change(|run| {
