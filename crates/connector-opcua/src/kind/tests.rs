@@ -473,7 +473,7 @@ fn values(frames: &[Frame], key: u128) -> Vec<f64> {
 fn writes_the_value_that_the_server_served_for_each_node_in_one_frame_per_tick() {
     let outcome = run(Setup::three(), |scene| async move {
         for (node, value) in [(A, 10.0), (B, 20.0), (C, 30.0)] {
-            scene.variables.set(node, value);
+            scene.variables.set(node, crate::value::Value::F64(value));
         }
         for at in [430, 1_230] {
             scene.after(ms(at), |scene| async move {
@@ -766,25 +766,181 @@ fn writes_a_frame_refused_as_backwards_again_after_the_stamp_of_the_refusal() {
 }
 
 #[test]
-fn refuses_a_channel_whose_samples_are_not_f64() {
+fn refuses_each_channel_whose_samples_are_not_a_scalar_of_a_value() {
     let mut setup = Setup::three();
-    setup.channels[1] = ("plant.a", data(2, 1, Type::Scalar(Scalar::I32)));
+    setup.channels[1] = ("plant.a", data(2, 1, Type::Scalar(Scalar::Stamp)));
+    setup.channels[3] = ("plant.c", data(4, 1, Type::String));
     let outcome = run(
         setup,
         |scene| async move { scene.supervise(ms(1_050)).await },
     );
-    assert_eq!(
-        diagnostics(outcome.result),
-        [Diagnostic::new(
+    let refused = |channel: &str, data_type: &str| {
+        Diagnostic::new(
             SAMPLE_TYPE,
             None,
-            "the channel `plant.a` has samples of type i32, and the opcua kind reads \
-             only f64"
+            format!(
+                "the channel `{channel}` has samples of type {data_type}, and the \
+                 opcua kind reads only bool, i8, u8, i16, u16, i32, u32, i64, u64, \
+                 f32, and f64"
+            ),
+            "Give the channel the sample type of its node, or remove its `read` block"
                 .into(),
-            "Give the channel the sample type f64, or remove its `read` block".into(),
-        )]
+        )
+    };
+    assert_eq!(
+        diagnostics(outcome.result),
+        [
+            refused("plant.a", "timestamp"),
+            refused("plant.c", "string")
+        ]
     );
     assert_eq!(outcome.frames, []);
+}
+
+/// The nodes of [`TYPED`], one for each type of a value.
+const TYPED_NODES: &[&str] = &[
+    "ns=2;i=1",
+    "ns=2;i=2",
+    "ns=2;i=3",
+    "ns=2;i=4",
+    "ns=2;i=5",
+    "ns=2;i=6",
+    "ns=2;i=7",
+    "ns=2;i=8",
+    "ns=2;i=9",
+    "ns=2;i=10",
+    "ns=2;i=11",
+];
+
+/// The channels of [`TYPED`], in the order of [`SCALARS`].
+const TYPED_CHANNELS: [&str; 11] = [
+    "plant.bool",
+    "plant.i8",
+    "plant.u8",
+    "plant.i16",
+    "plant.u16",
+    "plant.i32",
+    "plant.u32",
+    "plant.i64",
+    "plant.u64",
+    "plant.f32",
+    "plant.f64",
+];
+
+/// One channel of each type of a value (keys 2 to 12) on `plant.time` (key 1), each
+/// reading its node of [`TYPED_NODES`].
+fn typed() -> Setup {
+    let mut channels = vec![("plant.time", index(1))];
+    let mut reads = Vec::new();
+    for (at, (&channel, scalar)) in TYPED_CHANNELS.iter().zip(SCALARS).enumerate() {
+        let key = u128::try_from(at).expect("small") + 2;
+        channels.push((channel, data(key, 1, Type::Scalar(scalar))));
+        reads.push((channel, TYPED_NODES[at].to_owned()));
+    }
+    Setup {
+        nodes: TYPED_NODES,
+        channels,
+        reads,
+    }
+}
+
+/// The values of each type: the least, the largest, then one more: for a float, the
+/// one NaN that open62541 sends, the quiet NaN with the sign bit set.
+fn extremes() -> [[crate::value::Value; 11]; 3] {
+    use crate::value::Value as V;
+    [
+        [
+            V::Bool(false),
+            V::I8(i8::MIN),
+            V::U8(u8::MIN),
+            V::I16(i16::MIN),
+            V::U16(u16::MIN),
+            V::I32(i32::MIN),
+            V::U32(u32::MIN),
+            V::I64(i64::MIN),
+            V::U64(u64::MIN),
+            V::F32(f32::NEG_INFINITY),
+            V::F64(f64::NEG_INFINITY),
+        ],
+        [
+            V::Bool(true),
+            V::I8(i8::MAX),
+            V::U8(u8::MAX),
+            V::I16(i16::MAX),
+            V::U16(u16::MAX),
+            V::I32(i32::MAX),
+            V::U32(u32::MAX),
+            V::I64(i64::MAX),
+            V::U64(u64::MAX),
+            V::F32(f32::INFINITY),
+            V::F64(f64::INFINITY),
+        ],
+        [
+            V::Bool(true),
+            V::I8(-1),
+            V::U8(1),
+            V::I16(-1),
+            V::U16(1),
+            V::I32(-1),
+            V::U32(1),
+            V::I64(-1),
+            V::U64(1),
+            V::F32(f32::from_bits(0xffc0_0000)),
+            V::F64(f64::from_bits(0xfff8_0000_0000_0000)),
+        ],
+    ]
+}
+
+/// The sample of `value`, widened to 8 bytes as [`decode`] does.
+fn widened(value: crate::value::Value) -> u64 {
+    let mut sample = [0; 8];
+    value.put(&mut sample[..value.scalar().width()]);
+    u64::from_le_bytes(sample)
+}
+
+#[test]
+fn writes_each_type_of_a_value_into_a_channel_of_its_type() {
+    let outcome = run(typed(), |scene| async move {
+        let set = |scene: &Scene, values: [crate::value::Value; 11]| {
+            for (node, value) in TYPED_NODES.iter().zip(values) {
+                scene.variables.set(node, value);
+            }
+        };
+        let [least, largest, more] = extremes();
+        set(&scene, least);
+        scene.after(ms(430), move |scene| async move { set(&scene, largest) });
+        scene.after(ms(830), move |scene| async move { set(&scene, more) });
+        scene.supervise(ms(1_250)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(errors(&outcome.statuses), []);
+    let mut written: Vec<Vec<u64>> = (outcome.frames.iter())
+        .map(|frame| {
+            (2..=12)
+                .map(|key| fixed(frame, key).expect("a series")[0])
+                .collect()
+        })
+        .collect();
+    written.dedup();
+    let expected: Vec<Vec<u64>> = (extremes().iter())
+        .map(|values| values.iter().copied().map(widened).collect())
+        .collect();
+    assert_eq!(written, expected);
+}
+
+#[test]
+fn ends_the_run_with_a_device_error_on_a_value_of_another_type_than_its_channel() {
+    let outcome = run(Setup::three(), |scene| async move {
+        scene.after(ms(1_050), |scene| async move {
+            scene.variables.set(B, crate::value::Value::I32(7));
+        });
+        scene.supervise(ms(1_550)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let bad = "the node ns=3;i=7 of `plant.b` gives a value of type i32, and the \
+               channel has samples of type f64";
+    assert_eq!(errors(&outcome.statuses), [(DEVICE, bad.to_owned())]);
+    assert_eq!(outcome.frames.len(), 11);
 }
 
 #[test]
@@ -970,13 +1126,27 @@ fn panics_with_the_read_whose_value_is_bad() {
 }
 
 #[test]
-fn refuses_a_value_that_is_not_a_double_as_a_type_mismatch() {
+fn gives_the_first_value_that_is_bad_or_of_another_type_than_its_channel() {
     use crate::value::Value;
+    let scalars = [Scalar::F64, Scalar::F64, Scalar::I32];
     let values = [
         Ok(Value::F64(1.0)),
         Ok(Value::F32(1.0)),
         Err(Status::BAD_NOT_FOUND),
     ];
-    let refused = Values::new(&values).map(|_| ());
-    assert_eq!(refused, Err((1, Status::BAD_TYPE_MISMATCH)));
+    let refused = Values::new(&values, &scalars).map(|_| ());
+    let mismatch = Bad::Type {
+        value: Scalar::F32,
+        sample: Scalar::F64,
+    };
+    assert_eq!(refused, Err((1, mismatch)));
+    let refused = Values::new(&values[2..], &scalars[2..]).map(|_| ());
+    assert_eq!(refused, Err((0, Bad::Status(Status::BAD_NOT_FOUND))));
+    let good = [Ok(Value::F64(1.0)), Ok(Value::I32(-1))];
+    let scalars = [Scalar::F64, Scalar::I32];
+    let values = Values::new(&good, &scalars).expect("each value has its type");
+    assert_eq!(
+        (values.get(0), values.get(1)),
+        (Value::F64(1.0), Value::I32(-1))
+    );
 }

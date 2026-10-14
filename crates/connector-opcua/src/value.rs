@@ -2,7 +2,24 @@
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
+use types::sample::Scalar;
+
 use crate::ffi::{self, Status};
+
+/// The sample types of a [`Value`], in the order of their OPC UA types.
+pub(crate) const SCALARS: [Scalar; 11] = [
+    Scalar::Bool,
+    Scalar::I8,
+    Scalar::U8,
+    Scalar::I16,
+    Scalar::U16,
+    Scalar::I32,
+    Scalar::U32,
+    Scalar::I64,
+    Scalar::U64,
+    Scalar::F32,
+    Scalar::F64,
+];
 
 /// The scalar value of an OPC UA variable, in the sample type of the same width and
 /// sign: Boolean as `bool`, `SByte` to `UInt64` as `i8` to `u64`, Float as `f32`, and
@@ -68,6 +85,44 @@ impl Value {
                 "invariant: shim_value_scalar gives a kind of `ffi::Scalar`, not {kind}"
             ),
         })
+    }
+
+    /// The sample type of the value.
+    pub(crate) fn scalar(self) -> Scalar {
+        match self {
+            Self::Bool(_) => Scalar::Bool,
+            Self::I8(_) => Scalar::I8,
+            Self::U8(_) => Scalar::U8,
+            Self::I16(_) => Scalar::I16,
+            Self::U16(_) => Scalar::U16,
+            Self::I32(_) => Scalar::I32,
+            Self::U32(_) => Scalar::U32,
+            Self::I64(_) => Scalar::I64,
+            Self::U64(_) => Scalar::U64,
+            Self::F32(_) => Scalar::F32,
+            Self::F64(_) => Scalar::F64,
+        }
+    }
+
+    /// Writes the little-endian bytes of the value to `sample`.
+    ///
+    /// # Panics
+    ///
+    /// If `sample` is not as wide as the sample type of the value.
+    pub(crate) fn put(self, sample: &mut [u8]) {
+        match self {
+            Self::Bool(value) => sample.copy_from_slice(&[u8::from(value)]),
+            Self::I8(value) => sample.copy_from_slice(&value.to_le_bytes()),
+            Self::U8(value) => sample.copy_from_slice(&value.to_le_bytes()),
+            Self::I16(value) => sample.copy_from_slice(&value.to_le_bytes()),
+            Self::U16(value) => sample.copy_from_slice(&value.to_le_bytes()),
+            Self::I32(value) => sample.copy_from_slice(&value.to_le_bytes()),
+            Self::U32(value) => sample.copy_from_slice(&value.to_le_bytes()),
+            Self::I64(value) => sample.copy_from_slice(&value.to_le_bytes()),
+            Self::U64(value) => sample.copy_from_slice(&value.to_le_bytes()),
+            Self::F32(value) => sample.copy_from_slice(&value.to_le_bytes()),
+            Self::F64(value) => sample.copy_from_slice(&value.to_le_bytes()),
+        }
     }
 
     /// Gives the C scalar of the value and its kind.

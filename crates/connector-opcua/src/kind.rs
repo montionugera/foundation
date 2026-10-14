@@ -23,7 +23,7 @@ use crate::config::{self, Config, Read};
 use crate::event;
 use crate::ffi::Status;
 use crate::node::Node;
-use crate::value::Value;
+use crate::value::{SCALARS, Value};
 
 #[cfg(test)]
 #[cfg(feature = "sim")]
@@ -82,10 +82,12 @@ impl kind::Kind for Kind {
     /// # Errors
     ///
     /// The error of [`Context::writer`] and of each failed write. [`Error::Config`]
-    /// with `opcua.sample-type` for each channel whose sample type is not `f64`, and
-    /// with `opcua.large-read` when one Read of all nodes is past one message of the
-    /// server. [`Error::Device`] when the connect or a read fails, or a node gives a
-    /// bad status or a value that is not a Double.
+    /// with `opcua.sample-type` for each channel whose sample type is not `bool`, `i8`
+    /// to `u64`, `f32`, or `f64`, and with `opcua.large-read` when one Read of all
+    /// nodes is past one message of the server. [`Error::Device`] when the connect or a
+    /// read fails, or a node gives a bad status or a value whose type is not the
+    /// sample type of its channel: Boolean for `bool`, `SByte` to `UInt64` for `i8` to
+    /// `u64`, Float for `f32`, and Double for `f64`.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         run(ctx)
     }
@@ -190,7 +192,9 @@ struct Frames<'a> {
 
 /// The series of the frame of each tick, and what fills each.
 struct Layout {
-    /// Each entry of the key set and the bytes of its series, 8 for each.
+    /// The sample type of the channel of each read, in order.
+    scalars: Vec<Scalar>,
+    /// Each entry of the key set and the bytes of its series.
     series: Vec<(usize, usize)>,
     /// The sample of each entry of the key set.
     fills: Vec<Fill>,
@@ -213,16 +217,22 @@ impl<'a> Frames<'a> {
     /// # Errors
     ///
     /// The error of [`Context::writer`]. [`Error::Config`] with `opcua.sample-type`
-    /// for each channel whose sample type is not `f64`.
+    /// for each channel whose sample type is not one of [`SCALARS`].
     async fn open(ctx: &'a Context<Config>) -> Result<Self, Error> {
         let reads = &ctx.config().reads;
         let channels = reads.iter().map(|read| read.channel.clone()).collect();
         let writer = ctx.writer(channels, Authority::ABSOLUTE, None).await?;
         let set = writer.set();
         let entries = set.entries();
-        let wrong = (reads.iter().zip(writer.entries()))
-            .filter_map(|(read, &entry)| sample_type(read, entries[entry].data_type))
-            .collect::<Vec<_>>();
+        let (mut scalars, mut wrong) = (Vec::with_capacity(reads.len()), Vec::new());
+        for (read, &entry) in reads.iter().zip(writer.entries()) {
+            match entries[entry].data_type {
+                Type::Scalar(scalar) if SCALARS.contains(&scalar) => {
+                    scalars.push(scalar);
+                }
+                other => wrong.push(sample_type(read, other)),
+            }
+        }
         if !wrong.is_empty() {
             return Err(Error::Config(wrong));
         }
@@ -243,12 +253,17 @@ impl<'a> Frames<'a> {
             .filter(|fill| fill.read.is_none())
             .map(|fill| fill.group)
             .collect();
-        let series: Vec<_> = (0..entries.len()).map(|entry| (entry, 8)).collect();
+        let width = |entry: &key_set::Entry| {
+            (entry.data_type.width())
+                .expect("invariant: an index or a read is a scalar")
+        };
+        let series: Vec<_> = entries.iter().map(width).enumerate().collect();
         Ok(Self {
             reads,
             again: Vec::with_capacity(series.len()),
             backwards: Vec::with_capacity(samples.len()),
             layout: Layout {
+                scalars,
                 series,
                 fills,
                 samples,
@@ -274,8 +289,8 @@ impl<'a> Frames<'a> {
     ///
     /// # Errors
     ///
-    /// [`Error::Device`] when a value is a bad status, with no write. As
-    /// [`Out::send`].
+    /// [`Error::Device`] when a value is a bad status or has another type than its
+    /// channel, with no write. As [`Out::send`].
     ///
     /// # Panics
     ///
@@ -285,13 +300,14 @@ impl<'a> Frames<'a> {
         values: &[Result<Value, Status>],
         stamp: Stamp,
     ) -> Result<(), Error> {
-        let values = Values::new(values).map_err(|(at, status)| {
-            device(Failure::Value {
-                channel: self.reads[at].channel.clone(),
-                node: self.reads[at].node.clone(),
-                status,
-            })
-        })?;
+        let values =
+            Values::new(values, &self.layout.scalars).map_err(|(at, bad)| {
+                device(Failure::Value {
+                    channel: self.reads[at].channel.clone(),
+                    node: self.reads[at].node.clone(),
+                    bad,
+                })
+            })?;
         let Self {
             reads: _,
             layout,
@@ -414,42 +430,62 @@ fn fill(
     groups: &[u32],
 ) {
     for (entry, bytes) in draft.iter_mut() {
-        let sample = match fills[entry].read {
-            None => stamp.nanos().to_le_bytes(),
-            Some(read) => values.get(read).to_le_bytes(),
-        };
-        bytes.copy_from_slice(&sample);
+        match fills[entry].read {
+            None => bytes.copy_from_slice(&stamp.nanos().to_le_bytes()),
+            Some(read) => values.get(read).put(bytes),
+        }
     }
     for &group in groups {
         draft.set_count(group, 1);
     }
 }
 
-/// The values of one read, each a good Double.
+/// The values of one read, each good and of the sample type of its channel.
 #[derive(Clone, Copy)]
 struct Values<'a>(&'a [Result<Value, Status>]);
 
+/// Why a value of a read is not in [`Values`].
+#[derive(Debug, PartialEq)]
+enum Bad {
+    Status(Status),
+    /// The value has the type `value`, and its channel `sample`.
+    Type {
+        value: Scalar,
+        sample: Scalar,
+    },
+}
+
 impl<'a> Values<'a> {
-    /// Gives `values`, or the position and the status of the first bad one:
-    /// `BadTypeMismatch` for a value that is not a Double.
-    fn new(values: &'a [Result<Value, Status>]) -> Result<Self, (usize, Status)> {
-        match values
-            .iter()
-            .enumerate()
-            .find_map(|(at, value)| match value {
-                Ok(Value::F64(_)) => None,
-                Ok(_) => Some((at, Status::BAD_TYPE_MISMATCH)),
-                Err(status) => Some((at, *status)),
-            }) {
+    /// Gives `values`, or the position of the first bad one and why. `scalars` are the
+    /// sample types of the channels of the values, in order.
+    fn new(
+        values: &'a [Result<Value, Status>],
+        scalars: &[Scalar],
+    ) -> Result<Self, (usize, Bad)> {
+        let bad =
+            (values.iter().zip(scalars).enumerate()).find_map(
+                |(at, pair)| match pair {
+                    (Ok(value), &sample) if value.scalar() == sample => None,
+                    (Ok(value), &sample) => Some((
+                        at,
+                        Bad::Type {
+                            value: value.scalar(),
+                            sample,
+                        },
+                    )),
+                    (Err(status), _) => Some((at, Bad::Status(*status))),
+                },
+            );
+        match bad {
             Some(bad) => Err(bad),
             None => Ok(Self(values)),
         }
     }
 
     /// The value of the read at `at`.
-    fn get(self, at: usize) -> f64 {
+    fn get(self, at: usize) -> Value {
         match self.0[at] {
-            Ok(Value::F64(value)) => value,
+            Ok(value) => value,
             other => broken(at, other),
         }
     }
@@ -463,20 +499,23 @@ fn broken(at: usize, value: Result<Value, Status>) -> ! {
     panic!("invariant: read {at} is {value:?}, which `Values::new` refuses")
 }
 
-/// The diagnostic of the channel of `read` when its sample type is not `f64`.
-fn sample_type(read: &Read, data_type: Type) -> Option<Diagnostic> {
-    (data_type != Type::Scalar(Scalar::F64)).then(|| {
-        Diagnostic::new(
-            SAMPLE_TYPE,
-            None,
-            format!(
-                "the channel `{}` has samples of type {data_type}, and the opcua kind \
-                 reads only f64",
-                read.channel
-            ),
-            "Give the channel the sample type f64, or remove its `read` block".into(),
-        )
-    })
+/// The diagnostic of the channel of `read`, whose sample type `data_type` is not one
+/// of [`SCALARS`].
+fn sample_type(read: &Read, data_type: Type) -> Diagnostic {
+    let names = SCALARS.map(|scalar| Type::Scalar(scalar).to_string());
+    let (last, others) = names.split_last().expect("invariant: SCALARS has types");
+    Diagnostic::new(
+        SAMPLE_TYPE,
+        None,
+        format!(
+            "the channel `{}` has samples of type {data_type}, and the opcua kind reads \
+             only {}, and {last}",
+            read.channel,
+            others.join(", "),
+        ),
+        "Give the channel the sample type of its node, or remove its `read` block"
+            .into(),
+    )
 }
 
 /// The error of a Read of `nodes` nodes past one message of the server.
@@ -495,16 +534,9 @@ fn large_read(nodes: usize, Large { bytes, most }: Large) -> Error {
 /// Why a run ended with [`Error::Device`].
 #[derive(Debug)]
 enum Failure {
-    Connect {
-        address: String,
-        status: Status,
-    },
+    Connect { address: String, status: Status },
     Read(Status),
-    Value {
-        channel: Name,
-        node: Node,
-        status: Status,
-    },
+    Value { channel: Name, node: Node, bad: Bad },
 }
 
 impl fmt::Display for Failure {
@@ -514,11 +546,18 @@ impl fmt::Display for Failure {
                 write!(f, "the connect to {address} failed with {}", status.name())
             }
             Self::Read(status) => write!(f, "the read failed with {}", status.name()),
-            Self::Value {
-                channel,
-                node,
-                status,
-            } => write!(f, "the node {node} of `{channel}` gives {}", status.name()),
+            Self::Value { channel, node, bad } => {
+                write!(f, "the node {node} of `{channel}` gives ")?;
+                match bad {
+                    Bad::Status(status) => f.write_str(status.name()),
+                    Bad::Type { value, sample } => write!(
+                        f,
+                        "a value of type {}, and the channel has samples of type {}",
+                        Type::Scalar(*value),
+                        Type::Scalar(*sample),
+                    ),
+                }
+            }
         }
     }
 }
