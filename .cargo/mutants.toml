@@ -174,7 +174,7 @@ exclude_re = [
   'crates/buffer/src/buffer\.rs:.*replace <impl Drop for Hold<.*>>::drop with \(\)$',
   # A trim lands only where `land` gives, and `land` never gives the newest record
   # of a range, so `<=` there is the same as `<`.
-  'crates/buffer/src/log\.rs:.*replace < with <= in Ranges::hide$',
+  'crates/buffer/src/log\.rs:.*replace < with <= in Marked::hide$',
   # With the guard false, a record with two items takes two entries of `records`.
   # Each call of `Items` gives the same items; only the bytes held change, and no
   # test counts bytes. `the_items_of_a_record_share_its_entry` says why.

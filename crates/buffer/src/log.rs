@@ -352,7 +352,7 @@ pub(crate) struct Logs {
     scanned: u64,
     /// The ranges in which no trim lands. Each holds the range of each marked run,
     /// from the previous record of its path to the run's record.
-    marked: Ranges,
+    marked: Marked,
 }
 
 impl Logs {
@@ -719,9 +719,9 @@ fn nth_mut(logs: &mut [Log], at: u32) -> &mut Log {
 /// up to and with a later record. They are sorted, with a gap between any two.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
-struct Ranges(VecDeque<(u64, u64)>);
+struct Marked(VecDeque<(u64, u64)>);
 
-impl Ranges {
+impl Marked {
     /// Adds the range from after `after` up to and with `record`, which is at or
     /// after the newest record of each range. Merges each range that it touches or
     /// covers.
@@ -2099,43 +2099,43 @@ mod tests {
 
     #[test]
     fn a_mark_that_covers_an_older_range_takes_its_start() {
-        let mut ranges = Ranges::default();
-        ranges.mark(8192, 12288);
-        ranges.mark(4096, 16384);
+        let mut marked = Marked::default();
+        marked.mark(8192, 12288);
+        marked.mark(4096, 16384);
         for offset in [8192, 12288, 16384] {
-            assert_eq!(ranges.land(offset), 4096, "a landing at {offset}");
+            assert_eq!(marked.land(offset), 4096, "a landing at {offset}");
         }
-        assert_eq!(ranges.land(20480), 20480);
+        assert_eq!(marked.land(20480), 20480);
     }
 
     #[test]
     fn a_mark_from_the_end_of_a_range_merges_with_it() {
-        let mut ranges = Ranges::default();
-        ranges.mark(4096, 8192);
-        ranges.mark(8192, 12288);
-        assert_eq!(ranges.land(12288), 4096);
+        let mut marked = Marked::default();
+        marked.mark(4096, 8192);
+        marked.mark(8192, 12288);
+        assert_eq!(marked.land(12288), 4096);
     }
 
     #[test]
     fn a_mark_after_a_gap_keeps_two_ranges() {
-        let mut ranges = Ranges::default();
-        ranges.mark(4096, 8192);
-        ranges.mark(12288, 16384);
-        assert_eq!(ranges.land(8192), 4096);
-        assert_eq!(ranges.land(12288), 12288);
-        assert_eq!(ranges.land(16384), 12288);
+        let mut marked = Marked::default();
+        marked.mark(4096, 8192);
+        marked.mark(12288, 16384);
+        assert_eq!(marked.land(8192), 4096);
+        assert_eq!(marked.land(12288), 12288);
+        assert_eq!(marked.land(16384), 12288);
     }
 
     #[test]
     fn a_hide_keeps_each_range_that_ends_at_or_after_the_tail() {
-        let mut ranges = Ranges::default();
-        ranges.mark(4096, 8192);
-        ranges.mark(12288, 16384);
-        ranges.hide(4096);
-        assert_eq!(ranges.land(8192), 4096);
-        ranges.hide(12288);
-        assert_eq!(ranges.land(8192), 8192);
-        assert_eq!(ranges.land(16384), 12288);
+        let mut marked = Marked::default();
+        marked.mark(4096, 8192);
+        marked.mark(12288, 16384);
+        marked.hide(4096);
+        assert_eq!(marked.land(8192), 4096);
+        marked.hide(12288);
+        assert_eq!(marked.land(8192), 8192);
+        assert_eq!(marked.land(16384), 12288);
     }
 
     /// S4: "memory holds 28 bytes per record and path and 24 bytes per record, in
