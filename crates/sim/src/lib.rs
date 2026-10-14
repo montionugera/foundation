@@ -254,7 +254,8 @@ impl Sim {
         };
         let panics = self.stop(|key| key == node);
         drop(wakers);
-        drop(lock(&self.shared).crash(node, crash));
+        let ended = lock(&self.shared).crash(node, crash);
+        drop(ended);
         assert!(panics.is_empty(), "{}", panics.join(THEN));
     }
 
