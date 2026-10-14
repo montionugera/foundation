@@ -257,3 +257,6 @@ fn encode(path: &mut String, text: &str) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
