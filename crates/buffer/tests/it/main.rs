@@ -3728,16 +3728,16 @@ fn an_open_refuses_a_carry_record_of_the_wrong_shape() {
 
 /// A trim passed the record with the first entry with no samples that index 1 has at
 /// seq 3, and kept a record with two more. A carry record after the kept ones gives
-/// the count of them all. Each case: the seqs of the entries with no samples of each
-/// record, the count of a carry record at seq 3 in place of the first kept record,
-/// the carried count, and whether the open takes it. A carried count below the walked
-/// one, above it while a walked entry is not one at the carried seq, or above it
-/// after a carry record that came first, is a wrong shape.
+/// the count. Each case: the seqs of the entries with no samples of each record, the
+/// count of a carry record at seq 3 in place of the first kept record, the carried
+/// count, and whether the open takes it. The landing rule keeps each walked count
+/// exact, so a carried count that is not the walked one is a wrong shape.
 #[test]
-fn an_open_counts_the_entries_with_no_samples_that_a_trim_passed() {
+fn an_open_takes_a_carried_count_only_when_it_is_the_walked_one() {
     type Records = &'static [&'static [u64]];
-    let cases: [(Records, Option<u64>, u64, bool); 4] = [
-        (&[&[3], &[3, 3]], None, 3, true),
+    let cases: [(Records, Option<u64>, u64, bool); 5] = [
+        (&[&[3], &[3, 3]], None, 2, true),
+        (&[&[3], &[3, 3]], None, 3, false),
         (&[&[3], &[3, 3]], None, 1, false),
         (&[&[3], &[3, 3], &[4]], None, 2, false),
         (&[&[3], &[3], &[3]], Some(1), 3, false),
@@ -3784,27 +3784,27 @@ fn an_open_counts_the_entries_with_no_samples_that_a_trim_passed() {
             let expected = Read {
                 gap: Some(0..3),
                 entries: vec![stored(), stored()],
-                next: mark(3, 3),
+                next: mark(3, 2),
             };
             assert_eq!(read, Ok(expected));
+            let read = buffer.read(a, Path::Live, mark(3, 1), usize::MAX).await;
+            assert_eq!(read, Ok(whole(vec![stored()], mark(3, 2))));
             let read = buffer.read(a, Path::Live, mark(3, 2), usize::MAX).await;
-            assert_eq!(read, Ok(whole(vec![stored()], mark(3, 3))));
-            let read = buffer.read(a, Path::Live, mark(3, 3), usize::MAX).await;
-            assert_eq!(read, Ok(whole(vec![], mark(3, 3))));
+            assert_eq!(read, Ok(whole(vec![], mark(3, 2))));
             buffer.append([empty(3)]).expect("queues");
             buffer.committed().await.expect("commits");
-            let read = buffer.read(a, Path::Live, mark(3, 3), usize::MAX).await;
-            assert_eq!(read, Ok(whole(vec![stored()], mark(3, 4))));
+            let read = buffer.read(a, Path::Live, mark(3, 2), usize::MAX).await;
+            assert_eq!(read, Ok(whole(vec![stored()], mark(3, 3))));
         });
     }
 }
 
 /// Data records at 1, 2, and 4 blocks each hold an entry with no samples at seq 3.
-/// The carry record at 3 blocks, written over the third, takes two more, which a
-/// trim passed. It gives an exact count, so the one at 5 blocks takes no more.
+/// The carry record at 3 blocks, written over the third, holds the walked count, and
+/// the one at 5 blocks takes only the walked count.
 #[test]
-fn an_open_refuses_more_entries_with_no_samples_after_a_carry_record_of_the_path() {
-    for (given, taken) in [(5, true), (6, false)] {
+fn an_open_refuses_a_carried_count_above_the_walked_one() {
+    for (given, taken) in [(3, true), (4, false)] {
         run(189, move |shard| async move {
             let ring = layout(AREA, BODY_MAX);
             let mut slots = Slots::new();
@@ -3817,7 +3817,7 @@ fn an_open_refuses_more_entries_with_no_samples_after_a_carry_record_of_the_path
             }
             drop(buffer);
             shard
-                .put_carry(3 * BLOCK, &carry_body(&[carried(1, 3, 4, None)]))
+                .put_carry(3 * BLOCK, &carry_body(&[carried(1, 3, 2, None)]))
                 .await;
             shard.seal(4 * BLOCK).await;
             shard

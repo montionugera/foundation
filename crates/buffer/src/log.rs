@@ -238,9 +238,6 @@ struct Log {
     /// from the start, gives it, or a carry record of the path. A walk from it
     /// rebuilds that position. `None` before the first synced entry.
     holder: Option<u64>,
-    /// The seq at which the first synced entry starts. `None` before it, and after a
-    /// carried tail: its count is exact, and no trim passed an entry after it.
-    origin: Option<u64>,
 }
 
 impl Log {
@@ -252,7 +249,6 @@ impl Log {
             durable: Position::default(),
             runs: VecDeque::new(),
             holder: None,
-            origin: None,
         }
     }
 
@@ -260,23 +256,6 @@ impl Log {
     /// positions hold the same entries.
     fn queued(&self) -> bool {
         self.appended != self.durable
-    }
-
-    /// Starts each run past `passed` more entries with no samples at `seq`.
-    fn pass(&mut self, seq: u64, passed: u64) {
-        for run in &mut self.runs {
-            let given = if run.start.seq == seq {
-                run.start.given
-            } else {
-                0
-            };
-            run.start = Mark {
-                seq,
-                given: given
-                    .checked_add(passed)
-                    .expect("invariant: the carried count bounds it"),
-            };
-        }
     }
 
     /// Moves the durable tail past the entry, and makes the record at `offset` the
@@ -289,12 +268,11 @@ impl Log {
     fn sync(&mut self, header: &Header, offset: u64) -> Result<Synced, Invalid> {
         let start = self.durable.advance(header)?;
         let newest = self.runs.back().map(|run| run.offset).max(self.holder);
-        match newest {
-            None => self.origin = Some(header.first),
-            Some(newest) => assert!(
+        if let Some(newest) = newest {
+            assert!(
                 newest <= offset,
                 "invariant: record {offset} comes after record {newest}"
-            ),
+            );
         }
         let alone = Mark::at(0).after(header.first, header.len) == self.durable.mark();
         if alone && header.last == self.durable.tail.stamp {
@@ -568,7 +546,6 @@ impl Logs {
                 "invariant: carry record {offset} comes after record {newest:?}"
             );
             log.holder = Some(offset);
-            log.origin = None;
             self.items.push(offset, at);
         }
     }
@@ -591,18 +568,14 @@ impl Logs {
     /// record its holder. The recovery walk feeds it each carry record, in ring
     /// order. A path that the walk has not met moves to the carried tail and end,
     /// with no run. A path it met keeps its runs, and takes the carried stamp when it
-    /// has none: a trim passed the entry with the stamp. When the carried end has
-    /// more entries with no samples at the seq of the path's end, each walked entry
-    /// of the path is one at that seq, and no earlier carried tail gave an exact
-    /// count, a trim passed the others: each run starts past them, and so does the
-    /// end. A path with entries that are not durable keeps its appended tail.
+    /// has none: a trim passed the entry with the stamp. A path with entries that
+    /// are not durable keeps its appended tail.
     ///
     /// # Errors
     ///
-    /// [`Invalid::Carried`] when the walk met the path and the carried end has
-    /// another seq than its end, fewer entries with no samples, or more while a
-    /// walked entry is not one at that seq or after an earlier carried tail, or the
-    /// path has a stamp and the carried stamp is another. [`Invalid::Repeated`] when
+    /// [`Invalid::Carried`] when the walk met the path and the carried end is not
+    /// its end, or the path has a stamp and the carried stamp is another.
+    /// [`Invalid::Repeated`] when
     /// the record at `offset` already gave the path its tail. Nothing changes.
     ///
     /// # Panics
@@ -646,29 +619,22 @@ impl Logs {
         }
         let end = log.durable.mark();
         let stamp = log.durable.tail.stamp;
-        let passed = carried.given.checked_sub(end.given).filter(|&passed| {
-            carried.seq == end.seq
-                && (passed == 0 || log.origin == Some(end.seq))
-                && stamp.is_none_or(|_| carried.stamp == stamp)
-        });
-        let Some(passed) = passed else {
+        let met = carried.seq == end.seq
+            && carried.given == end.given
+            && stamp.is_none_or(|_| carried.stamp == stamp);
+        if !met {
             return Err(Invalid::Carried {
                 carried: *carried,
                 end,
                 stamp,
             });
-        };
-        if passed > 0 {
-            log.pass(end.seq, passed);
         }
         let queued = log.queued();
-        log.durable.given = carried.given;
         log.durable.tail.stamp = carried.stamp;
         if !queued {
             log.appended = log.durable;
         }
         log.holder = Some(offset);
-        log.origin = None;
         self.items.push(offset, at);
         Ok(())
     }
@@ -1808,42 +1774,36 @@ mod tests {
             assert_eq!(runs, [run(0, 0, 4096)]);
         }
 
-        /// A trim passed two of four entries with no samples at seq 3, and the
-        /// walk met the other two.
+        /// The walk met two entries with no samples at seq 3. The landing rule keeps
+        /// that count exact, so a carried end with four is a wrong shape.
         #[test]
-        fn starts_each_run_past_the_entries_that_a_trim_passed() {
+        fn refuses_more_entries_with_no_samples_than_the_walk_met() {
             let mut logs = Logs::default();
             for offset in [4096, 8192] {
                 let header = header(1, Path::Live, 3, 0, None);
                 logs.append(slot(1), &header).expect("appends");
                 logs.sync(slot(1), &header, offset).expect("syncs");
             }
-            logs.carry(slot(1), &carried(3, 4, Some(20)), 12288)
-                .expect("the walk met the newest entries at the carried seq");
+            let before = logs.clone();
+            let tail = carried(3, 4, Some(20));
+            let invalid = logs.carry(slot(1), &tail, 12288);
+            let carried_to = Invalid::Carried {
+                carried: tail,
+                end: mark(3, 2),
+                stamp: None,
+            };
+            assert_eq!(invalid, Err(carried_to));
+            assert_eq!(logs, before);
+            logs.carry(slot(1), &carried(3, 2, Some(20)), 12288)
+                .expect("the carried end is the walked end");
             let runs: Vec<Run> = logs.runs(slot(1), Path::Live).collect();
-            assert_eq!(runs, [run(3, 2, 4096), run(3, 3, 8192)]);
-            let key = channel::Key::from_u128(1);
-            assert_eq!(
-                logs.find(slot(1), Path::Live, mark(3, 0)),
-                Found::Run(key, run(3, 2, 4096))
-            );
-            assert_eq!(
-                logs.find(slot(1), Path::Live, mark(3, 3)),
-                Found::Run(key, run(3, 3, 8192))
-            );
-            assert_eq!(
-                logs.find(slot(1), Path::Live, mark(3, 4)),
-                Found::End(mark(3, 4))
-            );
+            assert_eq!(runs, [run(0, 0, 4096), run(3, 1, 8192)]);
             let tail = Tail {
                 seq: 3,
                 stamp: Some(Stamp::from_nanos(20)),
             };
             assert_eq!(logs.durable(slot(1), Path::Live), tail);
             assert_eq!(logs.appended(slot(1), Path::Live), tail);
-            let mut tails = Carried::default();
-            logs.clone().idle(16384, 2, &mut tails);
-            assert_eq!(tails.tails(), [carried(3, 4, Some(20))]);
             assert_eq!(logs.kept(), Some(12288));
         }
 
@@ -1965,8 +1925,8 @@ mod tests {
             assert_eq!(logs.kept(), Some(12288));
         }
 
-        /// A carried tail at seq 3 came first, so its count is exact: a later one
-        /// with more entries with no samples than the walk met is a wrong shape.
+        /// A carried tail at seq 3 came first: a later one with more entries with no
+        /// samples than the walk met is a wrong shape.
         #[test]
         fn refuses_more_entries_with_no_samples_after_a_carried_tail_came_first() {
             let mut logs = Logs::default();
@@ -1996,30 +1956,6 @@ mod tests {
                 stamp: None,
             };
             assert_eq!(invalid, Err(carried_to));
-        }
-
-        /// The carried tail at 8192 gives an exact count, so a later one with more
-        /// entries with no samples than the walk met is a wrong shape.
-        #[test]
-        fn refuses_more_entries_with_no_samples_after_a_carried_tail_of_a_met_path() {
-            let mut logs = Logs::default();
-            let header = header(1, Path::Live, 3, 0, None);
-            logs.append(slot(1), &header).expect("appends");
-            logs.sync(slot(1), &header, 4096).expect("syncs");
-            logs.carry(slot(1), &carried(3, 1, None), 8192)
-                .expect("the walk met the end");
-            logs.append(slot(1), &header).expect("appends");
-            logs.sync(slot(1), &header, 12288).expect("syncs");
-            let before = logs.clone();
-            let tail = carried(3, 3, None);
-            let invalid = logs.carry(slot(1), &tail, 16384);
-            let carried_to = Invalid::Carried {
-                carried: tail,
-                end: mark(3, 2),
-                stamp: None,
-            };
-            assert_eq!(invalid, Err(carried_to));
-            assert_eq!(logs, before);
         }
 
         /// The record at 8192 gave the path its tail, as a new path and as a met
