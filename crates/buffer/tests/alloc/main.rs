@@ -98,38 +98,33 @@ fn wait_once(buffer: &Buffer, commit: u64) {
     }
 }
 
-/// Each trim drops the range that the commit before marked, so the ranges stay in
-/// the memory that the warm-up gave them.
-fn marked_trims_take_no_allocation() {
+/// The allocations of 1024 calls of `commit` on logs of 4 indexes, after 64 calls
+/// that warm them up.
+fn commits(mut commit: impl FnMut(&mut buffer::bench::Logs)) -> u64 {
     let mut logs = buffer::bench::Logs::new(4);
     for _ in 0..64 {
-        logs.mark();
+        commit(&mut logs);
     }
-    let ((), n) = ALLOCATOR.count(|| {
-        for _ in 0..1024 {
-            logs.mark();
-        }
-    });
-    assert_eq!(n, 0, "{n} allocations in 1024 marked trims");
+    ALLOCATOR
+        .count(|| {
+            for _ in 0..1024 {
+                commit(&mut logs);
+            }
+        })
+        .1
 }
 
-/// Each index gets one entry and a carry record of its tail, then commits with no
-/// entry follow, in which a trim empties its runs. The room that the trim keeps takes
-/// the next entry.
-fn slow_paths_take_no_allocation() {
-    let mut logs = buffer::bench::Logs::new(4);
-    let mut cycle = |logs: &mut buffer::bench::Logs| {
+/// Each trim drops the range that the commit before marked, so the ranges stay in
+/// the memory that the warm-up gave them. A slow path gets one entry and a carry
+/// record of its tail, then commits with no entry follow, in which a trim empties
+/// its runs: the room that the trim keeps takes the next entry.
+fn logs_take_no_allocation() {
+    let n = commits(buffer::bench::Logs::mark);
+    assert_eq!(n, 0, "{n} allocations in 1024 marked trims");
+    let n = commits(|logs| {
         logs.carry();
         for _ in 0..3 {
             logs.commit(0);
-        }
-    };
-    for _ in 0..64 {
-        cycle(&mut logs);
-    }
-    let ((), n) = ALLOCATOR.count(|| {
-        for _ in 0..1024 {
-            cycle(&mut logs);
         }
     });
     assert_eq!(n, 0, "{n} allocations in 1024 entries of 4 slow paths");
@@ -141,8 +136,7 @@ fn main() {
         1,
         "the allocator counts"
     );
-    marked_trims_take_no_allocation();
-    slow_paths_take_no_allocation();
+    logs_take_no_allocation();
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let clock = node.clock();
