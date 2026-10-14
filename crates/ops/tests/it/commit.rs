@@ -170,12 +170,32 @@ fn create_worktree(root: &Path) -> PathBuf {
     path
 }
 
+/// Whether git can make a reftable repository, which needs git 2.45. Prints the skip
+/// when it cannot: the runners of CI have git 2.43 until #2633.
+#[expect(clippy::print_stdout, reason = "the test output names the skip")]
+fn reftable() -> bool {
+    let version = run(Path::new("."), "git", &["--version"], &[]);
+    let number = version.trim_start_matches("git version ");
+    let mut parts = number.split('.').map(|part| part.parse::<u32>().ok());
+    let (Some(Some(major)), Some(Some(minor))) = (parts.next(), parts.next()) else {
+        panic!("git gives the version `{version}`");
+    };
+    let able = (major, minor) >= (2, 45);
+    if !able {
+        println!("skips: git {number} cannot make a reftable repository");
+    }
+    able
+}
+
 #[test]
 fn a_commit_and_a_switch_in_a_worktree_rebuild() {
     for (name, init) in [
         ("worktree", &[][..]),
         ("reftable-worktree", &["--ref-format=reftable"]),
     ] {
+        if !init.is_empty() && !reftable() {
+            continue;
+        }
         let worktree = create_worktree(&create_probe(name, init));
         let first = git(&worktree, &["rev-parse", "HEAD"]);
         assert_eq!(built(&worktree), first, "{name}");
@@ -196,6 +216,9 @@ fn an_update_of_the_ref_of_a_worktree_from_another_rebuilds() {
         ("moved", &[][..]),
         ("reftable-moved", &["--ref-format=reftable"]),
     ] {
+        if !init.is_empty() && !reftable() {
+            continue;
+        }
         let root = create_probe(name, init);
         let worktree = create_worktree(&root);
         let first = git(&worktree, &["rev-parse", "HEAD"]);
@@ -274,6 +297,9 @@ fn a_commit_on_an_orphan_branch_rebuilds() {
 
 #[test]
 fn a_commit_in_a_reftable_repository_rebuilds() {
+    if !reftable() {
+        return;
+    }
     let root = create_probe("reftable", &["--ref-format=reftable"]);
     let first = commit(&root);
     assert_eq!(built(&root), first);
