@@ -16,6 +16,7 @@ use std::task::{Context, Wake, Waker};
 
 use super::{shard, sim};
 use crate::drivers::yield_now;
+use crate::log::Kept;
 use crate::shard::Fault;
 use crate::{Crash, line, node};
 use common::{Host, Log, Logs};
@@ -613,34 +614,37 @@ fn a_crash_drops_a_port_waker_that_reads_the_clock() {
     assert_eq!(messages, ["a clock read"]);
 }
 
-/// Memory of node code: it logs when it drops.
-struct LoggedMemory(block::Heap);
+/// A value of node code: it logs when it drops.
+struct Logged;
 
-#[expect(unsafe_code, reason = "a test memory that only wraps `Heap`")]
-// SAFETY: each call goes to `Heap`.
-unsafe impl block::Memory for LoggedMemory {
-    fn base(&self) -> std::ptr::NonNull<u8> {
-        self.0.base()
-    }
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-    fn commit(&self, offset: usize, len: usize) -> Result<(), block::Refused> {
-        self.0.commit(offset, len)
-    }
-    fn purge(&self, offset: usize, len: usize) {
-        self.0.purge(offset, len);
-    }
-}
-
-impl Drop for LoggedMemory {
+impl Drop for Logged {
     fn drop(&mut self) {
-        tracing::info!("a memory dropped");
+        tracing::info!("a value dropped");
     }
 }
 
 #[test]
-fn the_end_of_an_orphan_read_drops_its_block_with_the_log_of_its_node() {
+fn a_kept_value_drops_with_the_log_of_the_poll_that_kept_it() {
+    let (log, caller) = (Log::default(), Log::default());
+    let kept = tracing::dispatcher::with_default(&log.dispatch(), || Kept::new(Logged));
+    let _caller = tracing::dispatcher::set_default(&caller.dispatch());
+    drop(kept);
+    assert_eq!(caller.messages(), Vec::<String>::new());
+    assert_eq!(log.messages(), ["a value dropped"]);
+}
+
+#[test]
+fn a_kept_value_given_back_drops_with_the_log_of_the_caller() {
+    let (log, caller) = (Log::default(), Log::default());
+    let kept = tracing::dispatcher::with_default(&log.dispatch(), || Kept::new(Logged));
+    let _caller = tracing::dispatcher::set_default(&caller.dispatch());
+    drop(kept.into_inner());
+    assert_eq!(log.messages(), Vec::<String>::new());
+    assert_eq!(caller.messages(), ["a value dropped"]);
+}
+
+#[test]
+fn the_end_of_an_orphan_read_drops_its_waker_with_the_log_of_its_node() {
     let mut sim = sim(0);
     let a = sim.node(node::Config::default());
     let (log, caller) = (Log::default(), Log::default());
@@ -655,18 +659,15 @@ fn the_end_of_an_orphan_read_drops_its_block_with_the_log_of_its_node() {
                 .open(Path::new("a"), env::files::Mode::Create { len: 1_024 })
                 .await
                 .unwrap();
-            let config = block::Config::new(64 << 10).unwrap();
-            let memory = LoggedMemory(block::Heap::new(config.reservation()));
-            let pool = block::Pool::new(config, memory);
+            let pool = block::Pool::heap(block::Config::new(64 << 10).unwrap());
             let mut read = Box::pin(file.read_at(0, pool.alloc(1_024).unwrap()));
             poll_with_own_waker(read.as_mut());
             drop(read);
-            drop(pool);
             pending::<()>().await;
         });
     sim.run_for(Span::from_nanos(1_000_000_000)).unwrap();
     assert_eq!(caller.messages(), Vec::<String>::new());
-    assert_eq!(log.messages(), ["a waker dropped", "a memory dropped"]);
+    assert_eq!(log.messages(), ["a waker dropped"]);
 }
 
 #[test]
