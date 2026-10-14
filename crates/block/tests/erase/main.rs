@@ -1,9 +1,9 @@
-//! A pool on `Erased` leaves the bytes of its blocks in no freed allocation. The
-//! scan covers every thread, so this binary has no test harness.
+//! A pool from `Pool::erased` leaves the bytes of its blocks in no freed allocation.
+//! The scan covers every thread, so this binary has no test harness.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
-use block::{Config, Erased, Heap, Memory, Pool};
+use block::{Config, Pool};
 
 #[global_allocator]
 static ALLOCATOR: counting::Allocator = counting::Allocator::new();
@@ -12,34 +12,39 @@ const PLAIN: [u8; 32] = [0x5a; 32];
 
 fn main() {
     // Miri stops at the read of a freed byte that the program never wrote (COUNTING
-    // ALLOCATOR). The unit tests of `Erased` run its erase under Miri.
+    // ALLOCATOR). The unit tests of `block` run the erase under Miri.
     if cfg!(miri) {
         return;
     }
     for (len, at) in [(32, 0), (3000, 1), (3000, 0)] {
-        let held = freed(Heap::new, |pool| lent(pool, len, at));
+        let held = freed(Pool::heap, |pool| lent(pool, len, at));
         assert_eq!(
             held, 1,
-            "a dropped `Heap::new` frees the bytes ({len}, {at})"
+            "a dropped `Pool::heap` frees the bytes ({len}, {at})"
         );
-        let held = freed(Erased::new, |pool| lent(pool, len, at));
-        assert_eq!(held, 0, "a dropped `Erased` erases them ({len}, {at})");
+        let held = freed(Pool::erased, |pool| lent(pool, len, at));
+        assert_eq!(
+            held, 0,
+            "a dropped `Pool::erased` erases them ({len}, {at})"
+        );
     }
-    assert_eq!(freed(Heap::new, recarved), 1, "`Heap::new` frees the bytes");
     assert_eq!(
-        freed(Erased::new, recarved),
+        freed(Pool::heap, recarved),
+        1,
+        "`Pool::heap` frees the bytes"
+    );
+    assert_eq!(
+        freed(Pool::erased, recarved),
         0,
-        "a dropped `Erased` erases a block that the pool carved again after a purge"
+        "a dropped `Pool::erased` erases a block that it carved again after a purge"
     );
 }
 
-/// Gives the count of freed allocations that hold `PLAIN`, after `case` runs on a pool
-/// on the memory that `memory` gives and drops it.
-fn freed<M: Memory + 'static>(memory: fn(usize) -> M, case: impl FnOnce(Pool)) -> u64 {
-    let config = Config::new(1 << 14).expect("the budget fits");
-    let memory = memory(config.reservation());
-    let ((), found) =
-        ALLOCATOR.freed_holding(&PLAIN, || case(Pool::new(config, memory)));
+/// Gives the count of freed allocations that hold `PLAIN`, after `case` runs on the
+/// pool that `pool` gives and drops it.
+fn freed(pool: fn(Config) -> Pool, case: impl FnOnce(Pool)) -> u64 {
+    let pool = pool(Config::new(1 << 14).expect("the budget fits"));
+    let ((), found) = ALLOCATOR.freed_holding(&PLAIN, || case(pool));
     found
 }
 

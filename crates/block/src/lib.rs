@@ -22,7 +22,8 @@ use std::ptr::NonNull;
 use std::slice;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
-pub use memory::{Erased, Heap, Memory, Refused};
+use memory::Erased;
+pub use memory::{Heap, Memory, Refused};
 use sync::{AtomicUsize, Track};
 
 /// Byte alignment of every block.
@@ -305,6 +306,20 @@ impl Pool {
     pub fn heap(config: Config) -> Self {
         let heap = Heap::new(config.reservation());
         Self::new(config, heap)
+    }
+
+    /// Creates a pool on heap memory, as [`Pool::heap`] does, for blocks that hold a
+    /// secret. At the drop, it writes zero over the first [`ALIGN`] bytes and over
+    /// each range that the pool committed, with writes that the compiler keeps,
+    /// before it frees them.
+    ///
+    /// # Panics
+    ///
+    /// If the heap cannot allocate [`Config::reservation`] bytes.
+    #[must_use]
+    pub fn erased(config: Config) -> Self {
+        let memory = Erased::new(config.reservation());
+        Self::new(config, memory)
     }
 
     /// The most bytes the pool commits at once: the budget of its [`Config`].

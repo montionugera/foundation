@@ -140,7 +140,7 @@ impl Drop for Heap {
 /// Heap memory, as [`Heap`] gives it, for blocks that hold a secret. At the drop, it
 /// writes zero over the first [`ALIGN`] bytes and over each range that
 /// [`Memory::commit`] got, with writes that the compiler keeps, before it frees them.
-pub struct Erased {
+pub(crate) struct Erased {
     heap: Heap,
     /// The first [`ALIGN`] bytes and the ranges that `commit` got.
     committed: RefCell<Vec<Range<usize>>>,
@@ -153,7 +153,7 @@ impl Erased {
     ///
     /// If `len` is 0 or too large to allocate.
     #[must_use]
-    pub fn new(len: usize) -> Self {
+    pub(crate) fn new(len: usize) -> Self {
         Self {
             heap: Heap::new(len),
             committed: RefCell::new(iter::once(0..ALIGN.min(len)).collect()),
@@ -255,8 +255,7 @@ mod tests {
         use crate::{Config, Pool};
 
         let config = Config::new(1 << 14).expect("the budget fits");
-        let memory = Erased::new(config.reservation());
-        let pool = Pool::new(config, memory);
+        let pool = Pool::erased(config);
         let mut block = pool.alloc(3000).expect("the budget has room");
         block.fill(0x5a);
         let block = block.freeze();

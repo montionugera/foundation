@@ -97,8 +97,7 @@ impl File {
         }
         let len = usize::try_from(file.len()).expect("invariant: at most `LEN_MAX`");
         let config = pool(len);
-        let memory = block::Erased::new(config.reservation());
-        let pool = block::Pool::new(config, memory);
+        let pool = block::Pool::erased(config);
         let into = pool.alloc(len).expect("invariant: the pool holds the file");
         let read = file.read_at(0, into).await;
         file.close().await;
