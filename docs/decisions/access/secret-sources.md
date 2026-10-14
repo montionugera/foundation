@@ -31,8 +31,11 @@
 
   `secret::Resolver` gives the value of a source on one shard. `env()` reads the
   environment of the node process, which `node` main reads once at start
-  (`std::env::vars_os()`) and gives in `node::Config::vars`, with the first kind that
-  reads a secret (a later step of #2583). No code below `node` reads the OS environment.
+  (`std::env::vars_os()`) and gives in `node::Config::vars` from the PR of the first
+  kind that reads a secret (a later step of #2583). Until then `node` gives an empty
+  map. `laptop.architect-2` moved this read to that step on 2026-10-14T03:52:12Z
+  (https://github.com/synnaxlabs/foundation/pull/2662#issuecomment-6160488141). No code
+  below `node` reads the OS environment.
   To change the value, restart the node. A value that is not UTF-8 gives its bytes.
   `secret::Source::File` holds an `env::files::Absolute`, the one type of the path rule
   above, and `file()` reads it through `env::files::Files::open_absolute`, as
@@ -42,7 +45,10 @@
   `secret::Resolver::new` makes the one turn that `file()` and the store share on a
   shard: one read at a time, in the order they come, in the erased pool, at most 64 KiB,
   less one trailing `\n` or `\r\n`. So the memory bound of SECRET STORES AS ADAPTERS
-  holds for both. A variable of more than 64 KiB is `secret::Error::Unavailable`. An
+  holds for both. A variable of more than 64 KiB is `secret::Error::Unavailable`.
+  `laptop.architect-2` decided the turn in `Resolver::new`, the one `secret::Error`, and
+  this bound on 2026-10-14T03:11:41Z
+  (https://github.com/synnaxlabs/foundation/pull/2662#issuecomment-6160027911). An
   empty value, a variable that is not set, and a file that is not there are
   `secret::Error::Missing`, with a text that says where to put the value.
   `Context::secret(&Source)` gives each error as `Error::Retry` with the source in its

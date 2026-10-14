@@ -50,8 +50,9 @@
   heap on the `sim` driver (ip-172-31-11-216, Linux x86-64), with the future of each
   get. Peaks: 81,254, 321,878, and 5,606,318 bytes for one get of a file of 1, 4096, and
   65,536 bytes, and 5,606,950, 5,783,090, and 6,317,162 bytes for 2, 256, and 1024 gets
-  at once of 65,536 bytes, half of them through `file()`. On the `os` driver one get
-  held 81,070, 312,988, and 5,474,548 bytes, with no future counted (#2588). A dropped
+  at once of 65,536 bytes, half of them through `file()`. On the `os` driver
+  (ip-172-31-11-216, Linux x86-64), one get of the file store of #2588, before the
+  resolver, held 81,070, 312,988, and 5,474,548 bytes, with no future counted. A dropped
   get gives the turn on at its drop, and its pool stays until its read ends. The value
   is at most 64 KiB while a kind holds it. Both are outside the pool budget of the node.
   The store does not check the owner or mode of the file. Make the file readable only by

@@ -18,7 +18,7 @@ pub use sealed::Sealed;
 pub trait Store: fmt::Debug {
     /// Reads the value of `name`, the secret's full name in the tree, such as
     /// `site_a.secrets.influx_token`. Each store maps the name to its own key (a
-    /// file, a Vault path) by its config.
+    /// Vault path, a Kubernetes Secret) by its config.
     ///
     /// # Errors
     ///
