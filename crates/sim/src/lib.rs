@@ -35,7 +35,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll};
 use std::time::Instant;
 
 use env::rng::Rng;
@@ -251,9 +251,11 @@ impl Sim {
             state.net().crash(now, node, crash)
         };
         let panics = self.stop(|key| key == node);
-        drop(wakers);
+        // No thread owns these wakers, so their drops go to no log.
+        let unowned = Dispatch::none();
+        tracing::dispatcher::with_default(&unowned, || drop(wakers));
         let ended = lock(&self.shared).crash(node, crash);
-        drop(ended);
+        tracing::dispatcher::with_default(&unowned, || drop(ended));
         assert!(panics.is_empty(), "{}", panics.join(THEN));
     }
 
@@ -387,7 +389,9 @@ impl Sim {
                 Next::Poll => self.step()?,
                 Next::Advance(at) => {
                     let (wakers, orphans) = lock(&self.shared).advance(at);
-                    wakers.into_iter().for_each(Waker::wake);
+                    for (waker, log) in wakers {
+                        tracing::dispatcher::with_default(&log, || waker.wake());
+                    }
                     drop(orphans);
                 }
             }
@@ -488,12 +492,13 @@ impl Sim {
     }
 
     /// Drops the timer wakers of `ended`, and the futures of its tasks outside the
-    /// borrow, since a drop may spawn. Returns the message of each drop that panicked,
-    /// in order.
+    /// borrow, since a drop may spawn, each with the log of its thread. Returns the
+    /// message of each drop that panicked, in order.
     fn drop_ended(&self, ended: Ended) -> Vec<String> {
-        drop(ended.timers);
+        let mut panics = drop_each(ended.timers);
         let futures = self.futures.borrow_mut().remove(ended.tasks);
-        drop_each(futures)
+        panics.extend(drop_each(futures));
+        panics
     }
 }
 
@@ -502,12 +507,12 @@ impl Sim {
 /// panicked, in order.
 fn drop_each<T>(items: impl IntoIterator<Item = (T, Dispatch)>) -> Vec<String> {
     (items.into_iter())
-        .filter_map(|(item, log)| {
+        .flat_map(|(item, log)| {
             tracing::dispatcher::with_default(&log, || {
-                panic::catch_unwind(AssertUnwindSafe(|| drop(item))).err()
+                let dropped = panic::catch_unwind(AssertUnwindSafe(|| drop(item)));
+                dropped.err().map(messages).unwrap_or_default()
             })
         })
-        .flat_map(messages)
         .collect()
 }
 

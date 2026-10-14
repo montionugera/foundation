@@ -120,8 +120,8 @@ pub(crate) struct Ended {
     /// The tasks whose futures the caller drops, in key order, each with the log of
     /// its thread.
     pub(crate) tasks: Vec<(u64, Dispatch)>,
-    /// The wakers of the timers of the threads.
-    pub(crate) timers: Vec<Waker>,
+    /// The wakers of the timers of the threads, each with the log of its thread.
+    pub(crate) timers: Vec<(Waker, Dispatch)>,
 }
 
 /// The next step of a run.
@@ -527,29 +527,35 @@ impl State {
         }
         let timers = (self.timers)
             .extract_if(.., |_, (owner, _)| *owner == thread)
-            .map(|(_, (_, waker))| waker)
+            .map(|(_, (_, waker))| (waker, log.clone()))
             .collect();
         Ended { tasks, timers }
     }
 
     /// Moves true time to `at`, delivers the datagrams and bytes that arrive by then,
-    /// and ends the file calls due by then. Returns the wakers of the timers due, of
-    /// the sockets and ports that the arrivals wake, and of the file calls that end,
-    /// and the blocks of the file calls whose futures dropped, for the caller to drop
-    /// after it releases the lock.
-    pub(crate) fn advance(&mut self, at: Monotonic) -> (Vec<Waker>, Vec<Held>) {
+    /// and ends the file calls due by then. Returns the wakers of the timers due, each
+    /// with the log of its thread, then those of the sockets and ports that the
+    /// arrivals wake and of the file calls that end, with no log, and the blocks of
+    /// the file calls whose futures dropped, for the caller to drop after it releases
+    /// the lock.
+    pub(crate) fn advance(
+        &mut self,
+        at: Monotonic,
+    ) -> (Vec<(Waker, Dispatch)>, Vec<Held>) {
         self.now = at;
         let mut wakers = Vec::new();
         while let Some(timer) = self.timers.first_entry() {
             if timer.key().0 > at {
                 break;
             }
-            wakers.push(timer.remove().1);
+            let (thread, waker) = timer.remove();
+            wakers.push((waker, self.threads[&thread].log.clone()));
         }
-        wakers.extend(self.net.deliver(at));
-        wakers.extend(self.serial.deliver(at));
+        let mut unowned = self.net.deliver(at);
+        unowned.extend(self.serial.deliver(at));
         let (ended, orphans) = self.files.end(at);
-        wakers.extend(ended);
+        unowned.extend(ended);
+        wakers.extend(unowned.into_iter().map(|waker| (waker, Dispatch::none())));
         (wakers, orphans)
     }
 
