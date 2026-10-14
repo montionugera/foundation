@@ -118,8 +118,8 @@ impl Rig {
     ///
     /// # Panics
     ///
-    /// As [`kind::Table::check`](Table::check), and when the status reader does not
-    /// open.
+    /// As [`kind::Table::check`](Table::check) and [`Self::define`], such as a second
+    /// connector of one name, and when the status reader does not open.
     pub async fn supervise(&mut self, kind: &str, name: Name, config: Document) -> Run {
         let reader = match self.define_status(kind, &name, &config) {
             Some(select) => Some(self.status(select).await),
@@ -150,7 +150,8 @@ impl Rig {
     ///
     /// # Panics
     ///
-    /// As [`kind::Table::check`](Table::check).
+    /// As [`kind::Table::check`](Table::check) and [`Self::define`], such as a second
+    /// connector of one name.
     pub async fn open_connector<'a>(
         &'a mut self,
         kind: &'a str,
