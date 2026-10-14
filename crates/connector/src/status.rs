@@ -560,7 +560,9 @@ impl Writer {
     /// Polls `run` to its end. Meanwhile it writes the status that a kind staged or
     /// the home did not apply, at most once each [`PERIOD`] after the last write.
     /// Then it writes it the same way until the home applied it, the writer writes no
-    /// more, `cancel` is cancelled, or [`SETTLE`] passed.
+    /// more, `cancel` is cancelled, or [`SETTLE`] passed after `run` ended. The
+    /// supervisor ends `run` at its last change of state, so that bound counts from
+    /// that change.
     pub(crate) async fn during<T>(&self, run: impl Future<Output = T>) -> T {
         let output = beside(run, self.flush()).await;
         let until = self.clock.now() + SETTLE;
