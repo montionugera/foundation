@@ -740,7 +740,8 @@ mod tests {
     }
 
     /// Writes one status frame of `plant.script` from another writer, stamped `lead`
-    /// after the hub's time, with an empty `error` and 9 in each other sample.
+    /// after the hub's time, with an empty text in `error` and `note`, and 9 in each
+    /// other sample.
     async fn write_ahead(hub: &hub::Hub, lead: Span) {
         let channels = status_names("plant.script", &[]);
         let mut other =

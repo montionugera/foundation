@@ -215,11 +215,11 @@ impl Status {
         });
     }
 
-    /// Stages `new`, unless it is the value that the run shows, or no run runs.
+    /// Stages `new`, unless it is the error that the run shows, or no run runs.
     fn set(&self, new: Shown) {
         self.change(|run| {
-            let changed = run.shown != new;
-            run.shown = new;
+            let changed = run.error != new;
+            run.error = new;
             changed
         });
     }
@@ -381,10 +381,11 @@ impl Values {
     }
 }
 
-/// What one run of the kind shows. The run starts with nothing and ends with it.
+/// What one run of the kind shows: [`Writer::start`] sets an empty one, and
+/// [`Writer::end`] takes it.
 #[derive(Debug, Default)]
 struct Run {
-    shown: Shown,
+    error: Shown,
     /// Empty when the run shows no note.
     note: String,
 }
@@ -701,7 +702,7 @@ impl Session {
     fn write(&mut self, values: &Values, now: Monotonic) {
         values.staged.set(false);
         if let Some(run) = &*values.run.borrow() {
-            match &run.shown {
+            match &run.error {
                 Shown::Nothing => {}
                 Shown::Cleared => {
                     self.class = None;
