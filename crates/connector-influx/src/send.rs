@@ -146,7 +146,8 @@ async fn send(
                 let text = String::from_utf8_lossy(answer.body());
                 let refused =
                     matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
-                match ctx.config().token.as_ref().filter(|_| refused) {
+                let source = ctx.config().token.as_ref().filter(|_| refused);
+                match source {
                     Some(source) => ctx.error(&format_args!(
                         "Check the token {source}. InfluxDB answered {status}: {}",
                         text.trim()
@@ -158,7 +159,7 @@ async fn send(
                         ));
                     }
                 }
-                refused
+                source.is_some()
             }
             Err(error) => {
                 ctx.error(&format_args!("the write to InfluxDB failed: {error}"));
@@ -177,7 +178,6 @@ async fn send(
     }
 }
 
-/// The token of a run, as the value of its `Authorization` header.
 /// The request of one attempt to write `body` to `uri`, with the header of `token`.
 pub fn request(uri: &Uri, body: &Bytes, token: Option<&Token>) -> Request<Bytes> {
     let mut request = Request::new(body.clone());
@@ -234,7 +234,7 @@ impl Token {
     /// The `Authorization` header, marked sensitive.
     fn header(&self) -> HeaderValue {
         let header = HeaderValue::from_bytes(self.header.expose());
-        let mut header = header.expect("invariant: `read` checked the bytes");
+        let mut header = header.expect("invariant: `new` checked the bytes");
         header.set_sensitive(true);
         header
     }
