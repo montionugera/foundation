@@ -61,6 +61,16 @@
   https://github.com/synnaxlabs/foundation/issues/871#issuecomment-6070831264),
   approved by `laptop.architect` (2026-10-09T01:09:48Z, #2033,
   https://github.com/synnaxlabs/foundation/pull/2033#issuecomment-6072192755).
+  Amended (2026-10-13, #2606): `Shards::logged` and `Threads::logged` give a clone that
+  starts each thread with a `tracing::Dispatch`, the log of its node. The driver runs
+  each call of the thread's code with it as the default dispatch: the call of `main` or
+  `body`, each poll, and each drop of a task, of `main`, of `body`, or of a panic
+  payload. `os` sets it for the life of the OS thread, and `sim` enters it around each
+  such call. A `Shards` or `Threads` that is not logged drops each event
+  (`laptop.architect-2`, 2026-10-13T21:13:43Z, item 1 of
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155317582; rule
+  meaning: `laptop.director`, 2026-10-13T21:12:40Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155299486).
   `env::files` (#37) gives files under one data directory, with owned blocks and a
   sync that poisons the file on failure (S4). One handle at a time holds a file open
   to write, until it drops and its calls end; another write open fails with `Busy`

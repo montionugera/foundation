@@ -50,9 +50,9 @@ Rules:
    writes no event: it returns a value that its caller logs. `env` (layer 1) takes
    `tracing` only for the `Dispatch` type that its `Shards` and `Threads` hold. Only
    `node` takes `tracing-subscriber` and builds the dispatch of a node, and no crate
-   sets a default for the whole process (`laptop.architect`, 2026-10-13, #2606:
-   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155332793; rule
-   meaning:
+   sets a default for the whole process (`laptop.architect`, 2026-10-13T21:14:39Z,
+   #2606: https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155332793;
+   rule meaning (`laptop.director`, 2026-10-13T21:12:40Z):
    https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155299486).
 
 Order: layer 1 (`block`, `ring`, `counting`, `waker`) -> `types` -> (`env`, `document`,
