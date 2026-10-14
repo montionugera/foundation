@@ -234,7 +234,7 @@ impl Server {
     /// # Panics
     ///
     /// On a second call, as open62541 refuses the second add of the variable.
-    pub(crate) fn set_reads(&self, most: u32) {
+    pub(crate) fn set_per_read(&self, most: u32) {
         // SAFETY: the server lives.
         unsafe { ffi::test::shim_server_reads(self.raw(), most) };
         let node = Node {

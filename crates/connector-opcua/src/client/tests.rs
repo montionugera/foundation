@@ -1395,7 +1395,7 @@ fn numbered(index: u32) -> Node {
 fn read_per(most: u32, count: u32) -> (Vec<usize>, Read, Values) {
     run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
-            peer.server.set_reads(most);
+            peer.server.set_per_read(most);
             let mut nodes = Vec::new();
             let mut values = Vec::new();
             for index in 0..count {
@@ -1678,7 +1678,7 @@ fn read_split(
 ) -> [Read; 2] {
     run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
-            peer.server.set_reads(1);
+            peer.server.set_per_read(1);
             for index in 1..=3 {
                 peer.server.add_scalar(&numbered(index), Value::U32(index));
             }

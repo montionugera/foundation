@@ -90,7 +90,7 @@ impl Server {
         let add = |server: &mut crate::server::Server| {
             server.add_scalar(&VALUE, Value::F64(DOUBLE));
             server.add_scalar(&named(), Value::F64(DOUBLE));
-            server.set_reads(PER_READ);
+            server.set_per_read(PER_READ);
         };
         crate::server::Server::serve(manager, SESSIONS, add, body(&this)).await
     }
