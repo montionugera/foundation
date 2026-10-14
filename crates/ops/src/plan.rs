@@ -61,7 +61,8 @@ impl Documents {
     /// Reads the value of each source of a secret in the config of each connector of
     /// the node `node`, through `secrets` as a run does, and drops it. A source is a
     /// call of `env`, `file`, or `secret`, at any depth of the config, that
-    /// [`secret::Source::read`] reads. Reads one source at a time, in file order.
+    /// [`secret::Source::read`] reads. Reads one source at a time: the connectors in
+    /// name order, and the sources of each in the order of its config.
     ///
     /// # Errors
     ///

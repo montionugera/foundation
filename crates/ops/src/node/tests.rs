@@ -343,6 +343,33 @@ fn refuses_a_plan_with_each_secret_of_the_node_that_has_no_value() {
 }
 
 #[test]
+fn gives_the_secrets_with_no_value_of_each_connector_in_name_order() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let connector = |name: &str| {
+            format!(
+                "connector \"{name}\" {{\n  kind  = \"influx\"\n  node  = \"edge\"\n  \
+                 token = env(\"{name}\")\n}}\n"
+            )
+        };
+        let text = format!("{}{}", connector("b"), connector("a"));
+        let files = vec![(PathBuf::from("c.hcl"), text)];
+        let error = node.plan(files).await.expect_err("no values");
+        let unset = |name: &str| {
+            format!(
+                "the secret env(\"{name}\"): the environment variable {name} of the node \
+                 is not set. Start the node with it set to the value"
+            )
+        };
+        let expected = json!({ "errors": [
+            unresolved(&unset("a"), 9, 11),
+            unresolved(&unset("b"), 4, 11),
+        ]});
+        assert_eq!(error, expected);
+    });
+}
+
+#[test]
 fn plans_when_each_secret_of_the_node_has_a_value() {
     solo(|fixture, mesh| async move {
         let files = fixture.sim.files();
