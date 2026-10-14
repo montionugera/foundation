@@ -70,7 +70,9 @@
   applies the file, until `apply` reads them (#2694). This is the plan of item 7
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6161179051), with
   the filter by subject that `laptop.architect-2` approved on 2026-10-14T19:52:43Z
-  (https://github.com/synnaxlabs/foundation/pull/2692#issuecomment-6177025658). A
+  (https://github.com/synnaxlabs/foundation/pull/2692#issuecomment-6177025658). It
+  supersedes "each connector that the planning node runs" in item 7 of
+  https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6155189112. A
   connector on another node is not checked at plan until #239. A person who can apply a
   spec can make the node read any variable of its environment and any file that its user
   can read. The trigger for a limit that the operator of the node sets at start, such as
