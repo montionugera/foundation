@@ -110,10 +110,10 @@ impl Logs {
     }
 
     /// One commit of one record that holds `entries` data entries of each index. It
-    /// first hides the earlier records, as a trim that keeps up, so each log holds
-    /// one run. Then it syncs each entry.
+    /// first hides the records before the oldest holder, as a trim that keeps up, so
+    /// each log holds the run of its holder. Then it syncs each entry.
     pub fn commit(&mut self, entries: u32) {
-        self.inner.hide(self.offset);
+        self.keep_up();
         for (slot, header) in &mut self.headers {
             for _ in 0..entries {
                 self.inner
@@ -126,9 +126,10 @@ impl Logs {
     }
 
     /// One commit as `commit(1)`, with an append of each entry, then a carry record
-    /// in the next record that holds the durable tail of each index.
+    /// in the next record that holds the durable tail of each index, so the hide of
+    /// the next commit drops the run of each index.
     pub fn carry(&mut self) {
-        self.inner.hide(self.offset);
+        self.keep_up();
         for (slot, header) in &mut self.headers {
             self.inner.append(*slot, header).expect("entries in order");
             self.inner
@@ -192,10 +193,7 @@ impl Logs {
     /// syncs one entry with no samples of each index at the seq of its durable
     /// tail, then carries the durable end of each index in the next record.
     pub fn mark(&mut self) {
-        if let Some(kept) = self.inner.kept() {
-            let landing = self.inner.marked().land(kept);
-            self.inner.hide(landing);
-        }
+        self.keep_up();
         for (slot, header) in &self.headers {
             let empty = Header {
                 len: 0,
@@ -219,6 +217,15 @@ impl Logs {
                 .expect("the durable end");
         }
         self.offset += BLOCK;
+    }
+
+    /// Hides the records before the landing of the oldest holder, as a trim that
+    /// keeps up.
+    fn keep_up(&mut self) {
+        if let Some(kept) = self.inner.kept() {
+            let landing = self.inner.marked().land(kept);
+            self.inner.hide(landing);
+        }
     }
 }
 
@@ -251,9 +258,9 @@ mod tests {
     }
 
     /// Each commit moves the durable tail of each index past one more entry, and
-    /// each log keeps one run. It reads the private logs: `commit` gives nothing back,
-    /// and only the `logs` bench calls it, so no caller sees a commit that skips the
-    /// sync or the hide.
+    /// each log keeps two runs: the run of its holder, and the new one. It reads the
+    /// private logs: `commit` gives nothing back, and only the `logs` bench calls it,
+    /// so no caller sees a commit that skips the sync or the hide.
     #[test]
     fn each_commit_of_the_logs_syncs_one_entry_of_each_index() {
         let mut logs = Logs::new(2);
@@ -263,7 +270,7 @@ mod tests {
         for n in 0..2 {
             let slot = Slot::new(n);
             assert_eq!(logs.inner.durable(slot, Path::Live).seq, 6, "index {n}");
-            assert_eq!(logs.inner.runs(slot, Path::Live).count(), 1, "index {n}");
+            assert_eq!(logs.inner.runs(slot, Path::Live).count(), 2, "index {n}");
         }
     }
 
