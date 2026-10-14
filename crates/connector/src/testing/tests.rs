@@ -227,6 +227,39 @@ fn define_panics_on_a_name_that_an_earlier_call_defined() {
 }
 
 #[test]
+#[should_panic(expected = "two channels are named plant.ticks.status.time")]
+fn supervise_panics_on_a_second_connector_of_one_name() {
+    on_rig(
+        || Table::new().with("ticks", Ticks::default()),
+        |mut rig, _| async move {
+            let config = Document::default();
+            let a = rig
+                .supervise("ticks", name("plant.ticks"), config.clone())
+                .await;
+            assert_eq!(a.stop().await.map_err(|e| e.to_string()), Ok(()));
+            let _b = rig.supervise("ticks", name("plant.ticks"), config).await;
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "two channels are named plant.ticks.status.time")]
+fn open_connector_panics_on_a_second_connector_of_one_name() {
+    on_rig(
+        || Table::new().with("ticks", Ticks::default()),
+        |mut rig, _| async move {
+            let (config, cancel) = (Document::default(), cancel::Token::new());
+            let _a = rig
+                .supervise("ticks", name("plant.ticks"), config.clone())
+                .await;
+            let _b = rig
+                .open_connector("ticks", name("plant.ticks"), &config, &cancel)
+                .await;
+        },
+    );
+}
+
+#[test]
 fn two_connectors_of_one_rig_both_run() {
     on_rig(
         || Table::new().with("ticks", Ticks::default()),
