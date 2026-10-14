@@ -308,8 +308,14 @@ impl Log {
                 "invariant: record {offset} comes after record {newest}"
             );
         }
-        let alone = Mark::at(0).after(header.first, header.len) == self.durable.mark();
-        if alone && header.last == self.durable.tail.stamp {
+        if self.holder == Some(offset) {
+            return Ok(Synced::Same);
+        }
+        let mut alone = Position::default();
+        alone
+            .advance(header)
+            .expect("invariant: the durable tail took the entry");
+        if alone == self.durable {
             self.holder = Some(offset);
         }
         if self.runs.back().is_some_and(|run| run.offset == offset) {
@@ -317,7 +323,9 @@ impl Log {
         }
         self.runs.push_back(Run { start, offset });
         Ok(match newest {
-            Some(after) if !alone => Synced::Marked { after },
+            Some(after) if alone.mark() != self.durable.mark() => {
+                Synced::Marked { after }
+            }
             _ => Synced::Run,
         })
     }
@@ -1697,6 +1705,49 @@ mod tests {
             Some(12288),
             "a carry record holds a later tail"
         );
+    }
+
+    /// A later entry of a path in the record that holds it keeps the run and the
+    /// holder, and still gives its tag that record.
+    #[test]
+    fn a_later_entry_of_a_held_record_is_the_same_run() {
+        let mut logs = Logs::new(AREA);
+        logs.sync(slot(1), &header(1, Path::Live, 0, 3, None), 4096)
+            .expect("syncs");
+        let tagged = Header {
+            tag: 2,
+            ..header(1, Path::Live, 3, 1, None)
+        };
+        logs.sync(slot(1), &tagged, 4096).expect("syncs");
+        let runs: Vec<Run> = logs.runs(slot(1), Path::Live).collect();
+        assert_eq!(runs, [run(0, 0, 4096)]);
+        assert_eq!(
+            logs.durable(slot(1), Path::Live),
+            Tail {
+                seq: 4,
+                stamp: None
+            }
+        );
+        assert_eq!(logs.kept(), Some(4096));
+        let tag = NonZeroU8::new(2).expect("nonzero");
+        let key = channel::Key::from_u128(1);
+        assert_eq!(logs.tagged(Path::Live, tag), [(4096, slot(1), key)]);
+        assert_eq!(logs.items.records, [(4096, 1)]);
+    }
+
+    /// An entry with no samples whose mark alone is the durable one, with no stamp,
+    /// does not hold a path that has a stamp.
+    #[test]
+    fn the_alone_compare_takes_the_stamp_of_the_entry() {
+        let mut logs = Logs::new(AREA);
+        logs.sync(slot(1), &header(1, Path::Live, 0, 3, Some(30)), 4096)
+            .expect("syncs");
+        logs.sync(slot(1), &header(1, Path::Live, 3, 0, None), 8192)
+            .expect("syncs");
+        assert_eq!(logs.kept(), Some(4096));
+        let runs: Vec<Run> = logs.runs(slot(1), Path::Live).collect();
+        assert_eq!(runs, [run(0, 0, 4096), run(3, 0, 8192)]);
+        assert_eq!(logs.marked().land(8192), 8192, "no range is marked");
     }
 
     /// S4 bounds the memory of the items by one entry per record. No call of `Logs`
