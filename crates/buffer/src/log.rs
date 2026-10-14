@@ -281,7 +281,7 @@ impl Log {
             return;
         }
         self.lap = offset;
-        self.peak = u32::try_from(self.runs.len()).unwrap_or(u32::MAX);
+        self.peak = 0;
         // No deque holds more than `isize::MAX` bytes, so no shift overflows.
         let keep = usize::try_from(peak)
             .expect("invariant: u32 fits usize")
@@ -2578,7 +2578,7 @@ mod tests {
         let mut log = log_with(16, 4);
         log.trim(AREA, AREA);
         assert_eq!(room_of(&log), (16, 4));
-        assert_eq!((log.lap, log.peak), (AREA, 4));
+        assert_eq!((log.lap, log.peak), (AREA, 0));
     }
 
     /// The lap met 5 runs, though 1 is left at its end.
@@ -2591,7 +2591,7 @@ mod tests {
         assert_eq!(room_of(&log), (32, 1));
         log.trim(AREA, AREA);
         assert_eq!(room_of(&log), (10, 1));
-        assert_eq!((log.lap, log.peak), (AREA, 1));
+        assert_eq!((log.lap, log.peak), (AREA, 0));
     }
 
     #[test]
