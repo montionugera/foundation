@@ -77,15 +77,17 @@ impl kind::Kind for Kind {
 
     /// Connects to the server, and reads each node once per tick of the rate until
     /// the cancel. Each tick writes one frame, stamped at the midpoint of the read.
-    /// The connect is not raced with the cancel: it ends in the request timeout of the
-    /// client (5 s). Each end closes the session.
+    /// The connect is not raced with the cancel: it ends within four request timeouts
+    /// of the client (20 s), one for the session, one for the read of the
+    /// `MaxNodesPerRead` of the server, and two for the close after a failure. Each end
+    /// closes the session.
     ///
     /// # Errors
     ///
     /// The error of [`Context::writer`] and of each failed write. [`Error::Config`]
     /// with `opcua.sample-type` for each channel whose sample type is not `bool`, `i8`
-    /// to `u64`, `f32`, or `f64`, and with `opcua.large-read` when one Read of all
-    /// nodes is past one message of the server. [`Error::Device`] when the connect or a
+    /// to `u64`, `f32`, or `f64`, and with `opcua.large-read` when the Read of one node
+    /// alone is past one message of the server. [`Error::Device`] when the connect or a
     /// read fails, or a node gives a bad status or a value whose type is not the
     /// sample type of its channel: Boolean for `bool`, `SByte` to `UInt64` for `i8` to
     /// `u64`, Float for `f32`, and Double for `f64`.

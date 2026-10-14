@@ -1009,6 +1009,33 @@ fn a_connect_whose_create_session_answers_late_ends_two_request_timeouts_later()
     assert_eq!((before_the_deadline, after_a_check), (bound, bound));
 }
 
+/// A connect to a server that activates the session and then stops fails with
+/// `BadTimeout` within four request timeouts: the read of its `MaxNodesPerRead` times
+/// out, then the close. The relay drops each message of the server from the first Read
+/// response on.
+#[test]
+fn a_connect_to_a_server_that_stops_after_the_activation_ends_in_four_request_timeouts()
+{
+    let ((status, took), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
+            let mut stopped = false;
+            let rewrite = |message: &mut Vec<u8>| {
+                stopped |= handle(message).is_some();
+                if stopped {
+                    message.clear();
+                }
+            };
+            let start = peer.clock.now();
+            let connect = relayed(&node, rewrite, peer.connect(&url)).await;
+            (connect.err(), peer.clock.now() - start)
+        })
+        .await
+    });
+    assert_eq!(status, Some(Status::BAD_TIMEOUT));
+    assert!(took <= Span::from_nanos(20_000_000_000), "{took:?}");
+}
+
 /// Connects to a server with room for one session that stops at the first time of
 /// `flips` after the connect starts, runs again at the next, and so on, and runs from
 /// the end of the connect. Asserts that the connect fails with `BadTimeout` and that
