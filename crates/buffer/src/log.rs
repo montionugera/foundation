@@ -279,6 +279,18 @@ impl Log {
         }
     }
 
+    /// Drops the oldest run when it is of the record at `offset`. Then, when the runs
+    /// fill less than a quarter of their room, shrinks it to twice the runs: room
+    /// for at most four times the runs stays, and none when no run is left.
+    fn trim(&mut self, offset: u64) {
+        if self.runs.front().is_some_and(|run| run.offset == offset) {
+            self.runs.pop_front();
+        }
+        if self.runs.capacity() > self.runs.len().saturating_mul(4) {
+            self.runs.shrink_to(self.runs.len().saturating_mul(2));
+        }
+    }
+
     /// Moves the durable tail past the entry, and makes the record at `offset` the
     /// holder when the entry alone gives the durable position, stamp included.
     /// When the record has no run of the path, adds one.
@@ -442,10 +454,7 @@ impl Logs {
         self.marked.hide(tail);
         while let Some((offset, places)) = self.items.pop(tail) {
             for at in places {
-                let runs = &mut nth_mut(&mut self.paths, at).runs;
-                if runs.front().is_some_and(|run| run.offset == offset) {
-                    runs.pop_front();
-                }
+                nth_mut(&mut self.paths, at).trim(offset);
             }
         }
     }
@@ -2164,10 +2173,24 @@ mod tests {
         assert_eq!(marked.land(16384), 12288);
     }
 
-    /// S4: "memory holds 28 bytes per record and path and 24 bytes per record, in
-    /// deques that double: at most 56/51 of the area, plus 48 bytes per record". 65
-    /// one-block data records each hold an entry with no samples at seq 0 for each of
-    /// 80 paths: 80 * 51 + 13 bytes fit in 4096.
+    /// The bytes that the runs, the items, and the ranges of `logs` hold. No call of
+    /// `Logs` shows the room of its deques, so the tests of S4 read it.
+    fn held(logs: &Logs) -> (usize, usize, usize) {
+        let runs: usize = logs
+            .paths
+            .iter()
+            .map(|log| log.runs.capacity() * size_of::<Run>())
+            .sum();
+        let items = logs.items.places.capacity() * size_of::<u32>()
+            + logs.items.records.capacity() * size_of::<(u64, u64)>();
+        let marked = logs.marked.0.capacity() * size_of::<(u64, u64)>();
+        (runs, items, marked)
+    }
+
+    /// S4: "memory holds at most 104 bytes per record and path and 48 bytes per
+    /// record: at most 104/51 of the area, plus 48 bytes per record". 65 one-block
+    /// data records each hold an entry with no samples at seq 0 for each of 80 paths:
+    /// 80 * 51 + 13 bytes fit in 4096.
     #[test]
     fn marked_runs_keep_memory_in_the_s4_bound() {
         let records: u64 = 65;
@@ -2181,22 +2204,170 @@ mod tests {
                 logs.sync(slot(index), &entry, offset).expect("syncs");
             }
         }
-        let runs: usize = logs
-            .paths
-            .iter()
-            .map(|log| log.runs.capacity() * size_of::<Run>())
-            .sum();
-        let items = logs.items.places.capacity() * size_of::<u32>()
-            + logs.items.records.capacity() * size_of::<(u64, u64)>();
-        let marked = logs.marked.0.capacity() * size_of::<(u64, u64)>();
+        let (runs, items, marked) = held(&logs);
         let held = u64::try_from(runs + items + marked).expect("fits");
         let area = 4096 * records;
-        let bound = area * 56 / 51 + 48 * records;
+        let bound = area * 104 / 51 + 48 * records;
         assert!(
             held <= bound,
             "runs {runs} + items {items} + marked {marked} = {held} bytes, over the \
              bound of {bound} for an area of {area}"
         );
+    }
+
+    /// The tests of #2636, with the bound of S4.
+    mod breaker {
+        use super::*;
+
+        /// One one-block record with one entry of each of 80 paths.
+        #[test]
+        fn one_record_of_80_paths_stays_in_the_s4_bound() {
+            let paths: u32 = 80;
+            let mut logs = Logs::default();
+            for index in 1..=paths {
+                let entry = header(index, Path::Live, 0, 1, Some(1));
+                logs.append(slot(index), &entry).expect("appends");
+                logs.sync(slot(index), &entry, 4096).expect("syncs");
+            }
+            let (runs, items, marked) = held(&logs);
+            let total = u64::try_from(runs + items + marked).expect("fits");
+            let records = 1u64;
+            let area = 4096 * records;
+            let bound = area * 104 / 51 + 48 * records;
+            assert!(
+                total <= bound,
+                "runs {runs} + items {items} + marked {marked} = {total} bytes, over \
+                 the bound of {bound} for an area of {area}"
+            );
+        }
+
+        /// A ring of 65 records. Group after group of 80 paths fills its 64 data
+        /// records; each group then goes idle, a carry record takes its tails, and a
+        /// trim to that carry record frees the group's records.
+        #[test]
+        fn trimmed_records_keep_memory_in_the_s4_bound() {
+            let paths: u32 = 80;
+            let per_group: u64 = 64;
+            let groups: u32 = 8;
+            let ring_records = per_group + 1;
+            let mut logs = Logs::default();
+            let mut offset = 0u64;
+            for group in 0..groups {
+                for _ in 0..per_group {
+                    offset += 4096;
+                    for index in 1..=paths {
+                        let index = group * paths + index;
+                        let at = slot(index);
+                        let first = logs.appended(at, Path::Live).seq;
+                        let entry = header(index, Path::Live, first, 1, Some(1));
+                        logs.append(at, &entry).expect("appends");
+                        logs.sync(at, &entry, offset).expect("syncs");
+                    }
+                }
+                offset += 4096;
+                let mut tails = Vec::new();
+                logs.idle(offset, usize::MAX, &mut tails);
+                for tail in &tails {
+                    let index = (1..=groups * paths)
+                        .find(|&i| channel::Key::from_u128(u128::from(i)) == tail.index)
+                        .expect("a fed index");
+                    logs.carry(slot(index), tail, offset).expect("carries");
+                }
+                assert_eq!(logs.kept(), Some(offset));
+                logs.hide(offset);
+            }
+            let (runs, items, marked) = held(&logs);
+            let total = u64::try_from(runs + items + marked).expect("fits");
+            let area = 4096 * ring_records;
+            let bound = area * 104 / 51 + 48 * ring_records;
+            assert!(
+                total <= bound,
+                "runs {runs} + items {items} + marked {marked} = {total} bytes, over \
+                 the bound of {bound} for a ring of {ring_records} records"
+            );
+        }
+    }
+
+    /// Logs of one path with a run in each of the records 1 to `count`, of a block
+    /// each.
+    fn one_path_with_runs(count: u64) -> Logs {
+        let mut logs = Logs::default();
+        for record in 1..=count {
+            let entry = header(1, Path::Live, record - 1, 1, Some(1));
+            logs.append(slot(1), &entry).expect("appends");
+            logs.sync(slot(1), &entry, 4096 * record).expect("syncs");
+        }
+        logs
+    }
+
+    /// The room and the count of the runs of the path of index 1, which no call of
+    /// `Logs` shows.
+    fn room(logs: &Logs) -> (usize, usize) {
+        let log = logs.log(slot(1), Path::Live).expect("the path has a log");
+        (log.runs.capacity(), log.runs.len())
+    }
+
+    #[test]
+    fn a_trim_keeps_the_room_of_runs_that_fill_a_quarter_of_it() {
+        let mut logs = one_path_with_runs(16);
+        assert_eq!(room(&logs), (16, 16));
+        logs.hide(4096 * 13);
+        assert_eq!(room(&logs), (16, 4));
+    }
+
+    #[test]
+    fn a_trim_shrinks_the_room_of_runs_to_twice_their_count() {
+        let mut logs = one_path_with_runs(16);
+        logs.hide(4096 * 14);
+        assert_eq!(room(&logs), (6, 3));
+    }
+
+    #[test]
+    fn a_trim_frees_the_room_of_a_path_it_empties() {
+        let mut logs = one_path_with_runs(1);
+        logs.hide(8192);
+        assert_eq!(room(&logs), (0, 0));
+        let entry = header(1, Path::Live, 1, 1, Some(1));
+        logs.append(slot(1), &entry).expect("appends");
+        logs.sync(slot(1), &entry, 8192).expect("syncs");
+        assert_eq!(
+            logs.runs(slot(1), Path::Live).collect::<Vec<_>>(),
+            [run(1, 0, 8192)]
+        );
+    }
+
+    proptest! {
+        /// Records of a block each hold an entry of some of 8 paths, and a trim may
+        /// follow each, up to the oldest holder. After each trim, each path has room
+        /// for at most four times its runs, and none with no run.
+        #[test]
+        fn a_trim_keeps_the_room_of_each_path_in_four_times_its_runs(
+            records in prop::collection::vec(
+                (
+                    prop::collection::vec(1..=8u32, 0..6),
+                    prop::option::of(0..40u64),
+                ),
+                1..40,
+            ),
+        ) {
+            let mut logs = Logs::default();
+            for (record, (indexes, trim)) in (1..).zip(&records) {
+                for &index in indexes {
+                    let at = slot(index);
+                    let first = logs.appended(at, Path::Live).seq;
+                    let entry = header(index, Path::Live, first, 1, Some(1));
+                    prop_assert_eq!(logs.append(at, &entry), Ok(()));
+                    prop_assert_eq!(logs.sync(at, &entry, 4096 * record), Ok(()));
+                }
+                let Some(trim) = trim else { continue };
+                let Some(kept) = logs.kept() else { continue };
+                logs.hide(logs.hidden.max((4096 * trim).min(kept)));
+                for log in &logs.paths {
+                    let (room, runs) = (log.runs.capacity(), log.runs.len());
+                    prop_assert!(room <= 4 * runs, "room {} for {} runs", room, runs);
+                }
+            }
+        }
     }
 
     /// A record of a model ring, at its offset: the tails a commit carried, or the

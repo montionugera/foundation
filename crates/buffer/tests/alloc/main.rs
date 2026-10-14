@@ -1,8 +1,9 @@
 //! `append` makes no heap allocation once the buffer has taken a batch of each
 //! shape: its slots, its entry count, and whether it closes the open record. Nor
-//! does a `Commit` that waits and drops, or a commit of the logs that marks a range
-//! and trims. This binary has no test harness: the count covers each thread, and a
-//! harness allocates on its own thread at any time.
+//! does a `Commit` that waits and drops. A commit of the logs that marks a range
+//! and trims takes only one allocation per path that the trim empties. This binary
+//! has no test harness: the count covers each thread, and a harness allocates on its
+//! own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -99,8 +100,9 @@ fn wait_once(buffer: &Buffer, commit: u64) {
 }
 
 /// Each trim drops the range that the commit before marked, so the ranges stay in
-/// the memory that the warm-up gave them.
-fn marked_trims_take_no_allocation() {
+/// the memory that the warm-up gave them. Each trim also drops the one run of each
+/// path, which frees its room, so each path's next entry takes one allocation.
+fn marked_trims_take_one_allocation_per_path() {
     let mut logs = buffer::bench::Logs::new(4);
     for _ in 0..64 {
         logs.mark();
@@ -110,7 +112,11 @@ fn marked_trims_take_no_allocation() {
             logs.mark();
         }
     });
-    assert_eq!(n, 0, "{n} allocations in 1024 marked trims");
+    assert_eq!(
+        n,
+        4 * 1024,
+        "{n} allocations in 1024 marked trims of 4 paths"
+    );
 }
 
 fn main() {
@@ -119,7 +125,7 @@ fn main() {
         1,
         "the allocator counts"
     );
-    marked_trims_take_no_allocation();
+    marked_trims_take_one_allocation_per_path();
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let clock = node.clock();
