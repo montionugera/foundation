@@ -108,6 +108,25 @@ fn release_waiting(bencher: Bencher<'_, '_>, sessions: usize) {
     });
 }
 
+/// [`BURST`] lost live frames behind one queued frame, then its release, to `sessions`
+/// recording readers that keep up: each session misses them.
+#[divan::bench(args = [1, 16])]
+fn lose(bencher: Bencher<'_, '_>, sessions: usize) {
+    let (frame, set) = frame();
+    bencher
+        .with_inputs(|| {
+            let (mut readers, _) = opened(sessions, u64::MAX);
+            readers.queue(&frame, &set, 0..1);
+            readers
+        })
+        .bench_local_refs(|readers| {
+            for seq in 1..=BURST {
+                divan::black_box(readers.lose(seq..seq + 1));
+            }
+            divan::black_box(readers.release(BURST + 1).len())
+        });
+}
+
 /// The channels of [`wide`]: one index and its data channels.
 const CHANNELS: usize = 100_000;
 

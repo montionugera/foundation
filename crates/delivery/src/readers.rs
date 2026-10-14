@@ -64,9 +64,9 @@ pub struct Readers {
     /// multiply.
     flows: Vec<Flow>,
     /// The live frames not yet on disk, with their seq, oldest first, after the first
-    /// `held`. `None` for samples that found no room on disk, which never come first
-    /// after the held frames. Empty when no complete session is open.
-    queue: VecDeque<(Option<Frame>, Range<u64>)>,
+    /// `held`. A [`Queued::Lost`] never comes first after the held frames. Empty when
+    /// no complete session is open.
+    queue: VecDeque<(Queued, Range<u64>)>,
     /// The released frames at the front of `queue`, from the first that a session
     /// waits for a grant on. Zero when no session waits.
     held: usize,
@@ -78,8 +78,8 @@ pub struct Readers {
     sets: VecDeque<Arc<KeySet>>,
     /// The end of the last live frame queued, or the live seq at start.
     queued: u64,
-    /// The end of the newest live frame with samples that was released, or dropped
-    /// with no complete session open. A session that opens below it is behind.
+    /// The end of the newest live frame with samples that was released, lost, or
+    /// dropped with no complete session open. A session that opens below it is behind.
     released: u64,
     /// Named readers that still hold after their session closed.
     closed: Vec<Closed>,
@@ -87,7 +87,8 @@ pub struct Readers {
     latest: Vec<latest::Session>,
     /// The index's newest live frame.
     newest: Option<Frame>,
-    /// The last [`Readers::release`]'s result, kept so that it does not allocate.
+    /// The last result of [`Readers::release`] or [`Readers::lose`], kept so that it
+    /// does not allocate.
     woken_complete: Vec<complete::Key>,
     /// The last [`Readers::put`]'s result, kept so that it does not allocate.
     woken_latest: Vec<latest::Key>,
@@ -137,6 +138,14 @@ enum Lag {
     Owed(Owed),
     /// The session missed a frame, so it gets no later frame.
     Behind,
+}
+
+/// An entry of [`Readers::queue`].
+#[derive(Debug)]
+enum Queued {
+    Frame(Frame),
+    /// Samples that found no room on disk.
+    Lost,
 }
 
 /// A frame held in [`Readers::queue`] that a session waits for a grant on.
@@ -381,19 +390,7 @@ impl Readers {
             frame.key_set().get(),
             set.key().get()
         );
-        assert!(
-            seq.start <= seq.end,
-            "live frame at seq {}..{} ends before it starts",
-            seq.start,
-            seq.end
-        );
-        assert!(
-            self.queued <= seq.start,
-            "live frame at seq {}..{} queued after seq {}",
-            seq.start,
-            seq.end,
-            self.queued
-        );
+        self.check_live("live frame", &seq);
         self.queued = seq.end;
         if seq.is_empty() {
             return;
@@ -404,7 +401,7 @@ impl Readers {
             if self.sets.back().is_none_or(|last| last.key() != set.key()) {
                 self.sets.push_back(Arc::clone(set));
             }
-            self.queue.push_back((Some(frame.clone()), seq));
+            self.queue.push_back((Queued::Frame(frame.clone()), seq));
         }
     }
 
@@ -412,10 +409,10 @@ impl Readers {
     /// whose position `seq` ends past misses them: it takes each frame queued before
     /// them, then [`Next::Behind`], and a session that waits for a grant misses that
     /// frame too. Applies at once when no queued frame waits to be on disk, else at the
-    /// [`Readers::release`] that gives the last frame before them. An empty `seq` changes
-    /// nothing. With no complete session open, a session that opens later at a position
-    /// below `seq.end` starts behind, as for a frame given then. Returns the sessions to
-    /// wake now, as `release` does.
+    /// [`Readers::release`] that gives the last frame before them. An empty `seq`
+    /// changes nothing. With no complete session open, a session that opens later at a
+    /// position below `seq.end` starts behind, as for a frame given then. Returns the
+    /// sessions to wake now, as `release` does.
     ///
     /// # Panics
     ///
@@ -424,25 +421,18 @@ impl Readers {
     #[must_use]
     pub fn lose(&mut self, seq: Range<u64>) -> &[complete::Key] {
         self.woken_complete.clear();
-        assert!(
-            seq.start <= seq.end,
-            "lost live frame at seq {}..{} ends before it starts",
-            seq.start,
-            seq.end
-        );
-        assert!(
-            self.queued <= seq.start,
-            "lost live frame at seq {}..{} after seq {}",
-            seq.start,
-            seq.end,
-            self.queued
-        );
+        self.check_live("lost live frame", &seq);
         self.queued = seq.end;
         if seq.is_empty() {
             return &self.woken_complete;
         }
         if self.pending() {
-            self.queue.push_back((None, seq));
+            // `miss` reads only the end, so a run of losses keeps one entry.
+            if let Some((Queued::Lost, last)) = self.queue.back_mut() {
+                last.end = seq.end;
+            } else {
+                self.queue.push_back((Queued::Lost, seq));
+            }
         } else {
             self.miss(&seq);
         }
@@ -453,7 +443,9 @@ impl Readers {
     /// on disk, to each complete session whose position it ends past, in seq order. A
     /// frame that finds the session's credit spent waits for a grant, and so does each
     /// later frame. A frame that still waits for a grant when a later call releases a
-    /// frame is a miss: it drops, and the session gets no later frame. Returns the
+    /// frame is a miss: it drops, and the session gets no later frame. Applies the
+    /// samples that [`Readers::lose`] queued once each frame before them is given,
+    /// whatever `durable` is. Returns the
     /// complete sessions that had no frame to take and now have one, or that missed a
     /// frame now and have none to take, each once: wake them.
     #[must_use]
@@ -466,11 +458,13 @@ impl Readers {
             }
             self.miss_owed();
         }
-        while let Some((frame, seq)) = self
-            .queue
-            .pop_front_if(|(frame, seq)| frame.is_none() || seq.end <= durable)
+        while let Some((queued, seq)) =
+            self.queue.pop_front_if(|(queued, seq)| match queued {
+                Queued::Frame(_) => seq.end <= durable,
+                Queued::Lost => true,
+            })
         {
-            let Some(frame) = frame else {
+            let Queued::Frame(frame) = queued else {
                 self.miss(&seq);
                 continue;
             };
@@ -495,9 +489,9 @@ impl Readers {
                 waiting.push_back(frame.clone());
             }
             self.owing = owing;
-            self.queue.push_front((Some(frame), seq));
+            self.queue.push_front((Queued::Frame(frame), seq));
             self.hold(durable);
-            if let Some((None, _)) = self.queue.get(self.held) {
+            if let Some((Queued::Lost, _)) = self.queue.get(self.held) {
                 self.miss_owed();
                 continue;
             }
@@ -506,12 +500,12 @@ impl Readers {
         &self.woken_complete
     }
 
-    /// Gives the frames after the front of `queue` that end at or below `durable`, up to
-    /// lost samples, and keeps them all, from the front, for the sessions that wait for
-    /// a grant.
+    /// Gives the frames after the front of `queue` that end at or below `durable`, up
+    /// to lost samples, and keeps them all, from the front, for the sessions that wait
+    /// for a grant.
     fn hold(&mut self, durable: u64) {
         let mut at = Owed { frame: 1, set: 0 };
-        while let Some((Some(frame), seq)) = self.queue.get(at.frame)
+        while let Some((Queued::Frame(frame), seq)) = self.queue.get(at.frame)
             && seq.end <= durable
         {
             while self.sets[at.set].key() != frame.key_set() {
@@ -551,15 +545,17 @@ impl Readers {
         self.drop_held();
     }
 
-    /// Makes each complete session that the lost samples `seq` end past miss them, and
-    /// adds those with no frame to take to the sessions to wake. Each frame before
-    /// them was released.
+    /// Makes each complete session that waits for a grant, or that the lost samples
+    /// `seq` end past, miss them, adds those with no frame to take to the sessions to
+    /// wake, and drops the held frames. Each frame before them was released.
     fn miss(&mut self, seq: &Range<u64>) {
-        if self.owing != 0 {
-            self.miss_owed();
-        }
         for (session, flow) in iter::zip(&self.complete, &mut self.flows) {
-            if !matches!(flow.lag, Lag::None) || seq.end <= session.position.live {
+            let missed = match flow.lag {
+                Lag::Owed(_) => true,
+                Lag::None => seq.end > session.position.live,
+                Lag::Behind => false,
+            };
+            if !missed {
                 continue;
             }
             flow.lag = Lag::Behind;
@@ -567,7 +563,26 @@ impl Readers {
                 self.woken_complete.push(session.key);
             }
         }
+        self.owing = 0;
+        self.drop_held();
         self.released = seq.end;
+    }
+
+    /// Checks the seq of a live frame, named `what` in the panic message.
+    fn check_live(&self, what: &str, seq: &Range<u64>) {
+        assert!(
+            seq.start <= seq.end,
+            "{what} at seq {}..{} ends before it starts",
+            seq.start,
+            seq.end
+        );
+        assert!(
+            self.queued <= seq.start,
+            "{what} at seq {}..{} queued after seq {}",
+            seq.start,
+            seq.end,
+            self.queued
+        );
     }
 
     fn drop_held(&mut self) {
@@ -619,7 +634,7 @@ impl Readers {
             Lag::Behind => return Next::Behind,
             Lag::Owed(owed) => owed,
         };
-        let (Some(frame), _) = &self.queue[owed.frame] else {
+        let (Queued::Frame(frame), _) = &self.queue[owed.frame] else {
             unreachable!("invariant: a held frame is no lost samples")
         };
         while self.sets[owed.set].key() != frame.key_set() {
@@ -2945,6 +2960,21 @@ pub(super) mod tests {
         }
 
         #[test]
+        fn keeps_one_entry_for_a_run_of_lost_samples() {
+            let frames = Frames::new(1);
+            let mut readers = Readers::new(0);
+            let early = opened(&mut readers, 0, 10);
+            readers.queue(&frames.frame(1), &frames.set, 0..2);
+            assert_eq!(lost(&mut readers, 2..3), []);
+            let late = opened(&mut readers, 3, 10);
+            assert_eq!(lost(&mut readers, 4..6), []);
+            assert_eq!(readers.queue.len(), 2);
+            assert_eq!(released(&mut readers, 2), [early, late]);
+            assert_eq!(missed(&mut readers, early), [1]);
+            assert_eq!(missed(&mut readers, late), []);
+        }
+
+        #[test]
         fn wakes_a_session_once_for_a_frame_and_the_miss_after_it() {
             let frames = Frames::new(1);
             let mut readers = Readers::new(0);
@@ -3062,7 +3092,7 @@ pub(super) mod tests {
         }
 
         #[test]
-        #[should_panic(expected = "lost live frame at seq 1..3 after seq 2")]
+        #[should_panic(expected = "lost live frame at seq 1..3 queued after seq 2")]
         fn panics_on_samples_below_the_end_of_a_queued_frame() {
             let frames = Frames::new(1);
             let mut readers = Readers::new(0);
@@ -3080,7 +3110,7 @@ pub(super) mod tests {
         }
 
         #[test]
-        #[should_panic(expected = "lost live frame at seq 3..4 after seq 5")]
+        #[should_panic(expected = "lost live frame at seq 3..4 queued after seq 5")]
         fn panics_on_samples_below_the_live_seq_at_start() {
             let mut readers = Readers::new(5);
             lost(&mut readers, 3..4);
