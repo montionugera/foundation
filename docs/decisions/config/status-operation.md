@@ -45,7 +45,8 @@
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137032724).
   `ops::Node` takes the hub, the clock for the bound, and the node's name at
   construction. `state` is `running`, `restarting`, `stopped`, `ending`, or `unknown`;
-  with `unknown`, `restarts`, `counts`, `error`, and `note` are null. A connector whose
+  with `unknown`, `restarts`, `counts`, `error`, and `note` are null (`note` by `laptop.architect-2`, 2026-10-13T23:48:35Z,
+  https://github.com/synnaxlabs/foundation/issues/2630#issuecomment-6157620934). A connector whose
   newest frame holds no status or lacks a status channel of the spec is `unknown` too.
   So is a connector whose status channels the hub does not hold as the spec defines them
   yet (no channel, a key, a sample type, or an index of another spec), and one whose
