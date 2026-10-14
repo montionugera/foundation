@@ -27,9 +27,9 @@ pub(crate) fn start<R>(
     let os_name = name
         .split_once('\0')
         .map_or(name.as_str(), |(head, _)| head);
-    let caller = log.clone();
+    let spawning = log.clone();
     // A failed spawn drops the closure, and with it the node's code, on this thread.
-    let spawned = tracing::dispatcher::with_default(&caller, || {
+    let spawned = tracing::dispatcher::with_default(&spawning, || {
         thread::Builder::new()
             .name(os_name.to_owned())
             .spawn(move || {

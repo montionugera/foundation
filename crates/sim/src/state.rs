@@ -504,8 +504,9 @@ impl State {
         }
         self.tasks.remove(&task);
         self.ready.remove(&task);
+        // A task that completed left no future to drop, so its drop needs no log.
         Ended {
-            tasks: vec![(task, self.threads[&thread].log.clone())],
+            tasks: vec![(task, Dispatch::none())],
             timers: Vec::new(),
         }
     }
@@ -562,8 +563,7 @@ impl State {
     /// Ends each live thread of the nodes whose index `stopped` picks in a crash, and
     /// makes those nodes crashing until [`State::crash`]. Returns what the threads
     /// leave, and the starts of the threads that had not run in start order with
-    /// their logs, for the
-    /// caller to drop after it releases the lock.
+    /// their logs, for the caller to drop after it releases the lock.
     pub(crate) fn stop(
         &mut self,
         stopped: impl Fn(usize) -> bool,
