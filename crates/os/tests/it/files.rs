@@ -274,6 +274,11 @@ fn open_absolute_refuses_a_file_that_is_not_regular_and_waits_for_no_writer() {
     let scratch = Scratch::new();
     let (fifo, dir) = (scratch.0.join("fifo"), scratch.0.clone());
     mkfifo(&fifo);
+    // A socket path has a bound of 104 bytes on macOS, which the scratch path can pass.
+    let socket =
+        PathBuf::from(format!("/tmp/foundation-os-{}.sock", std::process::id()));
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let opened = socket.clone();
     let (done, ended) = std::sync::mpsc::channel();
     let opens = std::thread::spawn(move || {
         let (files, thread) = files(&dir, "files");
@@ -282,7 +287,8 @@ fn open_absolute_refuses_a_file_that_is_not_regular_and_waits_for_no_writer() {
             .unwrap();
         runtime.block_on(async {
             let mut found = Vec::new();
-            for path in [dir.join("fifo"), dir.clone(), PathBuf::from("/dev/null")] {
+            let paths = [dir.join("fifo"), dir.clone(), "/dev/null".into(), opened];
+            for path in paths {
                 found.push(files.open_absolute(&absolute(&path)).await.map(drop));
             }
             files.free().await.unwrap();
@@ -297,6 +303,8 @@ fn open_absolute_refuses_a_file_that_is_not_regular_and_waits_for_no_writer() {
         drop(rustix::fs::open(&fifo, flags, rustix::fs::Mode::empty()));
     }
     opens.join().unwrap();
+    drop(listener);
+    std::fs::remove_file(&socket).unwrap();
     let io = |path: PathBuf, code| {
         Err(Error::Io {
             path,
@@ -308,6 +316,7 @@ fn open_absolute_refuses_a_file_that_is_not_regular_and_waits_for_no_writer() {
         io(fifo, 22),
         io(scratch.0.clone(), 21),
         io("/dev/null".into(), 22),
+        io(socket, 22),
     ];
     assert_eq!(found.expect("no open blocks"), expected);
 }

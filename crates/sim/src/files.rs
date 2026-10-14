@@ -292,7 +292,8 @@ impl Files {
     /// remove through a handle, live or not, when the scope covers live removes, or
     /// zero. A call without a handle is on its path. A call through a handle is on each
     /// path that has named its file, and on the path of each dropped rename of the
-    /// file, so it stays on them after a rename or a remove.
+    /// file, so it stays on them after a rename or a remove. A call on a host file
+    /// changes no disk, so no call waits for it.
     fn wait_end(&self, node: usize, scope: &Scope) -> Monotonic {
         let disk = &self.disks[node];
         let pending: Vec<_> = (self.queue.iter().rev())
@@ -300,7 +301,8 @@ impl Files {
             .filter(|(_, flight)| {
                 let unlink =
                     matches!(flight.call, Call::Unlink { .. }) && scope.live_removes();
-                flight.node == node && (flight.dropped || unlink)
+                let host = matches!(flight.call, Call::Host(_));
+                flight.node == node && !host && (flight.dropped || unlink)
             })
             .collect();
         let moved: BTreeSet<_> = (pending.iter())
@@ -554,7 +556,17 @@ impl Files {
 
     /// Makes `handle`, which an open of `path` on `node` gave, a descriptor.
     pub(crate) fn opened(&mut self, node: usize, handle: Handle, path: &Path) {
-        self.disks[node].opened(handle, path);
+        self.disks[node].opened(handle.key, path);
+    }
+
+    /// Makes the host file that open `key` of `path` on `node` gave a descriptor.
+    pub(crate) fn opened_host(&mut self, node: usize, key: u64, path: &Path) {
+        self.disks[node].opened(key, path);
+    }
+
+    /// Closes the descriptor of a host file that open `key` of `node` gave.
+    pub(crate) fn close_host(&mut self, node: usize, key: u64) {
+        self.disks[node].closed(key);
     }
 
     /// Closes descriptor `handle` of `node`. Returns the waker of its close, to drop

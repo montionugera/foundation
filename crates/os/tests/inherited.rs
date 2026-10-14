@@ -10,12 +10,13 @@
 mod disk;
 
 use std::io::{Read, Write};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
 
 use disk::{Scratch, files};
-use env::files::Mode;
+use env::files::{Absolute, Mode};
 
 #[test]
 #[expect(unsafe_code, reason = "a hook before exec is an OS call")]
@@ -53,6 +54,39 @@ fn a_child_does_not_hold_the_lock_of_a_closed_file() {
     let opened = runtime.block_on(files.open(a, Mode::Write)).map(drop);
     assert_eq!(reopened, Ok(()));
     assert_eq!(opened, Ok(()));
+    drop(files);
+    thread.join().unwrap();
+}
+
+#[test]
+fn a_child_does_not_hold_a_file_that_open_absolute_opened() {
+    let scratch = Scratch::new();
+    let (files, thread) = files(&scratch.0, "files");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let path = scratch.0.join("token");
+    std::fs::write(&path, b"abc").unwrap();
+    let absolute = Absolute::new(path.to_str().unwrap()).unwrap();
+    let file = runtime.block_on(files.open_absolute(&absolute)).unwrap();
+    let made = std::fs::metadata(&path).unwrap();
+    let fd = (0..1_024)
+        .find(|fd| {
+            let found = std::fs::metadata(format!("/dev/fd/{fd}"));
+            found.is_ok_and(|found| {
+                (found.dev(), found.ino()) == (made.dev(), made.ino())
+            })
+        })
+        .expect("the file is open");
+    let held = Command::new("sh")
+        .arg("-c")
+        .arg(format!("[ /dev/fd/{fd} -ef \"$1\" ]"))
+        .arg("sh")
+        .arg(&path)
+        .status()
+        .unwrap();
+    drop(file);
+    assert!(!held.success(), "the child holds descriptor {fd}");
     drop(files);
     thread.join().unwrap();
 }
