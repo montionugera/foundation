@@ -17,3 +17,4 @@ pub mod testing;
 #[cfg(test)]
 #[cfg(not(loom))]
 mod common;
+mod deadline;
