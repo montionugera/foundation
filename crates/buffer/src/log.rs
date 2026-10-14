@@ -312,9 +312,8 @@ impl Log {
             return Ok(Synced::Same);
         }
         let mut alone = Position::default();
-        alone
-            .advance(header)
-            .expect("invariant: the durable tail took the entry");
+        // It fails only where the durable advance failed.
+        alone.advance(header)?;
         if alone == self.durable {
             self.holder = Some(offset);
         }
