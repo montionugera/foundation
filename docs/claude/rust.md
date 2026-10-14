@@ -79,9 +79,9 @@ true`. CI denies warnings. r16 gives the reason for each lint.
 
 - Every public type implements `Debug`, and the output is never empty (r16 1).
 - Each public item has one path. Do not `pub use` an item that is public at its home
-  (r16 2). The exceptions are in R16-10: a crate re-exports an item that its own public
-  surface names, for callers that may not depend on the home of the item, at the same
-  path under a module named for that crate (`hub::home::Error`).
+  (r16 2). The exceptions are in R16-10: a crate re-exports, under the same name in one
+  of its modules, an item that its own public surface names, for callers that may not
+  depend on the home of the item (`hub::home::Error`, `home::reader::Next`).
 - Fields are all private, or all public on plain data with no invariant (r16 4).
 - A type with an invariant has a fallible constructor and no `From` that can panic
   (r16 5).
