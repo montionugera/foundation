@@ -6,6 +6,7 @@ use types::frame::Path;
 use types::time::Stamp;
 
 use crate::entry::Header;
+use crate::log::Carried;
 use crate::record::{ALIGN, BLOCK};
 use crate::wal::{Ends, Layout, Position, Writer};
 
@@ -73,7 +74,7 @@ pub struct Logs {
     headers: Vec<(Slot, Header)>,
     offset: u64,
     commits: u32,
-    tails: Vec<crate::carry::Tail>,
+    tails: Carried,
 }
 
 impl Logs {
@@ -100,7 +101,7 @@ impl Logs {
             headers,
             offset: BLOCK,
             commits: 0,
-            tails: Vec::new(),
+            tails: Carried::default(),
         }
     }
 
@@ -206,13 +207,12 @@ impl Logs {
         self.tails.clear();
         self.inner
             .idle(self.offset, self.headers.len(), &mut self.tails);
-        assert_eq!(self.tails.len(), self.headers.len(), "a tail of each index");
-        for (tail, (slot, header)) in self.tails.iter().zip(&self.headers) {
+        let tails = self.tails.tails();
+        assert_eq!(tails.len(), self.headers.len(), "a tail of each index");
+        for (tail, (_, header)) in tails.iter().zip(&self.headers) {
             assert_eq!(tail.index, header.index, "a tail of each index, in order");
-            self.inner
-                .carry(*slot, tail, self.offset)
-                .expect("the durable end");
         }
+        self.inner.carried(&self.tails, self.offset);
         self.offset += BLOCK;
     }
 }
@@ -297,7 +297,7 @@ mod tests {
         let mut idle = Vec::new();
         for _ in 0..7 {
             logs.trim(3, 0);
-            idle.push(logs.tails.len());
+            idle.push(logs.tails.tails().len());
         }
         assert_eq!(idle, [0, 1, 0, 0, 1, 0, 0]);
         let first: Vec<_> = logs.inner.runs(Slot::new(1), Path::Live).collect();

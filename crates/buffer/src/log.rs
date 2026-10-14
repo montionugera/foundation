@@ -478,20 +478,17 @@ impl Logs {
         holding.map(|(_, offset, _)| offset)
     }
 
-    /// Puts in `tails` the durable tail of each path whose holder is before `reach`,
-    /// at most `limit`, oldest holder first. The next call goes on at the first path
-    /// that this call left out. A tail is the durable end at the call, so its carry
-    /// record comes before the record of each entry synced after the call.
+    /// Puts in `carried` the appended tail of each path whose holder is before
+    /// `reach`, at most `limit`, oldest holder first. The next call goes on at the
+    /// first path that this call left out. Call it in the borrow that takes the
+    /// records of a commit: each appended entry is then in a taken record, so the
+    /// tail is the end after those records, and the carry record goes right after
+    /// them.
     #[cfg_attr(
         not(any(test, feature = "sim")),
         expect(dead_code, reason = "a commit calls it")
     )]
-    pub(crate) fn idle(
-        &mut self,
-        reach: u64,
-        limit: usize,
-        tails: &mut Vec<carry::Tail>,
-    ) {
+    pub(crate) fn idle(&mut self, reach: u64, limit: usize, carried: &mut Carried) {
         let mut room = limit;
         for (number, offset, at) in self.items.since(self.scanned) {
             if offset >= reach {
@@ -507,15 +504,54 @@ impl Logs {
                 return;
             };
             room = left;
-            tails.push(carry::Tail {
+            carried.tails.push(carry::Tail {
                 index: log.index,
                 path: log.path,
-                seq: log.durable.tail.seq,
-                given: log.durable.given,
-                stamp: log.durable.tail.stamp,
+                seq: log.appended.tail.seq,
+                given: log.appended.given,
+                stamp: log.appended.tail.stamp,
             });
+            carried.places.push(at);
         }
         self.scanned = self.items.added();
+    }
+
+    /// Makes the carry record at `offset` the holder of each path of `carried`, once
+    /// the records before it are synced. A path with queued entries keeps its
+    /// appended tail.
+    ///
+    /// # Panics
+    ///
+    /// When a tail is not the durable end of its path, or `offset` is not after the
+    /// newest record of the path.
+    #[cfg_attr(
+        not(any(test, feature = "sim")),
+        expect(dead_code, reason = "a commit calls it")
+    )]
+    pub(crate) fn carried(&mut self, carried: &Carried, offset: u64) {
+        for (tail, &at) in carried.tails.iter().zip(&carried.places) {
+            let log = nth_mut(&mut self.paths, at);
+            let end = Position {
+                tail: Tail {
+                    seq: tail.seq,
+                    stamp: tail.stamp,
+                },
+                given: tail.given,
+            };
+            assert!(
+                log.durable == end,
+                "invariant: the carried tail {tail:?} is the durable end {:?}",
+                log.durable
+            );
+            let newest = log.runs.back().map(|run| run.offset).max(log.holder);
+            assert!(
+                newest < Some(offset),
+                "invariant: carry record {offset} comes after record {newest:?}"
+            );
+            log.holder = Some(offset);
+            log.origin = None;
+            self.items.push(offset, at);
+        }
     }
 
     /// The log of `path` of the index at `slot`.
@@ -698,6 +734,35 @@ impl Logs {
         let mut log = Log::new(header.index, header.path);
         let changed = change(&mut log)?;
         Ok((changed, self.add(key, log)))
+    }
+}
+
+/// The tails of one carry record, with the place of the log of each, oldest holder
+/// first.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Carried {
+    tails: Vec<carry::Tail>,
+    places: Vec<u32>,
+}
+
+impl Carried {
+    /// The tails, in the order of the record body.
+    #[cfg_attr(
+        not(any(test, feature = "sim")),
+        expect(dead_code, reason = "a commit calls it")
+    )]
+    pub(crate) fn tails(&self) -> &[carry::Tail] {
+        &self.tails
+    }
+
+    /// Drops the tails and keeps the capacity.
+    #[cfg_attr(
+        not(any(test, feature = "sim")),
+        expect(dead_code, reason = "a commit calls it")
+    )]
+    pub(crate) fn clear(&mut self) {
+        self.tails.clear();
+        self.places.clear();
     }
 }
 
@@ -1055,10 +1120,10 @@ mod tests {
         }
 
         /// Each record's entries are appended, a commit asks for the idle tails up to
-        /// a reach, a carry record of those tails may come before the record of the
+        /// a reach, a carry record of those tails may come after the record of the
         /// entries, and a trim may pass the records before the oldest holder. Each
         /// tail comes once for its holder, oldest holder first, with the path's
-        /// durable end. A call with room left has given each path whose holder is
+        /// appended end. A call with room left has given each path whose holder is
         /// before the reach.
         #[test]
         fn gives_each_idle_tail_once_and_keeps_the_oldest_holder(
@@ -1077,8 +1142,8 @@ mod tests {
             let mut model = Model::default();
             let numbered = records.iter().zip(1..);
             for ((record, reach, limit, trim, carries), number) in numbered {
-                let carried_at = 8192 * number;
-                let synced_at = carried_at + 4096;
+                let synced_at = 8192 * number;
+                let carried_at = synced_at + 4096;
                 let mut queued = Vec::new();
                 for next in record {
                     let at = slot(next.index);
@@ -1089,19 +1154,19 @@ mod tests {
                     queued.push((next.index, header));
                 }
                 let reach = 8192 * *reach.min(&number);
-                let mut tails = Vec::new();
-                logs.idle(reach, *limit, &mut tails);
-                model.check(&tails, reach, *limit)?;
-                if *carries {
-                    for tail in &tails {
-                        let at = slot(index_of(tail.index));
-                        prop_assert_eq!(logs.carry(at, tail, carried_at), Ok(()));
-                        model.carry(tail, carried_at);
-                    }
-                }
+                let mut carried = Carried::default();
+                logs.idle(reach, *limit, &mut carried);
+                let holders = model.holders();
                 for (index, header) in &queued {
                     prop_assert_eq!(logs.sync(slot(*index), header, synced_at), Ok(()));
                     model.sync(*index, header, synced_at);
+                }
+                model.check(carried.tails(), reach, *limit, &holders)?;
+                if *carries {
+                    logs.carried(&carried, carried_at);
+                    for tail in carried.tails() {
+                        model.carry(tail, carried_at);
+                    }
                 }
                 let kept = model.kept();
                 prop_assert_eq!(logs.kept(), kept);
@@ -1129,18 +1194,30 @@ mod tests {
     }
 
     impl Model {
-        /// Checks the tails of one call of `idle` up to `reach` with `limit`.
+        /// The holder of each path.
+        fn holders(&self) -> hash::Map<(u32, Path), u64> {
+            self.paths
+                .iter()
+                .map(|(&key, &(holder, ..))| (key, holder))
+                .collect()
+        }
+
+        /// Checks the tails of one call of `idle` up to `reach` with `limit`, made
+        /// when each path had its holder in `holders`, after the sync of the
+        /// entries that it saw appended.
         fn check(
             &mut self,
             tails: &[carry::Tail],
             reach: u64,
             limit: usize,
+            holders: &hash::Map<(u32, Path), u64>,
         ) -> Result<(), TestCaseError> {
             prop_assert!(tails.len() <= limit);
             let mut previous = 0;
             for tail in tails {
                 let key = (index_of(tail.index), tail.path);
-                let (holder, end, stamp) = self.paths[&key];
+                let holder = holders[&key];
+                let (_, end, stamp) = self.paths[&key];
                 prop_assert!(
                     self.hidden <= holder && holder < reach,
                     "holder {}",
@@ -1156,10 +1233,9 @@ mod tests {
                 prop_assert!(first, "given twice");
             }
             if tails.len() < limit {
-                let left =
-                    self.paths.iter().find(|&(&(index, path), &(holder, ..))| {
-                        holder < reach && !self.given.contains(&(index, path, holder))
-                    });
+                let left = holders.iter().find(|&(&(index, path), &holder)| {
+                    holder < reach && !self.given.contains(&(index, path, holder))
+                });
                 prop_assert!(left.is_none(), "{:?} is left out", left);
             }
             Ok(())
@@ -1756,15 +1832,88 @@ mod tests {
             };
             assert_eq!(logs.durable(slot(1), Path::Live), tail);
             assert_eq!(logs.appended(slot(1), Path::Live), tail);
-            let mut tails = Vec::new();
+            let mut tails = Carried::default();
             logs.clone().idle(16384, 2, &mut tails);
-            assert_eq!(tails, [carried(3, 4, Some(20))]);
+            assert_eq!(tails.tails(), [carried(3, 4, Some(20))]);
+            assert_eq!(logs.kept(), Some(12288));
+        }
+
+        /// The entry at 8192 is in a record that the commit took, so the tail goes
+        /// past it.
+        #[test]
+        fn idle_gives_the_appended_tail_of_a_taken_record() {
+            let mut logs = walked(Some(20));
             logs.append(slot(1), &header(1, Path::Live, 3, 2, None))
-                .expect("appends past the carried end");
+                .expect("appends");
+            let mut tails = Carried::default();
+            logs.idle(8192, 2, &mut tails);
+            assert_eq!(tails.tails(), [carried(5, 0, Some(20))]);
+        }
+
+        #[test]
+        fn carried_makes_the_carry_record_the_holder() {
+            let mut logs = walked(Some(20));
+            let header = header(1, Path::Live, 3, 2, None);
+            logs.append(slot(1), &header).expect("appends");
+            let mut tails = Carried::default();
+            logs.idle(8192, 2, &mut tails);
+            logs.sync(slot(1), &header, 8192).expect("syncs");
+            assert_eq!(logs.kept(), Some(4096));
+            logs.carried(&tails, 12288);
+            assert_eq!(logs.kept(), Some(12288));
+            let tail = Tail {
+                seq: 5,
+                stamp: Some(Stamp::from_nanos(20)),
+            };
+            assert_eq!(logs.durable(slot(1), Path::Live), tail);
+            let runs: Vec<Run> = logs.runs(slot(1), Path::Live).collect();
+            assert_eq!(runs, [run(0, 0, 4096), run(3, 1, 8192)]);
             tails.clear();
             logs.idle(16384, 2, &mut tails);
-            assert_eq!(tails, [carried(3, 4, Some(20))], "gives the durable tail");
+            assert_eq!(tails.tails(), [carried(5, 0, Some(20))]);
             assert_eq!(logs.kept(), Some(12288));
+        }
+
+        /// The entry of seq 5 came after the commit took its records.
+        #[test]
+        fn carried_keeps_the_appended_tail_of_a_queued_path() {
+            let mut logs = walked(Some(20));
+            let mut tails = Carried::default();
+            logs.idle(8192, 2, &mut tails);
+            logs.append(slot(1), &header(1, Path::Live, 3, 2, Some(50)))
+                .expect("appends");
+            logs.carried(&tails, 8192);
+            let durable = Tail {
+                seq: 3,
+                stamp: Some(Stamp::from_nanos(20)),
+            };
+            let appended = Tail {
+                seq: 5,
+                stamp: Some(Stamp::from_nanos(50)),
+            };
+            assert_eq!(logs.durable(slot(1), Path::Live), durable);
+            assert_eq!(logs.appended(slot(1), Path::Live), appended);
+            assert_eq!(logs.kept(), Some(8192));
+        }
+
+        #[test]
+        #[should_panic(expected = "invariant: the carried tail")]
+        fn a_carried_tail_that_is_not_the_durable_end_is_a_broken_invariant() {
+            let mut logs = walked(Some(20));
+            logs.append(slot(1), &header(1, Path::Live, 3, 2, None))
+                .expect("appends");
+            let mut tails = Carried::default();
+            logs.idle(8192, 2, &mut tails);
+            logs.carried(&tails, 12288);
+        }
+
+        #[test]
+        #[should_panic(expected = "invariant: carry record 4096 comes after record")]
+        fn a_carry_record_at_the_holder_is_a_broken_invariant() {
+            let mut logs = walked(Some(20));
+            let mut tails = Carried::default();
+            logs.idle(8192, 2, &mut tails);
+            logs.carried(&tails, 4096);
         }
 
         /// A trim that passes the carry record of a path keeps the run of a later
@@ -1986,9 +2135,9 @@ mod tests {
     fn trim_to_the_holder(records: &[(u64, Header)], holder: u64) {
         let mut logs = walk_from(records, 0);
         assert_eq!(logs.kept(), Some(holder));
-        let mut tails = Vec::new();
+        let mut tails = Carried::default();
         logs.idle(holder, 1023, &mut tails);
-        assert_eq!(tails, []);
+        assert_eq!(tails.tails(), []);
         logs.hide(holder);
         let walked = walk_from(records, holder);
         let durable =
@@ -2226,7 +2375,7 @@ mod tests {
     }
 
     proptest! {
-        /// Commits that carry the idle tails before their data record and trim to
+        /// Commits that carry the idle tails after their data record and trim to
         /// a landing at or below `kept`, then a walk of the records left, as the
         /// open does, gives each path its durable position and each read what it gets.
         #[test]
@@ -2253,8 +2402,8 @@ mod tests {
                     same_reads(&ring, &walked, &logs)?;
                     logs = walked;
                 }
-                let carried_at = 8192 * number;
-                let synced_at = carried_at + 4096;
+                let synced_at = 8192 * number;
+                let carried_at = synced_at + 4096;
                 let mut queued = Vec::new();
                 for next in record {
                     let at = slot(next.index);
@@ -2264,20 +2413,17 @@ mod tests {
                     prop_assert_eq!(logs.append(at, &header), Ok(()));
                     queued.push((next.index, header));
                 }
-                let mut tails = Vec::new();
-                logs.idle(8192 * *reach.min(&number), *limit, &mut tails);
-                if *carries && !tails.is_empty() {
-                    for tail in &tails {
-                        let at = slot(index_of(tail.index));
-                        prop_assert_eq!(logs.carry(at, tail, carried_at), Ok(()));
-                    }
-                    ring.push(Written::Carry(carried_at, tails));
-                }
+                let mut carried = Carried::default();
+                logs.idle(8192 * *reach.min(&number), *limit, &mut carried);
                 for (index, header) in &queued {
                     prop_assert_eq!(logs.sync(slot(*index), header, synced_at), Ok(()));
                 }
                 if !queued.is_empty() {
                     ring.push(Written::Data(synced_at, queued));
+                }
+                if *carries && !carried.tails().is_empty() {
+                    logs.carried(&carried, carried_at);
+                    ring.push(Written::Carry(carried_at, carried.tails().to_vec()));
                 }
                 if let Some(trim) = trim {
                     let bound = logs.kept().unwrap_or(synced_at + 4096);
