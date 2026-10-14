@@ -58,6 +58,10 @@ serde_json = { workspace = true }
 sim = { path = "../sim" }
 
 [[test]]
+name = "erase"
+harness = false
+
+[[test]]
 name = "memory"
 harness = false
 

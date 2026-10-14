@@ -57,3 +57,55 @@ pub(crate) fn output(name: &str, envs: &[(&str, &str)]) -> Output {
         .envs(envs.iter().copied());
     child.output().unwrap()
 }
+
+/// Runs the test `name` as `output` does, asserts that it aborts, and gives its
+/// output. On Windows it asserts the status of a Rust abort, or of a panic that no
+/// frame catches.
+pub(crate) fn aborted(name: &str, envs: &[(&str, &str)]) -> Output {
+    let output = output(name, envs);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        const SIGABRT: i32 = 6;
+        let signal = output.status.signal();
+        assert_eq!(signal, Some(SIGABRT), "{name} {envs:?}: {stderr}");
+    }
+    #[cfg(windows)]
+    {
+        // Rust aborts through `__fastfail`. A panic in the `listen` callback of C
+        // ends instead with the exception of the libgcc unwinder, which nothing
+        // handles (#2579).
+        const STATUS_STACK_BUFFER_OVERRUN: i32 = 0xC000_0409_u32.cast_signed();
+        const STATUS_GCC_THROW: i32 = 0x2047_4343;
+        let code = output.status.code();
+        let ends = [Some(STATUS_STACK_BUFFER_OVERRUN), Some(STATUS_GCC_THROW)];
+        assert!(ends.contains(&code), "{name} {envs:?}: {code:?} {stderr}");
+    }
+    output
+}
+
+/// Runs the test `name` as `output` does, and asserts that it writes `line` to stderr
+/// and ends through `abort` of the C runtime. On Windows the C runtime can write its
+/// own text after `line`.
+pub(crate) fn aborted_in_c(name: &str, envs: &[(&str, &str)], line: &str) {
+    let output = output(name, envs);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        const SIGABRT: i32 = 6;
+        assert_eq!(
+            output.status.signal(),
+            Some(SIGABRT),
+            "{name} {envs:?}: {stderr}"
+        );
+        assert_eq!(stderr, line);
+    }
+    #[cfg(windows)]
+    {
+        // The exit code of `abort` in the C runtime of MinGW.
+        assert_eq!(output.status.code(), Some(3), "{name} {envs:?}: {stderr}");
+        assert!(stderr.starts_with(line), "{stderr:?}");
+    }
+}

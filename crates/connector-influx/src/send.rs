@@ -14,8 +14,15 @@ use hub::reader::{Ended, Position, Received};
 use types::time::Span;
 
 use crate::batch::{Batch, Taken};
-use crate::{CONFIRMED, Config};
+use crate::{CONFIRMED, Config, Target};
 
+/// The longest name of a database, bucket, or org, in bytes.
+pub(crate) const NAME_MAX: usize = 4_096;
+const _: () = assert!(
+    "/api/v2/write?org=&bucket=&precision=ns".len() + 2 * 3 * NAME_MAX <= 65_534,
+    "the longest write path, two names with each byte percent-encoded, fits in the \
+     65,534 bytes that `http` takes"
+);
 /// The longest a write request may take.
 const TIMEOUT: Span = Span::from_nanos(10_000_000_000);
 /// The largest answer body read, for the text of an error.
@@ -47,7 +54,7 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
         timeout: TIMEOUT,
         body_max: BODY_MAX,
     });
-    let uri = write_uri(&config.address, &config.database);
+    let uri = write_uri(&config.address, &config.target);
     let confirmed = ctx.count(CONFIRMED);
     let mut batch = Batch::new(&config.measurement);
     let mut cancelled = pin!(ctx.cancel().wait());
@@ -135,18 +142,37 @@ async fn send(client: &Client, ctx: &Context<Config>, uri: &Uri, body: Bytes) {
     }
 }
 
-/// The InfluxDB 1 write URI of `database` at `address`, with nanosecond times.
-fn write_uri(address: &Uri, database: &str) -> Uri {
-    let mut path = String::from("/write?db=");
-    for &byte in database.as_bytes() {
+/// The write URI of `target` at `address`, with nanosecond times.
+fn write_uri(address: &Uri, target: &Target) -> Uri {
+    let mut path = String::new();
+    match target {
+        Target::Database(database) => {
+            path.push_str("/write?db=");
+            encode(&mut path, database);
+        }
+        Target::Bucket { name, org } => {
+            path.push_str("/api/v2/write?org=");
+            encode(&mut path, org);
+            path.push_str("&bucket=");
+            encode(&mut path, name);
+        }
+    }
+    path.push_str("&precision=ns");
+    let mut parts = address.clone().into_parts();
+    parts.path_and_query = Some(
+        path.parse()
+            .expect("invariant: names of at most NAME_MAX bytes fit in a query"),
+    );
+    Uri::from_parts(parts).expect("invariant: an address with a path is a URI")
+}
+
+/// Writes `text` into `path`, with each byte other than an unreserved one encoded.
+fn encode(path: &mut String, text: &str) {
+    for &byte in text.as_bytes() {
         if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
             path.push(char::from(byte));
         } else {
             write!(path, "%{byte:02X}").expect("invariant: a write to a String works");
         }
     }
-    path.push_str("&precision=ns");
-    let mut parts = address.clone().into_parts();
-    parts.path_and_query = Some(path.parse().expect("invariant: an encoded query"));
-    Uri::from_parts(parts).expect("invariant: an address with a path is a URI")
 }

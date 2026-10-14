@@ -16,11 +16,34 @@
   2026-10-08 04:51 UTC), and approved by item 4 of
   https://github.com/synnaxlabs/foundation/pull/1794#issuecomment-6052684931
   (2026-10-08 05:03 UTC).
-  The kind also reads `database`, which is not empty (`influx.bad-database`), and
-  `measurement`, a name that `line::Measurement::new` takes other than
-  `foundation_gaps` (`influx.bad-measurement`). `check` gives the reader of its
-  settings and no written channel. `run` writes each frame of the reader to InfluxDB 1
-  with `POST /write?db=<database>&precision=ns`: one line for each sample time, with
+  The kind also reads one target (`Target`): `database` for InfluxDB 1, or `bucket`
+  and `org` for InfluxDB 2 and 3. Supersedes "InfluxDB 1 only" of section 4 of the
+  ONE NODE record
+  (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6135595217). Each
+  is a string of 1 to 4,096 bytes (`influx.bad-database`, `influx.bad-bucket`,
+  `influx.bad-org`), so the query of the write URI holds both names when each byte is
+  encoded. A `database` with a `bucket` is `influx.two-targets`, and an `org` with a
+  `database` is `influx.org-with-database`. No target, or a `bucket` with no `org`,
+  is `document.missing-attribute`. A `database` is written with
+  `POST /write?db=<database>&precision=ns`, and a `bucket` with
+  `POST /api/v2/write?org=<org>&bucket=<bucket>&precision=ns`, which InfluxDB 2 and
+  InfluxDB 3 Core take. InfluxDB 3 takes any `org`. Each name is percent-encoded in
+  the query. Until the token of #2583, a request has no `Authorization`: the key
+  choice https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6156072634,
+  which `laptop.architect-2` accepted on 2026-10-13T21:59:25Z
+  (https://github.com/synnaxlabs/foundation/pull/2610#issuecomment-6156082448).
+  Approved by the person (2026-10-13T16:24:35Z, relayed in
+  https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150321949), and
+  the plan that `laptop.architect-2` approved on 2026-10-13T16:53:54Z
+  (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150691934),
+  its review of #2610 on 2026-10-13T21:26:57Z
+  (https://github.com/synnaxlabs/foundation/pull/2610#issuecomment-6155556749), and its
+  approval of the bound of 4,096 bytes on 2026-10-13T21:36:41Z
+  (https://github.com/synnaxlabs/foundation/pull/2610#issuecomment-6155716038).
+  The kind also reads `measurement`, a name that `line::Measurement::new` takes other
+  than `foundation_gaps` (`influx.bad-measurement`). `check` gives the reader of its
+  settings and no written channel. `run` writes each frame of the reader to the write
+  path of its target: one line for each sample time, with
   a field for each channel of the frame, keyed by the channel name. A NaN or infinite
   value is left out, and so is a line with no other value. Until #2555, only `f64`
   channels are written: another type ends the run with `Error::Config` and

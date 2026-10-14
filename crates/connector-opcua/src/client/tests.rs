@@ -18,10 +18,12 @@ use types::time::Span;
 use super::{Client, Large, Nodes, Reads, SPLIT, answer, most};
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
+use crate::event;
 use crate::ffi::{self, Status};
 use crate::node::{Key, Name, Node};
 use crate::server::{Limits, Server};
 use crate::unwind::caught;
+use crate::value::Value;
 
 /// The port of the test server.
 const PORT: u16 = 4840;
@@ -56,7 +58,7 @@ const TIME: Node = Node {
 
 impl Client {
     /// Reads the Value of `node` alone.
-    pub(crate) async fn read_one(&mut self, node: &Node) -> Result<f64, Status> {
+    pub(crate) async fn read_one(&mut self, node: &Node) -> Result<Value, Status> {
         let nodes = self
             .nodes(std::slice::from_ref(node))
             .expect("one node fits");
@@ -79,7 +81,7 @@ struct Peer<'s> {
     /// The endpoint of the test server.
     url: String,
     /// The value of [`VALUE`].
-    value: f64,
+    value: Value,
     /// The server does not run while it is set.
     paused: Rc<Cell<bool>>,
 }
@@ -87,8 +89,8 @@ struct Peer<'s> {
 impl Peer<'_> {
     async fn connect(&mut self, url: &str) -> Result<Client, Status> {
         let url = CString::new(url).expect("the URL holds no NUL");
-        let (clock, net) = (Clock::clone(&self.clock), Net::clone(&self.net));
-        Client::connect(clock, net, &mut self.rng, &url).await
+        let time = event::Time::monotonic(Clock::clone(&self.clock));
+        Client::connect(time, Net::clone(&self.net), &mut self.rng, &url).await
     }
 
     async fn connected(&mut self) -> Client {
@@ -99,8 +101,8 @@ impl Peer<'_> {
     /// Connects a client whose receive buffer is `receive` bytes.
     async fn receiving(&mut self, receive: u32) -> Client {
         let clock = Clock::clone(&self.clock);
-        let connections =
-            Manager::new(Clock::clone(&clock), self.net.clone(), &mut self.rng);
+        let time = event::Time::monotonic(Clock::clone(&clock));
+        let connections = Manager::new(time, self.net.clone(), &mut self.rng);
         // SAFETY: the loop outlives the client, which the drop of the client deletes
         // first.
         let raw = unsafe { ffi::shim_client_new(connections.events().raw(), CHUNKS) };
@@ -141,12 +143,18 @@ async fn serve<T>(
 ) -> T {
     let mut rng = node.entropy().rng();
     let local = SocketAddr::new(node.addresses()[0], PORT);
-    let manager = Manager::listening(node.clock(), node.net(), local, 4, &mut rng)
-        .expect("the port is free");
+    let manager = Manager::listening(
+        event::Time::monotonic(node.clock()),
+        node.net(),
+        local,
+        4,
+        &mut rng,
+    )
+    .expect("the port is free");
     // SAFETY: the close below deletes the server before the manager drops.
     let server = unsafe { Server::start(&manager, c"", sessions) };
-    let value = f64::from(u32::try_from(rng.below(1 << 20)).expect("fits"));
-    server.add_double(&VALUE, value);
+    let value = Value::F64(f64::from(u32::try_from(rng.below(1 << 20)).expect("fits")));
+    server.add_scalar(&VALUE, value);
     let peer = Peer {
         server: &server,
         clock: node.clock(),
@@ -176,7 +184,7 @@ async fn serve<T>(
 }
 
 /// The value of [`VALUE`] and the answer of a read of it, in a run of `seed`.
-fn spike(seed: u64) -> ((f64, Result<f64, Status>), u64) {
+fn spike(seed: u64) -> ((Value, Result<Value, Status>), u64) {
     run(seed, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
@@ -193,7 +201,7 @@ fn a_client_reads_a_double_and_a_run_replays() {
     assert_eq!(spike(7), ((value, Ok(value)), digest));
     let ((other, read), _) = spike(8);
     assert_eq!(read, Ok(other));
-    assert_ne!(other.to_bits(), value.to_bits());
+    assert_ne!(other, value);
 }
 
 #[test]
@@ -223,8 +231,10 @@ fn a_read_of_a_name_node_gives_its_value() {
                 namespace: 1,
                 key: Key::Name(Name::new(name).expect("a name that is not empty")),
             };
-            peer.server.add_double(&named("plant.spike;x=ü"), 2.5);
-            peer.server.add_double(&named("plant.spike"), 3.5);
+            peer.server
+                .add_scalar(&named("plant.spike;x=ü"), Value::F64(2.5));
+            peer.server
+                .add_scalar(&named("plant.spike"), Value::F64(3.5));
             let mut client = peer.connected().await;
             let reads = (
                 client.read_one(&named("plant.spike;x=ü")).await,
@@ -243,7 +253,7 @@ fn a_read_of_a_name_node_gives_its_value() {
         .await
     });
     let unknown = Err(Status::BAD_NODE_ID_UNKNOWN);
-    let expected = (Ok(2.5), Ok(3.5), unknown, unknown);
+    let expected = (Ok(Value::F64(2.5)), Ok(Value::F64(3.5)), unknown, unknown);
     assert_eq!(reads, expected);
 }
 
@@ -257,6 +267,145 @@ fn a_read_of_another_type_fails_with_a_type_mismatch() {
         .await
     });
     assert_eq!(read, Err(Status::BAD_TYPE_MISMATCH));
+}
+
+/// A scalar of each type at its bounds, and each special value of a float.
+const SCALARS: [Value; 30] = [
+    Value::Bool(false),
+    Value::Bool(true),
+    Value::I8(i8::MIN),
+    Value::I8(i8::MAX),
+    Value::U8(u8::MIN),
+    Value::U8(u8::MAX),
+    Value::I16(i16::MIN),
+    Value::I16(i16::MAX),
+    Value::U16(u16::MIN),
+    Value::U16(u16::MAX),
+    Value::I32(i32::MIN),
+    Value::I32(i32::MAX),
+    Value::U32(u32::MIN),
+    Value::U32(u32::MAX),
+    Value::I64(i64::MIN),
+    Value::I64(i64::MAX),
+    Value::U64(u64::MIN),
+    Value::U64(u64::MAX),
+    Value::F32(f32::MIN),
+    Value::F32(f32::MAX),
+    Value::F32(-0.0),
+    Value::F32(f32::NEG_INFINITY),
+    Value::F32(f32::NAN),
+    Value::F32(f32::from_bits(0xffc0_0001)),
+    Value::F64(f64::MIN),
+    Value::F64(f64::MAX),
+    Value::F64(-0.0),
+    Value::F64(f64::INFINITY),
+    Value::F64(f64::NAN),
+    Value::F64(f64::from_bits(0xfff8_0000_0000_0001)),
+];
+
+/// `value` as the test server sends it: open62541 sends each NaN as the quiet NaN
+/// with the sign bit set.
+fn sent(value: Value) -> Value {
+    match value {
+        Value::F32(float) if float.is_nan() => Value::F32(f32::from_bits(0xffc0_0000)),
+        Value::F64(double) if double.is_nan() => {
+            Value::F64(f64::from_bits(0xfff8_0000_0000_0000))
+        }
+        other => other,
+    }
+}
+
+/// A [`Value`] that compares each float by its bits, which tell each NaN and -0.0
+/// apart.
+#[derive(Clone, Debug, PartialEq)]
+enum Exact {
+    F32(u32),
+    F64(u64),
+    Other(Value),
+}
+
+fn exact(value: Result<Value, Status>) -> Result<Exact, Status> {
+    value.map(|value| match value {
+        Value::F32(float) => Exact::F32(float.to_bits()),
+        Value::F64(double) => Exact::F64(double.to_bits()),
+        other => Exact::Other(other),
+    })
+}
+
+#[test]
+fn a_read_gives_each_scalar_type_at_its_bounds() {
+    let (values, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let nodes: Vec<Node> = (2000..)
+                .zip(SCALARS)
+                .map(|(number, value)| {
+                    let node = Node {
+                        namespace: 1,
+                        key: Key::Number(number),
+                    };
+                    peer.server.add_scalar(&node, value);
+                    node
+                })
+                .collect();
+            let mut client = peer.connected().await;
+            let nodes = client.nodes(&nodes).expect("30 nodes fit");
+            let values = client.read(&nodes).await.map(<[_]>::to_vec);
+            client.close().await;
+            values
+        })
+        .await
+    });
+    let values = values.map(|values| values.into_iter().map(exact).collect::<Vec<_>>());
+    let expected = SCALARS.map(|value| exact(Ok(sent(value)))).to_vec();
+    assert_eq!(values, Ok(expected));
+}
+
+#[test]
+fn the_kind_of_each_scalar_type_is_its_index_in_ua_types() {
+    let kinds = [
+        ffi::BOOLEAN,
+        ffi::SBYTE,
+        ffi::BYTE,
+        ffi::INT16,
+        ffi::UINT16,
+        ffi::INT32,
+        ffi::UINT32,
+        ffi::INT64,
+        ffi::UINT64,
+        ffi::FLOAT,
+        ffi::DOUBLE,
+    ];
+    let names = kinds.map(|kind| ffi::types()[usize::from(kind)].name());
+    assert_eq!(
+        names,
+        [
+            "Boolean", "SByte", "Byte", "Int16", "UInt16", "Int32", "UInt32", "Int64",
+            "UInt64", "Float", "Double",
+        ]
+    );
+}
+
+#[test]
+fn a_read_of_an_array_or_a_byte_string_fails_with_a_type_mismatch() {
+    let (reads, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let array = Node {
+                namespace: 1,
+                key: Key::Number(1001),
+            };
+            let bytes = Node {
+                namespace: 1,
+                key: Key::Number(1002),
+            };
+            peer.server.add_doubles(&array);
+            peer.server.add_bytes(&bytes, 1);
+            let mut client = peer.connected().await;
+            (client.read_one(&array).await, client.read_one(&bytes).await)
+        })
+        .await
+    });
+    let mismatch = Err(Status::BAD_TYPE_MISMATCH);
+    assert_eq!(reads, (mismatch, mismatch));
 }
 
 #[test]
@@ -289,7 +438,7 @@ fn a_read_of_nodes_gives_the_value_of_each_in_order() {
 /// reads in flight, while that read waits to send.
 fn read_after_late_answer(
     dropped: u16,
-) -> (Result<Vec<Result<f64, Status>>, Status>, f64) {
+) -> (Result<Vec<Result<Value, Status>>, Status>, Value) {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
@@ -464,7 +613,7 @@ fn a_read_after_255_dropped_reads_gives_the_value() {
 
 /// While the server stops, a read after `dropped` dropped reads starts 2 s after them.
 /// Gives its answer and the time it took.
-fn read_after(dropped: u16) -> (Result<f64, Status>, Span) {
+fn read_after(dropped: u16) -> (Result<Value, Status>, Span) {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
@@ -507,7 +656,7 @@ async fn read_with_pass(
     client: &mut Client,
     peer: &Peer<'_>,
     at: Span,
-) -> (Result<f64, Status>, Span) {
+) -> (Result<Value, Status>, Span) {
     let start = peer.clock.now();
     let mut pass = pin!(peer.clock.sleep(at));
     let (mut woke, mut passed) = (false, false);
@@ -600,7 +749,7 @@ fn a_read_after_272_dropped_reads_on_a_stalled_server_gives_the_value() {
 
 /// Reads [`FITS`] and then [`PAST`] from a server that sends at most `chunks` chunks in
 /// a message.
-fn read_large(chunks: u32) -> (Result<f64, Status>, Result<f64, Status>) {
+fn read_large(chunks: u32) -> (Result<Value, Status>, Result<Value, Status>) {
     let (reads, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             peer.server.add_bytes(&FITS, 7 * CHUNK);
@@ -699,7 +848,12 @@ async fn connect_to_listener(
     let start = clock.now();
     let mut rng = node.entropy().rng();
     let url = CString::new(format!("opc.tcp://{local}")).expect("no NUL");
-    let mut connect = pin!(Client::connect(node.clock(), node.net(), &mut rng, &url));
+    let mut connect = pin!(Client::connect(
+        event::Time::monotonic(node.clock()),
+        node.net(),
+        &mut rng,
+        &url
+    ));
     let status = poll_fn(|cx| {
         while let Poll::Ready(stream) = listener.poll_accept(cx) {
             accepted(stream.expect("the accept works"));
@@ -729,10 +883,20 @@ fn a_connect_to_a_listener_that_never_answers_times_out() {
     assert_eq!(out, (Status::BAD_TIMEOUT, Span::from_nanos(5_000_000_000)));
 }
 
+/// The first close of the listener ends the connect, so the client dials once.
 #[test]
-fn a_connect_to_a_listener_that_closes_each_stream_times_out() {
-    let (out, _) = run(0, async |node| connect_to_listener(&node, drop).await);
-    assert_eq!(out, (Status::BAD_TIMEOUT, Span::from_nanos(5_000_000_000)));
+fn a_connect_to_a_listener_that_closes_each_stream_ends_after_one_dial() {
+    let (out, _) = run(0, async |node| {
+        let mut accepts = 0;
+        let out = connect_to_listener(&node, |stream| {
+            accepts += 1;
+            drop(stream);
+        })
+        .await;
+        (out, accepts)
+    });
+    let ended = (Status::BAD_CONNECTION_CLOSED, Span::from_nanos(1_000_000));
+    assert_eq!(out, (ended, 1));
 }
 
 /// A close waits for the answer of the server, which a server that stops never gives,
@@ -860,11 +1024,11 @@ fn times_out_and_closes(flips: &[Span]) -> Span {
         serve(&node, 1, async |mut peer| {
             let (url, paused) = (peer.url.clone(), Rc::clone(&peer.paused));
             let raw = CString::new(url.as_str()).expect("no NUL");
-            let (clock, net) = (Clock::clone(&peer.clock), Net::clone(&peer.net));
+            let time = event::Time::monotonic(Clock::clone(&peer.clock));
+            let net = Net::clone(&peer.net);
             let start = peer.clock.now();
             let first = {
-                let mut connect =
-                    pin!(Client::connect(clock, net, &mut peer.rng, &raw));
+                let mut connect = pin!(Client::connect(time, net, &mut peer.rng, &raw));
                 let mut flips: Vec<_> = flips
                     .iter()
                     .map(|at| Box::pin(peer.clock.sleep(*at)))
@@ -914,7 +1078,7 @@ fn a_read_of_a_namespace_that_the_server_adds_after_the_connect_gets_its_value()
                 namespace,
                 key: Key::Number(1000),
             };
-            peer.server.add_double(&added, 2.5);
+            peer.server.add_scalar(&added, Value::F64(2.5));
             let second = client.read_one(&added).await;
             client.close().await;
             let mut fresh = peer.connected().await;
@@ -924,7 +1088,10 @@ fn a_read_of_a_namespace_that_the_server_adds_after_the_connect_gets_its_value()
         })
         .await
     });
-    assert_eq!(reads, (Ok(value), 2, Ok(2.5), Ok(2.5)));
+    assert_eq!(
+        reads,
+        (Ok(value), 2, Ok(Value::F64(2.5)), Ok(Value::F64(2.5)))
+    );
 }
 
 /// A node in namespace 1 named by `length` bytes.
@@ -972,7 +1139,7 @@ fn a_request_takes_the_chunks_of_one_message() {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
             let length = fitting(&client, &[], 1 << 20);
-            peer.server.add_double(&long(length), 2.5);
+            peer.server.add_scalar(&long(length), Value::F64(2.5));
             let fits = client.nodes(&[long(length)]).expect("it fits");
             let read = client.read(&fits).await.map(<[_]>::to_vec);
             let past = client.nodes(&[long(length + 1)]).map(drop);
@@ -987,7 +1154,7 @@ fn a_request_takes_the_chunks_of_one_message() {
         .await
     });
     let (read, past, after, full, sent, value) = reads;
-    assert_eq!(read, Ok(vec![Ok(2.5)]));
+    assert_eq!(read, Ok(vec![Ok(Value::F64(2.5))]));
     assert_eq!(full, Ok(vec![Err(Status::BAD_NODE_ID_UNKNOWN)]));
     let most = 8 * (65_536 - 24) - 7 * 7;
     let large = Large {
@@ -1012,7 +1179,7 @@ fn a_read_takes_the_max_message_size_of_the_server() {
             });
             let mut client = peer.connected().await;
             let length = fitting(&client, &[], 9000);
-            peer.server.add_double(&long(length), 2.5);
+            peer.server.add_scalar(&long(length), Value::F64(2.5));
             let fits = client.nodes(&[long(length)]).expect("it fits");
             let read = client.read(&fits).await.map(<[_]>::to_vec);
             let past = client.nodes(&[long(length + 1)]).map(drop);
@@ -1027,7 +1194,7 @@ fn a_read_takes_the_max_message_size_of_the_server() {
         .await
     });
     let (read, past, values, answer_past, sent, value) = reads;
-    assert_eq!(read, Ok(vec![Ok(2.5)]));
+    assert_eq!(read, Ok(vec![Ok(Value::F64(2.5))]));
     let large = |bytes| Large { bytes, most: 8192 };
     assert_eq!(past, Err(large(8193)));
     assert_eq!(values, Ok(vec![Ok(value); 239]));
@@ -1250,15 +1417,14 @@ const RELAY: u16 = 4841;
 /// The binary encoding of a Read response, a `NodeId` of 4 bytes.
 const READ_RESPONSE: [u8; 4] = [0x01, 0x00, 0x7A, 0x02];
 
-/// Runs `body` while a relay on `node` moves the bytes of the first stream to
-/// [`RELAY`] to the test server and back, and gives each message of the server to
-/// `rewrite` before the client gets it.
+/// Runs `body` while [`relay`] runs on `node` with `control` and `rewrite`.
 async fn relayed<T>(
     node: &node::Node,
+    control: &Relay,
     rewrite: impl FnMut(&mut Vec<u8>),
     body: impl Future<Output = T>,
 ) -> T {
-    let mut relay = pin!(relay(node, rewrite));
+    let mut relay = pin!(relay(node, control, rewrite));
     let mut body = pin!(body);
     poll_fn(|cx| {
         assert!(relay.as_mut().poll(cx).is_pending(), "it never ends");
@@ -1267,33 +1433,355 @@ async fn relayed<T>(
     .await
 }
 
-async fn relay(node: &node::Node, mut rewrite: impl FnMut(&mut Vec<u8>)) {
+/// What a test reads and sets of a [`relay`].
+#[derive(Default)]
+struct Relay {
+    /// The streams that it accepted.
+    accepts: Cell<usize>,
+    /// When set, it closes its listener at each accept and binds it again this long
+    /// after that stream ends, so each dial in between is refused.
+    pause: Option<Span>,
+    /// When set, it drops both streams of the relay that runs at its next poll, and
+    /// clears it.
+    cut: Cell<bool>,
+}
+
+/// Moves the bytes of each stream to [`RELAY`], one at a time, to the test server and
+/// back, and gives each message of the server to `rewrite` before the client gets it.
+/// A relay ends when the client ends its side or `control` cuts it.
+#[expect(clippy::infinite_loop, reason = "it runs until its test ends")]
+async fn relay(
+    node: &node::Node,
+    control: &Relay,
+    mut rewrite: impl FnMut(&mut Vec<u8>),
+) {
     let address = node.addresses()[0];
     let listen = tcp::Listen {
         local: SocketAddr::new(address, RELAY),
         backlog: 4,
         options: options(),
     };
-    let mut listener = node.net().listen(&listen).expect("the port is free");
-    let mut client = poll_fn(|cx| listener.poll_accept(cx))
+    let mut listener = None;
+    loop {
+        let open = listener.get_or_insert_with(|| {
+            node.net().listen(&listen).expect("the port is free")
+        });
+        let mut client = poll_fn(|cx| open.poll_accept(cx))
+            .await
+            .expect("the accept works");
+        control.accepts.set(control.accepts.get() + 1);
+        if control.pause.is_some() {
+            listener = None;
+        }
+        let config = tcp::Config {
+            remote: SocketAddr::new(address, PORT),
+            options: options(),
+        };
+        let mut server = node
+            .net()
+            .connect(&config)
+            .await
+            .expect("the server listens");
+        let (mut up, mut down) = (Pipe::default(), Pipe::default());
+        poll_fn(|cx| {
+            if control.cut.take() {
+                return Poll::Ready(());
+            }
+            let ended = up.pump(cx, &mut client, &mut server, |_| {});
+            down.pump(cx, &mut server, &mut client, &mut rewrite);
+            if ended {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+        if let Some(pause) = control.pause {
+            node.clock().sleep(pause).await;
+        }
+    }
+}
+
+/// The URL of [`RELAY`] on `node`.
+fn relay_url(node: &node::Node) -> String {
+    format!("opc.tcp://{}:{RELAY}", node.addresses()[0])
+}
+
+/// A rewrite that puts the URL of the test server in place of each copy of the URL of
+/// [`RELAY`], as a server behind a NAT or in a container gives a URL that its client
+/// did not dial.
+fn to_server(node: &node::Node) -> impl FnMut(&mut Vec<u8>) {
+    let from = relay_url(node).into_bytes();
+    let to = format!("opc.tcp://{}:{PORT}", node.addresses()[0]).into_bytes();
+    assert_eq!(from.len(), to.len(), "the message keeps its length");
+    move |message| {
+        let mut at = 0;
+        while let Some(found) =
+            message[at..].windows(from.len()).position(|w| *w == from)
+        {
+            at += found;
+            message[at..at + from.len()].copy_from_slice(&to);
+            at += from.len();
+        }
+    }
+}
+
+/// A server that gives another URL than the one that the client dialed has the client
+/// close its channel and dial the address of the given URL again, with that URL in its
+/// HEL, and the connect works.
+#[test]
+fn a_connect_through_a_switch_of_the_url_reads() {
+    let ((read, value, accepts), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let read = relayed(&node, &control, to_server(&node), async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                let read = client.read_one(&VALUE).await;
+                client.close().await;
+                read
+            })
+            .await;
+            (read, peer.value, control.accepts.get())
+        })
         .await
-        .expect("the accept works");
-    let config = tcp::Config {
-        remote: SocketAddr::new(address, PORT),
-        options: options(),
-    };
-    let mut server = node
-        .net()
-        .connect(&config)
+    });
+    assert_eq!((read, accepts), (Ok(value), 2));
+}
+
+/// A failed dial after the switch of the URL takes the fallback to the given URL. Each
+/// dial goes to the address of the given URL, so the fallback fails too, with its own
+/// status.
+#[test]
+fn a_connect_whose_dial_after_a_switch_fails_takes_the_fallback() {
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay {
+                pause: Some(Span::from_nanos(10_000_000_000)),
+                ..Relay::default()
+            };
+            let url = relay_url(&node);
+            let connect =
+                relayed(&node, &control, to_server(&node), peer.connect(&url));
+            (connect.await.err(), control.accepts.get())
+        })
         .await
-        .expect("the server listens");
-    let (mut up, mut down) = (Pipe::default(), Pipe::default());
-    poll_fn(|cx| {
-        up.pump(cx, &mut client, &mut server, |_| {});
-        down.pump(cx, &mut server, &mut client, &mut rewrite);
-        Poll::<()>::Pending
-    })
-    .await;
+    });
+    assert_eq!(out, (Some(Status::BAD_CONNECTION_REJECTED), 1));
+}
+
+/// A refused dial after the switch of the URL takes the fallback to the given URL, and
+/// the connect reads through it. The relay binds again one link delay after the FIN of
+/// the client, with which the dial after the switch comes, and one link delay before
+/// the dial of the fallback.
+#[test]
+fn a_connect_whose_dial_after_a_switch_is_refused_reads_through_the_fallback() {
+    let ((read, value, accepts), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay {
+                pause: Some(Span::from_nanos(250_000)),
+                ..Relay::default()
+            };
+            let url = relay_url(&node);
+            let mut to = to_server(&node);
+            // The stream of the fallback gives the URL that the client dialed.
+            let rewrite = |message: &mut Vec<u8>| {
+                if control.accepts.get() == 1 {
+                    to(message);
+                }
+            };
+            let read = relayed(&node, &control, rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                let read = client.read_one(&VALUE).await;
+                client.close().await;
+                read
+            })
+            .await;
+            (read, peer.value, control.accepts.get())
+        })
+        .await
+    });
+    assert_eq!((read, accepts), (Ok(value), 2));
+}
+
+/// The binary encoding of a `GetEndpoints` response, a `NodeId` of 4 bytes.
+const ENDPOINTS_RESPONSE: [u8; 4] = [0x01, 0x00, 0xAF, 0x01];
+
+/// A server whose endpoint has another URL than the one that `FindServers` gave has the
+/// client close its channel and dial again, and the connect works.
+#[test]
+fn a_connect_through_a_switch_of_the_endpoint_url_reads() {
+    let ((read, value, accepts), _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let mut to = to_server(&node);
+            let rewrite = |message: &mut Vec<u8>| {
+                let endpoints = message.starts_with(b"MSG")
+                    && message[24..28] == ENDPOINTS_RESPONSE;
+                if endpoints && control.accepts.get() == 1 {
+                    to(message);
+                }
+            };
+            let read = relayed(&node, &control, rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                let read = client.read_one(&VALUE).await;
+                client.close().await;
+                read
+            })
+            .await;
+            (read, peer.value, control.accepts.get())
+        })
+        .await
+    });
+    assert_eq!((read, accepts), (Ok(value), 2));
+}
+
+/// An endpoint of mode Sign with the policy None has the client close its channel to
+/// switch the security mode, and the client refuses that mode before it dials.
+#[test]
+fn a_switch_of_the_security_mode_ends_with_its_status() {
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let clock = Clock::clone(&peer.clock);
+            let mut from = vec![1, 0, 0, 0, 47, 0, 0, 0];
+            from.extend_from_slice(b"http://opcfoundation.org/UA/SecurityPolicy#None");
+            let rewrite = |message: &mut Vec<u8>| {
+                let endpoints = message.starts_with(b"MSG")
+                    && message[24..28] == ENDPOINTS_RESPONSE;
+                if endpoints && control.accepts.get() == 1 {
+                    let mut at = 0;
+                    while let Some(found) = message[at..]
+                        .windows(from.len())
+                        .position(|w| *w == from[..])
+                    {
+                        at += found;
+                        message[at] = 2;
+                        at += from.len();
+                    }
+                }
+            };
+            let status = relayed(&node, &control, rewrite, async {
+                let status = peer.connect(&url).await.err();
+                clock.sleep(Span::from_nanos(10_000_000)).await;
+                status
+            })
+            .await;
+            (status, control.accepts.get())
+        })
+        .await
+    });
+    assert_eq!(out, (Some(Status::BAD_SECURITY_MODE_REJECTED), 1));
+}
+
+/// A message on an open channel that the client cannot process ends the session, and
+/// the client does not dial again, also after a switch of the URL.
+#[test]
+fn a_message_that_the_client_cannot_process_ends_the_session_with_no_dial() {
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let clock = Clock::clone(&peer.clock);
+            let bad = Cell::new(false);
+            let mut to = to_server(&node);
+            let rewrite = |message: &mut Vec<u8>| {
+                to(message);
+                if bad.get() && message.starts_with(b"MSG") {
+                    // The key of another channel.
+                    message[8] ^= 0xFF;
+                }
+            };
+            let reads = relayed(&node, &control, rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                bad.set(true);
+                let reads =
+                    (client.read_one(&VALUE).await, client.read_one(&VALUE).await);
+                clock.sleep(Span::from_nanos(10_000_000)).await;
+                reads
+            })
+            .await;
+            (reads, control.accepts.get())
+        })
+        .await
+    });
+    let reads = (
+        Err(Status::BAD_SECURE_CHANNEL_CLOSED),
+        Err(Status::BAD_SERVER_NOT_CONNECTED),
+    );
+    assert_eq!(out, (reads, 2));
+}
+
+/// Connects through a relay that gives the client the first `pass` messages of the
+/// server, and cuts both streams at the next one. Gives the status of the connect, and
+/// the accepts 10 ms after it ends.
+fn cut_after(pass: usize) -> (Option<Status>, usize) {
+    let (out, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let clock = Clock::clone(&peer.clock);
+            let mut given = 0;
+            let rewrite = |message: &mut Vec<u8>| {
+                if given == pass {
+                    message.clear();
+                    control.cut.set(true);
+                } else {
+                    given += 1;
+                }
+            };
+            let status = relayed(&node, &control, rewrite, async {
+                let status = peer.connect(&url).await.err();
+                clock.sleep(Span::from_nanos(10_000_000)).await;
+                status
+            })
+            .await;
+            (status, control.accepts.get())
+        })
+        .await
+    });
+    out
+}
+
+/// A reset while the request that creates or activates the session waits ends the
+/// connect with `BadConnectionClosed` after one dial, though the end of that request
+/// gives `BadSecureChannelClosed` first.
+#[test]
+fn a_reset_while_a_session_request_waits_ends_the_connect_with_no_dial() {
+    let closed = (Some(Status::BAD_CONNECTION_CLOSED), 1);
+    assert_eq!((cut_after(4), cut_after(5)), (closed, closed));
+}
+
+/// A reset of the streams of an active session ends it: each later read fails, and
+/// the client does not dial again.
+#[test]
+fn a_read_after_a_reset_of_an_active_session_fails_with_no_dial() {
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let clock = Clock::clone(&peer.clock);
+            let reads = relayed(&node, &control, |_| {}, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                control.cut.set(true);
+                let reads =
+                    (client.read_one(&VALUE).await, client.read_one(&VALUE).await);
+                // open62541 would dial again at once, within this wait.
+                clock.sleep(Span::from_nanos(10_000_000)).await;
+                reads
+            })
+            .await;
+            (reads, control.accepts.get())
+        })
+        .await
+    });
+    let reads = (
+        Err(Status::BAD_SECURE_CHANNEL_CLOSED),
+        Err(Status::BAD_SERVER_NOT_CONNECTED),
+    );
+    assert_eq!(out, (reads, 1));
 }
 
 /// One direction of a relay.
@@ -1306,19 +1794,21 @@ struct Pipe {
 }
 
 impl Pipe {
-    /// Moves the bytes that `from` has to `to`, and gives each whole message to
-    /// `rewrite` first.
+    /// Moves the bytes that `from` has to `to`, gives each whole message to `rewrite`
+    /// first, and gives whether `from` ended its side.
     fn pump(
         &mut self,
         cx: &mut Context<'_>,
         from: &mut Tcp,
         to: &mut Tcp,
         mut rewrite: impl FnMut(&mut Vec<u8>),
-    ) {
+    ) -> bool {
+        let mut ended = false;
         let mut buffer = [0; 1 << 12];
         while let Poll::Ready(read) = from.poll_read(cx, &mut buffer) {
             let read = read.expect("the read works");
             if read == 0 {
+                ended = true;
                 break;
             }
             self.read.extend_from_slice(&buffer[..read]);
@@ -1340,6 +1830,7 @@ impl Pipe {
             };
             self.write.drain(..written.expect("the write works"));
         }
+        ended
     }
 }
 
@@ -1367,13 +1858,13 @@ fn recount_of(message: &mut Vec<u8>, count: i32) {
 }
 
 /// The values of a read, or its error.
-type Read = Result<Vec<Result<f64, Status>>, Status>;
+type Read = Result<Vec<Result<Value, Status>>, Status>;
 
 /// Gives two reads of [`VALUE`] by one client through a relay that gives the first
 /// Read response `recount` empty results when it is set, the request handle of each
 /// Read response, the value of [`VALUE`], and the count of values that the first
 /// answer copies into the client.
-fn read_twice(recount: Option<i32>) -> ([Read; 2], Vec<u32>, f64, usize) {
+fn read_twice(recount: Option<i32>) -> ([Read; 2], Vec<u32>, Value, usize) {
     run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
@@ -1386,7 +1877,7 @@ fn read_twice(recount: Option<i32>) -> ([Read; 2], Vec<u32>, f64, usize) {
                     handles.push(handle);
                 }
             };
-            let (reads, copied) = relayed(&node, rewrite, async {
+            let (reads, copied) = relayed(&node, &Relay::default(), rewrite, async {
                 let mut client = peer.connect(&url).await.expect("the client connects");
                 let nodes = client.nodes(&[VALUE]).expect("one node fits");
                 let first = client.read(&nodes).await.map(<[_]>::to_vec);

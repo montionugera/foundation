@@ -20,8 +20,10 @@ use types::time::Stamp;
 
 use crate::client::{Client, Large};
 use crate::config::{self, Config, Read};
+use crate::event;
 use crate::ffi::Status;
 use crate::node::Node;
+use crate::value::Value;
 
 #[cfg(test)]
 #[cfg(feature = "sim")]
@@ -92,8 +94,14 @@ impl kind::Kind for Kind {
 async fn run(ctx: Context<Config>) -> Result<(), Error> {
     let mut frames = Frames::open(&ctx).await?;
     let config = ctx.config();
-    let (clock, net) = (ctx.clock().clone(), ctx.net().clone());
-    let connect = Client::connect(clock, net, &mut ctx.rng(), &config.address).await;
+    let mesh = frames.out.writer.time();
+    let time = event::Time {
+        clock: ctx.clock().clone(),
+        wall: Box::new(move || mesh.now()),
+    };
+    let rng = &mut ctx.rng();
+    let net = ctx.net().clone();
+    let connect = Client::connect(time, net, rng, &config.address).await;
     let mut client = connect.map_err(|status| {
         device(Failure::Connect {
             address: config.address.to_string_lossy().into_owned(),
@@ -152,7 +160,7 @@ pub async fn writes(
 ) -> Result<Vec<u64>, Error> {
     let mut frames = Frames::open(ctx).await?;
     let reads = &ctx.config().reads;
-    let values = vec![Ok(1.0); reads.len()];
+    let values = vec![Ok(Value::F64(1.0)); reads.len()];
     let mut measures = Vec::with_capacity(count);
     for _ in 0..count {
         ctx.clock().sleep(Span::from_nanos(1_000_000)).await;
@@ -274,7 +282,7 @@ impl<'a> Frames<'a> {
     /// When the home refuses a group as `Backwards` again.
     fn write(
         &mut self,
-        values: &[Result<f64, Status>],
+        values: &[Result<Value, Status>],
         stamp: Stamp,
     ) -> Result<(), Error> {
         let values = Values::new(values).map_err(|(at, status)| {
@@ -419,16 +427,20 @@ fn fill(
 
 /// The values of one read, each a good Double.
 #[derive(Clone, Copy)]
-struct Values<'a>(&'a [Result<f64, Status>]);
+struct Values<'a>(&'a [Result<Value, Status>]);
 
 impl<'a> Values<'a> {
-    /// Gives `values`, or the position and the status of the first bad one.
-    fn new(values: &'a [Result<f64, Status>]) -> Result<Self, (usize, Status)> {
+    /// Gives `values`, or the position and the status of the first bad one:
+    /// `BadTypeMismatch` for a value that is not a Double.
+    fn new(values: &'a [Result<Value, Status>]) -> Result<Self, (usize, Status)> {
         match values
             .iter()
             .enumerate()
-            .find_map(|(at, value)| Some((at, *value.as_ref().err()?)))
-        {
+            .find_map(|(at, value)| match value {
+                Ok(Value::F64(_)) => None,
+                Ok(_) => Some((at, Status::BAD_TYPE_MISMATCH)),
+                Err(status) => Some((at, *status)),
+            }) {
             Some(bad) => Err(bad),
             None => Ok(Self(values)),
         }
@@ -437,18 +449,18 @@ impl<'a> Values<'a> {
     /// The value of the read at `at`.
     fn get(self, at: usize) -> f64 {
         match self.0[at] {
-            Ok(value) => value,
-            Err(status) => broken(at, status),
+            Ok(Value::F64(value)) => value,
+            other => broken(at, other),
         }
     }
 }
 
-/// Panics with the read at `at` and its status. Cold and apart from `Values::get`, so
+/// Panics with the read at `at` and its value. Cold and apart from `Values::get`, so
 /// the loop of a send stores nothing per sample for the message.
 #[cold]
 #[inline(never)]
-fn broken(at: usize, status: Status) -> ! {
-    panic!("invariant: read {at} is {status:?}, which `Values::new` refuses")
+fn broken(at: usize, value: Result<Value, Status>) -> ! {
+    panic!("invariant: read {at} is {value:?}, which `Values::new` refuses")
 }
 
 /// The diagnostic of the channel of `read` when its sample type is not `f64`.

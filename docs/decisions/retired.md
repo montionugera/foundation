@@ -65,6 +65,7 @@
 | NODE PORT (#2089, 6089294422): the hub's task of a reader whose home is another node holds the transport until its next poll after the drop of the reader | NODE PORT amendment (#2244, 6095943720): a task of the hub holds it until its next poll after the hub and each value and future that it gave drop (`hub::Hub::new`) |
 | HOME TYPE REFUSAL (#963): `open_writer` refuses a series of a type the home does not write | HOME EVERY TYPE |
 | FIRST SLICE order, for ONE NODE work only; the order "after FIRST SLICE" of 6050540089 | FIRST SLICE amendment (2026-10-08) |
+| STORE AND FORWARD "It runs beside FIRST SLICE", until the new sessions start | STORE AND FORWARD amendment (2026-10-13) |
 | HUB SESSIONS (#340, 6066821273): `reader::Error::Remote` gives a reader of an index at another node | HUB SESSIONS amendment (#340 PR 4d-b, 6069259471): the reader reads from that home over one hub stream |
 | `hub::Config::mesh` of 6067438821 | HUB SESSIONS amendment (#340 PR 4d-b, 6068108715): `hub::Config::region` |
 | `hub::Config::transport` of 6048960511 | HUB SESSIONS amendment (#340 PR 4d-b, 6068108715): `hub::Config::region` |
@@ -77,3 +78,6 @@
 | "A stalled request holds its reservation until its stream or session ends; only an admitted subject can do this" of #1946 6069496483 | HUB LINK (#2121 6081223893): the share of a subject |
 | "`read` gives a list of `Error`" and "Nesting past the depth limit is `Error::TooDeep` from `read`" of HCL ERRORS (#330, 6007697466) | HCL DIAGNOSTICS (#2079, 6093002544): `read` gives `Vec<Diagnostic>` |
 | TEXT FIXES, after round 3: a code fix keeps its round; REVIEW TIERS, after round 3: a second round on the fix commits | REVIEW ROUNDS (6150355931) |
+| "InfluxDB 1 only" of ONE NODE section 4 (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6135595217) | INFLUX KIND (the person, 2026-10-13T16:24:35Z, https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150321949; `laptop.architect-2`, https://github.com/synnaxlabs/foundation/pull/2610#issuecomment-6156082448) |
+| TEXT FIXES, for a Low finding in text: an item gives the exact new text (#2041, 6103180556), and an item that gives only facts and links or asks the author to find a fact is a finding | TEXT FIXES amendment (#2573, 6147048003) |
+| REVIEW ROUNDS (#2586, 6151416969): "When `laptop.director` wrote the PR, it is the person, through `laptop.monitor`" | REVIEW ROUNDS (#2600, 6155838835): `laptop.monitor` is the design approver in place of `laptop.director` |

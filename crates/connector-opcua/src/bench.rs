@@ -26,7 +26,7 @@ use types::time::{Monotonic, Span};
 use crate::alloc;
 use crate::client::Nodes;
 use crate::connection;
-use crate::event::Loop;
+use crate::event::{self, Loop};
 use crate::ffi::{self, Status};
 use crate::node::{Key, Node};
 use crate::server::Server;
@@ -54,7 +54,7 @@ impl Client {
     /// says.
     #[must_use]
     pub fn new(clock: Clock, rng: &mut Rng, timers: usize) -> Self {
-        let events = Loop::new(clock, rng);
+        let events = Loop::new(event::Time::monotonic(clock), rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
         let client =
             unsafe { ffi::shim_client_new(events.raw(), crate::connection::CHUNKS) };
@@ -199,8 +199,14 @@ impl Manager {
             .expect("open62541 counts sessions in 16 bits");
         let local = SocketAddr::new(address, PORT);
         let manager = ManuallyDrop::new(
-            connection::Manager::listening(clock, net, local, u32::from(sessions), rng)
-                .expect("the port is free"),
+            connection::Manager::listening(
+                event::Time::monotonic(clock),
+                net,
+                local,
+                u32::from(sessions),
+                rng,
+            )
+            .expect("the port is free"),
         );
         let events = manager.events();
         // SAFETY: the member takes its own loop.

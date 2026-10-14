@@ -21,11 +21,13 @@
   review` checks that each merge after the last round is a clean merge of the base (`git
   merge-tree`), that the commits after it change no code, and, when one that is not a
   merge follows it, that its round comment has a line `Text fixes:` that is not `Text
-  fixes: none` (#2315). It cannot check that a commit applies only those items. Evidence
-  (`laptop.monitor`, 102 PRs merged from 2026-10-09T00:00Z): a median of 7 rounds per
-  PR, about 44% of the findings in text, and each text fix moved the head and started a
-  round. Late rounds still found defects in code (#2191, #2003), so a code fix keeps its
-  round. The person, at 2026-10-10T15:50:57Z, in the `laptop.monitor` chat
+  fixes: none` (#2315). After a last round of 3 or more (REVIEW ROUNDS), it checks only
+  the merges and each change to a decision. It cannot check that a commit applies only
+  those items. Evidence (`laptop.monitor`, 102 PRs merged from 2026-10-09T00:00Z): a
+  median of 7 rounds per PR, about 44% of the findings in text, and each text fix moved
+  the head and started a round. Late rounds still found defects in code (#2191, #2003),
+  so a code fix keeps its round. The person, at 2026-10-10T15:50:57Z, in the
+  `laptop.monitor` chat
   (https://github.com/synnaxlabs/foundation/issues/1703#issuecomment-6103074621): "Yes,
   let's do that please". The director decided the items and the code test at
   2026-10-10T23:02:11Z
@@ -73,5 +75,38 @@
   1 in COST TRIALS (the person, 2026-10-08T01:17Z, recorded in
   https://github.com/synnaxlabs/foundation/issues/1703). Amends REVIEW TIERS: a commit
   that only applies `Text fixes:` items gets no second round.
+  Amended (the person, 2026-10-13T13:42:21Z, in the `laptop.monitor` chat, recorded in
+  https://github.com/synnaxlabs/foundation/pull/2573#issuecomment-6147048003): a Low
+  finding in text only is also a `Text fixes:` item when the `reviewer` gives no exact
+  new text, also when it asks the author to find a fact, such as a link. A Low finding
+  is a problem of a citation or of the text of a deferral or a later step, whose fix
+  makes no sentence state another thing about what the code, a test, a decision, a
+  ruling, or a contract does. The author fixes it in place, and the PR merges with no
+  further round. A finding in code, and a finding in text that is Medium or higher and
+  has no exact new text, still get a round, up to round 3 (REVIEW ROUNDS). A problem of
+  wording that leaves each statement true is no finding (REVIEW ROUNDS), as the director
+  ruled at 2026-10-13T20:27:17Z
+  (https://github.com/synnaxlabs/foundation/pull/2573#issuecomment-6154537932).
+  `laptop.monitor` asked: "when
+  a round finds only Low text problems (wording, citations, issue text) and no code
+  problem, the author fixes them in place and the PR merges without another round. Code
+  findings and any Medium or higher finding still get a new round. Do you want that
+  rule?" The person: "Yes". The director read "still" as the rule on `main`: a finding
+  in text whose exact new text the `reviewer` gives stays a `Text fixes:` item at any
+  severity, ruled at 2026-10-13T13:46:30Z
+  (https://github.com/synnaxlabs/foundation/pull/2573#issuecomment-6147001639). The
+  director ruled at 2026-10-13T13:49:02Z
+  (https://github.com/synnaxlabs/foundation/pull/2573#issuecomment-6147056819) that a
+  missing or stale link to an approval, an OK, or a ruling that Round 1, "Findings" step
+  3, or "Done" of the `review` skill asks for is no Low finding, because such a link is
+  the record of a gate, not a citation. Cost: no round checks a Low item that has no
+  exact new text, also after round 3, so a wrong link or word can reach `main`.
+  `cargo xtask review` does
+  not change: a `Text fixes:` line already lets commits that change no code follow the
+  last round. Lost: a severity grade in each `reviewer` report, which the check would
+  read (a new field, and a grade for each finding of each round). Supersedes, for a Low
+  item, the exact new text of
+  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6103180556
+  (2026-10-10T23:10:22Z) and the facts-and-links sentence of this record.
   Amended (2026-10-13, REVIEW ROUNDS): after round 3, a code fix keeps no round, and
   gets only its test, CI, and the `architecture` run and approvals of REVIEW ROUNDS.

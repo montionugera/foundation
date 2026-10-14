@@ -310,11 +310,17 @@ impl Scene {
     fn serve(&self) {
         let listener = listen(&self.node);
         let (stop, group) = (Token::new(), Group::new(self.tasks.clone()));
-        let (clock, net) = (self.node.clock(), self.node.net());
+        let (clock, net, node) = (self.node.clock(), self.node.net(), self.node.wall());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a simulated device reads the wall time of its node"
+        )]
+        let wall = move || node.now().time;
         let (variables, until) = (self.variables.clone(), stop.clone());
         let mut rng = self.node.entropy().rng();
         group.tasks().spawn(async move {
-            serve(clock, net, listener, &mut rng, &variables, until.wait()).await;
+            let until = until.wait();
+            serve(clock, wall, net, listener, &mut rng, &variables, until).await;
         });
         *self.server.borrow_mut() = Some((stop, group));
     }
@@ -575,6 +581,18 @@ fn fill(writer: &Writer) -> Vec<Draft> {
     held
 }
 
+/// The server gives the wall time of the node, so the client finds the time of each
+/// channel token near its own only when its loop reads the mesh time of the node.
+#[test]
+fn the_loop_of_the_kind_reads_the_mesh_time_of_its_node() {
+    let name = "kind::tests::writes_one_stamp_in_each_index_of_a_frame";
+    let output = crate::child::output(name, &[]);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("test result: ok. 1 passed"), "{stdout}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(!stderr.contains("CreatedAt"), "{stderr}");
+}
+
 #[test]
 fn writes_one_stamp_in_each_index_of_a_frame() {
     let mut setup = Setup::three();
@@ -698,6 +716,21 @@ fn ends_the_run_with_a_device_error_on_a_bad_status() {
     let bad = "the node ns=3;s=SpikeData of `plant.a` gives Bad";
     assert_eq!(errors, [(DEVICE, bad.to_owned())]);
     assert_eq!(outcome.frames.len(), 11);
+}
+
+#[test]
+fn writes_the_value_of_a_good_status_with_a_subcode() {
+    let outcome = run(Setup::three(), |scene| async move {
+        scene.after(ms(1_050), |scene| async move {
+            scene.variables.change(Quality(0x0096_0000));
+        });
+        scene.supervise(ms(1_550)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(errors(&outcome.statuses), []);
+    let frames = &outcome.frames;
+    assert_eq!(frames.len(), 16);
+    assert_eq!(values(frames, 2), served(&outcome, A));
 }
 
 /// The error names the read of the first bad status, also past the first read.
@@ -927,10 +960,23 @@ fn stamps_each_frame_within_its_read() {
 /// that gives a value for a bad read in place of the panic.
 #[test]
 #[should_panic(
-    expected = "invariant: read 2 is BadNotFound, which `Values::new` refuses"
+    expected = "invariant: read 2 is Err(BadNotFound), which `Values::new` refuses"
 )]
 fn panics_with_the_read_whose_value_is_bad() {
+    use crate::value::Value;
     let bad = Err(Status::BAD_NOT_FOUND);
-    let values = [Ok(1.0), bad, bad];
+    let values = [Ok(Value::F64(1.0)), bad, bad];
     Values(&values).get(2);
+}
+
+#[test]
+fn refuses_a_value_that_is_not_a_double_as_a_type_mismatch() {
+    use crate::value::Value;
+    let values = [
+        Ok(Value::F64(1.0)),
+        Ok(Value::F32(1.0)),
+        Err(Status::BAD_NOT_FOUND),
+    ];
+    let refused = Values::new(&values).map(|_| ());
+    assert_eq!(refused, Err((1, Status::BAD_TYPE_MISMATCH)));
 }

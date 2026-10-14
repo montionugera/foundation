@@ -61,8 +61,9 @@ impl Status {
     pub(crate) const BAD_NOT_SUPPORTED: Self = Self(0x803D_0000);
     #[cfg(test)]
     pub(crate) const BAD_NODE_ID_UNKNOWN: Self = Self(0x8034_0000);
-    #[cfg(test)]
     pub(crate) const BAD_TYPE_MISMATCH: Self = Self(0x8074_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_NO_DATA: Self = Self(0x809B_0000);
     #[cfg(test)]
     pub(crate) const BAD_SESSION_CLOSED: Self = Self(0x8026_0000);
     #[cfg(test)]
@@ -75,6 +76,8 @@ impl Status {
     pub(crate) const BAD_TOO_MANY_SESSIONS: Self = Self(0x8056_0000);
     #[cfg(test)]
     pub(crate) const BAD_SERVER_NOT_CONNECTED: Self = Self(0x800D_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_SECURITY_MODE_REJECTED: Self = Self(0x8054_0000);
 
     /// Gives the name of the code, such as `BadNodeIdUnknown`.
     pub(crate) fn name(self) -> &'static str {
@@ -143,6 +146,19 @@ pub(crate) struct DecodeOptions {
 /// `UA_TYPES_COUNT`.
 pub(crate) const TYPES: usize = 388;
 
+/// The kind of each type of [`Scalar`], which is also its index in `UA_TYPES`.
+pub(crate) const BOOLEAN: u16 = 0;
+pub(crate) const SBYTE: u16 = 1;
+pub(crate) const BYTE: u16 = 2;
+pub(crate) const INT16: u16 = 3;
+pub(crate) const UINT16: u16 = 4;
+pub(crate) const INT32: u16 = 5;
+pub(crate) const UINT32: u16 = 6;
+pub(crate) const INT64: u16 = 7;
+pub(crate) const UINT64: u16 = 8;
+pub(crate) const FLOAT: u16 = 9;
+pub(crate) const DOUBLE: u16 = 10;
+
 /// The index of `ByteString` in `UA_TYPES`.
 pub(crate) const BYTE_STRING: usize = 14;
 
@@ -164,6 +180,7 @@ const _: () = {
     );
     assert!(size_of::<Node<'_>>() == 24, "shim_node changed");
     assert!(offset_of!(Node<'_>, name) == 8, "shim_node.name moved");
+    assert!(size_of::<Scalar>() == 8, "shim_scalar changed");
 };
 
 /// Gives `UA_TYPES`, the table of built-in types.
@@ -368,6 +385,24 @@ pub(crate) struct ReadRequest([u8; 0]);
 #[repr(C)]
 pub(crate) struct ReadResponse([u8; 0]);
 
+/// `shim_scalar`: a scalar of a type from [`BOOLEAN`] to [`DOUBLE`]. Its kind tells
+/// which field holds it.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) union Scalar {
+    pub(crate) boolean: bool,
+    pub(crate) sbyte: i8,
+    pub(crate) byte: u8,
+    pub(crate) int16: i16,
+    pub(crate) uint16: u16,
+    pub(crate) int32: i32,
+    pub(crate) uint32: u32,
+    pub(crate) int64: i64,
+    pub(crate) uint64: u64,
+    pub(crate) float: f32,
+    pub(crate) double: f64,
+}
+
 /// `UA_DataValue`, which Rust holds only by pointer.
 #[repr(C)]
 pub(crate) struct DataValue([u8; 0]);
@@ -403,7 +438,7 @@ pub(crate) type Read = unsafe extern "C" fn(
 );
 
 /// The `shim_now` of `shim.c`.
-pub(crate) type Now = unsafe extern "C" fn(clock: *mut c_void) -> i64;
+pub(crate) type Now = unsafe extern "C" fn(time: *mut c_void) -> i64;
 
 unsafe extern "C" {
     static UA_TYPES: [DataType; TYPES];
@@ -436,7 +471,11 @@ unsafe extern "C" {
     ) -> u32;
     pub(crate) fn UA_random_seed_deterministic(value: u64);
 
-    pub(crate) fn shim_loop_new(now: Now, clock: *mut c_void) -> *mut EventLoop;
+    pub(crate) fn shim_loop_new(
+        now: Now,
+        wall: Now,
+        time: *mut c_void,
+    ) -> *mut EventLoop;
     pub(crate) fn shim_loop_free(el: *mut EventLoop);
     pub(crate) fn shim_loop_delayed(el: *mut EventLoop) -> bool;
     pub(crate) static shim_free_passes: c_int;
@@ -486,7 +525,11 @@ unsafe extern "C" {
         response: *const ReadResponse,
         index: usize,
     ) -> *const DataValue;
-    pub(crate) fn shim_value_double(value: *const DataValue, out: *mut f64) -> u32;
+    pub(crate) fn shim_value_scalar(
+        value: *const DataValue,
+        out: *mut Scalar,
+        kind: *mut u16,
+    ) -> u32;
 
     pub(crate) fn shim_cm_new(
         el: *mut EventLoop,

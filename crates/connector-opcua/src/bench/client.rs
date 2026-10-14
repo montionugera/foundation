@@ -12,7 +12,9 @@ use env::rng::Rng;
 use super::PORT;
 use crate::client::Nodes;
 use crate::connection;
+use crate::event;
 use crate::node::{Key, Name, Node};
+use crate::value::Value;
 
 /// The Double variable of a [`Server`].
 const VALUE: Node = Node {
@@ -69,7 +71,7 @@ impl Server {
     ) -> T {
         let local = SocketAddr::new(address, PORT);
         let manager = connection::Manager::listening(
-            Clock::clone(&clock),
+            event::Time::monotonic(Clock::clone(&clock)),
             Net::clone(&net),
             local,
             u32::from(SESSIONS),
@@ -83,8 +85,8 @@ impl Server {
             rng: RefCell::new(rng),
         };
         let add = |server: &mut crate::server::Server| {
-            server.add_double(&VALUE, DOUBLE);
-            server.add_double(&named(), DOUBLE);
+            server.add_scalar(&VALUE, Value::F64(DOUBLE));
+            server.add_scalar(&named(), Value::F64(DOUBLE));
         };
         crate::server::Server::serve(manager, SESSIONS, add, body(&this)).await
     }
@@ -104,12 +106,13 @@ impl Server {
     /// memory.
     pub async fn connect(&self, count: usize) -> Client {
         let rng = &mut Rng::from_seed(self.rng.borrow_mut().next_u64());
-        let (clock, net) = (Clock::clone(&self.clock), Net::clone(&self.net));
-        let session =
-            match crate::client::Client::connect(clock, net, rng, &self.url).await {
-                Ok(session) => session,
-                Err(status) => panic!("a connect failed: {status:?}"),
-            };
+        let time = event::Time::monotonic(Clock::clone(&self.clock));
+        let net = Net::clone(&self.net);
+        let connect = crate::client::Client::connect(time, net, rng, &self.url);
+        let session = match connect.await {
+            Ok(session) => session,
+            Err(status) => panic!("a connect failed: {status:?}"),
+        };
         let nodes = |node: Node| {
             let nodes: Vec<Node> = std::iter::repeat_n(node, count).collect();
             session.nodes(&nodes).expect("the nodes fit in one message")
@@ -163,9 +166,10 @@ impl Client {
         };
         for value in values {
             match value {
-                Ok(value) => {
+                Ok(Value::F64(value)) => {
                     assert!(value.to_bits() == DOUBLE.to_bits(), "read {value}");
                 }
+                Ok(value) => panic!("read {value:?}"),
                 Err(status) => panic!("a read failed: {status:?}"),
             }
         }
