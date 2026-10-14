@@ -1345,6 +1345,12 @@ fn same(a: &str, b: &str) -> bool {
 /// run of white space as one space, trimmed. A character that looks like another stays
 /// itself.
 fn texts<'n>(paragraph: &'n AstNode<'n>) -> Vec<String> {
+    seamed(paragraph, "")
+}
+
+/// [`texts`], with `seam` between a span that ends in a digit and a span after it that
+/// starts with one.
+fn seamed<'n>(paragraph: &'n AstNode<'n>, seam: &str) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut fresh = true;
     let image =
@@ -1370,6 +1376,10 @@ fn texts<'n>(paragraph: &'n AstNode<'n>) -> Vec<String> {
             fresh = false;
         }
         if let Some(line) = lines.last_mut() {
+            let digits = [line.chars().next_back(), text.chars().next()];
+            if digits.iter().all(|c| c.is_some_and(|c| c.is_ascii_digit())) {
+                line.push_str(seam);
+            }
             line.push_str(&text);
         }
     }
@@ -1698,8 +1708,9 @@ fn waits(pull: &Value, api: gh::Read<'_>) -> Result<Result<Vec<u64>, String>, St
 /// order. A condition is `merges after` in each ASCII case, after no letter and no
 /// digit, then white space and `#<n>`, in a paragraph as GitHub shows it ([`texts`]),
 /// also of a list item or a block quote, and also in a code span. A code block, a
-/// heading, a table, and HTML hold none. Only the issue right after the words counts.
-/// Errors with the problem of a footnote inside a footnote ([`nested`]).
+/// heading, a table, and HTML hold none. Only the issue right after the words counts,
+/// and its number ends where its span ends, as GitHub links it. Errors with the
+/// problem of a footnote inside a footnote ([`nested`]).
 fn conditions(body: &str) -> Result<Vec<u64>, String> {
     let arena = Arena::new();
     let body = normalized(body);
@@ -1715,7 +1726,7 @@ fn conditions(body: &str) -> Result<Vec<u64>, String> {
         .filter(|n| matches!(n.data.borrow().value, NodeValue::Paragraph));
     let mut found = Vec::new();
     for node in paragraphs {
-        let text = texts(node).join(" ").to_ascii_lowercase();
+        let text = seamed(node, " ").join(" ").to_ascii_lowercase();
         for (at, words) in text.match_indices("merges after #") {
             if text[..at]
                 .chars()

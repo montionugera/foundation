@@ -4549,3 +4549,23 @@ fn a_round_3_whose_first_end_names_no_commit_fails_after_a_round_3_at_the_head()
     );
     repo.remove();
 }
+
+/// GitHub links `#245` in each body: the text after the digits is another span.
+#[test]
+fn reads_the_issue_that_github_links_when_a_span_follows_its_digits() {
+    let states = [(245, "open"), (2451, "closed"), (2457, "closed")];
+    for body in [
+        "Merges after #245[^1].\n\n[^1]: It needs `Busy`.",
+        "Merges after #245*7*.",
+        "Merges after #245`7`.",
+        "Merges after #245<span>7</span>.",
+        "Merges after #245[7](https://example.com).",
+        "Merges after **#245**7.",
+    ] {
+        assert_eq!(
+            waiting(&body.into(), &states),
+            Ok(vec![open(245)]),
+            "{body:?}"
+        );
+    }
+}
