@@ -47,6 +47,7 @@ const NO_REPLY: Code = Code::new("node.no-reply");
 /// `foundation start`. A failure to start the shard, or a failure of the node, goes to
 /// standard error through [`ops::fail`].
 fn main() -> ExitCode {
+    #[expect(clippy::disallowed_methods, reason = "node reads its arguments")]
     let args: Vec<OsString> = std::env::args_os().collect();
     let status = match run(&args) {
         Ok(status) => status,

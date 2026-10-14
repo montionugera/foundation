@@ -390,10 +390,11 @@ state on `main`.
   private key in `admin.key` in its data directory (NODE MESH), at mode 0600 when `os`
   makes it, so no other local user can read it unless the operator opens it (Who
   attacks). A local user who can read that file is the first admin.
-- `ctx.secret(name)` is the only path to a secret value (SECRET STORES AS ADAPTERS).
+- `ctx.secret(source)` is the only path to a secret value (SECRET SOURCES, SECRET
+  STORES AS ADAPTERS).
   The built-in store seals each value to the X25519 seal key of each node that may
-  use it (BQ16, S8). The other adapters (an environment variable or a file, and the
-  external stores) do not. An external adapter authenticates with the node key, and
+  use it (BQ16, S8). The external stores do not. Neither does `env()` or `file()`
+  (SECRET SOURCES). An external adapter authenticates with the node key, and
   may cache values sealed to it, which delays revocation.
 - Sealing is HPKE base mode, so it does not prove who sealed. The signed record
   does: the caller seals and signs the `secret set` request with the `secret`
@@ -409,6 +410,14 @@ state on `main`.
   version and goes only to a node of the placement, so a node that leaves the
   placement keeps no copy in region state. The newest version of a name outlives a
   delete and the secret's removal. Not built (`mesh`).
+- A person who can apply a spec can make the node read any variable of its
+  environment and any file that its user can read, with `env()` and `file()`
+  (SECRET SOURCES), and send the value to the address of a connector. This includes
+  the files of the data directory: the node's keys and the sealed store. The refusal
+  of a `file()` path in the data directory is #2670, before a release of ONE NODE. In
+  ONE NODE, that person is the node's admin. Trigger for a limit that the node's
+  operator sets, such as directories and variable names given at start: a spec applied
+  by a subject that does not run the node.
 - A join ticket is a secret (BQ11a).
 - Rule for every crate: no secret value in a log, a status channel, an error, or
   plan output.

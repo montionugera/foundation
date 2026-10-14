@@ -1113,8 +1113,13 @@ impl Serve {
                 return None;
             };
             let ended = mesh.as_ref().map(mesh::Mesh::ended);
-            let secrets =
-                secret::store::File::new(files.clone(), &directory::secrets());
+            // No kind reads `env()` yet. The environment of the process comes
+            // with the first one (#2583).
+            let secrets = secret::Resolver::new(
+                Arc::default(),
+                files.clone(),
+                &directory::secrets(),
+            );
             let serve = pin!(async move {
                 let region = mesh.clone().map(|mesh| hub::Region {
                     mesh,
@@ -1152,7 +1157,7 @@ impl Serve {
                             net,
                             tasks: tasks.clone(),
                             hub: hub.clone(),
-                            secrets: Box::new(secrets),
+                            secrets,
                         };
                         let runs = connectors::Runs::new(config, name);
                         (Some(ops), Some(follow(mesh, hub.clone(), runs).await))

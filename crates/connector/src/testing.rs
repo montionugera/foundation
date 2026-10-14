@@ -55,7 +55,7 @@ pub struct Rig {
 impl Rig {
     /// Opens a hub on a new shard of `env`, whose connectors run the kinds of
     /// `kinds`, reach devices through `net`, and read secrets from the store of
-    /// [`create_secret_store`] on `env.files`.
+    /// [`create_secrets`] on `env.files`.
     ///
     /// # Panics
     ///
@@ -291,12 +291,12 @@ impl Drop for Run {
     }
 }
 
-/// The directory of the files that holds the secrets of [`create_secret_store`].
+/// The directory of the files that holds the secrets of [`create_secrets`].
 const SECRETS: &str = "secrets";
 
 /// A supervisor's inputs for the tests of `connector` and the kinds: `kinds`, the
 /// seams of `env` and `net`, a hub on a new shard in `env`, and the store of
-/// [`create_secret_store`] on `env.files`.
+/// [`create_secrets`] on `env.files`.
 ///
 /// # Panics
 ///
@@ -317,34 +317,47 @@ pub async fn create_config(
         net,
         tasks,
         hub,
-        secrets: create_secret_store(files),
+        secrets: create_secrets(files),
     }
 }
 
-/// A store of the secrets on `files` that [`create_secret`] writes.
+/// A resolver with no environment variables, whose store holds the secrets on
+/// `files` that [`create_secret`] writes.
 #[must_use]
-pub fn create_secret_store(files: Files) -> Box<dyn secret::store::Store> {
-    Box::new(secret::store::File::new(files, Path::new(SECRETS)))
+pub fn create_secrets(files: Files) -> secret::Resolver {
+    secret::Resolver::new(Arc::default(), files, Path::new(SECRETS))
 }
 
-/// Writes `value` as the secret `name` in the store that [`create_secret_store`]
-/// makes on `files`, in place of a value that it had.
+/// Writes `value` as the secret `name` in the store that [`create_secrets`] makes
+/// on `files`, in place of a value that it had. A read of the store meanwhile gives
+/// the old value, no value, or `value`, never a part of one.
 ///
 /// # Panics
 ///
-/// When a call of `files` fails.
+/// When a call of `files` fails, such as when another call for `name` runs at once.
 pub async fn create_secret(files: &Files, name: &Name, value: &[u8]) {
     let dir = Path::new(SECRETS);
     files.create_dir(dir).await.expect("makes the directory");
-    let path = dir.join(name.as_str());
-    files.remove(&path).await.expect("removes the old value");
     let len = u64::try_from(value.len()).expect("invariant: usize fits u64");
-    let file = files.open(&path, files::Mode::Create { len }).await;
-    let file = file.expect("makes the file");
+    // No name starts with `.`, so the store never reads a staged file. Each call
+    // takes the first slot that no other call holds and no dropped call left at
+    // another length.
+    let mut slot = 0_u32;
+    let mut file = loop {
+        let staged = dir.join(format!(".{slot}"));
+        match files.open(&staged, files::Mode::Create { len }).await {
+            Ok(file) => break file,
+            Err(files::Error::Busy { .. } | files::Error::Length { .. }) => slot += 1,
+            Err(error) => panic!("makes the file: {error:?}"),
+        }
+    };
     let pool = block::Config::new(1 << 18).expect("a budget that fits");
     let block = block::Pool::heap(pool).copy(value);
     let block = block.expect("the pool holds the value");
     file.write_at(0, &[block]).await.expect("writes the value");
+    let path = dir.join(name.as_str());
+    files.remove(&path).await.expect("removes the old value");
+    file.rename(&path).await.expect("puts the value in place");
     file.close().await;
 }
 

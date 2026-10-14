@@ -46,6 +46,9 @@ pub(crate) enum Call {
     Unlink {
         handle: Handle,
     },
+    /// A call on a file of the host, which takes the time of a call and changes no
+    /// disk.
+    Host(Operation),
 }
 
 impl Call {
@@ -61,6 +64,7 @@ impl Call {
             Self::Read { .. } => Operation::ReadAt,
             Self::Sync { .. } => Operation::Sync,
             Self::Rename { .. } => Operation::Rename,
+            Self::Host(operation) => *operation,
         }
     }
 
@@ -414,6 +418,7 @@ impl Files {
             Call::Unlink { handle } => {
                 disk.unlink(handle.inode, &path).map(|()| Done::Unit)
             }
+            Call::Host(_) => Ok(Done::Unit),
         };
         if let Some(handle) = call.handle() {
             disk.release(handle);
@@ -549,7 +554,17 @@ impl Files {
 
     /// Makes `handle`, which an open of `path` on `node` gave, a descriptor.
     pub(crate) fn opened(&mut self, node: usize, handle: Handle, path: &Path) {
-        self.disks[node].opened(handle, path);
+        self.disks[node].opened(handle.key, path);
+    }
+
+    /// Makes the host file that open `key` of `path` on `node` gave a descriptor.
+    pub(crate) fn opened_host(&mut self, node: usize, key: u64, path: &Path) {
+        self.disks[node].opened(key, path);
+    }
+
+    /// Closes the descriptor of a host file that open `key` of `node` gave.
+    pub(crate) fn close_host(&mut self, node: usize, key: u64) {
+        self.disks[node].closed(key);
     }
 
     /// Closes descriptor `handle` of `node`. Returns the waker of its close, to drop

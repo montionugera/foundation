@@ -1,13 +1,16 @@
 //! The `env::files` drivers of a simulated node.
 
+use std::future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use block::{Block, Unique};
-use env::files::{Mode, Request};
+use env::files::{Error, Mode, Operation, Request};
+use env::paths::Found;
 
 use super::Node;
+use crate::DIRECTORY;
 use crate::disk::Handle;
 use crate::files::{Call, Done, Ended, Held};
 use crate::state::lock;
@@ -62,6 +65,43 @@ impl env::files::Driver for Node {
             let descriptor: Box<dyn env::files::Descriptor> =
                 Box::new(Descriptor { node, handle, len });
             descriptor
+        })
+    }
+
+    fn open_absolute<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Request<'a, Box<dyn env::files::Descriptor>> {
+        let wait = self.submit(path.to_path_buf(), Call::Host(Operation::Open), None);
+        let key = wait.key;
+        Box::pin(async move {
+            wait.await.result?;
+            let found = lock(&self.shared).paths().read(self.node, path, usize::MAX);
+            let io = |code| Error::Io {
+                path: path.to_path_buf(),
+                operation: Operation::Open,
+                code,
+            };
+            match found {
+                Ok(Found::File(bytes)) => {
+                    lock(&self.shared).files().opened_host(self.node, key, path);
+                    let descriptor: Box<dyn env::files::Descriptor> = Box::new(Host {
+                        node: self.clone(),
+                        key,
+                        path: path.to_path_buf(),
+                        bytes,
+                    });
+                    Ok(descriptor)
+                }
+                Ok(Found::Directory(_)) => Err(io(DIRECTORY)),
+                Ok(Found::Large) => {
+                    unreachable!("invariant: no file is over usize::MAX")
+                }
+                Err(env::paths::Error::NotFound) => Err(Error::NotFound {
+                    path: path.to_path_buf(),
+                }),
+                Err(env::paths::Error::Io { code }) => Err(io(code)),
+            }
         })
     }
 
@@ -225,6 +265,71 @@ impl Drop for Descriptor {
             .files()
             .close(self.node.node, self.handle);
         drop(unused);
+    }
+}
+
+/// A file of the host, read whole at its open. `File` opens it to read only, so it
+/// never writes, renames, or removes it.
+struct Host {
+    node: Node,
+    /// The key of its open, which keys its descriptor.
+    key: u64,
+    path: PathBuf,
+    bytes: Vec<u8>,
+}
+
+impl env::files::Descriptor for Host {
+    fn len(&self) -> u64 {
+        u64::try_from(self.bytes.len()).expect("invariant: usize fits u64")
+    }
+
+    fn write_at<'a>(&'a self, _: u64, _: &'a [Block]) -> Request<'a, ()> {
+        unreachable!("invariant: a host file is open to read")
+    }
+
+    fn read_at(&self, offset: u64, into: Unique) -> Request<'_, Unique> {
+        let call = Call::Host(Operation::ReadAt);
+        let held = Some(Held::Into(into));
+        let wait = self.node.submit(self.path.clone(), call, held);
+        Box::pin(async move {
+            let Ended { result, held } = wait.await;
+            result?;
+            let Some(Held::Into(mut into)) = held else {
+                unreachable!("invariant: a read keeps its block")
+            };
+            let start = usize::try_from(offset).expect("invariant: File checked it");
+            let bytes = self.bytes.get(start..start + into.len());
+            into.copy_from_slice(bytes.expect("invariant: File checked the range"));
+            Ok(into)
+        })
+    }
+
+    fn sync(&self) -> Request<'_, ()> {
+        Box::pin(future::ready(Ok(())))
+    }
+
+    fn rename<'a>(&'a self, _: &'a Path, _: &'a Path) -> Request<'a, ()> {
+        unreachable!("invariant: a host file is open to read")
+    }
+
+    fn close(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()>>> {
+        Box::pin(future::ready(()))
+    }
+
+    fn remove(
+        self: Box<Self>,
+        _: PathBuf,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>>>> {
+        unreachable!("invariant: a host file is open to read")
+    }
+}
+
+impl Drop for Host {
+    fn drop(&mut self) {
+        // As for `Descriptor`, no drop follows the crash that closed it.
+        lock(&self.node.shared)
+            .files()
+            .close_host(self.node.node, self.key);
     }
 }
 
