@@ -100,7 +100,7 @@
   fails. `token`, when given, is the one token that it takes, as `Token <token>` in
   `Authorization`: a write path gives 401 and stores nothing for a request with
   another or no `Authorization`. It does not take `Bearer`, so a client that sends
-  only `Bearer` fails here (laptop.architect-2, 2026-10-14T04:16:45Z
+  only `Bearer` fails here (`laptop.architect-2`, 2026-10-14T04:16:45Z:
   https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6160767913).
   `database`
   stays out of `Store`: the 404 is an answer of the HTTP front. The front compares names
