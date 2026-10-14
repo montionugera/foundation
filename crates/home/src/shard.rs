@@ -638,9 +638,10 @@ impl Shard {
     /// its credit: a frame spends what `charge` says. A frame that finds the credit
     /// spent waits for a [`grant`](Self::grant), and so does each later frame. A frame
     /// that still waits when a later commit releases frames of the index is a miss,
-    /// and so is a live frame that the write gives as [`Outcome::Lost`]: the reader
-    /// gets neither it nor a later frame, and [`take`](Self::take) gives the frames
-    /// before it, then [`Next::Behind`](reader::Next::Behind).
+    /// and so is a live frame that the write gives as [`Outcome::Lost`], with each
+    /// frame that waits for a grant then: the reader gets neither it nor a later
+    /// frame, and [`take`](Self::take) gives the frames before it, then
+    /// [`Next::Behind`](reader::Next::Behind).
     /// [`woken`](Self::woken) names the reader once for a miss with no frame to take,
     /// and not for a miss while frames wait to be taken. The home does not read a
     /// missed frame back from disk yet. Close the reader and open a new one. The new
