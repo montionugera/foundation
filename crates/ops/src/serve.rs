@@ -434,8 +434,11 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Body, Error
         return Err(check.denied(Action::Plan, On::Spec));
     }
     let (base, applied) = spec.newest()?;
-    // A subject that may not apply a connector learns nothing of its sources.
-    let readable = |name: &Name| check.allows(Action::Apply, name);
+    // A subject that may not apply a connector learns nothing of its sources, and
+    // `apply` of a connector needs `admin` too.
+    let readable = |name: &Name| {
+        check.allows(Action::Apply, name) && check.allows(Action::Admin, name)
+    };
     let (output, plan) = files.plan(node, base, &applied, readable).await?;
     let mut reply = Body::line(&Answer::Done { output: &output })?;
     reply.add(&plan.encode())?;

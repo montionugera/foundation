@@ -57,22 +57,22 @@
   of the node is not set. Start the node with it set to the value`, other than `BadName`
   of the store, which stays `Error::Config`. The mode check of #2596 is for the store of
   `secret()` only, because Docker and Kubernetes mount a secret file with mode 0444 or
-  0644. `plan` reads each source of each connector of the planning node that the
-  subject of the plan may apply, through a clone of the resolver of the shard, as a
-  run does, and drops the value. It reads no source of another connector, so a subject
-  that may only plan learns nothing of the files and the environment of the node. Each
-  source that gives no value, `BadName` too, is a `secret.unresolved` problem at its
-  call, with the text `the secret <source>: <error>`, after the problems of
-  `config::plan::plan` in one list: the connectors in name order, and the sources of
-  each in the order of its config. This is the plan of item 7
+  0644. `plan` reads each source of each connector of the planning node that the subject
+  of the plan may apply (`apply` and `admin` on its name), through a clone of the
+  resolver of the shard, as a run does, and drops the value. It reads no source of
+  another connector, so a subject that may only plan learns nothing of the files and the
+  environment of the node. Each source that gives no value, `BadName` too, is a
+  `secret.unresolved` problem at its call, with the text `the secret <source>: <error>`,
+  after the problems of `config::plan::plan` in one list: the connectors in name order,
+  and the sources of each in the order of its config. This is the plan of item 7
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6161179051), with
   the fixes of round 1 of #2692
   (https://github.com/synnaxlabs/foundation/pull/2692#issuecomment-6164799171). A
-  connector on another node is not checked at plan until #239. A person who can apply
-  a spec can make the node read any variable of its environment and any file that its
-  user can read. The trigger for a limit that the operator of the node sets at start,
-  such as directories and variable names: a spec applied by a subject that does not
-  run the node. Decided by `laptop.architect-2` on 2026-10-13T21:05:46Z
+  connector on another node is not checked at plan until #239. A person who can apply a
+  spec can make the node read any variable of its environment and any file that its user
+  can read. The trigger for a limit that the operator of the node sets at start, such as
+  directories and variable names: a spec applied by a subject that does not run the
+  node. Decided by `laptop.architect-2` on 2026-10-13T21:05:46Z
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6155189112), with
   the surface that it approved on 2026-10-13T21:26:42Z
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6155552036).

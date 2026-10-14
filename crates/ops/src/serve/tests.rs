@@ -376,6 +376,42 @@ fn breaker_a_subject_that_may_only_plan_learns_nothing_of_the_files_of_the_node(
 }
 
 #[test]
+fn breaker_a_subject_that_may_not_apply_a_connector_learns_nothing_of_its_sources() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
+        // `bob` may plan each name and apply each name under `site`, but has no
+        // `admin`, which `apply` of a connector needs.
+        let people = format!(
+            "{}access \"site-apply\" {{\n  subjects = \"bob\"\n  select = \
+             \"site.**\"\n  allow = [apply]\n}}\n",
+            people()
+        );
+        applied(&node, &[("people.hcl", &people)]).await;
+        let paths = fixture.sim.paths();
+        paths
+            .write(Path::new("/run/there"), b"x")
+            .expect("writes it");
+        let probe = |path: &str| {
+            format!(
+                "connector \"site.c\" {{\n  kind  = \"influx\"\n  node  = \"edge\"\n  \
+                 token = file(\"{path}\")\n}}\n"
+            )
+        };
+        let there = probe("/run/there");
+        let absent = probe("/run/absent");
+        let body = |c: &str| plan_body(&[("people.hcl", &people), ("c.hcl", c)]);
+        // `bob` may not apply the connector.
+        let plan = planned(&node, &[("people.hcl", &people), ("c.hcl", &there)]).await;
+        let reply = serve(&node, &name("bob"), &apply_body(&plan)).await;
+        let expected = denied("bob", "admin", "`site.c`");
+        assert_eq!(split(&reply), (expected, &b""[..]));
+        let seen = serve(&node, &name("bob"), &body(&there)).await;
+        let unseen = serve(&node, &name("bob"), &body(&absent)).await;
+        assert_eq!(split(&seen).0, split(&unseen).0);
+    });
+}
+
+#[test]
 fn refuses_a_plan_of_a_subject_with_no_grant_before_it_reads_a_secret() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh.clone());
