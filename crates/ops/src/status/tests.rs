@@ -38,7 +38,7 @@ enum Script {
     Steady,
     /// Each run ends at once with a device error.
     Fails(&'static str),
-    /// Each run shows the error.
+    /// Each run shows the error and the note `polls`.
     Shows(&'static str),
     /// The first run ends at once with a device error, and each later run clears it.
     Clears(&'static str),
@@ -80,7 +80,10 @@ impl kind::Kind for Scripted {
         match self.script {
             Script::Steady => {}
             Script::Fails(error) => return Err(kind::Error::Device(error.into())),
-            Script::Shows(error) => context.error(&error),
+            Script::Shows(error) => {
+                context.error(&error);
+                context.note(&"polls");
+            }
             Script::Clears(error) => {
                 if !self.failed.swap(true, Ordering::Relaxed) {
                     return Err(kind::Error::Device(error.into()));
@@ -98,9 +101,9 @@ impl kind::Kind for Scripted {
 
 /// `steady` sets `in` to 12 and `confirmed` to 10, `failing` ends with a device error,
 /// `forging` with one whose text, from the device, holds a newline, `showing` shows an
-/// error, `clearing` clears the error of its failed first run, `wide` also names
-/// `extra`, `shifted` names `in` and `other`, and `opcua` and `influx` set the counts
-/// of the status block of the quickstart page.
+/// error and a note, `clearing` clears the error of its failed first run, `wide` also
+/// names `extra`, `shifted` names `in` and `other`, and `opcua` and `influx` set the
+/// counts of the status block of the quickstart page.
 fn kinds() -> Table {
     let counts = &[("in", 12), ("confirmed", 10)];
     let failing = "no route to the device";
@@ -169,6 +172,7 @@ fn gives_unknown_until_the_run_of_a_spec_with_more_counts_writes_its_start_frame
             "restarts": 0,
             "counts": { "confirmed": 0, "extra": 0, "in": 0 },
             "error": null,
+            "note": null,
         }]}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
@@ -202,6 +206,7 @@ fn gives_unknown_until_the_run_of_a_spec_with_another_count_writes_its_start_fra
             "restarts": 0,
             "counts": { "in": 0, "other": 0 },
             "error": null,
+            "note": null,
         }]}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
@@ -225,6 +230,7 @@ fn gives_the_old_state_until_the_run_with_fewer_counts_writes_its_start_frame() 
                 "restarts": 0,
                 "counts": counts,
                 "error": null,
+                "note": null,
             }]}})
         };
         let (head, rest) = status(&node, "@admin").await;
@@ -417,6 +423,7 @@ fn unknown(name: &str, kind: &str) -> Value {
         "restarts": null,
         "counts": null,
         "error": null,
+        "note": null,
     })
 }
 
@@ -441,6 +448,7 @@ fn gives_the_state_counts_and_error_of_each_connector_on_the_node() {
                 "restarts": 0,
                 "counts": { "confirmed": 10, "in": 12 },
                 "error": null,
+                "note": null,
             },
             {
                 "name": "site.b",
@@ -450,6 +458,7 @@ fn gives_the_state_counts_and_error_of_each_connector_on_the_node() {
                 "restarts": 3,
                 "counts": { "confirmed": 0, "in": 0 },
                 "error": { "class": "device", "text": "no route to the device" },
+                "note": null,
             },
             unknown("site.c", "steady"),
         ]}});
@@ -481,9 +490,9 @@ fn the_command_line_writes_the_status_of_the_node_as_text_or_json() {
         supervise(&fixture, &node, &["site.a", "site.b"]).await;
         let paths = fixture.sim.paths();
         let table = "\
-CONNECTOR  KIND     STATE       ADDRESS                IN  CONFIRMED
-site.a     steady   running     opc.tcp://site.a:4840  12  10
-site.b     failing  restarting  opc.tcp://site.b:4840  0   0
+CONNECTOR  KIND     STATE       ADDRESS                COUNTS
+site.a     steady   running     opc.tcp://site.a:4840  confirmed=10 in=12
+site.b     failing  restarting  opc.tcp://site.b:4840  confirmed=0 in=0
 
 site.b: device error: no route to the device
 ";
@@ -516,7 +525,7 @@ fn the_command_line_writes_the_refusal_of_status() {
 }
 
 #[test]
-fn gives_the_error_that_a_running_kind_shows() {
+fn gives_the_error_and_the_note_that_a_running_kind_shows() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         applied(&fixture, &node, &connector("site.a", "showing", "edge")).await;
@@ -530,6 +539,7 @@ fn gives_the_error_that_a_running_kind_shows() {
             "restarts": 0,
             "counts": { "confirmed": 10, "in": 12 },
             "error": { "class": "retry", "text": "busy" },
+            "note": "polls",
         }]}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
@@ -551,6 +561,7 @@ fn gives_no_error_once_the_running_kind_clears_the_error_of_a_failed_run() {
             "restarts": 1,
             "counts": { "confirmed": 10, "in": 12 },
             "error": null,
+            "note": null,
         }]}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
@@ -986,6 +997,7 @@ fn line(
             BTreeMap::from([("in".to_owned(), n), ("confirmed".to_owned(), confirmed)])
         }),
         error,
+        note: None,
     }
 }
 
@@ -1000,31 +1012,39 @@ fn escapes_a_newline_in_each_value_of_the_table() {
             name: "a\nb".to_owned(),
             kind: "k\nk".to_owned(),
             address: Some("x\ny".to_owned()),
+            note: Some("n\nn".to_owned()),
             ..line("plant.plc", State::Running, None, Some(error))
         }],
     };
-    let text = "CONNECTOR  KIND  STATE    ADDRESS  IN  CONFIRMED\n\
-                a\\nb       k\\nk  running  x\\ny     -   -\n\
+    let text = "CONNECTOR  KIND  STATE    ADDRESS  COUNTS\n\
+                a\\nb       k\\nk  running  x\\ny     -\n\
                 \n\
+                a\\nb: note: n\\nn\n\
                 a\\nb: device error: t\n";
     assert_eq!(output.text(), text);
 }
 
 #[test]
-fn writes_a_table_then_the_line_of_each_error() {
+fn writes_a_table_of_each_count_then_the_note_and_the_error_of_each_connector() {
     let failure = Failure {
         class: Class::Device,
         text: "no route to the device".to_owned(),
     };
+    let opcua = ["missed", "in", "lost"];
+    let opcua = opcua.map(|count| (count.to_owned(), u64::from(count == "in") * 1200));
     let output = Output {
         connectors: vec![
-            line("plant.plc", State::Running, Some((1200, 1150)), None),
-            line(
-                "plant.press",
-                State::Restarting,
-                Some((0, 0)),
-                Some(failure),
-            ),
+            Status {
+                kind: "influx".to_owned(),
+                address: Some("http://lake".to_owned()),
+                counts: Some(BTreeMap::from([("confirmed".to_owned(), 1200)])),
+                ..line("lake", State::Running, None, None)
+            },
+            Status {
+                counts: Some(BTreeMap::from(opcua)),
+                note: Some("polls: the server has no subscriptions".to_owned()),
+                ..line("plant.press", State::Restarting, None, Some(failure))
+            },
             Status {
                 address: None,
                 ..line("yard.meter", State::Unknown, None, None)
@@ -1032,11 +1052,12 @@ fn writes_a_table_then_the_line_of_each_error() {
         ],
     };
     let expected = "\
-CONNECTOR    KIND   STATE       ADDRESS                     IN    CONFIRMED
-plant.plc    opcua  running     opc.tcp://plant.plc:4840    1200  1150
-plant.press  opcua  restarting  opc.tcp://plant.press:4840  0     0
-yard.meter   opcua  unknown     -                           -     -
+CONNECTOR    KIND    STATE       ADDRESS                     COUNTS
+lake         influx  running     http://lake                 confirmed=1200
+plant.press  opcua   restarting  opc.tcp://plant.press:4840  in=1200 lost=0 missed=0
+yard.meter   opcua   unknown     -                           -
 
+plant.press: note: polls: the server has no subscriptions
 plant.press: device error: no route to the device
 ";
     assert_eq!(output.text(), expected);

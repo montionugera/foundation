@@ -156,13 +156,13 @@ foundation status
 ```
 
 ```text
-CONNECTOR  KIND    STATE    ADDRESS                    IN    CONFIRMED
-influx     influx  running  http://localhost:8086      -     1517
-plc        opcua   running  opc.tcp://localhost:50000  1520  -
+CONNECTOR  KIND    STATE    ADDRESS                    COUNTS
+influx     influx  running  http://localhost:8086      confirmed=1517
+plc        opcua   running  opc.tcp://localhost:50000  in=1520 lost=0 missed=0
 ```
 
-`IN` counts the samples that the connector read from the server and the node stored.
-`CONFIRMED` counts the samples that InfluxDB confirmed. Run `status` again, and both
+`in` counts the samples that the connector read from the server and the node stored.
+`confirmed` counts the samples that InfluxDB confirmed. Run `status` again, and both
 grow.
 
 See the samples in InfluxDB:

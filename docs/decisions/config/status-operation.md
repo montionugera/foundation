@@ -2,9 +2,14 @@
   input. The CLI sends `{"status": {}}` to the node, and `ops::serve` runs it and
   replies `{"output": <Output>}`. `ops::status::Output` derives `Serialize`,
   `Deserialize`, and `JsonSchema`, and gives its terminal text with `text()`: a table of
-  connector, kind, state, address, in, and confirmed, then a line `<name>: <class>
-  error: <text>` for each connector with an error. The column `in` gives the count `in`:
-  the samples that the connector read and the home applied (`laptop.architect-2`,
+  connector, kind, state, address, and counts, then for each connector a line `<name>:
+  note: <text>` when its running kind shows a note, and a line `<name>: <class> error:
+  <text>` when it has an error. The column `counts` gives each count of the connector as
+  `<name>=<value>` in name order, or `-` when the state is unknown. The JSON form gives
+  `note`, or `null` when the kind shows none (`laptop.architect-2`,
+  2026-10-13T23:48:35Z,
+  https://github.com/synnaxlabs/foundation/issues/2630#issuecomment-6157620934, which
+  supersedes the columns in and confirmed). The count `in` gives the samples that the connector read and the home applied (`laptop.architect-2`,
   2026-10-13T04:35:20Z,
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6138315099, which
   supersedes the `c.status.in` line of
