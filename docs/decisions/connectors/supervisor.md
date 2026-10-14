@@ -276,8 +276,10 @@
   the end of the run (`laptop.architect-2`, 2026-10-09T19:51:38Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6088160535). After
   such an outage, the next frame that the home applies replaces both, as the bound for
-  each outage below states. This supersedes "stay two frames" of 6088160535 for such an
-  outage (https://github.com/synnaxlabs/foundation/pull/2680#issuecomment-6161372464).
+  each outage below states. This supersedes "stay two frames" of
+  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6088160535 for such
+  an outage (`laptop.architect-2`, 2026-10-14T05:09:04Z:
+  https://github.com/synnaxlabs/foundation/pull/2680#issuecomment-6161372464).
   `status::Writer` holds the rules of each channel but the counts, and the supervisor
   calls its `start`, `end`, `wait`, and `stop` (same ruling, for `class` and `restarts`;
   for `backoff` and `error`, the #1735 ruling and the plan on #420 above). A frame that
