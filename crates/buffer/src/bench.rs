@@ -326,11 +326,13 @@ mod tests {
         assert_eq!(offsets, [5 * BLOCK, 6 * BLOCK, 7 * BLOCK]);
     }
 
-    /// Each call marks the range from the carry record of the call before to its data
-    /// record, and the trim of the next call passes it, so only the newest range
-    /// stays. An entry with no samples moves no stamp. It reads the private logs:
-    /// `mark` gives nothing back, and only the `logs` bench and the `alloc` test call
-    /// it.
+    /// Each call after the first marks the range from the carry record of the call
+    /// before to its data record, and the trim of the next call passes it, so only
+    /// the newest range stays. An entry with no samples moves no stamp. It reads the
+    /// private logs: `mark` gives nothing back, and only the `logs` bench and the
+    /// `alloc` test call it. So only this test kills the mutant that deletes
+    /// `last: None` in `mark`: it changes only the stamp of a bench entry, which no
+    /// caller reads.
     #[test]
     fn each_mark_of_the_logs_marks_one_range_and_hides_the_one_before() {
         let mut logs = Logs::new(2);

@@ -2102,6 +2102,10 @@ mod tests {
         logs.hide(4096);
         assert_eq!(logs.land(12288), 4096);
         assert_eq!(logs.marked.0, [(4096, 12288)]);
+        logs.carry(slot(1), &carried(0, 3, None), 16384)
+            .expect("the walk met the end");
+        assert_eq!(logs.kept(), Some(16384));
+        assert_eq!(logs.land(16384), 16384);
         logs.hide(16384);
         assert_eq!(logs.marked.0, []);
     }
