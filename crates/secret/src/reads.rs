@@ -15,8 +15,7 @@ use crate::{Error, Value};
 pub(crate) const LEN_MAX: u64 = 1 << 16;
 
 /// The reads of secret files on one shard: one read at a time, in the order they
-/// come, into a pool that writes zero over its bytes at the drop. Clones share the
-/// turn.
+/// come, into a pool from [`block::Pool::erased`]. Clones share the turn.
 #[derive(Clone)]
 pub(crate) struct Reads(Rc<Inner>);
 
