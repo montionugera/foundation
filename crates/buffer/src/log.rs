@@ -481,9 +481,9 @@ impl Logs {
     pub(crate) fn kept(&mut self) -> Option<u64> {
         let holding = self
             .items
-            .from(self.stale)
+            .since(self.stale)
             .find(|&(_, offset, at)| nth(&self.paths, at).holder == Some(offset));
-        self.stale = holding.map_or_else(|| self.items.next(), |(number, ..)| number);
+        self.stale = holding.map_or_else(|| self.items.added(), |(number, ..)| number);
         holding.map(|(_, offset, _)| offset)
     }
 
@@ -502,7 +502,7 @@ impl Logs {
         tails: &mut Vec<carry::Tail>,
     ) {
         let mut room = limit;
-        for (number, offset, at) in self.items.from(self.scanned) {
+        for (number, offset, at) in self.items.since(self.scanned) {
             if offset >= reach {
                 self.scanned = number;
                 return;
@@ -524,7 +524,7 @@ impl Logs {
                 stamp: log.durable.tail.stamp,
             });
         }
-        self.scanned = self.items.next();
+        self.scanned = self.items.added();
     }
 
     /// The log of `path` of the index at `slot`.
@@ -747,7 +747,7 @@ impl Items {
     /// Adds an item for the log at `at` in the record at `offset`, which is at or
     /// after the record of each item.
     fn push(&mut self, offset: u64, at: u32) {
-        let next = self.next().checked_add(1).expect("invariant: numbers fit");
+        let next = self.added().checked_add(1).expect("invariant: numbers fit");
         match self.records.back_mut() {
             Some((last, end)) if *last == offset => *end = next,
             _ => self.records.push_back((offset, next)),
@@ -755,8 +755,8 @@ impl Items {
         self.places.push_back(at);
     }
 
-    /// The number of the next item.
-    fn next(&self) -> u64 {
+    /// The number of the next item that `push` adds.
+    fn added(&self) -> u64 {
         self.records.back().map_or(self.base, |&(_, end)| end)
     }
 
@@ -773,7 +773,7 @@ impl Items {
 
     /// Each item from the number `from`, or from the front item when it is past, with
     /// its number and the offset of its record, oldest first.
-    fn from(&self, from: u64) -> impl Iterator<Item = (u64, u64, u32)> + '_ {
+    fn since(&self, from: u64) -> impl Iterator<Item = (u64, u64, u32)> + '_ {
         let mut start = from.max(self.base);
         let first = self.records.partition_point(|&(_, end)| end <= start);
         let skip = self.index(start);
