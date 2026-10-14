@@ -45,9 +45,9 @@ const WRITES: [(usize, &[Scalar]); 5] = [
 /// commits on both lines: a write each 1 ms, and a tick each 100 ms.
 const WARMUP: usize = 20;
 const TICKS: usize = 1000;
-/// The runs of each write of a frame, each with a new home, of `TICKS / RUNS` timed
-/// writes. The test home never trims its ring (#160), so one run of 1,000 writes of
-/// narrow samples fills it.
+/// The runs of each write of a frame, each with a new home, of `TICKS / WRITE_RUNS`
+/// timed writes. The test home never trims its ring (#160), so one run of 1,000
+/// writes of narrow samples fills it.
 const WRITE_RUNS: usize = 5;
 /// The node counts of a run start and of a parse. A frame of 1,000 nodes fits the
 /// largest block of the pool of the test hub.
