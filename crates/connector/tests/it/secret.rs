@@ -67,24 +67,24 @@ fn a_read_gets_no_value_or_a_whole_written_value() {
     }
 }
 
-/// The values of `plant.a` and `plant.b` after two tasks write them at once.
-fn two_at_once(seed: u64) -> [Option<Vec<u8>>; 2] {
+/// The values of `names` after two tasks write them at once.
+fn two_at_once(seed: u64, names: [&'static str; 2]) -> [Option<Vec<u8>>; 2] {
     let mut sim = sim::Sim::new(sim::Config {
         seed,
         ..sim::Config::default()
     });
     let node = sim.node(sim::node::Config::default());
-    sim.run_on(&node, |node, tasks| async move {
+    sim.run_on(&node, move |node, tasks| async move {
         let files = node.files();
         let other = files.clone();
         tasks.spawn(async move {
-            create_secret(&other, &"plant.a".parse().unwrap(), b"aaaa").await;
+            create_secret(&other, &names[0].parse().unwrap(), b"aaaa").await;
         });
-        create_secret(&files, &"plant.b".parse().unwrap(), b"bb").await;
+        create_secret(&files, &names[1].parse().unwrap(), b"bb").await;
         node.clock().sleep(Span::SECOND).await;
         let store = create_secret_store(files);
         let mut got = [None, None];
-        for (value, key) in got.iter_mut().zip(["plant.a", "plant.b"]) {
+        for (value, key) in got.iter_mut().zip(names) {
             let read = store.get(&key.parse().unwrap()).await;
             *value = read.ok().map(|value| value.expose().to_vec());
         }
@@ -95,10 +95,19 @@ fn two_at_once(seed: u64) -> [Option<Vec<u8>>; 2] {
 
 #[test]
 fn two_secrets_written_at_once_both_land() {
-    for seed in 0..32 {
-        let got = two_at_once(seed);
+    // The second pair has one `DefaultHasher` hash, `b2ce31a3c857fea4`, so a staged
+    // file named by a hash of the name is one file for both.
+    let pairs = [
+        ["plant.a", "plant.b"],
+        ["p.ac5d98e62022af56d", "p.a8f75ad3ac7923eff"],
+    ];
+    for (names, seed) in pairs
+        .into_iter()
+        .flat_map(|names| (0..32).map(move |seed| (names, seed)))
+    {
+        let got = two_at_once(seed, names);
         let want = [Some(b"aaaa".to_vec()), Some(b"bb".to_vec())];
-        assert_eq!(got, want, "seed {seed}");
+        assert_eq!(got, want, "{names:?}, seed {seed}");
     }
 }
 

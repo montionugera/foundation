@@ -1,11 +1,10 @@
 //! The inputs of a supervisor and the status channels of a connector, for the tests
 //! of `connector` and of the kinds.
 
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 use std::sync::Arc;
 
-use env::files::{Files, Mode};
+use env::files::{self, Files, Mode};
 use env::net::Net;
 use spec::channel::{Channel, Data, Kind};
 use spec::data_type::DataType;
@@ -62,18 +61,19 @@ pub fn create_secret_store(files: Files) -> Box<dyn secret::store::Store> {
 pub async fn create_secret(files: &Files, name: &Name, value: &[u8]) {
     let dir = Path::new(SECRETS);
     files.create_dir(dir).await.expect("makes the directory");
-    // No name starts with `.`, so the store never reads the staged file. The hash
-    // keeps the staged name within 255 bytes for a name of `Name::MAX_BYTES`.
-    let mut hasher = DefaultHasher::new();
-    name.as_str().hash(&mut hasher);
-    let staged = dir.join(format!(".{:016x}", hasher.finish()));
-    files
-        .remove(&staged)
-        .await
-        .expect("removes a dropped value");
     let len = u64::try_from(value.len()).expect("invariant: usize fits u64");
-    let file = files.open(&staged, Mode::Create { len }).await;
-    let mut file = file.expect("makes the file");
+    // No name starts with `.`, so the store never reads a staged file. Each call
+    // takes the first slot that no other call holds and no dropped call left at
+    // another length.
+    let mut slot = 0_u32;
+    let mut file = loop {
+        let staged = dir.join(format!(".{slot}"));
+        match files.open(&staged, Mode::Create { len }).await {
+            Ok(file) => break file,
+            Err(files::Error::Busy { .. } | files::Error::Length { .. }) => slot += 1,
+            Err(error) => panic!("makes the file: {error:?}"),
+        }
+    };
     let pool = block::Config::new(1 << 18).expect("a budget that fits");
     let block = block::Pool::heap(pool).copy(value);
     let block = block.expect("the pool holds the value");
