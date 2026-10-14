@@ -1,14 +1,20 @@
+use std::future::poll_fn;
+use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
+use std::task::Poll;
 
 use document::Document;
 use document::diagnostic::{Code, Diagnostic};
+use env::clock::Clock;
+use hub::reader::{Mode, Reader};
+use types::authority::Authority;
 use types::channel;
-use types::name::Name;
+use types::name::{Name, Selector};
 use types::time::Span;
 
-use super::{Rig, STATUS, create_status};
+use super::{Reading, Rig, create_status};
 use crate::cancel;
 use crate::common::{env, run_on};
 use crate::kind::{Channels, Context, Error, Kind, Table};
@@ -17,10 +23,6 @@ use crate::status::State;
 const REFUSED: Code = Code::new("test.refused");
 
 const TEN: Span = Span::from_nanos(10_000_000_000);
-
-fn key(key: u128) -> channel::Key {
-    channel::Key::from_u128(key)
-}
 
 fn name(text: &str) -> Name {
     text.parse().expect("a valid name")
@@ -105,15 +107,43 @@ fn refused() -> Diagnostic {
     Diagnostic::new(REFUSED, None, "refused".into(), "Fix it".into())
 }
 
-/// Opens a rig of `kinds` on a sim node, and runs `test` on it.
+/// Opens a rig of `kinds` on a sim node, and runs `test` on it and the node's clock.
 fn on_rig<F: Future<Output = ()> + 'static>(
     kinds: impl FnOnce() -> Table + Send + 'static,
-    test: impl FnOnce(Rig) -> F + Send + 'static,
+    test: impl FnOnce(Rig, Clock) -> F + Send + 'static,
 ) {
     run_on(move |node, tasks| async move {
         let rig = Rig::open(env(&node, tasks), node.net(), kinds()).await;
-        test(rig).await;
+        test(rig, node.clock()).await;
     });
+}
+
+/// Opens a reader of each status channel of `connector` on the hub of `rig`.
+async fn status_of(rig: &Rig, connector: &str, mode: Mode) -> Reader {
+    let pattern = format!("{connector}.status.*");
+    let config = hub::reader::Config {
+        select: Selector::new([pattern.as_str()]).expect("a selector"),
+        mode,
+        subject: name("plant.test"),
+        name: None,
+        hold: Span::ZERO,
+    };
+    rig.hub().reader(config).await.expect("the reader opens")
+}
+
+/// Asserts that the hub of `rig` defines no channel `channel`.
+async fn assert_undefined(rig: &Rig, channel: &str) {
+    let config = hub::writer::Config {
+        subject: name("plant.test"),
+        authority: Authority::ABSOLUTE,
+        lease: None,
+        channels: vec![name(channel)],
+    };
+    let Err(error) = rig.hub().writer(config).await else {
+        panic!("the hub defines {channel}")
+    };
+    assert!(matches!(&error, hub::writer::Error::Unknown(n) if *n == name(channel)));
+    assert_eq!(error.to_string(), format!("no channel is named {channel}"));
 }
 
 /// Whether `reading` is Running with no error, no restart, and a count of ticks above
@@ -132,7 +162,7 @@ fn ticking(reading: &super::Reading) -> bool {
 fn a_connector_reaches_running_and_stops_with_ok() {
     on_rig(
         || Table::new().with("ticks", Ticks::default()),
-        |mut rig| async move {
+        |mut rig, _| async move {
             let config = Document::default();
             let mut run = rig.supervise("ticks", name("plant.ticks"), config).await;
             run.until(TEN, ticking).await;
@@ -147,7 +177,7 @@ fn stop_returns_once_each_task_of_the_run_ended() {
     let lingered = Arc::clone(&ticks.lingered);
     on_rig(
         || Table::new().with("ticks", ticks),
-        |mut rig| async move {
+        |mut rig, _| async move {
             let config = Document::default();
             let mut run = rig.supervise("ticks", name("plant.ticks"), config).await;
             run.until(TEN, ticking).await;
@@ -161,7 +191,7 @@ fn stop_returns_once_each_task_of_the_run_ended() {
 fn a_refused_config_ends_the_run_with_its_diagnostics_and_defines_nothing() {
     on_rig(
         || Table::new().with("refuses", Refuses),
-        |mut rig| async move {
+        |mut rig, _| async move {
             let config = Document::default();
             let run = rig
                 .supervise("refuses", name("plant.refuses"), config)
@@ -170,14 +200,14 @@ fn a_refused_config_ends_the_run_with_its_diagnostics_and_defines_nothing() {
                 panic!("a refused config ends with `Config`")
             };
             assert_eq!(diagnostics, [refused()]);
-            assert!(rig.definitions.is_empty(), "{:?}", rig.definitions);
+            assert_undefined(&rig, "plant.refuses.status.state").await;
         },
     );
 }
 
 #[test]
 fn define_keeps_what_an_earlier_call_defined() {
-    on_rig(Table::new, |mut rig| async move {
+    on_rig(Table::new, |mut rig, _| async move {
         let (a, b) = (name("plant.a"), name("plant.b"));
         rig.define(create_status(&a, &[], channel::Key::from_u128(1)));
         rig.define(create_status(&b, &[], channel::Key::from_u128(10)));
@@ -190,7 +220,7 @@ fn define_keeps_what_an_earlier_call_defined() {
 fn two_connectors_of_one_rig_both_run() {
     on_rig(
         || Table::new().with("ticks", Ticks::default()),
-        |mut rig| async move {
+        |mut rig, _| async move {
             let config = Document::default();
             let mut a = rig
                 .supervise("ticks", name("plant.a"), config.clone())
@@ -205,21 +235,25 @@ fn two_connectors_of_one_rig_both_run() {
 }
 
 #[test]
-fn the_status_keys_of_each_connector_follow_those_of_the_one_before() {
+fn the_second_connector_of_a_rig_gets_the_status_keys_after_the_first() {
     on_rig(
         || Table::new().with("ticks", Ticks::default()),
-        |mut rig| async move {
+        |mut rig, _| async move {
             let config = Document::default();
-            let a = rig
+            let _a = rig
                 .supervise("ticks", name("plant.a"), config.clone())
                 .await;
-            let b = rig.supervise("ticks", name("plant.b"), config).await;
-            let mut want =
-                create_status(&name("plant.a"), &[name("ticks")], key(STATUS));
-            let next = STATUS + u128::try_from(want.len()).expect("a few channels");
-            want.extend(create_status(&name("plant.b"), &[name("ticks")], key(next)));
-            assert_eq!(rig.definitions, want);
-            drop((a, b));
+            let _b = rig.supervise("ticks", name("plant.b"), config).await;
+            let mut reader = status_of(&rig, "plant.b", Mode::Latest).await;
+            let received = reader.next().await.expect("a status frame");
+            let mut keys: Vec<_> =
+                received.set().entries().iter().map(|e| e.key).collect();
+            keys.sort_unstable();
+            let first = 1_u128 << 64;
+            let want: Vec<_> = (first + 7..first + 14)
+                .map(channel::Key::from_u128)
+                .collect();
+            assert_eq!(keys, want);
         },
     );
 }
@@ -228,13 +262,13 @@ fn the_status_keys_of_each_connector_follow_those_of_the_one_before() {
 fn a_run_shows_whether_it_ended() {
     on_rig(
         || Table::new().with("refuses", Refuses),
-        |mut rig| async move {
+        |mut rig, clock| async move {
             let config = Document::default();
             let run = rig
                 .supervise("refuses", name("plant.refuses"), config)
                 .await;
             assert_eq!(format!("{run:?}"), "Run { ended: false, .. }");
-            run.ended.wait().await;
+            clock.sleep(Span::SECOND).await;
             assert_eq!(format!("{run:?}"), "Run { ended: true, .. }");
         },
     );
@@ -247,7 +281,7 @@ fn a_run_shows_whether_it_ended() {
 fn until_panics_with_the_readings_when_none_matches_in_time() {
     on_rig(
         || Table::new().with("ticks", Ticks::default()),
-        |mut rig| async move {
+        |mut rig, _| async move {
             let config = Document::default();
             let mut run = rig.supervise("ticks", name("plant.ticks"), config).await;
             run.until(Span::SECOND, |reading| reading.restarts > 0)
@@ -256,18 +290,74 @@ fn until_panics_with_the_readings_when_none_matches_in_time() {
     );
 }
 
-/// A drop of a [`super::Run`] cancels its connector, so the shard can end.
+/// A drop of a [`super::Run`] cancels its connector.
 #[test]
 fn a_drop_of_a_run_cancels_the_connector() {
     on_rig(
         || Table::new().with("ticks", Ticks::default()),
-        |mut rig| async move {
+        |mut rig, clock| async move {
             let config = Document::default();
             let run = rig.supervise("ticks", name("plant.ticks"), config).await;
-            let ended = run.ended.clone();
+            let mut reader = status_of(&rig, "plant.ticks", Mode::Complete).await;
             drop(run);
-            let late = ended.race(rig.clock.sleep(TEN)).await;
-            assert_eq!(late, None, "the run ends within 10 s of the drop");
+            let mut stopped = pin!(async {
+                loop {
+                    let received = reader.next().await.expect("a status frame");
+                    let reading = Reading::of(&received);
+                    if reading.is_some_and(|reading| reading.state == State::Stopped) {
+                        break;
+                    }
+                }
+            });
+            let mut late = pin!(clock.sleep(TEN));
+            let in_time = poll_fn(|cx| match stopped.as_mut().poll(cx) {
+                Poll::Ready(()) => Poll::Ready(true),
+                Poll::Pending => late.as_mut().poll(cx).map(|()| false),
+            })
+            .await;
+            assert!(in_time, "the connector stops within 10 s of the drop");
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "a connector whose check failed has no status")]
+fn next_panics_on_a_run_whose_check_failed() {
+    on_rig(
+        || Table::new().with("refuses", Refuses),
+        |mut rig, _| async move {
+            let config = Document::default();
+            let mut run = rig
+                .supervise("refuses", name("plant.refuses"), config)
+                .await;
+            run.next().await;
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "the writer does not open: no channel is named plant.none")]
+fn writer_panics_when_the_hub_refuses_it() {
+    on_rig(Table::new, |rig, _| async move {
+        rig.writer(name("plant.test"), vec![name("plant.none")])
+            .await;
+    });
+}
+
+#[test]
+fn a_refused_config_opens_a_connector_that_ends_with_its_diagnostics() {
+    on_rig(
+        || Table::new().with("refuses", Refuses),
+        |mut rig, _| async move {
+            let (config, cancel) = (Document::default(), cancel::Token::new());
+            let opened = rig
+                .open_connector("refuses", name("plant.refuses"), &config, &cancel)
+                .await;
+            let Err(Error::Config(diagnostics)) = opened.run().await else {
+                panic!("a refused config ends with `Config`")
+            };
+            assert_eq!(diagnostics, [refused()]);
+            assert_undefined(&rig, "plant.refuses.status.state").await;
         },
     );
 }
