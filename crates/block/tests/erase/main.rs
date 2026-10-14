@@ -17,33 +17,43 @@ fn main() {
         return;
     }
     for (len, at) in [(32, 0), (3000, 1), (3000, 0)] {
-        let held = freed(Pool::heap, |pool| lent(pool, len, at));
+        let held = freed(Pool::heap, 1 << 14, |pool| lent(pool, len, at));
         assert_eq!(
             held, 1,
             "a dropped `Pool::heap` frees the bytes ({len}, {at})"
         );
-        let held = freed(Pool::erased, |pool| lent(pool, len, at));
+        let held = freed(Pool::erased, 1 << 14, |pool| lent(pool, len, at));
         assert_eq!(
             held, 0,
             "a dropped `Pool::erased` erases them ({len}, {at})"
         );
     }
     assert_eq!(
-        freed(Pool::heap, recarved),
+        freed(Pool::heap, 1 << 14, recarved),
         1,
         "`Pool::heap` frees the bytes"
     );
     assert_eq!(
-        freed(Pool::erased, recarved),
+        freed(Pool::erased, 1 << 14, recarved),
         0,
         "a dropped `Pool::erased` erases a block that it carved again after a purge"
+    );
+    assert_eq!(
+        freed(Pool::heap, 384, pressed),
+        1,
+        "`Pool::heap` frees the bytes"
+    );
+    assert_eq!(
+        freed(Pool::erased, 384, pressed),
+        0,
+        "a dropped `Pool::erased` erases a block whose end touches a released span"
     );
 }
 
 /// Gives the count of freed allocations that hold `PLAIN`, after `case` runs on the
-/// pool that `pool` gives and drops it.
-fn freed(pool: fn(Config) -> Pool, case: impl FnOnce(Pool)) -> u64 {
-    let pool = pool(Config::new(1 << 14).expect("the budget fits"));
+/// pool that `pool` gives for `budget` and drops it.
+fn freed(pool: fn(Config) -> Pool, budget: u64, case: impl FnOnce(Pool)) -> u64 {
+    let pool = pool(Config::new(budget).expect("the budget fits"));
     let ((), found) = ALLOCATOR.freed_holding(&PLAIN, || case(pool));
     found
 }
@@ -83,4 +93,18 @@ fn recarved(pool: Pool) {
     pool.purge();
     drop(pool.alloc(32).expect("the budget has room"));
     drop(pool);
+}
+
+/// Carves class 2, then two blocks of class 1, whose second ends at the start of the
+/// released span of class 2 and holds `PLAIN` at its end.
+fn pressed(pool: Pool) {
+    drop(pool.alloc(192).expect("the budget has room"));
+    let mut first = pool.alloc(128).expect("the budget has room");
+    first.fill(0x11);
+    let mut second = pool.alloc(128).expect("the budget has room");
+    second.fill(0x11);
+    second[128 - PLAIN.len()..].copy_from_slice(&PLAIN);
+    drop(pool);
+    drop(first);
+    drop(second);
 }
