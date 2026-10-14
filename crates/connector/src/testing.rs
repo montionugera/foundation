@@ -313,7 +313,9 @@ pub async fn create_config(
 }
 
 /// The definitions of the status channels of `connector`, whose kind names `counts`,
-/// with keys from `first` on, the index first. A test passes them to [`Rig::define`].
+/// with keys from `first` on, the index first. A test passes them to [`Rig::define`],
+/// or to [`Hub::set_definitions`] with its own definitions when it replaces the whole
+/// set.
 ///
 /// # Panics
 ///
