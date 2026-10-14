@@ -90,8 +90,8 @@ fn refuses_the_token(rig: &Rig, message: &str) {
             .expect("the config has a token");
     let output = rig.run(&["plan", "plant.hcl", "--out", "plant.plan"], b"");
     let expected = format!(
-        "error[secret.unresolved]: {message}\n  --> plant.hcl:{line}:17\nfix: Fix the \
-         cause in the message, then plan again\n"
+        "error[secret.unresolved]: {message}\n  --> plant.hcl:{line}:17\nfix: Give the \
+         node the value at the source, or change the source, then plan again\n"
     );
     assert_eq!(
         (

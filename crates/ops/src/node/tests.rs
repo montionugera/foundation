@@ -280,19 +280,20 @@ fn gives_a_stop_of_the_group_as_stopped_in_apply_of_a_plan_with_no_change() {
     });
 }
 
-/// A config with a connector of `kind` on the node `node` that reads `TOKEN` from
-/// the environment, the file `/run/ca` in a block, and `plant.pw` from the store in a
-/// list.
+/// A config with a connector on the node `node` that reads the file `/run/ca` in a
+/// block, `plant.pw` from the store in a list, and `TOKEN` and `HEADER` from the
+/// environment, the second in a map.
 fn with_sources(node: &str) -> Vec<(PathBuf, String)> {
     let text = format!(
         r#"connector "c" {{
   kind  = "influx"
   node  = "{node}"
-  token = env("TOKEN")
-  users = [secret("plant.pw")]
   tls {{
     ca = file("/run/ca")
   }}
+  users = [secret("plant.pw")]
+  token = env("TOKEN")
+  headers = {{ a = env("HEADER") }}
 }}
 "#
     );
@@ -303,7 +304,8 @@ fn with_sources(node: &str) -> Vec<(PathBuf, String)> {
 fn unresolved(message: &str, line: u32, column: u32) -> Value {
     json!({
         "code": "secret.unresolved",
-        "fix": "Fix the cause in the message, then plan again",
+        "fix": "Give the node the value at the source, or change the source, then plan \
+                again",
         "message": message,
         "notes": [],
         "place": { "column": column, "file": "c.hcl", "line": line },
@@ -318,25 +320,27 @@ fn refuses_a_plan_with_each_secret_of_the_node_that_has_no_value() {
             .plan(with_sources("edge"))
             .await
             .expect_err("no values");
+        let unset = |name: &str| {
+            format!(
+                "the secret env(\"{name}\"): the environment variable {name} of the node \
+                 is not set. Start the node with it set to the value"
+            )
+        };
         let expected = json!({ "errors": [
             unresolved(
-                "the secret env(\"TOKEN\"): the environment variable TOKEN of the node \
-                 is not set. Start the node with it set to the value",
-                4,
-                11,
+                "the secret file(\"/run/ca\"): the file /run/ca is not there. Write the \
+                 value to it",
+                5,
+                10,
             ),
             unresolved(
                 "the secret secret(\"plant.pw\"): the file /data/secrets/plant.pw is \
                  not there. Write the value to it",
-                5,
+                7,
                 12,
             ),
-            unresolved(
-                "the secret file(\"/run/ca\"): the file /run/ca is not there. Write the \
-                 value to it",
-                7,
-                10,
-            ),
+            unresolved(&unset("TOKEN"), 8, 11),
+            unresolved(&unset("HEADER"), 9, 19),
         ]});
         assert_eq!(error, expected);
     });
@@ -376,7 +380,10 @@ fn plans_when_each_secret_of_the_node_has_a_value() {
         create_secret(&files, &name("plant.pw"), b"pw").await;
         let paths = fixture.sim.paths();
         paths.write(Path::new("/run/ca"), b"ca").expect("writes it");
-        let vars = BTreeMap::from([(OsString::from("TOKEN"), OsString::from("t"))]);
+        let vars = BTreeMap::from([
+            (OsString::from("TOKEN"), OsString::from("t")),
+            (OsString::from("HEADER"), OsString::from("h")),
+        ]);
         let secrets = secret::Resolver::new(Arc::new(vars), files, Path::new(SECRETS));
         let node = create_node_with(&fixture, mesh, front_ends(), secrets);
         let (_, output) = node.plan(with_sources("edge")).await.expect("a plan");
@@ -395,4 +402,85 @@ fn plans_a_connector_of_another_node_with_no_read_of_its_secrets() {
             assert_eq!(output["added"], 8, "{output}");
         },
     );
+}
+
+#[test]
+fn refuses_a_secret_with_a_bad_name_or_a_file_of_more_than_64_kib() {
+    solo(|fixture, mesh| async move {
+        let paths = fixture.sim.paths();
+        paths
+            .write(Path::new("/run/large"), &vec![b'x'; 70 * 1024])
+            .expect("writes it");
+        let node = create_node(&fixture, mesh);
+        let text = r#"connector "c" {
+  kind  = "influx"
+  node  = "edge"
+  token = secret("plant.Token")
+  ca    = file("/run/large")
+}
+"#;
+        let files = vec![(PathBuf::from("c.hcl"), text.to_owned())];
+        let error = node.plan(files).await.expect_err("no values");
+        let expected = json!({ "errors": [
+            unresolved(
+                "the secret secret(\"plant.Token\"): the store cannot hold the name. \
+                 Rename the secret in lowercase letters, since the file store holds no \
+                 name with a capital letter",
+                4,
+                11,
+            ),
+            unresolved(
+                "the secret file(\"/run/large\"): the file /run/large is 71680 bytes, \
+                 more than 65536. Make it at most 65536 bytes",
+                5,
+                11,
+            ),
+        ]});
+        assert_eq!(error, expected);
+    });
+}
+
+#[test]
+fn gives_the_secrets_with_no_value_after_the_other_problems_of_the_plan() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let text = r#"connector "c" {
+  kind  = "influx"
+  node  = "edge"
+  token = env("TOKEN")
+}
+placement "c.home" {
+  select = "c.**"
+  home   = "nowhere"
+}
+"#;
+        let files = vec![(PathBuf::from("c.hcl"), text.to_owned())];
+        let error = node.plan(files).await.expect_err("problems");
+        let place = json!({ "column": 12, "file": "c.hcl", "line": 8 });
+        let expected = json!({ "errors": [
+            {
+                "code": "config.connector-home",
+                "fix": "Name `edge` as the `home`, and keep `edge` out of `standby` and \
+                        `copies`",
+                "message": "the placement `c.home` names the home `nowhere`, but the \
+                            connector `c` runs on the node `edge`",
+                "notes": [],
+                "place": place,
+            },
+            {
+                "code": "config.unknown-node",
+                "fix": "Name a node of the mesh",
+                "message": "no node of the mesh is named `nowhere`",
+                "notes": [],
+                "place": place,
+            },
+            unresolved(
+                "the secret env(\"TOKEN\"): the environment variable TOKEN of the node \
+                 is not set. Start the node with it set to the value",
+                4,
+                11,
+            ),
+        ]});
+        assert_eq!(error, expected);
+    });
 }

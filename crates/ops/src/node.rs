@@ -29,31 +29,45 @@ pub struct Node {
     pub(crate) secrets: secret::Resolver,
 }
 
+/// The dependencies of a [`Node`].
+pub struct Config {
+    /// The mesh that the operations read and change.
+    pub mesh: mesh::Mesh,
+    /// Gives the key of each new channel: each call gives a key that no channel holds
+    /// and no earlier call gave.
+    pub key: Box<dyn Fn() -> channel::Key>,
+    /// The syntax of each file extension.
+    pub front_ends: FrontEnds,
+    /// Each connector kind of the node.
+    pub kinds: Arc<connector::kind::Table>,
+    /// The hub of the node, through which `status` reads the status channels.
+    pub hub: hub::Hub,
+    /// The clock of the node, on which `status` waits for the status channels.
+    pub clock: Clock,
+    /// The name of the node.
+    pub name: Name,
+    /// The resolver through which `plan` reads each secret of each connector of the
+    /// node, as a run does.
+    pub secrets: secret::Resolver,
+}
+
 impl Node {
-    /// `key` gives the key of each new channel: each call gives a key that no channel
-    /// holds and no earlier call gave. `front_ends` gives the syntax of each file
-    /// extension, and `kinds` holds each connector kind of the node. `status` reads
-    /// the status channels through `hub`, the hub of the node named `name`, and waits
-    /// for them on `clock`, the node's clock. `plan` reads each secret of each
-    /// connector of this node through `secrets`, as a run does.
+    /// The node with the dependencies of `config`.
     #[must_use]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each is a dependency of the node, of a different type"
-    )]
-    pub fn new(
-        mesh: mesh::Mesh,
-        key: impl Fn() -> channel::Key + 'static,
-        front_ends: FrontEnds,
-        kinds: Arc<connector::kind::Table>,
-        hub: hub::Hub,
-        clock: Clock,
-        name: Name,
-        secrets: secret::Resolver,
-    ) -> Self {
+    pub fn new(config: Config) -> Self {
+        let Config {
+            mesh,
+            key,
+            front_ends,
+            kinds,
+            hub,
+            clock,
+            name,
+            secrets,
+        } = config;
         Self {
             mesh,
-            key: Box::new(key),
+            key,
             front_ends,
             kinds,
             hub,
@@ -88,12 +102,7 @@ impl Node {
         let (base, applied) = used.map_err(|e| e.json())?;
         let planned = async {
             let documents = Documents::read(&files, &self.front_ends)?;
-            let names = self.mesh.names();
-            let planned = documents.plan(base, &applied, &names, &self.kinds)?;
-            documents
-                .resolve(&self.kinds, &self.name, &self.secrets)
-                .await?;
-            Ok::<_, crate::Error>(planned)
+            documents.plan(self, base, &applied, |_| true).await
         };
         let (output, plan) = planned.await.map_err(|e| e.json())?;
         Ok((plan.encode(), crate::value(&output)))
@@ -117,6 +126,15 @@ impl fmt::Debug for Node {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Node")
             .field("front_ends", &self.front_ends)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("front_ends", &self.front_ends)
+            .field("name", &self.name)
             .finish_non_exhaustive()
     }
 }

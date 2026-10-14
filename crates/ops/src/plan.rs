@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use spec::definition::Definition;
 use types::name::Name;
 
+use crate::Node;
 use crate::error::{Error, Place, Sources};
 use crate::front_end::{self, File, FrontEnds};
 
@@ -58,67 +59,77 @@ impl Documents {
         }
     }
 
-    /// Reads the value of each source of a secret in the config of each connector of
-    /// the node `node`, through `secrets` as a run does, and drops it. A source is a
-    /// call of `env`, `file`, or `secret`, at any depth of the config, that
-    /// [`secret::Source::read`] reads. Reads one source at a time: the connectors in
-    /// name order, and the sources of each in the order of its config.
+    /// The change from the files to the spec at `base` of `node`, and the plan that
+    /// `apply` takes. Also reads the value of each source of a secret in the config of
+    /// each connector of `node` whose name `readable` takes, through the resolver of
+    /// `node` as a run does, and drops it. A source is a call of `env`, `file`, or
+    /// `secret`, at any depth of the config, that [`secret::Source::read`] reads. Reads
+    /// one source at a time: the connectors in name order, and the sources of each in
+    /// the order of its config.
     ///
     /// # Errors
     ///
-    /// [`Error::Config`] with `secret.unresolved` at the call of each source that gives
-    /// no value, or with each problem of [`config::check`].
-    pub(crate) async fn resolve(
+    /// [`Error::Config`] with each problem of [`config::plan::plan`], then
+    /// `secret.unresolved` at the call of each source that gives no value.
+    pub(crate) async fn plan(
         &self,
-        kinds: &connector::kind::Table,
-        node: &Name,
-        secrets: &secret::Resolver,
-    ) -> Result<(), Error> {
-        let entries = config::check(&self.documents, kinds)
+        node: &Node,
+        base: spec::Pointer,
+        applied: &BTreeMap<Name, Definition>,
+        readable: impl Fn(&Name) -> bool,
+    ) -> Result<(Output, config::plan::Plan), Error> {
+        let entries = config::check(&self.documents, &node.kinds)
             .map_err(|diagnostics| Error::config(diagnostics, &self.sources))?;
         let mut calls = Vec::new();
-        for entry in entries.values() {
+        for (name, entry) in &entries {
             if let config::Definition::Spec(Definition::Connector(connector)) =
                 &entry.definition
-                && connector.node() == node
+                && connector.node() == &node.name
+                && readable(name)
             {
+                let start = calls.len();
                 sources(connector.config().document(), &mut calls);
+                calls[start..].sort_by_key(|(_, span)| *span);
             }
         }
-        let mut diagnostics = Vec::new();
+        let mut unresolved = Vec::new();
         for (source, span) in calls {
-            if let Err(error) = secrets.get(&source).await {
-                diagnostics.push(Diagnostic::new(
-                    UNRESOLVED,
+            if let Err(error) = node.secrets.get(&source).await {
+                unresolved.push(self::unresolved(
                     span,
                     format!("the secret {source}: {error}"),
-                    "Fix the cause in the message, then plan again".to_owned(),
                 ));
             }
         }
-        if diagnostics.is_empty() {
-            Ok(())
-        } else {
-            Err(Error::config(diagnostics, &self.sources))
+        let members = node.mesh.names();
+        match (
+            self.changes(base, applied, &members, &node.kinds),
+            unresolved.is_empty(),
+        ) {
+            (Ok(planned), true) => Ok(planned),
+            (Ok(_), false) => Err(Error::config(unresolved, &self.sources)),
+            (Err(mut diagnostics), _) => {
+                diagnostics.append(&mut unresolved);
+                Err(Error::config(diagnostics, &self.sources))
+            }
         }
     }
 
     /// The change from the files to the spec at `base`, and the plan that `apply`
-    /// takes.
+    /// takes, with no read of a secret.
     ///
     /// # Errors
     ///
-    /// [`Error::Config`] with each problem of [`config::plan::plan`].
-    pub(crate) fn plan(
+    /// Each problem of [`config::plan::plan`].
+    pub(crate) fn changes(
         &self,
         base: spec::Pointer,
         applied: &BTreeMap<Name, Definition>,
         members: &BTreeSet<Name>,
         kinds: &connector::kind::Table,
-    ) -> Result<(Output, config::plan::Plan), Error> {
+    ) -> Result<(Output, config::plan::Plan), Vec<Diagnostic>> {
         let sources = &self.sources;
-        let plan = config::plan::plan(&self.documents, base, applied, members, kinds)
-            .map_err(|diagnostics| Error::config(diagnostics, sources))?;
+        let plan = config::plan::plan(&self.documents, base, applied, members, kinds)?;
         let mut changes: Vec<(Order, Change)> = lines(&plan, applied)
             .map(|(name, line)| Change::of(name, line, sources))
             .collect();
@@ -141,6 +152,18 @@ impl Documents {
         };
         Ok((output, plan))
     }
+}
+
+/// The `secret.unresolved` problem at `span`, the call of a source that gives no value,
+/// with the text `message`.
+pub(crate) fn unresolved(span: Option<Span>, message: String) -> Diagnostic {
+    Diagnostic::new(
+        UNRESOLVED,
+        span,
+        message,
+        "Give the node the value at the source, or change the source, then plan again"
+            .to_owned(),
+    )
 }
 
 /// Adds each source of a secret in `document` to `into`, with the span of its call, in

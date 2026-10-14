@@ -19,9 +19,9 @@ use spec::definition::Definition;
 use types::channel::Key;
 use types::name::Name;
 
-use crate::error::Error;
+use crate::error::{Error, Sources};
 use crate::front_end::{File, FrontEnd, FrontEnds};
-use crate::{Failure, Node, Run, plan};
+use crate::{Config, Failure, Node, Run, plan};
 
 #[path = "../tests/common/founding.rs"]
 mod founding;
@@ -158,20 +158,20 @@ pub(crate) fn create_node_with(
         made.set(made.get() + 1);
         Key::from_u128(made.get())
     };
-    Node::new(
+    Node::new(Config {
         mesh,
-        key,
+        key: Box::new(key),
         front_ends,
-        Arc::new(create_kinds()),
-        fixture.hub.clone(),
-        fixture.sim.clock(),
-        fixture.name.clone(),
+        kinds: Arc::new(create_kinds()),
+        hub: fixture.hub.clone(),
+        clock: fixture.sim.clock(),
+        name: fixture.name.clone(),
         secrets,
-    )
+    })
 }
 
-/// The plan of `files` on `applied` at `base`, as `Node::plan` makes it before it
-/// reads the secrets.
+/// The plan of `files` on `applied` at `base`, as `Node::plan` makes it with no read
+/// of a secret.
 pub(crate) fn plan(
     files: &[File],
     base: spec::Pointer,
@@ -180,7 +180,9 @@ pub(crate) fn plan(
     front_ends: &FrontEnds,
     kinds: &Table,
 ) -> Result<(plan::Output, config::plan::Plan), Error> {
-    plan::Documents::read(files, front_ends)?.plan(base, applied, members, kinds)
+    plan::Documents::read(files, front_ends)?
+        .changes(base, applied, members, kinds)
+        .map_err(|diagnostics| Error::config(diagnostics, &Sources::of(files)))
 }
 
 pub(crate) fn name(text: &str) -> Name {

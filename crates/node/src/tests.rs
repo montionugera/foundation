@@ -4623,10 +4623,16 @@ mod port {
         ) -> Rc<ops::Node> {
             let member = mesh.member(key).expect("the peer is a member");
             let name = member.card.card().name.clone();
-            let kinds = Arc::new(crate::kinds());
-            let secrets = connector::testing::create_secrets(files);
-            let (hub, kinds) = (hub.clone(), kinds);
-            crate::operations(mesh, name, hub, clock, time, entropy, kinds, secrets)
+            Rc::new(ops::Node::new(ops::Config {
+                mesh: mesh.clone(),
+                key: crate::channel_keys(time, entropy),
+                front_ends: crate::front_ends(),
+                kinds: Arc::new(crate::kinds()),
+                hub: hub.clone(),
+                clock,
+                name,
+                secrets: connector::testing::create_secrets(files),
+            }))
         }
 
         /// As [`peer_hub`], with the region of `members`, and `act` gets only the mesh.

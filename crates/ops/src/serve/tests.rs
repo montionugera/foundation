@@ -338,12 +338,54 @@ fn refuses_a_plan_with_a_secret_of_the_node_that_has_no_value() {
                 "message": "the secret env(\"TOKEN\"): the environment variable TOKEN of \
                             the node is not set. Start the node with it set to the \
                             value",
-                "fix": "Fix the cause in the message, then plan again",
+                "fix": "Give the node the value at the source, or change the source, \
+                        then plan again",
                 "place": { "file": "c.hcl", "line": 4, "column": 11 },
                 "notes": [],
             }],
             "status": 2,
         });
+        assert_eq!(split(&reply), (expected, &b""[..]));
+    });
+}
+
+#[test]
+fn breaker_a_subject_that_may_only_plan_learns_nothing_of_the_files_of_the_node() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
+        let people = people();
+        applied(&node, &[("people.hcl", &people)]).await;
+        let paths = fixture.sim.paths();
+        paths
+            .write(Path::new("/run/there"), b"x")
+            .expect("writes it");
+        let probe = |path: &str| {
+            format!(
+                "connector \"c\" {{\n  kind  = \"influx\"\n  node  = \"edge\"\n  \
+                 token = file(\"{path}\")\n}}\n"
+            )
+        };
+        let there = probe("/run/there");
+        let absent = probe("/run/absent");
+        let body = |c: &str| plan_body(&[("people.hcl", &people), ("c.hcl", c)]);
+        // `bob` may plan each name, and apply none.
+        let seen = serve(&node, &name("bob"), &body(&there)).await;
+        let unseen = serve(&node, &name("bob"), &body(&absent)).await;
+        assert_eq!(split(&seen).0, split(&unseen).0);
+    });
+}
+
+#[test]
+fn refuses_a_plan_of_a_subject_with_no_grant_before_it_reads_a_secret() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh.clone());
+        let people = people();
+        applied(&node, &[("people.hcl", &people)]).await;
+        let c = "connector \"c\" {\n  kind  = \"influx\"\n  node  = \"edge\"\n  \
+                 token = env(\"TOKEN\")\n}\n";
+        let body = plan_body(&[("people.hcl", &people), ("c.hcl", c)]);
+        let reply = serve(&node, &name("eve"), &body).await;
+        let expected = denied("eve", "plan", "`bob.@subject`");
         assert_eq!(split(&reply), (expected, &b""[..]));
     });
 }

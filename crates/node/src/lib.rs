@@ -1144,16 +1144,16 @@ impl Serve {
                             member.expect("invariant: a mesh opens only on a member");
                         let name = member.card.card().name.clone();
                         let kinds = Arc::new(kinds());
-                        let ops = operations(
-                            mesh,
-                            name.clone(),
-                            hub.clone(),
-                            clock.clone(),
-                            &time,
-                            &entropy,
-                            Arc::clone(&kinds),
-                            secrets.clone(),
-                        );
+                        let ops = Rc::new(ops::Node::new(ops::Config {
+                            mesh: mesh.clone(),
+                            key: channel_keys(&time, &entropy),
+                            front_ends: front_ends(),
+                            kinds: Arc::clone(&kinds),
+                            hub: hub.clone(),
+                            clock: clock.clone(),
+                            name: name.clone(),
+                            secrets: secrets.clone(),
+                        }));
                         let config = connector::supervisor::Config {
                             kinds,
                             clock: clock.clone(),
@@ -1227,35 +1227,23 @@ fn channel_key(
     types::channel::Key::v7(at, u128::from_le_bytes(random))
 }
 
-/// The operations on `mesh`, as the node named `name` with `hub` and `clock`, with the
-/// connector kinds `kinds`, whose keys [`channel_key`] makes, and the resolver
-/// `secrets` of the connectors.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each is a part of the operations, of a different type"
-)]
-fn operations(
-    mesh: &mesh::Mesh,
-    name: types::name::Name,
-    hub: hub::Hub,
-    clock: env::clock::Clock,
-    time: &clock::Reader,
-    entropy: &env::entropy::Entropy,
-    kinds: Arc<connector::kind::Table>,
-    secrets: secret::Resolver,
-) -> Rc<ops::Node> {
-    let (time, entropy) = (time.clone(), entropy.clone());
-    let channel = move || channel_key(&time, &entropy);
-    let front_ends = ops::FrontEnds::new(
+/// The front ends of the config files that the operations read.
+fn front_ends() -> ops::FrontEnds {
+    ops::FrontEnds::new(
         "hcl",
         ops::FrontEnd {
             read: config_hcl::read,
         },
-    );
-    let mesh = mesh.clone();
-    let node =
-        ops::Node::new(mesh, channel, front_ends, kinds, hub, clock, name, secrets);
-    Rc::new(node)
+    )
+}
+
+/// Gives the key of each channel that the operations make ([`channel_key`]).
+fn channel_keys(
+    time: &clock::Reader,
+    entropy: &env::entropy::Entropy,
+) -> Box<dyn Fn() -> types::channel::Key> {
+    let (time, entropy) = (time.clone(), entropy.clone());
+    Box::new(move || channel_key(&time, &entropy))
 }
 
 /// Gives `hub` the access rules of the spec that `mesh` uses, and makes `runs` match

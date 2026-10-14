@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use ops::{FrontEnd, FrontEnds, Node, serve};
+use ops::{Config, FrontEnd, FrontEnds, Node, serve};
 use serde_json::{Value, json};
 use sim::Sim;
 use types::channel::Key;
@@ -77,16 +77,16 @@ fn serve_large(text: &str) {
                 read: config_hcl::read,
             },
         );
-        let node = Node::new(
+        let node = Node::new(Config {
             mesh,
-            || Key::from_u128(1),
+            key: Box::new(|| Key::from_u128(1)),
             front_ends,
-            Arc::new(connector::kind::Table::new()),
+            kinds: Arc::new(connector::kind::Table::new()),
             hub,
-            sim_node.clock(),
-            "edge".parse().expect("a name"),
-            connector::testing::create_secrets(sim_node.files()),
-        );
+            clock: sim_node.clock(),
+            name: "edge".parse().expect("a name"),
+            secrets: connector::testing::create_secrets(sim_node.files()),
+        });
         let subject = "@admin".parse().expect("a name");
         let before = ALLOCATOR.held();
         ALLOCATOR.reset_peak();
