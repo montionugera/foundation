@@ -129,8 +129,8 @@ impl Opened<'_> {
     /// not open, with no new run while a reader open waits (the open of
     /// [`Supervisor::open`] too), and otherwise once the run returned. It returns, with
     /// `Ok` or an error, only once each task of its last run ended, and the home
-    /// applied its last status frame, `cancel` is cancelled, or 10 s passed since it
-    /// wrote its last state. Neither wait holds once the home refused a status frame
+    /// applied its last status frame, `cancel` is cancelled, or 10 s passed since the
+    /// write of its last state. Neither wait holds once the home refused a status frame
     /// because the status channels were removed or its disk failed: after it, the call
     /// writes no more status. A drop of the future cancels the run and does not wait
     /// for its tasks: to wait, cancel `cancel` and await the future. The future is not
