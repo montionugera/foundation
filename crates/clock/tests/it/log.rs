@@ -174,3 +174,27 @@ fn a_lone_node_at_200_ppm_with_a_growing_os_bound_is_near() {
         }
     }
 }
+
+#[test]
+fn mesh_time_past_the_last_stamp_is_apart() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let wall = Stamp::from_nanos(i64::MAX - MS);
+    let node = sim.node(sim::node::Config {
+        wall,
+        ..sim::node::Config::default()
+    });
+    let (mut clock, mesh) = Clock::new(node.clock());
+    let source = clock.add();
+    let at = node.clock().now();
+    let monotonic = i64::try_from(at.0).expect("fits");
+    let offset = Span::from_nanos(i64::MAX - monotonic + Span::HOUR.nanos());
+    let measurement = Measurement::new(at, offset, ms(2)).expect("at most 36500 days");
+    clock.push(source, measurement);
+    assert_eq!(
+        Reader::new(node.wall(), mesh).now(),
+        Time {
+            wall,
+            mesh: Mesh::Apart(Stamp::from_nanos(i64::MAX))
+        }
+    );
+}
