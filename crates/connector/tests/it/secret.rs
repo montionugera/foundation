@@ -10,11 +10,10 @@ use std::task::Poll;
 use connector::cancel;
 use connector::kind::{Channels, Context, Error, Kind, Table};
 use connector::supervisor::Supervisor;
-use connector::testing::{
-    create_config, create_secret, create_secret_store, create_status,
-};
+use connector::testing::{create_config, create_secret, create_secrets, create_status};
 use document::Document;
 use document::diagnostic::Diagnostic;
+use secret::Source;
 use types::channel;
 use types::name::Name;
 use types::time::Span;
@@ -30,14 +29,15 @@ fn read_during_write(seed: u64) -> Vec<Vec<u8>> {
     sim.run_on(&node, |node, tasks| async move {
         let name: Name = "plant.token".parse().unwrap();
         let (files, clock) = (node.files(), node.clock());
-        let store = create_secret_store(files.clone());
+        let secrets = create_secrets(files.clone());
         let got = Rc::new(RefCell::new(Vec::new()));
         let done = Rc::new(Cell::new(false));
-        let (into, read, ended) = (Rc::clone(&got), name.clone(), Rc::clone(&done));
+        let (into, ended) = (Rc::clone(&got), Rc::clone(&done));
+        let read = Source::Secret(name.clone());
         tasks.spawn(async move {
             loop {
                 let last = ended.get();
-                if let Ok(value) = store.get(&read).await {
+                if let Ok(value) = secrets.get(&read).await {
                     into.borrow_mut().push(value.expose().to_vec());
                 }
                 if last {
@@ -82,10 +82,10 @@ fn two_at_once(seed: u64, names: [&'static str; 2]) -> [Option<Vec<u8>>; 2] {
         });
         create_secret(&files, &names[1].parse().unwrap(), b"bb").await;
         node.clock().sleep(Span::SECOND).await;
-        let store = create_secret_store(files);
+        let secrets = create_secrets(files);
         let mut got = [None, None];
         for (value, key) in got.iter_mut().zip(names) {
-            let read = store.get(&key.parse().unwrap()).await;
+            let read = secrets.get(&Source::Secret(key.parse().unwrap())).await;
             *value = read.ok().map(|value| value.expose().to_vec());
         }
         got
@@ -138,7 +138,8 @@ fn write_after_a_dropped_write(seed: u64, stop: i64) -> Option<Vec<u8>> {
         }
         clock.sleep(Span::SECOND).await;
         create_secret(&files, &name, b"t2").await;
-        let value = create_secret_store(files.clone()).get(&name).await;
+        let read = Source::Secret(name.clone());
+        let value = create_secrets(files.clone()).get(&read).await;
         value.ok().map(|value| value.expose().to_vec())
     })
     .expect("the run ends")
@@ -176,8 +177,9 @@ impl Kind for Watch {
     }
 
     async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
+        let source = Source::Secret("plant.token".parse().unwrap());
         loop {
-            match ctx.secret(&"plant.token".parse().unwrap()).await {
+            match ctx.secret(&source).await {
                 Ok(value) => {
                     self.0.lock().unwrap().push(value.expose().to_vec());
                     return Ok(());

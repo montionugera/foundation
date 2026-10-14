@@ -42,8 +42,8 @@ pub struct Config {
     pub tasks: Tasks,
     /// The shard's hub. Each session a kind opens acts as its connector.
     pub hub: hub::Hub,
-    /// The store that [`kind::Context::secret`] reads.
-    pub secrets: Box<dyn secret::store::Store>,
+    /// The sources that [`kind::Context::secret`] reads.
+    pub secrets: secret::Resolver,
 }
 
 /// Runs connectors of the kinds in a table, one `open` and its `run` at a time per
@@ -391,6 +391,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::Waker;
 
+    use env::files::Absolute;
     use env::net::tcp;
 
     use document::diagnostic::{Code, Diagnostic};
@@ -1072,9 +1073,8 @@ mod tests {
         assert_eq!(texts, ["", "busy", "busy", "busy", "", ""]);
     }
 
-    /// A kind that reads the secret of its name at the start of its run, then
-    /// returns.
-    struct Locked(&'static str);
+    /// A kind that reads its secret source at the start of its run, then returns.
+    struct Locked(secret::Source);
 
     impl Kind for Locked {
         type Config = ();
@@ -1095,7 +1095,7 @@ mod tests {
         }
 
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
-            let value = ctx.secret(&name(self.0)).await?;
+            let value = ctx.secret(&self.0).await?;
             assert_eq!(value.expose(), b"t");
             Ok(())
         }
@@ -1104,7 +1104,10 @@ mod tests {
     #[test]
     fn heals_a_run_when_the_missing_secret_is_written() {
         let (result, statuses) = run_on(|node, tasks| async move {
-            let kinds = Table::new().with("locked", Locked("plant.token"));
+            let kinds = Table::new().with(
+                "locked",
+                Locked(secret::Source::Secret(name("plant.token"))),
+            );
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.locked").await;
             let statuses = read_status(&inputs.hub, "plant.locked", &[], &tasks).await;
@@ -1127,15 +1130,58 @@ mod tests {
         });
         result.expect("the second run reads the secret");
         let texts: Vec<_> = errors(&statuses).into_iter().map(|(_, t)| t).collect();
-        let missing = "the secret plant.token: the store has no value: write it to the \
-                       file /data/secrets/plant.token";
+        let missing = "the secret secret(\"plant.token\"): the file \
+                       /data/secrets/plant.token is not there. Write the value to it";
         assert_eq!(texts, ["", missing, missing, missing, "", ""]);
+    }
+
+    #[test]
+    fn heals_a_run_when_a_secret_file_too_large_is_cut() {
+        let path = "/run/secrets/plant.token";
+        let (result, statuses) = run_on(move |node, tasks| async move {
+            let source = secret::Source::File(Absolute::new(path).expect("absolute"));
+            let kinds = Table::new().with("locked", Locked(source));
+            let inputs =
+                create_config(&node, tasks.clone(), kinds, "plant.locked").await;
+            let statuses = read_status(&inputs.hub, "plant.locked", &[], &tasks).await;
+            let paths = node.paths();
+            let large = vec![b't'; (1 << 16) + 1];
+            paths
+                .write(std::path::Path::new(path), &large)
+                .expect("writes it");
+            let (shown, clock) = (Rc::clone(&statuses), node.clock());
+            tasks.spawn(async move {
+                while shown.borrow().len() < 2 {
+                    clock.sleep(ms(10)).await;
+                }
+                paths
+                    .write(std::path::Path::new(path), b"t")
+                    .expect("writes it");
+            });
+            let token = Token::new();
+            let result = Supervisor::new(inputs)
+                .open("locked", name("plant.locked"), &config(), &token)
+                .await
+                .run()
+                .await;
+            node.clock().sleep(Span::SECOND).await;
+            (result, statuses.borrow().clone())
+        });
+        result.expect("the second run reads the secret");
+        let texts: Vec<_> = errors(&statuses).into_iter().map(|(_, t)| t).collect();
+        let large = "the secret file(\"/run/secrets/plant.token\"): the file \
+                     /run/secrets/plant.token is 65537 bytes, more than 65536. Make it \
+                     at most 65536 bytes";
+        assert_eq!(texts, ["", large, large, large, "", ""]);
     }
 
     #[test]
     fn ends_a_run_whose_secret_name_the_store_cannot_hold_without_a_restart() {
         let (result, statuses) = run_on(|node, tasks| async move {
-            let kinds = Table::new().with("locked", Locked("plant.Token"));
+            let kinds = Table::new().with(
+                "locked",
+                Locked(secret::Source::Secret(name("plant.Token"))),
+            );
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.locked").await;
             let statuses = read_status(&inputs.hub, "plant.locked", &[], &tasks).await;
@@ -1148,7 +1194,8 @@ mod tests {
             node.clock().sleep(ms(10_000)).await;
             (result, statuses.borrow().clone())
         });
-        let message = "the secret plant.Token has a name that the store cannot hold";
+        let message =
+            "the secret secret(\"plant.Token\") has a name that the store cannot hold";
         let fix = "Rename the secret in lowercase letters, since the file store holds \
                    no name with a capital letter";
         let code = Code::new("connector.bad-secret-name");
@@ -3327,7 +3374,7 @@ mod tests {
                 net: node.net(),
                 tasks: tasks.clone(),
                 hub: hub::testing::open(env(&node, tasks.clone())).await.0,
-                secrets: testing::create_secret_store(node.files()),
+                secrets: testing::create_secrets(node.files()),
             });
             let token = Token::new();
             token.cancel();
@@ -3378,7 +3425,7 @@ mod tests {
                 net: node.net(),
                 tasks: tasks.clone(),
                 hub,
-                secrets: testing::create_secret_store(node.files()),
+                secrets: testing::create_secrets(node.files()),
             };
             let token = Token::new();
             let (canceller, sleeper) = (token.clone(), clock.clone());

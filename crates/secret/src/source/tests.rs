@@ -21,6 +21,10 @@ fn string(text: &str) -> Value {
     }
 }
 
+fn absolute(text: &str) -> Absolute {
+    Absolute::new(text).expect("an absolute path")
+}
+
 /// `function(arguments)` at offset 3.
 fn call(function: &str, arguments: Vec<Value>) -> Value {
     Value {
@@ -61,11 +65,11 @@ fn reads_each_source() {
         ),
         (
             call("file", vec![string("/run/secrets/influx token")]),
-            Source::File("/run/secrets/influx token".into()),
+            Source::File(absolute("/run/secrets/influx token")),
         ),
         (
             call("file", vec![string("/a/..b")]),
-            Source::File("/a/..b".into()),
+            Source::File(absolute("/a/..b")),
         ),
         (
             call("secret", vec![string("plant.token")]),
@@ -210,7 +214,7 @@ fn shows_each_source_as_written() {
     for (source, shown) in [
         (Source::Env("INFLUX_TOKEN".into()), r#"env("INFLUX_TOKEN")"#),
         (
-            Source::File("/run/secrets/token".into()),
+            Source::File(absolute("/run/secrets/token")),
             r#"file("/run/secrets/token")"#,
         ),
         (
