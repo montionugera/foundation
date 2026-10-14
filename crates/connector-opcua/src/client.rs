@@ -250,14 +250,12 @@ impl Client {
     ///
     /// If open62541 cannot allocate a request, as [`alloc::exhausted`] says.
     pub(crate) fn nodes(&self, nodes: &[Node]) -> Result<Nodes, Large> {
-        // SAFETY: each reads nothing.
-        let (empty, answer, result) = unsafe {
-            (
-                ffi::shim_read_ask(self.token),
-                ffi::shim_read_answer(),
-                ffi::shim_read_answer_item(),
-            )
-        };
+        // SAFETY: it reads nothing.
+        let empty = unsafe { ffi::shim_read_ask(self.token) };
+        // SAFETY: it reads nothing.
+        let answer = unsafe { ffi::shim_read_answer() };
+        // SAFETY: it reads nothing.
+        let result = unsafe { ffi::shim_read_answer_item() };
         let past = |ask: usize, count: usize| {
             let answer = result.saturating_mul(count).saturating_add(answer);
             [(ask, self.sends), (answer, self.takes)]
