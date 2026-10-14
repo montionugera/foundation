@@ -63,5 +63,8 @@
   `laptop.architect`, the same #1863 comment). Supersedes the B3 single position, the
   `close` and `close_named` pair and its wrong-close panics of
   https://github.com/synnaxlabs/foundation/issues/1024#issuecomment-6029883335, and
-  https://github.com/synnaxlabs/foundation/issues/1024#issuecomment-6030162160. Basis:
+  https://github.com/synnaxlabs/foundation/issues/1024#issuecomment-6030162160. A live
+  frame that finds no room in the buffer ends each complete session that it would reach
+  with `Behind`, after the frames before it (`laptop.architect`, 2026-10-14T02:10:24Z:
+  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159325971). Basis:
   A6, A8, B2, B3, S10, X14, #41.

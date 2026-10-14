@@ -223,10 +223,11 @@ pub enum Outcome {
         range: frame::Range,
     },
     /// A live group with samples found no room in the ring or the pool. Its seq is a
-    /// gap in the log. The gap is durable only when a later live entry of the index,
-    /// with samples or a handoff, is on disk: a restart before that gives the next
-    /// frame the same seq. After a [`Shard::shed`] and a [`Shard::carry`] of the index,
-    /// the next frame gets the same seq only when no later live entry was appended.
+    /// gap in the log, and each complete reader that it ends past misses it. The gap is
+    /// durable only when a later live entry of the index, with samples or a handoff, is
+    /// on disk: a restart before that gives the next frame the same seq. After a
+    /// [`Shard::shed`] and a [`Shard::carry`] of the index, the next frame gets the
+    /// same seq only when no later live entry was appended.
     Lost {
         /// The slot of the group's index.
         slot: Slot,
@@ -636,9 +637,10 @@ impl Shard {
     /// samples after the commit that holds it, while the bytes it has spent are below
     /// its credit: a frame spends what `charge` says. A frame that finds the credit
     /// spent waits for a [`grant`](Self::grant), and so does each later frame. A frame
-    /// that still waits when a later commit releases frames of the index is a miss:
-    /// the reader gets neither it nor a later frame, and [`take`](Self::take) gives
-    /// the frames before it, then [`Next::Behind`](reader::Next::Behind).
+    /// that still waits when a later commit releases frames of the index is a miss,
+    /// and so is a live frame that the write gives as [`Outcome::Lost`]: the reader
+    /// gets neither it nor a later frame, and [`take`](Self::take) gives the frames
+    /// before it, then [`Next::Behind`](reader::Next::Behind).
     /// [`woken`](Self::woken) names the reader once for a miss with no frame to take,
     /// and not for a miss while frames wait to be taken. The home does not read a
     /// missed frame back from disk yet. Close the reader and open a new one. The new
