@@ -273,6 +273,7 @@ fn create_node(fixture: &Fixture, mesh: mesh::Mesh) -> Node {
         fixture.hub.clone(),
         fixture.sim.clock(),
         fixture.name.clone(),
+        connector::testing::create_secrets(fixture.sim.files()),
     )
 }
 

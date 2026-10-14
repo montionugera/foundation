@@ -67,8 +67,8 @@ fn with_token(source: &str) -> String {
     hcl
 }
 
-/// A node on [`with_token`] of `source`, with `INFLUX_TOKEN` set to `t0ken`, which
-/// pushes to an InfluxDB that takes only `t0ken`. It waits until the config applies.
+/// A running node on [`with_token`] of `source`, with `INFLUX_TOKEN` set to `t0ken`,
+/// which pushes to an InfluxDB that takes only `t0ken`. No config applies yet.
 fn create_token_plant(source: impl FnOnce(&Rig) -> String) -> Plant {
     let mut opcua = Opcua::default();
     let mut influx = Influx::taking("t0ken");
@@ -77,8 +77,31 @@ fn create_token_plant(source: impl FnOnce(&Rig) -> String) -> Plant {
     let hcl = with_token(&source(&rig));
     rig.config(&served(&hcl, opcua.serve(), influx.serve()));
     rig.start();
-    rig.apply();
     Plant { rig, opcua, influx }
+}
+
+/// Asserts that `plan` of `rig` exits with one `secret.unresolved` problem at the
+/// token of [`with_token`], with `message`, and writes no plan.
+fn refuses_the_token(rig: &Rig, message: &str) {
+    let hcl = std::fs::read_to_string(rig.dir.join("plant.hcl")).expect("reads it");
+    let line = 1
+        + (hcl.lines())
+            .position(|line| line.starts_with("  token "))
+            .expect("the config has a token");
+    let output = rig.run(&["plan", "plant.hcl", "--out", "plant.plan"], b"");
+    let expected = format!(
+        "error[secret.unresolved]: {message}\n  --> plant.hcl:{line}:17\nfix: Fix the \
+         cause in the message, then plan again\n"
+    );
+    assert_eq!(
+        (
+            output.status.code(),
+            text(&output.stdout),
+            text(&output.stderr)
+        ),
+        (Some(2), "", &*expected)
+    );
+    assert!(!rig.dir.join("plant.plan").exists(), "plan writes no plan");
 }
 
 /// The error that `influx` shows, once it shows one.
@@ -555,7 +578,18 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
 #[test]
 fn a_token_from_the_environment_of_the_node_reaches_influxdb() {
     let plant = create_token_plant(|_| "env(\"INFLUX_TOKEN\")".into());
+    plant.rig.apply();
     first_stored(&plant, &VARIABLES);
+}
+
+#[test]
+fn a_plan_refuses_a_token_from_a_variable_that_the_node_does_not_set() {
+    let plant = create_token_plant(|_| "env(\"PLANT_TOKEN\")".into());
+    refuses_the_token(
+        &plant.rig,
+        "the secret env(\"PLANT_TOKEN\"): the environment variable PLANT_TOKEN of the \
+         node is not set. Start the node with it set to the value",
+    );
 }
 
 #[test]
@@ -574,19 +608,29 @@ fn a_token_file_shows_its_fix_until_it_holds_the_token() {
             source
         });
         let (source, path) = given.expect("the plant names its source");
+        let missing = format!(
+            "the secret {source}: the file {} is not there. Write the value to it",
+            path.display()
+        );
+        refuses_the_token(&plant.rig, &missing);
+        let dir = path.parent().expect("a directory");
+        std::fs::create_dir_all(dir).expect("makes the directory");
+        std::fs::write(&path, b"t0ken\n").expect("writes the token");
+        let output = plant
+            .rig
+            .run(&["plan", "plant.hcl", "--out", "plant.plan"], b"");
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        // A run reads the token again, so it shows a file that goes after the plan.
+        std::fs::remove_file(&path).expect("removes the token");
+        let output = plant.rig.run(&["apply", "plant.plan"], b"");
+        assert!(output.status.success(), "{}", text(&output.stderr));
         assert_eq!(
             influx_error(&plant.rig),
             Error {
                 class: "retry".into(),
-                text: format!(
-                    "the secret {source}: the file {} is not there. Write the value \
-                     to it",
-                    path.display()
-                ),
+                text: missing,
             }
         );
-        let dir = path.parent().expect("a directory");
-        std::fs::create_dir_all(dir).expect("makes the directory");
         std::fs::write(&path, b"t0ken\n").expect("writes the token");
         first_stored(&plant, &VARIABLES);
     }

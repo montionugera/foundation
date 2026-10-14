@@ -435,6 +435,9 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Body, Error
     }
     let (base, applied) = spec.newest()?;
     let (output, plan) = files.plan(base, &applied, &node.mesh.names(), &node.kinds)?;
+    files
+        .resolve(&node.kinds, &node.name, &node.secrets)
+        .await?;
     let mut reply = Body::line(&Answer::Done { output: &output })?;
     reply.add(&plan.encode())?;
     Ok(reply)

@@ -1152,6 +1152,7 @@ impl Serve {
                             &time,
                             &entropy,
                             Arc::clone(&kinds),
+                            secrets.clone(),
                         );
                         let config = connector::supervisor::Config {
                             kinds,
@@ -1227,7 +1228,12 @@ fn channel_key(
 }
 
 /// The operations on `mesh`, as the node named `name` with `hub` and `clock`, with the
-/// connector kinds `kinds`, whose keys [`channel_key`] makes.
+/// connector kinds `kinds`, whose keys [`channel_key`] makes, and the resolver
+/// `secrets` of the connectors.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each is a part of the operations, of a different type"
+)]
 fn operations(
     mesh: &mesh::Mesh,
     name: types::name::Name,
@@ -1236,6 +1242,7 @@ fn operations(
     time: &clock::Reader,
     entropy: &env::entropy::Entropy,
     kinds: Arc<connector::kind::Table>,
+    secrets: secret::Resolver,
 ) -> Rc<ops::Node> {
     let (time, entropy) = (time.clone(), entropy.clone());
     let channel = move || channel_key(&time, &entropy);
@@ -1245,8 +1252,9 @@ fn operations(
             read: config_hcl::read,
         },
     );
+    let mesh = mesh.clone();
     let node =
-        ops::Node::new(mesh.clone(), channel, front_ends, kinds, hub, clock, name);
+        ops::Node::new(mesh, channel, front_ends, kinds, hub, clock, name, secrets);
     Rc::new(node)
 }
 

@@ -4610,7 +4610,8 @@ mod port {
             start(host, region(&[member(OWN, &KEY, host)]))
         }
 
-        /// The operations of the member `key` of `mesh` on `hub`, as a node makes them.
+        /// The operations of the member `key` of `mesh` on `hub`, as a node makes them,
+        /// with the secrets on `files`.
         fn operations(
             mesh: &::mesh::Mesh,
             key: types::node::Key,
@@ -4618,11 +4619,14 @@ mod port {
             clock: env::clock::Clock,
             time: &clock::Reader,
             entropy: &env::entropy::Entropy,
+            files: env::files::Files,
         ) -> Rc<ops::Node> {
             let member = mesh.member(key).expect("the peer is a member");
             let name = member.card.card().name.clone();
             let kinds = Arc::new(crate::kinds());
-            crate::operations(mesh, name, hub.clone(), clock, time, entropy, kinds)
+            let secrets = connector::testing::create_secrets(files);
+            let (hub, kinds) = (hub.clone(), kinds);
+            crate::operations(mesh, name, hub, clock, time, entropy, kinds, secrets)
         }
 
         /// As [`peer_hub`], with the region of `members`, and `act` gets only the mesh.
@@ -6251,7 +6255,9 @@ mod port {
                     }),
                 });
                 let clock = own.clock();
-                let ops = operations(&mesh, key, &hub, clock.clone(), &time, &entropy);
+                let files = own.files();
+                let ops =
+                    operations(&mesh, key, &hub, clock.clone(), &time, &entropy, files);
                 let port = route::accept(
                     transport,
                     crate::task::Handles {

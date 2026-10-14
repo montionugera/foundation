@@ -1,5 +1,9 @@
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use connector::testing::create_secret;
 use document::diagnostic::{Code, Diagnostic};
 use document::{Position, Span};
 use mesh::Mesh;
@@ -7,18 +11,21 @@ use serde_json::{Value, json};
 
 use crate::apply::{Applied, Effect};
 use crate::common::{
-    Fixture, NODE, create_kinds, create_node, create_node_reading, fail_sync,
-    front_ends, placed_site, plant, shown, solo,
+    ADMIN, Fixture, NODE, create_kinds, create_node, create_node_reading,
+    create_node_with, fail_sync, founded, front_ends, name, placed_site, plan, plant,
+    shown, solo,
 };
 use crate::error::Error;
 use crate::front_end::{File, FrontEnd, FrontEnds};
-use crate::plan::{self, Counts};
+use crate::plan::{Counts, Output, Pointer};
 use crate::used;
 
 const REFUSED: Code = Code::new("test.refused");
+/// The directory of the store that `connector::testing::create_secret` writes.
+const SECRETS: &str = "secrets";
 
-/// The output of `plan::plan` of `files` on `mesh`.
-async fn planned(mesh: &Mesh, files: Vec<(PathBuf, String)>) -> plan::Output {
+/// The output of `plan` of `files` on `mesh`.
+async fn planned(mesh: &Mesh, files: Vec<(PathBuf, String)>) -> Output {
     let spec = mesh.spec().await.expect("a spec");
     let files: Vec<File> = files
         .into_iter()
@@ -26,16 +33,16 @@ async fn planned(mesh: &Mesh, files: Vec<(PathBuf, String)>) -> plan::Output {
         .collect();
     let base = spec.pointer.expect("a spec in use");
     let names = mesh.names();
-    plan::plan(
+    let kinds = create_kinds();
+    let planned = plan(
         &files,
         base,
         &spec.definitions,
         &names,
         &front_ends(),
-        &create_kinds(),
-    )
-    .expect("a plan")
-    .0
+        &kinds,
+    );
+    planned.expect("a plan").0
 }
 
 fn site() -> Vec<(PathBuf, String)> {
@@ -52,7 +59,7 @@ fn applies_with_each_connector_kind_of_the_node() {
         let expected = Applied {
             file: "plant.plan".to_owned(),
             effect: Effect {
-                pointer: plan::Pointer::from(mesh.pointer()),
+                pointer: Pointer::from(mesh.pointer()),
                 counts: Counts {
                     added: 22,
                     changed: 0,
@@ -87,7 +94,7 @@ fn plans_and_applies_in_the_json_of_the_cli() {
         let expected = Applied {
             file: "site.plan".to_owned(),
             effect: Effect {
-                pointer: plan::Pointer::from(pointer),
+                pointer: Pointer::from(pointer),
                 counts: Counts {
                     added: 3,
                     changed: 0,
@@ -271,4 +278,94 @@ fn gives_a_stop_of_the_group_as_stopped_in_apply_of_a_plan_with_no_change() {
         let applied = node.apply(Path::new("empty.plan"), &empty).await;
         assert_eq!(applied, Err(stopped_errors(&stopped)));
     });
+}
+
+/// A config with a connector of `kind` on the node `node` that reads `TOKEN` from
+/// the environment, the file `/run/ca` in a block, and `plant.pw` from the store in a
+/// list.
+fn with_sources(node: &str) -> Vec<(PathBuf, String)> {
+    let text = format!(
+        r#"connector "c" {{
+  kind  = "influx"
+  node  = "{node}"
+  token = env("TOKEN")
+  users = [secret("plant.pw")]
+  tls {{
+    ca = file("/run/ca")
+  }}
+}}
+"#
+    );
+    vec![(PathBuf::from("c.hcl"), text)]
+}
+
+/// The JSON of one `secret.unresolved` problem at `line` and `column` of `c.hcl`.
+fn unresolved(message: &str, line: u32, column: u32) -> Value {
+    json!({
+        "code": "secret.unresolved",
+        "fix": "Fix the cause in the message, then plan again",
+        "message": message,
+        "notes": [],
+        "place": { "column": column, "file": "c.hcl", "line": line },
+    })
+}
+
+#[test]
+fn refuses_a_plan_with_each_secret_of_the_node_that_has_no_value() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let error = node
+            .plan(with_sources("edge"))
+            .await
+            .expect_err("no values");
+        let expected = json!({ "errors": [
+            unresolved(
+                "the secret env(\"TOKEN\"): the environment variable TOKEN of the node \
+                 is not set. Start the node with it set to the value",
+                4,
+                11,
+            ),
+            unresolved(
+                "the secret secret(\"plant.pw\"): the file /data/secrets/plant.pw is \
+                 not there. Write the value to it",
+                5,
+                12,
+            ),
+            unresolved(
+                "the secret file(\"/run/ca\"): the file /run/ca is not there. Write the \
+                 value to it",
+                7,
+                10,
+            ),
+        ]});
+        assert_eq!(error, expected);
+    });
+}
+
+#[test]
+fn plans_when_each_secret_of_the_node_has_a_value() {
+    solo(|fixture, mesh| async move {
+        let files = fixture.sim.files();
+        create_secret(&files, &name("plant.pw"), b"pw").await;
+        let paths = fixture.sim.paths();
+        paths.write(Path::new("/run/ca"), b"ca").expect("writes it");
+        let vars = BTreeMap::from([(OsString::from("TOKEN"), OsString::from("t"))]);
+        let secrets = secret::Resolver::new(Arc::new(vars), files, Path::new(SECRETS));
+        let node = create_node_with(&fixture, mesh, front_ends(), secrets);
+        let (_, output) = node.plan(with_sources("edge")).await.expect("a plan");
+        assert_eq!(output["added"], 8, "{output}");
+    });
+}
+
+#[test]
+fn plans_a_connector_of_another_node_with_no_read_of_its_secrets() {
+    founded(
+        &["edge", "other"],
+        spec::founding::create(ADMIN.public()),
+        |fixture, mesh| async move {
+            let node = create_node(&fixture, mesh);
+            let (_, output) = node.plan(with_sources("other")).await.expect("a plan");
+            assert_eq!(output["added"], 8, "{output}");
+        },
+    );
 }

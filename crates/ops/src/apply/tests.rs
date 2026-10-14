@@ -21,12 +21,13 @@ use types::ed25519::PrivateKey;
 use types::name::{Name, Prefix};
 
 use super::{Applied, Effect, file};
+use crate::common::plan;
 use crate::common::{
     ADMIN, INFLUX, NODE, create_kinds, fail_sync, files, founded, front_ends, keys,
     name, placed_site, plant, solo,
 };
 use crate::error::Error;
-use crate::plan::{self, Counts, Output, plan};
+use crate::plan::{self, Counts, Output};
 
 /// The plan of `texts` on the spec that `mesh` uses.
 async fn plan_on(mesh: &Mesh, texts: &[(&str, &str)]) -> (Output, config::plan::Plan) {

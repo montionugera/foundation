@@ -10,7 +10,8 @@ use types::channel;
 use types::name::Name;
 
 use crate::front_end::{File, FrontEnds};
-use crate::{apply, plan, used};
+use crate::plan::Documents;
+use crate::{apply, used};
 
 #[cfg(test)]
 mod tests;
@@ -25,6 +26,7 @@ pub struct Node {
     pub(crate) hub: hub::Hub,
     pub(crate) clock: Clock,
     pub(crate) name: Name,
+    pub(crate) secrets: secret::Resolver,
 }
 
 impl Node {
@@ -32,8 +34,13 @@ impl Node {
     /// holds and no earlier call gave. `front_ends` gives the syntax of each file
     /// extension, and `kinds` holds each connector kind of the node. `status` reads
     /// the status channels through `hub`, the hub of the node named `name`, and waits
-    /// for them on `clock`, the node's clock.
+    /// for them on `clock`, the node's clock. `plan` reads each secret of each
+    /// connector of this node through `secrets`, as a run does.
     #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each is a dependency of the node, of a different type"
+    )]
     pub fn new(
         mesh: mesh::Mesh,
         key: impl Fn() -> channel::Key + 'static,
@@ -42,6 +49,7 @@ impl Node {
         hub: hub::Hub,
         clock: Clock,
         name: Name,
+        secrets: secret::Resolver,
     ) -> Self {
         Self {
             mesh,
@@ -51,6 +59,7 @@ impl Node {
             hub,
             clock,
             name,
+            secrets,
         }
     }
 
@@ -60,8 +69,9 @@ impl Node {
         &self.mesh
     }
 
-    /// Plans the change from `files`, each a path and its text, to the spec in use.
-    /// Gives the plan file and the JSON output that `plan --json` writes.
+    /// Plans the change from `files`, each a path and its text, to the spec in use,
+    /// and reads each secret of each connector of this node. Gives the plan file and
+    /// the JSON output that `plan --json` writes.
     ///
     /// # Errors
     ///
@@ -76,15 +86,16 @@ impl Node {
             .collect();
         let used = used::spec(&self.mesh).await.and_then(used::Spec::newest);
         let (base, applied) = used.map_err(|e| e.json())?;
-        let (output, plan) = plan::plan(
-            &files,
-            base,
-            &applied,
-            &self.mesh.names(),
-            &self.front_ends,
-            &self.kinds,
-        )
-        .map_err(|e| e.json())?;
+        let planned = async {
+            let documents = Documents::read(&files, &self.front_ends)?;
+            let names = self.mesh.names();
+            let planned = documents.plan(base, &applied, &names, &self.kinds)?;
+            documents
+                .resolve(&self.kinds, &self.name, &self.secrets)
+                .await?;
+            Ok::<_, crate::Error>(planned)
+        };
+        let (output, plan) = planned.await.map_err(|e| e.json())?;
         Ok((plan.encode(), crate::value(&output)))
     }
 

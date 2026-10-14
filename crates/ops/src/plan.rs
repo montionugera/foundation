@@ -2,6 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use document::diagnostic::{Code, Diagnostic};
+use document::value::Kind;
 use document::{Document, Span};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -11,29 +13,11 @@ use types::name::Name;
 use crate::error::{Error, Place, Sources};
 use crate::front_end::{self, File, FrontEnds};
 
+/// A source of a secret of a connector of the planning node that gives no value.
+const UNRESOLVED: Code = Code::new("secret.unresolved");
+
 #[cfg(test)]
 mod tests;
-
-/// The change from the files to the spec at `base`, and the plan that `apply` takes.
-/// `Source(i)` is `files[i]`.
-///
-/// # Errors
-///
-/// As [`Documents::read`], then [`Documents::plan`].
-///
-/// # Panics
-///
-/// As [`front_end::read`] panics.
-pub(crate) fn plan(
-    files: &[File],
-    base: spec::Pointer,
-    applied: &BTreeMap<Name, Definition>,
-    members: &BTreeSet<Name>,
-    front_ends: &FrontEnds,
-    kinds: &connector::kind::Table,
-) -> Result<(Output, config::plan::Plan), Error> {
-    Documents::read(files, front_ends)?.plan(base, applied, members, kinds)
-}
 
 /// The config files of one plan, each read into its Document.
 pub(crate) struct Documents {
@@ -74,6 +58,50 @@ impl Documents {
         }
     }
 
+    /// Reads the value of each source of a secret in the config of each connector of
+    /// the node `node`, through `secrets` as a run does, and drops it. A source is a
+    /// call of `env`, `file`, or `secret`, at any depth of the config, that
+    /// [`secret::Source::read`] reads. Reads one source at a time, in file order.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] with `secret.unresolved` at the call of each source that gives
+    /// no value, or with each problem of [`config::check`].
+    pub(crate) async fn resolve(
+        &self,
+        kinds: &connector::kind::Table,
+        node: &Name,
+        secrets: &secret::Resolver,
+    ) -> Result<(), Error> {
+        let entries = config::check(&self.documents, kinds)
+            .map_err(|diagnostics| Error::config(diagnostics, &self.sources))?;
+        let mut calls = Vec::new();
+        for entry in entries.values() {
+            if let config::Definition::Spec(Definition::Connector(connector)) =
+                &entry.definition
+                && connector.node() == node
+            {
+                sources(connector.config().document(), &mut calls);
+            }
+        }
+        let mut diagnostics = Vec::new();
+        for (source, span) in calls {
+            if let Err(error) = secrets.get(&source).await {
+                diagnostics.push(Diagnostic::new(
+                    UNRESOLVED,
+                    span,
+                    format!("the secret {source}: {error}"),
+                    "Fix the cause in the message, then plan again".to_owned(),
+                ));
+            }
+        }
+        if diagnostics.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::config(diagnostics, &self.sources))
+        }
+    }
+
     /// The change from the files to the spec at `base`, and the plan that `apply`
     /// takes.
     ///
@@ -111,6 +139,46 @@ impl Documents {
                 .collect(),
         };
         Ok((output, plan))
+    }
+}
+
+/// Adds each source of a secret in `document` to `into`, with the span of its call, in
+/// the order of the document.
+fn sources(document: &Document, into: &mut Vec<(secret::Source, Option<Span>)>) {
+    for attribute in document.attributes.iter() {
+        value_sources(&attribute.value, into);
+    }
+    for block in &document.blocks {
+        sources(&block.body, into);
+    }
+}
+
+/// Adds each source of a secret in `value` to `into`, as [`sources`] does.
+fn value_sources(
+    value: &document::value::Value,
+    into: &mut Vec<(secret::Source, Option<Span>)>,
+) {
+    match &value.kind {
+        Kind::Call(_) => {
+            if let Ok(source) = secret::Source::read(value) {
+                into.push((source, value.span));
+            }
+        }
+        Kind::List(values) => {
+            for value in values {
+                value_sources(value, into);
+            }
+        }
+        Kind::Map(map) => {
+            for attribute in map.iter() {
+                value_sources(&attribute.value, into);
+            }
+        }
+        Kind::Bool(_)
+        | Kind::Integer(_)
+        | Kind::Float(_)
+        | Kind::String(_)
+        | Kind::Reference(_) => {}
     }
 }
 

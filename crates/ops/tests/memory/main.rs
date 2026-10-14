@@ -85,6 +85,7 @@ fn serve_large(text: &str) {
             hub,
             sim_node.clock(),
             "edge".parse().expect("a name"),
+            connector::testing::create_secrets(sim_node.files()),
         );
         let subject = "@admin".parse().expect("a name");
         let before = ALLOCATOR.held();

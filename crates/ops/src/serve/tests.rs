@@ -326,6 +326,29 @@ fn gives_each_error_of_plan_and_apply_with_its_status() {
 }
 
 #[test]
+fn refuses_a_plan_with_a_secret_of_the_node_that_has_no_value() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let c = "connector \"c\" {\n  kind  = \"influx\"\n  node  = \"edge\"\n  \
+                 token = env(\"TOKEN\")\n}\n";
+        let reply = serve(&node, &admin(), &plan_body(&[("c.hcl", c)])).await;
+        let expected = json!({
+            "errors": [{
+                "code": "secret.unresolved",
+                "message": "the secret env(\"TOKEN\"): the environment variable TOKEN of \
+                            the node is not set. Start the node with it set to the \
+                            value",
+                "fix": "Fix the cause in the message, then plan again",
+                "place": { "file": "c.hcl", "line": 4, "column": 11 },
+                "notes": [],
+            }],
+            "status": 2,
+        });
+        assert_eq!(split(&reply), (expected, &b""[..]));
+    });
+}
+
+#[test]
 fn refuses_a_plan_of_a_subject_with_no_grant_on_a_name_of_the_files() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh.clone());
