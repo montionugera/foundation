@@ -628,6 +628,32 @@ fn keeps_the_source_of_the_token_after_a_long_401_body() {
 }
 
 #[test]
+fn keeps_the_answer_of_influx_after_a_401_with_a_long_source() {
+    let path: &'static str = format!("/run/secrets/{}", "\u{1}".repeat(200)).leak();
+    let got = run(move |node, tasks| async move {
+        let plant = Plant::new(node.clone(), tasks).await;
+        node.paths()
+            .write(std::path::Path::new(path), b"old")
+            .expect("writes");
+        (plant.answers.borrow_mut()).push_back((StatusCode::UNAUTHORIZED, "no"));
+        let config = with_token(&plant, "file", path);
+        let (auth, errors, _) = send_one(&plant, config).await;
+        (auth, errors)
+    });
+    let mut source = format!("file({path:?})");
+    source.truncate(512);
+    let want =
+        format!("Check the token {source}. InfluxDB answered 401 Unauthorized: no");
+    assert_eq!(
+        got,
+        (
+            vec![Some("Token old".to_owned()); 2],
+            vec![String::new(), want, String::new()]
+        )
+    );
+}
+
+#[test]
 fn ends_the_run_when_the_token_is_gone_after_a_401() {
     let got = run(|node, tasks| async move {
         let plant = Plant::new(node.clone(), tasks).await;

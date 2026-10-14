@@ -30,6 +30,9 @@ const _: () = assert!(
 const TIMEOUT: Span = Span::from_nanos(10_000_000_000);
 /// The largest answer body read, for the text of an error.
 const BODY_MAX: usize = 1 << 16;
+/// The most bytes of the source of a token that an error shows, so that a long
+/// source leaves room for the answer of InfluxDB.
+const SOURCE_MAX: usize = 512;
 /// The waits between the attempts of one batch.
 const RETRY: retry::Config = retry::Config {
     first: Span::SECOND,
@@ -148,10 +151,14 @@ async fn send(
                     matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
                 let source = ctx.config().token.as_ref().filter(|_| refused);
                 match source {
-                    Some(source) => ctx.error(&format_args!(
-                        "Check the token {source}. InfluxDB answered {status}: {}",
-                        text.trim()
-                    )),
+                    Some(source) => {
+                        let mut shown = source.to_string();
+                        shown.truncate(shown.floor_char_boundary(SOURCE_MAX));
+                        ctx.error(&format_args!(
+                            "Check the token {shown}. InfluxDB answered {status}: {}",
+                            text.trim()
+                        ));
+                    }
                     None => {
                         ctx.error(&format_args!(
                             "InfluxDB answered {status}: {}",
