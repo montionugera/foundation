@@ -5,6 +5,7 @@ use types::frame::Path;
 use types::time::Stamp;
 
 use crate::entry::Header;
+use crate::log::{Found, Mark};
 use crate::record::{ALIGN, BLOCK};
 use crate::wal::{Ends, Layout, Position, Writer};
 
@@ -185,6 +186,49 @@ impl Logs {
         self.inner.hide(kept.min(read));
         self.offset += BLOCK;
     }
+
+    /// One commit that marks a range for each index, as a commit that trims and
+    /// keeps up. It hides the records before the landing of the oldest holder,
+    /// syncs one entry with no samples of each index at the seq of its durable
+    /// tail, then carries the durable end of each index in the next record.
+    pub fn mark(&mut self) {
+        if let Some(kept) = self.inner.kept() {
+            let landing = self.inner.land(kept);
+            self.inner.hide(landing);
+        }
+        for (slot, header) in &self.headers {
+            let empty = Header {
+                len: 0,
+                last: None,
+                ..*header
+            };
+            self.inner.append(*slot, &empty).expect("entries in order");
+            self.inner
+                .sync(*slot, &empty, self.offset)
+                .expect("entries in order");
+        }
+        self.offset += BLOCK;
+        for (slot, header) in &self.headers {
+            let past = Mark {
+                seq: u64::MAX,
+                given: u64::MAX,
+            };
+            let Found::End(end) = self.inner.find(*slot, header.path, past) else {
+                unreachable!("no run starts past the end");
+            };
+            let tail = crate::carry::Tail {
+                index: header.index,
+                path: header.path,
+                seq: end.seq,
+                given: end.given,
+                stamp: self.inner.durable(*slot, header.path).stamp,
+            };
+            self.inner
+                .carry(*slot, &tail, self.offset)
+                .expect("the durable end");
+        }
+        self.offset += BLOCK;
+    }
 }
 
 #[cfg(test)]
@@ -290,5 +334,28 @@ mod tests {
         let runs = logs.inner.runs(Slot::new(0), Path::Live);
         let offsets: Vec<u64> = runs.map(|run| run.offset).collect();
         assert_eq!(offsets, [5 * BLOCK, 6 * BLOCK, 7 * BLOCK]);
+    }
+
+    /// Each call marks the range from its carry record to its data record, and the
+    /// trim of the next call passes it, so only the newest range stays. An entry
+    /// with no samples moves no stamp. It reads
+    /// the private logs: `mark` gives nothing back, and only the `logs` bench and
+    /// the `alloc` test call it.
+    #[test]
+    fn each_mark_of_the_logs_marks_one_range_and_hides_the_one_before() {
+        let mut logs = Logs::new(2);
+        for _ in 0..3 {
+            logs.mark();
+        }
+        assert_eq!(logs.inner.land(3 * BLOCK), 3 * BLOCK);
+        assert_eq!(logs.inner.land(5 * BLOCK), 4 * BLOCK);
+        assert_eq!(logs.inner.kept(), Some(6 * BLOCK));
+        for n in 0..2 {
+            let runs = logs.inner.runs(Slot::new(n), Path::Live);
+            let offsets: Vec<u64> = runs.map(|run| run.offset).collect();
+            assert_eq!(offsets, [5 * BLOCK], "index {n}");
+            let stamp = logs.inner.durable(Slot::new(n), Path::Live).stamp;
+            assert_eq!(stamp, None, "index {n}");
+        }
     }
 }

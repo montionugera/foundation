@@ -457,7 +457,10 @@ impl Logs {
     /// the walk would count them from 0. Such a landing moves down to that previous
     /// record, again until it is in no such range. It takes a binary search of the
     /// ranges.
-    #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
+    #[cfg_attr(
+        not(any(test, feature = "sim")),
+        expect(dead_code, reason = "a commit calls it")
+    )]
     pub(crate) fn land(&self, offset: u64) -> u64 {
         self.marked.land(offset)
     }
@@ -1590,7 +1593,9 @@ mod tests {
         );
     }
 
-    /// S4 bounds the memory of the items by one entry per record.
+    /// S4 bounds the memory of the items by one entry per record. No caller sees a
+    /// record that takes two entries: each read of the items gives the same items,
+    /// and only the bytes held change.
     #[test]
     fn the_items_of_a_record_share_its_entry() {
         let mut logs = Logs::default();
@@ -2048,7 +2053,7 @@ mod tests {
             .expect("the walk met the end");
         logs.sync(slot(1), &empty(1, 0), 24576).expect("syncs");
         assert_eq!(logs.land(24576), 20480);
-        assert_eq!(logs.marked.0, [(4096, 16384), (20480, 24576)]);
+        assert_eq!(logs.land(8192), 4096);
     }
 
     /// A range that covers older ranges with a gap between them merges with each,
@@ -2063,11 +2068,10 @@ mod tests {
         logs.carry(slot(1), &carried(0, 2, None), 12288)
             .expect("the walk met the end");
         logs.sync(slot(1), &empty(1, 0), 16384).expect("syncs");
-        assert_eq!(logs.marked.0, [(4096, 8192), (12288, 16384)]);
+        assert_eq!(logs.land(8192), 4096);
         assert_eq!(logs.land(12288), 12288);
         assert_eq!(logs.land(16384), 12288);
         logs.sync(slot(2), &empty(2, 5), 20480).expect("syncs");
-        assert_eq!(logs.marked.0, [(0, 20480)]);
         for offset in [4096, 8192, 12288, 16384, 20480] {
             assert_eq!(logs.land(offset), 0, "a landing at {offset}");
         }
@@ -2075,9 +2079,9 @@ mod tests {
         assert_eq!(logs.land(24576), 24576);
     }
 
-    /// No caller sees a range whose newest record a trim passed: `land` gives a
-    /// landing below the trim, which frees nothing, so only memory holds it. The
-    /// read of `marked` checks that it leaves.
+    /// A trim at the landing of a range keeps it, and a trim past its newest record
+    /// drops it. Here only memory holds a passed range, so the test reads `marked`;
+    /// `marked_trims_take_no_allocation` of the `alloc` test sees it from outside.
     #[test]
     fn a_range_leaves_when_a_trim_passes_its_newest_record() {
         let records = [
@@ -2086,12 +2090,52 @@ mod tests {
             (12288, header(1, Path::Live, 0, 0, None)),
         ];
         let mut logs = walk_from(&records, 0);
-        assert_eq!(logs.marked.0, [(4096, 12288)]);
-        logs.hide(12288);
-        assert_eq!(logs.marked.0, [(4096, 12288)]);
+        logs.hide(4096);
         assert_eq!(logs.land(12288), 4096);
+        assert_eq!(logs.marked.0, [(4096, 12288)]);
         logs.hide(16384);
         assert_eq!(logs.marked.0, []);
+    }
+
+    #[test]
+    fn a_mark_that_covers_an_older_range_takes_its_start() {
+        let mut ranges = Ranges::default();
+        ranges.mark(8192, 12288);
+        ranges.mark(4096, 16384);
+        for offset in [8192, 12288, 16384] {
+            assert_eq!(ranges.land(offset), 4096, "a landing at {offset}");
+        }
+        assert_eq!(ranges.land(20480), 20480);
+    }
+
+    #[test]
+    fn a_mark_from_the_end_of_a_range_merges_with_it() {
+        let mut ranges = Ranges::default();
+        ranges.mark(4096, 8192);
+        ranges.mark(8192, 12288);
+        assert_eq!(ranges.land(12288), 4096);
+    }
+
+    #[test]
+    fn a_mark_after_a_gap_keeps_two_ranges() {
+        let mut ranges = Ranges::default();
+        ranges.mark(4096, 8192);
+        ranges.mark(12288, 16384);
+        assert_eq!(ranges.land(8192), 4096);
+        assert_eq!(ranges.land(12288), 12288);
+        assert_eq!(ranges.land(16384), 12288);
+    }
+
+    #[test]
+    fn a_hide_keeps_each_range_that_ends_at_or_after_the_tail() {
+        let mut ranges = Ranges::default();
+        ranges.mark(4096, 8192);
+        ranges.mark(12288, 16384);
+        ranges.hide(4096);
+        assert_eq!(ranges.land(8192), 4096);
+        ranges.hide(12288);
+        assert_eq!(ranges.land(8192), 8192);
+        assert_eq!(ranges.land(16384), 12288);
     }
 
     /// S4: "memory holds 28 bytes per record and path and 24 bytes per record, in
