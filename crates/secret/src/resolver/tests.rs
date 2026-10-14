@@ -177,9 +177,8 @@ fn gives_a_failed_open_of_an_absolute_file_as_unavailable() {
         assert_eq!(
             get(&resolver, &file("/run/secrets/token")).await,
             Err(Error::Unavailable {
-                detail: "open of /run/secrets/token failed with OS error 13. Make \
-                         /run/secrets/token a file of at most 65536 bytes that the \
-                         user of the node can read"
+                detail: "the open of the file /run/secrets/token failed with OS \
+                         error 13. Make the file readable by the user of the node"
                     .into(),
             })
         );

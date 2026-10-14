@@ -180,11 +180,24 @@ fn cut(bytes: &[u8]) -> &[u8] {
 
 /// The failed file call `error` on the file at `path`, as the path is shown.
 fn unavailable(error: &files::Error, path: &Path) -> Error {
-    Error::Unavailable {
-        detail: format!(
-            "{error}. Make {} a file of at most {LEN_MAX} bytes that the user of the \
-             node can read",
-            path.display()
+    const EACCES: i32 = 13;
+    let shown = path.display();
+    let detail = match error {
+        files::Error::Io {
+            operation,
+            code: EACCES,
+            ..
+        } => format!(
+            "the {operation} of the file {shown} failed with OS error {EACCES}. Make \
+             the file readable by the user of the node"
         ),
-    }
+        files::Error::Io {
+            operation, code, ..
+        } => format!(
+            "the {operation} of the file {shown} failed with OS error {code}. \
+             Retrying may succeed"
+        ),
+        error => format!("{error}. Retrying may succeed"),
+    };
+    Error::Unavailable { detail }
 }

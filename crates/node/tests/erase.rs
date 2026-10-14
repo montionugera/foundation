@@ -80,8 +80,7 @@ async fn cut(files: Files, data: PathBuf) {
     release(&data, "b");
     let failed = Err(Error::Unavailable {
         detail: format!(
-            "read_at of secrets/site.token failed with OS error 5. Make {} a file of \
-             at most 65536 bytes that the user of the node can read",
+            "the read_at of the file {} failed with OS error 5. Retrying may succeed",
             data.join("secrets/site.token").display()
         ),
     });

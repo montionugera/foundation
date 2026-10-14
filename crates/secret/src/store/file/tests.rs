@@ -200,9 +200,8 @@ fn gives_a_failed_file_call_as_unavailable() {
             node.fail_file(path, operation);
             let failed = Err(Error::Unavailable {
                 detail: format!(
-                    "{call} of secrets/plant.token failed with OS error 5. Make \
-                     /data/secrets/plant.token a file of at most 65536 bytes that the \
-                     user of the node can read"
+                    "the {call} of the file /data/secrets/plant.token failed with OS \
+                     error 5. Retrying may succeed"
                 ),
             });
             assert_eq!(get(&store, "plant.token").await, failed);
