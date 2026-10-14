@@ -8,9 +8,9 @@ use crate::common::{ms, node};
 
 const MS: i64 = 1_000_000;
 
-/// A reader of `node` whose mesh time has its midpoint `apart` ns from the wall time
-/// that the node starts with, with the clock that serves it. The sim clocks do not
-/// move.
+/// A reader of `node` whose mesh time has its best guess `apart` ns from the wall
+/// time that the node starts with, with the clock that serves it. The sim clocks do
+/// not move.
 fn reader(node: &Node, apart: i64) -> (Clock, Reader) {
     let (mut clock, mesh) = Clock::new(node.clock());
     let source = clock.add();
@@ -42,7 +42,7 @@ fn has_no_mesh_time_with_no_sources() {
 }
 
 #[test]
-fn a_midpoint_at_most_1_ms_from_the_wall_time_is_near() {
+fn a_best_guess_at_most_1_ms_from_the_wall_time_is_near() {
     for apart in [0, MS, -MS] {
         let (_sim, node) = node();
         let (_clock, reader) = reader(&node, apart);
@@ -58,7 +58,7 @@ fn a_midpoint_at_most_1_ms_from_the_wall_time_is_near() {
 }
 
 #[test]
-fn a_midpoint_more_than_1_ms_from_the_wall_time_is_apart() {
+fn a_best_guess_more_than_1_ms_from_the_wall_time_is_apart() {
     for apart in [MS + 1, -MS - 1, Span::HOUR.nanos()] {
         let (_sim, node) = node();
         let (_clock, reader) = reader(&node, apart);
@@ -99,4 +99,57 @@ fn a_clone_reads_the_same_clocks() {
     };
     assert_eq!(clone.now(), stepped);
     assert_eq!(reader.now(), clone.now());
+}
+
+/// The times of a line on a lone node whose OS wall clock starts at `wall`, with
+/// mesh time from its one OS wall source.
+fn lone(wall: Stamp, wall_error: Option<Span>) -> Time {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config {
+        wall,
+        wall_error,
+        ..sim::node::Config::default()
+    });
+    let (mut clock, mesh) = Clock::new(node.clock());
+    let source = clock.add();
+    #[expect(clippy::disallowed_methods, reason = "the test feeds the mesh clock")]
+    let measurement = clock::source::Wall::new(node.wall(), node.clock()).measure();
+    clock.push(source, measurement);
+    Reader::new(node.wall(), mesh).now()
+}
+
+#[test]
+fn a_lone_node_with_no_os_bound_after_the_last_edge_that_fits_is_near() {
+    let wall: Stamp = "2200-01-01T00:00:00Z".parse().expect("a stamp");
+    assert_eq!(
+        lone(wall, None),
+        Time {
+            wall,
+            mesh: Mesh::Near
+        }
+    );
+}
+
+#[test]
+fn a_lone_node_with_no_os_bound_before_the_first_edge_that_fits_is_near() {
+    let wall: Stamp = "1700-01-01T00:00:00Z".parse().expect("a stamp");
+    assert_eq!(
+        lone(wall, None),
+        Time {
+            wall,
+            mesh: Mesh::Near
+        }
+    );
+}
+
+#[test]
+fn a_lone_node_with_a_bound_past_the_end_of_a_stamp_is_near() {
+    let wall = Stamp::from_nanos(i64::MAX - 5 * MS);
+    assert_eq!(
+        lone(wall, Some(Span::from_nanos(10 * MS))),
+        Time {
+            wall,
+            mesh: Mesh::Near
+        }
+    );
 }

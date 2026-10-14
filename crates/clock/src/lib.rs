@@ -1,5 +1,5 @@
 //! Runs time source adapters and the peer exchange, feeds `estimate`, and serves mesh
-//! time as an interval.
+//! time as an interval, and the OS wall time and mesh time of each log line.
 
 mod cell;
 pub mod log;

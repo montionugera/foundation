@@ -156,6 +156,17 @@ impl Reader {
         })
     }
 
+    /// The best guess of mesh time now ([`Measurement::time`]), or `None` before the
+    /// first mesh time.
+    pub(crate) fn best(&self) -> Option<Stamp> {
+        self.cell.read(|discipline| {
+            let monotonic = self.monotonic.now();
+            discipline
+                .slew()
+                .map(|slew| slew.at(monotonic, DRIFT).time())
+        })
+    }
+
     /// Waits until the latest edge of mesh time is at or after `at`, and is never
     /// early: a read of mesh time inside the wait gave such an edge. A later read can
     /// give an earlier edge, when the error shrinks. Before the first mesh time, it
