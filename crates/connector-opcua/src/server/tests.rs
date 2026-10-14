@@ -44,3 +44,32 @@ fn an_add_of_a_node_of_the_number_0_panics_and_frees_the_port() {
     })
     .expect("the run ends");
 }
+
+#[cfg(feature = "sim")]
+#[test]
+fn a_source_is_a_variable_of_the_data_type_base_data_type() {
+    /// `UA_NS0ID_BASEDATATYPE`.
+    const BASE_DATA_TYPE: u32 = 24;
+    let mut sim = Sim::new(::sim::Config::default());
+    let node = sim.node(node::Config::default());
+    sim.run_on(&node, move |node, _| async move {
+        let mut rng = node.entropy().rng();
+        let local = SocketAddr::new(node.addresses()[0], 4840);
+        let manager = Manager::listening(
+            event::Time::monotonic(node.clock()),
+            node.net(),
+            local,
+            4,
+            &mut rng,
+        )
+        .expect("the port is free");
+        let source: Node = "ns=1;i=7".parse().expect("a node");
+        let add = |server: &mut Server| {
+            server
+                .add_source(&source, || (Value::I32(1), types::quality::Quality::GOOD));
+            assert_eq!(server.data_type(&source), BASE_DATA_TYPE);
+        };
+        Server::serve(manager, 1, add, async {}).await;
+    })
+    .expect("the run ends");
+}

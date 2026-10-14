@@ -518,6 +518,10 @@ fn drop_each<T>(items: impl IntoIterator<Item = (T, Dispatch)>) -> Vec<String> {
 
 /// The Linux code for an I/O error (`EIO`).
 const EIO: i32 = 5;
+/// The Linux code for a path through a file (`ENOTDIR`).
+const NOT_DIRECTORY: i32 = 20;
+/// The Linux code for a file call on a directory (`EISDIR`).
+const DIRECTORY: i32 = 21;
 
 /// The Linux code for a failure that may pass (`EAGAIN`).
 const EAGAIN: i32 = 11;

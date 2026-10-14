@@ -1256,6 +1256,7 @@ version = "0.0.0"
 dependencies = [
  "aws-lc-rs",
  "block",
+ "document",
  "env",
  "types",
  "zeroize",

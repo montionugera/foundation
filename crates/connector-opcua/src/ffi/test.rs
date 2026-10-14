@@ -210,6 +210,11 @@ unsafe extern "C" {
         node: Node<'_>,
         source: *mut c_void,
     ) -> u32;
+    pub(crate) fn shim_server_data_type(
+        server: *mut Server,
+        node: Node<'_>,
+        id: *mut u32,
+    ) -> u32;
     pub(crate) fn UA_Server_run_shutdown(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_delete(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_getLifecycleState(server: *mut Server) -> Lifecycle;
