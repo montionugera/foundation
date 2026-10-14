@@ -52,7 +52,8 @@ pub fn create_secret_store(files: Files) -> Box<dyn secret::store::Store> {
 }
 
 /// Writes `value` as the secret `name` in the store that [`create_secret_store`]
-/// makes on `files`, in place of a value that it had.
+/// makes on `files`, in place of a value that it had. A read of the store meanwhile
+/// gives the old value, no value, or `value`, never a part of one.
 ///
 /// # Panics
 ///
@@ -60,15 +61,18 @@ pub fn create_secret_store(files: Files) -> Box<dyn secret::store::Store> {
 pub async fn create_secret(files: &Files, name: &Name, value: &[u8]) {
     let dir = Path::new(SECRETS);
     files.create_dir(dir).await.expect("makes the directory");
-    let path = dir.join(name.as_str());
-    files.remove(&path).await.expect("removes the old value");
+    // No name starts with `.`, so the store never reads the staged file.
+    let staged = dir.join(".staged");
     let len = u64::try_from(value.len()).expect("invariant: usize fits u64");
-    let file = files.open(&path, Mode::Create { len }).await;
-    let file = file.expect("makes the file");
+    let file = files.open(&staged, Mode::Create { len }).await;
+    let mut file = file.expect("makes the file");
     let pool = block::Config::new(1 << 18).expect("a budget that fits");
     let block = block::Pool::heap(pool).copy(value);
     let block = block.expect("the pool holds the value");
     file.write_at(0, &[block]).await.expect("writes the value");
+    let path = dir.join(name.as_str());
+    files.remove(&path).await.expect("removes the old value");
+    file.rename(&path).await.expect("puts the value in place");
     file.close().await;
 }
 
