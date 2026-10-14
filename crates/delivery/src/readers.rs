@@ -2946,6 +2946,17 @@ pub(super) mod tests {
         }
 
         #[test]
+        fn gives_each_released_frame_then_behind_at_a_loss_at_once() {
+            let frames = Frames::new(1);
+            let mut readers = Readers::new(0);
+            let key = opened(&mut readers, 0, 10);
+            readers.queue(&frames.frame(1), &frames.set, 0..1);
+            assert_eq!(released(&mut readers, 1), [key]);
+            assert_eq!(lost(&mut readers, 1..2), []);
+            assert_eq!(missed(&mut readers, key), [1]);
+        }
+
+        #[test]
         fn gives_the_frames_queued_before_then_behind_at_their_release() {
             let frames = Frames::new(1);
             let mut readers = Readers::new(0);
@@ -3743,6 +3754,10 @@ pub(super) mod tests {
                 gap: u64,
                 len: u64,
             },
+            Lose {
+                gap: u64,
+                len: u64,
+            },
             Release(u64),
             Take(usize),
         }
@@ -3783,9 +3798,9 @@ pub(super) mod tests {
         }
 
         /// A queued frame of the model: its number, its seq, and whether memory holds
-        /// it.
+        /// it. Lost samples have no number.
         struct Queued {
-            n: u64,
+            n: Option<u64>,
             seq: Range<u64>,
             held: bool,
         }
@@ -3793,6 +3808,24 @@ pub(super) mod tests {
         /// Whether `seq` holds a sample at or past `position`.
         fn holds(seq: &Range<u64>, position: u64) -> bool {
             position.max(seq.start) < seq.end
+        }
+
+        /// Makes each session of `open` that waits for credit, or that `seq` ends
+        /// past, miss the lost samples `seq`.
+        fn miss(
+            open: &mut BTreeMap<complete::Key, Got>,
+            readers: &Model,
+            seq: &Range<u64>,
+        ) {
+            for (key, got) in open {
+                let position = readers.open[key].1.live;
+                if got.behind || got.owed.is_empty() && !holds(seq, position) {
+                    continue;
+                }
+                got.owed.clear();
+                got.behind = true;
+                got.missed = true;
+            }
         }
 
         impl Flows {
@@ -3807,7 +3840,34 @@ pub(super) mod tests {
 
             fn queue(&mut self, n: u64, seq: Range<u64>) {
                 let held = !self.open.is_empty();
-                self.queued.push(Queued { n, seq, held });
+                self.queued.push(Queued {
+                    n: Some(n),
+                    seq,
+                    held,
+                });
+            }
+
+            /// Returns the sessions woken, sorted.
+            fn lose(&mut self, seq: Range<u64>) -> Vec<complete::Key> {
+                if seq.is_empty() {
+                    return Vec::new();
+                }
+                let held = self.pending();
+                self.queued.push(Queued {
+                    n: None,
+                    seq: seq.clone(),
+                    held,
+                });
+                if held {
+                    return Vec::new();
+                }
+                for got in self.open.values_mut() {
+                    got.missed = false;
+                }
+                miss(&mut self.open, &self.readers, &seq);
+                let missed = self.open.iter().filter(|(_, got)| got.missed);
+                let idle = missed.filter(|(_, got)| got.taken == got.frames.len());
+                idle.map(|(&key, _)| key).collect()
             }
 
             /// Whether memory holds a frame with samples that no release gave yet.
@@ -3854,7 +3914,10 @@ pub(super) mod tests {
                     .map(|(&key, _)| key)
                     .collect();
                 let releases = self.queued.iter().any(|queued| {
-                    queued.held && !queued.seq.is_empty() && queued.seq.end <= durable
+                    queued.held
+                        && queued.n.is_some()
+                        && !queued.seq.is_empty()
+                        && queued.seq.end <= durable
                 });
                 for got in self.open.values_mut() {
                     got.missed = releases && !got.owed.is_empty();
@@ -3864,7 +3927,15 @@ pub(super) mod tests {
                     }
                 }
                 let held = self.queued.iter_mut().filter(|queued| queued.held);
-                for queued in held.filter(|queued| queued.seq.end <= durable) {
+                for queued in held.filter(|queued| !queued.seq.is_empty()) {
+                    let Some(n) = queued.n else {
+                        queued.held = false;
+                        miss(&mut self.open, &self.readers, &queued.seq);
+                        continue;
+                    };
+                    if queued.seq.end > durable {
+                        break;
+                    }
                     queued.held = false;
                     for (key, got) in &mut self.open {
                         let position = self.readers.open[key].1.live;
@@ -3873,9 +3944,9 @@ pub(super) mod tests {
                         }
                         if got.owed.is_empty() && got.spent < got.limit {
                             got.spent += CHARGE;
-                            got.frames.push(queued.n);
+                            got.frames.push(n);
                         } else {
-                            got.owed.push(queued.n);
+                            got.owed.push(n);
                         }
                     }
                 }
@@ -3913,6 +3984,7 @@ pub(super) mod tests {
                 (any::<usize>(), 0..4_u64).prop_map(|(i, ahead)| Live::Ack(i, ahead)),
                 (any::<usize>(), 0..6 * CHARGE).prop_map(|(i, b)| Live::Grant(i, b)),
                 (0..3_u64, 0..4_u64).prop_map(|(gap, len)| Live::Queue { gap, len }),
+                (0..3_u64, 0..4_u64).prop_map(|(gap, len)| Live::Lose { gap, len }),
                 (0..4_u64).prop_map(Live::Release),
                 any::<usize>().prop_map(Live::Take),
             ]
@@ -3951,8 +4023,10 @@ pub(super) mod tests {
         /// and one that still waits at the next release that gives a frame is a miss. A
         /// session that starts at or below a sample no longer in memory gets none, and
         /// nothing is kept with no session open. A named reader that resumes starts
-        /// where its last session stopped. A release wakes each session that had no
-        /// frame waiting and now has one or missed one.
+        /// where its last session stopped. Lost samples apply once each frame before
+        /// them is released, whatever `durable` is: each session that waits for credit
+        /// or that they end past misses them. A release or a loss wakes each session
+        /// that had no frame waiting and now has one or missed one.
         ///
         /// The `n`th open takes `limits[n]`, or 0 past the end of `limits`.
         fn check_live(steps: Vec<Live>, limits: &[u64]) {
@@ -3991,6 +4065,13 @@ pub(super) mod tests {
                         end = seq.end;
                         readers.queue(&frames.frame(made), &frames.set, seq.clone());
                         model.queue(made, seq);
+                    }
+                    Live::Lose { gap, len } => {
+                        let seq = end + gap..end + gap + len;
+                        end = seq.end;
+                        let mut woken = readers.lose(seq.clone()).to_vec();
+                        woken.sort_unstable();
+                        assert_eq!(woken, model.lose(seq));
                     }
                     Live::Release(back) => {
                         let durable = end.saturating_sub(back);
