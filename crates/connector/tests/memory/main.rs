@@ -1,7 +1,8 @@
 //! At the start of the next run, and at each 10 ms of the sim clock from the start of
 //! a run that ends with a device or retry error of 1 MiB, or with a device error whose
-//! text comes in two pieces of 1023 and 1 bytes, the process holds less than the cut
-//! text twice over the same run in a twin sim, where it ends with an error of 1 byte.
+//! text comes in two pieces of 1023 and 1 bytes, the process holds at most the bytes
+//! of [`Pool::over`] more than over the same run in a twin sim, where it ends with an
+//! error of 1 byte.
 //! The run has a task that lives 2 s more. In a second set of twins, a rival writer
 //! keeps the pool full around the run, so the home applies its frames late. The twins
 //! add their larger steps of memory at the same runs, so the steps cancel. This binary
@@ -56,6 +57,17 @@ enum Last {
 enum Pool {
     Free,
     Full,
+}
+
+impl Pool {
+    /// The most bytes that run [`SHORT`] holds over its twin, as measured, so that a
+    /// spare capacity of the cut text fails the test.
+    fn over(self) -> usize {
+        match self {
+            Self::Free => 1_985,
+            Self::Full => 1_023,
+        }
+    }
 }
 
 /// An error whose text comes in two pieces, of 1023 bytes then 1, so that the string
@@ -236,7 +248,7 @@ fn main() {
         for last in [Last::Large, Last::Pieces, Last::Retry] {
             let held = held(last, pool);
             assert!(
-                held < short + 2 * 1_024,
+                held <= short + pool.over(),
                 "from run {SHORT} to the next, the sim holds {short} bytes after a \
                  short error, {held} after {last:?}, with the pool {pool:?}"
             );
