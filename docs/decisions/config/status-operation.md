@@ -9,8 +9,8 @@
   `note`, or `null` when the kind shows none (`laptop.architect-2`,
   2026-10-13T23:48:35Z,
   https://github.com/synnaxlabs/foundation/issues/2630#issuecomment-6157620934, which
-  supersedes the columns in and confirmed). The count `in` gives the samples that the connector read and the home applied (`laptop.architect-2`,
-  2026-10-13T04:35:20Z,
+  supersedes the columns in and confirmed). The count `in` gives the samples that the
+  connector read and the home applied (`laptop.architect-2`, 2026-10-13T04:35:20Z,
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6138315099, which
   supersedes the `c.status.in` line of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186). The CLI
@@ -62,10 +62,10 @@
   supersedes "A spec with no connector on the node gives an empty list" of item 5 of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119). When
   #1028 checks each open of the hub, this check moves there. Deferred to
-  https://github.com/synnaxlabs/foundation/issues/2530: the time of the next restart
-  and MCP. Lost: `serve` replies with the text, so that `--json` and MCP each need a
-  second reply; `status` asks the supervisors, a second source of status with its own
-  access check. Decided by `laptop.architect-2` (2026-10-13T00:58:53Z,
+  https://github.com/synnaxlabs/foundation/issues/2530: the time of the next restart and
+  MCP. Lost: `serve` replies with the text, so that `--json` and MCP each need a second
+  reply; `status` asks the supervisors, a second source of status with its own access
+  check. Decided by `laptop.architect-2` (2026-10-13T00:58:53Z,
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119, which
   supersedes "The operation" of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186; the text
