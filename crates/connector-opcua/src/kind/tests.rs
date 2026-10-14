@@ -150,7 +150,8 @@ fn decode(received: &Received<'_>) -> Frame {
     frame
 }
 
-/// Reads each frame of `names` into the vector it gives, in a task on `tasks`.
+/// Reads each frame of `names` into the vector it gives, in a task on `tasks`. A
+/// frame that the home loses ends the reader `Behind`, so the task opens it again.
 async fn record(
     hub: &hub::Hub,
     names: &[Name],
@@ -163,12 +164,20 @@ async fn record(
         name: None,
         hold: Span::ZERO,
     };
-    let mut reader = hub.reader(config).await.expect("the reader opens");
+    let mut reader = hub.reader(config.clone()).await.expect("the reader opens");
     let frames = Rc::new(RefCell::new(Vec::new()));
     let into = Rc::clone(&frames);
+    let hub = hub.clone();
     tasks.spawn(async move {
-        while let Ok(received) = reader.next().await {
-            into.borrow_mut().push(decode(&received));
+        loop {
+            match reader.next().await {
+                Ok(received) => into.borrow_mut().push(decode(&received)),
+                Err(hub::reader::Ended::Behind) => {
+                    let again = hub.reader(config.clone()).await;
+                    reader = again.expect("the reader opens again");
+                }
+                Err(_) => break,
+            }
         }
     });
     frames
