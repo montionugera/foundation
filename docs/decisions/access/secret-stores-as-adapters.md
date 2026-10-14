@@ -27,7 +27,8 @@
   https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6150793141), so a
   value added heals the run at its next restart. Each get reads into a pool from
   `block::Pool::erased`, which, once the pool and its blocks have dropped, writes zero
-  over each range that the pool committed, also after a failed or dropped read
+  over the first `ALIGN` bytes and each range that the pool committed, also after a
+  failed or dropped read
   (`laptop.architect`:
   https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6151055798,
   https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6151395377,

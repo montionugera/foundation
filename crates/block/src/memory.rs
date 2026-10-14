@@ -215,7 +215,9 @@ mod tests {
     }
 
     /// Reads `committed`, since the first `ALIGN` bytes hold only the header of the
-    /// region, which holds no byte of a block, so no caller can see their erase.
+    /// region, which holds no byte of a block, so no caller can see their erase. A
+    /// commit next to a range that adds a range in place of a join erases the same
+    /// bytes, so a caller sees only a longer record.
     #[test]
     fn erased_records_the_first_bytes_and_merges_a_commit_that_touches_a_range() {
         let memory = Erased::new(4096);
