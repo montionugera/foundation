@@ -9,6 +9,9 @@ use crate::entry::Header;
 use crate::record::{ALIGN, BLOCK};
 use crate::wal::{Ends, Layout, Position, Writer};
 
+/// The area of the ring of [`Logs`]: 256 records of a block.
+const AREA: u64 = 256 * BLOCK;
+
 /// The body lengths of the records of a commit, in turn.
 const LENS: [usize; 5] = [8, 8, ALIGN, 8, 2 * ALIGN];
 
@@ -101,7 +104,7 @@ impl Logs {
             })
             .collect();
         Self {
-            inner: crate::log::Logs::default(),
+            inner: crate::log::Logs::new(AREA),
             headers,
             offset: BLOCK,
             commits: 0,
@@ -259,8 +262,9 @@ mod tests {
 
     /// Each commit moves the durable tail of each index past one more entry, and
     /// each log keeps two runs: the run of its holder, and the new one. It reads the
-    /// private logs: `commit` gives nothing back, and only the `logs` bench calls it,
-    /// so no caller sees a commit that skips the sync or the hide.
+    /// private logs: `commit` gives nothing back, and only the `logs` bench and the
+    /// `alloc` and `memory` tests call it, whose counts do not change when a commit
+    /// skips the hide.
     #[test]
     fn each_commit_of_the_logs_syncs_one_entry_of_each_index() {
         let mut logs = Logs::new(2);

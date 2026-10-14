@@ -99,11 +99,11 @@ fn wait_once(buffer: &Buffer, commit: u64) {
     }
 }
 
-/// The allocations of 1024 calls of `commit` on logs of 4 indexes, after 64 calls
-/// that warm them up.
-fn commits(mut commit: impl FnMut(&mut buffer::bench::Logs)) -> u64 {
-    let mut logs = buffer::bench::Logs::new(4);
-    for _ in 0..64 {
+/// The allocations of 1024 calls of `commit` on logs of `indexes` indexes, after
+/// 512 calls that warm them up, which span two laps of the logs.
+fn commits(indexes: u32, mut commit: impl FnMut(&mut buffer::bench::Logs)) -> u64 {
+    let mut logs = buffer::bench::Logs::new(indexes);
+    for _ in 0..512 {
         commit(&mut logs);
     }
     ALLOCATOR
@@ -115,27 +115,48 @@ fn commits(mut commit: impl FnMut(&mut buffer::bench::Logs)) -> u64 {
         .1
 }
 
+/// A slow path gets `entries` entries, each in a record of its own that a read
+/// holds, with a carry record of its tail after the last. Then a commit with no
+/// entry trims to the carry record and empties its runs.
+fn slow(logs: &mut buffer::bench::Logs, entries: u64) {
+    for held in 1..entries {
+        logs.trim(1, held);
+    }
+    logs.carry();
+    logs.commit(0);
+}
+
 /// Each trim drops the range that the commit before marked, so the ranges stay in
-/// the memory that the warm-up gave them. A slow path gets 1 to 4 entries, in turn,
-/// each in a record of its own that a read holds, with a carry record of its tail
-/// after the last. Then a commit with no entry trims to the carry record and empties
-/// its runs: the room that the trim keeps takes the next entries.
+/// the memory that the warm-up gave them. The runs of the other shapes swing inside
+/// a lap, so the room of each lap holds the runs of the next.
 fn logs_take_no_allocation() {
-    let n = commits(buffer::bench::Logs::mark);
+    let n = commits(4, buffer::bench::Logs::mark);
     assert_eq!(n, 0, "{n} allocations in 1024 marked trims");
     let mut entries = 0;
-    let n = commits(|logs| {
+    let n = commits(4, |logs| {
         entries = entries % 4 + 1;
-        for held in 1..entries {
-            logs.trim(1, held);
-        }
-        logs.carry();
-        logs.commit(0);
+        slow(logs, entries);
     });
     assert_eq!(
         n, 0,
         "{n} allocations in 1024 trims that empty 4 slow paths"
     );
+    let n = commits(4, |logs| slow(logs, 6));
+    assert_eq!(
+        n, 0,
+        "{n} allocations in 1024 trims after 6 entries of 4 paths"
+    );
+    let n = commits(64, |logs| logs.trim(64, 0));
+    assert_eq!(
+        n, 0,
+        "{n} allocations in 1024 trims of 64 paths, one of them slow"
+    );
+    let mut commit = 0;
+    let n = commits(4, |logs| {
+        logs.trim(1, commit % 8);
+        commit += 1;
+    });
+    assert_eq!(n, 0, "{n} allocations in 1024 trims of a read that holds 8");
 }
 
 fn main() {
