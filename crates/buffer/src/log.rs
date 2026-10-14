@@ -241,7 +241,8 @@ struct Log {
     /// The seq at which the first synced entry starts. `None` before it, and after a
     /// carried tail: its count is exact, and no trim passed an entry after it.
     origin: Option<u64>,
-    /// The offset of the trim that started the lap of the path.
+    /// The offset at which the lap of the path started: 0, or the offset of the trim
+    /// that ended the lap before.
     lap: u64,
     /// The most runs that a trim of the lap met.
     peak: u32,
@@ -286,7 +287,7 @@ impl Log {
     }
 
     /// Drops the oldest run when it is of the record at `offset`. The first trim at
-    /// least `area` after the one that started the lap ends it: when the room is over
+    /// least `area` after the start of the lap ends it: when the room is over
     /// four times the most runs that a trim of the lap met, or over four with none, it
     /// shrinks the room to twice them, or to two. So runs that swing inside a lap take
     /// no allocation, and the room is at most four times the most runs of two laps.
