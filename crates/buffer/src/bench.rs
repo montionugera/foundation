@@ -84,15 +84,28 @@ impl Logs {
     /// The logs of `indexes` indexes on the live path.
     #[must_use]
     pub fn new(indexes: u32) -> Self {
+        Self::of(indexes, 1, Some(Stamp::from_nanos(1)))
+    }
+
+    /// The logs of `indexes` indexes on the live path, whose entries have no
+    /// samples and come at the seq of the entry before. Each sync in a later
+    /// record marks a range.
+    #[must_use]
+    pub fn empty(indexes: u32) -> Self {
+        Self::of(indexes, 0, None)
+    }
+
+    /// The logs of `indexes` indexes whose entries hold `len` samples up to `last`.
+    fn of(indexes: u32, len: u32, last: Option<Stamp>) -> Self {
         let headers = (0..indexes)
             .map(|n| {
                 let header = Header {
                     index: channel::Key::from_u128(u128::from(n) + 1),
                     path: Path::Live,
                     first: 0,
-                    len: 1,
+                    len,
                     stored_at: Stamp::from_nanos(1),
-                    last: Some(Stamp::from_nanos(1)),
+                    last,
                     tag: 0,
                     bytes: 8,
                 };
@@ -118,7 +131,7 @@ impl Logs {
                 self.inner
                     .sync(*slot, header, self.offset)
                     .expect("entries in order");
-                header.first += 1;
+                header.first += u64::from(header.len);
             }
         }
         self.offset += BLOCK;
@@ -165,8 +178,8 @@ impl Logs {
     /// and syncs one data entry of each index but the last, which syncs one each
     /// `period` commits, so its item is the last of its record. Then it takes the
     /// idle tails before the record, at most one per index, and hides the records
-    /// before the oldest holder, or before the record `held` commits back, as a
-    /// read that holds it, when that one is older.
+    /// before the landing of the oldest holder, or of the record `held` commits
+    /// back, as a read that holds it, when that one is older.
     pub fn trim(&mut self, period: u32, held: u64) {
         let slow = self.commits.is_multiple_of(period);
         self.commits = self.commits.wrapping_add(1);
@@ -176,14 +189,15 @@ impl Logs {
             self.inner
                 .sync(*slot, header, self.offset)
                 .expect("entries in order");
-            header.first += 1;
+            header.first += u64::from(header.len);
         }
         self.tails.clear();
         self.inner
             .idle(self.offset, self.headers.len(), &mut self.tails);
         let kept = self.inner.kept().expect("a path has a synced entry");
         let read = self.offset.saturating_sub(held * BLOCK).max(BLOCK);
-        self.inner.hide(kept.min(read));
+        let landing = self.inner.marked().land(kept.min(read));
+        self.inner.hide(landing);
         self.offset += BLOCK;
     }
 
