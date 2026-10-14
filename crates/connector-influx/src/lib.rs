@@ -24,7 +24,7 @@ pub mod sim;
 use std::future;
 
 use connector::kind::{self, Channels, Context, Error};
-use connector::{cancel, reader};
+use connector::{cancel, reader, secret};
 use document::diagnostic::{Code, Diagnostic};
 use document::value::{self, Value};
 use document::{Document, read};

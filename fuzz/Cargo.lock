@@ -336,7 +336,6 @@ dependencies = [
  "document",
  "http",
  "hub",
- "secret",
  "types",
  "unicode-properties",
 ]

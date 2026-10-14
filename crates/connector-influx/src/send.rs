@@ -10,6 +10,7 @@ use bytes::Bytes;
 use connector::http::Client;
 use connector::kind::{Context, Error};
 use connector::retry::{self, Backoff};
+use connector::secret;
 use http::header::{AUTHORIZATION, HeaderValue};
 use http::{Request, StatusCode, Uri};
 use hub::reader::{Ended, Position, Received};

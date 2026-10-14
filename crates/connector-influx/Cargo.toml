@@ -21,7 +21,6 @@ env = { path = "../env", optional = true }
 http.workspace = true
 hub = { path = "../hub" }
 influxdb-line-protocol = { workspace = true, optional = true }
-secret = { path = "../secret" }
 types = { path = "../types" }
 unicode-properties.workspace = true
 

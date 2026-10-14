@@ -67,3 +67,10 @@
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6155189112), with
   the surface that it approved on 2026-10-13T21:26:42Z
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6155552036).
+
+  A kind names `Source` and `Value` through `connector::secret`, which re-exports them
+  from `secret`. So a `connector-<kind>` crate does not depend on `secret`, and does
+  not see `Resolver`, the stores, or the seal, which no kind may call. Lost: `secret`
+  in the `connector-<kind>` line of the crate map. Decided by `laptop.architect-2` on
+  2026-10-14T04:40:48Z
+  (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6161042898).

@@ -1,9 +1,8 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use bytes::Bytes;
 use connector::supervisor;
@@ -45,8 +44,8 @@ type End = Rc<RefCell<Option<Result<(), Error>>>>;
 /// (2) and `edge.b` (3), the `i64` channel `edge.count` (4), the `f64` channel `time`
 /// (5), and the status channels of `influx`, and an InfluxDB that answers each
 /// request with the next answer of its list. After the last, it writes the body to its
-/// store, and answers 204, or 400 when the store refuses a line. Its node has the
-/// variables `INFLUX_TOKEN` (`t0ken`) and `BROKEN` (with a line break).
+/// store, and answers 204, or 400 when the store refuses a line. Its store holds the
+/// secret `plant.influx_token` (`s3cret`).
 struct Plant {
     hub: hub::Hub,
     supervisor: Supervisor,
@@ -85,13 +84,9 @@ impl Plant {
             tasks: tasks.clone(),
         };
         let kinds = Table::new().with("influx", Kind);
-        let mut inputs = testing::create_config(env, node.net(), kinds).await;
-        let vars = BTreeMap::from([
-            ("INFLUX_TOKEN".into(), "t0ken".into()),
-            ("BROKEN".into(), "t0\nken".into()),
-        ]);
-        let secrets = std::path::Path::new("secrets");
-        inputs.secrets = secret::Resolver::new(Arc::new(vars), node.files(), secrets);
+        let inputs = testing::create_config(env, node.net(), kinds).await;
+        let token = "plant.influx_token".parse().expect("a name");
+        testing::create_secret(&node.files(), &token, b"s3cret").await;
         define(&inputs);
         let errors = read_errors(&inputs.hub, &tasks).await;
         let confirmed = read_confirmed(&inputs.hub, &tasks).await;
@@ -491,9 +486,9 @@ async fn send_one(
 }
 
 #[test]
-fn sends_the_token_of_a_variable_or_a_file_in_each_request() {
-    let got =
-        [("env", "INFLUX_TOKEN"), ("file", TOKEN_FILE)].map(|(function, argument)| {
+fn sends_the_token_of_a_store_or_a_file_in_each_request() {
+    let got = [("secret", "plant.influx_token"), ("file", TOKEN_FILE)].map(
+        |(function, argument)| {
             run(move |node, tasks| async move {
                 node.paths()
                     .write(std::path::Path::new(TOKEN_FILE), b"f1le\n")
@@ -504,12 +499,13 @@ fn sends_the_token_of_a_variable_or_a_file_in_each_request() {
                 let points = plant.store.borrow().points("telemetry", &[]).count();
                 (auth, errors, end.is_none(), points)
             })
-        });
+        },
+    );
     assert_eq!(
         got,
         [
             (
-                vec![Some("Token t0ken".to_owned())],
+                vec![Some("Token s3cret".to_owned())],
                 vec![String::new()],
                 true,
                 1
@@ -606,8 +602,11 @@ fn ends_the_run_when_the_token_is_gone_after_a_401() {
 #[test]
 fn ends_the_run_at_a_token_that_a_header_cannot_hold() {
     let got = run(|node, tasks| async move {
+        node.paths()
+            .write(std::path::Path::new(TOKEN_FILE), b"t0\nken\n")
+            .expect("writes");
         let plant = Plant::new(node, tasks).await;
-        let config = with_token(&plant, "env", "BROKEN");
+        let config = with_token(&plant, "file", TOKEN_FILE);
         let (auth, errors, _) = send_one(&plant, config).await;
         (auth, errors)
     });
@@ -617,9 +616,10 @@ fn ends_the_run_at_a_token_that_a_header_cannot_hold() {
             vec![],
             vec![
                 String::new(),
-                "the token env(\"BROKEN\") holds a byte that an HTTP header cannot \
-                 hold. Write the token with no control byte"
-                    .to_owned(),
+                format!(
+                    "the token file(\"{TOKEN_FILE}\") holds a byte that an HTTP header \
+                     cannot hold. Write the token with no control byte"
+                ),
             ]
         )
     );
