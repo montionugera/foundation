@@ -325,26 +325,26 @@ impl Client {
         // They can hold the requests and the values of a read that did not end.
         self.reads.requests.borrow_mut().clear();
         self.reads.failed.set(None);
+        // Only a growth needs a fill: a good read writes each value.
         let mut values = self.reads.values.take();
-        values.clear();
         values.resize(nodes.count, UNREAD);
         self.reads.values.set(values);
         // The first requests go before the drive moves the connections on, so a
         // connection that closed since the last read fails them in their answers.
-        let (mut sent, mut first) = (0, 0);
-        self.send(nodes, &mut sent, &mut first)?;
+        let mut sent = 0;
+        self.send(nodes, &mut sent)?;
         let read = self
             .connections
             .drive_until(Some(deadline), |_| {
                 loop {
-                    if let Err(status) = self.send(nodes, &mut sent, &mut first) {
+                    if let Err(status) = self.send(nodes, &mut sent) {
                         return Poll::Ready(Err(status));
                     }
                     self.connections.events().run();
                     if let Some(status) = self.reads.failed.get() {
                         return Poll::Ready(Err(status));
                     }
-                    if sent == nodes.requests.len() {
+                    if sent == nodes.parts.len() {
                         return if self.reads.requests.borrow().is_empty() {
                             Poll::Ready(Ok(()))
                         } else {
@@ -370,16 +370,10 @@ impl Client {
         Ok(&self.values)
     }
 
-    /// Sends the requests of `nodes` from the index `sent`, whose first node has the
-    /// index `first`, while fewer than [`READS`] are in flight and no answer of this
-    /// read failed, and moves `sent` and `first` past each.
-    fn send(
-        &self,
-        nodes: &Nodes,
-        sent: &mut usize,
-        first: &mut usize,
-    ) -> Result<(), Status> {
-        while let Some(&(request, count)) = nodes.requests.get(*sent)
+    /// Sends the requests of `nodes` from the index `sent` while fewer than [`READS`]
+    /// are in flight and no answer of this read failed, and moves `sent` past each.
+    fn send(&self, nodes: &Nodes, sent: &mut usize) -> Result<(), Status> {
+        while let Some(&Part { raw, first, count }) = nodes.parts.get(*sent)
             && self.reads.pending.get() < READS
             && self.reads.failed.get().is_none()
         {
@@ -388,7 +382,7 @@ impl Client {
             let status = Status(unsafe {
                 ffi::shim_client_read(
                     self.raw.as_ptr(),
-                    request.as_ptr(),
+                    raw.as_ptr(),
                     answer,
                     ptr::from_ref::<Reads>(&self.reads).cast_mut().cast(),
                     &raw mut key,
@@ -398,12 +392,8 @@ impl Client {
                 return Err(status);
             }
             self.reads.pending.set(self.reads.pending.get() + 1);
-            self.reads.requests.borrow_mut().push(Request {
-                key,
-                first: *first,
-                count,
-            });
-            (*sent, *first) = (*sent + 1, *first + count);
+            (self.reads.requests.borrow_mut()).push(Request { key, first, count });
+            *sent += 1;
         }
         Ok(())
     }
@@ -507,11 +497,21 @@ impl Drop for Client {
 
 /// The Read requests of a list of nodes, built once.
 pub(crate) struct Nodes {
-    /// Each request with its count of nodes, in node order.
-    requests: Vec<(NonNull<ffi::ReadRequest>, usize)>,
+    /// Each request, in node order.
+    parts: Vec<Part>,
     count: usize,
     /// The [`Client::key`] of the client that checked it.
     client: Rc<()>,
+}
+
+/// A Read request of a [`Nodes`].
+#[derive(Clone, Copy)]
+struct Part {
+    raw: NonNull<ffi::ReadRequest>,
+    /// The index of its first node in the list.
+    first: usize,
+    /// Its count of nodes.
+    count: usize,
 }
 
 impl Nodes {
@@ -530,23 +530,27 @@ impl Nodes {
     /// If open62541 cannot allocate a request, as [`alloc::exhausted`] says.
     fn new(nodes: &[Node], counts: &[usize], client: Rc<()>) -> Self {
         let raw: Vec<ffi::Node<'_>> = nodes.iter().map(Into::into).collect();
-        let mut rest = &raw[..];
-        let requests = counts
+        let mut first = 0;
+        let parts = counts
             .iter()
             .map(|&count| {
-                let (part, after) = rest.split_at(count);
-                rest = after;
+                let part = &raw[first..first + count];
                 // SAFETY: `part` holds `count` nodes, and C copies each name.
                 let request = unsafe { ffi::shim_read_new(part.as_ptr(), count) };
                 let Some(request) = NonNull::new(request) else {
                     alloc::exhausted()
                 };
-                (request, count)
+                first += count;
+                Part {
+                    raw: request,
+                    first: first - count,
+                    count,
+                }
             })
             .collect();
-        assert!(rest.is_empty(), "invariant: the counts take each node");
+        assert_eq!(first, nodes.len(), "invariant: the counts take each node");
         Self {
-            requests,
+            parts,
             count: nodes.len(),
             client,
         }
@@ -555,22 +559,28 @@ impl Nodes {
     /// Gives the count of nodes of each request, in order.
     #[cfg(test)]
     fn counts(&self) -> Vec<usize> {
-        self.requests.iter().map(|&(_, count)| count).collect()
+        self.parts.iter().map(|part| part.count).collect()
     }
 
-    /// Gives the first request, which lives while `self` does. A [`Nodes::unchecked`]
-    /// has one.
+    /// Gives the one request of a [`Nodes::unchecked`], which lives while `self` does.
+    ///
+    /// # Panics
+    ///
+    /// If `self` has more than one request.
     #[cfg(feature = "sim")]
     pub(crate) fn raw(&self) -> *mut ffi::ReadRequest {
-        self.requests[0].0.as_ptr()
+        let [part] = self.parts[..] else {
+            panic!("invariant: a bench reads a list of one request");
+        };
+        part.raw.as_ptr()
     }
 }
 
 impl Drop for Nodes {
     fn drop(&mut self) {
-        for &(request, _) in &self.requests {
+        for part in &self.parts {
             // SAFETY: the request lives, and nothing else holds it.
-            unsafe { ffi::shim_read_free(request.as_ptr()) };
+            unsafe { ffi::shim_read_free(part.raw.as_ptr()) };
         }
     }
 }
