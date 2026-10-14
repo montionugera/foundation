@@ -30,11 +30,11 @@ dispatch of `tracing` is one per thread. `os` sets the log of a shard or a dedic
 thread for the life of its OS thread and around its spawn, and `sim` enters the log of
 a thread around each call that runs its code: each poll, each drop of a task or a
 start, and each drop of a panic payload that it catches. A panic that a start passes
-to its caller is the caller's. Each waker of a net, serial, or file event, and each
-block that a file call keeps, wakes and drops with the log of the thread whose poll
-gave it. So an event goes only to the log of its node, or to no sink. No crate sets a
-default for the whole process (a lint), and the time of a line comes only from `clock`
-(`laptop.director`, 2026-10-13T21:12:40Z,
+to its caller is the caller's. Each waker of a net, serial, or file event wakes and
+drops with the log of the thread whose poll gave it, and so does the memory of its
+event. A waker given outside a poll has no log. So an event goes only to the log of its
+node, or to no sink. No crate sets a default for the whole process (a lint), and the
+time of a line comes only from `clock` (`laptop.director`, 2026-10-13T21:12:40Z,
 https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155299486).
 
 ## Layers

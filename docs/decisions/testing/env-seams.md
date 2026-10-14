@@ -68,10 +68,10 @@
   panic payload that the driver catches. A panic that `start` passes to its caller is
   the caller's. `os` sets it for the life of the OS thread and around the spawn, whose
   failure drops the node's code on the calling thread. `sim` enters it around each such
-  call. Each waker of a net, serial, or file event, and each block that a file call
-  keeps, wakes and drops with the log of the thread whose poll gave it. A `Shards` or
-  `Threads` that is not logged drops each event (`laptop.architect-2`,
-  2026-10-13T21:13:43Z, item 1 of
+  call. Each waker of a net, serial, or file event wakes and drops with the log of the
+  thread whose poll gave it, and so does the memory of its event. A waker given outside
+  a poll has no log. A `Shards` or `Threads` that is not logged drops each event
+  (`laptop.architect-2`, 2026-10-13T21:13:43Z, item 1 of
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155317582; rule
   meaning: `laptop.director`, 2026-10-13T21:12:40Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155299486; the
@@ -80,7 +80,8 @@
   https://github.com/synnaxlabs/foundation/pull/2657#issuecomment-6160057412, and
   2026-10-14T03:43:43Z,
   https://github.com/synnaxlabs/foundation/pull/2657#issuecomment-6160393075; the wakers
-  and blocks of events: OK OWED).
+  of events: `laptop.architect-2`, 2026-10-14T03:50:33Z,
+  https://github.com/synnaxlabs/foundation/pull/2657#issuecomment-6160469132).
   `env::files` (#37) gives files under one data directory, with owned blocks and a
   sync that poisons the file on failure (S4). One handle at a time holds a file open
   to write, until it drops and its calls end; another write open fails with `Busy`
