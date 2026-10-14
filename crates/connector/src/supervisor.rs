@@ -120,19 +120,20 @@ impl Opened<'_> {
     /// [`Context::tasks`] ended, or after `cancel` is cancelled. Writes the connector's
     /// status channels as the connector: the whole status at each start and change of
     /// state, and a change of counts alone at most once each second. Each change of
-    /// state, a start too, waits until the home applied the state before it or `cancel`
-    /// is cancelled.
+    /// state, a start too, waits until the home applied the state before it, `cancel`
+    /// is cancelled, or 10 s passed.
     ///
     /// Returns `Ok` when `run` returns `Ok`, when the mesh stopped before the status
     /// channels opened, or when `cancel` is cancelled: at once while the channels are
     /// not open, with no new run while a reader open waits (the open of
     /// [`Supervisor::open`] too), and otherwise once the run returned. It returns, with
     /// `Ok` or an error, only once each task of its last run ended, and the home
-    /// applied its last status frame or `cancel` is cancelled. Neither wait holds once
-    /// the home refused a status frame because the status channels were removed or its
-    /// disk failed: after it, the call writes no more status. A drop of the future
-    /// cancels the run and does not wait for its tasks: to wait, cancel `cancel` and
-    /// await the future. The future is not `Send`: call it on a shard.
+    /// applied its last status frame, `cancel` is cancelled, or 10 s passed. Neither
+    /// wait holds once the home refused a status frame because the status channels
+    /// were removed or its disk failed: after it, the call writes no more status. A
+    /// drop of the future cancels the run and does not wait for its tasks: to wait,
+    /// cancel `cancel` and await the future. The future is not `Send`: call it on a
+    /// shard.
     ///
     /// # Errors
     ///
@@ -1546,12 +1547,16 @@ mod tests {
         );
     }
 
-    /// The status frames of one connector of [`Script`] that returns `Ok` at once,
-    /// whose frames another writer refuses until `held`, and when the call returned.
-    fn refused_until(held: Span, cancel: Option<Span>) -> (Vec<Written>, Span) {
+    /// The status frames of one connector of [`Script`] that plays `steps`, whose
+    /// frames another writer refuses until `held`, and when the call returned.
+    fn refused_until(
+        steps: Vec<Step>,
+        held: Span,
+        cancel: Option<Span>,
+    ) -> (Vec<Written>, Span) {
         run_on(move |node, tasks| async move {
             let script = Script {
-                steps: Mutex::new([Step::Done].into()),
+                steps: Mutex::new(steps.into()),
                 ..Script::default()
             };
             let kinds = Table::new().with("script", script);
@@ -1592,7 +1597,7 @@ mod tests {
 
     #[test]
     fn writes_a_refused_last_frame_again_before_the_call_returns() {
-        let (statuses, returned) = refused_until(ms(500), None);
+        let (statuses, returned) = refused_until(vec![Step::Done], ms(500), None);
         assert_eq!(
             states(&statuses),
             [(0, 0, 0), (3, 0, 0), (2, 0, 0)],
@@ -1607,7 +1612,7 @@ mod tests {
 
     #[test]
     fn writes_a_last_frame_refused_twice_until_the_home_applies_it() {
-        let (statuses, returned) = refused_until(ms(1_500), None);
+        let (statuses, returned) = refused_until(vec![Step::Done], ms(1_500), None);
         assert_eq!(
             states(&statuses),
             [(0, 0, 0), (3, 0, 0), (2, 0, 0)],
@@ -1654,8 +1659,51 @@ mod tests {
     }
 
     #[test]
+    fn returns_after_a_bound_on_each_wait_while_the_home_refuses_each_frame() {
+        let (statuses, returned) = refused_until(vec![Step::Done], ms(60_000), None);
+        assert_eq!(
+            states(&statuses),
+            [],
+            "the call returned before the home applied"
+        );
+        assert_eq!(
+            returned,
+            ms(30_000),
+            "10 s for `state` 0 before `state` 3, for `state` 3 before `state` 2, and \
+             for `state` 2"
+        );
+    }
+
+    #[test]
+    fn restarts_after_a_bound_on_each_wait_while_the_home_refuses_each_frame() {
+        let (statuses, returned) =
+            refused_until(vec![Step::Retry, Step::Done], ms(35_000), None);
+        assert_eq!(
+            states(&statuses),
+            [(0, 3, 1), (3, 0, 1), (2, 0, 1)],
+            "the first frame that the home applies holds the restart"
+        );
+        assert!(
+            returned > ms(35_000) && returned < ms(37_000),
+            "returns after the frames of the restart apply: {returned:?}"
+        );
+    }
+
+    #[test]
+    fn writes_a_last_frame_refused_for_5_s_until_the_home_applies_it() {
+        let (statuses, returned) = refused_until(vec![Step::Done], ms(5_000), None);
+        assert_eq!(
+            states(&statuses),
+            [(0, 0, 0), (3, 0, 0), (2, 0, 0)],
+            "each state after the one that the home refused waits for it"
+        );
+        assert_eq!(returned, ms(5_000), "returns once the frame of 5 s applied");
+    }
+
+    #[test]
     fn returns_at_a_cancel_while_the_last_frame_waits() {
-        let (statuses, returned) = refused_until(ms(2_500), Some(ms(500)));
+        let (statuses, returned) =
+            refused_until(vec![Step::Done], ms(2_500), Some(ms(500)));
         assert_eq!(states(&statuses), [], "no frame after the cancel");
         assert_eq!(returned, ms(500));
     }

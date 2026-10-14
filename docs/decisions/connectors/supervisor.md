@@ -279,17 +279,23 @@
   the home does not apply (`Waiting`, `Reserved`, `Order`, or `Lost`), or for which the
   shard's pool has no block now (`block::Error::Exhausted` or `Refused` in
   `frame::Error::Pool`), leaves the status staged, so it is written again one second
-  later, also the last frame of a call: the call returns once the home applied it, or
-  once `cancel` is cancelled. The pool case is load, not a defect (`laptop.architect-2`,
+  later, also the last frame of a call: the call returns once the home applied it, once
+  `cancel` is cancelled, or after 10 s (`SETTLE`). The pool case is load, not a defect
+  (`laptop.architect-2`,
   2026-10-09T21:32:53Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6089614613). A
   status frame larger than the largest block of the pool (`block::Error::TooLarge`) is a
   defect, and panics (`laptop.architect-2`, 2026-10-09T21:40:46Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6089720287). A
-  change of state waits until the home applied the state before it, or until `cancel` is
-  cancelled, so no state replaces a state that the home did not apply. A start whose
-  wait a cancel ends writes nothing, and no run starts. After `Failure::Removed` or
-  `home::Error::Disk`, no change of state waits (`laptop.architect-2`,
+  change of state waits until the home applied the state before it, until `cancel` is
+  cancelled, or for at most 10 s (`SETTLE`), so no state replaces a state that the home
+  did not apply in normal load. After `SETTLE`, it goes on, and the next frame that the
+  home applies replaces the state that it did not apply, since each frame holds the
+  whole status. The status does not report the loss: the frames that would carry it are
+  the ones that the home drops (`laptop.architect-2`, 2026-10-14T02:09:48Z:
+  https://github.com/synnaxlabs/foundation/issues/2653#issuecomment-6159318680). A start
+  whose wait a cancel ends writes nothing, and no run starts. After `Failure::Removed`
+  or `home::Error::Disk`, no change of state waits (`laptop.architect-2`,
   2026-10-09T21:46:07Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6089790301).
   Supersedes "at once" in rule 3 of

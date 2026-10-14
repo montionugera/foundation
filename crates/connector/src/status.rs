@@ -69,6 +69,9 @@ const ERROR: usize = SUPERVISOR.len();
 const ERROR_MAX: usize = 1024;
 /// The least time between two writes of a change of counts alone.
 const PERIOD: Span = Span::SECOND;
+/// The most time that a wait for the home to apply the status lasts. After it, the
+/// change goes on, and the next frame that the home applies holds the whole status.
+const SETTLE: Span = Span::from_nanos(10 * Span::SECOND.nanos());
 
 /// The status channels of `connector`: the name of their index, then the name and
 /// sample type of each channel on it, the supervisor's first, then each of `counts`
@@ -514,30 +517,35 @@ impl Writer {
         self.set(|session| session.phase = Phase::Stopped).await;
     }
 
-    /// Writes the change of state that `change` makes, after the home applied the
-    /// change before it or `cancel` is cancelled, so that no state replaces a state
-    /// that the home did not apply.
+    /// Writes the change of state that `change` makes, after [`Self::applied`], so
+    /// that no state replaces a state that the home did not apply in normal load.
     async fn set(&self, change: impl FnOnce(&mut Session)) {
         self.applied().await;
         self.change(change);
     }
 
-    /// Waits until the home applied the last change of state or `cancel` is
-    /// cancelled.
+    /// Waits until the home applied the last change of state, `cancel` is cancelled,
+    /// or [`SETTLE`] passed.
     async fn applied(&self) {
         self.settle(|| self.session.borrow().unapplied).await;
     }
 
     /// Writes the status while `pending`, at most once each [`PERIOD`] after the last
-    /// write, until `cancel` is cancelled.
+    /// write, until `cancel` is cancelled or [`SETTLE`] after the call.
     async fn settle(&self, pending: impl Fn() -> bool) {
-        self.cancel
-            .race(async {
-                while pending() {
-                    self.write_staged().await;
-                }
-            })
-            .await;
+        let mut bound = pin!(self.clock.sleep_until(self.clock.now() + SETTLE));
+        let mut writes = pin!(async {
+            while pending() {
+                self.write_staged().await;
+            }
+        });
+        let bounded = poll_fn(|cx| {
+            if bound.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(());
+            }
+            writes.as_mut().poll(cx)
+        });
+        self.cancel.race(bounded).await;
     }
 
     /// Writes the change of state that `change` makes.
@@ -551,7 +559,7 @@ impl Writer {
     /// Polls `run` to its end. Meanwhile it writes the status that a kind staged or
     /// the home did not apply, at most once each [`PERIOD`] after the last write.
     /// Then it writes it the same way until the home applied it, the writer writes no
-    /// more, or `cancel` is cancelled.
+    /// more, `cancel` is cancelled, or [`SETTLE`] passed.
     pub(crate) async fn during<T>(&self, run: impl Future<Output = T>) -> T {
         let output = beside(run, self.flush()).await;
         self.settle(|| self.values.staged.get()).await;
