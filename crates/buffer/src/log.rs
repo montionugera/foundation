@@ -632,8 +632,8 @@ impl Logs {
     ///
     /// [`Invalid::Carried`] when the walk met the path and the carried end is not
     /// its end, or the path has a stamp and the carried stamp is another.
-    /// [`Invalid::Repeated`] when
-    /// the record at `offset` already gave the path its tail. Nothing changes.
+    /// [`Invalid::Repeated`] when the record at `offset` already gave the path its
+    /// tail. Nothing changes.
     ///
     /// # Panics
     ///
