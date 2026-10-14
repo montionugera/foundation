@@ -127,9 +127,9 @@ pub enum Status {
 pub struct Time {
     /// A reading of the node's monotonic clock.
     pub monotonic: Monotonic,
-    /// Mesh time at `monotonic`. The true time is inside the interval, and its
-    /// midpoint is the clock's best guess. `None` until a majority of the clock's
-    /// sources first agree.
+    /// Mesh time at `monotonic`. The true time is inside the interval when the error
+    /// of the clock is known (less than 36500 days). `None` until a majority of the
+    /// clock's sources first agree.
     pub mesh: Option<Interval>,
 }
 
