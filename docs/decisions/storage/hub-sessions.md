@@ -43,6 +43,14 @@
   https://github.com/synnaxlabs/foundation/issues/1170#issuecomment-6054827276), which
   supersedes the hub test of
   https://github.com/synnaxlabs/foundation/pull/1133#issuecomment-6033084119.
+  Amended (#2649): a live frame that finds no room in the buffer is a miss too.
+  `delivery::Readers::lose` ends each complete session whose position it ends past
+  with `Next::Behind`, after the frames before it, in place of a silent gap in `seq`
+  (`laptop.architect`, 2026-10-14T02:10:24Z and 02:12:26Z:
+  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159325971 and
+  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159349684). The hub
+  `sim` test `ends_a_complete_reader_that_sleeps_past_its_window_or_its_ring_as_behind`
+  checks it.
   Corrected by `laptop.architect` (2026-10-11T11:09:17Z:
   https://github.com/synnaxlabs/foundation/pull/2390#issuecomment-6108391183; the source
   of each part and Q21, 2026-10-11T11:41:19Z:
@@ -375,7 +383,9 @@
   https://github.com/synnaxlabs/foundation/pull/2183#issuecomment-6089887271;
   `laptop.architect`, 2026-10-08T10:01:19Z and 2026-10-10T00:57:58Z:
   https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6057419592 and
-  https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6091895275).
+  https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6091895275), or
+  lost because the buffer had no room (#2649, approval owed:
+  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159538423).
   Supersedes the resume where the last complete session opened, of
   https://github.com/synnaxlabs/foundation/pull/2183#issuecomment-6089237192.
   Amended (#1742 PR 3): `Received::position` gives the reader's position after each
