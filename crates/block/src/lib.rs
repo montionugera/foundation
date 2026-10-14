@@ -310,8 +310,8 @@ impl Pool {
 
     /// Creates a pool on heap memory, as [`Pool::heap`] does, for blocks that hold a
     /// secret. When the pool and every block from it have dropped, it writes zero over
-    /// each byte that a block held, with writes that the compiler keeps, before it
-    /// frees the memory.
+    /// the first [`ALIGN`] bytes and over each range that the pool committed, with
+    /// writes that the compiler keeps, before it frees the memory.
     ///
     /// # Panics
     ///

@@ -177,7 +177,8 @@ unsafe impl Memory for Erased {
         let end = end.expect("a commit lies in the memory");
         let mut committed = self.committed.borrow_mut();
         // A pool commits each class from the start of its span up, so a new range
-        // touches the one before it, and the record stays at one range per class.
+        // mostly touches one in the record. A join keeps the union, so no committed
+        // byte leaves the record.
         let touched = committed
             .iter_mut()
             .find(|range| range.start <= end && offset <= range.end);
