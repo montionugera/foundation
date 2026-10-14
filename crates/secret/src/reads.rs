@@ -183,8 +183,8 @@ fn unavailable(error: &files::Error, path: &Path) -> Error {
     const EACCES: i32 = 13;
     const ENOTDIR: i32 = 20;
     const EISDIR: i32 = 21;
-    /// The `os` driver gives it for an open of a file that is not a regular file or
-    /// a directory.
+    /// The `os` driver gives it for an open on the host of a file that is not a regular
+    /// file or a directory.
     const EINVAL: i32 = 22;
     let shown = path.display();
     let detail = match error {
@@ -207,8 +207,8 @@ fn unavailable(error: &files::Error, path: &Path) -> Error {
         files::Error::Io {
             operation, code, ..
         } => format!(
-            "the {operation} of the file {shown} failed with OS error {code}. \
-             Retrying may succeed"
+            "the {operation} of the file {shown} failed with OS error {code}. Check \
+             the path and the file, then retry"
         ),
         error => format!("{error}. Retrying may succeed"),
     };
