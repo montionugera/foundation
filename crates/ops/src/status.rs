@@ -307,10 +307,11 @@ impl Output {
     /// `<name>: note: <text>` when it has a note and a line `<name>: <class> error:
     /// <text>` when it has an error. `COUNTS` holds each count as `<name>=<value>`,
     /// in name order, or `-` when `state` is `unknown`. Each control character of a
-    /// value is escaped, so a value stays on its line. Empty with no connector.
+    /// value is escaped, so a value stays on its line. With no connector, one line
+    /// that does not tell whether the node places a connector.
     pub(crate) fn text(&self) -> String {
         if self.connectors.is_empty() {
-            return String::new();
+            return "You can read no connector on this node.\n".to_owned();
         }
         let head = ["CONNECTOR", "KIND", "STATE", "ADDRESS", "COUNTS"];
         let mut lines = vec![head.map(str::to_owned)];

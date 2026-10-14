@@ -212,6 +212,10 @@ impl Driver for Memory {
     fn free(&self) -> Request<'_, u64> {
         Box::pin(async { Ok(u64::MAX) })
     }
+
+    fn shown(&self, path: &Path) -> PathBuf {
+        path.into()
+    }
 }
 
 struct Open {

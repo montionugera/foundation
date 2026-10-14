@@ -45,7 +45,7 @@ pub(crate) enum Kind {
     Wrap,
     /// The chain continues from the value in the body.
     Restart,
-    /// The tails of paths whose newest data record a later trim passes.
+    /// The tails of paths whose holder a later trim passes.
     Carry,
 }
 

@@ -84,3 +84,28 @@ pub(crate) fn aborted(name: &str, envs: &[(&str, &str)]) -> Output {
     }
     output
 }
+
+/// Runs the test `name` as `output` does, and asserts that it writes `line` to stderr
+/// and ends through `abort` of the C runtime. On Windows the C runtime can write its
+/// own text after `line`.
+pub(crate) fn aborted_in_c(name: &str, envs: &[(&str, &str)], line: &str) {
+    let output = output(name, envs);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        const SIGABRT: i32 = 6;
+        assert_eq!(
+            output.status.signal(),
+            Some(SIGABRT),
+            "{name} {envs:?}: {stderr}"
+        );
+        assert_eq!(stderr, line);
+    }
+    #[cfg(windows)]
+    {
+        // The exit code of `abort` in the C runtime of MinGW.
+        assert_eq!(output.status.code(), Some(3), "{name} {envs:?}: {stderr}");
+        assert!(stderr.starts_with(line), "{stderr:?}");
+    }
+}

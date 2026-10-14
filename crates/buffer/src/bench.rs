@@ -60,7 +60,7 @@ impl Ring {
             let record = Position::new(plan.next, self.chain).expect("aligned");
             self.ends.push(Ends { wrap, record });
         }
-        let tail = self.writer.trimmed(None);
+        let tail = self.writer.trimmed(None, |offset| offset);
         for ends in self.ends.drain(..) {
             self.writer.synced(ends);
         }
@@ -76,6 +76,8 @@ pub struct Logs {
     inner: crate::log::Logs,
     headers: Vec<(Slot, Header)>,
     offset: u64,
+    commits: u32,
+    tails: Vec<crate::carry::Tail>,
 }
 
 impl Logs {
@@ -101,20 +103,86 @@ impl Logs {
             inner: crate::log::Logs::default(),
             headers,
             offset: BLOCK,
+            commits: 0,
+            tails: Vec::new(),
         }
     }
 
-    /// One commit of one record that holds one data entry of each index. It first
-    /// hides the earlier records, as a trim that keeps up, so each log holds one run.
-    /// Then it syncs each entry.
-    pub fn commit(&mut self) {
+    /// One commit of one record that holds `entries` data entries of each index. It
+    /// first hides the earlier records, as a trim that keeps up, so each log holds
+    /// one run. Then it syncs each entry.
+    pub fn commit(&mut self, entries: u32) {
         self.inner.hide(self.offset);
         for (slot, header) in &mut self.headers {
+            for _ in 0..entries {
+                self.inner
+                    .sync(*slot, header, self.offset)
+                    .expect("entries in order");
+                header.first += 1;
+            }
+        }
+        self.offset += BLOCK;
+    }
+
+    /// One commit as `commit(1)`, with an append of each entry, then a carry record
+    /// in the next record that holds the durable tail of each index.
+    pub fn carry(&mut self) {
+        self.inner.hide(self.offset);
+        for (slot, header) in &mut self.headers {
+            self.inner.append(*slot, header).expect("entries in order");
             self.inner
                 .sync(*slot, header, self.offset)
                 .expect("entries in order");
             header.first += 1;
         }
+        self.offset += BLOCK;
+        for (slot, header) in &self.headers {
+            let durable = self.inner.durable(*slot, header.path);
+            let tail = crate::carry::Tail {
+                index: header.index,
+                path: header.path,
+                seq: durable.seq,
+                given: 0,
+                stamp: durable.stamp,
+            };
+            self.inner
+                .carry(*slot, &tail, self.offset)
+                .expect("the durable tail");
+        }
+        self.offset += BLOCK;
+    }
+
+    /// Moves the appended tail of each index past one data entry, with no sync.
+    pub fn append(&mut self) {
+        for (slot, header) in &mut self.headers {
+            self.inner.append(*slot, header).expect("entries in order");
+            header.first += 1;
+        }
+    }
+
+    /// One commit that the oldest holder bounds, as a commit that trims. It appends
+    /// and syncs one data entry of each index but the last, which syncs one each
+    /// `period` commits, so its item is the last of its record. Then it takes the
+    /// idle tails before the record, at most one per index, and hides the records
+    /// before the oldest holder, or before the record `held` commits back, as a
+    /// read that holds it, when that one is older.
+    pub fn trim(&mut self, period: u32, held: u64) {
+        let slow = self.commits.is_multiple_of(period);
+        self.commits = self.commits.wrapping_add(1);
+        let synced = self.headers.len() - usize::from(!slow);
+        for (slot, header) in self.headers.iter_mut().take(synced) {
+            self.inner.append(*slot, header).expect("entries in order");
+            self.inner
+                .sync(*slot, header, self.offset)
+                .expect("entries in order");
+            header.first += 1;
+        }
+        self.tails.clear();
+        self.inner
+            .idle(self.offset, self.headers.len(), &mut self.tails);
+        let kept = self.inner.kept().expect("a path has a synced entry");
+        let read = self.offset.saturating_sub(held * BLOCK).max(BLOCK);
+        self.inner.hide(kept.min(read));
         self.offset += BLOCK;
     }
 }
@@ -155,12 +223,72 @@ mod tests {
     fn each_commit_of_the_logs_syncs_one_entry_of_each_index() {
         let mut logs = Logs::new(2);
         for _ in 0..3 {
-            logs.commit();
+            logs.commit(2);
         }
         for n in 0..2 {
             let slot = Slot::new(n);
-            assert_eq!(logs.inner.durable(slot, Path::Live).seq, 3, "index {n}");
+            assert_eq!(logs.inner.durable(slot, Path::Live).seq, 6, "index {n}");
             assert_eq!(logs.inner.runs(slot, Path::Live).count(), 1, "index {n}");
         }
+    }
+
+    /// Each carry record becomes the holder of each index, and its tail is the end.
+    #[test]
+    fn each_carry_of_the_logs_holds_the_tail_of_each_index() {
+        let mut logs = Logs::new(2);
+        logs.carry();
+        logs.carry();
+        for n in 0..2 {
+            let slot = Slot::new(n);
+            assert_eq!(logs.inner.durable(slot, Path::Live).seq, 2, "index {n}");
+        }
+        assert_eq!(logs.inner.kept(), Some(4 * BLOCK));
+    }
+
+    /// Each call moves the appended tail of each index past one more entry.
+    #[test]
+    fn each_append_of_the_logs_moves_each_index() {
+        let mut logs = Logs::new(2);
+        logs.append();
+        logs.append();
+        for n in 0..2 {
+            let slot = Slot::new(n);
+            assert_eq!(logs.inner.appended(slot, Path::Live).seq, 2, "index {n}");
+            assert_eq!(logs.inner.durable(slot, Path::Live).seq, 0, "index {n}");
+        }
+    }
+
+    /// The last index syncs each third commit, so a trim keeps the records from its
+    /// holder on, and its tail is idle once for each holder.
+    #[test]
+    fn a_trim_keeps_the_records_after_the_holder_of_the_slow_index() {
+        let mut logs = Logs::new(2);
+        let mut idle = Vec::new();
+        for _ in 0..7 {
+            logs.trim(3, 0);
+            idle.push(logs.tails.len());
+        }
+        assert_eq!(idle, [0, 1, 0, 0, 1, 0, 0]);
+        let first: Vec<_> = logs.inner.runs(Slot::new(1), Path::Live).collect();
+        let second = logs.inner.runs(Slot::new(0), Path::Live).count();
+        assert_eq!(
+            first.iter().map(|run| run.offset).collect::<Vec<_>>(),
+            [7 * BLOCK]
+        );
+        assert_eq!(second, 1);
+        assert_eq!(logs.inner.durable(Slot::new(1), Path::Live).seq, 3);
+    }
+
+    /// A read holds the record two commits back, so the runs of the records after it
+    /// stay.
+    #[test]
+    fn a_trim_keeps_the_records_from_the_one_a_read_holds() {
+        let mut logs = Logs::new(2);
+        for _ in 0..7 {
+            logs.trim(3, 2);
+        }
+        let runs = logs.inner.runs(Slot::new(0), Path::Live);
+        let offsets: Vec<u64> = runs.map(|run| run.offset).collect();
+        assert_eq!(offsets, [5 * BLOCK, 6 * BLOCK, 7 * BLOCK]);
     }
 }

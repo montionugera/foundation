@@ -42,6 +42,8 @@ pub struct Config {
     pub tasks: Tasks,
     /// The shard's hub. Each session a kind opens acts as its connector.
     pub hub: hub::Hub,
+    /// The store that [`kind::Context::secret`] reads.
+    pub secrets: Box<dyn secret::store::Store>,
 }
 
 /// Runs connectors of the kinds in a table, one `open` and its `run` at a time per
@@ -1208,6 +1210,94 @@ mod tests {
         );
         let texts: Vec<_> = errors(&out.statuses).into_iter().map(|(_, t)| t).collect();
         assert_eq!(texts, ["", "busy", "busy", "busy", "", ""]);
+    }
+
+    /// A kind that reads the secret of its name at the start of its run, then
+    /// returns.
+    struct Locked(&'static str);
+
+    impl Kind for Locked {
+        type Config = ();
+
+        fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+            Ok(())
+        }
+
+        fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+            Ok(Channels::default())
+        }
+
+        fn discover(
+            &self,
+            _: &cancel::Token,
+        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+
+        async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
+            let value = ctx.secret(&name(self.0)).await?;
+            assert_eq!(value.expose(), b"t");
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn heals_a_run_when_the_missing_secret_is_written() {
+        let (result, statuses) = run_on(|node, tasks| async move {
+            let kinds = Table::new().with("locked", Locked("plant.token"));
+            let inputs =
+                create_config(&node, tasks.clone(), kinds, "plant.locked").await;
+            let statuses = read_status(&inputs.hub, "plant.locked", &[], &tasks).await;
+            let (shown, files, clock) =
+                (Rc::clone(&statuses), node.files(), node.clock());
+            tasks.spawn(async move {
+                while shown.borrow().len() < 2 {
+                    clock.sleep(ms(10)).await;
+                }
+                testing::create_secret(&files, &name("plant.token"), b"t").await;
+            });
+            let token = Token::new();
+            let result = Supervisor::new(inputs)
+                .open("locked", name("plant.locked"), &config(), &token)
+                .await
+                .run()
+                .await;
+            node.clock().sleep(Span::SECOND).await;
+            (result, statuses.borrow().clone())
+        });
+        result.expect("the second run reads the secret");
+        let texts: Vec<_> = errors(&statuses).into_iter().map(|(_, t)| t).collect();
+        let missing = "the secret plant.token: the store has no value: write it to the \
+                       file /data/secrets/plant.token";
+        assert_eq!(texts, ["", missing, missing, missing, "", ""]);
+    }
+
+    #[test]
+    fn ends_a_run_whose_secret_name_the_store_cannot_hold_without_a_restart() {
+        let (result, statuses) = run_on(|node, tasks| async move {
+            let kinds = Table::new().with("locked", Locked("plant.Token"));
+            let inputs =
+                create_config(&node, tasks.clone(), kinds, "plant.locked").await;
+            let statuses = read_status(&inputs.hub, "plant.locked", &[], &tasks).await;
+            let token = Token::new();
+            let result = Supervisor::new(inputs)
+                .open("locked", name("plant.locked"), &config(), &token)
+                .await
+                .run()
+                .await;
+            node.clock().sleep(ms(10_000)).await;
+            (result, statuses.borrow().clone())
+        });
+        let message = "the secret plant.Token has a name that the store cannot hold";
+        let fix = "Rename the secret in lowercase letters, since the file store holds \
+                   no name with a capital letter";
+        let code = Code::new("connector.bad-secret-name");
+        let bad = Diagnostic::new(code, None, message.into(), fix.into());
+        assert_eq!(config_errors(result), [bad]);
+        assert_eq!(states(&statuses), [(0, 0, 0), (3, 1, 0), (2, 1, 0)]);
+        let texts: Vec<_> = errors(&statuses).into_iter().map(|(_, t)| t).collect();
+        let shown = format!("{message}. {fix}");
+        assert_eq!(texts, ["", &shown, &shown]);
     }
 
     #[test]
@@ -3374,6 +3464,7 @@ mod tests {
                 net: node.net(),
                 tasks: tasks.clone(),
                 hub: hub::testing::open(env(&node, tasks.clone())).await.0,
+                secrets: testing::create_secret_store(node.files()),
             });
             let token = Token::new();
             token.cancel();
@@ -3424,6 +3515,7 @@ mod tests {
                 net: node.net(),
                 tasks: tasks.clone(),
                 hub,
+                secrets: testing::create_secret_store(node.files()),
             };
             let token = Token::new();
             let (canceller, sleeper) = (token.clone(), clock.clone());
