@@ -19,8 +19,7 @@ use std::sync::atomic::Ordering::Relaxed;
 
 use connector::cancel::Token;
 use connector::kind::{Channels, Context, Error, Kind, Table};
-use connector::supervisor::Supervisor;
-use connector::testing;
+use connector::testing::{self, Rig};
 use document::Document;
 use document::diagnostic::Diagnostic;
 use types::authority::Authority;
@@ -197,20 +196,16 @@ fn held(last: Last, pool: Pool) -> usize {
             tasks: tasks.clone(),
         };
         let kinds = Table::new().with("large", kind);
-        let config = testing::create_config(env, node.net(), kinds).await;
+        let mut rig = Rig::open(env, node.net(), kinds).await;
         let connector: Name = "plant.large".parse().expect("a valid name");
-        let status =
-            testing::create_status(&connector, &[], channel::Key::from_u128(100));
-        config
-            .hub
-            .set_definitions(status.iter().map(|(name, def)| (name, def)));
+        let first = channel::Key::from_u128(100);
+        rig.define(testing::create_status(&connector, &[], first));
         if let Pool::Full = pool {
-            tasks.spawn(hog(config.hub.clone(), clock.clone(), Arc::clone(&runs)));
+            tasks.spawn(hog(rig.hub().clone(), clock.clone(), Arc::clone(&runs)));
         }
-        let supervisor = Supervisor::new(config);
         let (token, config) = (Token::new(), Document::default());
         let mut run = pin!(
-            supervisor
+            rig.supervisor()
                 .open("large", connector, &config, &token)
                 .await
                 .run()

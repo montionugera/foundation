@@ -26,8 +26,7 @@ use std::time::Instant;
 
 use connector::cancel::Token;
 use connector::kind::{Channels, Context, Error, Kind, Table};
-use connector::supervisor::Supervisor;
-use connector::testing;
+use connector::testing::{self, Rig};
 use document::Document;
 use document::diagnostic::Diagnostic;
 use hub::reader::Mode;
@@ -203,14 +202,12 @@ fn run(step: Step) -> Line {
             tasks: tasks.clone(),
         };
         let kinds = Table::new().with("steps", kind);
-        let config = testing::create_config(env, node.net(), kinds).await;
+        let mut rig = Rig::open(env, node.net(), kinds).await;
         let connector: Name = "plant.steps".parse().expect("a valid name");
         let status = testing::create_status(&connector, &[samples()], STATUS);
-        config
-            .hub
-            .set_definitions(status.iter().map(|(name, def)| (name, def)));
+        rig.define(status.clone());
         if matches!(step, Step::Closed) {
-            let (hub, clock) = (config.hub.clone(), node.clock());
+            let (hub, clock) = (rig.hub().clone(), node.clock());
             let removed = format!("{connector}.status.samples");
             let removed: Name = removed.parse().expect("a valid name");
             tasks.spawn(async move {
@@ -219,9 +216,10 @@ fn run(step: Step) -> Line {
                 hub.set_definitions(kept.map(|(name, def)| (name, def)));
             });
         }
-        let mut state = open_state(&config.hub, &connector).await;
+        let mut state = open_state(rig.hub(), &connector).await;
         let (token, document) = (Token::new(), Document::default());
-        let result = Supervisor::new(config)
+        let result = rig
+            .supervisor()
             .open("steps", connector, &document, &token)
             .await
             .run()
