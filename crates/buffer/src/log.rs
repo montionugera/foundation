@@ -286,10 +286,18 @@ impl Log {
         if self.runs.front().is_some_and(|run| run.offset == offset) {
             self.runs.pop_front();
         }
+        // No deque holds more than `isize::MAX` bytes, so no shift overflows.
         let keep = self.runs.len().max(1);
-        if self.runs.capacity() > keep.saturating_mul(4) {
-            self.runs.shrink_to(keep.saturating_mul(2));
+        if self.runs.capacity() > keep << 2 {
+            self.shrink(keep << 1);
         }
+    }
+
+    /// Out of line, so each trim of a run keeps its code small.
+    #[cold]
+    #[inline(never)]
+    fn shrink(&mut self, room: usize) {
+        self.runs.shrink_to(room);
     }
 
     /// Moves the durable tail past the entry, and makes the record at `offset` the
