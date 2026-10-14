@@ -31,8 +31,24 @@ fn freed(held: u64) -> usize {
     before - after
 }
 
+/// As `freed(0)`, then the path gets one more entry and a carry record of its tail,
+/// and a commit with no entry trims its two runs. Gives the bytes that this trim gives
+/// back.
+fn emptied() -> usize {
+    let mut logs = buffer::bench::Logs::new(1);
+    for _ in 0..40 {
+        logs.trim(1, 16);
+    }
+    logs.trim(1, 0);
+    logs.carry();
+    let before = ALLOCATOR.held();
+    logs.commit(0);
+    before - ALLOCATOR.held()
+}
+
 fn main() {
     assert_eq!(freed(4), (32 - 14) * RUN, "5 runs keep room for 14");
     assert_eq!(freed(2), (32 - 6) * RUN, "3 runs keep room for 6");
     assert_eq!(freed(0), (32 - 2) * RUN, "1 run keeps room for 2");
+    assert_eq!(emptied(), RUN, "no run keeps room for 1");
 }

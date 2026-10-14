@@ -1,7 +1,7 @@
 //! `append` makes no heap allocation once the buffer has taken a batch of each
 //! shape: its slots, its entry count, and whether it closes the open record. Nor
-//! does a `Commit` that waits and drops, or a commit of the logs that marks a range
-//! and trims. This binary has no test harness: the count covers each thread, and a
+//! does a `Commit` that waits and drops, a commit of the logs that marks a range
+//! and trims, or the entry of a path that a trim emptied. This binary has no test harness: the count covers each thread, and a
 //! harness allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
@@ -113,6 +113,28 @@ fn marked_trims_take_no_allocation() {
     assert_eq!(n, 0, "{n} allocations in 1024 marked trims");
 }
 
+/// Each index gets one entry and a carry record of its tail, then commits with no
+/// entry follow, in which a trim empties its runs. The room that the trim keeps takes
+/// the next entry.
+fn slow_paths_take_no_allocation() {
+    let mut logs = buffer::bench::Logs::new(4);
+    let mut cycle = |logs: &mut buffer::bench::Logs| {
+        logs.carry();
+        for _ in 0..3 {
+            logs.commit(0);
+        }
+    };
+    for _ in 0..64 {
+        cycle(&mut logs);
+    }
+    let ((), n) = ALLOCATOR.count(|| {
+        for _ in 0..1024 {
+            cycle(&mut logs);
+        }
+    });
+    assert_eq!(n, 0, "{n} allocations in 1024 entries of 4 slow paths");
+}
+
 fn main() {
     assert_eq!(
         ALLOCATOR.count(|| drop(Box::new(1_u8))).1,
@@ -120,6 +142,7 @@ fn main() {
         "the allocator counts"
     );
     marked_trims_take_no_allocation();
+    slow_paths_take_no_allocation();
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let clock = node.clock();
