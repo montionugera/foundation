@@ -311,10 +311,8 @@ impl Log {
         if self.holder == Some(offset) {
             return Ok(Synced::Same);
         }
-        let mut alone = Position::default();
-        // It fails only where the durable advance failed.
-        alone.advance(header)?;
-        if alone == self.durable {
+        let alone = Mark::at(0).after(header.first, header.len) == self.durable.mark();
+        if alone && header.last == self.durable.tail.stamp {
             self.holder = Some(offset);
         }
         if self.runs.back().is_some_and(|run| run.offset == offset) {
@@ -322,9 +320,7 @@ impl Log {
         }
         self.runs.push_back(Run { start, offset });
         Ok(match newest {
-            Some(after) if alone.mark() != self.durable.mark() => {
-                Synced::Marked { after }
-            }
+            Some(after) if !alone => Synced::Marked { after },
             _ => Synced::Run,
         })
     }
