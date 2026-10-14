@@ -826,6 +826,10 @@ impl Marked {
     /// after the newest record of each range. Merges each range that it touches or
     /// covers.
     fn mark(&mut self, after: u64, record: u64) {
+        let covered = |&(before, last): &(u64, u64)| last == record && before <= after;
+        if self.0.back().is_some_and(covered) {
+            return;
+        }
         let mut first = after;
         while let Some(&(before, last)) = self.0.back() {
             if last < first {
@@ -2349,6 +2353,23 @@ mod tests {
         marked.mark(4096, 8192);
         marked.mark(8192, 12288);
         assert_eq!(marked.land(12288), 4096);
+    }
+
+    #[test]
+    fn a_range_inside_the_back_range_adds_no_range() {
+        let mut marked = Marked::default();
+        marked.mark(4096, 12288);
+        marked.mark(8192, 12288);
+        marked.mark(4096, 12288);
+        assert_eq!(marked, Marked(VecDeque::from([(4096, 12288)])));
+    }
+
+    #[test]
+    fn a_wider_range_at_the_record_of_the_back_range_merges() {
+        let mut marked = Marked::default();
+        marked.mark(8192, 12288);
+        marked.mark(4096, 12288);
+        assert_eq!(marked, Marked(VecDeque::from([(4096, 12288)])));
     }
 
     #[test]
