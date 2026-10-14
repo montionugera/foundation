@@ -1,5 +1,3 @@
-#![expect(clippy::disallowed_methods, reason = "the tests read the log times")]
-
 use clock::Clock;
 use clock::log::{Mesh, Reader, Time};
 use estimate::Measurement;
@@ -8,7 +6,7 @@ use types::time::{Span, Stamp};
 
 use crate::common::{ms, node, run};
 
-const MS: i64 = 1_000_000;
+const MS_NS: i64 = 1_000_000;
 
 /// A reader of `node` whose mesh time has its best guess `apart` ns from the wall
 /// time that the node starts with, with the clock that serves it. The sim clocks do
@@ -24,6 +22,12 @@ fn reader(node: &Node, apart: i64) -> (Clock, Reader) {
     (clock, Reader::new(node.wall(), mesh))
 }
 
+/// The times of a line from `reader`.
+fn read(reader: &Reader) -> Time {
+    #[expect(clippy::disallowed_methods, reason = "the tests read the log times")]
+    reader.now()
+}
+
 /// The wall time that a node starts with, moved by `nanos`.
 fn wall(nanos: i64) -> Stamp {
     Stamp::from_nanos(sim::node::Config::default().wall.nanos() + nanos)
@@ -35,7 +39,7 @@ fn has_no_mesh_time_with_no_sources() {
     let (_clock, mesh) = Clock::new(node.clock());
     let reader = Reader::new(node.wall(), mesh);
     assert_eq!(
-        reader.now(),
+        read(&reader),
         Time {
             wall: wall(0),
             mesh: Mesh::Unsynced
@@ -45,11 +49,11 @@ fn has_no_mesh_time_with_no_sources() {
 
 #[test]
 fn a_best_guess_at_most_2_ms_from_the_wall_time_is_near() {
-    for apart in [0, 2 * MS, -2 * MS] {
+    for apart in [0, 2 * MS_NS, -2 * MS_NS] {
         let (_sim, node) = node();
         let (_clock, reader) = reader(&node, apart);
         assert_eq!(
-            reader.now(),
+            read(&reader),
             Time {
                 wall: wall(0),
                 mesh: Mesh::Near
@@ -61,12 +65,12 @@ fn a_best_guess_at_most_2_ms_from_the_wall_time_is_near() {
 
 #[test]
 fn a_best_guess_more_than_2_ms_from_the_wall_time_is_apart() {
-    for apart in [2 * MS + 1, -2 * MS - 1, Span::HOUR.nanos()] {
+    for apart in [2 * MS_NS + 1, -2 * MS_NS - 1, Span::HOUR.nanos()] {
         let (_sim, node) = node();
         let (_clock, reader) = reader(&node, apart);
         let mesh = Mesh::Apart(wall(apart));
         assert_eq!(
-            reader.now(),
+            read(&reader),
             Time {
                 wall: wall(0),
                 mesh
@@ -86,21 +90,21 @@ fn a_step_of_the_wall_clock_leaves_mesh_time_apart() {
         wall: wall(2 * second),
         mesh: Mesh::Apart(wall(0)),
     };
-    assert_eq!(reader.now(), stepped);
+    assert_eq!(read(&reader), stepped);
 }
 
 #[test]
 fn a_clone_reads_the_same_clocks() {
     let (_sim, node) = node();
-    let (_clock, reader) = reader(&node, 5 * MS);
+    let (_clock, reader) = reader(&node, 5 * MS_NS);
     let clone = reader.clone();
     node.step_wall(ms(5));
     let stepped = Time {
-        wall: wall(5 * MS),
+        wall: wall(5 * MS_NS),
         mesh: Mesh::Near,
     };
-    assert_eq!(clone.now(), stepped);
-    assert_eq!(reader.now(), clone.now());
+    assert_eq!(read(&clone), stepped);
+    assert_eq!(read(&reader), read(&clone));
 }
 
 /// The times of a line on a lone node whose OS wall clock starts at `wall`, with
@@ -117,7 +121,7 @@ fn lone(wall: Stamp, wall_error: Option<Span>) -> Time {
     #[expect(clippy::disallowed_methods, reason = "the test feeds the mesh clock")]
     let measurement = clock::source::Wall::new(node.wall(), node.clock()).measure();
     clock.push(source, measurement);
-    Reader::new(node.wall(), mesh).now()
+    read(&Reader::new(node.wall(), mesh))
 }
 
 #[test]
@@ -146,9 +150,9 @@ fn a_lone_node_with_no_os_bound_before_the_first_edge_that_fits_is_near() {
 
 #[test]
 fn a_lone_node_with_a_bound_past_the_end_of_a_stamp_is_near() {
-    let wall = Stamp::from_nanos(i64::MAX - 5 * MS);
+    let wall = Stamp::from_nanos(i64::MAX - 5 * MS_NS);
     assert_eq!(
-        lone(wall, Some(Span::from_nanos(10 * MS))),
+        lone(wall, Some(Span::from_nanos(10 * MS_NS))),
         Time {
             wall,
             mesh: Mesh::Near
@@ -165,13 +169,11 @@ fn a_lone_node_at_200_ppm_with_a_growing_os_bound_is_near() {
     let mesh = run(&host, host.wall());
     let reader = Reader::new(host.wall(), mesh);
     for second in 0..400 {
-        let error = 10 * MS + 500_000 * (second % 64);
+        let error = 10 * MS_NS + 500_000 * (second % 64);
         host.set_wall_error(Some(Span::from_nanos(error)));
         host.step_wall(Span::from_nanos(200_000));
         sim.run_for(Span::SECOND).expect("runs");
-        if second >= 100 {
-            assert_eq!(reader.now().mesh, Mesh::Near, "second {second}");
-        }
+        assert_eq!(read(&reader).mesh, Mesh::Near, "second {second}");
     }
 }
 
@@ -190,12 +192,12 @@ fn near_the_last_stamp(wall: Stamp, mesh: i128) -> Time {
     let measurement = Measurement::new(at, Span::from_nanos(offset), ms(2))
         .expect("at most 36500 days");
     clock.push(source, measurement);
-    Reader::new(node.wall(), reader).now()
+    read(&Reader::new(node.wall(), reader))
 }
 
 #[test]
 fn mesh_time_past_the_last_stamp_is_apart() {
-    let wall = Stamp::from_nanos(i64::MAX - MS);
+    let wall = Stamp::from_nanos(i64::MAX - MS_NS);
     let past = i128::from(i64::MAX) + i128::from(Span::HOUR.nanos());
     assert_eq!(
         near_the_last_stamp(wall, past),
@@ -209,7 +211,7 @@ fn mesh_time_past_the_last_stamp_is_apart() {
 #[test]
 fn a_wall_time_at_the_last_stamp_is_apart() {
     let wall = Stamp::from_nanos(i64::MAX);
-    let best = i64::MAX - MS;
+    let best = i64::MAX - MS_NS;
     assert_eq!(
         near_the_last_stamp(wall, i128::from(best)),
         Time {
