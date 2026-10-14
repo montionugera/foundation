@@ -882,6 +882,34 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "the kind \"counts\" names the count `class`, a status \
+                               channel of the supervisor")]
+    fn panics_on_a_count_named_as_the_status_class() {
+        drop(check_counts(&["class"]));
+    }
+
+    #[test]
+    #[should_panic(expected = "the kind \"counts\" names the count `restarts`, a \
+                               status channel of the supervisor")]
+    fn panics_on_a_count_named_as_the_status_restarts() {
+        drop(check_counts(&["restarts"]));
+    }
+
+    #[test]
+    #[should_panic(expected = "the kind \"counts\" names the count `backoff`, a \
+                               status channel of the supervisor")]
+    fn panics_on_a_count_named_as_the_status_backoff() {
+        drop(check_counts(&["backoff"]));
+    }
+
+    #[test]
+    #[should_panic(expected = "the kind \"counts\" names the count `error`, a status \
+                               channel of the supervisor")]
+    fn panics_on_a_count_named_as_the_status_error() {
+        drop(check_counts(&["error"]));
+    }
+
+    #[test]
     #[should_panic(expected = "the kind \"counts\" names the count `time`, a status \
                                channel of the supervisor")]
     fn panics_on_a_count_named_as_the_status_index() {

@@ -45,6 +45,7 @@ pub(crate) const TABLE: &[Spec] = &[
 #[command(
     name = "foundation",
     about = "Run Foundation operations",
+    version,
     disable_help_subcommand = true
 )]
 struct Cli {
@@ -142,7 +143,12 @@ pub(crate) enum Response {
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub(crate) struct Version {
-    version: String,
+    /// The version of Foundation.
+    pub(crate) version: String,
+    /// The 40 or 64 lowercase hex digits of the commit of `HEAD` in the build, or null
+    /// with no `git`, outside a git repository, and on a branch with no commit. A build
+    /// of a tree with changes gives the commit of `HEAD` too.
+    pub(crate) commit: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -183,6 +189,9 @@ pub(crate) fn parse(args: &[OsString], json: bool) -> Result<Parsed, Error> {
         Ok(matches) => matches,
         Err(e) if e.kind() == ErrorKind::DisplayHelp => {
             return Ok(Parsed::Help(e.to_string()));
+        }
+        Err(e) if e.kind() == ErrorKind::DisplayVersion => {
+            return Ok(Parsed::Run(Request::Version(Empty {})));
         }
         Err(e) => return Err(from_clap(&e)),
     };
@@ -340,10 +349,18 @@ impl Request {
         match self {
             Self::Version(Empty {}) => Response::Version(Version {
                 version: env!("CARGO_PKG_VERSION").to_owned(),
+                commit: commit(env!("FOUNDATION_COMMIT")),
             }),
             Self::Docs(Empty {}) => Response::Docs(Reference { markdown: docs() }),
         }
     }
+}
+
+/// The commit that the build script gives, which is empty when it reads none.
+pub(crate) fn commit(built: &str) -> Option<String> {
+    Some(built)
+        .filter(|commit| !commit.is_empty())
+        .map(str::to_owned)
 }
 
 impl Response {
@@ -357,7 +374,14 @@ impl Response {
 
     pub(crate) fn text(&self) -> String {
         match self {
-            Self::Version(output) => format!("{}\n", output.version),
+            Self::Version(output) => {
+                let commit = output.commit.as_deref().map_or("unknown", |commit| {
+                    commit
+                        .get(..12)
+                        .expect("invariant: a commit has 40 or 64 hex digits")
+                });
+                format!("{} ({commit})\n", output.version)
+            }
             Self::Docs(output) => output.markdown.clone(),
         }
     }
