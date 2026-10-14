@@ -418,7 +418,9 @@ state on `main`.
   of a `file()` path in the data directory is #2670, before a release of ONE NODE. In
   ONE NODE, that person is the node's admin. A remote `plan` reads the sources only
   of the connectors that its subject may apply, and a local `plan` reads each
-  connector of the node (SECRET SOURCES). Trigger for a limit that the node's
+  connector of the node (SECRET SOURCES). Until #2694, a subject with `apply` and
+  `admin` on the name of a new connector alone learns from a remote `plan` whether
+  each source gives a value. Trigger for a limit that the node's
   operator sets, such as directories and variable names given at start: a spec applied
   by a subject that does not run the node.
 - Each `HeaderValue` made from the token of the `influx` kind, one at each read of the
