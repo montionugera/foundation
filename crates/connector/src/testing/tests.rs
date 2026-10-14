@@ -8,7 +8,7 @@ use types::channel;
 use types::name::Name;
 use types::time::Span;
 
-use super::{Rig, create_status};
+use super::{Rig, STATUS, create_status};
 use crate::cancel;
 use crate::common::{env, run_on};
 use crate::kind::{Channels, Context, Error, Kind, Table};
@@ -17,6 +17,10 @@ use crate::status::State;
 const REFUSED: Code = Code::new("test.refused");
 
 const TEN: Span = Span::from_nanos(10_000_000_000);
+
+fn key(key: u128) -> channel::Key {
+    channel::Key::from_u128(key)
+}
 
 fn name(text: &str) -> Name {
     text.parse().expect("a valid name")
@@ -196,6 +200,42 @@ fn two_connectors_of_one_rig_both_run() {
             b.until(TEN, ticking).await;
             assert_eq!(a.stop().await.map_err(|e| e.to_string()), Ok(()));
             assert_eq!(b.stop().await.map_err(|e| e.to_string()), Ok(()));
+        },
+    );
+}
+
+#[test]
+fn the_status_keys_of_each_connector_follow_those_of_the_one_before() {
+    on_rig(
+        || Table::new().with("ticks", Ticks::default()),
+        |mut rig| async move {
+            let config = Document::default();
+            let a = rig
+                .supervise("ticks", name("plant.a"), config.clone())
+                .await;
+            let b = rig.supervise("ticks", name("plant.b"), config).await;
+            let mut want =
+                create_status(&name("plant.a"), &[name("ticks")], key(STATUS));
+            let next = STATUS + u128::try_from(want.len()).expect("a few channels");
+            want.extend(create_status(&name("plant.b"), &[name("ticks")], key(next)));
+            assert_eq!(rig.definitions, want);
+            drop((a, b));
+        },
+    );
+}
+
+#[test]
+fn a_run_shows_whether_it_ended() {
+    on_rig(
+        || Table::new().with("refuses", Refuses),
+        |mut rig| async move {
+            let config = Document::default();
+            let run = rig
+                .supervise("refuses", name("plant.refuses"), config)
+                .await;
+            assert_eq!(format!("{run:?}"), "Run { ended: false, .. }");
+            run.ended.wait().await;
+            assert_eq!(format!("{run:?}"), "Run { ended: true, .. }");
         },
     );
 }
