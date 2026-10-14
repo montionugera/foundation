@@ -118,11 +118,20 @@ impl<'a> Reading<'a> {
     }
 
     /// Tells the read that no record left holds an entry past its mark, and that
-    /// the path's durable entries end at `end`. A read with no entry and with seqs
-    /// before `end` reports them as its gap and goes on at `end`. A read that holds
-    /// entries stays before them, so the next read reports them.
+    /// the path's durable entries end at `end`. A read with seqs before `end`
+    /// reports them as its gap and goes on at `end`.
+    ///
+    /// # Panics
+    ///
+    /// When the read holds entries and seqs come before `end`: the hold of a read
+    /// keeps a trim from hiding the records after its entries.
     pub(crate) fn end(&mut self, end: Mark) {
-        if self.read.entries.is_empty() && end.seq > self.read.next.seq {
+        if end.seq > self.read.next.seq {
+            assert!(
+                self.read.entries.is_empty(),
+                "invariant: a read's hold keeps a trim from hiding the records after \
+                 its entries"
+            );
             self.read.gap = Some(self.read.next.seq..end.seq);
             self.read.next = end;
         }

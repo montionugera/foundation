@@ -1666,39 +1666,31 @@ mod tests {
         assert_eq!(*reads, expected);
     }
 
-    /// The test hides the later records, as a trim will, while a read waits on its
-    /// first record. The read gives the entry it holds, and the next read gives the
-    /// gap.
+    /// The test hides the later records while a read waits on its first record,
+    /// which no trim does: the hold of the read keeps them.
     #[test]
-    fn a_read_that_holds_entries_stops_before_the_seqs_that_a_trim_hid() {
+    #[should_panic(
+        expected = "invariant: a read's hold keeps a trim from hiding the records after \
+                    its entries"
+    )]
+    fn a_gap_after_held_entries_is_a_broken_invariant() {
         let mut sim = sim::Sim::new(sim::Config::default());
         let node = sim.node(sim::node::Config::default());
-        let reads = Arc::new(Mutex::new(Vec::new()));
-        let found = Arc::clone(&reads);
         with_buffer(
             &mut sim,
             &node,
             "write",
             |buffer, mut slots, pool| async move {
                 let one = create_three_records(&buffer, &mut slots, &pool).await;
-                let mut reads = Vec::new();
                 {
                     let mut read = pin!(read_from(&buffer, one, 0));
                     let first = poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
                     assert!(first.is_pending(), "the read waits on a file read");
                     buffer.shared.state.borrow_mut().logs.hide(16384);
-                    reads.push(read.await);
+                    read.await;
                 }
-                reads.push(read_from(&buffer, one, 3).await);
-                *found.lock().expect("no panic held the lock") = reads;
                 buffer
             },
         );
-        let reads = reads.lock().expect("no panic held the lock");
-        let expected = [
-            (None, vec![0], Mark::at(3)),
-            (Some(3..9), vec![], Mark::at(9)),
-        ];
-        assert_eq!(*reads, expected);
     }
 }
