@@ -1,7 +1,7 @@
-//! A connector of the `opcua` kind that reads Double variables of the sim server on
-//! one sim node, with a measure of each poll of its run, and one that writes the
-//! frames of its reads with no server, with a measure of each write. For the `alloc`
-//! test and the `kind` bench.
+//! A connector of the `opcua` kind that reads variables of the sim server, each with a
+//! Double value, on one sim node, with a measure of each poll of its run, and one that
+//! writes the frames of its reads with no server, with a measure of each write. For the
+//! `alloc` test and the `kind` bench.
 
 use std::future::{Future as _, poll_fn};
 use std::net::SocketAddr;
@@ -102,11 +102,11 @@ fn name(text: &str) -> Name {
     text.parse().expect("a valid name")
 }
 
-/// Runs a connector at 10 Hz that reads `nodes` Double variables of the sim server,
-/// for `count` ticks and two more, and gives what `measure` gives for its polls: for
-/// the run start (the open of its writer, its frames, its connect, and its first
-/// request), and for each of the first `count` reads. `measure` calls the poll that it
-/// gets once.
+/// Runs a connector at 10 Hz that reads `nodes` variables of the sim server, each with
+/// a Double value, for `count` ticks and two more, and gives what `measure` gives for
+/// its polls: for the run start (the open of its writer, its frames, its connect, and
+/// its first request), and for each of the first `count` reads. `measure` calls the
+/// poll that it gets once.
 ///
 /// # Panics
 ///
