@@ -20,11 +20,10 @@ use std::sync::atomic::Ordering::Relaxed;
 
 use connector::cancel::Token;
 use connector::kind::{Channels, Context, Error, Kind, Table};
-use connector::testing::{self, Rig};
+use connector::testing::Rig;
 use document::Document;
 use document::diagnostic::Diagnostic;
 use types::authority::Authority;
-use types::channel;
 use types::frame::{self, Form};
 use types::name::Name;
 use types::time::Span;
@@ -210,15 +209,12 @@ fn held(last: Last, pool: Pool) -> usize {
         let kinds = Table::new().with("large", kind);
         let mut rig = Rig::open(env, node.net(), kinds).await;
         let connector: Name = "plant.large".parse().expect("a valid name");
-        let first = channel::Key::from_u128(100);
-        rig.define(testing::create_status(&connector, &[], first));
         if let Pool::Full = pool {
             tasks.spawn(hog(rig.hub().clone(), clock.clone(), Arc::clone(&runs)));
         }
         let (token, config) = (Token::new(), Document::default());
         let mut run = pin!(
-            rig.supervisor()
-                .open("large", connector, &config, &token)
+            rig.open_connector("large", connector, &config, &token)
                 .await
                 .run()
         );

@@ -172,10 +172,9 @@ mod status {
 
     use connector::cancel::Token;
     use connector::kind::{Channels, Context, Error, Kind, Table};
-    use connector::testing::{self, Rig};
+    use connector::testing::Rig;
     use document::Document;
     use document::diagnostic::Diagnostic;
-    use types::channel;
     use types::name::Name;
     use types::time::Span;
 
@@ -291,12 +290,9 @@ mod status {
             let kinds = Table::new().with("sets", kind);
             let mut rig = Rig::open(super::env(&node, tasks), node.net(), kinds).await;
             let connector: Name = "plant.sets".parse().expect("a valid name");
-            let first = channel::Key::from_u128(100);
-            rig.define(testing::create_status(&connector, &[samples()], first));
             let (token, config) = (Token::new(), Document::default());
             let mut run = pin!(
-                rig.supervisor()
-                    .open("sets", connector, &config, &token)
+                rig.open_connector("sets", connector, &config, &token)
                     .await
                     .run()
             );

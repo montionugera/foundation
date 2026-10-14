@@ -76,20 +76,14 @@ impl Rig {
         &self.hub
     }
 
-    /// The supervisor of the rig's connectors, for a test that polls a run in its
-    /// own task, such as to count what each poll allocates.
-    #[must_use]
-    pub fn supervisor(&self) -> &Supervisor {
-        &self.supervisor
-    }
-
     /// Adds `definitions` to each definition that the rig holds, and sets all of
     /// them on the hub. Each call keeps what an earlier call defined.
     ///
     /// # Panics
     ///
     /// When the hub refuses them, such as a key that is already in use. The rig gives
-    /// status channels keys at 2^64 and above.
+    /// the status channels of each connector that it opens the next keys from 2^64
+    /// on, as [`create_status`] orders them.
     pub fn define(&mut self, definitions: Vec<(Name, Definition)>) {
         self.definitions.extend(definitions);
         let definitions = self.definitions.iter();
@@ -125,9 +119,9 @@ impl Rig {
     /// As [`kind::Table::check`](Table::check), and when the status reader does not
     /// open.
     pub async fn supervise(&mut self, kind: &str, name: Name, config: Document) -> Run {
-        let reader = match self.kinds.check(kind, None, &config) {
-            Ok(channels) => Some(self.status(&name, &channels.counts).await),
-            Err(_) => None,
+        let reader = match self.define_status(kind, &name, &config) {
+            Some(select) => Some(self.status(select).await),
+            None => None,
         };
         let (cancel, ended, end) =
             (Token::new(), Token::new(), Rc::new(Cell::new(None)));
@@ -147,17 +141,48 @@ impl Rig {
         }
     }
 
-    /// Defines the status channels of `connector`, whose kind names `counts`, with
-    /// the rig's next keys, and opens a reader of them.
-    async fn status(&mut self, connector: &Name, counts: &[Name]) -> Reader {
-        let status =
-            create_status(connector, counts, channel::Key::from_u128(self.next));
+    /// Defines the status channels of the connector `name` of `kind` from the counts of
+    /// the kind's check, and opens it as [`Supervisor::open`] does, for a test that
+    /// polls [`supervisor::Opened::run`] in its own task. When the check fails, it
+    /// defines nothing, and the run ends at once with [`Error::Config`].
+    ///
+    /// # Panics
+    ///
+    /// As [`kind::Table::check`](Table::check).
+    pub async fn open_connector<'a>(
+        &'a mut self,
+        kind: &'a str,
+        name: Name,
+        config: &'a Document,
+        cancel: &'a Token,
+    ) -> supervisor::Opened<'a> {
+        self.define_status(kind, &name, config);
+        self.supervisor.open(kind, name, config, cancel).await
+    }
+
+    /// Defines the status channels of the connector `name` of `kind` from the counts
+    /// of the kind's check, with the rig's next keys, and gives a selector of them.
+    /// Gives `None`, and defines nothing, when the check fails.
+    fn define_status(
+        &mut self,
+        kind: &str,
+        name: &Name,
+        config: &Document,
+    ) -> Option<Selector> {
+        let counts = self.kinds.check(kind, None, config).ok()?.counts;
+        let first = channel::Key::from_u128(self.next);
+        let status = create_status(name, &counts, first);
         let used = u128::try_from(status.len()).expect("invariant: a few channels");
         self.next += used;
         let select = Selector::new(status.iter().map(|(name, _)| name.as_str()));
         self.define(status);
+        Some(select.expect("invariant: names select"))
+    }
+
+    /// Opens a reader of the status channels of `select`.
+    async fn status(&self, select: Selector) -> Reader {
         let config = hub::reader::Config {
-            select: select.expect("invariant: names select"),
+            select,
             mode: Mode::Complete,
             subject: "rig".parse().expect("invariant: a valid name"),
             name: None,
