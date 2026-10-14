@@ -14,7 +14,9 @@
   Supersedes the bare secret name of K4 (`docs/decisions/access/k4.md`), item 2 of the
   ruling in the body of https://github.com/synnaxlabs/foundation/issues/2583 ("The
   token is a secret name"), and Q5 of
-  https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150705009.
+  https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150705009, and
+  the node environment variable or file adapters of SECRET STORES AS ADAPTERS
+  (`docs/decisions/access/secret-stores-as-adapters.md`).
   `laptop.architect-2` approved the reference form and the display of the argument as a
   string on 2026-10-13T22:18:44Z
   (https://github.com/synnaxlabs/foundation/pull/2619#issuecomment-6156410171). The path
@@ -29,28 +31,32 @@
 
   `secret::Resolver` gives the value of a source on one shard. `env()` reads the
   environment of the node process, which `node` main reads once at start
-  (`std::env::vars_os()`) and gives in `node::Config::vars`. No code below `node`
-  reads the OS environment. To change the value, restart the node. A value that is
-  not UTF-8 gives its bytes. `secret::Source::File` holds an `env::files::Absolute`,
-  the one type of the path rule above, and `file()` reads it through
-  `env::files::Files::open_absolute`, as `laptop.architect-2` ruled on
-  2026-10-13T22:35:35Z
+  (`std::env::vars_os()`) and gives in `node::Config::vars`, with the first kind that
+  reads a secret (a later step of #2583). No code below `node` reads the OS environment.
+  To change the value, restart the node. A value that is not UTF-8 gives its bytes.
+  `secret::Source::File` holds an `env::files::Absolute`, the one type of the path rule
+  above, and `file()` reads it through `env::files::Files::open_absolute`, as
+  `laptop.architect-2` ruled on 2026-10-13T22:35:35Z
   (https://github.com/synnaxlabs/foundation/pull/2621#issuecomment-6156672291).
-  `secret()` reads through the store (SECRET STORES
-  AS ADAPTERS). Both share one `secret::Reads` on a shard: one read at a time, in the
-  order they come, in the erased pool, at most 64 KiB, less one trailing `\n` or
-  `\r\n`. So the memory bound of SECRET STORES AS ADAPTERS holds for both. An empty
-  value, a variable that is not set, and a file that is not there are
-  `store::Error::Missing`, with a text that says where to put the value.
+  `secret()` reads through the store (SECRET STORES AS ADAPTERS).
+  `secret::Resolver::new` makes the one turn that `file()` and the store share on a
+  shard: one read at a time, in the order they come, in the erased pool, at most 64 KiB,
+  less one trailing `\n` or `\r\n`. So the memory bound of SECRET STORES AS ADAPTERS
+  holds for both. A variable of more than 64 KiB is `secret::Error::Unavailable`. An
+  empty value, a variable that is not set, and a file that is not there are
+  `secret::Error::Missing`, with a text that says where to put the value.
   `Context::secret(&Source)` gives each error as `Error::Retry` with the source in its
-  text, such as `the secret env("INFLUX_TOKEN"): the environment variable
-  INFLUX_TOKEN of the node is not set. Start the node with it set to the value`,
-  other than `BadName` of the store, which stays `Error::Config`. The mode check of
-  #2596 is for the store of `secret()` only, since Docker and Kubernetes mount a
-  secret file with mode 0444 or 0644. `plan` resolves each source of each connector
-  that the planning node runs, with the same read, as `secret.unresolved` (a later
-  step of #2583). A connector on another node is not checked at plan until #239.
-  Decided by `laptop.architect-2` on 2026-10-13T21:05:46Z
+  text, such as `the secret env("INFLUX_TOKEN"): the environment variable INFLUX_TOKEN
+  of the node is not set. Start the node with it set to the value`, other than `BadName`
+  of the store, which stays `Error::Config`. The mode check of #2596 is for the store of
+  `secret()` only, since Docker and Kubernetes mount a secret file with mode 0444 or
+  0644. `plan` resolves each source of each connector that the planning node runs, with
+  the same read, as `secret.unresolved` (a later step of #2583). A connector on another
+  node is not checked at plan until #239. A person who can apply a spec can make the
+  node read any variable of its environment and any file that its user can read. The
+  trigger for a limit that the operator of the node sets at start, such as directories
+  and variable names: a spec applied by a subject that does not run the node. Decided by
+  `laptop.architect-2` on 2026-10-13T21:05:46Z
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6155189112), with
   the surface that it approved on 2026-10-13T21:26:42Z
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6155552036).

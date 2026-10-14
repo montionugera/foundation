@@ -393,8 +393,8 @@ state on `main`.
 - `ctx.secret(source)` is the only path to a secret value (SECRET SOURCES, SECRET
   STORES AS ADAPTERS).
   The built-in store seals each value to the X25519 seal key of each node that may
-  use it (BQ16, S8). The other adapters (an environment variable or a file, and the
-  external stores) do not. An external adapter authenticates with the node key, and
+  use it (BQ16, S8). The external stores do not. Neither does `env()` or `file()`
+  (SECRET SOURCES). An external adapter authenticates with the node key, and
   may cache values sealed to it, which delays revocation.
 - Sealing is HPKE base mode, so it does not prove who sealed. The signed record
   does: the caller seals and signs the `secret set` request with the `secret`
