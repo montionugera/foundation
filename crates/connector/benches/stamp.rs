@@ -15,10 +15,10 @@ use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 use std::time::Instant;
 
+use connector::kind::Table;
 use connector::stamp::Stamps;
-use connector::testing;
+use connector::testing::{self, Rig};
 use hub::writer::Writer;
-use types::authority::Authority;
 use types::channel;
 use types::name::Name;
 
@@ -40,18 +40,12 @@ fn main() {
             entropy: node.entropy(),
             tasks,
         };
-        let (hub, _) = hub::testing::open(env).await;
+        let mut rig = Rig::open(env, node.net(), Table::new()).await;
         let connector: Name = "plant.stamp".parse().expect("a valid name");
         let first = channel::Key::from_u128(100);
-        let status = testing::create_status(&connector, &[], first);
-        hub.set_definitions(status.iter().map(|(name, def)| (name, def)));
-        let config = hub::writer::Config {
-            subject: connector,
-            authority: Authority(1),
-            lease: None,
-            channels: vec!["plant.stamp.status.state".parse().expect("a valid name")],
-        };
-        let writer = hub.writer(config).await.expect("the writer opens");
+        rig.define(testing::create_status(&connector, &[], first));
+        let state = "plant.stamp.status.state".parse().expect("a valid name");
+        let writer = rig.writer(connector, vec![state]).await;
         [
             time("now", || {
                 black_box(writer.now());
