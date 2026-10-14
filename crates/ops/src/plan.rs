@@ -87,9 +87,7 @@ impl Documents {
                 && connector.node() == &node.name
                 && readable(name)
             {
-                let start = calls.len();
                 sources(connector.config().document(), &mut calls);
-                calls[start..].sort_by_key(|(_, span)| *span);
             }
         }
         let mut unresolved = Vec::new();
@@ -169,15 +167,23 @@ pub(crate) fn unresolved(span: Option<Span>, message: String) -> Diagnostic {
 /// Adds each source of a secret in `document` to `into`, with the span of its call, in
 /// the order of the document.
 fn sources(document: &Document, into: &mut Vec<(secret::Source, Option<Span>)>) {
+    let start = into.len();
+    block_sources(document, into);
+    into[start..].sort_by_key(|(_, span)| *span);
+}
+
+/// Adds each source of a secret in `document` to `into`: its attributes in key order,
+/// then its blocks.
+fn block_sources(document: &Document, into: &mut Vec<(secret::Source, Option<Span>)>) {
     for attribute in document.attributes.iter() {
         value_sources(&attribute.value, into);
     }
     for block in &document.blocks {
-        sources(&block.body, into);
+        block_sources(&block.body, into);
     }
 }
 
-/// Adds each source of a secret in `value` to `into`, as [`sources`] does.
+/// Adds each source of a secret in `value` to `into`, as [`block_sources`] does.
 fn value_sources(
     value: &document::value::Value,
     into: &mut Vec<(secret::Source, Option<Span>)>,
