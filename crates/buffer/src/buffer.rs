@@ -178,10 +178,9 @@ pub enum Rejected {
     /// The batch alone is over a [`Limit`], so this buffer never takes it. The
     /// limit is the first one it is over, in the order of [`Limit`].
     Large(Limit),
-    /// The ring has no room for the batch after the trim: one block stays free for
-    /// the carry record of the next commit, and one for the restart record of the
-    /// next open.
-    /// Room returns only when records leave the ring at its tail, and never when the
+    /// The ring has no room for the batch: one block stays free for the carry record
+    /// of the next commit, and one for the restart record of the next open. Room
+    /// returns only when records leave the ring at its tail, and never when the
     /// offsets left before their end are under `needed`. Nothing moves records out
     /// of the ring yet.
     Full {

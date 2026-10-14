@@ -8,11 +8,13 @@
   `Rejected::Full` only when the records queued since the last commit do not fit after
   the trim: the full disk queue of B5, which is the commit queue. A read reports the
   trimmed seqs of a path as `Read::gap`, also when the path holds no entry, and the
-  gap's length is the count of samples lost (B2). An open of a full ring frees the
-  oldest record for its restart record, until segments exist (S4). `set_floor` and
-  `usage` wait for their first effect, the B1 warning (#1080). Lost: a `trim` call from
-  the home (it needs the commit rate, a late trim gives a second gap, and the edge cases
-  of the ring move up into `home`). Decided by the architect (#160,
+  gap's length is the count of samples lost (B2). Each data and carry record leaves one
+  block free for the restart record of the next open, so an open of a full ring has its
+  block (#160,
+  https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6158992463).
+  `set_floor` and `usage` wait for their first effect, the B1 warning (#1080). Lost: a
+  `trim` call from the home (it needs the commit rate, a late trim gives a second gap,
+  and the edge cases of the ring move up into `home`). Decided by the architect (#160,
   https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6030836762). An open
   frees to the same headroom as a commit. A checkpoint never passes the newest record of
   a path unless a later synced record holds that path's tail (seq and stamp), so a
@@ -49,7 +51,7 @@
   before it is not refused after commits of 255 records of one block, and is refused
   after commits of 256. Each of these two figures is one record less than before #160,
   because of the two blocks that stay free. On a ring of 1028 blocks, after commits of
-  64 records of four blocks, which are a quarter of the area less four blocks, a commit
+  64 records of four blocks, which are a quarter of the area less one block, a commit
   of 128 and the commit of 64 after it are not refused when no record from the commit
   two before the 128 to the commit after it must skip a block at a wrap. When a record
   must skip 3 blocks at a wrap in one of those four, the 128 or the commit after it is

@@ -30,17 +30,17 @@ use crate::record::{
 /// The body of a restart record: one chain value.
 const RESTART_LEN: usize = 4;
 
-/// Bytes of the whole blocks that hold a restart record: one block.
-const RESTART: usize = ALIGN;
-const _: () = assert!(HEADER_LEN + RESTART_LEN <= RESTART, "a restart record fits");
-
 /// The room that each data record leaves free for the carry record of the next
 /// commit: one block.
 const OWED: u64 = BLOCK;
 
 /// The room that each data and carry record leaves free for the restart record of
-/// the next open: [`RESTART`].
+/// the next open: the one block that holds it.
 const REOPEN: u64 = BLOCK;
+const _: () = assert!(HEADER_LEN + RESTART_LEN <= ALIGN, "a restart record fits");
+
+/// The room that each data record leaves free.
+const SPARE: u64 = OWED + REOPEN;
 
 /// The smallest body a layout allows: the rest of a block after the record header.
 /// A record takes whole blocks, so a smaller body saves no disk.
@@ -74,7 +74,7 @@ fn window(body_max: usize) -> Option<u64> {
 /// [`OWED`] and [`REOPEN`], so, when each commit and each open trims, a steady load
 /// of one record in each commit gets no [`Full`].
 fn area_min(window: u64) -> u64 {
-    4 * window + OWED + REOPEN
+    4 * window + SPARE
 }
 
 /// An offset that is not on a block boundary.
@@ -504,10 +504,10 @@ impl Writer {
     ///
     /// When `len` is more than the layout's maximum.
     pub(crate) fn append(&mut self, len: usize) -> Result<Plan, Full> {
-        self.plan(len, OWED + REOPEN)
+        self.plan(len, SPARE)
     }
 
-    /// Plans a carry record with a body of `len` bytes. It may take the block that
+    /// Plans a carry record of `tails` tails. It may take the block that
     /// [`append`](Self::append) leaves for it, and leaves the block of the restart
     /// record of the next open.
     ///
@@ -518,10 +518,10 @@ impl Writer {
     ///
     /// # Panics
     ///
-    /// When `len` is more than the layout's maximum.
+    /// When `tails` is more than [`Layout::tails_max`].
     #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
-    pub(crate) fn carry(&mut self, len: usize) -> Result<Plan, Full> {
-        self.plan(len, REOPEN)
+    pub(crate) fn carry(&mut self, tails: usize) -> Result<Plan, Full> {
+        self.plan(carry::body_len(tails), REOPEN)
     }
 
     /// The most tails that a carry record planned now may hold: the fewer of
@@ -548,9 +548,9 @@ impl Writer {
         self.want(self.head.saturating_add(queued), queued)
     }
 
-    /// Plans a record with a body of `len` bytes that leaves `kept` bytes free.
-    fn plan(&mut self, len: usize, kept: u64) -> Result<Plan, Full> {
-        let (skipped, size) = self.cost(len, kept)?;
+    /// Plans a record with a body of `len` bytes that leaves `spare` bytes free.
+    fn plan(&mut self, len: usize, spare: u64) -> Result<Plan, Full> {
+        let (skipped, size) = self.cost(len, spare)?;
         let wrap = (skipped > 0).then(|| self.layout.place(self.head));
         let start = self.head + skipped;
         if skipped > 0 {
@@ -582,7 +582,7 @@ impl Writer {
     ///
     /// When `len` is more than the layout's maximum.
     pub(crate) fn fits(&self, len: usize) -> Result<(), Full> {
-        self.cost(len, OWED + REOPEN).map(drop)
+        self.cost(len, SPARE).map(drop)
     }
 
     /// Frees the records before `tail`, an offset that an earlier plan gave.
@@ -705,21 +705,21 @@ impl Writer {
     /// [`trimmed`](Self::trimmed) before the head.
     fn want(&self, head: u64, queued: u64) -> u64 {
         let room = queued.max(self.layout.window).saturating_mul(3);
-        let spare = self.layout.area.saturating_sub(OWED + REOPEN + room);
-        head.saturating_sub(spare)
+        let lead = self.layout.area.saturating_sub(SPARE + room);
+        head.saturating_sub(lead)
     }
 
-    /// The bytes that a record may take and leave `kept` bytes free: the area not
-    /// in use, or the offsets left before the end, whichever is less, less `kept`.
-    fn free(&self, kept: u64) -> u64 {
+    /// The bytes that a record may take and leave `spare` bytes free: the area not
+    /// in use, or the offsets left before the end, whichever is less, less `spare`.
+    fn free(&self, spare: u64) -> u64 {
         let live = self.head - self.tail;
         let free = (self.layout.area - live).min(u64::MAX - self.head);
-        free.saturating_sub(kept)
+        free.saturating_sub(spare)
     }
 
     /// The bytes a record with a body of `len` bytes skips at the end of the area
-    /// and the bytes it takes, when it leaves `kept` bytes free.
-    fn cost(&self, len: usize, kept: u64) -> Result<(u64, u64), Full> {
+    /// and the bytes it takes, when it leaves `spare` bytes free.
+    fn cost(&self, len: usize, spare: u64) -> Result<(u64, u64), Full> {
         assert!(
             len <= self.layout.body_max,
             "invariant: a body of {len} bytes is over the maximum of {}",
@@ -729,7 +729,7 @@ impl Writer {
         let area = self.layout.area;
         let rest = area - self.layout.place(self.head);
         let skipped = if size > rest { rest } else { 0 };
-        let free = self.free(kept);
+        let free = self.free(spare);
         let needed = skipped + size;
         if needed > free {
             return Err(Full { needed, free });
@@ -1345,7 +1345,7 @@ mod tests {
         /// or the last one that `kept` permits.
         fn check_trim(&mut self, kept: Option<u64>) {
             let (area, head, old) = (self.layout.area, self.head.offset, self.tail);
-            let room = 3 * self.layout.window + OWED + REOPEN;
+            let room = 3 * self.layout.window + SPARE;
             let short = |tail: u64| area - (head - tail) < room;
             let bounds = self.bounds();
             let free = bounds.iter();
@@ -1458,7 +1458,7 @@ mod tests {
             let area = ring.layout.area;
             let free = match op {
                 Op::Reopen(_) => area - (after.offset - ring.tail.offset),
-                _ => (area - (head - ring.tail.offset)).saturating_sub(OWED + REOPEN),
+                _ => (area - (head - ring.tail.offset)).saturating_sub(SPARE),
             };
             let live = ring.data();
             let result = match op {
@@ -2217,8 +2217,8 @@ mod tests {
 
         proptest! {
             /// A ring of four of its largest record and two blocks refuses no record
-            /// when each commit holds one, of any length, placed before or after the release
-            /// of the trim before it.
+            /// when each commit holds one, of any length, placed before or after the
+            /// release of the trim before it.
             #[test]
             fn a_ring_of_four_records_refuses_no_record_of_a_steady_load(
                 extra in 0..8u64,
@@ -2381,12 +2381,11 @@ mod tests {
             ) {
                 let tails = written(blocks, &ops).tails();
                 if tails > 0 {
-                    let fits = written(blocks, &ops).carry(carry::body_len(tails));
+                    let fits = written(blocks, &ops).carry(tails);
                     prop_assert!(fits.is_ok(), "{tails} tails do not fit");
                 }
                 if tails < layout().tails_max() {
-                    let more = carry::body_len(tails + 1);
-                    let over = written(blocks, &ops).carry(more);
+                    let over = written(blocks, &ops).carry(tails + 1);
                     prop_assert!(over.is_err(), "{} tails fit", tails + 1);
                 }
             }
