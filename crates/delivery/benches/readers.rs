@@ -127,6 +127,19 @@ fn lose(bencher: Bencher<'_, '_>, sessions: usize) {
         });
 }
 
+/// One lost live frame with no frame queued, as when the ring is full, to `sessions`
+/// recording readers. Each session misses the first, so later ones walk sessions that
+/// are behind.
+#[divan::bench(args = [1, 16, 256])]
+fn lose_at_once(bencher: Bencher<'_, '_>, sessions: usize) {
+    let (mut readers, _) = opened(sessions, u64::MAX);
+    let mut seq = 0;
+    bencher.bench_local(|| {
+        divan::black_box(readers.lose(seq..seq + 1).len());
+        seq += 1;
+    });
+}
+
 /// The channels of [`wide`]: one index and its data channels.
 const CHANNELS: usize = 100_000;
 

@@ -35,9 +35,8 @@ pub enum Mode {
     /// still waits when the hub releases the next commit with frames of the index is
     /// a miss: the session ends with [`Ended::Behind`] after the frames before it. A
     /// live frame that finds no room in the buffer is a miss too, and so is each frame
-    /// that waits for the window then. So a reader that
-    /// takes the frames of each commit before the next such commit ends misses none
-    /// while the buffer has room.
+    /// that waits for the window then. So a reader that takes the frames of each
+    /// commit before the next such commit ends misses none while the buffer has room.
     Complete,
     /// The newest live frame, before its commit.
     Latest,
