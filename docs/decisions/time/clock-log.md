@@ -39,4 +39,8 @@
   gives `mesh_time=none`: `laptop.architect-2`, 2026-10-14T04:35:24Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6160981810. The last
   stamp: `laptop.architect-2`, 2026-10-14T04:40:25Z,
-  https://github.com/synnaxlabs/foundation/pull/2666#issuecomment-6161038475.
+  https://github.com/synnaxlabs/foundation/pull/2666#issuecomment-6161038475. The
+  `#[expect]` in `node`, a departure from
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155413393
+  (2026-10-13T21:19:14Z): `laptop.architect`, 2026-10-14T04:47:51Z,
+  https://github.com/synnaxlabs/foundation/pull/2666#issuecomment-6161122145.
