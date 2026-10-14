@@ -1,10 +1,12 @@
+#![expect(clippy::disallowed_methods, reason = "the tests read the log times")]
+
 use clock::Clock;
 use clock::log::{Mesh, Reader, Time};
 use estimate::Measurement;
 use sim::node::Node;
 use types::time::{Span, Stamp};
 
-use crate::common::{ms, node};
+use crate::common::{ms, node, run};
 
 const MS: i64 = 1_000_000;
 
@@ -36,14 +38,14 @@ fn has_no_mesh_time_with_no_sources() {
         reader.now(),
         Time {
             wall: wall(0),
-            mesh: Mesh::Unknown
+            mesh: Mesh::Unsynced
         }
     );
 }
 
 #[test]
-fn a_best_guess_at_most_1_ms_from_the_wall_time_is_near() {
-    for apart in [0, MS, -MS] {
+fn a_best_guess_at_most_2_ms_from_the_wall_time_is_near() {
+    for apart in [0, 2 * MS, -2 * MS] {
         let (_sim, node) = node();
         let (_clock, reader) = reader(&node, apart);
         assert_eq!(
@@ -58,8 +60,8 @@ fn a_best_guess_at_most_1_ms_from_the_wall_time_is_near() {
 }
 
 #[test]
-fn a_best_guess_more_than_1_ms_from_the_wall_time_is_apart() {
-    for apart in [MS + 1, -MS - 1, Span::HOUR.nanos()] {
+fn a_best_guess_more_than_2_ms_from_the_wall_time_is_apart() {
+    for apart in [2 * MS + 1, -2 * MS - 1, Span::HOUR.nanos()] {
         let (_sim, node) = node();
         let (_clock, reader) = reader(&node, apart);
         let mesh = Mesh::Apart(wall(apart));
@@ -152,4 +154,23 @@ fn a_lone_node_with_a_bound_past_the_end_of_a_stamp_is_near() {
             mesh: Mesh::Near
         }
     );
+}
+
+/// A lone node whose OS wall clock runs 200 ppm fast, the most that the clock allows
+/// for, with an OS bound that grows 500 µs each second between updates, as between
+/// the updates of chrony.
+#[test]
+fn a_lone_node_at_200_ppm_with_a_growing_os_bound_is_near() {
+    let (mut sim, host) = node();
+    let mesh = run(&host, host.wall());
+    let reader = Reader::new(host.wall(), mesh);
+    for second in 0..400 {
+        let error = 10 * MS + 500_000 * (second % 64);
+        host.set_wall_error(Some(Span::from_nanos(error)));
+        host.step_wall(Span::from_nanos(200_000));
+        sim.run_for(Span::SECOND).expect("runs");
+        if second >= 100 {
+            assert_eq!(reader.now().mesh, Mesh::Near, "second {second}");
+        }
+    }
 }
