@@ -297,6 +297,7 @@ impl env::files::Descriptor for Host {
         let wait = self.node.submit(self.path.clone(), call, held);
         Box::pin(async move {
             let Ended { result, held } = wait.await;
+            let held = held.map(Kept::into_inner);
             result?;
             let Some(Held::Into(mut into)) = held else {
                 unreachable!("invariant: a read keeps its block")
