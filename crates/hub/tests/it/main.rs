@@ -37,7 +37,6 @@ mod net;
 
 #[path = "../common/agent.rs"]
 mod agent;
-mod client;
 mod definitions;
 mod link;
 mod named;
@@ -62,9 +61,7 @@ const WIDE_AREA: u64 = 1 << 25;
 const WIDE_BODY_MAX: usize = 1 << 22;
 /// Samples per series of a frame whose charge is past the window of a reader.
 const PAST_WINDOW: i64 = 140_000;
-/// The pool reserves its budget once for each size class, 59 times here. With 8 tests
-/// at once, a budget of 8 MiB (63 classes) went over the 4 GiB cap of a test process
-/// in CI.
+/// The pool reserves its budget once for each size class, 59 times here.
 const POOL: usize = 1 << 22;
 const COMMIT: Span = Span::from_nanos(10_000_000);
 /// Past the commit of a write.
@@ -839,6 +836,23 @@ fn opens_a_writer_once_the_node_has_mesh_time_and_a_reader_before() {
 }
 
 #[test]
+fn the_time_of_a_writer_reads_mesh_time_also_after_the_writer_drops() {
+    run(5, |test| async move {
+        let writer = test.writer("a", &["value"]).await;
+        let time = writer.time();
+        test.clock.sleep(Span::SECOND).await;
+        let last = writer.now();
+        assert_eq!(time.now(), last);
+        assert_eq!(last.nanos(), test.now());
+        drop(writer);
+        test.clock.sleep(Span::SECOND).await;
+        let after = time.clone().now();
+        assert!(after >= last, "{after} is before {last}");
+        assert_eq!(after.nanos(), test.now());
+    });
+}
+
+#[test]
 fn opens_no_writer_with_a_lease_of_zero() {
     run(9, |test| async move {
         let config = writer::Config {
@@ -1322,8 +1336,10 @@ fn drops_the_commit_it_waits_for_with_the_hub() {
             ended,
             mut commit,
             hub,
+            pause,
             ..
         } = test;
+        pause.pause();
         drop((hub, reader, writer));
         assert_eq!((&mut commit).await, Ok(()));
         let open = || async {
@@ -1338,6 +1354,7 @@ fn drops_the_commit_it_waits_for_with_the_hub() {
         assert_eq!(open().await, Err(busy), "seed {seed}");
         drop(commit);
         assert_eq!(open().await, Ok(()), "seed {seed}");
+        pause.resume();
         clock.sleep(Span::from_nanos(1)).await;
         assert_eq!(ended.get(), 2, "the commit and gate tasks ended");
         first
@@ -2048,6 +2065,62 @@ fn ends_a_complete_reader_after_its_waiting_frames_when_it_misses_a_frame() {
         assert!(20 < taken && taken < 200, "{taken}");
         first
     });
+}
+
+/// A reader that sleeps while a writer writes one frame each second gets the frames
+/// before its miss, then `Behind`: frames of 128 samples pass the window before they
+/// fill the ring, and frames of 1 sample fill the ring first, so the reader gets each
+/// frame that the hub applied.
+#[test]
+fn ends_a_complete_reader_that_sleeps_past_its_window_or_its_ring_as_behind() {
+    for samples in [128, 1] {
+        run(21, move |test| async move {
+            let mut reader = test.reader(&["value"], Mode::Complete).await;
+            let mut writer = test.writer("a", &["value"]).await;
+            let mut outcomes = Vec::new();
+            for _ in 0..1_100 {
+                let stamps: Vec<_> = (test.now()..).take(samples).collect();
+                outcomes.extend(write(&mut writer, &stamps, &scrambled(&stamps)));
+                test.clock.sleep(Span::SECOND).await;
+            }
+            let applied = outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, Outcome::Applied { .. }))
+                .count();
+            let (mut taken, mut spent) = (0, 0);
+            let ended = loop {
+                match within(&test.clock, Span::SECOND, reader.next()).await {
+                    Some(Ok(received)) => {
+                        taken += 1;
+                        spent += charge(&received.view());
+                    }
+                    Some(Err(ended)) => break ended,
+                    None => panic!(
+                        "{samples} samples a frame: no end after {taken} frames of \
+                         {spent} bytes, of {applied} applied"
+                    ),
+                }
+            };
+            assert_behind(&ended);
+            assert!(taken < 1_100, "{taken} frames");
+            // The ring fills before the window, so each applied frame comes first.
+            if samples == 1 {
+                assert_eq!(taken, applied);
+            }
+        });
+    }
+}
+
+/// What `future` gives within `span` of `clock`, or `None`.
+async fn within<F: Future>(clock: &Clock, span: Span, future: F) -> Option<F::Output> {
+    let (mut future, mut sleep) = (pin!(future), pin!(clock.sleep(span)));
+    std::future::poll_fn(|cx| {
+        if let Poll::Ready(output) = future.as_mut().poll(cx) {
+            return Poll::Ready(Some(output));
+        }
+        sleep.as_mut().poll(cx).map(|()| None)
+    })
+    .await
 }
 
 #[test]

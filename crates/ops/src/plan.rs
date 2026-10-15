@@ -2,39 +2,23 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use document::diagnostic::{Code, Diagnostic};
+use document::value::Kind;
 use document::{Document, Span};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use spec::definition::Definition;
 use types::name::Name;
 
+use crate::Node;
 use crate::error::{Error, Place, Sources};
 use crate::front_end::{self, File, FrontEnds};
 
+/// A source of a secret of a connector of the planning node that gives no value.
+const UNRESOLVED: Code = Code::new("secret.unresolved");
+
 #[cfg(test)]
 mod tests;
-
-/// The change from the files to the spec at `base`, and the plan that `apply` takes.
-/// `Source(i)` is `files[i]`.
-///
-/// # Errors
-///
-/// As [`Documents::read`], then [`Documents::plan`].
-///
-/// # Panics
-///
-/// As [`front_end::read`] panics.
-pub(crate) fn plan(
-    files: &[File],
-    base: spec::Pointer,
-    applied: &BTreeMap<Name, Definition>,
-    members: &BTreeSet<Name>,
-    front_ends: &FrontEnds,
-    kinds: &connector::kind::Table,
-) -> Result<(Output, config::plan::Plan), Error> {
-    Documents::read(files, front_ends)?.plan(base, applied, members, kinds)
-}
 
 /// The config files of one plan, each read into its Document.
 pub(crate) struct Documents {
@@ -75,22 +59,76 @@ impl Documents {
         }
     }
 
-    /// The change from the files to the spec at `base`, and the plan that `apply`
-    /// takes.
+    /// The change from the files to the spec at `base` of `node`, and the plan that
+    /// `apply` takes. Also reads the value of each source of a secret in the config of
+    /// each connector of `node` whose name `readable` takes, through the resolver of
+    /// `node` as a run does, and drops it. A source is a call of `env`, `file`, or
+    /// `secret`, at any depth of the config, that [`secret::Source::read`] reads. Reads
+    /// one source at a time: the connectors in name order, and the sources of each in
+    /// the order of its config.
     ///
     /// # Errors
     ///
-    /// [`Error::Config`] with each problem of [`config::plan::plan`].
-    pub(crate) fn plan(
+    /// [`Error::Config`] with each problem of [`config::check`] and no read when it
+    /// fails; else each problem of [`config::plan::plan`], then `secret.unresolved` at
+    /// the call of each source that gives no value.
+    pub(crate) async fn plan(
+        &self,
+        node: &Node,
+        base: spec::Pointer,
+        applied: &BTreeMap<Name, Definition>,
+        readable: impl Fn(&Name) -> bool,
+    ) -> Result<(Output, config::plan::Plan), Error> {
+        let entries = config::check(&self.documents, &node.kinds)
+            .map_err(|diagnostics| Error::config(diagnostics, &self.sources))?;
+        let mut calls = Vec::new();
+        for (name, entry) in &entries {
+            if let config::Definition::Spec(Definition::Connector(connector)) =
+                &entry.definition
+                && connector.node() == &node.name
+                && readable(name)
+            {
+                sources(connector.config().document(), &mut calls);
+            }
+        }
+        let mut unresolved = Vec::new();
+        for (source, span) in calls {
+            if let Err(error) = node.secrets.get(&source).await {
+                unresolved.push(self::unresolved(
+                    span,
+                    format!("the secret {source}: {error}"),
+                ));
+            }
+        }
+        let members = node.mesh.names();
+        match (
+            self.changes(base, applied, &members, &node.kinds),
+            unresolved.is_empty(),
+        ) {
+            (Ok(planned), true) => Ok(planned),
+            (Ok(_), false) => Err(Error::config(unresolved, &self.sources)),
+            (Err(mut diagnostics), _) => {
+                diagnostics.append(&mut unresolved);
+                Err(Error::config(diagnostics, &self.sources))
+            }
+        }
+    }
+
+    /// The change from the files to the spec at `base`, and the plan that `apply`
+    /// takes, with no read of a secret.
+    ///
+    /// # Errors
+    ///
+    /// Each problem of [`config::plan::plan`].
+    pub(crate) fn changes(
         &self,
         base: spec::Pointer,
         applied: &BTreeMap<Name, Definition>,
         members: &BTreeSet<Name>,
         kinds: &connector::kind::Table,
-    ) -> Result<(Output, config::plan::Plan), Error> {
+    ) -> Result<(Output, config::plan::Plan), Vec<Diagnostic>> {
         let sources = &self.sources;
-        let plan = config::plan::plan(&self.documents, base, applied, members, kinds)
-            .map_err(|diagnostics| Error::config(diagnostics, sources))?;
+        let plan = config::plan::plan(&self.documents, base, applied, members, kinds)?;
         let mut changes: Vec<(Order, Change)> = lines(&plan, applied)
             .map(|(name, line)| Change::of(name, line, sources))
             .collect();
@@ -115,6 +153,66 @@ impl Documents {
     }
 }
 
+/// The `secret.unresolved` problem at `span`, the call of a source that gives no value,
+/// with the text `message`.
+pub(crate) fn unresolved(span: Option<Span>, message: String) -> Diagnostic {
+    Diagnostic::new(
+        UNRESOLVED,
+        span,
+        message,
+        "Give the node the value at the source, or change the source, then plan again"
+            .to_owned(),
+    )
+}
+
+/// Adds each source of a secret in `document` to `into`, with the span of its call, in
+/// the order of the document.
+fn sources(document: &Document, into: &mut Vec<(secret::Source, Option<Span>)>) {
+    let start = into.len();
+    block_sources(document, into);
+    into[start..].sort_by_key(|(_, span)| *span);
+}
+
+/// Adds each source of a secret in `document` to `into`: its attributes in key order,
+/// then its blocks.
+fn block_sources(document: &Document, into: &mut Vec<(secret::Source, Option<Span>)>) {
+    for attribute in document.attributes.iter() {
+        value_sources(&attribute.value, into);
+    }
+    for block in &document.blocks {
+        block_sources(&block.body, into);
+    }
+}
+
+/// Adds each source of a secret in `value` to `into`, as [`block_sources`] does.
+fn value_sources(
+    value: &document::value::Value,
+    into: &mut Vec<(secret::Source, Option<Span>)>,
+) {
+    match &value.kind {
+        Kind::Call(_) => {
+            if let Ok(source) = secret::Source::read(value) {
+                into.push((source, value.span));
+            }
+        }
+        Kind::List(values) => {
+            for value in values {
+                value_sources(value, into);
+            }
+        }
+        Kind::Map(map) => {
+            for attribute in map.iter() {
+                value_sources(&attribute.value, into);
+            }
+        }
+        Kind::Bool(_)
+        | Kind::Integer(_)
+        | Kind::Float(_)
+        | Kind::String(_)
+        | Kind::Reference(_) => {}
+    }
+}
+
 /// The change from the files to the spec, as `plan` gives it.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub(crate) struct Output {
@@ -134,11 +232,6 @@ pub(crate) struct Output {
 }
 
 impl Output {
-    /// The output as JSON.
-    pub(crate) fn json(&self) -> Value {
-        serde_json::to_value(self).expect("invariant: an output is plain JSON data")
-    }
-
     /// One line for each change, with a `key` line under it for each fingerprint, then
     /// the counts, then one `note` line with the tree key of each definition that
     /// Foundation made, when the spec holds one.

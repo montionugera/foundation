@@ -8,7 +8,7 @@ use std::pin::pin;
 use std::task::Poll;
 
 use block::{Block, Pool};
-use env::files::{Error, File, Files, Mode, Operation};
+use env::files::{Absolute, Error, File, Files, Mode, Operation};
 
 use crate::disk::{KIB, Scratch, files, opened};
 
@@ -24,6 +24,11 @@ fn run<F: Future<Output = ()>>(body: impl FnOnce(Files, PathBuf) -> F) {
     thread.join().unwrap();
 }
 
+/// `path` as the absolute path that `open_absolute` takes.
+fn absolute(path: &Path) -> Absolute {
+    Absolute::new(path.to_str().unwrap()).unwrap()
+}
+
 fn pool() -> Pool {
     let config = block::Config::new(1 << 20).expect("the budget fits");
     let memory = block::Heap::new(config.reservation());
@@ -31,9 +36,7 @@ fn pool() -> Pool {
 }
 
 fn block(pool: &Pool, bytes: &[u8]) -> Block {
-    let mut unique = pool.alloc(bytes.len()).unwrap();
-    unique.copy_from_slice(bytes);
-    unique.freeze()
+    pool.copy(bytes).unwrap()
 }
 
 /// The `len` bytes of `file` at `offset`.
@@ -223,6 +226,97 @@ fn an_open_of_a_missing_file_gives_not_found() {
         let expected = Error::NotFound { path: "b/a".into() };
         assert_eq!(found.await.unwrap_err(), expected);
     });
+}
+
+#[test]
+fn open_absolute_reads_a_file_outside_the_data_directory() {
+    run(|files, data| async move {
+        let path = data.parent().unwrap().join("token");
+        std::fs::write(&path, b"abc").unwrap();
+        let file = files.open_absolute(&absolute(&path)).await.unwrap();
+        assert_eq!(read(&file, &pool(), 0, 3).await, b"abc");
+        let gone = data.parent().unwrap().join("gone");
+        let found = files.open_absolute(&absolute(&gone)).await.unwrap_err();
+        assert_eq!(found, Error::NotFound { path: gone });
+    });
+}
+
+/// A write open of a mode 0444 file gives `EACCES` to a user other than root, and
+/// its lock gives `Busy` to a second open.
+#[test]
+fn open_absolute_opens_to_read_only_with_no_lock() {
+    run(|files, data| async move {
+        let path = data.parent().unwrap().join("token");
+        std::fs::write(&path, b"abc").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444))
+            .unwrap();
+        let (other, thread) = self::files(data.parent().unwrap(), "other");
+        let held = files.open_absolute(&absolute(&path)).await.unwrap();
+        let second = other.open_absolute(&absolute(&path)).await.unwrap();
+        let pool = pool();
+        assert_eq!(read(&held, &pool, 0, 3).await, b"abc");
+        assert_eq!(read(&second, &pool, 0, 3).await, b"abc");
+        drop((held, second, other));
+        thread.join().unwrap();
+    });
+}
+
+/// A FIFO with no writer would block an open with no `NONBLOCK`, and each later call
+/// with it, so the opens run on a thread that the test gives 5 s.
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a blocked open must not hang the test"
+)]
+fn open_absolute_refuses_a_file_that_is_not_regular_and_waits_for_no_writer() {
+    let scratch = Scratch::new();
+    let (fifo, dir) = (scratch.0.join("fifo"), scratch.0.clone());
+    mkfifo(&fifo);
+    // A socket path has a bound of 104 bytes on macOS, which the scratch path can pass.
+    let socket =
+        PathBuf::from(format!("/tmp/foundation-os-{}.sock", std::process::id()));
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let opened = socket.clone();
+    let (done, ended) = std::sync::mpsc::channel();
+    let opens = std::thread::spawn(move || {
+        let (files, thread) = files(&dir, "files");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut found = Vec::new();
+            let paths = [dir.join("fifo"), dir.clone(), "/dev/null".into(), opened];
+            for path in paths {
+                found.push(files.open_absolute(&absolute(&path)).await.map(drop));
+            }
+            files.free().await.unwrap();
+            done.send(found).unwrap();
+        });
+        drop(files);
+        thread.join().unwrap();
+    });
+    let found = ended.recv_timeout(std::time::Duration::from_secs(5));
+    if found.is_err() {
+        let flags = rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::NONBLOCK;
+        drop(rustix::fs::open(&fifo, flags, rustix::fs::Mode::empty()));
+    }
+    opens.join().unwrap();
+    drop(listener);
+    std::fs::remove_file(&socket).unwrap();
+    let io = |path: PathBuf, code| {
+        Err(Error::Io {
+            path,
+            operation: Operation::Open,
+            code,
+        })
+    };
+    let expected = vec![
+        io(fifo, 22),
+        io(scratch.0.clone(), 21),
+        io("/dev/null".into(), 22),
+        io(socket, 22),
+    ];
+    assert_eq!(found.expect("no open blocks"), expected);
 }
 
 #[test]
@@ -1543,6 +1637,42 @@ fn stored_reads_the_files_that_files_wrote() {
         let file = files.open(Path::new("a"), Mode::Read).await.unwrap();
         assert_eq!(read(&file, &pool, 0, 4).await, b"kept");
     });
+    drop(files);
+    thread.join().unwrap();
+}
+
+#[test]
+fn shown_joins_to_the_data_directory() {
+    run(|files, data| async move {
+        assert_eq!(
+            files.shown(Path::new("secrets/a.b")),
+            data.join("secrets/a.b")
+        );
+    });
+}
+
+#[test]
+fn shown_of_a_relative_directory_is_absolute() {
+    let scratch = Scratch::new();
+    let cwd = std::env::current_dir().unwrap();
+    let up = "../".repeat(cwd.components().count() - 1);
+    let dir = Path::new(&up).join(scratch.0.strip_prefix("/").unwrap());
+    let threads = os::threads().unwrap();
+    let (disk, thread) = os::files(&dir, &threads, "files").unwrap();
+    let files = Files::new(disk);
+    assert_eq!(files.shown(Path::new("a")), cwd.join(&dir).join("data/a"));
+    drop(files);
+    thread.join().unwrap();
+}
+
+#[test]
+fn shown_of_a_stored_directory_joins_to_its_data_directory() {
+    let scratch = Scratch::new();
+    std::fs::create_dir(scratch.0.join("data")).unwrap();
+    let threads = os::threads().unwrap();
+    let (disk, thread) = os::stored(&scratch.0, &threads, "files").unwrap();
+    let files = Files::new(disk);
+    assert_eq!(files.shown(Path::new("a")), scratch.0.join("data/a"));
     drop(files);
     thread.join().unwrap();
 }

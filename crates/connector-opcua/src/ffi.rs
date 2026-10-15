@@ -48,27 +48,37 @@ impl Status {
     #[cfg(test)]
     pub(crate) const BAD_INVALID_ARGUMENT: Self = Self(0x80AB_0000);
     pub(crate) const BAD_CONNECTION_CLOSED: Self = Self(0x80AE_0000);
+    #[cfg(test)]
     pub(crate) const BAD_TCP_ENDPOINT_URL_INVALID: Self = Self(0x8083_0000);
     pub(crate) const BAD_TIMEOUT: Self = Self(0x800A_0000);
     pub(crate) const BAD_TOO_MANY_OPERATIONS: Self = Self(0x8010_0000);
+    pub(crate) const BAD_UNEXPECTED_ERROR: Self = Self(0x8001_0000);
     #[cfg(test)]
     pub(crate) const BAD_INTERNAL_ERROR: Self = Self(0x8002_0000);
     #[cfg(test)]
     pub(crate) const BAD_OUT_OF_RANGE: Self = Self(0x803C_0000);
     #[cfg(test)]
+    pub(crate) const BAD_NOT_SUPPORTED: Self = Self(0x803D_0000);
+    #[cfg(test)]
     pub(crate) const BAD_NODE_ID_UNKNOWN: Self = Self(0x8034_0000);
     #[cfg(test)]
     pub(crate) const BAD_TYPE_MISMATCH: Self = Self(0x8074_0000);
     #[cfg(test)]
+    pub(crate) const BAD_NO_DATA: Self = Self(0x809B_0000);
+    #[cfg(test)]
     pub(crate) const BAD_SESSION_CLOSED: Self = Self(0x8026_0000);
     #[cfg(test)]
     pub(crate) const BAD_SECURE_CHANNEL_CLOSED: Self = Self(0x8086_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_RESPONSE_TOO_LARGE: Self = Self(0x80B9_0000);
     #[cfg(test)]
     pub(crate) const BAD_CONNECTION_REJECTED: Self = Self(0x80AC_0000);
     #[cfg(test)]
     pub(crate) const BAD_TOO_MANY_SESSIONS: Self = Self(0x8056_0000);
     #[cfg(test)]
     pub(crate) const BAD_SERVER_NOT_CONNECTED: Self = Self(0x800D_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_SECURITY_MODE_REJECTED: Self = Self(0x8054_0000);
 
     /// Gives the name of the code, such as `BadNodeIdUnknown`.
     pub(crate) fn name(self) -> &'static str {
@@ -137,6 +147,19 @@ pub(crate) struct DecodeOptions {
 /// `UA_TYPES_COUNT`.
 pub(crate) const TYPES: usize = 388;
 
+/// The kind of each type of [`Scalar`], which is also its index in `UA_TYPES`.
+pub(crate) const BOOLEAN: u16 = 0;
+pub(crate) const SBYTE: u16 = 1;
+pub(crate) const BYTE: u16 = 2;
+pub(crate) const INT16: u16 = 3;
+pub(crate) const UINT16: u16 = 4;
+pub(crate) const INT32: u16 = 5;
+pub(crate) const UINT32: u16 = 6;
+pub(crate) const INT64: u16 = 7;
+pub(crate) const UINT64: u16 = 8;
+pub(crate) const FLOAT: u16 = 9;
+pub(crate) const DOUBLE: u16 = 10;
+
 /// The index of `ByteString` in `UA_TYPES`.
 pub(crate) const BYTE_STRING: usize = 14;
 
@@ -158,6 +181,7 @@ const _: () = {
     );
     assert!(size_of::<Node<'_>>() == 24, "shim_node changed");
     assert!(offset_of!(Node<'_>, name) == 8, "shim_node.name moved");
+    assert!(size_of::<Scalar>() == 8, "shim_scalar changed");
 };
 
 /// Gives `UA_TYPES`, the table of built-in types.
@@ -165,6 +189,10 @@ pub(crate) fn types() -> &'static [DataType; TYPES] {
     // SAFETY: the table is initialized at compile time, and open62541 never writes it.
     unsafe { &UA_TYPES }
 }
+
+/// `UA_NS0ID_SERVER_SERVERCAPABILITIES_OPERATIONLIMITS_MAXNODESPERREAD`, the node of
+/// the most nodes of one Read request of a server, a `UInt32`. `shim.c` asserts it.
+pub(crate) const MAX_NODES_PER_READ: u32 = 11705;
 
 /// `UA_Callback`.
 pub(crate) type Callback =
@@ -354,6 +382,36 @@ pub(crate) struct Hooks {
 #[repr(C)]
 pub(crate) struct Client([u8; 0]);
 
+/// `UA_ReadRequest`, which Rust holds only by pointer.
+#[repr(C)]
+pub(crate) struct ReadRequest([u8; 0]);
+
+/// `UA_ReadResponse`, which Rust holds only by pointer.
+#[repr(C)]
+pub(crate) struct ReadResponse([u8; 0]);
+
+/// `shim_scalar`: a scalar of a type from [`BOOLEAN`] to [`DOUBLE`]. Its kind tells
+/// which field holds it.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) union Scalar {
+    pub(crate) boolean: bool,
+    pub(crate) sbyte: i8,
+    pub(crate) byte: u8,
+    pub(crate) int16: i16,
+    pub(crate) uint16: u16,
+    pub(crate) int32: i32,
+    pub(crate) uint32: u32,
+    pub(crate) int64: i64,
+    pub(crate) uint64: u64,
+    pub(crate) float: f32,
+    pub(crate) double: f64,
+}
+
+/// `UA_DataValue`, which Rust holds only by pointer.
+#[repr(C)]
+pub(crate) struct DataValue([u8; 0]);
+
 /// `UA_SecureChannelState` of a client.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(transparent)]
@@ -376,17 +434,16 @@ impl Session {
     pub(crate) const ACTIVATED: Self = Self(4);
 }
 
-/// `UA_ClientAsyncReadValueAttributeCallback`.
+/// `UA_ClientAsyncReadCallback`.
 pub(crate) type Read = unsafe extern "C" fn(
     client: *mut Client,
     data: *mut c_void,
     request: u32,
-    status: u32,
-    value: *mut c_void,
+    response: *mut ReadResponse,
 );
 
 /// The `shim_now` of `shim.c`.
-pub(crate) type Now = unsafe extern "C" fn(clock: *mut c_void) -> i64;
+pub(crate) type Now = unsafe extern "C" fn(time: *mut c_void) -> i64;
 
 unsafe extern "C" {
     static UA_TYPES: [DataType; TYPES];
@@ -411,9 +468,19 @@ unsafe extern "C" {
     pub(crate) fn UA_clear(value: *mut c_void, data_type: *const DataType);
 
     pub(crate) fn UA_StatusCode_name(code: u32) -> *const c_char;
+    pub(crate) fn UA_parseEndpointUrl(
+        url: *const Bytes,
+        host: *mut Bytes,
+        port: *mut u16,
+        path: *mut Bytes,
+    ) -> u32;
     pub(crate) fn UA_random_seed_deterministic(value: u64);
 
-    pub(crate) fn shim_loop_new(now: Now, clock: *mut c_void) -> *mut EventLoop;
+    pub(crate) fn shim_loop_new(
+        now: Now,
+        wall: Now,
+        time: *mut c_void,
+    ) -> *mut EventLoop;
     pub(crate) fn shim_loop_free(el: *mut EventLoop);
     pub(crate) fn shim_loop_delayed(el: *mut EventLoop) -> bool;
     pub(crate) static shim_free_passes: c_int;
@@ -428,6 +495,10 @@ unsafe extern "C" {
     pub(crate) fn UA_Client_delete(client: *mut Client);
     pub(crate) fn shim_client_free(client: *mut Client);
     pub(crate) fn shim_client_timeout(client: *mut Client) -> u32;
+    pub(crate) fn shim_client_limits(
+        client: *mut Client,
+        limits: *mut [usize; 5],
+    ) -> u32;
     pub(crate) fn UA_Client_disconnectAsync(client: *mut Client) -> u32;
     pub(crate) fn UA_Client_connectAsync(
         client: *mut Client,
@@ -439,14 +510,33 @@ unsafe extern "C" {
         session: *mut Session,
         status: *mut u32,
     );
+    pub(crate) fn shim_read_new(
+        nodes: *const Node<'_>,
+        count: usize,
+    ) -> *mut ReadRequest;
+    pub(crate) fn shim_read_free(request: *mut ReadRequest);
+    pub(crate) fn shim_read_ask(token: usize) -> usize;
+    pub(crate) fn shim_read_item(node: Node<'_>) -> usize;
+    pub(crate) fn shim_read_answer() -> usize;
+    pub(crate) fn shim_read_answer_item() -> usize;
     pub(crate) fn shim_client_read(
         client: *mut Client,
-        node: Node<'_>,
+        request: *mut ReadRequest,
         callback: Read,
         data: *mut c_void,
-        request: *mut u32,
+        id: *mut u32,
     ) -> u32;
-    pub(crate) fn shim_value_double(value: *const c_void, out: *mut f64) -> u32;
+    pub(crate) fn shim_response_result(response: *const c_void) -> u32;
+    pub(crate) fn shim_read_count(response: *const ReadResponse) -> usize;
+    pub(crate) fn shim_read_result(
+        response: *const ReadResponse,
+        index: usize,
+    ) -> *const DataValue;
+    pub(crate) fn shim_value_scalar(
+        value: *const DataValue,
+        out: *mut Scalar,
+        kind: *mut u16,
+    ) -> u32;
 
     pub(crate) fn shim_cm_new(
         el: *mut EventLoop,

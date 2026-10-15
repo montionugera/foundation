@@ -12,7 +12,7 @@ use std::time::Duration;
 use env::clock::Clock;
 use types::time::Span;
 
-use crate::status::Connector;
+use crate::status::{self, Connector};
 use crate::text;
 
 /// How long [`Rig::wait`] and [`Rig::run`] wait: longer than the 60 s cap of a restart
@@ -37,6 +37,8 @@ pub(crate) struct Rig {
     pub(crate) dir: PathBuf,
     /// The disk budget that [`Rig::new`] keeps: 8 MiB for each core.
     pub(crate) disk: u64,
+    /// The environment variables that [`Rig::var`] sets.
+    vars: Vec<(String, String)>,
     clock: Clock,
     node: Option<Running>,
 }
@@ -76,6 +78,7 @@ impl Rig {
             dir,
             disk: u64::try_from(cores).expect("invariant: a core count fits u64")
                 * (8 << 20),
+            vars: Vec::new(),
             clock: os::clock(),
             node: None,
         };
@@ -91,6 +94,12 @@ impl Rig {
     /// Writes the file [`Rig::budget`] that keeps `pool` and `disk`.
     pub(crate) fn keep(&self, pool: u64, disk: u64) {
         keep(&self.budget(), pool, disk);
+    }
+
+    /// Sets the environment variable `name` to `value` in each later start of a node,
+    /// and in each later `foundation` of [`Rig::run`] and [`Rig::talk`].
+    pub(crate) fn var(&mut self, name: &str, value: &str) {
+        self.vars.push((name.into(), value.into()));
     }
 
     /// Writes `hcl` to `plant.hcl`.
@@ -182,7 +191,10 @@ impl Rig {
     /// `foundation` with `args` in [`Rig::dir`].
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_foundation"));
-        command.args(args).current_dir(&self.dir);
+        command
+            .args(args)
+            .envs(self.vars.iter().map(|(name, value)| (name, value)));
+        command.current_dir(&self.dir);
         command
     }
 
@@ -275,10 +287,16 @@ impl Rig {
         })
     }
 
-    /// The connectors of `foundation status --json`, by name.
-    #[expect(clippy::todo, reason = "waits on #1735")]
+    /// The connectors of `foundation status --json`, by name. Panics when it fails.
     pub(crate) fn status(&self) -> BTreeMap<String, Connector> {
-        todo!("waits on #1735")
+        let output = self.run(&["status", "--json"], b"");
+        let stderr = text(&output.stderr);
+        assert!(
+            output.status.success() && stderr.is_empty(),
+            "`foundation status --json` exited with {}, stderr: {stderr}",
+            output.status
+        );
+        status::connectors(&output.stdout)
     }
 }
 

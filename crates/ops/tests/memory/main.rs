@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use ops::{FrontEnd, FrontEnds, Node, serve};
+use ops::{Config, FrontEnd, FrontEnds, Node, serve};
 use serde_json::{Value, json};
 use sim::Sim;
 use types::channel::Key;
@@ -63,18 +63,30 @@ fn serve_large(text: &str) {
     let ran = sim.run_on(&sim_node, move |sim_node, tasks| async move {
         let definitions = spec::founding::create(ADMIN.public());
         let mesh = create_mesh(&sim_node, &tasks, &["edge"], definitions).await;
+        let env = hub::testing::Env {
+            files: sim_node.files(),
+            clock: sim_node.clock(),
+            wall: sim_node.wall(),
+            entropy: sim_node.entropy(),
+            tasks,
+        };
+        let (hub, _) = hub::testing::open(env).await;
         let front_ends = FrontEnds::new(
             "hcl",
             FrontEnd {
                 read: config_hcl::read,
             },
         );
-        let node = Node::new(
+        let node = Node::new(Config {
             mesh,
-            || Key::from_u128(1),
+            keys: Box::new(|| Key::from_u128(1)),
             front_ends,
-            Arc::new(connector::kind::Table::new()),
-        );
+            kinds: Arc::new(connector::kind::Table::new()),
+            hub,
+            clock: sim_node.clock(),
+            name: "edge".parse().expect("a name"),
+            secrets: connector::testing::create_secrets(sim_node.files()),
+        });
         let subject = "@admin".parse().expect("a name");
         let before = ALLOCATOR.held();
         ALLOCATOR.reset_peak();

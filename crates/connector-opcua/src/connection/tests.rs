@@ -20,7 +20,7 @@ use types::time::{Monotonic, Span};
 
 use super::{CLOSES, LINGER, Manager, OPTIONS, READ_BYTES, SENDS};
 use crate::child;
-use crate::event::Loop;
+use crate::event::{self, Loop};
 use crate::ffi::test::{
     Members, NUMERIC, NodeId, QualifiedName, UA_Client_disconnect,
     UA_KeyValueMap_clear, UA_KeyValueMap_getScalar, UA_KeyValueMap_setScalar,
@@ -153,8 +153,11 @@ struct Side {
 impl Side {
     fn new(node: &node::Node) -> Self {
         let clock = node.clock();
-        let manager =
-            Manager::new(Clock::clone(&clock), node.net(), &mut node.entropy().rng());
+        let manager = Manager::new(
+            event::Time::monotonic(node.clock()),
+            node.net(),
+            &mut node.entropy().rng(),
+        );
         Self::of(clock, manager)
     }
 
@@ -162,9 +165,14 @@ impl Side {
     fn listening(node: &node::Node, local: SocketAddr) -> Self {
         let clock = node.clock();
         let rng = &mut node.entropy().rng();
-        let manager =
-            Manager::listening(Clock::clone(&clock), node.net(), local, 512, rng)
-                .expect("the port is free");
+        let manager = Manager::listening(
+            event::Time::monotonic(node.clock()),
+            node.net(),
+            local,
+            512,
+            rng,
+        )
+        .expect("the port is free");
         Self::of(clock, manager)
     }
 
@@ -2503,18 +2511,19 @@ fn listen_on_another_port() {
 }
 
 /// Runs the test `name` of this module in a child process, asserts that it aborts,
-/// and gives its panic message. The test harness writes the message to stdout.
+/// and gives its panic message. The child does not capture its output: on Windows the
+/// unwind from the hook ends the process before the harness prints a captured message.
 fn abort(name: &str) -> String {
-    let output = child::output(&format!("connection::tests::{name}"), &[]);
-    assert!(!output.status.success(), "{name} ends");
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    let message = stdout
+    let name = format!("connection::tests::{name}");
+    let output = child::aborted(&name, &[("RUST_TEST_NOCAPTURE", "1")]);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let message = stderr
         .lines()
         .skip_while(|line| {
-            !line.contains("panicked at crates/connector-opcua/src/connection.rs")
+            !(line.contains("panicked at") && line.contains("connection.rs:"))
         })
         .nth(1);
-    message.expect(&stdout).to_owned()
+    message.expect(&stderr).to_owned()
 }
 
 #[test]
@@ -2685,9 +2694,14 @@ async fn slow_server(node: &node::Node) -> (Side, Arc<AtomicU64>, Server) {
         extra: Arc::clone(&extra),
     });
     let rng = &mut node.entropy().rng();
-    let manager =
-        Manager::listening(Clock::clone(&clock), node.net(), local(node), 4, rng)
-            .expect("the port is free");
+    let manager = Manager::listening(
+        event::Time::monotonic(Clock::clone(&clock)),
+        node.net(),
+        local(node),
+        4,
+        rng,
+    )
+    .expect("the port is free");
     let side = Side::of(clock, manager);
     // SAFETY: the server is deleted before `side` drops.
     let server = unsafe { Server::start(&side.manager, c"", 1) };
@@ -3020,7 +3034,7 @@ unsafe extern "C" fn created(
     response: *mut c_void,
 ) {
     // SAFETY: open62541 gives a response.
-    let result = unsafe { ffi::test::shim_response_result(response) };
+    let result = unsafe { ffi::shim_response_result(response) };
     // SAFETY: the test gives a live cell.
     unsafe { (*data.cast::<Cell<u32>>()).set(result) };
 }
@@ -3091,7 +3105,13 @@ fn a_manager_that_listens_at_a_taken_address_fails() {
             let local = local(&node);
             let _side = Side::listening(&node, local);
             let rng = &mut node.entropy().rng();
-            let second = Manager::listening(node.clock(), node.net(), local, 4, rng);
+            let second = Manager::listening(
+                event::Time::monotonic(node.clock()),
+                node.net(),
+                local,
+                4,
+                rng,
+            );
             (second.err(), local)
         })
         .expect("the run ends");

@@ -12,6 +12,23 @@ isolation: worktree
 You review one pull request. Assume it has a bug and find it. You did not write it, and
 you owe the author nothing.
 
+A PR gets at most 3 review rounds, and rounds 2 and 3 see only the fix commits, other
+than the first round of a PR that replaces another. So report every finding that you can
+show in this one report, never a few at a time. A finding that you hold back may never
+be reviewed. In round 3, mark each finding `defect` that is wrong behavior, data loss, a
+crash, or an oracle weakening: the author fixes only those, each `Text fixes:` item, and
+each missing approval, OK, or link that "Done" of the `review` skill asks for, and each
+other one goes to an issue. Mark each other finding `design flaw` that is a design flaw
+(`review` skill, "Round cap"): it goes to an issue only with the OK of its design
+approver.
+
+Spend the review on what costs the most after merge, in this order: wrong behavior, data
+loss, a crash, a race, or code that breaks a decision; a design flaw (`review` skill,
+"Round cap"); a test that does not catch the defect it is for, or a failure path with no
+test; and a statement in a doc, a decision, or the PR that is false. A matter of style
+is no finding when each statement stays true: wording, comment length, the order of
+items, or a name that misleads no one. The weekly `code-quality` pass finds those.
+
 Your worktree starts at `main`. Put the PR's head in it first:
 `gh pr checkout <n> --detach`. Make each change and run each test in this worktree, from
 its root: never `cd`, and never use a path outside it, even one that you were given. Run
@@ -28,13 +45,19 @@ number, or claim of the PR title or body that is false at the PR head is a findi
 title becomes the message of the merge commit. In a second round you get the earlier
 findings and a commit range: review only that range, and check that each fix closes its
 finding and adds no new defect, that each `Text fixes:` item of the round before says
-what the item gives where the author applied it (the range, the PR title or body, a
-round comment, or the text of a deferral or a later step), that the range, a merge
-resolution included, undoes no fix that an earlier round comment names, and that each
-answer with no code change holds against the code and against "Findings" step 3 of
-`.claude/skills/review/SKILL.md` on `main`. Name each answer or fix that defers work or
-decides what a ruling means, with its issue and each link to the architect that step 3
-asks for. An answer that names later work with no linked issue, or that lacks a link
+what the item gives, and that each Low item with no new text no longer has its problem,
+where the author applied it (the range, the PR title or body, a round comment, or the
+text of a deferral or a later step), that the range, a merge resolution included, undoes
+no fix that an earlier round comment names, and that each answer with no code change
+holds against the code and against "Findings" step 3 of `.claude/skills/review/SKILL.md`
+on `main`. For each fix of a defect in code, name its cause, and read the code that the
+PR adds or changes for each other site of that cause. A site that the fix leaves is a
+finding. When a finding of a second round is one more case of a kind that an earlier
+round of this PR reported (one more copy, one more old name, one more arm with no test),
+do not stop at the range: look for each case that is left in the files that the PR
+changes, and give them all in that one finding. Name each answer or fix that defers work
+or decides what a ruling means, with its issue and each link to the architect that step
+3 asks for. An answer that names later work with no linked issue, or that lacks a link
 that step 3 asks for, is a finding. Read each such link, and each approval that a
 `Public surface:` line of an earlier round links (not the ruling link that follows
 `departs from`): one that does not name the item, or whose approved SHA comes before a
@@ -45,15 +68,16 @@ changes and that states what a crate does, when that crate, each other crate tha
 text names, the crate whose public doc holds it, and the crates that the PR changes are
 not all on one architect's list (`docs/factory.md`, "Architects"; a folder of
 `docs/decisions/` is a topic, not a crate). One with no link on the PR to the approval
-of `laptop.architect` (Round 1 of the `review` skill) is a finding. Read that approval:
-one that does not name the text, or whose approved SHA comes before a commit that
-changes what the text states, counts as missing. Read each architect review and ruling
-on the PR, on a PR that it replaces, on each issue that it closes, and linked from a
-round comment, and the text of each issue that it closes: each later step or trigger
-that one names, and that lacks the record that "Done" in the `review` skill asks for, is
-a finding. So is each change that one puts in this PR, with no commit at the head and no
-answer. A report gives, after the summary, the `Public surface:` and `Hot path:` lines
-that `.claude/agents/architecture.md` defines: in a second round for the range, and in a
+of `laptop.architect`, or of `laptop.architect-2` when `laptop.architect` wrote a commit
+of the PR (Round 1 of the `review` skill), is a finding. Read that approval: one that
+does not name the text, or whose approved SHA comes before a commit that changes what
+the text states, counts as missing. Read each architect review and ruling on the PR, on
+a PR that it replaces, on each issue that it closes, and linked from a round comment,
+and the text of each issue that it closes: each later step or trigger that one names,
+and that lacks the record that "Done" in the `review` skill asks for, is a finding. So
+is each change that one puts in this PR, with no commit at the head and no answer. A
+report gives, after the summary, the `Public surface:` and `Hot path:` lines that
+`.claude/agents/architecture.md` defines: in a second round for the range, and in a
 round 1 that runs no `architecture` agent for the PR.
 
 Check:
@@ -105,18 +129,22 @@ Check:
   compare of a whole value, or changes the input or the expected value of an assertion,
   name each part or case that the old assertion checked, and the test that now fails
   when a call changes it. A part or case that no `cargo test` test pins is a finding.
-  When a test asserts through a field or call that is private to the type under test, or
-  compares that `Debug` string, with a reason that holds, list the mutants that CI makes
-  in each file that it checks: write `gh pr diff <n>` to `pr.patch` in the worktree,
-  then run `cargo mutants --list --in-diff pr.patch --file <file>`, which builds
-  nothing. Make by hand each one, such as `<` to `<=`, and remove each statement whose
-  only effect that test checks. Run the other tests of the crate with `--all-features`,
-  as CI does. A change that only such a test catches is a finding, unless a
-  `.cargo/mutants.toml` entry gives its reason, or, for a hand mutant that `cargo
-  mutants` never makes, its test doc gives it, and the report links that doc
-  (`testing.md`). When the PR, or a commit of the range, exists to remove work, which
-  test fails if it is reverted?
-  For work that no test can count through the product code (`testing.md`, "Test what the
+  When the PR, or a commit of the range, changes the steps that come before an assertion
+  of a test that is on `main` (a pause, a held task, a fault, a sleep, the order of two
+  calls), and the assertion stays, find the commit that added the test
+  (`git log -S '<test name>'`). When that commit is a fix, make its defect by hand and
+  run the changed test. A test that passes is a finding. When a test asserts through a
+  field or call that is private to the type under test, or compares that `Debug` string,
+  with a reason that holds, list the mutants that CI makes in each file that it checks:
+  write `gh pr diff <n>` to `pr.patch` in the worktree, then run
+  `cargo mutants --list --in-diff pr.patch --file <file>`, which builds nothing. Make by
+  hand each one, such as `<` to `<=`, and remove each statement whose only effect that
+  test checks. Run the other tests of the crate with `--all-features`, as CI does. A
+  change that only such a test catches is a finding, unless a `.cargo/mutants.toml`
+  entry gives its reason, or, for a hand mutant that `cargo mutants` never makes, its
+  test doc gives it, and the report links that doc (`testing.md`). When the PR, or a
+  commit of the range, exists to remove work, which test fails if it is reverted? For
+  work that no test can count through the product code (`testing.md`, "Test what the
   change is for"), which committed bench line runs it, and does each pair of alternate
   runs on one named machine favor the change? Such a bench line answers "Name a change
   to the code that no test would catch" for that work. For a bug fix, revert the fix,
@@ -144,7 +172,9 @@ Check:
   If not, it is a finding, which an answer may defer to an open issue that "No target
   yet" names ("Findings" step 3). Does `oracles/fuzz/<target>/` hold an input that
   reaches each arm that the PR adds or changes, such as each `sample::Type` that the
-  decoder takes, and, for a new target, each state of its decoder? If not, it is a
+  decoder takes, and, for a new target, each state of its decoder? When the PR changes a
+  target, or the code between a target and a decoder, does each input of the corpus
+  reach the arm that it reached on `main`, or does a new file reach it? If not, it is a
   finding, which an answer may not defer (`testing.md`, "Fuzzing"). So is each sentence
   of its entry in "Fuzz targets" that the PR makes false.
 - `unsafe`: does each block have a `// SAFETY:` comment that holds, and a Miri test?
@@ -154,5 +184,6 @@ Start the report with the rating and the summary of code quality that "Rating" i
 Then report only findings you can show: a concrete input and the wrong result, or a
 failing test you wrote and ran. For each: file and line, the failure, and the fix. Most
 severe first. Give a finding in text only, whose exact new text you can give, under
-`Text fixes:` with that text ("Second round" step 2 of the `review` skill). No praise,
-and no other summary.
+`Text fixes:` with that text, and a Low one with that text or with its place and its
+problem ("Second round" step 2 of the `review` skill). No praise, and no other
+summary.

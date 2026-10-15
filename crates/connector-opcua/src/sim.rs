@@ -1,6 +1,6 @@
 //! A simulated OPC UA server for the tests of other crates: the open62541 test server,
-//! with no security, that serves Double variables and records each read that it
-//! answers.
+//! with no security, that serves variables of the `DataType` `BaseDataType`, each with
+//! a Double value, and records each read that it answers.
 
 use std::collections::BTreeMap;
 use std::ffi::CString;
@@ -10,17 +10,19 @@ use env::clock::Clock;
 use env::net::{Listener, Net};
 use env::rng::Rng;
 use types::quality::Quality;
-use types::time::Monotonic;
+use types::time::{Monotonic, Stamp};
 
 use crate::connection::Manager;
+use crate::event;
 use crate::node::Node;
 use crate::server::Server;
+use crate::value::Value;
 
 /// The sessions and secure channels of [`serve`].
 const SESSIONS: u16 = 4;
 
-/// The Double variables of [`serve`], each with its value and status, and each read
-/// that the server answered. Clones share them.
+/// The variables of [`serve`], each with its Double value and its status, and each
+/// read that the server answered. Clones share them.
 #[derive(Clone, Debug)]
 pub struct Variables(Arc<Mutex<State>>);
 
@@ -36,7 +38,7 @@ struct Variable {
     /// The text of the node in [`Variables::new`].
     text: String,
     node: Node,
-    value: f64,
+    value: Value,
     served: Vec<Served>,
 }
 
@@ -60,7 +62,7 @@ impl Variables {
             variables.push(Variable {
                 text: text.into(),
                 node,
-                value: 0.0,
+                value: Value::F64(0.0),
                 served: Vec::new(),
             });
         }
@@ -75,9 +77,27 @@ impl Variables {
     pub fn change(&self, quality: Quality) {
         let mut state = self.state();
         for variable in &mut state.variables {
-            variable.value += 1.0;
+            if let Value::F64(value) = &mut variable.value {
+                *value += 1.0;
+            }
         }
         state.quality = quality;
+    }
+
+    /// Sets the value of the variable of `text` in [`Variables::new`]. A value that is
+    /// not a Double keeps its value at [`Variables::change`], and its reads are served
+    /// but not recorded, since a [`Served`] holds an `f64`.
+    ///
+    /// # Panics
+    ///
+    /// If no variable has `text`.
+    #[cfg(test)]
+    pub(crate) fn set(&self, text: &str, value: Value) {
+        let mut state = self.state();
+        let variable = state.variables.iter_mut().find(|v| v.text == text);
+        variable
+            .unwrap_or_else(|| panic!("no variable {text:?}"))
+            .value = value;
     }
 
     /// Each read that a server answered, by the text of its node in
@@ -89,18 +109,21 @@ impl Variables {
             .collect()
     }
 
-    /// Answers a read of variable `index` at `time`, and records it.
-    fn read(&self, index: usize, time: Monotonic) -> Served {
+    /// Answers a read of variable `index` at `time`, and records it when its value is
+    /// a Double.
+    fn read(&self, index: usize, time: Monotonic) -> (Value, Quality) {
         let mut state = self.state();
         let quality = state.quality;
         let variable = &mut state.variables[index];
-        let served = Served {
-            time,
-            value: variable.value,
-            quality,
-        };
-        variable.served.push(served);
-        served
+        if let Value::F64(value) = variable.value {
+            let served = Served {
+                time,
+                value,
+                quality,
+            };
+            variable.served.push(served);
+        }
+        (variable.value, quality)
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -121,23 +144,36 @@ pub struct Served {
 
 /// Serves `variables` on `listener` with room for 4 sessions until `until` completes,
 /// then closes the server. It adds each namespace from 2 to the highest of
-/// `variables`. Each stream of the server has the options of `listener`. Call it on a
-/// thread that `env` started. A drop of the future while it waits, after a poll that
-/// gives `Pending`, leaks the server and can keep the port of `listener` bound.
+/// `variables`. Each stream of the server has the options of `listener`. `wall` gives
+/// the wall time of the server, which a client compares with the time of each channel
+/// token: give the wall time of the client's node. Call it on a thread that `env`
+/// started. A drop of the future while it waits, after a poll that gives `Pending`,
+/// leaks the server and can keep the port of `listener` bound.
 ///
 /// # Panics
 ///
 /// If open62541 refuses the server, a namespace, a variable, or a step of the close.
 /// If a variable has the number 0, which open62541 would serve at a free number.
+///
+/// # Aborts
+///
+/// When open62541 cannot allocate the loop or the connection manager: the process
+/// stops as the Rust allocator does when it has no memory. When `wall` panics:
+/// open62541 calls it, and a panic cannot unwind through C.
 pub async fn serve(
     clock: Clock,
+    wall: impl Fn() -> Stamp + 'static,
     net: Net,
     listener: Listener,
     rng: &mut Rng,
     variables: &Variables,
     until: impl Future<Output = ()>,
 ) {
-    let manager = Manager::accepting(Clock::clone(&clock), net, listener, rng);
+    let time = event::Time {
+        clock: Clock::clone(&clock),
+        wall: Box::new(wall),
+    };
+    let manager = Manager::accepting(time, net, listener, rng);
     let nodes: Vec<Node> = (variables.state().variables.iter())
         .map(|variable| variable.node.clone())
         .collect();
@@ -152,10 +188,7 @@ pub async fn serve(
         for (index, node) in nodes.iter().enumerate() {
             let (variables, clock) =
                 (Variables::clone(variables), Clock::clone(&clock));
-            server.add_source(node, move || {
-                let read = variables.read(index, clock.now());
-                (read.value, read.quality)
-            });
+            server.add_source(node, move || variables.read(index, clock.now()));
         }
     };
     Server::serve(manager, SESSIONS, add, until).await;

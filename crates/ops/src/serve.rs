@@ -4,8 +4,10 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Write};
+use std::marker::PhantomData;
 
 use access::Rules;
+use serde::de::value::MapAccessDeserializer;
 use serde::de::{self, DeserializeOwned, Deserializer, IgnoredAny, MapAccess};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -13,12 +15,11 @@ use spec::definition::{Definition, Kind};
 use types::name::{Name, Prefix};
 use wire::hub::client::BODY_BYTES_MAX;
 
-use crate::apply::Effect;
 use crate::error::{Action, Error, On, Problem};
 use crate::front_end::File;
 use crate::operation::Empty;
 use crate::plan::{Documents, Output};
-use crate::{Node, apply, used};
+use crate::{Node, apply, status, used};
 
 #[cfg(test)]
 mod tests;
@@ -29,13 +30,18 @@ mod tests;
 ///
 /// The reply is at most `wire::hub::client::BODY_BYTES_MAX` bytes, and `serve` stops
 /// writing a reply at that bound. No `body` makes it panic. The reply holds
-/// `ops.bad-request` for a body that is no request of `plan` or `apply`, `ops.denied`
-/// for an action that no access policy gives `subject` and for a request that names
-/// no definition, and `ops.large-reply` in place of a reply over the bound. `apply`
-/// also needs `apply` on the channel at each edge of each channel that the plan adds
-/// or changes, and `admin` on the key of each definition other than a channel that the
-/// plan adds, changes, or removes. It gives a home only to an index on which `subject`
-/// has `apply`, and drops each other home with no error.
+/// `ops.bad-request` for a body that is no request of `plan`, `apply`, or `status`,
+/// `ops.denied` for an action that no access policy gives `subject` and for a request
+/// that names no definition, and `ops.large-reply` in place of a reply over the bound.
+/// `apply` also needs `apply` on the channel at each edge of each channel that the plan
+/// adds or changes, and `admin` on the key of each definition other than a channel that
+/// the plan adds, changes, or removes. It gives a home only to an index on which
+/// `subject` has `apply`, and drops each other home with no error. `status` shows only
+/// each connector on whose status channels `subject` has `read`. When it shows none,
+/// also when the node places none, it needs `read` on the name of the node, and gives
+/// `ops.denied` with no grant. It waits at most 1 s from the request. A connector is
+/// `unknown` when no status as the spec defines it comes in that time, and `status`
+/// gives `ops.channel-read` when the reader of a connector fails for another cause.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
@@ -107,6 +113,7 @@ impl Write for Body {
 enum Request {
     Plan(Plan),
     Apply,
+    Status,
     /// An operation of another name.
     Other(String),
 }
@@ -115,7 +122,40 @@ enum Request {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Plan {
+    #[serde(deserialize_with = "objects")]
     files: Vec<File>,
+}
+
+/// A `T` that takes only an object: a derived struct also takes a sequence.
+struct Object<T>(T);
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor<T>(PhantomData<T>);
+
+        impl<'de, T: Deserialize<'de>> de::Visitor<'de> for Visitor<T> {
+            type Value = Object<T>;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<Object<T>, A::Error> {
+                T::deserialize(MapAccessDeserializer::new(map)).map(Object)
+            }
+        }
+
+        deserializer.deserialize_map(Visitor(PhantomData))
+    }
+}
+
+/// The files of a [`Plan`], each only from an object.
+fn objects<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<File>, D::Error> {
+    let files = Vec::<Object<File>>::deserialize(deserializer)?;
+    Ok(files.into_iter().map(|Object(file)| file).collect())
 }
 
 impl<'de> Deserialize<'de> for Request {
@@ -137,10 +177,17 @@ impl<'de> Deserialize<'de> for Request {
                     return Err(de::Error::custom("no operation"));
                 };
                 let request = match name.as_str() {
-                    "plan" => Request::Plan(map.next_value()?),
+                    "plan" => {
+                        let Object(plan) = map.next_value()?;
+                        Request::Plan(plan)
+                    }
                     "apply" => {
-                        let Empty {} = map.next_value()?;
+                        let Object(Empty {}) = map.next_value()?;
                         Request::Apply
+                    }
+                    "status" => {
+                        let Object(Empty {}) = map.next_value()?;
+                        Request::Status
                     }
                     _ => {
                         let IgnoredAny = map.next_value()?;
@@ -214,6 +261,9 @@ pub(crate) fn apply_request(plan: &[u8]) -> Result<Vec<u8>, Error> {
     Ok(body.0)
 }
 
+/// The body of a request of `status`, for [`serve`].
+pub(crate) const STATUS_REQUEST: &[u8] = b"{\"status\":{}}\n";
+
 /// The output of the reply `body` of [`serve`] to a request of `plan`, and the plan
 /// file after its first line.
 ///
@@ -230,19 +280,22 @@ pub(crate) fn plan_reply(body: &[u8]) -> Result<(Output, &[u8]), Error> {
     Ok((output, plan))
 }
 
-/// The output of the reply `body` of [`serve`] to a request of `apply`.
+/// The output of the reply `body` of [`serve`] to a request of `operation`.
 ///
 /// # Errors
 ///
 /// Each error of [`answer`], and [`Error::Reply`] when bytes follow the output.
-pub(crate) fn apply_reply(body: &[u8]) -> Result<Effect, Error> {
-    let (effect, rest) = answer(body)?;
+pub(crate) fn reply<T: DeserializeOwned>(
+    body: &[u8],
+    operation: &str,
+) -> Result<T, Error> {
+    let (output, rest) = answer(body)?;
     if !rest.is_empty() {
-        return Err(bad_reply(
-            "bytes follow the first line of the reply of `apply`",
-        ));
+        return Err(bad_reply(format!(
+            "bytes follow the first line of the reply of `{operation}`"
+        )));
     }
-    Ok(effect)
+    Ok(output)
 }
 
 /// The output of the reply `body` of [`serve`], and the bytes after its first line.
@@ -305,6 +358,10 @@ async fn run(node: &Node, subject: &Name, body: &[u8]) -> Result<Body, Error> {
         }
         Request::Plan(Plan { files }) => plan(node, subject, &files).await,
         Request::Apply => apply(node, subject, rest).await,
+        Request::Status if !rest.is_empty() => {
+            Err(bad_request("bytes follow the first line of `status`"))
+        }
+        Request::Status => status(node, subject).await,
         Request::Other(name) => Err(bad_request(format!(
             "the operation `{name}` does not run on a node"
         ))),
@@ -377,7 +434,12 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Body, Error
         return Err(check.denied(Action::Plan, On::Spec));
     }
     let (base, applied) = spec.newest()?;
-    let (output, plan) = files.plan(base, &applied, &node.mesh.names(), &node.kinds)?;
+    // A subject that may not apply a connector learns nothing of its sources, and
+    // `apply` of a connector needs `admin` too.
+    let readable = |name: &Name| {
+        check.allows(Action::Apply, name) && check.allows(Action::Admin, name)
+    };
+    let (output, plan) = files.plan(node, base, &applied, readable).await?;
     let mut reply = Body::line(&Answer::Done { output: &output })?;
     reply.add(&plan.encode())?;
     Ok(reply)
@@ -422,6 +484,32 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Body, Error>
     if plan.changes.is_empty() && plan.homes.is_empty() {
         return Err(check.denied(Action::Apply, On::Nothing));
     }
-    let effect = apply::apply(plan, spec, &node.mesh, &node.kinds, &node.key).await?;
+    let effect = apply::apply(plan, spec, &node.mesh, &node.kinds, &node.keys).await?;
     Ok(Body::line(&Answer::Done { output: &effect })?)
+}
+
+/// The reply of `status`: its output. It leaves out each connector on whose status
+/// channels `subject` has no `read`. When it leaves out each connector, or the node
+/// places none, it needs `read` on the name of the node.
+async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
+    let asked = node.clock.now();
+    let spec = used::spec(&node.mesh).await?;
+    let check = Check::new(&spec, subject);
+    let mut placed = status::placed(spec.definitions(), &node.name);
+    placed.retain(|placed| {
+        placed
+            .channels()
+            .all(|name| check.allows(Action::Read, name))
+    });
+    let output = if placed.is_empty() {
+        if !check.allows(Action::Read, &node.name) {
+            return Err(check.denied(Action::Read, On::Nothing));
+        }
+        status::Output {
+            connectors: Vec::new(),
+        }
+    } else {
+        status::read(node, subject, &placed, asked).await?
+    };
+    Ok(Body::line(&Answer::Done { output: &output })?)
 }

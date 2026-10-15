@@ -848,7 +848,6 @@ mod tests {
     use types::time::Span;
 
     use super::*;
-    use crate::bytes::block;
     use crate::bytes::{PRESENT, VOTE};
     use crate::common::{at, create_pool, key};
 
@@ -890,7 +889,7 @@ mod tests {
     async fn put(node: &sim::node::Node, file: &str, offset: u64, bytes: &[u8]) {
         let path = Path::new(DIR).join(file);
         let file = node.files().open(&path, Mode::Write).await.unwrap();
-        let block = block(&create_pool(), bytes).unwrap();
+        let block = create_pool().copy(bytes).unwrap();
         file.write_at(offset, &[block]).await.unwrap();
         file.sync().await.unwrap();
     }

@@ -1203,11 +1203,12 @@ UA_Client_findDataType(UA_Client *client, const UA_NodeId *typeId) {
 /* Connection Attributes */
 /*************************/
 
-#define UA_CONNECTIONATTRIBUTESSIZE 3
+#define UA_CONNECTIONATTRIBUTESSIZE 4
 static const UA_QualifiedName connectionAttributes[UA_CONNECTIONATTRIBUTESSIZE] = {
     {0, UA_STRING_STATIC("serverDescription")},
     {0, UA_STRING_STATIC("securityPolicyUri")},
-    {0, UA_STRING_STATIC("securityMode")}
+    {0, UA_STRING_STATIC("securityMode")},
+    {0, UA_STRING_STATIC("messageLimits")}
 };
 
 static UA_StatusCode
@@ -1233,6 +1234,20 @@ getConnectionttribute(UA_Client *client, const UA_QualifiedName key,
         /* SecurityMode */
         UA_Variant_setScalar(&localAttr, &client->channel.securityMode,
                              &UA_TYPES[UA_TYPES_MESSAGESECURITYMODE]);
+    } else if(UA_QualifiedName_equal(&key, &connectionAttributes[3])) {
+        /* MessageLimits: the negotiated sendBufferSize, recvBufferSize,
+         * remoteMaxMessageSize, and remoteMaxChunkCount, then the encoded size of
+         * the authentication token. Only as a copy. */
+        if(!copy)
+            return UA_STATUSCODE_BADNOTSUPPORTED;
+        const UA_ConnectionConfig *config = &client->channel.config;
+        UA_UInt32 limits[5] = {
+            config->sendBufferSize, config->recvBufferSize,
+            config->remoteMaxMessageSize, config->remoteMaxChunkCount,
+            (UA_UInt32)UA_calcSizeBinary(&client->authenticationToken,
+                                         &UA_TYPES[UA_TYPES_NODEID], NULL)};
+        return UA_Variant_setArrayCopy(outValue, limits, 5,
+                                       &UA_TYPES[UA_TYPES_UINT32]);
     } else {
         return UA_STATUSCODE_BADINTERNALERROR;
     }

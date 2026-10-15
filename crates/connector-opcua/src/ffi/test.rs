@@ -116,6 +116,11 @@ const _: () = {
 };
 
 unsafe extern "C" {
+    pub(crate) fn UA_readNumber(
+        buf: *const u8,
+        length: usize,
+        number: *mut u32,
+    ) -> usize;
     pub(crate) fn UA_UInt32_random() -> u32;
     pub(crate) fn UA_DateTime_now() -> i64;
     pub(crate) fn UA_DateTime_nowMonotonic() -> i64;
@@ -176,22 +181,41 @@ unsafe extern "C" {
         chunks: u32,
     ) -> *mut Server;
     pub(crate) fn UA_Server_run_startup(server: *mut Server) -> u32;
-    pub(crate) fn shim_server_add_double(
+    pub(crate) fn shim_server_add_scalar(
         server: *mut Server,
         node: Node<'_>,
-        value: f64,
+        value: *const super::Scalar,
+        kind: u16,
     ) -> u32;
+    pub(crate) fn shim_server_add_doubles(server: *mut Server, node: Node<'_>) -> u32;
     pub(crate) fn shim_server_add_bytes(
         server: *mut Server,
         node: Node<'_>,
         size: usize,
+    ) -> u32;
+    pub(crate) fn shim_server_limits(
+        server: *mut Server,
+        buffer: u32,
+        message: u32,
+        chunks: u32,
+    );
+    pub(crate) fn shim_client_receive(client: *mut super::Client, size: u32);
+    pub(crate) fn shim_server_reads(server: *mut Server, most: u32);
+    pub(crate) fn UA_Client_getConnectionAttribute(
+        client: *mut super::Client,
+        key: QualifiedName,
+        value: *mut c_void,
     ) -> u32;
     pub(crate) fn shim_server_add_source(
         server: *mut Server,
         node: Node<'_>,
         source: *mut c_void,
     ) -> u32;
-    pub(crate) fn shim_server_chunks(server: *mut Server, chunks: u32);
+    pub(crate) fn shim_server_data_type(
+        server: *mut Server,
+        node: Node<'_>,
+        id: *mut u32,
+    ) -> u32;
     pub(crate) fn UA_Server_run_shutdown(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_delete(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_getLifecycleState(server: *mut Server) -> Lifecycle;
@@ -199,8 +223,7 @@ unsafe extern "C" {
         server: *mut Server,
         name: *const std::ffi::c_char,
     ) -> u16;
-    pub(crate) fn shim_response_result(response: *const c_void) -> u32;
-    pub(crate) fn shim_value_status(value: *const c_void) -> u32;
+    pub(crate) fn shim_value_status(value: *const super::DataValue) -> u32;
     pub(crate) fn shim_server_discovery_url(
         server: *mut Server,
         index: usize,

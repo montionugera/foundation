@@ -23,15 +23,15 @@
   `ops::fail` writes an `ops::Failure { code, message, fix }` as `cli` writes its own
   errors, and gives exit status 1. So `ops` keeps the one output form, and `main` gives
   the facts. The codes: `node.busy`, `node.data`, `node.unnamed`, `node.renamed`,
-  `node.name`, `node.reserved` (NODE NAME), `node.budget`, `node.disk`, `node.memory`
-  (NODE SETTINGS), `node.port`, and `node.failed`. `node.data` is "this user cannot use
-  the data directory as it is": each `os::Error::Dir` whatever its errno, and each
-  `env::files::Error::Io` whose code is `EACCES`, `EPERM`, or `EROFS` that
-  `node::Error::files` gives: the failed file call of a `Directory`, `Buffer`, `Blob`,
-  `Mesh`, or `Group` error. Its message is "cannot write the data directory {data}:
-  {error}", and its fix "Make {data} a directory that this user can write, and let it
-  write each file in it, or give another directory with `--data`". The fix also covers a
-  missing parent (`ENOENT`) and a file in its place (`ENOTDIR`). Decided by
+  `node.name`, `node.reserved`, `node.long` (NODE NAME), `node.budget`, `node.disk`,
+  `node.memory` (NODE SETTINGS), `node.port`, and `node.failed`. `node.data` is "this
+  user cannot use the data directory as it is": each `os::Error::Dir` whatever its
+  errno, and each `env::files::Error::Io` whose code is `EACCES`, `EPERM`, or `EROFS`
+  that `node::Error::files` gives: the failed file call of a `Directory`, `Buffer`,
+  `Blob`, `Mesh`, or `Group` error. Its message is "cannot write the data directory
+  {data}: {error}", and its fix "Make {data} a directory that this user can write, and
+  let it write each file in it, or give another directory with `--data`". The fix also
+  covers a missing parent (`ENOENT`) and a file in its place (`ENOTDIR`). Decided by
   `laptop.architect-2` (2026-10-10T22:20:07Z,
   https://github.com/synnaxlabs/foundation/pull/2188#issuecomment-6102789069).
   Supersedes the cause list and the fix of
@@ -180,10 +180,10 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108190079;
   2026-10-11T10:50:50Z, this text,
   https://github.com/synnaxlabs/foundation/pull/2391#issuecomment-6108247629).
-  `node::client::reach` gives a program on the host of a node a hub client of the node
-  that runs on a data directory, as `@admin` (`spec::founding::admin`). It reads
-  `address`, then `admin.key`, through `env::files` with the readers of `node`, so a
-  simulation gives the simulated disk; it makes and locks nothing, and `os::stored`
+  `node::client::reach` gives a program on the host of a node a `program::Session` of
+  the node that runs on a data directory, as `@admin` (`spec::founding::admin`). It
+  reads `address`, then `admin.key`, through `env::files` with the readers of `node`, so
+  a simulation gives the simulated disk; it makes and locks nothing, and `os::stored`
   opens `dir/data` of a directory that is there and makes nothing. A file `address`
   with no address of a node is `Error::NotRunning`, which also covers a node that
   still writes it; an `admin.key` that no node wrote is `Error::Key`. In place of an
@@ -191,8 +191,10 @@
   gives no session is `Error::Unanswered` with the address it dialed and the error of
   the transport; a broken socket of the program is `Error::Transport`, as a failed
   start of its transport is; a session or hello that fails after the dial is
-  `Error::Session` with the address and the error of `hub`; a refused hello is
-  `Error::Refused`. Its pool is fixed, as the pool of `sector` is. Lost:
+  `Error::Session` with the address and the error of `program` (the name,
+  `laptop.architect`, 2026-10-15T18:23:47Z,
+  https://github.com/synnaxlabs/foundation/pull/2724#issuecomment-6199257488); a refused
+  hello is `Error::Refused`. Its pool is fixed, as the pool of `sector` is. Lost:
   `ops::Unreached`, worded in `ops`, which would name the files that only `node` reads
   and take `hub` for the error of a dial. Lost: `Error::Session` for a broken socket of
   the program, since the caller then cannot tell its own host from the node. Decided

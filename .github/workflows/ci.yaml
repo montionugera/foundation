@@ -20,6 +20,7 @@ on:
       - 'clippy.toml'
       - 'rustfmt.toml'
       - 'deny.toml'
+      - 'docs/quickstart.md'
       - '.github/workflows/**'
 
 # Each commit on main gets its own group, so a later merge never cancels its run.
@@ -71,6 +72,7 @@ jobs:
               - 'clippy.toml'
               - 'rustfmt.toml'
               - 'deny.toml'
+              - 'docs/quickstart.md'
               - '.github/workflows/**'
             deps:
               - 'Cargo.toml'
@@ -277,23 +279,82 @@ jobs:
           path: fuzz/artifacts
           if-no-files-found: ignore
 
-  mutants:
+  mutants-shard:
     needs: changes
     if: >-
       !cancelled() && needs.changes.outputs.rust != 'false' &&
+      github.event_name == 'pull_request'
+    # A mutant that hangs runs until its timeout, so the run needs parallel jobs. Each
+    # shard runs an eighth of the mutants, round robin, on its own hosted 4-core VM,
+    # which no other job shares (#2726). The rule that a missed mutant fails CI is in
+    # `docs/claude/testing.md`.
+    name: mutants shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # cargo-mutants builds in copies of the tree, never in its `target`.
+          cache-targets: false
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants@27.1.0
+      - name: Mutants in the diff
+        env:
+          TMPDIR: ${{ runner.temp }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          git diff origin/main...HEAD > "$RUNNER_TEMP/diff.patch"
+          # A mutant can allocate in a loop. The cap leaves 3 GiB of the VM to the
+          # runner agent, so the kernel kills the test, and the job reports the mutant.
+          # The default OOMPolicy=stop would also stop cargo-mutants at that kill. A
+          # hang waits 3 times the test time of the baseline, not the default 5: 4 jobs
+          # on 4 cores can run slower than the baseline, so not lower.
+          cap=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) - 3145728 ))K
+          status=0
+          sudo -E systemd-run --quiet --scope -p MemoryMax="$cap" -p MemorySwapMax=0 \
+            -p OOMPolicy=continue --uid="$(id -u)" --gid="$(id -g)" -- \
+            env "PATH=$PATH" \
+            cargo mutants --in-diff "$RUNNER_TEMP/diff.patch" --jobs 4 \
+            --shard "$SHARD/8" --sharding round-robin --timeout-multiplier 3 ||
+            status=$?
+          # A timeout is a mutant that made a test hang, so a test caught it. Exit 3
+          # (timeout) wins over exit 2 (missed), so read the missed list too.
+          if [ "$status" -eq 3 ] && [ ! -s mutants.out/missed.txt ]; then
+            cat mutants.out/timeout.txt
+            status=0
+          fi
+          exit "$status"
+
+  # The required check. On a PR it passes when each shard passed. In the queue no shard
+  # runs: it carries the result of this job at the head of the PR to the group.
+  mutants:
+    needs: [changes, mutants-shard]
+    if: >-
+      !cancelled() && needs.changes.outputs.rust != 'false' &&
       (github.event_name == 'pull_request' || github.event_name == 'merge_group')
-    # A mutant that hangs runs until its timeout, so the run needs parallel jobs and
-    # memory that the 2-core hosted runner lacks. In the queue, the job runs no mutant:
-    # it carries the result of this job at the head of the PR to the group. The rule
-    # that a missed mutant fails CI is in `docs/claude/testing.md`.
-    runs-on: >-
-      ${{ github.event_name == 'merge_group' && 'ubuntu-latest' ||
-      fromJSON('["self-hosted", "Linux", "ARM64"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
       contents: read
       checks: read
     steps:
+      - if: github.event_name == 'pull_request'
+        name: The result of the shards
+        env:
+          RESULT: ${{ needs.mutants-shard.result }}
+        run: |
+          [ "$RESULT" = success ] ||
+            { echo "::error::The mutants shards ended in $RESULT."; exit 1; }
       - if: github.event_name == 'merge_group'
         uses: actions/checkout@v4
         with:
@@ -308,66 +369,3 @@ jobs:
           GH_REPO: ${{ github.repository }}
           GROUP: ${{ github.event.merge_group.head_sha }}
         run: cargo xtask queue mutants "$GROUP"
-      # A mutant can allocate in a loop until the host runs out of memory. Each runner
-      # unit on the host has a cap, the caps leave 2 GiB of the host free, and the
-      # unit's OOMPolicy=continue keeps the runner up, so only a test process dies
-      # (#803). Hosts whose template sets none of this: #898.
-      - if: github.event_name == 'pull_request'
-        name: Check the memory cap of the runner
-        run: |
-          set -o pipefail
-          c=$(cut -d: -f3 /proc/self/cgroup)
-          case $c in
-            /system.slice/actions.runner.*.service) ;;
-            *) echo "::error::The job runs in $c, in no runner unit (#898)."; exit 1 ;;
-          esac
-          total=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
-          # systemd reads each runner unit, also one that is stopped and has no cgroup.
-          units=$(systemctl list-unit-files --plain --no-legend 'actions.runner.*' |
-            cut -d' ' -f1)
-          grep -qxF "${c##*/}" <<< "$units" ||
-            { echo "::error::systemd lists no unit ${c##*/} (#898)."; exit 1; }
-          sum=0
-          for u in $units; do
-            p=$(systemctl show -p OOMPolicy --value "$u")
-            [ "$p" = continue ] ||
-              { echo "::error::OOMPolicy of $u is '$p' (#803, #898)."; exit 1; }
-            m=$(systemctl show -p MemoryMax --value "$u")
-            [ "$m" != infinity ] ||
-              { echo "::error::$u has no MemoryMax (#803, #898)."; exit 1; }
-            # A longer cap is past any host, and the sum of such caps can wrap.
-            [ "${#m}" -le 15 ] ||
-              { echo "::error::$u has MemoryMax $m, past the host (#803)."; exit 1; }
-            sum=$((sum + m / 1024))
-          done
-          [ "$sum" -le $((total - 2097152)) ] || {
-            echo "::error::The runner caps take $sum KiB of $total KiB (#803)."
-            exit 1
-          }
-          echo "The runner caps take $sum KiB of $total KiB"
-      - if: github.event_name == 'pull_request'
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - if: github.event_name == 'pull_request'
-        name: Add cargo to the path
-        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - if: github.event_name == 'pull_request'
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-mutants@27.1.0
-      - if: github.event_name == 'pull_request'
-        name: Mutants in the diff
-        env:
-          TMPDIR: ${{ runner.temp }}
-        run: |
-          git diff origin/main...HEAD > "$RUNNER_TEMP/diff.patch"
-          status=0
-          cargo mutants --in-diff "$RUNNER_TEMP/diff.patch" --jobs 4 || status=$?
-          # A timeout is a mutant that made a test hang, so a test caught it. Exit 3
-          # (timeout) wins over exit 2 (missed), so read the missed list too.
-          if [ "$status" -eq 3 ] && [ ! -s mutants.out/missed.txt ]; then
-            cat mutants.out/timeout.txt
-            status=0
-          fi
-          exit "$status"

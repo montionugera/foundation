@@ -360,6 +360,13 @@
   The allocator and the archive test for `server.c`: approved by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2329#issuecomment-6103852696,
   2026-10-11 00:41 UTC).
+  A NULL from a constructor of `shim.c` stops the process through `alloc::exhausted`,
+  which calls `std::alloc::handle_alloc_error` as the Rust allocator does on out of
+  memory. Its message gives the size of a header alone, because a constructor does
+  not give the size of the block that failed. A NULL inside the copy keeps the C
+  contract. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2541#issuecomment-6140602800,
+  2026-10-13 07:30 UTC).
   `build.rs` gives both builds the sanitizers of the Rust build. With
   `sanitize="address"`, it adds `-fsanitize=address,undefined -fno-sanitize=function
   -fno-sanitize-recover=all` and sets `cfg(asan)`. With `cfg(fuzzing)`, it adds
@@ -411,20 +418,41 @@
   (https://github.com/synnaxlabs/foundation/pull/1995#issuecomment-6071050895,
   2026-10-08 23:26 UTC).
   The event loop of `connector-opcua` is a `UA_EventLoop` that `shim.c` fills and
-  `event::Loop` owns, on one thread. Its monotonic time is the clock of `env`.
-  `dateTime_now` gives that time counted from the Unix epoch, and the UTC offset is 0,
-  until #1992 gives it the wall time of the node through `hub`, in the PR of the first
-  connection with a security policy other than `None`. No connection that checks a
-  certificate runs before. Its drop runs the queued delayed callbacks in at most 64
-  passes, then aborts: a callback that queues itself at each pass is a defect. The
-  hidden module `bench`, behind the feature `sim`, gives the benchmark and the
-  allocation test a client on the loop. Decided by `laptop.architect-2`
+  `event::Loop` owns, on one thread. Its monotonic time is the clock of `env`, and the
+  UTC offset is 0. Its drop runs the queued delayed callbacks in at most 64 passes,
+  then aborts: a callback that queues itself at each pass is a defect. The hidden
+  module `bench`, behind the feature `sim`, gives the benchmark and the allocation test
+  a client on the loop. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6067067211,
   2026-10-08 19:05 UTC); the abort supersedes "panics" in that comment
   (https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068349707,
-  2026-10-08 20:22 UTC). `bench` also gives a connection manager with the test server
-  and its clients on the loop of the manager. Approved by `laptop.architect-2` at
-  `3b508e494`
+  2026-10-08 20:22 UTC).
+  `dateTime_now` gives the wall time of the `event::Time` that `event::Loop::new`
+  takes. Approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2574#issuecomment-6147646436,
+  2026-10-13 14:18 UTC, and
+  https://github.com/synnaxlabs/foundation/pull/2574#issuecomment-6147864860,
+  2026-10-13 14:28 UTC). The kind gives the wall time of the node through
+  `hub::writer::Writer::time`, the midpoint of mesh time. Decided by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6147197858,
+  2026-10-13 13:56 UTC). This meets condition 3 of
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6067067211 for the
+  loop of the kind. No connection that checks a certificate runs on
+  `event::Time::monotonic`.
+  `sim::serve` gives the wall time that its caller gives; the benches and the unit
+  tests give the monotonic time from the Unix epoch (`event::Time::monotonic`).
+  Approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2574#issuecomment-6147681882,
+  2026-10-13 14:19 UTC). `laptop.architect-2` moved the trigger of #1992 to "exit test
+  1 of #1737 passes"
+  (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6140198064,
+  2026-10-13 07:03 UTC), and the person added this part to ONE NODE ("Yes thats
+  fine"), relayed by `laptop.monitor`
+  (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6146887778,
+  2026-10-13 13:40 UTC). The certificate part of #1992 keeps its trigger: the PR of
+  the first connection with a security policy other than `None`.
+  `bench` also gives a connection manager with the test server and its clients on the
+  loop of the manager. Approved by `laptop.architect-2` at `3b508e494`
   (https://github.com/synnaxlabs/foundation/pull/2212#issuecomment-6093126338,
   2026-10-10 03:05 UTC).
   `bench::client` gives a test server on its own manager, and clients of it that each
@@ -440,12 +468,27 @@
   loop of a thread has no start value to draw from. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2428#issuecomment-6111912275,
   2026-10-11 17:51 UTC).
+  `bench::client::Server::scope` closes its server also after a panic in its body,
+  which it then resumes, as `bench::Manager::scope` does. Supersedes, for a panic in
+  the body, the leak in the doc of `Server::scope` approved at `c1285785f`
+  (https://github.com/synnaxlabs/foundation/pull/2428#issuecomment-6111882520). Lost: a
+  scope that leaks the server and its manager after a panic. The two fixtures of the
+  crate then have two forms after a panic, and each test of a panic through the scope
+  runs in a child process with no leak check, so a leak of the client under that test is
+  not found.
+  Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2428#issuecomment-6130241056,
+  2026-10-12 18:31 UTC).
   The logger of the loop writes each message of level warning and up to fd 2, and
   drops the lower levels: it formats the line into a stack buffer of 512 bytes with
   `mp_vsnprintf` and sends it in one `write`, so a line allocates nothing, takes no
-  `stdio` lock, and does not mix with a line of another thread. A longer line is cut,
-  not dropped. Trigger: when `node` has a log, the loop takes its sink from its
-  caller. Decided by `laptop.architect-2`
+  `stdio` lock, and does not mix with a line of another thread. On Windows it sends it
+  with `WriteFile`, as `write` there adds a CR before each LF. The line of a refused
+  call and the line before an abort take the same path (approved by
+  `laptop.architect-2` at `124a85613`,
+  https://github.com/synnaxlabs/foundation/pull/2594#issuecomment-6153806001,
+  2026-10-13 19:46 UTC). A longer line is cut, not dropped. Trigger: when `node` has a
+  log, the loop takes its sink from its caller. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068103327,
   2026-10-08 20:07 UTC;
   https://github.com/synnaxlabs/foundation/pull/1982#issuecomment-6068349707,

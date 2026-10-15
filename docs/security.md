@@ -304,7 +304,8 @@ state on `main`.
   reads the documents into definitions, and the influx kind reads the config of each
   `connector` block of kind `influx`. Fuzzed: `config_check`, which only the inputs
   `influx_*` take to the influx kind, through `connector::reader::read`,
-  `connector::http::uri`, and `connector_influx::Kind::parse` (#1817).
+  `connector::http::uri`, `secret::Source::read` (the inputs `influx_token_*`), and
+  `connector_influx::Kind::parse` (#1817).
 - A person or an agent reviews the files and the plan before `apply` (K3). Text
   that shows one thing and reads as another defeats that review. Questions for a
   decision, with no `security` label yet: #360 (a lone `\r` in a comment,
@@ -347,8 +348,14 @@ state on `main`.
   path byte, and a carried tail below the path's tail, one that continues the chain
   only from the second header, one inside a data record, off the way, one that only
   the older header reaches, one that passes the end of the area, and one after a
-  data record longer than the window. The `body_over_max` input holds a data record
-  that follows the chain with a body over `body_max`.
+  data record longer than the window. Six more reach the rule for a path that the
+  walk met: `carry_passed` gives a larger count to a path whose only entry has no
+  samples, which the open takes; `carry_seq`, `carry_stamp`, and
+  `carry_more_after_carry` give another seq, another stamp, and a larger count after
+  a carried tail, which it refuses; `carry_met_after_carry` gives a larger count
+  again after the open took one, which it refuses; and `carry_twice` lists one path
+  twice in one record, which it refuses. The `body_over_max` input holds a data
+  record that follows the chain with a body over `body_max`.
 
 ### Device to connector
 
@@ -384,10 +391,11 @@ state on `main`.
   private key in `admin.key` in its data directory (NODE MESH), at mode 0600 when `os`
   makes it, so no other local user can read it unless the operator opens it (Who
   attacks). A local user who can read that file is the first admin.
-- `ctx.secret(name)` is the only path to a secret value (SECRET STORES AS ADAPTERS).
+- `ctx.secret(source)` is the only path to a secret value (SECRET SOURCES, SECRET
+  STORES AS ADAPTERS).
   The built-in store seals each value to the X25519 seal key of each node that may
-  use it (BQ16, S8). The other adapters (an environment variable or a file, and the
-  external stores) do not. An external adapter authenticates with the node key, and
+  use it (BQ16, S8). The external stores do not. Neither does `env()` or `file()`
+  (SECRET SOURCES). An external adapter authenticates with the node key, and
   may cache values sealed to it, which delays revocation.
 - Sealing is HPKE base mode, so it does not prove who sealed. The signed record
   does: the caller seals and signs the `secret set` request with the `secret`
@@ -403,6 +411,28 @@ state on `main`.
   version and goes only to a node of the placement, so a node that leaves the
   placement keeps no copy in region state. The newest version of a name outlives a
   delete and the secret's removal. Not built (`mesh`).
+- A person who can apply a spec can make the node read any variable of its
+  environment and any file that its user can read, with `env()` and `file()`
+  (SECRET SOURCES), and send the value to the address of a connector. This includes
+  the files of the data directory: the node's keys and the sealed store. The refusal
+  of a `file()` path in the data directory is #2670, before a release of ONE NODE. In
+  ONE NODE, that person is the node's admin. A remote `plan` reads the sources only of
+  the connectors that its subject may apply, and a local `plan` reads each connector of
+  the node (SECRET SOURCES). Until #2694, a subject with `apply` and `admin` on the name
+  of a new connector alone learns from a remote `plan` the error of each source that
+  gives no value: whether it is set or there, whether it is empty, its size when over
+  64 KiB, the OS error of a failed file call, and, for `secret()`, the absolute path of
+  the data directory. Trigger for a limit that the node's operator sets, such as
+  directories and variable names given at start: a spec applied by a subject that does
+  not run the node.
+- Each `HeaderValue` made from the token of the `influx` kind, one at each read of the
+  token and one for each request, and the write buffer of hyper keep a copy of it, and
+  their memory is freed without zeros
+  (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6160767913).
+  While a run lives, `secret::Value` holds the token in clear, so the copies add only
+  the time until the allocator gives that memory again. Trigger for a request path
+  that clears them: an attacker who reads freed heap of the node and not its live
+  heap.
 - A join ticket is a secret (BQ11a).
 - Rule for every crate: no secret value in a log, a status channel, an error, or
   plan output.
@@ -483,15 +513,17 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `node_identity` | `node::sector::written` with `node::identity::fields` and `encode` (the checks `node::identity::check` and `node::admin::check`, which call `node::sector::check`), by `node::fuzz::identity` (feature `sim`), on 100 bytes, or on 96 bytes with their CRC32C; the same for `admin.key`, on 54 bytes, or on 50 bytes with their CRC32C; and the decode and encode of `address` (the check `node::address::check`), on 99 bytes, or on 95 bytes with their CRC32C | Gives an identity or an admin key exactly for bytes with the tag and the CRC32C, and an address exactly for the bytes that the encode writes, with the tag and the CRC32C, and that value encodes to the same bytes |
 
 No target yet, because the decoder is private, not built, not reached from a file, or
-not reached from the corpus: `transport::message` (#55), the QUIC hello
+not reached from the corpus: `transport::message` (#2139), the QUIC hello
 (`transport::quic::hello::Hello::decode`), the file `founding` of the mesh directory
 (`mesh::region::Founding::decode`, with `mesh::Member::decode` in it, #2311), the join
 answer (`mesh::Member::decode` from a peer, #336 adds its target),
-each connector's protocol parser, the `node_id` text of the `opcua` kind
-(`connector_opcua::node`, #2523), the file `name` of the data directory
-(`node::name::decode`, #2174), the file `budget` of the data directory
-(`node::budget::decode`, #2174), the parsers of
-`/proc/self/mountinfo` and `/proc/self/cgroup` in `os::memory` (#2226), the request
-of a remote program and the reply of its node (`ops::serve`, #1744), the newest handoff
-record of each index in the ring (`home::handoff::read`, #2278), and the chunk
-processing of open62541 (`ua_securechannel.c`, #1990).
+each connector's protocol parser, the `node_id`
+text of the `opcua` kind
+(`connector_opcua::node`, #2523), its `address`, which `UA_parseEndpointUrl` of
+open62541 reads (`connector_opcua::Kind::parse`, #2523), the file `name` of the data
+directory (`node::name::decode`, #2174), the file `budget` of the data directory
+(`node::budget::decode`, #2174), the parsers of `/proc/self/mountinfo` and
+`/proc/self/cgroup` in `os::memory` (#2226), the request of a remote program and the
+reply of its node (`ops::serve`, #2563), the newest handoff record of each index in the
+ring (`home::handoff::read`, #2278), and the chunk processing of open62541
+(`ua_securechannel.c`, #1990).

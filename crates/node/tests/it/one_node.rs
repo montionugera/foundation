@@ -1,7 +1,6 @@
 //! The exit tests of ONE NODE: one `foundation` node reads a simulated OPC UA server
 //! and pushes each sample to a simulated InfluxDB. Exit test 1 runs on the real binary
-//! with `cargo test -p node --test it samples_from_an_opc_ua_server_reach_influxdb --
-//! --include-ignored`.
+//! with `cargo test -p node --test it samples_from_an_opc_ua_server_reach_influxdb`.
 
 mod sim;
 
@@ -12,12 +11,10 @@ use types::quality::Quality;
 use types::time::{Span, Stamp};
 
 use self::sim::{Influx, Opcua, Sample};
+use crate::quickstart::plant;
 use crate::rig::Rig;
 use crate::status::{Connector, Error};
 use crate::text;
-
-/// The config of the quickstart page.
-const PLANT: &str = include_str!("../../../acceptance/tests/it/fixtures/plant.hcl");
 
 /// The channel `plant.spike`, with the quality channel `plant.quality`.
 const QUALITY: &str = include_str!("one_node/quality.hcl");
@@ -59,6 +56,61 @@ fn create_plant(hcl: &str) -> Plant {
     rig.start();
     rig.apply();
     Plant { rig, opcua, influx }
+}
+
+/// The quickstart config, with the token of `influx` from `source`.
+fn with_token(source: &str) -> String {
+    let select = "  select      = \"plant.*\"\n";
+    let hcl =
+        plant().replacen(select, &format!("{select}  token       = {source}\n"), 1);
+    assert_ne!(hcl, plant(), "the quickstart config selects `plant.*`");
+    hcl
+}
+
+/// A running node on [`with_token`] of `source`, with `INFLUX_TOKEN` set to `t0ken`,
+/// which pushes to an InfluxDB that takes only `t0ken`. No config applies yet.
+fn create_token_plant(source: impl FnOnce(&Rig) -> String) -> Plant {
+    let mut opcua = Opcua::default();
+    let mut influx = Influx::taking("t0ken");
+    let mut rig = Rig::new();
+    rig.var("INFLUX_TOKEN", "t0ken");
+    let hcl = with_token(&source(&rig));
+    rig.config(&served(&hcl, opcua.serve(), influx.serve()));
+    rig.start();
+    Plant { rig, opcua, influx }
+}
+
+/// Asserts that `plan` of `rig` exits with one `secret.unresolved` problem at the
+/// token of [`with_token`], with `message`, and writes no plan.
+fn refuses_the_token(rig: &Rig, message: &str) {
+    let hcl = std::fs::read_to_string(rig.dir.join("plant.hcl")).expect("reads it");
+    let line = 1
+        + (hcl.lines())
+            .position(|line| line.starts_with("  token "))
+            .expect("the config has a token");
+    let output = rig.run(&["plan", "plant.hcl", "--out", "plant.plan"], b"");
+    let expected = format!(
+        "error[secret.unresolved]: {message}\n  --> plant.hcl:{line}:17\nfix: Give the \
+         node the value at the source, or change the source, then plan again\n"
+    );
+    assert_eq!(
+        (
+            output.status.code(),
+            text(&output.stdout),
+            text(&output.stderr)
+        ),
+        (Some(2), "", &*expected)
+    );
+    assert!(!rig.dir.join("plant.plan").exists(), "plan writes no plan");
+}
+
+/// The error that `influx` shows, once it shows one.
+fn influx_error(rig: &Rig) -> Error {
+    rig.wait("`influx` shows an error", || {
+        let status = rig.status();
+        (status.get("influx").and_then(|influx| influx.error.clone()))
+            .ok_or_else(|| format!("{status:#?}"))
+    })
 }
 
 /// `hcl` with `opcua` in place of `localhost:50000` and `influx` in place of
@@ -391,7 +443,7 @@ fn a_trace_with_no_step_panics_with_the_reads_of_the_changes() {
 fn each_config_names_the_served_addresses() {
     let opcua = SocketAddr::from(([127, 0, 0, 1], 4840));
     let influx = SocketAddr::from(([127, 0, 0, 1], 9086));
-    for hcl in [PLANT, QUALITY] {
+    for hcl in [plant(), QUALITY] {
         let hcl = served(hcl, opcua, influx);
         assert!(hcl.contains("\"opc.tcp://127.0.0.1:4840\""), "{hcl}");
         assert!(hcl.contains("\"http://127.0.0.1:9086\""), "{hcl}");
@@ -400,16 +452,18 @@ fn each_config_names_the_served_addresses() {
 }
 
 #[test]
-#[ignore = "waits on #435, #1734"]
 fn samples_from_an_opc_ua_server_reach_influxdb() {
-    let plant = create_plant(PLANT);
+    let plant = create_plant(plant());
     first_stored(&plant, &VARIABLES);
     let reads = change(&plant.opcua, &VARIABLES, Quality::GOOD);
-    held(&plant, &reads);
+    for trace in held(&plant, &reads) {
+        let good = |sample: &Sample| sample.quality == Some(Quality::GOOD);
+        assert!(trace.served.iter().all(good), "{trace:?}");
+    }
 }
 
 #[test]
-#[ignore = "waits on #435, #1734, #2510"]
+#[ignore = "waits on #435, #2510"]
 fn a_bad_status_keeps_its_quality() {
     let plant = create_plant(QUALITY);
     let spike = &VARIABLES[..1];
@@ -433,10 +487,9 @@ fn a_bad_status_keeps_its_quality() {
 }
 
 #[test]
-#[ignore = "waits on #435, #1734"]
 fn a_wrong_config_gives_its_file_line_and_fix() {
     let mut rig = Rig::new();
-    let hcl = PLANT
+    let hcl = plant()
         .replacen("data_type", "datatype", 1)
         .replace("\"http://localhost:8086\"", "8086");
     rig.config(&hcl);
@@ -469,7 +522,10 @@ fn a_wrong_config_gives_its_file_line_and_fix() {
 }
 
 #[test]
-#[ignore = "waits on #274, #435, #1734, #1735"]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "needs SOCK_CLOEXEC and the shutdown of a listener"
+)]
 fn a_wrong_endpoint_shows_in_status_and_heals() {
     let mut opcua = Opcua::default();
     let mut influx = Influx::default();
@@ -477,39 +533,34 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
     let opcua_address = opcua.serve();
     let influx_address = influx.serve();
     influx.stop();
-    rig.config(&served(PLANT, opcua_address, influx_address));
+    rig.config(&served(plant(), opcua_address, influx_address));
     rig.start();
     rig.apply();
-    let restarting = rig.wait("`influx` restarts", || {
+    let failing = rig.wait("`influx` shows the failed write", || {
         let status = rig.status();
         status
             .get("influx")
-            .filter(|connector| {
-                connector.state == "restarting" && connector.restarts >= Some(1)
-            })
+            .filter(|connector| connector.error.is_some())
             .cloned()
             .ok_or_else(|| format!("{status:#?}"))
     });
-    let next = restarting
-        .error
-        .as_ref()
-        .and_then(|error| error.next.clone());
-    assert!(next.is_some(), "{restarting:#?}");
     assert_eq!(
-        restarting,
+        failing,
         Connector {
+            name: "influx".into(),
             kind: "influx".into(),
-            state: "restarting".into(),
+            state: "running".into(),
             address: Some(format!("http://{influx_address}")),
-            restarts: restarting.restarts,
+            restarts: Some(0),
             counts: Some(BTreeMap::from([("confirmed".into(), 0)])),
             error: Some(Error {
-                class: "device".into(),
+                class: "retry".into(),
                 text: format!(
-                    "the connect failed: {influx_address} refused the connection"
+                    "the write to InfluxDB failed: the connect failed: {influx_address} \
+                     refused the connection"
                 ),
-                next,
             }),
+            note: None,
         }
     );
     rig.wait("`plc` reads the first value of each variable", || {
@@ -526,9 +577,69 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
 }
 
 #[test]
-#[ignore = "waits on #435, #1734, #1735"]
+fn a_token_from_the_environment_of_the_node_reaches_influxdb() {
+    let plant = create_token_plant(|_| "env(\"INFLUX_TOKEN\")".into());
+    plant.rig.apply();
+    first_stored(&plant, &VARIABLES);
+}
+
+#[test]
+fn a_plan_refuses_a_token_from_a_variable_that_the_node_does_not_set() {
+    let plant = create_token_plant(|_| "env(\"PLANT_TOKEN\")".into());
+    refuses_the_token(
+        &plant.rig,
+        "the secret env(\"PLANT_TOKEN\"): the environment variable PLANT_TOKEN of the \
+         node is not set. Start the node with it set to the value",
+    );
+}
+
+#[test]
+fn a_token_file_shows_its_fix_until_it_holds_the_token() {
+    for named in [false, true] {
+        let mut given = None;
+        let plant = create_token_plant(|rig| {
+            let (source, path) = if named {
+                let path = rig.dir.join("foundation-data/data/secrets/plant.token");
+                ("secret(\"plant.token\")".to_owned(), path)
+            } else {
+                let path = rig.dir.join("token");
+                (format!("file({:?})", path.display().to_string()), path)
+            };
+            given = Some((source.clone(), path));
+            source
+        });
+        let (source, path) = given.expect("the plant names its source");
+        let missing = format!(
+            "the secret {source}: the file {} is not there. Write the value to it",
+            path.display()
+        );
+        refuses_the_token(&plant.rig, &missing);
+        let dir = path.parent().expect("a directory");
+        std::fs::create_dir_all(dir).expect("makes the directory");
+        std::fs::write(&path, b"t0ken\n").expect("writes the token");
+        let output = plant
+            .rig
+            .run(&["plan", "plant.hcl", "--out", "plant.plan"], b"");
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        // A run reads the token again, so it shows a file that goes after the plan.
+        std::fs::remove_file(&path).expect("removes the token");
+        let output = plant.rig.run(&["apply", "plant.plan"], b"");
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        assert_eq!(
+            influx_error(&plant.rig),
+            Error {
+                class: "retry".into(),
+                text: missing,
+            }
+        );
+        std::fs::write(&path, b"t0ken\n").expect("writes the token");
+        first_stored(&plant, &VARIABLES);
+    }
+}
+
+#[test]
 fn status_shows_samples_flow() {
-    let plant = create_plant(PLANT);
+    let plant = create_plant(plant());
     let rig = &plant.rig;
     let before = rig.wait("both counts are above 0", || counts_above(rig, (0, 0)));
     plant.opcua.change(TICKS, Quality::GOOD);

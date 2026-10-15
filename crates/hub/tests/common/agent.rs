@@ -9,7 +9,11 @@ use types::hello::Hello;
 use types::name::Name;
 use types::time::Span;
 use wire::Protocol;
-use wire::hub::client::{Challenge, Mode, Open, Read, Request, Response, Signed};
+use wire::hub::FromHome;
+use wire::hub::client::{
+    self, Challenge, FromNode, Mode, Open, Place, Places, Read, Request, Response,
+    Signed,
+};
 
 use crate::net::{HOME, NODE, own_pool, public_key};
 
@@ -32,13 +36,14 @@ pub(crate) struct Stream {
     pool: std::rc::Rc<block::Pool>,
     pub(crate) sender: Sender,
     pub(crate) receiver: Receiver,
+    /// The mode of the read that the stream sent.
+    mode: Option<Mode>,
 }
 
 impl Stream {
     pub(crate) async fn send(&mut self, bytes: &[u8]) {
-        let mut block = self.pool.alloc(bytes.len()).expect("the pool has room");
-        block.copy_from_slice(bytes);
-        self.sender.send(block.freeze()).await.expect("sends");
+        let block = self.pool.copy(bytes).expect("the pool has room");
+        self.sender.send(block).await.expect("sends");
     }
 
     /// Sends a request of `length` bytes, signed over `body`, and `body` in messages
@@ -77,11 +82,45 @@ impl Stream {
         read.encode(&mut out);
         self.send(&out).await;
         self.send(&body).await;
+        self.mode = Some(open.mode);
     }
 
     /// The next message from the node, `None` once it finished.
     pub(crate) async fn recv(&mut self) -> Result<Option<Vec<u8>>, transport::Error> {
         Ok(self.receiver.recv().await?.map(|block| block.to_vec()))
+    }
+
+    /// Reads the start of the read that the stream sent: the places, their run, and
+    /// `Opened`. Gives the places, the run, and the decoder of the frames.
+    ///
+    /// # Panics
+    ///
+    /// When the stream sent no read.
+    pub(crate) async fn opened(&mut self) -> (Places, Vec<Place>, wire::hub::Reader) {
+        let mode = self.mode.expect("the stream sent a read");
+        let mut start = client::Reader::new(mode);
+        let mut next = async || {
+            let message = self.recv().await.expect("receives");
+            message.expect("a message before the finish")
+        };
+        let Ok(FromNode::Places(places)) = start.decode(&next().await) else {
+            panic!("the places come first");
+        };
+        let mut run = Vec::new();
+        let mut reader = loop {
+            let Ok(FromNode::Run { places, home }) = start.decode(&next().await) else {
+                panic!("a message of the run of places");
+            };
+            run.extend(places);
+            if let Some(home) = home {
+                break home;
+            }
+        };
+        assert!(
+            matches!(reader.decode(&next().await), Ok(FromHome::Opened)),
+            "then `Opened`"
+        );
+        (places, run, reader)
     }
 
     /// The next challenge from the node.
@@ -139,6 +178,7 @@ impl Agent {
             pool: std::rc::Rc::clone(&pool),
             sender,
             receiver,
+            mode: None,
         };
         hello.send(&wire::header::encode(Protocol::Hub)).await;
         Self {
@@ -203,6 +243,7 @@ impl Agent {
             pool: std::rc::Rc::clone(&self.pool),
             sender,
             receiver,
+            mode: None,
         }
     }
 

@@ -7,6 +7,7 @@
 //! - `poll`: a step with no work.
 //! - `poll + set`: a step that sets a status count.
 //! - `set`: a set of a status count, with no poll.
+//! - `add`: an add to a status count, with no poll.
 //! - `poll + set (closed)`: as `poll + set`, after a status channel was removed, so
 //!   the status writer writes no more.
 //! - `clear`: a clear of the shown error, with no poll, after a clear.
@@ -25,8 +26,7 @@ use std::time::Instant;
 
 use connector::cancel::Token;
 use connector::kind::{Channels, Context, Error, Kind, Table};
-use connector::supervisor::Supervisor;
-use connector::testing;
+use connector::testing::{self, Rig};
 use document::Document;
 use document::diagnostic::Diagnostic;
 use hub::reader::Mode;
@@ -44,16 +44,15 @@ const ROUNDS: usize = 100;
 const REMOVED: Span = Span::from_nanos(500_000_000);
 /// When a `Closed` kind starts its rounds, after the writer saw the removal.
 const CLOSED: Span = Span::from_nanos(3_000_000_000);
-/// The first key of the status channels.
-const STATUS: channel::Key = channel::Key::from_u128(100);
-/// The key of the status channel `state`.
-const STATE: channel::Key = channel::Key::from_u128(101);
+/// The first key of the status channels, which the rig gives its first connector.
+const STATUS: channel::Key = channel::Key::from_u128(1 << 64);
 
 fn main() {
     let lines = [
         Step::Poll,
         Step::PollSet,
         Step::Set,
+        Step::Add,
         Step::Closed,
         Step::Clear,
         Step::Show,
@@ -68,6 +67,7 @@ enum Step {
     Poll,
     PollSet,
     Set,
+    Add,
     Closed,
     Clear,
     Show,
@@ -79,6 +79,7 @@ impl Step {
             Self::Poll => "poll",
             Self::PollSet => "poll + set",
             Self::Set => "set",
+            Self::Add => "add",
             Self::Closed => "poll + set (closed)",
             Self::Clear => "clear",
             Self::Show => "show",
@@ -134,10 +135,14 @@ impl Kind for Steps {
                     Step::Poll => {}
                     Step::Clear => ctx.clear_error(),
                     Step::Show => ctx.error(&"refused"),
+                    Step::Add => count.add(std::hint::black_box(1)),
                     _ => count.set(std::hint::black_box(i)),
                 };
                 allocations += ALLOCATOR.count(set).1;
-                if !matches!(self.step, Step::Set | Step::Clear | Step::Show) {
+                if !matches!(
+                    self.step,
+                    Step::Set | Step::Add | Step::Clear | Step::Show
+                ) {
                     Yield(false).await;
                 }
             }
@@ -195,14 +200,11 @@ fn run(step: Step) -> Line {
             tasks: tasks.clone(),
         };
         let kinds = Table::new().with("steps", kind);
-        let config = testing::create_config(env, node.net(), kinds).await;
+        let mut rig = Rig::open(env, node.net(), kinds).await;
         let connector: Name = "plant.steps".parse().expect("a valid name");
-        let status = testing::create_status(&connector, &[samples()], STATUS);
-        config
-            .hub
-            .set_definitions(status.iter().map(|(name, def)| (name, def)));
         if matches!(step, Step::Closed) {
-            let (hub, clock) = (config.hub.clone(), node.clock());
+            let status = testing::create_status(&connector, &[samples()], STATUS);
+            let (hub, clock) = (rig.hub().clone(), node.clock());
             let removed = format!("{connector}.status.samples");
             let removed: Name = removed.parse().expect("a valid name");
             tasks.spawn(async move {
@@ -211,15 +213,15 @@ fn run(step: Step) -> Line {
                 hub.set_definitions(kept.map(|(name, def)| (name, def)));
             });
         }
-        let mut state = open_state(&config.hub, &connector).await;
+        let (hub, state) = (rig.hub().clone(), format!("{connector}.status.state"));
         let (token, document) = (Token::new(), Document::default());
-        let result = Supervisor::new(config)
-            .open("steps", connector, &document, &token)
-            .await
-            .run()
+        let opened = rig
+            .open_connector("steps", connector, &document, &token)
             .await;
+        let mut reader = open_state(&hub, &state).await;
+        let result = opened.run().await;
         node.clock().sleep(Span::SECOND).await;
-        let last = last_state(&mut state).await;
+        let last = last_state(&mut reader, &state).await;
         (result, last)
     });
     let (result, last) = result.expect("the run ends");
@@ -242,12 +244,11 @@ fn run(step: Step) -> Line {
         .expect("no panic under the lock")
 }
 
-/// Opens a latest reader of the `state` status channel of `connector`. It spawns no
-/// task, so the timed rounds poll only the supervisor.
-async fn open_state(hub: &hub::Hub, connector: &Name) -> hub::reader::Reader {
-    let state = format!("{connector}.status.state");
+/// Opens a latest reader of the status channel `state`. It spawns no task, so the
+/// timed rounds poll only the supervisor.
+async fn open_state(hub: &hub::Hub, state: &str) -> hub::reader::Reader {
     let open = hub::reader::Config {
-        select: Selector::new([state.as_str()]).expect("a selector"),
+        select: Selector::new([state]).expect("a selector"),
         mode: Mode::Latest,
         subject: "bench".parse().expect("a valid name"),
         name: None,
@@ -256,11 +257,12 @@ async fn open_state(hub: &hub::Hub, connector: &Name) -> hub::reader::Reader {
     hub.reader(open).await.expect("the reader opens")
 }
 
-/// The last `state` sample of the newest status frame that `reader` holds.
-async fn last_state(reader: &mut hub::reader::Reader) -> Option<u8> {
+/// The last sample of the status channel `state` in the newest status frame that
+/// `reader` holds.
+async fn last_state(reader: &mut hub::reader::Reader, state: &str) -> Option<u8> {
     let received = reader.next().await.expect("a status frame");
     let entries = received.set().entries();
-    let at = entries.iter().position(|entry| entry.key == STATE);
+    let at = (0..entries.len()).position(|entry| received.name(entry) == state);
     let at = at.expect("the set holds `state`");
     let range = received.view().range(entries[at].group);
     let count = range.expect("the group is present").count;

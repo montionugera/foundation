@@ -63,6 +63,12 @@ impl Default for Opcua {
     }
 }
 
+/// The wall time of the server at `at`, where `zero` is its wall time at
+/// `Monotonic(0)`.
+fn wall(zero: Stamp, at: Monotonic) -> Stamp {
+    zero + (at - Monotonic(0))
+}
+
 /// The simulated InfluxDB, with the database `plant`. Drop stops it.
 #[derive(Debug, Default)]
 pub(super) struct Influx {
@@ -70,6 +76,8 @@ pub(super) struct Influx {
     store: Arc<Mutex<Store>>,
     /// The address of the first [`Influx::serve`].
     address: Option<SocketAddr>,
+    /// The one token that it takes, when given.
+    token: Option<String>,
     /// The panic tests put a shard that panics or blocks here, since no input to
     /// [`Influx::serve`] makes it do so.
     server: Option<Server>,
@@ -101,12 +109,18 @@ impl Opcua {
     pub(super) fn serve(&mut self) -> SocketAddr {
         let listener = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
         let address = listener.local();
-        let (variables, clock) =
-            (Variables::clone(&self.variables), self.clock.clone());
+        let (variables, clock, zero) = (
+            Variables::clone(&self.variables),
+            self.clock.clone(),
+            self.zero,
+        );
         let server = Server::start("OPC UA server", move |_, token| async move {
             let mut rng = os::entropy().rng();
             let net = os::net();
-            serve(clock, net, listener, &mut rng, &variables, token.wait()).await;
+            let read = clock.clone();
+            let now = move || wall(zero, read.now());
+            let until = token.wait();
+            serve(clock, now, net, listener, &mut rng, &variables, until).await;
         });
         self.server = Some(server);
         address
@@ -127,7 +141,7 @@ impl Opcua {
     /// of the answer, at the time of the answer.
     pub(super) fn served(&self) -> BTreeMap<String, Vec<Sample>> {
         let sample = |served: &Served| Sample {
-            time: self.zero + (served.time - Monotonic(0)),
+            time: wall(self.zero, served.time),
             value: served.value,
             quality: Some(served.quality),
         };
@@ -138,16 +152,29 @@ impl Opcua {
 }
 
 impl Influx {
+    /// An InfluxDB that takes only `token`, as `Token <token>` in `Authorization`.
+    pub(super) fn taking(token: &str) -> Self {
+        Self {
+            token: Some(token.into()),
+            ..Self::default()
+        }
+    }
+
     /// Serves, and gives the address: a free loopback port at the first call, and the
     /// same port after [`Influx::stop`]. What it stored stays across a stop.
     pub(super) fn serve(&mut self) -> SocketAddr {
         let listener = listen(self.address.unwrap_or((Ipv4Addr::LOCALHOST, 0).into()));
         let address = listener.local();
         self.address = Some(address);
-        let store = Arc::clone(&self.store);
+        let (store, taken) = (Arc::clone(&self.store), self.token.clone());
         let server = Server::start("InfluxDB", move |tasks, token| async move {
-            let serve =
-                connector_influx::sim::serve(listener, tasks, store, "plant".into());
+            let serve = connector_influx::sim::serve(
+                listener,
+                tasks,
+                store,
+                "plant".into(),
+                taken,
+            );
             if let Some(error) = token.race(serve).await {
                 panic!("the simulated InfluxDB stopped: {error}");
             }

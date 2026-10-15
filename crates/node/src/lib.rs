@@ -34,6 +34,8 @@ mod task;
 #[cfg(not(loom))]
 mod tests;
 
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fmt;
 use std::future::poll_fn;
 use std::iter;
@@ -93,14 +95,17 @@ pub struct Config<M> {
     /// The node's name. The first start on a data directory keeps it in the file
     /// `name`. Get it with [`name`] before the start. A later start with another name
     /// than the stored one fails with [`Error::Renamed`], and a name with a reserved
-    /// segment starts no shard ([`Error::Reserved`]). Once the data directory stores a
-    /// founding with the node's card, that card holds the name too, and a start whose
-    /// file `name` is gone writes it again from the card. [`Node::join`] gives the
-    /// first failure.
+    /// segment ([`Error::Reserved`]) or of more than 191 bytes ([`Error::Long`]) starts
+    /// no shard. Once the data directory stores a founding with the node's card, that
+    /// card holds the name too, and a start whose file `name` is gone writes it again
+    /// from the card. [`Node::join`] gives the first failure.
     pub name: types::name::Name,
     /// The limits of the node's port, its peers, and its chunk store. A value that the
     /// transport refuses stops the node with [`Error::Transport`].
     pub settings: Settings,
+    /// The environment of the node process, which `env()` in a config reads. Main
+    /// gives `std::env::vars_os()`.
+    pub vars: BTreeMap<OsString, OsString>,
 }
 
 impl<M> fmt::Debug for Config<M> {
@@ -213,9 +218,10 @@ impl Node {
     /// pool budget gives a reservation of more than `usize::MAX` bytes
     /// ([`Error::Pool`]), when [`Config::listen`] has a multicast IP or the IPv4
     /// broadcast IP ([`Error::Listen`]), or when [`Config::name`] has a reserved
-    /// segment ([`Error::Reserved`]). A port that does not bind stops the node after
-    /// shard 0 claimed the data directory, and no buffer opens ([`Error::Port`]). Any
-    /// failure stops the node, and [`Node::join`] gives the first one (its `# Errors`).
+    /// segment ([`Error::Reserved`]) or more than 191 bytes ([`Error::Long`]). A port
+    /// that does not bind stops the node after shard 0 claimed the data directory, and
+    /// no buffer opens ([`Error::Port`]). Any failure stops the node, and
+    /// [`Node::join`] gives the first one (its `# Errors`).
     ///
     /// # Panics
     ///
@@ -227,6 +233,10 @@ impl Node {
         if config.name.reserved() {
             let name = config.name;
             return Self::failed(Error::Reserved { name }, regional);
+        }
+        if config.name.as_str().len() > name::MAX_BYTES {
+            let name = config.name;
+            return Self::failed(Error::Long { name }, regional);
         }
         if unreachable(config.listen.ip()) {
             let listen = config.listen;
@@ -300,6 +310,7 @@ impl Node {
             budget: config.budget,
             inbox,
             time: clock.clone(),
+            vars: Arc::new(config.vars),
         };
         let roles = Role::all(mesh, wall, first, bind, serve, config.name, cores);
         let mut started = Vec::new();
@@ -413,19 +424,22 @@ impl Node {
     /// # Errors
     ///
     /// The first failure: [`Error::Reserved`] for a name with a reserved segment,
-    /// [`Error::Listen`] for a [`Config::listen`] with a multicast IP or the IPv4
-    /// broadcast IP, [`Error::Disk`] for a disk budget that holds no ring on each
-    /// shard, [`Error::Pool`] for a part of the pool budget that needs a reservation of
-    /// more than `usize::MAX` bytes, [`Error::Start`] for a shard that could not start
-    /// or pin, or [`Error::Memory`] for a shard with no memory, else [`Error::Shards`]
-    /// or [`Error::Directory`] for a data directory that shard 0 could not claim, else
-    /// [`Error::Name`], [`Error::Renamed`], [`Error::NoCard`], [`Error::Mesh`],
-    /// [`Error::Key`], or [`Error::Directory`] for a stored name that it could not read
-    /// or a name it could not keep, else [`Error::Port`] for a port that did not bind,
-    /// else [`Error::Buffer`] for the first shard by core whose buffer, or the home
-    /// over it, did not open, [`Error::Budget`] or [`Error::Directory`] for a file
-    /// `budget` that shard 0 could not read or write, [`Error::Key`], [`Error::Admin`],
-    /// or [`Error::Directory`] for a key file that shard 0 could not read or write,
+    /// [`Error::Long`] for a name of more than 191 bytes, [`Error::Listen`] for a
+    /// [`Config::listen`] with a multicast IP or the IPv4 broadcast IP, [`Error::Disk`]
+    /// for a disk budget that holds no ring on each shard, [`Error::Pool`] for a part
+    /// of the pool budget that needs a reservation of more than `usize::MAX` bytes,
+    /// [`Error::Start`] for a shard that could not start or pin, or [`Error::Memory`]
+    /// for a shard with no memory, else [`Error::Shards`] or [`Error::Directory`] for a
+    /// data directory that shard 0 could not claim, else [`Error::NoCard`] for a data
+    /// directory with the directory of a mesh and no file `node.key`, or
+    /// [`Error::Directory`] for a check of them that fails, else [`Error::Name`],
+    /// [`Error::Renamed`], [`Error::NoCard`], [`Error::Mesh`], [`Error::Key`], or
+    /// [`Error::Directory`] for a stored name that it could not read or a name it could
+    /// not keep, else [`Error::Port`] for a port that did not bind, else
+    /// [`Error::Buffer`] for the first shard by core whose buffer, or the home over it,
+    /// did not open, [`Error::Budget`] or [`Error::Directory`] for a file `budget` that
+    /// shard 0 could not read or write, [`Error::Key`], [`Error::Admin`], or
+    /// [`Error::Directory`] for a key file that shard 0 could not read or write,
     /// [`Error::Transport`] for a value of [`Config::settings`] that the transport
     /// refuses, [`Error::Blob`] for a chunk store or [`Error::Mesh`] for a stored
     /// region or a mesh that did not open, [`Error::Directory`] for a file `address`
@@ -730,6 +744,7 @@ impl Open {
         }
         let claimed = async {
             let lock = directory::claim(files, cores).await?;
+            identity::claim(files).await?;
             name::keep(files, name).await?;
             Ok::<_, Error>((lock, bind.bind(name)?))
         };
@@ -807,6 +822,8 @@ struct Serve {
     budget: Budget,
     inbox: task::Inbox<task::Task>,
     time: clock::Reader,
+    /// The environment of the node process, which the node's connectors read.
+    vars: Arc<BTreeMap<OsString, OsString>>,
 }
 
 /// What shard 0 binds the node's port with, once it claimed the data directory.
@@ -904,6 +921,7 @@ impl Opening {
         self,
         files: &env::files::Files,
         pool: Rc<block::Pool>,
+        time: &clock::Reader,
         entropy: &env::entropy::Entropy,
         identity: &identity::Identity,
     ) -> Result<Option<mesh::region::Founding>, Error> {
@@ -914,7 +932,8 @@ impl Opening {
                 if let Some(founding) = stored.map_err(Error::Mesh)? {
                     return Ok(Some(founding));
                 }
-                let root = root::founding(files, entropy, identity, name, addresses);
+                let root =
+                    root::founding(files, time, entropy, identity, name, addresses);
                 root.await.map(Some)
             }
             #[cfg(feature = "sim")]
@@ -962,7 +981,8 @@ impl Endpoint {
     /// node has a region, the chunk store in directory [`directory::blob`] of `files`,
     /// and the mesh of that region over both, in directory [`directory::mesh`]. Gives
     /// the transport, also with the error of a founding, a store, or a mesh that did
-    /// not open.
+    /// not open. A new root region takes the keys of its status at the mesh time of
+    /// `time`.
     ///
     /// # Errors
     ///
@@ -972,6 +992,7 @@ impl Endpoint {
         identity: identity::Identity,
         files: env::files::Files,
         pool: Rc<block::Pool>,
+        time: &clock::Reader,
         tasks: env::tasks::Tasks,
     ) -> Result<(Rc<transport::Transport>, Result<Option<mesh::Mesh>, Error>), Error>
     {
@@ -988,9 +1009,13 @@ impl Endpoint {
         };
         let transport = transport::Transport::new(config, self.part);
         let transport = Rc::new(transport.map_err(Error::Transport)?);
-        let founding =
-            self.region
-                .founding(&files, Rc::clone(&pool), &self.entropy, &identity);
+        let founding = self.region.founding(
+            &files,
+            Rc::clone(&pool),
+            time,
+            &self.entropy,
+            &identity,
+        );
         let founding = match founding.await {
             Ok(Some(founding)) => founding,
             Ok(None) => return Ok((transport, Ok(None))),
@@ -1082,8 +1107,9 @@ impl Serve {
         let (key, entropy) = (identity.key, endpoint.entropy.clone());
         let (clock, net) = (endpoint.clock.clone(), endpoint.net.clone());
         let address = endpoint.address(&identity);
-        let settings = endpoint.settings;
-        let opened = endpoint.open(identity, files.clone(), pool, tasks.clone());
+        let (settings, vars) = (endpoint.settings, self.vars);
+        let opened =
+            endpoint.open(identity, files.clone(), pool, &self.time, tasks.clone());
         let Ok((transport, mesh)) = opened.await.map_err(&fail) else {
             return;
         };
@@ -1098,6 +1124,8 @@ impl Serve {
                 return None;
             };
             let ended = mesh.as_ref().map(mesh::Mesh::ended);
+            let secrets =
+                secret::Resolver::new(vars, files.clone(), &directory::secrets());
             let serve = pin!(async move {
                 let region = mesh.clone().map(|mesh| hub::Region {
                     mesh,
@@ -1114,8 +1142,21 @@ impl Serve {
                 });
                 let (ops, followed) = match mesh.as_ref() {
                     Some(mesh) => {
+                        let member = mesh.member(key);
+                        let member =
+                            member.expect("invariant: a mesh opens only on a member");
+                        let name = member.card.card().name.clone();
                         let kinds = Arc::new(kinds());
-                        let ops = operations(mesh, &time, &entropy, Arc::clone(&kinds));
+                        let ops = Rc::new(ops::Node::new(ops::Config {
+                            mesh: mesh.clone(),
+                            keys: channel_keys(&time, &entropy),
+                            front_ends: front_ends(),
+                            kinds: Arc::clone(&kinds),
+                            hub: hub.clone(),
+                            clock: clock.clone(),
+                            name: name.clone(),
+                            secrets: secrets.clone(),
+                        }));
                         let config = connector::supervisor::Config {
                             kinds,
                             clock: clock.clone(),
@@ -1123,8 +1164,9 @@ impl Serve {
                             net,
                             tasks: tasks.clone(),
                             hub: hub.clone(),
+                            secrets,
                         };
-                        let runs = runs(mesh, key, config);
+                        let runs = connectors::Runs::new(config, name);
                         (Some(ops), Some(follow(mesh, hub.clone(), runs).await))
                     }
                     None => (None, None),
@@ -1188,35 +1230,23 @@ fn channel_key(
     types::channel::Key::v7(at, u128::from_le_bytes(random))
 }
 
-/// The operations on `mesh` with the connector kinds `kinds`, whose keys
-/// [`channel_key`] makes.
-fn operations(
-    mesh: &mesh::Mesh,
-    time: &clock::Reader,
-    entropy: &env::entropy::Entropy,
-    kinds: Arc<connector::kind::Table>,
-) -> Rc<ops::Node> {
-    let (time, entropy) = (time.clone(), entropy.clone());
-    let key = move || channel_key(&time, &entropy);
-    let front_ends = ops::FrontEnds::new(
+/// The front ends of the config files that the operations read.
+fn front_ends() -> ops::FrontEnds {
+    ops::FrontEnds::new(
         "hcl",
         ops::FrontEnd {
             read: config_hcl::read,
         },
-    );
-    Rc::new(ops::Node::new(mesh.clone(), key, front_ends, kinds))
+    )
 }
 
-/// The runs of the connectors that the spec in use places on the node `key` of
-/// `mesh`, on a supervisor made from `config`.
-fn runs(
-    mesh: &mesh::Mesh,
-    key: types::node::Key,
-    config: connector::supervisor::Config,
-) -> connectors::Runs {
-    let member = mesh.member(key);
-    let member = member.expect("invariant: a mesh opens only on a member");
-    connectors::Runs::new(config, member.card.card().name.clone())
+/// Gives the key of each channel that the operations make ([`channel_key`]).
+fn channel_keys(
+    time: &clock::Reader,
+    entropy: &env::entropy::Entropy,
+) -> Box<dyn Fn() -> types::channel::Key> {
+    let (time, entropy) = (time.clone(), entropy.clone());
+    Box::new(move || channel_key(&time, &entropy))
 }
 
 /// Gives `hub` the access rules of the spec that `mesh` uses, and makes `runs` match
@@ -1250,7 +1280,9 @@ async fn follow(
 
 /// The connector kinds of this binary.
 fn kinds() -> connector::kind::Table {
-    connector::kind::Table::new().with("influx", connector_influx::Kind::default())
+    connector::kind::Table::new()
+        .with("influx", connector_influx::Kind::default())
+        .with("opcua", connector_opcua::Kind::default())
 }
 
 /// Drives `runs`, with a mesh, which ends when the mesh's group stops. Ready when the
@@ -1404,15 +1436,22 @@ pub enum Error {
     /// The data directory holds no node name and stores no founding, and the start gave
     /// no name.
     Unnamed,
-    /// The data directory stores a founding and holds no file `name`, and the founding
-    /// holds no card of the node: the file `node.key` is not there, or it holds a key
-    /// with no card in the founding. A start that gives it wrote nothing: no file
-    /// `name`, and no new `node.key`, because a new key is a new node to its region.
+    /// The data directory has the directory of a mesh, and the file `node.key` is not
+    /// there, or, with no file `name`, it holds a key with no card in the founding of
+    /// its region. A start that gives it wrote no file `name` and no new `node.key`,
+    /// because a new key is a new node to its region.
     NoCard,
     /// The start gave `name`, which has a segment that starts with `@`. A region
     /// refuses it, so no shard started and the data directory keeps no name that its
     /// founding refuses.
     Reserved {
+        /// The name the start gave.
+        name: types::name::Name,
+    },
+    /// The start gave `name`, which is longer than 191 bytes: the most that leaves room
+    /// for the name of each status channel of a node, `<name>.<status>`. No shard
+    /// started, and the data directory keeps no such name.
+    Long {
         /// The name the start gave.
         name: types::name::Name,
     },
@@ -1448,6 +1487,7 @@ impl Error {
             | Self::Unnamed
             | Self::NoCard
             | Self::Reserved { .. }
+            | Self::Long { .. }
             | Self::Budget => None,
         }
     }
@@ -1525,8 +1565,8 @@ impl fmt::Display for Error {
                 "the data directory holds no node name; give the node a name",
             ),
             Self::NoCard => f.write_str(
-                "the data directory stores a region and holds no file `name`, and the \
-                 file `node.key` is not there or holds a key that the founding of the \
+                "the data directory has the directory of a mesh, and the file \
+                 `node.key` is not there or holds a key that the founding of its \
                  region does not hold; restore `node.key` from a backup of this node, \
                  or give another data directory",
             ),
@@ -1534,6 +1574,12 @@ impl fmt::Display for Error {
                 f,
                 "the name {name} has a segment that starts with `@`, which is reserved \
                  for Foundation; give another name"
+            ),
+            Self::Long { name } => write!(
+                f,
+                "the name {name} is longer than {} bytes, the most that leaves room for \
+                 the name of each status channel of the node",
+                name::MAX_BYTES
             ),
             Self::Budget => f.write_str(
                 "the file `budget` in the data directory does not hold budgets that a \

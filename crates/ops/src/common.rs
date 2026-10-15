@@ -1,7 +1,7 @@
-//! Fixtures that the tests of `plan`, `apply`, and `Node` share.
+//! Fixtures that the tests of `plan`, `apply`, `status`, and `Node` share.
 
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -10,28 +10,64 @@ use connector::kind::{self, Channels, Context, Table};
 use document::Document;
 use document::diagnostic::Diagnostic;
 use env::files::{self, Operation};
+use env::paths::Paths;
+use env::tasks::Tasks;
+use hub::Hub;
 use mesh::Mesh;
 use sim::Sim;
 use spec::definition::Definition;
 use types::channel::Key;
 use types::name::Name;
 
-use crate::Node;
+use crate::error::{Error, Sources};
 use crate::front_end::{File, FrontEnd, FrontEnds};
+use crate::{Config, Failure, Node, Run, plan};
 
 #[path = "../tests/common/founding.rs"]
 mod founding;
 
-pub(crate) use founding::{ADMIN, NODE, create_mesh};
+#[path = "../tests/common/quickstart.rs"]
+mod quickstart;
 
-pub(crate) const PLANT: &str =
-    include_str!("../../acceptance/tests/it/fixtures/plant.hcl");
+pub(crate) use founding::{ADMIN, NODE, create_mesh};
+pub(crate) use quickstart::{plant, shown};
+
 pub(crate) const SITE: &str =
     include_str!("../../acceptance/tests/it/fixtures/site.hcl");
 
+/// Lines that `ssh-keygen -t ed25519` wrote.
+pub(crate) const BOB: &str = concat!(
+    "ssh-ed25519 ",
+    "AAAAC3NzaC1lZDI1NTE5AAAAIP0QMDFGOHfS9XR71aVyCvs+QnNQ4BXrHs9dGDDz7KY6",
+    " bob@site",
+);
+pub(crate) const EVE: &str = concat!(
+    "ssh-ed25519 ",
+    "AAAAC3NzaC1lZDI1NTE5AAAAIGVVuOR8JKYpAcWLMUveadmJ1wUAmYGgIDtqlhFe7Yhg",
+    " eve@laptop",
+);
+pub(crate) const SAM: &str = concat!(
+    "ssh-ed25519 ",
+    "AAAAC3NzaC1lZDI1NTE5AAAAIBwW/hh0ZkgH9jcODHef/ulXUH2Hx66uLYTxi9hWfS+o",
+    " sam@site",
+);
+
 /// A kind whose channels are the labels of its `read` blocks, which it writes. It takes
 /// each attribute, so it stands in for each kind of the fixtures.
-pub(crate) struct Reader;
+pub(crate) struct Reader {
+    /// The counts of the kind.
+    counts: &'static [&'static str],
+}
+
+/// The stand-in of the `opcua` kind, with the counts that #435 gives it.
+pub(crate) const OPCUA: Reader = Reader {
+    counts: &["in", "lost", "missed"],
+};
+
+/// The stand-in of the `influx` kind, with the count `confirmed` that #1734 gives it.
+pub(crate) const INFLUX: Reader = Reader {
+    counts: &["confirmed"],
+};
 
 impl kind::Kind for Reader {
     type Config = Vec<Name>;
@@ -50,7 +86,7 @@ impl kind::Kind for Reader {
         Ok(Channels {
             reader: None,
             writes: writes.clone(),
-            counts: Vec::new(),
+            counts: self.counts.iter().map(|count| name(count)).collect(),
         })
     }
 
@@ -80,22 +116,83 @@ pub(crate) fn front_ends() -> FrontEnds {
 
 /// The kinds of the connectors of the fixtures.
 pub(crate) fn create_kinds() -> Table {
-    Table::new().with("influx", Reader).with("opcua", Reader)
+    Table::new().with("influx", INFLUX).with("opcua", OPCUA)
 }
 
-/// The node of `mesh`, whose channel keys count from 1.
-pub(crate) fn create_node(mesh: Mesh) -> Node {
-    create_node_reading(mesh, front_ends())
+/// The sim node of a run, and a hub on it.
+pub(crate) struct Fixture {
+    pub(crate) sim: sim::node::Node,
+    pub(crate) hub: Hub,
+    /// The name of the member of the mesh on `sim`.
+    pub(crate) name: Name,
+    /// The tasks of the run.
+    pub(crate) tasks: Tasks,
 }
 
-/// The node of `mesh` that reads with `front_ends`, whose channel keys count from 1.
-pub(crate) fn create_node_reading(mesh: Mesh, front_ends: FrontEnds) -> Node {
+/// The node of `mesh` on `fixture`, whose channel keys count from 1.
+pub(crate) fn create_node(fixture: &Fixture, mesh: Mesh) -> Node {
+    create_node_reading(fixture, mesh, front_ends())
+}
+
+/// The node of `mesh` on `fixture` that reads with `front_ends`, whose channel keys
+/// count from 1.
+pub(crate) fn create_node_reading(
+    fixture: &Fixture,
+    mesh: Mesh,
+    front_ends: FrontEnds,
+) -> Node {
+    let secrets = connector::testing::create_secrets(fixture.sim.files());
+    create_node_with(fixture, mesh, front_ends, secrets)
+}
+
+/// The node of `mesh` on `fixture` that reads with `front_ends` and reads secrets
+/// through `secrets`, whose channel keys count from 1.
+pub(crate) fn create_node_with(
+    fixture: &Fixture,
+    mesh: Mesh,
+    front_ends: FrontEnds,
+    secrets: secret::Resolver,
+) -> Node {
+    Node::new(create_config(fixture, mesh, front_ends, secrets))
+}
+
+/// The config of a node of `mesh` on `fixture`, as [`create_node_with`] makes it.
+pub(crate) fn create_config(
+    fixture: &Fixture,
+    mesh: Mesh,
+    front_ends: FrontEnds,
+    secrets: secret::Resolver,
+) -> Config {
     let made = Cell::new(0);
     let key = move || {
         made.set(made.get() + 1);
         Key::from_u128(made.get())
     };
-    Node::new(mesh, key, front_ends, Arc::new(create_kinds()))
+    Config {
+        mesh,
+        keys: Box::new(key),
+        front_ends,
+        kinds: Arc::new(create_kinds()),
+        hub: fixture.hub.clone(),
+        clock: fixture.sim.clock(),
+        name: fixture.name.clone(),
+        secrets,
+    }
+}
+
+/// The plan of `files` on `applied` at `base`, as `Node::plan` makes it with no read
+/// of a secret.
+pub(crate) fn plan(
+    files: &[File],
+    base: spec::Pointer,
+    applied: &BTreeMap<Name, Definition>,
+    members: &BTreeSet<Name>,
+    front_ends: &FrontEnds,
+    kinds: &Table,
+) -> Result<(plan::Output, config::plan::Plan), Error> {
+    plan::Documents::read(files, front_ends)?
+        .changes(base, applied, members, kinds)
+        .map_err(|diagnostics| Error::config(diagnostics, &Sources::of(files)))
 }
 
 pub(crate) fn name(text: &str) -> Name {
@@ -112,6 +209,24 @@ pub(crate) fn files(files: &[(&str, &str)]) -> Vec<File> {
         .collect()
 }
 
+/// The run, output, and errors of `foundation <args>`, whose requests go through
+/// `reach`.
+pub(crate) async fn cli<C>(
+    paths: &Paths,
+    args: &[&str],
+    reach: impl AsyncFnMut(&Path) -> Result<C, Failure>,
+) -> (Run, String, String)
+where
+    C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
+{
+    let args = ["foundation"].iter().chain(args).map(Into::into);
+    let (mut output, mut errors) = (Vec::new(), Vec::new());
+    let input = std::io::empty();
+    let run = crate::cli(args, input, &mut output, &mut errors, paths, reach).await;
+    let text = |bytes| String::from_utf8(bytes).expect("UTF-8");
+    (run, text(output), text(errors))
+}
+
 /// `site.hcl` with a placement that homes its index on `edge`.
 pub(crate) fn placed_site() -> String {
     format!("{SITE}placement \"p\" {{\n  select = \"site.*\"\n  home = \"edge\"\n}}\n")
@@ -120,7 +235,7 @@ pub(crate) fn placed_site() -> String {
 /// Runs `body` with the one node of a run and the mesh of [`create_mesh`] on it, whose
 /// one member is `edge`, with the definitions of a first start.
 pub(crate) fn solo<F: Future<Output = ()> + 'static>(
-    body: impl FnOnce(sim::node::Node, Mesh) -> F + Send + 'static,
+    body: impl FnOnce(Fixture, Mesh) -> F + Send + 'static,
 ) {
     founded(&["edge"], spec::founding::create(ADMIN.public()), body);
 }
@@ -130,13 +245,27 @@ pub(crate) fn solo<F: Future<Output = ()> + 'static>(
 pub(crate) fn founded<F: Future<Output = ()> + 'static>(
     names: &'static [&'static str],
     definitions: BTreeMap<Name, Definition>,
-    body: impl FnOnce(sim::node::Node, Mesh) -> F + Send + 'static,
+    body: impl FnOnce(Fixture, Mesh) -> F + Send + 'static,
 ) {
     let mut sim = Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let ran = sim.run_on(&node, move |node, tasks| async move {
         let mesh = create_mesh(&node, &tasks, names, definitions).await;
-        body(node, mesh).await;
+        let env = hub::testing::Env {
+            files: node.files(),
+            clock: node.clock(),
+            wall: node.wall(),
+            entropy: node.entropy(),
+            tasks: tasks.clone(),
+        };
+        let (hub, _) = hub::testing::open(env).await;
+        let fixture = Fixture {
+            sim: node,
+            hub,
+            name: name(names[0]),
+            tasks,
+        };
+        body(fixture, mesh).await;
     });
     assert_eq!(ran, Ok(()));
 }
