@@ -50,7 +50,7 @@ impl PartialEq for Stored {
 
 impl Eq for Stored {}
 
-/// What one [`Buffer::read`](crate::Buffer::read) gives.
+/// What one [`Reader::read`](crate::Reader::read) gives.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Read {
     /// The seqs right before the first entry that the path no longer has, as one

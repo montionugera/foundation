@@ -519,40 +519,12 @@ impl Buffer {
         self.shared.state.borrow().logs.durable(slot, path)
     }
 
-    /// The durable entries of `path` of the index at `slot` from `from`, in order,
-    /// until their blocks take `budget` pool bytes, by [`block::footprint`] of each,
-    /// seqs that the path no longer has start, or the pool has no block for the next
-    /// entry. The last entry may pass the budget. An entry that holds `from` comes
-    /// whole. A read from a mark at or in seqs that the path no longer has reports them
-    /// as `gap` and goes on after them. When the path holds no entry after them, the
-    /// read gives the gap and no entry. The first read starts at `Mark::at(0)`; each
-    /// read continues at `next`, which a read that gives no entry and no gap does not
-    /// move. A read makes one file read for the table of each record it visits, two
-    /// when the record header and table pass 4 KiB, and one per entry with bytes.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Files`] when a ring read fails and [`Error::Pool`] when the pool
-    /// has no block for the first entry or its table; the buffer goes on. When a
-    /// commit's file call fails before the read ends, the error that ended the
-    /// buffer.
-    pub async fn read(
-        &self,
-        slot: Slot,
-        path: Path,
-        from: Mark,
-        budget: usize,
-    ) -> Result<Read, Error> {
-        let Shared {
-            file, pool, layout, ..
-        } = &*self.shared;
-        let mut reading = Reading::new(file, pool, *layout, path, from, budget);
-        let walked = self.walk(&mut reading, slot, path).await;
-        // After the walk: a ring read after a failed sync gives `Poisoned`.
-        if let Some(failed) = &self.shared.state.borrow().failed {
-            return Err(Error::Files(failed.clone()));
+    /// A [`Reader`] of this buffer.
+    #[must_use]
+    pub fn reader(&self) -> Reader {
+        Reader {
+            shared: Rc::clone(&self.shared),
         }
-        walked.map(|()| reading.finish())
     }
 
     /// The newest durable entry with `tag` on `path` of each index that has one, with
@@ -607,34 +579,6 @@ impl Buffer {
             found.extend(read::newest(file, pool, place, path, tag, &wanted).await?);
         }
         Ok(found)
-    }
-
-    /// Gives `reading` the records of `path` of the index at `slot` until it ends.
-    async fn walk(
-        &self,
-        reading: &mut Reading<'_>,
-        slot: Slot,
-        path: Path,
-    ) -> Result<(), Error> {
-        // No await comes between a lookup and its hold, or between the drop of a
-        // hold and the next lookup, so no trim passes the records the read goes on
-        // to.
-        while let Some(from) = reading.next() {
-            let found = self.shared.state.borrow().logs.find(slot, path, from);
-            match found {
-                Found::Run(index, run) => {
-                    let _hold = Hold::new(&self.shared, run.offset);
-                    if !reading.record(index, run).await? {
-                        break;
-                    }
-                }
-                Found::End(end) => {
-                    reading.end(end);
-                    break;
-                }
-            }
-        }
-        Ok(())
     }
 
     /// How many group commits ended since the open. It moves before the [`Commit`]
@@ -1119,6 +1063,81 @@ impl Future for End {
     }
 }
 
+/// A handle that reads the durable entries of a [`Buffer`]. It shares the buffer's
+/// state, so it sees each commit. A read after the buffer fails gives that error. A
+/// read after the buffer drops gives the entries made durable before the drop, as a
+/// read before it does. It keeps the ring file open: drop it before a reopen.
+#[derive(Clone, Debug)]
+pub struct Reader {
+    shared: Rc<Shared>,
+}
+
+impl Reader {
+    /// The durable entries of `path` of the index at `slot` from `from`, in order,
+    /// until their blocks take `budget` pool bytes, by [`block::footprint`] of each,
+    /// seqs that the path no longer has start, or the pool has no block for the next
+    /// entry. The last entry may pass the budget. An entry that holds `from` comes
+    /// whole. A read from a mark at or in seqs that the path no longer has reports them
+    /// as `gap` and goes on after them. When the path holds no entry after them, the
+    /// read gives the gap and no entry. The first read starts at `Mark::at(0)`; each
+    /// read continues at `next`, which a read that gives no entry and no gap does not
+    /// move. A read makes one file read for the table of each record it visits, two
+    /// when the record header and table pass 4 KiB, and one per entry with bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Files`] when a ring read fails and [`Error::Pool`] when the pool
+    /// has no block for the first entry or its table; the buffer goes on. When a
+    /// commit's file call fails before the read ends, the error that ended the
+    /// buffer.
+    pub async fn read(
+        &self,
+        slot: Slot,
+        path: Path,
+        from: Mark,
+        budget: usize,
+    ) -> Result<Read, Error> {
+        let Shared {
+            file, pool, layout, ..
+        } = &*self.shared;
+        let mut reading = Reading::new(file, pool, *layout, path, from, budget);
+        let walked = self.walk(&mut reading, slot, path).await;
+        // After the walk: a ring read after a failed sync gives `Poisoned`.
+        if let Some(failed) = &self.shared.state.borrow().failed {
+            return Err(Error::Files(failed.clone()));
+        }
+        walked.map(|()| reading.finish())
+    }
+
+    /// Gives `reading` the records of `path` of the index at `slot` until it ends.
+    async fn walk(
+        &self,
+        reading: &mut Reading<'_>,
+        slot: Slot,
+        path: Path,
+    ) -> Result<(), Error> {
+        // No await comes between a lookup and its hold, or between the drop of a
+        // hold and the next lookup, so no trim passes the records the read goes on
+        // to.
+        while let Some(from) = reading.next() {
+            let found = self.shared.state.borrow().logs.find(slot, path, from);
+            match found {
+                Found::Run(index, run) => {
+                    let _hold = Hold::new(&self.shared, run.offset);
+                    if !reading.record(index, run).await? {
+                        break;
+                    }
+                }
+                Found::End(end) => {
+                    reading.end(end);
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// A record that a read in progress holds, which no trim frees, until the drop.
 struct Hold<'a> {
     shared: &'a Shared,
@@ -1401,6 +1420,7 @@ mod tests {
         from: u64,
     ) -> (Option<Range<u64>>, Vec<u64>, Mark) {
         let read = buffer
+            .reader()
             .read(slot, Path::Live, Mark::at(from), usize::MAX)
             .await
             .expect("reads");
@@ -1612,7 +1632,8 @@ mod tests {
                 let mut tails = vec![trimmed()];
                 {
                     let from = Mark::at(0).after(0, 0);
-                    let mut read = pin!(buffer.read(one, Path::Live, from, usize::MAX));
+                    let reader = buffer.reader();
+                    let mut read = pin!(reader.read(one, Path::Live, from, usize::MAX));
                     let first = poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
                     assert!(first.is_pending(), "the read waits on a file read");
                     tails.push(trimmed());
