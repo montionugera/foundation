@@ -7,7 +7,7 @@ use types::frame::Path;
 use types::name::Name;
 use types::time::Stamp;
 
-use crate::line::{Measurement, Value};
+use crate::line::{Field, Measurement, Value};
 
 /// The measurement of the gap lines.
 pub const MEASUREMENT: &str = "foundation_gaps";
@@ -18,6 +18,7 @@ pub const MEASUREMENT: &str = "foundation_gaps";
 #[derive(Debug)]
 pub struct Gap {
     measurement: Measurement,
+    count: Field,
     seqs: Option<Range<u64>>,
 }
 
@@ -39,9 +40,13 @@ impl Gap {
             ("index", index.as_str()),
             ("path", path),
         ];
+        let measurement = Measurement::new(MEASUREMENT, &tags)
+            .expect("invariant: a name or a path is a valid tag value");
         Self {
-            measurement: Measurement::new(MEASUREMENT, &tags, &["count"])
-                .expect("invariant: a name or a path is a valid tag value"),
+            count: measurement
+                .field("count")
+                .expect("invariant: a valid field key"),
+            measurement,
             seqs: None,
         }
     }
@@ -96,8 +101,8 @@ impl Gap {
                     seqs.start
                 )
             });
-        self.measurement
-            .line(out, &[Some(Value::Integer(count))], stamp);
+        let values = [(&self.count, Value::Integer(count))];
+        self.measurement.line(out, values, stamp);
     }
 }
 

@@ -7,7 +7,7 @@ use spec::channel::{Data, Kind};
 use spec::connector::Connector;
 use spec::data_type::DataType;
 use spec::definition;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use types::name::{self, Name};
 
 use crate::{Definition, Entry, Found, LONG_NAME, span};
@@ -78,25 +78,42 @@ fn config(block: &Block) -> Document {
 pub(crate) struct Writes {
     /// The channels that its kind writes.
     channels: Vec<Name>,
-    /// The channels that it implies, by name.
-    implied: Vec<(Name, Kind<Name>)>,
+    /// The status index that it implies.
+    index: Name,
+    /// The status data channels that it implies, by name.
+    data: Vec<(Name, Data<Name>)>,
     /// The span of the connector's label.
     label: Option<Span>,
 }
 
 impl Writes {
-    /// Each channel that it writes: those of its kind, then those it implies.
-    pub(crate) fn names(&self) -> impl Iterator<Item = &Name> {
-        let implied = self.implied.iter().map(|(name, _)| name);
-        self.channels.iter().chain(implied)
+    /// Each channel that its kind writes.
+    pub(crate) fn channels(&self) -> impl Iterator<Item = &Name> {
+        self.channels.iter()
     }
 
-    /// Each index that it implies.
-    pub(crate) fn indexes(&self) -> impl Iterator<Item = &Name> {
-        self.implied.iter().filter_map(|(name, kind)| match kind {
-            Kind::Index { .. } => Some(name),
-            Kind::Data(_) => None,
-        })
+    /// Each channel that it implies: the status index, then the data.
+    fn implied_names(&self) -> impl Iterator<Item = &Name> {
+        let data = self.data.iter().map(|(name, _)| name);
+        std::iter::once(&self.index).chain(data)
+    }
+
+    /// Each channel that it implies, with its kind: the status index, then the data.
+    fn implied(&self) -> impl Iterator<Item = (&Name, Kind<Name>)> {
+        let index = Kind::Index {
+            error: None,
+            control: None,
+        };
+        let data = self
+            .data
+            .iter()
+            .map(|(name, data)| (name, Kind::Data(data.clone())));
+        std::iter::once((&self.index, index)).chain(data)
+    }
+
+    /// The status index that it implies.
+    pub(crate) fn index(&self) -> &Name {
+        &self.index
     }
 }
 
@@ -126,19 +143,16 @@ pub(crate) fn writes(
             "Shorten the name of the connector".into(),
         )
     })?;
-    let index = Kind::Index {
-        error: None,
-        control: None,
-    };
     let data = status.into_iter().map(|(name, sample)| {
         let data = Data::new(time.clone(), None, DataType::Sample(sample), None);
         let data = data.expect("invariant: a status channel has no unit");
-        (name, Kind::Data(data))
+        (name, data)
     });
-    let implied = std::iter::once((time.clone(), index)).chain(data).collect();
+    let data = data.collect();
     Ok(Writes {
         channels: channels.writes,
-        implied,
+        index: time,
+        data,
         label: at,
     })
 }
@@ -149,10 +163,10 @@ pub(crate) fn writes(
 pub(crate) fn imply(found: &mut Found<'_>) {
     for (connector, writes) in &found.writes {
         let at = writes.label;
-        for (channel, kind) in &writes.implied {
+        for (channel, kind) in writes.implied() {
             let lower = channel.as_str().to_ascii_lowercase();
             let Some(labels) = found.labels.get(lower.as_str()) else {
-                let definition = Definition::Channel(kind.clone());
+                let definition = Definition::Channel(kind);
                 let entry = Entry {
                     definition,
                     label_span: at,
@@ -178,13 +192,14 @@ pub(crate) fn imply(found: &mut Found<'_>) {
     found.diagnostics.extend(refused);
 }
 
-/// The `config.implied-channel` diagnostic of each connector of `writes` whose kind
-/// writes, in any ASCII case, a channel that a connector of `writes` implies, at the
-/// connector's label.
+/// The `config.implied-channel` diagnostic, at the label of the connector that writes
+/// it, of each channel that the kind of a connector of `writes` writes and that a
+/// connector of `writes` implies, in any ASCII case. A connector gives one for each
+/// such channel, however many times its kind writes it.
 pub(crate) fn implied_writes(writes: &BTreeMap<Name, Writes>) -> Vec<Diagnostic> {
     let mut implied = BTreeMap::new();
     for (connector, writes) in writes {
-        for (channel, _) in &writes.implied {
+        for channel in writes.implied_names() {
             let lower = channel.as_str().to_ascii_lowercase();
             let channel = Implied {
                 connector,
@@ -196,13 +211,87 @@ pub(crate) fn implied_writes(writes: &BTreeMap<Name, Writes>) -> Vec<Diagnostic>
     }
     let mut diagnostics = Vec::new();
     for (writer, writes) in writes {
+        let mut refused = BTreeSet::new();
         for channel in &writes.channels {
             let lower = channel.as_str().to_ascii_lowercase();
-            if let Some(implied) = implied.get(&lower) {
+            if let Some(implied) = implied.get(&lower)
+                && refused.insert(lower)
+            {
                 diagnostics.push(implied.refuse(
                     writes.label,
                     &format!("the connector `{writer}` cannot write it"),
                     format!("Write another channel from the connector `{writer}`"),
+                ));
+            }
+        }
+    }
+    diagnostics
+}
+
+/// The `config.implied-channel` diagnostic of each channel that a connector of
+/// `writes` implies and that `definitions`, the definitions of a spec with the name
+/// of each channel by key in `names`, lack or hold as another channel, then of each
+/// channel that no connector implies and that has an edge to a channel that a
+/// connector implies, once for each channel that it points at.
+pub(crate) fn implied_definitions(
+    definitions: &BTreeMap<Name, definition::Definition>,
+    names: &BTreeMap<types::channel::Key, &Name>,
+    writes: &BTreeMap<Name, Writes>,
+) -> Vec<Diagnostic> {
+    let implied: Vec<(Implied<'_>, Kind<Name>)> = writes
+        .iter()
+        .flat_map(|(connector, writes)| {
+            writes.implied().map(move |(channel, kind)| {
+                let implied = Implied {
+                    connector,
+                    channel,
+                    label: writes.label,
+                };
+                (implied, kind)
+            })
+        })
+        .collect();
+    let mut diagnostics = Vec::new();
+    for (implied, kind) in &implied {
+        let held = match definitions.get(implied.channel) {
+            Some(definition::Definition::Channel(stored)) => {
+                // An edge to a key that is no channel is `None`, so it differs.
+                let edges = stored
+                    .kind
+                    .clone()
+                    .map(|key| names.get(&key).copied().cloned());
+                edges == kind.clone().map(Some)
+            }
+            _ => false,
+        };
+        if !held {
+            diagnostics.push(implied.refuse(
+                None,
+                "the spec must hold it as the connector gives it",
+                "Make the plan file with `plan`".into(),
+            ));
+        }
+    }
+    let by_name: BTreeMap<&Name, &Implied<'_>> = implied
+        .iter()
+        .map(|(implied, _)| (implied.channel, implied))
+        .collect();
+    for (from, definition) in definitions {
+        let definition::Definition::Channel(channel) = definition else {
+            continue;
+        };
+        if by_name.contains_key(from) {
+            continue;
+        }
+        let mut refused = BTreeSet::new();
+        for (_, key) in channel.kind.edges() {
+            if let Some(implied) = names.get(key).and_then(|to| by_name.get(*to))
+                && refused.insert(implied.channel)
+            {
+                diagnostics.push(implied.refuse(
+                    None,
+                    &format!("the channel `{from}` cannot point at it"),
+                    "Make the plan file with `plan`".into(),
                 ));
             }
         }

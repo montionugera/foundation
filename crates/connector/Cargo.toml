@@ -6,7 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-sim = ["hyper/server", "hub/sim", "dep:spec"]
+sim = ["hyper/server", "hub/sim"]
 
 [dependencies]
 bytes.workspace = true
@@ -17,8 +17,9 @@ block = { path = "../block" }
 codec = { path = "../codec" }
 env = { path = "../env" }
 hub = { path = "../hub" }
+secret = { path = "../secret" }
 document = { path = "../document" }
-spec = { path = "../spec", optional = true }
+spec = { path = "../spec" }
 types = { path = "../types" }
 
 [target.'cfg(loom)'.dependencies]
@@ -31,7 +32,6 @@ counting = { path = "../counting" }
 hub = { path = "../hub", features = ["sim"] }
 proptest = { workspace = true }
 sim = { path = "../sim" }
-spec = { path = "../spec" }
 wire = { path = "../wire" }
 
 [[test]]
@@ -44,6 +44,11 @@ harness = false
 
 [[bench]]
 name = "run"
+harness = false
+test = true
+
+[[bench]]
+name = "stamp"
 harness = false
 test = true
 

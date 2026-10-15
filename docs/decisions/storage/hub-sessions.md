@@ -51,6 +51,21 @@
   no hub test reaches that wake, and the ruling of #1170 gave the two hub `sim` tests as
   they were before #2388. The ruling of #1718 above supersedes Q21 ("no change now") of
   the same #1133 comment.
+  Amended (#2649): a live frame that finds no room in the buffer is a miss too, and
+  so is each frame that waits for a grant then, as READER RULES states
+  (`laptop.architect`, 2026-10-14T02:10:24Z and 02:12:26Z:
+  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159325971 and
+  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159349684). The hub
+  `sim` test `ends_a_complete_reader_that_sleeps_past_its_window_or_its_ring_as_behind`
+  checks the lost frame, and the `delivery` tests
+  `lose::misses_the_frame_that_a_session_waits_for_a_grant_on` and
+  `lose::misses_a_held_frame_at_the_release_that_reaches_the_lost_samples` check the
+  frame that waits for a grant then. A seq lost for no room stays a miss under the
+  catch-up of #274 B1: a reader that reaches it ends with `Behind`, never a gap, and
+  the B1 plan states how it knows that seq. Supersedes item 4 of
+  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159325971
+  (`laptop.architect`, 2026-10-14T02:29:09Z:
+  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159543609).
   The hub `sim` tests `drops_the_commit_it_waits_for_with_the_hub` (64 values),
   `ends_a_complete_reader_that_holds_a_frame_past_its_window_at_the_next_commit`,
   `gives_a_waiting_complete_reader_each_frame_of_a_commit_past_its_window`, and
@@ -317,6 +332,14 @@
   would compute the midpoint again, and a change of the home's rule would make its
   stamps `Ahead`. Connector time sync adds what it needs with its own caller. Lost: a
   writer that stamps the frame, because only the caller knows when it read each sample.
+  `writer::Writer::time` gives a `writer::Time`, which a caller keeps apart from the
+  writer: `Time::now` reads what `Writer::now` reads, also after the writer drops. The
+  open62541 loop of the opcua kind reads it inside each client call, while the kind
+  holds its writer to write. A `Time` comes only from a writer, so mesh time is known.
+  Lost: the writer in `Rc<RefCell<_>>` in the kind, because it adds a borrow to each
+  draft and write. No `Hub::time`. Decided by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6147197858,
+  2026-10-13 13:56 UTC).
   `writer::Writer::entries` gives the entry of each channel of
   `writer::Config::channels`, in that order: its position in the entries of
   `Writer::set`, as `Writer::draft` and `Draft::series_mut` take it. A channel named
@@ -333,7 +356,16 @@
   the open gives `ManyIndexes` with the least matched name and the least name on another
   index (`laptop.architect`, 2026-10-08T06:18:32Z:
   https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6053699496). A
-  selector that matches no channel gives `Empty` until #1819 (`laptop.architect`,
+  reader gives the name of each channel that it reads, as at its open, through
+  `Received::name`. The reader of a client read holds no name (`laptop.architect`,
+  2026-10-13T01:00:24Z and 01:03:02Z:
+  https://github.com/synnaxlabs/foundation/issues/2508#issuecomment-6135761867 and
+  https://github.com/synnaxlabs/foundation/issues/2508#issuecomment-6135803509). This
+  supersedes "and an open of a connector clones no name" of finding 3 of
+  https://github.com/synnaxlabs/foundation/pull/2425#issuecomment-6111681323. Each open
+  of `Hub::reader` now copies the bytes of each matched name once, into one text, with
+  a count of allocations that does not grow with the channels. A selector that matches
+  no channel gives `Empty` until #1819 (`laptop.architect`,
   2026-10-08T06:18:32Z and 06:37:34Z:
   https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6053699496 and
   https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6054016051). A named
@@ -358,7 +390,12 @@
   https://github.com/synnaxlabs/foundation/pull/2183#issuecomment-6089887271;
   `laptop.architect`, 2026-10-08T10:01:19Z and 2026-10-10T00:57:58Z:
   https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6057419592 and
-  https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6091895275).
+  https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6091895275), or
+  lost because the buffer had no room (`laptop.architect`, 2026-10-14T02:29:09Z:
+  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159543609).
+  Supersedes the line of
+  https://github.com/synnaxlabs/foundation/pull/2183#issuecomment-6089887271 that a
+  frame lost for no room is not in the condition.
   Supersedes the resume where the last complete session opened, of
   https://github.com/synnaxlabs/foundation/pull/2183#issuecomment-6089237192.
   Amended (#1742 PR 3): `Received::position` gives the reader's position after each

@@ -11,7 +11,10 @@ use serde_json::{Map, Value};
 use types::name::Name;
 
 use crate::Start;
-use crate::error::Error;
+use crate::error::{Among, Error};
+
+/// The data directory of a command that names none.
+pub(crate) const DATA: &str = "foundation-data";
 
 /// The facts that the CLI, the MCP tools, and the docs show for one operation.
 pub(crate) struct Spec {
@@ -42,6 +45,7 @@ pub(crate) const TABLE: &[Spec] = &[
 #[command(
     name = "foundation",
     about = "Run Foundation operations",
+    version,
     disable_help_subcommand = true
 )]
 struct Cli {
@@ -58,6 +62,12 @@ enum Command {
     Run(Request),
     /// Start a node on a data directory, and run it until Ctrl-C.
     Start(StartArgs),
+    /// Show the change from config files to the spec of the node of `--data`.
+    Plan(PlanArgs),
+    /// Apply a plan file of `foundation plan --out` on the node of `--data`.
+    Apply(ApplyArgs),
+    /// Show the state of each connector on the node of `--data`.
+    Status(NodeArgs),
     /// Answer MCP messages on standard input, one JSON-RPC message per line, until it
     /// closes.
     Mcp,
@@ -69,7 +79,7 @@ enum Command {
 struct StartArgs {
     /// The data directory of the node. The start makes it when it is not there, but
     /// not its parents.
-    #[arg(long, default_value = "foundation-data")]
+    #[arg(long, default_value = DATA)]
     data: PathBuf,
     /// The name of the node. The first start on a data directory needs it, and a later
     /// start reads it from there.
@@ -79,6 +89,35 @@ struct StartArgs {
     /// takes no session from another host.
     #[arg(long, default_value = "127.0.0.1:0")]
     listen: SocketAddr,
+}
+
+#[derive(clap::Args)]
+struct PlanArgs {
+    /// The config files.
+    #[arg(required = true)]
+    files: Vec<PathBuf>,
+    /// Write the plan file here, for `foundation apply`. With none, `plan` writes no
+    /// file.
+    #[arg(long)]
+    out: Option<PathBuf>,
+    #[command(flatten)]
+    node: NodeArgs,
+}
+
+#[derive(clap::Args)]
+struct ApplyArgs {
+    /// The plan file.
+    plan: PathBuf,
+    #[command(flatten)]
+    node: NodeArgs,
+}
+
+/// The arguments of a command that runs on a node.
+#[derive(clap::Args)]
+struct NodeArgs {
+    /// The data directory of the node.
+    #[arg(long, default_value = DATA)]
+    data: PathBuf,
 }
 
 /// The input of each operation. Clap and serde both name a variant in kebab case.
@@ -104,7 +143,12 @@ pub(crate) enum Response {
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub(crate) struct Version {
-    version: String,
+    /// The version of Foundation.
+    pub(crate) version: String,
+    /// The 40 or 64 lowercase hex digits of the commit of `HEAD` in the build, or null
+    /// with no `git`, outside a git repository, and on a branch with no commit. A build
+    /// of a tree with changes gives the commit of `HEAD` too.
+    pub(crate) commit: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -115,6 +159,18 @@ pub(crate) struct Reference {
 pub(crate) enum Parsed {
     Run(Request),
     Start(Start),
+    Plan {
+        files: Vec<PathBuf>,
+        out: Option<PathBuf>,
+        data: PathBuf,
+    },
+    Apply {
+        plan: PathBuf,
+        data: PathBuf,
+    },
+    Status {
+        data: PathBuf,
+    },
     Help(String),
     Mcp,
 }
@@ -127,11 +183,15 @@ pub(crate) fn command() -> clap::Command {
     })
 }
 
-pub(crate) fn parse(args: &[OsString]) -> Result<Parsed, Error> {
+/// Parses `args`. `json` is whether they ask for JSON, as `cli` read it.
+pub(crate) fn parse(args: &[OsString], json: bool) -> Result<Parsed, Error> {
     let matches = match command().try_get_matches_from(args) {
         Ok(matches) => matches,
         Err(e) if e.kind() == ErrorKind::DisplayHelp => {
             return Ok(Parsed::Help(e.to_string()));
+        }
+        Err(e) if e.kind() == ErrorKind::DisplayVersion => {
+            return Ok(Parsed::Run(Request::Version(Empty {})));
         }
         Err(e) => return Err(from_clap(&e)),
     };
@@ -140,10 +200,20 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Parsed, Error> {
         Command::Run(request) => Ok(Parsed::Run(request)),
         Command::Start(StartArgs { data, name, listen }) => Ok(Parsed::Start(Start {
             data,
-            json: cli.json,
+            json,
             name,
             listen,
         })),
+        Command::Plan(PlanArgs { files, out, node }) => Ok(Parsed::Plan {
+            files,
+            out,
+            data: node.data,
+        }),
+        Command::Apply(ApplyArgs { plan, node }) => Ok(Parsed::Apply {
+            plan,
+            data: node.data,
+        }),
+        Command::Status(NodeArgs { data }) => Ok(Parsed::Status { data }),
         Command::Mcp => Ok(Parsed::Mcp),
         Command::Help { command } => help(command.as_deref()),
     }
@@ -155,21 +225,20 @@ fn help(name: Option<&str>) -> Result<Parsed, Error> {
     root.build();
     let command = match name {
         None => &mut root,
-        Some("help") => return Err(unknown("help")),
         Some(name) => root
             .find_subcommand_mut(name)
-            .ok_or_else(|| unknown(name))?,
+            .ok_or_else(|| unknown(name, Among::Commands))?,
     };
     Ok(Parsed::Help(command.render_help().to_string()))
 }
 
-/// Reads a request for the operation `name` from its JSON `arguments`.
+/// Reads the request of a `tools/call` of MCP for the tool `name` from its `arguments`.
 pub(crate) fn read(
     name: &str,
     arguments: Map<String, Value>,
 ) -> Result<Request, Error> {
     if !TABLE.iter().any(|spec| spec.name == name) {
-        return Err(unknown(name));
+        return Err(unknown(name, Among::Tools));
     }
     let tagged = Map::from_iter([(name.to_owned(), Value::Object(arguments))]);
     serde_json::from_value(Value::Object(tagged)).map_err(|e| Error::Argument {
@@ -178,7 +247,7 @@ pub(crate) fn read(
 }
 
 /// The unknown-operation error for `name`, with the closest operation name.
-fn unknown(name: &str) -> Error {
+fn unknown(name: &str, among: Among) -> Error {
     let operations = Request::augment_subcommands(clap::Command::new("foundation"))
         .disable_help_subcommand(true)
         .disable_help_flag(true);
@@ -189,6 +258,7 @@ fn unknown(name: &str) -> Error {
     Error::Unknown {
         name: name.to_owned(),
         closest,
+        among,
     }
 }
 
@@ -206,6 +276,7 @@ fn from_clap(e: &clap::Error) -> Error {
             name: context(e, ContextKind::InvalidSubcommand)
                 .expect("invariant: clap names an unknown subcommand"),
             closest: context(e, ContextKind::SuggestedSubcommand),
+            among: Among::Commands,
         };
     }
     let what = e
@@ -278,25 +349,39 @@ impl Request {
         match self {
             Self::Version(Empty {}) => Response::Version(Version {
                 version: env!("CARGO_PKG_VERSION").to_owned(),
+                commit: commit(env!("FOUNDATION_COMMIT")),
             }),
             Self::Docs(Empty {}) => Response::Docs(Reference { markdown: docs() }),
         }
     }
 }
 
+/// The commit that the build script gives, which is empty when it reads none.
+pub(crate) fn commit(built: &str) -> Option<String> {
+    Some(built)
+        .filter(|commit| !commit.is_empty())
+        .map(str::to_owned)
+}
+
 impl Response {
     /// The output as JSON, without the operation's name.
     pub(crate) fn json(&self) -> Value {
-        let value = match self {
-            Self::Version(output) => serde_json::to_value(output),
-            Self::Docs(output) => serde_json::to_value(output),
-        };
-        value.expect("invariant: an output is plain JSON data")
+        match self {
+            Self::Version(output) => crate::value(output),
+            Self::Docs(output) => crate::value(output),
+        }
     }
 
     pub(crate) fn text(&self) -> String {
         match self {
-            Self::Version(output) => format!("{}\n", output.version),
+            Self::Version(output) => {
+                let commit = output.commit.as_deref().map_or("unknown", |commit| {
+                    commit
+                        .get(..12)
+                        .expect("invariant: a commit has 40 or 64 hex digits")
+                });
+                format!("{} ({commit})\n", output.version)
+            }
             Self::Docs(output) => output.markdown.clone(),
         }
     }

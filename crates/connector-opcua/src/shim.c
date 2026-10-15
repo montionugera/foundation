@@ -15,11 +15,17 @@
 #include "timer.h"
 #pragma GCC diagnostic pop
 
+#include "shim.h"
+
+#include <stdarg.h>
 #include <stddef.h>
-#include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 /* The reason of the clock key of `encryptUserIdentityTokenEcc` in `cargo xtask
  * open62541` needs encryption off. */
@@ -33,12 +39,46 @@ UA_DateTime UA_DateTime_now(void) { return 0; }
 UA_DateTime UA_DateTime_nowMonotonic(void) { return 0; }
 UA_Int64 UA_DateTime_localTimeUtcOffset(void) { return 0; }
 
-/* The library calls these only when a config has no event loop, and ours always has
- * one, so a call is a defect. */
-static void refuse(const char *name) {
-    fprintf(stderr, "connector-opcua: open62541 called %s, which is not built\n", name);
+/* The bytes of a line to stderr, with its newline. */
+#define LINE_BYTES 512
+
+/* Writes `connector-opcua: open62541 `, then `level` and `: ` when `level` is not NULL,
+ * then `format` with `args`, to stderr as one line of at most `LINE_BYTES` bytes, in
+ * one call, with the same bytes on each OS. So a line takes no `stdio` lock and does
+ * not mix with a line of another thread. */
+static void put_line(const char *level, const char *format, va_list args) {
+    char line[LINE_BYTES];
+    /* `mp_vsnprintf`, not `vsnprintf`: open62541 formats `%S` and `%N`. */
+    int length = mp_snprintf(line, sizeof(line), "connector-opcua: open62541 %s%s",
+                             level ? level : "", level ? ": " : "");
+    length += mp_vsnprintf(line + length, sizeof(line) - (size_t)length, format, args);
+    if(length > LINE_BYTES - 1)
+        length = LINE_BYTES - 1;
+    line[length] = '\n';
+    /* A failed write of a line to stderr has nowhere to go. */
+#ifdef _WIN32
+    /* `write` puts a CR before each LF of fd 2, which is in text mode. */
+    DWORD written;
+    HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
+    WriteFile(err, line, (DWORD)length + 1, &written, NULL);
+#else
+    ssize_t written = write(STDERR_FILENO, line, (size_t)length + 1);
+#endif
+    (void)written;
+}
+
+/* Writes `format` with its arguments to stderr with `put_line`, and aborts. */
+static void die(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    put_line(NULL, format, args);
+    va_end(args);
     abort();
 }
+
+/* The library calls these only when a config has no event loop, and ours always has
+ * one, so a call is a defect. */
+static void refuse(const char *name) { die("called %s, which is not built", name); }
 
 UA_EventLoop *UA_EventLoop_new_POSIX(const UA_Logger *logger) {
     (void)logger;
@@ -76,7 +116,24 @@ _Static_assert(sizeof(UA_DataType) == 96, "UA_DataType changed");
 _Static_assert(sizeof(UA_DecodeBinaryOptions) == 40, "UA_DecodeBinaryOptions changed");
 _Static_assert(offsetof(UA_DecodeBinaryOptions, decodedLength) == 32,
                "decodedLength moved");
+_Static_assert(sizeof(shim_node) == 24, "shim_node changed");
+_Static_assert(offsetof(shim_node, name) == 8, "shim_node.name moved");
+_Static_assert(sizeof(shim_scalar) == 8, "shim_scalar changed");
 _Static_assert(UA_TYPES_COUNT == 388, "UA_TYPES changed");
+_Static_assert(UA_TYPES_BOOLEAN == 0 && UA_TYPES_SBYTE == 1 &&
+                   UA_TYPES_BYTE == 2 && UA_TYPES_INT16 == 3 &&
+                   UA_TYPES_UINT16 == 4 && UA_TYPES_INT32 == 5 &&
+                   UA_TYPES_UINT32 == 6 && UA_TYPES_INT64 == 7 &&
+                   UA_TYPES_UINT64 == 8 && UA_TYPES_FLOAT == 9 &&
+                   UA_TYPES_DOUBLE == 10,
+               "the scalar types of UA_TYPES moved");
+_Static_assert(UA_DATATYPEKIND_BOOLEAN == 0 && UA_DATATYPEKIND_SBYTE == 1 &&
+                   UA_DATATYPEKIND_BYTE == 2 && UA_DATATYPEKIND_INT16 == 3 &&
+                   UA_DATATYPEKIND_UINT16 == 4 && UA_DATATYPEKIND_INT32 == 5 &&
+                   UA_DATATYPEKIND_UINT32 == 6 && UA_DATATYPEKIND_INT64 == 7 &&
+                   UA_DATATYPEKIND_UINT64 == 8 && UA_DATATYPEKIND_FLOAT == 9 &&
+                   UA_DATATYPEKIND_DOUBLE == 10,
+               "the kinds of the scalar types moved");
 _Static_assert(UA_TYPES_BYTESTRING == 14, "UA_TYPES_BYTESTRING moved");
 _Static_assert(UA_TYPES_VARIANT == 23, "UA_TYPES_VARIANT moved");
 _Static_assert(UA_NS0ID_SERVER_SERVERSTATUS_CURRENTTIME == 2258,
@@ -142,8 +199,9 @@ AT(unlock, 22);
 /* The last tick of a clock of `u64` ns. */
 #define LAST_TICK ((UA_DateTime)(UINT64_MAX / 100))
 
-/* Gives the monotonic time of `clock` in ticks of 100 ns, at most `LAST_TICK`. */
-typedef UA_DateTime (*shim_now)(void *clock);
+/* Gives a time of `time` in ticks of 100 ns: the monotonic time, at most `LAST_TICK`,
+ * or the wall time from the Unix epoch. */
+typedef UA_DateTime (*shim_now)(void *time);
 
 /* An event loop with no I/O. It runs on one thread and never blocks. */
 struct shim_loop {
@@ -152,7 +210,8 @@ struct shim_loop {
     UA_Timer timer;
     UA_Logger logger;
     shim_now now;
-    void *clock;
+    shim_now wall;
+    void *time;
     /* The delayed callbacks for the next run, in order, and `tail` at the `next` of
      * the last. */
     UA_DelayedCallback *queued;
@@ -166,7 +225,7 @@ static struct shim_loop *loop_of(UA_EventLoop *el) { return (struct shim_loop *)
 
 static UA_DateTime now_of(UA_EventLoop *el) {
     struct shim_loop *loop = loop_of(el);
-    return loop->now(loop->clock);
+    return loop->now(loop->time);
 }
 
 static void set_state(UA_EventLoop *el, UA_EventLoopState state) {
@@ -238,7 +297,8 @@ static UA_StatusCode el_run(UA_EventLoop *el, UA_UInt32 timeout) {
 static void el_cancel(UA_EventLoop *el) { (void)el; }
 
 static UA_DateTime el_now(UA_EventLoop *el) {
-    return now_of(el) + UA_DATETIME_UNIX_EPOCH;
+    struct shim_loop *loop = loop_of(el);
+    return loop->wall(loop->time) + UA_DATETIME_UNIX_EPOCH;
 }
 
 static UA_Int64 el_utc_offset(UA_EventLoop *el) {
@@ -326,47 +386,33 @@ static void el_remove_delayed(UA_EventLoop *el, UA_DelayedCallback *dc) {
 static const char *const LEVELS[] = {"trace", "debug", "info", "warning", "error",
                                      "fatal"};
 
-/* The bytes of a log line, with its newline. */
-#define LOG_BYTES 512
-
-/* Writes each message of level warning and up to fd 2, in one `write`, so a line takes
- * no `stdio` lock and does not mix with a line of another thread. A line longer than
- * `LOG_BYTES` is cut. It allocates nothing. */
+/* Writes each message of level warning and up to stderr. It allocates nothing. */
 static void log_message(void *context, UA_LogLevel level, UA_LogCategory category,
                         const char *msg, va_list args) {
     (void)context;
     (void)category;
     if(level < UA_LOGLEVEL_WARNING)
         return;
-    char line[LOG_BYTES];
-    /* `mp_vsnprintf`, not `vsnprintf`: open62541 formats `%S` and `%N`. */
-    int prefix = mp_snprintf(line, sizeof(line), "connector-opcua: open62541 %s: ",
-                             LEVELS[level / 100 - 1]);
-    int text = mp_vsnprintf(line + prefix, sizeof(line) - (size_t)prefix, msg, args);
-    size_t length = (size_t)prefix + (size_t)text;
-    if(length > LOG_BYTES - 1)
-        length = LOG_BYTES - 1;
-    line[length] = '\n';
-    /* A failed write of a log line has nowhere to go. */
-    ssize_t written = write(STDERR_FILENO, line, length + 1);
-    (void)written;
+    put_line(LEVELS[level / 100 - 1], msg, args);
 }
 
 /* Logs the `length` bytes at `message` as a warning through the logger of `el`.
  * `length` is above 0: mp_printf reads a precision of 0 as none, and reads to a NUL. */
 void shim_log_warning(UA_EventLoop *el, const char *message, size_t length) {
-    int bytes = length < LOG_BYTES ? (int)length : LOG_BYTES;
+    int bytes = length < LINE_BYTES ? (int)length : LINE_BYTES;
     UA_LOG_WARNING(el->logger, UA_LOGCATEGORY_NETWORK, "%.*s", bytes, message);
 }
 
-/* Gives a fresh loop whose time is `now(clock)`, or NULL when out of memory. */
-UA_EventLoop *shim_loop_new(shim_now now, void *clock) {
+/* Gives a fresh loop whose monotonic time is `now(time)` and whose wall time is
+ * `wall(time)`, or NULL when out of memory. */
+UA_EventLoop *shim_loop_new(shim_now now, shim_now wall, void *time) {
     struct shim_loop *loop = (struct shim_loop *)UA_calloc(1, sizeof(*loop));
     if(!loop)
         return NULL;
     UA_Timer_init(&loop->timer);
     loop->now = now;
-    loop->clock = clock;
+    loop->wall = wall;
+    loop->time = time;
     loop->tail = &loop->queued;
     loop->logger.log = log_message;
     UA_EventLoop *el = &loop->el;
@@ -407,11 +453,8 @@ const int shim_free_passes = FREE_PASSES;
 void shim_loop_free(UA_EventLoop *el) {
     struct shim_loop *loop = loop_of(el);
     for(int pass = 0; loop->queued; pass++) {
-        if(pass == FREE_PASSES) {
-            fprintf(stderr, "connector-opcua: open62541 queued delayed callbacks for "
-                            "%d passes of a loop free\n", FREE_PASSES);
-            abort();
-        }
+        if(pass == FREE_PASSES)
+            die("queued delayed callbacks for %d passes of a loop free", FREE_PASSES);
         run_delayed(loop);
     }
     UA_Timer_clear(&loop->timer);
@@ -611,8 +654,10 @@ void shim_establish(UA_ConnectionManager *cm, uintptr_t id, void *application,
              message);
 }
 
-/* Gives a client on `el`, or NULL on a failure. */
-UA_Client *shim_client_new(UA_EventLoop *el) {
+/* Gives a client on `el` that sends and takes at most `chunks` chunks in a message,
+ * or NULL when out of memory. A failed copy of the application URI or of the URI of
+ * namespace 0 gives a client with that URI empty (#2566). */
+UA_Client *shim_client_new(UA_EventLoop *el, UA_UInt32 chunks) {
     UA_ClientConfig config;
     memset(&config, 0, sizeof(config));
     config.logging = &loop_of(el)->logger;
@@ -622,12 +667,35 @@ UA_Client *shim_client_new(UA_EventLoop *el) {
         UA_ClientConfig_clear(&config);
         return NULL;
     }
+    /* open62541 checks the chunks of a message that it sends and of one that it takes
+     * against this count, not against the count of the peer. */
+    config.localConnectionConfig.localMaxChunkCount = chunks;
     return UA_Client_newWithConfig(&config);
 }
 
 /* Gives the timeout of the requests of `client`, in ms. */
 UA_UInt32 shim_client_timeout(UA_Client *client) {
     return UA_Client_getConfig(client)->timeout;
+}
+
+/* Writes to `limits` the send and receive buffer sizes of the channel of `client`, the
+ * MaxMessageSize and the MaxChunkCount of its server (0 for none), and the encoded size
+ * of the session token of `client`. Gives `BadInternalError` when the copy gives
+ * another value than 5 `UInt32` values. */
+UA_StatusCode shim_client_limits(UA_Client *client, size_t limits[5]) {
+    UA_Variant value;
+    UA_StatusCode status = UA_Client_getConnectionAttributeCopy(
+        client, UA_QUALIFIEDNAME(0, "messageLimits"), &value);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    if(value.type != &UA_TYPES[UA_TYPES_UINT32] || value.arrayLength != 5) {
+        UA_Variant_clear(&value);
+        return UA_STATUSCODE_BADINTERNALERROR;
+    }
+    for(size_t i = 0; i < 5; i++)
+        limits[i] = ((const UA_UInt32 *)value.data)[i];
+    UA_Variant_clear(&value);
+    return UA_STATUSCODE_GOOD;
 }
 
 /* Stops the loop of `client`, so no call of the delete waits on the loop, then deletes
@@ -659,44 +727,137 @@ UA_StatusCode shim_response_result(const void *response) {
     return ((const UA_ResponseHeader *)response)->serviceResult;
 }
 
-/* Asks `client` for the Value of node `node` of `namespace`, and has `callback` called
- * with `data` and the answer. Writes the id of the request to `request` when it is not
- * NULL. */
-UA_StatusCode shim_client_read(UA_Client *client, UA_UInt16 namespace, UA_UInt32 node,
-                               UA_ClientAsyncReadValueAttributeCallback callback,
-                               void *data, UA_UInt32 *request) {
-    return UA_Client_readValueAttribute_async(
-        client, UA_NODEID_NUMERIC(namespace, node), callback, data, request);
+/* Gives a Read request of the Value of each of the `count` nodes at `nodes`, with no
+ * timestamps, which copies their names, or NULL when an allocation fails. */
+UA_ReadRequest *shim_read_new(const shim_node *nodes, size_t count) {
+    UA_ReadRequest *request = UA_ReadRequest_new();
+    if(!request)
+        return NULL;
+    request->timestampsToReturn = UA_TIMESTAMPSTORETURN_NEITHER;
+    request->nodesToRead =
+        (UA_ReadValueId *)UA_Array_new(count, &UA_TYPES[UA_TYPES_READVALUEID]);
+    if(!request->nodesToRead) {
+        UA_ReadRequest_delete(request);
+        return NULL;
+    }
+    request->nodesToReadSize = count;
+    for(size_t i = 0; i < count; i++) {
+        UA_ReadValueId *read = &request->nodesToRead[i];
+        read->attributeId = UA_ATTRIBUTEID_VALUE;
+        UA_NodeId id = shim_node_id(nodes[i]);
+        if(UA_NodeId_copy(&id, &read->nodeId) != UA_STATUSCODE_GOOD) {
+            UA_ReadRequest_delete(request);
+            return NULL;
+        }
+    }
+    return request;
 }
 
-/* Gives the status of `value`, an answer of a read: `BadNoData` when it holds no
- * value. A read callback gets `Good` whatever the answer holds. */
+void shim_read_free(UA_ReadRequest *request) { UA_ReadRequest_delete(request); }
+
+/* Sends `request` on `client`, and has `callback` called with `data` and the answer.
+ * Writes the id of the request to `id`. The request times out only after 2^32 - 1 ms
+ * (49.7 days), so in practice it ends at its answer or at the close of the channel. */
+UA_StatusCode shim_client_read(UA_Client *client, UA_ReadRequest *request,
+                               UA_ClientAsyncReadCallback callback, void *data,
+                               UA_UInt32 *id) {
+    /* open62541 takes the timeout hint of a request from the config, and makes 0
+     * 2^32 - 1 ms (`src/client/ua_client.c`, lines 460 and 915). The server gets the
+     * hint 0. A send keeps the handle that it gives a request with handle 0. */
+    UA_ClientConfig *config = UA_Client_getConfig(client);
+    UA_UInt32 timeout = config->timeout;
+    config->timeout = 0;
+    request->requestHeader.requestHandle = 0;
+    UA_StatusCode status =
+        UA_Client_sendAsyncReadRequest(client, request, callback, data, id);
+    config->timeout = timeout;
+    return status;
+}
+
+/* Gives the bytes of the body of the message of `request` sent with a session token of
+ * `token` encoded bytes. */
+size_t shim_read_ask(const UA_ReadRequest *request, size_t token) {
+    const UA_DataType *type = &UA_TYPES[UA_TYPES_READREQUEST];
+    return UA_calcSizeBinary(&type->binaryEncodingId, &UA_TYPES[UA_TYPES_NODEID], NULL) +
+           UA_calcSizeBinary(request, type, NULL) -
+           UA_calcSizeBinary(&request->requestHeader.authenticationToken,
+                             &UA_TYPES[UA_TYPES_NODEID], NULL) +
+           token;
+}
+
+/* Gives the most bytes of the body of the message of a good answer of a read of `count`
+ * nodes that each hold a Double, the largest scalar of `shim_value_scalar`, with each
+ * field of each value, or `SIZE_MAX` past it. */
+size_t shim_read_answer(size_t count) {
+    const UA_DataType *type = &UA_TYPES[UA_TYPES_READRESPONSE];
+    UA_ReadResponse response;
+    UA_ReadResponse_init(&response);
+    UA_Double value = 0;
+    UA_DataValue result;
+    UA_DataValue_init(&result);
+    UA_Variant_setScalar(&result.value, &value, &UA_TYPES[UA_TYPES_DOUBLE]);
+    result.hasValue = true;
+    result.hasStatus = true;
+    result.hasSourceTimestamp = true;
+    result.hasServerTimestamp = true;
+    result.hasSourcePicoseconds = true;
+    result.hasServerPicoseconds = true;
+    size_t fixed =
+        UA_calcSizeBinary(&type->binaryEncodingId, &UA_TYPES[UA_TYPES_NODEID], NULL) +
+        UA_calcSizeBinary(&response, type, NULL);
+    size_t each = UA_calcSizeBinary(&result, &UA_TYPES[UA_TYPES_DATAVALUE], NULL);
+    if(count > (SIZE_MAX - fixed) / each)
+        return SIZE_MAX;
+    return fixed + count * each;
+}
+
+/* Gives the count of results of `response`, a Read response. */
+size_t shim_read_count(const UA_ReadResponse *response) {
+    return response->resultsSize;
+}
+
+/* Gives result `index` of `response`, a Read response with more results than
+ * `index`. */
+const UA_DataValue *shim_read_result(const UA_ReadResponse *response, size_t index) {
+    return &response->results[index];
+}
+
+/* Gives the status of `value`, an answer of a read: its status when it is not Good,
+ * else `BadNoData` when it holds no value, else `Good`, also for a Good with a subcode.
+ * A read callback gets `Good` whatever the answer holds. */
 UA_StatusCode shim_value_status(const void *value) {
     const UA_DataValue *answer = (const UA_DataValue *)value;
-    if(answer->hasStatus && answer->status != UA_STATUSCODE_GOOD)
+    if(answer->hasStatus && !UA_StatusCode_isGood(answer->status))
         return answer->status;
     return answer->hasValue ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNODATA;
 }
 
-/* Writes the scalar Double of `value`, an answer of a read, to `out`, or gives the
- * status of `shim_value_status`, or `BadTypeMismatch` for another value. */
-UA_StatusCode shim_value_double(const void *value, UA_Double *out) {
+/* Writes the scalar of `value`, an answer of a read, to `out`, and its kind to `kind`.
+ * Else gives the status of `shim_value_status`, or `BadTypeMismatch` for an array or a
+ * kind that `shim_scalar` does not hold. */
+UA_StatusCode shim_value_scalar(const void *value, shim_scalar *out, UA_UInt16 *kind) {
     UA_StatusCode status = shim_value_status(value);
     if(status != UA_STATUSCODE_GOOD)
         return status;
     const UA_Variant *variant = &((const UA_DataValue *)value)->value;
-    if(!UA_Variant_hasScalarType(variant, &UA_TYPES[UA_TYPES_DOUBLE]))
+    if(!UA_Variant_isScalar(variant))
         return UA_STATUSCODE_BADTYPEMISMATCH;
-    *out = *(const UA_Double *)variant->data;
+    /* A load of fixed size for each kind, since a `memcpy` of `memSize` calls glibc. */
+    const void *data = variant->data;
+    switch(variant->type->typeKind) {
+    case UA_DATATYPEKIND_BOOLEAN: out->boolean = *(const UA_Boolean *)data; break;
+    case UA_DATATYPEKIND_SBYTE: out->sbyte = *(const UA_SByte *)data; break;
+    case UA_DATATYPEKIND_BYTE: out->byte = *(const UA_Byte *)data; break;
+    case UA_DATATYPEKIND_INT16: out->int16 = *(const UA_Int16 *)data; break;
+    case UA_DATATYPEKIND_UINT16: out->uint16 = *(const UA_UInt16 *)data; break;
+    case UA_DATATYPEKIND_INT32: out->int32 = *(const UA_Int32 *)data; break;
+    case UA_DATATYPEKIND_UINT32: out->uint32 = *(const UA_UInt32 *)data; break;
+    case UA_DATATYPEKIND_INT64: out->int64 = *(const UA_Int64 *)data; break;
+    case UA_DATATYPEKIND_UINT64: out->uint64 = *(const UA_UInt64 *)data; break;
+    case UA_DATATYPEKIND_FLOAT: out->float_ = *(const UA_Float *)data; break;
+    case UA_DATATYPEKIND_DOUBLE: out->double_ = *(const UA_Double *)data; break;
+    default: return UA_STATUSCODE_BADTYPEMISMATCH;
+    }
+    *kind = (UA_UInt16)variant->type->typeKind;
     return UA_STATUSCODE_GOOD;
-}
-
-/* Gives whether `client` has the URI of namespace 1 from its server, which it reads
- * after its session activates. */
-UA_Boolean shim_client_namespaced(UA_Client *client) {
-    UA_String uri = UA_STRING_NULL;
-    UA_StatusCode status = UA_Client_getNamespaceUri(client, 1, &uri);
-    UA_Boolean namespaced = status == UA_STATUSCODE_GOOD && uri.length > 0;
-    UA_String_clear(&uri);
-    return namespaced;
 }

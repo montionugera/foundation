@@ -1,13 +1,19 @@
 //! The time for each commit of the write-ahead ring with no file, and its records per
 //! second: `append` and `synced` for each record, `trimmed` and `release` for each
 //! commit. A commit of 1 record shows the cost for each commit, one of 8 the cost for
-//! each record. A ring of 64 blocks wraps often, one of 4096 blocks seldom. Each time
+//! each record. The ring of ID 64 wraps often, the one of ID 4096 seldom. Each time
 //! also holds the bench's own work to make the ends of each record, so a change of the
-//! writer shows smaller than it is.
+//! writer shows smaller than it is. Each ring has [`PHASE`] blocks more than its
+//! argument, so that each commit of 1 record trims.
 
 use buffer::bench::Ring;
 use divan::Bencher;
 use divan::counter::ItemsCount;
+
+/// The blocks that each ring adds to its ID. With the three blocks that each record
+/// keeps free, each commit of 1 record trims at 68 and 4100 blocks, as the test
+/// `each_commit_of_1_record_trims_on_the_rings_of_the_bench` of `bench` checks.
+const PHASE: u64 = 4;
 
 fn main() {
     divan::main();
@@ -24,7 +30,7 @@ fn commit_8_records(bencher: Bencher<'_, '_>, blocks: u64) {
 }
 
 fn cycle(bencher: Bencher<'_, '_>, blocks: u64, records: usize) {
-    let mut ring = Ring::new(blocks);
+    let mut ring = Ring::new(blocks + PHASE);
     // Times the steady ring, which trims at each commit, not one still filling.
     for _ in 0..2 * blocks {
         ring.commit(records);

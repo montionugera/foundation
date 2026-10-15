@@ -68,7 +68,7 @@ fn pick(data: &[u8]) -> Option<(&'static DataType, &[u8])> {
 }
 
 /// A decoded value, cleared when dropped.
-struct Value {
+pub(crate) struct Value {
     data_type: &'static DataType,
     memory: Vec<u64>,
 }
@@ -76,7 +76,7 @@ struct Value {
 impl Value {
     /// Decodes a value of `data_type` from the start of `bytes`, and gives it with the
     /// number of bytes read.
-    fn decode(
+    pub(crate) fn decode(
         data_type: &'static DataType,
         bytes: &[u8],
     ) -> Result<(Self, usize), Status> {
@@ -102,7 +102,8 @@ impl Value {
         Ok((Value { data_type, memory }, options.decoded))
     }
 
-    fn pointer(&self) -> *const c_void {
+    /// Gives the value, live until the drop.
+    pub(crate) fn pointer(&self) -> *const c_void {
         self.memory.as_ptr().cast()
     }
 

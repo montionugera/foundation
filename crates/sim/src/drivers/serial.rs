@@ -6,6 +6,7 @@ use std::task::{Context, Poll};
 use env::serial::{Config, Error, Open, port};
 
 use super::{Node, Owner};
+use crate::log;
 use crate::serial::End;
 use crate::state::lock;
 
@@ -43,7 +44,7 @@ impl port::Driver for Port {
         buffer: &mut [u8],
     ) -> Poll<Result<usize, Error>> {
         self.owner.check(&self.node);
-        let waker = cx.waker().clone();
+        let waker = log::Waker::new(cx.waker().clone());
         let (poll, unused) = lock(&self.node.shared)
             .serial()
             .read(self.end, waker, buffer);
@@ -57,7 +58,7 @@ impl port::Driver for Port {
         bytes: &[u8],
     ) -> Poll<Result<usize, Error>> {
         self.owner.check(&self.node);
-        let waker = cx.waker().clone();
+        let waker = log::Waker::new(cx.waker().clone());
         let (poll, unused) = {
             let mut state = lock(&self.node.shared);
             let now = state.now();
