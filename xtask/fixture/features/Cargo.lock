@@ -10,10 +10,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "devonly"
+version = "0.0.0"
+dependencies = [
+ "helper",
+]
+
+[[package]]
+name = "helper"
+version = "0.0.0"
+dependencies = [
+ "own",
+]
+
+[[package]]
+name = "hidden"
+version = "0.0.0"
+dependencies = [
+ "own",
+]
+
+[[package]]
 name = "normal"
 version = "0.0.0"
 dependencies = [
  "own",
+]
+
+[[package]]
+name = "optional"
+version = "0.0.0"
+dependencies = [
+ "hidden",
 ]
 
 [[package]]

@@ -1,7 +1,7 @@
 //! Keeps each `sim` feature test-only: only a dev-dependency, the fuzz crate, or
 //! another `sim` feature turns it on (rule 10 in `docs/decisions/crate-map.md`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
@@ -12,22 +12,76 @@ const RULE: &str = "A `sim` feature is test-only: only a dev-dependency, the fuz
                     turns on `dep:sim` and `simulate` features. See rule 10 in \
                     docs/decisions/crate-map.md.";
 
-/// The problems where a local crate of `graph`, the resolved `cargo metadata` of a
-/// workspace, turns on a `sim` feature from a feature other than `sim` or from a
-/// dependency that is not a dev-dependency. A local crate is a member, also a tool or
-/// a benchmark, or a path crate outside the workspace: a build unifies the features
-/// of each. A field that is missing or of another shape is a problem too.
+/// The problems where a local crate of `graph`, the `cargo metadata` of a workspace
+/// resolved with all features on, turns on a `sim` feature from a feature other than
+/// `sim` or from a dependency that is not a dev-dependency. It checks each local crate
+/// that a walk from the members reaches along edges that are not only dev-dependencies:
+/// a member, also a tool or a benchmark, or a path crate outside the workspace. A
+/// field that is missing or of another shape is a problem too.
 pub(crate) fn check(graph: &Value) -> Vec<String> {
+    let reached = match built(graph) {
+        Ok(reached) => reached,
+        Err(e) => return vec![e],
+    };
     let packages = match field::list(graph, "packages") {
         Ok(packages) => packages,
         Err(e) => return vec![e],
     };
-    let local = packages
+    let mut problems = Vec::new();
+    for package in packages {
+        let found = local(package).and_then(|local| {
+            if local && reached.contains(field::text(package, "id")?) {
+                self::problems(package)
+            } else {
+                Ok(Vec::new())
+            }
+        });
+        problems.extend(found.unwrap_or_else(|e| vec![e]));
+    }
+    problems
+}
+
+/// The ids of the packages that a build of `graph` reaches: the members, and each
+/// package on an edge from a reached one that is not only a dev-dependency.
+fn built(graph: &Value) -> Result<BTreeSet<&str>, String> {
+    let mut deps = BTreeMap::new();
+    for node in field::list(&graph["resolve"], "nodes")? {
+        deps.insert(field::text(node, "id")?, field::list(node, "deps")?);
+    }
+    let mut reached = BTreeSet::new();
+    let mut next: Vec<&str> = field::list(graph, "workspace_members")?
         .iter()
-        .filter(|package| package["source"].is_null());
-    local
-        .flat_map(|package| problems(package).unwrap_or_else(|e| vec![e]))
-        .collect()
+        .map(|member| {
+            member
+                .as_str()
+                .ok_or("JSON has a member that is not a string")
+        })
+        .collect::<Result<_, _>>()?;
+    while let Some(id) = next.pop() {
+        if !reached.insert(id) {
+            continue;
+        }
+        for dep in deps.get(id).copied().unwrap_or_default() {
+            let mut kinds = field::list(dep, "dep_kinds")?.iter();
+            if kinds.any(|kind| kind["kind"] != "dev") {
+                next.push(field::text(dep, "pkg")?);
+            }
+        }
+    }
+    Ok(reached)
+}
+
+/// Whether `package` is a local crate: its `source` is null, where a registry or git
+/// crate has a string.
+fn local(package: &Value) -> Result<bool, String> {
+    match &package["source"] {
+        Value::Null => Ok(true),
+        Value::String(_) => Ok(false),
+        _ => Err(format!(
+            "`{}`: JSON field `source` is neither null nor a string",
+            package["name"].as_str().unwrap_or("?")
+        )),
+    }
 }
 
 /// The problems of one package of `cargo metadata`, as [`check`] states.
@@ -118,6 +172,25 @@ mod tests {
     }
 
     #[test]
+    fn rejects_sim_from_a_crate_that_only_a_feature_brings_in() {
+        assert_eq!(
+            of("hidden"),
+            [
+                "`hidden` turns on the `sim` feature of its dependency `own`. Move it \
+                 to the dev-dependencies. A `sim` feature is test-only: only a \
+                 dev-dependency, the fuzz crate, or another `sim` feature turns it \
+                 on. A product feature turns on `dep:sim` and `simulate` features. \
+                 See rule 10 in docs/decisions/crate-map.md."
+            ]
+        );
+    }
+
+    #[test]
+    fn accepts_sim_from_a_crate_that_only_a_dev_dependency_reaches() {
+        assert_eq!(of("helper"), Vec::<String>::new());
+    }
+
+    #[test]
     fn names_a_field_that_is_missing_or_of_another_shape() {
         for (package, error) in [
             (json!({}), "JSON has no string field `name`"),
@@ -149,16 +222,28 @@ mod tests {
 
     #[test]
     fn checks_only_local_crates_and_names_a_malformed_graph() {
-        assert_eq!(check(&json!({})), ["JSON has no array field `packages`"]);
+        assert_eq!(check(&json!({})), ["JSON has no array field `nodes`"]);
         let registry = json!({
             "name": "a",
             "source": "registry+https://github.com/rust-lang/crates.io-index",
             "features": { "default": ["sim"] },
             "dependencies": [],
         });
+        let member = json!({ "id": "a", "name": "a", "source": 1 });
+        let graph = |packages: Value| {
+            json!({
+                "workspace_members": ["a"],
+                "resolve": { "nodes": [{ "id": "a", "deps": [] }] },
+                "packages": packages,
+            })
+        };
         assert_eq!(
-            check(&json!({ "packages": [registry, {}] })),
+            check(&graph(json!([registry, { "id": "a" }]))),
             ["JSON has no string field `name`"]
+        );
+        assert_eq!(
+            check(&graph(json!([member]))),
+            ["`a`: JSON field `source` is neither null nor a string"]
         );
     }
 }

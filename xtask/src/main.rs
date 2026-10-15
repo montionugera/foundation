@@ -148,10 +148,10 @@ fn metadata(root: &Path) -> Result<Value, String> {
     metadata_with(root, &["--no-deps"])
 }
 
-/// The resolved dependency graph of the workspace at `dir`. It fails when the lock of
-/// the workspace is stale.
+/// The dependency graph of the workspace at `dir`, resolved with all features on. It
+/// fails when the lock of the workspace is stale.
 fn graph(dir: &Path) -> Result<Value, String> {
-    metadata_with(dir, &["--locked"])
+    metadata_with(dir, &["--locked", "--all-features"])
 }
 
 /// Runs `cargo metadata` with `flags` on the workspace at `dir`.
