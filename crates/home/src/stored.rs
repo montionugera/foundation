@@ -6,7 +6,7 @@ use std::sync::Arc;
 use block::Block;
 use buffer::{Entry, Stored};
 use types::channel;
-use types::frame::key_set::KeySet;
+use types::frame::key_set::{self, KeySet};
 use types::frame::{self, Form, Frame, Layout, Path};
 use types::hash;
 use types::sample::{Scalar, Sides, Type};
@@ -158,15 +158,13 @@ pub(crate) fn read(body: &[u8]) -> impl Iterator<Item = Series<'_>> {
 /// Makes the frames of stored data entries again, of the key set that the caller
 /// gives. It keeps the map of each key set it was given and of the channels of the
 /// last entry, so a run of entries of one key set and one list of channels maps each
-/// series once.
+/// series once. Each key set given to one decoder comes from one interner.
 #[derive(Debug, Default)]
 pub(crate) struct Decoder {
     /// The key set of the last frame.
-    set: Option<Arc<KeySet>>,
-    /// Each key set given so far, by its address, with the entry of each channel and
-    /// type in it. The interner keeps each key set for the life of the node, so this
-    /// grows no faster.
-    entry_of: hash::Map<usize, (Arc<KeySet>, EntryOf)>,
+    set: Option<key_set::Key>,
+    /// The entry of each channel and type in each key set given so far.
+    entry_of: hash::Map<key_set::Key, EntryOf>,
     /// The channel and type of each series of the last entry, in entry order.
     channels: Vec<(channel::Key, Type)>,
     /// The entry in `set` and the position in `channels` of each series that `set`
@@ -231,24 +229,19 @@ impl Decoder {
     }
 
     /// Maps the series of `body`, the body of an entry, to the entries of `set`.
-    fn map(&mut self, set: &Arc<KeySet>, body: &[u8]) {
+    fn map(&mut self, set: &KeySet, body: &[u8]) {
         let channels = || read(body).map(|series| (series.channel, series.data_type));
-        match &self.set {
-            Some(last) if Arc::ptr_eq(last, set) => {
-                if channels().eq(self.channels.iter().copied()) {
-                    return;
-                }
-            }
-            _ => self.set = Some(Arc::clone(set)),
+        let key = set.key();
+        if self.set == Some(key) && channels().eq(self.channels.iter().copied()) {
+            return;
         }
-        let (_, entry_of) = self
-            .entry_of
-            .entry(Arc::as_ptr(set).addr())
-            .or_insert_with(|| {
-                let entries = set.entries().iter().enumerate();
-                let of = entries.map(|(at, entry)| ((entry.key, entry.data_type), at));
-                (Arc::clone(set), of.collect())
-            });
+        self.set = Some(key);
+        let entry_of = self.entry_of.entry(key).or_insert_with(|| {
+            let entries = set.entries().iter().enumerate();
+            entries
+                .map(|(at, entry)| ((entry.key, entry.data_type), at))
+                .collect()
+        });
         self.channels.clear();
         self.channels.extend(channels());
         self.kept.clear();

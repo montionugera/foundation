@@ -11,7 +11,7 @@ use std::sync::Arc;
 use common::MIXED;
 use divan::Bencher;
 use divan::counter::ItemsCount;
-use types::frame::key_set::KeySet;
+use types::frame::key_set::{Interner, KeySet};
 use types::frame::{Draft, Form, Frame, Path};
 use types::sample::{Scalar, Type};
 use types::time::Stamp;
@@ -147,15 +147,18 @@ fn frame(bencher: Bencher<'_, '_>, case: &Case) {
         });
 }
 
-/// As `frame`, with each frame made of the other of two key sets, as when two
-/// sessions on one shard read from disk in turn.
+/// As `frame`, with each frame made of the other of two key sets of one interner, as
+/// when two sessions on one shard read from disk in turn. The second set has one more
+/// data channel, which the frame does not hold.
 #[divan::bench(args = cases(), sample_count = 1000)]
 fn frame_alternating(bencher: Bencher<'_, '_>, case: &Case) {
     let pool = block::Pool::heap(POOL);
     let frame = case.frame(&pool);
     let stored = home::bench::stored(&pool, &frame, &case.set).expect("room");
-    let other = common::set(case.series, case.types);
-    let sets = [&case.set, &other];
+    let mut interner = Interner::new();
+    let one = common::intern(&mut interner, case.series, case.types);
+    let other = common::intern(&mut interner, case.series + 1, case.types);
+    let sets = [&one, &other];
     let mut decoder = home::bench::Decoder::default();
     let mut turn = 0;
     bencher

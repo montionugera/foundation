@@ -62,7 +62,8 @@ pub struct Decoder(stored::Decoder);
 impl Decoder {
     /// The live frame of key set `set` that `stored` holds, an entry of the index of
     /// the one group of `set`. It drops each series whose channel and type `set` does
-    /// not hold. `None` when `stored` is not a data entry with samples.
+    /// not hold. `None` when `stored` is not a data entry with samples. Each `set`
+    /// given to one decoder comes from one interner.
     ///
     /// # Errors
     ///
