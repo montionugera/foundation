@@ -263,6 +263,11 @@ impl Lab {
                     .expect("lab failure: a node name is a name"),
                 settings: node::Settings::default(),
                 vars: BTreeMap::new(),
+                log: node::Log {
+                    writer: Box::new(std::io::sink()),
+                    json: false,
+                    level: tracing::Level::INFO,
+                },
             });
             member.node = Some(node);
         }

@@ -17,6 +17,7 @@ mod directory;
 pub mod fuzz;
 mod handoff;
 mod identity;
+mod log;
 mod name;
 mod root;
 mod route;
@@ -53,6 +54,7 @@ use types::time::{Span, Stamp};
 
 pub use crate::budget::{Budget, budget};
 use crate::handoff::{Give, Take};
+pub use crate::log::Log;
 pub use crate::settings::Settings;
 use crate::stop::{Guard, Stop};
 
@@ -106,6 +108,9 @@ pub struct Config<M> {
     /// The environment of the node process, which `env()` in a config reads. Main
     /// gives `std::env::vars_os()`.
     pub vars: BTreeMap<OsString, OsString>,
+    /// Where and how the node writes its log. Each shard writes the events of its
+    /// thread there, and [`Node::join`] the event `stopped`.
+    pub log: Log,
 }
 
 impl<M> fmt::Debug for Config<M> {
@@ -120,6 +125,7 @@ impl<M> fmt::Debug for Config<M> {
             .field("region", &self.region)
             .field("name", &self.name)
             .field("settings", &self.settings)
+            .field("log", &self.log)
             .finish_non_exhaustive()
     }
 }
@@ -162,6 +168,8 @@ pub struct Node {
     queue: task::Queue<task::Task>,
     /// The node has a region, so shard 0 has an `ops::Node`.
     regional: bool,
+    /// Where the node writes its log.
+    log: tracing::Dispatch,
 }
 
 /// A started shard, with its error once it fails.
@@ -229,18 +237,17 @@ impl Node {
     #[must_use = "a dropped Node leaves its shards running"]
     pub fn start<M: block::Memory + 'static>(config: Config<M>) -> Self {
         let cores = config.shards.cores().get();
-        let regional = !matches!(config.region, Region::Absent);
         if config.name.reserved() {
-            let name = config.name;
-            return Self::failed(Error::Reserved { name }, regional);
+            let name = config.name.clone();
+            return Self::failed(Error::Reserved { name }, config);
         }
         if config.name.as_str().len() > name::MAX_BYTES {
-            let name = config.name;
-            return Self::failed(Error::Long { name }, regional);
+            let name = config.name.clone();
+            return Self::failed(Error::Long { name }, config);
         }
         if unreachable(config.listen.ip()) {
             let listen = config.listen;
-            return Self::failed(Error::Listen { listen }, regional);
+            return Self::failed(Error::Listen { listen }, config);
         }
         let parts = match parts(config.budget.pool, config.budget.disk, cores) {
             Ok(parts) => parts,
@@ -254,7 +261,7 @@ impl Node {
                     cores,
                     min,
                 };
-                return Self::failed(error, regional);
+                return Self::failed(error, config);
             }
         };
         let Ok(count) = u32::try_from(cores) else {
@@ -266,28 +273,31 @@ impl Node {
             .collect::<Result<Vec<_>, block::Unfit>>();
         let Ok(parts) = parts else {
             let pool = config.budget.pool;
-            return Self::failed(Error::Pool { pool, cores }, regional);
+            return Self::failed(Error::Pool { pool, cores }, config);
         };
-        Self::launch(config, regional, parts.into_iter().zip(0..count))
+        Self::launch(config, parts.into_iter().zip(0..count))
     }
 
-    /// A node that failed with `error` before any shard started. `regional` is whether
-    /// its config has a region.
-    fn failed(error: Error, regional: bool) -> Self {
+    /// A node of `config` that failed with `error` before any shard started.
+    fn failed<M>(error: Error, config: Config<M>) -> Self {
+        let (_, mesh) = clock::Clock::new(config.clock);
         Self {
             stop: Stop::default(),
             shards: Vec::new(),
             failed: Some(error),
             queue: task::pair().0,
-            regional,
+            regional: !matches!(config.region, Region::Absent),
+            log: log::dispatch(config.log, config.wall, mesh),
         }
     }
 
     /// Starts the shards of `config`, each with its part and its number in `parts`.
-    /// `regional` is whether `config` has a region.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the start of each shard, whose parts each come from the one before"
+    )]
     fn launch<M: block::Memory + 'static>(
         config: Config<M>,
-        regional: bool,
         parts: impl Iterator<Item = ((block::Config, buffer::Layout), u32)>,
     ) -> Self {
         let bind = Bind::new(&config);
@@ -298,6 +308,7 @@ impl Node {
             mut memory,
             mut files,
             entropy,
+            log,
             ..
         } = config;
         let stop = Stop::default();
@@ -305,12 +316,16 @@ impl Node {
         let handoff::Chain { first, last, links } = handoff::chain(cores);
         let (queue, inbox) = task::pair();
         let (mesh, clock) = clock::Clock::new(monotonic.clone());
+        let log = log::dispatch(log, wall.clone(), clock.clone());
+        let shards = shards.logged(log.clone());
         let serve = Serve {
             interner: last,
             budget: config.budget,
             inbox,
             time: clock.clone(),
             vars: Arc::new(config.vars),
+            name: config.name.clone(),
+            shards: cores,
         };
         let roles = Role::all(mesh, wall, first, bind, serve, config.name, cores);
         let mut started = Vec::new();
@@ -359,7 +374,8 @@ impl Node {
             shards: started,
             failed: error,
             queue,
-            regional,
+            regional: !matches!(config.region, Region::Absent),
+            log,
         }
     }
 
@@ -418,7 +434,8 @@ impl Node {
         Stopper(self.stop.clone())
     }
 
-    /// Blocks until every shard has ended. Call it on a thread that `env` did not
+    /// Blocks until every shard has ended, then writes the event `stopped` to the log:
+    /// INFO, or ERROR with the field `error`. Call it on a thread that `env` did not
     /// start. Under `sim`, run the sim to its end first.
     ///
     /// # Errors
@@ -453,7 +470,12 @@ impl Node {
             let joined = shard.handle.join();
             (joined, shard.failed.get().cloned())
         });
-        error(self.failed, shards.collect())
+        let joined = error(self.failed, shards.collect());
+        tracing::dispatcher::with_default(&self.log, || match &joined {
+            Ok(()) => tracing::info!("stopped"),
+            Err(error) => tracing::error!(%error, "stopped"),
+        });
+        joined
     }
 }
 
@@ -824,6 +846,9 @@ struct Serve {
     time: clock::Reader,
     /// The environment of the node process, which the node's connectors read.
     vars: Arc<BTreeMap<OsString, OsString>>,
+    /// The node's name and shard count, for the event `started`.
+    name: types::name::Name,
+    shards: usize,
 }
 
 /// What shard 0 binds the node's port with, once it claimed the data directory.
@@ -1107,7 +1132,8 @@ impl Serve {
         let (key, entropy) = (identity.key, endpoint.entropy.clone());
         let (clock, net) = (endpoint.clock.clone(), endpoint.net.clone());
         let address = endpoint.address(&identity);
-        let (settings, vars) = (endpoint.settings, self.vars);
+        let (settings, vars, name) = (endpoint.settings, self.vars, self.name);
+        let shards = self.shards;
         let opened =
             endpoint.open(identity, files.clone(), pool, &self.time, tasks.clone());
         let Ok((transport, mesh)) = opened.await.map_err(&fail) else {
@@ -1127,6 +1153,8 @@ impl Serve {
             let secrets =
                 secret::Resolver::new(vars, files.clone(), &directory::secrets());
             let serve = pin!(async move {
+                // `hold` polls `serve` only once the file `address` holds the address.
+                tracing::info!(%name, address = %address.bound, shards, "started");
                 let region = mesh.clone().map(|mesh| hub::Region {
                     mesh,
                     transport: Rc::clone(&transport),

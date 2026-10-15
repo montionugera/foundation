@@ -34,7 +34,10 @@ mesh = { path = "../mesh" }
 ops = { path = "../ops" }
 os = { path = "../os" }
 secret = { path = "../secret" }
+serde_json = { workspace = true }
 spec = { path = "../spec" }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 transport = { path = "../transport" }
 types = { path = "../types" }
 wire = { path = "../wire" }
@@ -54,7 +57,6 @@ hub = { path = "../hub", features = ["sim"] }
 node = { path = ".", features = ["sim"] }
 proptest = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 sim = { path = "../sim" }
 
 [[test]]
