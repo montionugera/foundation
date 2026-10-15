@@ -10,8 +10,9 @@
 //!
 //! The CRC covers `len`, `kind`, and the body, and it continues from the CRC of the
 //! record before: the chain. The writer starts a chain from a random value each
-//! time it opens the ring. Bytes from an earlier chain, at a record start or inside
-//! a body, then never read as the next record.
+//! time it opens the ring. Old bytes where the next record starts then read as that
+//! record only when they hold a record sealed with the chain value there, also from
+//! inside an old body: one chance in 2^32 for bytes that do not depend on that value.
 
 #![deny(
     clippy::indexing_slicing,
@@ -44,6 +45,8 @@ pub(crate) enum Kind {
     Wrap,
     /// The chain continues from the value in the body.
     Restart,
+    /// The tails of paths whose holder a later trim passes.
+    Carry,
 }
 
 impl Kind {
@@ -53,6 +56,7 @@ impl Kind {
             Self::Data => 1,
             Self::Wrap => 2,
             Self::Restart => 3,
+            Self::Carry => 4,
         }
     }
 
@@ -62,6 +66,7 @@ impl Kind {
             1 => Some(Self::Data),
             2 => Some(Self::Wrap),
             3 => Some(Self::Restart),
+            4 => Some(Self::Carry),
             _ => None,
         }
     }
@@ -243,7 +248,7 @@ mod tests {
     }
 
     fn kind() -> impl Strategy<Value = Kind> {
-        prop::sample::select(vec![Kind::Data, Kind::Wrap, Kind::Restart])
+        prop::sample::select(vec![Kind::Data, Kind::Wrap, Kind::Restart, Kind::Carry])
     }
 
     fn parts() -> impl Strategy<Value = Vec<Vec<u8>>> {
@@ -258,8 +263,13 @@ mod tests {
         use super::*;
 
         #[test]
-        fn decodes_only_the_bytes_of_the_three_kinds() {
-            let known = [(1, Kind::Data), (2, Kind::Wrap), (3, Kind::Restart)];
+        fn decodes_only_the_bytes_of_the_four_kinds() {
+            let known = [
+                (1, Kind::Data),
+                (2, Kind::Wrap),
+                (3, Kind::Restart),
+                (4, Kind::Carry),
+            ];
             for byte in 0..=u8::MAX {
                 let kind = known.iter().find(|(known, _)| *known == byte);
                 assert_eq!(Kind::decode(byte), kind.map(|(_, kind)| *kind));

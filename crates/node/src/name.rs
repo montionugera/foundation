@@ -14,10 +14,13 @@ use mesh::region::Founding;
 use types::name::Name;
 
 use crate::sector::{self, Held};
-use crate::{Error, directory, identity};
+use crate::{Error, directory, identity, status};
 
 /// The name of the file.
 pub(crate) const FILE: &str = "name";
+/// The most bytes of a node's name, so `<name>.<status>` fits a name for each name of
+/// the status table.
+pub(crate) const MAX_BYTES: usize = Name::MAX_BYTES - 1 - status::MAX_BYTES;
 /// The first bytes of the file; a new form gets a new tag.
 const TAG: &[u8; 17] = b"foundation/name/1";
 /// The length of the tag, the length of the name, and the name with its padding.

@@ -9,8 +9,10 @@ publish.workspace = true
 sim = []
 
 [dependencies]
+zeroize = { workspace = true }
 
 [dev-dependencies]
+counting = { path = "../counting" }
 divan = { workspace = true }
 proptest = { workspace = true }
 
@@ -23,6 +25,10 @@ harness = false
 
 [[test]]
 name = "alloc"
+harness = false
+
+[[test]]
+name = "erase"
 harness = false
 
 [lints]

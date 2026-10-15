@@ -48,6 +48,8 @@ pub(crate) fn start_node<D: Driver + Send + 'static>(
         listen,
         region,
         name: "edge".parse().expect("a name"),
+        settings: node::Settings::default(),
+        vars: std::collections::BTreeMap::new(),
     })
 }
 

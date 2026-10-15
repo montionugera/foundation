@@ -70,6 +70,10 @@ impl Driver for Held {
         self.disk.open(path, mode)
     }
 
+    fn open_absolute<'a>(&'a self, path: &'a Path) -> Request<'a, Box<dyn Descriptor>> {
+        self.disk.open_absolute(path)
+    }
+
     fn list<'a>(&'a self, dir: &'a Path) -> Request<'a, Vec<PathBuf>> {
         Box::pin(async move {
             if dir == Path::new("mesh") {
@@ -96,5 +100,9 @@ impl Driver for Held {
 
     fn free(&self) -> Request<'_, u64> {
         self.disk.free()
+    }
+
+    fn shown(&self, path: &Path) -> PathBuf {
+        self.disk.shown(path)
     }
 }

@@ -17,6 +17,7 @@ env = { path = "../env" }
 getrandom = { workspace = true }
 rustix = { workspace = true, features = ["fs", "net"] }
 tokio = { workspace = true, features = ["net", "rt", "sync", "time"] }
+tracing = { workspace = true }
 types = { path = "../types" }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
@@ -53,6 +54,10 @@ harness = false
 name = "root"
 path = "tests/root/main.rs"
 test = false
+
+[[bench]]
+name = "files"
+harness = false
 
 [[bench]]
 name = "net"

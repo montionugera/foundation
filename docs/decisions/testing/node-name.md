@@ -13,10 +13,11 @@
   A name with a segment that starts with `@` is reserved, and a region refuses it in a
   card. So `Node::start` stops with `Error::Reserved { name }` before the claim, also
   with `Region::Absent`: it starts no shard, and the data directory keeps no name that
-  its founding refuses (the CLI code is `node.reserved`). `node` checks only
-  `Name::reserved`, the one test of `mesh::region::fits` that the card of a root
-  founding can fail. Trigger: a join by ticket (#1157), where `fits` also refuses a name
-  outside the region, makes `mesh` give one check of a card name against a region, which
+  its founding refuses (the CLI code is `node.reserved`). `node` checks `Name::reserved`
+  and the length of the name (the amendment below), the two tests of
+  `mesh::region::fits` that the card and the status of a root founding can fail.
+  Trigger: a join by ticket (#1157), where `fits` also refuses a name outside the
+  region, makes `mesh` give one check of a card name against a region, which
   `fits` calls and `node` calls before the claim. No release kept a reserved name. Only
   a build of `main` before this check could, and a start of its data directory with
   another name gives `node.renamed`, whose second fix, another data directory, is the
@@ -30,9 +31,10 @@
   https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104132104); approved
   by `laptop.architect` at `172d1b6e0` (2026-10-11T01:22:34Z,
   https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104154087). The one
-  test, the trigger, the way out of a kept reserved name, the reason of the write after
-  the region opens, and the lost write over a kept reserved name: proposed in rounds 2
-  to 4 of #2331 (round 2: 2026-10-11T01:39:35Z,
+  test (superseded by the amendment of #728 below), the trigger, the way out of a kept
+  reserved name, the reason of the write after the region opens, and the lost write over
+  a kept reserved name: proposed in rounds 2 to 4 of #2331 (round 2:
+  2026-10-11T01:39:35Z,
   https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104275190; round 3:
   2026-10-11T01:57:16Z,
   https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104399766; round 4:
@@ -200,3 +202,20 @@
   https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6088435494;
   2026-10-09T20:42:29Z, a file `name` with the same name,
   https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6088917341.
+  Amended (2026-10-12, #728, by `laptop.architect-2`, 2026-10-12T16:02:04Z):
+  https://github.com/synnaxlabs/foundation/issues/728#issuecomment-6127912135. A node's
+  name is at most 191 bytes. A status channel `<name>.<status>` must fit a name of 255
+  bytes (MEMBER RECORD), and each name of `node::status::TABLE` is at most 63 bytes,
+  which a constant assertion checks. So `Node::start` stops with `Error::Long { name }`
+  before the claim, also with `Region::Absent`, as for a reserved name (the CLI code is
+  `node.long`). The limit does not move when a release adds a status channel, and a
+  founding that `node` builds does not fail the length test of `mesh::region::fits`. No
+  release kept a longer name. Lost: the refusal by the region after the claim
+  (`mesh::region::Unfit::Long`), which keeps a name that the founding refuses at each
+  start, and a start with a shorter name gives `node.renamed`; a limit of 255 bytes less
+  the longest name of the table, which moves with the table, so a release with a longer
+  status name stops a node that ran; a check that `mesh` gives and `node` calls before
+  the claim (the trigger above), which is an interface change of `mesh` and gives that
+  same limit. Supersedes "`node` checks only `Name::reserved`, the one test of
+  `mesh::region::fits` that the card of a root founding can fail" of
+  https://github.com/synnaxlabs/foundation/pull/2331#issuecomment-6104734826.
