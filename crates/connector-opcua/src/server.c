@@ -116,6 +116,11 @@ void shim_server_limits(UA_Server *server, UA_UInt32 buffer, UA_UInt32 message,
     config->tcpMaxChunks = chunks;
 }
 
+/* Sets the MaxNodesPerRead of `server`, 0 for none. */
+void shim_server_reads(UA_Server *server, UA_UInt32 most) {
+    UA_Server_getConfig(server)->maxNodesPerRead = most;
+}
+
 /* Sets the receive buffer size that `client` gives in its next HEL. */
 void shim_client_receive(UA_Client *client, UA_UInt32 size) {
     UA_Client_getConfig(client)->localConnectionConfig.recvBufferSize = size;
@@ -125,8 +130,9 @@ void shim_client_receive(UA_Client *client, UA_UInt32 size) {
  * the context that Rust holds. */
 typedef struct shim_source shim_source;
 struct shim_source {
-    /* Gives the value and the status of a read of the variable. */
-    void (*read)(shim_source *source, UA_Double *value, UA_StatusCode *status);
+    /* Gives the value, its kind, and the status of a read of the variable. */
+    void (*read)(shim_source *source, shim_scalar *value, UA_UInt16 *kind,
+                 UA_StatusCode *status);
 };
 
 static UA_StatusCode shim_source_read(UA_Server *server, const UA_NodeId *sessionId,
@@ -144,20 +150,22 @@ static UA_StatusCode shim_source_read(UA_Server *server, const UA_NodeId *sessio
     (void)range;
     value->hasStatus = true;
     shim_source *source = nodeContext;
-    UA_Double read;
-    source->read(source, &read, &value->status);
+    shim_scalar read;
+    UA_UInt16 kind;
+    source->read(source, &read, &kind, &value->status);
     UA_StatusCode status =
-        UA_Variant_setScalarCopy(&value->value, &read, &UA_TYPES[UA_TYPES_DOUBLE]);
+        UA_Variant_setScalarCopy(&value->value, &read, &UA_TYPES[kind]);
     value->hasValue = status == UA_STATUSCODE_GOOD;
     return status;
 }
 
-/* Adds to `server` the Double variable `node` under the Objects folder, whose reads
- * `source` answers. `source` lives until the server is deleted. */
+/* Adds to `server` the scalar variable `node` of the DataType BaseDataType under the
+ * Objects folder, whose reads `source` answers. `source` lives until the server is
+ * deleted. */
 UA_StatusCode shim_server_add_source(UA_Server *server, shim_node node,
                                      shim_source *source) {
     UA_VariableAttributes attributes = UA_VariableAttributes_default;
-    attributes.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
+    attributes.dataType = UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATATYPE);
     attributes.valueRank = UA_VALUERANK_SCALAR;
     attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
     UA_CallbackValueSource callbacks = {.read = shim_source_read, .write = NULL};
@@ -168,4 +176,20 @@ UA_StatusCode shim_server_add_source(UA_Server *server, shim_node node,
         UA_QUALIFIEDNAME(node.namespace, "source"),
         UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, callbacks,
         source, NULL);
+}
+
+/* Gives in `id` the number of the DataType of the variable `node` of `server`.
+ * Returns `UA_STATUSCODE_BADTYPEMISMATCH` when the DataType is not a number of
+ * namespace 0. */
+UA_StatusCode shim_server_data_type(UA_Server *server, shim_node node, UA_UInt32 *id) {
+    UA_NodeId type;
+    UA_StatusCode status = UA_Server_readDataType(server, shim_node_id(node), &type);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    if(type.namespaceIndex != 0 || type.identifierType != UA_NODEIDTYPE_NUMERIC)
+        status = UA_STATUSCODE_BADTYPEMISMATCH;
+    else
+        *id = type.identifier.numeric;
+    UA_NodeId_clear(&type);
+    return status;
 }

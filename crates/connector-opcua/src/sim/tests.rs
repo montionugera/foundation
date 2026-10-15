@@ -116,6 +116,79 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
 }
 
 #[test]
+fn a_server_answers_a_value_of_each_type_and_records_only_a_double() {
+    let mut sim = Sim::new(::sim::Config::default());
+    let node = sim.node(node::Config::default());
+    sim.run_on(&node, move |node, _| async move {
+        let listener = listen(&node);
+        let url =
+            CString::new(format!("opc.tcp://{}", listener.local())).expect("no NUL");
+        let mut rng = node.entropy().rng();
+        let values = [
+            Value::Bool(true),
+            Value::I8(-8),
+            Value::U8(8),
+            Value::I16(-16),
+            Value::U16(16),
+            Value::I32(-32),
+            Value::U32(32),
+            Value::I64(-64),
+            Value::U64(64),
+            Value::F32(0.5),
+            Value::F64(0.25),
+        ];
+        let texts: Vec<String> =
+            (1..=values.len()).map(|i| format!("ns=2;i={i}")).collect();
+        let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let variables = Variables::new(&texts);
+        for (text, value) in texts.iter().zip(values) {
+            variables.set(text, value);
+        }
+        variables.change(Quality::GOOD);
+        let mut reads = Vec::new();
+        let until = async {
+            let mut client = (Client::connect(
+                event::Time::monotonic(node.clock()),
+                node.net(),
+                &mut rng,
+                &url,
+            ))
+            .await
+            .expect("connect");
+            for text in &texts {
+                let node = text.parse::<Node>().expect("a node");
+                reads.push(client.read_one(&node).await);
+            }
+            client.close().await;
+        };
+        let mut served = node.entropy().rng();
+        serve(
+            node.clock(),
+            event::Time::monotonic(node.clock()).wall,
+            node.net(),
+            listener,
+            &mut served,
+            &variables,
+            until,
+        )
+        .await;
+        let mut expected = values.map(Ok);
+        expected[10] = Ok(Value::F64(1.25));
+        assert_eq!(reads, expected);
+        let record = variables.served();
+        for text in &texts[..10] {
+            assert_eq!(record[*text], [], "{text}");
+        }
+        let doubles: Vec<_> = record[texts[10]]
+            .iter()
+            .map(|served| served.value)
+            .collect();
+        assert_eq!(doubles, [1.25]);
+    })
+    .expect("the run ends");
+}
+
+#[test]
 fn a_server_has_room_for_4_sessions() {
     let mut sim = Sim::new(::sim::Config::default());
     let node = sim.node(node::Config::default());

@@ -97,9 +97,56 @@ fn reads_the_address_and_the_reader() {
         address: "http://influx:8086".parse().expect("a URI"),
         target: Target::Database("plant".into()),
         measurement: "telemetry".into(),
+        token: None,
         reader: reader::read(&config, &KEYS, &[]).expect("the reader settings"),
     };
     assert_eq!(Kind.parse(&config), Ok(expected));
+}
+
+/// A call of `function` with the string `argument`.
+fn call(function: &str, argument: &str) -> Value {
+    Value::Call(document::value::Call {
+        function: function.into(),
+        function_span: at(61),
+        arguments: vec![document::value::Value {
+            kind: string(argument),
+            span: at(62),
+        }],
+    })
+}
+
+#[test]
+fn reads_the_source_of_a_token() {
+    for (value, source) in [
+        (
+            call("env", "INFLUX_TOKEN"),
+            secret::Source::Env("INFLUX_TOKEN".into()),
+        ),
+        (
+            call("secret", "plant.influx_token"),
+            secret::Source::Secret("plant.influx_token".parse().expect("a name")),
+        ),
+    ] {
+        let config = plus(influx(), &[(60, "token", value)]);
+        assert_eq!(
+            Kind.parse(&config).map(|config| config.token),
+            Ok(Some(source))
+        );
+    }
+}
+
+#[test]
+fn refuses_a_token_that_is_not_a_source() {
+    let config = plus(influx(), &[(60, "token", string("my-t0ken"))]);
+    assert_eq!(
+        Kind.parse(&config),
+        Err(vec![refused(
+            "secret.source",
+            61,
+            "a secret takes where its value comes from, never the value",
+            "Write `env(\"NAME\")`, `file(\"/absolute/path\")`, or `secret(\"name\")`",
+        )])
+    );
 }
 
 #[test]
@@ -448,23 +495,7 @@ fn refuses_a_config_with_no_address_or_select() {
 
 #[test]
 fn refuses_each_key_it_does_not_take() {
-    let mut config = config(string("http://influx:8086"));
-    config.attributes = Map::new(
-        config
-            .attributes
-            .iter()
-            .cloned()
-            .chain([Attribute {
-                key: "token".into(),
-                key_span: at(60),
-                value: document::value::Value {
-                    kind: string("site"),
-                    span: at(61),
-                },
-            }])
-            .collect(),
-    )
-    .expect("unique keys");
+    let mut config = plus(influx(), &[(60, "user", string("site"))]);
     config.blocks.push(block(70, "tls", &[]));
     assert_eq!(
         Kind.parse(&config),
@@ -472,9 +503,9 @@ fn refuses_each_key_it_does_not_take() {
             refused(
                 "document.unknown-attribute",
                 60,
-                "`token` is not an attribute of the connector",
-                "Use `select`, `address`, `database`, `bucket`, `org`, or \
-                 `measurement`, or remove it",
+                "`user` is not an attribute of the connector",
+                "Use `select`, `address`, `database`, `bucket`, `org`, `measurement`, \
+                 or `token`, or remove it",
             ),
             refused(
                 "document.unknown-block",

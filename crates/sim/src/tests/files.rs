@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
 
 use block::{Block, Pool};
-use env::files::{Error, File, Mode, Operation};
+use env::files::{Absolute, Error, File, Mode, Operation};
 use env::tasks::Tasks;
 use env::thread::Handle;
 use types::time::{Monotonic, Span};
@@ -21,6 +21,11 @@ use crate::node;
 
 pub(super) const KIB: u64 = 1 << 10;
 pub(super) const MIB: u64 = 1 << 20;
+
+/// `path` as the absolute path that `open_absolute` takes.
+fn absolute(path: &Path) -> Absolute {
+    Absolute::new(path.to_str().unwrap()).unwrap()
+}
 
 /// Runs `body` on a shard of a node with a disk of `disk_bytes`, and returns what it
 /// gives.
@@ -48,9 +53,7 @@ pub(super) fn pool() -> Pool {
 }
 
 pub(super) fn block(pool: &Pool, bytes: &[u8]) -> Block {
-    let mut unique = pool.alloc(bytes.len()).unwrap();
-    unique.copy_from_slice(bytes);
-    unique.freeze()
+    pool.copy(bytes).unwrap()
 }
 
 /// The `len` bytes of `file` at `offset`.
@@ -107,6 +110,203 @@ fn a_read_after_a_write_ends_sees_it_and_a_new_file_reads_zeros() {
     expected[100..1_100].copy_from_slice(&bytes);
     assert_eq!(whole, expected);
     assert_eq!(reopened, bytes);
+}
+
+#[test]
+fn open_absolute_reads_the_host_file_at_once_and_keeps_its_bytes() {
+    let (bytes, span, later) = run(0, MIB, |node, _| async move {
+        let (paths, path) = (node.paths(), Path::new("/run/secrets/token"));
+        paths.write(path, b"abc").unwrap();
+        let start = node.clock().now();
+        let file = node.files().open_absolute(&absolute(path)).await.unwrap();
+        let span = node.clock().now() - start;
+        paths.write(path, b"xyz").unwrap();
+        let (pool, len) = (pool(), usize::try_from(file.len()).unwrap());
+        let bytes = read(&file, &pool, 0, len).await;
+        let later = read(&file, &pool, 1, 2).await;
+        file.sync().await.unwrap();
+        file.close().await;
+        (bytes, span, later)
+    });
+    assert_eq!((bytes, later), (b"abc".to_vec(), b"bc".to_vec()));
+    assert!(
+        span <= Span::from_nanos(100 * Span::MICROSECOND.nanos()),
+        "{span:?}"
+    );
+}
+
+#[test]
+fn open_absolute_and_its_reads_take_the_time_of_a_call_and_take_faults() {
+    let (spans, found) = run(0, MIB, |node, _| async move {
+        let (files, clock, pool) = (node.files(), node.clock(), pool());
+        let path = Path::new("/run/secrets/a");
+        node.paths().write(path, b"abc").unwrap();
+        let mut spans = Vec::new();
+        for _ in 0..16 {
+            let start = clock.now();
+            let file = files.open_absolute(&absolute(path)).await.unwrap();
+            spans.push(clock.now() - start);
+            let start = clock.now();
+            read(&file, &pool, 0, 3).await;
+            spans.push(clock.now() - start);
+        }
+        node.fail_file(path, Operation::Open);
+        let opened = files
+            .open_absolute(&absolute(path))
+            .await
+            .map(drop)
+            .unwrap_err();
+        let file = files.open_absolute(&absolute(path)).await.unwrap();
+        node.fail_file(path, Operation::ReadAt);
+        let read = file.read_at(0, pool.alloc(3).unwrap()).await.map(drop);
+        (spans, [opened, read.unwrap_err()])
+    });
+    let range = Span::ZERO..=Span::from_nanos(100 * Span::MICROSECOND.nanos());
+    assert!(spans.iter().all(|span| range.contains(span)), "{spans:?}");
+    assert!(spans.iter().any(|&span| span > Span::ZERO), "{spans:?}");
+    let path = "/run/secrets/a";
+    assert_eq!(
+        found,
+        [io(path, Operation::Open, 5), io(path, Operation::ReadAt, 5)]
+    );
+}
+
+#[test]
+#[should_panic(expected = "a file call needs a thread that the sim started")]
+fn open_absolute_outside_the_sim_panics() {
+    let mut sim = sim(0);
+    let node = sim.node(node::Config::default());
+    let files = node.files();
+    let path = absolute(Path::new("/a"));
+    let mut opened = pin!(files.open_absolute(&path));
+    drop(
+        opened
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop())),
+    );
+}
+
+#[test]
+fn open_absolute_reports_each_failure() {
+    let found = run(0, MIB, |node, _| async move {
+        let paths = node.paths();
+        paths.write(Path::new("/run/secrets/a"), b"abc").unwrap();
+        node.fail_path(Path::new("/run/secrets/a"), 13);
+        let files = node.files();
+        let mut found = Vec::new();
+        for path in ["/run/secrets/gone", "/run/secrets", "/run/secrets/a"] {
+            let opened = files.open_absolute(&absolute(Path::new(path))).await;
+            found.push(opened.map(drop).unwrap_err());
+        }
+        found
+    });
+    assert_eq!(
+        found,
+        [
+            Error::NotFound {
+                path: "/run/secrets/gone".into()
+            },
+            io("/run/secrets", Operation::Open, 21),
+            io("/run/secrets/a", Operation::Open, 13),
+        ]
+    );
+}
+
+#[test]
+fn open_absolute_reads_the_tree_when_the_open_ends() {
+    let bytes = run(0, MIB, |node, _| async move {
+        let (paths, files) = (node.paths(), node.files());
+        paths.write(Path::new("/a"), b"abc").unwrap();
+        let path = absolute(Path::new("/a"));
+        let mut opened = pin!(files.open_absolute(&path));
+        pend(opened.as_mut()).await;
+        paths.write(Path::new("/a"), b"xyz").unwrap();
+        let file = opened.await.unwrap();
+        read(&file, &pool(), 0, 3).await
+    });
+    assert_eq!(bytes, b"xyz");
+}
+
+#[test]
+fn a_fault_on_a_host_file_never_fires_on_a_data_file_of_the_same_names() {
+    let found = run(0, MIB, |node, _| async move {
+        let files = node.files();
+        node.paths().write(Path::new("/a"), b"abc").unwrap();
+        drop(create(&node, "a", 3).await);
+        let mut found = Vec::new();
+        for aimed in ["a", "/a"] {
+            node.fail_file(Path::new(aimed), Operation::Open);
+            let path = absolute(Path::new("/a"));
+            let host = files.open_absolute(&path).await.map(drop);
+            let data = files.open(Path::new("a"), Mode::Read).await.map(drop);
+            found.push((host, data));
+        }
+        found
+    });
+    assert_eq!(
+        found,
+        [
+            (Ok(()), Err(io("a", Operation::Open, 5))),
+            (Err(io("/a", Operation::Open, 5)), Ok(())),
+        ]
+    );
+}
+
+/// The time at which a call on the data file `a` ends after an open of `/a` or of `a`
+/// pends: the awaited open, or a `free` after the drop of the open in flight.
+fn end(seed: u64, host: bool, dropped: bool) -> Monotonic {
+    run(seed, MIB, move |node, _| async move {
+        let (files, clock) = (node.files(), node.clock());
+        node.paths().write(Path::new("/a"), b"abc").unwrap();
+        drop(create(&node, "a", 3).await);
+        let path = absolute(Path::new("/a"));
+        let mut opened: Pin<Box<dyn Future<Output = Result<File, Error>>>> = if host {
+            Box::pin(files.open_absolute(&path))
+        } else {
+            Box::pin(files.open(Path::new("a"), Mode::Read))
+        };
+        pend(Pin::new(&mut opened)).await;
+        if dropped {
+            drop(opened);
+            files.free().await.unwrap();
+        } else {
+            drop(opened.await.unwrap());
+        }
+        clock.now()
+    })
+}
+
+#[test]
+fn a_free_waits_for_each_dropped_call() {
+    for host in [false, true] {
+        for seed in 0..32 {
+            let (open, free) = (end(seed, host, false), end(seed, host, true));
+            assert!(free >= open, "host {host} seed {seed}: {free:?} < {open:?}");
+        }
+    }
+}
+
+#[test]
+fn the_node_gives_the_absolute_path_of_each_host_file_that_it_closed() {
+    let mut sim = sim(0);
+    let node = sim.node(node::Config {
+        disk_bytes: MIB,
+        ..node::Config::default()
+    });
+    sim.run_on(&node, |node, _| async move {
+        let files = node.files();
+        node.paths().write(Path::new("/run/a"), b"abc").unwrap();
+        let path = absolute(Path::new("/run/a"));
+        let host = files.open_absolute(&path).await.unwrap();
+        drop(create(&node, "a", 0).await);
+        host.close().await;
+        drop(files.open_absolute(&path).await);
+    })
+    .unwrap();
+    assert_eq!(
+        node.file_closes(),
+        ["a", "/run/a", "/run/a"].map(PathBuf::from)
+    );
 }
 
 #[test]

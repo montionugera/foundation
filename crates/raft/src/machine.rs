@@ -131,6 +131,7 @@ pub struct Raft {
     votes: Option<Proof>,
     election_ticks: u64,
     heartbeat_ticks: u64,
+    fits: fn(&Message) -> bool,
     term: Term,
     vote: Option<node::Key>,
     // The proof of `term`: see `Hard::proof`.
@@ -171,6 +172,7 @@ impl Raft {
             key,
             election_ticks,
             heartbeat_ticks,
+            fits,
         } = config;
         let Start {
             hard,
@@ -209,6 +211,7 @@ impl Raft {
             outbox: Vec::new(),
             election_ticks: u64::from(election_ticks),
             heartbeat_ticks: u64::from(heartbeat_ticks),
+            fits,
             term,
             vote,
             proof,
@@ -296,13 +299,11 @@ impl Raft {
         if let Some(hard) = &hard {
             self.given = hard.clone();
         }
-        let mut messages = std::mem::take(&mut self.outbox);
-        self.chain(&mut messages);
         Ready {
             hard,
             entries: self.log.take_unstable(),
             committed: self.log.take_committed(),
-            messages,
+            messages: std::mem::take(&mut self.outbox),
         }
     }
 
@@ -821,13 +822,14 @@ impl Raft {
         }
     }
 
-    // Sends each follower in `range` the entries from its `next` and the commit
-    // index, unless the leader waits for its reply. A node that a change removed
-    // gets entries only up to `removed_end`.
+    // Sends each follower in `range` the entries from its `next` that fit, and the
+    // commit index, unless the leader waits for its reply. A node that a change
+    // removed gets entries only up to `removed_end`.
     fn send_appends<R: RangeBounds<node::Key>>(&mut self, range: R) {
         let commit = self.log.committed();
         let removed_end = self.removed_end();
         let (key, term, votes) = (self.key, self.term, &self.votes);
+        let mut links = None;
         for (&to, peer) in self.peers.range_mut(range) {
             if peer.progress.paused() {
                 continue;
@@ -843,13 +845,15 @@ impl Raft {
                 removed_end
             };
             let entries = self.log.slice(next, end, BATCH);
-            let last = entries.last().map_or(prev.index, |entry| entry.at.index);
-            peer.progress.sent(last);
             let proof = match votes {
                 Some(votes) if !peer.answered => Some(votes.clone()),
                 _ => None,
             };
-            self.outbox.push(Message {
+            let chain = match proof {
+                Some(_) => links.get_or_insert_with(|| self.log.links(term)).clone(),
+                None => Vec::new(),
+            };
+            let mut message = Message {
                 from: key,
                 to,
                 term,
@@ -859,8 +863,13 @@ impl Raft {
                     commit,
                 },
                 proof,
-                chain: Vec::new(),
-            });
+                chain,
+            };
+            fit(self.fits, &mut message);
+            let entries = message.body.entries();
+            let last = entries.last().map_or(prev.index, |entry| entry.at.index);
+            peer.progress.sent(last);
+            self.outbox.push(message);
         }
     }
 
@@ -1316,43 +1325,72 @@ impl Raft {
 
     // Sends `body` to each peer, with `proof`.
     fn broadcast(&mut self, term: Term, body: &Body, proof: Option<&Proof>) {
+        let chain = self.chain(term, proof);
         for &to in self.peers.keys() {
-            self.outbox.push(Message {
+            let mut message = Message {
                 from: self.key,
                 to,
                 term,
                 body: body.clone(),
                 proof: proof.cloned(),
-                chain: Vec::new(),
-            });
+                chain: chain.clone(),
+            };
+            fit(self.fits, &mut message);
+            self.outbox.push(message);
         }
     }
 
     // Sends `body` to `to`, with `proof`.
     fn send(&mut self, to: node::Key, term: Term, body: Body, proof: Option<Proof>) {
-        self.outbox.push(Message {
+        let chain = self.chain(term, proof.as_ref());
+        let mut message = Message {
             from: self.key,
             to,
             term,
             body,
             proof,
-            chain: Vec::new(),
-        });
+            chain,
+        };
+        fit(self.fits, &mut message);
+        self.outbox.push(message);
     }
 
-    // Gives each message with a proof the chain of this node's configuration
-    // entries below its term.
-    fn chain(&self, messages: &mut [Message]) {
-        let mut chains: BTreeMap<Term, Vec<Link>> = BTreeMap::new();
-        for message in messages
-            .iter_mut()
-            .filter(|message| message.proof.is_some())
-        {
-            message.chain = chains
-                .entry(message.term)
-                .or_insert_with(|| self.log.links(message.term))
-                .clone();
+    // The chain of a message of `term`: this node's configuration entries below
+    // `term` when the message carries a proof, else none.
+    fn chain(&self, term: Term, proof: Option<&Proof>) -> Vec<Link> {
+        match proof {
+            Some(_) => self.log.links(term),
+            None => Vec::new(),
         }
+    }
+}
+
+// Drops what `message` can lose until it fits: the last entries of an append, down
+// to one with no proof and to none with a proof, then the oldest links.
+fn fit(fits: fn(&Message) -> bool, message: &mut Message) {
+    let least = usize::from(message.proof.is_none());
+    while !fits(message) {
+        if let Body::Append { entries, .. } = &mut message.body
+            && entries.len() > least
+        {
+            entries.pop();
+            continue;
+        }
+        assert!(
+            !message.chain.is_empty(),
+            "invariant: `Config::fits` holds an append of one entry with no proof, \
+             and each message with no entry and no link; to {:?}, term {:?}, {} \
+             entries, {}",
+            message.to,
+            message.term,
+            message.body.entries().len(),
+            if message.proof.is_some() {
+                "a proof"
+            } else {
+                "no proof"
+            },
+        );
+        message.chain.remove(0);
     }
 }
 
@@ -1376,6 +1414,7 @@ mod tests {
         key: node::Key::from_u128(1),
         election_ticks: 10,
         heartbeat_ticks: 1,
+        fits: |_| true,
     };
 
     const GRANTED: Answer = Answer::Granted(None);

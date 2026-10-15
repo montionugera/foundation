@@ -50,6 +50,7 @@ fn checks_the_connector_and_the_subject_alone() {
         "plc.status.class",
         "plc.status.confirmed",
         "plc.status.error",
+        "plc.status.note",
         "plc.status.restarts",
         "plc.status.state",
         "plc.status.time",

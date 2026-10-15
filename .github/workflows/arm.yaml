@@ -68,20 +68,9 @@ jobs:
   test:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.code != 'false'"
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
-      - name: Add cargo to the path
-        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      # Outside the workspace, so checkout keeps it. One job runs on a runner at a
-      # time, so each runner owns its directory.
-      - name: Keep the build
-        run: |
-          dir="$HOME/target/$RUNNER_NAME"
-          if [ -d "$dir" ] && [ "$(du -sk "$dir" | cut -f1)" -gt $((25 * 1024 * 1024)) ]
-          then
-            rm -rf "$dir"
-          fi
-          echo "CARGO_TARGET_DIR=$dir" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
       - name: Test
         run: cargo test --workspace

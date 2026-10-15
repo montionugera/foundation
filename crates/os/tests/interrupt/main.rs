@@ -28,7 +28,9 @@ const BOUND: Duration = Duration::from_secs(10);
 fn main() {
     // A child inherits the mask of the test, which holds the signals once a test has
     // called `interrupt`.
-    match std::env::args_os().nth(1) {
+    #[expect(clippy::disallowed_methods, reason = "the child reads its role")]
+    let role = std::env::args_os().nth(1);
+    match role {
         Some(arg) if arg == "child" => {
             mask::set(&[]);
             child(&[]);

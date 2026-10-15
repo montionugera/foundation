@@ -96,8 +96,9 @@ const JOIN: u8 = 2;
 const TICKET: u8 = 3;
 const SPEC: u8 = 4;
 
-/// The most chunk digests that one `Spec` change lists, so that one change (about
-/// 32 KiB) fits in an append of 64 KiB.
+/// The most chunk digests that one `Spec` change lists, so that
+/// [`message::BYTES_MIN`](crate::message::BYTES_MIN) stays under 64 KiB, the default
+/// limit of a node.
 pub(crate) const CHUNKS_MAX: usize = 1024;
 
 /// The most holders of one `Spec` change, so that a change with [`CHUNKS_MAX`]
@@ -107,6 +108,9 @@ pub(crate) const HOLDERS_MAX: usize = 64;
 /// The most homes of one `Spec` change, so that a change at each bound stays at about
 /// 50 KiB.
 pub(crate) const HOMES_MAX: usize = 512;
+
+/// The most bytes of the byte form of a change: a `Spec` change at each bound.
+pub(crate) const BYTES_MAX: usize = 50_255;
 
 impl Change {
     /// Adds the one byte form of the change to `out`: a kind byte, then the body of
@@ -364,13 +368,17 @@ impl std::error::Error for Unknown {}
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
+    use types::name::Name;
     use types::time::Span;
 
     use super::*;
+    use crate::card::Card;
+    use crate::card::addresses::{self, Addresses};
     use crate::common::{
-        digest, encoded, home, index, join, key, name, options, public, spec,
-        status_bytes, ticket_change, with_status,
+        BEFORE_EXPIRY, digest, encoded, home, index, join, join_with, key, name,
+        options, private, public, spec, status_bytes, ticket_change, with_status,
     };
+    use crate::status;
 
     #[test]
     fn a_home_change_has_a_fixed_byte_form() {
@@ -563,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn a_spec_change_at_each_bound_fits_in_50_kib() {
+    fn a_spec_change_at_each_bound_is_bytes_max_bytes() {
         let mut change = many(CHUNKS_MAX);
         let Change::Spec { holders, homes, .. } = &mut change else {
             unreachable!()
@@ -572,7 +580,40 @@ mod tests {
             .map(node::Key::from_u128)
             .collect();
         *homes = homes_of(HOMES_MAX);
-        assert_eq!(encoded(&change).len(), 50_255);
+        assert_eq!(encoded(&change).len(), BYTES_MAX);
+    }
+
+    #[test]
+    fn the_largest_change_of_each_other_kind_is_below_bytes_max_bytes() {
+        // A name of the most bytes that ends in `at`.
+        let long = |at: usize| {
+            let end = format!("b{at}");
+            name(&format!("{end:a>width$}", width = Name::MAX_BYTES))
+        };
+        let relay = transport::Address::Relay {
+            node: public(2),
+            at: "[::1]:4000".parse().unwrap(),
+        };
+        let card = Card {
+            name: long(0),
+            public_key: public(3),
+            seal_key: types::node::SealKey::new([9; 32]).unwrap(),
+            addresses: Addresses::new(vec![relay; addresses::MAX.into()]).unwrap(),
+            version: u64::MAX,
+        };
+        let card = card::Signed::sign(key(3), card, &private(3));
+        let statuses = (0..usize::from(status::MAX)).map(|at| (long(at), index(9)));
+        let status = Status::new(statuses.collect());
+        let join = join_with(&card, 7, BEFORE_EXPIRY, status.unwrap());
+        let mut options = options("a", true);
+        options.prefix = long(0);
+        let lengths = [
+            encoded(&home(u128::MAX, u128::MAX)).len(),
+            encoded(&Change::Join(Box::new(join))).len(),
+            encoded(&ticket_change(7, options)).len(),
+        ];
+        assert_eq!(lengths, [33, 19_601, 307]);
+        assert!(lengths.iter().all(|&length| length < BYTES_MAX));
     }
 
     /// A spec change with no chunk and `count` homes.

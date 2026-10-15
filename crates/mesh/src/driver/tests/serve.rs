@@ -22,7 +22,7 @@ struct Peer {
 
 impl Peer {
     async fn send(&self, sender: &mut Sender, bytes: &[u8]) {
-        let block = crate::bytes::block(&self.pool, bytes).unwrap();
+        let block = self.pool.copy(bytes).unwrap();
         sender.send(block).await.unwrap();
     }
 
@@ -89,10 +89,7 @@ where
     M: Future<Output: Send + 'static> + 'static,
     P: Future<Output: Send + 'static> + 'static,
 {
-    let mut sim = Sim::new(sim::Config {
-        seed,
-        ..sim::Config::default()
-    });
+    let mut sim = Sim::new(common::simulation(seed));
     let nodes = [1, 2].map(|_| sim.node(sim::node::Config::default()));
     let at = SocketAddr::new(nodes[0].addresses()[0], PORT);
     let served = Arc::new(Mutex::new(None));
@@ -884,4 +881,116 @@ fn serve_stops_a_two_way_stream_at_a_second_message() {
     assert_eq!(served, Err(Error::Malformed));
     assert_eq!(answer, Ok(Some(Message::Proposed { at })));
     assert_eq!(finished, Err(stopped));
+}
+
+/// The member with `key` and private key `private`, named `name`, with a card that
+/// it signed.
+fn member_of(key: node::Key, private: &PrivateKey, name: &str) -> Member {
+    let mut card = common::member(1).card.card().clone();
+    card.name = name.parse().unwrap();
+    card.public_key = private.public();
+    Member {
+        card: card::Signed::sign(key, card, private),
+        ..common::member(1)
+    }
+}
+
+/// The signature of the pre-vote that `voter`, with private key `private`, grants to
+/// node 2 in `TERM`.
+fn pre_vote_of(voter: node::Key, private: &PrivateKey) -> raft::Signature {
+    let body = Body::PreVoteReply {
+        answer: Answer::Granted(None),
+    };
+    let mut ready = raft::Ready {
+        messages: vec![raft::Message {
+            from: voter,
+            to: key(2),
+            term: common::TERM,
+            body,
+            proof: None,
+            chain: Vec::new(),
+        }],
+        ..raft::Ready::default()
+    };
+    Signer::new(voter, private).sign(&mut ready);
+    match ready.messages.remove(0).body {
+        Body::PreVoteReply {
+            answer: Answer::Granted(Some(signature)),
+        } => signature,
+        body => unreachable!("a grant answers with {body:?}"),
+    }
+}
+
+// Voter 2 asks for votes with a proof that also holds the pre-votes of 700 applied
+// members that are no voters. A stale heartbeat would get that proof back, in a
+// message over `BYTES_MIN`. Past 254 grants the message does not decode, so node 1
+// neither takes nor answers it.
+#[test]
+fn serve_stops_at_a_vote_whose_proof_has_more_grants_than_two_sets_of_voters() {
+    let extras: Vec<(node::Key, PrivateKey)> = (0..700u16)
+        .map(|at| {
+            let mut private = [0xa5; 32];
+            private[..2].copy_from_slice(&at.to_le_bytes());
+            (
+                node::Key::from_u128(1000 + u128::from(at)),
+                PrivateKey(private),
+            )
+        })
+        .collect();
+    let members: Vec<Member> = extras
+        .iter()
+        .zip(0..)
+        .map(|((key, private), at)| {
+            member_of(*key, private, &format!("plant.extra{at}"))
+        })
+        .collect();
+    let mut voters: BTreeMap<node::Key, Option<raft::Signature>> = extras
+        .iter()
+        .map(|(key, private)| (*key, Some(pre_vote_of(*key, private))))
+        .collect();
+    voters.insert(key(2), None);
+    voters.insert(key(3), Some(common::signature(3, Grant::PreVote, 2)));
+    let proof = Proof {
+        grant: Grant::PreVote,
+        candidate: key(2),
+        voters,
+    };
+    let stale = raft::Message {
+        proof: Some(proof.clone()),
+        ..message(1, 2, Body::HeartbeatReply)
+    };
+    assert!(!crate::message::fits(&stale));
+    let mut ready = raft::Ready {
+        messages: vec![raft::Message {
+            proof: Some(proof),
+            ..message(2, 1, Body::Vote { last: at(1) })
+        }],
+        ..raft::Ready::default()
+    };
+    common::signer(2).sign(&mut ready);
+    let vote = raft(ready.messages.remove(0));
+    let heartbeat = raft(common::proven_in(
+        Term(4),
+        2,
+        1,
+        Body::Heartbeat { commit: 0 },
+    ));
+    let (served, finished) = run(
+        move |node, tasks, incoming| async move {
+            let mut config = config(&node, &tasks, 1, &IDS, &IDS).await;
+            config.founding.members.extend(members);
+            let mesh = Mesh::start(config).await.unwrap();
+            let served = mesh.serve(public(2), incoming).await;
+            node.clock().sleep(HALF).await;
+            assert!(quiet(&mesh, 2).await);
+            served
+        },
+        |peer| async move {
+            let mut sender = peer.send_each(&[vote, heartbeat]).await;
+            peer.settle().await;
+            sender.finish()
+        },
+    );
+    let stopped = transport::Error::Stopped { code: MALFORMED };
+    assert_eq!((served, finished), (Err(Error::Malformed), Err(stopped)));
 }

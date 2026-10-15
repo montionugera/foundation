@@ -20,6 +20,7 @@ mod files;
 mod fsize;
 #[cfg(target_os = "linux")]
 mod kept;
+mod log;
 #[cfg(target_os = "linux")]
 mod memory;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -28,6 +29,8 @@ mod net;
 mod panics;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod paths;
+#[path = "../../../env/tests/common/log.rs"]
+mod recorded;
 #[cfg(target_os = "linux")]
 #[path = "../common/seccomp.rs"]
 mod seccomp;

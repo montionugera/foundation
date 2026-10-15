@@ -12,8 +12,8 @@ use secret::seal::Opener;
 use types::ed25519::PrivateKey;
 use types::time::Stamp;
 
-use crate::Error;
 use crate::sector::{self, Held};
+use crate::{Error, directory};
 
 /// The name of the file.
 pub(crate) const FILE: &str = "node.key";
@@ -44,10 +44,31 @@ pub(crate) async fn key(files: &Files) -> Result<Option<types::node::Key>, Error
     Ok(read(files).await?.map(|bytes| node_key(&bytes)))
 }
 
-/// The identity in `node.key` of `files`. When the file is not there, makes a new one
-/// at mesh time from `clock`, once it has mesh time, and from `entropy`, and publishes
-/// it. Call it under the lock of the data directory, after the claim has made the
-/// directory durable, so that a key that `publish` made is durable when it reads it.
+/// [`Error::NoCard`] when the file is not there and the data directory has the
+/// directory of a mesh: a first start makes the file durable before the mesh makes
+/// that directory, so the key is lost. A file that a node did not write is there, and
+/// its readers give [`Error::Key`]. Call it under the lock of the data directory,
+/// before the start writes anything other than `lock` and `shards-<n>`.
+///
+/// # Errors
+///
+/// [`Error::NoCard`] as above, and [`Error::Directory`] for a file call that fails.
+pub(crate) async fn claim(files: &Files) -> Result<(), Error> {
+    let held = sector::read::<LEN>(files, Path::new(FILE), TAG).await;
+    if matches!(held.map_err(Error::Directory)?, Held::Nothing)
+        && directory::meshed(files).await?
+    {
+        return Err(Error::NoCard);
+    }
+    Ok(())
+}
+
+/// The identity in `node.key` of `files`. [`claim`] refuses a data directory with the
+/// directory of a mesh and no file, so a new key is a key of a new node. When the file
+/// is not there, makes a new one at mesh time from `clock`, once it has mesh time, and
+/// from `entropy`, and publishes it. Call it under the lock of the data directory,
+/// after the claim has made the directory durable, so that a key that `publish` made
+/// is durable when it reads it.
 ///
 /// # Errors
 ///

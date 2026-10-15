@@ -100,15 +100,13 @@ async fn source(files: &Files) -> Result<Source, Error> {
 /// The founding that the data directory of `files` stores. Makes the pool of the read,
 /// whose reservation is over 2 MiB, only when the mesh's directory is there.
 async fn founding(files: &Files) -> Result<Option<Founding>, Error> {
-    let dir = directory::mesh();
-    if let Err(error) = files.list(&dir).await {
-        return match error {
-            env::files::Error::NotFound { .. } => Ok(None),
-            error => Err(Error::Directory(error)),
-        };
+    if !directory::meshed(files).await? {
+        return Ok(None);
     }
     let pool = Rc::new(block::Pool::heap(POOL));
-    mesh::founding(files, &dir, pool).await.map_err(Error::Mesh)
+    mesh::founding(files, &directory::mesh(), pool)
+        .await
+        .map_err(Error::Mesh)
 }
 
 /// Writes `name` to the file `name` of `files` and makes it durable, when the file is
