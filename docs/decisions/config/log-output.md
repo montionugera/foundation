@@ -51,7 +51,8 @@
   Shard 0 writes `started` (INFO, `name`, `address`: the bound address, `shards`) once
   the file `address` holds the address. `Node::join` writes `stopped`: INFO after a
   stop, ERROR with `error` after a failure, also a failure before any shard started.
-  (6) The fix of `node.session` points to the log (OPS OUTPUT).
+  (6) The fix of `node.session` does not point to the log, which holds no event of a
+  failed session yet (OPS OUTPUT, #2767).
   (7) `node` starts no thread through `env::threads::Threads`, and no thread of `main`
   writes an event, so `node::Config` has no `threads` yet. The first part that needs
   one (the thread of open62541) adds `Config::threads` and calls `Threads::logged`.

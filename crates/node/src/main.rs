@@ -204,8 +204,7 @@ fn unreached(dir: &Path, error: node::client::Error) -> Failure {
         node::client::Error::Session { at, error } => (
             SESSION,
             format!("the session with the node at {at} failed: {error}"),
-            "Read the log of the node on its standard error, then run the command again"
-                .into(),
+            "Fix the cause in the message, then run the command again".into(),
         ),
         node::client::Error::Refused(refusal) => (
             REFUSED,
@@ -1483,8 +1482,7 @@ mod tests {
                 SESSION,
                 "the session with the node at 127.0.0.1:54321 failed: the node \
                  finished a stream with no answer",
-                "Read the log of the node on its standard error, then run the command \
-                 again",
+                "Fix the cause in the message, then run the command again",
             )
         );
     }
