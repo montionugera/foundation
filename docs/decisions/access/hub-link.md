@@ -158,9 +158,7 @@
   of the stream (plan item 3), as a HUB WIRE session does, so the arm of `Ended::Behind`
   panics too (`laptop.architect`, 2026-10-11T15:17:29Z,
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809, item
-  1). Amended (#274 B1): a complete read gets `Behind` only at a frame that the buffer
-  lost for no room. It reads each other missed frame from disk (HUB SESSIONS).
-  Supersedes the `Remote` panic arm of
+  1). Supersedes the `Remote` panic arm of
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608 item 6,
   as https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809 item 3
   gives `Remote` the code NOT_HOME. A home's `MALFORMED` gives `FAILED`, as the
