@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
 
-use env::files::{Error, Mode, Operation};
+use env::files::{Absolute, Error, Mode, Operation};
 use env::net::udp;
 use types::time::Span;
 
@@ -1897,6 +1897,20 @@ fn a_crash_closes_a_leaked_file_and_gives_its_path() {
         crash_after(&mut sim, &node, crash, |_| async {});
         assert_eq!(node.file_closes(), [PathBuf::from("a")], "{crash:?}");
     }
+}
+
+#[test]
+fn a_crash_closes_a_leaked_host_file_and_gives_its_absolute_path() {
+    let (mut sim, node) = disk(0);
+    crash_after(&mut sim, &node, Crash::Process, |node| async move {
+        node.paths().write(Path::new("/run/a"), b"abc").unwrap();
+        let path = Absolute::new("/run/a").unwrap();
+        let file = node.files().open_absolute(&path).await.unwrap();
+        Box::leak(Box::new(file));
+        let _held = create(&node, "b", 0).await;
+        pending::<()>().await;
+    });
+    assert_eq!(node.file_closes(), ["b", "/run/a"].map(PathBuf::from));
 }
 
 #[test]

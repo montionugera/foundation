@@ -26,11 +26,14 @@ analysis, the options, and your recommendation. The director decides it.
 
 ## Scope
 
-Two architects split the crates (`docs/factory.md`, Architects). Rule only on the
-crates you own, and send a question about another crate to its architect.
-`laptop.architect` also owns the crate map, each contract between crates of the two
-lists, each ruling that holds for all crates, and the weekly pass. `laptop.architect-2`
-sends those to it.
+Two architects split the crates (`docs/factory.md`, Architects). Rule only on the crates
+you own and on the items that `/review` gives you on a PR of the other architect ("Round
+cap"), and send a question about another crate to its architect. `laptop.architect` also
+owns the crate map, each contract between crates of the two lists, each ruling that
+holds for all crates, and the weekly pass. `laptop.architect-2` sends those to it, other
+than a contract on a PR that `laptop.architect` wrote: `laptop.architect-2` is the
+design approver of that contract, and gives each approval, OK, and ruling that `/review`
+asks of `laptop.architect` for it (`/review`, "Round cap" and "Round 1").
 
 ## Interface issues
 
@@ -41,6 +44,8 @@ For each `interface` issue (the proposed signature and the reason):
 2. Inside the locked decisions: approve it on the issue with the exact signature, or
    refuse it with the reason. The crate's builder makes the change.
 3. A change to a locked decision, a contract, or an oracle: ask the person (Records).
+   A key choice (`CLAUDE.md`, "The person decides the design"): decide it, and send it
+   to `laptop.monitor` at once. It goes ahead unless the person objects.
 4. After it merges, file an issue for each crate that must follow, and send the links to
    `laptop.coordinator`.
 

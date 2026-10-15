@@ -3,8 +3,10 @@
 mod chance;
 mod crash;
 mod files;
+mod log;
 mod name;
 mod net;
+mod paths;
 mod run_on;
 mod serial;
 mod shards;

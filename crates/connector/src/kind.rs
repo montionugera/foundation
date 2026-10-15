@@ -192,6 +192,12 @@ impl<C> Context<C> {
     /// Opens a writer session on `channels` as this connector: the session's subject
     /// is the connector's name.
     ///
+    /// Return a failed write with `?`: KIND TABLE gives its class. After
+    /// [`hub::writer::Failure::Removed`], the next run opens its writer by name, so a
+    /// channel that the spec defined again with a new key is written. The frame of that
+    /// write is lost, and so is each sample of the device until the next run opens its
+    /// writer.
+    ///
     /// # Errors
     ///
     /// [`Error::Config`] with one diagnostic and no span, for a writer that only a
@@ -218,14 +224,17 @@ impl<C> Context<C> {
         self.inputs.hub.writer(config).await.map_err(writer_error)
     }
 
-    /// Takes the reader that the supervisor opened for this run, under the
-    /// connector's name, from the settings that `check` gave. `None` when `check`
-    /// gave none, or after the first call. When the reader ends with
-    /// [`hub::reader::Ended::Behind`], return [`Error::Retry`]: the supervisor opens a
-    /// new reader before the next run. A reader with a hold opens again at its held
-    /// position. While the home keeps no frame there, each later run gets `Behind`.
-    /// Each close starts the hold again, so a hold longer than the wait between two
-    /// runs never ends.
+    /// Takes the reader that the supervisor opened for this run, under the connector's
+    /// name, from the settings that `check` gave. `None` when `check` gave none, or
+    /// after the first call. Return the end of the reader with `?`: KIND TABLE gives
+    /// its class. After [`hub::reader::Ended::Behind`] or
+    /// [`hub::reader::Ended::Removed`], the supervisor opens a new reader from the
+    /// selector before the next run, so a channel that the spec defined again with a
+    /// new key is read, and the open gives `Config` when the selector matches nothing.
+    /// A reader with a hold opens again at its held position while its index keeps its
+    /// key. While the home keeps no frame there, each later run gets `Behind`. Each
+    /// close starts the hold again, so a hold longer than the wait between two runs
+    /// never ends.
     pub fn reader(&mut self) -> Option<hub::reader::Reader> {
         self.reader.take()
     }
@@ -242,10 +251,68 @@ impl<C> Context<C> {
         self.status.count(name)
     }
 
+    /// Shows `error` in the status of the running connector, as an attempt that
+    /// failed with the class `retry`. The status gives it within one second. The end
+    /// of the run replaces it, and a call after the run returned shows nothing.
+    pub fn error(&self, error: &dyn fmt::Display) {
+        self.status.show(error);
+    }
+
+    /// Clears the class and the text of the error in the status of the running
+    /// connector, within one second: the one that [`Context::error`] showed, or the
+    /// end of the last run. Until the first call of `error` or `clear_error` in a
+    /// run, the status keeps the end of the last run. A call after the run returned
+    /// shows nothing.
+    pub fn clear_error(&self) {
+        self.status.clear();
+    }
+
+    /// Shows `note` in the status of the running connector until the run ends or the
+    /// next call: a short text of how the run works other than its spec asks, such as
+    /// a mode that the device forces. The status gives it within one second. A note of
+    /// more than 1024 bytes keeps its first and last 510 bytes or less at char
+    /// boundaries, joined by `…`. The end of the run clears it, and a call after the
+    /// run returned shows nothing.
+    pub fn note(&self, note: &dyn fmt::Display) {
+        self.status.note(note);
+    }
+
     /// Connects streams and datagrams.
     #[must_use]
     pub fn net(&self) -> &Net {
         &self.inputs.net
+    }
+
+    /// Reads the value of `source`. Each call reads the file or the store again, so
+    /// a kind that reads it at the start of each run sees a value changed there at
+    /// its next run. An `env()` gives the value of the node's start. Send its bytes
+    /// only to the system they unlock, and never into a status or a log.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] with code `connector.bad-secret-name` when the store cannot
+    /// hold the name of a `secret()`, with the store's text as the fix.
+    /// [`Error::Retry`] for each other error, with a text that names the source and
+    /// holds the fix, such as where to put the value. The supervisor restarts the
+    /// run with backoff, so a value put in its place heals it. For `env()`, restart
+    /// the node with the variable set.
+    pub async fn secret(
+        &self,
+        source: &secret::Source,
+    ) -> Result<secret::Value, Error> {
+        let get = self.inputs.secrets.get(source).await;
+        get.map_err(|error| match error {
+            secret::Error::BadName { detail } => {
+                let error = format!(
+                    "the secret {source} has a name that the store cannot hold"
+                );
+                config_error(BAD_SECRET_NAME, &error, &detail)
+            }
+            error => {
+                let source = source.clone();
+                Error::Retry(Box::new(Unread { source, error }))
+            }
+        })
     }
 
     /// Runs the kind's own tasks on its shard. Each task must end when
@@ -374,6 +441,29 @@ const UNKNOWN_CHANNEL: Code = Code::new("connector.unknown-channel");
 const NO_CHANNEL: Code = Code::new("connector.no-channel");
 const MANY_INDEXES: Code = Code::new("connector.many-indexes");
 const LEASE: Code = Code::new("connector.lease");
+const LARGE_FRAME: Code = Code::new("connector.large-frame");
+const BAD_SECRET_NAME: Code = Code::new("connector.bad-secret-name");
+/// The fix of [`LARGE_FRAME`].
+const FEWER_CHANNELS: &str = "Give the connector fewer channels";
+
+/// A secret whose source gave no value.
+#[derive(Debug)]
+struct Unread {
+    source: secret::Source,
+    error: secret::Error,
+}
+
+impl fmt::Display for Unread {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "the secret {}: {}", self.source, self.error)
+    }
+}
+
+impl std::error::Error for Unread {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
 
 /// The class of `error` of the open of a named reader.
 ///
@@ -413,6 +503,97 @@ fn writer_error(error: hub::writer::Error) -> Error {
         }
     };
     config_error(code, &error, fix)
+}
+
+/// The class of the end of the reader of a run, for a kind that returns it with `?`:
+/// `Retry` for `Behind`, `Removed`, `Replaced`, and `Buffer`.
+///
+/// # Panics
+///
+/// For an end that only a reader away from its home gives, because a named reader opens
+/// only at its home.
+#[expect(
+    clippy::fallible_impl_from,
+    reason = "each panic is an end that no run gets"
+)]
+impl From<hub::reader::Ended> for Error {
+    fn from(ended: hub::reader::Ended) -> Self {
+        use hub::reader::Ended;
+        match ended {
+            Ended::Behind | Ended::Removed(_) | Ended::Replaced | Ended::Buffer(_) => {
+                Self::Retry(Box::new(ended))
+            }
+            Ended::Stream(_)
+            | Ended::Refused(_)
+            | Ended::Message(_)
+            | Ended::Frame(_)
+            | Ended::Pool(_)
+            | Ended::Credit { .. } => {
+                panic!("invariant: a named reader away from its home gave: {ended}")
+            }
+        }
+    }
+}
+
+/// The class of a failed write of a run, for a kind that returns it with `?`: `Config`
+/// (`connector.large-frame`) for `Home(Large)`, and `Retry` for `Removed`,
+/// `Home(Full)`, and `Home(Disk)`.
+///
+/// # Panics
+///
+/// For [`hub::home::Error::Resend`], because a kind labels no frame resend.
+#[expect(clippy::fallible_impl_from, reason = "a kind labels no frame resend")]
+impl From<hub::writer::Failure> for Error {
+    fn from(failure: hub::writer::Failure) -> Self {
+        use hub::home::Error as Home;
+        use hub::writer::Failure;
+        match failure {
+            Failure::Removed(_) | Failure::Home(Home::Full | Home::Disk(_)) => {
+                Self::Retry(Box::new(failure))
+            }
+            Failure::Home(Home::Large) => {
+                config_error(LARGE_FRAME, &failure, FEWER_CHANNELS)
+            }
+            Failure::Home(Home::Resend) => {
+                panic!("invariant: a kind labels no frame resend")
+            }
+        }
+    }
+}
+
+/// The class of a failed draft of a frame of a run, for a kind that returns it with
+/// `?`: `Config` (`connector.large-frame`) for a pool `TooLarge`, because only a spec
+/// change or a kind that splits its frames fixes it, and `Retry` for a pool
+/// `Exhausted` and `Refused`.
+///
+/// # Panics
+///
+/// For `OutOfRange`, `Unordered`, and `IndexAbsent`, because a kind gives its series
+/// from its own code, and for `End`, which a draft never gives.
+#[expect(
+    clippy::fallible_impl_from,
+    reason = "each panic is a defect of the kind's series or an end that no draft gives"
+)]
+impl From<types::frame::Error> for Error {
+    fn from(error: types::frame::Error) -> Self {
+        use types::frame::Error as Frame;
+        match error {
+            Frame::Pool(
+                block::Error::Exhausted { .. } | block::Error::Refused { .. },
+            ) => Self::Retry(Box::new(error)),
+            Frame::Pool(block::Error::TooLarge { .. }) => {
+                config_error(LARGE_FRAME, &error, FEWER_CHANNELS)
+            }
+            Frame::OutOfRange { .. }
+            | Frame::Unordered { .. }
+            | Frame::IndexAbsent { .. } => {
+                panic!("invariant: the series follow the key set: {error}")
+            }
+            Frame::End(_) => {
+                panic!("invariant: a draft gives no end of another node: {error}")
+            }
+        }
+    }
 }
 
 /// [`Error::Config`] with one diagnostic and no span, whose message is `error`.
@@ -477,6 +658,7 @@ mod tests {
     use super::*;
     use crate::cancel::Token;
     use crate::common::{create_config, run, run_on};
+    use crate::testing;
 
     const MISSING: Code = Code::new("test.missing");
     const RANGE: Code = Code::new("test.range");
@@ -710,6 +892,34 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "the kind \"counts\" names the count `class`, a status \
+                               channel of the supervisor")]
+    fn panics_on_a_count_named_as_the_status_class() {
+        drop(check_counts(&["class"]));
+    }
+
+    #[test]
+    #[should_panic(expected = "the kind \"counts\" names the count `restarts`, a \
+                               status channel of the supervisor")]
+    fn panics_on_a_count_named_as_the_status_restarts() {
+        drop(check_counts(&["restarts"]));
+    }
+
+    #[test]
+    #[should_panic(expected = "the kind \"counts\" names the count `backoff`, a \
+                               status channel of the supervisor")]
+    fn panics_on_a_count_named_as_the_status_backoff() {
+        drop(check_counts(&["backoff"]));
+    }
+
+    #[test]
+    #[should_panic(expected = "the kind \"counts\" names the count `error`, a status \
+                               channel of the supervisor")]
+    fn panics_on_a_count_named_as_the_status_error() {
+        drop(check_counts(&["error"]));
+    }
+
+    #[test]
     #[should_panic(expected = "the kind \"counts\" names the count `time`, a status \
                                channel of the supervisor")]
     fn panics_on_a_count_named_as_the_status_index() {
@@ -835,6 +1045,90 @@ mod tests {
     }
 
     #[test]
+    fn reads_a_secret_at_each_call_and_retries_one_the_store_has_not() {
+        let (missing, read, changed) = run_on(|node, tasks| async move {
+            let inputs =
+                Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
+            let status = status::Status::new(Vec::new());
+            let ctx =
+                Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
+            let token = name("plant.influx_token");
+            let source = secret::Source::Secret(token.clone());
+            let get = async || {
+                let value = ctx.secret(&source).await;
+                value.map(|value| value.expose().to_vec())
+            };
+            let missing = get().await;
+            testing::create_secret(&node.files(), &token, b"t0\n").await;
+            let read = get().await;
+            testing::create_secret(&node.files(), &token, b"t1").await;
+            (missing, read, get().await)
+        });
+        let Err(Error::Retry(error)) = missing else {
+            panic!("a missing secret is retried: {missing:?}");
+        };
+        assert_eq!(
+            error.to_string(),
+            "the secret secret(\"plant.influx_token\"): the file \
+             /data/secrets/plant.influx_token is not there. Write the value to it"
+        );
+        let source = error.source().map(ToString::to_string);
+        assert_eq!(
+            source.as_deref(),
+            Some(
+                "the file /data/secrets/plant.influx_token is not there. Write the \
+                 value to it"
+            )
+        );
+        assert_eq!(read.expect("the store has the value"), b"t0");
+        assert_eq!(changed.expect("the store has the new value"), b"t1");
+    }
+
+    #[test]
+    fn retries_a_variable_that_is_not_set_and_names_its_source() {
+        let missing = run_on(|node, tasks| async move {
+            let inputs =
+                Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
+            let status = status::Status::new(Vec::new());
+            let ctx =
+                Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
+            let source = secret::Source::Env("INFLUX_TOKEN".into());
+            ctx.secret(&source).await.map(drop)
+        });
+        let Err(Error::Retry(error)) = missing else {
+            panic!("a missing variable is retried: {missing:?}");
+        };
+        assert_eq!(
+            error.to_string(),
+            "the secret env(\"INFLUX_TOKEN\"): the environment variable INFLUX_TOKEN \
+             of the node is not set. Start the node with it set to the value"
+        );
+    }
+
+    #[test]
+    fn gives_a_secret_name_that_the_store_cannot_hold_as_a_config_error() {
+        let bad = run_on(|node, tasks| async move {
+            let inputs =
+                Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
+            let status = status::Status::new(Vec::new());
+            let ctx =
+                Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
+            let source = secret::Source::Secret(name("plant.Token"));
+            ctx.secret(&source).await.map(drop)
+        });
+        let Err(Error::Config(diagnostics)) = bad else {
+            panic!("a bad name is a config error: {bad:?}");
+        };
+        let fix = "Rename the secret in lowercase letters, since the file store holds \
+                   no name with a capital letter";
+        let message =
+            "the secret secret(\"plant.Token\") has a name that the store cannot hold";
+        let expected =
+            Diagnostic::new(BAD_SECRET_NAME, None, message.into(), fix.into());
+        assert_eq!(diagnostics, [expected]);
+    }
+
+    #[test]
     fn shows_the_class_and_the_source() {
         let device = Error::Device("no reply from unit 4".into());
         assert_eq!(
@@ -861,7 +1155,7 @@ mod tests {
             reader(hub::reader::Error::Remote { home }),
             format!(
                 "an attempt failed: the home of the index of the reader is node \
-                 {home}, and a named reader opens only at this node"
+                 {home}, and this reader opens only at the home"
             )
         );
         assert_eq!(
@@ -932,6 +1226,77 @@ mod tests {
     fn panics_for_a_writer_error_that_the_hub_never_gives() {
         let unsynced = hub::home::writer::Error::Unsynced;
         drop(writer_error(hub::writer::Error::Home(unsynced)));
+    }
+
+    /// Calls the mapping directly, because a named reader opens only at its home. The
+    /// arm has no test of `Stream`: `connector` cannot build a `transport` error.
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: the home sent \
+                    a frame past the credit of 8 bytes"
+    )]
+    fn panics_for_an_end_of_a_reader_away_from_its_home() {
+        drop(Error::from(hub::reader::Ended::Credit { limit_bytes: 8 }));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: the home \
+                    ended the session with code 17: the node is not the home of the \
+                    index"
+    )]
+    fn panics_for_a_refused_end_of_a_reader_away_from_its_home() {
+        drop(Error::from(hub::reader::Ended::Refused(
+            wire::hub::Refusal::NotHome,
+        )));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: a message \
+                    from the home broke the hub protocol: the hub message is empty"
+    )]
+    fn panics_for_a_message_end_of_a_reader_away_from_its_home() {
+        drop(Error::from(hub::reader::Ended::Message(
+            wire::hub::Error::Empty,
+        )));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: a frame \
+                    from the home is not valid: entry 2 is out of range for a key set \
+                    of 1 entries"
+    )]
+    fn panics_for_a_frame_end_of_a_reader_away_from_its_home() {
+        drop(Error::from(hub::reader::Ended::Frame(
+            types::frame::Error::OutOfRange {
+                entry: 2,
+                entries: 1,
+            },
+        )));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invariant: a named reader away from its home gave: the pool had \
+                    no block for the reader: pool is full: asked for 8 bytes, 0 bytes \
+                    free"
+    )]
+    fn panics_for_a_pool_end_of_a_reader_away_from_its_home() {
+        drop(Error::from(hub::reader::Ended::Pool(
+            block::Error::Exhausted {
+                requested: 8,
+                available: 0,
+            },
+        )));
+    }
+
+    #[test]
+    #[should_panic(expected = "invariant: a kind labels no frame resend")]
+    fn panics_for_a_write_of_a_resend_frame() {
+        let resend = hub::home::Error::Resend;
+        drop(Error::from(hub::writer::Failure::Home(resend)));
     }
 
     #[test]

@@ -8,7 +8,7 @@ use std::pin::pin;
 use std::task::Poll;
 
 use block::{Block, Pool};
-use env::files::{Error, File, Files, Mode, Operation};
+use env::files::{Absolute, Error, File, Files, Mode, Operation};
 
 use crate::disk::{KIB, Scratch, files, opened};
 
@@ -22,6 +22,11 @@ fn run<F: Future<Output = ()>>(body: impl FnOnce(Files, PathBuf) -> F) {
         .unwrap();
     runtime.block_on(body(files, scratch.0.join("data")));
     thread.join().unwrap();
+}
+
+/// `path` as the absolute path that `open_absolute` takes.
+fn absolute(path: &Path) -> Absolute {
+    Absolute::new(path.to_str().unwrap()).unwrap()
 }
 
 fn pool() -> Pool {
@@ -174,34 +179,42 @@ fn create_of_another_length_gives_length() {
     });
 }
 
+/// The file size limit of `a_create_past_the_file_size_limit_leaves_no_file`.
+#[cfg(target_os = "linux")]
+const LIMIT: u64 = 1 << 20;
+
 #[cfg(target_os = "linux")]
 #[test]
 fn a_create_past_the_file_size_limit_leaves_no_file() {
-    use rustix::process::{Resource, getrlimit};
-    const LIMIT: u64 = 1 << 20;
-    if getrlimit(Resource::Fsize).current != Some(LIMIT) {
-        let thread = std::thread::current();
-        let test = thread.name().expect("invariant: libtest names the thread");
-        // The limit is on the whole process, so this test runs alone in a child. An
-        // ignored `SIGXFSZ` stays ignored across `exec`, so it does not end the child.
-        let script = r#"trap '' XFSZ && ulimit -f "$0" && exec "$1" --exact "$2""#;
-        let status = std::process::Command::new("sh")
-            .args(["-c", script])
-            .arg((LIMIT / 512).to_string())
-            .arg(std::env::current_exe().unwrap())
-            .arg(test)
-            .status()
-            .unwrap();
-        assert!(status.success(), "{status}");
-        return;
-    }
-    run(|files, _| async move {
-        let mode = Mode::Create { len: 8 * LIMIT };
-        let found = files.open(Path::new("a"), mode).await.unwrap_err();
-        assert_eq!(found, io("a", Operation::Open, libc::EFBIG));
-        let found = files.open(Path::new("a"), Mode::Write).await.unwrap_err();
-        assert_eq!(found, Error::NotFound { path: "a".into() });
+    crate::fsize::under(LIMIT, || {
+        run(|files, _| async move {
+            let mode = Mode::Create { len: 8 * LIMIT };
+            let found = files.open(Path::new("a"), mode).await.unwrap_err();
+            assert_eq!(found, io("a", Operation::Open, libc::EFBIG));
+            let found = files.open(Path::new("a"), Mode::Write).await.unwrap_err();
+            assert_eq!(found, Error::NotFound { path: "a".into() });
+        });
     });
+}
+
+/// A limit that the parent of the test binary set, as `ulimit -f` in a shell does,
+/// comes with no ignored `SIGXFSZ`.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_file_size_limit_test_passes_under_a_limit_that_its_parent_set() {
+    let script = r#"ulimit -f "$0" && exec "$1" --exact "$2" --nocapture"#;
+    let output = std::process::Command::new("sh")
+        .args(["-c", script])
+        .arg((LIMIT / 512).to_string())
+        .arg(std::env::current_exe().unwrap())
+        .arg("files::a_create_past_the_file_size_limit_leaves_no_file")
+        .output()
+        .unwrap();
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{}: {error}", output.status);
+    // A name that matches no test also ends with success.
+    let ran = String::from_utf8_lossy(&output.stdout);
+    assert!(ran.contains("test result: ok. 1 passed"), "{ran}");
 }
 
 #[test]
@@ -215,6 +228,97 @@ fn an_open_of_a_missing_file_gives_not_found() {
         let expected = Error::NotFound { path: "b/a".into() };
         assert_eq!(found.await.unwrap_err(), expected);
     });
+}
+
+#[test]
+fn open_absolute_reads_a_file_outside_the_data_directory() {
+    run(|files, data| async move {
+        let path = data.parent().unwrap().join("token");
+        std::fs::write(&path, b"abc").unwrap();
+        let file = files.open_absolute(&absolute(&path)).await.unwrap();
+        assert_eq!(read(&file, &pool(), 0, 3).await, b"abc");
+        let gone = data.parent().unwrap().join("gone");
+        let found = files.open_absolute(&absolute(&gone)).await.unwrap_err();
+        assert_eq!(found, Error::NotFound { path: gone });
+    });
+}
+
+/// A write open of a mode 0444 file gives `EACCES` to a user other than root, and
+/// its lock gives `Busy` to a second open.
+#[test]
+fn open_absolute_opens_to_read_only_with_no_lock() {
+    run(|files, data| async move {
+        let path = data.parent().unwrap().join("token");
+        std::fs::write(&path, b"abc").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444))
+            .unwrap();
+        let (other, thread) = self::files(data.parent().unwrap(), "other");
+        let held = files.open_absolute(&absolute(&path)).await.unwrap();
+        let second = other.open_absolute(&absolute(&path)).await.unwrap();
+        let pool = pool();
+        assert_eq!(read(&held, &pool, 0, 3).await, b"abc");
+        assert_eq!(read(&second, &pool, 0, 3).await, b"abc");
+        drop((held, second, other));
+        thread.join().unwrap();
+    });
+}
+
+/// A FIFO with no writer would block an open with no `NONBLOCK`, and each later call
+/// with it, so the opens run on a thread that the test gives 5 s.
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a blocked open must not hang the test"
+)]
+fn open_absolute_refuses_a_file_that_is_not_regular_and_waits_for_no_writer() {
+    let scratch = Scratch::new();
+    let (fifo, dir) = (scratch.0.join("fifo"), scratch.0.clone());
+    mkfifo(&fifo);
+    // A socket path has a bound of 104 bytes on macOS, which the scratch path can pass.
+    let socket =
+        PathBuf::from(format!("/tmp/foundation-os-{}.sock", std::process::id()));
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let opened = socket.clone();
+    let (done, ended) = std::sync::mpsc::channel();
+    let opens = std::thread::spawn(move || {
+        let (files, thread) = files(&dir, "files");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut found = Vec::new();
+            let paths = [dir.join("fifo"), dir.clone(), "/dev/null".into(), opened];
+            for path in paths {
+                found.push(files.open_absolute(&absolute(&path)).await.map(drop));
+            }
+            files.free().await.unwrap();
+            done.send(found).unwrap();
+        });
+        drop(files);
+        thread.join().unwrap();
+    });
+    let found = ended.recv_timeout(std::time::Duration::from_secs(5));
+    if found.is_err() {
+        let flags = rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::NONBLOCK;
+        drop(rustix::fs::open(&fifo, flags, rustix::fs::Mode::empty()));
+    }
+    opens.join().unwrap();
+    drop(listener);
+    std::fs::remove_file(&socket).unwrap();
+    let io = |path: PathBuf, code| {
+        Err(Error::Io {
+            path,
+            operation: Operation::Open,
+            code,
+        })
+    };
+    let expected = vec![
+        io(fifo, 22),
+        io(scratch.0.clone(), 21),
+        io("/dev/null".into(), 22),
+        io(socket, 22),
+    ];
+    assert_eq!(found.expect("no open blocks"), expected);
 }
 
 #[test]
@@ -632,78 +736,6 @@ fn a_sync_after_a_write_succeeds() {
     });
 }
 
-/// A RAM disk of 64 MiB with an HFS+ volume, which no other process writes. It
-/// detaches when it drops, except while the thread panics.
-#[cfg(target_os = "macos")]
-struct Ram {
-    device: String,
-    mount: PathBuf,
-}
-
-#[cfg(target_os = "macos")]
-impl Ram {
-    fn new() -> Self {
-        // The size is in sectors of 512 bytes.
-        let attach = ["attach", "-nomount", "ram://131072"];
-        let device = stdout(std::process::Command::new("hdiutil").args(attach));
-        let device = device.trim().to_owned();
-        // The device is unique while it is attached, so tests that run at the same
-        // time get their own volumes.
-        let disk = device.trim_start_matches("/dev/");
-        let name = format!("foundation-os-{}-{disk}", std::process::id());
-        let erase = ["erasevolume", "HFS+", &name, &device];
-        stdout(std::process::Command::new("diskutil").args(erase));
-        let mount = Path::new("/Volumes").join(name);
-        Self { device, mount }
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl Drop for Ram {
-    fn drop(&mut self) {
-        // While the thread panics, a second panic aborts the test binary.
-        if !std::thread::panicking() {
-            let detach = ["detach", self.device.as_str()];
-            stdout(std::process::Command::new("hdiutil").args(detach));
-        }
-    }
-}
-
-/// Runs `command`, and gives its output. Panics with its error output when it fails.
-#[cfg(target_os = "macos")]
-fn stdout(command: &mut std::process::Command) -> String {
-    let output = command.output().unwrap();
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "{command:?}: {error}");
-    String::from_utf8(output.stdout).unwrap()
-}
-
-/// The root tests check this on Linux, on a filesystem of their own.
-#[cfg(target_os = "macos")]
-#[test]
-fn free_drops_by_the_bytes_of_a_created_file() {
-    check_free_on_ram(crate::free::Create::Held);
-}
-
-/// The root tests check this on Linux, on a filesystem of their own.
-#[cfg(target_os = "macos")]
-#[test]
-fn a_free_waits_for_a_dropped_create() {
-    check_free_on_ram(crate::free::Create::Dropped);
-}
-
-/// Runs `free::check` on a `Ram` of its own.
-#[cfg(target_os = "macos")]
-fn check_free_on_ram(create: crate::free::Create) {
-    let ram = Ram::new();
-    let (files, thread) = files(&ram.mount, "files");
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap();
-    runtime.block_on(async move { crate::free::check(&files, create).await });
-    thread.join().unwrap();
-}
-
 /// The error of `os::files` on `dir`.
 #[test]
 fn a_disk_shows_as_disk() {
@@ -772,7 +804,7 @@ fn files_syncs_the_holders_of_dir_and_its_data_at_each_call() {
         let holders = [root.clone(), dir.clone()];
         assert_eq!(*synced.lock().unwrap(), [holders.clone(), holders].concat());
     });
-    crate::common::assert_joins(handle.unwrap(), Ok(()));
+    crate::panics::assert_joins(handle.unwrap(), Ok(()));
 }
 
 /// A `dir` that the call made under a holder that it cannot sync is still not
@@ -826,7 +858,7 @@ fn files_whose_holder_sync_fails_gives_dir() {
         );
         assert!(matches!(found, os::Error::Dir(_)));
     });
-    crate::common::assert_joins(handle.unwrap(), Ok(()));
+    crate::panics::assert_joins(handle.unwrap(), Ok(()));
 }
 
 #[test]
@@ -903,6 +935,151 @@ fn hold_while_another_create_fails(mode: Mode) {
     writer_thread.join().unwrap();
 }
 
+/// The `ftruncate` that frees the blocks of a failed create also fails.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_failed_create_whose_free_fails_leaves_no_file() {
+    let scratch = Scratch::new();
+    let dir = scratch.0.clone();
+    let threads = os::threads().unwrap();
+    let handle = threads.start("freed", move || async move {
+        crate::seccomp::answer_calls(
+            &[libc::SYS_fallocate, libc::SYS_ftruncate],
+            |data, k| match i64::from(data.nr) {
+                libc::SYS_fallocate => Some(libc::ENOSPC),
+                libc::SYS_ftruncate if k == 1 => Some(libc::EIO),
+                _ => None,
+            },
+        );
+        let (files, thread) = files(&dir, "files");
+        let mode = Mode::Create { len: 4 * KIB };
+        let created = files.open(Path::new("a"), mode).await.map(|_| ());
+        let reopened = files.open(Path::new("a"), Mode::Write).await.map(|_| ());
+        drop(files);
+        thread.join().unwrap();
+        assert_eq!(created, Err(io("a", Operation::Open, libc::EIO)));
+        assert_eq!(reopened, Err(Error::NotFound { path: "a".into() }));
+    });
+    crate::panics::assert_joins(handle.unwrap(), Ok(()));
+}
+
+/// Makes each unlock by `flock` of this thread, or of a thread that it starts later,
+/// give `errno`.
+#[cfg(target_os = "linux")]
+fn unlock_gives(errno: i32) {
+    crate::seccomp::answer_calls(&[libc::SYS_flock], move |data, _| {
+        (data.args[1] == libc::LOCK_UN as u64).then_some(errno)
+    });
+}
+
+/// The unlock of a closed write handle fails, as an NFS `LOCKU` or a FUSE daemon can.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_close_whose_unlock_fails_closes_the_file() {
+    let scratch = Scratch::new();
+    let dir = scratch.0.clone();
+    let threads = os::threads().unwrap();
+    let handle = threads.start("unlock", move || async move {
+        unlock_gives(libc::EIO);
+        let (files, thread) = files(&dir, "files");
+        let file = create(&files, "a", 4 * KIB).await;
+        file.close().await;
+        let reopened = files.open(Path::new("a"), Mode::Write).await.map(|_| ());
+        drop(files);
+        thread.join().unwrap();
+        assert_eq!(reopened, Ok(()));
+    });
+    crate::panics::assert_joins(handle.unwrap(), Ok(()));
+}
+
+/// An unlock that gives `EBADF` is a broken invariant: the close panics the I/O thread.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_close_whose_unlock_gives_ebadf_panics_the_io_thread() {
+    let scratch = Scratch::new();
+    let dir = scratch.0.clone();
+    let threads = os::threads().unwrap();
+    let (sent, io) = std::sync::mpsc::channel();
+    let handle = threads.start("unlock", move || async move {
+        unlock_gives(libc::EBADF);
+        let (files, thread) = files(&dir, "files");
+        let file = create(&files, "a", 4 * KIB).await;
+        sent.send(thread).unwrap();
+        file.close().await;
+    });
+    crate::panics::assert_joins(handle.unwrap(), crate::panics::panicked("unlock"));
+    let thread = io.try_recv().unwrap();
+    crate::panics::assert_joins(thread, crate::panics::panicked("files"));
+}
+
+/// An unlock that gives `EINVAL` is a broken invariant too: the close panics the I/O
+/// thread.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_close_whose_unlock_gives_einval_panics_the_io_thread() {
+    let scratch = Scratch::new();
+    let dir = scratch.0.clone();
+    let threads = os::threads().unwrap();
+    let (sent, io) = std::sync::mpsc::channel();
+    let handle = threads.start("unlock", move || async move {
+        unlock_gives(libc::EINVAL);
+        let (files, thread) = files(&dir, "files");
+        let file = create(&files, "a", 4 * KIB).await;
+        sent.send(thread).unwrap();
+        file.close().await;
+    });
+    crate::panics::assert_joins(handle.unwrap(), crate::panics::panicked("unlock"));
+    let thread = io.try_recv().unwrap();
+    crate::panics::assert_joins(thread, crate::panics::panicked("files"));
+}
+
+/// A write open that another disk holds the lock of gives `Busy`, holds no lock, and so
+/// sends no unlock.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_busy_write_open_sends_no_unlock() {
+    let scratch = Scratch::new();
+    let (holder, holder_thread) = files(&scratch.0, "holder");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let held = runtime.block_on(create(&holder, "a", KIB));
+    let dir = scratch.0.clone();
+    let threads = os::threads().unwrap();
+    let handle = threads.start("unlock", move || async move {
+        unlock_gives(libc::EBADF);
+        let (files, thread) = files(&dir, "files");
+        let opened = files.open(Path::new("a"), Mode::Write).await.map(drop);
+        drop(files);
+        thread.join().unwrap();
+        assert_eq!(opened, Err(Error::Busy { path: "a".into() }));
+    });
+    crate::panics::assert_joins(handle.unwrap(), Ok(()));
+    runtime.block_on(held.close());
+    drop(holder);
+    holder_thread.join().unwrap();
+}
+
+/// A read handle holds no lock, so its close sends no unlock.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_close_of_a_read_handle_sends_no_unlock() {
+    let scratch = Scratch::new();
+    std::fs::create_dir_all(scratch.0.join("data")).unwrap();
+    std::fs::write(scratch.0.join("data/a"), b"").unwrap();
+    let dir = scratch.0.clone();
+    let threads = os::threads().unwrap();
+    let handle = threads.start("unlock", move || async move {
+        unlock_gives(libc::EBADF);
+        let (files, thread) = files(&dir, "files");
+        let read = files.open(Path::new("a"), Mode::Read).await.unwrap();
+        read.close().await;
+        drop(files);
+        thread.join().unwrap();
+    });
+    crate::panics::assert_joins(handle.unwrap(), Ok(()));
+}
+
 /// A remove that drops while it waits for room in the full queue of the I/O thread
 /// never runs.
 #[test]
@@ -953,9 +1130,8 @@ async fn stalled<T>(
     started
 }
 
-/// Makes a FIFO at `path`. A child process, such as `mkfifo`, would hold the files of
-/// the tests on other threads open until it starts, and so keep their locks.
-fn mkfifo(path: &Path) {
+/// Makes a FIFO at `path`.
+pub(crate) fn mkfifo(path: &Path) {
     #[cfg(target_os = "linux")]
     {
         let mode = rustix::fs::Mode::from_raw_mode(0o600);
@@ -1426,4 +1602,79 @@ fn a_list_waits_for_a_dropped_create_dir_in_its_directory() {
         .await;
         assert_eq!(names, [PathBuf::from("e")]);
     });
+}
+
+#[test]
+fn stored_of_a_directory_with_no_data_directory_gives_dir_and_makes_nothing() {
+    let scratch = Scratch::new();
+    let threads = os::threads().unwrap();
+    for dir in [scratch.0.join("node"), scratch.0.clone()] {
+        let Err(os::Error::Dir(error)) = os::stored(&dir, &threads, "files") else {
+            panic!("a directory with no data directory gives Dir");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    }
+    let left = std::fs::read_dir(&scratch.0).unwrap().count();
+    assert_eq!(left, 0);
+}
+
+#[test]
+fn stored_reads_the_files_that_files_wrote() {
+    let scratch = Scratch::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let pool = pool();
+    let (files, thread) = files(&scratch.0, "files");
+    runtime.block_on(async {
+        let file = create(&files, "a", KIB).await;
+        file.write_at(0, &[block(&pool, b"kept")]).await.unwrap();
+    });
+    drop(files);
+    thread.join().unwrap();
+    let threads = os::threads().unwrap();
+    let (disk, thread) = os::stored(&scratch.0, &threads, "files").unwrap();
+    let files = Files::new(disk);
+    runtime.block_on(async {
+        let file = files.open(Path::new("a"), Mode::Read).await.unwrap();
+        assert_eq!(read(&file, &pool, 0, 4).await, b"kept");
+    });
+    drop(files);
+    thread.join().unwrap();
+}
+
+#[test]
+fn shown_joins_to_the_data_directory() {
+    run(|files, data| async move {
+        assert_eq!(
+            files.shown(Path::new("secrets/a.b")),
+            data.join("secrets/a.b")
+        );
+    });
+}
+
+#[test]
+fn shown_of_a_relative_directory_is_absolute() {
+    let scratch = Scratch::new();
+    let cwd = std::env::current_dir().unwrap();
+    let up = "../".repeat(cwd.components().count() - 1);
+    let dir = Path::new(&up).join(scratch.0.strip_prefix("/").unwrap());
+    let threads = os::threads().unwrap();
+    let (disk, thread) = os::files(&dir, &threads, "files").unwrap();
+    let files = Files::new(disk);
+    assert_eq!(files.shown(Path::new("a")), cwd.join(&dir).join("data/a"));
+    drop(files);
+    thread.join().unwrap();
+}
+
+#[test]
+fn shown_of_a_stored_directory_joins_to_its_data_directory() {
+    let scratch = Scratch::new();
+    std::fs::create_dir(scratch.0.join("data")).unwrap();
+    let threads = os::threads().unwrap();
+    let (disk, thread) = os::stored(&scratch.0, &threads, "files").unwrap();
+    let files = Files::new(disk);
+    assert_eq!(files.shown(Path::new("a")), scratch.0.join("data/a"));
+    drop(files);
+    thread.join().unwrap();
 }

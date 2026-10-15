@@ -40,5 +40,6 @@
   "homes": {
     "site.time": "edge"
   },
-  "removed": 0
+  "removed": 0,
+  "reserved": []
 }

@@ -1,5 +1,5 @@
 //! The streams that a [`Link`](crate::Link) serves: remote reader sessions, and the
-//! hello and request streams of a client, and why one ends.
+//! hello, request, and read streams of a client, and why one ends.
 
 pub(crate) mod client;
 
@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::future::poll_fn;
-use std::pin::pin;
+use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::slice;
 use std::task::{Context, Poll};
@@ -25,16 +25,17 @@ use wire::hub::{
     BUSY, FAILED, FromReader, Head, Home, Mode, NOT_HOME, UNKNOWN, ends, keys,
 };
 
-use crate::reader::{Channels, Complete, Session, Stop};
+use crate::reader::{self, Channels, Complete, Session, Stop};
 use crate::{Away, Ending, State};
 
 pub use client::{Reply, Request};
 
-/// The most bytes of client request bodies that one hub holds at once, over each of
-/// its links: each from the decode of its request until the caller sends or drops
-/// its [`Reply`]. A request whose body does not fit stops with `BUSY` before the
-/// hub reads a byte of it. The requests of one subject hold at most
-/// [`BODY_BYTES_MAX`] of it ([`Error::Share`]).
+/// The most bytes of client bodies that one hub holds at once, over each of its links:
+/// the body of a request from its decode until the caller sends or drops its
+/// [`Reply`], and the open of a read until it decodes after the wait for the home of
+/// its index. A body that does not fit stops with `BUSY` before the hub reads a byte
+/// of it. The bodies of one subject hold at most [`BODY_BYTES_MAX`] of it
+/// ([`Error::Share`]).
 pub const BODIES_BYTES_MAX: u64 = 2 * BODY_BYTES_MAX;
 
 /// Why [`Link::serve`](crate::Link::serve) ended a stream.
@@ -77,32 +78,43 @@ pub enum Error {
     Access(access::proof::Error),
     /// The hello does not echo the nonce of the last challenge. Code `STALE`.
     Stale,
-    /// A request stream before the link admitted a hello. Code `MALFORMED`.
+    /// A request or read stream before the link admitted a hello. Code `MALFORMED`.
     Unadmitted,
     /// A request stream while another request of the link waits for its reply. Code
     /// `MALFORMED`.
     Pending,
-    /// The open requests of the hub hold so many body bytes that a body of `length`
-    /// more is over [`BODIES_BYTES_MAX`]. Code `BUSY`. The same request can succeed
-    /// once enough open requests reply.
+    /// The request bodies and read opens of the hub hold so many body bytes that a
+    /// body of `length` more is over [`BODIES_BYTES_MAX`]. Code `BUSY`. A retry can
+    /// succeed once enough of them are released.
     Bodies {
-        /// The body length of the refused request.
+        /// The body length of the refused request or read.
         length: u64,
-        /// The body bytes that the open requests of the hub held.
+        /// The body bytes that the open requests and reads of the hub held.
         held: u64,
     },
-    /// The open requests of `subject`, over each link of the hub, hold so many body
-    /// bytes that a body of `length` more is over the share of one subject,
-    /// [`BODY_BYTES_MAX`]. Code `BUSY`. The same request can succeed once enough open
-    /// requests of the subject reply.
+    /// The request bodies and read opens of `subject`, over each link of the hub, hold
+    /// so many body bytes that a body of `length` more is over the share of one
+    /// subject, [`BODY_BYTES_MAX`]. Code `BUSY`. A retry can succeed once enough of
+    /// them are released.
     Share {
         /// The subject of the link's admitted hello.
         subject: Name,
-        /// The body length of the refused request.
+        /// The body length of the refused request or read.
         length: u64,
-        /// The body bytes that the open requests of `subject` held.
+        /// The body bytes that the open requests and reads of `subject` held.
         held: u64,
     },
+    /// The reader of a read did not open. Code: `UNKNOWN` for [`reader::Error::Empty`],
+    /// `MALFORMED` for `ManyIndexes`, `NOT_HOME` for `Remote`, `BUSY` for `Pool`, the
+    /// code of the home's refusal but `FAILED` for its `MALFORMED`, and `FAILED` for
+    /// `Mesh`, `Transport`, and `Message`. A read gives no `Unsynced`.
+    Reader(Box<reader::Error>),
+    /// The reader of a read ended. Code: `UNKNOWN` for [`reader::Ended::Removed`],
+    /// `BUSY` for `Pool`, the code of the home's refusal but `FAILED` for its
+    /// `MALFORMED`, and `FAILED` for `Buffer`, `Stream`, `Message`, `Frame`, and
+    /// `Credit`. A read gives no `Behind`, which it sends as a reply before it finishes
+    /// the stream, and no `Replaced`.
+    Ended(Box<reader::Ended>),
 }
 
 impl Error {
@@ -127,11 +139,14 @@ impl Error {
                 Some(Code(BUSY))
             }
             Self::Stream(_) => None,
+            Self::Reader(error) => Some(Code(client::read::refused(error).code())),
+            Self::Ended(ended) => Some(Code(client::read::ended(ended).code())),
         }
     }
 }
 
 impl fmt::Display for Error {
+    #[expect(clippy::too_many_lines, reason = "one arm for each error")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Message(error) => write!(f, "a hub message is not valid: {error}"),
@@ -179,16 +194,16 @@ impl fmt::Display for Error {
                 "the hello does not echo the nonce of the node's last challenge",
             ),
             Self::Unadmitted => f.write_str(
-                "the program sent a request before the node admitted a hello",
+                "the program sent a request or a read before the node admitted a hello",
             ),
             Self::Pending => f.write_str(
                 "the program sent a request while another request waits for its reply",
             ),
             Self::Bodies { length, held } => write!(
                 f,
-                "a request body of {length} bytes does not fit under the cap of \
-                 {BODIES_BYTES_MAX} bytes: the open requests of the hub hold {held} \
-                 bytes"
+                "a body of {length} bytes does not fit under the cap of \
+                 {BODIES_BYTES_MAX} bytes: the open requests and reads of the hub hold \
+                 {held} bytes"
             ),
             Self::Share {
                 subject,
@@ -196,10 +211,14 @@ impl fmt::Display for Error {
                 held,
             } => write!(
                 f,
-                "a request body of {length} bytes does not fit under the share of \
-                 {BODY_BYTES_MAX} bytes of subject {subject}: its open requests hold \
-                 {held} bytes"
+                "a body of {length} bytes does not fit under the share of \
+                 {BODY_BYTES_MAX} bytes of subject {subject}: its open requests and \
+                 reads hold {held} bytes"
             ),
+            Self::Reader(error) => {
+                write!(f, "the reader of a read did not open: {error}")
+            }
+            Self::Ended(ended) => write!(f, "the reader of a read ended: {ended}"),
         }
     }
 }
@@ -289,48 +308,47 @@ async fn serve(
     // gives up a frame only in the poll that returns it.
     let mut peer = pin!(peer(receiver, home, complete.as_ref()));
     loop {
-        let event = {
-            let mut take = pin!(session.take());
-            // `take` polls after `peer` in each poll: a grant wakes no session, so a
-            // frame that waits for credit goes out only at the take after its grant
-            // (CREDIT RULES).
-            poll_fn(|cx| match peer.as_mut().poll(cx) {
-                Poll::Ready(finished) => Poll::Ready(Event::Finished(finished)),
-                Poll::Pending => take.as_mut().poll(cx).map(Event::Frame),
-            })
-            .await
+        // `unless` polls `peer` first, and a grant wakes no session, so a frame that
+        // waits for credit goes out at the take after its grant (CREDIT RULES).
+        let Some(taken) = unless(peer.as_mut(), session.take()).await? else {
+            sender.finish()?;
+            return Ok(());
         };
-        match event {
-            Event::Finished(finished) => {
-                finished?;
-                sender.finish()?;
-                return Ok(());
-            }
-            Event::Frame(Ok((frame, lens))) => {
+        match taken {
+            Ok((frame, lens)) => {
                 layout.send(state, sender, &frame, &lens.set).await?;
             }
-            Event::Frame(Err(Stop::Behind)) => {
+            Err(Stop::Behind) => {
                 sender.send(reply(state, wire::hub::Reply::Behind)?).await?;
                 sender.finish()?;
                 return Ok(());
             }
-            Event::Frame(Err(Stop::Buffer(error))) => {
-                return Err(Error::Buffer(error));
-            }
-            Event::Frame(Err(Stop::Removed(key))) => {
-                return Err(Error::Removed(key));
-            }
-            Event::Frame(Err(Stop::Replaced)) => {
+            Err(Stop::Buffer(error)) => return Err(Error::Buffer(error)),
+            Err(Stop::Removed(key)) => return Err(Error::Removed(key)),
+            Err(Stop::Replaced) => {
                 unreachable!("invariant: a served session has no name to take over")
             }
         }
     }
 }
 
-enum Event<F> {
-    /// The peer finished, or broke the stream or HUB WIRE.
-    Finished(Result<(), Error>),
-    Frame(Result<F, Stop>),
+/// Runs `work` until it ends, unless `peer` ends first: `None` when the peer finished,
+/// or the error of the peer. `peer` polls first in each poll, so the node does no work
+/// in a poll in which the peer ends.
+async fn unless<P, W>(
+    mut peer: Pin<&mut P>,
+    work: W,
+) -> Result<Option<W::Output>, Error>
+where
+    P: Future<Output = Result<(), Error>>,
+    W: Future,
+{
+    let mut work = pin!(work);
+    poll_fn(|cx| match peer.as_mut().poll(cx) {
+        Poll::Ready(finished) => Poll::Ready(finished.map(|()| None)),
+        Poll::Pending => work.as_mut().poll(cx).map(|output| Ok(Some(output))),
+    })
+    .await
 }
 
 /// Reads what the peer sends after the keys run, and grants each credit. Returns when
@@ -443,6 +461,7 @@ struct Opening<'s> {
 impl<'s> Opening<'s> {
     fn new(state: &'s Rc<RefCell<State>>) -> Self {
         let mut borrowed = state.borrow_mut();
+        borrowed.catch_up();
         let key = borrowed.opened;
         borrowed.opened += 1;
         let ending = borrowed.opens.add(key, Box::default());
@@ -457,8 +476,8 @@ impl<'s> Opening<'s> {
         }
     }
 
-    /// Fails with the first channel of the open that a call removed. Else sets the
-    /// waker that such a call wakes.
+    /// Fails with the first channel of the open that a change of the definitions
+    /// removed. Else sets the waker that such a change wakes.
     fn watch(&self, cx: &Context<'_>) -> Result<(), Error> {
         if let Some(key) = self.ending.removed() {
             return Err(Error::Removed(key));
@@ -468,8 +487,8 @@ impl<'s> Opening<'s> {
         Ok(())
     }
 
-    /// Reads the next message of the peer. Fails at once when a call removes a
-    /// channel of the open.
+    /// Reads the next message of the peer. Fails at once when a change of the
+    /// definitions removes a channel of the open.
     async fn recv(&self, receiver: &mut Receiver) -> Result<Option<Block>, Error> {
         let mut recv = pin!(receiver.recv());
         poll_fn(|cx| {
@@ -506,7 +525,7 @@ impl<'s> Opening<'s> {
     }
 
     /// Waits until the mesh names this node the home of the index. Fails at once when
-    /// a call removes a channel of the open.
+    /// a change of the definitions removes a channel of the open.
     ///
     /// # Panics
     ///
@@ -532,8 +551,8 @@ impl Drop for Opening<'_> {
 
 /// Waits until the mesh names this node the home of the index of `opening`, and reads
 /// the peer meanwhile. Gives the highest grant that the peer sent, 0 for none, or
-/// `None` when the peer finished first. Fails at once when a call removes a channel of
-/// `opening`.
+/// `None` when the peer finished first. Fails at once when a change of the
+/// definitions removes a channel of `opening`.
 async fn wait_for(
     opening: &Opening<'_>,
     home: &mut Home,
@@ -742,6 +761,133 @@ mod tests {
 
     fn key(key: u128) -> channel::Key {
         channel::Key::from_u128(key)
+    }
+
+    /// Each end of the reader of a read, but `Behind` and `Replaced`, stops it with
+    /// its code. A refusal of the home keeps its code. Only a remote reader gives a
+    /// refusal, `Error::Pool`, `Transport`, and `Message`, and `Ended::Pool`,
+    /// `Stream`, `Message`, `Frame`, and `Credit`. A read opens no remote reader until
+    /// #2419, so this test pins those arms.
+    #[test]
+    #[expect(clippy::too_many_lines, reason = "one case for each error")]
+    fn each_error_of_the_reader_of_a_read_has_its_code() {
+        let pool = block::Error::Exhausted {
+            requested: 1,
+            available: 0,
+        };
+        let refused = |refusal| {
+            (
+                reader::Error::Refused(refusal),
+                reader::Ended::Refused(refusal),
+            )
+        };
+        let mut cases = vec![
+            (Error::Reader(Box::new(reader::Error::Empty)), UNKNOWN),
+            (
+                Error::Reader(Box::new(reader::Error::Remote {
+                    home: types::node::Key::from_u128(2),
+                })),
+                NOT_HOME,
+            ),
+            (
+                Error::Reader(Box::new(reader::Error::ManyIndexes {
+                    first: "a".parse().expect("a name"),
+                    other: "b".parse().expect("a name"),
+                })),
+                MALFORMED,
+            ),
+            (
+                Error::Reader(Box::new(reader::Error::Pool(pool.clone()))),
+                BUSY,
+            ),
+            (
+                Error::Reader(Box::new(reader::Error::Mesh(mesh::Stopped::Dropped))),
+                FAILED,
+            ),
+            (
+                Error::Reader(Box::new(reader::Error::Transport(
+                    transport::Error::Unroutable,
+                ))),
+                FAILED,
+            ),
+            (
+                Error::Reader(Box::new(reader::Error::Message(
+                    wire::hub::Error::Empty,
+                ))),
+                FAILED,
+            ),
+            (
+                Error::Ended(Box::new(reader::Ended::Removed(key(2)))),
+                UNKNOWN,
+            ),
+            (Error::Ended(Box::new(reader::Ended::Pool(pool))), BUSY),
+            (
+                Error::Ended(Box::new(reader::Ended::Buffer(
+                    env::files::Error::Full {
+                        path: "ring".into(),
+                    },
+                ))),
+                FAILED,
+            ),
+            (
+                Error::Ended(Box::new(reader::Ended::Stream(
+                    transport::Error::Unroutable,
+                ))),
+                FAILED,
+            ),
+            (
+                Error::Ended(Box::new(reader::Ended::Message(wire::hub::Error::Empty))),
+                FAILED,
+            ),
+            (
+                Error::Ended(Box::new(reader::Ended::Frame(
+                    frame::Error::OutOfRange {
+                        entry: 1,
+                        entries: 1,
+                    },
+                ))),
+                FAILED,
+            ),
+            (
+                Error::Ended(Box::new(reader::Ended::Credit { limit_bytes: 1 })),
+                FAILED,
+            ),
+        ];
+        for (refusal, code) in [
+            (wire::hub::Refusal::Malformed, FAILED),
+            (wire::hub::Refusal::Unknown, UNKNOWN),
+            (wire::hub::Refusal::NotHome, NOT_HOME),
+            (wire::hub::Refusal::Failed, FAILED),
+            (wire::hub::Refusal::Busy, BUSY),
+        ] {
+            let (error, ended) = refused(refusal);
+            cases.extend([
+                (Error::Reader(Box::new(error)), code),
+                (Error::Ended(Box::new(ended)), code),
+            ]);
+        }
+        for (error, code) in cases {
+            assert_eq!(error.code(), Some(Code(code)), "{error:?}");
+        }
+    }
+
+    /// The per-frame results of the serve loops hold an `Error`, so a large rare cause
+    /// is boxed.
+    #[test]
+    fn keeps_an_error_at_64_bytes() {
+        assert_eq!(size_of::<Error>(), 64);
+    }
+
+    #[test]
+    #[should_panic(expected = "invariant: an unnamed reader does not give Unsynced")]
+    fn panics_for_the_code_of_an_error_that_only_a_named_reader_gives() {
+        Error::Reader(Box::new(reader::Error::Unsynced)).code();
+    }
+
+    #[test]
+    #[should_panic(expected = "invariant: a read does not end as Replaced")]
+    fn panics_for_the_code_of_an_end_that_a_read_sends_or_never_has() {
+        Error::Ended(Box::new(reader::Ended::Replaced)).code();
     }
 
     /// A frame of `data` on index 1, with `lens` bytes in each series by entry.

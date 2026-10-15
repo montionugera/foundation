@@ -104,9 +104,29 @@ fn admin(sim: &mut sim::Sim, host: &sim::node::Node) -> PrivateKey {
     PrivateKey(bytes[18..50].try_into().unwrap())
 }
 
+/// The status of the one member of `founding`, after a check that it holds a distinct
+/// UUIDv7 key after the Unix epoch for each name of [`crate::status::names`], and no
+/// other name.
+fn keys(founding: &Founding) -> Status {
+    let [member] = founding.members.as_slice() else {
+        panic!("one member: {founding:?}");
+    };
+    let status = member.status.as_map();
+    assert!(status.keys().eq(&crate::status::names()), "{status:?}");
+    let distinct: BTreeSet<_> = status.values().collect();
+    assert_eq!(distinct.len(), status.len(), "{status:?}");
+    for key in status.values() {
+        let bits = key.as_u128();
+        assert_eq!(bits >> 76 & 0xf, 7, "the version of {key}");
+        assert_eq!(bits >> 62 & 0b11, 0b10, "the variant of {key}");
+        assert_ne!(bits >> 80, 0, "the time of {key}");
+    }
+    member.status.clone()
+}
+
 /// The root region that the node [`OWN`] on `host` founds alone, as `edge`, whose spec
-/// holds the first admin `admin`.
-fn root(host: &sim::node::Node, admin: &PrivateKey) -> Founding {
+/// holds the first admin `admin`, with the status keys of `stored` ([`keys`]).
+fn root(host: &sim::node::Node, admin: &PrivateKey, stored: &Founding) -> Founding {
     let card = Card {
         name: "edge".parse().unwrap(),
         public_key: KEY.public(),
@@ -118,7 +138,7 @@ fn root(host: &sim::node::Node, admin: &PrivateKey) -> Founding {
         card: card::Signed::sign(OWN, card, &KEY),
         admission: [0; 64],
         ephemeral: None,
-        status: Status::new(BTreeMap::new()).unwrap(),
+        status: keys(stored),
     };
     Founding {
         prefix: Prefix::ROOT,
@@ -136,7 +156,8 @@ fn the_first_start_founds_the_root_region_alone() {
     assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
     let admin = admin(&mut sim, &host);
     assert_ne!(admin.0, KEY.0, "the admin is not the node");
-    assert_eq!(stored(&mut sim, &host), Some(root(&host, &admin)));
+    let stored = stored(&mut sim, &host).expect("a founding");
+    assert_eq!(stored, root(&host, &admin, &stored));
 }
 
 /// Two first starts on two hosts make two admin keys from the entropy.
@@ -196,8 +217,8 @@ fn a_first_start_founds_with_the_admin_key_of_the_corpus() {
     let host = keyed(&mut sim, 2);
     write(&mut sim, &host, FILE, valid.to_vec());
     assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
-    let founded = root(&host, &PrivateKey([7; 32]));
-    assert_eq!(stored(&mut sim, &host), Some(founded));
+    let stored = stored(&mut sim, &host).expect("a founding");
+    assert_eq!(stored, root(&host, &PrivateKey([7; 32]), &stored));
     assert_eq!(bytes(&mut sim, &host, FILE), Some(valid.to_vec()));
 }
 
@@ -211,7 +232,8 @@ fn a_first_start_removes_a_new_admin_key_that_a_crash_left() {
         write(&mut sim, &host, NEW, bytes);
         assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
         let admin = admin(&mut sim, &host);
-        assert_eq!(stored(&mut sim, &host), Some(root(&host, &admin)));
+        let stored = stored(&mut sim, &host).expect("a founding");
+        assert_eq!(stored, root(&host, &admin, &stored));
         assert!(!listed(&mut sim, &host, "").contains(&PathBuf::from(NEW)));
     }
 }
@@ -260,9 +282,9 @@ fn a_power_cut_during_the_first_start_keeps_the_admin_of_the_region() {
             if let Some(written) = written {
                 assert_eq!(written.0, admin.0, "{seed} {after:?}");
             }
-            let founded = Some(root(&host, &admin));
-            assert_eq!(stored(&mut sim, &host), founded, "{seed} {after:?}");
-            if kept.is_some() {
+            let founded = stored(&mut sim, &host).expect("a founding");
+            assert_eq!(founded, root(&host, &admin, &founded), "{seed} {after:?}");
+            if let Some(kept) = kept {
                 assert_eq!(kept, founded, "{seed} {after:?}");
                 break;
             }
@@ -349,9 +371,72 @@ fn a_failed_file_call_on_the_admin_key_stops_the_node() {
         if path == FILE {
             assert_eq!(admin.0, [7; 32], "{operation:?} {path}");
         }
-        let founded = Some(root(&host, &admin));
-        assert_eq!(stored(&mut sim, &host), founded, "{operation:?} {path}");
+        let founded = stored(&mut sim, &host).expect("a founding");
+        let root = root(&host, &admin, &founded);
+        assert_eq!(founded, root, "{operation:?} {path}");
     }
+}
+
+/// A stored founding whose member has no status keys starts, and a later start keeps
+/// it as it is: the start gives no keys to a record that lacks them.
+#[test]
+fn a_later_start_keeps_a_stored_member_with_no_status_keys() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    let first = start_and_stop(&mut sim, &host);
+    assert_eq!(first, Ok(()));
+    let mut given = stored(&mut sim, &host).expect("a founding");
+    given.members[0].status = Status::new(BTreeMap::new()).unwrap();
+    let host = keyed(&mut sim, 3);
+    let node = Node::start(Config {
+        region: Region::Given(given.clone()),
+        ..config(&host, Size::MEBIBYTE, Box::new(heap))
+    });
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    node.stop();
+    assert_eq!(sim.run(), Ok(()));
+    assert_eq!(node.join(), Ok(()));
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    assert_eq!(stored(&mut sim, &host), Some(given));
+}
+
+/// A name of 192 bytes leaves no room for `.<status>` in a name of 255 bytes, so the
+/// start gives `Error::Long`, starts no shard, and keeps no name. A name of 191 bytes
+/// founds the region, and its member holds each status name.
+#[test]
+fn a_name_longer_than_191_bytes_starts_no_shard() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    let long: types::name::Name = "a".repeat(192).parse().unwrap();
+    let (made, starts) = (listed(&mut sim, &host, ""), host.shard_starts());
+    let node = Node::start(Config {
+        region: Region::Stored,
+        name: long.clone(),
+        ..config(&host, Size::MEBIBYTE, Box::new(heap))
+    });
+    assert_eq!(sim.run(), Ok(()));
+    let error = Error::Long { name: long };
+    assert_eq!(node.join(), Err(error.clone()));
+    assert_eq!(host.shard_starts(), starts);
+    assert_eq!(listed(&mut sim, &host, ""), made, "keeps no name");
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "the name {} is longer than 191 bytes, the most that leaves room for the \
+             name of each status channel of the node",
+            "a".repeat(192)
+        )
+    );
+    let node = Node::start(Config {
+        region: Region::Stored,
+        name: "a".repeat(191).parse().unwrap(),
+        ..config(&host, Size::MEBIBYTE, Box::new(heap))
+    });
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    node.stop();
+    assert_eq!(sim.run(), Ok(()));
+    assert_eq!(node.join(), Ok(()));
+    keys(&stored(&mut sim, &host).expect("a founding"));
 }
 
 /// A founding that does not read stops the node before it makes `admin.key`.
@@ -568,21 +653,65 @@ fn a_founding_that_does_not_read_after_the_name_file_is_gone_fails_the_name() {
     assert_eq!(named(&mut sim, &host), Err(Error::Mesh(error)));
 }
 
-/// With no file `name` and no file `node.key`, [`crate::name`] reads no founding, so a
-/// founding that does not read gives no error.
+/// With no file `name` and no file `node.key`, [`crate::name`] reads the founding, so
+/// a founding that does not read gives its error.
 #[test]
-fn a_directory_with_no_node_key_reads_no_founding_for_the_name() {
+fn a_founding_that_does_not_read_with_no_node_key_fails_the_name() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = keyed(&mut sim, 2);
     assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
     remove_name(&mut sim, &host);
     remove(&mut sim, &host, identity::FILE);
-    host.fail_file(Path::new(FOUNDING), env::files::Operation::ReadAt);
-    assert_eq!(named(&mut sim, &host), Err(Error::Unnamed));
+    let operation = env::files::Operation::ReadAt;
+    host.fail_file(Path::new(FOUNDING), operation);
+    let error = ::mesh::Error::Files(env::files::Error::Io {
+        path: PathBuf::from(FOUNDING),
+        operation,
+        code: 5,
+    });
+    assert_eq!(named(&mut sim, &host), Err(Error::Mesh(error)));
 }
 
-/// With no file `name`, no file `node.key`, or the key of a node with no card in the
-/// founding, gives no stored name, and a file `node.key` that a node did not write
+/// With no file `name`, a list of the mesh's directory that fails gives
+/// [`Error::Directory`].
+#[test]
+fn a_mesh_directory_that_does_not_list_gives_its_error() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    remove_name(&mut sim, &host);
+    let operation = env::files::Operation::List;
+    host.fail_file(Path::new("mesh"), operation);
+    let error = env::files::Error::Io {
+        path: PathBuf::from("mesh"),
+        operation,
+        code: 5,
+    };
+    assert_eq!(named(&mut sim, &host), Err(Error::Directory(error)));
+}
+
+/// With no file `name`, a founding that does not read gives its error before a file
+/// `node.key` that a node did not write.
+#[test]
+fn a_founding_that_does_not_read_comes_before_a_node_key_that_is_not_a_key() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    remove_name(&mut sim, &host);
+    remove(&mut sim, &host, identity::FILE);
+    write(&mut sim, &host, identity::FILE, Vec::new());
+    let operation = env::files::Operation::ReadAt;
+    host.fail_file(Path::new(FOUNDING), operation);
+    let error = ::mesh::Error::Files(env::files::Error::Io {
+        path: PathBuf::from(FOUNDING),
+        operation,
+        code: 5,
+    });
+    assert_eq!(named(&mut sim, &host), Err(Error::Mesh(error)));
+}
+
+/// With no file `name`, no file `node.key` or the key of a node with no card in the
+/// founding gives [`Error::NoCard`], and a file `node.key` that a node did not write
 /// gives [`Error::Key`].
 #[test]
 fn the_card_name_is_the_one_of_the_key_in_node_key() {
@@ -591,14 +720,12 @@ fn the_card_name_is_the_one_of_the_key_in_node_key() {
     assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
     remove_name(&mut sim, &host);
     let own = bytes(&mut sim, &host, identity::FILE).expect("the file");
-    let mut another: [u8; identity::LEN] = own.clone().try_into().unwrap();
-    another[31] ^= 1;
-    crate::sector::checksum(&mut another);
+    let another = another_key(&own);
     let mut foreign = own.clone();
     foreign[40] ^= 1;
     let cases = [
-        (None, Err(Error::Unnamed)),
-        (Some(another.to_vec()), Err(Error::Unnamed)),
+        (None, Err(Error::NoCard)),
+        (Some(another), Err(Error::NoCard)),
         (Some(foreign), Err(Error::Key)),
         (Some(Vec::new()), Err(Error::Key)),
         (Some(vec![0; identity::LEN]), Err(Error::Key)),
@@ -611,6 +738,19 @@ fn the_card_name_is_the_one_of_the_key_in_node_key() {
         }
         assert_eq!(named(&mut sim, &host), name, "{key:?}");
     }
+}
+
+/// With no file `name` and no founding, a file `node.key` that a node did not write
+/// gives [`Error::Key`], not [`Error::Unnamed`], and a start stops and writes no name.
+#[test]
+fn a_node_key_that_is_not_a_key_comes_before_unnamed() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = sim.node(sim::node::Config::default());
+    write_key(&mut sim, &host, Vec::new());
+    assert_eq!(named(&mut sim, &host), Err(Error::Key));
+    let found = start_as(&mut sim, &host, Region::Absent, "edge");
+    assert_eq!(found, Err(Error::Key));
+    assert_eq!(kept(&mut sim, &host), None);
 }
 
 /// A start with no file `name`, whose file `node.key` does not read, stops the node
@@ -649,4 +789,112 @@ fn the_name_file_comes_before_the_card_name() {
     let file: [u8; crate::name::LEN] = crate::sector::summed(&body).expect("a body");
     write(&mut sim, &host, crate::name::FILE, file.to_vec());
     assert_eq!(named(&mut sim, &host), Ok("other".parse().unwrap()));
+}
+
+/// Starts the node on `host` with `region` and the name `name`, runs `sim` for a
+/// second, then stops it and gives the error of its join.
+#[expect(
+    clippy::unwrap_in_result,
+    reason = "a test helper panics on a name that does not parse"
+)]
+fn start_as(
+    sim: &mut sim::Sim,
+    host: &sim::node::Node,
+    region: Region,
+    name: &str,
+) -> Result<(), Error> {
+    let node = Node::start(Config {
+        region,
+        name: name.parse().unwrap(),
+        ..config(host, Size::MEBIBYTE, Box::new(heap))
+    });
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    node.stop();
+    assert_eq!(sim.run(), Ok(()));
+    node.join()
+}
+
+/// A key of the node that has no card in the founding of [`root`].
+fn another_key(own: &[u8]) -> Vec<u8> {
+    let mut another: [u8; identity::LEN] = own.try_into().unwrap();
+    another[31] ^= 1;
+    crate::sector::checksum(&mut another);
+    another.to_vec()
+}
+
+/// A start with no file `name` and no file `node.key`, on a data directory that stores
+/// a founding, stops and writes nothing. With the key back, the card name runs.
+#[test]
+fn a_start_with_no_name_file_and_no_node_key_stops_and_writes_nothing() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    remove_name(&mut sim, &host);
+    let own = bytes(&mut sim, &host, identity::FILE).expect("the file");
+    remove(&mut sim, &host, identity::FILE);
+    let found = start_as(&mut sim, &host, Region::Stored, "other");
+    assert_eq!(found, Err(Error::NoCard));
+    assert_eq!(kept(&mut sim, &host), None);
+    assert_eq!(bytes(&mut sim, &host, identity::FILE), None);
+    write(&mut sim, &host, identity::FILE, own);
+    let renamed = Error::Renamed {
+        stored: "edge".parse().unwrap(),
+        given: "other".parse().unwrap(),
+    };
+    let found = start_as(&mut sim, &host, Region::Stored, "other");
+    assert_eq!(found, Err(renamed));
+    assert_eq!(start_as(&mut sim, &host, Region::Stored, "edge"), Ok(()));
+}
+
+/// A start with no file `name` and the key of another node in `node.key`, on a data
+/// directory that stores a founding, stops and writes nothing.
+#[test]
+fn a_start_with_no_name_file_and_a_key_with_no_card_stops_and_writes_nothing() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    remove_name(&mut sim, &host);
+    let own = bytes(&mut sim, &host, identity::FILE).expect("the file");
+    let another = another_key(&own);
+    remove(&mut sim, &host, identity::FILE);
+    write(&mut sim, &host, identity::FILE, another.clone());
+    let found = start_as(&mut sim, &host, Region::Stored, "edge");
+    assert_eq!(found, Err(Error::NoCard));
+    assert_eq!(kept(&mut sim, &host), None);
+    assert_eq!(bytes(&mut sim, &host, identity::FILE), Some(another));
+}
+
+/// A start with [`Region::Absent`] and no file `name` and no file `node.key`, on a
+/// data directory that stores a founding, stops and writes nothing.
+#[test]
+fn a_start_with_no_region_and_no_node_key_on_a_stored_founding_stops() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    remove_name(&mut sim, &host);
+    remove(&mut sim, &host, identity::FILE);
+    let found = start_as(&mut sim, &host, Region::Absent, "edge");
+    assert_eq!(found, Err(Error::NoCard));
+    assert_eq!(kept(&mut sim, &host), None);
+    assert_eq!(bytes(&mut sim, &host, identity::FILE), None);
+}
+
+/// A start with a file `name` and the key of another node in `node.key`, on a data
+/// directory that stores a founding: the open of the region refuses the key, and a
+/// start with [`Region::Absent`] opens no region.
+#[test]
+fn a_key_with_no_card_and_a_name_file_fails_only_the_open_of_the_region() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    let own = bytes(&mut sim, &host, identity::FILE).expect("the file");
+    remove(&mut sim, &host, identity::FILE);
+    write(&mut sim, &host, identity::FILE, another_key(&own));
+    let key = sim.run_on(&host, |host, _| async move {
+        identity::key(&host.files()).await.unwrap().expect("a key")
+    });
+    let error = mesh::Error::NotMember(key.expect("the run ends"));
+    let found = start_as(&mut sim, &host, Region::Stored, "edge");
+    assert_eq!(found, Err(Error::Mesh(error)));
+    assert_eq!(start_as(&mut sim, &host, Region::Absent, "edge"), Ok(()));
 }

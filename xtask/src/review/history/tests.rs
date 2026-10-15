@@ -4,8 +4,8 @@ use super::*;
 
 /// A git repository in a fresh temporary directory. Each test ends with `remove`, so
 /// a test that fails leaves its directory.
-pub(in crate::review) struct Repo {
-    pub(in crate::review) dir: PathBuf,
+pub(crate) struct Repo {
+    pub(crate) dir: PathBuf,
 }
 
 impl Repo {
@@ -24,16 +24,19 @@ impl Repo {
     }
 
     /// A `git` command in the repository as `History` makes it, with an identity and
-    /// no global ignore file, so the machine's settings cannot change a test.
+    /// no global ignore file, so the machine's settings cannot change a test. No
+    /// commit starts a background `git maintenance`, which can write in `.git` while
+    /// `remove` deletes it.
     fn command(&self) -> Command {
         let mut command = command(&self.dir);
         command
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
-            .args(["-c", "core.excludesFile=/dev/null"]);
+            .args(["-c", "core.excludesFile=/dev/null"])
+            .args(["-c", "maintenance.auto=false"]);
         command
     }
 
-    pub(in crate::review) fn git(&self, args: &[&str]) -> String {
+    pub(crate) fn git(&self, args: &[&str]) -> String {
         let output = self.command().args(args).output().unwrap();
         assert!(output.status.success(), "git {args:?}: {output:?}");
         String::from_utf8(output.stdout).unwrap().trim().to_string()
@@ -64,7 +67,7 @@ impl Repo {
 
     /// A repository with `main` at one commit and the branch `pr` one commit after
     /// it. Returns the repository and the commit on `pr`.
-    pub(in crate::review) fn with_pr(name: &str) -> (Self, String) {
+    pub(crate) fn with_pr(name: &str) -> (Self, String) {
         let repo = Self::new(name);
         let base = repo.commit("a.txt", "base\n");
         repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
@@ -108,7 +111,8 @@ impl Repo {
     /// Whether a last round with a `Text fixes:` line that ends at `end` passes at
     /// `head`.
     fn passes(&self, end: &str, head: &str) -> Result<bool, String> {
-        Ok(self.place(end, head)? != Place::Off
+        let place = self.place(end, head)?;
+        Ok(matches!(place, Place::Head | Place::Before)
             && self.code_change(end, head)?.is_none())
     }
 
@@ -125,11 +129,29 @@ impl Repo {
     /// # Panics
     ///
     /// When the removal fails.
-    pub(in crate::review) fn remove(self) {
+    pub(crate) fn remove(self) {
         if let Err(e) = std::fs::remove_dir_all(&self.dir) {
             panic!("remove {}: {e}", self.dir.display());
         }
     }
+}
+
+#[test]
+fn a_commit_starts_no_background_maintenance() {
+    let repo = Repo::new("maintenance");
+    std::fs::write(repo.dir.join("a.txt"), "a\n").unwrap();
+    repo.git(&["add", "a.txt"]);
+    let output = repo
+        .command()
+        .env("GIT_TRACE", "1")
+        .args(["commit", "--quiet", "-m", "a"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let trace = String::from_utf8(output.stderr).unwrap();
+    assert!(trace.contains("built-in: git commit"), "{trace}");
+    assert!(!trace.contains("git maintenance run"), "{trace}");
+    repo.remove();
 }
 
 #[test]
@@ -180,7 +202,7 @@ fn refuses_a_merge_that_resolves_a_conflict() {
     std::fs::write(repo.dir.join("a.txt"), "resolved\n").unwrap();
     repo.git(&["add", "a.txt"]);
     repo.git(&["commit", "--quiet", "--no-edit"]);
-    assert_eq!(repo.place(&end, &repo.head()), Ok(Place::Off));
+    assert_eq!(repo.place(&end, &repo.head()), Ok(Place::Unclean));
     repo.remove();
 }
 
@@ -191,7 +213,7 @@ fn refuses_a_clean_merge_with_an_added_change() {
     repo.git(&["merge", "--quiet", "--no-edit", "origin/main"]);
     std::fs::write(repo.dir.join("b.txt"), "slipped in\n").unwrap();
     repo.git(&["commit", "--quiet", "--all", "--amend", "--no-edit"]);
-    assert_eq!(repo.place(&end, &repo.head()), Ok(Place::Off));
+    assert_eq!(repo.place(&end, &repo.head()), Ok(Place::Unclean));
     repo.remove();
 }
 
@@ -203,6 +225,26 @@ fn refuses_a_merge_of_a_branch_that_is_not_main() {
     repo.git(&["switch", "--quiet", "pr"]);
     repo.git(&["merge", "--quiet", "--no-edit", &other]);
     assert_eq!(repo.code_change(&end, &repo.head()), Ok(None));
+    assert_eq!(repo.place(&end, &repo.head()), Ok(Place::Off));
+    repo.remove();
+}
+
+#[test]
+fn a_merge_of_another_branch_is_off_also_before_a_merge_that_is_not_clean() {
+    let (repo, end) = Repo::with_pr("other-then-conflict");
+    repo.git(&["switch", "--quiet", "-c", "other", "main"]);
+    let other = repo.commit("c.md", "other\n");
+    repo.git(&["switch", "--quiet", "pr"]);
+    repo.git(&["merge", "--quiet", "--no-edit", &other]);
+    repo.commit("a.txt", "pr side\n");
+    repo.advance_main("a.txt", "main side\n");
+    repo.command()
+        .args(["merge", "--no-edit", "origin/main"])
+        .output()
+        .unwrap();
+    std::fs::write(repo.dir.join("a.txt"), "resolved\n").unwrap();
+    repo.git(&["add", "a.txt"]);
+    repo.git(&["commit", "--quiet", "--no-edit"]);
     assert_eq!(repo.place(&end, &repo.head()), Ok(Place::Off));
     repo.remove();
 }
@@ -1059,7 +1101,7 @@ fn text_of_an_earlier_round_that_the_base_moves_into_a_code_file_counts() {
         Some("fn unreviewed() {}")
     );
     assert_eq!(repo.passes(&end, &merge), Ok(false));
-    assert_eq!(repo.place(&end, &merge), Ok(Place::Off));
+    assert_eq!(repo.place(&end, &merge), Ok(Place::Unclean));
     assert_eq!(
         repo.code_change(&end, &merge),
         Ok(Some(

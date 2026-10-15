@@ -123,6 +123,8 @@ fn start_node(
         listen,
         region: node::Region::Absent,
         name: "edge".parse().expect("a name"),
+        settings: node::Settings::default(),
+        vars: std::collections::BTreeMap::new(),
     })
 }
 
@@ -143,6 +145,10 @@ impl Driver for Slow {
         })
     }
 
+    fn open_absolute<'a>(&'a self, path: &'a Path) -> Request<'a, Box<dyn Descriptor>> {
+        self.0.open_absolute(path)
+    }
+
     fn list<'a>(&'a self, dir: &'a Path) -> Request<'a, Vec<PathBuf>> {
         self.0.list(dir)
     }
@@ -161,6 +167,10 @@ impl Driver for Slow {
 
     fn free(&self) -> Request<'_, u64> {
         self.0.free()
+    }
+
+    fn shown(&self, path: &Path) -> PathBuf {
+        self.0.shown(path)
     }
 }
 

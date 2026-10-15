@@ -127,6 +127,7 @@ const POOL_RULE: &str = "must hold a message of at least 1472 bytes";
 pub struct Transport {
     carrier: quic::Carrier,
     public_key: PublicKey,
+    message_bytes_max: usize,
     table: Rc<RefCell<Table>>,
 }
 
@@ -151,11 +152,14 @@ impl Transport {
     pub fn new(config: Config, part: port::Part) -> Result<Self, Error> {
         let public_key = config.private_key.public();
         let tasks = config.tasks.clone();
-        let carrier = quic::Carrier::new(config.setup()?, part);
+        let setup = config.setup()?;
+        let message_bytes_max = setup.message_bytes_max;
+        let carrier = quic::Carrier::new(setup, part);
         let table = Table::new(public_key, tasks, carrier.handle());
         Ok(Self {
             carrier,
             public_key,
+            message_bytes_max,
             table,
         })
     }
@@ -170,6 +174,21 @@ impl Transport {
     #[must_use]
     pub fn public_key(&self) -> PublicKey {
         self.public_key
+    }
+
+    /// The largest message that this node takes on a stream, and the largest datagram:
+    /// the smaller of [`Config::message_bytes_max`] and the largest block of
+    /// [`Config::pool`]. It is at least 1472, since [`Transport::new`] refuses a
+    /// smaller limit. Peers get it in the handshake.
+    ///
+    /// ```
+    /// fn limit(transport: &transport::Transport) -> usize {
+    ///     transport.message_bytes_max()
+    /// }
+    /// ```
+    #[must_use]
+    pub fn message_bytes_max(&self) -> usize {
+        self.message_bytes_max
     }
 
     /// Gives the session to the node `peer`: the open one, from a dial or from the
@@ -327,10 +346,18 @@ pub struct Config {
     /// exchange their limits in the handshake, and each sender checks the peer's.
     pub message_bytes_max: NonZeroUsize,
     /// The most bytes in flight per session in each direction: sent and not yet
-    /// acknowledged, or received and not yet taken. It bounds the memory of a session.
-    /// Size it near bandwidth times round trip. Must be at least twice the message
-    /// limit (the smaller of `message_bytes_max` and `pool.largest()`), so a message
-    /// of one class leaves room for a message of the other.
+    /// acknowledged, or received and not yet taken. A sent byte stays in flight until
+    /// the peer acknowledges it and each byte before it on its stream, or the stream
+    /// resets, so a session holds at most this many sent bytes against any peer. While
+    /// the window is full, the session takes no new byte to send, of any class. Each
+    /// held run of over 1452 bytes of a block holds the whole block: at most
+    /// `window_bytes / 1453` blocks, plus two for each stream. Size it near bandwidth
+    /// times round trip, and larger for a path that loses or reorders packets, where
+    /// each gap holds the window until its repair: with 1 ms of jitter at 12.5 MB/s and
+    /// a round trip of 20 ms, a window of about 1, 4, and 8 times that product sent
+    /// 16 MiB in 4.3 s, 2.5 s, and 2.2 s. Must be at least twice the message limit (the
+    /// smaller of `message_bytes_max` and `pool.largest()`), so a message of one class
+    /// leaves room for a message of the other.
     pub window_bytes: usize,
     /// The most two-way streams, and apart from them the most one-way streams, a peer
     /// may have open to this node at once, per session. Size it near the rate of new
@@ -504,6 +531,24 @@ mod tests {
                 let config = config(shard, Span::SECOND, 2 * largest, message);
                 let new = Transport::new(config, shard.part());
                 assert_eq!(new.err(), None, "{message} bytes");
+            }
+        });
+    }
+
+    #[test]
+    fn message_bytes_max_is_the_smaller_of_the_config_and_the_largest_block() {
+        testing::run(0, |shard| {
+            let largest = largest(shard);
+            for (message, expected) in [
+                (1472, 1472),
+                (largest - 1, largest - 1),
+                (largest, largest),
+                (largest + 1, largest),
+                (usize::MAX, largest),
+            ] {
+                let config = config(shard, Span::SECOND, 2 * largest, message);
+                let transport = Transport::new(config, shard.part()).expect("valid");
+                assert_eq!(transport.message_bytes_max(), expected, "{message} bytes");
             }
         });
     }

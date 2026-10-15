@@ -8,8 +8,8 @@ use block::Block;
 use buffer::{Buffer, Entry, Layout};
 use control::{Handoff, Writer};
 use types::authority::Authority;
-use types::channel::Slot;
-use types::frame::{Path, key_set};
+use types::channel::{self, Slot};
+use types::frame::Path;
 use types::name::Name;
 use types::time::Stamp;
 
@@ -23,9 +23,9 @@ const _: () = assert!(
     "a handoff fits one entry of any ring"
 );
 
-/// The buffer entry that records `handoff` on the live path of `index` at seq `first`,
-/// at mesh time `stored_at`. Its body is a block from `pool`, or no part when no
-/// writer holds control.
+/// The buffer entry that records `handoff` on the live path of the index `index` at
+/// `slot`, at seq `first` and mesh time `stored_at`. Its body is a block from `pool`,
+/// or no part when no writer holds control.
 ///
 /// # Errors
 ///
@@ -33,13 +33,14 @@ const _: () = assert!(
 pub(crate) fn entry(
     pool: &block::Pool,
     handoff: Handoff<'_>,
-    index: &key_set::Entry,
+    index: channel::Key,
+    slot: Slot,
     first: u64,
     stored_at: Stamp,
 ) -> Result<Entry, block::Error> {
     Ok(Entry {
-        index: index.key,
-        slot: index.slot,
+        index,
+        slot,
         path: Path::Live,
         first,
         len: 0,
@@ -114,11 +115,9 @@ fn read(body: &[u8]) -> Option<Writer> {
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
-    use types::channel::Slot;
-    use types::frame::key_set::Group;
 
     use super::*;
-    use crate::common::{create_pool, intern, key};
+    use crate::common::{create_pool, key};
 
     fn writer(subject: &str, authority: u8) -> Writer {
         Writer {
@@ -130,15 +129,6 @@ mod tests {
     mod entry {
         use super::*;
 
-        /// The index entry of slot 4 in a key set of its own.
-        fn index() -> key_set::Entry {
-            let set = intern(&[Group {
-                index: key(Slot::new(4)),
-                data: &[],
-            }]);
-            set.entries()[0]
-        }
-
         #[test]
         fn records_the_holder_on_the_live_path_at_first() {
             let holder = writer("plant.pump-1", 7);
@@ -147,7 +137,8 @@ mod tests {
             let entry = entry(
                 &create_pool(4096),
                 Handoff { to: Some(&holder) },
-                &index(),
+                key(Slot::new(4)),
+                Slot::new(4),
                 12,
                 stored_at,
             )
@@ -169,7 +160,8 @@ mod tests {
             let entry = entry(
                 &create_pool(4096),
                 Handoff { to: None },
-                &index(),
+                key(Slot::new(4)),
+                Slot::new(4),
                 12,
                 Stamp::from_nanos(9),
             )

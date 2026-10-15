@@ -9,7 +9,11 @@ use types::hello::Hello;
 use types::name::Name;
 use types::time::Span;
 use wire::Protocol;
-use wire::hub::client::{Challenge, Request, Response, Signed};
+use wire::hub::FromHome;
+use wire::hub::client::{
+    self, Challenge, FromNode, Mode, Open, Place, Places, Read, Request, Response,
+    Signed,
+};
 
 use crate::net::{HOME, NODE, own_pool, public_key};
 
@@ -32,6 +36,8 @@ pub(crate) struct Stream {
     pool: std::rc::Rc<block::Pool>,
     pub(crate) sender: Sender,
     pub(crate) receiver: Receiver,
+    /// The mode of the read that the stream sent.
+    mode: Option<Mode>,
 }
 
 impl Stream {
@@ -58,9 +64,64 @@ impl Stream {
         }
     }
 
+    /// Sends a read of `open`, signed with `key` as a `kind`, and the open in one
+    /// message.
+    pub(crate) async fn read(
+        &mut self,
+        open: &Open,
+        kind: access::proof::Kind,
+        key: &PrivateKey,
+    ) {
+        let mut body = vec![0; open.encoded_len()];
+        open.encode(&mut body);
+        let signed = access::proof::signed(kind, CONNECTION, &body);
+        let read = Read {
+            length: u64::try_from(body.len()).expect("an open fits a u64"),
+            signature: Pair::new(key).sign(&signed),
+        };
+        let mut out = [0; Read::LEN];
+        read.encode(&mut out);
+        self.send(&out).await;
+        self.send(&body).await;
+        self.mode = Some(open.mode);
+    }
+
     /// The next message from the node, `None` once it finished.
     pub(crate) async fn recv(&mut self) -> Result<Option<Vec<u8>>, transport::Error> {
         Ok(self.receiver.recv().await?.map(|block| block.to_vec()))
+    }
+
+    /// Reads the start of the read that the stream sent: the places, their run, and
+    /// `Opened`. Gives the places, the run, and the decoder of the frames.
+    ///
+    /// # Panics
+    ///
+    /// When the stream sent no read.
+    pub(crate) async fn opened(&mut self) -> (Places, Vec<Place>, wire::hub::Reader) {
+        let mode = self.mode.expect("the stream sent a read");
+        let mut start = client::Reader::new(mode);
+        let mut next = async || {
+            let message = self.recv().await.expect("receives");
+            message.expect("a message before the finish")
+        };
+        let Ok(FromNode::Places(places)) = start.decode(&next().await) else {
+            panic!("the places come first");
+        };
+        let mut run = Vec::new();
+        let mut reader = loop {
+            let Ok(FromNode::Run { places, home }) = start.decode(&next().await) else {
+                panic!("a message of the run of places");
+            };
+            run.extend(places);
+            if let Some(home) = home {
+                break home;
+            }
+        };
+        assert!(
+            matches!(reader.decode(&next().await), Ok(FromHome::Opened)),
+            "then `Opened`"
+        );
+        (places, run, reader)
     }
 
     /// The next challenge from the node.
@@ -118,6 +179,7 @@ impl Agent {
             pool: std::rc::Rc::clone(&pool),
             sender,
             receiver,
+            mode: None,
         };
         hello.send(&wire::header::encode(Protocol::Hub)).await;
         Self {
@@ -161,19 +223,28 @@ impl Agent {
 
     /// Opens a request stream and sends its header.
     pub(crate) async fn open(&self) -> Stream {
-        let mut stream = self.silent().await;
+        self.open_as(Class::Complete).await
+    }
+
+    /// Opens a stream of `class` and sends its header.
+    pub(crate) async fn open_as(&self, class: Class) -> Stream {
+        let mut stream = self.silent_as(class).await;
         stream.send(&wire::header::encode(Protocol::Hub)).await;
         stream
     }
 
     /// Opens a stream and sends nothing, so the node does not see it yet.
     pub(crate) async fn silent(&self) -> Stream {
-        let (sender, receiver) =
-            self.session.open(Class::Complete).await.expect("opens");
+        self.silent_as(Class::Complete).await
+    }
+
+    async fn silent_as(&self, class: Class) -> Stream {
+        let (sender, receiver) = self.session.open(class).await.expect("opens");
         Stream {
             pool: std::rc::Rc::clone(&self.pool),
             sender,
             receiver,
+            mode: None,
         }
     }
 
@@ -189,6 +260,23 @@ impl Agent {
     pub(crate) async fn unfinished(&self, length: u64, body: &[u8]) -> Stream {
         let mut stream = self.open().await;
         stream.request(length, body).await;
+        stream
+    }
+
+    /// Sends a read of `select` in `mode`, signed by the agent, on a new stream of the
+    /// class of `mode`. Leaves the stream open.
+    pub(crate) async fn read(&self, mode: Mode, select: &[&str]) -> Stream {
+        let class = match mode {
+            Mode::Latest => Class::Latest,
+            Mode::Complete => Class::Complete,
+        };
+        let mut stream = self.open_as(class).await;
+        let open = Open {
+            mode,
+            select: types::name::Selector::new(select.iter().copied())
+                .expect("a selector"),
+        };
+        stream.read(&open, access::proof::Kind::Read, &AGENT).await;
         stream
     }
 
