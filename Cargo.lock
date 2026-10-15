@@ -319,18 +319,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
-name = "client"
-version = "0.0.0"
-dependencies = [
- "access",
- "block",
- "env",
- "transport",
- "types",
- "wire",
-]
-
-[[package]]
 name = "clock"
 version = "0.0.0"
 dependencies = [
@@ -974,7 +962,6 @@ dependencies = [
  "blob",
  "block",
  "buffer",
- "client",
  "clock",
  "codec",
  "counting",
@@ -982,6 +969,7 @@ dependencies = [
  "home",
  "hub",
  "mesh",
+ "program",
  "sim",
  "spec",
  "transport",
@@ -1193,7 +1181,6 @@ dependencies = [
  "block",
  "buffer",
  "bytes",
- "client",
  "clock",
  "codec",
  "config-hcl",
@@ -1214,6 +1201,7 @@ dependencies = [
  "node",
  "ops",
  "os",
+ "program",
  "proptest",
  "secret",
  "serde",
@@ -1474,6 +1462,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "program"
+version = "0.0.0"
+dependencies = [
+ "access",
+ "block",
+ "env",
+ "transport",
+ "types",
+ "wire",
 ]
 
 [[package]]

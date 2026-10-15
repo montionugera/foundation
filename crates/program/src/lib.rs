@@ -25,7 +25,7 @@ use wire::hub::client::{
 
 use turn::{Taken, Turn};
 
-/// How long each hello of a [`Client`] lives. The client renews it at half its life.
+/// How long each hello of a [`Session`] lives. The client renews it at half its life.
 pub const LIFE: Span = Span::from_nanos(10 * Span::MINUTE.nanos());
 
 const HALF: Span = Span::from_nanos(LIFE.nanos() / 2);
@@ -33,7 +33,7 @@ const HALF: Span = Span::from_nanos(LIFE.nanos() / 2);
 /// How long a message that finds the pool full waits before it tries again.
 const RETRY: Span = Span::from_nanos(10 * Span::MILLISECOND.nanos());
 
-/// What a [`Client`] is given.
+/// What a [`Session`] is given.
 #[derive(Debug)]
 pub struct Config {
     /// The key of the node to connect to, which each hello names as `via`.
@@ -65,9 +65,9 @@ pub struct Config {
 /// clone is the same session. When the last clone drops, the client closes the
 /// session with `Code(0)`.
 #[derive(Clone, Debug)]
-pub struct Client(Rc<Handle>);
+pub struct Session(Rc<Handle>);
 
-/// Closes the session when the last clone of a [`Client`] drops. The renewal task
+/// Closes the session when the last clone of a [`Session`] drops. The renewal task
 /// holds only the [`Shared`] part.
 #[derive(Debug)]
 struct Handle(Rc<Shared>);
@@ -94,7 +94,7 @@ struct Shared {
     ended: RefCell<Option<Error>>,
 }
 
-impl Client {
+impl Session {
     /// Dials the node on `transport` as a program, and waits until the node admits
     /// the subject's first hello. A task on `config.tasks` then renews the hello at
     /// half of [`LIFE`] until the session ends.
@@ -174,7 +174,7 @@ impl Client {
 
 impl Shared {
     /// Takes the turn, sends the request of `body`, whose length is `length`, and
-    /// gives the body of the response. Gives each error of [`Client::request`] but
+    /// gives the body of the response. Gives each error of [`Session::request`] but
     /// [`Error::Body`], with the error of the close in place of the error that ended
     /// the renewal.
     async fn exchange(&self, body: &[u8], length: u64) -> Result<Vec<u8>, Error> {
@@ -359,7 +359,7 @@ impl Drop for Open<'_> {
     }
 }
 
-/// Why a [`Client`] call failed.
+/// Why a [`Session`] call failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The body is over `BODY_BYTES_MAX`. Nothing was sent.

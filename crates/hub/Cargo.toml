@@ -26,7 +26,7 @@ aws-lc-rs.workspace = true
 blob = { path = "../blob" }
 block = { path = "../block", features = ["sim"] }
 buffer = { path = "../buffer" }
-client = { path = "../client" }
+program = { path = "../program" }
 codec = { path = "../codec" }
 counting = { path = "../counting" }
 # Turns on `sim`, because the bench host runs no features.

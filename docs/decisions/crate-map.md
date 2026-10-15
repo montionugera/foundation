@@ -57,7 +57,7 @@ Rules:
 
 Order: layer 1 (`block`, `ring`, `counting`, `waker`) -> `types` -> (`env`, `document`,
 `raft`, `estimate`, `control`, `delivery`) -> `codec` -> `wire` -> `spec` -> `access`;
-layer 2 `os` -> (`transport`, `buffer`) -> (`clock`, `blob`, `sim`, `client`) ->
+layer 2 `os` -> (`transport`, `buffer`) -> (`clock`, `blob`, `sim`, `program`) ->
 `mesh` -> (`home`, `replica`) -> `hub`; layer 3 `secret` -> `connector` ->
 `connector-<kind>`; layer 4 (`config-hcl`, `config`) -> `ops` -> `node`.
 
@@ -84,11 +84,11 @@ layer 2 `os` -> (`transport`, `buffer`) -> (`clock`, `blob`, `sim`, `client`) ->
 | 2 | `clock` | Runs time source adapters and the peer exchange, feeds `estimate`, serves mesh time as an interval, and gives the OS wall time and mesh time of each log line. | `ring`, `env`, `types`, `estimate`, `wire`, `transport` |
 | 2 | `blob` | Stores content by hash and fetches it from peers (spec chunks, binaries). | `env`, `types`, `block`, `wire`, `transport` |
 | 2 | `sim` | Simulates the `env` seams (time, randomness, scheduling, files, network, serial lines) with a deterministic scheduler and fault injection; ships behind a feature. | `env`, `types`, `block` |
-| 2 | `client` | Runs the session of a program with one node: dials it, keeps the subject's hello admitted, and sends signed requests, reads, and writes. | `env`, `types`, `block`, `wire`, `transport`, `access` |
+| 2 | `program` | Runs the session of a program with one node: dials it, keeps the subject's hello admitted, and sends signed requests, reads, and writes. | `env`, `types`, `block`, `wire`, `transport`, `access` |
 | 2 | `mesh` | Agrees per region, through `raft`, on spec pointers, delegations, and runtime state (membership, node leases, homes, seq blocks, index history, secret ciphertexts, tickets, versions, rollout lock, format flag); serves snapshots, watches, effective settings, and the changes channels. | `env`, `types`, `block`, `raft`, `spec`, `access`, `wire`, `transport`, `clock`, `blob` |
 | 2 | `home` | Runs the per-index write path (time checks, seq, fence, control, storage, fan-out), crash-recovery and copy-mode opens, and companion writes. | `env`, `types`, `block`, `ring`, `control`, `delivery`, `codec`, `spec`, `access`, `buffer`, `clock`, `mesh` |
 | 2 | `replica` | Receives an index's log from its home on a standby or copy node and stores it with `append`. | `env`, `types`, `block`, `wire`, `transport`, `buffer`, `mesh` |
-| 2 | `hub` | Is the one path for every read and write: sessions across homes, routing, live selectors, the server loop, authentication, encode and decode once, raw cursors for replicas, re-index stitching, and the layer-3 window. | `access`, `env`, `types`, `block`, `ring`, `codec`, `wire`, `spec`, `transport`, `clock`, `mesh`, `home`; `buffer`, `blob`, and `client` as dev-dependencies only |
+| 2 | `hub` | Is the one path for every read and write: sessions across homes, routing, live selectors, the server loop, authentication, encode and decode once, raw cursors for replicas, re-index stitching, and the layer-3 window. | `access`, `env`, `types`, `block`, `ring`, `codec`, `wire`, `spec`, `transport`, `clock`, `mesh`, `home`; `buffer`, `blob`, and `program` as dev-dependencies only |
 | 3 | `secret` | Resolves the source of a secret on the node that runs a connector: a variable of the node's environment, a file, or a name in a store adapter chosen by policy; `node` hands it the sealed ciphertexts it pulls from `mesh`. Seals a value to a node's seal key, and opens it. | layer 1 |
 | 3 | `connector` | Defines the kind contract (parse, check, discover, run), the thin supervisor, `ctx`, the component library, and the compositions. | layer 1, `hub`, `secret` |
 | 3 | `connector-<kind>` | Translates one protocol, device family, store, or the calculation engine into channels. | layer 1, `hub`, `connector`; vendor libraries behind build flags, except a library loaded at run time, which links nothing |
@@ -104,11 +104,11 @@ pinned nightly, may depend on any crate, and no crate depends on it (#252;
 `laptop.architect`, 2026-10-09T04:18Z,
 https://github.com/synnaxlabs/foundation/pull/2099#issuecomment-6074164278).
 
-Outside the binary: the Rust SDK `sdk` builds on `client`, and the Python SDK wraps
+Outside the binary: the Rust SDK `sdk` builds on `program`, and the Python SDK wraps
 `sdk` with PyO3 (C6: the person chose A at 2026-10-15T17:40Z, relayed by
 `laptop.architect-2` at 2026-10-15T17:45:08Z,
 https://github.com/synnaxlabs/foundation/issues/2177#issuecomment-6198508264; the crate
-`client`, `laptop.architect`, 2026-10-15T17:56:55Z,
+`program`, `laptop.architect`, 2026-10-15T17:56:55Z,
 https://github.com/synnaxlabs/foundation/issues/2177#issuecomment-6198730147; its
 dependency on `access`, `laptop.architect`, 2026-10-15T18:05:02Z,
 https://github.com/synnaxlabs/foundation/issues/2722#issuecomment-6198883707). Other

@@ -8,7 +8,6 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::sync::mpsc;
 
-use ::client::Client;
 use document::diagnostic::Code;
 use env::shards::Shards;
 use env::tasks::Tasks;
@@ -122,7 +121,7 @@ async fn reach(
     dir: &Path,
     tasks: &Tasks,
     started: &mpsc::Sender<env::thread::Handle>,
-) -> Result<Client, Failure> {
+) -> Result<program::Session, Failure> {
     let threads = os::threads().map_err(failed)?;
     let (disk, handle) =
         os::stored(dir, &threads, "files-reach").map_err(|error| stored(dir, error))?;
@@ -141,7 +140,7 @@ async fn reach(
 }
 
 /// What sends a request through `client` and gives the reply.
-fn send(client: Client) -> impl AsyncFn(&[u8]) -> Result<Vec<u8>, Failure> {
+fn send(client: program::Session) -> impl AsyncFn(&[u8]) -> Result<Vec<u8>, Failure> {
     async move |body: &[u8]| {
         client.request(body).await.map_err(|error| no_reply(&error))
     }
@@ -262,7 +261,7 @@ fn unreadable(dir: &Path, error: impl std::fmt::Display) -> Failure {
 }
 
 /// The failure of a request that the node gave no reply to.
-fn no_reply(error: &::client::Error) -> Failure {
+fn no_reply(error: &program::Error) -> Failure {
     Failure {
         code: NO_REPLY,
         message: format!("the node gave no reply: {error}"),
@@ -1470,7 +1469,7 @@ mod tests {
     fn a_session_that_fails_names_the_address() {
         let error = node::client::Error::Session {
             at: at(),
-            error: ::client::Error::Unanswered,
+            error: program::Error::Unanswered,
         };
         assert_eq!(
             unreached(dir(), error),
@@ -1501,7 +1500,7 @@ mod tests {
     #[test]
     fn a_request_with_no_reply_says_to_plan_again() {
         assert_eq!(
-            no_reply(&::client::Error::Unanswered),
+            no_reply(&program::Error::Unanswered),
             of_reach(
                 NO_REPLY,
                 "the node gave no reply: the node finished a stream with no answer",

@@ -1,4 +1,4 @@
-//! `client::Client`, a program's session, against a simulated node that serves
+//! `program::Session`, a program's session, against a simulated node that serves
 //! it on one `hub::Link`.
 
 use std::cell::Cell;
@@ -8,8 +8,8 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
-use client::{Client, Config, Error, LIFE};
 use hub::serve;
+use program::{Config, Error, LIFE, Session};
 use transport::stream::Incoming;
 use transport::{Address, Code};
 use types::ed25519::PrivateKey;
@@ -33,7 +33,7 @@ async fn connect(
     tasks: env::tasks::Tasks,
     at: Address,
     key: PrivateKey,
-) -> Result<Client, Error> {
+) -> Result<Session, Error> {
     let config = block::Config::new(2 << 24).expect("the budget fits");
     let pool = block::Pool::new(config.clone(), block::Heap::new(config.reservation()));
     connect_with(node, tasks, at, key, Rc::new(pool)).await
@@ -47,7 +47,7 @@ async fn connect_with(
     at: Address,
     key: PrivateKey,
     pool: Rc<block::Pool>,
-) -> Result<Client, Error> {
+) -> Result<Session, Error> {
     let config = transport::client::Config {
         net: node.net(),
         clock: node.clock(),
@@ -67,14 +67,14 @@ async fn connect_with(
         tasks,
         pool,
     };
-    Client::connect(&transport, config).await
+    Session::connect(&transport, config).await
 }
 
 /// Runs `program` with a client of [`SUBJECT`] on a home with mesh time and the
 /// rules of `rules`, and gives what the home saw.
 fn with_client<P>(
     seed: u64,
-    program: impl FnOnce(Client, sim::node::Node) -> P + Send + 'static,
+    program: impl FnOnce(Session, sim::node::Node) -> P + Send + 'static,
 ) -> super::link::Home
 where
     P: Future<Output = ()> + 'static,
@@ -309,7 +309,7 @@ fn by_hand<R>(
     seed: u64,
     rest: impl FnOnce(transport::Session, sim::node::Node) -> R + Send + 'static,
     program: impl FnOnce(
-        Client,
+        Session,
         sim::node::Node,
     ) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
     + Send
