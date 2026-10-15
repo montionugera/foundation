@@ -29,8 +29,9 @@ jobs:
             > artifacts
       # Each binary runs in its crate, as `cargo test` runs it: a libtest binary with
       # the flags of the time, a binary with `harness = false` with no argument.
-      # `--report-time` is unstable, so only these runs get RUSTC_BOOTSTRAP. Each
-      # line prints when it comes, so a test that hangs still shows its name.
+      # `--report-time` is unstable, so only the libtest runs get RUSTC_BOOTSTRAP. Each
+      # line prints when it comes, so a test that hangs still shows its name, and a
+      # failed test shows its output.
       - name: Times
         timeout-minutes: 50
         shell: python3 -u {0}
@@ -62,8 +63,9 @@ jobs:
               name = f"{'/'.join(target['kind'])} {target['name']}"
               manifest = artifact["manifest_path"]
               libtest = harness(manifest, target)
-              env = dict(os.environ, RUSTC_BOOTSTRAP="1",
-                         CARGO_MANIFEST_DIR=os.path.dirname(manifest))
+              env = dict(os.environ, CARGO_MANIFEST_DIR=os.path.dirname(manifest))
+              if libtest:
+                  env["RUSTC_BOOTSTRAP"] = "1"
               args = [artifact["executable"]] + (flags if libtest else [])
               start = time.monotonic()
               run = subprocess.Popen(args, cwd=os.path.dirname(manifest), env=env,
@@ -75,10 +77,16 @@ jobs:
                       event = None
                   if not libtest or not isinstance(event, dict):
                       print(f"{name}: {out}", end="")
-                  elif event.get("type") == "test" and event.get("event") != "started":
+                  elif event.get("type") != "test":
+                      continue
+                  elif event["event"] == "started":
+                      print(f"started\t{name}\t{event['name']}")
+                  else:
                       shown = f"{event.get('exec_time', '-')}\t{event['event']}\t{name}"
                       tests.append(f"{shown}\t{event['name']}")
                       print(tests[-1])
+                      if event["event"] == "failed":
+                          print(event.get("stdout", ""), end="")
               code = run.wait()
               failed |= code != 0
               print(f"binary {name}: exit {code}, {time.monotonic() - start:.2f} s")
