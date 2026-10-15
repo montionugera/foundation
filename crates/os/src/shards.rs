@@ -12,6 +12,7 @@ use env::shards::{Config, Main};
 use env::tasks::{Task, Tasks};
 use env::thread::{Error, Handle};
 use tokio::runtime::{Builder, LocalOptions, LocalRuntime};
+use tracing::Dispatch;
 
 use crate::cores::Cores;
 use crate::{thread, unwind};
@@ -34,11 +35,16 @@ impl env::shards::Driver for Driver {
         !self.0.cpus.is_empty()
     }
 
-    fn start(&self, config: Config, main: Main) -> Result<Handle, Error> {
+    fn start(
+        &self,
+        config: Config,
+        main: Main,
+        log: Dispatch,
+    ) -> Result<Handle, Error> {
         let Config { name, core } = config;
         let cores = Arc::clone(&self.0);
         let build = move |name: &str| build(&cores, name, core);
-        thread::start(name, build, |runtime| serve(runtime, main))
+        thread::start(name, build, |runtime| serve(runtime, main), log)
     }
 }
 
@@ -60,29 +66,34 @@ fn build(
 }
 
 /// Runs `main` until it ends or a task panics, then drops every task. Returns whether a
-/// task panicked.
+/// task panicked, or a panic escaped Tokio in `block_on` or in the drop of `runtime`.
 fn serve(runtime: LocalRuntime, main: Main) -> bool {
     let alarm = Rc::new(Alarm::default());
     let tasks = Tasks::new(Spawner(Rc::clone(&alarm)));
-    runtime.block_on(async {
-        // Calls `main` inside the catch.
-        let main = Box::pin(async move { main(tasks).await });
-        let mut main = Caught::new(main, Rc::clone(&alarm));
-        poll_fn(|cx| {
-            // `clone_from` skips the clone when the waker is the same.
-            let mut waker = alarm.waker.replace(Waker::noop().clone());
-            waker.clone_from(cx.waker());
-            alarm.waker.set(waker);
-            if alarm.raised.get() {
-                return Poll::Ready(());
-            }
-            Pin::new(&mut main).poll(cx)
-        })
-        .await;
+    // A panic in the drop of a payload can escape Tokio's catches of a task that the
+    // shard spawned without `tasks`, in `block_on` or in the drop of `runtime`. Each is
+    // caught apart, so that a panic in the drop of a task does not abort the unwind of
+    // the first.
+    let ran = unwind::catch(|| {
+        runtime.block_on(async {
+            // Calls `main` inside the catch.
+            let main = Box::pin(async move { main(tasks).await });
+            let mut main = Caught::new(main, Rc::clone(&alarm));
+            poll_fn(|cx| {
+                // `clone_from` skips the clone when the waker is the same.
+                let mut waker = alarm.waker.replace(Waker::noop().clone());
+                waker.clone_from(cx.waker());
+                alarm.waker.set(waker);
+                if alarm.raised.get() {
+                    return Poll::Ready(());
+                }
+                Pin::new(&mut main).poll(cx)
+            })
+            .await;
+        });
     });
-    // The drop of a task may panic, also of one that the shard spawned without `tasks`.
-    let dropped = unwind::catch(|| drop(runtime)).is_some();
-    alarm.raised.get() || !dropped
+    let dropped = unwind::catch(|| drop(runtime));
+    alarm.raised.get() || ran.is_none() || dropped.is_none()
 }
 
 /// Tells the main loop of a shard that a task panicked.

@@ -5,8 +5,9 @@
 ## Toolchain
 
 - Stable Rust, pinned in `rust-toolchain.toml`. Edition 2024.
-- Miri and cargo-fuzz need nightly. They run on one pinned nightly that only those
-  gates use. Builds and tests stay on stable (r16 64).
+- Miri, cargo-fuzz, and the sanitizer gate (`cargo xtask sanitizers`) need nightly.
+  They run on one pinned nightly that only those gates use. Every other build and test
+  stays on stable (r16 64).
 - One Cargo workspace. Crates live in `crates/<name>`, with `publish = false`. The
   package name is the bare module name (`types`, `hub`), so code reads `types::Frame`.
 - Dev tools live in `xtask` and run as `cargo xtask <task>`.
@@ -69,14 +70,18 @@ true`. CI denies warnings. r16 gives the reason for each lint.
     `string_slice`. Bad input returns an error. It never panics or wraps.
   - Layer 1 decision crates (`raft`, `control`, `delivery`, `access`, `estimate`)
     deny `wildcard_enum_match_arm`, so a new variant breaks every match.
-- `clippy::todo` and `let_underscore_untyped` turn on for a crate when its stubs are
-  gone.
+- `clippy::todo` and `let_underscore_untyped` are denied for the workspace. A function
+  that holds a `todo!` expects `clippy::todo` on itself, with the issues it waits on as
+  the reason. Only a stub and a method of a test bench that waits on its issues (No
+  `#[ignore]` in `docs/claude/testing.md`) hold one.
 
 ## Style and API
 
 - Every public type implements `Debug`, and the output is never empty (r16 1).
 - Each public item has one path. Do not `pub use` an item that is public at its home
-  (r16 2). The one exception is `hub`, the layer-3 window (R16-10).
+  (r16 2). The exceptions are in R16-10: a crate re-exports, under the same name in one
+  of its modules, an item that its own public surface names, for callers that may not
+  depend on the home of the item (`hub::home::Error`, `home::reader::Next`).
 - Fields are all private, or all public on plain data with no invariant (r16 4).
 - A type with an invariant has a fallible constructor and no `From` that can panic
   (r16 5).
@@ -105,30 +110,51 @@ true`. CI denies warnings. r16 gives the reason for each lint.
   a fix. Do not use error structs with a hidden kind (r16 17).
 - Every error a user can see has a stable code and a fix-it hint.
 - Convert errors with `From` and `?`. Never drop the cause (r16 18).
-- Never ignore a `Result`: no `.ok();` and no `let _ = fallible();` (r16 19). Never
-  `unwrap()` outside tests. Use `expect("invariant: ...")` only for an internal
-  invariant.
+- Never ignore a `Result`: no `.ok();`, no `let _ = fallible();`, and no
+  `let _name = fallible();` (r16 19). A `#[should_panic]` test may bind to `_name` a
+  call that panics before it returns. Never `unwrap()` outside tests. Use
+  `expect("invariant: ...")` only for an internal invariant.
 - An internal invariant that breaks panics. Bad outside input never panics: it returns
   an error. Panic and assert messages state what broke and the values (r16 20).
-- `Drop` never panics. It never blocks unless the type also gives a call that does
-  not block (r16 23). One exception: `sim::Sim` (SIM DROP in `docs/decisions.md`).
+- `Drop` never panics on a failure from outside the code (an I/O error, a closed peer,
+  bad outside input). It matches that failure by its name, and the arm states why the
+  outcome is then correct. A broken internal invariant panics in `Drop` too. `Drop`
+  never blocks unless the type also gives a call that does not block (r16 23).
+  `sim::Sim` panics in its `Drop` to report a panic of a future, when the thread is not
+  already panicking (SIM DROP in `docs/decisions/testing/sim-drop.md`). A test helper
+  under `tests/` may panic or block in its `Drop` only as TEST DROP says
+  (`docs/decisions/testing/test-drop.md`), and a type in test code (under `tests/` or
+  in a `#[cfg(test)]` module) whose `Drop` panics or blocks as the input of its test
+  is outside this bullet.
 
 ## Unsafe
 
 - `unsafe_code` is denied. Only the crates the crate map names may hold `unsafe`:
-  `block`, `ring`, `counting`, the `memory`, `clock`, and `wall` modules of `os`, the
-  `net::lowat` module of `os` (architect, #120,
+  `block`, `ring`, `counting`, `waker` (`laptop.architect`, 2026-10-10 06:25 UTC, #2254,
+  https://github.com/synnaxlabs/foundation/issues/2254#issuecomment-6094631943), the
+  `memory`, `clock`, and `wall` modules of `os`, the `net::lowat` module of `os`
+  (architect, #120,
   https://github.com/synnaxlabs/foundation/issues/120#issuecomment-6050971843), the
+  `net::resolve` module of `os` (architect, 2026-10-08 16:52 UTC, #1095,
+  https://github.com/synnaxlabs/foundation/issues/1095#issuecomment-6064802287), the
   `allocate` module of `os` on macOS (architect, #931,
-  https://github.com/synnaxlabs/foundation/issues/931#issuecomment-6030986099), and
+  https://github.com/synnaxlabs/foundation/issues/931#issuecomment-6030986099), the
+  `signal` module of `os` (architect, #1732,
+  https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6086905545), the
+  test module `tasks::tests::hooked` of `env` (laptop.architect-2, 2026-10-10 03:57
+  UTC, #2218,
+  https://github.com/synnaxlabs/foundation/pull/2218#issuecomment-6093523974), and
   later FFI connectors. Such a module uses `#[expect(unsafe_code, reason = "...")]`
   and runs under Miri (r16 24). Those modules of `os` only call the OS, which Miri
   cannot run, so tests on the real OS check them, and `cargo xtask miri` skips `os`
   (BLOCK MEMORY). `connector-opcua` compiles C into its tests, which Miri cannot run
-  either, so `cargo xtask miri` skips it. Its `sim` tests, with the C and Rust under
-  the sanitizers, are to check it (#1912; `laptop.architect-2`, #435,
+  either, so `cargo xtask miri` skips it. In place of Miri, `cargo xtask sanitizers`
+  (the `sanitizers` job of `ci.yaml`) runs its tests with the Rust under ASan and the
+  C under ASan and UBSan, with no `function` check (`laptop.architect-2`, #435,
   https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6050889018,
-  2026-10-08 02:24 UTC).
+  2026-10-08 02:24 UTC, and #2165,
+  https://github.com/synnaxlabs/foundation/pull/2165#issuecomment-6086019787,
+  2026-10-09 17:35 UTC).
 - Each `unsafe` block holds one unsafe operation and a `// SAFETY:` comment. The
   comment relies only on earlier checks, type invariants, and well-formed inputs
   (r16 25).

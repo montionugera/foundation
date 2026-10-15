@@ -4,6 +4,7 @@ mod carrier;
 mod cid;
 pub(crate) mod connection;
 mod datagram;
+mod end;
 #[cfg_attr(
     not(feature = "fuzzing"),
     expect(unreachable_pub, reason = "only the fuzzing feature exports it")
@@ -42,7 +43,8 @@ use crate::message::Reader;
 use crate::stream::Part;
 use crate::{Class, Code, Error, Peer};
 
-pub(crate) use self::carrier::{Carrier, Session};
+pub(crate) use self::carrier::{Carrier, Handle, Session};
+pub use self::end::Ended;
 #[cfg(feature = "fuzzing")]
 pub use self::hello::Hello;
 pub(crate) use self::settings::{Role, Setup};
@@ -73,6 +75,8 @@ pub(crate) struct Endpoint {
     window_bytes: usize,
     /// Indexed by noq-proto's handle.
     connections: Vec<Option<Connection>>,
+    /// The messages of the drained connections that waited for send budget room.
+    budget_waits: u64,
     /// The connections made so far.
     serial: u64,
     /// The connections that may have a datagram to send, each once, in the order
@@ -103,8 +107,9 @@ pub(crate) enum Event {
     /// [`Endpoint::accept`] has a stream for `key`.
     Incoming { key: connection::Key },
     /// [`Endpoint::open`] and [`Endpoint::open_sender`] may now give a stream. It
-    /// comes first when the peer's hello arrives. A peer may never send its hello:
-    /// the caller bounds that wait.
+    /// comes first when the peer's hello arrives. When the peer's hello has not arrived
+    /// twice the idle timeout after [`Event::Connected`], the key gets
+    /// [`Event::Closed`] in its place.
     Available { key: connection::Key },
     /// `stream` may have more to read. It can repeat, and it can name a stream the
     /// caller no longer holds or has not accepted yet.
@@ -112,6 +117,8 @@ pub(crate) enum Event {
     /// `stream` may take more, or the peer stopped it. It can repeat, and it can
     /// name a stream the caller no longer holds or has not accepted yet.
     Writable { stream: stream::Key },
+    /// The peer acknowledged a packet sent after the last [`Endpoint::ping`] of `key`.
+    Acked { key: connection::Key },
     /// [`Endpoint::datagrams`] has a datagram of `key` to take. It comes when one
     /// arrives and none waited, so take them all after it.
     Datagram { key: connection::Key },
@@ -132,6 +139,7 @@ impl Endpoint {
             message_bytes_max: setup.message_bytes_max,
             window_bytes: setup.window_bytes,
             connections: Vec::new(),
+            budget_waits: 0,
             serial: 0,
             ready: VecDeque::new(),
             events: VecDeque::new(),
@@ -226,41 +234,57 @@ impl Endpoint {
     /// When [`Endpoint::timeout`] must next run, or `None` with no connection.
     pub(crate) fn deadline(&self) -> Option<Monotonic> {
         let connections = self.connections.iter().flatten();
-        let deadline = connections
-            .filter_map(|connection| connection.inner.poll_timeout())
-            .min()?;
+        let deadline = connections.filter_map(Connection::deadline).min()?;
         let nanos = deadline.duration_since(self.epoch).as_nanos();
         Some(Monotonic(u64::try_from(nanos).unwrap_or(u64::MAX)))
     }
 
-    /// Runs the timers due at `now`: loss detection, keep-alives, and the idle
-    /// timeout.
+    /// Runs the timers due at `now`: loss detection, keep-alives, the idle timeout,
+    /// and the wait for each peer's hello.
     pub(crate) fn timeout(&mut self, now: Monotonic) {
         let now = self.instant(now);
         for handle in (0..self.connections.len()).map(ConnectionHandle) {
-            let Some(connection) = &mut self.connections[handle.0] else {
-                continue;
-            };
-            if connection
-                .inner
-                .poll_timeout()
-                .is_some_and(|deadline| deadline <= now)
+            if let Some(connection) = &mut self.connections[handle.0]
+                && connection.timeout(now, &mut self.events)
             {
-                connection.inner.handle_timeout(now);
                 self.drive(handle, now);
             }
         }
     }
 
-    /// Refuses each connection that a peer dials from now on. The peer's dial ends
-    /// at once.
-    pub(crate) fn refuse(&mut self) {
+    /// Shuts the endpoint to new connections: refuses each one that a peer dials from
+    /// now on, and closes with code 0 each one whose handshake is in flight, in either
+    /// direction. The peer's dial ends at once, and each dial of the caller gets its
+    /// [`Event::Closed`].
+    pub(crate) fn shut(&mut self, now: Monotonic) {
         self.refusing = true;
+        let now = self.instant(now);
+        for handle in (0..self.connections.len()).map(ConnectionHandle) {
+            let entry = self.connections[handle.0].as_mut();
+            let Some(connection) = entry.filter(|c| c.handshaking()) else {
+                continue;
+            };
+            self.events.extend(connection.abort(now));
+            self.drive(handle, now);
+        }
+    }
+
+    /// The messages that waited for room in the send budget of their connection, over
+    /// every connection, also those that drained.
+    pub(crate) fn budget_waits(&self) -> u64 {
+        let live = self.connections.iter().flatten();
+        self.budget_waits + live.map(|c| c.streams.budget_waits()).sum::<u64>()
     }
 
     /// `true` when each connection drained, so none sends again.
     pub(crate) fn drained(&self) -> bool {
         self.connections.iter().all(Option::is_none)
+    }
+
+    /// `true` when each connection ended. One that ended may still drain its close.
+    pub(crate) fn ended(&self) -> bool {
+        let mut connections = self.connections.iter().flatten();
+        connections.all(|connection| !connection.live())
     }
 
     /// Ends each connection after the socket broke, and queues the
@@ -269,6 +293,12 @@ impl Endpoint {
         let connections = self.connections.iter_mut().flatten();
         let closed = connections.filter_map(|connection| connection.fail(error));
         self.events.extend(closed);
+    }
+
+    /// Whether the connection of `key` has not ended. A close ends it at once.
+    pub(crate) fn live(&self, key: connection::Key) -> bool {
+        let connection = self.connections.get(key.handle.0).and_then(Option::as_ref);
+        connection.is_some_and(|connection| connection.key == key && connection.live())
     }
 
     /// Closes the connection of `key` with `code`, and queues its [`Event::Closed`]
@@ -282,6 +312,18 @@ impl Endpoint {
         let closed = connection.close(now, code);
         self.events.extend(closed);
         self.drive(key.handle, now);
+    }
+
+    /// Pings the peer on the connection of `key`: [`Event::Acked`] follows once the
+    /// peer acknowledges the ping or a later packet. Does nothing when the connection
+    /// ended.
+    pub(crate) fn ping(&mut self, now: Monotonic, key: connection::Key) {
+        let Some(connection) = find(&mut self.connections, key).filter(|c| c.live())
+        else {
+            return;
+        };
+        connection.ping();
+        self.drive(key.handle, self.instant(now));
     }
 
     /// Opens a stream of `class` that goes both ways. `None` until the peer's hello
@@ -332,10 +374,12 @@ impl Endpoint {
     ///
     /// [`Error::TooLarge`] when the message, the sum of the range lengths and the
     /// zeros, is over the peer's largest message. Nothing of it is sent, and the
-    /// block stays in `message`. Then the error of the connection's
-    /// [`Event::Closed`] once it ended. Then [`Error::Reset`] with `Code(0)` after an
-    /// [`Endpoint::cancel`] reset the stream, and [`Error::Stopped`] when the peer
-    /// stopped it; each later write gives it too.
+    /// block stays in `message`. When the stream holds a message whose rest the caller
+    /// was to write, the stream writes that rest by itself from then, as after a write
+    /// that passes. Then the error of the connection's [`Event::Closed`] once it
+    /// ended. Then [`Error::Reset`] with `Code(0)` after an [`Endpoint::cancel`] reset
+    /// the stream, and [`Error::Stopped`] when the peer stopped it; each later write
+    /// gives it too.
     ///
     /// # Panics
     ///
@@ -352,7 +396,10 @@ impl Endpoint {
             .as_ref()
             .map_or(0, |block| crate::stream::size(parts, block.len()));
         sender.check_open();
-        stream::check_size(bytes, sender.bytes_max())?;
+        if let Err(error) = stream::check_size(bytes, sender.bytes_max()) {
+            self.adopt(now, sender);
+            return Err(error);
+        }
         let key = sender.key().connection;
         self.streams(
             now,
@@ -386,7 +433,10 @@ impl Endpoint {
     ) -> Result<Option<Block>, Error> {
         let bytes = crate::stream::size(parts, message.len());
         sender.check_open();
-        stream::check_size(bytes, sender.bytes_max())?;
+        if let Err(error) = stream::check_size(bytes, sender.bytes_max()) {
+            self.adopt(now, sender);
+            return Err(error);
+        }
         let key = sender.key().connection;
         let mut message = Some(message);
         self.streams(
@@ -538,21 +588,28 @@ impl Endpoint {
         self.drive(key.handle, self.instant(now));
     }
 
-    /// Cancels the message that `sender`'s stream took from the last
-    /// [`Endpoint::write`] and holds. When no byte of it went, its header included,
-    /// the message drops and the stream stays open. Else the stream resets with
-    /// `Code(0)`, as [`Endpoint::reset`] does, and each later write and finish gives
-    /// [`Error::Reset`] with `Code(0)`. Either way the send budget and the turn of
-    /// the message come back now. Does nothing when the connection ended.
-    pub(crate) fn cancel(&mut self, now: Monotonic, sender: &Sender) {
+    /// Cancels the message that the stream of `sender` took from an [`Endpoint::write`]
+    /// and holds, while the caller writes its rest. When no byte of it went, its header
+    /// included, the message drops and the stream stays open. Else the stream resets
+    /// with `Code(0)`, as [`Endpoint::reset`] does, and each later write and finish
+    /// gives [`Error::Reset`] with `Code(0)`. Either way the send budget and the turn
+    /// of the message come back now. Does nothing when the stream holds no such
+    /// message, as a message of [`Endpoint::try_write`], after a finish or reset of
+    /// `sender`, or when the connection ended. Calls `now` for the time only when it
+    /// takes a message.
+    pub(crate) fn cancel(&mut self, now: impl FnOnce() -> Monotonic, sender: &Sender) {
+        if sender.ended() {
+            return;
+        }
         let key = sender.key().connection;
         let Some(connection) = find(&mut self.connections, key).filter(|c| c.live())
         else {
             return;
         };
         let Connection { inner, streams, .. } = connection;
-        streams.cancel(inner, sender);
-        self.drive(key.handle, self.instant(now));
+        if streams.cancel(inner, sender) {
+            self.drive(key.handle, self.instant(now()));
+        }
     }
 
     /// Stops `receiver`'s stream with `code`. The messages not read yet drop, and the
@@ -616,6 +673,21 @@ impl Endpoint {
             .open(&mut connection.inner, key, dir, class);
         self.drive(key.handle, self.instant(now));
         sender
+    }
+
+    /// For a write of `sender` that the size check refused: while the connection
+    /// runs, the stream adopts the rest of a leaked write ([`Streams::adopt`]).
+    fn adopt(&mut self, now: Monotonic, sender: &Sender) {
+        if sender.closed().is_some() {
+            return;
+        }
+        let key = sender.key().connection;
+        let connection = find(&mut self.connections, key);
+        let connection =
+            connection.expect("invariant: a connection drains only after it closed");
+        let Connection { inner, streams, .. } = connection;
+        streams.adopt(inner, sender);
+        self.drive(key.handle, self.instant(now));
     }
 
     /// Runs `call` on the streams of `key`'s connection with the pool and the event
@@ -683,8 +755,6 @@ impl Endpoint {
         if dropped(&datagram) {
             return;
         }
-        // noq-proto answers a short header only with a stateless reset.
-        let short = datagram.first().is_some_and(|form| form & 0x80 == 0);
         let mut reply = Vec::new();
         let event = self.inner.handle(now, path, ecn, datagram, &mut reply);
         let response = match event {
@@ -713,8 +783,9 @@ impl Endpoint {
                 }
             }
             Some(DatagramEvent::Response(response)) => {
+                let reset = reply.first().is_some_and(|form| form & 0x80 == 0);
                 let admitted =
-                    !short || self.resets.admit(now, response.destination.ip());
+                    !reset || self.resets.admit(now, response.destination.ip());
                 admitted.then_some(response)
             }
         };
@@ -732,6 +803,7 @@ impl Endpoint {
         let entry = &mut self.connections[handle.0];
         let connection = entry.as_mut().expect("invariant: a live handle");
         if connection.drive(now, &mut self.inner, &self.pool, &mut self.events) {
+            self.budget_waits += connection.streams.budget_waits();
             *entry = None;
         } else {
             queue(&mut self.ready, connection);
@@ -1105,6 +1177,30 @@ mod tests {
                 endpoint.connect(later, server(), pair::SERVER);
                 while endpoint.transmit(later, &mut buffer).is_some() {}
                 assert_eq!(endpoint.deadline(), Some(earliest));
+            });
+        }
+    }
+
+    mod ping {
+        use super::*;
+
+        fn acks(side: &Side) -> Vec<&Event> {
+            let acked = |event: &&Event| matches!(event, Event::Acked { .. });
+            events(side).into_iter().filter(acked).collect()
+        }
+
+        // The server acknowledged the client's handshake packets, all before the mark.
+        #[test]
+        fn gives_acked_once_the_peer_acknowledges_a_packet_after_it() {
+            testing::run(1, |shard| {
+                let mut pair = dial(shard, server());
+                let key = pair.client.key.expect("a key");
+                let now = pair.now();
+                pair.client.endpoint.ping(now, key);
+                pair.run(DELAY);
+                assert!(acks(&pair.client).is_empty());
+                pair.run(Duration::from_millis(100));
+                assert_eq!(acks(&pair.client), [&Event::Acked { key }]);
             });
         }
     }

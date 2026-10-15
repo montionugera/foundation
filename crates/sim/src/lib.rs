@@ -20,7 +20,9 @@ mod chance;
 mod disk;
 mod drivers;
 mod files;
+mod log;
 mod net;
+mod paths;
 mod serial;
 mod state;
 #[cfg(test)]
@@ -34,10 +36,11 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll};
 use std::time::Instant;
 
 use env::rng::Rng;
+use tracing::Dispatch;
 use types::time::{Monotonic, Span};
 
 use crate::files::Files;
@@ -99,8 +102,9 @@ impl Default for Config {
 /// and each thread that has not started, and a task or thread that one of these drops
 /// starts is dropped in that drop. When one of these drops panics, the others still
 /// run, and then the drop panics once with each message, as [`Error::Panicked`] gives
-/// them: those of the tasks first, then those of the threads, each in start order. It
-/// does not panic while the thread already panics.
+/// them: those of the timer wakers first, then those of the tasks, then those of the
+/// threads, the tasks and the threads each in start order. It does not panic while the
+/// thread already panics.
 pub struct Sim {
     config: Config,
     shared: Shared,
@@ -140,7 +144,14 @@ impl Sim {
 
     /// Adds a node. Its clocks read the values in `config` now, and its entropy is
     /// its own stream from the seed.
+    ///
+    /// # Panics
+    ///
+    /// When `config.arm_max` is zero or negative.
     pub fn node(&mut self, config: node::Config) -> Node {
+        if let Some(max) = config.arm_max {
+            assert!(max > Span::ZERO, "arm_max {max:?} is not positive");
+        }
         let entropy = Rng::from_seed(self.streams.next_u64());
         let node = lock(&self.shared).add(config, entropy);
         let shared = Arc::clone(&self.shared);
@@ -231,9 +242,11 @@ impl Sim {
     /// # Panics
     ///
     /// - When `node` belongs to another run.
-    /// - When the drop of a future or of a thread that has not run panics. The crash
-    ///   still ends, and the panic gives each message as [`Error::Panicked`] does:
-    ///   those of the futures first, then those of the threads, each in start order.
+    /// - When the drop of a timer waker, of a future, or of a thread that has not run
+    ///   panics. The crash still ends, and the panic gives each message as
+    ///   [`Error::Panicked`] does: those of the timer wakers first, then those of the
+    ///   futures, then those of the threads, the futures and the threads each in start
+    ///   order.
     pub fn crash(&mut self, node: &Node, crash: Crash) {
         let node = self.own(node);
         let wakers = {
@@ -378,7 +391,7 @@ impl Sim {
                 Next::Poll => self.step()?,
                 Next::Advance(at) => {
                     let (wakers, orphans) = lock(&self.shared).advance(at);
-                    wakers.into_iter().for_each(Waker::wake);
+                    wakers.into_iter().for_each(log::Waker::wake);
                     drop(orphans);
                 }
             }
@@ -391,16 +404,19 @@ impl Sim {
         Err(Error::Stuck { threads, seed })
     }
 
-    /// Polls one ready task, picked at random. A panic in the poll, or in a drop of
-    /// the futures that end with the task, ends the task's thread and the run.
+    /// Polls one ready task, picked at random, with the log of its thread as the
+    /// default dispatch. A panic in the poll, or in a drop of the futures that end
+    /// with the task, ends the task's thread and the run.
     fn step(&mut self) -> Result<(), Error> {
-        let (task, thread, start) = lock(&self.shared).pick(&mut self.scheduler);
+        let (task, thread, start, log) = lock(&self.shared).pick(&mut self.scheduler);
         let run = panic::catch_unwind(AssertUnwindSafe(|| {
-            if self.poll(task, thread, start).is_pending() {
-                return Vec::new();
-            }
-            let done = lock(&self.shared).finish(task, thread);
-            self.drop_ended(done)
+            tracing::dispatcher::with_default(&log, || {
+                if self.poll(task, thread, start).is_pending() {
+                    return Vec::new();
+                }
+                let done = lock(&self.shared).finish(task, thread);
+                self.drop_ended(done)
+            })
         }));
         lock(&self.shared).release();
         if matches!(&run, Ok(panics) if panics.is_empty()) {
@@ -410,7 +426,8 @@ impl Sim {
         let panicked = env::thread::Panicked { name: name.clone() };
         let ended = lock(&self.shared).end(thread, Outcome::Done(Err(panicked)));
         // The payload drops after the thread ends, as the thread's futures do.
-        let mut panics = run.unwrap_or_else(messages);
+        let mut panics =
+            tracing::dispatcher::with_default(&log, || run.unwrap_or_else(messages));
         panics.extend(self.drop_ended(ended));
         Err(Error::Panicked {
             thread: name,
@@ -475,26 +492,36 @@ impl Sim {
     }
 
     /// Drops the timer wakers of `ended`, and the futures of its tasks outside the
-    /// borrow, since a drop may spawn. Returns the message of each drop that panicked,
-    /// in order.
+    /// borrow, since a drop may spawn, each with the log of its thread. Returns the
+    /// message of each drop that panicked, in order.
     fn drop_ended(&self, ended: Ended) -> Vec<String> {
-        drop(ended.timers);
-        let futures = self.futures.borrow_mut().remove(&ended.tasks);
-        drop_each(futures)
+        let mut panics = drop_each(ended.timers);
+        let futures = self.futures.borrow_mut().remove(ended.tasks);
+        panics.extend(drop_each(futures));
+        panics
     }
 }
 
-/// Drops each item on its own, as a second panic in one unwind aborts the process.
-/// Returns the [`messages`] of each drop that panicked, in order.
-fn drop_each<T>(items: impl IntoIterator<Item = T>) -> Vec<String> {
+/// Drops each item on its own, with its log as the default dispatch, as a second
+/// panic in one unwind aborts the process. Returns the [`messages`] of each drop that
+/// panicked, in order.
+fn drop_each<T>(items: impl IntoIterator<Item = (T, Dispatch)>) -> Vec<String> {
     (items.into_iter())
-        .filter_map(|item| panic::catch_unwind(AssertUnwindSafe(|| drop(item))).err())
-        .flat_map(messages)
+        .flat_map(|(item, log)| {
+            tracing::dispatcher::with_default(&log, || {
+                let dropped = panic::catch_unwind(AssertUnwindSafe(|| drop(item)));
+                dropped.err().map(messages).unwrap_or_default()
+            })
+        })
         .collect()
 }
 
 /// The Linux code for an I/O error (`EIO`).
 const EIO: i32 = 5;
+/// The Linux code for a path through a file (`ENOTDIR`).
+const NOT_DIRECTORY: i32 = 20;
+/// The Linux code for a file call on a directory (`EISDIR`).
+const DIRECTORY: i32 = 21;
 
 /// The Linux code for a failure that may pass (`EAGAIN`).
 const EAGAIN: i32 = 11;
@@ -560,11 +587,13 @@ impl fmt::Debug for Sim {
 /// How a node crashes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Crash {
-    /// The process dies, as on a kill or a panic with `panic = "abort"`. The disk
-    /// keeps each call that ended. Each file call in flight takes effect at the
-    /// crash, as if its future dropped, so a write keeps any subset of its sectors,
-    /// and a [`Mode::Create`](env::files::Mode::Create) open that makes a file
-    /// leaves it whole or with no bytes. Each TCP stream and listener drops.
+    /// The process dies, as on a kill or a panic with `panic = "abort"`. The disk keeps
+    /// each call that ended. Each file call in flight takes effect at the crash, as if
+    /// its future dropped, so a write keeps any subset of its sectors, and a
+    /// [`Mode::Create`](env::files::Mode::Create) open that makes a file leaves it
+    /// whole or with no bytes. When the disk has no room for its bytes, that open
+    /// leaves no file at its path, as with no crash, or a file with no bytes. Each TCP
+    /// stream and listener drops.
     Process,
     /// The machine loses power and boots again.
     ///
@@ -604,9 +633,9 @@ pub enum Error {
     Panicked {
         /// The thread's name.
         thread: String,
-        /// The panic message. When drops of the thread's futures or of a panic
-        /// payload panic after it, the message of each follows, after ", then a drop
-        /// panicked: ".
+        /// The panic message. When drops of a panic payload, of the thread's timer
+        /// wakers, or of its futures panic after it, the message of each follows, in
+        /// that order, after ", then a drop panicked: ".
         message: String,
         /// The seed that replays the run.
         seed: u64,

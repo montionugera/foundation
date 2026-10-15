@@ -1,10 +1,11 @@
 //! Test helpers that the modules of `home` reuse.
 
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 
 use proptest::prelude::*;
 use types::channel::{self, Slot};
-use types::frame::key_set::Interner;
+use types::frame::key_set::{Group, Interner, KeySet};
 use types::sample::{Scalar, Sides, Type};
 
 /// Each scalar.
@@ -64,8 +65,7 @@ pub(crate) fn values(state: u64, count: u32, data_type: Type) -> Vec<u8> {
 }
 
 /// The raw values of `count` variable samples of `element`, each of at most `max`
-/// elements: their ends, zeros to the start of the elements, then the elements, each
-/// byte of which is cut by `mask`.
+/// elements, each byte of which is cut by `mask`.
 fn variable(
     mut state: u64,
     count: usize,
@@ -73,21 +73,32 @@ fn variable(
     max: u32,
     mask: u8,
 ) -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut end = 0;
-    for _ in 0..count {
-        state = next(state);
-        end += u32::try_from(state % (u64::from(max) + 1)).expect("small");
-        out.extend(end.to_le_bytes());
-    }
-    out.resize(out.len().next_multiple_of(element.width().min(8)), 0);
     let width = element.width();
-    let len = usize::try_from(end).expect("a small end") * width;
-    out.extend(
-        elements(state, len, width)
-            .into_iter()
-            .map(|byte| byte & mask),
-    );
+    let lens: Vec<usize> = (0..count)
+        .map(|_| {
+            state = next(state);
+            usize::try_from(state % (u64::from(max) + 1)).expect("small") * width
+        })
+        .collect();
+    let elements: Vec<u8> = elements(state, lens.iter().sum(), width)
+        .into_iter()
+        .map(|byte| byte & mask)
+        .collect();
+    let samples: Vec<&[u8]> = lens
+        .iter()
+        .scan(0, |start, len| {
+            *start += len;
+            Some(&elements[*start - len..*start])
+        })
+        .collect();
+    raw(Type::List { element, max }, &samples)
+}
+
+/// The raw form of `samples` of `data_type`, a `String`, `Bytes`, or `List` type.
+pub(crate) fn raw(data_type: Type, samples: &[impl AsRef<[u8]>]) -> Vec<u8> {
+    let form = codec::Variable::of(data_type).expect("a variable type");
+    let mut out = vec![0; form.len(samples).expect("small samples")];
+    form.write(samples, &mut out);
     out
 }
 
@@ -115,7 +126,8 @@ fn next(mut state: u64) -> u64 {
 
 /// A pool of `budget` bytes on the heap.
 pub(crate) fn create_pool(budget: usize) -> block::Pool {
-    let config = block::Config { budget };
+    let budget = u64::try_from(budget).expect("a usize fits in a u64");
+    let config = block::Config::new(budget).expect("the budget fits");
     let memory = block::Heap::new(config.reservation());
     block::Pool::new(config, memory)
 }
@@ -126,11 +138,32 @@ pub(crate) fn key(slot: Slot) -> channel::Key {
     channel::Key::from_u128(bits << 120 | bits)
 }
 
-/// An interner where `key(slot)` has `slot`, for each slot below 64.
-pub(crate) fn create_interner() -> Interner {
+/// An interner where `key(slot)` has `slot`, for each slot below 64: as an index for
+/// each slot in `indexes`, else as a data channel of the type that `groups` gives its
+/// key, or `I64`.
+pub(crate) fn create_interner(indexes: &[u32], groups: &[Group<'_>]) -> Interner {
     let mut interner = Interner::new();
     for n in 0..64 {
-        interner.slots().assign(key(Slot::new(n)));
+        let key = key(Slot::new(n));
+        if indexes.contains(&n) {
+            interner.slots().index(key);
+        } else {
+            let data_type = groups
+                .iter()
+                .flat_map(|group| group.data)
+                .find_map(|&(at, data_type)| (at == key).then_some(data_type));
+            let data_type = data_type.unwrap_or(Type::Scalar(Scalar::I64));
+            interner.slots().data(key, data_type);
+        }
     }
     interner
+}
+
+/// The key set of `groups` from an interner where `key(slot)` has `slot`, for each
+/// slot below 64, in its role in `groups`.
+pub(crate) fn intern(groups: &[Group<'_>]) -> Arc<KeySet> {
+    let indexes: Vec<u32> = (0..64)
+        .filter(|&n| groups.iter().any(|group| group.index == key(Slot::new(n))))
+        .collect();
+    create_interner(&indexes, groups).intern(groups)
 }

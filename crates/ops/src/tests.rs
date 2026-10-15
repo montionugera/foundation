@@ -1,14 +1,22 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::Cell;
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::pin::pin;
+use std::task::{Context, Poll, Waker};
 
+use document::Source;
 use serde_json::{Map, Value, json};
 
-use crate::FrontEnd;
-use crate::error::Error;
-use crate::front_end;
+use crate::error::{Action, Among, Error, On, Unread};
 use crate::operation::{self, Response, TABLE};
+use crate::{FrontEnd, FrontEnds};
+use crate::{front_end, plan};
+
+/// The fix of `ops.argument`.
+const HELP: &str =
+    "Match the arguments to `foundation --help` or `foundation <operation> --help`";
 
 #[derive(Debug, PartialEq, Eq)]
 struct Exit {
@@ -17,11 +25,41 @@ struct Exit {
     status: u8,
 }
 
+/// What [`crate::cli`] gives for a command that reaches no node, with the paths of a
+/// host that holds no file. Such a command does not wait, so one poll ends it.
+fn offline(
+    args: impl IntoIterator<Item = OsString>,
+    input: impl io::BufRead,
+    output: impl io::Write,
+    errors: impl io::Write,
+) -> crate::Run {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let paths = sim.node(sim::node::Config::default()).paths();
+    let request = async |_: &[u8]| -> Result<Vec<u8>, crate::Failure> {
+        panic!("a command sent a request")
+    };
+    let reached = Cell::new(0);
+    let reach = async |_: &Path| {
+        reached.set(reached.get() + 1);
+        Ok(request)
+    };
+    let cli = crate::cli(args, input, output, errors, &paths, reach);
+    let Poll::Ready(run) = pin!(cli).poll(&mut Context::from_waker(Waker::noop()))
+    else {
+        panic!("a command waited");
+    };
+    assert_eq!(reached.get(), 0, "a command reached its node");
+    run
+}
+
 fn run(args: &[&str], input: impl io::BufRead) -> Exit {
     let args = ["foundation"].iter().chain(args).map(OsString::from);
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    let status = crate::cli(args, input, &mut stdout, &mut stderr);
+    let crate::Run::Exit(status) = offline(args, input, &mut stdout, &mut stderr)
+    else {
+        panic!("a command that is not `start` exits");
+    };
     Exit {
         stdout: String::from_utf8(stdout).expect("UTF-8"),
         stderr: String::from_utf8(stderr).expect("UTF-8"),
@@ -81,8 +119,9 @@ fn each_operation_appears_once_in_the_cli_the_tools_and_the_docs() {
     let tools = tools();
     let tools = tools["tools"].as_array().expect("tools is a list");
     let docs = operation::docs();
-    // Two more for `mcp` and `help`, which are not operations.
-    assert_eq!(command.get_subcommands().count(), TABLE.len() + 2);
+    // Six more for `start`, `plan`, `apply`, `status`, `mcp`, and `help`, which are
+    // not operations.
+    assert_eq!(command.get_subcommands().count(), TABLE.len() + 6);
     assert_eq!(tools.len(), TABLE.len());
     let inputs = operation::inputs();
     let outputs = operation::outputs();
@@ -154,16 +193,78 @@ fn json_output_parses_back_to_the_typed_output() {
     }
 }
 
+/// The commit of `HEAD` that `git` reads here, or `None` when it fails.
+fn head() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8(output.stdout).expect("UTF-8");
+    output.status.success().then(|| text.trim().to_owned())
+}
+
 #[test]
-fn version_prints_the_crate_version() {
-    let version = env!("CARGO_PKG_VERSION");
-    let text = cli(&["version"]);
-    assert_eq!(
-        (text.status, text.stdout.as_str()),
-        (0, format!("{version}\n").as_str())
-    );
+fn version_prints_the_crate_version_and_the_commit() {
+    let commit = head();
     let json = cli(&["version", "--json"]);
-    assert_eq!(json.stdout, format!("{{\"version\":\"{version}\"}}\n"));
+    let output: Value = serde_json::from_str(&json.stdout).expect("json");
+    assert_eq!(
+        output,
+        json!({ "version": env!("CARGO_PKG_VERSION"), "commit": commit })
+    );
+    let commit = commit.as_deref().map_or("unknown", |commit| &commit[..12]);
+    let line = format!("{} ({commit})\n", env!("CARGO_PKG_VERSION"));
+    assert_eq!((cli(&["version"]).stdout, json.status), (line, 0));
+}
+
+#[test]
+fn version_gives_no_commit_when_the_build_reads_none() {
+    let built = "0123456789abcdef0123456789abcdef01234567";
+    assert_eq!(
+        (
+            crate::operation::commit(""),
+            crate::operation::commit(built)
+        ),
+        (None, Some(built.to_owned()))
+    );
+}
+
+#[test]
+fn the_version_flag_runs_the_operation_version() {
+    for (flag, operation) in [
+        (&["--version"][..], &["version"][..]),
+        (&["--version", "--json"], &["version", "--json"]),
+        (&["-V"], &["version"]),
+    ] {
+        assert_eq!(cli(flag), cli(operation), "{flag:?}");
+    }
+}
+
+#[test]
+fn version_writes_twelve_digits_of_the_commit_or_unknown() {
+    let commit = "8e29d7d536cd11b8243439baa91128f6ed9ee497";
+    let output = |commit: Option<&str>| {
+        Response::Version(operation::Version {
+            version: "0.0.0".to_owned(),
+            commit: commit.map(str::to_owned),
+        })
+    };
+    let built = output(Some(commit));
+    assert_eq!(
+        (built.text(), built.json()),
+        (
+            "0.0.0 (8e29d7d536cd)\n".to_owned(),
+            json!({ "version": "0.0.0", "commit": commit })
+        )
+    );
+    let unknown = output(None);
+    assert_eq!(
+        (unknown.text(), unknown.json()),
+        (
+            "0.0.0 (unknown)\n".to_owned(),
+            json!({ "version": "0.0.0", "commit": null })
+        )
+    );
 }
 
 #[test]
@@ -194,7 +295,8 @@ fn a_bad_argument_gives_the_code_message_and_fix_as_text() {
         cli(&["version", "--nope"]),
         failed(
             "error[ops.argument]: unexpected argument found: `--nope`\n\
-             fix: Match the arguments to the operation in `foundation docs`\n"
+             fix: Match the arguments to `foundation --help` or \
+             `foundation <operation> --help`\n"
         )
     );
 }
@@ -208,14 +310,14 @@ fn a_bad_argument_gives_the_code_message_and_fix_as_json() {
         error,
         json!({ "errors": [{ "code": "ops.argument",
             "message": "unexpected argument found: `--nope`",
-            "fix": "Match the arguments to the operation in `foundation docs`", "notes": [] }] })
+            "fix": HELP, "notes": [] }] })
     );
 }
 
 #[test]
 fn no_operation_gives_the_same_error_as_text_and_as_json() {
     let message = "a subcommand is required but one was not provided";
-    let fix = "Match the arguments to the operation in `foundation docs`";
+    let fix = HELP;
     assert_eq!(
         cli(&[]),
         failed(&format!("error[ops.argument]: {message}\nfix: {fix}\n"))
@@ -234,7 +336,8 @@ fn json_after_a_double_dash_is_not_the_flag() {
         cli(&["version", "--", "--json"]),
         failed(
             "error[ops.argument]: unexpected argument found: `--json`\n\
-             fix: Match the arguments to the operation in `foundation docs`\n"
+             fix: Match the arguments to `foundation --help` or \
+             `foundation <operation> --help`\n"
         )
     );
 }
@@ -262,7 +365,7 @@ fn a_text_error_writes_control_characters_as_escapes() {
             cli(&[name]).stderr,
             format!(
                 "error[ops.unknown-operation]: no operation is named `{escaped}`\n\
-                 fix: Use a name from `foundation docs`\n"
+                 fix: Use a name from `foundation --help`\n"
             )
         );
     }
@@ -277,7 +380,7 @@ fn a_json_error_keeps_the_callers_text() {
         json!({ "errors": [{
             "code": "ops.unknown-operation",
             "message": "no operation is named `\u{1b}x`",
-            "fix": "Use a name from `foundation docs`",
+            "fix": "Use a name from `foundation --help`",
             "notes": [],
         }] })
     );
@@ -316,7 +419,7 @@ fn help_for_a_command_matches_its_help_flag() {
 }
 
 #[test]
-fn help_for_a_name_that_is_not_a_command_is_unknown() {
+fn help_for_a_name_that_is_not_a_command_is_unknown_and_help_of_help_is_help() {
     assert_eq!(
         cli(&["help", "versoin"]),
         failed(
@@ -325,12 +428,15 @@ fn help_for_a_name_that_is_not_a_command_is_unknown() {
         )
     );
     assert_eq!(
-        cli(&["help", "help"]),
+        cli(&["help", "zzz"]),
         failed(
-            "error[ops.unknown-operation]: no operation is named `help`\n\
-             fix: Use a name from `foundation docs`\n"
+            "error[ops.unknown-operation]: no operation is named `zzz`\n\
+             fix: Use a name from `foundation --help`\n"
         )
     );
+    let help = cli(&["help", "help"]);
+    assert_eq!(help.status, 0);
+    assert_eq!(help, cli(&["help", "--help"]));
 }
 
 #[test]
@@ -346,15 +452,15 @@ fn a_json_flag_with_a_value_gives_its_error_as_json() {
             value.clone(),
         ];
         let mut stderr = Vec::new();
-        let status = crate::cli(args, io::empty(), io::sink(), &mut stderr);
+        let status = offline(args, io::empty(), io::sink(), &mut stderr);
         let error: Value = serde_json::from_slice(&stderr).expect("json");
         assert_eq!(
             (status, error),
             (
-                2,
+                crate::Run::Exit(2),
                 json!({ "errors": [{ "code": "ops.argument",
                     "message": "unexpected value for an argument found: `--json`",
-                    "fix": "Match the arguments to the operation in `foundation docs`", "notes": [] }] })
+                    "fix": HELP, "notes": [] }] })
             ),
             "{value:?}"
         );
@@ -363,7 +469,8 @@ fn a_json_flag_with_a_value_gives_its_error_as_json() {
         cli(&["version", "--jsonx"]),
         failed(
             "error[ops.argument]: unexpected argument found: `--jsonx`\n\
-             fix: Match the arguments to the operation in `foundation docs`\n"
+             fix: Match the arguments to `foundation --help` or \
+             `foundation <operation> --help`\n"
         )
     );
 }
@@ -389,19 +496,23 @@ fn an_unknown_operation_suggests_the_closest_name() {
 }
 
 #[test]
-fn an_unknown_operation_far_from_every_name_points_to_the_docs() {
-    let expected = json!({ "errors": [{ "code": "ops.unknown-operation",
-        "message": "no operation is named `zzz`",
-        "fix": "Use a name from `foundation docs`", "notes": [] }] });
+fn an_unknown_operation_far_from_every_name_points_to_the_list_of_its_carrier() {
+    let expected = |fix| {
+        json!({ "errors": [{ "code": "ops.unknown-operation",
+            "message": "no operation is named `zzz`", "fix": fix, "notes": [] }] })
+    };
     assert_eq!(
         call(&json!({ "name": "zzz" })),
-        failed_call("no operation is named `zzz`", &expected)
+        failed_call(
+            "no operation is named `zzz`",
+            &expected("Use a name from `tools/list`")
+        )
     );
     let exit = cli(&["zzz", "--json"]);
     assert_eq!((exit.status, exit.stdout.as_str()), (2, ""));
     assert_eq!(
         serde_json::from_str::<Value>(&exit.stderr).expect("json"),
-        expected
+        expected("Use a name from `foundation --help`")
     );
 }
 
@@ -414,7 +525,7 @@ fn a_call_with_a_bad_argument_names_it() {
             message,
             &json!({ "errors": [{ "code": "ops.argument",
                 "message": message,
-                "fix": "Match the arguments to the operation in `foundation docs`", "notes": [] }] })
+                "fix": HELP, "notes": [] }] })
         )
     );
 }
@@ -427,15 +538,20 @@ fn a_call_with_no_arguments_runs() {
     );
 }
 
-#[test]
-fn error_codes_and_fixes_match_the_golden_file() {
-    let every = [
+/// One error of each variant but `Config`, `Node`, and `Remote`.
+fn every() -> Vec<Error> {
+    let pointer = spec::Pointer {
+        version: 0,
+        root: spec::tree::empty(),
+    };
+    vec![
         Error::Argument {
             message: String::new(),
         },
         Error::Unknown {
             name: String::new(),
             closest: None,
+            among: Among::Commands,
         },
         Error::Input {
             message: String::new(),
@@ -443,16 +559,73 @@ fn error_codes_and_fixes_match_the_golden_file() {
         Error::Output {
             message: String::new(),
         },
-    ];
+        Error::Plan(config::plan::Error::Malformed { at: 0 }),
+        Error::Behind(Box::new(mesh::used::Behind {
+            pointer,
+            cause: mesh::used::Cause::Problems(Vec::new()),
+        })),
+        Error::Stale {
+            base: pointer,
+            pointer,
+        },
+        Error::Apply(mesh::Error::NoVote),
+        Error::Stopped(mesh::Stopped::Dropped),
+        Error::Request {
+            message: String::new(),
+        },
+        Error::Denied {
+            subject: "bob".parse().expect("a name"),
+            action: Action::Plan,
+            on: On::Spec,
+        },
+        Error::LargeReply,
+        Error::ChannelRead {
+            connector: "site.a".parse().expect("a name"),
+            message: String::new(),
+        },
+        Error::Read {
+            path: PathBuf::new(),
+            cause: Unread::NotFound,
+        },
+        Error::Write {
+            path: PathBuf::new(),
+            error: env::paths::Error::NotFound,
+        },
+        Error::LargeRequest,
+        Error::Reply {
+            message: String::new(),
+        },
+    ]
+}
+
+#[test]
+fn error_codes_and_fixes_match_the_golden_file() {
+    let every = every();
     for error in &every {
         // A new variant fails this match, so it joins `every` and the golden file.
-        // `Config` holds the codes of the front ends, of `config`, and the one below.
+        // `Config` holds the codes of the front ends, of `config`, and the ones below.
+        // `Node` holds the codes of `node`, and `Remote` the codes of a reply.
         match error {
             Error::Argument { .. }
             | Error::Unknown { .. }
             | Error::Input { .. }
             | Error::Output { .. }
-            | Error::Config(_) => {}
+            | Error::Plan(_)
+            | Error::Behind(_)
+            | Error::Stale { .. }
+            | Error::Apply(_)
+            | Error::Stopped(_)
+            | Error::Request { .. }
+            | Error::Denied { .. }
+            | Error::LargeReply
+            | Error::ChannelRead { .. }
+            | Error::Read { .. }
+            | Error::Write { .. }
+            | Error::LargeRequest
+            | Error::Reply { .. }
+            | Error::Config(_)
+            | Error::Node(_)
+            | Error::Remote { .. } => {}
         }
     }
     let mut lines: Vec<_> = every
@@ -460,15 +633,342 @@ fn error_codes_and_fixes_match_the_golden_file() {
         .flat_map(|error| error.problems().into_owned())
         .map(|problem| format!("{}\t{}\n", problem.code, problem.fix))
         .collect();
-    let front_ends = BTreeMap::from([(
+    let front_ends = FrontEnds::new(
         "hcl",
         FrontEnd {
             read: |_, _| Err(Vec::new()),
         },
-    )]);
-    let unknown = front_end::unknown(Path::new("plant.yaml"), &front_ends);
-    lines.push(format!("{}\t{}\n", unknown.code, unknown.fix));
+    );
+    let unknown = front_end::unknown(Source(0), &front_ends);
+    let not_utf8 = front_end::not_utf8(Path::new("plant.yaml"));
+    let unresolved = plan::unresolved(None, String::new());
+    for diagnostic in [unknown, not_utf8, unresolved] {
+        lines.push(format!("{}\t{}\n", diagnostic.code, diagnostic.fix));
+    }
+    let codes: BTreeSet<_> = lines.iter().map(|line| line.split('\t').next()).collect();
+    assert_eq!(codes.len(), lines.len(), "a code has one cause");
     assert_eq!(lines.concat(), include_str!("codes.golden"));
+}
+
+mod start {
+    use std::ffi::OsString;
+    use std::io::{self, Write};
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::path::PathBuf;
+
+    use document::diagnostic::Code;
+    use serde_json::json;
+
+    use super::{Exit, call, cli, failed, offline};
+    use crate::{Failure, Run, Start};
+
+    fn start(args: &[&str]) -> Run {
+        let args = ["foundation", "start"]
+            .iter()
+            .chain(args)
+            .map(OsString::from);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let run = offline(args, io::empty(), &mut stdout, &mut stderr);
+        assert_eq!((stdout, stderr), (Vec::new(), Vec::new()), "writes nothing");
+        run
+    }
+
+    fn local() -> SocketAddr {
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0))
+    }
+
+    fn edge() -> types::name::Name {
+        "edge".parse().unwrap()
+    }
+
+    fn busy() -> Failure {
+        Failure {
+            code: Code::new("node.busy"),
+            message: "another node runs in foundation-data".to_owned(),
+            fix: "Stop that node, or give another data directory with `--data`"
+                .to_owned(),
+        }
+    }
+
+    #[test]
+    fn start_with_no_flag_uses_foundation_data_and_no_name() {
+        assert_eq!(
+            start(&[]),
+            Run::Start(Start {
+                data: PathBuf::from("foundation-data"),
+                json: false,
+                name: None,
+                listen: local(),
+            })
+        );
+    }
+
+    #[test]
+    fn start_gives_its_flags() {
+        assert_eq!(
+            start(&[
+                "--data",
+                "/srv/a",
+                "--name",
+                "site_a.edge",
+                "--listen",
+                "[::1]:7000",
+                "--json",
+            ]),
+            Run::Start(Start {
+                data: PathBuf::from("/srv/a"),
+                json: true,
+                name: Some("site_a.edge".parse().unwrap()),
+                listen: "[::1]:7000".parse().unwrap(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_bad_name_is_an_argument_error() {
+        assert_eq!(
+            cli(&["start", "--name", "a..b"]),
+            failed(
+                "error[ops.argument]: invalid value for one of the arguments: `--name \
+                 <NAME>`: a segment is not valid: \"\" in \"a..b\"\n\
+                 fix: Match the arguments to `foundation --help` or \
+                 `foundation <operation> --help`\n"
+            )
+        );
+    }
+
+    #[test]
+    fn a_listen_that_is_no_socket_address_is_an_argument_error() {
+        assert_eq!(
+            cli(&["start", "--listen", "x"]),
+            failed(
+                "error[ops.argument]: invalid value for one of the arguments: \
+                 `--listen <LISTEN>`: invalid socket address syntax\n\
+                 fix: Match the arguments to `foundation --help` or \
+                 `foundation <operation> --help`\n"
+            )
+        );
+    }
+
+    #[test]
+    fn the_help_of_start_names_its_flags() {
+        let exit = cli(&["start", "--help"]);
+        assert_eq!((exit.status, exit.stderr.as_str()), (0, ""));
+        for flag in [
+            "--data <DATA>",
+            "--name <NAME>",
+            "--listen <LISTEN>",
+            "--json",
+            "[default: foundation-data]",
+            "[default: 127.0.0.1:0]",
+        ] {
+            assert!(exit.stdout.contains(flag), "{flag}: {}", exit.stdout);
+        }
+    }
+
+    /// `start` is a command, not an operation: the help names it, and the docs and
+    /// the tools do not.
+    #[test]
+    fn the_help_names_start_and_the_docs_do_not() {
+        let exit = cli(&["--help"]);
+        assert_eq!((exit.status, exit.stderr.as_str()), (0, ""));
+        assert!(
+            exit.stdout.contains(
+                "  start    Start a node on a data directory, and run it until Ctrl-C"
+            ),
+            "{}",
+            exit.stdout
+        );
+        assert!(!crate::operation::docs().contains("start"));
+    }
+
+    #[test]
+    fn start_has_no_tool() {
+        assert_eq!(
+            call(&json!({ "name": "start", "arguments": {} }))["error"]["message"],
+            "no operation is named `start`"
+        );
+    }
+
+    #[test]
+    fn line_gives_the_name_and_the_data_directory() {
+        let mut start = Start {
+            data: PathBuf::from("foundation-data"),
+            json: false,
+            name: None,
+            listen: local(),
+        };
+        assert_eq!(
+            start.line(&edge()),
+            "node edge runs in foundation-data. Stop it with Ctrl-C.\n"
+        );
+        start.json = true;
+        assert_eq!(
+            start.line(&edge()),
+            "{\"name\":\"edge\",\"data\":\"foundation-data\"}\n"
+        );
+    }
+
+    #[test]
+    fn line_escapes_the_data_directory_as_an_error_does() {
+        let start = Start {
+            data: PathBuf::from("a.\nnode cloud runs in b\\ce\u{301}"),
+            json: false,
+            name: None,
+            listen: local(),
+        };
+        assert_eq!(
+            start.line(&edge()),
+            "node edge runs in a.\\nnode cloud runs in b\\\\ce\\u{301}. Stop it with \
+             Ctrl-C.\n"
+        );
+    }
+
+    #[test]
+    fn line_and_fail_give_the_data_directory_in_one_form() {
+        let data = "it's \"b\\c\"\ne\u{301}";
+        let start = Start {
+            data: PathBuf::from(data),
+            json: false,
+            name: None,
+            listen: local(),
+        };
+        let shown = "it's \"b\\\\c\"\\ne\\u{301}";
+        assert_eq!(
+            start.line(&edge()),
+            format!("node edge runs in {shown}. Stop it with Ctrl-C.\n")
+        );
+        let failure = Failure {
+            code: Code::new("node.data"),
+            message: format!("cannot write the data directory {data}: x"),
+            fix: "y".to_owned(),
+        };
+        let mut text = Vec::new();
+        assert_eq!(crate::fail(&[], &failure, &mut text), 1);
+        assert_eq!(
+            String::from_utf8(text).unwrap(),
+            format!(
+                "error[node.data]: cannot write the data directory {shown}: x\nfix: y\n"
+            )
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn line_gives_a_data_directory_that_is_not_utf8_lossily() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let mut start = Start {
+            data: PathBuf::from(std::ffi::OsStr::from_bytes(b"a\xf0\x9f\x98b\xffc")),
+            json: true,
+            name: None,
+            listen: local(),
+        };
+        assert_eq!(
+            start.line(&edge()),
+            "{\"name\":\"edge\",\"data\":\"a\u{fffd}b\u{fffd}c\"}\n"
+        );
+        start.json = false;
+        assert_eq!(
+            start.line(&edge()),
+            "node edge runs in a\u{fffd}b\u{fffd}c. Stop it with Ctrl-C.\n"
+        );
+    }
+
+    /// A writer whose every call fails.
+    struct Closed;
+
+    impl Write for Closed {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+    }
+
+    fn args(args: &[&str]) -> Vec<OsString> {
+        ["foundation"]
+            .iter()
+            .chain(args)
+            .map(OsString::from)
+            .collect()
+    }
+
+    #[test]
+    fn fail_writes_the_failure_as_cli_does_and_gives_1() {
+        let mut text = Vec::new();
+        let status = crate::fail(&args(&["start"]), &busy(), &mut text);
+        assert_eq!(
+            Exit {
+                stdout: String::new(),
+                stderr: String::from_utf8(text).unwrap(),
+                status,
+            },
+            Exit {
+                stdout: String::new(),
+                stderr: "error[node.busy]: another node runs in foundation-data\n\
+                         fix: Stop that node, or give another data directory with \
+                         `--data`\n"
+                    .to_owned(),
+                status: 1,
+            }
+        );
+        let mut json = Vec::new();
+        let status = crate::fail(&args(&["start", "--json"]), &busy(), &mut json);
+        assert_eq!(status, 1);
+        let json: serde_json::Value = serde_json::from_slice(&json).unwrap();
+        assert_eq!(
+            json,
+            json!({ "errors": [{
+                "code": "node.busy",
+                "message": "another node runs in foundation-data",
+                "fix": "Stop that node, or give another data directory with `--data`",
+                "notes": [],
+            }] })
+        );
+        let status = crate::fail(&args(&["version", "--json"]), &busy(), Closed);
+        assert_eq!(status, 1, "a closed output");
+    }
+
+    #[test]
+    fn fail_after_a_double_dash_json_gives_text() {
+        let mut text = Vec::new();
+        let status =
+            crate::fail(&args(&["version", "--", "--json"]), &busy(), &mut text);
+        assert_eq!(status, 1);
+        assert_eq!(
+            String::from_utf8(text).unwrap(),
+            "error[node.busy]: another node runs in foundation-data\n\
+             fix: Stop that node, or give another data directory with `--data`\n"
+        );
+    }
+
+    /// The OS gives the program name, so it can read as a flag.
+    #[test]
+    fn json_skips_the_program_name() {
+        for (program, flags, json) in [
+            ("--", &["start", "--json"][..], true),
+            ("--json", &["start"][..], false),
+        ] {
+            let args: Vec<OsString> =
+                [program].iter().chain(flags).map(OsString::from).collect();
+            let run = offline(args.clone(), io::empty(), io::sink(), io::sink());
+            let Run::Start(start) = run else {
+                panic!("{args:?} starts a node");
+            };
+            let mut written = Vec::new();
+            crate::fail(&args, &busy(), &mut written);
+            assert_eq!(
+                (start.json, written.starts_with(b"{")),
+                (json, json),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&written)
+            );
+        }
+    }
 }
 
 mod mcp {
@@ -673,7 +1173,7 @@ mod mcp {
             assert_eq!(
                 ask(&request(json!(1), "tools/call", json!({ "name": name })))["error"]
                     ["data"]["errors"][0]["fix"],
-                "Use a name from `foundation docs`",
+                "Use a name from `tools/list`",
                 "{name}"
             );
         }
@@ -691,7 +1191,8 @@ mod mcp {
 mod serve {
     use std::io::{self, Read, Write};
 
-    use super::{Exit, run};
+    use super::{Exit, offline, run};
+    use crate::Run;
 
     const PING: &str = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n";
     const PONG: &str = "{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{}}\n";
@@ -768,13 +1269,13 @@ mod serve {
     #[test]
     fn each_reply_is_flushed() {
         let mut output = Buffered::default();
-        let status = crate::cli(
+        let status = offline(
             ["foundation", "mcp"].map(Into::into),
             PING.as_bytes(),
             &mut output,
             io::sink(),
         );
-        assert_eq!(status, 0);
+        assert_eq!(status, Run::Exit(0));
         assert_eq!(
             (output.pending.as_slice(), output.flushed.as_slice()),
             (b"".as_slice(), PONG.as_bytes())
@@ -790,7 +1291,7 @@ mod serve {
             closed: true,
             ..Buffered::default()
         };
-        let status = crate::cli(
+        let status = offline(
             ["foundation", "mcp"].map(Into::into),
             &mut rest,
             output,
@@ -798,7 +1299,7 @@ mod serve {
         );
         assert_eq!(
             (status, stderr.as_slice(), rest),
-            (0, b"".as_slice(), PING.as_bytes())
+            (Run::Exit(0), b"".as_slice(), PING.as_bytes())
         );
     }
 
@@ -822,7 +1323,7 @@ mod serve {
         let input = format!("{PING}{PING}");
         let mut rest = input.as_bytes();
         let mut stdout = Vec::new();
-        let status = crate::cli(
+        let status = offline(
             ["foundation", "mcp"].map(Into::into),
             &mut rest,
             Failing(io::ErrorKind::BrokenPipe),
@@ -830,29 +1331,29 @@ mod serve {
         );
         assert_eq!(
             (status, stdout.as_slice(), rest),
-            (0, b"".as_slice(), PING.as_bytes())
+            (Run::Exit(0), b"".as_slice(), PING.as_bytes())
         );
         let mut stderr = Vec::new();
-        let status = crate::cli(
+        let status = offline(
             ["foundation", "version"].map(Into::into),
             io::empty(),
             Failing(io::ErrorKind::BrokenPipe),
             &mut stderr,
         );
-        assert_eq!((status, stderr.as_slice()), (0, b"".as_slice()));
+        assert_eq!((status, stderr.as_slice()), (Run::Exit(0), b"".as_slice()));
     }
 
     #[test]
     fn an_output_that_fails_is_an_error() {
         let mut stderr = Vec::new();
-        let status = crate::cli(
+        let status = offline(
             ["foundation", "version", "--json"].map(Into::into),
             io::empty(),
             Failing(io::ErrorKind::StorageFull),
             &mut stderr,
         );
         let message = io::Error::from(io::ErrorKind::StorageFull).to_string();
-        assert_eq!(status, 1);
+        assert_eq!(status, Run::Exit(1));
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&stderr).expect("json"),
             serde_json::json!({ "errors": [{
@@ -891,4 +1392,22 @@ mod serve {
             "{help}"
         );
     }
+}
+
+#[test]
+fn the_places_of_one_file_share_its_path() {
+    let files = crate::common::files(&[("site.hcl", "nope \"a\" {}\nnope \"b\" {}\n")]);
+    let read = crate::plan::Documents::read(&files, &crate::common::front_ends())
+        .and_then(|documents| documents.names(&crate::common::create_kinds()));
+    let Err(Error::Config(problems)) = read else {
+        panic!("two problems, not {read:?}");
+    };
+    let [a, b] = &problems[..] else {
+        panic!("two problems, not {problems:?}");
+    };
+    let (Some(a), Some(b)) = (&a.place, &b.place) else {
+        panic!("two places, not {problems:?}");
+    };
+    assert_eq!(&*a.file, "site.hcl");
+    assert!(std::sync::Arc::ptr_eq(&a.file, &b.file));
 }

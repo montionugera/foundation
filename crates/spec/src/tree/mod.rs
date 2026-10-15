@@ -63,7 +63,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// The chunks that tree operations can read, by digest.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Chunks(BTreeMap<Digest, Vec<u8>>);
 
 impl Chunks {

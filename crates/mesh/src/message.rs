@@ -273,24 +273,14 @@ mod tests {
     const LINK: usize = 16 + (8 + 3 * 16) * 2 + (1 + 16 + 8 + 3 * (16 + 64)) + 64;
 
     use super::*;
-
-    fn node(bits: u128) -> node::Key {
-        node::Key::from_u128(bits)
-    }
-
-    fn at(term: u64, index: u64) -> Position {
-        Position {
-            term: Term(term),
-            index,
-        }
-    }
+    use crate::common::{at, key};
 
     fn a_position() -> impl Strategy<Value = Position> {
         (any::<u64>(), any::<u64>()).prop_map(|(term, index)| at(term, index))
     }
 
     fn keys() -> impl Strategy<Value = BTreeSet<node::Key>> {
-        prop::collection::btree_set(any::<u128>().prop_map(node), 0..4)
+        prop::collection::btree_set(any::<u128>().prop_map(node::Key::from_u128), 0..4)
     }
 
     fn a_signature() -> impl Strategy<Value = Signature> {
@@ -354,13 +344,13 @@ mod tests {
         let grant = any::<bool>()
             .prop_map(|vote| if vote { Grant::Vote } else { Grant::PreVote });
         let voters = prop::collection::btree_map(
-            any::<u128>().prop_map(node),
+            any::<u128>().prop_map(node::Key::from_u128),
             a_signature().prop_map(Some),
             0..4,
         );
         (grant, any::<u128>(), voters).prop_map(|(grant, candidate, voters)| Proof {
             grant,
-            candidate: node(candidate),
+            candidate: node::Key::from_u128(candidate),
             voters,
         })
     }
@@ -376,8 +366,8 @@ mod tests {
         );
         let raft = fields.prop_map(|(from, to, term, body, proof, chain)| {
             Message::Raft(raft::Message {
-                from: node(from),
-                to: node(to),
+                from: node::Key::from_u128(from),
+                to: node::Key::from_u128(to),
                 term: Term(term),
                 body,
                 proof,
@@ -388,13 +378,13 @@ mod tests {
             (any::<u128>(), any::<u128>()).prop_map(|(index, home)| Message::Propose {
                 change: Change::Home {
                     index: channel::Key::from_u128(index),
-                    home: node(home),
+                    home: node::Key::from_u128(home),
                 },
             });
         let proposed = a_position().prop_map(|at| Message::Proposed { at });
         let not_leader =
             prop::option::of(any::<u128>()).prop_map(|leader| Message::NotLeader {
-                leader: leader.map(node),
+                leader: leader.map(node::Key::from_u128),
             });
         prop_oneof![4 => raft, 1 => propose, 1 => proposed, 1 => not_leader]
     }
@@ -403,7 +393,7 @@ mod tests {
         number.to_le_bytes()
     }
 
-    fn key(low: u8) -> Vec<u8> {
+    fn le_key(low: u8) -> Vec<u8> {
         let mut key = vec![low];
         key.extend([0; 15]);
         key
@@ -414,20 +404,20 @@ mod tests {
     }
 
     // An append of one change to the incoming voters `keys`, with no outgoing voter.
-    fn change_append(keys: [u128; 2]) -> Vec<u8> {
+    fn change_append(keys: [u8; 2]) -> Vec<u8> {
         raft(Body::Append {
             prev: at(0, 0),
             entries: vec![Entry {
                 at: at(3, 1),
                 data: Data::Voters(raft::Change {
                     voters: Voters {
-                        incoming: keys.map(node).into(),
+                        incoming: keys.map(key).into(),
                         outgoing: BTreeSet::new(),
                     },
                     votes: Proof {
                         grant: Grant::Vote,
-                        candidate: node(1),
-                        voters: [(node(1), Some(signature(1)))].into(),
+                        candidate: key(1),
+                        voters: [(key(1), Some(signature(1)))].into(),
                     },
                     signature: Some(signature(2)),
                 }),
@@ -439,8 +429,8 @@ mod tests {
 
     fn raft(body: Body) -> Message {
         Message::Raft(raft::Message {
-            from: node(1),
-            to: node(2),
+            from: key(1),
+            to: key(2),
             term: Term(3),
             body,
             proof: None,
@@ -450,7 +440,7 @@ mod tests {
 
     /// The bytes of [`raft`] before the body: no proof, then an empty chain.
     fn head() -> Vec<u8> {
-        [&[RAFT][..], &key(1), &key(2), &le(3), &[0], &le(0)].concat()
+        [&[RAFT][..], &le_key(1), &le_key(2), &le(3), &[0], &le(0)].concat()
     }
 
     /// The length of [`head`].
@@ -464,13 +454,13 @@ mod tests {
     fn change(signature: Option<Signature>) -> raft::Change {
         raft::Change {
             voters: Voters {
-                incoming: [node(1), node(2)].into(),
-                outgoing: [node(2)].into(),
+                incoming: [key(1), key(2)].into(),
+                outgoing: [key(2)].into(),
             },
             votes: Proof {
                 grant: Grant::Vote,
-                candidate: node(1),
-                voters: [(node(1), Some(self::signature(5)))].into(),
+                candidate: key(1),
+                voters: [(key(1), Some(self::signature(5)))].into(),
             },
             signature,
         }
@@ -539,20 +529,20 @@ mod tests {
     fn a_proof_has_a_fixed_byte_form() {
         assert_eq!(head().len(), HEAD);
         let message = Message::Raft(raft::Message {
-            from: node(1),
-            to: node(2),
+            from: key(1),
+            to: key(2),
             term: Term(3),
             body: Body::Heartbeat { commit: 6 },
             proof: Some(Proof {
                 grant: Grant::Vote,
-                candidate: node(1),
-                voters: [(node(1), Some(signature(5))), (node(4), Some(signature(6)))]
+                candidate: key(1),
+                voters: [(key(1), Some(signature(5))), (key(4), Some(signature(6)))]
                     .into(),
             }),
             chain: Vec::new(),
         });
-        let voters = [&le(2)[..], &key(1), &[5; 64], &key(4), &[6; 64]].concat();
-        let proof = [&[1, 1][..], &key(1), &voters].concat();
+        let voters = [&le(2)[..], &le_key(1), &[5; 64], &le_key(4), &[6; 64]].concat();
+        let proof = [&[1, 1][..], &le_key(1), &voters].concat();
         let head = &head()[..PROOF_AT];
         let expected = [head, &proof, &le(0), &[5], &le(6)].concat();
         assert_eq!(message.encode(), expected);
@@ -567,9 +557,9 @@ mod tests {
         };
         let message = chained(vec![link]);
         let position = [le(2), le(4)].concat();
-        let incoming = [&le(2)[..], &key(1), &key(2)].concat();
-        let outgoing = [&le(1)[..], &key(2)].concat();
-        let votes = [&[1][..], &key(1), &le(1), &key(1), &[5; 64]].concat();
+        let incoming = [&le(2)[..], &le_key(1), &le_key(2)].concat();
+        let outgoing = [&le(1)[..], &le_key(2)].concat();
+        let votes = [&[1][..], &le_key(1), &le(1), &le_key(1), &[5; 64]].concat();
         let link = [position, incoming, outgoing, votes, vec![6; 64]].concat();
         let head = &head()[..head().len() - 8];
         let expected = [head, &le(1), &link, &[5], &le(6)].concat();
@@ -587,14 +577,14 @@ mod tests {
                     at: at(2, index),
                     change: raft::Change {
                         voters: Voters {
-                            incoming: [1, 2, 3].map(node).into(),
-                            outgoing: [1, 2, 4].map(node).into(),
+                            incoming: [1, 2, 3].map(key).into(),
+                            outgoing: [1, 2, 4].map(key).into(),
                         },
                         votes: Proof {
                             grant: Grant::Vote,
-                            candidate: node(1),
+                            candidate: key(1),
                             voters: [1_u8, 2, 3]
-                                .map(|id| (node(id.into()), Some(signature(id))))
+                                .map(|id| (key(id), Some(signature(id))))
                                 .into(),
                         },
                         signature: Some(signature(6)),
@@ -611,17 +601,17 @@ mod tests {
         let propose = Message::Propose {
             change: Change::Home {
                 index: channel::Key::from_u128(7),
-                home: node(8),
+                home: key(8),
             },
         };
         let known = Message::NotLeader {
-            leader: Some(node(7)),
+            leader: Some(key(7)),
         };
         let cases: [(Message, &[&[u8]]); 4] = [
-            (propose, &[&[2, 1], &key(7), &key(8)]),
+            (propose, &[&[2, 1], &le_key(7), &le_key(8)]),
             (Message::Proposed { at: at(2, 4) }, &[&[3], &le(2), &le(4)]),
             (Message::NotLeader { leader: None }, &[&[4]]),
-            (known, &[&[5], &key(7)]),
+            (known, &[&[5], &le_key(7)]),
         ];
         for (message, expected) in cases {
             let expected = expected.concat();
@@ -646,11 +636,18 @@ mod tests {
         tail.push(0);
         let mut presence = heartbeat.clone();
         presence[PROOF_AT] = 2;
-        let grant =
-            [&head()[..PROOF_AT], &[1, 2], &key(1), &le(0), &le(0), &[6]].concat();
+        let grant = [
+            &head()[..PROOF_AT],
+            &[1, 2],
+            &le_key(1),
+            &le(0),
+            &le(0),
+            &[6],
+        ]
+        .concat();
         let proven = |voters: [u8; 2]| {
-            let voters = voters.map(|voter| [key(voter), vec![voter; 64]].concat());
-            let proof = [&[1, 1][..], &key(1), &le(2), &voters.concat()].concat();
+            let voters = voters.map(|voter| [le_key(voter), vec![voter; 64]].concat());
+            let proof = [&[1, 1][..], &le_key(1), &le(2), &voters.concat()].concat();
             [&head()[..PROOF_AT], &proof, &le(0), &[6]].concat()
         };
         let link = Link {
@@ -709,7 +706,7 @@ mod tests {
 
     #[test]
     fn decode_refuses_what_is_not_a_proposal_or_an_answer() {
-        let home = [&[2, 1][..], &key(7), &key(8)].concat();
+        let home = [&[2, 1][..], &le_key(7), &le_key(8)].concat();
         let cases: [(&str, &[u8]); 7] = [
             ("a proposal with no change", &[2]),
             ("a change of an unknown kind", &[2, 9]),
@@ -718,9 +715,9 @@ mod tests {
             ("a cut position", &[&[3][..], &le(2), &le(4)[..7]].concat()),
             (
                 "a leader after \"not the leader\"",
-                &[&[4][..], &key(7)].concat(),
+                &[&[4][..], &le_key(7)].concat(),
             ),
-            ("a cut leader", &[&[5][..], &key(7)[..15]].concat()),
+            ("a cut leader", &[&[5][..], &le_key(7)[..15]].concat()),
         ];
         for (name, bytes) in cases {
             assert_eq!(Message::decode(bytes), None, "{name}");
@@ -741,14 +738,14 @@ mod tests {
     #[should_panic(expected = "invariant: a claim is signed before it is encoded")]
     fn encode_panics_on_an_unsigned_proof_entry() {
         Message::Raft(raft::Message {
-            from: node(1),
-            to: node(2),
+            from: key(1),
+            to: key(2),
             term: Term(3),
             body: Body::Vote { last: at(0, 0) },
             proof: Some(Proof {
                 grant: Grant::PreVote,
-                candidate: node(1),
-                voters: [(node(1), None), (node(2), Some(signature(2)))].into(),
+                candidate: key(1),
+                voters: [(key(1), None), (key(2), Some(signature(2)))].into(),
             }),
             chain: Vec::new(),
         })

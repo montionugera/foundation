@@ -1,15 +1,49 @@
 use std::borrow::Cow;
 use std::fmt;
+use std::sync::Arc;
 
-use document::diagnostic::Code;
+use std::path::PathBuf;
+
+use document::Span;
+use document::diagnostic::{Code, Diagnostic};
+use mesh::used::{Behind, Cause};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use types::name::Name;
+use wire::hub::client::BODY_BYTES_MAX;
+
+use crate::front_end::File;
 
 const ARGUMENT: Code = Code::new("ops.argument");
 const UNKNOWN: Code = Code::new("ops.unknown-operation");
 const INPUT: Code = Code::new("ops.input");
 const OUTPUT: Code = Code::new("ops.output");
+const BAD_PLAN: Code = Code::new("ops.bad-plan");
+const BEHIND: Code = Code::new("ops.behind");
+const STALE_PLAN: Code = Code::new("ops.stale-plan");
+const APPLY: Code = Code::new("ops.apply");
+const STOPPED: Code = Code::new("ops.stopped");
+const BAD_REQUEST: Code = Code::new("ops.bad-request");
+const DENIED: Code = Code::new("ops.denied");
+const LARGE_REPLY: Code = Code::new("ops.large-reply");
+const CHANNEL_READ: Code = Code::new("ops.channel-read");
+const READ: Code = Code::new("ops.read");
+const WRITE: Code = Code::new("ops.write");
+const LARGE_REQUEST: Code = Code::new("ops.large-request");
+const BAD_REPLY: Code = Code::new("ops.bad-reply");
+/// The fix of [`ARGUMENT`].
+const HELP: &str =
+    "Match the arguments to `foundation --help` or `foundation <operation> --help`";
+
+/// Where the caller of an operation finds the names of the operations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Among {
+    /// The commands of `foundation --help`.
+    Commands,
+    /// The tools of `tools/list` in MCP.
+    Tools,
+}
 
 /// Why a command line did not run to its end.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,6 +54,7 @@ pub(crate) enum Error {
     Unknown {
         name: String,
         closest: Option<String>,
+        among: Among,
     },
     /// Standard input could not be read.
     Input { message: String },
@@ -27,30 +62,179 @@ pub(crate) enum Error {
     Output { message: String },
     /// The config files have problems: at least one.
     Config(Vec<Problem>),
+    /// The plan file holds no plan that `plan` makes.
+    Plan(config::plan::Error),
+    /// The node does not use the newest spec, so it can neither plan nor apply.
+    Behind(Box<Behind>),
+    /// The spec in use is at `pointer`, not at `base`, the spec that the plan changes.
+    Stale {
+        base: spec::Pointer,
+        pointer: spec::Pointer,
+    },
+    /// The region did not apply the plan.
+    Apply(mesh::Error),
+    /// The command line did not run, its node did not start or stopped with an error,
+    /// or the command line did not reach its node.
+    Node(Failure),
+    /// The group of the mesh stopped, so the node can neither plan nor apply.
+    Stopped(mesh::Stopped),
+    /// The body that a node got is no request.
+    Request { message: String },
+    /// No access policy gives `subject` the action `action` on `on`.
+    Denied {
+        subject: Name,
+        action: Action,
+        on: On,
+    },
+    /// The reply of a node has more bytes than one reply holds.
+    LargeReply,
+    /// A reader of the status channels of `connector` did not open or ended, with the
+    /// text of the hub.
+    ChannelRead { connector: Name, message: String },
+    /// A command line did not read the file at `path`.
+    Read { path: PathBuf, cause: Unread },
+    /// A command line did not write the plan file at `path`.
+    Write {
+        path: PathBuf,
+        error: env::paths::Error,
+    },
+    /// The request of a command line has more bytes than one request holds.
+    LargeRequest,
+    /// The reply of a node to a command line is no reply.
+    Reply { message: String },
+    /// The errors that a node gave a command line, and the exit status of the reply.
+    Remote { problems: Vec<Problem>, status: u8 },
+}
+
+/// Why a command line did not read a file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unread {
+    NotFound,
+    Directory,
+    NotUtf8,
+    Io { code: i32 },
+}
+
+/// An action that an operation on a node needs: the action of its name, and `Admin`
+/// on a changed key of a definition other than a channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Action {
+    Read,
+    Plan,
+    Apply,
+    Admin,
+}
+
+/// What a refusal of an operation on a node names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum On {
+    /// A name that the request holds.
+    Name(Name),
+    /// A definition of the spec in use that the files do not hold.
+    Spec,
+    /// No name: the request names no definition.
+    Nothing,
+}
+
+impl fmt::Display for On {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Name(name) => write!(f, "`{name}`"),
+            Self::Spec => f.write_str(
+                "a definition of the spec in use that the files do not hold",
+            ),
+            Self::Nothing => f.write_str("a request that names no definition"),
+        }
+    }
+}
+
+impl Action {
+    /// The word of the action in a config file.
+    const fn word(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Plan => "plan",
+            Self::Apply => "apply",
+            Self::Admin => "admin",
+        }
+    }
+}
+
+impl From<Action> for spec::access::Action {
+    fn from(action: Action) -> Self {
+        match action {
+            Action::Read => Self::Read,
+            Action::Plan => Self::Plan,
+            Action::Apply => Self::Apply,
+            Action::Admin => Self::Admin,
+        }
+    }
 }
 
 impl Error {
+    /// `Config` with the problem of each of `diagnostics`, whose spans are in the files
+    /// of `sources`.
+    pub(crate) fn config(diagnostics: Vec<Diagnostic>, sources: &Sources) -> Self {
+        Self::Config(
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| Problem::of(diagnostic, sources))
+                .collect(),
+        )
+    }
+
     pub(crate) fn status(&self) -> u8 {
         match self {
-            Self::Argument { .. } | Self::Unknown { .. } | Self::Config(_) => 2,
-            Self::Input { .. } | Self::Output { .. } => 1,
+            Self::Remote { status, .. } => *status,
+            Self::Read {
+                cause: Unread::Io { .. },
+                ..
+            }
+            | Self::Input { .. }
+            | Self::Output { .. }
+            | Self::Behind(_)
+            | Self::Stale { .. }
+            | Self::Apply(_)
+            | Self::Node(_)
+            | Self::Stopped(_)
+            | Self::Request { .. }
+            | Self::Denied { .. }
+            | Self::LargeReply
+            | Self::ChannelRead { .. }
+            | Self::Write { .. }
+            | Self::Reply { .. } => 1,
+            Self::Argument { .. }
+            | Self::Unknown { .. }
+            | Self::Config(_)
+            | Self::Plan(_)
+            | Self::Read { .. }
+            | Self::LargeRequest => 2,
         }
     }
 
     /// Each problem: for each error but `Config`, one with no place and no note.
+    #[expect(clippy::too_many_lines, reason = "one arm for each error")]
     pub(crate) fn problems(&self) -> Cow<'_, [Problem]> {
         let (code, fix) = match self {
-            Self::Config(problems) => return Cow::Borrowed(problems),
-            Self::Argument { .. } => (
-                ARGUMENT,
-                "Match the arguments to the operation in `foundation docs`".to_owned(),
-            ),
+            Self::Config(problems) | Self::Remote { problems, .. } => {
+                return Cow::Borrowed(problems);
+            }
+            Self::Node(failure) => (failure.code, failure.fix.clone()),
+            Self::Argument { .. } => (ARGUMENT, HELP.to_owned()),
             Self::Unknown {
                 closest: Some(closest),
                 ..
             } => (UNKNOWN, format!("Use `{closest}`, the closest name")),
-            Self::Unknown { closest: None, .. } => {
-                (UNKNOWN, "Use a name from `foundation docs`".to_owned())
+            Self::Unknown {
+                closest: None,
+                among,
+                ..
+            } => {
+                let list = match among {
+                    Among::Commands => "foundation --help",
+                    Among::Tools => "tools/list",
+                };
+                (UNKNOWN, format!("Use a name from `{list}`"))
             }
             Self::Input { .. } => (
                 INPUT,
@@ -59,6 +243,55 @@ impl Error {
             Self::Output { .. } => (
                 OUTPUT,
                 "Give standard output a destination that can be written".to_owned(),
+            ),
+            Self::Plan(_) => (
+                BAD_PLAN,
+                "Make a plan with `foundation plan`, and apply it with no edits"
+                    .to_owned(),
+            ),
+            Self::Behind(_) => (BEHIND, "Fix the cause, then plan again".to_owned()),
+            Self::Stale { .. } => (STALE_PLAN, "Plan again".to_owned()),
+            Self::Apply(_) => (
+                APPLY,
+                "Fix the cause in the message, then plan and apply again".to_owned(),
+            ),
+            Self::Stopped(_) => (
+                STOPPED,
+                "Fix the cause in the message, then start the node and plan again"
+                    .to_owned(),
+            ),
+            Self::Request { .. } => (
+                BAD_REQUEST,
+                "Use a `foundation` program of the same version as the node".to_owned(),
+            ),
+            Self::Denied { .. } => (
+                DENIED,
+                "Ask an admin of the region for an access policy that allows it"
+                    .to_owned(),
+            ),
+            Self::LargeReply => (
+                LARGE_REPLY,
+                "Plan and apply the change in smaller steps".to_owned(),
+            ),
+            Self::ChannelRead { .. } => (
+                CHANNEL_READ,
+                "Fix the cause in the message, then ask for the status again"
+                    .to_owned(),
+            ),
+            Self::Read { .. } => (
+                READ,
+                "Fix the cause in the message, then run the command again".to_owned(),
+            ),
+            Self::Write { .. } => (
+                WRITE,
+                "Give `--out` a path in a directory that can be written".to_owned(),
+            ),
+            Self::LargeRequest => {
+                (LARGE_REQUEST, "Make the config files smaller".to_owned())
+            }
+            Self::Reply { .. } => (
+                BAD_REPLY,
+                "Use a `foundation` program of the same version as the node".to_owned(),
             ),
         };
         Cow::Owned(vec![Problem {
@@ -75,14 +308,14 @@ impl Error {
         json!({ "errors": self.problems() })
     }
 
-    /// Each problem for a terminal, with one empty line between two. In `Config`, each
-    /// control character is written as its Rust escape, because a config producer
-    /// quotes the text of a file itself. In each other error, so are a backslash and
-    /// each character that does not print, because that text holds the caller's text
-    /// as given.
+    /// Each problem for a terminal, with one empty line between two. In `Config` and
+    /// `Remote`, each control character is written as its Rust escape, because a
+    /// config producer or the node quotes the text of a file itself. In each other
+    /// error, so are a backslash and each character that does not print, because that
+    /// text holds the caller's text as given.
     pub(crate) fn text(&self) -> String {
         let escape: fn(&str) -> String = match self {
-            Self::Config(_) => escape_controls,
+            Self::Config(_) | Self::Remote { .. } => escape_controls,
             _ => escape,
         };
         let problems: Vec<String> = self
@@ -92,6 +325,18 @@ impl Error {
             .collect();
         problems.join("\n")
     }
+}
+
+/// Why the command line did not run, why its node did not start or stopped with an
+/// error, or why the command line did not reach its node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Failure {
+    /// What kind of failure it is, such as `node.busy`.
+    pub code: Code,
+    /// What went wrong.
+    pub message: String,
+    /// What to do about it.
+    pub fix: String,
 }
 
 /// One problem, as the JSON and the text of each error give it.
@@ -111,6 +356,24 @@ pub(crate) struct Problem {
 }
 
 impl Problem {
+    /// The problem of `diagnostic`, whose spans are in the files of `sources`.
+    pub(crate) fn of(diagnostic: Diagnostic, sources: &Sources) -> Self {
+        Self {
+            code: diagnostic.code.as_str().to_owned(),
+            message: diagnostic.message,
+            fix: diagnostic.fix,
+            place: diagnostic.span.map(|span| sources.place(span)),
+            notes: diagnostic
+                .notes
+                .into_iter()
+                .map(|note| Note {
+                    text: note.text,
+                    place: sources.place(note.span),
+                })
+                .collect(),
+        }
+    }
+
     /// `error[<code>]: <message>`, its place, `fix: <fix>`, then each note and its
     /// place, with `escape` on each text.
     fn text(&self, escape: fn(&str) -> String) -> String {
@@ -144,14 +407,47 @@ pub(crate) struct Note {
 /// scalar values, as rustc does.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub(crate) struct Place {
-    /// The path of the file, as the user or a directory listing gave it, as
-    /// `Path::display` writes it: each part that is not UTF-8 is U+FFFD, so two paths
-    /// can give one text.
-    pub(crate) file: String,
+    /// The exact path, as the user or a directory listing gave it. A path that is not
+    /// UTF-8 gives `ops.path-not-utf8` instead.
+    pub(crate) file: Arc<str>,
     /// The line, from 1.
     pub(crate) line: u32,
     /// The column, from 1, in Unicode scalar values.
     pub(crate) column: u32,
+}
+
+/// The path of each file of a plan, by source. Each place in a file shares its path,
+/// so the problems of a file do not repeat it in memory.
+#[derive(Default)]
+pub(crate) struct Sources(Vec<Option<Arc<str>>>);
+
+impl Sources {
+    /// The path of each of `files`, by source.
+    pub(crate) fn of(files: &[File]) -> Self {
+        Self(
+            files
+                .iter()
+                .map(|file| file.path.to_str().map(Arc::from))
+                .collect(),
+        )
+    }
+
+    /// The start of `span`, in the file of its source.
+    pub(crate) fn place(&self, span: Span) -> Place {
+        let path = usize::try_from(span.source().0)
+            .ok()
+            .and_then(|source| self.0.get(source))
+            .expect("invariant: a span is in a file of the plan");
+        let start = span.start();
+        Place {
+            file: Arc::clone(
+                path.as_ref()
+                    .expect("invariant: `read` refuses a path that is not UTF-8"),
+            ),
+            line: start.line + 1,
+            column: start.column + 1,
+        }
+    }
 }
 
 /// `  --> <file>:<line>:<column>`, as rustc writes a place, and a new line.
@@ -163,6 +459,7 @@ impl fmt::Display for Place {
 }
 
 impl fmt::Display for Error {
+    #[expect(clippy::too_many_lines, reason = "one arm for each error")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Argument { message } => f.write_str(message),
@@ -176,6 +473,96 @@ impl fmt::Display for Error {
             Self::Config(problems) => match problems.as_slice() {
                 [one] => f.write_str(&one.message),
                 _ => write!(f, "the config files have {} problems", problems.len()),
+            },
+            Self::Plan(error) => error.fmt(f),
+            Self::Behind(behind) => {
+                let Behind { pointer, cause } = &**behind;
+                write!(f, "the node does not use the newest spec, at {pointer}: ")?;
+                match cause {
+                    Cause::Read(error) => write!(f, "its tree does not read: {error}"),
+                    Cause::Problems(problems) => {
+                        f.write_str("it has problems at this build: ")?;
+                        for (i, problem) in problems.iter().enumerate() {
+                            let between = if i == 0 { "" } else { "; " };
+                            write!(f, "{between}{problem}")?;
+                        }
+                        Ok(())
+                    }
+                    Cause::Blob(error) => {
+                        write!(f, "a call of the store failed: {error}")
+                    }
+                    Cause::Files(error) => write!(
+                        f,
+                        "the file of the pointer in use was not made durable: {error}"
+                    ),
+                }
+            }
+            Self::Stale { base, pointer } => write!(
+                f,
+                "the spec changed: the spec is at {pointer}, not at the base {base} \
+                 of the plan"
+            ),
+            Self::Apply(error) => error.fmt(f),
+            Self::Node(failure) => f.write_str(&failure.message),
+            Self::Stopped(stopped) => stopped.fmt(f),
+            Self::Request { message } => {
+                write!(f, "the body is no request: {message}")
+            }
+            Self::Denied {
+                subject,
+                action,
+                on,
+            } => {
+                let action = action.word();
+                write!(
+                    f,
+                    "no access policy gives `{subject}` the action `{action}` on {on}"
+                )
+            }
+            Self::LargeReply => write!(
+                f,
+                "the reply has more than {BODY_BYTES_MAX} bytes, the most that a reply \
+                 holds"
+            ),
+            Self::ChannelRead { connector, message } => write!(
+                f,
+                "the status channels of the connector `{connector}` did not read: \
+                 {message}"
+            ),
+            Self::Read { path, cause } => {
+                let path = path.display();
+                match cause {
+                    Unread::NotFound => write!(f, "no file is at {path}"),
+                    Unread::Directory => write!(f, "{path} is a directory, not a file"),
+                    Unread::NotUtf8 => write!(f, "the text of {path} is not UTF-8"),
+                    Unread::Io { code } => {
+                        write!(f, "the read of {path} failed with OS error {code}")
+                    }
+                }
+            }
+            Self::Write { path, error } => {
+                let path = path.display();
+                match error {
+                    env::paths::Error::NotFound => {
+                        write!(f, "the directory of the plan file {path} is not there")
+                    }
+                    env::paths::Error::Io { code } => write!(
+                        f,
+                        "the write of the plan file {path} failed with OS error {code}"
+                    ),
+                }
+            }
+            Self::LargeRequest => write!(
+                f,
+                "the request has more than {BODY_BYTES_MAX} bytes, the most that a \
+                 request holds"
+            ),
+            Self::Reply { message } => {
+                write!(f, "the reply of the node is no reply: {message}")
+            }
+            Self::Remote { problems, .. } => match problems.as_slice() {
+                [one] => f.write_str(&one.message),
+                _ => write!(f, "the node gave {} problems", problems.len()),
             },
         }
     }

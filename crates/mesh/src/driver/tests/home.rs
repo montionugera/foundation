@@ -2,10 +2,12 @@
 //! 1 with node 2 as a raw peer that plays its leader.
 
 use std::future::pending;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use transport::Class;
 use transport::stream::{Incoming, Receiver, Sender};
 
+use super::apply::Counted;
 use super::send::{self, LIMIT, Peer, create_config, stop};
 use super::*;
 
@@ -19,7 +21,7 @@ impl Cluster {
     /// gives the leader, a follower, and the position of the entry of that home.
     pub(super) fn led(run: u64) -> (Self, u8, u8, Position) {
         let mut cluster = Self::new(run);
-        cluster.script(home);
+        cluster.script(home_to);
         cluster.start();
         cluster.run(seconds(5));
         let board = cluster.board();
@@ -44,7 +46,7 @@ fn a_follower_sets_a_home_through_the_leader() {
         let (mut cluster, leader, from, at) = Cluster::led(run);
         cluster.set(from, from);
         cluster.run(seconds(5));
-        cluster.script(|_| home(9));
+        cluster.script(|_| home_to(9));
         cluster.run(seconds(5));
         let board = cluster.board();
         assert_eq!(board.set, [(from, Some(key(from)), Ok(()))], "run {run}");
@@ -118,7 +120,7 @@ fn a_call_on_a_follower_that_is_cut_off_returns_after_the_links_heal() {
 fn a_member_that_is_not_a_voter_sets_no_home() {
     let mut cluster = Cluster::new(5);
     cluster.board.lock().unwrap().learners = [3].into();
-    cluster.script(home);
+    cluster.script(home_to);
     cluster.start();
     cluster.run(seconds(5));
     let board = cluster.board();
@@ -127,7 +129,7 @@ fn a_member_that_is_not_a_voter_sets_no_home() {
     };
     cluster.set(3, leader);
     cluster.run(seconds(5));
-    cluster.script(|_| home(9));
+    cluster.script(|_| home_to(9));
     cluster.run(seconds(5));
     let board = cluster.board();
     assert_eq!(board.set, [(3, None, Err(Error::NoVote))]);
@@ -144,6 +146,60 @@ fn set_home_refuses_a_home_that_is_not_a_member() {
         assert_eq!(set, Poll::Ready(Err(error.clone())));
         let text = format!("node {} is not a member of the region", key(9));
         assert_eq!(error.to_string(), text);
+    });
+}
+
+#[test]
+fn set_home_refuses_a_member_that_the_node_appended_and_did_not_apply() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+        let changes = [plant_ticket(), join_change(4)];
+        let entries = changes.iter().zip(1..).map(|(change, index)| Entry {
+            at: at(index),
+            data: Data::Bytes(encoded(change)),
+        });
+        let append = Body::Append {
+            prev: Position::default(),
+            entries: entries.collect(),
+            commit: 0,
+        };
+        assert_eq!(mesh.receive(public(2), proven(2, 1, append)), Ok(()));
+        let reply = mesh.outgoing(key(2)).await.unwrap();
+        assert_eq!(reply, message(1, 2, Body::AppendReply { last: 2 }));
+        let set = now(pin!(mesh.set_home(INDEX, key(4)))).await;
+        assert_eq!(set, Poll::Ready(Err(Error::NotMember(key(4)))));
+        let commit = proven(2, 1, Body::Heartbeat { commit: 2 });
+        assert_eq!(mesh.receive(public(2), commit), Ok(()));
+        let reply = mesh.outgoing(key(2)).await.unwrap();
+        assert_eq!(reply, message(1, 2, Body::HeartbeatReply));
+        assert!(mesh.member(key(4)).is_some());
+        let set = now(pin!(mesh.set_home(INDEX, key(4)))).await;
+        assert_eq!(set, Poll::Pending);
+    });
+}
+
+// The node leads, so its own write puts the join in its log.
+#[test]
+fn set_home_refuses_a_member_that_the_leader_wrote_and_did_not_apply() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+        let first = elect(&mesh).await;
+        mesh.propose(plant_ticket()).await.unwrap();
+        let joined = mesh.propose(join_change(4)).await.unwrap();
+        let set = now(pin!(mesh.set_home(INDEX, key(4)))).await;
+        assert_eq!(set, Poll::Ready(Err(Error::NotMember(key(4)))));
+        let last = joined.index;
+        let reply = raft::Message {
+            term: first.term,
+            ..message(2, 1, Body::AppendReply { last })
+        };
+        assert_eq!(mesh.receive(public(2), reply), Ok(()));
+        let clock = node.clock();
+        while mesh.member(key(4)).is_none() {
+            clock.sleep(Span::MILLISECOND).await;
+        }
+        let set = now(pin!(mesh.set_home(INDEX, key(4)))).await;
+        assert_eq!(set, Poll::Pending);
     });
 }
 
@@ -176,7 +232,7 @@ fn a_promoted_node_sets_a_home_from_the_append_of_its_promotion() {
         };
         let append = Body::Append {
             prev: Position::default(),
-            entries: vec![common::change(2, at(1), promoted)],
+            entries: vec![common::voters_entry(2, at(1), promoted)],
             commit: 0,
         };
         assert_eq!(mesh.receive(public(2), proven(2, 1, append)), Ok(()));
@@ -199,7 +255,7 @@ fn a_voter_of_one_half_of_a_joint_configuration_sets_a_home() {
             };
             let append = Body::Append {
                 prev: Position::default(),
-                entries: vec![common::change(2, at(1), joint)],
+                entries: vec![common::voters_entry(2, at(1), joint)],
                 commit: 0,
             };
             assert_eq!(mesh.receive(public(2), proven(2, id, append)), Ok(()));
@@ -232,7 +288,7 @@ fn a_lone_voter_sets_a_home_when_it_leads() {
 fn set_home_gives_the_cause_when_the_write_of_its_entry_stops_the_group() {
     solo(|node, tasks| async move {
         let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-        lead(&mesh, &node.clock(), home(1)).await;
+        lead(&mesh, &node.clock(), home_to(1)).await;
         let stopped = Error::Stopped(fail_sync(&node));
         let clock = node.clock();
         let start = clock.now();
@@ -274,13 +330,13 @@ fn set_home_proposes_again_while_the_pool_has_no_block() {
         };
         let mesh = Mesh::start(config).await.unwrap();
         let clock = node.clock();
-        lead(&mesh, &clock, home(1)).await;
+        lead(&mesh, &clock, home_to(1)).await;
         let held = fill(&pool);
-        let mut waits = pin!(mesh.propose(home(1)));
+        let mut waits = pin!(mesh.propose(home_to(1)));
         assert!(now(waits.as_mut()).await.is_pending());
         clock.sleep(TICK).await;
         assert_eq!(
-            started(&mesh, home(1)).await,
+            started(&mesh, home_to(1)).await,
             Poll::Ready(Err(exhausted(93)))
         );
         let mut set = pin!(mesh.set_home(INDEX, key(1)));
@@ -300,36 +356,29 @@ async fn create_leader(node: &sim::node::Node, tasks: &Tasks) -> Mesh {
     mesh
 }
 
-/// Polls `call` until it waits for the outcome of its entry.
-async fn wait_for_outcome<F: Future<Output = Result<(), Error>>>(
-    mesh: &Mesh,
-    clock: &Clock,
-    mut call: Pin<&mut F>,
-) {
-    while mesh.group.borrow().calls.is_empty() {
-        assert_eq!(now(call.as_mut()).await, Poll::Pending);
-        clock.sleep(Span::MILLISECOND).await;
-    }
-}
-
+// After the write, a count of 3 means that the group holds a clone of the waker for
+// the outcome of the entry. The failed write stops the group with no change of the
+// term, which would wake each call too.
 #[test]
 fn a_call_that_waits_for_its_entry_gets_the_cause_when_the_group_stops() {
     solo(|node, tasks| async move {
         let mesh = create_leader(&node, &tasks).await;
-        let result = Rc::new(RefCell::new(None));
-        let (calling, returned) = (mesh.clone(), Rc::clone(&result));
-        tasks.spawn(async move {
-            let set = calling.set_home(INDEX, key(2)).await;
-            *returned.borrow_mut() = Some(set);
-        });
+        let held = Arc::new(Counted(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&held));
+        let mut cx = Context::from_waker(&waker);
+        let mut call = Box::pin(mesh.set_home(INDEX, key(2)));
+        assert_eq!(call.as_mut().poll(&mut cx), Poll::Pending);
         let clock = node.clock();
-        clock.sleep(seconds(1)).await;
-        assert_eq!(mesh.group.borrow().calls.len(), 1);
-        assert_eq!(*result.borrow(), None);
-        let stopped = stop(&node, &mesh);
-        clock.sleep(Span::MILLISECOND).await;
-        assert_eq!(*result.borrow(), Some(Err(Error::Stopped(stopped))));
-        assert!(mesh.group.borrow().calls.is_empty());
+        clock.sleep(TICK).await;
+        assert_eq!(call.as_mut().poll(&mut cx), Poll::Pending);
+        assert_eq!(Arc::strong_count(&held), 3);
+        let woken = held.0.load(Ordering::Relaxed);
+        let stopped = Error::Stopped(fail_sync(&node));
+        assert_eq!(mesh.propose_data(vec![9]).await, Err(stopped.clone()));
+        assert_eq!(Arc::strong_count(&held), 2);
+        assert_eq!(held.0.load(Ordering::Relaxed), woken + 1);
+        let cause = Poll::Ready(Err(stopped));
+        assert_eq!(call.as_mut().poll(&mut cx), cause);
     });
 }
 
@@ -341,7 +390,7 @@ fn a_call_gives_ok_when_its_entry_applies_in_the_batch_that_stops_the_group() {
         let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
         let first = elect(&mesh).await;
         let mut call = pin!(mesh.set_home(INDEX, key(2)));
-        wait_for_outcome(&mesh, &node.clock(), call.as_mut()).await;
+        assert_eq!(now(call.as_mut()).await, Poll::Pending);
         let bad = mesh.propose_data(vec![9]).await.unwrap();
         assert_eq!(bad, after(first, 2));
         let reply = raft::Message {
@@ -369,6 +418,7 @@ fn the_pointer_after_a_stop_is_the_pointer_at_the_stop() {
             root: common::digest(1),
             chunks: [common::digest(1)].into(),
             holders: IDS.map(key).into(),
+            homes: BTreeMap::new(),
         };
         mesh.propose_data(encoded(&change)).await.unwrap();
         let bad = mesh.propose_data(vec![9]).await.unwrap();
@@ -389,28 +439,70 @@ fn the_pointer_after_a_stop_is_the_pointer_at_the_stop() {
     });
 }
 
-// A waker or a floor that stays only takes memory, which no call shows, so this
-// test reads the group.
+// A floor that stays only takes memory, which no call shows, so this test reads it.
 #[test]
 fn a_dropped_call_that_waits_for_its_entry_leaves_no_waker_and_no_floor() {
     solo(|node, tasks| async move {
         let mesh = create_leader(&node, &tasks).await;
+        let held = Arc::new(Idle);
+        let waker = Waker::from(Arc::clone(&held));
+        let mut cx = Context::from_waker(&waker);
         let mut call = Box::pin(mesh.set_home(INDEX, key(2)));
-        wait_for_outcome(&mesh, &node.clock(), call.as_mut()).await;
-        assert_eq!(mesh.group.borrow().calls.len(), 1);
+        assert_eq!(call.as_mut().poll(&mut cx), Poll::Pending);
+        node.clock().sleep(TICK).await;
+        // The write of the entry ended, and the group woke the call: only `held` and
+        // `waker` are left.
+        assert_eq!(Arc::strong_count(&held), 2);
+        assert_eq!(call.as_mut().poll(&mut cx), Poll::Pending);
+        // The group holds a waker while the call waits for the outcome of its entry.
+        assert_eq!(Arc::strong_count(&held), 3);
         assert_ne!(mesh.group.borrow().applied, Applied::default());
         drop(call);
-        assert!(mesh.group.borrow().calls.is_empty());
+        assert_eq!(Arc::strong_count(&held), 2);
         assert_eq!(mesh.group.borrow().applied, Applied::default());
     });
 }
 
-/// A position in the term of the tests.
-fn at(index: u64) -> Position {
-    Position {
-        term: common::TERM,
-        index,
-    }
+// Each call waits for the outcome of its entry when the second one drops. A count of
+// 3 means that the group holds a clone of that waker.
+#[test]
+fn a_dropped_call_leaves_the_waker_of_each_other_call_that_waits_for_its_entry() {
+    solo(|node, tasks| async move {
+        let mesh = create_leader(&node, &tasks).await;
+        let held = [(); 3].map(|()| Arc::new(Idle));
+        let wakers = held.each_ref().map(|held| Waker::from(Arc::clone(held)));
+        let mut calls = [1, 2, 3].map(|id| Box::pin(mesh.set_home(INDEX, key(id))));
+        for _ in 0..2 {
+            for (call, waker) in calls.iter_mut().zip(&wakers) {
+                let mut cx = Context::from_waker(waker);
+                assert_eq!(call.as_mut().poll(&mut cx), Poll::Pending);
+            }
+            node.clock().sleep(TICK).await;
+        }
+        let [_first, second, _third] = calls;
+        drop(second);
+        assert_eq!(held.each_ref().map(Arc::strong_count), [3, 2, 3]);
+    });
+}
+
+// A count of 3 means that the group holds a clone of that waker.
+#[test]
+fn a_call_that_waits_for_its_entry_keeps_the_waker_of_its_last_poll() {
+    solo(|node, tasks| async move {
+        let mesh = create_leader(&node, &tasks).await;
+        let (old, new) = (Arc::new(Idle), Arc::new(Idle));
+        let old_waker = Waker::from(Arc::clone(&old));
+        let new_waker = Waker::from(Arc::clone(&new));
+        let mut call = Box::pin(mesh.set_home(INDEX, key(2)));
+        let mut cx = Context::from_waker(&old_waker);
+        assert_eq!(call.as_mut().poll(&mut cx), Poll::Pending);
+        node.clock().sleep(TICK).await;
+        assert_eq!(call.as_mut().poll(&mut cx), Poll::Pending);
+        assert_eq!(Arc::strong_count(&old), 3);
+        let mut cx = Context::from_waker(&new_waker);
+        assert_eq!(call.as_mut().poll(&mut cx), Poll::Pending);
+        assert_eq!((Arc::strong_count(&old), Arc::strong_count(&new)), (2, 3));
+    });
 }
 
 /// The time between two heartbeats of node 2: less than half of the shortest
@@ -426,9 +518,8 @@ struct Leader {
     peer: Peer,
     /// Whether node 2 sends no heartbeat now.
     silent: Rc<Cell<bool>>,
-    /// The session that node 2 dialed, for its `raft` messages.
-    dialed: Session,
-    /// The session that node 1 dialed.
+    /// The session between node 1 and node 2. Node 2 dialed it, and node 1 got it
+    /// for its own dial.
     session: Session,
     /// The streams of node 1 that go one way.
     held: Vec<Receiver>,
@@ -437,14 +528,30 @@ struct Leader {
 impl Leader {
     async fn new(peer: Peer) -> Self {
         let addresses = [Address::Udp(address(1))];
-        let dialed = peer.transport.dial(public(1), &addresses).await.unwrap();
-        let mut beats = Self::open(&peer, &dialed).await;
-        let (clock, pool) = (peer.node.clock(), Rc::clone(&peer.pool));
+        let session = peer.transport.dial(public(1), &addresses).await.unwrap();
+        // `accept` also gives the session of each dial.
+        drop(peer.session().await);
+        let mut leader = Self {
+            peer,
+            silent: Rc::new(Cell::new(true)),
+            session,
+            held: Vec::new(),
+        };
+        leader.beat().await;
+        leader
+    }
+
+    /// Sends the heartbeats on a new stream of `session` from now on, and none on
+    /// the stream before.
+    async fn beat(&mut self) {
+        self.silent.set(true);
+        let mut beats = Self::open(&self.peer, &self.session).await;
+        let (clock, pool) = (self.peer.node.clock(), Rc::clone(&self.peer.pool));
         let silent = Rc::new(Cell::new(false));
-        let ended = Rc::clone(&silent);
-        peer.tasks.spawn(async move {
+        self.silent = Rc::clone(&silent);
+        self.peer.tasks.spawn(async move {
             loop {
-                if !ended.get() {
+                if !silent.get() {
                     let beat = proven(2, 1, Body::Heartbeat { commit: 0 });
                     let beat = block(&pool, &Message::Raft(beat).encode()).unwrap();
                     beats.send(beat).await.unwrap();
@@ -452,15 +559,6 @@ impl Leader {
                 clock.sleep(BEAT).await;
             }
         });
-        // Node 1 dials for its reply to the first heartbeat.
-        let session = peer.session().await;
-        Self {
-            peer,
-            silent,
-            dialed,
-            session,
-            held: Vec::new(),
-        }
     }
 
     /// A stream to node 1 that goes one way, after its header.
@@ -522,7 +620,7 @@ impl Leader {
             commit: at.index,
         };
         let append = Message::Raft(proven(2, 1, append)).encode();
-        let mut sender = Self::open(&self.peer, &self.dialed).await;
+        let mut sender = Self::open(&self.peer, &self.session).await;
         sender.send(self.peer.block(&append)).await.unwrap();
         sender.finish().unwrap();
     }
@@ -638,14 +736,14 @@ fn a_proposal_with_no_answer_goes_again_only_after_node_1_has_no_leader() {
         leader.silent.set(false);
         let (second, mut asked) = leader.proposal().await;
         leader.answer(&mut asked, at(1)).await.unwrap();
-        leader.append(&home(1), at(1)).await;
+        leader.append(&home_to(1), at(1)).await;
         leader.rest(seconds(2)).await;
         let early = early.map(|(change, _)| change);
         ([first, second], early, gap, late, [end, asked.end().await])
     };
     let ((set, quiet), (changes, early, gap, late, ends)) = run(call, leader);
     assert_eq!(set, (Ok(()), Some(key(1))));
-    assert_eq!(changes, [home(1), home(1)]);
+    assert_eq!(changes, [home_to(1), home_to(1)]);
     assert_eq!(early, None);
     // The last heartbeat came at most 300 ms before, and an election timeout is 1 s
     // to 2 s.
@@ -680,7 +778,7 @@ fn a_try_ends_when_the_same_leader_leads_a_later_term() {
         leader.silent.set(true);
         leader.rest(BEAT).await;
         let beat = common::proven_in(Term(6), 2, 1, Body::Heartbeat { commit: 0 });
-        let mut sender = Leader::open(&leader.peer, &leader.dialed).await;
+        let mut sender = Leader::open(&leader.peer, &leader.session).await;
         let start = clock.now();
         let beat = leader.peer.block(&Message::Raft(beat).encode());
         sender.send(beat).await.unwrap();
@@ -698,16 +796,17 @@ fn a_try_ends_when_the_same_leader_leads_a_later_term() {
 }
 
 // The answer comes while nothing polls the call. Node 1 then takes a heartbeat of
-// term 6, which the read of its term shows, so the next poll of the call sees the
-// answer and the new term.
+// term 6, so the next poll of the call sees the answer and the new term. The reply
+// to the heartbeat goes out only after that poll, so the test reads the term of the
+// group.
 #[test]
 fn one_poll_that_sees_the_answer_and_a_later_term_keeps_the_answer() {
-    let asked = Arc::new(Mutex::new(false));
+    let asked = Arc::new(AtomicBool::new(false));
     let got = Arc::clone(&asked);
     let call = move |node: sim::node::Node, mesh: Mesh| async move {
         let clock = node.clock();
         let mut call = pin!(set(mesh.clone()));
-        while !*asked.lock().unwrap() {
+        while !asked.load(Ordering::Relaxed) {
             assert!(now(call.as_mut()).await.is_pending());
             clock.sleep(Span::MILLISECOND).await;
         }
@@ -720,11 +819,11 @@ fn one_poll_that_sees_the_answer_and_a_later_term_keeps_the_answer() {
     let (set, (more, end)) = run(call, |mut leader| async move {
         let (_, mut asked) = leader.proposal().await;
         leader.silent.set(true);
-        *got.lock().unwrap() = true;
+        got.store(true, Ordering::Relaxed);
         leader.answer(&mut asked, at(1)).await.unwrap();
         leader.rest(seconds(1)).await;
-        let mut sender = Leader::open(&leader.peer, &leader.dialed).await;
-        let append = leader.append_in(Term(6), &home(1), at(1));
+        let mut sender = Leader::open(&leader.peer, &leader.session).await;
+        let append = leader.append_in(Term(6), &home_to(1), at(1));
         sender.send(append).await.unwrap();
         let more = leader.proposal_within(seconds(3)).await;
         (more.map(|(change, _)| change), asked.end().await)
@@ -732,6 +831,38 @@ fn one_poll_that_sees_the_answer_and_a_later_term_keeps_the_answer() {
     assert_eq!(more, None);
     assert_eq!(end, Ok(()));
     assert_eq!(set, Some((Ok(()), Some(key(1)))));
+}
+
+// The leader has the proposal and gives no answer, so the call waits for it. A count
+// of 4 means that the group and the stream of the answer each hold a clone of that
+// waker.
+#[test]
+fn a_call_that_waits_for_the_answer_keeps_the_waker_of_its_last_poll() {
+    let asked = Arc::new(AtomicBool::new(false));
+    let got = Arc::clone(&asked);
+    let call = move |node: sim::node::Node, mesh: Mesh| async move {
+        let (old, new) = (Arc::new(Idle), Arc::new(Idle));
+        let old_waker = Waker::from(Arc::clone(&old));
+        let new_waker = Waker::from(Arc::clone(&new));
+        let mut call = Box::pin(mesh.set_home(INDEX, key(1)));
+        let mut cx = Context::from_waker(&old_waker);
+        while !asked.load(Ordering::Relaxed) {
+            assert_eq!(call.as_mut().poll(&mut cx), Poll::Pending);
+            node.clock().sleep(Span::MILLISECOND).await;
+        }
+        assert_eq!(call.as_mut().poll(&mut cx), Poll::Pending);
+        let first = Arc::strong_count(&old);
+        let mut cx = Context::from_waker(&new_waker);
+        assert_eq!(call.as_mut().poll(&mut cx), Poll::Pending);
+        [first, Arc::strong_count(&old), Arc::strong_count(&new)]
+    };
+    let (counts, ()) = run(call, |mut leader| async move {
+        let (_, _asked) = leader.proposal().await;
+        leader.silent.set(true);
+        got.store(true, Ordering::Relaxed);
+        leader.rest(seconds(3)).await;
+    });
+    assert_eq!(counts, [4, 2, 4]);
 }
 
 /// The next value of `watch`, which comes while `call` waits.
@@ -762,7 +893,7 @@ fn an_answer_that_comes_after_its_entry_applied_ends_the_call() {
     };
     let ((applied, returned, end), ()) = run(call, |mut leader| async move {
         let (_, mut asked) = leader.proposal().await;
-        leader.append(&home(1), at(1)).await;
+        leader.append(&home_to(1), at(1)).await;
         leader.rest(HALF).await;
         leader.answer(&mut asked, at(1)).await.unwrap();
         leader.rest(seconds(2)).await;
@@ -779,19 +910,19 @@ fn an_answer_that_comes_after_its_entry_applied_ends_the_call() {
 
 #[test]
 fn a_dropped_call_that_waits_for_the_answer_stops_its_stream() {
-    let asked = Arc::new(Mutex::new(false));
+    let asked = Arc::new(AtomicBool::new(false));
     let got = Arc::clone(&asked);
     let call = move |node: sim::node::Node, mesh: Mesh| async move {
         let clock = node.clock();
         let mut call = pin!(mesh.set_home(INDEX, key(1)));
-        while !*asked.lock().unwrap() {
+        while !asked.load(Ordering::Relaxed) {
             assert_eq!(now(call.as_mut()).await, Poll::Pending);
             clock.sleep(Span::MILLISECOND).await;
         }
     };
     let ((), (late, end, more)) = run(call, |mut leader| async move {
         let (_, mut asked) = leader.proposal().await;
-        *got.lock().unwrap() = true;
+        got.store(true, Ordering::Relaxed);
         leader.rest(HALF).await;
         let late = leader.answer(&mut asked, at(1)).await;
         let end = asked.end().await;
@@ -832,9 +963,9 @@ fn a_call_that_waits_for_the_answer_gets_the_cause_when_the_group_stops() {
     let cause = Stopped::Change { at: at(1), cause };
     assert_eq!(stopped, Err(cause.clone()));
     assert_eq!(set, Err(Error::Stopped(cause)));
-    // The group dropped its sessions at the stop, so the try held the last handle
-    // of this one.
-    assert_eq!(end, Err(transport::Error::PeerClosed { code: Code(0) }));
+    // The group dropped its streams at the stop. The session stays open: `accept`
+    // on node 1 holds it.
+    assert_eq!(end, Err(transport::Error::Reset { code: Code(0) }));
 }
 
 /// How node 2 refuses a proposal.
@@ -862,7 +993,7 @@ fn a_proposal_that_the_leader_refuses_goes_again_after_one_tick() {
         ),
         (
             "a proposal",
-            Refusal::Answer(Message::Propose { change: home(1) }.encode()),
+            Refusal::Answer(Message::Propose { change: home_to(1) }.encode()),
             Ok(()),
         ),
         ("no message", Refusal::Answer(vec![0xff]), Ok(())),
@@ -898,7 +1029,7 @@ fn a_proposal_that_the_leader_refuses_goes_again_after_one_tick() {
             let (second, mut asked) = leader.proposal().await;
             let gap = clock.now() - start;
             leader.answer(&mut asked, at(1)).await.unwrap();
-            leader.append(&home(1), at(1)).await;
+            leader.append(&home_to(1), at(1)).await;
             leader.rest(seconds(2)).await;
             ([first, second], gap, end)
         });
@@ -906,7 +1037,7 @@ fn a_proposal_that_the_leader_refuses_goes_again_after_one_tick() {
         // Node 1 ends its stream after each answer, also one that refuses, and resets
         // it when the leader ends or resets with no answer.
         assert_eq!(end, ended, "{case}");
-        assert_eq!(changes, [home(1), home(1)], "{case}");
+        assert_eq!(changes, [home_to(1), home_to(1)], "{case}");
         let ms = gap.nanos() / Span::MILLISECOND.nanos();
         assert!(
             (100..200).contains(&ms),
@@ -931,7 +1062,7 @@ fn an_answer_stands_when_the_leader_stopped_its_half() {
         let answer = Message::Proposed { at: at(1) }.encode();
         sender.send(leader.peer.block(&answer)).await.unwrap();
         sender.finish().unwrap();
-        leader.append(&home(1), at(1)).await;
+        leader.append(&home_to(1), at(1)).await;
         let more = leader.proposal_within(seconds(3)).await;
         more.map(|(change, _)| change)
     });
@@ -948,11 +1079,27 @@ async fn wait_for_session(mesh: &Mesh, clock: &Clock) {
     }
 }
 
+// Node 1 has a session to its leader, which does not check the home of a proposal.
+#[test]
+fn no_proposal_goes_to_the_leader_for_a_home_that_is_not_a_member() {
+    let call = |node: sim::node::Node, mesh: Mesh| async move {
+        wait_for_session(&mesh, &node.clock()).await;
+        mesh.set_home(INDEX, key(9)).await
+    };
+    let (set, early) = run(call, |mut leader| async move {
+        let early = leader.proposal_within(seconds(2)).await;
+        early.map(|(change, _)| change)
+    });
+    assert_eq!(early, None);
+    assert_eq!(set, Err(Error::NotMember(key(9))));
+}
+
 #[test]
 fn no_proposal_goes_to_the_leader_while_the_pool_has_no_block() {
     let call = |node: sim::node::Node, mesh: Mesh| async move {
         let clock = node.clock();
         wait_for_session(&mesh, &clock).await;
+        // `run` builds the pool and gives `call` only the mesh.
         let held = fill(&mesh.pool);
         let mut call = pin!(set(mesh.clone()));
         let end = clock.now() + seconds(2);
@@ -967,27 +1114,30 @@ fn no_proposal_goes_to_the_leader_while_the_pool_has_no_block() {
         let early = leader.proposal_within(seconds(1)).await;
         let (change, mut asked) = leader.proposal().await;
         leader.answer(&mut asked, at(1)).await.unwrap();
-        leader.append(&home(1), at(1)).await;
+        leader.append(&home_to(1), at(1)).await;
         leader.rest(seconds(2)).await;
         (early.map(|(change, _)| change), change)
     });
     assert_eq!(set, (Ok(()), Some(key(1))));
-    assert_eq!((early, change), (None, home(1)));
+    assert_eq!((early, change), (None, home_to(1)));
 }
 
 #[test]
 fn a_proposal_goes_on_the_next_session_when_the_session_to_the_leader_closed() {
     let call = |_, mesh| set(mesh);
     let (set, change) = run(call, |mut leader| async move {
+        // No heartbeat goes on the closed session.
+        leader.silent.set(true);
         leader.session.close(Code(7));
         leader.session = leader.peer.session().await;
+        leader.beat().await;
         let (change, mut asked) = leader.proposal().await;
         leader.answer(&mut asked, at(1)).await.unwrap();
-        leader.append(&home(1), at(1)).await;
+        leader.append(&home_to(1), at(1)).await;
         leader.rest(seconds(2)).await;
         change
     });
-    assert_eq!((set, change), ((Ok(()), Some(key(1))), home(1)));
+    assert_eq!((set, change), ((Ok(()), Some(key(1))), home_to(1)));
 }
 
 /// An index that only a probe for the leader sets.
@@ -1113,7 +1263,7 @@ fn a_call_puts_one_entry_in_the_log_when_the_answer_of_the_leader_is_slow() {
     let (mut cluster, leader, follower, at) = Cluster::asked(0, seconds(30));
     let board = cluster.board();
     assert_eq!(board.set, [(follower, Some(key(follower)), Ok(()))]);
-    cluster.script(|_| home(9));
+    cluster.script(|_| home_to(9));
     cluster.run(seconds(10));
     let board = cluster.board();
     assert_eq!((board.led, board.at), (vec![leader], vec![after(at, 2)]));
@@ -1133,7 +1283,7 @@ fn a_call_returns_through_the_next_leader_when_the_leader_crashes() {
         let board = cluster.board();
         let set = [(follower, Some(key(follower)), Ok(()))];
         assert_eq!(board.set, set, "run {run}, {wait} ticks");
-        cluster.script(|_| home(9));
+        cluster.script(|_| home_to(9));
         cluster.run(seconds(10));
         let board = cluster.board();
         let next: Vec<u8> = IDS.into_iter().filter(|&id| id != leader).collect();
@@ -1164,10 +1314,29 @@ fn a_call_that_is_cut_off_while_it_waits_for_the_answer_returns_after_the_heal()
             [(follower, Some(key(follower)), Ok(()))],
             "run {run}"
         );
-        cluster.script(|_| home(9));
+        cluster.script(|_| home_to(9));
         cluster.run(seconds(5));
         let board = cluster.board();
         let took = (board.led, board.at);
         assert_eq!(took, (vec![leader], vec![after(at, 3)]), "run {run}");
     }
+}
+
+// It pins the panic of today. #1273 decides what `set_home` gives for this refusal.
+#[test]
+#[should_panic(
+    expected = "invariant: a home change is never refused: a change of kind \
+                           1 and 32 bytes is not in the byte form of its kind"
+)]
+fn set_home_shows_the_refusal_of_a_body_that_does_not_decode() {
+    let call = |_, mesh: Mesh| async move { mesh.set_home(INDEX, key(1)).await };
+    let (set, ()) = run(call, |mut leader| async move {
+        let (_, mut asked) = leader.proposal().await;
+        leader.answer(&mut asked, at(1)).await.unwrap();
+        let mut cut = encoded(&home_to(1));
+        cut.pop();
+        leader.append_data(cut, at(1)).await;
+        leader.rest(seconds(2)).await;
+    });
+    panic!("set_home returned {set:?}");
 }

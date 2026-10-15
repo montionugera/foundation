@@ -1,4 +1,5 @@
-//! The proof of a subject: a signed hello, then signed requests on its connection.
+//! The proof of a subject: a signed hello, then signed requests and read opens on
+//! its connection.
 
 use std::fmt;
 
@@ -11,11 +12,12 @@ use types::time::{Interval, Span, Stamp};
 
 use crate::Rules;
 
-/// How far past the earliest mesh time a hello may expire.
+/// How far past the latest mesh time at its admission the node holds a hello live.
 pub const CAP: Span = Span::from_nanos(15 * Span::MINUTE.nanos());
 
 const HELLO_TAG: &[u8] = b"foundation/hello/1";
 const REQUEST_TAG: &[u8] = b"foundation/request/1";
+const READ_TAG: &[u8] = b"foundation/read/1";
 
 /// The bytes that the signature of `hello` covers. Each integer is little-endian:
 /// the 18 bytes `foundation/hello/1`, the length of the subject (1 byte), the
@@ -31,31 +33,54 @@ pub fn hello(hello: &Hello) -> Vec<u8> {
     bytes
 }
 
-/// The bytes that the signature of a request or session open on `connection` covers:
-/// the 20 bytes `foundation/request/1`, the connection (16), and `body`, the exact
-/// bytes that the program sent.
+/// What a program signs on a stream after its hello. Each kind has its own tag, so a
+/// signature of one kind never verifies as another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// A request: its body.
+    Request,
+    /// The open of a read.
+    Read,
+}
+
+/// The bytes that the signature of `bytes`, of `kind`, on `connection` covers: the
+/// tag of `kind` (the 20 bytes `foundation/request/1` or the 17 bytes
+/// `foundation/read/1`), the connection (16), and `bytes`, the exact bytes that the
+/// program sent.
 #[must_use]
-pub fn request(connection: connection::Key, body: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(REQUEST_TAG.len() + 16 + body.len());
-    bytes.extend_from_slice(REQUEST_TAG);
-    bytes.extend_from_slice(&connection.0);
-    bytes.extend_from_slice(body);
-    bytes
+pub fn signed(kind: Kind, connection: connection::Key, bytes: &[u8]) -> Vec<u8> {
+    let tag = match kind {
+        Kind::Request => REQUEST_TAG,
+        Kind::Read => READ_TAG,
+    };
+    let mut signed = Vec::with_capacity(tag.len() + 16 + bytes.len());
+    signed.extend_from_slice(tag);
+    signed.extend_from_slice(&connection.0);
+    signed.extend_from_slice(bytes);
+    signed
 }
 
 /// A hello that [`Rules::admit`] took. Keep it for the connection, and give it to
-/// [`Rules::verify`] with each request.
+/// [`Rules::verify`] with each request and read open.
 #[derive(Clone, Debug)]
 pub struct Admitted {
     hello: Hello,
+    ends: Stamp,
 }
 
 impl Admitted {
-    /// The hello: its subject for audit, and `expires`, at which the owner closes the
-    /// sessions of the connection.
+    /// The hello, with its subject for audit.
     #[must_use]
     pub fn hello(&self) -> &Hello {
         &self.hello
+    }
+
+    /// When the hello stops being live at this node: the earlier of its `expires` and
+    /// [`CAP`] past the latest mesh time at its admission. The owner closes the
+    /// sessions of the connection at this stamp.
+    #[must_use]
+    pub fn ends(&self) -> Stamp {
+        self.ends
     }
 }
 
@@ -70,7 +95,7 @@ impl Rules {
     ///
     /// The first that applies, in order: [`Error::Unsynced`], [`Error::Unknown`],
     /// [`Error::Unlisted`], [`Error::Signature`], [`Error::Via`],
-    /// [`Error::Expired`], [`Error::Capped`].
+    /// [`Error::Expired`].
     pub fn admit(
         &self,
         now: Option<Interval>,
@@ -90,16 +115,12 @@ impl Rules {
                 peer,
             });
         }
-        live(&hello, now)?;
-        if let Some(cap) = now.earliest.checked_add(CAP)
-            && hello.expires > cap
-        {
-            return Err(Error::Capped {
-                expires: hello.expires,
-                cap,
-            });
-        }
-        Ok(Admitted { hello })
+        let ends = now
+            .latest
+            .checked_add(CAP)
+            .map_or(hello.expires, |cap| hello.expires.min(cap));
+        live(ends, now)?;
+        Ok(Admitted { hello, ends })
     }
 
     /// Checks `hello`, signed with `signature`, which renews `admitted` on its
@@ -111,7 +132,7 @@ impl Rules {
     /// The first that applies, in order: [`Error::Changed`] when `hello` names another
     /// value of a [`Field`] than `admitted`, then [`Error::Unsynced`],
     /// [`Error::Unknown`], [`Error::Unlisted`], [`Error::Signature`],
-    /// [`Error::Expired`], [`Error::Capped`].
+    /// [`Error::Expired`].
     pub fn renew(
         &self,
         admitted: &Admitted,
@@ -132,10 +153,10 @@ impl Rules {
         self.admit(now, first.via, hello, signature)
     }
 
-    /// Checks that `body`, signed with `signature`, is a request of the connection of
-    /// `admitted`, at mesh time `now`: its subject still lists its key, the hello has
-    /// not expired, and the key signed [`request`] of the hello's connection and
-    /// `body`.
+    /// Checks that `bytes` of `kind`, signed with `signature`, came on the connection
+    /// of `admitted`, at mesh time `now`: its subject still lists its key, the hello is
+    /// live until [`Admitted::ends`], and the key signed [`signed`] of `kind`, the
+    /// hello's connection, and `bytes`.
     ///
     /// # Errors
     ///
@@ -145,7 +166,8 @@ impl Rules {
         &self,
         admitted: &Admitted,
         now: Option<Interval>,
-        body: &[u8],
+        kind: Kind,
+        bytes: &[u8],
         signature: &[u8; 64],
     ) -> Result<(), Error> {
         let now = now.ok_or(Error::Unsynced)?;
@@ -153,9 +175,9 @@ impl Rules {
         self.listed(hello)?;
         hello
             .key
-            .verify(&request(hello.connection, body), signature)
+            .verify(&signed(kind, hello.connection, bytes), signature)
             .map_err(|_bad| Error::Signature)?;
-        live(hello, now)
+        live(admitted.ends, now)
     }
 
     /// Refuses `hello` unless the spec lists its key for its subject.
@@ -177,11 +199,11 @@ impl Rules {
     }
 }
 
-/// Refuses `hello` once the latest mesh time reaches its expiry.
-fn live(hello: &Hello, now: Interval) -> Result<(), Error> {
-    if now.latest >= hello.expires {
+/// Refuses a hello once the latest mesh time reaches `ends`.
+fn live(ends: Stamp, now: Interval) -> Result<(), Error> {
+    if now.latest >= ends {
         return Err(Error::Expired {
-            expires: hello.expires,
+            expires: ends,
             now: now.latest,
         });
     }
@@ -215,19 +237,13 @@ pub enum Error {
         /// The node that carried the hello.
         peer: node::Key,
     },
-    /// The hello expired at `expires`, at or before the latest mesh time `now`.
+    /// The hello ended at `expires`, at or before the latest mesh time `now`.
     Expired {
-        /// When the hello expires.
+        /// When the hello stops being live at this node: the earlier of its `expires`
+        /// and [`CAP`] past the latest mesh time at its admission ([`Admitted::ends`]).
         expires: Stamp,
         /// The latest the mesh time can be.
         now: Stamp,
-    },
-    /// The hello expires later than [`CAP`] past the earliest mesh time.
-    Capped {
-        /// When the hello expires.
-        expires: Stamp,
-        /// The latest expiry that the node takes: [`CAP`] past the earliest mesh time.
-        cap: Stamp,
     },
     /// A renewal names another value of `field` than the hello it renews: the first
     /// that differs, in the order of [`Field`].
@@ -275,8 +291,9 @@ impl Error {
             }
             Self::Signature => "Sign the exact bytes with the key of the hello",
             Self::Via { .. } => "Name the node that the program connects to as `via`",
-            Self::Expired { .. } => "Send a new hello with a later expiry",
-            Self::Capped { .. } => "Send a hello that expires within 15 minutes",
+            Self::Expired { .. } => {
+                "Send a hello with a later expiry, and renew it before it ends"
+            }
             Self::Changed { .. } => {
                 "Renew with the subject, key, `via`, and connection of the hello it \
                  renews"
@@ -301,11 +318,8 @@ impl fmt::Display for Error {
             }
             Self::Expired { expires, now } => write!(
                 f,
-                "the hello expired at {expires}, at or before the mesh time {now}"
+                "the hello ended at {expires}, at or before the mesh time {now}"
             ),
-            Self::Capped { expires, cap } => {
-                write!(f, "the hello expires at {expires}, after the cap {cap}")
-            }
             Self::Changed { field } => {
                 write!(
                     f,

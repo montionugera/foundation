@@ -136,7 +136,7 @@ pub(super) async fn create_config(
 
 /// Runs `mesh` on node 1 and `peer` on node 2 for 30 s, and gives what `peer`
 /// returned. Node 2 takes a message of at most `limit` bytes, and node 1 sends at
-/// most `limit` bytes that node 2 did not read.
+/// most twice `limit` bytes that node 2 did not read.
 pub(super) fn run<M, P>(
     limit: usize,
     mesh: impl FnOnce(sim::node::Node, Tasks) -> M + Send + 'static,
@@ -201,7 +201,7 @@ where
         let pool = create_pool();
         let config = transport::Config {
             message_bytes_max: NonZeroUsize::new(limit).unwrap(),
-            window_bytes: limit,
+            window_bytes: limit.checked_mul(2).unwrap(),
             ..transport_config(&node, &tasks, id, Rc::clone(&pool))
         };
         let transport = bind(&node, PORT, config);
@@ -375,14 +375,6 @@ fn a_task_that_waits_in_a_dial_holds_no_block() {
     });
 }
 
-/// A position in the term of the tests.
-fn at(index: u64) -> Position {
-    Position {
-        term: common::TERM,
-        index,
-    }
-}
-
 /// The config of a node 1 with no record of node 4, and the append of node 2 whose
 /// voter set names node 4.
 async fn create_stranger(
@@ -398,7 +390,7 @@ async fn create_stranger(
     };
     let append = Body::Append {
         prev: Position::default(),
-        entries: vec![common::change(2, at(1), voters)],
+        entries: vec![common::voters_entry(2, at(1), voters)],
         commit: 0,
     };
     (config, proven(2, 1, append))
@@ -435,7 +427,7 @@ fn a_message_for_a_node_with_no_member_record_drops_and_its_task_goes_on() {
         let addresses = vec![Address::Udp(address(2))];
         card.addresses = card::addresses::Addresses::new(addresses).unwrap();
         let card = card::Signed::sign(key(4), card, &private(4));
-        let join = join_with(&card, 7, Stamp::EPOCH);
+        let join = join_change_with(&card, 7, Stamp::EPOCH);
         let entry = |index, data| Entry {
             at: at(index),
             data,
@@ -443,7 +435,7 @@ fn a_message_for_a_node_with_no_member_record_drops_and_its_task_goes_on() {
         let append = Body::Append {
             prev: at(1),
             entries: vec![
-                entry(2, Data::Bytes(encoded(&ticket()))),
+                entry(2, Data::Bytes(encoded(&plant_ticket()))),
                 entry(3, Data::Bytes(encoded(&join))),
             ],
             commit: 3,
@@ -471,7 +463,7 @@ fn large(limit: usize) -> (bool, [[bool; 2]; 2]) {
         tasks.spawn(async move {
             accept(serving, transport, streams).await;
         });
-        lead(&mesh, &node.clock(), home(1)).await;
+        lead(&mesh, &node.clock(), home_to(1)).await;
         mesh.propose_data(vec![0; 2000]).await.unwrap();
         pending::<()>().await;
     };
@@ -504,12 +496,12 @@ fn a_message_that_is_too_large_for_the_peer_drops_and_its_stream_stays() {
     assert_eq!(large(1472), (false, [[false; 2]; 2]));
 }
 
-/// Asserts that node 2 gets a message, and that its stream and its session then end
-/// with code 0, when `mesh` runs on node 1.
+/// Asserts that node 2 gets a message, and that its stream then resets with code 0,
+/// when `mesh` runs on node 1.
 fn assert_ends<M: Future<Output = ()> + 'static>(
     mesh: impl FnOnce(sim::node::Node, Tasks) -> M + Send + 'static,
 ) {
-    let (sent, end, closed) = run(LIMIT, mesh, |peer| async move {
+    let (sent, end) = run(LIMIT, mesh, |peer| async move {
         let session = peer.session().await;
         let mut receiver = stream(&session).await;
         let mut sent = Vec::new();
@@ -519,16 +511,15 @@ fn assert_ends<M: Future<Output = ()> + 'static>(
                 end => break end,
             }
         };
-        (sent, end, session.closed().await)
+        (sent, end)
     });
     assert!(!sent.is_empty(), "no message came before the end");
     assert_eq!(sent, vec![pre_vote(); sent.len()]);
-    assert_eq!(end, Err(closed.clone()));
-    assert_eq!(closed, transport::Error::PeerClosed { code: Code(0) });
+    assert_eq!(end, Err(transport::Error::Reset { code: Code(0) }));
 }
 
 /// Asserts that each task that sends ended, also the task of node 3, which waits in
-/// a dial: only the test holds `transport`, so only those tasks can end the session.
+/// a dial: only the test holds `transport`.
 async fn assert_ended(clock: &Clock, transport: Rc<Transport>) {
     clock.sleep(Span::MILLISECOND).await;
     assert_eq!(Rc::strong_count(&transport), 1, "a task that sends runs");
@@ -579,10 +570,7 @@ fn each_task_that_sends_ends_when_a_committed_entry_stops_the_group() {
         let mut watch = mesh.watch(INDEX);
         assert_eq!(watch.next().await, Ok(None));
         node.clock().sleep(seconds(3)).await;
-        let at = Position {
-            term: Term(5),
-            index: 1,
-        };
+        let at = common::at(5, 1);
         let entry = Entry {
             at,
             data: Data::Bytes(vec![9]),
@@ -613,15 +601,18 @@ fn assert_ends_in_a_send<E: Future<Output = ()> + 'static>(
         let clock = node.clock();
         {
             // Node 1 serves node 2 only until it leads: no task holds the mesh after.
-            let mut serving = pin!(accept(mesh.clone(), transport, tasks.clone()));
-            let mut leading = pin!(lead(&mesh, &clock, home(1)));
+            let mut serving = pin!(async {
+                serve_first(&mesh, &transport).await;
+                pending::<std::convert::Infallible>().await
+            });
+            let mut leading = pin!(lead(&mesh, &clock, home_to(1)));
             poll_fn(|cx| {
                 let Poll::Pending = serving.as_mut().poll(cx);
                 leading.as_mut().poll(cx)
             })
             .await;
         }
-        clock.sleep(seconds(10)).await;
+        clock.sleep(seconds(25)).await;
         for _ in 0..2 {
             assert!(!quiet(&mesh, 2).await, "the task of node 2 does not wait");
         }
@@ -648,6 +639,17 @@ fn a_task_that_waits_in_a_send_ends_when_the_group_stops() {
         stop(&node, &mesh);
         pending::<()>().await;
     });
+}
+
+/// Serves the first stream that node 2 opens to `mesh`, on the first session that
+/// `transport` accepts.
+async fn serve_first(mesh: &Mesh, transport: &Transport) {
+    let session = transport.accept().await.unwrap();
+    let mut incoming = session.accept().await.unwrap();
+    let Ok(Some(_)) = incoming.receiver.recv().await else {
+        return;
+    };
+    drop(mesh.serve(public(2), incoming).await);
 }
 
 // Serves each stream that node 2 opens to `mesh`.
@@ -714,7 +716,7 @@ fn a_proposal_whose_write_waits_gives_a_removed_stop() {
         let mesh = Mesh::open(config).await.unwrap();
         let clock = node.clock();
         serve_each(&mesh, &tasks, transport);
-        lead(&mesh, &clock, home(1)).await;
+        lead(&mesh, &clock, home_to(1)).await;
         clock.sleep(seconds(10)).await;
         for _ in 0..2 {
             assert!(!quiet(&mesh, 2).await, "the task of node 2 does not wait");
@@ -727,7 +729,12 @@ fn a_proposal_whose_write_waits_gives_a_removed_stop() {
             now(call.as_mut()).await.is_pending(),
             "the write did not wait"
         );
-        assert_eq!(mesh.propose_data(vec![2]).await, Err(exhausted(61)));
+        // The sends that wait leave the budget fully carved.
+        let full = block::Error::Exhausted {
+            requested: 61,
+            available: 0,
+        };
+        assert_eq!(mesh.propose_data(vec![2]).await, Err(Error::Pool(full)));
         let proposed = within(&clock, seconds(20), call).await;
         let watched = mesh.watch(INDEX).next().await;
         *written.lock().unwrap() = Some((proposed, watched));

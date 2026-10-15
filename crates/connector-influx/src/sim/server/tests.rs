@@ -1,11 +1,12 @@
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use connector::http::{Client, Config};
 use env::net::tcp;
 use env::thread::Handle;
-use http::header::CONTENT_ENCODING;
+use http::header::{AUTHORIZATION, CONTENT_ENCODING};
 use http::{HeaderValue, Method, Request, StatusCode};
 use sim::{Sim, node};
 use types::time::Span;
@@ -18,7 +19,7 @@ const TIMEOUT: Span = Span::from_nanos(10_000_000_000);
 const OPTIONS: tcp::Options = tcp::Options {
     send_buffer_bytes: 1 << 16,
     recv_buffer_bytes: 1 << 16,
-    unsent_bytes_max: 1 << 14,
+    unsent_bytes_max: NonZeroUsize::new(1 << 14).unwrap(),
     delayed: false,
 };
 
@@ -40,6 +41,11 @@ struct Network {
 
 impl Network {
     fn new() -> Self {
+        Self::taking(None)
+    }
+
+    /// A network whose server takes only `token`, when given.
+    fn taking(token: Option<&str>) -> Self {
         let mut sim = Sim::new(sim::Config {
             seed: 7,
             steps_max: 10_000_000,
@@ -56,10 +62,11 @@ impl Network {
         let listener = server.net().listen(&listen).expect("the port is free");
         let store = Arc::new(Mutex::new(Store::default()));
         let held = Arc::clone(&store);
+        let token = token.map(str::to_owned);
         let handle = server
             .shards()
             .start(shard("server"), move |tasks| async move {
-                let error = serve(listener, tasks, held, "edge".into()).await;
+                let error = serve(listener, tasks, held, "edge".into(), token).await;
                 panic!("the listener failed: {error}");
             })
             .expect("the shard starts");
@@ -371,6 +378,66 @@ fn checks_the_path_then_the_method_then_the_content_encoding_then_the_query() {
             answer(
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 "the store decodes no content-encoding, not \"gzip\""
+            ),
+        ]
+    );
+    assert_eq!(network.times("m"), [0_i64; 0]);
+}
+
+/// `request` with `value` in `Authorization`.
+fn authorized(mut request: Request<Bytes>, value: &'static str) -> Request<Bytes> {
+    let value = HeaderValue::from_static(value);
+    request.headers_mut().insert(AUTHORIZATION, value);
+    request
+}
+
+#[test]
+fn stores_a_write_with_its_token_and_answers_401_to_any_other() {
+    let mut network = Network::taking(Some("t0ken"));
+    let v2 = "/api/v2/write?org=o&bucket=edge";
+    let requests = vec![
+        authorized(network.post("/write?db=edge", "m v=1 1"), "Token t0ken"),
+        authorized(network.post(v2, "m v=2 2"), "Token t0ken"),
+        network.post(v2, "m v=3 3"),
+        authorized(network.post(v2, "m v=4 4"), "Token other"),
+        authorized(network.post(v2, "m v=5 5"), "Bearer t0ken"),
+        authorized(network.post(v2, "m v=6 6"), "token t0ken"),
+    ];
+    let refused = answer(
+        StatusCode::UNAUTHORIZED,
+        r#"{"code":"unauthorized","message":"unauthorized access"}"#,
+    );
+    assert_eq!(
+        network.send(vec![requests]),
+        [
+            answer(StatusCode::NO_CONTENT, ""),
+            answer(StatusCode::NO_CONTENT, ""),
+            refused.clone(),
+            refused.clone(),
+            refused.clone(),
+            refused,
+        ]
+    );
+    assert_eq!(network.times("m"), [1, 2]);
+}
+
+#[test]
+fn checks_the_token_after_the_method_and_before_the_content_encoding() {
+    let mut network = Network::taking(Some("t0ken"));
+    let mut get = network.post("/write?db=edge", "m v=1 1");
+    *get.method_mut() = Method::GET;
+    let mut gzip = network.post("/write", "m v=2 2");
+    let value = HeaderValue::from_static("gzip");
+    gzip.headers_mut().insert(CONTENT_ENCODING, value);
+    let requests = vec![network.post("/nowhere", "m v=1 1"), get, gzip];
+    assert_eq!(
+        network.send(vec![requests]),
+        [
+            answer(StatusCode::NOT_FOUND, "no endpoint at /nowhere"),
+            answer(StatusCode::METHOD_NOT_ALLOWED, "/write takes POST, not GET"),
+            answer(
+                StatusCode::UNAUTHORIZED,
+                r#"{"code":"unauthorized","message":"unauthorized access"}"#
             ),
         ]
     );

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use proptest::prelude::*;
 use spec::access::Action;
-use spec::definition::{Definition, Kind};
+use spec::definition::{self, Definition};
 use spec::subject::Subject;
 use types::ed25519::{Pair, PrivateKey};
 use types::time::Interval;
@@ -48,7 +48,7 @@ fn rules(subjects: &[(&str, &[PublicKey])]) -> Rules {
     let tree: BTreeMap<Name, Definition> = subjects
         .iter()
         .map(|(subject, keys)| {
-            let key = Kind::Subject.key(subject).unwrap();
+            let key = definition::Kind::Subject.key(subject).unwrap();
             (
                 key,
                 Definition::Subject(Subject::new(keys.to_vec()).unwrap()),
@@ -103,8 +103,11 @@ fn admitted() -> Admitted {
 }
 
 /// Signs a request of `body` on the connection of the golden hello.
-fn signed(body: &[u8]) -> [u8; 64] {
-    sign(&pair(TEST_1), &request(create_hello().connection, body))
+fn request_signature(body: &[u8]) -> [u8; 64] {
+    sign(
+        &pair(TEST_1),
+        &signed(Kind::Request, create_hello().connection, body),
+    )
 }
 
 mod golden {
@@ -136,7 +139,11 @@ mod golden {
 
     #[test]
     fn gives_the_exact_bytes_of_a_request_and_its_signature_verifies() {
-        let bytes = request(create_hello().connection, b"open site_a.pt_1");
+        let bytes = signed(
+            Kind::Request,
+            create_hello().connection,
+            b"open site_a.pt_1",
+        );
 
         assert_eq!(
             bytes,
@@ -149,6 +156,25 @@ mod golden {
         let signature = hex(concat!(
             "60bfa85a16ec42321352a9ab26ad64056eee4bb51f63e07e0e43ab310cfa4634",
             "1bc146b32998921f446113a0d563e5ccd5232654cc8ba4da49d4c499e062ed03",
+        ));
+        assert_eq!(create_hello().key.verify(&bytes, &signature), Ok(()));
+    }
+
+    #[test]
+    fn gives_the_exact_bytes_of_a_read_open_and_its_signature_verifies() {
+        let bytes = signed(Kind::Read, create_hello().connection, b"open site_a.pt_1");
+
+        assert_eq!(
+            bytes,
+            hex::<49>(concat!(
+                "666f756e646174696f6e2f726561642f31",
+                "c0c1c2c3c4c5c6c7c8c9cacbcccdcecf",
+                "6f70656e20736974655f612e70745f31",
+            ))
+        );
+        let signature = hex(concat!(
+            "0e2b8d71d8e803ddd98fb1134b2de7414e1f115be1b93b3f1d1c76f4fbe47c8f",
+            "6ae2a3667630594137660047fccaa5a538c50514dcee0fe4c144ade192b2a807",
         ));
         assert_eq!(create_hello().key.verify(&bytes, &signature), Ok(()));
     }
@@ -198,7 +224,20 @@ mod golden {
         ) {
             let hello = create_hello();
 
-            prop_assert_ne!(request(hello.connection, &body), super::hello(&hello));
+            prop_assert_ne!(signed(Kind::Request, hello.connection, &body), super::hello(&hello));
+        }
+
+        #[test]
+        fn never_gives_the_bytes_of_one_kind_for_another(
+            request in proptest::collection::vec(any::<u8>(), 0..128),
+            read in proptest::collection::vec(any::<u8>(), 0..128),
+        ) {
+            let connection = create_hello().connection;
+
+            prop_assert_ne!(
+                signed(Kind::Request, connection, &request),
+                signed(Kind::Read, connection, &read)
+            );
         }
     }
 }
@@ -344,26 +383,55 @@ mod admit {
         );
     }
 
+    /// The cap counts from the latest edge, here with an error of 36500 days.
     #[test]
-    fn refuses_a_hello_that_expires_past_the_cap() {
-        let earliest = |cap: Stamp| {
-            Some(Interval {
-                earliest: cap - CAP,
-                latest: cap - CAP + Span::SECOND,
-            })
-        };
-        admit(&listed(), earliest(EXPIRES), create_hello()).unwrap();
+    fn holds_a_hello_that_expires_past_the_cap_live_until_the_cap() {
+        let unknown = Span::from_nanos(36_500 * Span::DAY.nanos());
+        let latest = EXPIRES - Span::NANOSECOND - CAP;
+        let now = Some(Interval {
+            earliest: latest - unknown,
+            latest,
+        });
+        let body = b"open site_a.pt_1";
 
-        let cap = EXPIRES - Span::NANOSECOND;
-        let error = admit(&listed(), earliest(cap), create_hello()).unwrap_err();
+        let admitted = admit(&listed(), now, create_hello()).unwrap();
 
+        let ends = latest + CAP;
+        assert_eq!(admitted.ends(), ends);
+        let before = Some(at(ends - Span::NANOSECOND));
         assert_eq!(
-            error,
-            Error::Capped {
-                expires: EXPIRES,
-                cap
-            }
+            listed().verify(
+                &admitted,
+                before,
+                Kind::Request,
+                body,
+                &request_signature(body)
+            ),
+            Ok(())
         );
+        assert_eq!(
+            listed().verify(
+                &admitted,
+                Some(at(ends)),
+                Kind::Request,
+                body,
+                &request_signature(body)
+            ),
+            Err(Error::Expired {
+                expires: ends,
+                now: ends
+            })
+        );
+    }
+
+    #[test]
+    fn ends_a_hello_that_expires_before_the_cap_at_its_expiry() {
+        assert_eq!(admitted().ends(), EXPIRES);
+
+        let cap = Some(at(EXPIRES - CAP));
+        let admitted = admit(&listed(), cap, create_hello()).unwrap();
+
+        assert_eq!(admitted.ends(), EXPIRES);
     }
 
     /// A hello that fails each check, with one failure removed at each step, gives
@@ -371,10 +439,7 @@ mod admit {
     #[test]
     fn refuses_a_hello_for_the_first_check_that_fails() {
         let other = node::Key::from_u128(7);
-        let wide = Some(Interval {
-            earliest: EXPIRES - CAP - CAP,
-            latest: EXPIRES,
-        });
+        let late = Some(at(EXPIRES));
         let hello = Hello {
             via: other,
             ..create_hello()
@@ -395,18 +460,18 @@ mod admit {
             Error::Unsynced
         );
         assert_eq!(
-            refuse(&rules(&[]), wide, &hello, &unsigned),
+            refuse(&rules(&[]), late, &hello, &unsigned),
             Error::Unknown {
                 subject: subject.clone()
             }
         );
         assert_eq!(
-            refuse(&unlisted, wide, &hello, &unsigned),
+            refuse(&unlisted, late, &hello, &unsigned),
             Error::Unlisted { subject, key }
         );
-        assert_eq!(refuse(&listed(), wide, &hello, &unsigned), Error::Signature);
+        assert_eq!(refuse(&listed(), late, &hello, &unsigned), Error::Signature);
         assert_eq!(
-            refuse(&listed(), wide, &hello, &signature),
+            refuse(&listed(), late, &hello, &signature),
             Error::Via {
                 via: other,
                 peer: PEER
@@ -415,22 +480,10 @@ mod admit {
         let hello = create_hello();
         let signature = sign(&pair(TEST_1), &super::hello(&hello));
         assert_eq!(
-            refuse(&listed(), wide, &hello, &signature),
+            refuse(&listed(), late, &hello, &signature),
             Error::Expired {
                 expires: EXPIRES,
                 now: EXPIRES
-            }
-        );
-        let wide = wide.map(|now| Interval {
-            latest: now.latest - Span::NANOSECOND,
-            ..now
-        });
-        let cap = EXPIRES - CAP;
-        assert_eq!(
-            refuse(&listed(), wide, &hello, &signature),
-            Error::Capped {
-                expires: EXPIRES,
-                cap
             }
         );
     }
@@ -439,8 +492,11 @@ mod admit {
     fn keeps_each_subject_of_each_region_tree_by_its_label() {
         let key = public(&pair(TEST_1));
         let subject = Definition::Subject(Subject::new(vec![key]).unwrap());
-        let region: BTreeMap<Name, Definition> =
-            [(Kind::Subject.key("site_a.ana").unwrap(), subject)].into();
+        let region: BTreeMap<Name, Definition> = [(
+            definition::Kind::Subject.key("site_a.ana").unwrap(),
+            subject,
+        )]
+        .into();
         let rules = Rules::new([
             (types::name::Prefix::ROOT, &BTreeMap::new()),
             ("site_a".parse().unwrap(), &region),
@@ -470,6 +526,17 @@ mod admit {
         let admitted = admit(&listed(), now, hello.clone()).unwrap();
 
         assert_eq!(admitted.hello(), &hello);
+        assert_eq!(admitted.ends(), hello.expires);
+    }
+
+    #[test]
+    fn refuses_each_subject_by_the_default_rules() {
+        let hello = create_hello();
+        let subject = hello.subject.clone();
+
+        let error = admit(&Rules::default(), NOW, hello).unwrap_err();
+
+        assert_eq!(error, Error::Unknown { subject });
     }
 
     #[test]
@@ -597,10 +664,7 @@ mod renew {
     #[test]
     fn checks_a_renewal_as_a_first_hello() {
         let late = Some(at(EXPIRES + Span::MINUTE));
-        let capped = Some(Interval {
-            earliest: EXPIRES - CAP,
-            latest: EXPIRES - CAP + Span::SECOND,
-        });
+        let capped = Some(at(EXPIRES - CAP));
 
         assert_eq!(
             renew(&listed(), None, TEST_1, renewal()),
@@ -623,13 +687,25 @@ mod renew {
                 now: EXPIRES + Span::MINUTE,
             })
         );
-        assert_eq!(
-            renew(&listed(), capped, TEST_1, renewal()),
-            Err(Error::Capped {
-                expires: EXPIRES + Span::MINUTE,
-                cap: EXPIRES,
-            })
-        );
+        let signature = sign(&pair(TEST_1), &super::hello(&renewal()));
+        let renewed = listed().renew(&admitted(), capped, renewal(), &signature);
+        assert_eq!(renewed.map(|renewed| renewed.ends()), Ok(EXPIRES));
+    }
+
+    /// A renewal set from the latest edge before a drop of a day is taken, and lives
+    /// only until the cap past the latest edge at the renewal.
+    #[test]
+    fn holds_a_renewal_after_a_drop_of_the_latest_edge_until_the_cap() {
+        let dropped = NOW.map(|now| Interval {
+            earliest: now.earliest - Span::DAY,
+            latest: now.latest - Span::DAY,
+        });
+        let signature = sign(&pair(TEST_1), &super::hello(&renewal()));
+
+        let renewed = listed().renew(&admitted(), dropped, renewal(), &signature);
+
+        let ends = NOW.unwrap().latest - Span::DAY + CAP;
+        assert_eq!(renewed.map(|renewed| renewed.ends()), Ok(ends));
     }
 
     /// A spec that no longer lists the key refuses the renewal of a hello that it
@@ -655,17 +731,70 @@ mod verify {
     fn verifies_a_request_signed_with_the_key_of_the_hello() {
         let body = b"open site_a.pt_1";
 
-        let verified = listed().verify(&admitted(), NOW, body, &signed(body));
+        let verified = listed().verify(
+            &admitted(),
+            NOW,
+            Kind::Request,
+            body,
+            &request_signature(body),
+        );
 
         assert_eq!(verified, Ok(()));
     }
 
     #[test]
-    fn refuses_a_request_whose_body_changed_after_its_signature() {
-        let signature = signed(b"open site_a.pt_1");
+    fn verifies_a_read_open_signed_with_the_key_of_the_hello() {
+        let open = b"open site_a.pt_1";
+        let signature = sign(
+            &pair(TEST_1),
+            &signed(Kind::Read, create_hello().connection, open),
+        );
+
+        let verified = listed().verify(&admitted(), NOW, Kind::Read, open, &signature);
+
+        assert_eq!(verified, Ok(()));
+    }
+
+    #[test]
+    fn refuses_the_signature_of_a_request_as_a_read_open() {
+        let body = b"open site_a.pt_1";
+
+        let verified = listed().verify(
+            &admitted(),
+            NOW,
+            Kind::Read,
+            body,
+            &request_signature(body),
+        );
+
+        assert_eq!(verified, Err(Error::Signature));
+    }
+
+    #[test]
+    fn refuses_the_signature_of_a_read_open_as_a_request() {
+        let open = b"open site_a.pt_1";
+        let signature = sign(
+            &pair(TEST_1),
+            &signed(Kind::Read, create_hello().connection, open),
+        );
 
         let verified =
-            listed().verify(&admitted(), NOW, b"open site_a.pt_2", &signature);
+            listed().verify(&admitted(), NOW, Kind::Request, open, &signature);
+
+        assert_eq!(verified, Err(Error::Signature));
+    }
+
+    #[test]
+    fn refuses_a_request_whose_body_changed_after_its_signature() {
+        let signature = request_signature(b"open site_a.pt_1");
+
+        let verified = listed().verify(
+            &admitted(),
+            NOW,
+            Kind::Request,
+            b"open site_a.pt_2",
+            &signature,
+        );
 
         assert_eq!(verified, Err(Error::Signature));
     }
@@ -674,9 +803,10 @@ mod verify {
     fn refuses_a_request_signed_for_another_connection() {
         let body = b"open site_a.pt_1";
         let other = connection::Key([0; 16]);
-        let signature = sign(&pair(TEST_1), &request(other, body));
+        let signature = sign(&pair(TEST_1), &signed(Kind::Request, other, body));
 
-        let verified = listed().verify(&admitted(), NOW, body, &signature);
+        let verified =
+            listed().verify(&admitted(), NOW, Kind::Request, body, &signature);
 
         assert_eq!(verified, Err(Error::Signature));
     }
@@ -687,9 +817,12 @@ mod verify {
         let both =
             rules(&[("ops.ana", &[public(&pair(TEST_1)), public(&pair(TEST_2))])]);
         let admitted = admit(&both, NOW, create_hello()).unwrap();
-        let signature = sign(&pair(TEST_2), &request(create_hello().connection, body));
+        let signature = sign(
+            &pair(TEST_2),
+            &signed(Kind::Request, create_hello().connection, body),
+        );
 
-        let verified = both.verify(&admitted, NOW, body, &signature);
+        let verified = both.verify(&admitted, NOW, Kind::Request, body, &signature);
 
         assert_eq!(verified, Err(Error::Signature));
     }
@@ -699,7 +832,8 @@ mod verify {
         let bytes = hello(&create_hello());
         let signature = sign(&pair(TEST_1), &bytes);
 
-        let verified = listed().verify(&admitted(), NOW, &bytes, &signature);
+        let verified =
+            listed().verify(&admitted(), NOW, Kind::Request, &bytes, &signature);
 
         assert_eq!(verified, Err(Error::Signature));
     }
@@ -709,12 +843,24 @@ mod verify {
         let body = b"open site_a.pt_1";
         let before = Some(at(EXPIRES - Span::NANOSECOND));
         assert_eq!(
-            listed().verify(&admitted(), before, body, &signed(body)),
+            listed().verify(
+                &admitted(),
+                before,
+                Kind::Request,
+                body,
+                &request_signature(body)
+            ),
             Ok(())
         );
 
         let late = Some(at(EXPIRES));
-        let verified = listed().verify(&admitted(), late, body, &signed(body));
+        let verified = listed().verify(
+            &admitted(),
+            late,
+            Kind::Request,
+            body,
+            &request_signature(body),
+        );
 
         let now = EXPIRES;
         assert_eq!(
@@ -730,7 +876,13 @@ mod verify {
     fn refuses_a_request_at_a_node_with_no_mesh_time() {
         let body = b"open site_a.pt_1";
 
-        let verified = listed().verify(&admitted(), None, body, &signed(body));
+        let verified = listed().verify(
+            &admitted(),
+            None,
+            Kind::Request,
+            body,
+            &request_signature(body),
+        );
 
         assert_eq!(verified, Err(Error::Unsynced));
     }
@@ -740,7 +892,13 @@ mod verify {
         let body = b"open site_a.pt_1";
         let rules = rules(&[("ops.ana", &[public(&pair(TEST_2))])]);
 
-        let verified = rules.verify(&admitted(), NOW, body, &signed(body));
+        let verified = rules.verify(
+            &admitted(),
+            NOW,
+            Kind::Request,
+            body,
+            &request_signature(body),
+        );
 
         let key = public(&pair(TEST_1));
         let subject = name("ops.ana");
@@ -751,7 +909,13 @@ mod verify {
     fn refuses_a_request_once_the_spec_no_longer_has_the_subject() {
         let body = b"open site_a.pt_1";
 
-        let verified = rules(&[]).verify(&admitted(), NOW, body, &signed(body));
+        let verified = rules(&[]).verify(
+            &admitted(),
+            NOW,
+            Kind::Request,
+            body,
+            &request_signature(body),
+        );
 
         let subject = name("ops.ana");
         assert_eq!(verified, Err(Error::Unknown { subject }));
@@ -764,7 +928,9 @@ mod verify {
         let unlisted = rules(&[("ops.ana", &[public(&pair(TEST_2))])]);
         let late = Some(at(EXPIRES));
         let refuse = |rules: &Rules, now, signature| {
-            rules.verify(&admitted(), now, body, signature).unwrap_err()
+            rules
+                .verify(&admitted(), now, Kind::Request, body, signature)
+                .unwrap_err()
         };
 
         let subject = name("ops.ana");
@@ -782,7 +948,7 @@ mod verify {
         );
         assert_eq!(refuse(&listed(), late, &unsigned), Error::Signature);
         assert_eq!(
-            refuse(&listed(), late, &signed(body)),
+            refuse(&listed(), late, &request_signature(body)),
             Error::Expired {
                 expires: EXPIRES,
                 now: EXPIRES
@@ -832,18 +998,9 @@ fn names_each_refusal_and_its_fix() {
                 expires: Stamp::from_nanos(2_000_000_000),
                 now: Stamp::from_nanos(3_000_000_000),
             },
-            "the hello expired at 1970-01-01T00:00:02.000000000Z, at or before the \
+            "the hello ended at 1970-01-01T00:00:02.000000000Z, at or before the \
              mesh time 1970-01-01T00:00:03.000000000Z",
-            "Send a new hello with a later expiry",
-        ),
-        (
-            Error::Capped {
-                expires: Stamp::from_nanos(2_000_000_000),
-                cap: Stamp::from_nanos(1_000_000_000),
-            },
-            "the hello expires at 1970-01-01T00:00:02.000000000Z, after the cap \
-             1970-01-01T00:00:01.000000000Z",
-            "Send a hello that expires within 15 minutes",
+            "Send a hello with a later expiry, and renew it before it ends",
         ),
     ];
     for (error, message, fix) in cases {
@@ -870,6 +1027,117 @@ fn names_each_changed_field() {
             error.fix(),
             "Renew with the subject, key, `via`, and connection of the hello it renews"
         );
+    }
+}
+
+mod clamp {
+    use super::*;
+
+    /// Checks `admit`, `verify`, and `renew` of a hello that expires at `expires`
+    /// against the clamp, at a mesh time `width` wide that ends at `latest`.
+    fn check(latest: i64, expires: i64, width: i64) -> Result<(), TestCaseError> {
+        let latest = Stamp::from_nanos(latest);
+        let earliest = Stamp::from_nanos(latest.nanos().saturating_sub(width));
+        let now = Some(Interval { earliest, latest });
+        let hello = Hello {
+            expires: Stamp::from_nanos(expires),
+            ..create_hello()
+        };
+        let got = admit(&listed(), now, hello.clone());
+        if latest >= hello.expires {
+            prop_assert_eq!(
+                got.map(|a| a.ends()),
+                Err(Error::Expired {
+                    expires: hello.expires,
+                    now: latest
+                })
+            );
+            return Ok(());
+        }
+        let ends = match latest.checked_add(CAP) {
+            Some(cap) if cap < hello.expires => cap,
+            _ => hello.expires,
+        };
+        let admitted = got.map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(admitted.ends(), ends);
+        prop_assert!(admitted.ends() > latest);
+        let body = b"x";
+        prop_assert_eq!(
+            listed().verify(
+                &admitted,
+                now,
+                Kind::Request,
+                body,
+                &request_signature(body)
+            ),
+            Ok(())
+        );
+        let at_end = Some(Interval {
+            earliest: ends,
+            latest: ends,
+        });
+        prop_assert_eq!(
+            listed().verify(
+                &admitted,
+                at_end,
+                Kind::Request,
+                body,
+                &request_signature(body)
+            ),
+            Err(Error::Expired {
+                expires: ends,
+                now: ends
+            })
+        );
+        let sig = sign(&pair(TEST_1), &super::super::hello(&hello));
+        let renewed = listed()
+            .renew(&admitted, now, hello.clone(), &sig)
+            .map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(renewed.ends(), ends);
+        Ok(())
+    }
+
+    #[test]
+    fn holds_at_each_edge() {
+        let cap = CAP.nanos();
+        let cases = [
+            (i64::MAX, i64::MAX),
+            (i64::MAX - 1, i64::MAX),
+            (i64::MAX - cap, i64::MAX),
+            (i64::MAX - cap + 1, i64::MAX),
+            (i64::MAX - cap - 1, i64::MAX),
+            (i64::MIN, i64::MIN + 1),
+            (i64::MIN, i64::MAX),
+            (i64::MIN, i64::MIN),
+            (0, cap),
+            (0, cap + 1),
+            (0, cap - 1),
+            (-1, 0),
+            (i64::MAX, i64::MIN),
+        ];
+        for (latest, expires) in cases {
+            check(latest, expires, 1_000_000_000).unwrap();
+            check(latest, expires, 0).unwrap();
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn ends_at_the_earlier_of_expires_and_the_cap(
+            latest: i64,
+            expires: i64,
+            width in 0..i64::MAX,
+        ) {
+            check(latest, expires, width)?;
+        }
+
+        #[test]
+        fn ends_at_the_earlier_near_the_cap(
+            latest: i64,
+            delta in -2_000_000_000_000_i64..2_000_000_000_000,
+        ) {
+            check(latest, latest.saturating_add(delta), 1)?;
+        }
     }
 }
 

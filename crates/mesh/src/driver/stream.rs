@@ -147,6 +147,13 @@ fn code(error: &Error) -> Option<Code> {
         | Error::Large { .. }
         | Error::Problems(_)
         | Error::Quorum { .. }
-        | Error::Blob(_) => Some(REFUSED),
+        | Error::Blob(_)
+        | Error::Files(_)
+        | Error::Stray { .. }
+        | Error::NotIndex(_)
+        | Error::UnknownNode(_)
+        | Error::Homes { .. }
+        | Error::Founding { .. }
+        | Error::Unfounded { .. } => Some(REFUSED),
     }
 }

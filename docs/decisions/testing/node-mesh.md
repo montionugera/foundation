@@ -1,0 +1,217 @@
+- **NODE MESH (#585, 2026-10-08)** The node's key and private key come from the file
+  `node.key` (NODE PORT, amended for #1660, by `laptop.architect-2`, 19:52 UTC:
+  https://github.com/synnaxlabs/foundation/issues/1660#issuecomment-6067866831). This
+  supersedes `Config::key` and `Config::private_key` of
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6051655452.
+  `Config::region` (`Region::Given`, amended below) gives the region that the node is
+  a member of: its prefix, its members (one card has the node's key), the voters before
+  the first entry of the log, and its founding definitions. The caller gives the same
+  region at each start: a start whose mesh log holds no record keeps it in the data
+  directory, and a start whose log holds a record and that gives another region stops
+  the node with `mesh::Error::Founding` (#1209, `laptop.architect-2`,
+  2026-10-08T16:32:10Z:
+  https://github.com/synnaxlabs/foundation/issues/1209#issuecomment-6064460084; the
+  condition on the log, `laptop.architect-2`, 2026-10-09T23:58:45Z:
+  https://github.com/synnaxlabs/foundation/pull/2200#issuecomment-6091323223, and
+  `laptop.architect`, 2026-10-10T00:00:37Z:
+  https://github.com/synnaxlabs/foundation/pull/2200#issuecomment-6091342010).
+  `Region::Absent` opens no mesh, and the hub of each task then gets no mesh: a node
+  runs with no region before it founds or joins one. Changed by `laptop.architect`,
+  2026-10-08T18:42:42Z
+  (https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6066677536). The
+  long-term path takes it out of `Config`: the node keeps its membership in its data
+  directory when it founds or joins, and reads it at each start.
+  With a region, shard 0 opens `mesh::Mesh` on the node's transport after the last shard
+  has opened its buffer and before it takes the first session. Its directory is `mesh`
+  in the data directory (`mesh::Config::dir`; the directory by `laptop.architect`,
+  2026-10-08 03:37 UTC:
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6051658475; the field
+  by `laptop.architect-2`, 03:54 UTC:
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6051833866, and by
+  `laptop.architect`, 04:00 UTC:
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6051912643). Shard 0
+  waits for `Mesh::ended` before it drops `lock` (DATA DIRECTORY LOCK). Each clone of
+  the mesh, also one inside the hub, lives in a future that shard 0 drops at the stop.
+  PR 4 of #585 keeps this (`laptop.architect-2`, 2026-10-08 07:26 UTC:
+  https://github.com/synnaxlabs/foundation/pull/1830#issuecomment-6054871235). A mesh
+  that does not open stops the node, and `Node::join` gives `Error::Mesh`, ranked with
+  `Error::Buffer` and below `Error::Transport`. Each `wire::Protocol::Mesh` stream of a
+  peer that proved a node key goes to `Mesh::serve`, which checks each message against
+  the region; the error of `serve` ends only its stream. A mesh stream of a client, or
+  of a node with no region, is rejected as NODE PORT says. Shard 0 sets no home yet (PR
+  4 of #585). Shard 0 opens the mesh with `Config::region` unchanged, and no caller
+  gives definitions yet. From PR 1b of #1744, the code that builds the `Config::region`
+  of a founding node gives the root region the definitions that
+  `spec::founding::create` gives, and each other region an empty map. A node that joins
+  gives the definitions of its join answer (#336). Decided by `laptop.architect` at
+  2026-10-08T06:11:30Z
+  (https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6053599101), with
+  the text for a founding node at 15:44:46Z
+  (https://github.com/synnaxlabs/foundation/pull/1904#issuecomment-6063609356).
+  `mesh::region::Founding` replaced `node::Region`, which copied three fields of
+  `mesh::Config`, so `node` maps no `mesh` value by hand (#1859). Decided by
+  `laptop.architect` at 2026-10-08T10:23:48Z and 10:34:37Z
+  (https://github.com/synnaxlabs/foundation/pull/1857#issuecomment-6057800438,
+  https://github.com/synnaxlabs/foundation/issues/1859#issuecomment-6057975061).
+  The type lands as PR 1 of #1209, ordered by `laptop.coordinator` at
+  2026-10-08T15:21:38Z
+  (https://github.com/synnaxlabs/foundation/issues/1859#issuecomment-6063144369) and
+  approved by `laptop.architect` at 15:26:10Z
+  (https://github.com/synnaxlabs/foundation/issues/1209#issuecomment-6063246600).
+  Supersedes the trigger of 10:23:48Z, the first of PR 1 of #1744 and the join answer
+  of #336. Lost: `Node::found(region)` at run time, which needs a second open path and
+  a node that runs with no region before it; the key in `node::Region`, because a
+  node's identity is not region data, and PR 4 needs it with no region. Decided by
+  `laptop.architect-2` (2026-10-08 03:37 UTC):
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6051655452, on the
+  plan https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6051630943. A
+  mesh whose group stops stops the node, and `Node::join` gives `Error::Group` with
+  the cause. Of a transport that stops and a group that stops, `join` gives the one
+  that the node sees first; of two that stop at one instant, either can be first
+  (#1780). Supersedes the deferral of
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6051655452. Lost:
+  `Mesh::stopped()`, because `Watch::next` gives the stop as its contract and one
+  caller does not justify a new `mesh` item; add `Mesh::stopped` when a second caller
+  needs the stop of the group and reads no home, and ask `laptop.architect` for it.
+  Decided by `laptop.architect-2` at 2026-10-08T17:27:20Z
+  (https://github.com/synnaxlabs/foundation/issues/1780#issuecomment-6065408760), and
+  changed by `laptop.architect-2` at 17:32:00Z
+  (https://github.com/synnaxlabs/foundation/pull/1936#issuecomment-6065487136): the
+  stop has its own variant. Lost: `Error::Mesh` with `mesh::Error::Stopped`, which
+  gives one variant two meanings. The rank by what the node sees first supersedes item
+  2 of https://github.com/synnaxlabs/foundation/pull/1936#issuecomment-6065487136, and
+  the private rank of shard 0's stop is a fixed tie-break with no contract. Decided by
+  `laptop.architect-2` at 17:49:13Z
+  (https://github.com/synnaxlabs/foundation/pull/1936#issuecomment-6065780217), and
+  for `Node::spawn` at 17:58:35Z
+  (https://github.com/synnaxlabs/foundation/pull/1936#issuecomment-6065936160): a
+  panic gives `Error::Panicked` unless the node saw the transport or the group stop
+  first. Lost: "the transport's when both stop at once", because the node sees each
+  stop only at its next poll, so of two stops at one instant either can come first
+  (the breaker,
+  https://github.com/synnaxlabs/foundation/pull/1936#issuecomment-6065770160 and
+  https://github.com/synnaxlabs/foundation/pull/1936#issuecomment-6065929818).
+  `node::create_key(files, entropy, key, private_key)` makes `node.key` in the data
+  directory of a node that has not started, with a seal key from `entropy`, and gives
+  the public seal key, so the `acceptance` lab knows each key before the first start
+  and puts it in the founding (amended by `laptop.architect-2`, #1744, 2026-10-10
+  03:42 UTC:
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093413533, and
+  approved by `laptop.architect`, 2026-10-10 03:57 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2229#issuecomment-6093523453). This
+  supersedes the signature and the 68-byte file of
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6071015421. It
+  writes with the code of `identity`, so the file has one owner. It reads `node.key`
+  first: any file that is there, also one with no bytes or with 100 zero bytes, gives
+  `Error::Directory` with `Exists`, and it writes nothing, also no `node.key.new` with
+  the keys (decided by `laptop.architect-2`, 2026-10-11 10:16 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2384#issuecomment-6107980115). Else it
+  makes the file with `sector::publish` (amended, #2305, by `laptop.architect-2`,
+  2026-10-10 22:20 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6102792702). This
+  supersedes the `Length` error and the file with no bytes or with 68 zero bytes (100
+  since `foundation/key/2`) as no key, of
+  https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6072002986.
+  There is no new `Error` variant, as the advice of `Error::Key` is wrong for this
+  case, and no idempotent form: the lab calls it once, in `Lab::start`. The write
+  runs the simulation to its end: a node that runs never ends, and a task of a test runs
+  before its time. So a `Lab::start` after the first `Lab::run` or a task of a test
+  panics. No scenario adds a node after a run. Trigger: a scenario that does needs a new
+  ruling on where the lab calls `create_key`. Trigger: when #1744 lands, the lab founds
+  its region through the node, and `create_key` stays only if a tool still needs it.
+  Until a tool calls it, `create_key` is behind the `sim` feature (`laptop.architect-2`,
+  2026-10-09T03:42:57Z,
+  https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6073816041).
+  Trigger: a tool that needs a node's key before its first start takes it out of
+  `sim`, with a new ruling.
+  Lost: a second copy of the format in `acceptance`; a restart of each node and a read
+  of its key from outside `node`; a form that gives back only the public key, as the lab
+  signs each card with the private key. Decided by `laptop.architect-2` at
+  2026-10-08T23:23:28Z
+  (https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6071015421), with
+  the start rule and its trigger approved by `laptop.architect-2`
+  (2026-10-09T00:36:11Z, #1962,
+  https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6071836755), and the
+  file with no bytes approved by `laptop.architect-2` (2026-10-09T00:51:50Z,
+  https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6072002986).
+  Amended (2026-10-09, #1756): `node` builds one `ops::Node` on shard 0 when the mesh
+  opens, and keeps it until the stop. `Node::operate` gives a task that value
+  (`Rc<ops::Node>`), the value that `ops::serve` of #1744 takes, so the lab runs the
+  production value and the node has one key maker. A new channel key is a UUIDv7 at mesh
+  time. `ops::Node` holds the handles that the operation table uses: the mesh, the key
+  maker, the front ends, and the connector kinds. `new` takes `ops::FrontEnds`, which
+  holds at least one front end (`laptop.architect-2`, 2026-10-09T05:10:54Z,
+  https://github.com/synnaxlabs/foundation/pull/2078#issuecomment-6074720909).
+  Supersedes "`new` refuses an empty front-end table once" of
+  https://github.com/synnaxlabs/foundation/issues/1756#issuecomment-6072660664. `node`
+  may take `config-hcl`, as the composition root. Trigger: when the
+  lab reaches the node through the CLI, remove `Node::operate` if nothing else calls it.
+  Lost: a `call(body)` dispatch, which is a table entry of #1744; typed methods on
+  `ops::Node` that make `Output`, `Applied`, `Error`, and `Problem` public; a `hub` that
+  gives the mesh. Decided by `laptop.architect-2` (2026-10-09T01:55:14Z,
+  https://github.com/synnaxlabs/foundation/issues/1756#issuecomment-6072660664).
+  Amended in review (2026-10-09, #2078): the key time is the best guess of mesh time
+  (`Measurement::time`), which never goes back, and 0 before the node has mesh time or
+  before 1970: the time only orders keys, and the random bits make each key unique.
+  `ops::Node::mesh` gives the mesh, so the lab reads the home of a channel. `node` also
+  takes `document` and `connector`. The trigger above also makes `ops::Node::plan`,
+  `apply`, and `mesh` crate-private. Approved by `laptop.architect` for the key time
+  rule and `ops::Node::mesh` (2026-10-09T03:33:40Z,
+  https://github.com/synnaxlabs/foundation/pull/2078#issuecomment-6073726053). Approved
+  by `laptop.architect-2` for the `node` and `ops` parts (2026-10-09T03:40:04Z,
+  https://github.com/synnaxlabs/foundation/pull/2078#issuecomment-6073787912).
+  Amended (2026-10-10, #1744 PR 1b-3): `Config::region` has the type `node::Region`.
+  Supersedes the type `Option<mesh::region::Founding>` of
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6051655452.
+  `Region::Stored` is the production path, and supersedes the long-term path above.
+  Shard 0 reads the founding of the mesh directory with `mesh::founding`. When the
+  directory holds none, the node founds the root region alone: one member, the node,
+  whose card has `Config::name`, the public halves of the two private keys of
+  `node.key`, the addresses that the port bound but an IPv6 address with flow info or a
+  scope, and version 1, with 64 zero bytes as its admission; that node as the one voter;
+  the definitions of `spec::founding::create` with the public key of the first admin;
+  and no home. The card filter: approved by `laptop.architect` (2026-10-10T23:18:37Z,
+  https://github.com/synnaxlabs/foundation/pull/2310#issuecomment-6103243825). The
+  first admin's private key is in the file `admin.key` of the data
+  directory: 54 bytes, the tag `foundation/admin/1`, the Ed25519 private key, and the
+  CRC32C of those 50 bytes (little-endian), in one sector. Shard 0 reads it, or makes it
+  from `Config::entropy` with `sector::publish` as it makes `name` (NODE NAME), before
+  it builds the founding. So a read sees no file or a whole one. A start that stops
+  after it renames `admin.key.new` to `admin.key` and before the founding is durable
+  leaves a key that a later start founds with, unless a crash loses the rename before a
+  sync of the data directory succeeds: the sync of `publish`, or the claim of a later
+  start after that sync fails (approved by `laptop.architect` at `9ec5ee63e`,
+  2026-10-11T02:49:17Z,
+  https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104757560, and "a
+  later start" at `d70848450`, 2026-10-11T03:02:09Z,
+  https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104845006). A file of
+  another length, also one with no bytes, which `publish` never leaves, or of another
+  tag or checksum gives `Error::Admin`, and the node does not write over it. Each other
+  file error on `admin.key` gives `Error::Directory`. `publish` in place of a write in
+  place, by `laptop.architect-2` (2026-10-10T22:20:34Z, the audit of #2172):
+  https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6102792702. A start
+  that reads a founding reads no `admin.key`, so a start with a founding and no
+  `admin.key` starts. A founding that does not read gives `Error::Mesh`. `Error::Admin`
+  and these errors come where `Error::Mesh` does in the rank of `Node::join`.
+  `Region::Given(founding)` is the `Some` of before, behind the feature `sim`: a patch
+  for the tests of `node` and the `acceptance` lab until a node joins by ticket (#1157;
+  the feature by `laptop.architect`, 2026-10-10T04:08:03Z:
+  https://github.com/synnaxlabs/foundation/issues/2233#issuecomment-6093607742).
+  `Region::Absent` is `None`. The member of the founder holds a status key for each name
+  of `node::status::TABLE`. `node` makes each key as it makes each key that `apply`
+  gives: a UUIDv7 at mesh time, with random bits from `entropy`. The time only orders
+  keys, so the founder does not wait for a known error. The keys live in the founding
+  that `mesh` stores, and `node` keeps no second copy, so a later start keeps each key.
+  A start does not change a stored status that lacks a name, and does not fail for it
+  (STATUS CHANNELS). By `laptop.architect-2` (#728, 2026-10-12T16:02:04Z):
+  https://github.com/synnaxlabs/foundation/issues/728#issuecomment-6127912135.
+  Supersedes "The status of the member is empty until #728 gives the status channels of
+  the node their keys" of
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093320483. Earlier,
+  by `laptop.architect-2` (#1744, plan revision 3, 2026-10-10T03:30:54Z):
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093320483. Lost:
+  `node` keeps its own founding file, a second copy of one value; `node` builds the
+  founding again at each start, so a card with port 0 or a release that changes
+  `spec::founding::create` changes the founding of a region that exists;
+  `mesh::Config::founding: Option<Founding>`, with which `node` cannot tell a first
+  start from a later one before the open fails.

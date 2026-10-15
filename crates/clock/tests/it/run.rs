@@ -7,26 +7,7 @@ use sim::Sim;
 use sim::node::{self, Node};
 use types::time::{Interval, Span, Stamp};
 
-use crate::common::{UNKNOWN, ms, node};
-
-/// Runs a clock on one shard of `host`, fed by `wall`.
-fn run(host: &Node, wall: env::wall::Wall) -> Reader {
-    let (clock, reader) = Clock::new(host.clock());
-    start(host, clock, wall);
-    reader
-}
-
-/// Runs `clock` on one shard of `host`, fed by `wall`.
-fn start(host: &Node, clock: Clock, wall: env::wall::Wall) {
-    let shard = env::shards::Config {
-        name: "shard-0".into(),
-        core: Some(0),
-    };
-    let handle = host
-        .shards()
-        .start(shard, |_tasks| async { clock.run(wall).await });
-    drop(handle.expect("the shard starts"));
-}
+use crate::common::{UNKNOWN, ms, node, run, start};
 
 /// Mesh time and the OS clock now.
 fn read(host: &Node, reader: &Reader) -> (Interval, Stamp) {
@@ -102,7 +83,7 @@ fn keeps_a_narrow_measurement_when_the_os_bound_widens() {
 fn a_source_added_before_run_panics() {
     let (mut sim, host) = node();
     let (mut clock, _reader) = Clock::new(host.clock());
-    let _ = clock.add();
+    let _: clock::source::Key = clock.add();
     start(&host, clock, host.wall());
     assert_eq!(
         sim.run_for(Span::ZERO),

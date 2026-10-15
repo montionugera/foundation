@@ -18,9 +18,9 @@ lessons. Never copy Synnax code into this repo.
 
 Read only the section you need, when you need it.
 
-- `docs/decisions.md` -> every locked decision, where each data structure lives, and
-  the crate map. It is the source of truth for the design. Read the section for your
-  crate before you write code.
+- `docs/decisions/` -> every locked decision, one file per record in the folder of its
+  topic, where each data structure lives, and the crate map. It is the source of
+  truth for the design. Read the records for your crate before you write code.
 - `docs/factory.md` -> the sessions, the machines, the two lanes, and the merge path.
 - `docs/coordination.md` -> issues, PRs, messages between sessions, and how an interface
   changes.
@@ -34,16 +34,78 @@ Read only the section you need, when you need it.
 - `docs/research/` -> the studies behind the decisions (r1 to r17). Cite them. Do not
   re-run a study without a reason.
 - `docs/history/interview-log.md` -> the design interview in order, with the person's
-  words. Read it to learn why; `docs/decisions.md` wins where they differ.
+  words. Read it to learn why; `docs/decisions/` wins where they differ.
 - `docs/security.md` -> the threat model: assets, attackers, trust boundaries, and fuzz
   targets.
 - `docs/rfc/` -> RFCs.
+
+## 🚨 The person decides the design 🚨
+
+The person sees each key choice early and can reverse it. A key choice goes ahead when
+it is made, unless the person objects. A choice that a test, a simulator, or a fixture
+makes counts too. The record is PERSON DECIDES THE DESIGN
+(`docs/decisions/operations/person-decides-design.md`).
+
+A key choice is one of these product contracts:
+
+- (a) the external systems and versions that a connector supports;
+- (b) the security posture, and any default that lowers it;
+- (c) the user model as a whole;
+- (d) data guarantees: loss, order, and durability;
+- (e) how data maps to and from an external system: types, time, and what drops;
+- (f) the formats that something outside the binary keeps or speaks;
+- (g) what the exit tests run against.
+
+Or it is one of these kinds of internal architecture:
+
+1. Boundaries: a new crate or component, a job that moves between them, or a new
+   dependency between layers.
+2. Public interfaces between components: the traits and types that one crate gives
+   others, the connector interface, the client wire and SDK, and the command line.
+3. The HCL schema: new block kinds, new attributes, removed or renamed ones, a changed
+   type, default, or meaning, and how plan and apply work.
+4. Data architecture: the data model (channels, series, frames, specs, time, quality),
+   its layout in memory, on the wire, and on disk, the storage design (logs, indexes,
+   retention, crash safety), and where data lives and how it moves.
+5. Build or use: our own protocol, parser, storage engine, or codec, or a library for
+   a core structure.
+6. The execution model: the runtime, threads, shards, and where each part runs.
+7. The strategy of a connector against its system: poll or subscribe, batching, and
+   the timing source.
+8. A simple version first, and the robust design that it defers.
+9. Failure handling between components: what stops, what restarts, and what the user
+   sees.
+
+The crate's architect decides all else: names, error codes, tunable numbers, tests, a
+new function that follows an interface the person saw, and delivery tuning (codec
+details, routing, packing, priority). There is no catch-all. When you are not sure,
+ask the crate's architect, not the person.
+
+When you make a key choice:
+
+1. Before work builds on it, send `laptop.monitor` one message: the kind, the choice,
+   your recommendation, and a link to it on its issue or PR. A choice sent after code
+   builds on it is caught late.
+2. Go on. Do not wait for an answer, add `blocked`, or hold a PR for it.
+3. When the person objects, `laptop.monitor` tells you. Reverse the choice, and record
+   the person's words in `docs/decisions/` with the UTC time and the link.
+
+## 🚨 Three review rounds 🚨
+
+A PR gets at most 3 review rounds (`/review`, "Round cap"). Reviewers report every
+finding in one round, never a few at a time. The author fixes all findings of a round in
+one batch of commits, then asks for the next round. After round 3, only a defect (wrong
+behavior, data loss, a crash, or an oracle weakening) gets its fix, with a test that
+fails without it. Each other finding goes to an issue, other than a missing approval,
+OK, or link that `/review`, "Done", asks for. A design flaw (`/review`, "Round cap")
+goes to an issue only with the OK of its design approver, or the PR closes for a new
+design. Review hunts deep flaws (a wrong design, wrong behavior, lost data), not style.
 
 ## 🚨 The repo is the memory 🚨
 
 Several Claude sessions work here at once, and any one can compact, crash, or be
 replaced. Nothing that matters may live only in a session's context or in its private
-Claude memory. A decision goes into `docs/decisions.md`. A protocol goes into
+Claude memory. A decision goes into `docs/decisions/`. A protocol goes into
 `docs/coordination.md`. A lesson goes into `docs/claude/lessons.md`. A task goes into a
 GitHub issue.
 
@@ -51,7 +113,7 @@ GitHub issue.
 
 1. **Layers.** A crate depends only on crates in lower layers. Inside layer 2, a crate
    depends only on crates earlier in the fixed order. `cargo xtask layers` checks this
-   on every PR. The crate map is in `docs/decisions.md`.
+   on every PR. The crate map is in `docs/decisions/crate-map.md`.
 2. **Layer 1 decides. Layer 2 does.** Layer 1 is pure logic: no I/O, no clock, no
    threads, no async runtime. Layer 2 drives I/O. It gets clock, network, disk, and
    randomness as inputs (`env`), never from the OS directly. Wall time comes only from
@@ -96,7 +158,8 @@ Dependencies are explicit, injected inputs, never reached for from the environme
 - 🚨 **No mutable globals, ever.** No `static mut`, no global `OnceLock` or
   `lazy_static` holding state, no singletons. A registry is an injected, explicitly
   built value. Constants are fine. One exception: a counting `#[global_allocator]` in
-  a test or benchmark binary (COUNTING ALLOCATOR in `docs/decisions.md`).
+  a test or benchmark binary (COUNTING ALLOCATOR in
+  `docs/decisions/testing/counting-allocator.md`).
 - **No load-time self-wiring.** No `ctor`, no `inventory`, no link-time registration.
   Wire at the call site.
 - **Pluggable dispatch** (handlers keyed by kind) is built at one explicit wiring site:

@@ -31,7 +31,8 @@ const ACCESS: (Kind, &str) = (Kind::Access, ADMIN);
 #[must_use]
 #[expect(
     clippy::missing_panics_doc,
-    reason = "one key, `@admin`, `**`, and a kind segment always read"
+    reason = "one key, `@admin`, `**`, and a kind segment always read, and `Action::ALL` \
+              is not empty"
 )]
 pub fn create(admin: PublicKey) -> BTreeMap<Name, Definition> {
     let subject = Subject::new(vec![admin]).expect("invariant: one key is a subject");
@@ -40,11 +41,19 @@ pub fn create(admin: PublicKey) -> BTreeMap<Name, Definition> {
         Selector::new(["**"]).expect("invariant: `**` is a pattern"),
         Action::ALL.into_iter().collect(),
         Authority(0),
-    );
+    )
+    .expect("invariant: `Action::ALL` is not empty");
     BTreeMap::from([
         (key(SUBJECT), Definition::Subject(subject)),
         (key(ACCESS), Definition::Access(policy)),
     ])
+}
+
+/// The name of the subject that [`create`] makes for the key `admin`: `@admin`.
+#[must_use]
+#[expect(clippy::missing_panics_doc, reason = "`@admin` always reads as a name")]
+pub fn admin() -> Name {
+    ADMIN.parse().expect("invariant: `@admin` is a name")
 }
 
 /// Whether a founding definition of kind `kind` has the label `label`: a key that
@@ -96,6 +105,18 @@ mod tests {
             assert!(policy.allow().contains(action), "{action:?}");
         }
         assert_eq!(policy.authority(), Some(Authority(0)));
+    }
+
+    #[test]
+    fn the_admin_is_the_subject_that_holds_the_first_key() {
+        assert_eq!(super::admin(), name("@admin"));
+        let founding = create(admin());
+        let Some(Definition::Subject(subject)) =
+            founding.get(&Kind::Subject.join(super::admin()))
+        else {
+            panic!("no subject `@admin`: {founding:?}");
+        };
+        assert_eq!(subject.keys(), [admin()]);
     }
 
     #[test]

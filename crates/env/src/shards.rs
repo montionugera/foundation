@@ -4,6 +4,8 @@ use std::fmt;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use tracing::Dispatch;
+
 use crate::tasks::{Task, Tasks};
 use crate::thread::{Error, Handle};
 
@@ -34,7 +36,10 @@ pub type Main = Box<dyn FnOnce(Tasks) -> Task + Send>;
 /// }
 /// ```
 #[derive(Clone)]
-pub struct Shards(Arc<dyn Driver>);
+pub struct Shards {
+    driver: Arc<dyn Driver>,
+    log: Dispatch,
+}
 
 impl Shards {
     /// Wraps a driver from `os` or `sim`.
@@ -45,7 +50,27 @@ impl Shards {
     /// }
     /// ```
     pub fn new(driver: impl Driver + 'static) -> Self {
-        Self(Arc::new(driver))
+        Self {
+            driver: Arc::new(driver),
+            log: Dispatch::none(),
+        }
+    }
+
+    /// A clone that starts each shard with `log` as the dispatch of its thread, so
+    /// each `tracing` event of a task of the shard goes to `log`. A value from
+    /// [`Shards::new`] drops each event.
+    ///
+    /// ```
+    /// fn logged(shards: &env::shards::Shards) -> env::shards::Shards {
+    ///     shards.logged(tracing::Dispatch::none())
+    /// }
+    /// ```
+    #[must_use]
+    pub fn logged(&self, log: Dispatch) -> Self {
+        Self {
+            driver: Arc::clone(&self.driver),
+            log,
+        }
     }
 
     /// The number of cores this node may use. It never changes.
@@ -57,7 +82,7 @@ impl Shards {
     /// ```
     #[must_use]
     pub fn cores(&self) -> NonZeroUsize {
-        self.0.cores()
+        self.driver.cores()
     }
 
     /// Whether `start` can pin a shard to a core. It never changes. When `false`, set
@@ -70,15 +95,17 @@ impl Shards {
     /// ```
     #[must_use]
     pub fn pinnable(&self) -> bool {
-        self.0.pinnable()
+        self.driver.pinnable()
     }
 
     /// Starts a shard. `main` runs on the new thread and gets the shard's [`Tasks`].
     /// It returns when the thread runs, is pinned, and has its executor.
     ///
     /// When the future that `main` returns completes, the shard drops its other tasks
-    /// and the thread ends. A panic in any of its tasks ends the shard, and
-    /// [`Handle::join`] returns [`Panicked`](crate::thread::Panicked).
+    /// and the thread ends. A panic in `main`, in its future, or in a task of its
+    /// [`Tasks`] ends the shard, and [`Handle::join`] returns
+    /// [`Panicked`](crate::thread::Panicked). As anywhere in Rust, a panic that unwinds
+    /// into the unwind of another panic aborts the process.
     ///
     /// # Errors
     ///
@@ -116,8 +143,8 @@ impl Shards {
                 "{name} asks for core {core} of a node that cannot pin"
             );
         }
-        self.0
-            .start(config, Box::new(|tasks| Box::pin(main(tasks))))
+        let main: Main = Box::new(|tasks| Box::pin(main(tasks)));
+        self.driver.start(config, main, self.log.clone())
     }
 }
 
@@ -161,13 +188,17 @@ pub trait Driver: Send + Sync {
     /// any character; `os` gives the OS the part before the first NUL byte.
     /// `config.core`, when set, is below [`Driver::cores`] and the driver is
     /// pinnable: [`Shards::start`] checks both. Dropping the shard drops every task,
-    /// also one that holds a clone of its [`Tasks`].
+    /// also one that holds a clone of its [`Tasks`]. The call of `main`, each poll of a
+    /// task of the shard, each drop of a task or of `main`, and each drop of a panic
+    /// payload that the driver catches run with `log` as the default dispatch of the
+    /// thread. A panic that `start` passes to its caller is the caller's.
     ///
     /// # Errors
     ///
     /// - [`Error::Start`] when the thread or its executor cannot start.
     /// - [`Error::Pin`] when the thread cannot pin to `config.core`.
-    fn start(&self, config: Config, main: Main) -> Result<Handle, Error>;
+    fn start(&self, config: Config, main: Main, log: Dispatch)
+    -> Result<Handle, Error>;
 }
 
 #[cfg(test)]
@@ -189,7 +220,7 @@ mod tests {
             self.pinnable
         }
 
-        fn start(&self, _: Config, _: Main) -> Result<Handle, Error> {
+        fn start(&self, _: Config, _: Main, _: Dispatch) -> Result<Handle, Error> {
             Ok(Handle::new(|| Ok(())))
         }
     }

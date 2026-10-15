@@ -116,6 +116,13 @@ pub struct Range {
 }
 
 impl Range {
+    /// The seq after the last sample of the range, or `None` when it would pass
+    /// `u64::MAX`.
+    #[must_use]
+    pub fn end(self) -> Option<u64> {
+        self.seq.checked_add(u64::from(self.count))
+    }
+
     /// The range of `group` in the frame `bytes`, or `None` when it is absent.
     fn find(bytes: &[u8], group: u32) -> Option<Self> {
         let (ranges, ..) = parts(bytes);
@@ -273,6 +280,11 @@ impl<'a> Layout<'a> {
         Self::checked(set, ends, Sizes::Ends)
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "as a call, it keeps `Draft::new` from folding its constant `Sizes`"
+    )]
+    #[inline(always)]
     fn checked(
         set: &'a KeySet,
         series: &'a [(usize, usize)],
@@ -353,6 +365,9 @@ impl<'a> Layout<'a> {
     /// # Errors
     ///
     /// The pool's error when it cannot give the block.
+    // Without the hint, fat LTO stops inlining it into `Draft::new` once it has a
+    // second caller.
+    #[inline]
     pub fn draft(self, pool: &block::Pool, form: Form) -> Result<Draft, block::Error> {
         let Self {
             set,
@@ -873,17 +888,20 @@ mod tests {
         channel::Key::from_u128(u128::from(n))
     }
 
-    /// An interner where key `n` has slot `n`, for each `n` below 1000.
+    /// An interner where key `n` has slot `2n` as an index and `2n + 1` as a data
+    /// channel of `F64`, for each `n` below 1000.
     pub(super) fn interner() -> Interner {
         let mut interner = Interner::new();
         for n in 0..1000 {
-            interner.slots().assign(key(n));
+            interner.slots().index(key(n));
+            interner.slots().data(key(n), F64);
         }
         interner
     }
 
     pub(super) fn pool(budget: usize) -> block::Pool {
-        let config = block::Config { budget };
+        let budget = u64::try_from(budget).expect("a usize fits in a u64");
+        let config = block::Config::new(budget).expect("the budget fits");
         let memory = block::Heap::new(config.reservation());
         block::Pool::new(config, memory)
     }
@@ -2109,7 +2127,8 @@ mod tests {
         }]);
         let mut interner = Interner::new();
         for &n in &remote.order {
-            interner.slots().assign(key(n));
+            interner.slots().index(key(n));
+            interner.slots().data(key(n), F64);
         }
         let held = data(&|j| remote.held[j]);
         let reader = interner.intern(&[Group {
@@ -2204,5 +2223,30 @@ mod tests {
                 prop_assert_eq!(received.series(place), expected, "place {}", place);
             }
         }
+    }
+
+    proptest! {
+        #[test]
+        fn gives_the_seq_after_a_range_or_none_past_the_highest_seq(
+            seq in prop_oneof![
+                any::<u64>(),
+                (u64::MAX - u64::from(u32::MAX))..=u64::MAX,
+            ],
+            count in any::<u32>(),
+        ) {
+            let sum = u128::from(seq) + u128::from(count);
+            let expected = u64::try_from(sum).ok();
+            prop_assert_eq!(Range { seq, count }.end(), expected);
+        }
+    }
+
+    #[test]
+    fn ends_a_range_at_the_highest_seq_and_none_past_it() {
+        let range = |count| Range {
+            seq: u64::MAX,
+            count,
+        };
+        assert_eq!(range(0).end(), Some(u64::MAX));
+        assert_eq!(range(1).end(), None);
     }
 }
