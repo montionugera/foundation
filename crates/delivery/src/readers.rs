@@ -459,12 +459,10 @@ impl Readers {
         } else {
             self.lost = seq.clone();
         }
-        // `miss` reads only the end, so a run of losses keeps one entry.
-        let pending = self.queue.len() > self.held;
+        // `miss` reads only the end, so a run of losses keeps one entry. A lost back
+        // entry is never held, as held entries are frames.
         match self.queue.back_mut() {
-            Some((Queued::Lost, last)) if pending => {
-                last.end = seq.end;
-            }
+            Some((Queued::Lost, last)) => last.end = seq.end,
             _ => self.lose_first(seq),
         }
         &self.woken_complete
