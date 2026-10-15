@@ -62,8 +62,8 @@ The risk crates are `raft`, `buffer`, `delivery`, `block`, `ring`, `codec`, `wir
 ## Architects
 
 Two architects split the crates by load. "The crate's architect" in the skills is the
-one that owns the crate. `laptop.architect` also owns the crate map, each contract
-between crates of the two lists, and each ruling that holds for all crates.
+one that owns the crate. `laptop.architect` also owns each contract between crates of
+the two lists, and each ruling that holds for all crates.
 
 An edge of the crate map whose two crates are on one list, a test edge of rule 8
 included, needs the approval of that list's architect. Each other change to the crate
