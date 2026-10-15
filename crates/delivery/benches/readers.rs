@@ -137,7 +137,8 @@ fn fill(bencher: Bencher<'_, '_>) {
                 panic!("the reader reads from disk");
             };
             for seq in 0..BURST {
-                assert!(readers.fill(*key, &frame, &set, seq..seq + 1), "filled");
+                let filled = readers.fill(*key, frame.clone(), &set, seq..seq + 1);
+                assert!(filled, "filled");
             }
             for _ in 0..BURST {
                 let Next::Frame(frame) = readers.take((*key).into()) else {

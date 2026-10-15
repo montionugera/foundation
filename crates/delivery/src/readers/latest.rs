@@ -393,7 +393,7 @@ mod tests {
             let below = readers
                 .open(Reader::Unnamed, Start::At(live(2)), 1, Charge::Whole)
                 .key;
-            assert_eq!(read(&mut readers, below), (vec![], 2, 1));
+            assert_eq!(read(&mut readers, below), (vec![], 2));
             let named = Reader::Named {
                 reader: reader("s", "b"),
                 hold: Span::from_nanos(10),
