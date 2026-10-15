@@ -17,3 +17,4 @@ ops.large-request	Make the config files smaller
 ops.bad-reply	Use a `foundation` program of the same version as the node
 ops.unknown-extension	Use a file that ends in `.hcl`
 ops.path-not-utf8	Rename the file to a UTF-8 name
+secret.unresolved	Give the node the value at the source, or change the source, then plan again

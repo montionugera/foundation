@@ -17,6 +17,7 @@ mesh = { path = "../mesh" }
 schemars = { workspace = true }
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true }
+secret = { path = "../secret" }
 spec = { path = "../spec" }
 types = { path = "../types" }
 wire = { path = "../wire" }

@@ -11,14 +11,13 @@ use std::fmt;
 use std::future::poll_fn;
 use std::net::Ipv6Addr;
 use std::num::NonZeroUsize;
-use std::pin::{Pin, pin};
+use std::pin::Pin;
 use std::rc::Rc;
-use std::task::Poll;
 
 use bytes::Bytes;
 use document::diagnostic::{Code, Diagnostic};
 use document::value::{self, Value};
-use env::clock::{Clock, Sleep};
+use env::clock::Clock;
 use env::net::{self, Net, Tcp, tcp};
 use env::tasks::Tasks;
 use http::uri::Scheme;
@@ -31,6 +30,7 @@ use types::time::{Monotonic, Span};
 use self::body::Whole;
 use self::pool::Pool;
 use self::stream::Stream;
+use crate::deadline::before;
 
 /// The shortest share of the timeout that a connect to one address gets.
 const ATTEMPT_MIN: Span = Span::from_nanos(2 * Span::SECOND.nanos());
@@ -127,10 +127,13 @@ impl Client {
         request: Request<Bytes>,
     ) -> Result<Response<Bytes>, Error> {
         let deadline = self.clock.now().checked_add(self.timeout);
-        let sleep = deadline.map(|deadline| self.clock.sleep_until(deadline));
-        before(Box::pin(self.exchange(request, deadline)), sleep)
-            .await
-            .unwrap_or(Err(Error::TimedOut))
+        let exchange = Box::pin(self.exchange(request, deadline));
+        match deadline {
+            Some(deadline) => (before(exchange, self.clock.sleep_until(deadline))
+                .await)
+                .unwrap_or(Err(Error::TimedOut)),
+            None => exchange.await,
+        }
     }
 
     async fn exchange(
@@ -234,11 +237,14 @@ impl Client {
             if deadline.is_some_and(|deadline| deadline <= now) {
                 return Err(Error::TimedOut);
             }
-            let sleep = deadline
-                .and_then(|deadline| share(now, deadline, left))
-                .map(|end| self.clock.sleep_until(end));
-            let connect = before(self.net.connect(&config), sleep).await;
-            match connect.unwrap_or(Err(net::Error::TimedOut { remote })) {
+            let connect = self.net.connect(&config);
+            let connect = match deadline.and_then(|deadline| share(now, deadline, left))
+            {
+                Some(end) => (before(connect, self.clock.sleep_until(end)).await)
+                    .unwrap_or(Err(net::Error::TimedOut { remote })),
+                None => connect.await,
+            };
+            match connect {
                 Ok(tcp) => return Ok(tcp),
                 Err(error) => {
                     first.get_or_insert(error);
@@ -249,25 +255,6 @@ impl Client {
             first.expect("invariant: a lookup gives an address"),
         ))
     }
-}
-
-/// Polls `future` until it ends, or gives `None` when `sleep` fires first. With no
-/// `sleep`, it waits for `future`.
-async fn before<T>(
-    future: impl Future<Output = T>,
-    mut sleep: Option<Sleep>,
-) -> Option<T> {
-    let mut future = pin!(future);
-    poll_fn(|cx| {
-        if let Poll::Ready(out) = future.as_mut().poll(cx) {
-            return Poll::Ready(Some(out));
-        }
-        match &mut sleep {
-            Some(sleep) => Pin::new(sleep).poll(cx).map(|()| None),
-            None => Poll::Pending,
-        }
-    })
-    .await
 }
 
 const BAD_URI: Code = Code::new("connector.bad-uri");

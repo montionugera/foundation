@@ -50,7 +50,7 @@ https://github.com/synnaxlabs/foundation/pull/1901#issuecomment-6066565970). B7 
 indexes a default home on the connector's node. A placement selecting the same connector
 could name another node.
 Resolution: the connector's `node` is its required primary node (it is
-attached to a device, and `discover` writes it). A placement that selects a connector
+attached to a device, which `discover` finds). A placement that selects a connector
 may add `standby` and `copies`, and may name only the connector's `node` as `home`;
 `plan` fails otherwise.
 An index's home, in order: a placement that selects the index, then the node of the

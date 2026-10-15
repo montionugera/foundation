@@ -1,17 +1,20 @@
-//! A connector of the `opcua` kind that reads Double variables of the sim server on
-//! one sim node, with a measure of each poll of its run, and one that writes the
-//! frames of its reads with no server, with a measure of each write. For the `alloc`
-//! test and the `kind` bench.
+//! A connector of the `opcua` kind that reads variables of the sim server, each with a
+//! Double value, on one sim node, with a measure of each poll of its run, and one that
+//! writes the frames of its reads with no server, with a measure of each write. For the
+//! `alloc` test and the `kind` bench.
 
+use std::cell::RefCell;
 use std::future::{Future as _, poll_fn};
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::pin::pin;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
 use connector::cancel::Token;
 use connector::kind::{self, Channels, Context, Error, Table};
+use connector::status::{self, Reading};
 use connector::supervisor::{self, Supervisor};
 use connector::testing;
 use connector_opcua::Config;
@@ -22,16 +25,20 @@ use document::value::{self, Value};
 use document::{Attribute, Block, Map};
 use env::net::tcp;
 use env::tasks::Group;
+use hub::reader::Mode;
 use spec::channel::{Channel, Data};
 use spec::data_type::DataType;
 use spec::definition::Definition;
 use types::channel;
-use types::name::Name;
+use types::name::{Name, Selector};
 use types::sample::{Scalar, Type};
 use types::time::{Monotonic, Span};
 
 /// The time between two ticks of the connector, at 10 Hz.
 const PERIOD: Span = Span::from_nanos(100_000_000);
+
+/// The counts of the `opcua` kind.
+const COUNTS: [&str; 3] = ["in", "missed", "lost"];
 
 /// What a measure gives for each poll of a run: the time of the poll and the value.
 type Polls = Arc<Mutex<Vec<(Monotonic, u64)>>>;
@@ -102,11 +109,11 @@ fn name(text: &str) -> Name {
     text.parse().expect("a valid name")
 }
 
-/// Runs a connector at 10 Hz that reads `nodes` Double variables of the sim server,
-/// for `count` ticks and two more, and gives what `measure` gives for its polls: for
-/// the run start (the open of its writer, its frames, its connect, and its first
-/// request), and for each of the first `count` reads. `measure` calls the poll that it
-/// gets once.
+/// Runs a connector at 10 Hz that reads `nodes` variables of the sim server, each with
+/// a Double value, for `count` ticks and two more, and gives what `measure` gives for
+/// its polls: for the run start (the open of its writer, its frames, its connect, and
+/// its first request), and for each of the first `count` reads. `measure` calls the
+/// poll that it gets once.
 ///
 /// # Panics
 ///
@@ -125,7 +132,7 @@ pub(crate) fn run(
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let run = sim.run_on(&node, move |node, tasks| async move {
-        let inputs = inputs(&node, &tasks, kind, nodes).await;
+        let inputs = inputs(&node, &tasks, kind, nodes, &[Scalar::F64]).await;
         let variables =
             Variables::new(&texts.iter().map(String::as_str).collect::<Vec<_>>());
         let (stop, serving) = (Token::new(), Group::new(tasks.clone()));
@@ -168,18 +175,21 @@ pub(crate) fn run(
     )
 }
 
-/// Writes `count` frames of a connector that reads `nodes` Double variables, with no
-/// server, and gives what `measure` gives for the check of the values and the write
-/// of each frame. `measure` calls the work that it gets once.
+/// Writes `count` frames of a connector that reads `nodes` variables, with no server,
+/// and gives what `measure` gives for the check of the values and the write of each
+/// frame, and each status of the connector that the home applied, in order. Read `i`
+/// goes into a channel of the type `scalars[i % scalars.len()]`. `measure` calls the
+/// work that it gets once.
 ///
 /// # Panics
 ///
 /// If the run ends with an error.
 pub(crate) fn writes(
     nodes: usize,
+    scalars: &'static [Scalar],
     count: usize,
     measure: impl Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static,
-) -> Vec<u64> {
+) -> (Vec<u64>, Vec<Reading>) {
     let measures = Arc::<Mutex<Vec<u64>>>::default();
     let kind = Measured {
         measure,
@@ -191,26 +201,56 @@ pub(crate) fn writes(
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let run = sim.run_on(&node, move |node, tasks| async move {
-        let supervisor = Supervisor::new(inputs(&node, &tasks, kind, nodes).await);
+        let inputs = inputs(&node, &tasks, kind, nodes, scalars).await;
+        let mut status = status(&inputs.hub).await;
+        let readings = Rc::new(RefCell::new(Vec::new()));
+        let into = Rc::clone(&readings);
+        tasks.spawn(async move {
+            while let Ok(received) = status.next().await {
+                let reading = Reading::of(&received).expect("a whole status");
+                into.borrow_mut().push(reading);
+            }
+        });
+        let supervisor = Supervisor::new(inputs);
         let config = config("opc.tcp://plc:4840", nodes);
         let token = Token::new();
         let open = supervisor.open("opcua", name("plant.plc"), &config, &token);
-        open.await.run().await
+        let result = open.await.run().await;
+        node.clock().sleep(Span::SECOND).await;
+        (result, readings.take())
     });
-    let result = run.expect("the run ends");
+    let (result, readings) = run.expect("the run ends");
     assert!(result.is_ok(), "the run ends ok: {result:?}");
     let measures = measures.lock().expect("no panic under the lock");
-    measures.clone()
+    (measures.clone(), readings)
+}
+
+/// A reader of the status channels of `plant.plc`.
+async fn status(hub: &hub::Hub) -> hub::reader::Reader {
+    let names = status::channels(&name("plant.plc"), &COUNTS.map(name));
+    let (time, channels) = names.expect("the status names are names");
+    let channels = channels.iter().map(|(name, _)| name.as_str());
+    let select = Selector::new(std::iter::once(time.as_str()).chain(channels));
+    let config = hub::reader::Config {
+        select: select.expect("the status names select"),
+        mode: Mode::Complete,
+        subject: name("rig"),
+        name: None,
+        hold: Span::ZERO,
+    };
+    hub.reader(config).await.expect("the status reader opens")
 }
 
 /// The inputs of a supervisor on `node` with `kind` as `opcua`, and the channels of
 /// `plant.plc`, a connector that reads `nodes` nodes: its status, the index
-/// `plant.time` of key 1, and an `f64` channel of key 2 on for each read.
+/// `plant.time` of key 1, and a channel of key 2 on for each read, of the types of
+/// `scalars` in turn.
 async fn inputs(
     node: &sim::node::Node,
     tasks: &env::tasks::Tasks,
     kind: impl kind::Kind,
     nodes: usize,
+    scalars: &[Scalar],
 ) -> supervisor::Config {
     let env = hub::testing::Env {
         files: node.files(),
@@ -221,11 +261,12 @@ async fn inputs(
     };
     let kinds = Table::new().with("opcua", kind);
     let inputs = testing::create_config(env, node.net(), kinds).await;
-    let counts = ["in", "missed", "lost"].map(name);
+    let counts = COUNTS.map(name);
     let first = channel::Key::from_u128(1_000_000);
     let mut definitions = testing::create_status(&name("plant.plc"), &counts, first);
     definitions.push((name("plant.time"), index(1)));
-    let reads = (2..).take(nodes).map(|key| (name(&read(key).0), data(key)));
+    let reads = (2..).zip(scalars.iter().cycle()).take(nodes);
+    let reads = reads.map(|(key, &scalar)| (name(&read(key).0), data(key, scalar)));
     definitions.extend(reads);
     inputs
         .hub
@@ -270,10 +311,10 @@ fn index(key: u128) -> Definition {
     })
 }
 
-/// The definition of an `f64` channel of `key` on the index of key 1.
-fn data(key: u128) -> Definition {
+/// The definition of a channel of `scalar` of `key` on the index of key 1.
+fn data(key: u128, scalar: Scalar) -> Definition {
     let index = channel::Key::from_u128(1);
-    let sample = DataType::Sample(Type::Scalar(Scalar::F64));
+    let sample = DataType::Sample(Type::Scalar(scalar));
     let data = Data::new(index, None, sample, None).expect("no unit");
     Definition::Channel(Channel {
         key: channel::Key::from_u128(key),

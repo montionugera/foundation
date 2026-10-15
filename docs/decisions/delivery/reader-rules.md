@@ -51,10 +51,14 @@
   One `Readers::close(key, now)` ends each session: `now` is `None` before the home
   first has mesh time, and a close with `None` of an open named complete session panics.
   `Readers::open_named_latest` takes a stamp, and no other open does, so the home opens
-  unnamed readers before the first estimate. A named complete session has a
-  `complete::Key` (#1024). One close replaces `Readers::close_named`, so the caller
-  never picks a close by the mode of the session (`laptop.architect`,
-  2026-10-08T11:12:45Z:
+  unnamed readers before the first estimate. `Readers::open_latest` returns the
+  `latest::Key` alone: an unnamed latest open takes over no session, so only
+  `Readers::open_named_latest` returns `latest::Opened` with `replaced`
+  (`laptop.architect`, 2026-10-07T16:30:34Z:
+  https://github.com/synnaxlabs/foundation/issues/1479#issuecomment-6042237695). A named
+  complete session has a `complete::Key` (#1024). One close replaces
+  `Readers::close_named`, so the caller never picks a close by the mode of the session
+  (`laptop.architect`, 2026-10-08T11:12:45Z:
   https://github.com/synnaxlabs/foundation/pull/1863#issuecomment-6058607367). One
   `delivery::named::Key { subject, name }` keys a named reader in `Reader::Named`,
   `Record`, and `Readers::open_named_latest`, in place of two `Name` values (the
@@ -63,5 +67,14 @@
   `laptop.architect`, the same #1863 comment). Supersedes the B3 single position, the
   `close` and `close_named` pair and its wrong-close panics of
   https://github.com/synnaxlabs/foundation/issues/1024#issuecomment-6029883335, and
-  https://github.com/synnaxlabs/foundation/issues/1024#issuecomment-6030162160. Basis:
+  https://github.com/synnaxlabs/foundation/issues/1024#issuecomment-6030162160. A live
+  frame that finds no room in the buffer ends each complete session that it would reach
+  with `Behind`, after the frames before it (`laptop.architect`, 2026-10-14T02:10:24Z:
+  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159325971). A
+  session that waits for a grant then misses that frame too (`laptop.architect`,
+  2026-10-14T02:12:26Z:
+  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159349684). A named
+  complete session that the home holds over such a frame resumes with `Behind`
+  (`laptop.architect`, 2026-10-14T02:29:09Z:
+  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159543609). Basis:
   A6, A8, B2, B3, S10, X14, #41.

@@ -8,15 +8,15 @@ use wire::hub::client::Refusal;
 
 use crate::{address, admin};
 
-/// The pool of the transport and of the hub client. Its largest block holds a
-/// datagram, and the client sends a body in chunks of its largest block.
+/// The pool of the transport and of the `program::Session`. Its largest block holds a
+/// datagram, and the session sends a body in chunks of its largest block.
 const POOL: block::Config = match block::Config::new(1 << 21) {
     Ok(config) => config,
     Err(_) => panic!("invariant: the budget fits"),
 };
 
 /// What [`reach`] dials with: the files of the data directory, and the seams of the
-/// program's transport and of its hub client.
+/// program's transport and of its `program::Session`.
 #[derive(Debug)]
 pub struct Config {
     /// The files of the data directory, which `reach` only reads.
@@ -27,18 +27,18 @@ pub struct Config {
     pub clock: env::clock::Clock,
     /// The source of the random values of the transport and of the connection key.
     pub entropy: env::entropy::Entropy,
-    /// Where the transport and the hub client spawn their tasks.
+    /// Where the transport and the `program::Session` spawn their tasks.
     pub tasks: env::tasks::Tasks,
 }
 
-/// A client of the node that runs on the data directory of `config`, as its first
-/// admin. It reads `address` and `admin.key`, and makes and locks nothing. It dials
-/// the loopback IP of the family in place of an unspecified IP in `address`.
+/// A `program::Session` with the node that runs on the data directory of `config`, as
+/// its first admin. It reads `address` and `admin.key`, and makes and locks nothing. It
+/// dials the loopback IP of the family in place of an unspecified IP in `address`.
 ///
 /// # Errors
 ///
 /// Each [`Error`], by its doc.
-pub async fn reach(config: Config) -> Result<hub::client::Client, Error> {
+pub async fn reach(config: Config) -> Result<program::Session, Error> {
     let Config {
         files,
         net,
@@ -60,7 +60,7 @@ pub async fn reach(config: Config) -> Result<hub::client::Client, Error> {
     })
     .map_err(Error::Transport)?;
     let at = dialed(address.bound);
-    let config = hub::client::Config {
+    let config = program::Config {
         via: address.key,
         node: address.public_key,
         addresses: vec![transport::Address::Udp(at)],
@@ -71,21 +71,21 @@ pub async fn reach(config: Config) -> Result<hub::client::Client, Error> {
         tasks,
         pool,
     };
-    hub::client::Client::connect(&transport, config)
+    program::Session::connect(&transport, config)
         .await
         .map_err(|error| match error {
-            hub::client::Error::Refused(refusal) => Error::Refused(refusal),
-            hub::client::Error::Transport(error @ transport::Error::Network { .. }) => {
+            program::Error::Refused(refusal) => Error::Refused(refusal),
+            program::Error::Transport(error @ transport::Error::Network { .. }) => {
                 Error::Transport(error)
             }
-            hub::client::Error::Transport(
-                error @ transport::Error::Unreachable { .. },
-            ) => Error::Unanswered { at, error },
+            program::Error::Transport(error @ transport::Error::Unreachable { .. }) => {
+                Error::Unanswered { at, error }
+            }
             error => Error::Session { at, error },
         })
 }
 
-/// Why [`reach`] gave no client.
+/// Why [`reach`] gave no session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// No node runs on the directory: its file `address` holds no address of a node.
@@ -109,8 +109,8 @@ pub enum Error {
     Session {
         /// The address that the program dialed.
         at: SocketAddr,
-        /// Why the hub client gave no client.
-        error: hub::client::Error,
+        /// Why `program::Session::connect` gave no session.
+        error: program::Error,
     },
     /// The node refused the hello that the key in `admin.key` signs.
     Refused(Refusal),

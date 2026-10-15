@@ -23,6 +23,13 @@
   https://github.com/synnaxlabs/foundation/pull/2218#issuecomment-6093108453.
   Supersedes "no change to `env`" in
   https://github.com/synnaxlabs/foundation/pull/1944#issuecomment-6067043337.
+  Amended (2026-10-12, #2214): a driver of `tasks` does not count tasks to wait for
+  them to end, and a part that waits for its tasks uses `Group`. A driver of a test may
+  count the tasks it passes on, to check them. Supersedes "a driver of `tasks` that
+  counts tasks passes each task to one of theirs" of the #2063 amendment
+  (https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6073808019).
+  `laptop.architect-2` (2026-10-12T23:44:03Z):
+  https://github.com/synnaxlabs/foundation/pull/2496#issuecomment-6134761989.
   `clock::Clock`: monotonic time as `types::time::Monotonic`, and a `Sleep` future that
   resets without an allocation.
   `wall::Wall`: the OS wall clock, which only `clock` reads (a lint).
@@ -61,6 +68,30 @@
   https://github.com/synnaxlabs/foundation/issues/871#issuecomment-6070831264),
   approved by `laptop.architect` (2026-10-09T01:09:48Z, #2033,
   https://github.com/synnaxlabs/foundation/pull/2033#issuecomment-6072192755).
+  Amended (2026-10-13, #2606): `Shards::logged` and `Threads::logged` give a clone that
+  starts each thread with a `tracing::Dispatch`, the log of its node. The driver runs
+  each call of the thread's code with it as the default dispatch: the call of `main` or
+  `body`, each poll, each drop of a task, of `main`, or of `body`, and each drop of a
+  panic payload that the driver catches. A panic that `start` passes to its caller is
+  the caller's. `os` sets it for the life of the OS thread and around the spawn, whose
+  failure drops the node's code on the calling thread. `sim` enters it around each such
+  call. Each waker of a net, serial, or file event wakes and drops with the log of the
+  thread whose poll gave it, and so does the memory of its event. A waker given outside
+  a poll keeps the default log where it is given: that of the thread in a drop of its
+  code, else that of the caller. A `Shards` or `Threads` that is not logged drops each
+  event (`laptop.architect-2`, 2026-10-13T21:13:43Z, item 1 of
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155317582; rule
+  meaning: `laptop.director`, 2026-10-13T21:12:40Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155299486; the
+  drops of tasks, mains, bodies, and payloads, and the spawn on `os`:
+  `laptop.architect-2`, 2026-10-14T03:14:18Z,
+  https://github.com/synnaxlabs/foundation/pull/2657#issuecomment-6160057412, and
+  2026-10-14T03:43:43Z,
+  https://github.com/synnaxlabs/foundation/pull/2657#issuecomment-6160393075; the wakers
+  of events: `laptop.architect-2`, 2026-10-14T03:50:33Z,
+  https://github.com/synnaxlabs/foundation/pull/2657#issuecomment-6160469132; a waker
+  given outside a poll: `laptop.architect-2`, 2026-10-14T04:19:55Z,
+  https://github.com/synnaxlabs/foundation/pull/2657#issuecomment-6160804099).
   `env::files` (#37) gives files under one data directory, with owned blocks and a
   sync that poisons the file on failure (S4). One handle at a time holds a file open
   to write, until it drops and its calls end; another write open fails with `Busy`
@@ -600,7 +631,13 @@
   and sets no access control list. A file that a write makes takes the entries that its
   directory gives to its new files, as each file that a tool makes there does. On macOS
   such an entry is then on the file, also when the file that it replaces had none, and
-  it can open the bytes to another user (measured on macOS 27.0.1, round 6 of #2424).
+  it can open the bytes to another user (measured on macOS 27.0.1, round 6 of #2424). On
+  Linux such an entry is on the file too, but the mode `0o600` of the open sets the mask
+  of the list to no access, so the entry gives its user nothing until the operator
+  widens the mask. A file that a tool makes there with a wider mode gets a wider mask
+  (measured on Linux 7.0.0-1013-aws, ext4, #2504; `laptop.architect-2`,
+  2026-10-12T20:42:03Z:
+  https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6132261488).
   The entry is the operator's (`docs/security.md`, "Other local user"). Lost: an empty
   list on the hidden file on macOS. `rustix` and `libc` give no call for it. A clear
   after the open leaves a time in which a user that the entry names opens the file, and
@@ -650,3 +687,22 @@
   https://github.com/synnaxlabs/foundation/issues/1930#issuecomment-6128674782;
   2026-10-12T18:18:49Z:
   https://github.com/synnaxlabs/foundation/issues/1930#issuecomment-6130043360).
+  Amended (2026-10-12T19:51:51Z, #2481): a read goes through one open of its path. `os`
+  lists a directory through the handle of that open (`rustix::fs::Dir::new`), so a later
+  rename or replace at the path does not change what it reads. A directory that is
+  removed after the open lists no entries. Lost: `Dir::read_from`, which makes a second
+  open through the handle; a check of the device and inode after a second open by name,
+  with a retry (`laptop.architect-2`, 2026-10-12T19:51:51Z:
+  https://github.com/synnaxlabs/foundation/issues/2481#issuecomment-6131521237). The doc
+  promises the one open, not what the open gives: on Linux 7.0 ext4, the kernel's open
+  of a symbolic link that a rename swaps can give the directory that holds the link
+  (#2490). `a_read_of_a_path_that_swaps_a_directory_for_a_file_gives_one_of_them`
+  matches only the variant of the read, so #2490 does not make it flake. A later change
+  must not make it assert which directory it read. Lost: a path walk of our own, which
+  copies the kernel's rules as a second guard for a defect that is not ours; a check of
+  the handle's device and inode against a `stat` of the path after the open, with a
+  retry, which cannot tell a swap from the defect (`laptop.architect-2`,
+  2026-10-12T20:23:51Z:
+  https://github.com/synnaxlabs/foundation/pull/2486#issuecomment-6131997012).
+  Supersedes "It reads what `path` names at its open" of item 2 of
+  https://github.com/synnaxlabs/foundation/issues/2481#issuecomment-6131521237.

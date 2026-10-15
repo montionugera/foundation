@@ -12,7 +12,7 @@
 //! A batch makes a record of one to four blocks, with a table of up to four.
 //! Two edits seal a CRC: a header block and a record. One edit writes a tail and
 //! its chain value in the first header block: a block of the area, on one of the
-//! first 128 laps or the last 128.
+//! first 128 laps or the last 128 that hold the block.
 //!
 //! The target follows the offsets of the ring ([`Room`]) while no edit other than a
 //! move of the tail changed it. Each append, open, and reopen must then fit, or give
@@ -53,9 +53,9 @@ use types::time::{Span, Stamp};
 const BLOCK: usize = 4096;
 /// The largest record, in blocks.
 const RECORD_BLOCKS: usize = 4;
-/// Blocks in the area: four of the largest record, the least area of a ring. A power
-/// of two, so the last lap of the offsets holds all of the area but its last byte.
-const BLOCKS: usize = 4 * RECORD_BLOCKS;
+/// Blocks in the area: four of the largest record and the three blocks that each
+/// record leaves free, the least area of a ring.
+const BLOCKS: usize = 4 * RECORD_BLOCKS + 3;
 const AREA: u64 = (BLOCKS * BLOCK) as u64;
 /// The first block of the area: the two header blocks come before it.
 const AREA_START: usize = 2;
@@ -98,14 +98,18 @@ const CHECK_LAST: Stamp = Stamp::from_nanos(9);
 /// share a tag differ in `first`.
 const BUILD_TAG: u8 = 0x01;
 const CHECK_TAG: u8 = 0x81;
-/// The last lap of the area that a `u64` offset holds.
-const LAP_LAST: u64 = u64::MAX / AREA;
 /// The last offset of a ring.
 const OFFSET_LAST: u128 = u64::MAX as u128;
 
 /// The ring offset of `block` of the file on `lap`.
 fn offset(block: usize, lap: u64) -> u64 {
     lap * AREA + ((block - AREA_START) * BLOCK) as u64
+}
+
+/// The last lap whose `block` of the file a `u64` offset holds. Since the area is no
+/// power of two, the first blocks have one more lap than the last.
+fn lap_last(block: usize) -> u64 {
+    (u64::MAX - offset(block, 0)) / AREA
 }
 
 /// The block of the file and the lap of ring offset `offset`: the inverse of
@@ -289,12 +293,15 @@ struct Offsets {
 
 impl Offsets {
     /// The bytes that a record of `size` bytes at `at` takes with the rest of the
-    /// area it skips, as `Writer::cost` of `buffer` gives them.
-    fn cost(self, at: u128, size: u128) -> std::result::Result<u128, Fit> {
+    /// area it skips, and leaves `kept` bytes free, as `Writer::cost` of `buffer`
+    /// gives them.
+    fn cost(self, at: u128, size: u128, kept: u128) -> std::result::Result<u128, Fit> {
         let area = u128::from(AREA);
         let rest = area - at % area;
         let skipped = if size > rest { rest } else { 0 };
-        let free = (area - (at - self.tail)).min(OFFSET_LAST - at);
+        let free = (area - (at - self.tail))
+            .min(OFFSET_LAST - at)
+            .saturating_sub(kept);
         let needed = skipped + size;
         let bytes = |bytes| u64::try_from(bytes).expect("invariant: under an area");
         if needed > free {
@@ -352,7 +359,7 @@ impl Room {
         if offsets.end > OFFSET_LAST {
             return Fit::Past;
         }
-        match offsets.cost(offsets.data, BLOCK as u128) {
+        match offsets.cost(offsets.data, BLOCK as u128, 0) {
             Ok(needed) => {
                 offsets.end = offsets.data + needed;
                 Fit::Fits
@@ -361,12 +368,14 @@ impl Room {
         }
     }
 
-    /// An append of a record of `blocks` blocks after the last record.
+    /// An append of a record of `blocks` blocks after the last record. It leaves
+    /// three blocks free: for the restart record of the next open, the carry record
+    /// of the commit after it, and the restart record of a later open.
     fn take(&mut self, blocks: usize) -> Fit {
         let Some(offsets) = &mut self.0 else {
             return Fit::Unknown;
         };
-        match offsets.cost(offsets.end, (blocks * BLOCK) as u128) {
+        match offsets.cost(offsets.end, (blocks * BLOCK) as u128, 3 * BLOCK as u128) {
             Ok(needed) => {
                 offsets.end += needed;
                 offsets.data = offsets.end;
@@ -539,14 +548,16 @@ impl<'a> Arbitrary<'a> for Input {
                 3 => Edit::SealRecord {
                     block: u.int_in_range(blocks.clone())?,
                 },
-                _ => Edit::MoveTail {
-                    block: u.int_in_range(blocks.clone())?,
-                    // The first 128 laps, or the last 128.
-                    lap: match u.arbitrary::<u8>()? {
-                        low @ ..128 => u64::from(low),
-                        high => LAP_LAST - u64::from(255 - high),
-                    },
-                },
+                _ => {
+                    let block = u.int_in_range(blocks.clone())?;
+                    Edit::MoveTail {
+                        block,
+                        lap: match u.arbitrary::<u8>()? {
+                            low @ ..128 => u64::from(low),
+                            high => lap_last(block) - u64::from(255 - high),
+                        },
+                    }
+                }
             });
         }
         // Last, so an input that ends before these has no small entry and the least
@@ -965,11 +976,7 @@ async fn edit(
     }
     let blocks: Vec<Block> = image
         .chunks(BLOCK)
-        .map(|bytes| {
-            let mut block = pool.alloc(BLOCK).expect("the pool has a block");
-            block.copy_from_slice(bytes);
-            block.freeze()
-        })
+        .map(|bytes| pool.copy(bytes).expect("the pool has a block"))
         .collect();
     file.write_at(0, &blocks).await.expect("the ring writes");
     file.sync().await.expect("the ring syncs");

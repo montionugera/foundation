@@ -105,7 +105,7 @@ fn flip(sim: &mut Sim, node: &sim::node::Node, at: u64) -> u64 {
         let pool = create_pool();
         let byte = file.read_at(at, pool.alloc(1).unwrap()).await.unwrap();
         let flipped = byte.first().unwrap() ^ 1;
-        let block = crate::bytes::block(&pool, &[flipped]).unwrap();
+        let block = pool.copy(&[flipped]).unwrap();
         file.write_at(at, &[block]).await.unwrap();
         file.sync().await.unwrap();
         file.len()
@@ -569,7 +569,7 @@ fn a_founding_of_another_version_or_form_is_refused() {
             let len = u64::try_from(bytes.len()).unwrap();
             let file = node.files().open(path, Mode::Create { len }).await;
             let file = file.unwrap();
-            let block = crate::bytes::block(&pool, &bytes).unwrap();
+            let block = pool.copy(&bytes).unwrap();
             file.write_at(0, &[block]).await.unwrap();
             file.sync().await.unwrap();
         })

@@ -7,8 +7,11 @@
 //! - `round`: the ns from the first poll of that read to its value, with the server,
 //!   the sim net, and the sim scheduler.
 //! - `name client` and `name round`: the same for a read of a node by name.
-//! - `client 16`, `round 16`, `client 256`, and `round 256`: the same for one read of
-//!   16 and of 256 nodes by number.
+//! - `client N` and `round N`: the same for one read of N nodes by number. A read of
+//!   512 nodes sends 2 requests of [`PER_READ`] nodes, and a read of 4352 sends 17,
+//!   one more than the requests in flight.
+//!
+//! [`PER_READ`]: connector_opcua::bench::client::PER_READ
 
 use std::future::{Future as _, poll_fn};
 use std::pin::pin;
@@ -21,48 +24,39 @@ const WARMUP: usize = 10;
 const ROUNDS: usize = 1000;
 
 /// The node counts of the reads of a node by number.
-const COUNTS: [usize; 3] = [1, 16, 256];
+const COUNTS: [usize; 5] = [1, 16, 256, 512, 4352];
 
 fn main() {
     let mut sim = Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
-    let [
-        mut client,
-        mut round,
-        mut name_client,
-        mut name_round,
-        mut client_16,
-        mut round_16,
-        mut client_256,
-        mut round_256,
-    ] = sim.run_on(&node, bench).expect("the run ends");
-    print(&mut [
-        ("client", &mut client),
-        ("round", &mut round),
-        ("name client", &mut name_client),
-        ("name round", &mut name_round),
-        ("client 16", &mut client_16),
-        ("round 16", &mut round_16),
-        ("client 256", &mut client_256),
-        ("round 256", &mut round_256),
-    ]);
+    let mut lines = sim.run_on(&node, bench).expect("the run ends");
+    print(&mut lines);
 }
 
-/// The ns of the polls and of the whole of each timed read: of a node by number, of a
-/// node by name, then of each other count of [`COUNTS`] by number.
-async fn bench(node: sim::node::Node, _: env::tasks::Tasks) -> [Vec<u64>; 8] {
+/// The name and the ns of the polls and of the whole of each timed read: of a node by
+/// number, of a node by name, then of each other count of [`COUNTS`] by number.
+async fn bench(node: sim::node::Node, _: env::tasks::Tasks) -> Vec<(String, Vec<u64>)> {
     let address = node.addresses()[0];
     let body = async |server: &Server| {
         let mut lines = Vec::new();
         for count in COUNTS {
             let mut client = server.connect(count).await;
-            lines.extend(reads(&mut client, Variable::Number).await);
+            let [polls, rounds] = reads(&mut client, Variable::Number).await;
+            let suffix = if count == 1 {
+                String::new()
+            } else {
+                format!(" {count}")
+            };
+            lines.push((format!("client{suffix}"), polls));
+            lines.push((format!("round{suffix}"), rounds));
             if count == 1 {
-                lines.extend(reads(&mut client, Variable::Name).await);
+                let [polls, rounds] = reads(&mut client, Variable::Name).await;
+                lines.push(("name client".to_owned(), polls));
+                lines.push(("name round".to_owned(), rounds));
             }
             client.close().await;
         }
-        lines.try_into().expect("8 lines")
+        lines
     };
     let rng = node.entropy().rng();
     Server::scope(node.clock(), node.net(), address, rng, body).await
@@ -101,7 +95,7 @@ fn nanos(span: Duration) -> u64 {
 }
 
 #[expect(clippy::print_stdout, reason = "a benchmark prints its results")]
-fn print(lines: &mut [(&str, &mut Vec<u64>)]) {
+fn print(lines: &mut [(String, Vec<u64>)]) {
     println!("ns per read over {ROUNDS} reads");
     println!("pN: the read at percentile N");
     println!("{:<12} {:>9} {:>9} {:>9}", "line", "p10", "p50", "p90");

@@ -1,9 +1,13 @@
 - **OPCUA SIM (#2515)** `connector_opcua::sim`, behind the cargo feature `sim`, off by
   default, is the simulated OPC UA server of the tests of other crates. It is the
   open62541 test server of the crate, with no security. `sim::Variables::new(nodes)`
-  holds Double variables at the node ids `nodes`, each with the value 0 and the status
-  Good. Clones share them. `Variables::change(quality)` adds 1 to each value and gives
-  each later read the status `quality`. `Variables::served()` gives each read that a
+  holds variables of the `DataType` `BaseDataType` at the node ids `nodes`, each with
+  the Double value 0 and the status Good (`laptop.architect-2`, 2026-10-14T02:30:14Z:
+  https://github.com/synnaxlabs/foundation/pull/2635#issuecomment-6159556142). This
+  supersedes the Double variables of
+  https://github.com/synnaxlabs/foundation/issues/2515#issuecomment-6136027630. Clones
+  share them. `Variables::change(quality)` adds 1 to each value and gives each later
+  read the status `quality`. `Variables::served()` gives each read that a
   server answered, by the text of its node in `new`, in the order of the answers, as
   `sim::Served { time, value, quality }`, with `time` on the injected clock of the
   server. `sim::serve(clock, wall, net, listener, rng, &variables, until)` serves

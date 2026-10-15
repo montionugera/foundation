@@ -1,7 +1,7 @@
 //! Counts heap allocations, so a test can assert that code does not allocate, and
 //! finds freed blocks that hold given bytes, so a test can assert that code erases a
-//! secret before it frees it ([`Allocator`]). Counts the heap bytes held, so a test can
-//! bound the memory of a structure ([`Bytes`]).
+//! secret before it frees it ([`Allocator`]). Counts the heap bytes held and given out,
+//! so a test can bound the memory of a structure and what code allocates ([`Bytes`]).
 
 #![expect(unsafe_code, reason = "the allocator implements `GlobalAlloc`")]
 
