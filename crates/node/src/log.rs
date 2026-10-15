@@ -5,6 +5,7 @@ use std::io;
 use std::sync::Mutex;
 
 use clock::log::{Mesh, Time};
+use serde::ser::{Serialize, SerializeMap, Serializer};
 use tracing::field::{Field, Visit};
 use tracing::{Dispatch, Event, Subscriber};
 use tracing_subscriber::filter::LevelFilter;
@@ -144,17 +145,13 @@ enum Value {
 }
 
 impl Value {
-    /// Writes the value in the form of the log, with `text` for a `Text` value.
-    fn write(
-        &self,
-        w: &mut Writer<'_>,
-        text: fn(&mut Writer<'_>, &str) -> fmt::Result,
-    ) -> fmt::Result {
+    /// Writes the value as a text line holds it.
+    fn write(&self, w: &mut Writer<'_>) -> fmt::Result {
         match self {
             Self::Signed(n) => write!(w, "{n}"),
             Self::Unsigned(n) => write!(w, "{n}"),
             Self::Bool(b) => write!(w, "{b}"),
-            Self::Text(t) => text(w, t),
+            Self::Text(text) => value(w, text),
         }
     }
 }
@@ -178,7 +175,7 @@ fn text(
     }
     for (name, field) in fields.others {
         write!(w, " {name}=")?;
-        field.write(w, value)?;
+        field.write(w)?;
     }
     match time.mesh {
         Mesh::Near => {}
@@ -214,8 +211,7 @@ fn escape(w: &mut Writer<'_>, c: char, escaped: bool) -> fmt::Result {
 }
 
 /// One JSON object with the keys `timestamp`, `level`, `target`, `fields` (the
-/// message first), and `mesh_time`, in that order, written by hand as a `json!`
-/// object sorts its keys.
+/// message first), and `mesh_time`, in that order.
 fn json(
     w: &mut Writer<'_>,
     time: Time,
@@ -223,34 +219,62 @@ fn json(
     target: &str,
     fields: Fields,
 ) -> fmt::Result {
-    let wall = micros(time.wall);
-    write!(
-        w,
-        "{{\"timestamp\":\"{wall}\",\"level\":\"{level}\",\"target\":"
-    )?;
-    string(w, target)?;
-    w.write_str(",\"fields\":{")?;
-    let message = fields.message.map(|m| ("message", Value::Text(m)));
-    for (i, (name, field)) in message.into_iter().chain(fields.others).enumerate() {
-        if i > 0 {
-            w.write_char(',')?;
-        }
-        string(w, name)?;
-        w.write_char(':')?;
-        field.write(w, string)?;
-    }
-    w.write_char('}')?;
-    match time.mesh {
-        Mesh::Near => {}
-        Mesh::Apart(mesh) => write!(w, ",\"mesh_time\":\"{}\"", micros(mesh))?,
-        Mesh::Unsynced => w.write_str(",\"mesh_time\":null")?,
-    }
-    w.write_str("}\n")
+    let line = Json {
+        time,
+        level,
+        target,
+        fields,
+    };
+    w.write_str(&serde_json::to_string(&line).map_err(|_never| fmt::Error)?)?;
+    w.write_char('\n')
 }
 
-/// `text` as a JSON string.
-fn string(w: &mut Writer<'_>, text: &str) -> fmt::Result {
-    w.write_str(&serde_json::to_string(text).map_err(|_never| fmt::Error)?)
+/// A JSON line. A map keeps the order of its entries, where `json!` sorts its keys.
+struct Json<'a> {
+    time: Time,
+    level: tracing::Level,
+    target: &'a str,
+    fields: Fields,
+}
+
+impl Serialize for Json<'_> {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut map = s.serialize_map(None)?;
+        map.serialize_entry("timestamp", &micros(self.time.wall))?;
+        map.serialize_entry("level", self.level.as_str())?;
+        map.serialize_entry("target", self.target)?;
+        map.serialize_entry("fields", &self.fields)?;
+        match self.time.mesh {
+            Mesh::Near => {}
+            Mesh::Apart(mesh) => map.serialize_entry("mesh_time", &micros(mesh))?,
+            Mesh::Unsynced => map.serialize_entry("mesh_time", &())?,
+        }
+        map.end()
+    }
+}
+
+impl Serialize for Fields {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut map = s.serialize_map(None)?;
+        if let Some(message) = &self.message {
+            map.serialize_entry("message", message)?;
+        }
+        for (name, value) in &self.others {
+            map.serialize_entry(name, value)?;
+        }
+        map.end()
+    }
+}
+
+impl Serialize for Value {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Signed(n) => s.serialize_i128(*n),
+            Self::Unsigned(n) => s.serialize_u128(*n),
+            Self::Bool(b) => s.serialize_bool(*b),
+            Self::Text(text) => s.serialize_str(text),
+        }
+    }
 }
 
 /// `stamp` in RFC 3339 UTC with six fraction digits, floored.
