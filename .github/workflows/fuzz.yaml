@@ -1,7 +1,7 @@
 name: Fuzz
 
-# Each PR runs each target for 60 seconds (`ci.yaml`). This run is longer, on the ARM
-# runner.
+# Each PR runs each target for 60 seconds (`ci.yaml`). This run is longer, on a hosted
+# ARM runner.
 on:
   schedule:
     - cron: '0 3 * * *'
@@ -9,12 +9,10 @@ on:
 
 jobs:
   fuzz:
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - name: Add cargo to the path
-        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Install the pinned nightly
         run: |
           rustup toolchain install "$(cat rust-toolchain-nightly)" --profile minimal
