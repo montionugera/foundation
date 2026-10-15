@@ -277,6 +277,24 @@ fn refuses_an_open_over_the_cap_with_nothing_sent() {
     assert_eq!(home.served, [closed()]);
 }
 
+/// An open of exactly the cap reaches the node, which finds no channel.
+#[test]
+fn sends_an_open_at_the_cap() {
+    let names: Vec<String> = (0..255)
+        .map(|n| format!("n{n:03}{}", "x".repeat(251)))
+        .collect();
+    let select = Selector::new(names.iter().map(String::as_str)).expect("a selector");
+    let open = Open {
+        mode: Mode::Complete,
+        select: select.clone(),
+    };
+    assert_eq!(u64::try_from(open.encoded_len()), Ok(OPEN_BYTES_MAX));
+    with_writes(405, &[], move |session, _| async move {
+        let opened = session.reader(select, Mode::Complete).await;
+        assert_eq!(opened.map(drop), Err(Error::Refused(Refusal::Unknown)));
+    });
+}
+
 /// A read takes no turn, so a request runs while a reader is open.
 #[test]
 fn runs_a_request_beside_an_open_reader() {
