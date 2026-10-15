@@ -19,6 +19,18 @@ pub struct Start {
     pub name: Option<Name>,
     /// `--listen`: the address of the node's one port, else port 0 of `127.0.0.1`.
     pub listen: SocketAddr,
+    /// `--log-format` and `--log-level`.
+    pub log: Log,
+}
+
+/// How the node writes its log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Log {
+    /// `--log-format json`, or `--json` with no `--log-format`: each line is one JSON
+    /// object.
+    pub json: bool,
+    /// `--log-level`: the least level of an event that the log holds.
+    pub level: tracing::Level,
 }
 
 impl Start {
