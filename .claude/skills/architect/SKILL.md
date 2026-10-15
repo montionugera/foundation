@@ -32,10 +32,9 @@ other architect ("Round cap"), and send a question about another crate to its ar
 `laptop.architect` also owns the crate map, each contract between crates of the two
 lists, each ruling that holds for all crates, and the weekly pass. `laptop.architect-2`
 sends those to it, other than a contract on a PR of which `laptop.architect` wrote a
-commit and `laptop.architect-2` wrote none: `laptop.architect-2` is the design approver
-of that contract, and gives each approval, OK, and ruling that `/review` asks of
-`laptop.architect` for it (`/review`, "Round cap" and "Round 1"). When both wrote a
-commit of the PR, `laptop.director` gives them.
+commit: `laptop.architect-2` is the design approver of that contract, and gives each
+approval, OK, and ruling that `/review` asks of `laptop.architect` for it (`/review`,
+"Round cap" and "Round 1").
 
 ## Interface issues
 

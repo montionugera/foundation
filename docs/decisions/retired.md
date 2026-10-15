@@ -82,3 +82,4 @@
 | TEXT FIXES, for a Low finding in text: an item gives the exact new text (#2041, 6103180556), and an item that gives only facts and links or asks the author to find a fact is a finding | TEXT FIXES amendment (#2573, 6147048003) |
 | REVIEW ROUNDS (#2586, 6151416969): "When `laptop.director` wrote the PR, it is the person, through `laptop.monitor`" | REVIEW ROUNDS (#2600, 6155838835): `laptop.monitor` is the design approver in place of `laptop.director` |
 | Item 45 of #2041 (6111639867): "the next round starts where the last round of the old PR ends" | REVIEW ROUNDS (#2586, 6150615724): the first round of a PR that replaces another reviews its whole diff |
+| REVIEW ROUNDS (#2586, 6151416969; #2600, 6154720280): the other architect is the design approver when the crate's architect, or `laptop.architect` for a contract between the two lists, "wrote the PR" | REVIEW ROUNDS amendment (#2455, 6197095582): when it wrote a commit of the PR |
