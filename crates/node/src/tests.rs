@@ -6120,10 +6120,11 @@ pub(crate) mod port {
         #[test]
         fn the_log_of_the_mesh_is_free_once_the_lock_is() {
             let (mut held, mut logged, mut ordered) = (false, false, false);
-            // The mesh opens at about 1.5 ms, and from 1.6 s the log writes a home
-            // about each 0.7 ms.
+            // The mesh opens at about 1.5 ms. From 1.6 s the log writes a home about
+            // each 0.7 ms, and the stops in the writes step from before the write of
+            // one home, through its write and its sync, to after them.
             let opens = (0..200).map(|step| step * 13_000);
-            let writes = (0..100).map(|step| 1_700_000_000 + step * 7_000);
+            let writes = (0..13).map(|step| 1_700_553_000 + step * 7_000);
             for after in opens.chain(writes) {
                 let mut sim = sim::Sim::new(sim::Config::default());
                 let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
