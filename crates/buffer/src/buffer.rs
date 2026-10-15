@@ -893,7 +893,7 @@ async fn walk(
     slots: &mut Slots,
 ) -> Result<(Cursor, Logs), Error> {
     let mut cursor = Cursor::new(header.layout, header.tail, pool.largest());
-    let mut logs = Logs::default();
+    let mut logs = Logs::new(header.layout.area());
     loop {
         let Window { place, len } = cursor.window();
         let bytes = file.read_at(AREA_START + place, pool.alloc(len)?).await?;
