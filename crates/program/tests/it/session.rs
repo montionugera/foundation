@@ -26,7 +26,7 @@ use crate::net::{HOME, NODE, header, own_pool, public_key, transport};
 use crate::sessions::{Got, Home, OTHER, QUIET, rules, run_program, shrink_wall_error};
 
 /// Connects to the home at `at` from `node` as [`SUBJECT`], signing with `key`, with a
-/// client pool that holds a body at the cap while the transport sends it.
+/// session pool that holds a body at the cap while the transport sends it.
 async fn connect(
     node: &sim::node::Node,
     tasks: env::tasks::Tasks,
@@ -38,7 +38,7 @@ async fn connect(
     connect_with(node, tasks, at, key, Rc::new(pool)).await
 }
 
-/// As [`connect`], where the client sends from `pool`, and the transport from a pool
+/// As [`connect`], where the session sends from `pool`, and the transport from a pool
 /// of its own.
 async fn connect_with(
     node: &sim::node::Node,
@@ -69,9 +69,9 @@ async fn connect_with(
     Session::connect(&transport, config).await
 }
 
-/// Runs `program` with a client of [`SUBJECT`] on a home with mesh time and the
+/// Runs `program` with a session of [`SUBJECT`] on a home with mesh time and the
 /// rules of `rules`, and gives what the home saw.
-fn with_client<P>(
+fn with_session<P>(
     seed: u64,
     program: impl FnOnce(Session, sim::node::Node) -> P + Send + 'static,
 ) -> Home
@@ -79,8 +79,8 @@ where
     P: Future<Output = ()> + 'static,
 {
     serve_session(seed, true, Some(rules()), |node, tasks, at| async move {
-        let client = connect(&node, tasks, at, AGENT).await.expect("connects");
-        program(client, node.clone()).await;
+        let session = connect(&node, tasks, at, AGENT).await.expect("connects");
+        program(session, node.clone()).await;
         node.clock().sleep(QUIET).await;
     })
 }
@@ -98,9 +98,9 @@ fn reversed(body: &[u8]) -> Vec<u8> {
 fn sends_a_request_and_gives_its_whole_reply_at_each_size() {
     let large = body(256 << 10);
     let sent = large.clone();
-    let home = with_client(120, move |client, _| async move {
-        assert_eq!(client.request(b"").await, Ok(Vec::new()));
-        assert_eq!(client.request(&sent).await, Ok(reversed(&sent)));
+    let home = with_session(120, move |session, _| async move {
+        assert_eq!(session.request(b"").await, Ok(Vec::new()));
+        assert_eq!(session.request(&sent).await, Ok(reversed(&sent)));
     });
     assert_eq!(
         home.served[..2],
@@ -113,9 +113,9 @@ fn sends_a_request_and_gives_its_whole_reply_at_each_size() {
 
 #[test]
 fn closes_the_session_when_the_last_clone_drops() {
-    let home = with_client(121, |client, node| async move {
-        let clone = client.clone();
-        drop(client);
+    let home = with_session(121, |session, node| async move {
+        let clone = session.clone();
+        drop(session);
         assert_eq!(clone.request(b"ab").await, Ok(b"ba".to_vec()));
         drop(clone);
         node.clock().sleep(QUIET).await;
@@ -132,9 +132,9 @@ fn closes_the_session_when_the_last_clone_drops() {
 #[test]
 fn keeps_the_end_of_each_stream_at_each_seed() {
     for seed in 0..16 {
-        let home = with_client(seed, |client, node| async move {
-            assert_eq!(client.request(b"ab").await, Ok(b"ba".to_vec()));
-            drop(client);
+        let home = with_session(seed, |session, node| async move {
+            assert_eq!(session.request(b"ab").await, Ok(b"ba".to_vec()));
+            drop(session);
             node.clock().sleep(QUIET).await;
         });
         assert_eq!(home.served.len(), 2, "seed {seed}: {:?}", home.served);
@@ -174,15 +174,15 @@ fn refuses_to_connect_to_a_node_with_no_mesh_time() {
     );
 }
 
-/// The client renews the hello, so a request long after the first hello's expiry
+/// The session renews the hello, so a request long after the first hello's expiry
 /// gets its reply, and the hello stream stays open.
 #[test]
 fn renews_the_hello_before_it_expires() {
-    let home = with_client(124, |client, node| async move {
+    let home = with_session(124, |session, node| async move {
         node.clock()
             .sleep(Span::from_nanos(2 * LIFE.nanos() + Span::SECOND.nanos()))
             .await;
-        assert_eq!(client.request(b"late").await, Ok(b"etal".to_vec()));
+        assert_eq!(session.request(b"late").await, Ok(b"etal".to_vec()));
     });
     assert_eq!(
         home.served[0],
@@ -190,22 +190,22 @@ fn renews_the_hello_before_it_expires() {
     );
 }
 
-/// Two tasks that call `request` on clones of one client at once each get their own
+/// Two tasks that call `request` on clones of one session at once each get their own
 /// replies, in turns, and the node never stops one as `MALFORMED`.
 #[test]
 fn takes_requests_from_two_tasks_one_at_a_time() {
     const EACH: usize = 8;
     let home = serve_session(125, true, Some(rules()), |node, tasks, at| async move {
-        let client = connect(&node, tasks.clone(), at, AGENT)
+        let session = connect(&node, tasks.clone(), at, AGENT)
             .await
             .expect("connects");
         let replied = Rc::new(Cell::new(0));
         for tag in [1, 2] {
-            let (client, replied) = (client.clone(), Rc::clone(&replied));
+            let (session, replied) = (session.clone(), Rc::clone(&replied));
             tasks.spawn(async move {
                 for i in 0..EACH {
                     let body = [tag, u8::try_from(i).expect("small")];
-                    assert_eq!(client.request(&body).await, Ok(reversed(&body)));
+                    assert_eq!(session.request(&body).await, Ok(reversed(&body)));
                     replied.set(replied.get() + 1);
                 }
             });
@@ -250,10 +250,10 @@ fn sends_a_body_at_the_cap() {
             sender.finish().expect("finishes");
             node.clock().sleep(QUIET).await;
         },
-        |client, _| {
+        |session, _| {
             Box::pin(async move {
                 let cap = usize::try_from(BODY_BYTES_MAX).expect("fits");
-                assert_eq!(client.request(&vec![7; cap]).await, Ok(Vec::new()));
+                assert_eq!(session.request(&vec![7; cap]).await, Ok(Vec::new()));
             })
         },
     );
@@ -261,9 +261,9 @@ fn sends_a_body_at_the_cap() {
 
 #[test]
 fn refuses_a_body_over_the_cap_with_nothing_sent() {
-    let home = with_client(126, |client, _| async move {
+    let home = with_session(126, |session, _| async move {
         let length = usize::try_from(BODY_BYTES_MAX).expect("fits") + 1;
-        let refused = client.request(&vec![0; length]).await;
+        let refused = session.request(&vec![0; length]).await;
         assert_eq!(refused, Err(Error::Body { length }));
         assert_eq!(
             refused.expect_err("refused").to_string(),
@@ -278,8 +278,9 @@ fn refuses_a_body_over_the_cap_with_nothing_sent() {
     );
 }
 
-/// Runs a program whose client connects to a home that admits its hello on a link,
-/// then gives the session to `rest`, which serves what follows by hand.
+/// Runs a program whose session connects to a home that admits its hello on a link,
+/// then gives the transport session of the home to `rest`, which serves what follows
+/// by hand.
 fn by_hand<R>(
     seed: u64,
     rest: impl FnOnce(transport::Session, sim::node::Node) -> R + Send + 'static,
@@ -304,8 +305,8 @@ fn by_hand<R>(
         drop((link, test));
     };
     run_program(seed, home, |node, tasks, at| async move {
-        let client = connect(&node, tasks, at, AGENT).await.expect("connects");
-        program(client, node).await;
+        let session = connect(&node, tasks, at, AGENT).await.expect("connects");
+        program(session, node).await;
     });
 }
 
@@ -342,11 +343,11 @@ fn gives_the_close_of_a_node_after_admission() {
                 session.close(Code(code));
                 node.clock().sleep(QUIET).await;
             },
-            move |client, node| {
+            move |session, node| {
                 Box::pin(async move {
                     node.clock().sleep(QUIET).await;
                     node.clock().sleep(QUIET).await;
-                    assert_eq!(client.request(b"ab").await, Err(error));
+                    assert_eq!(session.request(b"ab").await, Err(error));
                 })
             },
         );
@@ -367,9 +368,9 @@ fn refuses_a_request_stream_finished_with_no_response() {
                 .expect("finishes");
             node.clock().sleep(QUIET).await;
         },
-        |client, _| {
+        |session, _| {
             Box::pin(async move {
-                assert_eq!(client.request(b"ab").await, Err(Error::Unanswered));
+                assert_eq!(session.request(b"ab").await, Err(Error::Unanswered));
             })
         },
     );
@@ -394,10 +395,10 @@ fn refuses_a_response_whose_body_ends_early() {
             sender.finish().expect("finishes");
             node.clock().sleep(QUIET).await;
         },
-        |client, _| {
+        |session, _| {
             Box::pin(async move {
                 assert_eq!(
-                    client.request(b"abcd").await,
+                    session.request(b"abcd").await,
                     Err(Error::Message(wire::hub::client::Error::Unfinished {
                         remain: 2
                     }))
@@ -432,15 +433,15 @@ fn gives_the_turn_after_a_response_that_is_not_valid() {
             node.clock().sleep(QUIET).await;
             drop(first);
         },
-        |client, node| {
+        |session, node| {
             Box::pin(async move {
                 assert_eq!(
-                    client.request(b"ab").await,
+                    session.request(b"ab").await,
                     Err(Error::Message(wire::hub::client::Error::Kind {
                         kind: 0xff
                     }))
                 );
-                let next = within(&node.clock(), QUIET, client.request(b"cd")).await;
+                let next = within(&node.clock(), QUIET, session.request(b"cd")).await;
                 assert_eq!(next, Some(Ok(b"dc".to_vec())));
             })
         },
@@ -469,9 +470,9 @@ fn gives_the_reply_once_its_body_ends() {
             node.clock().sleep(QUIET).await;
             sender.finish().expect("finishes");
         },
-        |client, node| {
+        |session, node| {
             Box::pin(async move {
-                let mut reply = pin!(client.request(b"ab"));
+                let mut reply = pin!(session.request(b"ab"));
                 let mut quiet = pin!(node.clock().sleep(QUIET));
                 let got = poll_fn(|cx| match reply.as_mut().poll(cx) {
                     Poll::Ready(got) => Poll::Ready(Some(got)),
@@ -520,10 +521,10 @@ async fn within<T>(
 #[test]
 fn sends_the_next_request_after_a_dropped_one() {
     run_program(133, slow, |node, tasks, at| async move {
-        let client = connect(&node, tasks, at, AGENT).await.expect("connects");
-        let first = within(&node.clock(), QUIET, client.request(b"slow")).await;
+        let session = connect(&node, tasks, at, AGENT).await.expect("connects");
+        let first = within(&node.clock(), QUIET, session.request(b"slow")).await;
         assert_eq!(first, None, "the first request is dropped while it waits");
-        assert_eq!(client.request(b"ab").await, Ok(b"ba".to_vec()));
+        assert_eq!(session.request(b"ab").await, Ok(b"ba".to_vec()));
     });
 }
 
@@ -532,15 +533,15 @@ fn sends_the_next_request_after_a_dropped_one() {
 #[test]
 fn gives_the_turn_past_a_request_that_left_the_line() {
     run_program(138, slow, |node, tasks, at| async move {
-        let client = connect(&node, tasks.clone(), at, AGENT)
+        let session = connect(&node, tasks.clone(), at, AGENT)
             .await
             .expect("connects");
-        let first = client.clone();
+        let first = session.clone();
         tasks.spawn(async move {
             assert_eq!(first.request(b"a1").await, Ok(b"1a".to_vec()));
         });
         node.clock().sleep(QUIET).await;
-        let (second, clock) = (client.clone(), node.clock());
+        let (second, clock) = (session.clone(), node.clock());
         tasks.spawn(async move {
             assert_eq!(within(&clock, QUIET, second.request(b"b2")).await, None);
         });
@@ -548,8 +549,8 @@ fn gives_the_turn_past_a_request_that_left_the_line() {
             .sleep(Span::from_nanos(QUIET.nanos() / 2))
             .await;
         let third = Rc::new(Cell::new(None));
-        let (client, got) = (client.clone(), Rc::clone(&third));
-        tasks.spawn(async move { got.set(Some(client.request(b"c3").await)) });
+        let (session, got) = (session.clone(), Rc::clone(&third));
+        tasks.spawn(async move { got.set(Some(session.request(b"c3").await)) });
         node.clock()
             .sleep(Span::from_nanos(5 * Span::SECOND.nanos()))
             .await;
@@ -557,7 +558,7 @@ fn gives_the_turn_past_a_request_that_left_the_line() {
     });
 }
 
-/// Runs a program whose client connects to a home that serves the hello stream by
+/// Runs a program whose session connects to a home that serves the hello stream by
 /// hand with `hello`, with no hub.
 fn raw<F, H, G, P>(seed: u64, hello: F, program: G)
 where
@@ -622,10 +623,10 @@ fn closes_the_session_on_a_challenge_that_is_not_valid() {
             );
         },
         |node, tasks, at| async move {
-            let client = connect(&node, tasks, at, AGENT).await.expect("connects");
+            let session = connect(&node, tasks, at, AGENT).await.expect("connects");
             node.clock().sleep(LIFE).await;
             assert_eq!(
-                client.request(b"ab").await,
+                session.request(b"ab").await,
                 Err(Error::Message(wire::hub::client::Error::Kind {
                     kind: 0xff
                 }))
@@ -648,13 +649,13 @@ fn gives_the_error_of_the_renewal_to_each_later_request() {
             drop(session.closed().await);
         },
         |node, tasks, at| async move {
-            let client = connect(&node, tasks, at, AGENT).await.expect("connects");
+            let session = connect(&node, tasks, at, AGENT).await.expect("connects");
             node.clock().sleep(LIFE).await;
             let ended = Err(Error::Message(wire::hub::client::Error::Kind {
                 kind: 0xff,
             }));
-            assert_eq!(client.request(b"ab").await, ended);
-            assert_eq!(client.request(b"cd").await, ended);
+            assert_eq!(session.request(b"ab").await, ended);
+            assert_eq!(session.request(b"cd").await, ended);
         },
     );
 }
@@ -674,9 +675,9 @@ fn gives_the_error_of_the_renewal_to_a_request_in_flight() {
             drop(session.closed().await);
         },
         |node, tasks, at| async move {
-            let client = connect(&node, tasks, at, AGENT).await.expect("connects");
+            let session = connect(&node, tasks, at, AGENT).await.expect("connects");
             assert_eq!(
-                client.request(b"ab").await,
+                session.request(b"ab").await,
                 Err(Error::Message(wire::hub::client::Error::Kind {
                     kind: 0xff
                 }))
@@ -699,8 +700,8 @@ fn gives_an_unanswered_renewal_to_a_request_in_flight() {
             drop(session.closed().await);
         },
         |node, tasks, at| async move {
-            let client = connect(&node, tasks, at, AGENT).await.expect("connects");
-            assert_eq!(client.request(b"ab").await, Err(Error::Unanswered));
+            let session = connect(&node, tasks, at, AGENT).await.expect("connects");
+            assert_eq!(session.request(b"ab").await, Err(Error::Unanswered));
         },
     );
 }
@@ -718,11 +719,11 @@ fn gives_the_body_error_first_after_the_renewal_ended() {
             drop(session.closed().await);
         },
         |node, tasks, at| async move {
-            let client = connect(&node, tasks, at, AGENT).await.expect("connects");
+            let session = connect(&node, tasks, at, AGENT).await.expect("connects");
             node.clock().sleep(LIFE).await;
             let length = usize::try_from(BODY_BYTES_MAX).expect("fits") + 1;
             assert_eq!(
-                client.request(&vec![0; length]).await,
+                session.request(&vec![0; length]).await,
                 Err(Error::Body { length })
             );
         },
@@ -806,7 +807,7 @@ fn fill(pool: &block::Pool) -> Vec<block::Unique> {
 fn renews_the_hello_once_the_pool_has_room() {
     let home = serve_session(136, true, Some(rules()), |node, tasks, at| async move {
         let pool = own_pool();
-        let client = connect_with(&node, tasks, at, AGENT, Rc::clone(&pool))
+        let session = connect_with(&node, tasks, at, AGENT, Rc::clone(&pool))
             .await
             .expect("connects");
         let half = Span::from_nanos(LIFE.nanos() / 2 - Span::SECOND.nanos());
@@ -818,7 +819,7 @@ fn renews_the_hello_once_the_pool_has_room() {
         drop(held);
         node.clock().sleep(LIFE).await;
         node.clock().sleep(LIFE).await;
-        assert_eq!(client.request(b"late").await, Ok(b"etal".to_vec()));
+        assert_eq!(session.request(b"late").await, Ok(b"etal".to_vec()));
         node.clock().sleep(QUIET).await;
     });
     assert_eq!(
@@ -858,7 +859,7 @@ fn retries_a_renewal_every_ten_milliseconds_while_the_pool_is_full() {
         },
         |node, tasks, at| async move {
             let pool = own_pool();
-            let client = connect_with(&node, tasks, at, AGENT, Rc::clone(&pool))
+            let session = connect_with(&node, tasks, at, AGENT, Rc::clone(&pool))
                 .await
                 .expect("connects");
             node.clock()
@@ -870,7 +871,7 @@ fn retries_a_renewal_every_ten_milliseconds_while_the_pool_is_full() {
                 .await;
             drop(held);
             node.clock().sleep(Span::SECOND).await;
-            drop(client);
+            drop(session);
         },
     );
 }
@@ -891,11 +892,11 @@ fn ends_the_wait_for_a_block_when_the_session_closes() {
         },
         |node, tasks, at| async move {
             let pool = own_pool();
-            let client = connect_with(&node, tasks, at, AGENT, Rc::clone(&pool))
+            let session = connect_with(&node, tasks, at, AGENT, Rc::clone(&pool))
                 .await
                 .expect("connects");
             let held = fill(&pool);
-            let got = within(&node.clock(), LIFE, client.request(b"ab")).await;
+            let got = within(&node.clock(), LIFE, session.request(b"ab")).await;
             assert_eq!(got, Some(Err(Error::Refused(Refusal::Busy))));
             drop(held);
         },
@@ -919,10 +920,10 @@ fn ends_the_life_of_a_hello_at_the_end_of_time() {
             drop(session);
         },
         |node, tasks, at| async move {
-            let client = connect(&node, tasks, at, AGENT).await.expect("connects");
+            let session = connect(&node, tasks, at, AGENT).await.expect("connects");
             node.clock().sleep(HALF).await;
             node.clock().sleep(QUIET).await;
-            drop(client);
+            drop(session);
         },
     );
 }
@@ -956,11 +957,11 @@ fn connects_once_the_memory_of_the_pool_has_room() {
         switch.refuse();
         allow_after(&tasks, node.clock(), switch, Span::SECOND);
         let began = node.clock().now();
-        let client = connect_with(&node, tasks, at, AGENT, pool)
+        let session = connect_with(&node, tasks, at, AGENT, pool)
             .await
             .expect("connects");
         assert!(node.clock().now() - began >= Span::SECOND);
-        assert_eq!(client.request(b"ab").await, Ok(b"ba".to_vec()));
+        assert_eq!(session.request(b"ab").await, Ok(b"ba".to_vec()));
         node.clock().sleep(QUIET).await;
     });
     assert_eq!(
@@ -975,14 +976,14 @@ fn connects_once_the_memory_of_the_pool_has_room() {
 fn sends_a_request_once_the_memory_of_the_pool_has_room() {
     let home = serve_session(148, true, Some(rules()), |node, tasks, at| async move {
         let (pool, switch) = scarce();
-        let client = connect_with(&node, tasks.clone(), at, AGENT, pool)
+        let session = connect_with(&node, tasks.clone(), at, AGENT, pool)
             .await
             .expect("connects");
         node.clock().sleep(QUIET).await;
         switch.refuse();
         allow_after(&tasks, node.clock(), switch, Span::SECOND);
         let began = node.clock().now();
-        assert_eq!(client.request(b"ab").await, Ok(b"ba".to_vec()));
+        assert_eq!(session.request(b"ab").await, Ok(b"ba".to_vec()));
         assert!(node.clock().now() - began >= Span::SECOND);
         node.clock().sleep(QUIET).await;
     });
@@ -1017,7 +1018,7 @@ fn refuses_to_connect_from_a_pool_with_no_block_for_the_header() {
     );
 }
 
-/// A client splits a body into blocks that its pool holds.
+/// A session splits a body into blocks that its pool holds.
 #[test]
 fn sends_a_body_over_the_largest_block_of_its_pool() {
     let home = serve_session(141, true, Some(rules()), |node, tasks, at| async move {
@@ -1025,10 +1026,10 @@ fn sends_a_body_over_the_largest_block_of_its_pool() {
         let pool =
             block::Pool::new(config.clone(), block::Heap::new(config.reservation()));
         let body = body(pool.largest() + 1);
-        let client = connect_with(&node, tasks, at, AGENT, Rc::new(pool))
+        let session = connect_with(&node, tasks, at, AGENT, Rc::new(pool))
             .await
             .expect("connects");
-        assert_eq!(client.request(&body).await, Ok(reversed(&body)));
+        assert_eq!(session.request(&body).await, Ok(reversed(&body)));
     });
     assert!(
         matches!(home.served[0], Ok(Got::Request(..))),
@@ -1045,11 +1046,11 @@ fn sends_a_body_over_the_room_of_its_pool() {
         let config = block::Config::new(1 << 17).expect("the budget fits");
         let pool =
             block::Pool::new(config.clone(), block::Heap::new(config.reservation()));
-        let client = connect_with(&node, tasks, at, AGENT, Rc::new(pool))
+        let session = connect_with(&node, tasks, at, AGENT, Rc::new(pool))
             .await
             .expect("connects");
         let sent = body(256 << 10);
-        let reply = client.request(&sent).await.expect("replies");
+        let reply = session.request(&sent).await.expect("replies");
         assert!(reply.iter().eq(sent.iter().rev()));
     });
 }
@@ -1059,9 +1060,9 @@ fn sends_a_body_over_the_room_of_its_pool() {
 #[test]
 fn hands_on_a_turn_given_to_a_dropped_request() {
     run_program(139, slow, |node, tasks, at| async move {
-        let client = connect(&node, tasks, at, AGENT).await.expect("connects");
-        let mut first = pin!(client.request(b"ab"));
-        let mut second = Box::pin(client.request(b"cd"));
+        let session = connect(&node, tasks, at, AGENT).await.expect("connects");
+        let mut first = pin!(session.request(b"ab"));
+        let mut second = Box::pin(session.request(b"cd"));
         let mut waits = false;
         let got = poll_fn(|cx| {
             if let Poll::Ready(got) = first.as_mut().poll(cx) {
@@ -1076,7 +1077,7 @@ fn hands_on_a_turn_given_to_a_dropped_request() {
         .await;
         assert_eq!(got, Ok(b"ba".to_vec()));
         drop(second);
-        assert_eq!(client.request(b"ef").await, Ok(b"fe".to_vec()));
+        assert_eq!(session.request(b"ef").await, Ok(b"fe".to_vec()));
     });
 }
 
@@ -1085,10 +1086,10 @@ fn hands_on_a_turn_given_to_a_dropped_request() {
 #[test]
 fn gives_the_turn_in_the_order_requests_began() {
     let home = serve_session(142, true, Some(rules()), |node, tasks, at| async move {
-        let client = connect(&node, tasks, at, AGENT).await.expect("connects");
+        let session = connect(&node, tasks, at, AGENT).await.expect("connects");
         let mut requests: Vec<_> = [[1], [2], [3]]
             .iter()
-            .map(|body| Some(Box::pin(client.request(body))))
+            .map(|body| Some(Box::pin(session.request(body))))
             .collect();
         poll_fn(|cx| {
             for request in requests.iter_mut().flatten() {
@@ -1208,12 +1209,12 @@ fn sends_a_body_at_the_cap_from_a_pool_of_one_chunk_on_each_link() {
                     config.clone(),
                     block::Heap::new(config.reservation()),
                 );
-                let client = connect_with(&node, tasks, at, AGENT, Rc::new(pool))
+                let session = connect_with(&node, tasks, at, AGENT, Rc::new(pool))
                     .await
                     .expect("connects");
                 let cap = usize::try_from(BODY_BYTES_MAX).expect("fits");
                 let sent = body(cap);
-                let got = client.request(&sent).await;
+                let got = session.request(&sent).await;
                 assert!(got == Ok(reversed(&sent)), "{label}");
             },
         );
@@ -1224,7 +1225,7 @@ fn sends_a_body_at_the_cap_from_a_pool_of_one_chunk_on_each_link() {
 /// `wall_error`.
 fn connects_at_wall_error(seed: u64, wall_error: Option<Span>) {
     let (connected, served) = (Arc::new(Mutex::new(None)), Arc::new(Mutex::new(None)));
-    let (client_end, home_end) = (Arc::clone(&connected), Arc::clone(&served));
+    let (session_end, home_end) = (Arc::clone(&connected), Arc::clone(&served));
     run_program(
         seed,
         move |node, tasks| async move {
@@ -1239,7 +1240,7 @@ fn connects_at_wall_error(seed: u64, wall_error: Option<Span>) {
         },
         move |node, tasks, at| async move {
             let result = connect(&node, tasks, at, AGENT).await.map(drop);
-            *client_end.lock().expect("not poisoned") = Some(result);
+            *session_end.lock().expect("not poisoned") = Some(result);
         },
     );
     let served = served.lock().expect("not poisoned").take();
@@ -1281,13 +1282,13 @@ fn keeps_a_session_when_the_error_of_mesh_time_shrinks() {
             drop((link, test));
         },
         move |node, tasks, at| async move {
-            let client = connect(&node, tasks, at, AGENT).await.expect("connects");
+            let session = connect(&node, tasks, at, AGENT).await.expect("connects");
             node.clock()
                 .sleep(Span::from_nanos(2 * LIFE.nanos() + Span::SECOND.nanos()))
                 .await;
-            let late = client.request(b"late").await;
+            let late = session.request(b"late").await;
             *kept.lock().expect("not poisoned") = Some(late);
-            drop(client);
+            drop(session);
             node.clock().sleep(QUIET).await;
         },
     );
