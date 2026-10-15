@@ -53,7 +53,8 @@ pub struct Server {
 impl Server {
     /// Starts the server on `clock`, `net`, and `rng`, with its listener on `address`
     /// and port 4840 and room for 4 sessions, runs `body` while the server runs, then
-    /// closes the server. Each client of [`Server::connect`] also draws from `rng`.
+    /// closes the server, also after a panic in `body`, which it then resumes. Each
+    /// client of [`Server::connect`] also draws from `rng`.
     ///
     /// # Panics
     ///
