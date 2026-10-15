@@ -165,8 +165,8 @@
   Supersedes "A founding with no card of that key gives no stored name. So does a data
   directory with no `node.key`." of
   https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495. Supersedes
-  "That start writes nothing: no file `name`, and no new `node.key`" and rule 3, "The
-  start writes nothing in that state.", of
+  "That start writes nothing: no file `name`, and no new `node.key`" of this record, and
+  rule 3, "The start writes nothing in that state.", of
   https://github.com/synnaxlabs/foundation/issues/2433#issuecomment-6113249462: that
   start writes no file `name` and no new `node.key` (the doc of `Error::NoCard`,
   `laptop.architect-2`, 2026-10-12T23:51:07Z,
