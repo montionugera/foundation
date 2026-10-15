@@ -79,11 +79,19 @@
   `laptop.architect` (2026-10-07T09:12:02Z):
   https://github.com/synnaxlabs/foundation/pull/1284#issuecomment-6034784720. So a pool
   that opens holds each write. A write that a file call fails, or that its caller drops,
-  poisons the log (`Error::Poisoned`), and a write that the pool stops does not. The
-  next write puts zeros over the bytes of the stopped write and syncs, and only then
-  writes its record: with one sync, a power cut can keep the record and not the zeros
-  (SIM CRASH), and an open then reads the old bytes as a header (PR 1 of #1091, approved
-  by the architect, 2026-10-07T05:29:41Z:
+  poisons the log (`Error::Poisoned`), and a write that the pool stops does not. A
+  poisoned log holds no end file (`file: Option<File>`): a write takes the file out of
+  the log and puts it back only on `Ok` or `Error::Pool`, so a failure closes it at
+  once. The log removes a file that it holds through its handle (`File::remove`): the
+  spare at an open, and an end file with no record that a write makes again, larger
+  (#1314, decided by `laptop.architect`, 2026-10-07T20:26:12Z:
+  https://github.com/synnaxlabs/foundation/issues/1314#issuecomment-6046201661). With
+  no handle left, the create of the larger file gets the room of the removed one,
+  because `Files::open` syncs the directory and opens again on `Full` (ENV SEAMS,
+  #1622; #1350). The next write puts zeros over the bytes of the stopped write and
+  syncs, and only then writes its record: with one sync, a power cut can keep the record
+  and not the zeros (SIM CRASH), and an open then reads the old bytes as a header (PR 1
+  of #1091, approved by the architect, 2026-10-07T05:29:41Z:
   https://github.com/synnaxlabs/foundation/issues/1091#issuecomment-6031627973, and the
   text of this rule, 2026-10-07T08:42:04Z:
   https://github.com/synnaxlabs/foundation/pull/1284#issuecomment-6034282653). A header
@@ -129,3 +137,22 @@
   https://github.com/synnaxlabs/foundation/pull/1740#issuecomment-6051674927. Supersedes
   https://github.com/synnaxlabs/foundation/issues/1711#issuecomment-6050509924 for the
   doc of the seal).
+  `mesh::testing::seal_log_dir` and `scan_log_dir`, behind `sim`, give the fuzz target
+  `mesh_log_dir` the open of a framed log directory: `log::sequence` as it is, and the
+  one step that `Log::open` also calls, which scans, drops the spare, and writes zeros
+  after the last record. The seal writes both checks of each record and keeps a body
+  check of zeros, so the target reaches a torn end. An open of the files that an open
+  leaves reads the same hard state and entries, not the same files: an empty end file
+  after `log-0` stays at the first open and goes as the spare at the second. After two
+  opens the files are a fixed point; a case that breaks this is a defect of the open.
+  `round_trip_spec_name` gives `mesh_spec_name` the read of a spec pointer from a file
+  name (approved by the architect, 2026-10-10T22:44:18Z:
+  https://github.com/synnaxlabs/foundation/issues/1746#issuecomment-6102980950; the
+  `Scan` result and the fixed point after two opens, 2026-10-10T22:54:30Z:
+  https://github.com/synnaxlabs/foundation/issues/1746#issuecomment-6103059175; the one
+  step that `Log::open` also calls, ruled 2026-10-10T23:17:42Z:
+  https://github.com/synnaxlabs/foundation/pull/2317#issuecomment-6103236920, approved
+  2026-10-10T23:33:24Z:
+  https://github.com/synnaxlabs/foundation/pull/2317#issuecomment-6103353737. Supersedes
+  https://github.com/synnaxlabs/foundation/issues/1746#issuecomment-6102980950 for what
+  the one private function of condition 1 does, and for the result of `scan_log_dir`).

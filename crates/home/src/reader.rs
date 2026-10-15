@@ -309,20 +309,25 @@ impl Set {
         }
     }
 
-    /// Makes `frame`, a live frame that found no room in the buffer, the newest frame
-    /// of the index at `place`. Complete readers never get it.
+    /// Makes `frame`, a live frame at `seq` that found no room in the buffer, the
+    /// newest frame of the index at `place`, or no frame when the pool had no block for
+    /// it. Complete readers miss it after the frames before it.
     ///
     /// # Panics
     ///
     /// If `frame` is a backfill frame, which waits for room instead.
-    pub(crate) fn lost(&mut self, place: usize, frame: Frame) {
-        assert_eq!(
-            frame.path(),
-            Path::Live,
-            "invariant: only a live frame is lost"
-        );
+    pub(crate) fn lost(&mut self, place: usize, frame: Option<Frame>, seq: Range<u64>) {
         let entry = &mut self.entries[place];
-        wake(&mut self.keys, entry.slot, entry.readers.put(frame));
+        if let Some(frame) = frame {
+            assert_eq!(
+                frame.path(),
+                Path::Live,
+                "invariant: only a live frame is lost"
+            );
+            wake(&mut self.keys, entry.slot, entry.readers.put(frame));
+        }
+        // A lost frame queues only behind a pending frame, whose index is listed.
+        wake(&mut self.keys, entry.slot, entry.readers.lose(seq));
     }
 
     /// Replaces `keys` with the readers to wake since the last call, each once, in slot
@@ -498,7 +503,8 @@ mod tests {
             let frames = Frames::new();
             let mut set = carried(1);
             let latest = set.open_latest(0);
-            let _ = set.open_complete(0, 0, u64::MAX, complete::Charge::Whole);
+            let _: complete::Key =
+                set.open_complete(0, 0, u64::MAX, complete::Charge::Whole);
             set.applied(0, frames.frame(Path::Backfill, 0..2), &frames.set, 0..2);
             assert_eq!(woken(&mut set), []);
             assert_eq!(set.listed(), []);
@@ -512,19 +518,58 @@ mod tests {
     mod lost {
         use super::*;
 
+        /// The range of each frame that the reader `session` of the index at `place`
+        /// takes before [`Next::Behind`].
+        ///
+        /// # Panics
+        ///
+        /// If the reader gets [`Next::Empty`].
+        #[track_caller]
+        fn missed(
+            set: &mut Set,
+            place: usize,
+            session: impl Into<delivery::Key>,
+        ) -> Vec<frame::Range> {
+            let session = session.into();
+            let mut ranges = Vec::new();
+            loop {
+                match set.take(place, session) {
+                    Next::Frame(frame) => {
+                        ranges.push(frame.range(0).expect("the index is present"));
+                    }
+                    Next::Behind => return ranges,
+                    Next::Empty => panic!("empty after {ranges:?}"),
+                }
+            }
+        }
+
         #[test]
-        fn gives_a_live_frame_to_the_latest_readers_only() {
+        fn gives_a_live_frame_to_the_latest_readers_and_ends_the_complete_behind() {
             let frames = Frames::new();
             let mut set = carried(1);
             let latest = set.open_latest(0);
             let complete = set.open_complete(0, 0, u64::MAX, complete::Charge::Whole);
-            set.lost(0, frames.frame(Path::Live, 0..2));
-            assert_eq!(woken(&mut set), [reader(0, latest)]);
+            set.lost(0, Some(frames.frame(Path::Live, 0..2)), 0..2);
+            assert_eq!(woken(&mut set), [reader(0, latest), reader(0, complete)]);
             assert_eq!(set.listed(), []);
             assert_eq!(taken(&mut set, 0, latest), [range(0, 2)]);
+            assert_eq!(missed(&mut set, 0, complete), []);
             set.applied(0, frames.frame(Path::Live, 2..3), &frames.set, 2..3);
-            assert_eq!(released(&mut set, 0, 3), [complete]);
-            assert_eq!(taken(&mut set, 0, complete), [range(2, 1)]);
+            assert_eq!(released(&mut set, 0, 3), []);
+            assert_eq!(missed(&mut set, 0, complete), []);
+        }
+
+        #[test]
+        fn ends_a_complete_reader_behind_once_the_frames_before_the_lost_are_on_disk() {
+            let frames = Frames::new();
+            let mut set = carried(1);
+            let complete = set.open_complete(0, 0, u64::MAX, complete::Charge::Whole);
+            set.applied(0, frames.frame(Path::Live, 0..1), &frames.set, 0..1);
+            set.lost(0, Some(frames.frame(Path::Live, 1..3)), 1..3);
+            assert_eq!(woken(&mut set), []);
+            assert_eq!(set.listed(), [0]);
+            assert_eq!(released(&mut set, 0, 1), [complete]);
+            assert_eq!(missed(&mut set, 0, complete), [range(0, 1)]);
         }
 
         #[test]
@@ -532,7 +577,7 @@ mod tests {
         fn panics_on_a_backfill_frame() {
             let frames = Frames::new();
             let mut set = carried(1);
-            set.lost(0, frames.frame(Path::Backfill, 0..2));
+            set.lost(0, Some(frames.frame(Path::Backfill, 0..2)), 0..2);
         }
     }
 
@@ -547,6 +592,8 @@ mod tests {
         }
 
         /// The set keeps the number of a shed index only until it carries it again.
+        /// No caller sees a kept number: a slot is carried again only after a `shed`,
+        /// which writes over it.
         #[test]
         fn drops_the_number_of_a_shed_index_that_it_carries_again() {
             let mut set = carried(2);

@@ -107,7 +107,13 @@ impl Mesh {
         self.check_proposer()?;
         let homes = self.keyed(&indexes)?;
         let holders = BTreeSet::from([self.group.borrow().raft.key()]);
-        region::quorum(self.group.borrow().raft.voters(), &holders).map_err(refused)?;
+        let quorum = self
+            .group
+            .borrow()
+            .raft
+            .voters()
+            .quorum(|key| holders.contains(&key));
+        quorum.map_err(|short| refused(short.into()))?;
         // Each chunk, not only the listed ones: the store can lack a chunk that the
         // base shares with the new tree, and `diff` never reads a shared chunk.
         put(&self.store, &self.pool, &chunks, &update.chunks).await?;

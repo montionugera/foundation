@@ -33,12 +33,41 @@
   `RUSTFLAGS="-C target-cpu=x86-64-v2 -C llvm-args=-align-all-functions=6"`, and its
   result names these flags beside the machine. The two builds of one comparison, also in
   the daily run against its fixed commit, use the same flags. An aligned result over 5%
-  still needs the P1 judgment. `scripts/bench-host.sh` passes these flags after the item
-  of #1139
-  (https://github.com/synnaxlabs/foundation/issues/1139#issuecomment-6074402988). The
+  still needs the P1 judgment. `scripts/bench-host.sh` passes the flags (item of #1139,
+  https://github.com/synnaxlabs/foundation/issues/1139#issuecomment-6074402988). The
   two-host carrier bench builds as `bench/carrier/run.sh` does. A carrier result over
   5% that the P1 judgment does not find in the code of the PR is the trigger for a
   change of the script. Decided by `laptop.director`, 2026-10-09T02:44:36Z:
   https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6073190937, with its
   scope at 2026-10-09T02:50:37Z:
   https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6073252079.
+  Amended (2026-10-10T00:24Z): each 5% in this record is now the cost limit of P1
+  (`docs/decisions/memory/p1.md`), and each "over 5%" is "at or over the cost limit". A
+  result is near the limit when it is at or over the limit and the noise of its run
+  could put it under. A slowdown under the limit needs no rerun, no judgment, and no
+  issue. The daily run stays: it finds small slowdowns that add up. The person decided
+  on 2026-10-10T00:24Z ("Yes, I approve it"; `laptop.monitor`'s record:
+  https://github.com/synnaxlabs/foundation/pull/2196#issuecomment-6091584600).
+  Supersedes the 5% of
+  https://github.com/synnaxlabs/foundation/issues/462#issuecomment-6074405652 and
+  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6073190937.
+  Amended (2026-10-11): a one-host quiet-host run that compares two commits makes three
+  passes or more of each commit. A pass runs the benches once at one commit. The time of
+  a bench at a commit is the median of the medians of its passes, and one pass alone
+  gives no time: the host builds each commit once, before the first pass
+  (`scripts/bench-host.sh`), so a difference between two passes of one commit is the
+  host, not the code. The result of a bench is the slowdown of its head time against its
+  base time, and a result at or over the cost limit still needs the P1 judgment. The
+  check of two passes of one binary in WAL BENCH
+  (`docs/decisions/delivery/wal-bench.md`) stays. Decided by `laptop.director`,
+  2026-10-11T05:56:21Z:
+  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6106022275, on the
+  reading of `laptop.architect` in
+  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6105920017, with the
+  count, the slowdown, and the scope at 2026-10-11T06:21:14Z:
+  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6106196216, and with
+  the words "pass", "time", and "result" at 2026-10-11T06:41:22Z:
+  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6106336614.
+  `scripts/bench-host.sh` makes two passes of each commit, so its report alone gives no
+  result. Until #2367 changes it, `laptop.monitor` makes the passes as in
+  https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6104945553.

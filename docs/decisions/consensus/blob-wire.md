@@ -71,4 +71,10 @@
   texts of `hub::Error` change). Decided by `laptop.architect` (2026-10-09T01:57:16Z):
   https://github.com/synnaxlabs/foundation/issues/1681#issuecomment-6072682474, under
   the OK of 2026-10-08T16:52:55Z:
-  https://github.com/synnaxlabs/foundation/pull/1918#issuecomment-6064815697.
+  https://github.com/synnaxlabs/foundation/pull/1918#issuecomment-6064815697. Amended
+  (`laptop.architect`, 2026-10-11T05:39:27Z:
+  https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6105909022): `FULL`
+  also stops a put when the disk of the server is full (`env::files::Error::Full`),
+  because both mean that the server has no room for the put. Supersedes "`FULL`: the
+  free floor of #1229" of
+  https://github.com/synnaxlabs/foundation/issues/1227#issuecomment-6046483057.

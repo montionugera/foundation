@@ -7,7 +7,7 @@ use document::{Attribute, Block, Document, Label, Position, Source, Span};
 
 use crate::lex::{self, Tokens};
 use crate::write::{After, INDENT, Writer};
-use crate::{Error, Unwritable, read, write};
+use crate::{Unwritable, read, write};
 
 /// Changes `text` so that [`read`] reads it as `document`, and returns the new text.
 /// Each attribute and block that keeps its value and its place keeps its bytes, with
@@ -47,7 +47,7 @@ pub fn update(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// The problems in the text, as [`read`] gives them.
-    Text(Vec<Error>),
+    Text(Vec<Diagnostic>),
     /// The parts of the Document that HCL text cannot hold, as [`write()`] gives them.
     Document(Vec<Unwritable>),
 }
@@ -56,7 +56,7 @@ pub enum Refusal {
 impl From<&Refusal> for Vec<Diagnostic> {
     fn from(refusal: &Refusal) -> Self {
         match refusal {
-            Refusal::Text(errors) => errors.iter().map(Diagnostic::from).collect(),
+            Refusal::Text(diagnostics) => diagnostics.clone(),
             Refusal::Document(parts) => parts.iter().map(Diagnostic::from).collect(),
         }
     }
@@ -567,8 +567,8 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::Expected;
     use crate::arbitrary::{checked, document};
+    use crate::{Error, Expected};
 
     fn parsed(text: &str) -> Document {
         read(Source(0), text).unwrap()
@@ -746,6 +746,61 @@ mod tests {
         span
     }
 
+    /// Whether `want` equals `out` but in one place, where `want` has a heredoc and
+    /// `out` has a value on one line: the value of the top attribute of `out` with
+    /// the key of the attribute that ends `text`. After the closer, `want` holds the
+    /// rest of `out`, with a `\n` that `out` lacks when the closer's line is the last.
+    fn quoted_at_end(text: &str, out: &str, want: &str) -> bool {
+        let start = out
+            .char_indices()
+            .zip(want.chars())
+            .find(|((_, a), b)| a != b)
+            .map_or(out.len().min(want.len()), |((i, _), _)| i);
+        let values = |text: &str| {
+            let document = read(Source(0), text).ok()?;
+            let spans = document.attributes.iter().filter_map(|attribute| {
+                let span = attribute.value.span?;
+                let start = usize::try_from(span.start().offset).ok()?;
+                let end = usize::try_from(span.end().offset).ok()?;
+                Some((attribute.key.clone(), start, end))
+            });
+            Some(spans.collect::<Vec<_>>())
+        };
+        let ended = text.trim_end().len();
+        let Some(key) = values(text)
+            .into_iter()
+            .flatten()
+            .find_map(|(key, _, last)| (last == ended).then_some(key))
+        else {
+            return false;
+        };
+        // The end of the value of `key` that starts at `start`.
+        let end = |text: &str| {
+            values(text)
+                .into_iter()
+                .flatten()
+                .find_map(|(other, first, last)| {
+                    (other == key && first == start).then_some(last)
+                })
+        };
+        let (Some(last), Some(closer)) = (end(out), end(want)) else {
+            return false;
+        };
+        // A heredoc's span ends after its marker and the spaces after it.
+        let heredoc = want.get(start..closer).unwrap_or_default();
+        let spaces = heredoc.trim_end_matches(lex::space).len();
+        let spaces = heredoc.get(spaces..).unwrap_or_default();
+        let rest = match want.get(closer..) {
+            Some("\n") => "",
+            rest => rest.unwrap_or_default(),
+        };
+        heredoc.starts_with("<<")
+            && out
+                .get(start..last)
+                .is_some_and(|value| !value.contains('\n'))
+            && out.get(last..) == Some(&format!("{spaces}{rest}"))
+    }
+
     proptest! {
         #[test]
         fn keeps_a_text_whose_document_does_not_change(
@@ -827,7 +882,10 @@ mod tests {
             let annotated = annotate(&text_of(&a, attributes_last), &mut picks);
             let text = annotated.trim_end_matches(['\r', '\n']);
             // `update` takes the line end of the first line.
-            let line_end = if text.contains("\r\n") { "\r\n" } else { "\n" };
+            let crlf = text
+                .split_once('\n')
+                .is_some_and(|(line, _)| line.ends_with('\r'));
+            let line_end = if crlf { "\r\n" } else { "\n" };
             let ended = format!("{text}{line_end}");
             // A heredoc needs the line end after its closer.
             prop_assume!(read(Source(0), text) == Ok(a.clone()));
@@ -835,7 +893,12 @@ mod tests {
             let out = update(Source(0), text, &checked(&document)).unwrap();
             let want = update(Source(0), &ended, &checked(&document)).unwrap();
             prop_assert!(
-                want == out || want == format!("{out}{line_end}"),
+                want == out
+                    || want == format!("{out}{line_end}")
+                    // A heredoc needs a line end after its closer, so a value at the
+                    // end of an unended text is quoted.
+                    || quoted_at_end(text, &out, &want)
+                        && read(Source(0), &out) == Ok(document),
                 "{:?}\n{:?}\n{:?}",
                 text,
                 out,
@@ -1055,6 +1118,94 @@ mod tests {
     }
 
     #[test]
+    fn quotes_a_value_at_the_end_of_a_text_with_no_line_end_before_an_added_line() {
+        let new = "a = \"\\n\"\nb = false";
+        let out = updated("a = false", new);
+        let want = updated("a = false\n", new);
+        assert_eq!(out, "a = \"\\n\"\nb = false\n");
+        assert_eq!(want, "a = <<EOT\n\nEOT\nb = false\n");
+        assert!(quoted_at_end("a = false", &out, &want));
+        let out = "a = \"x\\n\"\nb = 2\nc = 3\n";
+        let want = "a = <<EOT\nx\nEOT\nb = 2\nc = 3\n";
+        assert!(!quoted_at_end("a = 1\nb = 2", out, want));
+        let out = "ba = \"x\\n\"\na = 2\nc = 3\n";
+        let want = "ba = <<EOT\nx\nEOT\na = 2\nc = 3\n";
+        assert!(!quoted_at_end("ba = 1\na = 2", out, want), "line");
+        let out = "b {\na = \"x\\n\"\n}\na = 2\nc = 3\n";
+        let want = "b {\na = <<EOT\nx\nEOT\n}\na = 2\nc = 3\n";
+        assert!(!quoted_at_end("b {\na = 1\n}\na = 2", out, want), "block");
+        let ended = "a = <<EOT\nx\nEOT\n";
+        let more = "a = <<EOT\nx\nEOT\nb = 2\n";
+        for (out, want) in [
+            ("a = \"x\\n\" # c\nb = 2\n", more),
+            ("a = \"x\\n\"   \nb = 2\n", more),
+            ("a = \"x\\n\" # c", ended),
+            ("a = \"x\\n\"   ", ended),
+        ] {
+            let after = quoted_at_end("a = 1", out, want);
+            assert!(!after, "after the value: {out:?}");
+        }
+        let lines = "a = [\n\"x\\n\"\n]";
+        assert!(!quoted_at_end("a = 1", lines, ended), "one line");
+        let out = "a = \"x\"\n";
+        assert!(
+            !quoted_at_end("a = 1", out, ended),
+            "line end after the closer"
+        );
+        let want = "a = 2\n";
+        assert!(!quoted_at_end("a = 1", "a = \"x\\n\"", want), "no heredoc");
+        let want = "b {\na = 1\n}\nc = <<EOT\nx\nEOT\n";
+        let out = "b {\na = 1\n}\nc = \"x\\n\"";
+        assert!(
+            !quoted_at_end("b {\na = 1\n}", out, want),
+            "text in a block"
+        );
+        assert_eq!(
+            updated("a = 1\nb = 2", "a = \"x\\n\"\nb = 2"),
+            "a = <<EOT\nx\nEOT\nb = 2"
+        );
+    }
+
+    #[test]
+    fn quotes_the_last_value_of_an_unended_text_with_more_bytes_on_its_line() {
+        for (text, new) in [
+            ("a = 1  ", "a = \"x\\n\""),
+            ("a = 1  ", "a = \"x\\n\"\nb = 2"),
+            ("a = 1\t", "a = \"x\\n\""),
+            ("\u{feff}a = 1", "a = \"x\\n\""),
+            ("b = 2\n  a = 1", "b = 2\na = \"x\\n\""),
+            ("/* c */ a = 1", "a = \"x\\n\""),
+        ] {
+            let ended = format!("{text}\n");
+            let (out, want) = (updated(text, new), updated(&ended, new));
+            assert!(quoted_at_end(text, &out, &want), "{out:?}\n{want:?}");
+        }
+    }
+
+    #[test]
+    fn quotes_the_last_value_of_an_unended_text_with_a_crlf_line() {
+        for text in ["a = 1\nb = 2\r\nc = 3", "a = 1\nb = 2\r\nc = 3  "] {
+            let new = "a = 1\nb = 2\nc = \"x\\n\"";
+            let ended = format!("{text}\n");
+            let (out, want) = (updated(text, new), updated(&ended, new));
+            assert!(quoted_at_end(text, &out, &want), "{out:?}\n{want:?}");
+            let kept = format!("{out}\r\n");
+            assert!(!quoted_at_end(text, &kept, &want), "{kept:?}");
+        }
+    }
+
+    #[test]
+    fn quotes_the_last_value_of_a_crlf_line_before_an_added_line() {
+        let text = "a = 1\nb = 2\r\nc = 3";
+        let new = "a = 1\nb = 2\nc = \"x\\n\"\nd = 4";
+        let (out, want) = (updated(text, new), updated(&format!("{text}\n"), new));
+        assert_eq!(out, "a = 1\nb = 2\r\nc = \"x\\n\"\nd = 4\n");
+        assert!(quoted_at_end(text, &out, &want), "{out:?}\n{want:?}");
+        let kept = out.replacen("\"\n", "\"\r\n", 1);
+        assert!(!quoted_at_end(text, &kept, &want), "{kept:?}");
+    }
+
+    #[test]
     fn keeps_a_value_that_fits_on_one_line_before_a_comment_or_the_end() {
         let line = format!("a = [\"{}\"]", "x".repeat(80));
         assert_eq!(line.chars().count(), 88);
@@ -1137,10 +1288,10 @@ mod tests {
         };
         assert_eq!(
             update(Source(0), "a = \n", &checked(&document)),
-            Err(Refusal::Text(vec![Error::Syntax {
+            Err(Refusal::Text(vec![Diagnostic::from(&Error::Syntax {
                 span: Span::new(Source(0), at(4, 0, 4), at(5, 1, 0)).unwrap(),
                 expected: Expected::Value,
-            }]))
+            })]))
         );
         assert_eq!(
             update(Source(0), "a = 1\n", &checked(&document)),
@@ -1155,12 +1306,14 @@ mod tests {
             line: 0,
             column: offset,
         };
-        let errors = [3, 1].map(|offset| Error::TooDeep {
-            span: Span::new(Source(0), at(offset), at(offset)).unwrap(),
+        let diagnostics = [3, 1].map(|offset| {
+            Diagnostic::from(&Error::TooDeep {
+                span: Span::new(Source(0), at(offset), at(offset)).unwrap(),
+            })
         });
         assert_eq!(
-            Vec::<Diagnostic>::from(&Refusal::Text(errors.to_vec())),
-            errors.iter().map(Diagnostic::from).collect::<Vec<_>>()
+            Vec::<Diagnostic>::from(&Refusal::Text(diagnostics.to_vec())),
+            diagnostics
         );
         let parts = [
             Unwritable::For { span: None },

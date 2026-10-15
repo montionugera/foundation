@@ -7,12 +7,12 @@ mod wire;
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::task::Waker;
 
 use env::net::Error;
 use env::rng::Rng;
 use types::time::Monotonic;
 
+use crate::log::Waker;
 use crate::name::key;
 use crate::{Crash, link, name};
 use wire::{Packet, Wire};

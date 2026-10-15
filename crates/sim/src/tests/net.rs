@@ -5,8 +5,9 @@ use std::future::poll_fn;
 use std::io::IoSliceMut;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::num::{NonZeroU64, NonZeroUsize};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll, Wake, Waker};
 
 use env::net::udp::{Config as Udp, Meta, Receiver, Sender, Transmit};
 use env::net::{Ecn, Error as Net};
@@ -319,6 +320,43 @@ fn a_send_that_waits_wakes_only_when_the_send_buffer_has_room() {
     let _send = send_logged(&a, sender, to, vec![vec![2]], &sent);
     sim.run_for(Span::SECOND).unwrap();
     assert_eq!(*sent.lock().unwrap(), [(after(millis(2)), 2)]);
+}
+
+/// A waker that counts its wakes.
+struct Wakes(AtomicUsize);
+
+impl Wake for Wakes {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn a_send_that_waits_twice_with_one_waker_keeps_it_once_and_wakes_it_once() {
+    let (mut sim, a, b) = pair(0, rated());
+    let (mut sender, _a) = buffered(&a, 4433, 1740);
+    let (_b, _receiver) = udp(&b, 4433);
+    let to = at(&b, 4433);
+    let counter = Arc::new(Wakes(AtomicUsize::new(0)));
+    let kept = Arc::new(AtomicUsize::new(0));
+    let (inner, kept_inner) = (Arc::clone(&counter), Arc::clone(&kept));
+    let send = a.shards().start(shard("send"), move |_| async move {
+        let full = vec![1; 972];
+        poll_fn(|cx| sender.poll_send(cx, &transmit(to, &full)))
+            .await
+            .unwrap();
+        let waker = Waker::from(Arc::clone(&inner));
+        let mut cx = Context::from_waker(&waker);
+        for _ in 0..2 {
+            assert!(sender.poll_send(&mut cx, &transmit(to, &[2])).is_pending());
+        }
+        // The test, `inner`, and `waker` hold the other three.
+        kept_inner.store(Arc::strong_count(&inner) - 3, Ordering::Relaxed);
+    });
+    let _send = send.unwrap();
+    sim.run_for(Span::SECOND).unwrap();
+    let kept = kept.load(Ordering::Relaxed);
+    assert_eq!((kept, counter.0.load(Ordering::Relaxed)), (1, 1));
 }
 
 #[test]

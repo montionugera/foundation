@@ -31,7 +31,7 @@ use std::fmt;
 
 use types::digest::Digest;
 
-use crate::common::{Fields, Writer, body};
+use crate::common::{Fields, Length, Writer, body};
 use crate::header;
 
 const GET: u8 = 1;
@@ -65,7 +65,7 @@ pub mod get {
 
     use types::digest::Digest;
 
-    use super::{DIGEST_LEN, Error, GET, Writer};
+    use super::{DIGEST_LEN, Error, Fields, GET, Writer};
 
     /// The bytes of a get of `digests` digests. A get has at least 1.
     #[must_use]
@@ -105,13 +105,9 @@ pub mod get {
 
     impl ExactSizeIterator for Digests<'_> {}
 
-    /// The digests in `rest`, the bytes after the kind of a message of `len` bytes.
-    pub(super) fn decode(rest: &[u8], len: usize) -> Result<Digests<'_>, Error> {
-        let (digests, tail) = rest.as_chunks::<DIGEST_LEN>();
-        if digests.is_empty() || !tail.is_empty() {
-            return Err(Error::Length { len });
-        }
-        Ok(Digests(digests.iter()))
+    /// The digests in `fields`, the fields of a get after its kind.
+    pub(super) fn decode(fields: Fields<'_>) -> Result<Digests<'_>, Error> {
+        Ok(Digests(fields.take_all()?.iter()))
     }
 }
 
@@ -140,12 +136,10 @@ impl Put {
         out.put(&self.len.to_le_bytes());
     }
 
-    /// The put whose fields are `rest`, the bytes after the kind of a message of
-    /// `len` bytes.
-    fn fields(rest: &[u8], len: usize) -> Result<Self, Error> {
-        let mut fields = Fields::new(rest, Error::Length { len });
-        let digest = Digest(fields.take()?);
-        let len = u32::from_le_bytes(fields.take()?);
+    /// The put in `fields`, the fields of a put after its kind.
+    fn fields(mut fields: Fields<'_>) -> Result<Self, Error> {
+        let digest = Digest(*fields.take()?);
+        let len = u32::from_le_bytes(*fields.take()?);
         fields.end()?;
         Ok(Self { digest, len })
     }
@@ -224,18 +218,20 @@ impl Reply {
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let (&kind, rest) = bytes.split_first().ok_or(Error::Empty)?;
-        let mut fields = Fields::new(rest, Error::Length { len: bytes.len() });
+        let mut fields = Fields::new(bytes);
+        let Some(kind) = fields.kind() else {
+            return Err(Error::Empty);
+        };
         let reply = match kind {
             CHUNK => Self::Chunk {
-                digest: Digest(fields.take()?),
-                len: u32::from_le_bytes(fields.take()?),
+                digest: Digest(*fields.take()?),
+                len: u32::from_le_bytes(*fields.take()?),
             },
             ABSENT => Self::Absent {
-                digest: Digest(fields.take()?),
+                digest: Digest(*fields.take()?),
             },
             STORED => Self::Stored {
-                digest: Digest(fields.take()?),
+                digest: Digest(*fields.take()?),
             },
             kind => return Err(Error::Kind { kind }),
         };
@@ -276,11 +272,14 @@ impl Server {
     /// put longer than the limit. The caller then stops the session with
     /// [`Error::code`].
     pub fn decode<'m>(&self, message: &'m [u8]) -> Result<FromRequester<'m>, Error> {
-        let (&kind, rest) = message.split_first().ok_or(Error::Empty)?;
+        let mut fields = Fields::new(message);
+        let Some(kind) = fields.kind() else {
+            return Err(Error::Empty);
+        };
         match kind {
-            GET => Ok(FromRequester::Get(get::decode(rest, message.len())?)),
+            GET => Ok(FromRequester::Get(get::decode(fields)?)),
             PUT => {
-                let put = Put::fields(rest, message.len())?;
+                let put = Put::fields(fields)?;
                 fits(put.len, self.chunk_bytes_max)?;
                 Ok(FromRequester::Put(put))
             }
@@ -449,6 +448,12 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+impl From<Length> for Error {
+    fn from(Length { len }: Length) -> Self {
+        Self::Length { len }
+    }
+}
 
 impl From<body::Error> for Error {
     fn from(error: body::Error) -> Self {

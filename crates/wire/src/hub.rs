@@ -37,7 +37,7 @@ pub use home::{FromReader, Home};
 pub use reader::{FromHome, Reader};
 use types::frame::{Path, Range};
 
-use crate::common::{Fields, Writer, body};
+use crate::common::{Fields, Length, Run, Writer, body};
 
 const LATEST: u8 = 1;
 const COMPLETE: u8 = 2;
@@ -51,11 +51,67 @@ const BEHIND: u8 = 3;
 pub const UNKNOWN: u32 = 16;
 /// Stop code: the node is not the home of the open's index.
 pub const NOT_HOME: u32 = 17;
-/// Stop code: the home's buffer failed.
+/// Stop code: the home's buffer failed, or its mesh stopped.
 pub const FAILED: u32 = 18;
-/// Stop code: the home had no memory for a reply, or the node had no room for a
-/// request body under its cap. A later open or request can succeed.
+/// Stop code: the side that stops had no block for a stream's session, or no room for
+/// a request body under its cap. A later open or request can succeed, but not when
+/// the block is larger than each block of that side's pool.
 pub const BUSY: u32 = 19;
+
+/// A code of HUB WIRE that ends a session, from the side that stops the stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// [`MALFORMED`](crate::header::MALFORMED).
+    Malformed,
+    /// [`UNKNOWN`].
+    Unknown,
+    /// [`NOT_HOME`].
+    NotHome,
+    /// [`FAILED`].
+    Failed,
+    /// [`BUSY`].
+    Busy,
+}
+
+impl Refusal {
+    /// The refusal that `code` names, or `None` for a code that HUB WIRE does not
+    /// name.
+    #[must_use]
+    pub fn from_code(code: u32) -> Option<Self> {
+        match code {
+            crate::header::MALFORMED => Some(Self::Malformed),
+            UNKNOWN => Some(Self::Unknown),
+            NOT_HOME => Some(Self::NotHome),
+            FAILED => Some(Self::Failed),
+            BUSY => Some(Self::Busy),
+            _ => None,
+        }
+    }
+
+    /// The code that stops or resets the stream.
+    #[must_use]
+    pub fn code(self) -> u32 {
+        match self {
+            Self::Malformed => crate::header::MALFORMED,
+            Self::Unknown => UNKNOWN,
+            Self::NotHome => NOT_HOME,
+            Self::Failed => FAILED,
+            Self::Busy => BUSY,
+        }
+    }
+}
+
+impl fmt::Display for Refusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Malformed => "a message broke the hub protocol",
+            Self::Unknown => "the home does not know a channel of the open",
+            Self::NotHome => "the node is not the home of the index",
+            Self::Failed => "the home's buffer failed, or its mesh stopped",
+            Self::Busy => "the side that stopped had no block for the session",
+        })
+    }
+}
 
 /// The first message from the reader's node, which opens the session. The run of its
 /// [`keys`] follows.
@@ -107,16 +163,18 @@ impl Open {
     /// names no open, [`Error::Length`] when the length fits no open of that kind, and
     /// [`Error::Channels`] when the open names no channel.
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let (&kind, rest) = bytes.split_first().ok_or(Error::Empty)?;
-        let mut fields = Fields::new(rest, Error::Length { len: bytes.len() });
+        let mut fields = Fields::new(bytes);
+        let Some(kind) = fields.kind() else {
+            return Err(Error::Empty);
+        };
         let mode = match kind {
             LATEST => Mode::Latest,
             COMPLETE => Mode::Complete {
-                limit_bytes: u64::from_le_bytes(fields.take()?),
+                limit_bytes: u64::from_le_bytes(*fields.take()?),
             },
             kind => return Err(Error::Kind { kind }),
         };
-        let channels = u32::from_le_bytes(fields.take()?);
+        let channels = u32::from_le_bytes(*fields.take()?);
         fields.end()?;
         if channels == 0 {
             return Err(Error::Channels);
@@ -168,12 +226,14 @@ impl Credit {
     /// names no credit, and [`Error::Length`] when `bytes` is not [`Credit::LEN`]
     /// bytes.
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let (&kind, rest) = bytes.split_first().ok_or(Error::Empty)?;
+        let mut fields = Fields::new(bytes);
+        let Some(kind) = fields.kind() else {
+            return Err(Error::Empty);
+        };
         if kind != CREDIT {
             return Err(Error::Kind { kind });
         }
-        let mut fields = Fields::new(rest, Error::Length { len: bytes.len() });
-        let limit_bytes = u64::from_le_bytes(fields.take()?);
+        let limit_bytes = u64::from_le_bytes(*fields.take()?);
         fields.end()?;
         Ok(Self { limit_bytes })
     }
@@ -197,7 +257,8 @@ pub enum Reply {
 pub struct Head {
     /// How the frame reached the home.
     pub path: Path,
-    /// The samples of the frame.
+    /// The samples of the frame. A head whose range ends past `u64::MAX` is not
+    /// valid.
     pub range: Range,
     /// The count of the frame's series, which is the count of its ends. At least 1,
     /// since a frame holds its index. A head with more series than the session has
@@ -219,7 +280,8 @@ impl Reply {
     ///
     /// # Panics
     ///
-    /// When a head has no series, or `out` is not [`Reply::encoded_len`] bytes.
+    /// When a head has no series or a range that ends past `u64::MAX`, or `out` is
+    /// not [`Reply::encoded_len`] bytes.
     pub fn encode(&self, out: &mut [u8]) {
         let mut out = Writer::new(out, self.encoded_len());
         match self {
@@ -227,6 +289,12 @@ impl Reply {
             Self::Behind => out.put(&[BEHIND]),
             Self::Head(head) => {
                 assert!(head.series > 0, "a head names at least one series");
+                assert!(
+                    head.range.end().is_some(),
+                    "a head's range ends past the highest seq: {} samples from seq {}",
+                    head.range.count,
+                    head.range.seq
+                );
                 out.put(&[HEAD, path_byte(head.path)]);
                 out.put(&head.range.seq.to_le_bytes());
                 out.put(&head.range.count.to_le_bytes());
@@ -241,11 +309,13 @@ impl Reply {
     ///
     /// [`Error::Empty`] when `bytes` is empty, [`Error::Kind`] when the first byte
     /// names no reply, [`Error::Length`] when the length fits no reply of that kind,
-    /// [`Error::Path`] when a head names no path, and [`Error::Series`] when it names
-    /// no series.
+    /// [`Error::Path`] when a head names no path, [`Error::Series`] when it names no
+    /// series, and [`Error::Range`] when its range ends past `u64::MAX`.
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let (&kind, rest) = bytes.split_first().ok_or(Error::Empty)?;
-        let mut fields = Fields::new(rest, Error::Length { len: bytes.len() });
+        let mut fields = Fields::new(bytes);
+        let Some(kind) = fields.kind() else {
+            return Err(Error::Empty);
+        };
         match kind {
             OPENED => {
                 fields.end()?;
@@ -256,18 +326,22 @@ impl Reply {
                 Ok(Self::Behind)
             }
             HEAD => {
-                let [path] = fields.take()?;
-                let seq = u64::from_le_bytes(fields.take()?);
-                let count = u32::from_le_bytes(fields.take()?);
-                let series = u32::from_le_bytes(fields.take()?);
+                let [path] = *fields.take()?;
+                let seq = u64::from_le_bytes(*fields.take()?);
+                let count = u32::from_le_bytes(*fields.take()?);
+                let series = u32::from_le_bytes(*fields.take()?);
                 fields.end()?;
                 let path = path_of(path)?;
                 if series == 0 {
                     return Err(Error::Series);
                 }
+                let range = Range { seq, count };
+                if range.end().is_none() {
+                    return Err(Error::Range { seq, count });
+                }
                 Ok(Self::Head(Head {
                     path,
-                    range: Range { seq, count },
+                    range,
                     series,
                 }))
             }
@@ -422,7 +496,8 @@ pub mod ends {
     }
 }
 
-/// A hub message that is not valid.
+/// A message of a reader session that is not valid. The decoders of [`client`] give
+/// [`client::Error`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The message has no bytes.
@@ -441,6 +516,13 @@ pub enum Error {
     Channels,
     /// A head names no series.
     Series,
+    /// A head's range ends past the highest seq.
+    Range {
+        /// The seq of the range.
+        seq: u64,
+        /// The count of the range.
+        count: u32,
+    },
     /// A head names no path.
     Path {
         /// The path byte.
@@ -464,6 +546,17 @@ pub enum Error {
         /// The places of the session.
         places: u32,
     },
+    /// A head of a reader session is on the backfill path. A session gets only live
+    /// frames.
+    Backfill,
+    /// A head starts before the end of the head before it. The heads of a session
+    /// rise.
+    Seq {
+        /// The seq of the head.
+        seq: u64,
+        /// The seq plus the count of the head before it.
+        end: u64,
+    },
     /// A message of a run has more keys or ends than remain in the run.
     Run {
         /// The keys or ends of the message.
@@ -485,24 +578,20 @@ pub enum Error {
         /// The kind byte of the message.
         kind: u8,
     },
-    /// The subject of a hello is not a name.
-    Subject,
-    /// The key of a hello is a point of small order.
-    SmallOrder,
-    /// A request or a response has a body over
-    /// [`BODY_BYTES_MAX`](client::BODY_BYTES_MAX).
-    Oversize {
-        /// The bytes of the body.
-        length: u64,
-    },
-    /// A message comes after the body of a request or a response.
-    Trailing,
     /// The stream ended before its body.
     Unfinished {
         /// The bytes of the body that did not come.
         remain: usize,
     },
+    /// The home finished the stream outside a body, before it ended the session.
+    Finished,
 }
+
+// Frame decoders give it for each message: it stays `Copy`, with no drop glue.
+const _: fn() = || {
+    fn copy<T: Copy>() {}
+    copy::<Error>();
+};
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -518,6 +607,11 @@ impl fmt::Display for Error {
             ),
             Self::Channels => f.write_str("the hub open names no channel"),
             Self::Series => f.write_str("the frame head names no series"),
+            Self::Range { seq, count } => write!(
+                f,
+                "the frame head has {count} samples from seq {seq}, which end past the \
+                 highest seq"
+            ),
             Self::Path { byte } => write!(
                 f,
                 "the frame head names path {byte}, which this node does not know"
@@ -536,6 +630,14 @@ impl fmt::Display for Error {
                 "the frame head names {series} series, and the session has {places} \
                  places"
             ),
+            Self::Backfill => {
+                f.write_str("the frame head of a reader session is on backfill")
+            }
+            Self::Seq { seq, end } => write!(
+                f,
+                "the frame head starts at seq {seq}, before the end {end} of the head \
+                 before it"
+            ),
             Self::Run { items, remain } => write!(
                 f,
                 "the run message holds {items} items, and {remain} remain in the run"
@@ -551,27 +653,30 @@ impl fmt::Display for Error {
                 f,
                 "the hub message has kind {kind}, which a latest session does not have"
             ),
-            Self::Subject => f.write_str("the subject of the hello is not a name"),
-            Self::SmallOrder => {
-                f.write_str("the key of the hello is a point of small order")
-            }
-            Self::Oversize { length } => write!(
-                f,
-                "the body has {length} bytes, over the cap of {}",
-                client::BODY_BYTES_MAX
-            ),
-            Self::Trailing => {
-                f.write_str("a hub message came after the body of the stream")
-            }
             Self::Unfinished { remain } => write!(
                 f,
                 "the stream ended with {remain} bytes of its body to come"
             ),
+            Self::Finished => {
+                f.write_str("the home finished the stream before it ended the session")
+            }
         }
     }
 }
 
 impl std::error::Error for Error {}
+
+impl From<Length> for Error {
+    fn from(Length { len }: Length) -> Self {
+        Self::Length { len }
+    }
+}
+
+impl From<Run> for Error {
+    fn from(Run { items, remain }: Run) -> Self {
+        Self::Run { items, remain }
+    }
+}
 
 impl From<body::Error> for Error {
     fn from(error: body::Error) -> Self {
@@ -581,14 +686,6 @@ impl From<body::Error> for Error {
             body::Error::Unfinished { remain } => Self::Unfinished { remain },
         }
     }
-}
-
-/// The items that remain in a run of `remain` after a message of `items` items.
-fn rest_of_run(remain: u32, items: usize) -> Result<u32, Error> {
-    u32::try_from(items)
-        .ok()
-        .and_then(|count| remain.checked_sub(count))
-        .ok_or(Error::Run { items, remain })
 }
 
 /// The slots of one message of a run: `out` as items of `N` bytes, to fill.
@@ -890,6 +987,23 @@ mod tests {
         }
 
         #[test]
+        fn refuses_a_head_whose_range_ends_past_the_highest_seq() {
+            let mut bytes = encode_reply(head(Path::Live, u64::MAX - 1, 1, 1));
+            assert_eq!(
+                Reply::decode(&bytes),
+                Ok(head(Path::Live, u64::MAX - 1, 1, 1))
+            );
+            bytes[10] = 2;
+            assert_eq!(
+                Reply::decode(&bytes),
+                Err(Error::Range {
+                    seq: u64::MAX - 1,
+                    count: 2
+                })
+            );
+        }
+
+        #[test]
         fn decodes_a_head_of_one_series() {
             let mut bytes = zeros(2, 18);
             bytes[14] = 1;
@@ -900,6 +1014,15 @@ mod tests {
         #[should_panic(expected = "a head names at least one series")]
         fn panics_on_a_head_of_no_series() {
             head(Path::Live, 0, 0, 0).encode(&mut [0; 18]);
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "a head's range ends past the highest seq: 1 samples from seq \
+                        18446744073709551615"
+        )]
+        fn panics_on_a_head_whose_range_ends_past_the_highest_seq() {
+            head(Path::Live, u64::MAX, 1, 1).encode(&mut [0; 18]);
         }
 
         #[test]
@@ -1150,6 +1273,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines, reason = "one case for each error")]
     fn names_each_error() {
         let cases = [
             (Error::Empty, "the hub message is empty"),
@@ -1163,6 +1287,10 @@ mod tests {
             ),
             (Error::Channels, "the hub open names no channel"),
             (Error::Series, "the frame head names no series"),
+            (
+                Error::Range { seq: 7, count: 2 },
+                "the frame head has 2 samples from seq 7, which end past the highest seq",
+            ),
             (
                 Error::Path { byte: 2 },
                 "the frame head names path 2, which this node does not know",
@@ -1182,6 +1310,14 @@ mod tests {
                     places: 3,
                 },
                 "the frame head names 4 series, and the session has 3 places",
+            ),
+            (
+                Error::Backfill,
+                "the frame head of a reader session is on backfill",
+            ),
+            (
+                Error::Seq { seq: 3, end: 11 },
+                "the frame head starts at seq 3, before the end 11 of the head before it",
             ),
             (
                 Error::Run {
@@ -1205,31 +1341,13 @@ mod tests {
                 Error::Latest { kind: 3 },
                 "the hub message has kind 3, which a latest session does not have",
             ),
-        ];
-        for (error, text) in cases {
-            assert_eq!(error.to_string(), text);
-        }
-    }
-
-    #[test]
-    fn names_each_error_of_a_client_stream() {
-        let cases = [
-            (Error::Subject, "the subject of the hello is not a name"),
-            (
-                Error::SmallOrder,
-                "the key of the hello is a point of small order",
-            ),
-            (
-                Error::Oversize { length: 16_777_217 },
-                "the body has 16777217 bytes, over the cap of 16777216",
-            ),
-            (
-                Error::Trailing,
-                "a hub message came after the body of the stream",
-            ),
             (
                 Error::Unfinished { remain: 3 },
                 "the stream ended with 3 bytes of its body to come",
+            ),
+            (
+                Error::Finished,
+                "the home finished the stream before it ended the session",
             ),
         ];
         for (error, text) in cases {
@@ -1250,8 +1368,16 @@ mod tests {
         prop_oneof![
             Just(Reply::Opened),
             Just(Reply::Behind),
-            (path, any::<u64>(), any::<u32>(), 1..=u32::MAX)
-                .prop_map(|(path, seq, count, series)| head(path, seq, count, series)),
+            (path, any::<u64>(), any::<u32>(), 1..=u32::MAX).prop_map(
+                |(path, seq, count, series)| {
+                    head(
+                        path,
+                        seq.min(u64::MAX.saturating_sub(u64::from(count))),
+                        count,
+                        series,
+                    )
+                }
+            ),
         ]
     }
 
@@ -1268,6 +1394,41 @@ mod tests {
                 [[kind].as_slice(), &rest].concat()
             })
         })
+    }
+
+    #[test]
+    fn names_each_code_of_hub_wire_that_ends_a_session() {
+        let refusals = [
+            (Refusal::Malformed, 2, "a message broke the hub protocol"),
+            (
+                Refusal::Unknown,
+                16,
+                "the home does not know a channel of the open",
+            ),
+            (
+                Refusal::NotHome,
+                17,
+                "the node is not the home of the index",
+            ),
+            (
+                Refusal::Failed,
+                18,
+                "the home's buffer failed, or its mesh stopped",
+            ),
+            (
+                Refusal::Busy,
+                19,
+                "the side that stopped had no block for the session",
+            ),
+        ];
+        for (refusal, code, meaning) in refusals {
+            assert_eq!(refusal.code(), code);
+            assert_eq!(Refusal::from_code(code), Some(refusal));
+            assert_eq!(refusal.to_string(), meaning);
+        }
+        for code in (0..32).filter(|code| ![2, 16, 17, 18, 19].contains(code)) {
+            assert_eq!(Refusal::from_code(code), None, "{code}");
+        }
     }
 
     proptest! {

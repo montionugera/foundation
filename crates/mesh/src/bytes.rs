@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use raft::{Change, Grant, Position, Proof, Signature, Term, Voters};
 use types::channel;
 use types::ed25519::PublicKey;
-use types::name::Name;
+use types::name::{Name, Prefix};
 use types::node;
 use types::time::{Span, Stamp};
 
@@ -53,6 +53,23 @@ pub(crate) fn take_name(bytes: &mut &[u8]) -> Option<Name> {
     let (name, rest) = bytes.split_at_checked(usize::from(len))?;
     *bytes = rest;
     std::str::from_utf8(name).ok()?.parse().ok()
+}
+
+/// Adds a prefix behind a length byte, with no bytes for the root.
+pub(crate) fn put_prefix(prefix: &Prefix, out: &mut Vec<u8>) {
+    let prefix = prefix.to_string();
+    out.push(
+        u8::try_from(prefix.len()).expect("invariant: a name is at most 255 bytes"),
+    );
+    out.extend(prefix.as_bytes());
+}
+
+/// Takes what [`put_prefix`] gives. `None` when the bytes are not a valid prefix.
+pub(crate) fn take_prefix(bytes: &mut &[u8]) -> Option<Prefix> {
+    let [len] = take(bytes)?;
+    let (prefix, rest) = bytes.split_at_checked(usize::from(len))?;
+    *bytes = rest;
+    std::str::from_utf8(prefix).ok()?.parse().ok()
 }
 
 /// Adds a public key's 32 bytes.
@@ -194,8 +211,7 @@ pub(crate) fn put_optional_key(key: Option<node::Key>, out: &mut Vec<u8>) {
 ///
 /// # Panics
 ///
-/// When `signature` is `None`: the caller signs every grant and change before it
-/// encodes one.
+/// When `signature` is `None`: the caller signs each claim before it encodes one.
 pub(crate) fn put_signature(signature: Option<Signature>, out: &mut Vec<u8>) {
     let Signature(bytes) =
         signature.expect("invariant: a claim is signed before it is encoded");

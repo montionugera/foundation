@@ -8,7 +8,7 @@
 
 use std::ffi::c_void;
 
-use connector_opcua::bench::Client;
+use connector_opcua::bench::{Client, client};
 use sim::Sim;
 
 #[global_allocator]
@@ -23,7 +23,7 @@ struct Bytes {
 
 /// A `UA_NodeId` with a numeric identifier.
 #[repr(C, align(8))]
-struct NodeId {
+struct Key {
     namespace: u16,
     kind: u32,
     numeric: u32,
@@ -31,7 +31,7 @@ struct NodeId {
 }
 
 unsafe extern "C" {
-    fn UA_findDataType(id: *const NodeId) -> *const c_void;
+    fn UA_findDataType(key: *const Key) -> *const c_void;
     fn UA_ByteString_allocBuffer(bytes: *mut Bytes, length: usize) -> u32;
     fn UA_clear(value: *mut c_void, kind: *const c_void);
     fn connector_opcua_malloc(size: usize) -> *mut c_void;
@@ -46,18 +46,20 @@ fn main() {
     c_allocates_through_the_global_allocator();
     the_drop_frees_the_client_its_loop_and_its_timers();
     each_function_writes_the_size_into_the_header();
+    the_fuzz_round_trip_frees_each_value();
+    a_client_frees_what_it_holds();
 }
 
 fn c_allocates_through_the_global_allocator() {
-    let id = NodeId {
+    let key = Key {
         namespace: 0,
         kind: 0,
         // The type ByteString.
         numeric: 15,
         rest: [0; 3],
     };
-    // SAFETY: `id` is a valid numeric node key.
-    let kind = unsafe { UA_findDataType(&raw const id) };
+    // SAFETY: `key` is a valid numeric node key.
+    let kind = unsafe { UA_findDataType(&raw const key) };
     assert!(!kind.is_null(), "the copy holds the type ByteString");
     let before = ALLOCATOR.held();
     let mut bytes = Bytes {
@@ -83,9 +85,9 @@ fn c_allocates_through_the_global_allocator() {
 
 fn the_drop_frees_the_client_its_loop_and_its_timers() {
     let mut sim = Sim::new(sim::Config::default());
-    let clock = sim.node(sim::node::Config::default()).clock();
+    let node = sim.node(sim::node::Config::default());
     let before = ALLOCATOR.held();
-    let client = Client::new(env::clock::Clock::clone(&clock), 100);
+    let client = Client::new(node.clock(), &mut node.entropy().rng(), 100);
     let held = ALLOCATOR.held().strict_sub(before);
     assert!(
         held > 100 * size_of::<usize>(),
@@ -118,4 +120,44 @@ fn each_function_writes_the_size_into_the_header() {
     // SAFETY: `block` is live and from the allocator, and freed once.
     unsafe { connector_opcua_free(block) };
     assert_eq!(ALLOCATOR.held(), before, "free gave back what realloc held");
+}
+
+fn the_fuzz_round_trip_frees_each_value() {
+    // A `Variant` (23, as `ffi` is private) of 7 `ExtensionObject` values, then the
+    // zeros that #435 needs.
+    let mut data = vec![23, 0, 0x96, 7, 0, 0, 0];
+    data.resize(data.len() + 7 * 4, 0);
+    let before = ALLOCATOR.held();
+    connector_opcua::fuzz::decode(&data);
+    assert_eq!(ALLOCATOR.held(), before, "the round trip freed each block");
+}
+
+/// Each cycle connects a client, reads, closes the client, and drops it. The first
+/// cycle also grows the memory of the sim and of the server, so the test compares the
+/// later cycles. A client that only drops leaves its session on the server until it
+/// times out, which the server holds.
+fn a_client_frees_what_it_holds() {
+    let mut sim = Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    let run = move |node: sim::node::Node, _| async move {
+        let address = node.addresses()[0];
+        let body = async |server: &client::Server| {
+            let mut held = Vec::new();
+            for _ in 0..4 {
+                let mut client = server.connect(64).await;
+                client.read(client::Variable::Number).await;
+                client.close().await;
+                held.push(ALLOCATOR.held());
+            }
+            held
+        };
+        let rng = node.entropy().rng();
+        client::Server::scope(node.clock(), node.net(), address, rng, body).await
+    };
+    let held = sim.run_on(&node, run).expect("the run ends");
+    assert_eq!(
+        held[2..],
+        [held[1]; 2],
+        "each held byte count after the first"
+    );
 }

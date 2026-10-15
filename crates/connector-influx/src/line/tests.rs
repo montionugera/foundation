@@ -44,9 +44,6 @@ fn value(text: &str) -> Value {
         _ if text.ends_with('i') => {
             Value::Integer(text.trim_end_matches('i').parse().unwrap())
         }
-        _ if text.ends_with('u') => {
-            Value::Unsigned(text.trim_end_matches('u').parse().unwrap())
-        }
         _ => Value::Float(float(text.parse().unwrap())),
     }
 }
@@ -85,35 +82,63 @@ fn text(out: &[u8]) -> &str {
     std::str::from_utf8(out).unwrap()
 }
 
+/// A measurement and the field of each of its keys.
+type Built = (Measurement, Vec<Field>);
+
+/// The measurement `name` with `tags`, and the field of each key in `fields`.
+fn build(name: &str, tags: &[(&str, &str)], fields: &[&str]) -> Result<Built, Error> {
+    let measurement = Measurement::new(name, tags)?;
+    let fields = fields.iter().map(|key| measurement.field(key));
+    let fields = fields.collect::<Result<_, _>>()?;
+    Ok((measurement, fields))
+}
+
+/// Appends the line of `built` at `time`, with each field that has a value in
+/// `values`.
+fn write(
+    (measurement, fields): &Built,
+    out: &mut Vec<u8>,
+    values: &[Option<Value>],
+    time: Stamp,
+) {
+    assert_eq!(values.len(), fields.len(), "one value for each field");
+    let values = fields.iter().zip(values);
+    let values = values.filter_map(|(field, value)| Some((field, (*value)?)));
+    measurement.line(out, values, time);
+}
+
 #[test]
 fn writes_one_known_line() {
-    let measurement = Measurement::new(
+    let measurement = build(
         "plant",
         &[("site", "west"), ("line", "a b")],
-        &["temp", "n", "total", "open"],
+        &["temp", "n", "open"],
     )
     .unwrap();
     let mut out = b"before\n".to_vec();
     let values = [
         Some(Value::Float(float(21.5))),
         Some(Value::Integer(-3)),
-        Some(Value::Unsigned(7)),
         Some(Value::Boolean(true)),
     ];
-    measurement.line(&mut out, &values, Stamp::from_nanos(1_000));
+    write(&measurement, &mut out, &values, Stamp::from_nanos(1_000));
     assert_eq!(
         text(&out),
-        "before\nplant,line=a\\ b,site=west temp=2.15e1,n=-3i,total=7u,open=t 1000\n"
+        "before\nplant,line=a\\ b,site=west temp=2.15e1,n=-3i,open=t 1000\n"
     );
 }
 
 #[test]
 fn escapes_as_the_specification_example() {
     let measurement =
-        Measurement::new("my Measurement", &[("tag Key1", "tag Value1")], &["f"])
-            .unwrap();
+        build("my Measurement", &[("tag Key1", "tag Value1")], &["f"]).unwrap();
     let mut out = Vec::new();
-    measurement.line(&mut out, &[Some(Value::Integer(1))], Stamp::EPOCH);
+    write(
+        &measurement,
+        &mut out,
+        &[Some(Value::Integer(1))],
+        Stamp::EPOCH,
+    );
     assert_eq!(
         text(&out),
         "my\\ Measurement,tag\\ Key1=tag\\ Value1 f=1i 0\n"
@@ -122,10 +147,14 @@ fn escapes_as_the_specification_example() {
 
 #[test]
 fn escapes_what_line_protocol_reads_as_syntax() {
-    let measurement =
-        Measurement::new("a,b c=d", &[("k,=  ", "v,= ")], &["f,= "]).unwrap();
+    let measurement = build("a,b c=d", &[("k,=  ", "v,= ")], &["f,= "]).unwrap();
     let mut out = Vec::new();
-    measurement.line(&mut out, &[Some(Value::Boolean(false))], Stamp::EPOCH);
+    write(
+        &measurement,
+        &mut out,
+        &[Some(Value::Boolean(false))],
+        Stamp::EPOCH,
+    );
     assert_eq!(
         text(&out),
         "a\\,b\\ c=d,k\\,\\=\\ \\ =v\\,\\=\\  f\\,\\=\\ =f 0\n"
@@ -134,19 +163,68 @@ fn escapes_what_line_protocol_reads_as_syntax() {
 
 #[test]
 fn leaves_out_a_field_with_no_value() {
-    let measurement = Measurement::new("m", &[], &["a", "b"]).unwrap();
+    let measurement = build("m", &[], &["a", "b"]).unwrap();
     let mut out = b"x".to_vec();
-    measurement.line(&mut out, &[None, None], Stamp::EPOCH);
+    write(&measurement, &mut out, &[None, None], Stamp::EPOCH);
     assert_eq!(out, b"x", "no value, so nothing is written");
-    measurement.line(&mut out, &[None, Some(Value::Integer(1))], Stamp::EPOCH);
+    write(
+        &measurement,
+        &mut out,
+        &[None, Some(Value::Integer(1))],
+        Stamp::EPOCH,
+    );
     assert_eq!(text(&out), "xm b=1i 0\n");
 }
 
 #[test]
-#[should_panic(expected = "one value for each field")]
-fn panics_on_a_value_count_that_is_not_the_field_count() {
-    let measurement = Measurement::new("m", &[], &["a"]).unwrap();
-    measurement.line(&mut Vec::new(), &[], Stamp::EPOCH);
+fn writes_each_field_in_the_order_given_and_twice() {
+    let measurement = Measurement::new("m", &[]).unwrap();
+    let a = measurement.field("a").unwrap();
+    let c = measurement.field("c").unwrap();
+    let mut out = b"x".to_vec();
+    assert_eq!(measurement.line(&mut out, [], Stamp::EPOCH), 0);
+    assert_eq!(out, b"x", "no value, so nothing is written");
+    let values = [
+        (&c, Value::Integer(3)),
+        (&a, Value::Integer(1)),
+        (&c, Value::Integer(4)),
+    ];
+    assert_eq!(measurement.line(&mut out, values, Stamp::from_nanos(5)), 3);
+    assert_eq!(text(&out), "xm c=3i,a=1i,c=4i 5\n");
+}
+
+#[test]
+fn writes_a_field_of_another_measurement_at_a_tag_key_of_this_one() {
+    let measurement = Measurement::new("m", &[("t", "v")]).unwrap();
+    let other = Measurement::new("n", &[]).unwrap();
+    let field = other.field("t").unwrap();
+    let mut out = Vec::new();
+    measurement.line(&mut out, [(&field, Value::Float(float(1.0)))], Stamp::EPOCH);
+    assert_eq!(text(&out), "m,t=v t=1e0 0\n");
+}
+
+#[test]
+fn refuses_a_field_key_as_new_refuses_a_key() {
+    let measurement = Measurement::new("m", &[("k", "v")]).unwrap();
+    let character = Error::Character {
+        part: Part::FieldKey,
+        text: "a\tb".into(),
+        character: '\t',
+    };
+    let cases = [
+        ("", Error::Empty(Part::FieldKey)),
+        ("_f", Error::Reserved("_f".into())),
+        ("time", Error::Reserved("time".into())),
+        ("a\tb", character),
+        ("k", Error::Duplicate("k".into())),
+    ];
+    for (key, error) in cases {
+        assert_eq!(measurement.field(key), Err(error));
+    }
+    let field = measurement.field("b c").unwrap();
+    let mut out = Vec::new();
+    measurement.line(&mut out, [(&field, Value::Integer(1))], Stamp::EPOCH);
+    assert_eq!(text(&out), "m,k=v b\\ c=1i 0\n");
 }
 
 #[test]
@@ -157,7 +235,7 @@ fn refuses_a_float_that_is_not_finite() {
     assert_eq!(Float::new(-0.5).map(Float::get), Some(-0.5));
 }
 
-fn refuses(cases: &[(Result<Measurement, Error>, Error, &str)]) {
+fn refuses(cases: &[(Result<Built, Error>, Error, &str)]) {
     for (got, error, message) in cases {
         assert_eq!(got, &Err(error.clone()));
         assert_eq!(error.to_string(), *message);
@@ -168,27 +246,27 @@ fn refuses(cases: &[(Result<Measurement, Error>, Error, &str)]) {
 fn refuses_a_measurement_line_protocol_cannot_carry() {
     refuses(&[
         (
-            Measurement::new("", &[], &["f"]),
+            build("", &[], &["f"]),
             Error::Empty(Part::Measurement),
             "the measurement name is empty",
         ),
         (
-            Measurement::new("m", &[("", "v")], &["f"]),
+            build("m", &[("", "v")], &["f"]),
             Error::Empty(Part::TagKey),
             "a tag key is empty",
         ),
         (
-            Measurement::new("m", &[("k", "")], &["f"]),
+            build("m", &[("k", "")], &["f"]),
             Error::Empty(Part::TagValue("k".into())),
             "the value of the tag \"k\" is empty",
         ),
         (
-            Measurement::new("m", &[], &[""]),
+            build("m", &[], &[""]),
             Error::Empty(Part::FieldKey),
             "a field key is empty",
         ),
         (
-            Measurement::new("a\\b", &[], &["f"]),
+            build("a\\b", &[], &["f"]),
             Error::Character {
                 part: Part::Measurement,
                 text: "a\\b".into(),
@@ -197,7 +275,7 @@ fn refuses_a_measurement_line_protocol_cannot_carry() {
             "the measurement name \"a\\\\b\" holds '\\\\', which a line cannot hold",
         ),
         (
-            Measurement::new("m", &[("k", "a\nb")], &["f"]),
+            build("m", &[("k", "a\nb")], &["f"]),
             Error::Character {
                 part: Part::TagValue("k".into()),
                 text: "a\nb".into(),
@@ -207,7 +285,7 @@ fn refuses_a_measurement_line_protocol_cannot_carry() {
              which a line cannot hold",
         ),
         (
-            Measurement::new("m", &[], &["f\r"]),
+            build("m", &[], &["f\r"]),
             Error::Character {
                 part: Part::FieldKey,
                 text: "f\r".into(),
@@ -222,7 +300,7 @@ fn refuses_a_measurement_line_protocol_cannot_carry() {
 fn refuses_a_tab_or_nul_in_any_part() {
     refuses(&[
         (
-            Measurement::new("\t#m", &[], &["f"]),
+            build("\t#m", &[], &["f"]),
             Error::Character {
                 part: Part::Measurement,
                 text: "\t#m".into(),
@@ -231,7 +309,7 @@ fn refuses_a_tab_or_nul_in_any_part() {
             "the measurement name \"\\t#m\" holds '\\t', which a line cannot hold",
         ),
         (
-            Measurement::new("m\0x", &[], &["f"]),
+            build("m\0x", &[], &["f"]),
             Error::Character {
                 part: Part::Measurement,
                 text: "m\0x".into(),
@@ -240,7 +318,7 @@ fn refuses_a_tab_or_nul_in_any_part() {
             "the measurement name \"m\\0x\" holds '\\0', which a line cannot hold",
         ),
         (
-            Measurement::new("m", &[("\tk", "v")], &["f"]),
+            build("m", &[("\tk", "v")], &["f"]),
             Error::Character {
                 part: Part::TagKey,
                 text: "\tk".into(),
@@ -249,7 +327,7 @@ fn refuses_a_tab_or_nul_in_any_part() {
             "the tag key \"\\tk\" holds '\\t', which a line cannot hold",
         ),
         (
-            Measurement::new("m", &[("k", "a\tb")], &["f"]),
+            build("m", &[("k", "a\tb")], &["f"]),
             Error::Character {
                 part: Part::TagValue("k".into()),
                 text: "a\tb".into(),
@@ -259,7 +337,7 @@ fn refuses_a_tab_or_nul_in_any_part() {
              which a line cannot hold",
         ),
         (
-            Measurement::new("m", &[("k2", "a\tb"), ("k1", "a\tb")], &["f"]),
+            build("m", &[("k2", "a\tb"), ("k1", "a\tb")], &["f"]),
             Error::Character {
                 part: Part::TagValue("k1".into()),
                 text: "a\tb".into(),
@@ -269,7 +347,7 @@ fn refuses_a_tab_or_nul_in_any_part() {
              which a line cannot hold",
         ),
         (
-            Measurement::new("m", &[], &["f", "\tf"]),
+            build("m", &[], &["f", "\tf"]),
             Error::Character {
                 part: Part::FieldKey,
                 text: "\tf".into(),
@@ -278,7 +356,7 @@ fn refuses_a_tab_or_nul_in_any_part() {
             "the field key \"\\tf\" holds '\\t', which a line cannot hold",
         ),
         (
-            Measurement::new("m", &[], &["f\0g"]),
+            build("m", &[], &["f\0g"]),
             Error::Character {
                 part: Part::FieldKey,
                 text: "f\0g".into(),
@@ -312,7 +390,7 @@ const DROPPED: [char; 14] = [
 fn refuses_a_character_influxdb_drops() {
     refuses(&[
         (
-            Measurement::new("m\u{1}x", &[], &["f"]),
+            build("m\u{1}x", &[], &["f"]),
             Error::Character {
                 part: Part::Measurement,
                 text: "m\u{1}x".into(),
@@ -322,7 +400,7 @@ fn refuses_a_character_influxdb_drops() {
              which a line cannot hold",
         ),
         (
-            Measurement::new("m", &[("k\u{a0}", "v")], &["f"]),
+            build("m", &[("k\u{a0}", "v")], &["f"]),
             Error::Character {
                 part: Part::TagKey,
                 text: "k\u{a0}".into(),
@@ -331,7 +409,7 @@ fn refuses_a_character_influxdb_drops() {
             "the tag key \"k\\u{a0}\" holds '\\u{a0}', which a line cannot hold",
         ),
         (
-            Measurement::new("m", &[("k", "a\u{fffd}b")], &["f"]),
+            build("m", &[("k", "a\u{fffd}b")], &["f"]),
             Error::Character {
                 part: Part::TagValue("k".into()),
                 text: "a\u{fffd}b".into(),
@@ -341,7 +419,7 @@ fn refuses_a_character_influxdb_drops() {
              which a line cannot hold",
         ),
         (
-            Measurement::new("m", &[("k", "a\u{e0001}")], &["f"]),
+            build("m", &[("k", "a\u{e0001}")], &["f"]),
             Error::Character {
                 part: Part::TagValue("k".into()),
                 text: "a\u{e0001}".into(),
@@ -351,7 +429,7 @@ fn refuses_a_character_influxdb_drops() {
              which a line cannot hold",
         ),
         (
-            Measurement::new("m", &[], &["f\u{378}"]),
+            build("m", &[], &["f\u{378}"]),
             Error::Character {
                 part: Part::FieldKey,
                 text: "f\u{378}".into(),
@@ -376,10 +454,10 @@ fn accepts_each_general_category_influxdb_prints() {
         let text = format!("a{c}");
         let t = text.as_str();
         for got in [
-            Measurement::new(t, &[], &["f"]),
-            Measurement::new("m", &[(t, "v")], &["f"]),
-            Measurement::new("m", &[("k", t)], &["f"]),
-            Measurement::new("m", &[], &[t]),
+            build(t, &[], &["f"]),
+            build("m", &[(t, "v")], &["f"]),
+            build("m", &[("k", t)], &["f"]),
+            build("m", &[], &[t]),
         ] {
             assert!(got.is_ok(), "{c:?}: {got:?}");
         }
@@ -394,7 +472,7 @@ fn reads_general_categories_of_unicode_17() {
 #[test]
 fn names_the_first_refused_character() {
     refuses(&[(
-        Measurement::new("m", &[], &["a\0b\tc"]),
+        build("m", &[], &["a\0b\tc"]),
         Error::Character {
             part: Part::FieldKey,
             text: "a\0b\tc".into(),
@@ -408,64 +486,58 @@ fn names_the_first_refused_character() {
 fn refuses_a_name_influxdb_keeps_or_repeats() {
     refuses(&[
         (
-            Measurement::new("_m", &[], &["f"]),
+            build("_m", &[], &["f"]),
             Error::Reserved("_m".into()),
             "InfluxDB keeps the name \"_m\" for itself",
         ),
         (
-            Measurement::new("m", &[("_k", "v")], &["f"]),
+            build("m", &[("_k", "v")], &["f"]),
             Error::Reserved("_k".into()),
             "InfluxDB keeps the name \"_k\" for itself",
         ),
         (
-            Measurement::new("m", &[], &["_f"]),
+            build("m", &[], &["_f"]),
             Error::Reserved("_f".into()),
             "InfluxDB keeps the name \"_f\" for itself",
         ),
         (
-            Measurement::new("m", &[("time", "v")], &["f"]),
+            build("m", &[("time", "v")], &["f"]),
             Error::Reserved("time".into()),
             "InfluxDB keeps the name \"time\" for itself",
         ),
         (
-            Measurement::new("m", &[], &["time"]),
+            build("m", &[], &["time"]),
             Error::Reserved("time".into()),
             "InfluxDB keeps the name \"time\" for itself",
         ),
         (
-            Measurement::new("#m", &[], &["f"]),
+            build("#m", &[], &["f"]),
             Error::Comment("#m".into()),
             "the name \"#m\" starts with '#', which makes each line a comment",
         ),
         (
-            Measurement::new("m", &[("k", "a"), ("k", "b")], &["f"]),
+            build("m", &[("k", "a"), ("k", "b")], &["f"]),
             Error::Duplicate("k".into()),
             "the key \"k\" comes more than once",
         ),
         (
-            Measurement::new("m", &[("k", "a")], &["f", "k"]),
+            build("m", &[("k", "a")], &["f", "k"]),
             Error::Duplicate("k".into()),
             "the key \"k\" comes more than once",
-        ),
-        (
-            Measurement::new("m", &[], &["f", "f"]),
-            Error::Duplicate("f".into()),
-            "the key \"f\" comes more than once",
-        ),
-        (
-            Measurement::new("m", &[], &[]),
-            Error::NoField,
-            "a measurement needs at least one field",
         ),
     ]);
 }
 
 #[test]
 fn allows_what_is_reserved_only_elsewhere() {
-    let measurement =
-        Measurement::new("time", &[("k", "_v"), ("t", "#")], &["#f"]).unwrap();
+    let measurement = build("time", &[("k", "_v"), ("t", "#")], &["#f"]).unwrap();
     let mut out = Vec::new();
-    measurement.line(&mut out, &[Some(Value::Integer(0))], Stamp::EPOCH);
+    write(
+        &measurement,
+        &mut out,
+        &[Some(Value::Integer(0))],
+        Stamp::EPOCH,
+    );
     assert_eq!(text(&out), "time,k=_v,t=# #f=0i 0\n");
 }
 
@@ -484,7 +556,6 @@ fn field_value() -> impl Strategy<Value = Value> {
             .prop_filter_map("finite", Float::new)
             .prop_map(Value::Float),
         any::<i64>().prop_map(Value::Integer),
-        any::<u64>().prop_map(Value::Unsigned),
         any::<bool>().prop_map(Value::Boolean),
     ]
 }
@@ -514,10 +585,10 @@ proptest! {
         prop_assume!(!fields.is_empty());
         let borrowed: Vec<(&str, &str)> =
             tags.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        let line = Measurement::new(&measurement, &borrowed, &keys_of_fields).unwrap();
+        let line = build(&measurement, &borrowed, &keys_of_fields).unwrap();
         let values: Vec<Option<Value>> = fields.iter().map(|&(_, v)| Some(v)).collect();
         let mut out = Vec::new();
-        line.line(&mut out, &values, Stamp::from_nanos(time));
+        write(&line, &mut out, &values, Stamp::from_nanos(time));
         prop_assert_eq!(parse(text(&out)), (measurement, tags, fields, time));
     }
 
@@ -535,13 +606,13 @@ proptest! {
         let text: String = chars.into_iter().collect();
         let n = text.as_str();
         let (got, part) = match part {
-            0 => (Measurement::new(n, &[("k", "v")], &["f"]), Part::Measurement),
-            1 => (Measurement::new("m", &[(n, "v")], &["f"]), Part::TagKey),
+            0 => (build(n, &[("k", "v")], &["f"]), Part::Measurement),
+            1 => (build("m", &[(n, "v")], &["f"]), Part::TagKey),
             2 => (
-                Measurement::new("m", &[("k", n)], &["f"]),
+                build("m", &[("k", n)], &["f"]),
                 Part::TagValue("k".into()),
             ),
-            _ => (Measurement::new("m", &[("k", "v")], &["f", n]), Part::FieldKey),
+            _ => (build("m", &[("k", "v")], &["f", n]), Part::FieldKey),
         };
         prop_assert_eq!(got, Err(Error::Character { part, text, character }));
     }

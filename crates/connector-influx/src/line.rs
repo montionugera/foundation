@@ -7,16 +7,21 @@ use std::io::Write as _;
 use types::time::Stamp;
 use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory as _};
 
-/// One measurement's name, tags, and field keys, checked and escaped once.
+/// One measurement's name and tags, checked and escaped once.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Measurement {
     prefix: Vec<u8>,
-    fields: Vec<Vec<u8>>,
+    /// Each tag key, as given.
+    tags: Vec<String>,
 }
 
+/// A field key, checked and escaped once by [`Measurement::field`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Field(Vec<u8>);
+
 impl Measurement {
-    /// Checks and escapes `name`, `tags`, and the field keys in `fields`. The line
-    /// sorts the tags by key, as InfluxDB asks for its fastest writes.
+    /// Checks and escapes `name` and `tags`. The line sorts the tags by key, as
+    /// InfluxDB asks for its fastest writes.
     ///
     /// # Errors
     ///
@@ -27,72 +32,73 @@ impl Measurement {
     /// - [`Error::Reserved`] for a name or key that starts with `_`, or a key
     ///   `time`.
     /// - [`Error::Comment`] for a name that starts with `#`.
-    /// - [`Error::Duplicate`] for a key that comes more than once, in tags and
-    ///   fields together.
-    /// - [`Error::NoField`] for no fields.
-    pub fn new(
-        name: &str,
-        tags: &[(&str, &str)],
-        fields: &[&str],
-    ) -> Result<Self, Error> {
+    /// - [`Error::Duplicate`] for a tag key that comes more than once.
+    pub fn new(name: &str, tags: &[(&str, &str)]) -> Result<Self, Error> {
         unreserved(name)?;
         if name.starts_with('#') {
             return Err(Error::Comment(name.into()));
         }
-        if fields.is_empty() {
-            return Err(Error::NoField);
-        }
-        let mut keys: Vec<&str> = tags.iter().map(|&(key, _)| key).collect();
-        keys.extend_from_slice(fields);
-        keys.sort_unstable();
-        if let Some([key, _]) = keys.array_windows().find(|[a, b]| a == b) {
+        let mut tags = tags.to_vec();
+        tags.sort_unstable_by_key(|&(key, _)| key);
+        if let Some([(key, _), _]) = tags.array_windows().find(|[a, b]| a.0 == b.0) {
             return Err(Error::Duplicate((*key).into()));
         }
         let mut prefix = Vec::new();
         escape(name, b", ", Part::Measurement, &mut prefix)?;
-        let mut tags = tags.to_vec();
-        tags.sort_unstable_by_key(|&(key, _)| key);
-        for (key, value) in tags {
+        for &(key, value) in &tags {
             unreserved_key(key)?;
             prefix.push(b',');
             escape(key, b",= ", Part::TagKey, &mut prefix)?;
             prefix.push(b'=');
             escape(value, b",= ", Part::TagValue(key.into()), &mut prefix)?;
         }
-        let fields = fields.iter().map(|&key| {
-            unreserved_key(key)?;
-            let mut bytes = Vec::new();
-            escape(key, b",= ", Part::FieldKey, &mut bytes)?;
-            Ok(bytes)
-        });
         Ok(Self {
             prefix,
-            fields: fields.collect::<Result<_, _>>()?,
+            tags: tags.into_iter().map(|(key, _)| key.into()).collect(),
         })
     }
 
-    /// Appends one line at `time` to `out`, with the value of each field at its
-    /// position in `values`. A field with no value is left out, and with no value
-    /// at all, nothing is written.
+    /// Checks and escapes the field key `key`. It costs O(tags).
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// When `values` and the fields differ in length.
-    pub fn line(&self, out: &mut Vec<u8>, values: &[Option<Value>], time: Stamp) {
-        assert_eq!(values.len(), self.fields.len(), "one value for each field");
+    /// As [`Measurement::new`] gives for a key, and [`Error::Duplicate`] for a key
+    /// that a tag of this measurement has.
+    pub fn field(&self, key: &str) -> Result<Field, Error> {
+        unreserved_key(key)?;
+        if self.tags.iter().any(|tag| tag == key) {
+            return Err(Error::Duplicate(key.into()));
+        }
+        let mut bytes = Vec::with_capacity(key.len());
+        escape(key, b",= ", Part::FieldKey, &mut bytes)?;
+        Ok(Field(bytes))
+    }
+
+    /// Appends one line at `time` to `out`, with each field of `values` and its
+    /// value, in order. Each field comes from [`Measurement::field`] of this
+    /// measurement: a field of another one can repeat a tag key of this one. With no
+    /// value, nothing is written. A field that comes twice is written twice. Gives
+    /// the number of fields written.
+    #[expect(clippy::missing_panics_doc, reason = "a write to a Vec never fails")]
+    pub fn line<'a>(
+        &self,
+        out: &mut Vec<u8>,
+        values: impl IntoIterator<Item = (&'a Field, Value)>,
+        time: Stamp,
+    ) -> usize {
         let start = out.len();
         out.extend_from_slice(&self.prefix);
         let mut separator = b' ';
-        for (key, value) in self.fields.iter().zip(values) {
-            let Some(value) = *value else { continue };
+        let mut fields = 0_usize;
+        for (Field(key), value) in values {
             out.push(separator);
             separator = b',';
+            fields = fields.saturating_add(1);
             out.extend_from_slice(key);
             out.push(b'=');
             let wrote = match value {
                 Value::Float(Float(float)) => write!(out, "{float:e}"),
                 Value::Integer(integer) => write!(out, "{integer}i"),
-                Value::Unsigned(unsigned) => write!(out, "{unsigned}u"),
                 Value::Boolean(boolean) => {
                     out.push(if boolean { b't' } else { b'f' });
                     Ok(())
@@ -102,22 +108,22 @@ impl Measurement {
         }
         if separator == b' ' {
             out.truncate(start);
-            return;
+            return 0;
         }
         writeln!(out, " {}", time.nanos())
             .expect("invariant: a write to a Vec never fails");
+        fields
     }
 }
 
-/// One field value, in InfluxDB's types.
+/// One field value, in a type that InfluxDB 1, 2, and 3 each store, so no unsigned
+/// integer.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Value {
     /// A 64-bit float.
     Float(Float),
     /// A signed 64-bit integer.
     Integer(i64),
-    /// An unsigned 64-bit integer.
-    Unsigned(u64),
     /// A boolean.
     Boolean(bool),
 }
@@ -140,12 +146,13 @@ impl Float {
     }
 }
 
-/// Why a measurement is not valid line protocol.
+/// Why a measurement or a field key is not valid line protocol.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// An empty part.
     Empty(Part),
-    /// A part with a character that [`Measurement::new`] refuses.
+    /// A part with a character that [`Measurement::new`] or [`Measurement::field`]
+    /// refuses.
     Character {
         /// The part that holds `character`.
         part: Part,
@@ -159,10 +166,8 @@ pub enum Error {
     Reserved(String),
     /// A measurement name that starts with `#`, which makes each line a comment.
     Comment(String),
-    /// A key that comes more than once, in tags and fields together.
+    /// A key that comes more than once, in the tags or in a tag and a field.
     Duplicate(String),
-    /// No fields. A line holds at least one.
-    NoField,
 }
 
 /// A part of a measurement.
@@ -212,7 +217,6 @@ impl fmt::Display for Error {
                 "the name {name:?} starts with '#', which makes each line a comment"
             ),
             Self::Duplicate(key) => write!(f, "the key {key:?} comes more than once"),
-            Self::NoField => write!(f, "a measurement needs at least one field"),
         }
     }
 }

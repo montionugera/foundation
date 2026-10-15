@@ -35,15 +35,14 @@ use std::rc::Rc;
 use block::Pool;
 use env::files::{self, File, Files, Mode};
 use raft::{Entry, Hard, Term};
-use types::digest::Digest;
 
 use crate::bytes::{
     put_optional_key, put_optional_proof, take, take_bool, take_key, take_proof,
 };
 use crate::entry;
+use crate::file::{self, Blocks, CHECK, check, narrow, wide};
 
 const VERSION: u16 = 1;
-const CHECK: usize = 8;
 /// The bytes of a record before its body: the header check, the version, the number,
 /// the body length, and the body check.
 const HEADER: usize = 34;
@@ -51,8 +50,6 @@ const HEADER: usize = 34;
 const SECTOR: usize = files::SECTOR;
 /// The length of a file, unless the record that the log made it for needs more.
 const SEGMENT: u64 = 1 << 20;
-/// The most bytes in one block of a read or a write.
-const CHUNK: usize = 64 << 10;
 /// The name of the file that a log holds open while it lives.
 const LOCK: &str = "lock";
 
@@ -142,6 +139,15 @@ impl From<files::Error> for Error {
     }
 }
 
+impl From<file::Failed> for Error {
+    fn from(failed: file::Failed) -> Self {
+        match failed {
+            file::Failed::Files(error) => Self::Files(error),
+            file::Failed::Pool(error) => Self::Pool(error),
+        }
+    }
+}
+
 impl From<block::Error> for Error {
     fn from(error: block::Error) -> Self {
         Self::Pool(error)
@@ -153,9 +159,10 @@ impl From<block::Error> for Error {
 pub(crate) struct Log {
     files: Files,
     dir: PathBuf,
-    pool: Rc<Pool>,
-    // The file that holds the end of the log, and its number.
-    file: File,
+    blocks: Blocks,
+    // The file that holds the end of the log, and its number. A failed or dropped
+    // write leaves no file, as the end of the log is not known.
+    file: Option<File>,
     number: u64,
     // Where the last record ends in `file`.
     offset: u64,
@@ -166,8 +173,6 @@ pub(crate) struct Log {
     next: u64,
     // The index of the last entry.
     last: u64,
-    // A write failed or was dropped, so the end of the log is not known.
-    poisoned: bool,
     // Held so that a second open of `dir` fails. A write that starts a file lets go
     // of `file`, so `file` does not do that.
     _lock: File,
@@ -199,11 +204,7 @@ impl Log {
         dir: PathBuf,
         pool: Rc<Pool>,
     ) -> Result<(Self, Stored), Error> {
-        let largest = pool.largest();
-        if largest < SECTOR {
-            let requested = SECTOR;
-            return Err(Error::Pool(block::Error::TooLarge { requested, largest }));
-        }
+        let blocks = Blocks::new(pool)?;
         files.create_dir(&dir).await?;
         let lock = files.open(&dir.join(LOCK), Mode::Create { len: 0 }).await?;
         let names = files.list(&dir).await?;
@@ -211,26 +212,25 @@ impl Log {
         let mut segments = Vec::new();
         for path in sequence(&dir, names)? {
             let file = files.open(&path, Mode::Write).await?;
-            segments.push(read(&file, &pool).await?);
+            segments.push(blocks.read(&file).await?);
             open.push(file);
         }
-        let scan = scan(&dir, &segments)?;
+        let scan = settle(&dir, &mut segments)?;
         let number = wide(scan.segment);
+        let mut open = open.into_iter().skip(scan.segment);
+        let end = open.next();
         if scan.spare {
-            files.remove(&path(&dir, number.saturating_add(1))).await?;
+            let spare = open.next().expect("invariant: the open holds the spare");
+            spare.remove().await?;
         }
-        let file = if let Some(file) = open.into_iter().nth(scan.segment) {
+        let file = if let Some(file) = end {
             // A sync that failed in this boot leaves its writes in the cache, where
             // the read saw them, and a later sync does not write them. So the open
             // writes again what it read, with zeros after the last record.
             let bytes = segments
-                .get_mut(scan.segment)
+                .get(scan.segment)
                 .expect("invariant: the open read each file that it holds");
-            bytes
-                .get_mut(scan.offset..)
-                .expect("invariant: the log ends in its end file")
-                .fill(0);
-            write_in_blocks(&file, &pool, 0, &mut &bytes[..]).await?;
+            blocks.write(&file, 0, &mut &bytes[..]).await?;
             file
         } else {
             let mode = Mode::Create { len: SEGMENT };
@@ -246,17 +246,21 @@ impl Log {
         let log = Self {
             files,
             dir,
-            pool,
-            file,
+            blocks,
+            file: Some(file),
             number,
             offset: wide(scan.offset),
             stale: None,
             next: scan.next,
             last: wide(scan.stored.entries.len()),
-            poisoned: false,
             _lock: lock,
         };
         Ok((log, scan.stored))
+    }
+
+    /// The blocks that the log reads and writes in.
+    pub(crate) fn blocks(&self) -> &Blocks {
+        &self.blocks
     }
 
     /// Writes `hard`, when it is given, and `entries` as one record. The entries
@@ -284,7 +288,7 @@ impl Log {
         hard: Option<Hard>,
         entries: &[Entry],
     ) -> Result<(), Error> {
-        if self.poisoned {
+        if self.file.is_none() {
             let path = path(&self.dir, self.number);
             return Err(Error::Poisoned { path });
         }
@@ -295,56 +299,64 @@ impl Log {
         if hard.is_none() && entries.is_empty() {
             return Ok(());
         }
-        self.poisoned = true;
-        let result = self.append(hard, entries).await;
-        self.poisoned = !matches!(result, Ok(()) | Err(Error::Pool(_)));
+        let mut file = self.file.take();
+        let result = self.append(&mut file, hard, entries).await;
+        if matches!(result, Ok(()) | Err(Error::Pool(_))) {
+            self.file = file;
+        }
         result
     }
 
     // Writes one record after the last one. A pool error leaves each record as it
     // was. It can leave the bytes that `stale` names, and the end of the log in the
-    // file that it made for the record.
+    // file that it made for the record, which it puts in `file`.
     async fn append(
         &mut self,
+        file: &mut Option<File>,
         hard: Option<Hard>,
         entries: &[Entry],
     ) -> Result<(), Error> {
+        let held = "invariant: a write starts with the end file";
+        let current = file.as_ref().expect(held);
         if let Some((at, end)) = self.stale {
             // A scan reads bytes that stay after a later record as its next header.
             // The zeros get their own sync: with one sync, a power cut can keep the
             // record and not the zeros.
             let zeros = vec![0; narrow(end.saturating_sub(at))];
-            write_in_blocks(&self.file, &self.pool, at, &mut &zeros[..]).await?;
-            self.file.sync().await?;
+            self.blocks.write(current, at, &mut &zeros[..]).await?;
+            current.sync().await?;
             self.stale = None;
         }
         let record = encode(self.next, hard, entries);
         let len = wide(record.len());
         let mut start = wide(start(narrow(self.offset)));
-        if start.saturating_add(len) > self.file.len() {
+        let file = if start.saturating_add(len) > current.len() {
             // A file with no record is made again, larger: a scan refuses a file
             // with no record before another file.
             let empty = self.offset == 0;
             let number = self.number.saturating_add(u64::from(!empty));
             let path = path(&self.dir, number);
             if empty {
-                self.files.remove(&path).await?;
+                file.take().expect(held).remove().await?;
             }
             let mode = Mode::Create {
                 len: len.max(SEGMENT),
             };
-            let file = self.files.open(&path, mode).await?;
+            let opened = self.files.open(&path, mode).await?;
             self.files.sync_dir(&self.dir).await?;
-            (self.file, self.number, self.offset, start) = (file, number, 0, 0);
-        }
+            (self.number, self.offset, start) = (number, 0, 0);
+            &*file.insert(opened)
+        } else {
+            current
+        };
         let end = start.saturating_add(len);
         let mut rest = &record[..];
-        let written = write_in_blocks(&self.file, &self.pool, start, &mut rest).await;
+        let written = self.blocks.write(file, start, &mut rest).await;
         if written.is_err() && rest.len() < record.len() {
             self.stale = Some((start.saturating_add(wide(rest.len())), end));
         }
         written?;
-        self.file.sync().await?;
+        file.sync().await?;
         self.offset = end;
         self.next = self.next.saturating_add(1);
         if let Some(entry) = entries.last() {
@@ -356,22 +368,6 @@ impl Log {
 
 fn path(dir: &Path, number: u64) -> PathBuf {
     dir.join(format!("log-{number}"))
-}
-
-fn wide(len: usize) -> u64 {
-    u64::try_from(len).expect("invariant: a length fits in 64 bits")
-}
-
-// A file is read whole into memory, so each offset in it fits.
-fn narrow(offset: u64) -> usize {
-    usize::try_from(offset).expect("invariant: a file offset fits in memory")
-}
-
-// The most bytes in one block of a read or a write: `CHUNK`, or less when the pool has
-// no such block. It is whole sectors, and an open refuses a pool that gives 0.
-fn chunk(pool: &Pool) -> usize {
-    let largest = pool.largest();
-    largest.saturating_sub(largest % SECTOR).min(CHUNK)
 }
 
 // Where the record after one that ends at `end` starts: the next sector when the
@@ -405,44 +401,6 @@ fn sequence(dir: &Path, mut names: Vec<PathBuf>) -> Result<Vec<PathBuf>, Error> 
     Ok(paths.into_iter().flatten().collect())
 }
 
-async fn read(file: &File, pool: &Pool) -> Result<Vec<u8>, Error> {
-    let chunk = chunk(pool);
-    let mut bytes = Vec::new();
-    while wide(bytes.len()) < file.len() {
-        let offset = wide(bytes.len());
-        let len = narrow(file.len().saturating_sub(offset)).min(chunk);
-        let block = file.read_at(offset, pool.alloc(len)?).await?;
-        bytes.extend_from_slice(&block);
-    }
-    Ok(bytes)
-}
-
-// Writes `bytes` at `at` of `file`, one block at a time, from the end of `bytes` to
-// its start, and takes each block that it wrote off the end of `bytes`. Each block but
-// the one at the end ends at a multiple of the block size in the file, so no two
-// blocks share a sector.
-async fn write_in_blocks(
-    file: &File,
-    pool: &Pool,
-    at: u64,
-    bytes: &mut &[u8],
-) -> Result<(), Error> {
-    let chunk = chunk(pool);
-    while !bytes.is_empty() {
-        let end = narrow(at).saturating_add(bytes.len());
-        let over = end
-            .checked_rem(chunk)
-            .expect("invariant: a block of the log is one sector or more");
-        let len = if over == 0 { chunk } else { over }.min(bytes.len());
-        let (rest, part) = bytes.split_at(bytes.len().saturating_sub(len));
-        let block = pool.copy(part)?;
-        let offset = at.saturating_add(wide(rest.len()));
-        file.write_at(offset, &[block]).await?;
-        *bytes = rest;
-    }
-    Ok(())
-}
-
 // What the files hold, and where the log ends.
 #[derive(Debug, PartialEq, Eq)]
 struct Scan {
@@ -454,6 +412,45 @@ struct Scan {
     next: u64,
     // A file after `segment` is there, with no record.
     spare: bool,
+}
+
+// Scans `segments`, the files of `dir` in order, and leaves in it the files that an
+// open keeps: no spare, and zeros after the last record of the end file.
+fn settle(dir: &Path, segments: &mut Vec<Vec<u8>>) -> Result<Scan, Error> {
+    let scan = scan(dir, segments)?;
+    if scan.spare {
+        segments.remove(scan.segment.strict_add(1));
+    }
+    if let Some(bytes) = segments.get_mut(scan.segment) {
+        bytes
+            .get_mut(scan.offset..)
+            .expect("invariant: the log ends in its end file")
+            .fill(0);
+    }
+    Ok(scan)
+}
+
+/// What an open of a directory that holds `files` reads, and the log files, in number
+/// order, that it leaves: no file after the one that holds the end, which has zeros
+/// after its last record. Each of `files` is a name and the bytes of that file.
+#[cfg(any(test, feature = "sim"))]
+pub(crate) fn open_files(
+    files: &[(PathBuf, Vec<u8>)],
+) -> Result<(Stored, Vec<Vec<u8>>), Error> {
+    let dir = Path::new("log");
+    let names = files.iter().map(|(name, _)| name.clone()).collect();
+    let mut segments: Vec<Vec<u8>> = sequence(dir, names)?
+        .iter()
+        .map(|path| {
+            let (_, bytes) = files
+                .iter()
+                .find(|(name, _)| dir.join(name) == *path)
+                .expect("invariant: each log file is one of the files");
+            bytes.clone()
+        })
+        .collect();
+    let scan = settle(dir, &mut segments)?;
+    Ok((scan.stored, segments))
 }
 
 // Reads the records of the files in `dir`, which `segments` holds in order.
@@ -561,14 +558,6 @@ fn records(
         *next = next.saturating_add(1);
     }
     Ok((end, None))
-}
-
-// The check of some bytes: the first bytes of their digest.
-fn check(bytes: &[u8]) -> [u8; CHECK] {
-    let digest = Digest::of(bytes).0;
-    *digest
-        .first_chunk()
-        .expect("invariant: a digest has 32 bytes")
 }
 
 // What is where a record should start.
@@ -782,6 +771,49 @@ pub(crate) fn seal(record: &mut [u8]) {
         .split_last_chunk_mut::<8>()
         .expect("invariant: the length comes before the body check");
     *len = wide(body.len()).to_le_bytes();
+    seal_header(head);
+}
+
+/// Makes the checks of each record in the log file `bytes` match its bytes, as a scan
+/// reads the records: the body check over the length that the header claims, unless
+/// it is zeros, then the header check. It stops at the end of `bytes`, at a header of
+/// zeros, and after the header of a record that claims more bytes than `bytes` holds.
+#[cfg(any(test, feature = "sim"))]
+pub(crate) fn seal_file(bytes: &mut [u8]) {
+    let mut end = 0;
+    loop {
+        let at = start(end);
+        let Some((head, after)) = bytes
+            .get_mut(at..)
+            .and_then(<[u8]>::split_first_chunk_mut::<HEADER>)
+        else {
+            return;
+        };
+        if *head == [0; HEADER] {
+            return;
+        }
+        let (fields, claimed) = head
+            .split_last_chunk_mut::<CHECK>()
+            .expect("invariant: a header ends with the body check");
+        let (_, len) = fields
+            .split_last_chunk::<8>()
+            .expect("invariant: the length comes before the body check");
+        let len = usize::try_from(u64::from_le_bytes(*len)).ok();
+        let Some((len, body)) = len.and_then(|len| Some((len, after.get(..len)?)))
+        else {
+            seal_header(head);
+            return;
+        };
+        if *claimed != [0; CHECK] {
+            *claimed = check(body);
+        }
+        seal_header(head);
+        end = at.saturating_add(HEADER).saturating_add(len);
+    }
+}
+
+#[cfg(any(test, feature = "sim"))]
+fn seal_header(head: &mut [u8; HEADER]) {
     let (claimed, rest) = head
         .split_first_chunk_mut::<CHECK>()
         .expect("invariant: a header starts with its check");
@@ -807,6 +839,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::task::Poll;
 
+    use crate::file::CHUNK;
     use env::files::Operation;
     use proptest::prelude::*;
     use raft::{Change, Data, Grant, Proof, Signature, Voters};
@@ -816,7 +849,7 @@ mod tests {
 
     use super::*;
     use crate::bytes::{PRESENT, VOTE};
-    use crate::common::create_pool;
+    use crate::common::{at, create_pool, key};
 
     const DIR: &str = "mesh";
 
@@ -861,25 +894,18 @@ mod tests {
         file.sync().await.unwrap();
     }
 
-    fn key(id: u128) -> node::Key {
-        node::Key::from_u128(id)
-    }
-
     fn hard(term: u64, vote: Option<u128>) -> Hard {
         Hard {
             term: Term(term),
-            vote: vote.map(key),
+            vote: vote.map(node::Key::from_u128),
             leader: None,
             proof: None,
         }
     }
 
-    // Each voter signs with its key's low byte, 64 times.
-    fn proof(grant: Grant, candidate: u128, voters: &[u128]) -> Proof {
-        let signed = |&voter: &u128| {
-            let signature = Signature([voter.to_le_bytes()[0]; 64]);
-            (key(voter), Some(signature))
-        };
+    // Each voter signs with its id, 64 times.
+    fn proof(grant: Grant, candidate: u8, voters: &[u8]) -> Proof {
+        let signed = |&voter: &u8| (key(voter), Some(Signature([voter; 64])));
         Proof {
             grant,
             candidate: key(candidate),
@@ -888,9 +914,8 @@ mod tests {
     }
 
     fn entry(term: u64, index: u64, data: Data) -> Entry {
-        let term = Term(term);
         Entry {
-            at: raft::Position { term, index },
+            at: at(term, index),
             data,
         }
     }
@@ -914,8 +939,8 @@ mod tests {
         })
     }
 
-    fn voters(incoming: &[u128], outgoing: &[u128]) -> Data {
-        let set = |ids: &[u128]| ids.iter().copied().map(key).collect();
+    fn voters(incoming: &[u8], outgoing: &[u8]) -> Data {
+        let set = |ids: &[u8]| ids.iter().copied().map(key).collect();
         let voters = Voters {
             incoming: set(incoming),
             outgoing: set(outgoing),
@@ -1204,7 +1229,11 @@ mod tests {
         sim.run_on(node, move |node, _| async move {
             let log = file("log-0");
             let file = node.files().open(&log, Mode::Read).await.unwrap();
-            let bytes = read(&file, &create_pool()).await.unwrap();
+            let bytes = Blocks::new(create_pool())
+                .unwrap()
+                .read(&file)
+                .await
+                .unwrap();
             bytes[narrow(end)..].iter().all(|&byte| byte == 0)
         })
         .unwrap()
@@ -1315,7 +1344,7 @@ mod tests {
 
     /// A pool whose largest block, 1,792 bytes, is 3.5 sectors.
     fn odd_pool() -> Rc<Pool> {
-        let config = block::Config { budget: 2048 };
+        let config = block::Config::new(2048).expect("the budget fits");
         let memory = block::Heap::new(config.reservation());
         let pool = Rc::new(Pool::new(config, memory));
         assert_eq!(pool.largest(), 1792);
@@ -1324,12 +1353,6 @@ mod tests {
 
     async fn odd_open(node: &sim::node::Node) -> Result<(Log, Stored), Error> {
         Log::open(node.files(), DIR.into(), odd_pool()).await
-    }
-
-    #[test]
-    fn a_block_is_the_most_whole_sectors_that_the_pool_gives() {
-        assert_eq!(chunk(&odd_pool()), 3 * SECTOR);
-        assert_eq!(chunk(&create_pool()), CHUNK);
     }
 
     // The header of the second record is at bytes 1,770 to 1,804, in one sector and
@@ -1424,7 +1447,7 @@ mod tests {
             let (mut sim, node) = create_node(0);
             let (new, listed, held) = sim
                 .run_on(&node, move |node, _| async move {
-                    let config = block::Config { budget };
+                    let config = block::Config::new(budget).expect("the budget fits");
                     let memory = block::Heap::new(config.reservation());
                     let pool = Rc::new(Pool::new(config, memory));
                     let files = node.files();
@@ -1453,7 +1476,7 @@ mod tests {
         let (mut sim, node) = create_node(0);
         let written = sim
             .run_on(&node, |node, _| async move {
-                let config = block::Config { budget: 704 };
+                let config = block::Config::new(704).expect("the budget fits");
                 let memory = block::Heap::new(config.reservation());
                 let pool = Rc::new(Pool::new(config, memory));
                 let entry = bytes(1, 580);
@@ -1502,7 +1525,7 @@ mod tests {
             let (mut sim, node) = create_node(0);
             let written = sim
                 .run_on(&node, move |node, _| async move {
-                    let config = block::Config { budget };
+                    let config = block::Config::new(budget).expect("the budget fits");
                     let memory = block::Heap::new(config.reservation());
                     let pool = Rc::new(Pool::new(config, memory));
                     let entry = bytes(1, record - 60);
@@ -1528,7 +1551,7 @@ mod tests {
     // has none for the 16 blocks of its first record.
     #[test]
     fn a_write_holds_one_block_of_the_pool_at_a_time() {
-        let cases: [(usize, &[usize]); 3] = [
+        let cases: [(u64, &[usize]); 3] = [
             (82_000, &[81_920]),
             (9472, &[9217]),
             (1_000_000, &[984_040, 81_536]),
@@ -1544,7 +1567,8 @@ mod tests {
             let written = sim
                 .run_on(&node, move |node, _| async move {
                     let new = || {
-                        let config = block::Config { budget };
+                        let config =
+                            block::Config::new(budget).expect("the budget fits");
                         let memory = block::Heap::new(config.reservation());
                         Rc::new(Pool::new(config, memory))
                     };
@@ -1574,7 +1598,7 @@ mod tests {
     fn opens_with_a_pool_whose_largest_block_is_one_sector() {
         let (mut sim, node) = create_node(0);
         sim.run_on(&node, |node, _| async move {
-            let config = block::Config { budget: 576 };
+            let config = block::Config::new(576).expect("the budget fits");
             let memory = block::Heap::new(config.reservation());
             let pool = Rc::new(Pool::new(config, memory));
             assert_eq!(pool.largest(), SECTOR);
@@ -2566,22 +2590,25 @@ mod tests {
     #[test]
     fn gives_the_error_of_a_pool_with_no_block_for_a_read() {
         let (mut sim, node) = create_node(0);
-        let (error, expected) = sim
+        let error = sim
             .run_on(&node, |node, _| async move {
                 drop(open(&node).await.unwrap());
-                let config = block::Config { budget: 4096 };
+                let config = block::Config::new(4096).expect("the budget fits");
                 let memory = block::Heap::new(config.reservation());
                 let pool = Rc::new(Pool::new(config, memory));
-                let held = pool.alloc(pool.largest()).unwrap();
-                let expected = pool.alloc(chunk(&pool)).unwrap_err();
+                assert_eq!(pool.largest(), 3584);
+                let held = pool.alloc(3584).unwrap();
                 let error = Log::open(node.files(), DIR.into(), Rc::clone(&pool))
                     .await
                     .unwrap_err();
                 drop(held);
-                (error, expected)
+                error
             })
             .unwrap();
-        assert!(matches!(expected, block::Error::Exhausted { .. }));
+        let expected = block::Error::Exhausted {
+            requested: 7 * SECTOR,
+            available: 448,
+        };
         assert_eq!(error, Error::Pool(expected));
     }
 
@@ -2976,6 +3003,278 @@ mod tests {
         );
     }
 
+    /// Polls `future` until it has waited `waits` times, and drops it at that wait,
+    /// with its file call in flight. Gives its output when it ended first.
+    async fn cut<T>(future: impl Future<Output = T>, waits: usize) -> Option<T> {
+        let mut future = pin!(future);
+        let mut waited = 0;
+        poll_fn(|cx| match future.as_mut().poll(cx) {
+            Poll::Ready(output) => Poll::Ready(Some(output)),
+            Poll::Pending if waited == waits => Poll::Ready(None),
+            Poll::Pending => {
+                waited = waited.strict_add(1);
+                Poll::Pending
+            }
+        })
+        .await
+    }
+
+    // The write of a record that does not fit in a file with no record removes that
+    // file, then makes it again. The caller drops the write while the remove is in
+    // flight, and opens the log again, as `Error::Poisoned` says.
+    #[test]
+    fn a_write_after_an_open_after_a_dropped_write_is_durable() {
+        let mut lost = Vec::new();
+        for run in 0..64 {
+            let (mut sim, node) = create_node(run);
+            let names = sim
+                .run_on(&node, |node, _| async move {
+                    let (mut log, _) = open(&node).await.unwrap();
+                    let large = [bytes(1, LARGE)];
+                    assert!(cut(log.write(None, &large), 0).await.is_none());
+                    drop(log);
+                    let (mut log, stored) = open(&node).await.unwrap();
+                    assert_eq!(stored, Stored::default());
+                    log.write(None, &[bytes(1, 10)]).await.unwrap();
+                    drop(log);
+                    node.files().list(Path::new(DIR)).await.unwrap()
+                })
+                .unwrap();
+            sim.crash(&node, Crash::Power);
+            let kept = stored(&mut sim, &node).unwrap();
+            if kept.entries != [bytes(1, 10)] {
+                lost.push((run, names, kept.entries));
+            }
+        }
+        assert_eq!(
+            lost,
+            [],
+            "(run, the files after the write, the entries of the next open)"
+        );
+    }
+
+    // The write of a record that does not fit removes `log-0` and makes it again. The
+    // caller drops the write at each wait, so also while the remove or the create is
+    // in flight. Few run values reach an open that lists before the dropped call ends.
+    #[test]
+    fn an_open_after_a_dropped_write_opens_in_each_run() {
+        let mut failed = Vec::new();
+        for run in 0..64 {
+            for waits in 0.. {
+                let (mut sim, node) = create_node(run);
+                let (ended, error) = sim
+                    .run_on(&node, move |node, _| async move {
+                        let (mut log, _) = open(&node).await.unwrap();
+                        let large = [bytes(1, LARGE)];
+                        let ended = cut(log.write(None, &large), waits).await.is_some();
+                        drop(log);
+                        let error = match open(&node).await {
+                            Ok((mut log, _)) => {
+                                log.write(None, &[bytes(1, 10)]).await.err()
+                            }
+                            Err(error) => Some(error),
+                        };
+                        (ended, error)
+                    })
+                    .unwrap();
+                if let Some(error) = error {
+                    failed.push((run, waits, error.to_string()));
+                }
+                if ended {
+                    break;
+                }
+            }
+        }
+        assert_eq!(failed, [], "(run, the wait of the drop, the error)");
+    }
+
+    // An open removes the spare `log-1`. The caller drops the open at each wait, so
+    // also while the remove is in flight.
+    #[test]
+    fn an_open_after_a_dropped_open_opens_in_each_run() {
+        let mut failed = Vec::new();
+        for run in 0..16 {
+            for waits in 0.. {
+                let (mut sim, node) = create_node(run);
+                create_spare(&mut sim, &node, 512);
+                let (ended, error) = sim
+                    .run_on(&node, move |node, _| async move {
+                        let ended = cut(open(&node), waits).await.is_some();
+                        (ended, open(&node).await.err())
+                    })
+                    .unwrap();
+                if let Some(error) = error {
+                    failed.push((run, waits, error.to_string()));
+                }
+                if ended {
+                    break;
+                }
+            }
+        }
+        assert_eq!(
+            failed,
+            [],
+            "(run, the wait of the drop, the error of the open)"
+        );
+    }
+
+    // An open removes the spare `log-1`, and a later write makes `log-1` again. The
+    // caller drops the open at each wait, so also while the remove is in flight.
+    #[test]
+    fn a_write_after_an_open_after_a_dropped_open_is_durable() {
+        let mut lost = Vec::new();
+        for run in 0..16 {
+            for waits in 0.. {
+                let (mut sim, node) = create_node(run);
+                create_spare(&mut sim, &node, 512);
+                let ended = sim
+                    .run_on(&node, move |node, _| async move {
+                        let ended = match cut(open(&node), waits).await {
+                            Some(opened) => {
+                                opened.unwrap();
+                                true
+                            }
+                            None => false,
+                        };
+                        let (mut log, _) = open(&node).await.unwrap();
+                        log.write(None, &[bytes(2, LARGE)]).await.unwrap();
+                        ended
+                    })
+                    .unwrap();
+                sim.crash(&node, Crash::Power);
+                let kept = stored(&mut sim, &node).unwrap();
+                if kept.entries != [bytes(1, 10), bytes(2, LARGE)] {
+                    lost.push((run, waits));
+                }
+                if ended {
+                    break;
+                }
+            }
+        }
+        assert_eq!(lost, [], "(run, the wait at which the open dropped)");
+    }
+
+    #[test]
+    fn a_write_dropped_between_its_remove_and_its_create_poisons_the_log() {
+        let (mut sim, node) = create_node(0);
+        let (errors, names, stored) = sim
+            .run_on(&node, |node, _| async move {
+                let (mut log, _) = open(&node).await.unwrap();
+                let large = [bytes(1, LARGE)];
+                {
+                    let mut write = pin!(log.write(None, &large));
+                    let poll = poll_fn(|cx| Poll::Ready(write.as_mut().poll(cx))).await;
+                    assert!(poll.is_pending());
+                    // The write is not polled again, so it makes no file.
+                    let mut lists = 0;
+                    while node.files().list(Path::new(DIR)).await.unwrap().len() > 1 {
+                        lists += 1;
+                        assert!(lists < 64, "the remove of log-0 does not end");
+                    }
+                }
+                let errors = (
+                    log.write(None, &large).await.unwrap_err(),
+                    log.write(Some(hard(1, None)), &[]).await.unwrap_err(),
+                );
+                drop(log);
+                let names = node.files().list(Path::new(DIR)).await.unwrap();
+                let (_, stored) = open(&node).await.unwrap();
+                (errors, names, stored)
+            })
+            .unwrap();
+        let poisoned = Error::Poisoned {
+            path: file("log-0"),
+        };
+        assert_eq!(errors, (poisoned.clone(), poisoned));
+        assert_eq!(names, [PathBuf::from("lock")]);
+        assert_eq!(stored, Stored::default());
+    }
+
+    /// A node whose disk holds `disk_bytes`.
+    fn create_small_node(disk_bytes: u64) -> (Sim, sim::node::Node) {
+        let mut sim = Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config {
+            disk_bytes,
+            ..sim::node::Config::default()
+        });
+        (sim, node)
+    }
+
+    /// Room for a first record that holds `bytes(1, LARGE)`, and 4 KiB, but not
+    /// for `log-0` with no record too.
+    fn large_disk() -> u64 {
+        wide(encode(0, None, &[bytes(1, LARGE)]).len()).strict_add(4096)
+    }
+
+    // The write removes `log-0`, which has no record, and makes it again, larger. The
+    // disk has room for the new file only when the room of the old one is free.
+    #[test]
+    fn a_first_record_fits_in_the_room_of_the_file_it_replaces() {
+        let (mut sim, node) = create_small_node(large_disk());
+        sim.run_on(&node, |node, _| async move {
+            let (mut log, _) = open(&node).await.unwrap();
+            log.write(None, &[bytes(1, LARGE)]).await.unwrap();
+        })
+        .unwrap();
+        sim.crash(&node, Crash::Power);
+        let expected = Stored {
+            hard: Hard::default(),
+            entries: vec![bytes(1, LARGE)],
+        };
+        assert_eq!(stored(&mut sim, &node), Ok(expected));
+    }
+
+    #[test]
+    fn a_first_record_with_no_room_leaves_an_empty_log() {
+        let (mut sim, node) = create_small_node(SEGMENT.strict_add(4096));
+        let (error, stored) = sim
+            .run_on(&node, |node, _| async move {
+                let (mut log, _) = open(&node).await.unwrap();
+                let error = log.write(None, &[bytes(1, LARGE)]).await.unwrap_err();
+                drop(log);
+                (error, open(&node).await.map(|(_, stored)| stored))
+            })
+            .unwrap();
+        let full = files::Error::Full {
+            path: file("log-0"),
+        };
+        assert_eq!(error, Error::Files(full));
+        assert_eq!(stored, Ok(Stored::default()));
+    }
+
+    // A cut at each wait of the write, so also between the remove of `log-0` and its
+    // create, which syncs the directory to free the room of the removed file.
+    #[test]
+    fn a_power_cut_in_a_first_record_that_replaces_its_file_keeps_all_or_none() {
+        let large = Stored {
+            hard: Hard::default(),
+            entries: vec![bytes(1, LARGE)],
+        };
+        for waits in 0.. {
+            let (mut sim, node) = create_small_node(large_disk());
+            let ended = sim
+                .run_on(&node, move |node, _| async move {
+                    let (mut log, _) = open(&node).await.unwrap();
+                    let large = [bytes(1, LARGE)];
+                    match cut(log.write(None, &large), waits).await {
+                        Some(written) => {
+                            written.unwrap();
+                            true
+                        }
+                        None => false,
+                    }
+                })
+                .unwrap();
+            sim.crash(&node, Crash::Power);
+            let kept = stored(&mut sim, &node).unwrap();
+            if ended {
+                assert_eq!(kept, large);
+                break;
+            }
+            assert!(kept == Stored::default() || kept == large, "wait {waits}");
+        }
+    }
+
     /// A log on a pool of 2,048 bytes, with one record to byte 1,236 and the block
     /// at the end of a second record at bytes 1,536 to 1,576: the pool gave no block
     /// for the 300 bytes before it. Returns the log, its pool, and the block that keeps
@@ -3095,7 +3394,7 @@ mod tests {
     fn the_zeros_cover_each_block_of_the_stopped_write() {
         let (mut sim, node) = create_node(0);
         sim.run_on(&node, |node, _| async move {
-            let config = block::Config { budget: 140_000 };
+            let config = block::Config::new(140_000).expect("the budget fits");
             let memory = block::Heap::new(config.reservation());
             let pool = Rc::new(Pool::new(config, memory));
             let (mut log, _) = Log::open(node.files(), DIR.into(), Rc::clone(&pool))
@@ -3338,7 +3637,11 @@ mod tests {
                 .run_on(&node, |node, _| async move {
                     let log = file("log-0");
                     let file = node.files().open(&log, Mode::Read).await.unwrap();
-                    let bytes = read(&file, &create_pool()).await.unwrap();
+                    let bytes = Blocks::new(create_pool())
+                        .unwrap()
+                        .read(&file)
+                        .await
+                        .unwrap();
                     bytes[SECTOR..6 * SECTOR]
                         .chunks(SECTOR)
                         .all(|sector| sector == [0; SECTOR] || sector == [2; SECTOR])
@@ -3391,7 +3694,12 @@ mod tests {
     }
 
     fn data() -> impl Strategy<Value = Data> {
-        let keys = || prop::collection::btree_set(any::<u128>().prop_map(key), 0..4);
+        let keys = || {
+            prop::collection::btree_set(
+                any::<u128>().prop_map(node::Key::from_u128),
+                0..4,
+            )
+        };
         prop_oneof![
             Just(Data::Empty),
             prop::collection::vec(any::<u8>(), 0..64).prop_map(Data::Bytes),
@@ -3421,10 +3729,12 @@ mod tests {
         prop::option::of((grant, any::<u128>(), voters)).prop_map(|proof| {
             proof.map(|(grant, candidate, voters)| Proof {
                 grant,
-                candidate: key(candidate),
+                candidate: node::Key::from_u128(candidate),
                 voters: voters
                     .into_iter()
-                    .map(|(voter, signature)| (key(voter), Some(signature)))
+                    .map(|(voter, signature)| {
+                        (node::Key::from_u128(voter), Some(signature))
+                    })
                     .collect(),
             })
         })
@@ -3435,7 +3745,7 @@ mod tests {
         prop::option::of((any::<u64>(), keys.clone(), keys, proofs())).prop_map(
             |hard| {
                 hard.map(|(term, vote, leader, proof)| Hard {
-                    leader: leader.map(key),
+                    leader: leader.map(node::Key::from_u128),
                     proof,
                     ..self::hard(term, vote)
                 })

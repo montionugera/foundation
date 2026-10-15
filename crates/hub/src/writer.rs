@@ -12,9 +12,9 @@ use types::frame::{self, Draft, Form, Label};
 use types::hash;
 use types::name::Name;
 use types::sample::Type;
-use types::time::Span;
+use types::time::{Span, Stamp};
 
-use crate::{Away, Removal, State};
+use crate::{Away, Ending, State};
 
 /// What a writer session opens with.
 #[derive(Clone, Debug)]
@@ -115,7 +115,7 @@ fn resolve(
     for name in channels {
         let channel = state
             .channels
-            .get(name)
+            .named(name)
             .ok_or_else(|| Error::Unknown(name.clone()))?;
         let (key, index) = (channel.key(), channel.index());
         keys.push(key);
@@ -130,14 +130,33 @@ fn resolve(
     Ok((keys, groups))
 }
 
+/// The entry in `set` of each of `keys`, in their order.
+fn entries(set: &KeySet, keys: &[channel::Key]) -> Box<[usize]> {
+    let entry_of: hash::Map<channel::Key, usize> = set
+        .entries()
+        .iter()
+        .enumerate()
+        .map(|(at, entry)| (entry.key, at))
+        .collect();
+    keys.iter()
+        .map(|key| {
+            let entry = entry_of.get(key).copied();
+            entry
+                .unwrap_or_else(|| panic!("invariant: the key set holds channel {key}"))
+        })
+        .collect()
+}
+
 /// A writer session. Dropping it closes the session.
 #[derive(Debug)]
 pub struct Writer {
     state: Rc<RefCell<State>>,
     key: ::home::writer::Key,
-    /// The channel whose removal ended the writer.
-    removed: Removal,
+    /// Why the hub ended the writer.
+    ending: Ending,
     set: Arc<KeySet>,
+    /// The entry in `set` of each channel of the config, in its order.
+    entries: Box<[usize]>,
     /// The outcomes of the last write.
     outcomes: Vec<::home::Outcome>,
 }
@@ -157,17 +176,24 @@ impl Writer {
         if channels.is_empty() {
             return Err(Error::Empty);
         }
+        state.borrow_mut().catch_up();
+        let indexes = |groups: &[Indexed]| -> Vec<channel::Key> {
+            groups.iter().map(|&(index, _)| index).collect()
+        };
+        // An unknown name fails before the wait. Each mesh time reaches the first
+        // stamp, so once the node has mesh time, the wait is ready at once.
+        resolve(&state.borrow(), &channels)?;
+        let time = state.borrow().time.reach(Stamp::from_nanos(i64::MIN));
+        time.await;
         let (mut keys, groups) = loop {
             let (_, groups) = resolve(&state.borrow(), &channels)?;
-            for (index, _) in &groups {
-                crate::home(state, *index).await?;
-            }
-            // A call of `set_definitions` while the open waits can change a channel.
+            let checked = indexes(&groups);
+            let homed = crate::homes(state, &checked).await;
+            // A change of the definitions while the open waits can change a channel,
+            // and then the home of an index it left does not matter.
             let (keys, again) = resolve(&state.borrow(), &channels)?;
-            let indexes = |groups: &[Indexed]| -> Vec<channel::Key> {
-                groups.iter().map(|&(index, _)| index).collect()
-            };
-            if indexes(&again) == indexes(&groups) {
+            if indexes(&again) == checked {
+                homed?;
                 break (keys, again);
             }
         };
@@ -184,6 +210,7 @@ impl Writer {
             })
             .collect();
         let set = borrowed.interner.intern(&groups);
+        let entries = entries(&set, &keys);
         let writer = ::home::writer::Writer {
             subject,
             authority,
@@ -191,14 +218,15 @@ impl Writer {
             set: Arc::clone(&set),
         };
         let key = borrowed.home.open_writer(writer).map_err(Error::Home)?;
-        borrowed.commit.appended();
+        borrowed.gate.wake();
         keys.extend(groups.iter().map(|group| group.index));
-        let removed = borrowed.writers.add(key, keys.into());
+        let ending = borrowed.writers.add(key, keys.into());
         Ok(Self {
             state: Rc::clone(state),
             key,
-            removed,
+            ending,
             set,
+            entries,
             outcomes: Vec::new(),
         })
     }
@@ -207,6 +235,29 @@ impl Writer {
     #[must_use]
     pub fn set(&self) -> &Arc<KeySet> {
         &self.set
+    }
+
+    /// The entry of each channel of [`Config::channels`], in that order: its
+    /// position in the entries of [`Self::set`], as [`Self::draft`] and
+    /// [`Draft::series_mut`] take it. A channel named twice has the same entry twice.
+    #[must_use]
+    pub fn entries(&self) -> &[usize] {
+        &self.entries
+    }
+
+    /// Mesh time now, as the home stamps each entry and checks each stamp: it never
+    /// goes back, and two calls can give the same stamp. Each stamp of a path must be
+    /// after the one before it
+    /// ([`order::Error::Backwards`](crate::home::order::Error::Backwards)).
+    #[must_use]
+    pub fn now(&self) -> Stamp {
+        now(&self.state)
+    }
+
+    /// The mesh time of the writer's hub, as [`Writer::now`] gives it.
+    #[must_use]
+    pub fn time(&self) -> Time {
+        Time(Rc::clone(&self.state))
     }
 
     /// A frame of the writer's key set to fill, from the shard's pool, as
@@ -249,13 +300,12 @@ impl Writer {
         label: Label,
         frame: Draft,
     ) -> Result<&[::home::Outcome], Failure> {
-        if let Some(key) = self.removed.get() {
+        if let Some(key) = self.ending.removed() {
             return Err(Failure::Removed(key));
         }
         let mut state = self.state.borrow_mut();
         let state = &mut *state;
         let written = state.home.write(self.key, label, frame);
-        state.commit.appended();
         let outcomes = written.map_err(Failure::Home)?;
         self.outcomes.clear();
         self.outcomes.extend_from_slice(outcomes);
@@ -268,4 +318,22 @@ impl Drop for Writer {
     fn drop(&mut self) {
         self.state.borrow_mut().close_writer(self.key);
     }
+}
+
+/// Mesh time of the hub of a writer, which a caller can keep apart from the writer.
+/// It reads what [`Writer::now`] reads, also after the writer drops.
+#[derive(Clone, Debug)]
+pub struct Time(Rc<RefCell<State>>);
+
+impl Time {
+    /// As [`Writer::now`].
+    #[must_use]
+    pub fn now(&self) -> Stamp {
+        now(&self.0)
+    }
+}
+
+fn now(state: &RefCell<State>) -> Stamp {
+    let now = state.borrow().home.now();
+    now.expect("invariant: mesh time stays once known")
 }
