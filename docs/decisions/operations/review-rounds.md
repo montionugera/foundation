@@ -83,3 +83,27 @@
   changes in the range after round 3, what a round comment with the number of the one
   before it holds, that a PR after round 3 is a new design, or the OK of a deferred
   design flaw outside a risk crate.
+  Amended (2026-10-15, merge check of #2455): when the crate's architect, or
+  `laptop.architect` for a contract between the two lists, wrote a commit of the PR, the
+  other architect is the design approver, as item 42 rules for Round 1
+  (`laptop.director`, 2026-10-11T16:02:05Z:
+  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6110904042), and as
+  the ruling of #2600 rules for a contract between the two lists (`laptop.director`,
+  2026-10-13T20:37:53Z:
+  https://github.com/synnaxlabs/foundation/pull/2600#issuecomment-6154720280).
+  Supersedes "wrote the PR" in "When the crate's architect, or `laptop.architect` for a
+  contract between the two lists, wrote the PR, it is the other architect" above.
+  Supersedes "each round" of the old PR "counts for the new PR at its SHA" and "the next
+  round starts where the last round of the old PR ends" of item 45
+  (`laptop.director`, 2026-10-11T17:20:58Z:
+  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6111639867), as
+  round 1 of #2586 decided (`laptop.director`, 2026-10-13T16:49:41Z:
+  https://github.com/synnaxlabs/foundation/pull/2586#issuecomment-6150615724). When the
+  head of the old PR is an ancestor of the head of the new one, the answers and
+  approvals of the old PR still count at their SHA. Decided by `laptop.director`,
+  2026-10-15T16:32:24Z:
+  https://github.com/synnaxlabs/foundation/pull/2455#issuecomment-6197095582, and
+  2026-10-15T16:38:12Z:
+  https://github.com/synnaxlabs/foundation/pull/2455#issuecomment-6197209707, and
+  2026-10-15T16:44:09Z:
+  https://github.com/synnaxlabs/foundation/pull/2455#issuecomment-6197325644.
