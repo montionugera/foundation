@@ -2026,19 +2026,22 @@ mod lock {
         Start,
     }
 
-    /// Runs a node that serves and a second node at its port, with the second of
-    /// `order` 5 µs times `step` after the first. Returns whether the second node
-    /// served, and asserts that it gave `Err(busy())` when it did not.
-    fn second_served(order: Order, step: i64) -> bool {
-        let mut sim = sim::Sim::new(sim::Config::default());
+    /// Runs a node that serves and a second node at its port on `seed`, with the
+    /// second of `order` 5 µs times `step` after the first. Returns whether the second
+    /// node served, and asserts that it gave `Err(busy())` when it did not.
+    fn second_served(order: Order, seed: u64, step: i64) -> bool {
+        let mut sim = sim::Sim::new(sim::Config {
+            seed,
+            ..sim::Config::default()
+        });
         let host = host(&mut sim, 2);
         let first = start_on(&host, 0);
-        assert_eq!(sim.run_for(Span::SECOND), Ok(()), "at {step}");
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()), "seed {seed} at {step}");
         let delay = Span::from_nanos(step * 5_000);
         let (second, probe) = match order {
             Order::Stop => {
                 first.stop();
-                assert_eq!(sim.run_for(delay), Ok(()), "at {step}");
+                assert_eq!(sim.run_for(delay), Ok(()), "seed {seed} at {step}");
                 let second = start_on(&host, 0);
                 let probe = probe(&second);
                 (second, probe)
@@ -2046,42 +2049,46 @@ mod lock {
             Order::Start => {
                 let second = start_on(&host, 0);
                 let probe = probe(&second);
-                assert_eq!(sim.run_for(delay), Ok(()), "at {step}");
+                assert_eq!(sim.run_for(delay), Ok(()), "seed {seed} at {step}");
                 first.stop();
                 (second, probe)
             }
         };
-        assert_eq!(sim.run_for(Span::SECOND), Ok(()), "at {step}");
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()), "seed {seed} at {step}");
         second.stop();
-        assert_eq!(sim.run(), Ok(()), "at {step}");
-        assert_eq!(first.join(), Ok(()), "at {step}");
+        assert_eq!(sim.run(), Ok(()), "seed {seed} at {step}");
+        assert_eq!(first.join(), Ok(()), "seed {seed} at {step}");
         let served = fate(&probe) == Fate::Ran;
         let expected = if served { Ok(()) } else { Err(busy()) };
-        assert_eq!(second.join(), expected, "at {step}");
+        assert_eq!(second.join(), expected, "seed {seed} at {step}");
         served
     }
 
     /// A node that serves stops, and a second node at its port starts at a step of
-    /// that stop: the second node finds the lock held or serves, and never fails on
-    /// the port.
+    /// that stop, on seeds 0 to 3: the second node finds the lock held or serves, and
+    /// never fails on the port. One seed can give one outcome at each step.
     #[test]
     fn a_start_at_each_step_of_the_stop_of_a_node_at_its_port_never_fails_on_the_port()
     {
         let mut seen = [false; 2];
-        for step in 0..400 {
-            seen[usize::from(second_served(Order::Stop, step))] = true;
+        for (seed, step) in
+            (0..4).flat_map(|seed| (0..400).step_by(4).map(move |step| (seed, step)))
+        {
+            seen[usize::from(second_served(Order::Stop, seed, step))] = true;
         }
         assert_eq!(seen, [true; 2]);
     }
 
     /// A second node starts at the port of a node that serves, and the first node
-    /// stops at a step of that start: the second node finds the lock held or serves,
-    /// and never fails on the port.
+    /// stops at a step of that start, on seeds 0 to 3: the second node finds the lock
+    /// held or serves, and never fails on the port.
     #[test]
     fn a_stop_at_each_step_of_a_start_at_the_port_of_a_node_never_fails_on_the_port() {
         let mut seen = [false; 2];
-        for step in 0..400 {
-            seen[usize::from(second_served(Order::Start, step))] = true;
+        for (seed, step) in
+            (0..4).flat_map(|seed| (0..400).step_by(4).map(move |step| (seed, step)))
+        {
+            seen[usize::from(second_served(Order::Start, seed, step))] = true;
         }
         assert_eq!(seen, [true; 2]);
     }
@@ -3275,6 +3282,29 @@ pub(crate) mod port {
         assert_eq!(fate(&probe), Fate::Ran);
     }
 
+    /// With a file `name`, a held port gives [`Error::Port`] before the load reads a
+    /// `node.key` that a node did not write.
+    #[test]
+    fn a_port_that_does_not_bind_wins_over_a_node_key_that_is_not_a_key() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let listen = listen(&host);
+        let udp = env::net::udp::Config {
+            local: listen,
+            send_buffer_bytes: 1 << 16,
+            recv_buffer_bytes: 1 << 16,
+        };
+        let held = host.net().udp(&udp).expect("the port binds");
+        let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+        assert_eq!(sim.run(), Ok(()));
+        assert!(matches!(node.join(), Err(Error::Port { .. })));
+        write_key(&mut sim, &host, vec![0; identity::LEN]);
+        let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+        assert_eq!(sim.run(), Ok(()));
+        assert!(matches!(node.join(), Err(Error::Port { .. })));
+        drop(held);
+    }
+
     /// A multicast IP or the IPv4 broadcast IP, also as an IPv4-mapped IPv6 address,
     /// starts no shard and makes no file.
     #[test]
@@ -4390,7 +4420,7 @@ pub(crate) mod port {
         const OPEN: Span = Span::from_nanos(10_000_000);
         /// The time after [`OPEN`], in nanoseconds, at which a write of [`LOG`] that
         /// fails from [`OPEN`] stops the group in the sim.
-        const WRITE: i64 = 1_793_725_638;
+        const WRITE: i64 = 1_794_021_365;
 
         /// Why the group stops when a write of [`LOG`] fails.
         fn write_failed() -> ::mesh::Stopped {
@@ -5726,7 +5756,7 @@ pub(crate) mod port {
         }
 
         /// A task that panics after the group stops, before the node sees the stop:
-        /// `join` gives the panic. At [`WRITE`], three idle tasks that wake at that
+        /// `join` gives the panic. At [`WRITE`], seven idle tasks that wake at that
         /// instant make the sim run the group's stop, then this task, before the node
         /// sees the stop. The task asserts that the group stopped before it panics.
         #[test]
@@ -5736,7 +5766,7 @@ pub(crate) mod port {
             let node = start_alone(&host);
             let at =
                 sim::node::Config::default().monotonic + OPEN + Span::from_nanos(WRITE);
-            for _ in 0..3 {
+            for _ in 0..7 {
                 let own = host.clone();
                 node.spawn(move |_| async move {
                     own.clock().sleep_until(at).await;
@@ -7269,10 +7299,10 @@ mod name {
     fn the_text_of_no_card_states_the_two_ways_out() {
         assert_eq!(
             Error::NoCard.to_string(),
-            "the data directory stores a region and holds no file `name`, and the file \
-             `node.key` is not there or holds a key that the founding of the region \
-             does not hold; restore `node.key` from a backup of this node, or give \
-             another data directory"
+            "the data directory has the directory of a mesh, and the file `node.key` \
+             is not there or holds a key that the founding of its region does not \
+             hold; restore `node.key` from a backup of this node, or give another \
+             data directory"
         );
     }
 
