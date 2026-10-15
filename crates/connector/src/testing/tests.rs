@@ -409,20 +409,33 @@ fn a_refused_config_opens_a_connector_that_ends_with_its_diagnostics() {
     );
 }
 
+/// A run whose status reader sleeps until the buffer has no room reads each status
+/// frame that the hub applied, with no end.
 #[test]
-#[should_panic(
-    expected = "the status ends: the reader missed a frame and gets no later one"
-)]
-fn a_run_reads_its_status_after_a_long_sleep_until_behind() {
+fn a_run_reads_its_status_after_a_long_sleep_past_the_frames_lost_for_no_room() {
     on_rig(
         || Table::new().with("ticks", Ticks::default()),
         |mut rig, clock| async move {
             let config = Document::default();
             let mut run = rig.supervise("ticks", name("plant.ticks"), config).await;
             clock.sleep(Span::from_nanos(1_100_000_000_000)).await;
+            let reader = run.reader.as_mut().expect("a status reader");
+            let mut taken = 0;
             loop {
-                run.next().await;
+                let (mut next, mut quiet) =
+                    (pin!(reader.next()), pin!(clock.sleep(Span::SECOND)));
+                let received = poll_fn(|cx| {
+                    if let Poll::Ready(received) = next.as_mut().poll(cx) {
+                        return Poll::Ready(Some(received));
+                    }
+                    quiet.as_mut().poll(cx).map(|()| None)
+                })
+                .await;
+                let Some(received) = received else { break };
+                received.expect("a status frame");
+                taken += 1;
             }
+            assert!(1_000 < taken && taken < 1_100, "{taken} taken");
         },
     );
 }
