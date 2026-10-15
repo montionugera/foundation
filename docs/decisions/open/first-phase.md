@@ -87,7 +87,7 @@ https://github.com/synnaxlabs/foundation/pull/2710#issuecomment-6198034604). The
 prerequisites of #1157 are part of B2, not new items, so that B2 finishes
 (`laptop.monitor`, factory message `8a7a297c`, recorded at 2026-10-15T17:33Z:
 https://github.com/synnaxlabs/foundation/pull/2710#issuecomment-6198296586); the path of
-#1069 names each one. #1441 (B5) and #1329 (B6) wait for a later batch. Supersedes, for
+#1069 names each one, and each keeps its milestone. #1441 (B5) and #1329 (B6) wait for a later batch. Supersedes, for
 these items only, of the amendment of 2026-10-13 above: "no session starts new work on
 it before then" and "Each issue that stays on this milestone waits, also protocol 4 of
 #1232" (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6154908233),
