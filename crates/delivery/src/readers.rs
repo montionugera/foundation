@@ -357,7 +357,8 @@ impl Readers {
     /// Records that the session has every sample below `position`. On each path, a seq
     /// at or below the session's changes nothing: an ack can repeat or arrive late. An
     /// ack to a closed session changes nothing too: an ack can arrive after its session
-    /// closes.
+    /// closes. An ack can make the next [`Readers::take`] of the session give
+    /// [`Next::Disk`], so take after the ack.
     ///
     /// # Errors
     ///
@@ -778,7 +779,7 @@ impl Readers {
                 // A read takes the same time for one frame as for many, so a session
                 // that gets its credit back one frame at a time waits for half of it.
                 let acked = self.complete[i].position.live >= *from;
-                let enough = flow.credit.half() || acked;
+                let enough = flow.credit.half_left() || acked;
                 return if flow.credit.left() == 0 || !enough {
                     Next::Empty
                 } else {
@@ -1029,7 +1030,7 @@ impl Credit {
 
     /// Whether a read from disk fills enough of the credit left to be worth its
     /// cost: at least half the window is left.
-    fn half(&self) -> bool {
+    fn half_left(&self) -> bool {
         self.left().saturating_mul(2) >= self.window
     }
 
@@ -3447,6 +3448,77 @@ pub(super) mod tests {
                 }
             }
             assert!(reads <= FRAMES / 5 + 1, "{reads} reads");
+        }
+
+        #[test]
+        fn reads_disk_at_most_once_for_each_half_window_when_it_acks_each_frame() {
+            const FRAMES: u64 = 40;
+            let frames = Frames::new(41);
+            let mut readers = Readers::new(0);
+            for n in 0..FRAMES {
+                readers.queue(&frames.frame(n + 1), &frames.set, n..n + 1);
+            }
+            let key = opened(&mut readers, 0, 10);
+            let (mut reads, mut given, mut granted) = (0, 0, 10 * CHARGE);
+            while given < FRAMES {
+                match readers.take(key.into()) {
+                    Next::Disk { from } => {
+                        reads += 1;
+                        let mut n = from;
+                        while n < FRAMES
+                            && fill(&mut readers, &frames, key, n + 1, n..n + 1)
+                        {
+                            n += 1;
+                        }
+                    }
+                    Next::Frame(_) => {
+                        given += 1;
+                        readers.ack(key, live(given)).expect("the ack is valid");
+                        granted += CHARGE;
+                        readers.grant(key, granted);
+                    }
+                    Next::Empty => panic!("each frame gives its credit back"),
+                    Next::Behind => panic!("no samples were lost"),
+                }
+            }
+            assert!(reads <= FRAMES / 5 + 1, "{reads} reads");
+        }
+
+        /// Opens a session with `limit_bytes` of credit over three frames, and fills
+        /// two.
+        fn spent_two(
+            readers: &mut Readers,
+            frames: &Frames,
+            limit_bytes: u64,
+        ) -> complete::Key {
+            for n in 0..3 {
+                readers.queue(&frames.frame(n + 1), &frames.set, n..n + 1);
+            }
+            let start = Start::At(live(0));
+            let key = readers
+                .open(Reader::Unnamed, start, limit_bytes, Charge::Whole)
+                .key;
+            assert_eq!(read(readers, key), (vec![], 0));
+            for n in 0..2 {
+                assert!(fill(readers, frames, key, n + 1, n..n + 1));
+            }
+            key
+        }
+
+        #[test]
+        fn reads_disk_with_half_the_window_left() {
+            let frames = Frames::new(4);
+            let mut readers = Readers::new(0);
+            let key = spent_two(&mut readers, &frames, 4 * CHARGE);
+            assert_eq!(read(&mut readers, key), (vec![1, 2], 2));
+        }
+
+        #[test]
+        fn waits_with_one_byte_less_than_half_the_window_left() {
+            let frames = Frames::new(4);
+            let mut readers = Readers::new(0);
+            let key = spent_two(&mut readers, &frames, 4 * CHARGE - 2);
+            assert_eq!(taken(&mut readers, key), [1, 2]);
         }
 
         #[test]
