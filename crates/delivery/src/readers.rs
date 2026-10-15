@@ -459,17 +459,26 @@ impl Readers {
         } else {
             self.lost = seq.clone();
         }
-        if self.queue.len() > self.held {
-            // `miss` reads only the end, so a run of losses keeps one entry.
-            if let Some((Queued::Lost, last)) = self.queue.back_mut() {
+        // `miss` reads only the end, so a run of losses keeps one entry.
+        let pending = self.queue.len() > self.held;
+        match self.queue.back_mut() {
+            Some((Queued::Lost, last)) if pending => {
                 last.end = seq.end;
-            } else {
-                self.queue.push_back((Queued::Lost, seq));
             }
+            _ => self.lose_first(seq),
+        }
+        &self.woken_complete
+    }
+
+    /// Queues the loss `seq` after a frame, or applies it at once when no queued frame
+    /// waits to be on disk.
+    #[cold]
+    fn lose_first(&mut self, seq: Range<u64>) {
+        if self.queue.len() > self.held {
+            self.queue.push_back((Queued::Lost, seq));
         } else {
             self.miss(Some(seq.end));
         }
-        &self.woken_complete
     }
 
     /// Gives each queued frame that ends at or below `durable`, the first live seq not
