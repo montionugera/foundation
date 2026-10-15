@@ -4,28 +4,48 @@
 //! The commit task is not counted. The home's `woken` after a commit, which that task
 //! calls, is counted on its own: it makes none once its keys are sized, while a
 //! complete reader takes each frame, and when a complete reader falls behind again to
-//! a depth it reached before. This binary has no test harness: the count covers each
-//! thread, and a harness allocates on its own thread at any time.
+//! a depth it reached before. An open of a reader of many channels makes no
+//! allocation for each channel. The names of a reader make no allocation at a change
+//! to a key set no larger than one before. A client read makes as many allocations for
+//! each frame it relays as a HUB WIRE session. This binary has no test harness: the
+//! count covers each thread, and a harness allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
+#[path = "../common/agent.rs"]
+#[expect(dead_code, reason = "the binary uses only some of the helpers")]
+mod agent;
+#[expect(dead_code, reason = "the binary uses only some of the helpers")]
 #[path = "../common/mod.rs"]
 mod common;
+#[path = "../common/net.rs"]
+mod net;
 #[path = "../common/node.rs"]
 mod node;
+#[path = "../common/peer.rs"]
+mod peer;
+mod relay;
+#[path = "../common/serving.rs"]
+mod serving;
+#[path = "../common/sessions.rs"]
+#[expect(dead_code, reason = "the binary uses only some of the helpers")]
+mod sessions;
 #[path = "../common/woken.rs"]
 mod woken;
 
+use std::hint::black_box;
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
-use common::{SETTLE, hub, name};
+use common::{SETTLE, hub, name, unnamed};
 use home::reader::Next;
 use home::reader::complete::Charge;
 use hub::Hub;
-use hub::reader::{Mode, Reader};
+use hub::reader::{self, Mode, Reader};
 use hub::writer::{self, Writer};
 use types::authority::Authority;
+use types::time::Span;
+use wire::hub::client;
 use woken::Woken;
 
 #[global_allocator]
@@ -58,6 +78,25 @@ fn read(reader: &mut Reader) -> u64 {
     allocations
 }
 
+/// Takes the next frame of `reader`, as [`read`] does, and gives the name of each entry
+/// of its view, with the allocations of both.
+fn read_named(reader: &mut Reader) -> u64 {
+    let (taken, allocations) = ALLOCATOR.count(|| {
+        let context = &mut Context::from_waker(Waker::noop());
+        (0..2).any(|_| match pin!(reader.next()).poll(context) {
+            Poll::Ready(Ok(received)) => {
+                for (entry, _) in received.view().iter() {
+                    black_box(received.name(entry));
+                }
+                true
+            }
+            Poll::Ready(Err(_)) | Poll::Pending => false,
+        })
+    });
+    assert!(taken, "a committed frame waits for the reader");
+    allocations
+}
+
 /// Polls `reader`, which has no frame waiting, once, with the allocations the poll
 /// made. A `Pending` ends the streak of `next`, so the poll never yields.
 fn wait(reader: &mut Reader) -> u64 {
@@ -80,7 +119,7 @@ async fn five_latest(
 ) {
     let mut latests = vec![latest];
     for _ in 0..4 {
-        let latest = hub.reader(&[name("value")], Mode::Latest).await;
+        let latest = hub.reader(unnamed(&["value"], Mode::Latest)).await;
         latests.push(latest.expect("opens"));
     }
     for latest in &mut latests[1..] {
@@ -110,7 +149,7 @@ async fn replaced(
 ) {
     let mut latests = Vec::new();
     for _ in 0..12 {
-        let latest = hub.reader(&[name("value")], Mode::Latest).await;
+        let latest = hub.reader(unnamed(&["value"], Mode::Latest)).await;
         latests.push(latest.expect("opens"));
     }
     for latest in &mut latests {
@@ -130,7 +169,7 @@ async fn replaced(
         }
     }
     for latest in &mut latests {
-        let replaced = hub.reader(&[name("value")], Mode::Latest).await;
+        let replaced = hub.reader(unnamed(&["value"], Mode::Latest)).await;
         *latest = replaced.expect("opens");
         read(latest);
     }
@@ -138,6 +177,101 @@ async fn replaced(
     let written = write(writer, now);
     let taken: u64 = latests.iter_mut().map(read).sum();
     assert_eq!((waited, written, taken), (0, 0, 0), "replaced");
+}
+
+/// Opens `config` on `hub`, with the allocations made while the open ran, not those of
+/// the other tasks while it waited.
+async fn open(
+    hub: &Hub,
+    node: &sim::node::Node,
+    config: reader::Config,
+) -> (Reader, u64) {
+    let mut open = pin!(hub.reader(config));
+    let mut context = Context::from_waker(Waker::noop());
+    let mut allocations = 0;
+    loop {
+        let (poll, made) = ALLOCATOR.count(|| open.as_mut().poll(&mut context));
+        allocations += made;
+        if let Poll::Ready(reader) = poll {
+            return (reader.expect("opens"), allocations);
+        }
+        node.clock().sleep(Span::MILLISECOND).await;
+    }
+}
+
+/// An open of a reader of many channels makes fewer allocations than it has channels,
+/// once the first open grew the state of its channels: it makes no allocation for each
+/// name.
+fn open_of_a_reader_of_many_channels() {
+    const MANY: u64 = 1000;
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    sim.run_on(&node, |node, tasks| async move {
+        let more: Vec<_> = (0..MANY).map(|n| name(&format!("w.{n}"))).collect();
+        let hub = common::hub_alone(&node, tasks, &more).await;
+        let _first = open(&hub, &node, unnamed(&["w.**"], Mode::Latest)).await;
+        let (_second, allocations) =
+            open(&hub, &node, unnamed(&["w.**"], Mode::Latest)).await;
+        assert!(
+            allocations < MANY,
+            "an open of {MANY} channels made {allocations} allocations"
+        );
+    })
+    .expect("the run ends");
+}
+
+/// The `next` of a reader at each change between a large key set and a small one. The
+/// first two frames get no name, and make no places. Then each frame gets a name for
+/// each entry of its view: the places allocate at the first large key set, and then
+/// never again.
+fn next_at_each_change_of_key_set() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    sim.run_on(&node, |node, tasks| async move {
+        let more: Vec<_> = (0..64).map(|n| name(&format!("w.{n}"))).collect();
+        let hub = common::hub_alone(&node, tasks, &more).await;
+        let mut reader = hub
+            .reader(unnamed(&["value"], Mode::Complete))
+            .await
+            .expect("opens");
+        let large: Vec<_> = [name("time"), name("value")]
+            .into_iter()
+            .chain(more.iter().cloned())
+            .collect();
+        let small = vec![name("time"), name("value")];
+        let mut counts = Vec::new();
+        let mut now = 1_000_000;
+        for n in 0..8 {
+            let channels = if n % 2 == 0 {
+                large.clone()
+            } else {
+                small.clone()
+            };
+            let config = writer::Config {
+                subject: name("a"),
+                authority: Authority(1),
+                lease: None,
+                channels,
+            };
+            let mut writer = hub.writer(config).await.expect("opens");
+            now = writer.now().nanos().max(now + 1);
+            write(&mut writer, now);
+            node.clock().sleep(SETTLE).await;
+            counts.push(if n < 2 {
+                read(&mut reader)
+            } else {
+                read_named(&mut reader)
+            });
+            drop(writer);
+            node.clock().sleep(SETTLE).await;
+        }
+        assert_eq!(
+            counts,
+            [4, 1, 5, 1, 4, 1, 4, 1],
+            "allocations of each `next` and its names: {counts:?}"
+        );
+    })
+    .expect("the run ends");
 }
 
 /// Writes a frame, waits for its commit, and calls `woken`. Returns the number of keys
@@ -254,15 +388,21 @@ fn main() {
         1,
         "the allocator counts"
     );
+    relay::relays_a_frame_with_the_allocations_of_a_wire_session(client::Mode::Latest);
+    relay::relays_a_frame_with_the_allocations_of_a_wire_session(
+        client::Mode::Complete,
+    );
     woken_of_a_reader_that_takes_each_frame();
     woken_of_a_reader_that_falls_behind_again();
     woken_of_a_reader_whose_frame_waits_for_credit();
+    open_of_a_reader_of_many_channels();
+    next_at_each_change_of_key_set();
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     sim.run_on(&node, |node, tasks| async move {
         let (hub, now) = hub(&node, tasks).await;
         let mut reader = hub
-            .reader(&[name("value")], Mode::Complete)
+            .reader(unnamed(&["value"], Mode::Complete))
             .await
             .expect("opens");
         let config = writer::Config {
@@ -273,15 +413,17 @@ fn main() {
         };
         let mut writer = hub.writer(config).await.expect("opens");
         let mut latest = hub
-            .reader(&[name("value")], Mode::Latest)
+            .reader(unnamed(&["value"], Mode::Latest))
             .await
             .expect("opens");
         for n in 0..WARM + COUNTED {
+            let stamped = ALLOCATOR.count(|| writer.now()).1;
             let written = write(&mut writer, now + n);
             node.clock().sleep(SETTLE).await;
             let read = read(&mut reader);
             if n >= WARM {
-                assert_eq!((written, read), (0, 0), "frame {n} allocated");
+                let counts = (stamped, written, read);
+                assert_eq!(counts, (0, 0, 0), "frame {n} allocated");
             }
         }
         let now = now + WARM + COUNTED;

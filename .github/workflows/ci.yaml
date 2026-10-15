@@ -20,6 +20,7 @@ on:
       - 'clippy.toml'
       - 'rustfmt.toml'
       - 'deny.toml'
+      - 'docs/quickstart.md'
       - '.github/workflows/**'
 
 # Each commit on main gets its own group, so a later merge never cancels its run.
@@ -71,18 +72,24 @@ jobs:
               - 'clippy.toml'
               - 'rustfmt.toml'
               - 'deny.toml'
+              - 'docs/quickstart.md'
               - '.github/workflows/**'
             deps:
               - 'Cargo.toml'
               - '**/Cargo.toml'
               - 'Cargo.lock'
+              - 'fuzz/Cargo.lock'
               - 'deny.toml'
               - '.github/workflows/**'
             models:
               - 'crates/ring/**'
               - 'crates/block/**'
               - 'crates/counting/**'
+              - 'crates/waker/**'
+              - 'crates/env/**'
+              - 'crates/types/**'
               - 'crates/node/**'
+              - 'crates/connector/**'
               - 'crates/connector-ni/**'
               - 'crates/daqmx-stub/**'
               - 'xtask/**'
@@ -103,7 +110,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - name: Format
-        run: cargo fmt --check
+        run: |
+          cargo fmt --check
+          cargo fmt --check --manifest-path fuzz/Cargo.toml
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Layers
@@ -143,8 +152,12 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny@0.20.2
+      # `fuzz/` is a workspace of its own, with its own lock file.
       - name: Dependencies
-        run: cargo deny check advisories bans licenses sources
+        run: |
+          cargo deny check advisories bans licenses sources
+          cargo deny --manifest-path fuzz/Cargo.toml \
+            check advisories bans licenses sources
       # A patched crate is a path package, which no advisory reaches. A package that
       # depends on the exact release of each path package outside the workspace
       # checks those releases.
@@ -216,15 +229,74 @@ jobs:
       - name: Miri
         run: cargo xtask miri
 
-  mutants:
+  # Miri cannot run C, so ASan and UBSan check `connector-opcua` in its place.
+  sanitizers:
+    needs: changes
+    if: "!cancelled() && needs.changes.outputs.rust != 'false'"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned nightly
+        run: |
+          rustup toolchain install "$(cat rust-toolchain-nightly)" --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - name: Sanitizers
+        run: cargo xtask sanitizers
+
+  fuzz:
+    needs: changes
+    if: "!cancelled() && needs.changes.outputs.rust != 'false'"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned nightly
+        run: |
+          rustup toolchain install "$(cat rust-toolchain-nightly)" --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            fuzz -> target
+      - name: Read the cargo-fuzz pin
+        id: cargo-fuzz
+        run: echo "tool=cargo-fuzz@$(cat fuzz/cargo-fuzz-version)" >> "$GITHUB_OUTPUT"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: ${{ steps.cargo-fuzz.outputs.tool }}
+      # `fuzz/` is a workspace of its own, which the Clippy step of `check` does not
+      # see.
+      - name: Clippy
+        run: cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+      - name: Fuzz
+        if: ${{ !cancelled() }}
+        run: cargo xtask fuzz 60
+      - name: Clean tree
+        run: test -z "$(git status --porcelain)" || { git status; exit 1; }
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          if-no-files-found: ignore
+
+  mutants-shard:
     needs: changes
     if: >-
-      !cancelled() && github.event_name == 'pull_request' &&
-      needs.changes.outputs.rust != 'false'
+      !cancelled() && needs.changes.outputs.rust != 'false' &&
+      github.event_name == 'pull_request'
     # A mutant that hangs runs until its timeout, so the run needs parallel jobs and
-    # memory that the 2-core hosted runner lacks.
+    # memory that the 2-core hosted runner lacks. Each shard runs a fourth of the
+    # mutants, round robin, on its own runner. The rule that a missed mutant fails CI
+    # is in `docs/claude/testing.md`.
+    name: mutants shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     runs-on: [self-hosted, Linux, ARM64]
     timeout-minutes: 90
+    permissions:
+      contents: read
     steps:
       # A mutant can allocate in a loop until the host runs out of memory. Each runner
       # unit on the host has a cap, the caps leave 2 GiB of the host free, and the
@@ -271,10 +343,14 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0
       - name: Mutants in the diff
+        env:
+          TMPDIR: ${{ runner.temp }}
+          SHARD: ${{ matrix.shard }}
         run: |
           git diff origin/main...HEAD > "$RUNNER_TEMP/diff.patch"
           status=0
-          cargo mutants --in-diff "$RUNNER_TEMP/diff.patch" --jobs 4 || status=$?
+          cargo mutants --in-diff "$RUNNER_TEMP/diff.patch" --jobs 4 \
+            --shard "$SHARD/4" --sharding round-robin || status=$?
           # A timeout is a mutant that made a test hang, so a test caught it. Exit 3
           # (timeout) wins over exit 2 (missed), so read the missed list too.
           if [ "$status" -eq 3 ] && [ ! -s mutants.out/missed.txt ]; then
@@ -282,3 +358,38 @@ jobs:
             status=0
           fi
           exit "$status"
+
+  # The required check. On a PR it passes when each shard passed. In the queue no shard
+  # runs: it carries the result of this job at the head of the PR to the group.
+  mutants:
+    needs: [changes, mutants-shard]
+    if: >-
+      !cancelled() && needs.changes.outputs.rust != 'false' &&
+      (github.event_name == 'pull_request' || github.event_name == 'merge_group')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - if: github.event_name == 'pull_request'
+        name: The result of the shards
+        env:
+          RESULT: ${{ needs.mutants-shard.result }}
+        run: |
+          [ "$RESULT" = success ] ||
+            { echo "::error::The mutants shards ended in $RESULT."; exit 1; }
+      - if: github.event_name == 'merge_group'
+        uses: actions/checkout@v4
+        with:
+          # The check that runs is the one on the default branch, never the PR's.
+          ref: ${{ github.event.repository.default_branch }}
+      - if: github.event_name == 'merge_group'
+        uses: Swatinem/rust-cache@v2
+      - if: github.event_name == 'merge_group'
+        name: The mutants result at the head of the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          GROUP: ${{ github.event.merge_group.head_sha }}
+        run: cargo xtask queue mutants "$GROUP"

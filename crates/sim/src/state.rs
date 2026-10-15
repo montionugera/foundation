@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::mem;
 use std::net::IpAddr;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -13,10 +14,13 @@ use env::shards::Main;
 use env::tasks::Task;
 use env::thread::Panicked;
 use env::threads::Body;
+use tracing::Dispatch;
 use types::time::{Monotonic, Span, Stamp};
 
 use crate::files::{Files, Held};
+use crate::log::{self, Kept};
 use crate::net::{self, Network};
+use crate::paths::Paths;
 use crate::serial::Serial;
 use crate::{Crash, node, shard};
 
@@ -52,6 +56,7 @@ pub(crate) struct State {
     net: Network,
     files: Files,
     serial: Serial,
+    paths: Paths,
     /// A hash of every pick, in order, with the network, file, and serial digests at
     /// the pick, so that it holds where their events fall between the picks.
     digest: DefaultHasher,
@@ -68,6 +73,7 @@ struct Node {
     resumes: Option<Monotonic>,
     cores: NonZeroUsize,
     unpinnable: bool,
+    arm_max: Option<Span>,
     entropy: Rng,
     shards: shard::Starts,
     /// The monotonic reading at boot.
@@ -95,6 +101,8 @@ struct Thread {
     node: usize,
     main: u64,
     outcome: Option<Outcome>,
+    /// The default dispatch of each poll of a task of the thread.
+    log: Dispatch,
 }
 
 /// How a thread ended.
@@ -110,10 +118,11 @@ pub(crate) enum Outcome {
 /// lock.
 #[derive(Default)]
 pub(crate) struct Ended {
-    /// The tasks whose futures the caller drops, in key order.
-    pub(crate) tasks: Vec<u64>,
-    /// The wakers of the timers of the threads.
-    pub(crate) timers: Vec<Waker>,
+    /// The tasks whose futures the caller drops, in key order, each with the log of
+    /// its thread.
+    pub(crate) tasks: Vec<(u64, Dispatch)>,
+    /// The wakers of the timers of the threads, each with the log of its thread.
+    pub(crate) timers: Vec<(Waker, Dispatch)>,
 }
 
 /// The next step of a run.
@@ -161,6 +170,7 @@ impl State {
             net,
             files,
             serial,
+            paths: Paths::default(),
             digest: DefaultHasher::new(),
         }
     }
@@ -186,6 +196,7 @@ impl State {
             resumes: Some(self.now),
             cores: config.cores,
             unpinnable: config.unpinnable,
+            arm_max: config.arm_max,
             entropy,
             shards: shard::Starts::default(),
             boot: config.monotonic,
@@ -284,15 +295,23 @@ impl State {
             .filter(|&task| self.resumes(task).is_some_and(|at| at <= self.now))
     }
 
-    /// When a timer of `node` with `deadline` fires.
+    /// When a timer of `node` with `deadline` fires: at the deadline, or early at the
+    /// node's [`node::Config::arm_max`]. A deadline past the end of true time at the
+    /// poll gets no early wake, so a run that waits only for it stays stuck.
     pub(crate) fn due(&self, node: usize, deadline: Monotonic) -> Due {
         let now = self.monotonic(node);
         if deadline <= now {
             return Due::Passed;
         }
-        match self.now.0.checked_add(deadline.0 - now.0) {
-            Some(at) => Due::At(Monotonic(at)),
-            None => Due::Never,
+        let Some(at) = self.now.0.checked_add(deadline.0 - now.0) else {
+            return Due::Never;
+        };
+        match self.nodes[node].arm_max {
+            Some(max) if at <= self.last().0 => {
+                let early = self.now.0.saturating_add(max.nanos().unsigned_abs());
+                Due::At(Monotonic(at.min(early)))
+            }
+            _ => Due::At(Monotonic(at)),
         }
     }
 
@@ -347,6 +366,10 @@ impl State {
         &mut self.serial
     }
 
+    pub(crate) fn paths(&mut self) -> &mut Paths {
+        &mut self.paths
+    }
+
     /// A hash of the picks, the network, the files, and the serial lines.
     pub(crate) fn digest(&self) -> u64 {
         let mut digest = self.digest.clone();
@@ -361,17 +384,22 @@ impl State {
 
     /// Adds a thread whose first task is ready, and returns the thread's key. On a
     /// crashing node the thread is born ended in the crash, and `start` comes back
-    /// for the caller to drop after it releases the lock.
+    /// with `log` for the caller to drop after it releases the lock.
     pub(crate) fn start(
         &mut self,
         node: usize,
         name: String,
         start: Start,
-    ) -> (u64, Option<Start>) {
+        log: Dispatch,
+    ) -> (u64, Option<(Start, Dispatch)>) {
         let thread = self.key();
         let main = self.key();
         let crashing = self.nodes[node].crashing;
-        let outcome = crashing.then_some(Outcome::Crashed);
+        let (outcome, held) = if crashing {
+            (Some(Outcome::Crashed), Dispatch::none())
+        } else {
+            (None, log.clone())
+        };
         self.threads.insert(
             thread,
             Thread {
@@ -379,10 +407,11 @@ impl State {
                 node,
                 main,
                 outcome,
+                log: held,
             },
         );
         if crashing {
-            return (thread, Some(start));
+            return (thread, Some((start, log)));
         }
         self.tasks.insert(main, thread);
         self.ready.insert(main);
@@ -440,13 +469,16 @@ impl State {
     }
 
     /// Takes a ready task of a node that is not paused, at random, and makes its
-    /// thread the current one. Returns the task, its thread, and the thread's start
-    /// when the task is its first.
+    /// thread the current one. Returns the task, its thread, the thread's start when
+    /// the task is its first, and the thread's log.
     ///
     /// # Panics
     ///
     /// When no such task is ready.
-    pub(crate) fn pick(&mut self, rng: &mut Rng) -> (u64, u64, Option<Start>) {
+    pub(crate) fn pick(
+        &mut self,
+        rng: &mut Rng,
+    ) -> (u64, u64, Option<Start>, Dispatch) {
         let runnable: Vec<u64> = self.runnable().collect();
         let count = u64::try_from(runnable.len()).expect("invariant: usize fits u64");
         let nth = usize::try_from(rng.below(count))
@@ -456,7 +488,8 @@ impl State {
         self.ready.remove(&task);
         let thread = self.tasks[&task];
         self.current = Some(thread);
-        (task, thread, self.starts.remove(&task))
+        let log = self.threads[&thread].log.clone();
+        (task, thread, self.starts.remove(&task), log)
     }
 
     /// Ends the poll that `pick` began.
@@ -472,45 +505,54 @@ impl State {
         }
         self.tasks.remove(&task);
         self.ready.remove(&task);
+        // A task that completed left no future to drop, so its drop needs no log.
         Ended {
-            tasks: vec![task],
+            tasks: vec![(task, Dispatch::none())],
             timers: Vec::new(),
         }
     }
 
-    /// Ends `thread` with `outcome`, and its timers, leaked ones too.
+    /// Ends `thread` with `outcome`, and its timers, leaked ones too. The thread's
+    /// log moves to its tasks in [`Ended`].
     pub(crate) fn end(&mut self, thread: u64, outcome: Outcome) -> Ended {
-        self.threads
-            .get_mut(&thread)
-            .expect("invariant: an ending thread exists")
-            .outcome = Some(outcome);
-        let tasks: Vec<u64> = (self.tasks.iter())
-            .filter_map(|(&task, &owner)| (owner == thread).then_some(task))
+        let ending = (self.threads.get_mut(&thread))
+            .expect("invariant: an ending thread exists");
+        ending.outcome = Some(outcome);
+        let log = mem::replace(&mut ending.log, Dispatch::none());
+        let tasks: Vec<(u64, Dispatch)> = (self.tasks.iter())
+            .filter(|&(_, &owner)| owner == thread)
+            .map(|(&task, _)| (task, log.clone()))
             .collect();
-        for task in &tasks {
+        for (task, _) in &tasks {
             self.tasks.remove(task);
             self.ready.remove(task);
         }
         let timers = (self.timers)
             .extract_if(.., |_, (owner, _)| *owner == thread)
-            .map(|(_, (_, waker))| waker)
+            .map(|(_, (_, waker))| (waker, log.clone()))
             .collect();
         Ended { tasks, timers }
     }
 
     /// Moves true time to `at`, delivers the datagrams and bytes that arrive by then,
-    /// and ends the file calls due by then. Returns the wakers of the timers due, of
-    /// the sockets and ports that the arrivals wake, and of the file calls that end,
-    /// and the blocks of the file calls whose futures dropped, for the caller to drop
-    /// after it releases the lock.
-    pub(crate) fn advance(&mut self, at: Monotonic) -> (Vec<Waker>, Vec<Held>) {
+    /// and ends the file calls due by then. Returns the wakers of the timers due, each
+    /// with the log of its thread, then those of the sockets and ports that the
+    /// arrivals wake and of the file calls that end, and the blocks of the file calls
+    /// whose futures dropped, for the caller to wake and drop after it releases the
+    /// lock.
+    pub(crate) fn advance(
+        &mut self,
+        at: Monotonic,
+    ) -> (Vec<log::Waker>, Vec<Kept<Held>>) {
         self.now = at;
         let mut wakers = Vec::new();
         while let Some(timer) = self.timers.first_entry() {
             if timer.key().0 > at {
                 break;
             }
-            wakers.push(timer.remove().1);
+            let (thread, waker) = timer.remove();
+            let log = self.threads[&thread].log.clone();
+            wakers.push(log::Waker::logged(waker, log));
         }
         wakers.extend(self.net.deliver(at));
         wakers.extend(self.serial.deliver(at));
@@ -521,12 +563,12 @@ impl State {
 
     /// Ends each live thread of the nodes whose index `stopped` picks in a crash, and
     /// makes those nodes crashing until [`State::crash`]. Returns what the threads
-    /// leave, and the starts of the threads that had not run in start order, for the
-    /// caller to drop after it releases the lock.
+    /// leave, and the starts of the threads that had not run in start order with
+    /// their logs, for the caller to drop after it releases the lock.
     pub(crate) fn stop(
         &mut self,
         stopped: impl Fn(usize) -> bool,
-    ) -> (Ended, Vec<Start>) {
+    ) -> (Ended, Vec<(Start, Dispatch)>) {
         for (key, node) in self.nodes.iter_mut().enumerate() {
             node.crashing |= stopped(key);
         }
@@ -536,12 +578,14 @@ impl State {
             .collect();
         let (mut ended, mut starts) = (Ended::default(), Vec::new());
         for (thread, main) in live {
-            starts.extend(self.starts.remove(&main));
+            let start = self.starts.remove(&main);
+            starts
+                .extend(start.map(|start| (start, self.threads[&thread].log.clone())));
             let Ended { tasks, timers } = self.end(thread, Outcome::Crashed);
             ended.tasks.extend(tasks);
             ended.timers.extend(timers);
         }
-        ended.tasks.sort_unstable();
+        ended.tasks.sort_unstable_by_key(|&(task, _)| task);
         (ended, starts)
     }
 
@@ -554,7 +598,7 @@ impl State {
         &mut self,
         node: usize,
         crash: Crash,
-    ) -> (Vec<Waker>, Vec<Held>) {
+    ) -> (Vec<log::Waker>, Vec<Kept<Held>>) {
         self.nodes[node].crashing = false;
         self.nodes[node].life += 1;
         let mut wakers = self.serial.crash(node);
@@ -639,11 +683,14 @@ impl Futures {
         entry.future = Some(future);
     }
 
-    /// Removes the entries of `tasks` and returns their futures, which the caller
-    /// drops after it releases the borrow.
-    pub(crate) fn remove(&mut self, tasks: &[u64]) -> Vec<Task> {
-        (tasks.iter())
-            .filter_map(|task| self.0.remove(task)?.future)
+    /// Removes the entries of `tasks` and returns their futures with the logs that
+    /// `tasks` gives, which the caller drops after it releases the borrow.
+    pub(crate) fn remove(
+        &mut self,
+        tasks: Vec<(u64, Dispatch)>,
+    ) -> Vec<(Task, Dispatch)> {
+        (tasks.into_iter())
+            .filter_map(|(task, log)| Some((self.0.remove(&task)?.future?, log)))
             .collect()
     }
 }

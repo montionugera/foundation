@@ -412,7 +412,8 @@ mod tests {
     use super::*;
 
     fn pool(budget: usize) -> Pool {
-        let config = Config { budget };
+        let budget = u64::try_from(budget).expect("a usize fits in a u64");
+        let config = Config::new(budget).expect("the budget fits");
         let memory = Heap::new(config.reservation());
         Pool::new(config, memory)
     }
@@ -525,7 +526,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "a message of 4611686018427387904 bytes")]
     fn prefix_panics_at_2_to_the_62() {
-        let _ = prefix(1 << 62);
+        let _: Varint = prefix(1 << 62);
     }
 
     mod reader {

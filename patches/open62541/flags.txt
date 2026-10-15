@@ -12,3 +12,4 @@
 -fno-asynchronous-unwind-tables
 -fno-math-errno
 -DNDEBUG
+-fno-dollars-in-identifiers

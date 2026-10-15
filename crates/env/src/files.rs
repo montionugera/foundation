@@ -1,4 +1,4 @@
-//! Files under one data directory.
+//! Files under one data directory, and files on the host opened to read.
 
 use std::cell::Cell;
 use std::ffi::OsStr;
@@ -21,10 +21,16 @@ pub type Request<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + 'a>>;
 pub const SECTOR: usize = 512;
 
 /// The files under one data directory. Paths are relative to it: a call panics on an
-/// absolute path or a `..` segment. The handle cannot leave the thread that made it,
-/// so each shard has its own. Clones use the same directory.
+/// absolute path or a `..` segment, other than [`Files::open_absolute`], which takes an
+/// [`Absolute`] path. The handle cannot leave the thread that made it, so each shard
+/// has its own. Clones use the same directory and driver, and each rule on the calls of
+/// this `Files` holds for its clones too.
 ///
-/// A call whose future drops can still run, and then it ends as it would have.
+/// A call whose future drops can still run, and then it ends as it would have. Where a
+/// call first waits for the calls that a dropped future or handle left to run, the wait
+/// is for a future or handle that dropped before the call started. A drop after that
+/// can add the wait or not. Await a call, or drop its future, before you start a call
+/// that must see its result.
 ///
 /// ```
 /// use std::path::Path;
@@ -60,19 +66,23 @@ impl Files {
     /// ends can leave it with no bytes. After `sync_dir` ends, a crash leaves it whole,
     /// with `len` zero bytes. A create that gives [`Error::Full`] leaves no file
     /// at `path` and keeps no blocks. Another error can leave an empty file at `path`,
-    /// as a crash can.
+    /// as a crash can. A create that finds no room syncs the directory of `path` one
+    /// time and tries again, since a removed file's room counts as used until that
+    /// sync.
     ///
     /// # Errors
     ///
     /// - [`Error::NotFound`] when the file is not there and `mode` is not
     ///   [`Mode::Create`].
-    /// - [`Error::Busy`] when `mode` is not [`Mode::Read`] and another handle holds
-    ///   the file with [`Mode::Write`] or [`Mode::Create`]. A handle holds it until it
-    ///   drops and its calls end, in this process or another.
+    /// - [`Error::Busy`] when `mode` is not [`Mode::Read`] and a live handle holds
+    ///   the file with [`Mode::Write`] or [`Mode::Create`], or a handle of another
+    ///   `Files` or another process does. A write open first waits for each call on
+    ///   `path` that a dropped future or handle of this `Files` left to run.
     /// - [`Error::Length`] when [`Mode::Create`] finds a file of another length that
     ///   is not empty.
     /// - [`Error::Full`] when the disk has no room for the file that
-    ///   [`Mode::Create`] allocates.
+    ///   [`Mode::Create`] allocates, after that sync. A `sync_dir` error from that
+    ///   sync comes back as it is.
     /// - [`Error::Io`] for other failures.
     ///
     /// # Panics
@@ -88,7 +98,14 @@ impl Files {
     /// ```
     pub async fn open(&self, path: &Path, mode: Mode) -> Result<File, Error> {
         check(path);
-        let descriptor = self.0.open(path, mode).await?;
+        let descriptor = match self.0.open(path, mode).await {
+            Err(Error::Full { .. }) if matches!(mode, Mode::Create { .. }) => {
+                let dir = path.parent().unwrap_or(Path::new(""));
+                self.0.sync_dir(dir).await?;
+                self.0.open(path, mode).await?
+            }
+            result => result?,
+        };
         if let Mode::Create { len } = mode
             && descriptor.len() != len
         {
@@ -106,8 +123,37 @@ impl Files {
         })
     }
 
-    /// The names of the files and directories directly in `dir`, sorted. Each is a
-    /// bare name, not joined with `dir`. It does not list inside subdirectories.
+    /// Opens the file at `path`, outside the data directory, to read. A config names
+    /// such a file, such as a secret that the platform mounts.
+    ///
+    /// # Errors
+    ///
+    /// As [`Files::open`], and [`Error::Io`] with code 22 (`EINVAL`) for a file that is
+    /// neither a regular file nor a directory, such as a FIFO or a device. The open
+    /// does not wait for a writer of a FIFO.
+    ///
+    /// ```
+    /// use env::files::Absolute;
+    ///
+    /// async fn token(files: &env::files::Files) -> Option<env::files::File> {
+    ///     let path = Absolute::new("/run/secrets/token")?;
+    ///     files.open_absolute(&path).await.ok()
+    /// }
+    /// ```
+    pub async fn open_absolute(&self, path: &Absolute) -> Result<File, Error> {
+        let descriptor = self.0.open_absolute(path.as_path()).await?;
+        Ok(File {
+            descriptor,
+            path: path.0.clone(),
+            mode: Mode::Read,
+            poisoned: Cell::new(false),
+        })
+    }
+
+    /// The names of the files and directories directly in `dir`, sorted. Each is a bare
+    /// name, not joined with `dir`. It does not list inside subdirectories. It first
+    /// waits for each call on a path directly in `dir` that a dropped future or handle
+    /// of this `Files` left to run, so the names are as those calls leave them.
     ///
     /// # Errors
     ///
@@ -158,12 +204,13 @@ impl Files {
         self.0.create_dir(dir).await
     }
 
-    /// Removes the file at `path`. A file that is not there counts as removed. A remove
-    /// that a drop leaves to run removes what the path names when it ends. The removal
-    /// is not durable until [`Files::sync_dir`] on its directory ends. Count the file's
-    /// room as used until then, and while a handle holds the file. To remove a file and
-    /// then make one at its path, remove it through its write handle
-    /// ([`File::remove`]).
+    /// Removes the file at `path`. A file that is not there counts as removed. It first
+    /// waits for each call on `path` that a dropped future or handle of this `Files`
+    /// left to run. A remove that a drop leaves to run removes what the path names when
+    /// it ends. The removal is not durable until [`Files::sync_dir`] on its directory
+    /// ends. Count the file's room as used until then, and while a handle holds the
+    /// file. To remove a file and then make one at its path, remove it through its
+    /// write handle ([`File::remove`]).
     ///
     /// # Errors
     ///
@@ -213,7 +260,9 @@ impl Files {
         self.0.sync_dir(dir).await
     }
 
-    /// The bytes free on the disk of the data directory.
+    /// The bytes free on the disk of the data directory. It first waits for each call
+    /// that a dropped future or handle of this `Files` left to run, so the result is as
+    /// those calls leave the disk.
     ///
     /// # Errors
     ///
@@ -226,6 +275,24 @@ impl Files {
     /// ```
     pub async fn free(&self) -> Result<u64, Error> {
         self.0.free().await
+    }
+
+    /// The path that a person sees for `path`, for a text that tells a person where a
+    /// file is. On `os`, the absolute path under the data directory.
+    ///
+    /// # Panics
+    ///
+    /// When `path` is absolute or has a `..` segment.
+    ///
+    /// ```
+    /// fn tell(files: &env::files::Files) -> String {
+    ///     format!("write it to {}", files.shown("key".as_ref()).display())
+    /// }
+    /// ```
+    #[must_use]
+    pub fn shown(&self, path: &Path) -> PathBuf {
+        check(path);
+        self.0.shown(path)
     }
 }
 
@@ -401,8 +468,10 @@ impl File {
 
     /// Makes the writes that ended before the call durable, as [`File::sync`], then
     /// gives the file the name `to` in the same directory. It never replaces a file.
-    /// The errors of the handle then name `to`, and the handle keeps its hold: a write
-    /// open of `to` gives [`Error::Busy`] until the handle closes.
+    /// It first waits for each call on `to` that a dropped future or handle of this
+    /// `Files` left to run. The errors of the handle then name `to`, and the handle
+    /// keeps its hold: a write open of `to` gives [`Error::Busy`] until the handle
+    /// closes.
     ///
     /// The new name is not durable until [`Files::sync_dir`] on the directory ends. A
     /// crash before then can undo the rename. A crash never leaves the file at both
@@ -461,8 +530,8 @@ impl File {
     /// Closes the file. The future ends after every call of this handle ends, those
     /// of dropped futures too, and the file is closed. A write open of the same path
     /// then succeeds, unless another handle holds the file. A drop closes the handle
-    /// too, but without a wait. After the drop of a write handle, a write open before
-    /// its calls end gives [`Error::Busy`].
+    /// too, but without a wait. After the drop of a write handle, a write open of this
+    /// `Files` waits for its calls to end.
     ///
     /// It gives no error: [`File::sync`] makes the bytes durable, and a close after
     /// it loses nothing. A drop of the future closes the file without a wait.
@@ -482,8 +551,9 @@ impl File {
     }
 
     /// Removes the file of this handle from its directory, then closes the handle as
-    /// [`File::close`]. Until the remove ends, also after a drop of the future, a
-    /// write open of the path gives [`Error::Busy`]. A drop of the future can stop the
+    /// [`File::close`]. Until the remove ends, a write open of the path from another
+    /// `Files` or another process gives [`Error::Busy`]. A write open of this `Files`
+    /// waits for it, also after a drop of the future. A drop of the future can stop the
     /// remove before it starts; the file then stays, and the handle closes. The
     /// removal is not durable until [`Files::sync_dir`] on its directory ends. Count
     /// the file's room as used until then.
@@ -599,7 +669,38 @@ fn check(path: &Path) {
     }
 }
 
-/// Why a file call failed. Paths are relative to the data directory.
+/// A path that starts with `/`, has no NUL, and has no `..` segment between `/` or
+/// `\`, by the same text rule on every host: the path that [`Files::open_absolute`]
+/// takes.
+///
+/// ```
+/// use env::files::Absolute;
+///
+/// assert!(Absolute::new("/run/secrets/token").is_some());
+/// assert!(Absolute::new("/run/../etc/shadow").is_none());
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Absolute(PathBuf);
+
+impl Absolute {
+    /// `text` as an absolute path, or `None` when it breaks the rule.
+    #[must_use]
+    pub fn new(text: &str) -> Option<Self> {
+        let allowed = text.starts_with('/')
+            && !text.contains('\0')
+            && !text.split(['/', '\\']).any(|segment| segment == "..");
+        allowed.then(|| Self(text.into()))
+    }
+
+    /// The path.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// Why a file call failed. Paths are relative to the data directory, other than those
+/// of [`Files::open_absolute`] and of the file it opens, which are absolute.
 ///
 /// ```
 /// use std::path::PathBuf;
@@ -750,9 +851,17 @@ impl fmt::Display for Operation {
 
 /// What `os` and `sim` implement to run [`Files`]. Only they implement it.
 ///
-/// Paths reach it checked and relative to the data directory. It opens, creates, and
-/// removes files with the rules of the [`Files`] calls; [`Files`] sorts and checks
-/// what it returns.
+/// Paths reach it checked: relative to the data directory, or absolute for
+/// `open_absolute`. It opens, creates, and removes files with the rules of the
+/// [`Files`] calls; [`Files`] sorts and checks what it returns. A write open, a remove,
+/// and a rename to a path first wait for each call on the path that a dropped future or
+/// descriptor of the driver left to run, and for each remove of the path through a
+/// descriptor of the driver that has not ended. A list of a directory first waits for
+/// each call on a path directly in it that a dropped future or descriptor of the driver
+/// left to run. A `free` first waits for each call that a dropped future or descriptor
+/// of the driver left to run. Each wait for the calls that a dropped future or
+/// descriptor left to run is for a future or descriptor that dropped before the call
+/// that waits started.
 ///
 /// ```
 /// fn wrap(driver: impl env::files::Driver + 'static) -> env::files::Files {
@@ -767,13 +876,20 @@ pub trait Driver {
     /// leaves no file at `path` and keeps no blocks. Another error can leave an empty
     /// file at `path`, as a crash can. It makes the allocation durable before it ends
     /// (`os`: `fallocate`, then `fsync` the file), so a `sync_dir` alone makes the file
-    /// whole. A write open of a file that a write handle holds gives [`Error::Busy`]
-    /// before any other check or change of the file.
+    /// whole. A write open of a file that a live write handle, or a descriptor of
+    /// another driver or another process, holds gives [`Error::Busy`] before any other
+    /// check or change of the file.
     fn open<'a>(
         &'a self,
         path: &'a Path,
         mode: Mode,
     ) -> Request<'a, Box<dyn Descriptor>>;
+
+    /// Opens the file at `path`, an absolute path outside the data directory, to read
+    /// only, with no wait for a writer of a FIFO. It makes no file, and gives
+    /// [`Error::Io`] with code 22 (`EINVAL`) for a file that is neither a regular file
+    /// nor a directory.
+    fn open_absolute<'a>(&'a self, path: &'a Path) -> Request<'a, Box<dyn Descriptor>>;
 
     /// The bare names of the files and directories directly in `dir`, in any order.
     fn list<'a>(&'a self, dir: &'a Path) -> Request<'a, Vec<PathBuf>>;
@@ -789,6 +905,10 @@ pub trait Driver {
 
     /// The bytes free on the disk of the data directory.
     fn free(&self) -> Request<'_, u64>;
+
+    /// The path that a person sees for `path`, such as the absolute path on the real
+    /// disk. It only joins paths and does not ask the disk.
+    fn shown(&self, path: &Path) -> PathBuf;
 }
 
 /// One open file as a driver holds it, run through a [`File`]. Only `os` and `sim`
@@ -891,6 +1011,9 @@ mod tests {
             mode: Mode,
         ) -> Request<'a, Box<dyn Descriptor>> {
             self.record(format!("open {} {mode:?}", path.display()));
+            if path.file_name() == Some(OsStr::new("full")) {
+                return Box::pin(async { Err(Error::Full { path: path.into() }) });
+            }
             let descriptor: Box<dyn Descriptor> = Box::new(Fixed {
                 len: self.len,
                 sync: self.sync.clone(),
@@ -898,6 +1021,13 @@ mod tests {
                 calls: Rc::clone(&self.calls),
             });
             Box::pin(async { Ok(descriptor) })
+        }
+
+        fn open_absolute<'a>(
+            &'a self,
+            path: &'a Path,
+        ) -> Request<'a, Box<dyn Descriptor>> {
+            self.open(path, Mode::Read)
         }
 
         fn list<'a>(&'a self, dir: &'a Path) -> Request<'a, Vec<PathBuf>> {
@@ -926,11 +1056,23 @@ mod tests {
 
         fn sync_dir<'a>(&'a self, dir: &'a Path) -> Request<'a, ()> {
             self.record(format!("sync_dir {}", dir.display()));
-            Box::pin(async { Ok(()) })
+            let result = match dir.to_str() {
+                Some("unsynced") => Err(Error::Io {
+                    path: dir.into(),
+                    operation: Operation::SyncDir,
+                    code: 5,
+                }),
+                _ => Ok(()),
+            };
+            Box::pin(async { result })
         }
 
         fn free(&self) -> Request<'_, u64> {
             Box::pin(async { Ok(7) })
+        }
+
+        fn shown(&self, path: &Path) -> PathBuf {
+            path.into()
         }
     }
 
@@ -1115,6 +1257,87 @@ mod tests {
         }
 
         #[test]
+        fn open_absolute_opens_to_read() {
+            let (files, calls) = Fixed::files(3);
+            let file = ready(files.open_absolute(&token()));
+            assert_eq!(file.map(|file| file.len()), Ok(3));
+            assert_eq!(*calls.borrow(), ["open /run/secrets/token Read"]);
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "write to /run/secrets/token, which was opened to read"
+        )]
+        fn open_absolute_gives_a_file_that_panics_on_a_write() {
+            let (files, _) = Fixed::files(3);
+            let file = ready(files.open_absolute(&token()));
+            drop(ready(file.unwrap().write_at(0, &[])));
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "remove /run/secrets/token, which was opened to read"
+        )]
+        fn open_absolute_gives_a_file_that_panics_on_a_remove() {
+            let (files, _) = Fixed::files(3);
+            let file = ready(files.open_absolute(&token()));
+            drop(ready(file.unwrap().remove()));
+        }
+
+        fn token() -> Absolute {
+            Absolute::new("/run/secrets/token").unwrap()
+        }
+
+        #[test]
+        fn absolute_takes_a_path_from_the_root_with_no_parent_segment() {
+            for text in ["/run/secrets/x", "/a/..b", "/"] {
+                let path = Absolute::new(text).unwrap();
+                assert_eq!(path.as_path(), Path::new(text));
+            }
+        }
+
+        #[test]
+        fn absolute_refuses_a_relative_path_or_one_with_a_parent_segment_or_nul() {
+            for text in [
+                "",
+                "token",
+                "./token",
+                "secrets/token",
+                "/run/../etc/shadow",
+                "/a/..",
+                "C:\\x",
+                "x",
+                "/a\\..\\b",
+                "\\a\\b",
+                "/run/a\0b",
+            ] {
+                assert_eq!(Absolute::new(text), None, "{text:?}");
+            }
+        }
+
+        #[cfg(unix)]
+        proptest::proptest! {
+            // Miri has no file access for the failure files.
+            #![proptest_config(proptest::test_runner::Config {
+                cases: if cfg!(miri) { 16 } else { 256 },
+                failure_persistence: None,
+                ..proptest::test_runner::Config::default()
+            })]
+
+            #[test]
+            fn absolute_is_a_path_from_the_root_with_no_parent_segment(
+                text in "[/\\\\.a\0]{0,12}",
+            ) {
+                if let Some(path) = Absolute::new(&text) {
+                    let path = path.as_path();
+                    proptest::prop_assert!(path.is_absolute());
+                    let parent = path.components().any(|part| part == Component::ParentDir);
+                    proptest::prop_assert!(!parent);
+                }
+            }
+        }
+
+        #[test]
         #[should_panic(expected = "path /segments is absolute")]
         fn list_panics_on_an_absolute_path() {
             let (files, _) = Fixed::files(0);
@@ -1133,6 +1356,13 @@ mod tests {
         fn create_dir_panics_on_a_parent_segment() {
             let (files, _) = Fixed::files(0);
             drop(ready(files.create_dir(Path::new("segments/.."))));
+        }
+
+        #[test]
+        #[should_panic(expected = "path /etc/key is absolute")]
+        fn shown_panics_on_an_absolute_path() {
+            let (files, _) = Fixed::files(0);
+            drop(files.shown(Path::new("/etc/key")));
         }
 
         #[test]
@@ -1192,6 +1422,73 @@ mod tests {
             let (files, _) = Fixed::files(512);
             assert_eq!(open(&files, Mode::Write).len(), 512);
         }
+
+        #[test]
+        fn syncs_the_directory_once_and_tries_again_when_create_finds_no_room() {
+            let (files, calls) = Fixed::files(0);
+            let mode = Mode::Create { len: 4_096 };
+            let results = ["ring/full", "full"].map(|path| {
+                ready(files.open(Path::new(path), mode)).expect_err("no room")
+            });
+            assert_eq!(
+                results,
+                [
+                    Error::Full {
+                        path: "ring/full".into()
+                    },
+                    Error::Full {
+                        path: "full".into()
+                    },
+                ]
+            );
+            assert_eq!(
+                *calls.borrow(),
+                [
+                    "open ring/full Create { len: 4096 }",
+                    "sync_dir ring",
+                    "open ring/full Create { len: 4096 }",
+                    "open full Create { len: 4096 }",
+                    "sync_dir ",
+                    "open full Create { len: 4096 }",
+                ]
+            );
+        }
+
+        #[test]
+        fn gives_full_of_an_open_to_read_or_write_with_no_sync() {
+            let (files, calls) = Fixed::files(0);
+            let results = [Mode::Read, Mode::Write]
+                .map(|mode| ready(files.open(Path::new("ring/full"), mode)).map(drop));
+            let full = Err(Error::Full {
+                path: "ring/full".into(),
+            });
+            assert_eq!(results, [full.clone(), full]);
+            assert_eq!(
+                *calls.borrow(),
+                ["open ring/full Read", "open ring/full Write"]
+            );
+        }
+
+        #[test]
+        fn gives_the_error_of_the_sync_after_a_create_finds_no_room() {
+            let (files, calls) = Fixed::files(0);
+            let mode = Mode::Create { len: 4_096 };
+            assert_eq!(
+                ready(files.open(Path::new("unsynced/full"), mode)).map(drop),
+                Err(Error::Io {
+                    path: "unsynced".into(),
+                    operation: Operation::SyncDir,
+                    code: 5,
+                })
+            );
+            assert_eq!(
+                *calls.borrow(),
+                [
+                    "open unsynced/full Create { len: 4096 }",
+                    "sync_dir unsynced"
+                ]
+            );
+        }
     }
 
     mod remove {
@@ -1237,6 +1534,18 @@ mod tests {
         fn gives_the_bytes_that_the_driver_finds() {
             let (files, _) = Fixed::files(0);
             assert_eq!(ready(files.free()), Ok(7));
+        }
+    }
+
+    mod shown {
+        use super::*;
+
+        #[test]
+        fn gives_the_path_that_the_driver_shows() {
+            let (files, calls) = Fixed::files(0);
+            let shown = files.shown(Path::new("secrets/a.b"));
+            assert_eq!(shown, Path::new("secrets/a.b"));
+            assert!(calls.borrow().is_empty());
         }
     }
 
@@ -1421,9 +1730,10 @@ mod tests {
             let mut file = Stuck::file(Operation::Rename);
             drop_pending(file.rename(Path::new("ring/1")));
             assert_eq!(ready(file.write_at(0, &[])), poisoned("ring/0"));
-            let into = block::Pool::heap(block::Config { budget: 4_096 })
-                .alloc(0)
-                .expect("room");
+            let into =
+                block::Pool::heap(block::Config::new(4_096).expect("the budget fits"))
+                    .alloc(0)
+                    .expect("room");
             assert_eq!(ready(file.read_at(0, into)).map(drop), poisoned("ring/0"));
         }
 

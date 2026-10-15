@@ -1,12 +1,14 @@
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, CString, c_void};
 use std::ptr;
+use std::rc::Rc;
 
 use env::rng::Rng;
 use sim::Sim;
-use types::time::{Monotonic, Span};
+use types::time::{Monotonic, Span, Stamp};
 
-use super::Loop;
+use super::{Loop, Time};
+use crate::child;
 use crate::ffi::{self, DelayedCallback, EventLoop, Status};
 
 /// Ticks of 100 ns from 1601 to 1970, the epoch of `dateTime_now`.
@@ -16,6 +18,8 @@ const UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
 struct Fixture {
     sim: Sim,
     clock: env::clock::Clock,
+    /// The wall time that the loop reads.
+    wall: Rc<Cell<Stamp>>,
     events: Loop,
     probe: Box<Probe>,
 }
@@ -44,8 +48,13 @@ impl Fixture {
         let mut sim = Sim::new(sim::Config::default());
         let node = sim.node(node);
         let clock = node.clock();
-        let events =
-            Loop::new(env::clock::Clock::clone(&clock), &mut Rng::from_seed(0));
+        let wall = Rc::new(Cell::new(Stamp::EPOCH));
+        let read = Rc::clone(&wall);
+        let time = Time {
+            clock: env::clock::Clock::clone(&clock),
+            wall: Box::new(move || read.get()),
+        };
+        let events = Loop::new(time, &mut Rng::from_seed(0));
         let probe = Box::new(Probe {
             ran: RefCell::new(Vec::new()),
             raw: events.raw(),
@@ -54,6 +63,7 @@ impl Fixture {
         Self {
             sim,
             clock,
+            wall,
             events,
             probe,
         }
@@ -120,6 +130,11 @@ impl Fixture {
             )
         });
         (status == Status::GOOD).then_some(key).ok_or(status)
+    }
+
+    fn remove(&self, key: u64) {
+        // SAFETY: the member takes its own loop and a key that it gave.
+        unsafe { (self.members().remove_timer)(self.events.raw(), key) };
     }
 
     /// Changes the timer of `key`, timed from `base` when given, and gives the
@@ -238,8 +253,20 @@ fn number(n: usize) -> *mut c_void {
     ptr::without_provenance_mut(n)
 }
 
+/// The monotonic time, the wall time, and the UTC offset that the loop of `f` gives.
+fn times(f: &Fixture) -> (i64, i64, i64) {
+    let (raw, members) = (f.events.raw(), f.members());
+    // SAFETY: each member takes its own loop.
+    let monotonic = unsafe { (members.now_monotonic)(raw) };
+    // SAFETY: as above.
+    let now = unsafe { (members.now)(raw) };
+    // SAFETY: as above.
+    let offset = unsafe { (members.utc_offset)(raw) };
+    (monotonic, now, offset)
+}
+
 #[test]
-fn the_loop_reads_its_clock() {
+fn the_loop_reads_its_clock_and_its_wall() {
     let mut f = Fixture::new();
     f.advance(Span::from_nanos(1_234_567));
     let ticks = i64::try_from(f.now().0).unwrap() / 100;
@@ -248,25 +275,38 @@ fn the_loop_reads_its_clock() {
         12_345,
         "a tick is 100 ns, and the rest drops"
     );
-    let raw = f.events.raw();
-    let members = f.members();
-    // SAFETY: each member takes its own loop.
-    let monotonic = unsafe { (members.now_monotonic)(raw) };
-    // SAFETY: as above.
-    let now = unsafe { (members.now)(raw) };
-    // SAFETY: as above.
-    let offset = unsafe { (members.utc_offset)(raw) };
+    // 2026-01-01T00:00:00.000123456Z.
+    f.wall.set(Stamp::from_nanos(1_767_225_600_000_123_456));
+    let wall = 17_672_256_000_001_234;
+    assert_eq!(times(&f), (ticks, wall + UNIX_EPOCH_TICKS, 0));
+    f.wall.set(Stamp::from_nanos(-1));
     assert_eq!(
-        (monotonic, now, offset),
-        (ticks, ticks + UNIX_EPOCH_TICKS, 0)
+        times(&f),
+        (ticks, UNIX_EPOCH_TICKS - 1, 0),
+        "a wall time before the Unix epoch rounds down"
     );
+}
+
+#[test]
+fn the_monotonic_wall_of_a_test_loop_gives_the_last_stamp_past_it() {
+    let mut sim = Sim::new(sim::Config::default());
+    let clock = sim
+        .node(sim::node::Config {
+            monotonic: Monotonic(u64::MAX - 1000),
+            ..sim::node::Config::default()
+        })
+        .clock();
+    let events = Loop::new(Time::monotonic(clock), &mut Rng::from_seed(0));
+    // SAFETY: the member takes its own loop.
+    let now = unsafe { (events.members().now)(events.raw()) };
+    assert_eq!(now, i64::MAX / 100 + UNIX_EPOCH_TICKS);
 }
 
 /// Four values of open62541's generator after a loop with `rng` of `seed`.
 fn draws(seed: u64) -> [u32; 4] {
     let mut sim = Sim::new(sim::Config::default());
     let clock = sim.node(sim::node::Config::default()).clock();
-    let _events = Loop::new(clock, &mut Rng::from_seed(seed));
+    let _events = Loop::new(Time::monotonic(clock), &mut Rng::from_seed(seed));
     // SAFETY: it draws from the generator of this thread.
     std::array::from_fn(|_| unsafe { ffi::test::UA_UInt32_random() })
 }
@@ -341,6 +381,84 @@ fn a_base_time_timer_keeps_its_phase_after_a_missed_cycle() {
     assert_eq!(f.events.next(), Some(at(start, ms(30))));
 }
 
+/// open62541 ranks timers with equal due times by address, so the second set takes the
+/// memory of the first, which the allocator gives back in another order.
+#[test]
+fn timers_due_at_one_time_run_in_the_order_of_their_adds() {
+    let mut f = Fixture::new();
+    f.start();
+    let order: Vec<usize> = (1..=32).collect();
+    for _ in 0..2 {
+        let keys: Vec<u64> = order
+            .iter()
+            .map(|&n| f.add(n, 10.0, ffi::BASE_TIME))
+            .collect();
+        for _ in 0..3 {
+            f.advance(ms(10));
+            f.run();
+            assert_eq!(f.ran(), order);
+        }
+        for key in keys {
+            f.remove(key);
+        }
+    }
+}
+
+/// A current-time timer due within a quarter of its interval of one with the same
+/// interval runs with it, bounds included. No assert reads the order of the run, since
+/// no code may depend on the order of a tie.
+#[test]
+fn a_current_time_timer_runs_with_one_of_its_interval_due_near_it() {
+    for (due_ms, next_ms, ran) in [
+        (34, 34, vec![1, 2]),
+        (35, 60, vec![1, 2]),
+        (85, 60, vec![1, 2]),
+        (86, 60, vec![1]),
+    ] {
+        let mut f = Fixture::new();
+        f.start();
+        let start = f.now();
+        let now = i64::try_from(start.0 / 100).unwrap();
+        for (n, due_ms) in [(1, 60), (2, due_ms)] {
+            let base = Some(now + due_ms * 10_000);
+            f.try_timer(record, number(n), 100.0, base, ffi::CURRENT_TIME)
+                .expect("a timer of 100 ms");
+        }
+        let due = Some(at(start, ms(next_ms)));
+        assert_eq!(f.events.next(), due, "timer 2 due at {due_ms} ms");
+        f.advance(ms(60));
+        f.run();
+        assert_eq!(sorted(f.ran()), ran, "timer 2 due at {due_ms} ms");
+    }
+}
+
+/// open62541 searches the window of a batch in the wrong direction, so whether a timer
+/// batches hangs on the shape of the timer tree, which the other timers and their
+/// addresses set.
+#[test]
+fn a_batch_does_not_hang_on_the_other_timers() {
+    let mut kept = Vec::new();
+    for others in 0..64_u32 {
+        let mut f = Fixture::new();
+        f.start();
+        for (n, i) in (100..).zip(0..others / 8) {
+            f.add(n, 10.0 + f64::from(i), ffi::ONCE);
+        }
+        for (n, i) in (200..).zip(0..others % 8) {
+            f.add(n, 10_000.0 * (1.0 + f64::from(i)), ffi::ONCE);
+        }
+        f.add(1, 100.0, ffi::CURRENT_TIME);
+        f.advance(ms(5));
+        f.add(2, 100.0, ffi::CURRENT_TIME);
+        f.advance(ms(95));
+        f.run();
+        let ran = f.ran().into_iter().filter(|&n| n <= 2).collect();
+        assert_eq!(sorted(ran), [1, 2], "with {others} other timers");
+        // Held, so each pass gets new heap addresses.
+        kept.push(f);
+    }
+}
+
 #[test]
 fn a_timer_changes_its_interval_and_goes() {
     let mut f = Fixture::new();
@@ -350,8 +468,7 @@ fn a_timer_changes_its_interval_and_goes() {
     f.advance(ms(5));
     assert_eq!(f.modify(key, 50.0, None, ffi::ONCE), Status::GOOD);
     assert_eq!(f.events.next(), Some(at(start, ms(55))));
-    // SAFETY: as above.
-    unsafe { (f.members().remove_timer)(f.events.raw(), key) };
+    f.remove(key);
     assert_eq!(f.events.next(), None);
     f.advance(ms(1000));
     f.run();
@@ -446,7 +563,7 @@ fn a_repeated_timer_due_within_1_s_of_the_last_date_after_a_run_is_refused() {
         }
     }
     let outside = repeated_before_the_last_date(2.0e7);
-    // Timers due at one time run in an order that the heap sets.
+    // Distinct due times, since no code may depend on the order of a tie.
     for (n, policy, base) in [(1, ffi::CURRENT_TIME, 0), (2, ffi::BASE_TIME, 10_000)] {
         let base = Some(now + 30_000_000 + base);
         f.try_timer(record, number(n), outside, base, policy)
@@ -578,6 +695,38 @@ fn a_change_to_an_interval_out_of_range_is_refused_and_keeps_the_timer() {
 }
 
 #[test]
+fn a_delayed_callback_waits_until_a_run() {
+    let f = Fixture::new();
+    f.start();
+    assert!(!f.events.delayed());
+    let mut first = f.delayed(record, number(1));
+    f.queue(&mut first);
+    assert!(f.events.delayed());
+    f.run();
+    assert_eq!(f.ran(), [1]);
+    assert!(!f.events.delayed());
+}
+
+#[test]
+fn a_removed_delayed_callback_does_not_wait() {
+    let f = Fixture::new();
+    f.start();
+    let mut first = f.delayed(record, number(1));
+    f.queue(&mut first);
+    f.unqueue(&mut first);
+    assert!(!f.events.delayed());
+}
+
+#[test]
+fn a_due_timer_is_no_delayed_callback() {
+    let mut f = Fixture::new();
+    f.start();
+    f.add(1, 1.0, ffi::ONCE);
+    f.advance(ms(1));
+    assert!(!f.events.delayed());
+}
+
+#[test]
 fn delayed_callbacks_run_in_order_after_the_due_timers() {
     let mut f = Fixture::new();
     f.start();
@@ -690,48 +839,19 @@ fn the_drop_runs_64_passes_of_delayed_callbacks() {
     assert_eq!(drop_queuing(63), (0..=63).rev().collect::<Vec<_>>());
 }
 
-/// The variable that marks a child process of a test.
-const CHILD: &str = "CONNECTOR_OPCUA_CHILD";
-
-/// Tells whether this process is a child that `child` started.
-fn is_child() -> bool {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the parent test marks its child process"
-    )]
-    let child = std::env::var_os(CHILD).is_some();
-    child
-}
-
-/// Runs the test `name` of this binary in a child process, and gives its output.
-fn child(name: &str) -> std::process::Output {
-    std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", name])
-        .env(CHILD, "1")
-        .output()
-        .unwrap()
-}
-
-/// Runs a 65th pass of a drop, when `CHILD` is set.
+/// Runs a 65th pass of a drop, when `child::running()`.
 #[test]
 fn drop_65_passes() {
-    if is_child() {
+    if child::running() {
         drop_queuing(64);
     }
 }
 
 #[test]
-#[cfg(unix)]
 fn the_drop_aborts_after_64_passes() {
-    use std::os::unix::process::ExitStatusExt;
-    const SIGABRT: i32 = 6;
-    let output = child("event::tests::drop_65_passes");
-    assert_eq!(output.status.signal(), Some(SIGABRT));
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "connector-opcua: open62541 queued delayed callbacks for 64 passes of a loop \
-         free\n"
-    );
+    let line = "connector-opcua: open62541 queued delayed callbacks for 64 passes of a loop \
+                free\n";
+    child::aborted_in_c("event::tests::drop_65_passes", &[], line);
 }
 
 #[test]
@@ -739,7 +859,8 @@ fn a_client_runs_its_housekeeping_on_the_loop() {
     let mut f = Fixture::new();
     let start = f.now();
     // SAFETY: the loop lives until the client is deleted.
-    let client = unsafe { ffi::shim_client_new(f.events.raw()) };
+    let client =
+        unsafe { ffi::shim_client_new(f.events.raw(), crate::connection::CHUNKS) };
     assert!(!client.is_null());
     assert_eq!(f.members().state, ffi::FRESH);
     // SAFETY: the client lives.
@@ -780,7 +901,8 @@ unsafe extern "C" fn count(_: *mut c_void, data: *mut c_void) {
 fn a_timed_callback_at_a_past_date_runs_at_the_next_run() {
     let f = Fixture::new();
     // SAFETY: the loop lives until the client is deleted.
-    let client = unsafe { ffi::shim_client_new(f.events.raw()) };
+    let client =
+        unsafe { ffi::shim_client_new(f.events.raw(), crate::connection::CHUNKS) };
     assert!(!client.is_null());
     // SAFETY: the client lives.
     let status = Status(unsafe { ffi::UA_Client_run_iterate(client, 0) });
@@ -807,23 +929,28 @@ fn a_timed_callback_at_a_past_date_runs_at_the_next_run() {
     unsafe { ffi::UA_Client_delete(client) };
 }
 
+fn sorted(mut ran: Vec<usize>) -> Vec<usize> {
+    ran.sort_unstable();
+    ran
+}
+
 fn ms(n: i64) -> Span {
     Span::from_nanos(n * Span::MILLISECOND.nanos())
 }
 
-/// Connects a client to `url`, which is not valid, when `CHILD` is set. The copy then
-/// logs a warning and an info message.
+/// Connects a client to `url`, which is not valid, when `child::running()`. The copy
+/// then logs a warning and an info message.
 fn connect(url: &CStr) {
-    if !is_child() {
+    if !child::running() {
         return;
     }
     let f = Fixture::new();
     // SAFETY: the loop lives until the client is deleted.
-    let client = unsafe { ffi::shim_client_new(f.events.raw()) };
+    let client =
+        unsafe { ffi::shim_client_new(f.events.raw(), crate::connection::CHUNKS) };
     assert!(!client.is_null());
     // SAFETY: the client lives, and `url` ends with a NUL.
-    let status =
-        Status(unsafe { ffi::test::UA_Client_connectAsync(client, url.as_ptr()) });
+    let status = Status(unsafe { ffi::UA_Client_connectAsync(client, url.as_ptr()) });
     assert_eq!(status.name(), "BadTcpEndpointUrlInvalid");
     // SAFETY: the client lives, and the loop outlives it.
     unsafe { ffi::UA_Client_delete(client) };
@@ -844,16 +971,17 @@ fn connect_to_a_long_url() {
     connect(&long());
 }
 
-/// Sends a request on a client with no channel, when `CHILD` is set. The copy then
+/// Sends a request on a client with no channel, when `child::running()`. The copy then
 /// logs an error.
 #[test]
 fn send_with_no_channel() {
-    if !is_child() {
+    if !child::running() {
         return;
     }
     let f = Fixture::new();
     // SAFETY: the loop lives until the client is deleted.
-    let client = unsafe { ffi::shim_client_new(f.events.raw()) };
+    let client =
+        unsafe { ffi::shim_client_new(f.events.raw(), crate::connection::CHUNKS) };
     assert!(!client.is_null());
     // SAFETY: the client lives, and with no channel the copy reads no other argument.
     let status = Status(unsafe {
@@ -874,7 +1002,7 @@ fn send_with_no_channel() {
 
 #[test]
 fn an_error_goes_to_stderr() {
-    let output = child("event::tests::send_with_no_channel");
+    let output = child::output("event::tests::send_with_no_channel", &[]);
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
@@ -885,7 +1013,7 @@ fn an_error_goes_to_stderr() {
 
 #[test]
 fn a_warning_goes_to_stderr_and_an_info_message_does_not() {
-    let output = child("event::tests::connect_to_a_bad_url");
+    let output = child::output("event::tests::connect_to_a_bad_url", &[]);
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
@@ -895,7 +1023,7 @@ fn a_warning_goes_to_stderr_and_an_info_message_does_not() {
 
 #[test]
 fn a_long_line_is_cut_to_512_bytes_with_its_newline() {
-    let output = child("event::tests::connect_to_a_long_url");
+    let output = child::output("event::tests::connect_to_a_long_url", &[]);
     assert!(output.status.success());
     let line = format!(
         "connector-opcua: open62541 warning: Endpoint URL is invalid: {}",

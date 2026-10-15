@@ -1,5 +1,5 @@
 - **HOME SURFACE (#963)** The public surface of `home` names only `types`, `env`,
-  `codec`, and `home` items, apart from three. `Config`, which only `node` builds, names
+  `codec`, and `home` items, apart from four. `Config`, which only `node` builds, names
   `buffer` and `clock` types. `Shard::pool` gives a `block::Pool`, the pool of the
   shard's buffer. `block` is in the `hub` row. A writer's frames come from that pool, so
   `hub` takes no pool of its own and the two cannot differ (architect,
@@ -8,13 +8,23 @@
   `Position`, `Error`, `named::Key`, and `complete::Charge` (`laptop.architect`,
   2026-10-08T11:12:45Z:
   https://github.com/synnaxlabs/foundation/pull/1863#issuecomment-6058607367).
+  `Shard::open` gives a `buffer::Error`: `node` puts it in `Error::Buffer`, and
+  `foundation` reports its variants as it reports those of `Buffer::open`. Lost:
+  `env::files::Error` with a panic on `Error::Pool`, because the panic rests on how
+  `buffer` reads; a `home` error of `Files` and `Pool`, a third type that `node` puts in
+  the same variant (`laptop.architect`, #275, 2026-10-10T04:04:50Z:
+  https://github.com/synnaxlabs/foundation/issues/275#issuecomment-6093580361; #2274,
+  2026-10-10T15:01:02Z:
+  https://github.com/synnaxlabs/foundation/pull/2274#issuecomment-6098836145).
+  Supersedes the clause "no caller matches its variants" of
+  https://github.com/synnaxlabs/foundation/issues/275#issuecomment-6093580361.
   Supersedes the clause "apart from `Config`" of
   https://github.com/synnaxlabs/foundation/issues/963#issuecomment-6031464116, which the
   `Shard::pool` ruling above made two. `Config` takes no pool: the shard uses
   `Buffer::pool()`. It takes one `clock: clock::Reader` for monotonic and mesh time. The
   shard is the only writer of the buffer in `Config`: the caller gives it with no entry
   that waits for a commit. The condition is stated, not checked: `node` appends nothing
-  before `Shard::new`, and `Config` takes the buffer by value, so no later append can
+  before `Shard::open`, and `Config` takes the buffer by value, so no later append can
   come from outside (architect,
   https://github.com/synnaxlabs/foundation/pull/1130#issuecomment-6033691871; lost: a
   check in `Shard::new`). `replica` (X13) and copy mode (X43) are out of the MVP. Their
@@ -36,10 +46,19 @@
   by the architect, #963
   (https://github.com/synnaxlabs/foundation/issues/963#issuecomment-6031464116). Amended
   (2026-10-08T22:24:43Z, #2020): `Shard::shed` stops carrying an index, the pair of
-  `carry`. Its control gate goes, and with it a handoff that waits for room. Each named
-  reader of the index stops holding its position. Its frames stay in the buffer, so a
-  later `carry` of the slot continues each path from its tail in the buffer, the last
-  entry appended, on disk or not: a lost seq is given again only when no later live
+  `carry`. A shed changes no control: the shard keeps the gate of the index for the
+  next carry of its slot when the gate holds a restored holder or a handoff that waits,
+  and drops each other gate, which equals a new one (`laptop.architect`,
+  #2314, 2026-10-10T22:57:44Z, item 2:
+  https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6103084268; "a
+  handoff that waits", for one that waits for mesh time too: `laptop.architect`, #2314,
+  2026-10-11T12:52:20Z, item 1:
+  https://github.com/synnaxlabs/foundation/issues/2314#issuecomment-6109217872;
+  supersedes "its control gate goes, and with it a handoff that waits for room" of
+  https://github.com/synnaxlabs/foundation/issues/2020#issuecomment-6070259814). Each
+  named reader of the index stops holding its position. Its frames stay in the buffer,
+  so a later `carry` of the slot continues each path from its tail in the buffer, the
+  last entry appended, on disk or not: a lost seq is given again only when no later live
   entry of the index was appended (`Outcome::Lost`; `laptop.architect`,
   2026-10-08T23:30:35Z:
   https://github.com/synnaxlabs/foundation/pull/2026#issuecomment-6071097559). Lost: a

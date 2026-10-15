@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::mem;
 use std::path::{Path, PathBuf};
-use std::task::{Poll, Waker};
+use std::task::Poll;
 
 use block::{Block, Unique};
 use env::files::{Error, Mode, Operation};
@@ -12,6 +12,7 @@ use env::rng::Rng;
 use types::time::Monotonic;
 
 use crate::disk::{self, Cause, Disk, Handle};
+use crate::log::{Kept, Waker};
 use crate::{Crash, EIO};
 
 /// The count of call delays in nanoseconds: a call takes 0 to 100 us.
@@ -46,6 +47,9 @@ pub(crate) enum Call {
     Unlink {
         handle: Handle,
     },
+    /// A call on a file of the host, which takes the time of a call and changes no
+    /// disk.
+    Host(Operation),
 }
 
 impl Call {
@@ -61,6 +65,7 @@ impl Call {
             Self::Read { .. } => Operation::ReadAt,
             Self::Sync { .. } => Operation::Sync,
             Self::Rename { .. } => Operation::Rename,
+            Self::Host(operation) => *operation,
         }
     }
 
@@ -74,6 +79,47 @@ impl Call {
             | Self::Unlink { handle } => Some(*handle),
             _ => None,
         }
+    }
+
+    /// The calls in flight that a call of `path` waits for, if any.
+    fn scope(&self, path: &Path) -> Option<Scope> {
+        match self {
+            Self::Open(Mode::Write | Mode::Create { .. })
+            | Self::Remove
+            | Self::Unlink { .. } => Some(Scope::Path(disk::normal(path))),
+            Self::Rename { to, .. } => Some(Scope::Path(disk::normal(to))),
+            Self::List => Some(Scope::Dir(disk::normal(path))),
+            Self::Free => Some(Scope::Disk),
+            _ => None,
+        }
+    }
+}
+
+/// The calls of a node that a dropped future or handle left to run, which a call waits
+/// for. Its paths are normal.
+enum Scope {
+    /// The calls on a path whose file the call replaces, makes, or removes.
+    Path(PathBuf),
+    /// The calls on a path directly in a directory that the call lists.
+    Dir(PathBuf),
+    /// Every call.
+    Disk,
+}
+
+impl Scope {
+    /// Whether a call on `path`, which is normal, is in the scope.
+    fn covers(&self, path: &Path) -> bool {
+        match self {
+            Self::Path(on) => on == path,
+            Self::Dir(dir) => path.parent() == Some(dir),
+            Self::Disk => true,
+        }
+    }
+
+    /// Whether the scope also covers each remove through a handle whose future lives.
+    /// Only a call that replaces, makes, or removes a file waits for one.
+    fn live_removes(&self) -> bool {
+        matches!(self, Self::Path(_))
     }
 }
 
@@ -115,7 +161,7 @@ pub(crate) enum Held {
 /// A call that ended.
 pub(crate) struct Ended {
     pub(crate) result: Result<Done, Error>,
-    pub(crate) held: Option<Held>,
+    pub(crate) held: Option<Kept<Held>>,
 }
 
 /// What a crash leaves of a [`Mode::Create`] open in flight that makes a file. The
@@ -133,7 +179,7 @@ struct Flight {
     /// The path of the call, or of the file for a call on an open file.
     path: PathBuf,
     call: Call,
-    held: Option<Held>,
+    held: Option<Kept<Held>>,
     /// A fault fails the call when it ends.
     failed: bool,
     /// A read's bytes when it started. Empty for other calls.
@@ -207,7 +253,7 @@ impl Files {
         node: usize,
         path: PathBuf,
         call: Call,
-        held: Option<Held>,
+        held: Option<Kept<Held>>,
     ) -> u64 {
         let key = self.tick();
         let delay = self.rng.below(DELAYS);
@@ -223,7 +269,10 @@ impl Files {
                 before = disk.file(handle.inode).start_read(range, &mut self.rng);
             }
         }
-        let at = Monotonic(now.0.saturating_add(delay));
+        let mut at = Monotonic(now.0.saturating_add(delay));
+        if let Some(scope) = call.scope(&path) {
+            at = at.max(self.wait_end(node, &scope));
+        }
         self.queue.insert((at, key));
         let flight = Flight {
             node,
@@ -239,6 +288,41 @@ impl Files {
         key
     }
 
+    /// The time that a call of `node` in `scope` ends no earlier than: the end of the
+    /// last call in `scope` that a dropped future or handle left to run, or of a
+    /// remove through a handle, live or not, when the scope covers live removes, or
+    /// zero. A call without a handle is on its path. A call through a handle is on each
+    /// path that has named its file, and on the path of each dropped rename of the
+    /// file, so it stays on them after a rename or a remove.
+    fn wait_end(&self, node: usize, scope: &Scope) -> Monotonic {
+        let disk = &self.disks[node];
+        let pending: Vec<_> = (self.queue.iter().rev())
+            .map(|(at, key)| (*at, &self.flights[key]))
+            .filter(|(_, flight)| {
+                let unlink =
+                    matches!(flight.call, Call::Unlink { .. }) && scope.live_removes();
+                flight.node == node && (flight.dropped || unlink)
+            })
+            .collect();
+        let moved: BTreeSet<_> = (pending.iter())
+            .filter_map(|(_, flight)| match &flight.call {
+                Call::Rename { handle, to } if scope.covers(&disk::normal(to)) => {
+                    Some(handle.inode)
+                }
+                _ => None,
+            })
+            .collect();
+        (pending.iter())
+            .find(|(_, flight)| match flight.call.handle() {
+                Some(handle) => {
+                    moved.contains(&handle.inode)
+                        || disk.names(handle.inode).any(|name| scope.covers(name))
+                }
+                None => scope.covers(&disk::normal(&flight.path)),
+            })
+            .map_or(Monotonic::default(), |(at, _)| *at)
+    }
+
     /// The true time at which the first call in flight ends.
     pub(crate) fn first(&self) -> Option<Monotonic> {
         self.queue.first().map(|&(at, _)| at)
@@ -251,7 +335,7 @@ impl Files {
 
     /// Ends the calls due by true time `at`, in order. Returns the wakers of their
     /// futures, and the blocks of the calls whose futures dropped.
-    pub(crate) fn end(&mut self, at: Monotonic) -> (Vec<Waker>, Vec<Held>) {
+    pub(crate) fn end(&mut self, at: Monotonic) -> (Vec<Waker>, Vec<Kept<Held>>) {
         let (mut wakers, mut orphans) = (Vec::new(), Vec::new());
         while let Some(&(due, key)) = self.queue.first() {
             if due > at {
@@ -335,6 +419,7 @@ impl Files {
             Call::Unlink { handle } => {
                 disk.unlink(handle.inode, &path).map(|()| Done::Unit)
             }
+            Call::Host(_) => Ok(Done::Unit),
         };
         if let Some(handle) = call.handle() {
             disk.release(handle);
@@ -360,7 +445,7 @@ impl Files {
 
     /// The future of call `key` dropped before it took the result. A call in flight
     /// still ends. Returns what to drop after the lock is released.
-    pub(crate) fn abandon(&mut self, key: u64) -> (Option<Waker>, Option<Held>) {
+    pub(crate) fn abandon(&mut self, key: u64) -> (Option<Waker>, Option<Kept<Held>>) {
         if let Some(flight) = self.flights.get_mut(&key) {
             flight.dropped = true;
             return (flight.waker.take(), None);
@@ -373,7 +458,7 @@ impl Files {
     /// Drops call `ended` of `node`, whose future dropped: an open releases the file
     /// it opened. Returns the blocks of the call, for the caller to drop after it
     /// releases the lock.
-    fn discard(&mut self, node: usize, ended: Ended) -> Option<Held> {
+    fn discard(&mut self, node: usize, ended: Ended) -> Option<Kept<Held>> {
         if let Ok(Done::Open { handle, .. }) = ended.result {
             self.disks[node].release(handle);
         }
@@ -392,7 +477,7 @@ impl Files {
         node: usize,
         at: Monotonic,
         crash: Crash,
-    ) -> (Vec<Waker>, Vec<Held>) {
+    ) -> (Vec<Waker>, Vec<Kept<Held>>) {
         let flights = &self.flights;
         let (cut, queue): (BTreeSet<_>, _) = mem::take(&mut self.queue)
             .into_iter()
@@ -407,10 +492,13 @@ impl Files {
             let close = flight.call.handle().map(|handle| handle.key);
             closes.extend(close.and_then(|key| self.closing.remove(&key)));
             let kind = mem::discriminant(&flight.call);
-            let drawn = (matches!(flight.call, Call::Open(Mode::Create { .. }))
-                && !flight.failed
-                && self.disks[node].makes(&flight.path))
-            .then(|| match self.rng.below(2) {
+            let makes = match flight.call {
+                Call::Open(Mode::Create { len }) => {
+                    self.disks[node].makes(&flight.path, len)
+                }
+                _ => false,
+            };
+            let drawn = (makes && !flight.failed).then(|| match self.rng.below(2) {
                 0 => Cut::Whole,
                 _ => Cut::Empty,
             });
@@ -420,10 +508,13 @@ impl Files {
             // A power cut loses what a sync in flight would make durable.
             let synced = matches!(flight.call, Call::Sync { .. } | Call::SyncDir);
             let (ok, held) = if power && synced {
+                if let Some(handle) = flight.call.handle() {
+                    self.disks[node].release(handle);
+                }
                 (false, flight.held)
             } else {
                 let ended = self.apply(key, flight);
-                (ended.result.is_ok(), ended.held)
+                (ended.result.is_ok(), self.discard(node, ended))
             };
             (at, key, kind, drawn, ok).hash(&mut self.digest);
             orphans.extend(held);
@@ -464,7 +555,17 @@ impl Files {
 
     /// Makes `handle`, which an open of `path` on `node` gave, a descriptor.
     pub(crate) fn opened(&mut self, node: usize, handle: Handle, path: &Path) {
-        self.disks[node].opened(handle, path);
+        self.disks[node].opened(handle.key, path);
+    }
+
+    /// Makes the host file that open `key` of `path` on `node` gave a descriptor.
+    pub(crate) fn opened_host(&mut self, node: usize, key: u64, path: &Path) {
+        self.disks[node].opened(key, path);
+    }
+
+    /// Closes the descriptor of a host file that open `key` of `node` gave.
+    pub(crate) fn close_host(&mut self, node: usize, key: u64) {
+        self.disks[node].closed(key);
     }
 
     /// Closes descriptor `handle` of `node`. Returns the waker of its close, to drop

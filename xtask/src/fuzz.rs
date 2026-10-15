@@ -26,17 +26,23 @@ const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
 /// The least `-max_len` of a run: libFuzzer makes no input longer.
 const MAX_LEN: u64 = 16 * 1024;
 
+/// Each target, and the count of features that it must give at `INITED` to pass.
+const FLOORS: [(&str, u64); 1] = [
+    // With fewer, the build gave its C no coverage.
+    ("connector_opcua_decode", 1000),
+];
+
 /// Runs each target of `fuzz/` at `root` for `seconds`, as many at once as the host has
 /// cores. Each run reads `fuzz/corpus/<target>`, which libFuzzer writes to, and
 /// `oracles/fuzz/<target>`. It fails before the build on each problem that [`check`]
-/// finds, and then when the build fails or a target fails. cargo-fuzz keeps the input
-/// of a crash in `fuzz/artifacts/<target>/`.
+/// finds and when the pinned nightly gives no host triple, and then when the build
+/// fails or a target fails. cargo-fuzz keeps the input of a crash in
+/// `fuzz/artifacts/<target>/`.
 pub(crate) fn run(root: &Path, seconds: NonZeroU16) -> Result<(), Vec<String>> {
     let targets = check(root)?;
-    let nightly = crate::nightly(root).map_err(|e| vec![e])?;
-    let built = nightly
-        .cargo()
-        .args(["fuzz", "build"])
+    let cargo = Cargo::new(root).map_err(|e| vec![e])?;
+    let built = cargo
+        .build()
         .status()
         .map_err(|e| vec![format!("rustup: {e}")])?;
     if !built.success() {
@@ -46,7 +52,7 @@ pub(crate) fn run(root: &Path, seconds: NonZeroU16) -> Result<(), Vec<String>> {
     let worker = || {
         let mut problems = Vec::new();
         while let Some(target) = targets.get(next.fetch_add(1, Ordering::Relaxed)) {
-            if let Err(problem) = run_one(root, &nightly, target, seconds) {
+            if let Err(problem) = run_one(root, &cargo, target, seconds) {
                 problems.push(problem);
             }
         }
@@ -74,7 +80,7 @@ pub(crate) fn run(root: &Path, seconds: NonZeroU16) -> Result<(), Vec<String>> {
 /// Runs `target` for `seconds` and prints its result.
 fn run_one(
     root: &Path,
-    nightly: &crate::Nightly,
+    cargo: &Cargo,
     target: &str,
     seconds: NonZeroU16,
 ) -> Result<(), String> {
@@ -89,7 +95,9 @@ fn run_one(
         .map_err(|e| format!("{}: {e}", oracles.display()))?;
     std::fs::create_dir_all(&corpus)
         .map_err(|e| format!("{}: {e}", corpus.display()))?;
-    let output = command(nightly, target, &corpus, &oracles, seconds, max_len(sizes))
+    let max_len = max_len(sizes);
+    let output = cargo
+        .run(target, &corpus, &oracles, seconds, max_len)
         .output()
         .map_err(|e| format!("rustup: {e}"))?;
     let (report, result) = report(target, &output);
@@ -131,29 +139,54 @@ fn unmatched(targets: &[&str], folders: &[String]) -> Vec<String> {
     inputless.chain(targetless).collect()
 }
 
-/// The command that runs `target` on the toolchain `nightly` for `seconds`, on the
-/// inputs in `corpus` and `oracles`, with no input longer than `max_len` bytes.
-fn command(
-    nightly: &crate::Nightly,
-    target: &str,
-    corpus: &Path,
-    oracles: &Path,
-    seconds: NonZeroU16,
-    max_len: u64,
-) -> Command {
-    let mut command = nightly.cargo();
-    command
-        .args(["fuzz", "run", target])
-        .arg(corpus)
-        .arg(oracles)
-        .args([
+/// cargo-fuzz on the pinned nightly, for the host triple of that nightly.
+struct Cargo {
+    nightly: crate::nightly::Toolchain,
+    host: String,
+}
+
+impl Cargo {
+    /// cargo-fuzz on the pinned nightly of the workspace at `root`. cargo-fuzz builds
+    /// for the triple that it was itself built for unless it gets `--target`, and a
+    /// musl build of it cannot build a sanitized target.
+    fn new(root: &Path) -> Result<Self, String> {
+        let nightly = crate::nightly::Toolchain::read(root)?;
+        let host = nightly.host()?;
+        Ok(Self { nightly, host })
+    }
+
+    /// The command that builds each target.
+    fn build(&self) -> Command {
+        self.fuzz("build")
+    }
+
+    /// The command that runs `target` for `seconds`, on the inputs in `corpus` and
+    /// `oracles`, with no input longer than `max_len` bytes.
+    fn run(
+        &self,
+        target: &str,
+        corpus: &Path,
+        oracles: &Path,
+        seconds: NonZeroU16,
+        max_len: u64,
+    ) -> Command {
+        let mut command = self.fuzz("run");
+        command.arg(target).arg(corpus).arg(oracles).args([
             "--".to_string(),
             format!("-max_total_time={seconds}"),
             "-timeout=10".to_string(),
             "-rss_limit_mb=2048".to_string(),
             format!("-max_len={max_len}"),
         ]);
-    command
+        command
+    }
+
+    /// A command that runs `cargo fuzz <sub>` for the host, at the workspace root.
+    fn fuzz(&self, sub: &str) -> Command {
+        let mut command = self.nightly.cargo();
+        command.args(["fuzz", sub, "--target", &self.host]);
+        command
+    }
 }
 
 /// The `-max_len` for oracle inputs of `sizes` bytes: [`MAX_LEN`], or the largest
@@ -164,20 +197,31 @@ fn max_len(sizes: impl IntoIterator<Item = u64>) -> u64 {
 
 /// What the run of `target` that gave `output` prints, and its problem. A run that
 /// passed prints libFuzzer's last `Done` line, and any other run its whole output. A
-/// run that passed with no `Done` line ran no input, which is a problem.
+/// run that passed with no `Done` line ran no input, which is a problem. So is a run
+/// with fewer features at `INITED` than the floor of its target in [`FLOORS`].
 fn report(target: &str, output: &Output) -> (String, Result<(), String>) {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let done = stderr.lines().rfind(|line| line.starts_with("Done "));
-    match (output.status.success(), done) {
-        (true, Some(done)) => {
+    let floor = FLOORS.iter().find(|(name, _)| *name == target);
+    let features = inited(&stderr);
+    match (output.status.success(), done, floor) {
+        (true, Some(_), Some((_, floor))) if features.is_none_or(|n| n < *floor) => {
+            let problem = format!(
+                "fuzz target `{target}` gave {} features at `INITED`, fewer than \
+                 its floor of {floor} in `FLOORS`",
+                features.map_or_else(|| "no".to_string(), |n| n.to_string())
+            );
+            (format!("{problem}:\n{stdout}{stderr}\n"), Err(problem))
+        }
+        (true, Some(done), _) => {
             (format!("fuzz target `{target}` passed: {done}\n"), Ok(()))
         }
-        (true, None) => (
+        (true, None, _) => (
             format!("fuzz target `{target}` gave no `Done` line:\n{stdout}{stderr}\n"),
             Err(format!("fuzz target `{target}` gave no `Done` line")),
         ),
-        (false, _) => (
+        (false, _, _) => (
             format!("fuzz target `{target}` failed:\n{stdout}{stderr}\n"),
             Err(format!(
                 "fuzz target `{target}` failed. cargo-fuzz keeps the input of a crash \
@@ -185,6 +229,13 @@ fn report(target: &str, output: &Output) -> (String, Result<(), String>) {
             )),
         ),
     }
+}
+
+/// The count of features on the `INITED` line of libFuzzer in `stderr`.
+fn inited(stderr: &str) -> Option<u64> {
+    let line = stderr.lines().find(|line| line.contains("\tINITED "))?;
+    let mut words = line.split_whitespace().skip_while(|word| *word != "ft:");
+    words.nth(1)?.parse().ok()
 }
 
 /// Checks `fuzz/` at `root` before the build and returns its targets, read from its
@@ -415,12 +466,10 @@ impl<'a> Package<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::process::ExitStatusExt;
-    use std::process::ExitStatus;
-
     use serde_json::json;
 
     use super::*;
+    use crate::common::output;
 
     const PATCHED: &str = "path+file:///w/patches/noq-proto#noq-proto@1.3.0";
     const TYPES: &str = "path+file:///w/crates/types#0.0.0";
@@ -1240,12 +1289,7 @@ mod tests {
     #[test]
     fn runs_the_target_on_both_corpus_directories_with_the_limits() {
         let seconds = NonZeroU16::new(5).unwrap();
-        let nightly = crate::Nightly {
-            root: "/w".into(),
-            pin: "nightly-x".to_string(),
-        };
-        let command = command(
-            &nightly,
+        let command = arm().run(
             "spec_tree",
             Path::new("/c"),
             Path::new("/o"),
@@ -1261,6 +1305,8 @@ mod tests {
                 "cargo",
                 "fuzz",
                 "run",
+                "--target",
+                "aarch64-unknown-linux-gnu",
                 "spec_tree",
                 "/c",
                 "/o",
@@ -1269,6 +1315,54 @@ mod tests {
                 "-timeout=10",
                 "-rss_limit_mb=2048",
                 "-max_len=20000",
+            ]
+        );
+        assert_eq!(command.get_current_dir(), Some(Path::new("/w")));
+    }
+
+    fn arm() -> Cargo {
+        Cargo {
+            nightly: crate::nightly::Toolchain::new("/w", "nightly-x"),
+            host: "aarch64-unknown-linux-gnu".to_string(),
+        }
+    }
+
+    #[test]
+    fn new_builds_for_the_host_of_the_pin() {
+        let root = crate::common::create_stable_root("xtask-fuzz-host");
+        let cargo = Cargo::new(&root);
+        std::fs::remove_dir_all(&root).unwrap();
+        let build = cargo.unwrap().build();
+        let args: Vec<_> = build.get_args().filter_map(|a| a.to_str()).collect();
+        let [.., "--target", host] = args[..] else {
+            panic!("{args:?}");
+        };
+        assert!(host.starts_with(std::env::consts::ARCH), "{host}");
+    }
+
+    #[test]
+    fn new_names_rustup_and_the_pin_when_the_pin_is_not_installed() {
+        let Err(error) = Cargo::new(&crate::fixture()) else {
+            panic!("the pin of the fixture is not installed");
+        };
+        let command = "`rustup run nightly-2000-01-01 rustc -vV`: exit status: 1: ";
+        assert!(error.starts_with(command), "{error}");
+    }
+
+    #[test]
+    fn builds_for_the_host_of_the_nightly() {
+        let command = arm().build();
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(
+            args,
+            [
+                "run",
+                "nightly-x",
+                "cargo",
+                "fuzz",
+                "build",
+                "--target",
+                "aarch64-unknown-linux-gnu",
             ]
         );
         assert_eq!(command.get_current_dir(), Some(Path::new("/w")));
@@ -1305,14 +1399,6 @@ mod tests {
         assert_eq!(max_len([]), 16384);
         assert_eq!(max_len([3, 16384, 70]), 16384);
         assert_eq!(max_len([3, 32875, 16385]), 32875);
-    }
-
-    fn output(code: i32, stdout: &str, stderr: &str) -> Output {
-        Output {
-            status: ExitStatus::from_raw(code << 8),
-            stdout: stdout.into(),
-            stderr: stderr.into(),
-        }
     }
 
     #[test]
@@ -1354,6 +1440,38 @@ mod tests {
                 Err("fuzz target `spec_tree` gave no `Done` line".to_string())
             )
         );
+    }
+
+    #[test]
+    fn refuses_a_run_below_the_feature_floor_of_its_target() {
+        let target = "connector_opcua_decode";
+        let floor = |features: &str| {
+            let stderr = format!("#488\tINITED{features} corp: 1\nDone 9 runs\n");
+            report(target, &output(0, "", &stderr)).1
+        };
+        assert_eq!(floor(" cov: 530 ft: 1000"), Ok(()));
+        let refused = |n: &str| {
+            Err(format!(
+                "fuzz target `{target}` gave {n} features at `INITED`, fewer than \
+                 its floor of 1000 in `FLOORS`"
+            ))
+        };
+        assert_eq!(floor(" cov: 75 ft: 999"), refused("999"));
+        assert_eq!(floor(""), refused("no"));
+        let stderr = "#2\tINITED cov: 1 ft: 1 corp: 1\nDone 9 runs\n";
+        assert_eq!(report("spec_tree", &output(0, "", stderr)).1, Ok(()));
+    }
+
+    #[test]
+    fn each_floor_names_a_target_of_fuzz() {
+        let fuzz = crate::fixture().join("../../fuzz");
+        let targets = bins(&crate::graph(&fuzz).unwrap()).unwrap();
+        for (target, _) in FLOORS {
+            assert!(
+                targets.iter().any(|t| t == target),
+                "{target} in {targets:?}"
+            );
+        }
     }
 
     #[test]

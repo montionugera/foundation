@@ -1,40 +1,73 @@
-//! Fixtures that the tests of `plan`, `apply`, and `Node` share.
+//! Fixtures that the tests of `plan`, `apply`, `status`, and `Node` share.
 
-use std::collections::BTreeMap;
-use std::net::SocketAddr;
-use std::num::{NonZeroU32, NonZeroUsize};
-use std::path::PathBuf;
-use std::rc::Rc;
+use std::cell::Cell;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use connector::cancel;
-use connector::kind::{self, Channels, Context};
+use connector::kind::{self, Channels, Context, Table};
+use document::Document;
 use document::diagnostic::Diagnostic;
-use document::{Document, Source};
+use env::files::{self, Operation};
+use env::paths::Paths;
 use env::tasks::Tasks;
-use mesh::card::addresses::Addresses;
-use mesh::card::{self, Card};
-use mesh::region::Founding;
-use mesh::status::Status;
-use mesh::{Member, Mesh};
+use hub::Hub;
+use mesh::Mesh;
 use sim::Sim;
 use spec::definition::Definition;
-use transport::{Port, Transport};
 use types::channel::Key;
-use types::ed25519::PrivateKey;
-use types::name::{Name, Prefix};
-use types::node::{self, SealKey};
-use types::time::Span;
+use types::name::Name;
 
-use crate::front_end::{File, FrontEnd};
+use crate::error::{Error, Sources};
+use crate::front_end::{File, FrontEnd, FrontEnds};
+use crate::{Config, Failure, Node, Run, plan};
 
-pub(crate) const PLANT: &str =
-    include_str!("../../acceptance/tests/it/fixtures/plant.hcl");
+#[path = "../tests/common/founding.rs"]
+mod founding;
+
+#[path = "../tests/common/quickstart.rs"]
+mod quickstart;
+
+pub(crate) use founding::{ADMIN, NODE, create_mesh};
+pub(crate) use quickstart::{plant, shown};
+
 pub(crate) const SITE: &str =
     include_str!("../../acceptance/tests/it/fixtures/site.hcl");
 
+/// Lines that `ssh-keygen -t ed25519` wrote.
+pub(crate) const BOB: &str = concat!(
+    "ssh-ed25519 ",
+    "AAAAC3NzaC1lZDI1NTE5AAAAIP0QMDFGOHfS9XR71aVyCvs+QnNQ4BXrHs9dGDDz7KY6",
+    " bob@site",
+);
+pub(crate) const EVE: &str = concat!(
+    "ssh-ed25519 ",
+    "AAAAC3NzaC1lZDI1NTE5AAAAIGVVuOR8JKYpAcWLMUveadmJ1wUAmYGgIDtqlhFe7Yhg",
+    " eve@laptop",
+);
+pub(crate) const SAM: &str = concat!(
+    "ssh-ed25519 ",
+    "AAAAC3NzaC1lZDI1NTE5AAAAIBwW/hh0ZkgH9jcODHef/ulXUH2Hx66uLYTxi9hWfS+o",
+    " sam@site",
+);
+
 /// A kind whose channels are the labels of its `read` blocks, which it writes. It takes
 /// each attribute, so it stands in for each kind of the fixtures.
-pub(crate) struct Reader;
+pub(crate) struct Reader {
+    /// The counts of the kind.
+    counts: &'static [&'static str],
+}
+
+/// The stand-in of the `opcua` kind, with the counts that #435 gives it.
+pub(crate) const OPCUA: Reader = Reader {
+    counts: &["in", "lost", "missed"],
+};
+
+/// The stand-in of the `influx` kind, with the count `confirmed` that #1734 gives it.
+pub(crate) const INFLUX: Reader = Reader {
+    counts: &["confirmed"],
+};
 
 impl kind::Kind for Reader {
     type Config = Vec<Name>;
@@ -51,8 +84,9 @@ impl kind::Kind for Reader {
 
     fn check(&self, writes: &Vec<Name>) -> Result<Channels, Vec<Diagnostic>> {
         Ok(Channels {
-            reads: Vec::new(),
+            reader: None,
             writes: writes.clone(),
+            counts: self.counts.iter().map(|count| name(count)).collect(),
         })
     }
 
@@ -71,13 +105,94 @@ impl kind::Kind for Reader {
     }
 }
 
-pub(crate) fn hcl(source: Source, text: &str) -> Result<Document, Vec<Diagnostic>> {
-    config_hcl::read(source, text)
-        .map_err(|errors| errors.iter().map(Diagnostic::from).collect())
+pub(crate) fn front_ends() -> FrontEnds {
+    FrontEnds::new(
+        "hcl",
+        FrontEnd {
+            read: config_hcl::read,
+        },
+    )
 }
 
-pub(crate) fn front_ends() -> BTreeMap<&'static str, FrontEnd> {
-    BTreeMap::from([("hcl", FrontEnd { read: hcl })])
+/// The kinds of the connectors of the fixtures.
+pub(crate) fn create_kinds() -> Table {
+    Table::new().with("influx", INFLUX).with("opcua", OPCUA)
+}
+
+/// The sim node of a run, and a hub on it.
+pub(crate) struct Fixture {
+    pub(crate) sim: sim::node::Node,
+    pub(crate) hub: Hub,
+    /// The name of the member of the mesh on `sim`.
+    pub(crate) name: Name,
+    /// The tasks of the run.
+    pub(crate) tasks: Tasks,
+}
+
+/// The node of `mesh` on `fixture`, whose channel keys count from 1.
+pub(crate) fn create_node(fixture: &Fixture, mesh: Mesh) -> Node {
+    create_node_reading(fixture, mesh, front_ends())
+}
+
+/// The node of `mesh` on `fixture` that reads with `front_ends`, whose channel keys
+/// count from 1.
+pub(crate) fn create_node_reading(
+    fixture: &Fixture,
+    mesh: Mesh,
+    front_ends: FrontEnds,
+) -> Node {
+    let secrets = connector::testing::create_secrets(fixture.sim.files());
+    create_node_with(fixture, mesh, front_ends, secrets)
+}
+
+/// The node of `mesh` on `fixture` that reads with `front_ends` and reads secrets
+/// through `secrets`, whose channel keys count from 1.
+pub(crate) fn create_node_with(
+    fixture: &Fixture,
+    mesh: Mesh,
+    front_ends: FrontEnds,
+    secrets: secret::Resolver,
+) -> Node {
+    Node::new(create_config(fixture, mesh, front_ends, secrets))
+}
+
+/// The config of a node of `mesh` on `fixture`, as [`create_node_with`] makes it.
+pub(crate) fn create_config(
+    fixture: &Fixture,
+    mesh: Mesh,
+    front_ends: FrontEnds,
+    secrets: secret::Resolver,
+) -> Config {
+    let made = Cell::new(0);
+    let key = move || {
+        made.set(made.get() + 1);
+        Key::from_u128(made.get())
+    };
+    Config {
+        mesh,
+        keys: Box::new(key),
+        front_ends,
+        kinds: Arc::new(create_kinds()),
+        hub: fixture.hub.clone(),
+        clock: fixture.sim.clock(),
+        name: fixture.name.clone(),
+        secrets,
+    }
+}
+
+/// The plan of `files` on `applied` at `base`, as `Node::plan` makes it with no read
+/// of a secret.
+pub(crate) fn plan(
+    files: &[File],
+    base: spec::Pointer,
+    applied: &BTreeMap<Name, Definition>,
+    members: &BTreeSet<Name>,
+    front_ends: &FrontEnds,
+    kinds: &Table,
+) -> Result<(plan::Output, config::plan::Plan), Error> {
+    plan::Documents::read(files, front_ends)?
+        .changes(base, applied, members, kinds)
+        .map_err(|diagnostics| Error::config(diagnostics, &Sources::of(files)))
 }
 
 pub(crate) fn name(text: &str) -> Name {
@@ -94,110 +209,78 @@ pub(crate) fn files(files: &[(&str, &str)]) -> Vec<File> {
         .collect()
 }
 
+/// The run, output, and errors of `foundation <args>`, whose requests go through
+/// `reach`.
+pub(crate) async fn cli<C>(
+    paths: &Paths,
+    args: &[&str],
+    reach: impl AsyncFnMut(&Path) -> Result<C, Failure>,
+) -> (Run, String, String)
+where
+    C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
+{
+    let args = ["foundation"].iter().chain(args).map(Into::into);
+    let (mut output, mut errors) = (Vec::new(), Vec::new());
+    let input = std::io::empty();
+    let run = crate::cli(args, input, &mut output, &mut errors, paths, reach).await;
+    let text = |bytes| String::from_utf8(bytes).expect("UTF-8");
+    (run, text(output), text(errors))
+}
+
 /// `site.hcl` with a placement that homes its index on `edge`.
 pub(crate) fn placed_site() -> String {
     format!("{SITE}placement \"p\" {{\n  select = \"site.*\"\n  home = \"edge\"\n}}\n")
 }
 
-pub(crate) const NODE: node::Key = node::Key::from_u128(1);
-pub(crate) const PRIVATE_KEY: PrivateKey = PrivateKey([1; 32]);
-pub(crate) const ADMIN: PrivateKey = PrivateKey([7; 32]);
-pub(crate) const PORT: u16 = 7000;
-
-/// The record of the one node, `edge`, which the plans name.
-pub(crate) fn create_member() -> Member {
-    let card = Card {
-        name: name("edge"),
-        public_key: PRIVATE_KEY.public(),
-        seal_key: SealKey::new([9; 32]).expect("a seal key"),
-        addresses: Addresses::new(Vec::new()).expect("no addresses"),
-        version: 1,
-    };
-    Member {
-        card: card::Signed::sign(NODE, card, &PRIVATE_KEY),
-        admission: [0; 64],
-        ephemeral: None,
-        status: Status::new([].into()).expect("a status"),
-    }
-}
-
-/// The mesh of a root region whose one member and voter is `edge`, with the founding
-/// `definitions`.
-pub(crate) async fn open(
-    node: &sim::node::Node,
-    tasks: &Tasks,
-    definitions: BTreeMap<Name, Definition>,
-) -> Mesh {
-    let budget = block::Config { budget: 1 << 20 };
-    let memory = block::Heap::new(budget.reservation());
-    let pool = Rc::new(block::Pool::new(budget, memory));
-    let at = SocketAddr::new(node.addresses()[0], PORT);
-    let mut parts = Port::bind(&node.net(), at)
-        .expect("a port")
-        .split(NonZeroUsize::MIN);
-    let config = transport::Config {
-        private_key: PRIVATE_KEY,
-        message_bytes_max: NonZeroUsize::new(1 << 16).expect("not zero"),
-        window_bytes: 1 << 20,
-        streams_max: NonZeroU32::new(16).expect("not zero"),
-        idle: Span::from_nanos(60 * Span::SECOND.nanos()),
-        clock: node.clock(),
-        entropy: node.entropy(),
-        tasks: tasks.clone(),
-        pool: Rc::clone(&pool),
-    };
-    let part = parts.pop().expect("a part");
-    let transport = Transport::new(config, part).expect("a transport");
-    let store = blob::Store::open(blob::Config {
-        files: node.files(),
-        dir: "blob".into(),
-        pool: Rc::clone(&pool),
-    })
-    .await
-    .expect("a store");
-    let member = create_member();
-    let config = mesh::Config {
-        key: NODE,
-        private_key: PRIVATE_KEY,
-        founding: Founding {
-            prefix: Prefix::ROOT,
-            voters: [NODE].into(),
-            members: vec![member],
-            definitions,
-            homes: BTreeMap::new(),
-        },
-        files: node.files(),
-        dir: PathBuf::new(),
-        clock: node.clock(),
-        entropy: node.entropy(),
-        tasks: tasks.clone(),
-        transport: Rc::new(transport),
-        pool,
-        store: Rc::new(store),
-    };
-    Mesh::open(config).await.expect("a mesh")
-}
-
-/// Runs `body` with the mesh of [`open`] on the one node of a run, with the
-/// definitions of a first start.
+/// Runs `body` with the one node of a run and the mesh of [`create_mesh`] on it, whose
+/// one member is `edge`, with the definitions of a first start.
 pub(crate) fn solo<F: Future<Output = ()> + 'static>(
-    body: impl FnOnce(Mesh) -> F + Send + 'static,
+    body: impl FnOnce(Fixture, Mesh) -> F + Send + 'static,
 ) {
-    founded(spec::founding::create(ADMIN.public()), body);
+    founded(&["edge"], spec::founding::create(ADMIN.public()), body);
 }
 
-/// Runs `body` with the mesh of [`open`] on the one node of a run, with the founding
-/// `definitions`.
+/// Runs `body` with the one node of a run and the mesh of [`create_mesh`] on it, with
+/// the members `names` and the founding `definitions`.
 pub(crate) fn founded<F: Future<Output = ()> + 'static>(
+    names: &'static [&'static str],
     definitions: BTreeMap<Name, Definition>,
-    body: impl FnOnce(Mesh) -> F + Send + 'static,
+    body: impl FnOnce(Fixture, Mesh) -> F + Send + 'static,
 ) {
     let mut sim = Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
-    let ran = sim.run_on(&node, |node, tasks| async move {
-        body(open(&node, &tasks, definitions).await).await;
+    let ran = sim.run_on(&node, move |node, tasks| async move {
+        let mesh = create_mesh(&node, &tasks, names, definitions).await;
+        let env = hub::testing::Env {
+            files: node.files(),
+            clock: node.clock(),
+            wall: node.wall(),
+            entropy: node.entropy(),
+            tasks: tasks.clone(),
+        };
+        let (hub, _) = hub::testing::open(env).await;
+        let fixture = Fixture {
+            sim: node,
+            hub,
+            name: name(names[0]),
+            tasks,
+        };
+        body(fixture, mesh).await;
     });
     assert_eq!(ran, Ok(()));
+}
+
+/// Makes each sync of the log of the mesh of [`create_mesh`] on `node` fail, and gives
+/// the stop of its group at its next write of the log.
+pub(crate) fn fail_sync(node: &sim::node::Node) -> mesh::Stopped {
+    let path = Path::new("log").join("log-0");
+    node.fail_file(&path, Operation::Sync);
+    let cause = files::Error::Io {
+        path,
+        operation: Operation::Sync,
+        code: 5,
+    };
+    mesh::Stopped::Write(mesh::log::Error::Files(cause))
 }
 
 /// Gives `Key::from_u128(n)` for each `n` from `from` up.

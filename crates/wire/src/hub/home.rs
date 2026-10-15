@@ -1,4 +1,5 @@
-use super::{CREDIT, Credit, Error, Mode, Open, keys, rest_of_run};
+use super::{CREDIT, Credit, Error, Mode, Open, keys};
+use crate::common::rest_of_run;
 
 /// The decoder at the home: it takes each message from the reader's node, in order,
 /// and checks the order and the run of the session.

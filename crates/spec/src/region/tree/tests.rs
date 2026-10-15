@@ -75,15 +75,32 @@ proptest! {
         }
         let mut chunks = Chunks::default();
         let update = tree(&mut chunks, &defined);
-        prop_assert_eq!(definitions(&chunks, update.root), Ok(defined));
+        prop_assert_eq!(definitions(&chunks, update.root), Ok((defined, chunks)));
     }
+}
+
+#[test]
+fn definitions_give_the_chunks_of_their_tree_and_no_other() {
+    let first = create_definitions(&[("plant.time", index(1))]);
+    let second = create_definitions(&[("site.time", index(2))]);
+    let mut chunks = Chunks::default();
+    let update = tree(&mut chunks, &first);
+    let other = tree(&mut chunks, &second);
+    let own = other
+        .chunks
+        .iter()
+        .any(|digest| !update.chunks.contains(digest));
+    assert!(own, "the second tree has no chunk of its own");
+    let mut alone = Chunks::default();
+    tree(&mut alone, &first);
+    assert_eq!(definitions(&chunks, update.root), Ok((first, alone)));
 }
 
 #[test]
 fn definitions_of_the_empty_tree_are_none() {
     assert_eq!(
         definitions(&Chunks::default(), tree::empty()),
-        Ok(BTreeMap::new())
+        Ok((BTreeMap::new(), Chunks::default()))
     );
 }
 
@@ -129,7 +146,8 @@ fn definitions_give_definitions_with_a_problem() {
     ]);
     let mut chunks = Chunks::default();
     let update = tree(&mut chunks, &defined);
-    assert_eq!(definitions(&chunks, update.root), Ok(defined));
+    let read = definitions(&chunks, update.root);
+    assert_eq!(read, Ok((defined, chunks)));
 }
 
 #[test]
@@ -139,7 +157,8 @@ fn definitions_of_a_tree_cut_at_other_boundaries_give_its_root() {
     let b = chunks.insert(leaf(&[("p.b", index(2).encode())]));
     let root = chunks.insert(parent(&[("p.a", a), ("p.b", b)]));
     let corrupt = Error::Tree(tree::Error::Corrupt(root));
-    assert_eq!(definitions(&chunks, root), Err(corrupt.clone()));
+    let read = definitions(&chunks, root);
+    assert_eq!(read, Err(corrupt.clone()));
     assert_eq!(
         corrupt.to_string(),
         format!("chunk {root} is not a chunk of a spec tree")

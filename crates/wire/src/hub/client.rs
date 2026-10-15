@@ -6,14 +6,22 @@
 //!   then to renew.
 //! - A request stream carries one request. The program sends a [`Request`] and then
 //!   its body, and the node sends a [`Response`] and then its body.
+//! - A read stream carries one reader session. The program sends a [`Read`] and then
+//!   its [`Open`] as a body. The node sends [`Places`] and the run of its [`place`]s,
+//!   and then the replies of a reader session, from `Opened`. The program sends no
+//!   credit. It decodes the places and the run with [`Reader`], which then gives the
+//!   [`super::Reader`] of the replies.
 //!
 //! A body goes as a run of stream messages back to back, with no prefix, each at most
 //! the peer's `message_bytes_max` and none empty. It holds exactly the length of its
-//! request or response, so the receiver counts it to find where it ends. No message
-//! follows a body.
+//! request, response, or read, so the receiver counts it to find where it ends. No
+//! message follows a body.
 //!
-//! Each side knows the kind of each stream, so it calls the `decode` of the message
-//! that it expects, and counts a body with the [`Body`] of its request or response.
+//! The program knows the kind of each stream, so it calls the `decode` of the message
+//! that it expects, or of its [`Reader`] on a read stream. The node knows the kind of
+//! the hello stream only: it decodes the first message of each later stream with
+//! [`First::decode`]. Each side counts a body with the [`Body`] of its request,
+//! response, or read.
 //!
 //! Fields are little-endian.
 //!
@@ -25,24 +33,40 @@
 //!   signed bytes of the hello with no tag.
 //! - [`Request`]: kind 5, the body's length (`u64`), and the signature (64).
 //! - [`Response`]: kind 5 and the body's length (`u64`).
+//! - [`Read`]: kind 6, the open's length (`u64`), and the signature (64).
+//! - [`Open`]: the mode (`u8`, latest 1, complete 2), then each pattern of the selector
+//!   as written, an exclusion with its leading `!`: its length (`u16`) and its text.
+//! - [`Places`]: kind 6, the count of places (`u32`), and the place of the index
+//!   (`u32`).
+//! - [`place`]: each place's key (`u128`), its sample type as text (length `u8`, then
+//!   the text), and its name (length `u8`, then the name).
 
 use std::fmt;
 
 use types::connection;
 use types::ed25519::PublicKey;
 use types::hello::Hello;
-use types::name::Name;
+use types::name::{self, Name};
 use types::node;
+use types::sample;
 use types::time::{Interval, Stamp};
 
-use super::{BUSY, Error};
-use crate::common::{Fields, Writer, body};
+use super::{BUSY, FAILED, NOT_HOME, UNKNOWN};
+use crate::common::{Fields, Length, Run, Writer, body};
 use crate::header::MALFORMED;
+
+mod read;
+pub mod text;
+
+pub use read::{
+    FromNode, Mode, OPEN_BYTES_MAX, Open, Place, Places, Read, Reader, place,
+};
 
 const HELLO: u8 = 4;
 const REQUEST: u8 = 5;
+const READ: u8 = 6;
 
-/// Stop code: the hello or request failed the access check. The spec has no such
+/// Stop code: the hello, request, or read failed the access check. The spec has no such
 /// subject, does not list the key for it, or the signature is not valid. The node's
 /// log names which.
 pub const REFUSED: u32 = 20;
@@ -56,11 +80,9 @@ pub const STALE: u32 = 22;
 /// Stop code: the hello names another node as `via` than the node that carried it.
 pub const VIA: u32 = 23;
 
-/// Stop code: the hello expired.
+/// Stop code: the hello ended, at its `expires` or earlier, at the cap of the node on
+/// the life of a hello.
 pub const EXPIRED: u32 = 24;
-
-/// Stop code: the hello expires later than the cap past the earliest mesh time.
-pub const CAPPED: u32 = 25;
 
 /// Stop code: a renewal names another subject, key, `via`, or connection than the
 /// hello it renews.
@@ -72,7 +94,15 @@ pub enum Refusal {
     /// [`MALFORMED`]: a message of the program does not decode, or breaks a rule of
     /// the client wire.
     Malformed,
-    /// [`BUSY`]: the node had no memory for a response or a request body.
+    /// [`UNKNOWN`]: the selector of a read matches no channel, or a channel of the
+    /// read was removed.
+    Unknown,
+    /// [`NOT_HOME`]: the home of the index of a read is another node, at the open or
+    /// after a move.
+    NotHome,
+    /// [`FAILED`]: the reader of a read failed.
+    Failed,
+    /// [`BUSY`]: the node had no memory for a response, a request body, or a read.
     Busy,
     /// [`REFUSED`].
     Refused,
@@ -84,22 +114,22 @@ pub enum Refusal {
     Via,
     /// [`EXPIRED`].
     Expired,
-    /// [`CAPPED`].
-    Capped,
     /// [`CHANGED`].
     Changed,
 }
 
 impl Refusal {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 11] = [
         Self::Malformed,
+        Self::Unknown,
+        Self::NotHome,
+        Self::Failed,
         Self::Busy,
         Self::Refused,
         Self::Unsynced,
         Self::Stale,
         Self::Via,
         Self::Expired,
-        Self::Capped,
         Self::Changed,
     ];
 
@@ -114,13 +144,15 @@ impl Refusal {
     pub const fn code(self) -> u32 {
         match self {
             Self::Malformed => MALFORMED,
+            Self::Unknown => UNKNOWN,
+            Self::NotHome => NOT_HOME,
+            Self::Failed => FAILED,
             Self::Busy => BUSY,
             Self::Refused => REFUSED,
             Self::Unsynced => UNSYNCED,
             Self::Stale => STALE,
             Self::Via => VIA,
             Self::Expired => EXPIRED,
-            Self::Capped => CAPPED,
             Self::Changed => CHANGED,
         }
     }
@@ -130,7 +162,17 @@ impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Malformed => "a message of the program broke the client wire",
-            Self::Busy => "the node had no memory for a response or a request body",
+            Self::Unknown => {
+                "the selector matches no channel, or a channel of the read was removed"
+            }
+            Self::NotHome => "the home of the index of the read is another node",
+            Self::Failed => {
+                "the reader failed: the buffer or the mesh of the home of the index \
+                 stopped, or the path from the node to that home failed"
+            }
+            Self::Busy => {
+                "the node had no memory for a response, a request body, or a read"
+            }
             Self::Refused => {
                 "the spec has no such subject, does not list the key for it, or the \
                  signature is not valid"
@@ -141,16 +183,190 @@ impl fmt::Display for Refusal {
                  challenge"
             }
             Self::Via => "the hello names another node as via",
-            Self::Expired => "the hello expired",
-            Self::Capped => {
-                "the hello expires later than the cap past the earliest mesh \
-                 time"
-            }
+            Self::Expired => "the hello ended",
             Self::Changed => {
                 "a renewal names another subject, key, via, or connection than \
                  the hello it renews"
             }
         })
+    }
+}
+
+/// A message of the client wire that is not valid.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    /// The message has no bytes.
+    Empty,
+    /// The first byte names no message of this stream.
+    Kind {
+        /// The first byte.
+        kind: u8,
+    },
+    /// No message of its kind has this length.
+    Length {
+        /// The bytes of the message.
+        len: usize,
+    },
+    /// The subject of a hello is not a name.
+    Subject(text::Error<Box<name::Error>>),
+    /// The key of a hello is a point of small order.
+    SmallOrder,
+    /// A message comes after the body of a request, a response, or a read.
+    Trailing,
+    /// A request or a response has a body over [`BODY_BYTES_MAX`], or a read has an
+    /// open over [`OPEN_BYTES_MAX`].
+    Oversize {
+        /// The bytes of the body.
+        length: u64,
+        /// The cap of the body.
+        cap: u64,
+    },
+    /// A message of a body has more bytes than remain in the body.
+    Body {
+        /// The bytes of the message.
+        len: usize,
+        /// The bytes that remain in the body.
+        remain: usize,
+    },
+    /// The stream ended before its body.
+    Unfinished {
+        /// The bytes of the body that did not come.
+        remain: usize,
+    },
+    /// The open of a read names no mode.
+    Mode {
+        /// The mode byte.
+        byte: u8,
+    },
+    /// The open of a read has a pattern that does not read, or none that includes
+    /// names.
+    Selector(text::Error<Box<name::Error>>),
+    /// The places of a read name an index place that is not below their count.
+    Index {
+        /// The place of the index.
+        index: u32,
+        /// The count of places.
+        count: u32,
+    },
+    /// The sample type of a place of a read does not read.
+    Sample(text::Error<sample::Error>),
+    /// The name of a place of a read does not read.
+    Name(text::Error<Box<name::Error>>),
+    /// A message of the run of places has more places than remain in the run.
+    Run {
+        /// The places of the message.
+        items: usize,
+        /// The places that remain in the run.
+        remain: u32,
+    },
+    /// The index place of a read has a sample type that is not `Stamp`.
+    Unstamped {
+        /// The sample type of the index place.
+        sample: sample::Type,
+    },
+    /// The node finished a read stream before its last place. The caller of
+    /// [`Reader`] gives it.
+    Finished,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => f.write_str("the hub message is empty"),
+            Self::Kind { kind } => write!(
+                f,
+                "the hub message has kind {kind}, which this stream does not carry"
+            ),
+            Self::Length { len } => write!(
+                f,
+                "the hub message has {len} bytes, which no message of its kind has"
+            ),
+            Self::Subject(cause) => {
+                write!(f, "the subject of the hello is not a name: {cause}")
+            }
+            Self::SmallOrder => {
+                f.write_str("the key of the hello is a point of small order")
+            }
+            Self::Trailing => {
+                f.write_str("a hub message came after the body of the stream")
+            }
+            Self::Oversize { length, cap } => {
+                write!(f, "the body has {length} bytes, over the cap of {cap}")
+            }
+            Self::Body { len, remain } => write!(
+                f,
+                "the body message has {len} bytes, and {remain} remain in the body"
+            ),
+            Self::Unfinished { remain } => write!(
+                f,
+                "the stream ended with {remain} bytes of its body to come"
+            ),
+            Self::Mode { byte } => {
+                write!(
+                    f,
+                    "the open of the read names mode {byte}, which no read has"
+                )
+            }
+            Self::Selector(cause) => {
+                write!(f, "the selector of the read does not read: {cause}")
+            }
+            Self::Index { index, count } => write!(
+                f,
+                "the places of the read put the index at place {index} of {count}"
+            ),
+            Self::Sample(cause) => write!(
+                f,
+                "the sample type of a place of the read does not read: {cause}"
+            ),
+            Self::Name(cause) => {
+                write!(f, "the name of a place of the read does not read: {cause}")
+            }
+            Self::Run { items, remain } => write!(
+                f,
+                "the run message holds {items} items, and {remain} remain in the run"
+            ),
+            Self::Unstamped { sample } => write!(
+                f,
+                "the index place of the read has sample type {sample}, not timestamp"
+            ),
+            Self::Finished => {
+                f.write_str("the node finished the read stream before its last place")
+            }
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Subject(cause) | Self::Selector(cause) | Self::Name(cause) => {
+                Some(cause)
+            }
+            Self::Sample(cause) => Some(cause),
+            _ => None,
+        }
+    }
+}
+
+impl From<Length> for Error {
+    fn from(Length { len }: Length) -> Self {
+        Self::Length { len }
+    }
+}
+
+impl From<Run> for Error {
+    fn from(Run { items, remain }: Run) -> Self {
+        Self::Run { items, remain }
+    }
+}
+
+impl From<body::Error> for Error {
+    fn from(error: body::Error) -> Self {
+        match error {
+            body::Error::Empty => Self::Empty,
+            body::Error::Over { len, remain } => Self::Body { len, remain },
+            body::Error::Unfinished { remain } => Self::Unfinished { remain },
+        }
     }
 }
 
@@ -193,9 +409,9 @@ impl Challenge {
     /// [`Error::Length`].
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = fields(message, HELLO)?;
-        let nonce = fields.take()?;
-        let earliest = stamp(fields.take()?);
-        let latest = stamp(fields.take()?);
+        let nonce = *fields.take()?;
+        let earliest = stamp(*fields.take()?);
+        let latest = stamp(*fields.take()?);
         fields.end()?;
         Ok(Self {
             nonce,
@@ -240,19 +456,16 @@ impl Signed {
     /// [`Error::Length`], [`Error::Subject`], and then [`Error::SmallOrder`].
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = fields(message, HELLO)?;
-        let [len] = fields.take()?;
+        let [len] = *fields.take()?;
         let subject = fields.take_slice(usize::from(len))?;
-        let key = fields.take()?;
-        let via = u128::from_le_bytes(fields.take()?);
-        let connection = fields.take()?;
-        let nonce = fields.take()?;
-        let expires = stamp(fields.take()?);
-        let signature = fields.take()?;
+        let key = *fields.take()?;
+        let via = u128::from_le_bytes(*fields.take()?);
+        let connection = *fields.take()?;
+        let nonce = *fields.take()?;
+        let expires = stamp(*fields.take()?);
+        let signature = *fields.take()?;
         fields.end()?;
-        let subject = std::str::from_utf8(subject)
-            .ok()
-            .and_then(|subject| subject.parse::<Name>().ok())
-            .ok_or(Error::Subject)?;
+        let subject: Name = text::read(subject).map_err(Error::Subject)?;
         let key = PublicKey::new(key).map_err(|_small| Error::SmallOrder)?;
         Ok(Self {
             hello: Hello {
@@ -304,8 +517,8 @@ impl Request {
     /// [`Error::Length`], and [`Error::Oversize`].
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = fields(message, REQUEST)?;
-        let length = fields.take()?;
-        let signature = fields.take()?;
+        let length = *fields.take()?;
+        let signature = *fields.take()?;
         fields.end()?;
         Ok(Self {
             length: body(length)?,
@@ -321,6 +534,31 @@ impl Request {
     #[must_use]
     pub fn body(&self) -> Body {
         Body::new(self.length)
+    }
+}
+
+/// The first message of a stream after the hello stream, which gives the stream's
+/// kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum First {
+    /// A request stream.
+    Request(Request),
+    /// A read stream.
+    Read(Read),
+}
+
+impl First {
+    /// Decodes the first message of a stream after the hello stream.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Empty`], [`Error::Kind`] for a message that is neither kind 5 nor 6,
+    /// and the errors of [`Request::decode`] and [`Read::decode`].
+    pub fn decode(message: &[u8]) -> Result<Self, Error> {
+        match message.first() {
+            Some(&READ) => Read::decode(message).map(Self::Read),
+            _ => Request::decode(message).map(Self::Request),
+        }
     }
 }
 
@@ -355,7 +593,7 @@ impl Response {
     /// As [`Request::decode`].
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = fields(message, REQUEST)?;
-        let length = fields.take()?;
+        let length = *fields.take()?;
         fields.end()?;
         Ok(Self {
             length: body(length)?,
@@ -373,7 +611,7 @@ impl Response {
     }
 }
 
-/// The rest of the body of one request or response.
+/// The rest of the body of one request, response, or read.
 #[derive(Debug)]
 pub struct Body(body::Count);
 
@@ -416,13 +654,12 @@ impl Body {
 }
 
 /// The fields of `message` after its kind byte, which must be `kind`.
-fn fields(message: &[u8], kind: u8) -> Result<Fields<'_, Error>, Error> {
-    match message.split_first() {
+fn fields(message: &[u8], kind: u8) -> Result<Fields<'_>, Error> {
+    let mut fields = Fields::new(message);
+    match fields.kind() {
         None => Err(Error::Empty),
-        Some((&first, rest)) if first == kind => {
-            Ok(Fields::new(rest, Error::Length { len: message.len() }))
-        }
-        Some((&kind, _rest)) => Err(Error::Kind { kind }),
+        Some(first) if first == kind => Ok(fields),
+        Some(kind) => Err(Error::Kind { kind }),
     }
 }
 
@@ -434,7 +671,10 @@ fn stamp(word: [u8; 8]) -> Stamp {
 fn body(word: [u8; 8]) -> Result<u64, Error> {
     let length = u64::from_le_bytes(word);
     if length > BODY_BYTES_MAX {
-        return Err(Error::Oversize { length });
+        return Err(Error::Oversize {
+            length,
+            cap: BODY_BYTES_MAX,
+        });
     }
     Ok(length)
 }
