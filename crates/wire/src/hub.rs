@@ -28,11 +28,13 @@
 //! - [`ends`]: place and end (each `u32`) for each series.
 
 pub mod client;
+mod frames;
 mod home;
 mod reader;
 
 use std::fmt;
 
+pub use frames::{Frames, Step};
 pub use home::{FromReader, Home};
 pub use reader::{FromHome, Reader};
 use types::frame::{Path, Range};
