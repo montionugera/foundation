@@ -3600,7 +3600,7 @@ mod tests {
             while phase.load(Ordering::Relaxed) == 0 {
                 assert!(
                     turns < TURNS,
-                    "run {run}: the write starts in {TURNS} turns"
+                    "run {run}: the write did not start in {TURNS} turns"
                 );
                 sim.run_for(Span::from_nanos(1_000)).unwrap();
                 turns += 1;
