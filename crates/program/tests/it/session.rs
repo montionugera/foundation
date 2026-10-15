@@ -1,5 +1,5 @@
-//! `program::Session`, a program's session, against a simulated node that serves
-//! it on one `hub::Link`.
+//! Each behavior of a [`Session`]: the hello and its renewal, requests, the turn, the
+//! pool, and each error.
 
 use std::cell::Cell;
 use std::future::poll_fn;
@@ -20,10 +20,11 @@ use wire::hub::client::{
     BODY_BYTES_MAX, Challenge, REFUSED, Refusal, Request, Response, Signed,
 };
 
-use super::link::{OTHER, QUIET, accept, serve_session, serve_session_on};
-use super::{NODE, POOL};
 use crate::agent::{AGENT, SUBJECT, name};
-use crate::net::{HOME, header, own_pool, public_key, transport};
+use crate::home::{
+    Home, OTHER, QUIET, accept, serve_session, serve_session_on, shrink_wall_error,
+};
+use crate::net::{HOME, NODE, header, own_pool, public_key, transport};
 use crate::sessions::{Got, rules, run_program};
 
 /// Connects to the home at `at` from `node` as [`SUBJECT`], signing with `key`, with a
@@ -75,21 +76,15 @@ async fn connect_with(
 fn with_client<P>(
     seed: u64,
     program: impl FnOnce(Session, sim::node::Node) -> P + Send + 'static,
-) -> super::link::Home
+) -> Home
 where
     P: Future<Output = ()> + 'static,
 {
-    serve_session(
-        seed,
-        true,
-        POOL,
-        Some(rules()),
-        |node, tasks, at| async move {
-            let client = connect(&node, tasks, at, AGENT).await.expect("connects");
-            program(client, node.clone()).await;
-            node.clock().sleep(QUIET).await;
-        },
-    )
+    serve_session(seed, true, Some(rules()), |node, tasks, at| async move {
+        let client = connect(&node, tasks, at, AGENT).await.expect("connects");
+        program(client, node.clone()).await;
+        node.clock().sleep(QUIET).await;
+    })
 }
 
 /// `bytes` bytes that differ from their reverse.
@@ -152,16 +147,10 @@ fn keeps_the_end_of_each_stream_at_each_seed() {
 fn refuses_a_hello_of_a_key_the_spec_does_not_list() {
     let got = Arc::new(Mutex::new(None));
     let kept = Arc::clone(&got);
-    let home = serve_session(
-        122,
-        true,
-        POOL,
-        Some(rules()),
-        |node, tasks, at| async move {
-            let refused = connect(&node, tasks, at, OTHER).await.map(drop);
-            *kept.lock().expect("not poisoned") = Some(refused);
-        },
-    );
+    let home = serve_session(122, true, Some(rules()), |node, tasks, at| async move {
+        let refused = connect(&node, tasks, at, OTHER).await.map(drop);
+        *kept.lock().expect("not poisoned") = Some(refused);
+    });
     let got = got.lock().expect("not poisoned").take();
     assert_eq!(got, Some(Err(Error::Refused(Refusal::Refused))));
     let unlisted = access::proof::Error::Unlisted {
@@ -175,16 +164,10 @@ fn refuses_a_hello_of_a_key_the_spec_does_not_list() {
 fn refuses_to_connect_to_a_node_with_no_mesh_time() {
     let got = Arc::new(Mutex::new(None));
     let kept = Arc::clone(&got);
-    let home = serve_session(
-        123,
-        false,
-        POOL,
-        Some(rules()),
-        |node, tasks, at| async move {
-            let refused = connect(&node, tasks, at, AGENT).await.map(drop);
-            *kept.lock().expect("not poisoned") = Some(refused);
-        },
-    );
+    let home = serve_session(123, false, Some(rules()), |node, tasks, at| async move {
+        let refused = connect(&node, tasks, at, AGENT).await.map(drop);
+        *kept.lock().expect("not poisoned") = Some(refused);
+    });
     let got = got.lock().expect("not poisoned").take();
     assert_eq!(got, Some(Err(Error::Refused(Refusal::Unsynced))));
     assert_eq!(
@@ -214,32 +197,26 @@ fn renews_the_hello_before_it_expires() {
 #[test]
 fn takes_requests_from_two_tasks_one_at_a_time() {
     const EACH: usize = 8;
-    let home = serve_session(
-        125,
-        true,
-        POOL,
-        Some(rules()),
-        |node, tasks, at| async move {
-            let client = connect(&node, tasks.clone(), at, AGENT)
-                .await
-                .expect("connects");
-            let replied = Rc::new(Cell::new(0));
-            for tag in [1, 2] {
-                let (client, replied) = (client.clone(), Rc::clone(&replied));
-                tasks.spawn(async move {
-                    for i in 0..EACH {
-                        let body = [tag, u8::try_from(i).expect("small")];
-                        assert_eq!(client.request(&body).await, Ok(reversed(&body)));
-                        replied.set(replied.get() + 1);
-                    }
-                });
-            }
-            node.clock()
-                .sleep(Span::from_nanos(10 * Span::SECOND.nanos()))
-                .await;
-            assert_eq!(replied.get(), 2 * EACH);
-        },
-    );
+    let home = serve_session(125, true, Some(rules()), |node, tasks, at| async move {
+        let client = connect(&node, tasks.clone(), at, AGENT)
+            .await
+            .expect("connects");
+        let replied = Rc::new(Cell::new(0));
+        for tag in [1, 2] {
+            let (client, replied) = (client.clone(), Rc::clone(&replied));
+            tasks.spawn(async move {
+                for i in 0..EACH {
+                    let body = [tag, u8::try_from(i).expect("small")];
+                    assert_eq!(client.request(&body).await, Ok(reversed(&body)));
+                    replied.set(replied.get() + 1);
+                }
+            });
+        }
+        node.clock()
+            .sleep(Span::from_nanos(10 * Span::SECOND.nanos()))
+            .await;
+        assert_eq!(replied.get(), 2 * EACH);
+    });
     let order: Vec<_> = (0..EACH)
         .flat_map(|i| [1, 2].map(|tag| [tag, u8::try_from(i).expect("small")]))
         .map(|body| Ok(Got::Request(name(SUBJECT), body.to_vec())))
@@ -318,8 +295,7 @@ fn by_hand<R>(
     R: Future<Output = ()> + 'static,
 {
     let home = move |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
-        let (test, session, link) =
-            accept(&node, &tasks, POOL, true, Some(rules())).await;
+        let (test, session, link) = accept(&node, &tasks, true, Some(rules())).await;
         let mut hello = session.accept().await.expect("a stream");
         header(&mut hello).await;
         let hello = link.serve(hello);
@@ -512,7 +488,7 @@ fn gives_the_reply_once_its_body_ends() {
 
 /// A home whose node replies to each request a second after it came.
 async fn slow(node: sim::node::Node, tasks: env::tasks::Tasks) {
-    let (test, session, link) = accept(&node, &tasks, POOL, true, Some(rules())).await;
+    let (test, session, link) = accept(&node, &tasks, true, Some(rules())).await;
     while let Ok(mut incoming) = session.accept().await {
         let (link, clock) = (link.clone(), node.clock());
         tasks.spawn(async move {
@@ -830,29 +806,23 @@ fn fill(pool: &block::Pool) -> Vec<block::Unique> {
 /// A renewal that finds the pool full tries again, so the hello stays admitted.
 #[test]
 fn renews_the_hello_once_the_pool_has_room() {
-    let home = serve_session(
-        136,
-        true,
-        POOL,
-        Some(rules()),
-        |node, tasks, at| async move {
-            let pool = own_pool();
-            let client = connect_with(&node, tasks, at, AGENT, Rc::clone(&pool))
-                .await
-                .expect("connects");
-            let half = Span::from_nanos(LIFE.nanos() / 2 - Span::SECOND.nanos());
-            node.clock().sleep(half).await;
-            let held = fill(&pool);
-            node.clock()
-                .sleep(Span::from_nanos(10 * Span::SECOND.nanos()))
-                .await;
-            drop(held);
-            node.clock().sleep(LIFE).await;
-            node.clock().sleep(LIFE).await;
-            assert_eq!(client.request(b"late").await, Ok(b"etal".to_vec()));
-            node.clock().sleep(QUIET).await;
-        },
-    );
+    let home = serve_session(136, true, Some(rules()), |node, tasks, at| async move {
+        let pool = own_pool();
+        let client = connect_with(&node, tasks, at, AGENT, Rc::clone(&pool))
+            .await
+            .expect("connects");
+        let half = Span::from_nanos(LIFE.nanos() / 2 - Span::SECOND.nanos());
+        node.clock().sleep(half).await;
+        let held = fill(&pool);
+        node.clock()
+            .sleep(Span::from_nanos(10 * Span::SECOND.nanos()))
+            .await;
+        drop(held);
+        node.clock().sleep(LIFE).await;
+        node.clock().sleep(LIFE).await;
+        assert_eq!(client.request(b"late").await, Ok(b"etal".to_vec()));
+        node.clock().sleep(QUIET).await;
+    });
     assert_eq!(
         home.served[0],
         Ok(Got::Request(name(SUBJECT), b"late".to_vec()))
@@ -983,24 +953,18 @@ fn allow_after(
 /// sends its header and hello once the memory has room.
 #[test]
 fn connects_once_the_memory_of_the_pool_has_room() {
-    let home = serve_session(
-        147,
-        true,
-        POOL,
-        Some(rules()),
-        |node, tasks, at| async move {
-            let (pool, switch) = scarce();
-            switch.refuse();
-            allow_after(&tasks, node.clock(), switch, Span::SECOND);
-            let began = node.clock().now();
-            let client = connect_with(&node, tasks, at, AGENT, pool)
-                .await
-                .expect("connects");
-            assert!(node.clock().now() - began >= Span::SECOND);
-            assert_eq!(client.request(b"ab").await, Ok(b"ba".to_vec()));
-            node.clock().sleep(QUIET).await;
-        },
-    );
+    let home = serve_session(147, true, Some(rules()), |node, tasks, at| async move {
+        let (pool, switch) = scarce();
+        switch.refuse();
+        allow_after(&tasks, node.clock(), switch, Span::SECOND);
+        let began = node.clock().now();
+        let client = connect_with(&node, tasks, at, AGENT, pool)
+            .await
+            .expect("connects");
+        assert!(node.clock().now() - began >= Span::SECOND);
+        assert_eq!(client.request(b"ab").await, Ok(b"ba".to_vec()));
+        node.clock().sleep(QUIET).await;
+    });
     assert_eq!(
         home.served[0],
         Ok(Got::Request(name(SUBJECT), b"ab".to_vec()))
@@ -1011,25 +975,19 @@ fn connects_once_the_memory_of_the_pool_has_room() {
 /// holds no block of its size yet, so its memory must commit one.
 #[test]
 fn sends_a_request_once_the_memory_of_the_pool_has_room() {
-    let home = serve_session(
-        148,
-        true,
-        POOL,
-        Some(rules()),
-        |node, tasks, at| async move {
-            let (pool, switch) = scarce();
-            let client = connect_with(&node, tasks.clone(), at, AGENT, pool)
-                .await
-                .expect("connects");
-            node.clock().sleep(QUIET).await;
-            switch.refuse();
-            allow_after(&tasks, node.clock(), switch, Span::SECOND);
-            let began = node.clock().now();
-            assert_eq!(client.request(b"ab").await, Ok(b"ba".to_vec()));
-            assert!(node.clock().now() - began >= Span::SECOND);
-            node.clock().sleep(QUIET).await;
-        },
-    );
+    let home = serve_session(148, true, Some(rules()), |node, tasks, at| async move {
+        let (pool, switch) = scarce();
+        let client = connect_with(&node, tasks.clone(), at, AGENT, pool)
+            .await
+            .expect("connects");
+        node.clock().sleep(QUIET).await;
+        switch.refuse();
+        allow_after(&tasks, node.clock(), switch, Span::SECOND);
+        let began = node.clock().now();
+        assert_eq!(client.request(b"ab").await, Ok(b"ba".to_vec()));
+        assert!(node.clock().now() - began >= Span::SECOND);
+        node.clock().sleep(QUIET).await;
+    });
     assert_eq!(
         home.served[0],
         Ok(Got::Request(name(SUBJECT), b"ab".to_vec()))
@@ -1041,19 +999,13 @@ fn sends_a_request_once_the_memory_of_the_pool_has_room() {
 fn refuses_to_connect_from_a_pool_with_no_block_for_the_header() {
     let got = Arc::new(Mutex::new(None));
     let kept = Arc::clone(&got);
-    serve_session(
-        145,
-        true,
-        POOL,
-        Some(rules()),
-        |node, tasks, at| async move {
-            let config = block::Config::new(0).expect("the budget fits");
-            let heap = block::Heap::new(config.reservation());
-            let pool = Rc::new(block::Pool::new(config, heap));
-            let refused = connect_with(&node, tasks, at, AGENT, pool).await.map(drop);
-            *kept.lock().expect("not poisoned") = Some(refused);
-        },
-    );
+    serve_session(145, true, Some(rules()), |node, tasks, at| async move {
+        let config = block::Config::new(0).expect("the budget fits");
+        let heap = block::Heap::new(config.reservation());
+        let pool = Rc::new(block::Pool::new(config, heap));
+        let refused = connect_with(&node, tasks, at, AGENT, pool).await.map(drop);
+        *kept.lock().expect("not poisoned") = Some(refused);
+    });
     let got = got.lock().expect("not poisoned").take().expect("ran");
     let error = block::Error::TooLarge {
         requested: wire::header::LEN,
@@ -1070,24 +1022,16 @@ fn refuses_to_connect_from_a_pool_with_no_block_for_the_header() {
 /// A client splits a body into blocks that its pool holds.
 #[test]
 fn sends_a_body_over_the_largest_block_of_its_pool() {
-    let home = serve_session(
-        141,
-        true,
-        POOL,
-        Some(rules()),
-        |node, tasks, at| async move {
-            let config = block::Config::new(1 << 16).expect("the budget fits");
-            let pool = block::Pool::new(
-                config.clone(),
-                block::Heap::new(config.reservation()),
-            );
-            let body = body(pool.largest() + 1);
-            let client = connect_with(&node, tasks, at, AGENT, Rc::new(pool))
-                .await
-                .expect("connects");
-            assert_eq!(client.request(&body).await, Ok(reversed(&body)));
-        },
-    );
+    let home = serve_session(141, true, Some(rules()), |node, tasks, at| async move {
+        let config = block::Config::new(1 << 16).expect("the budget fits");
+        let pool =
+            block::Pool::new(config.clone(), block::Heap::new(config.reservation()));
+        let body = body(pool.largest() + 1);
+        let client = connect_with(&node, tasks, at, AGENT, Rc::new(pool))
+            .await
+            .expect("connects");
+        assert_eq!(client.request(&body).await, Ok(reversed(&body)));
+    });
     assert!(
         matches!(home.served[0], Ok(Got::Request(..))),
         "{:?}",
@@ -1099,25 +1043,17 @@ fn sends_a_body_over_the_largest_block_of_its_pool() {
 /// chunk after a block that the node acknowledged, and gets the whole reply.
 #[test]
 fn sends_a_body_over_the_room_of_its_pool() {
-    serve_session(
-        143,
-        true,
-        POOL,
-        Some(rules()),
-        |node, tasks, at| async move {
-            let config = block::Config::new(1 << 17).expect("the budget fits");
-            let pool = block::Pool::new(
-                config.clone(),
-                block::Heap::new(config.reservation()),
-            );
-            let client = connect_with(&node, tasks, at, AGENT, Rc::new(pool))
-                .await
-                .expect("connects");
-            let sent = body(256 << 10);
-            let reply = client.request(&sent).await.expect("replies");
-            assert!(reply.iter().eq(sent.iter().rev()));
-        },
-    );
+    serve_session(143, true, Some(rules()), |node, tasks, at| async move {
+        let config = block::Config::new(1 << 17).expect("the budget fits");
+        let pool =
+            block::Pool::new(config.clone(), block::Heap::new(config.reservation()));
+        let client = connect_with(&node, tasks, at, AGENT, Rc::new(pool))
+            .await
+            .expect("connects");
+        let sent = body(256 << 10);
+        let reply = client.request(&sent).await.expect("replies");
+        assert!(reply.iter().eq(sent.iter().rev()));
+    });
 }
 
 /// A request that the turn gave to and that dropped before it polled again hands the
@@ -1150,42 +1086,36 @@ fn hands_on_a_turn_given_to_a_dropped_request() {
 /// the last is polled first.
 #[test]
 fn gives_the_turn_in_the_order_requests_began() {
-    let home = serve_session(
-        142,
-        true,
-        POOL,
-        Some(rules()),
-        |node, tasks, at| async move {
-            let client = connect(&node, tasks, at, AGENT).await.expect("connects");
-            let mut requests: Vec<_> = [[1], [2], [3]]
-                .iter()
-                .map(|body| Some(Box::pin(client.request(body))))
-                .collect();
-            poll_fn(|cx| {
-                for request in requests.iter_mut().flatten() {
-                    assert!(request.as_mut().poll(cx).is_pending());
+    let home = serve_session(142, true, Some(rules()), |node, tasks, at| async move {
+        let client = connect(&node, tasks, at, AGENT).await.expect("connects");
+        let mut requests: Vec<_> = [[1], [2], [3]]
+            .iter()
+            .map(|body| Some(Box::pin(client.request(body))))
+            .collect();
+        poll_fn(|cx| {
+            for request in requests.iter_mut().flatten() {
+                assert!(request.as_mut().poll(cx).is_pending());
+            }
+            Poll::Ready(())
+        })
+        .await;
+        poll_fn(|cx| {
+            for slot in requests.iter_mut().rev() {
+                if let Some(request) = slot
+                    && let Poll::Ready(got) = request.as_mut().poll(cx)
+                {
+                    assert!(got.is_ok(), "{got:?}");
+                    *slot = None;
                 }
+            }
+            if requests.iter().all(Option::is_none) {
                 Poll::Ready(())
-            })
-            .await;
-            poll_fn(|cx| {
-                for slot in requests.iter_mut().rev() {
-                    if let Some(request) = slot
-                        && let Poll::Ready(got) = request.as_mut().poll(cx)
-                    {
-                        assert!(got.is_ok(), "{got:?}");
-                        *slot = None;
-                    }
-                }
-                if requests.iter().all(Option::is_none) {
-                    Poll::Ready(())
-                } else {
-                    Poll::Pending
-                }
-            })
-            .await;
-        },
-    );
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+    });
     let requests: Vec<_> = home
         .served
         .into_iter()
@@ -1269,9 +1199,7 @@ fn sends_a_body_at_the_cap_from_a_pool_of_one_chunk_on_each_link() {
             143,
             wire,
             true,
-            POOL,
             Some(rules()),
-            async |_| {},
             move |node, tasks, at| async move {
                 let config = block::Config::new(
                     u64::try_from(block::footprint(1 << 16))
@@ -1304,7 +1232,7 @@ fn connects_at_wall_error(seed: u64, wall_error: Option<Span>) {
         move |node, tasks| async move {
             node.set_wall_error(wall_error);
             let (test, session, link) =
-                accept(&node, &tasks, POOL, true, Some(rules())).await;
+                accept(&node, &tasks, true, Some(rules())).await;
             let mut hello = session.accept().await.expect("a hello stream");
             header(&mut hello).await;
             let result = link.serve(hello).await.map(drop);
@@ -1340,9 +1268,9 @@ fn keeps_a_session_when_the_error_of_mesh_time_shrinks() {
     run_program(
         172,
         move |node, tasks| async move {
-            super::link::shrink_wall_error(&node, &tasks);
+            shrink_wall_error(&node, &tasks);
             let (test, session, link) =
-                accept(&node, &tasks, POOL, true, Some(rules())).await;
+                accept(&node, &tasks, true, Some(rules())).await;
             crate::sessions::serve_each(
                 &session,
                 &link,
@@ -1368,118 +1296,4 @@ fn keeps_a_session_when_the_error_of_mesh_time_shrinks() {
     let served = std::mem::take(&mut *served.lock().expect("not poisoned"));
     let got = got.lock().expect("not poisoned").take();
     assert_eq!(got, Some(Ok(b"etal".to_vec())), "the home gave {served:?}");
-}
-
-/// Polls `hello` beside `other` until `other` resolves.
-async fn beside<T>(
-    hello: &mut std::pin::Pin<
-        Box<impl Future<Output = Result<hub::Served, serve::Error>>>,
-    >,
-    other: impl Future<Output = T>,
-) -> T {
-    let mut other = pin!(other);
-    poll_fn(|cx| {
-        drop(hello.as_mut().poll(cx));
-        other.as_mut().poll(cx)
-    })
-    .await
-}
-
-/// The reply of a request that `Link::serve` gave holds the region after the hub, the
-/// link, and each future of serve drop, and the hub lets go once the reply drops.
-#[test]
-fn holds_the_transport_until_the_reply_of_a_request_drops() {
-    let (held, with_reply, without_reply) = reply_holds(End::Drop);
-    assert_eq!(with_reply, held, "the reply holds the hub");
-    assert_eq!(without_reply, 1, "no task holds the transport");
-}
-
-/// The hub lets go of the region once a reply, sent after the hub, the link, and each
-/// future of serve drop, ends its send.
-#[test]
-fn lets_go_of_the_transport_once_the_send_of_a_reply_ends() {
-    let (held, with_reply, without_reply) = reply_holds(End::Send);
-    assert_eq!(with_reply, held, "the reply holds the hub");
-    assert_eq!(without_reply, 1, "no task holds the transport");
-}
-
-/// How the test ends the reply of a served request.
-enum End {
-    Drop,
-    Send,
-}
-
-/// The count of the transport of a home with one served request: before the hub, its
-/// link, and the future of serve drop, after, and once the reply ends as `end` says and
-/// the region drops.
-fn reply_holds(end: End) -> (usize, usize, usize) {
-    let outcome = Arc::new(Mutex::new(None));
-    let kept = Arc::clone(&outcome);
-    let home = move |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
-        let transport = Rc::new(transport(&node, &tasks, &own_pool(), HOME, 1 << 16));
-        let region = super::region::open(
-            &node,
-            &tasks,
-            Rc::clone(&transport),
-            Vec::new(),
-            super::channels(),
-        )
-        .await;
-        let layout = buffer::Layout::new(super::AREA, super::BODY_MAX).expect("a ring");
-        let mut test =
-            super::Test::new(node.clone(), tasks.clone(), layout, POOL, Some(region))
-                .await;
-        test.sync().await;
-        test.hub.set_rules(rules());
-        let session = transport.accept().await.expect("a session");
-        let link = test.hub.link(session.clone());
-        let mut hello = session.accept().await.expect("a stream");
-        header(&mut hello).await;
-        let mut hello = Box::pin(link.serve(hello));
-        let mut incoming = beside(&mut hello, session.accept())
-            .await
-            .expect("a stream");
-        beside(&mut hello, header(&mut incoming)).await;
-        let served = beside(&mut hello, link.serve(incoming)).await;
-        let Ok(hub::Served::Request(request)) = served else {
-            panic!("a request: {served:?}");
-        };
-        let held = Rc::strong_count(&transport);
-        let super::Test {
-            clock, hub, region, ..
-        } = test;
-        drop((hub, link, hello));
-        clock.sleep(Span::SECOND).await;
-        let with_reply = Rc::strong_count(&transport);
-        match end {
-            End::Drop => drop(request),
-            End::Send => request
-                .reply
-                .send(b"cd")
-                .await
-                .expect("the response is sent"),
-        }
-        drop((region, session));
-        clock.sleep(Span::SECOND).await;
-        let without_reply = Rc::strong_count(&transport);
-        *kept.lock().expect("not poisoned") = Some((held, with_reply, without_reply));
-    };
-    run_program(139, home, |node, tasks, at| async move {
-        let client = connect(&node, tasks, at, AGENT).await.expect("connects");
-        let mut request = pin!(client.request(b"ab"));
-        let mut quiet = pin!(
-            node.clock()
-                .sleep(Span::from_nanos(3 * Span::SECOND.nanos()))
-        );
-        poll_fn(|cx| match request.as_mut().poll(cx) {
-            Poll::Ready(_) => Poll::Ready(()),
-            Poll::Pending => quiet.as_mut().poll(cx),
-        })
-        .await;
-    });
-    outcome
-        .lock()
-        .expect("not poisoned")
-        .take()
-        .expect("the home ran")
 }

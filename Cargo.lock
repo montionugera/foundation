@@ -969,7 +969,6 @@ dependencies = [
  "home",
  "hub",
  "mesh",
- "program",
  "sim",
  "spec",
  "transport",
@@ -1469,8 +1468,12 @@ name = "program"
 version = "0.0.0"
 dependencies = [
  "access",
+ "aws-lc-rs",
  "block",
  "env",
+ "hub",
+ "sim",
+ "spec",
  "transport",
  "types",
  "wire",

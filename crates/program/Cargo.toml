@@ -13,5 +13,12 @@ transport = { path = "../transport" }
 types = { path = "../types" }
 wire = { path = "../wire" }
 
+[dev-dependencies]
+aws-lc-rs.workspace = true
+block = { path = "../block", features = ["sim"] }
+hub = { path = "../hub", features = ["sim"] }
+sim = { path = "../sim" }
+spec = { path = "../spec" }
+
 [lints]
 workspace = true
