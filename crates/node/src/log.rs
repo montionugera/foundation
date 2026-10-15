@@ -48,7 +48,7 @@ pub(crate) fn dispatch(
         json,
         time: clock::log::Reader::new(wall, mesh),
     };
-    // Else `fmt` writes a line of its own to the stderr of the process.
+    // The doc of `fmt` gives true as the default, though 0.3.23 sets false.
     let lines = layer()
         .event_format(line)
         .with_writer(Mutex::new(writer))

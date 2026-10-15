@@ -146,26 +146,38 @@ fn a_node_that_fails_at_its_start_logs_the_error_with_no_mesh_time() {
 
 #[test]
 fn a_wall_step_shows_mesh_time_beside_the_stamp() {
-    let (mut sim, host) = host(1);
-    let lines = Lines::default();
-    let node = Node::start(Config {
-        log: to(&lines, false, tracing::Level::INFO),
-        ..config(&host, Size::MEBIBYTE, Box::new(heap))
-    });
-    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
-    host.step_wall(Span::from_nanos(2_000_000_000));
-    node.stop();
-    assert_eq!(sim.run(), Ok(()));
-    assert_eq!(node.join(), Ok(()));
-    assert_eq!(
-        lines.read(),
-        [
-            "2026-01-01T00:00:00.004198Z INFO node: started name=edge \
-             address=10.0.0.1:7000 shards=4",
-            "2026-01-01T00:00:03.000004Z INFO node: stopped \
-             mesh_time=2026-01-01T00:00:01.000004Z",
-        ]
-    );
+    let text = [
+        "2026-01-01T00:00:00.004198Z INFO node: started name=edge address=10.0.0.1:7000 \
+         shards=4",
+        "2026-01-01T00:00:03.000004Z INFO node: stopped \
+         mesh_time=2026-01-01T00:00:01.000004Z",
+    ];
+    let json = [
+        concat!(
+            r#"{"timestamp":"2026-01-01T00:00:00.004198Z","level":"INFO","#,
+            r#""target":"node","fields":{"message":"started","name":"edge","#,
+            r#""address":"10.0.0.1:7000","shards":4}}"#,
+        ),
+        concat!(
+            r#"{"timestamp":"2026-01-01T00:00:03.000004Z","level":"INFO","#,
+            r#""target":"node","fields":{"message":"stopped"},"#,
+            r#""mesh_time":"2026-01-01T00:00:01.000004Z"}"#,
+        ),
+    ];
+    for (json, written) in [(false, text), (true, json)] {
+        let (mut sim, host) = host(1);
+        let lines = Lines::default();
+        let node = Node::start(Config {
+            log: to(&lines, json, tracing::Level::INFO),
+            ..config(&host, Size::MEBIBYTE, Box::new(heap))
+        });
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+        host.step_wall(Span::from_nanos(2_000_000_000));
+        node.stop();
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Ok(()));
+        assert_eq!(lines.read(), written, "json: {json}");
+    }
 }
 
 #[test]
