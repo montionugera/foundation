@@ -26,6 +26,8 @@ pub(crate) const TEST_EDGES: &[(&str, &str)] = &[
     ("connector-ni", "daqmx-stub"),
     ("hub", "buffer"),
     ("hub", "blob"),
+    ("program", "hub"),
+    ("program", "spec"),
     ("access", "document"),
     ("config", "config-hcl"),
     ("config", "connector-influx"),
@@ -141,6 +143,11 @@ pub(crate) const CRATES: &[Crate] = &[
         name: "sim",
         layer: 2,
         deps: Deps::Only(&["env", "types", "block"]),
+    },
+    Crate {
+        name: "program",
+        layer: 2,
+        deps: Deps::Only(&["access", "env", "types", "block", "wire", "transport"]),
     },
     Crate {
         name: "mesh",
