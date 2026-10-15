@@ -2074,6 +2074,36 @@ mod tests {
     }
 
     #[test]
+    fn opens_a_latest_session_at_the_frame_it_gets_after_a_loss_with_no_block() {
+        run(16, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
+            let first: [(usize, &[i64]); 3] = [(0, &[5]), (1, &[0]), (2, &[1])];
+            let first = frame(&test.pool, &set, &first);
+            assert_eq!(
+                shard.write(a, LIVE, first),
+                Ok(&[applied(0, 0, 1), applied(2, 0, 1)][..])
+            );
+            let stamps: Vec<_> = (2..=101).collect();
+            let series: [(usize, &[i64]); 3] = [(0, &[10]), (1, &[1]), (2, &stamps)];
+            let live = frame(&test.pool, &set, &series);
+            let twin = frame(&test.pool, &set, &series);
+            let room = [80, 56].map(|len| test.pool.alloc(len).expect("a block"));
+            let blocks = test.fill();
+            drop(room);
+            assert_eq!(
+                shard.write(a, LIVE, live),
+                Ok(&[lost(0, 1, 1), lost(2, 1, 100)][..])
+            );
+            let latest = shard.open_latest(Slot::new(2));
+            assert_eq!(latest.live, 0);
+            assert_eq!(taken(&mut shard, latest.key, 1), [seq(0, 1)]);
+            drop((twin, blocks));
+        });
+    }
+
+    #[test]
     fn loses_a_live_frame_when_the_pool_has_no_block_for_its_record() {
         run(15, |test| async move {
             let set = two_indexes();
@@ -5458,6 +5488,7 @@ mod tests {
                     shard.ack(first.key, live(1)).expect("forward");
                     let latest = shard.open_named_latest(Slot::new(0), key("a", "r"));
                     let latest = latest.expect("synced");
+                    assert_eq!(latest.live, 1);
                     assert_eq!(latest.replaced, Some(first.key.into()));
                     assert_eq!(taken(&mut shard, first.key.into(), 0), []);
                     assert_eq!(taken(&mut shard, latest.key, 0), [seq(1, 1)]);

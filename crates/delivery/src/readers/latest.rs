@@ -226,8 +226,8 @@ mod tests {
             let frames = Frames::new(4);
             let mut readers = Readers::new(0);
             assert!(readers.newest().is_none());
-            let _ = put(&mut readers, frames.frame(1));
-            let _ = put(&mut readers, frames.frame(2));
+            assert_eq!(put(&mut readers, frames.frame(1)), []);
+            assert_eq!(put(&mut readers, frames.frame(2)), []);
             assert_eq!(readers.newest().map(number), Some(2));
         }
 

@@ -409,10 +409,11 @@ fn a_refused_config_opens_a_connector_that_ends_with_its_diagnostics() {
     );
 }
 
-/// A run whose status reader sleeps until the buffer has no room reads each status
-/// frame that the hub applied, with no gap and no end.
+/// A run whose status reader sleeps until the buffer has no room reads its status up to
+/// the frames lost for no room, with no end. No write frees the ring, so no frame comes
+/// after them.
 #[test]
-fn a_run_reads_its_status_after_a_long_sleep_past_the_frames_lost_for_no_room() {
+fn a_run_reads_its_status_up_to_the_frames_lost_for_no_room_after_a_long_sleep() {
     on_rig(
         || Table::new().with("ticks", Ticks::default()),
         |mut rig, clock| async move {
@@ -432,11 +433,10 @@ fn a_run_reads_its_status_after_a_long_sleep_past_the_frames_lost_for_no_room() 
                 })
                 .await;
                 let Some(received) = received else { break };
-                let received = received.expect("a status frame");
-                assert_eq!(received.gap(), None, "frame {taken}");
+                received.expect("a status frame");
                 taken += 1;
             }
-            assert!(1_000 < taken && taken < 1_100, "{taken} taken");
+            assert_eq!(taken, 1_020);
         },
     );
 }

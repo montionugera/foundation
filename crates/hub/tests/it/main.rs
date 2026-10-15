@@ -2146,6 +2146,23 @@ fn gives_a_complete_reader_the_samples_lost_for_no_room_as_the_gap_of_the_next_f
     });
 }
 
+#[test]
+fn gives_a_latest_reader_that_skips_frames_no_gap() {
+    run(111, |test| async move {
+        let mut latest = test.reader(&["value"], Mode::Latest).await;
+        let mut writer = test.writer("a", &["value"]).await;
+        write(&mut writer, &[test.now()], &[7]);
+        test.clock.sleep(SETTLE).await;
+        let received = latest.next().await.expect("a frame");
+        assert_eq!((samples(&received, 2), received.gap()), (vec![7], None));
+        write(&mut writer, &[test.now()], &[8]);
+        write(&mut writer, &[test.now() + 1], &[9]);
+        test.clock.sleep(SETTLE).await;
+        let received = latest.next().await.expect("a frame");
+        assert_eq!((samples(&received, 2), received.gap()), (vec![9], None));
+    });
+}
+
 /// What `future` gives within `span` of `clock`, or `None`.
 async fn within<F: Future>(clock: &Clock, span: Span, future: F) -> Option<F::Output> {
     let (mut future, mut sleep) = (pin!(future), pin!(clock.sleep(span)));
