@@ -25,7 +25,7 @@ use types::name::Name;
 use types::sample::{Scalar, Type};
 use types::time::Span;
 use wire::Protocol;
-use wire::hub::{Credit, FromHome, Head, Mode, Open, Reader, keys};
+use wire::hub::{Credit, FromHome, Head, Mode, Open, Reader, Reply, keys};
 
 use super::definitions::I32;
 use super::{
@@ -233,11 +233,19 @@ pub(super) async fn stopped(peer: &mut Peer) -> transport::Error {
     }
 }
 
+/// The `Opened` of a session whose open position is `live`.
+fn opened(live: u64) -> Vec<u8> {
+    let reply = Reply::Opened { live };
+    let mut out = vec![0; reply.encoded_len()];
+    reply.encode(&mut out);
+    out
+}
+
 #[test]
 fn opens_a_session_of_known_keys() {
     let served = served(41, Class::Complete, false, |mut peer| async move {
         peer.open(Mode::Complete { limit_bytes: 0 }, &[1, 2]).await;
-        assert_eq!(peer.recv().await, Ok(Some(vec![1])));
+        assert_eq!(peer.recv().await, Ok(Some(opened(0))));
         peer.sender.finish().expect("finishes");
         assert_eq!(peer.recv().await, Ok(None));
     });
@@ -615,7 +623,7 @@ fn stops_a_one_way_stream_as_malformed() {
 fn stops_a_second_open_as_malformed() {
     let served = served(46, Class::Complete, false, |mut peer| async move {
         peer.open(Mode::Complete { limit_bytes: 0 }, &[1, 2]).await;
-        assert_eq!(peer.recv().await, Ok(Some(vec![1])));
+        assert_eq!(peer.recv().await, Ok(Some(opened(0))));
         peer.open(Mode::Complete { limit_bytes: 0 }, &[1, 2]).await;
         let code = Code(wire::header::MALFORMED);
         assert_eq!(peer.recv().await, Err(transport::Error::Reset { code }));
@@ -633,7 +641,7 @@ fn stops_a_second_open_as_malformed() {
 fn stops_a_credit_in_a_latest_session_as_malformed() {
     let served = served(47, Class::Latest, false, |mut peer| async move {
         peer.open(Mode::Latest, &[1, 2]).await;
-        assert_eq!(peer.recv().await, Ok(Some(vec![1])));
+        assert_eq!(peer.recv().await, Ok(Some(opened(0))));
         peer.credit(1).await.expect("sends the credit");
         let code = Code(wire::header::MALFORMED);
         assert_eq!(peer.recv().await, Err(transport::Error::Reset { code }));
@@ -663,7 +671,7 @@ fn sends_behind_and_finishes_when_a_complete_session_misses_a_frame() {
     };
     session(48, Class::Complete, false, home, |mut peer| async move {
         peer.open(Mode::Complete { limit_bytes: 0 }, &[1, 2]).await;
-        assert_eq!(peer.recv().await, Ok(Some(vec![1])));
+        assert_eq!(peer.recv().await, Ok(Some(opened(0))));
         assert_eq!(peer.recv().await, Ok(Some(vec![3])));
         assert_eq!(peer.recv().await, Ok(None));
     });
@@ -675,7 +683,7 @@ fn sends_behind_and_finishes_when_a_complete_session_misses_a_frame() {
 fn ends_with_the_error_of_the_stream_when_the_peer_resets_it() {
     let served = served(49, Class::Complete, false, |mut peer| async move {
         peer.open(Mode::Complete { limit_bytes: 0 }, &[1, 2]).await;
-        assert_eq!(peer.recv().await, Ok(Some(vec![1])));
+        assert_eq!(peer.recv().await, Ok(Some(opened(0))));
         let Peer { node, sender, .. } = peer;
         sender.reset(Code(7));
         node.clock().sleep(QUIET).await;
@@ -769,7 +777,10 @@ fn keeps_the_highest_credit_sent_while_the_open_waits_for_a_home() {
             peer.credit(0).await.expect("sends the credit");
             let mut reader = Reader::new(&Open { mode, channels: 2 });
             let opened = peer.recv().await.expect("receives").expect("a message");
-            assert!(matches!(reader.decode(&opened), Ok(FromHome::Opened)));
+            assert!(matches!(
+                reader.decode(&opened),
+                Ok(FromHome::Opened { live: 0 })
+            ));
             let got = got(peer.receiver(), &mut reader).await.expect("a frame");
             assert_eq!(places(&got), [0, 1]);
             assert_eq!(decoded(&got, &[I64])[0], [10]);
@@ -777,6 +788,47 @@ fn keeps_the_highest_credit_sent_while_the_open_waits_for_a_home() {
             assert_eq!(peer.recv().await, Ok(None));
         },
     );
+}
+
+/// `Opened` gives the open position of a complete session that opens after three
+/// frames, and its first head starts there.
+#[test]
+fn sends_the_open_position_in_opened_and_starts_the_first_head_at_it() {
+    let home = |test: Test, link: Link, incoming| async move {
+        let test = Rc::new(test);
+        let writing = Rc::clone(&test);
+        test.tasks.spawn(async move {
+            let mut writer = writing.writer("a", &["value"]).await;
+            for value in [10, 11, 12] {
+                writing.clock.sleep(SETTLE).await;
+                write(&mut writer, &[writing.now()], &[value]);
+            }
+            writing.clock.sleep(QUIET).await;
+            writing.clock.sleep(SETTLE).await;
+            write(&mut writer, &[writing.now()], &[13]);
+            writing.clock.sleep(SETTLE).await;
+        });
+        assert_eq!(serve(&link, incoming).await, Ok(()));
+    };
+    session(79, Class::Complete, false, home, |mut peer| async move {
+        peer.sleep(QUIET).await;
+        let mode = Mode::Complete {
+            limit_bytes: 1 << 20,
+        };
+        peer.open(mode, &[2, 1]).await;
+        let mut reader = Reader::new(&Open { mode, channels: 2 });
+        let opened = peer.recv().await.expect("receives").expect("a message");
+        assert_eq!(opened, self::opened(3));
+        assert!(matches!(
+            reader.decode(&opened),
+            Ok(FromHome::Opened { live: 3 })
+        ));
+        let got = got(peer.receiver(), &mut reader).await.expect("a frame");
+        assert_eq!(got.head.range.seq, 3);
+        assert_eq!(decoded(&got, &[I64])[0], [13]);
+        peer.sender.finish().expect("finishes");
+        assert_eq!(peer.recv().await, Ok(None));
+    });
 }
 
 /// Runs a latest session whose peer opens `[value, time]` and waits for the home of
@@ -872,7 +924,7 @@ async fn stopped_as_failed(mut peer: Peer) {
     .await;
     let code = Code(wire::hub::FAILED);
     let mut message = peer.recv().await;
-    if message == Ok(Some(vec![1])) {
+    if message == Ok(Some(opened(0))) {
         message = peer.recv().await;
     }
     assert_eq!(message, Err(transport::Error::Reset { code }));
@@ -923,7 +975,7 @@ fn stops_a_session_whose_home_fails_after_the_open_with_failed() {
             &[1, 2],
         )
         .await;
-        assert_eq!(peer.recv().await, Ok(Some(vec![1])));
+        assert_eq!(peer.recv().await, Ok(Some(opened(0))));
         let code = Code(wire::hub::FAILED);
         assert_eq!(peer.recv().await, Err(transport::Error::Reset { code }));
     });
@@ -959,7 +1011,7 @@ fn closes_the_session_when_the_future_drops() {
     };
     session(55, Class::Complete, false, home, |mut peer| async move {
         peer.open(Mode::Complete { limit_bytes: 0 }, &[1, 2]).await;
-        assert_eq!(peer.recv().await, Ok(Some(vec![1])));
+        assert_eq!(peer.recv().await, Ok(Some(opened(0))));
         let code = Code(0);
         assert_eq!(peer.recv().await, Err(transport::Error::Reset { code }));
     });
@@ -981,7 +1033,10 @@ async fn open_complete(peer: &mut Peer, keys: &[u128], limit_bytes: u64) -> Read
     let channels = u32::try_from(keys.len()).expect("the keys fit a u32");
     let mut reader = Reader::new(&Open { mode, channels });
     let opened = peer.recv().await.expect("receives").expect("a message");
-    assert!(matches!(reader.decode(&opened), Ok(FromHome::Opened)));
+    assert!(matches!(
+        reader.decode(&opened),
+        Ok(FromHome::Opened { live: 0 })
+    ));
     reader
 }
 
@@ -1486,13 +1541,13 @@ fn stops_an_open_whose_reply_finds_the_pool_empty_with_busy() {
     });
     let served = result.lock().expect("not poisoned").take();
     let exhausted = block::Error::Exhausted {
-        requested: 1,
+        requested: 9,
         available: 64,
     };
     assert_eq!(served, Some(Err(serve::Error::Pool(exhausted.clone()))));
     assert_eq!(
         serve::Error::Pool(exhausted).to_string(),
-        "the home's pool had no block for a reply: pool is full: asked for 1 bytes, 64 \
+        "the home's pool had no block for a reply: pool is full: asked for 9 bytes, 64 \
          bytes free"
     );
 }

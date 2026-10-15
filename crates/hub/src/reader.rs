@@ -353,7 +353,7 @@ pub struct Reader {
     /// The slot of the reader's index.
     index: channel::Slot,
     /// The seq of the first live sample that a complete reader did not get, or
-    /// `None` for a latest reader. `u64::MAX` gives the next frame no gap.
+    /// `None` for a latest reader.
     next: Option<u64>,
     lent: Lent,
     /// The frame that the last [`Received`] lends.
@@ -498,12 +498,13 @@ impl Reader {
             Home::Away(home) if named.is_some() => return Err(Error::Remote { home }),
             Home::Away(home) => {
                 let index = matched.index;
-                let (remote, slots) = Remote::open(state, home, matched, mode).await?;
+                let (remote, slots, live) =
+                    Remote::open(state, home, matched, mode).await?;
                 listed.slot(&slots);
                 Self {
                     index: slots[index],
                     source: Source::Remote(Box::new(remote)),
-                    next: (mode == Mode::Complete).then_some(u64::MAX),
+                    next: (mode == Mode::Complete).then_some(live),
                     lent: Lent::default(),
                     frame: None,
                 }
@@ -522,6 +523,12 @@ impl Reader {
         mode: Mode,
     ) -> Result<Self, Error> {
         Self::local(state, channels, mode, None, Span::ZERO)
+    }
+
+    /// The first live seq that a complete reader did not get: its open position until
+    /// its first frame. 0 for a latest reader.
+    pub(crate) fn live(&self) -> u64 {
+        self.next.unwrap_or(0)
     }
 
     /// Opens a reader on `channels` at this node, the home of their index.

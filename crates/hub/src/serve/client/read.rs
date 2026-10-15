@@ -42,7 +42,7 @@ pub(super) async fn serve(
         sender.finish()?;
         return Ok(());
     };
-    start(state, sender, places).await?;
+    start(state, sender, places, reader.live()).await?;
     relay(state, reader, layout, program, sender).await
 }
 
@@ -122,11 +122,13 @@ where
     Ok(Some((reader, places, layout)))
 }
 
-/// Sends `places`, their run, and `Opened`, and drops the places.
+/// Sends `places`, their run, and `Opened` with `live`, the open position, and drops
+/// the places.
 async fn start(
     state: &RefCell<State>,
     sender: &mut Sender,
     places: Matched<Place>,
+    live: u64,
 ) -> Result<(), Error> {
     let mut block = alloc(state, Places::LEN)?;
     Places {
@@ -143,7 +145,9 @@ async fn start(
         message.encode(&mut block);
         sender.send(block.freeze()).await?;
     }
-    sender.send(reply(state, wire::hub::Reply::Opened)?).await?;
+    sender
+        .send(reply(state, wire::hub::Reply::Opened { live })?)
+        .await?;
     Ok(())
 }
 

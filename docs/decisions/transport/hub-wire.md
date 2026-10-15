@@ -175,9 +175,9 @@
   (https://github.com/synnaxlabs/foundation/issues/1068#issuecomment-6031655359). The
   byte form, little-endian: `Open` is kind 1 (latest) or 2 (complete, then `limit_bytes`
   `u64`), then `channels` `u32`; `Credit` is kind 3, then `limit_bytes` `u64`; `Reply`
-  is kind 1 (opened), 2 (head: path `u8`, live 0 and backfill 1, seq `u64`, count
-  `u32`, series `u32`), or 3 (behind, no fields, by the Behind rule: the architect,
-  2026-10-07T21:07:50Z,
+  is kind 1 (opened, then `live` `u64`), 2 (head: path `u8`, live 0 and backfill 1,
+  seq `u64`, count `u32`, series `u32`), or 3 (behind, no fields, by the Behind rule:
+  the architect, 2026-10-07T21:07:50Z,
   https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6046877541); a key is
   a `u128`; an end is place and end, each `u32`. Amended (2026-10-07, #1196): the
   message order, the runs, and the head bound move from `hub` to two stateful decoders
@@ -241,3 +241,12 @@
   home's receive half resets with code 0, not the refusal code, until #2031
   (`laptop.architect`, 2026-10-08T23:49:49Z:
   https://github.com/synnaxlabs/foundation/pull/2003#issuecomment-6071319399).
+  Amended (#2553): `Opened` carries `live`, the open position of a complete session:
+  the first live seq of the index that it can get. A latest session gets 0.
+  `wire::hub::Reader` refuses a first head that starts before `live` with `Seq`, as it
+  refuses a head that starts before the end of the head before it. A remote reader and
+  a client read give the seqs from `live` to the first frame as its gap
+  (`hub::reader::Received::gap`). Lost: `Opened` with no field, so a loss between the
+  open and the first frame was silent. Decided by `laptop.architect`
+  (2026-10-15T19:40:52Z,
+  https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6200757306).

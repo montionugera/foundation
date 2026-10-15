@@ -824,7 +824,7 @@ async fn fake_accept(transport: &Transport) -> (Session, Sender, Receiver) {
 /// [`fake_accept`], then `Opened` sent.
 async fn fake_open(transport: &Transport) -> (Session, Sender, Receiver) {
     let (session, mut sender, receiver) = fake_accept(transport).await;
-    send(&mut sender, 1, |out| Reply::Opened.encode(out)).await;
+    send(&mut sender, 9, |out| Reply::Opened { live: 0 }.encode(out)).await;
     (session, sender, receiver)
 }
 
@@ -1545,6 +1545,32 @@ fn a_complete_reader_gets_the_seqs_that_the_home_skipped_as_the_gap_of_the_next_
         |test, _| async move {
             let mut reader = test.reader(&["value"], Mode::Complete).await;
             for gap in [None, Some(2..5), None] {
+                let received = reader.next().await.expect("a frame");
+                assert_eq!(received.gap(), gap);
+            }
+        },
+    );
+}
+
+#[test]
+fn a_complete_reader_gets_the_seqs_from_the_open_position_as_the_gap_of_the_first_frame()
+ {
+    remote(
+        148,
+        sim::link::Config::default(),
+        |node, _, transport, steps| async move {
+            let (_, mut sender, _receiver) = fake_accept(&transport).await;
+            let opened = Reply::Opened { live: 5 };
+            send(&mut sender, 9, |out| opened.encode(out)).await;
+            let mut seq = 9;
+            for _ in 0..2 {
+                send_frame(&mut sender, &mut seq, 32).await.expect("sends");
+            }
+            until(&node.clock(), &steps.done).await;
+        },
+        |test, _| async move {
+            let mut reader = test.reader(&["value"], Mode::Complete).await;
+            for gap in [Some(5..9), None] {
                 let received = reader.next().await.expect("a frame");
                 assert_eq!(received.gap(), gap);
             }
@@ -2751,7 +2777,7 @@ async fn open_a_third(
                 .expect("open");
         }
         let mut opened = third.sender.take().expect("a two-way stream");
-        send(&mut opened, 1, |out| Reply::Opened.encode(out)).await;
+        send(&mut opened, 9, |out| Reply::Opened { live: 0 }.encode(out)).await;
         until(&node.clock(), &steps.done).await;
     };
     race(serve_third, drain)
@@ -3225,7 +3251,8 @@ fn a_reader_stops_the_stream_as_malformed_when_a_head_starts_before_the_last_end
             series: 2,
         }),
         wire::hub::Error::Seq { seq: 3, end: 11 },
-        "the frame head starts at seq 3, before the end 11 of the head before it",
+        "the frame head starts at seq 3, before seq 11, where the head before it ended or \
+         the session opened",
     );
 }
 
@@ -3296,7 +3323,7 @@ fn a_reader_panics_on_an_ack_of_a_position_at_zero_before_it_gave_one() {
                     .expect("a message")
                     .expect("not finished");
             }
-            send(&mut second, 1, |out| Reply::Opened.encode(out)).await;
+            send(&mut second, 9, |out| Reply::Opened { live: 0 }.encode(out)).await;
             until(&node.clock(), &steps.done).await;
         },
         |test, _| async move {

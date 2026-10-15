@@ -39,6 +39,9 @@ fn main() {
     place_messages();
 }
 
+/// An `Opened` at the open position 0.
+const OPENED: [u8; 9] = [1, 0, 0, 0, 0, 0, 0, 0, 0];
+
 /// A reader that has decoded `Opened` and a head of `series` series.
 fn reader(series: u32) -> Reader {
     let mut out = [0; 18];
@@ -49,7 +52,7 @@ fn reader(series: u32) -> Reader {
     })
     .encode(&mut out);
     let mut reader = Reader::new(&OPEN);
-    for message in [[1].as_slice(), &out] {
+    for message in [OPENED.as_slice(), &out] {
         reader.decode(message).expect("the head decodes");
     }
     reader
@@ -65,7 +68,7 @@ fn head() {
     let ((), allocations) = ALLOCATOR.count(|| Reply::Head(head).encode(&mut out));
     assert_eq!(allocations, 0, "the head encode allocated");
     let mut reader = Reader::new(&OPEN);
-    reader.decode(&[1]).expect("the session opens");
+    reader.decode(&OPENED).expect("the session opens");
     let (decoded, allocations) = ALLOCATOR.count(|| match reader.decode(&out) {
         Ok(FromHome::Head(decoded)) => decoded,
         other => panic!("the head did not decode: {other:?}"),

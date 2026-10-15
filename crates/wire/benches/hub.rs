@@ -46,7 +46,7 @@ fn opened(places: u32) -> Reader {
         mode: Mode::Latest,
         channels: places,
     });
-    decode(&mut reader, &[1]).expect("the session opens");
+    decode(&mut reader, &[1, 0, 0, 0, 0, 0, 0, 0, 0]).expect("the session opens");
     reader
 }
 

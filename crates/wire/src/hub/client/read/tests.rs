@@ -471,6 +471,10 @@ mod reader {
     const OPENED: u8 = 1;
     const BEHIND: u8 = 3;
 
+    fn opened_at(live: u64) -> Vec<u8> {
+        encode_reply(Reply::Opened { live })
+    }
+
     /// A place of `u8` named `a`: 21 bytes.
     fn byte(key: u128) -> Place {
         pt(key, "u8", "a")
@@ -543,14 +547,14 @@ mod reader {
 
     #[derive(Debug, PartialEq)]
     enum Home {
-        Opened,
+        Opened(u64),
         Head(u32),
         Behind,
     }
 
     fn reply(home: &mut hub::Reader, message: &[u8]) -> Result<Home, hub::Error> {
         home.decode(message).map(|event| match event {
-            FromHome::Opened => Home::Opened,
+            FromHome::Opened { live } => Home::Opened(live),
             FromHome::Head(head) => Home::Head(head.series),
             FromHome::Behind => Home::Behind,
             other => panic!("no test sends {other:?}"),
@@ -579,7 +583,7 @@ mod reader {
             }) if places == run[2..] => home,
             other => panic!("the last place gave {other:?}"),
         };
-        assert_eq!(reply(&mut home, &[OPENED]), Ok(Home::Opened));
+        assert_eq!(reply(&mut home, &opened_at(0)), Ok(Home::Opened(0)));
         assert_eq!(reply(&mut home, &head(3)), Ok(Home::Head(3)));
     }
 
@@ -769,8 +773,8 @@ mod reader {
                 vec![
                     places(2, 0),
                     Step::Event(Ok(Event::Last(vec![stamp(1), pt(2, "f64", "b")]))),
-                    Step::Reply(Ok(Home::Opened)),
-                    Step::Reply(Ok(Home::Behind)),
+                    Step::Reply(Err(hub::Error::Length { len: 1 })),
+                    Step::Reply(Err(hub::Error::Unopened { kind: BEHIND })),
                 ],
             ),
             (
@@ -789,8 +793,8 @@ mod reader {
                     places(2, 1),
                     Step::Event(Ok(Event::Run(vec![byte(1)]))),
                     Step::Event(Ok(Event::Last(vec![pt(2, "timestamp", "a.time")]))),
-                    Step::Reply(Ok(Home::Opened)),
-                    Step::Reply(Ok(Home::Head(2))),
+                    Step::Reply(Err(hub::Error::Length { len: 1 })),
+                    Step::Reply(Err(hub::Error::Unopened { kind: 2 })),
                 ],
             ),
         ];
@@ -878,7 +882,7 @@ mod reader {
             home.decode(&encode_run(&[stamp(7)])).err(),
             Some(hub::Error::Kind { kind: 7 })
         );
-        assert_eq!(reply(&mut home, &[OPENED]), Ok(Home::Opened));
+        assert_eq!(reply(&mut home, &opened_at(0)), Ok(Home::Opened(0)));
     }
 
     #[test]
@@ -907,7 +911,7 @@ mod reader {
                 );
             }
             let mut home = last(&mut reader, end);
-            assert_eq!(reply(&mut home, &[OPENED]), Ok(Home::Opened));
+            assert_eq!(reply(&mut home, &opened_at(0)), Ok(Home::Opened(0)));
         }
     }
 
@@ -936,7 +940,7 @@ mod reader {
             Places { count: 2, index: 1 },
             &[byte(1), stamp(2)],
         );
-        home.decode(&[OPENED]).expect("the session opens");
+        home.decode(&opened_at(0)).expect("the session opens");
         assert_eq!(
             home.decode(&head(3)).err(),
             Some(hub::Error::Places {
@@ -951,13 +955,13 @@ mod reader {
     fn opens_a_latest_session_for_a_latest_read() {
         let places = Places { count: 1, index: 0 };
         let mut latest = after_run(Mode::Latest, places, &[stamp(1)]);
-        latest.decode(&[OPENED]).expect("the session opens");
+        latest.decode(&opened_at(0)).expect("the session opens");
         assert_eq!(
             latest.decode(&[BEHIND]).err(),
             Some(hub::Error::Latest { kind: BEHIND })
         );
         let mut complete = after_run(Mode::Complete, places, &[stamp(1)]);
-        complete.decode(&[OPENED]).expect("the session opens");
+        complete.decode(&opened_at(0)).expect("the session opens");
         assert_eq!(reply(&mut complete, &[BEHIND]), Ok(Home::Behind));
         assert_eq!(complete.end(), Ok(()));
     }
@@ -1196,7 +1200,13 @@ proptest! {
         prop_assert!(stamped);
         prop_assert_eq!(&decoded, &places);
         let mut home = last.expect("the last place gives the replies");
-        prop_assert!(matches!(home.decode(&[1]), Ok(crate::hub::FromHome::Opened)));
+        let opened = crate::hub::tests::encode_reply(crate::hub::Reply::Opened { live: 7 });
+        let opened = home.decode(&opened);
+        let live = match opened {
+            Ok(crate::hub::FromHome::Opened { live }) => Some(live),
+            _ => None,
+        };
+        prop_assert_eq!(live, Some(7));
     }
 
     /// A fault after any message of a cut run but the last gives its exact error: a

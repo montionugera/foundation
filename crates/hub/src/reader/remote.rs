@@ -85,8 +85,9 @@ impl Sessions {
 /// The frames that the task took and the caller has not, and why the session ended.
 #[derive(Debug, Default)]
 struct Queue {
-    /// The result of the open, until [`Remote::open`] takes it.
-    opened: Option<Result<(), Error>>,
+    /// The result of the open, the open position on success, until [`Remote::open`]
+    /// takes it.
+    opened: Option<Result<u64, Error>>,
     frames: VecDeque<Frame>,
     /// Why the session ended. The caller gets it after each frame in `frames`.
     ended: Option<Ended>,
@@ -121,14 +122,14 @@ impl Remote {
     /// type, at `home`, another node, the home of their index. Spawns the task of the
     /// session, which dials the home, opens the session, and then takes its frames,
     /// and waits until the home opened it. A removal of a channel during the open ends
-    /// the session at its first take. Returns the session and the slot of each channel
-    /// of `matched`, in its order.
+    /// the session at its first take. Returns the session, the slot of each channel of
+    /// `matched` in its order, and the open position that the home gave.
     pub(super) async fn open(
         state: &Rc<RefCell<State>>,
         home: types::node::Key,
         matched: Matched<(channel::Key, Type)>,
         mode: Mode,
-    ) -> Result<(Self, Box<[channel::Slot]>), Error> {
+    ) -> Result<(Self, Box<[channel::Slot]>, u64), Error> {
         let (index, _) = matched.items[matched.index];
         let data: Vec<_> = matched
             .items
@@ -170,8 +171,8 @@ impl Remote {
             lens,
             streak: Streak::default(),
         };
-        poll_fn(|cx| remote.queue.borrow_mut().poll_open(cx)).await?;
-        Ok((remote, slots))
+        let live = poll_fn(|cx| remote.queue.borrow_mut().poll_open(cx)).await?;
+        Ok((remote, slots, live))
     }
 
     /// Adds the charge of `frame`, which the reader gave back, to the credit.
@@ -230,21 +231,21 @@ impl Drop for Remote {
 }
 
 impl Queue {
-    /// The result of the open once the task has it, else `Ok` once the session
-    /// ended, else `Pending` with the waker kept.
-    fn poll_open(&mut self, cx: &Context<'_>) -> Poll<Result<(), Error>> {
+    /// The result of the open once the task has it, else `Ok(0)` once the session
+    /// ended, as no frame comes, else `Pending` with the waker kept.
+    fn poll_open(&mut self, cx: &Context<'_>) -> Poll<Result<u64, Error>> {
         if let Some(opened) = self.opened.take() {
             return Poll::Ready(opened);
         }
         if self.ended.is_some() {
-            return Poll::Ready(Ok(()));
+            return Poll::Ready(Ok(0));
         }
         keep(&mut self.taker, cx);
         Poll::Pending
     }
 
     /// Keeps `opened`, the result of the open, and wakes the caller.
-    fn open(&mut self, opened: Result<(), Error>) {
+    fn open(&mut self, opened: Result<u64, Error>) {
         self.opened = Some(opened);
         if let Some(taker) = self.taker.take() {
             taker.wake();
@@ -332,9 +333,9 @@ async fn session(
         return;
     };
     let (sender, receiver) = match opened {
-        Ok(streams) => {
-            waiting.borrow_mut().open(Ok(()));
-            streams
+        Ok((sender, receiver, live)) => {
+            waiting.borrow_mut().open(Ok(live));
+            (sender, receiver)
         }
         Err(error) => {
             waiting.borrow_mut().open(Err(error));
@@ -508,7 +509,7 @@ impl Inbound {
                     }
                 }
                 FromHome::Behind => return Err(Ended::Behind),
-                FromHome::Opened | FromHome::Body { .. } => {
+                FromHome::Opened { .. } | FromHome::Body { .. } => {
                     unreachable!("invariant: the decoder gives no opened or body here")
                 }
             }
@@ -640,7 +641,7 @@ async fn connect(
     decoder: &mut wire::hub::Reader,
     open: &Open,
     set: &KeySet,
-) -> Result<(Sender, Receiver), Error> {
+) -> Result<(Sender, Receiver, u64), Error> {
     let mut tries = 1;
     loop {
         match attempt(state, home, class, decoder, open, set).await {
@@ -661,7 +662,7 @@ async fn attempt(
     decoder: &mut wire::hub::Reader,
     open: &Open,
     set: &KeySet,
-) -> Result<(Sender, Receiver), Error> {
+) -> Result<(Sender, Receiver, u64), Error> {
     let (mut sender, mut receiver) = dial(state, home)
         .await?
         .open(class)
@@ -669,30 +670,33 @@ async fn attempt(
         .map_err(Error::Transport)?;
     let opened =
         handshake(state, (&mut sender, &mut receiver), decoder, open, set).await;
-    if let Err(error) = opened {
-        let refusal = match error {
-            Error::Message(_) => Some(Refusal::Malformed),
-            Error::Pool(_) => Some(Refusal::Busy),
-            _ => None,
-        };
-        if let Some(refusal) = refusal {
-            receiver.stop(Code(refusal.code()));
-            sender.reset(Code(refusal.code()));
+    let live = match opened {
+        Ok(live) => live,
+        Err(error) => {
+            let refusal = match error {
+                Error::Message(_) => Some(Refusal::Malformed),
+                Error::Pool(_) => Some(Refusal::Busy),
+                _ => None,
+            };
+            if let Some(refusal) = refusal {
+                receiver.stop(Code(refusal.code()));
+                sender.reset(Code(refusal.code()));
+            }
+            return Err(error);
         }
-        return Err(error);
-    }
-    Ok((sender, receiver))
+    };
+    Ok((sender, receiver, live))
 }
 
 /// Sends the header, `open`, and the keys of `set` on `sender`, and waits for the
-/// home's `Opened`.
+/// home's `Opened`. Returns its open position.
 async fn handshake(
     state: &RefCell<State>,
     (sender, receiver): (&mut Sender, &mut Receiver),
     decoder: &mut wire::hub::Reader,
     open: &Open,
     set: &KeySet,
-) -> Result<(), Error> {
+) -> Result<u64, Error> {
     let header = wire::header::encode(Protocol::Hub);
     send(state, sender, header.len(), |out| {
         out.copy_from_slice(&header);
@@ -712,7 +716,7 @@ async fn handshake(
     }
     match receiver.recv().await {
         Ok(Some(message)) => match decoder.decode(&message) {
-            Ok(FromHome::Opened) => Ok(()),
+            Ok(FromHome::Opened { live }) => Ok(live),
             Ok(_) => unreachable!("invariant: the decoder gives opened first"),
             Err(error) => Err(Error::Message(error)),
         },
