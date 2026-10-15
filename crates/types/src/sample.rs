@@ -3,6 +3,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use crate::time::{Span, Stamp};
+
 /// Defines [`Scalar`], its text, and `SCALARS` from one list, so no scalar can miss its
 /// text or its place in `SCALARS`.
 macro_rules! scalars {
@@ -243,6 +245,139 @@ fn digits<T: FromStr>(text: &str) -> Option<T> {
         return None;
     }
     text.parse().ok()
+}
+
+/// One sample of a fixed-width scalar, with the byte layout of its [`Scalar`]: little
+/// endian, and a `bool` as one byte, 0 or 1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Value {
+    /// A `bool` sample.
+    Bool(bool),
+    /// An `i8` sample.
+    I8(i8),
+    /// An `i16` sample.
+    I16(i16),
+    /// An `i32` sample.
+    I32(i32),
+    /// An `i64` sample.
+    I64(i64),
+    /// A `u8` sample.
+    U8(u8),
+    /// A `u16` sample.
+    U16(u16),
+    /// A `u32` sample.
+    U32(u32),
+    /// A `u64` sample.
+    U64(u64),
+    /// An `f32` sample.
+    F32(f32),
+    /// An `f64` sample.
+    F64(f64),
+    /// A `timestamp` sample.
+    Stamp(Stamp),
+    /// A `duration` sample.
+    Span(Span),
+    /// A `uuid` sample, as the 16 bytes that the sample holds.
+    Uuid([u8; 16]),
+}
+
+impl Value {
+    /// The scalar of the value.
+    #[must_use]
+    pub const fn scalar(self) -> Scalar {
+        match self {
+            Self::Bool(_) => Scalar::Bool,
+            Self::I8(_) => Scalar::I8,
+            Self::I16(_) => Scalar::I16,
+            Self::I32(_) => Scalar::I32,
+            Self::I64(_) => Scalar::I64,
+            Self::U8(_) => Scalar::U8,
+            Self::U16(_) => Scalar::U16,
+            Self::U32(_) => Scalar::U32,
+            Self::U64(_) => Scalar::U64,
+            Self::F32(_) => Scalar::F32,
+            Self::F64(_) => Scalar::F64,
+            Self::Stamp(_) => Scalar::Stamp,
+            Self::Span(_) => Scalar::Span,
+            Self::Uuid(_) => Scalar::Uuid,
+        }
+    }
+
+    /// Writes the value as one sample.
+    ///
+    /// # Panics
+    ///
+    /// When `sample` is not `self.scalar().width()` bytes.
+    #[inline]
+    pub fn write(self, sample: &mut [u8]) {
+        match self {
+            Self::Bool(value) => *sized(sample) = [u8::from(value)],
+            Self::I8(value) => *sized(sample) = value.to_le_bytes(),
+            Self::I16(value) => *sized(sample) = value.to_le_bytes(),
+            Self::I32(value) => *sized(sample) = value.to_le_bytes(),
+            Self::I64(value) => *sized(sample) = value.to_le_bytes(),
+            Self::U8(value) => *sized(sample) = value.to_le_bytes(),
+            Self::U16(value) => *sized(sample) = value.to_le_bytes(),
+            Self::U32(value) => *sized(sample) = value.to_le_bytes(),
+            Self::U64(value) => *sized(sample) = value.to_le_bytes(),
+            Self::F32(value) => *sized(sample) = value.to_le_bytes(),
+            Self::F64(value) => *sized(sample) = value.to_le_bytes(),
+            Self::Stamp(value) => *sized(sample) = value.nanos().to_le_bytes(),
+            Self::Span(value) => *sized(sample) = value.nanos().to_le_bytes(),
+            Self::Uuid(value) => *sized(sample) = value,
+        }
+    }
+
+    /// Reads one sample of `scalar`. A `bool` byte other than 0 is `true`.
+    ///
+    /// # Panics
+    ///
+    /// When `sample` is not `scalar.width()` bytes.
+    #[inline]
+    #[must_use]
+    pub fn read(scalar: Scalar, sample: &[u8]) -> Self {
+        match scalar {
+            Scalar::Bool => Self::Bool(bytes::<1>(sample)[0] != 0),
+            Scalar::I8 => Self::I8(i8::from_le_bytes(bytes(sample))),
+            Scalar::I16 => Self::I16(i16::from_le_bytes(bytes(sample))),
+            Scalar::I32 => Self::I32(i32::from_le_bytes(bytes(sample))),
+            Scalar::I64 => Self::I64(i64::from_le_bytes(bytes(sample))),
+            Scalar::U8 => Self::U8(u8::from_le_bytes(bytes(sample))),
+            Scalar::U16 => Self::U16(u16::from_le_bytes(bytes(sample))),
+            Scalar::U32 => Self::U32(u32::from_le_bytes(bytes(sample))),
+            Scalar::U64 => Self::U64(u64::from_le_bytes(bytes(sample))),
+            Scalar::F32 => Self::F32(f32::from_le_bytes(bytes(sample))),
+            Scalar::F64 => Self::F64(f64::from_le_bytes(bytes(sample))),
+            Scalar::Stamp => {
+                Self::Stamp(Stamp::from_nanos(i64::from_le_bytes(bytes(sample))))
+            }
+            Scalar::Span => {
+                Self::Span(Span::from_nanos(i64::from_le_bytes(bytes(sample))))
+            }
+            Scalar::Uuid => Self::Uuid(bytes(sample)),
+        }
+    }
+}
+
+/// `sample` as an array of `N` bytes.
+///
+/// # Panics
+///
+/// When `sample` is not `N` bytes.
+fn sized<const N: usize>(sample: &mut [u8]) -> &mut [u8; N] {
+    let len = sample.len();
+    <&mut [u8; N]>::try_from(sample)
+        .unwrap_or_else(|_| panic!("a sample of {N} bytes, not {len}"))
+}
+
+/// The `N` bytes of `sample`.
+///
+/// # Panics
+///
+/// When `sample` is not `N` bytes.
+fn bytes<const N: usize>(sample: &[u8]) -> [u8; N] {
+    <[u8; N]>::try_from(sample)
+        .unwrap_or_else(|_| panic!("a sample of {N} bytes, not {}", sample.len()))
 }
 
 /// Why a text is not a sample type. `Display` gives the message: a lower-case clause
@@ -538,7 +673,106 @@ mod tests {
         }
     }
 
+    fn values() -> impl Strategy<Value = Value> {
+        prop_oneof![
+            any::<bool>().prop_map(Value::Bool),
+            any::<i8>().prop_map(Value::I8),
+            any::<i16>().prop_map(Value::I16),
+            any::<i32>().prop_map(Value::I32),
+            any::<i64>().prop_map(Value::I64),
+            any::<u8>().prop_map(Value::U8),
+            any::<u16>().prop_map(Value::U16),
+            any::<u32>().prop_map(Value::U32),
+            any::<u64>().prop_map(Value::U64),
+            any::<f32>().prop_map(Value::F32),
+            any::<f64>().prop_map(Value::F64),
+            any::<i64>().prop_map(|nanos| Value::Stamp(Stamp::from_nanos(nanos))),
+            any::<i64>().prop_map(|nanos| Value::Span(Span::from_nanos(nanos))),
+            any::<[u8; 16]>().prop_map(Value::Uuid),
+        ]
+    }
+
+    /// The little-endian bytes of `value`.
+    fn little(value: Value) -> Vec<u8> {
+        match value {
+            Value::Bool(value) => vec![u8::from(value)],
+            Value::I8(value) => value.to_le_bytes().to_vec(),
+            Value::I16(value) => value.to_le_bytes().to_vec(),
+            Value::I32(value) => value.to_le_bytes().to_vec(),
+            Value::I64(value) => value.to_le_bytes().to_vec(),
+            Value::U8(value) => value.to_le_bytes().to_vec(),
+            Value::U16(value) => value.to_le_bytes().to_vec(),
+            Value::U32(value) => value.to_le_bytes().to_vec(),
+            Value::U64(value) => value.to_le_bytes().to_vec(),
+            Value::F32(value) => value.to_le_bytes().to_vec(),
+            Value::F64(value) => value.to_le_bytes().to_vec(),
+            Value::Stamp(value) => value.nanos().to_le_bytes().to_vec(),
+            Value::Span(value) => value.nanos().to_le_bytes().to_vec(),
+            Value::Uuid(value) => value.to_vec(),
+        }
+    }
+
+    #[test]
+    fn gives_the_scalar_of_each_value() {
+        let values = [
+            Value::Bool(false),
+            Value::I8(0),
+            Value::I16(0),
+            Value::I32(0),
+            Value::I64(0),
+            Value::U8(0),
+            Value::U16(0),
+            Value::U32(0),
+            Value::U64(0),
+            Value::F32(0.0),
+            Value::F64(0.0),
+            Value::Stamp(Stamp::EPOCH),
+            Value::Span(Span::from_nanos(0)),
+            Value::Uuid([0; 16]),
+        ];
+        assert_eq!(values.map(Value::scalar).as_slice(), SCALARS);
+    }
+
+    #[test]
+    fn reads_a_bool_byte_of_0_as_false() {
+        assert_eq!(Value::read(Scalar::Bool, &[0]), Value::Bool(false));
+    }
+
     proptest! {
+        #[test]
+        fn writes_the_little_endian_bytes_and_reads_them_back(value in values()) {
+            let mut sample = vec![0xAA; value.scalar().width()];
+            value.write(&mut sample);
+            prop_assert_eq!(&sample, &little(value));
+            let read = Value::read(value.scalar(), &sample);
+            prop_assert_eq!(read.scalar(), value.scalar());
+            let mut again = vec![0; sample.len()];
+            read.write(&mut again);
+            prop_assert_eq!(again, sample);
+        }
+
+        #[test]
+        fn panics_at_a_sample_of_another_width(value in values(), more in 1..8_usize) {
+            let width = value.scalar().width();
+            for len in [width - 1, width + more] {
+                let write = std::panic::catch_unwind(|| value.write(&mut vec![0; len]));
+                let read = std::panic::catch_unwind(|| {
+                    Value::read(value.scalar(), &vec![0; len]).scalar()
+                });
+                let expected = format!("a sample of {width} bytes, not {len}");
+                for payload in [write, read.map(|_| ())] {
+                    let payload = payload.expect_err("a panic");
+                    let message = payload.downcast_ref::<String>().map(String::as_str);
+                    prop_assert_eq!(message, Some(expected.as_str()), "{:?}", value);
+                }
+            }
+        }
+
+        #[test]
+        fn reads_a_bool_byte_other_than_0_as_true(byte in 1_u8..) {
+            prop_assert_eq!(Value::read(Scalar::Bool, &[byte]), Value::Bool(true));
+        }
+
         #[test]
         fn reads_back_the_text_of_each_type(sample in types()) {
             prop_assert_eq!(sample.to_string().parse(), Ok(sample));
