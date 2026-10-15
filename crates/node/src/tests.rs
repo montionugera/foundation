@@ -6122,7 +6122,10 @@ pub(crate) mod port {
             let (mut held, mut logged, mut ordered) = (false, false, false);
             // The probe finds the lock free and the log made, from about 4.1 ms.
             let mut freed = false;
-            // Between writes, in the write of a home, and in its sync.
+            // Three orders of the last closes of the log, `shard-1/ring`, and
+            // `address` that the stops in a write give at seed 0: the log first, the
+            // address first, and the ring first. They do not show which file call is
+            // in flight (#2778), so a drift of the writes can still keep each order.
             let mut crossed = [false; 3];
             // A stop from about 1.35 ms comes after the node starts to open its
             // mesh, which opens its log at about 3.1 ms. From about 1.1 s the log
@@ -6172,7 +6175,7 @@ pub(crate) mod port {
             assert!(held && logged && ordered && freed);
             assert_eq!(
                 crossed, [true; 3],
-                "the stops miss a step of the write: find its times again"
+                "the stops miss an order of the closes: find the write times again"
             );
         }
 
