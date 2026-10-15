@@ -2856,7 +2856,7 @@ mod pool {
     }
 }
 
-mod port {
+pub(crate) mod port {
     use std::num::NonZeroU32;
     use std::rc::Rc;
 
@@ -4347,7 +4347,7 @@ mod port {
         }
     }
 
-    mod mesh {
+    pub(crate) mod mesh {
         use std::cell::{Cell, RefCell};
         use std::collections::BTreeMap;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -4402,7 +4402,7 @@ mod port {
         }
 
         /// The member `key` with `private_key`, whose node listens on `host`.
-        fn member(
+        pub(crate) fn member(
             key: types::node::Key,
             private_key: &PrivateKey,
             host: &sim::node::Node,
@@ -4423,13 +4423,73 @@ mod port {
         }
 
         /// The region `plant`, where each of `members` is a voter.
-        fn region(members: &[Member]) -> Founding {
+        pub(crate) fn region(members: &[Member]) -> Founding {
             Founding {
                 prefix: "plant".parse().unwrap(),
                 members: members.to_vec(),
                 voters: members.iter().map(|member| member.card.key()).collect(),
                 definitions: BTreeMap::new(),
                 homes: BTreeMap::new(),
+            }
+        }
+
+        /// What [`open`] opens.
+        pub(crate) struct Opened {
+            pub(crate) hub: ::hub::Hub,
+            pub(crate) mesh: ::mesh::Mesh,
+            pub(crate) transport: Rc<transport::Transport>,
+            pub(crate) time: clock::Reader,
+            pub(crate) entropy: env::entropy::Entropy,
+        }
+
+        /// Opens the endpoint of `identity` at [`listen`] on `host` in the region
+        /// `founding`, and a hub on a new buffer of `host` with its mesh.
+        pub(crate) async fn open(
+            host: &sim::node::Node,
+            tasks: &env::tasks::Tasks,
+            identity: Identity,
+            founding: Founding,
+        ) -> Opened {
+            let bound =
+                transport::Port::bind(&host.net(), listen(host)).expect("a port");
+            let (opening, clock) = (Opening::Given(founding), host.clock());
+            let (entropy, settings) = (host.entropy(), crate::Settings::default());
+            let endpoint =
+                Endpoint::new(bound, opening, clock, entropy, host.net(), settings);
+            let stop = crate::stop::Stop::default();
+            let (open, buffer, given, time) =
+                super::super::home::create_open(host, tasks, 0, stop);
+            let opened = open.run(host.files(), Rc::new(buffer), tasks.clone()).await;
+            let home = opened.expect("the buffer opens");
+            let interner = given.await.expect("the open gives the interner");
+            let (key, entropy) = (identity.key, endpoint.entropy.clone());
+            let opened = endpoint.open(
+                identity,
+                host.files(),
+                super::pool(),
+                &time,
+                tasks.clone(),
+            );
+            let (transport, mesh) = opened.await.expect("the transport opens");
+            let mesh = mesh.expect("the mesh opens").expect("a region");
+            let hub = ::hub::Hub::new(::hub::Config {
+                home,
+                interner,
+                tasks: tasks.clone(),
+                node: key,
+                time: time.clone(),
+                entropy: entropy.clone(),
+                region: Some(::hub::Region {
+                    mesh: mesh.clone(),
+                    transport: Rc::clone(&transport),
+                }),
+            });
+            Opened {
+                hub,
+                mesh,
+                transport,
+                time,
+                entropy,
             }
         }
 
@@ -6208,43 +6268,20 @@ mod port {
             };
             let own = host.clone();
             let started = host.shards().start(shard, move |tasks| async move {
-                let bound =
-                    transport::Port::bind(&own.net(), listen(&own)).expect("a port");
                 let identity = Identity {
                     key: OTHER.0,
                     private_key: OTHER.1,
                     opener: Opener::from_bytes(SEAL),
                 };
-                let (opening, clock) = (Opening::Given(founding), own.clock());
-                let (entropy, settings) = (own.entropy(), crate::Settings::default());
-                let endpoint =
-                    Endpoint::new(bound, opening, clock, entropy, own.net(), settings);
-                let pool = super::pool();
-                let stop = crate::stop::Stop::default();
-                let (open, buffer, given, time) =
-                    super::super::home::create_open(&own, &tasks, 0, stop);
-                let opened =
-                    open.run(own.files(), Rc::new(buffer), tasks.clone()).await;
-                let home = opened.expect("the buffer opens");
-                let interner = given.await.expect("the open gives the interner");
-                let (key, entropy) = (identity.key, endpoint.entropy.clone());
-                let opened =
-                    endpoint.open(identity, own.files(), pool, &time, tasks.clone());
-                let (transport, mesh) = opened.await.expect("the transport opens");
-                let mesh = mesh.expect("the mesh opens");
-                let mesh = mesh.expect("the peer has a region");
-                let hub = ::hub::Hub::new(::hub::Config {
-                    home,
-                    interner,
-                    tasks: tasks.clone(),
-                    node: key,
-                    time: time.clone(),
-                    entropy: entropy.clone(),
-                    region: Some(::hub::Region {
-                        mesh: mesh.clone(),
-                        transport: Rc::clone(&transport),
-                    }),
-                });
+                let key = identity.key;
+                let Opened {
+                    hub,
+                    mesh,
+                    transport,
+                    time,
+                    entropy,
+                } = open(&own, &tasks, identity, founding).await;
+                let settings = crate::Settings::default();
                 let clock = own.clock();
                 let files = own.files();
                 let ops =

@@ -53,3 +53,11 @@
   (https://github.com/synnaxlabs/foundation/pull/2230#issuecomment-6093592767), which
   supersedes its swap of the peak to 0. Supersedes "one atomic count of the bytes it
   holds" of https://github.com/synnaxlabs/foundation/pull/1440#issuecomment-6042194242.
+  `Bytes` also counts the bytes it gave out in all, freed or not: `allocated` never goes
+  down, so a test takes the difference of two reads and bounds the bytes that code
+  allocates, also a copy that it frees at once, which `held` and `peak` do not show. A
+  `realloc` that grows adds its growth; a shrink, a free, and `reset_peak` do not change
+  it. Lost: a committed bench line (it shows the cost, but no test fails on the copy);
+  `Allocator::count` (it counts allocations, not bytes). Decided by `laptop.architect`
+  on 2026-10-12T21:54:59Z
+  (https://github.com/synnaxlabs/foundation/issues/2500#issuecomment-6133319741).
