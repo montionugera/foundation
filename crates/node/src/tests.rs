@@ -5894,6 +5894,28 @@ pub(crate) mod port {
             assert_eq!(node.join(), Ok(()));
         }
 
+        /// A lone node leads at open, so the set of a home ends within [`OPEN`] of
+        /// the start, long before one election timeout of 1 s.
+        #[test]
+        fn a_lone_node_serves_a_set_of_a_home_at_open() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let node = start_alone(&host);
+            let served = Arc::new(Mutex::new(None));
+            let (own, seen) = (host.clone(), Arc::clone(&served));
+            node.operate(move |ops| async move {
+                let set = ops.mesh().set_home(channel::Key::from_u128(8), OWN).await;
+                assert_eq!(set, Ok(()));
+                *seen.lock().unwrap() = Some(own.clock().now());
+            });
+            assert_eq!(sim.run_for(OPEN), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let served = served.lock().unwrap().expect("the set ends before `OPEN`");
+            assert!(served - sim::node::Config::default().monotonic < OPEN);
+        }
+
         /// A restart with another region, after the log holds a record, stops the
         /// node, and `join` gives the region that the first start kept.
         #[test]
@@ -5901,7 +5923,7 @@ pub(crate) mod port {
             let mut sim = sim::Sim::new(sim::Config::default());
             let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
             let node = start_alone(&hosts[0]);
-            // Past the longest election timeout, so the node votes for itself.
+            // The lone voter votes for itself at open, and its write ends in this time.
             let elected = Span::from_nanos(3 * Span::SECOND.nanos());
             assert_eq!(sim.run_for(elected), Ok(()));
             node.stop();
