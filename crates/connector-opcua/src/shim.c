@@ -127,6 +127,7 @@ _Static_assert(UA_TYPES_BOOLEAN == 0 && UA_TYPES_SBYTE == 1 &&
                    UA_TYPES_UINT64 == 8 && UA_TYPES_FLOAT == 9 &&
                    UA_TYPES_DOUBLE == 10,
                "the scalar types of UA_TYPES moved");
+_Static_assert(SHIM_ARRAY == 0x8000, "SHIM_ARRAY is `ffi::ARRAY`");
 _Static_assert(UA_DATATYPEKIND_BOOLEAN == 0 && UA_DATATYPEKIND_SBYTE == 1 &&
                    UA_DATATYPEKIND_BYTE == 2 && UA_DATATYPEKIND_INT16 == 3 &&
                    UA_DATATYPEKIND_UINT16 == 4 && UA_DATATYPEKIND_INT32 == 5 &&
@@ -878,21 +879,21 @@ UA_StatusCode shim_value_status(const void *value) {
     return answer->hasValue ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNODATA;
 }
 
-/* Writes the scalar of `value`, an answer of a read, to `out`, and its kind to `kind`.
- * Else gives the status of `shim_value_status`, `BadNoData` for an empty Variant, or
- * `BadTypeMismatch` for an array or a kind that `shim_scalar` does not hold, with that
- * kind in `kind`, plus `SHIM_ARRAY` for an array. */
+/* Writes the kind of `value`, a Good answer of a read, to `kind`, plus `SHIM_ARRAY` for
+ * an array, and its scalar to `out` when `shim_scalar` holds that kind. Else gives the
+ * status of `shim_value_status`, or `BadNoData` for an empty Variant. */
 UA_StatusCode shim_value_scalar(const void *value, shim_scalar *out, UA_UInt16 *kind) {
     UA_StatusCode status = shim_value_status(value);
     if(status != UA_STATUSCODE_GOOD)
         return status;
     const UA_Variant *variant = &((const UA_DataValue *)value)->value;
-    if(UA_Variant_isEmpty(variant))
-        return UA_STATUSCODE_BADNODATA;
     if(!UA_Variant_isScalar(variant)) {
+        if(variant->type == NULL)
+            return UA_STATUSCODE_BADNODATA;
         *kind = (UA_UInt16)(variant->type->typeKind | SHIM_ARRAY);
-        return UA_STATUSCODE_BADTYPEMISMATCH;
+        return UA_STATUSCODE_GOOD;
     }
+    *kind = (UA_UInt16)variant->type->typeKind;
     /* A load of fixed size for each kind, since a `memcpy` of `memSize` calls glibc. */
     const void *data = variant->data;
     switch(variant->type->typeKind) {
@@ -907,10 +908,7 @@ UA_StatusCode shim_value_scalar(const void *value, shim_scalar *out, UA_UInt16 *
     case UA_DATATYPEKIND_UINT64: out->uint64 = *(const UA_UInt64 *)data; break;
     case UA_DATATYPEKIND_FLOAT: out->float_ = *(const UA_Float *)data; break;
     case UA_DATATYPEKIND_DOUBLE: out->double_ = *(const UA_Double *)data; break;
-    default:
-        *kind = (UA_UInt16)variant->type->typeKind;
-        return UA_STATUSCODE_BADTYPEMISMATCH;
+    default: break;
     }
-    *kind = (UA_UInt16)variant->type->typeKind;
     return UA_STATUSCODE_GOOD;
 }

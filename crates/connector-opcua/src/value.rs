@@ -63,17 +63,14 @@ impl Value {
     /// `value` is a live `UA_DataValue`.
     pub(crate) unsafe fn of(value: *const ffi::DataValue) -> Result<Self, Fault> {
         let mut scalar = ffi::Scalar { uint64: 0 };
-        let mut kind = NO_KIND;
+        let mut kind = 0;
         // SAFETY: `value` is live, as the caller ensures, and the outputs are places
         // to write.
         let status = Status(unsafe {
             ffi::shim_value_scalar(value, &raw mut scalar, &raw mut kind)
         });
         if status != Status::GOOD {
-            return Err(match kind {
-                NO_KIND => Fault::Status(status),
-                kind => Fault::Type(BuiltIn::new(kind)),
-            });
+            return Err(Fault::Status(status));
         }
         Ok(match kind {
             // SAFETY: `shim_value_scalar` wrote the field of `kind`.
@@ -98,9 +95,7 @@ impl Value {
             ffi::FLOAT => Self::F32(unsafe { scalar.float }),
             // SAFETY: `shim_value_scalar` wrote the field of `kind`.
             ffi::DOUBLE => Self::F64(unsafe { scalar.double }),
-            _ => panic!(
-                "invariant: shim_value_scalar gives a kind of `ffi::Scalar`, not {kind}"
-            ),
+            kind => return Err(mistyped(kind)),
         })
     }
 
@@ -170,8 +165,13 @@ impl From<Value> for sample::Value {
     }
 }
 
-/// The kind that `shim_value_scalar` writes only for a value of another type.
-const NO_KIND: u16 = u16::MAX;
+/// The fault of a Good answer of the open62541 kind `kind`, apart from the Ok path of
+/// [`Value::of`].
+#[cold]
+#[inline(never)]
+fn mistyped(kind: u16) -> Fault {
+    Fault::Type(BuiltIn::new(kind))
+}
 
 /// The name of each built-in type of OPC UA, by its kind in open62541.
 const NAMES: [&str; ffi::KINDS] = [
