@@ -449,14 +449,14 @@
   the free port, which the transport gives, so a hub future adds a surface whose one
   caller must still wait for the transport (`laptop.architect`, 2026-10-09T21:38:13Z:
   https://github.com/synnaxlabs/foundation/issues/2185#issuecomment-6089685674).
-  Amended (#274 B1): a complete session reads a frame that it missed at its window
-  later from disk, in order. `home::Shard::take` gives `Next::Disk`, and the session
-  runs `Disk::read`, gives the result to `Shard::fill`, then takes again. `Behind` has
+  Amended (#274 B1): a complete session reads a frame that it missed at its window later
+  from disk, in order. `home::Shard::take` gives `Next::Disk`, and the session runs
+  `disk::Read::read`, gives the result to `Shard::fill`, then takes again. `Behind` has
   one meaning: the session reached a seq that the buffer lost for no room. A read from
   disk that fails ends the session with `Ended::Buffer` and its error, and a read or a
-  fill that finds no block ends it with `Ended::Pool`, on that call and each later
-  one. `home::reader::Failure` holds the two errors of a read, as `hub` takes `buffer`
-  as a dev-dependency only (`laptop.architect`: the plan, 2026-10-15T16:29:36Z:
+  fill that finds no block ends it with `Ended::Pool`, on that call and each later one.
+  `home::reader::disk::Error` holds the two errors of a read, as `hub` takes `buffer` as
+  a dev-dependency only (`laptop.architect`: the plan, 2026-10-15T16:29:36Z:
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6197039098; its
   changes, 2026-10-15T16:38:55Z, 17:00:40Z, and 17:16:20Z:
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6197223487,
@@ -470,5 +470,18 @@
   `gives_a_complete_reader_its_waiting_frames_then_the_missed_ones_from_disk`,
   `ends_a_complete_reader_that_sleeps_past_its_ring_as_behind`, and the `serve` tests
   `sends_behind_and_finishes_when_a_complete_session_misses_a_lost_frame` and
-  `sends_each_frame_in_order_to_a_session_that_misses_frames_before_its_credit`. The
-  two `gives_` tests keep their 32 values and their check of both orders.
+  `sends_each_frame_in_order_to_a_session_that_misses_frames_before_its_credit`. The two
+  `gives_` tests keep their 32 values and their check of both orders. A session decodes
+  each entry that it reads from disk onto the key set of its index's group, which it
+  interns at its first read. A series whose channel the set no longer has drops, as the
+  reader's mask drops it, and a series whose type changed since it was stored drops too:
+  the frame carries no series of that channel
+  (`resumes_a_named_complete_reader_from_disk_with_no_series_of_a_changed_type`;
+  `laptop.architect`, 2026-10-15T18:23:12Z:
+  https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6199246153, item 1).
+  `delivery::Readers::fill(key, frame, set, seq)` takes the decoded frame by value with
+  its set lent, and `delivery::Readers::reached(key, next, durable)`, which changes
+  nothing when `next < durable`, records the end of a read (`laptop.architect`,
+  2026-10-15T18:27:16Z:
+  https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6199323861, items 5
+  and 6).

@@ -67,4 +67,12 @@
   share those frames, which memory held until that release; on a quiet index they stay
   until each session takes them or closes. Replaces r11 5.2 (a window beyond the
   acknowledged position): flow control stays apart from durable acks. Basis: B3, M3,
-  MEMORY BOUNDS, X35, r11 5.2, #41, #267.
+  MEMORY BOUNDS, X35, r11 5.2, #41, #267. Amended (#274 B1): a read from disk takes
+  about the same time for one frame as for many, so `delivery::Readers::take` gives a
+  session that missed frames `Next::Disk` only while the session has at least half its
+  window of credit left, or has acked each frame it was given and has credit left. Its
+  window is the most credit it had left at its open or at a grant, as a session can get
+  its credit back one frame at a time. A session whose window shrinks below half of that
+  most credit, and that never acks, then reads no more frames, so the change that adapts
+  the window does #2753 first (`laptop.architect`, 2026-10-15T18:23:12Z:
+  https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6199246153, item 3).
