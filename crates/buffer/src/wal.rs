@@ -2458,7 +2458,8 @@ mod tests {
         }
 
         /// A commit marks its records synced and frees the records before the tail
-        /// that its trim gave before the sync.
+        /// that its trim gave before the sync. A release to the end of the commit
+        /// panics unless its records are synced.
         #[test]
         fn committed_syncs_before_it_releases() {
             let mut writer = Writer::empty(layout(), 0);
@@ -2472,7 +2473,9 @@ mod tests {
             let tail = writer.trimmed(None, |offset| offset);
             assert_eq!(tail.map(Position::offset), Some(8 * 4096));
             writer.committed(ends, tail);
-            assert_eq!((writer.tail, writer.synced_end()), (8 * 4096, 12 * 4096));
+            assert_eq!(writer.tail(), 8 * 4096);
+            writer.release(12 * 4096);
+            assert_eq!(writer.tail(), 12 * 4096);
         }
 
         #[test]
