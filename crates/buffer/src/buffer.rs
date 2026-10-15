@@ -40,9 +40,6 @@ use crate::wal::{
 /// How many reads at once hold records with no allocation.
 const HOLDS: usize = 16;
 
-/// Whether each commit trims the ring and writes carry records.
-const TRIM: bool = cfg!(feature = "trim");
-
 /// What one shard's buffer is given at open.
 #[derive(Debug)]
 pub struct Config {
@@ -68,6 +65,9 @@ pub struct Config {
     /// The longest time an entry waits for its group commit to start. An entry
     /// queued during a commit longer than `commit` waits until that commit ends.
     pub commit: Span,
+    /// Each commit frees the oldest records that no path needs, when the ring needs
+    /// their room. False until the open trims too.
+    pub trimmed: bool,
 }
 
 /// Why an open or a read failed.
@@ -299,6 +299,8 @@ impl Shared {
 #[derive(Debug)]
 struct State {
     writer: Writer,
+    /// [`Config::trimmed`].
+    trimmed: bool,
     /// The group that takes the next batch.
     open: Group,
     /// Cleared groups with their capacity, for the next open group.
@@ -446,9 +448,9 @@ impl State {
     /// took, in the same borrow. The trim needs a pool block for its checkpoint, and
     /// the carry record needs blocks for its body and a wrap. Without them, the
     /// commit does not trim, or carries at a later deadline. Gives nothing when
-    /// [`TRIM`] is off.
+    /// [`Config::trimmed`] is false.
     fn trim(&mut self, pool: &Pool) -> Trim {
-        if !TRIM {
+        if !self.trimmed {
             return Trim::default();
         }
         let kept = self.kept();
@@ -617,6 +619,7 @@ impl Buffer {
             entropy,
             layout,
             commit,
+            trimmed,
         } = config;
         let block_max = group::block_max(&pool).map_err(|min| Error::Budget {
             budget: pool.budget(),
@@ -635,6 +638,7 @@ impl Buffer {
             layout: header.layout,
             state: RefCell::new(State {
                 writer,
+                trimmed,
                 open: Group::default(),
                 spares: Vec::new(),
                 queue: Vec::new(),
@@ -872,8 +876,7 @@ impl Buffer {
                     .push(pool, block_max, &state.writer, batch)
                     .map_err(rejected)?
             }
-            #[cfg(feature = "trim")]
-            Err(full @ group::Rejected::Ring(_)) => {
+            Err(full @ group::Rejected::Ring(_)) if state.trimmed => {
                 state.starved = true;
                 drop(guard);
                 shared.unpark();
@@ -1478,6 +1481,20 @@ mod tests {
     where
         F: Future<Output = Buffer> + 'static,
     {
+        with_ring(sim, node, name, false, main)
+    }
+
+    /// [`with_buffer`] with [`Config::trimmed`] set to `trimmed`.
+    fn with_ring<F>(
+        sim: &mut sim::Sim,
+        node: &sim::node::Node,
+        name: &str,
+        trimmed: bool,
+        main: impl FnOnce(Buffer, Slots, Rc<Pool>) -> F + Send + 'static,
+    ) -> Logs
+    where
+        F: Future<Output = Buffer> + 'static,
+    {
         let logs = Arc::new(Mutex::new(None));
         let ended = Arc::clone(&logs);
         let config = env::shards::Config {
@@ -1501,6 +1518,7 @@ mod tests {
                     layout: Layout::new(64 * 4096, 8000)
                         .expect("the sizes make a ring"),
                     commit: COMMIT,
+                    trimmed,
                 };
                 let mut slots = Slots::new();
                 let buffer = Buffer::open(config, &mut slots).await.expect("opens");
@@ -1923,9 +1941,21 @@ mod tests {
     }
 
     /// The tests of the trim and the carry of each commit.
-    #[cfg(feature = "trim")]
     mod trims {
         use super::*;
+
+        /// [`with_buffer`] with commits that trim.
+        fn with_trims<F>(
+            sim: &mut sim::Sim,
+            node: &sim::node::Node,
+            name: &str,
+            main: impl FnOnce(Buffer, Slots, Rc<Pool>) -> F + Send + 'static,
+        ) -> Logs
+        where
+            F: Future<Output = Buffer> + 'static,
+        {
+            with_ring(sim, node, name, true, main)
+        }
 
         /// Commits one entry of 3 seqs of `index` on the live path at `slot` for each
         /// `n` of `firsts`, at seq `3 * n`, one commit each.
@@ -1952,7 +1982,7 @@ mod tests {
             let node = sim.node(sim::node::Config::default());
             let found = Arc::new(Mutex::new(None));
             let given = Arc::clone(&found);
-            with_buffer(
+            with_trims(
                 &mut sim,
                 &node,
                 "write",
@@ -1987,7 +2017,7 @@ mod tests {
             let node = sim.node(sim::node::Config::default());
             let found = Arc::new(Mutex::new(None));
             let given = Arc::clone(&found);
-            let logs = with_buffer(
+            let logs = with_trims(
                 &mut sim,
                 &node,
                 "write",
@@ -2023,7 +2053,7 @@ mod tests {
             let node = sim.node(sim::node::Config::default());
             let skipped = Arc::new(Mutex::new(None));
             let given = Arc::clone(&skipped);
-            with_buffer(
+            with_trims(
                 &mut sim,
                 &node,
                 "write",
@@ -2052,7 +2082,7 @@ mod tests {
             sim.crash(&node, sim::Crash::Power);
             let found = Arc::new(Mutex::new(Vec::new()));
             let given = Arc::clone(&found);
-            with_buffer(
+            with_trims(
                 &mut sim,
                 &node,
                 "reopen",
@@ -2079,7 +2109,7 @@ mod tests {
         fn an_index_that_writes_once_continues_after_the_ring_turns() {
             let mut sim = sim::Sim::new(sim::Config::default());
             let node = sim.node(sim::node::Config::default());
-            with_buffer(
+            with_trims(
                 &mut sim,
                 &node,
                 "write",
@@ -2095,7 +2125,7 @@ mod tests {
             sim.crash(&node, sim::Crash::Power);
             let found = Arc::new(Mutex::new(None));
             let given = Arc::clone(&found);
-            with_buffer(
+            with_trims(
                 &mut sim,
                 &node,
                 "reopen",
@@ -2129,7 +2159,7 @@ mod tests {
             let node = sim.node(sim::node::Config::default());
             let wanted = Arc::new(Mutex::new(None));
             let found = Arc::clone(&wanted);
-            with_buffer(
+            with_trims(
                 &mut sim,
                 &node,
                 "write",
@@ -2160,7 +2190,7 @@ mod tests {
             sim.crash(&node, sim::Crash::Power);
             let found = Arc::new(Mutex::new(None));
             let given = Arc::clone(&found);
-            with_buffer(
+            with_trims(
                 &mut sim,
                 &node,
                 "reopen",
@@ -2199,7 +2229,7 @@ mod tests {
             let own = node.clone();
             let found = Arc::new(Mutex::new(None));
             let given = Arc::clone(&found);
-            with_buffer(
+            with_trims(
                 &mut sim,
                 &node,
                 "write",
@@ -2252,7 +2282,7 @@ mod tests {
             let node = sim.node(sim::node::Config::default());
             let reads = Arc::new(Mutex::new(Vec::new()));
             let before = Arc::clone(&reads);
-            with_buffer(
+            with_trims(
                 &mut sim,
                 &node,
                 "write",
@@ -2267,7 +2297,7 @@ mod tests {
             );
             sim.crash(&node, sim::Crash::Power);
             let after = Arc::clone(&reads);
-            with_buffer(
+            with_trims(
                 &mut sim,
                 &node,
                 "reopen",

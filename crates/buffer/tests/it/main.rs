@@ -87,6 +87,7 @@ impl Shard {
             entropy: self.entropy.clone(),
             layout,
             commit: COMMIT,
+            trimmed: false,
         };
         Buffer::open(config, slots).await
     }
@@ -2023,6 +2024,7 @@ fn node_config(node: &sim::node::Node, tasks: Tasks, dir: &str) -> Config {
         entropy: node.entropy(),
         layout: layout(AREA, BODY_MAX),
         commit: COMMIT,
+        trimmed: false,
     }
 }
 

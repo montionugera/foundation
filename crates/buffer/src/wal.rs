@@ -499,7 +499,7 @@ impl Writer {
     }
 
     /// The offsets of the last wrap skip, empty before the first.
-    #[cfg(all(test, feature = "trim"))]
+    #[cfg(test)]
     pub(crate) fn skip(&self) -> Range<u64> {
         self.skip.clone()
     }
