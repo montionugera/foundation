@@ -11,8 +11,9 @@
   commit of 1 record, as 64 and 4096 did before. The IDs stay, so the baseline
   compares the same work. Decided by `laptop.architect` (#2683,
   2026-10-14T19:58:01Z):
-  https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6177122793. Lost: a copy of `wal.rs` in the bench through `#[path]`, which needs
-  `entry`, `record`, and `crc32c` copied too and the workspace lints off; a time of
+  https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6177122793.
+  Lost: a copy of `wal.rs` in the bench through `#[path]`, which needs `entry`,
+  `record`, and `crc32c` copied too and the workspace lints off; a time of
   `Buffer::append` and `committed` on a simulated file system, whose file writes hide
   the cost of the writer; and a control bench of code that a PR does not change, since
   the bench host gives A/A. It lands before the next PR after #1698 that changes
