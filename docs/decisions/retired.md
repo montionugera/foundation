@@ -66,6 +66,7 @@
 | HOME TYPE REFUSAL (#963): `open_writer` refuses a series of a type the home does not write | HOME EVERY TYPE |
 | FIRST SLICE order, for ONE NODE work only; the order "after FIRST SLICE" of 6050540089 | FIRST SLICE amendment (2026-10-08) |
 | STORE AND FORWARD "It runs beside FIRST SLICE", until the new sessions start | STORE AND FORWARD amendment (2026-10-13) |
+| STORE AND FORWARD amendment (2026-10-13), for the items of part B of batch 2 of #1737: "no session starts new work on it before then", "the drafts #2565 and #2454 wait", and "moves to the ONE NODE milestone" | STORE AND FORWARD amendment (2026-10-15) |
 | HUB SESSIONS (#340, 6066821273): `reader::Error::Remote` gives a reader of an index at another node | HUB SESSIONS amendment (#340 PR 4d-b, 6069259471): the reader reads from that home over one hub stream |
 | `hub::Config::mesh` of 6067438821 | HUB SESSIONS amendment (#340 PR 4d-b, 6068108715): `hub::Config::region` |
 | `hub::Config::transport` of 6048960511 | HUB SESSIONS amendment (#340 PR 4d-b, 6068108715): `hub::Config::region` |
