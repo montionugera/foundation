@@ -83,7 +83,7 @@ pub(crate) struct Client {
 struct Reads {
     /// The requests of the last read that open62541 took and has not answered. The
     /// callback drops the answer of another request, so a read clears them when it
-    /// starts.
+    /// starts, and the first failed answer clears them to drop each later answer.
     requests: RefCell<Vec<Request>>,
     /// The status of the first failed answer of the last read.
     failed: Cell<Option<Status>>,
@@ -638,10 +638,8 @@ unsafe extern "C" fn answer(
         status = Status::BAD_UNEXPECTED_ERROR;
     }
     if status != Status::GOOD {
-        // One run of the events can take more answers of the read after it fails.
-        if reads.failed.get().is_none() {
-            reads.failed.set(Some(status));
-        }
+        requests.clear();
+        reads.failed.set(Some(status));
         return;
     }
     let mut values = reads.values.take();
