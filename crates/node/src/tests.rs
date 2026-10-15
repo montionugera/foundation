@@ -3550,18 +3550,16 @@ mod port {
                 .expect("a session");
             let mut late = wire::header::encode(wire::Protocol::Mesh).to_vec();
             late.resize(60 << 10, 0);
-            let mut block = pool.alloc(late.len()).unwrap();
-            block.copy_from_slice(&late);
+            let block = pool.copy(&late).unwrap();
             let (mut sender, mut reply) =
                 session.open(Class::Complete).await.expect("a stream");
             let start = own.clock().now();
-            sender.send(block.freeze()).await.expect("it sends");
+            sender.send(block).await.expect("it sends");
             let read = reply.recv().await.map(|m| m.map(|b| b.to_vec()));
             let waited = own.clock().now() - start;
             let sent = loop {
-                let mut block = pool.alloc(1).unwrap();
-                block.copy_from_slice(b"a");
-                if let Err(error) = sender.send(block.freeze()).await {
+                let block = pool.copy(b"a").unwrap();
+                if let Err(error) = sender.send(block).await {
                     break error;
                 }
                 own.clock().sleep(Span::MILLISECOND).await;
@@ -5471,9 +5469,8 @@ mod port {
             let mut sender = sender.expect("a stream");
             let header = wire::header::encode(wire::Protocol::Clock);
             loop {
-                let mut block = pool.alloc(header.len()).unwrap();
-                block.copy_from_slice(&header);
-                if let Err(error) = sender.send(block.freeze()).await {
+                let block = pool.copy(&header).unwrap();
+                if let Err(error) = sender.send(block).await {
                     return error;
                 }
                 host.clock().sleep(Span::MILLISECOND).await;
