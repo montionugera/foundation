@@ -238,7 +238,7 @@ impl Node {
     pub fn start<M: block::Memory + 'static>(config: Config<M>) -> Self {
         let (mesh, time) = clock::Clock::new(config.clock.clone());
         let regional = !matches!(config.region, Region::Absent);
-        match parts_of(&config) {
+        match plan(&config) {
             Ok(parts) => Self::launch(config, parts, (mesh, time), regional),
             Err(error) => Self {
                 stop: Stop::default(),
@@ -251,7 +251,7 @@ impl Node {
         }
     }
 
-    /// Starts the shards of `config`, each with its part in `parts`,
+    /// Starts the shards of `config`, each with its number and part in `parts`,
     /// with the mesh clock and its reader in `clock`.
     #[expect(
         clippy::too_many_lines,
@@ -259,7 +259,7 @@ impl Node {
     )]
     fn launch<M: block::Memory + 'static>(
         config: Config<M>,
-        parts: Vec<(block::Config, buffer::Layout)>,
+        parts: Vec<(u32, block::Config, buffer::Layout)>,
         (mesh, clock): (clock::Clock, clock::Reader),
         regional: bool,
     ) -> Self {
@@ -292,7 +292,7 @@ impl Node {
         let roles = Role::all(mesh, wall, first, bind, serve, cores);
         let mut started = Vec::new();
         let mut error = None;
-        for (core, (((config, layout), role), (take, give))) in
+        for (core, (((number, config, layout), role), (take, give))) in
             parts.into_iter().zip(roles).zip(links).enumerate()
         {
             let pool = match memory(config.reservation()) {
@@ -310,7 +310,7 @@ impl Node {
             let guard = stop.guard();
             let failed = Arc::new(OnceLock::new());
             let open = Open {
-                shard: u32::try_from(core).expect("invariant: `parts_of` checked it"),
+                shard: number,
                 take,
                 give,
                 monotonic: monotonic.clone(),
@@ -597,15 +597,16 @@ fn unreachable(ip: IpAddr) -> bool {
     ip.is_multicast() || ip == Ipv4Addr::BROADCAST
 }
 
-/// The part and the layout of each shard of `config`, in order of core, else the
-/// error that stops the node before any shard starts.
+/// The plan of the shards of a `config` that passes its checks: the number, the part,
+/// and the layout of each shard, in order of core. Else the error that stops the node
+/// before any shard starts.
 ///
 /// # Panics
 ///
 /// If the disk budget holds a ring on each of more than `u32::MAX` cores.
-fn parts_of<M>(
+fn plan<M>(
     config: &Config<M>,
-) -> Result<Vec<(block::Config, buffer::Layout)>, Error> {
+) -> Result<Vec<(u32, block::Config, buffer::Layout)>, Error> {
     let cores = config.shards.cores().get();
     if config.name.reserved() {
         let name = config.name.clone();
@@ -629,13 +630,13 @@ fn parts_of<M>(
                 min: types::byte::Size::from_bytes(small.min.saturating_mul(count)),
             }
         })?;
-    assert!(
-        u32::try_from(cores).is_ok(),
-        "the host has {cores} cores, more than a node numbers"
-    );
+    let Ok(count) = u32::try_from(cores) else {
+        panic!("the host has {cores} cores, more than a node numbers");
+    };
     let parts = parts
         .into_iter()
-        .map(|(pool, layout)| Ok((block::Config::new(pool)?, layout)))
+        .zip(0..count)
+        .map(|((pool, layout), shard)| Ok((shard, block::Config::new(pool)?, layout)))
         .collect::<Result<Vec<_>, block::Unfit>>();
     let Ok(parts) = parts else {
         let pool = config.budget.pool;
@@ -850,7 +851,7 @@ struct Serve {
     time: clock::Reader,
     /// The environment of the node process, which the node's connectors read.
     vars: Arc<BTreeMap<OsString, OsString>>,
-    /// The node's name and shard count, for the event `started`.
+    /// The node's name and shard count, which the claim and the event `started` read.
     name: types::name::Name,
     shards: usize,
 }
