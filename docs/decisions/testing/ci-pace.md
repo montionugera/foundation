@@ -25,8 +25,10 @@
   runners are free. The test timeout is 3 times the test time of the baseline
   (`--timeout-multiplier 3`), not the default 5, so a mutant that hangs costs about 14
   min, not 23.5. Four jobs on 4 vCPU can run slower than the baseline, so not lower.
-  Amended (`box2.builder-5`, 2026-10-15, #2756, OK of `laptop.architect` and
-  `laptop.architect-2` owed): `sim` builds at opt-level 2 in the dev profile, with its
-  checks. At opt-level 0, the `mesh` lib tests took 93 s on box2 and 276 s of CPU,
-  most of it in the sim disk; at opt-level 2, 14 s and 82 s. A clean build of `sim`
-  takes 6.0 s in place of 1.8 s.
+  Amended (#2756): `sim` builds at opt-level 2 in the dev profile, with its checks. It
+  is a dev-dependency only, and at opt-level 0 it took most of the time of the tests
+  that run on it: the `mesh` tests took 276 s of CPU, and 82 s at opt-level 2. OK of
+  `laptop.architect` as the advisor:
+  https://github.com/synnaxlabs/foundation/issues/2756#issuecomment-6202718051, and of
+  `laptop.architect-2` for `sim`:
+  https://github.com/synnaxlabs/foundation/issues/2756#issuecomment-6202725115.

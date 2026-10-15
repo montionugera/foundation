@@ -134,12 +134,12 @@ wildcard_dependencies = "deny"
 debug = "line-tables-only"
 
 # Dependencies build optimized so tests run fast. Workspace crates stay at opt-level 0
-# with debug assertions and overflow checks.
+# with debug assertions and overflow checks. One exception: `sim` builds at opt-level 2,
+# with its checks, as its disk model sets the pace of the tests of each crate that uses
+# it.
 [profile.dev.package."*"]
 opt-level = 2
 
-# The sim disk does work per sector that tests at opt-level 0 wait on. It keeps its
-# checks.
 [profile.dev.package.sim]
 opt-level = 2
 
