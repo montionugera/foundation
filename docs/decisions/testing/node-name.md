@@ -135,12 +135,11 @@
   https://github.com/synnaxlabs/foundation/issues/2484#issuecomment-6131685955 and "The
   claim checks it after the lock and before the start writes a file." of
   https://github.com/synnaxlabs/foundation/pull/2502#issuecomment-6134515196.
-  Lost: the claim reads the founding on each start and
-  gives `Error::NoCard` for each founding with no card of the node. It changes rule 7
-  for a key with no card, which writes nothing, and reads a founding on each start to
-  stop a write that only `load` makes. Lost: a new variant for a missing key. The state
-  and the way out are those of `Error::NoCard` (`laptop.architect-2`,
-  2026-10-12T20:02:51Z,
+  Lost: the claim reads the founding on each start and gives `Error::NoCard` for each
+  founding with no card of the node. It changes rule 7 for a key with no card, which
+  writes nothing, and reads a founding on each start to stop a write that only `load`
+  makes. Lost: a new variant for a missing key. The state and the way out are those of
+  `Error::NoCard` (`laptop.architect-2`, 2026-10-12T20:02:51Z,
   https://github.com/synnaxlabs/foundation/issues/2484#issuecomment-6131685955). Lost:
   the check in `identity::load`, after `name::keep` and `budget::keep`. A start then
   wrote the file `name` (a first start that stopped before it stored the founding, then
