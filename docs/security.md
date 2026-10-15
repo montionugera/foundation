@@ -525,5 +525,6 @@ directory (`node::name::decode`, #2174), the file `budget` of the data directory
 (`node::budget::decode`, #2174), the parsers of `/proc/self/mountinfo` and
 `/proc/self/cgroup` in `os::memory` (#2226), the request of a remote program and the
 reply of its node (`ops::serve`, #2563), the newest handoff record of each index in the
-ring (`home::handoff::read`, #2278), and the chunk processing of open62541
+ring (`home::handoff::read`, #2278), the buffer entry that a complete reader reads from
+disk (`home::stored::Decoder::frame`, #2738), and the chunk processing of open62541
 (`ua_securechannel.c`, #1990).
