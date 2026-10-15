@@ -164,9 +164,8 @@ fn holds_no_more_bytes_for_an_open_that_names_one_channel_many_times() {
             .expect("dials");
         let (mut sender, _receiver) = session.open(Class::Latest).await.expect("opens");
         let mut send = async |bytes: &[u8]| {
-            let mut block = pool.alloc(bytes.len()).expect("the pool has room");
-            block.copy_from_slice(bytes);
-            sender.send(block.freeze()).await
+            let block = pool.copy(bytes).expect("the pool has room");
+            sender.send(block).await
         };
         send(&wire::header::encode(wire::Protocol::Hub))
             .await
