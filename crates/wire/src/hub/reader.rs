@@ -12,7 +12,8 @@ pub struct Reader {
     places: u32,
     latest: bool,
     next: Next,
-    /// The seq plus the count of the last head, or the open position.
+    /// The seq plus the count of the last head, or the open position of a complete
+    /// session. A latest session also gets the newest frame below its open position.
     end: u64,
 }
 
@@ -31,9 +32,8 @@ enum Next {
 pub enum FromHome<'m> {
     /// The session is open at the home.
     Opened {
-        /// The open position of a complete session: the first live seq of the index
-        /// that it can get. No head of the session starts below it. 0 for a latest
-        /// session.
+        /// The open position of the session: the first live seq of the index that it
+        /// can get. No head of a complete session starts below it.
         live: u64,
     },
     /// The head of one frame. The run of its ends follows.
@@ -101,7 +101,7 @@ impl Reader {
     ///    session; for a head, [`Error::Places`] when it has more series than places,
     ///    [`Error::Backfill`] when it is on the backfill path, and [`Error::Seq`]
     ///    when it starts before the end of the head before it, or the first head
-    ///    before the open position; [`Error::Run`] for a
+    ///    of a complete session before the open position; [`Error::Run`] for a
     ///    message with more ends than remain; and [`Error::Body`] for a message longer
     ///    than the rest of the body.
     ///
@@ -169,7 +169,9 @@ impl Reader {
         }
         match (Reply::decode(message)?, self.next) {
             (Reply::Opened { live }, Next::Opened) => {
-                self.end = live;
+                if !self.latest {
+                    self.end = live;
+                }
                 Ok((FromHome::Opened { live }, Next::Head))
             }
             (Reply::Head(_), Next::Opened) => Err(Error::Unopened { kind: HEAD }),
@@ -226,6 +228,19 @@ fn body_len(end: u32) -> usize {
 mod tests {
     use super::*;
     use crate::hub::tests::{cut, encode_ends, encode_reply};
+    #[test]
+    fn takes_a_first_head_of_a_latest_session_below_the_open_position() {
+        let mut reader = Reader::new(&Open {
+            mode: Mode::Latest,
+            channels: 1,
+        });
+        assert_eq!(event(&mut reader, &opened_at(5)), Ok(Event::Opened(5)));
+        assert_eq!(
+            event(&mut reader, &head_at(Path::Live, 4, 1, 1)),
+            Ok(Event::Head(1))
+        );
+    }
+
     use proptest::prelude::*;
 
     fn open(channels: u32) -> Open {

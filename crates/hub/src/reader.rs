@@ -395,7 +395,7 @@ struct Local {
 
 impl Local {
     /// Opens a session on `channels` at this node, the home of their index.
-    /// Returns the session and, for a complete one, the seq of the first live sample
+    /// Returns the session and its open position: the seq of the first live sample
     /// that it can get.
     fn open(
         state: &Rc<RefCell<State>>,
@@ -403,13 +403,13 @@ impl Local {
         mode: Mode,
         named: Option<::home::reader::named::Key>,
         hold: Span,
-    ) -> Result<(Self, Option<u64>), Error> {
+    ) -> Result<(Self, u64), Error> {
         let charge = ::home::reader::complete::Charge::Whole;
-        let (session, complete) = match (mode, named) {
+        let (session, live, complete) = match (mode, named) {
             (Mode::Complete, None) => {
                 let (session, complete, live) =
                     Session::complete(state, channels, WINDOW, charge);
-                (session, Some((complete, live)))
+                (session, live, Some(complete))
             }
             (Mode::Complete, Some(named)) => {
                 let (key, live) = {
@@ -425,22 +425,25 @@ impl Local {
                     (state.take_over(opened), live)
                 };
                 let (session, complete) = Session::with_complete(state, key, channels);
-                (session, Some((complete, live)))
+                (session, live, Some(complete))
             }
-            (Mode::Latest, None) => (Session::latest(state, channels), None),
+            (Mode::Latest, None) => {
+                let (session, live) = Session::latest(state, channels);
+                (session, live, None)
+            }
             (Mode::Latest, Some(named)) => {
-                let key = {
+                let (key, live) = {
                     let mut state = state.borrow_mut();
                     let opened = state.home.open_named_latest(channels.index, named)?;
-                    state.take_over(opened)
+                    let live = opened.live;
+                    (state.take_over(opened), live)
                 };
-                (Session::new(state, key, channels), None)
+                (Session::new(state, key, channels), live, None)
             }
         };
-        let live = complete.as_ref().map(|&(_, live)| live);
         let local = Self {
             session,
-            complete: complete.map(|(complete, _)| (complete, 0)),
+            complete: complete.map(|complete| (complete, 0)),
         };
         Ok((local, live))
     }
@@ -493,7 +496,7 @@ impl Reader {
         let mut reader = match home {
             Home::Here(channels) => {
                 listed.slot(&channels.slots);
-                Self::local(state, channels, mode, named, hold)?
+                Self::local(state, channels, mode, named, hold)?.0
             }
             Home::Away(home) if named.is_some() => return Err(Error::Remote { home }),
             Home::Away(home) => {
@@ -516,38 +519,35 @@ impl Reader {
 
     /// Opens an unnamed reader on `channels` from [`Home::Here`], with no wait since
     /// [`find`] gave them. It holds no names: the places of a served read carry them,
-    /// so [`Received::name`] panics.
+    /// so [`Received::name`] panics. Returns the reader and its open position: the
+    /// first live seq of the index that the session can get.
     pub(crate) fn here(
         state: &Rc<RefCell<State>>,
         channels: Channels,
         mode: Mode,
-    ) -> Result<Self, Error> {
+    ) -> Result<(Self, u64), Error> {
         Self::local(state, channels, mode, None, Span::ZERO)
     }
 
-    /// The first live seq that a complete reader did not get: its open position until
-    /// its first frame. 0 for a latest reader.
-    pub(crate) fn live(&self) -> u64 {
-        self.next.unwrap_or(0)
-    }
-
-    /// Opens a reader on `channels` at this node, the home of their index.
+    /// Opens a reader on `channels` at this node, the home of their index. Returns
+    /// the reader and its open position.
     fn local(
         state: &Rc<RefCell<State>>,
         channels: Channels,
         mode: Mode,
         named: Option<::home::reader::named::Key>,
         hold: Span,
-    ) -> Result<Self, Error> {
+    ) -> Result<(Self, u64), Error> {
         let slot = channels.index;
-        let (local, next) = Local::open(state, channels, mode, named, hold)?;
-        Ok(Self {
+        let (local, live) = Local::open(state, channels, mode, named, hold)?;
+        let reader = Self {
             source: Source::Local(local),
             index: slot,
-            next,
+            next: (mode == Mode::Complete).then_some(live),
             lent: Lent::default(),
             frame: None,
-        })
+        };
+        Ok((reader, live))
     }
 
     /// The next frame, as a view of the reader's channels. The view borrows the
@@ -942,10 +942,14 @@ impl Session {
         (session, complete, opened.live)
     }
 
-    /// Opens a latest session on `channels`.
-    pub(crate) fn latest(state: &Rc<RefCell<State>>, channels: Channels) -> Self {
-        let key = state.borrow_mut().home.open_latest(channels.index);
-        Self::new(state, key, channels)
+    /// Opens a latest session on `channels`. Returns the session and its open
+    /// position, the live tail of the index.
+    pub(crate) fn latest(
+        state: &Rc<RefCell<State>>,
+        channels: Channels,
+    ) -> (Self, u64) {
+        let opened = state.borrow_mut().home.open_latest(channels.index);
+        (Self::new(state, opened.key, channels), opened.live)
     }
 
     fn with_complete(

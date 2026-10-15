@@ -1017,6 +1017,45 @@ fn closes_the_session_when_the_future_drops() {
     });
 }
 
+/// `Opened` gives the open position of a latest session that opens after three
+/// frames: the live tail, not 0.
+#[test]
+fn sends_the_live_tail_in_the_opened_of_a_latest_session() {
+    let home = |test: Test, link: Link, incoming| async move {
+        let test = Rc::new(test);
+        let writing = Rc::clone(&test);
+        test.tasks.spawn(async move {
+            let mut writer = writing.writer("a", &["value"]).await;
+            for value in [10, 11, 12] {
+                writing.clock.sleep(SETTLE).await;
+                write(&mut writer, &[writing.now()], &[value]);
+            }
+            writing.clock.sleep(QUIET).await;
+            writing.clock.sleep(SETTLE).await;
+        });
+        assert_eq!(serve(&link, incoming).await, Ok(()));
+    };
+    session(80, Class::Latest, false, home, |mut peer| async move {
+        peer.sleep(QUIET).await;
+        peer.open(Mode::Latest, &[2, 1]).await;
+        let mut reader = Reader::new(&Open {
+            mode: Mode::Latest,
+            channels: 2,
+        });
+        let opened = peer.recv().await.expect("receives").expect("a message");
+        assert_eq!(opened, self::opened(3));
+        assert!(matches!(
+            reader.decode(&opened),
+            Ok(FromHome::Opened { live: 3 })
+        ));
+        let got = got(peer.receiver(), &mut reader).await.expect("a frame");
+        assert_eq!(got.head.range.seq, 2);
+        assert_eq!(decoded(&got, &[I64])[0], [12]);
+        peer.sender.finish().expect("finishes");
+        assert_eq!(peer.recv().await, Ok(None));
+    });
+}
+
 /// One frame that the peer read.
 #[derive(Debug)]
 pub(super) struct Got {

@@ -36,13 +36,13 @@ pub(super) async fn serve(
         }
     });
     let state = &session.state;
-    let Some((reader, places, layout)) =
+    let Some((reader, live, places, layout)) =
         here(state, open, mode, program.as_mut()).await?
     else {
         sender.finish()?;
         return Ok(());
     };
-    start(state, sender, places, reader.live()).await?;
+    start(state, sender, places, live).await?;
     relay(state, reader, layout, program, sender).await
 }
 
@@ -89,14 +89,14 @@ async fn open(
 }
 
 /// Opens the reader of `open` at this node, the home of its index, and gives it with
-/// its places and their layout, or `None` when `program` finishes first. Holds the
+/// its open position, its places, and their layout, or `None` when `program` finishes first. Holds the
 /// reservation of `open` until the open decodes after the wait for the home.
 async fn here<F>(
     state: &Rc<RefCell<State>>,
     open: Held,
     mode: reader::Mode,
     program: Pin<&mut F>,
-) -> Result<Option<(Reader, Matched<Place>, Layout)>, Error>
+) -> Result<Option<(Reader, u64, Matched<Place>, Layout)>, Error>
 where
     F: Future<Output = Result<(), Error>>,
 {
@@ -118,8 +118,8 @@ where
         Home::Away(home) => return Err(refused(reader::Error::Remote { home })),
     };
     let layout = Layout::new(channels.slots.clone(), channels.index);
-    let reader = Reader::here(state, channels, mode).map_err(refused)?;
-    Ok(Some((reader, places, layout)))
+    let (reader, live) = Reader::here(state, channels, mode).map_err(refused)?;
+    Ok(Some((reader, live, places, layout)))
 }
 
 /// Sends `places`, their run, and `Opened` with `live`, the open position, and drops

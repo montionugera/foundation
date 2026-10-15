@@ -722,9 +722,14 @@ impl Shard {
     ///
     /// If the shard does not carry `slot`.
     #[must_use = "the reader stays open until `close_reader` gets its key"]
-    pub fn open_latest(&mut self, slot: Slot) -> reader::Key {
-        let session = self.readers.open_latest(self.place(slot)).into();
-        reader::Key { slot, session }
+    pub fn open_latest(&mut self, slot: Slot) -> reader::Opened<reader::Key> {
+        let place = self.place(slot);
+        let session = self.readers.open_latest(place).into();
+        reader::Opened {
+            key: reader::Key { slot, session },
+            live: self.indexes[place].live_tail(),
+            replaced: None,
+        }
     }
 
     /// Opens a latest session for the named reader `reader` on the index at `slot`, as
@@ -1676,6 +1681,8 @@ mod tests {
             let first = frame(&test.pool, &set, &[(0, &[10]), (1, &[1])]);
             assert_eq!(shard.write(a, LIVE, first), Ok(&[applied(0, 0, 1)][..]));
             let latest = shard.open_latest(Slot::new(0));
+            assert_eq!((latest.live, latest.replaced), (1, None));
+            let latest = latest.key;
             assert!(!shard.carry(Slot::new(0), key(Slot::new(0))));
             let next = frame(&test.pool, &set, &[(0, &[20]), (1, &[2])]);
             assert_eq!(shard.write(a, LIVE, next), Ok(&[applied(0, 1, 1)][..]));
@@ -3995,7 +4002,7 @@ mod tests {
         use super::*;
 
         fn latest(shard: &mut Shard, slot: Slot) -> reader::Key {
-            shard.open_latest(slot)
+            shard.open_latest(slot).key
         }
 
         fn close(shard: &mut Shard, reader: reader::Key) {
@@ -4020,7 +4027,7 @@ mod tests {
                 let mut shard = test.unsynced().await;
                 assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
                 let session = shard.open_complete(Slot::new(0), 1, Charge::Whole).key;
-                let readers = [session.into(), shard.open_latest(Slot::new(0))];
+                let readers = [session.into(), shard.open_latest(Slot::new(0)).key];
                 assert_ne!(readers[0], readers[1]);
                 shard.grant(session, CREDIT);
                 for reader in readers {
@@ -4766,7 +4773,7 @@ mod tests {
         #[test]
         fn panics_at_the_open_of_a_latest_reader_of_an_index_it_does_not_carry() {
             check_not_carried(29, |shard| {
-                let _key = shard.open_latest(Slot::new(3));
+                let _key = shard.open_latest(Slot::new(3)).key;
             });
         }
 
@@ -5953,7 +5960,7 @@ mod tests {
                 data: &data,
             }]);
             let mut shard = test.shard(AREA).await;
-            let latest = shard.open_latest(Slot::new(2));
+            let latest = shard.open_latest(Slot::new(2)).key;
             let marked = test.now();
             let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
             let lens: Vec<_> =

@@ -241,11 +241,14 @@
   home's receive half resets with code 0, not the refusal code, until #2031
   (`laptop.architect`, 2026-10-08T23:49:49Z:
   https://github.com/synnaxlabs/foundation/pull/2003#issuecomment-6071319399).
-  Amended (#2553): `Opened` carries `live`, the open position of a complete session:
-  the first live seq of the index that it can get. A latest session gets 0.
-  `wire::hub::Reader` refuses a first head that starts before `live` with `Seq`, as it
-  refuses a head that starts before the end of the head before it. A remote reader and
-  a client read give the seqs from `live` to the first frame as its gap
+  Amended (#2553): `Opened` carries `live`, the open position of the session: the
+  first live seq of the index that it can get, in each mode, with no sentinel
+  (`laptop.architect`, 2026-10-15T20:18:28Z:
+  https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6201432448).
+  `wire::hub::Reader` refuses a first head of a complete session that starts before
+  `live` with `Seq`, as it refuses a head that starts before the end of the head before
+  it. A latest session also gets the newest frame below `live`. A complete remote reader
+  and a complete client read give the seqs from `live` to the first frame as its gap
   (`hub::reader::Received::gap`). Lost: `Opened` with no field, so a loss between the
   open and the first frame was silent. Decided by `laptop.architect`
   (2026-10-15T19:40:52Z,

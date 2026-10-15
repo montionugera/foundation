@@ -379,7 +379,7 @@ struct Opened {
     /// The grant and the ack of a complete session.
     complete: Option<Complete>,
     layout: Layout,
-    /// The open position of a complete session, 0 for a latest one.
+    /// The open position of the session.
     live: u64,
 }
 
@@ -438,7 +438,10 @@ async fn open(
                 Session::complete(state, channels, limit_bytes, charge);
             (session, Some(complete), live)
         }
-        Mode::Latest => (Session::latest(state, channels), None, 0),
+        Mode::Latest => {
+            let (session, live) = Session::latest(state, channels);
+            (session, None, live)
+        }
     };
     if let Some(complete) = &complete {
         complete.grant(granted);
