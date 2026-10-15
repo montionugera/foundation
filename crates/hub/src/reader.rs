@@ -17,6 +17,7 @@ use types::name::{Name, Selector};
 use types::time::Span;
 
 use crate::channel::Channel;
+use crate::pending::Pending;
 use crate::{Away, End, Ending, State};
 use remote::Remote;
 
@@ -751,42 +752,53 @@ pub(crate) enum Home {
 }
 
 /// What the selector that `select` gives matches once the home of its index is known,
-/// with the items that `items` makes, one for each channel in the order of the
-/// channels it gets, and that home. It first applies the spec in use. It calls
-/// `select` before and after each wait for the home, and keeps no selector or item
-/// across a wait. It calls `items` once, after the last wait.
+/// with the items that `items` makes, one for each channel in the order of the channels
+/// it gets, and that home. It applies the spec in use before each match. A change of a
+/// channel that it matched ends a wait for the home at once, and it matches again. It
+/// calls `select` before and after each wait for the home, and keeps no selector or
+/// item across a wait. It calls `items` once, after the last wait.
 pub(crate) async fn find<S: std::borrow::Borrow<Selector>, T>(
     state: &Rc<RefCell<State>>,
     mut select: impl FnMut() -> S,
     mut items: impl FnMut(&[(&Name, &Channel)]) -> Vec<T>,
 ) -> Result<(Matched<T>, Home), Error> {
-    state.borrow_mut().catch_up();
-    loop {
-        let index = defined(&state.borrow(), select().borrow())?[0].1.index();
-        let away = match crate::homes(state, &[index]).await {
-            Ok(()) => None,
-            Err(Away::Remote(home)) => Some(home),
-            Err(Away::Mesh(stopped)) => return Err(Error::Mesh(stopped)),
+    let (index, homed) = loop {
+        let (index, keys) = {
+            let mut borrowed = state.borrow_mut();
+            borrowed.catch_up();
+            let defined = defined(&borrowed, select().borrow())?;
+            let index = defined[0].1.index();
+            let keys = defined.iter().map(|(_, channel)| channel.key());
+            (index, keys.collect())
         };
-        // A change of the definitions while the open waits can change a channel.
-        let Some((keys, found)) =
-            matched(&state.borrow(), select().borrow(), index, &mut items)?
-        else {
-            continue;
-        };
-        let home = if let Some(home) = away {
-            Home::Away(home)
-        } else {
-            // With no wait since `matched`, so each of `keys` is defined.
-            let slots = state.borrow_mut().slots(index, &keys);
-            Home::Here(Channels {
-                index: slots[found.index],
-                keys,
-                slots,
-            })
-        };
-        return Ok((found, home));
-    }
+        let pending = Pending::new(state, keys);
+        if let Ok(homed) = pending.wait(crate::homes(state, &[index])).await {
+            break (index, homed);
+        }
+    };
+    let away = match homed {
+        Ok(()) => None,
+        Err(Away::Remote(home)) => Some(home),
+        Err(Away::Mesh(stopped)) => return Err(Error::Mesh(stopped)),
+    };
+    // A spec that only adds a channel ends no wait, and the selector can match it now.
+    let (keys, found) = matched(&state.borrow(), select().borrow(), &mut items)?;
+    assert_eq!(
+        keys[found.index], index,
+        "invariant: no registered channel changed, so the index stays"
+    );
+    let home = if let Some(home) = away {
+        Home::Away(home)
+    } else {
+        // With no wait since `matched`, so each of `keys` is defined.
+        let slots = state.borrow_mut().slots(index, &keys);
+        Home::Here(Channels {
+            index: slots[found.index],
+            keys,
+            slots,
+        })
+    };
+    Ok((found, home))
 }
 
 /// The defined channels that `select` matches, in name order, each on one index.
@@ -811,23 +823,16 @@ fn defined<'a>(
     Ok(found)
 }
 
-/// The keys of what a selector matched, and what it matched.
-type Found<T> = (Box<[channel::Key]>, Matched<T>);
-
 /// The key of each channel that `select` matches, in name order, then of their one
 /// index when `select` does not match it, and what `select` matched, with the items
-/// that `items` makes. `None`, with no call of `items`, when their index is not
-/// `index`.
+/// that `items` makes.
 fn matched<T>(
     state: &State,
     select: &Selector,
-    index: channel::Key,
     mut items: impl FnMut(&[(&Name, &Channel)]) -> Vec<T>,
-) -> Result<Option<Found<T>>, Error> {
+) -> Result<(Box<[channel::Key]>, Matched<T>), Error> {
     let mut found = defined(state, select)?;
-    if found[0].1.index() != index {
-        return Ok(None);
-    }
+    let index = found[0].1.index();
     let at = if let Some(at) =
         found.iter().position(|(_, channel)| channel.key() == index)
     {
@@ -843,7 +848,7 @@ fn matched<T>(
     };
     let keys = found.iter().map(|(_, channel)| channel.key()).collect();
     let items = items(&found);
-    Ok(Some((keys, Matched { items, index: at })))
+    Ok((keys, Matched { items, index: at }))
 }
 
 /// A session at the shard's home, through a mask of the reader's channels: the frames
@@ -915,7 +920,10 @@ impl Session {
         key: ::home::reader::Key,
         channels: Channels,
     ) -> Self {
-        let ending = state.borrow_mut().readers.add(key, channels.keys);
+        let ending = state
+            .borrow_mut()
+            .readers
+            .add(key, channels.keys.into_vec());
         Self {
             state: Rc::clone(state),
             key,
