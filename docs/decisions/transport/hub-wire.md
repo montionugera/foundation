@@ -85,7 +85,9 @@
   valid (lost: a stop code, which can cut off the frames sent before it; the architect,
   2026-10-07T21:07:50Z,
   https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6046877541).
-  `Behind` and `Credit` in a latest session are not valid (lost: accept them in either
+  Amended (#274 B1): the home sends `Behind` only at a frame that the buffer lost for no
+  room. The session reads each other missed frame from disk (HUB SESSIONS). `Behind`
+  and `Credit` in a latest session are not valid (lost: accept them in either
   mode, which lets a remote latest reader give `Ended::Behind`; the architect,
   2026-10-07T21:34:58Z,
   https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6047310321). The

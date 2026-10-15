@@ -232,9 +232,10 @@ impl<C> Context<C> {
     /// selector before the next run, so a channel that the spec defined again with a
     /// new key is read, and the open gives `Config` when the selector matches nothing.
     /// A reader with a hold opens again at its held position while its index keeps its
-    /// key. While the home keeps no frame there, each later run gets `Behind`. Each
-    /// close starts the hold again, so a hold longer than the wait between two runs
-    /// never ends.
+    /// key, and reads the frames after it from disk. Past a frame that the buffer lost
+    /// for no room, each later run within the hold gets `Behind` (#2553). Each close
+    /// starts the hold again, so a hold longer than the wait between two runs never
+    /// ends.
     pub fn reader(&mut self) -> Option<hub::reader::Reader> {
         self.reader.take()
     }

@@ -10,23 +10,23 @@
   `Channels::reader` that `check` gave, and the run takes it through `Context::reader`.
   A failed open ends that run with the class of its error (KIND TABLE), and the kind's
   `run` is not called. A run whose reader ends with
-  `hub::reader::Ended::Behind` returns `Retry`, and the frames between the two opens
-  do not come again before #274 (`laptop.architect-2`, 2026-10-11T05:11:21Z:
+  `hub::reader::Ended::Behind` (it reached a frame that the buffer lost for no room)
+  returns `Retry`. With no hold, the frames between the two opens do not come again
+  (`laptop.architect-2`, 2026-10-11T05:11:21Z:
   https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105720439, items 1
   and 3; 2026-10-11T05:23:35Z:
   https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, items 2,
   3, and 5). The reader open waits while the mesh names no home for the index that it
   selects. A reader with a hold opens again at its held position while its index keeps
-  its key, so it stays `Behind` at each open within its hold, and each close starts the
-  hold again (HOME NAMED READERS). So a hold longer than the longest wait of the backoff
-  never ends while the node runs with that spec. The reader then gets no frame again
-  until #274 reads from disk (the test:
-  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6106518626). The wait
-  for a home, and that the supervisor does no more for a held reader before #274, are
-  decided by `laptop.architect-2` (2026-10-11T07:34:44Z:
+  its key, and reads the frames after it from disk, then the live ones (#274 B1, HOME
+  NAMED READERS). Each close starts the hold again, so a hold longer than the longest
+  wait of the backoff never ends while the node runs with that spec. A held reader whose
+  next frame the buffer lost for no room then gets `Behind` at each open, and no frame
+  again, until #2553. The wait for a home, and that the supervisor does no more for a
+  held reader before #2553, are decided by `laptop.architect-2` (2026-10-11T07:34:44Z:
   https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106726413, questions
-  1 and 2). The text from "A reader with a hold" to the #274 test is from
-  `laptop.architect` (2026-10-11T07:34:36Z:
+  1 and 2). The first text from "A reader with a hold" to "never ends", which #274 B1
+  amends, is from `laptop.architect` (2026-10-11T07:34:36Z:
   https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106725343), and
   "while its index keeps its key" is from `laptop.architect` (2026-10-12T20:35:29Z:
   https://github.com/synnaxlabs/foundation/pull/2488#issuecomment-6132165963). Each run
