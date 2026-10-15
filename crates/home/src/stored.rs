@@ -155,20 +155,23 @@ pub(crate) fn read(body: &[u8]) -> impl Iterator<Item = Series<'_>> {
     })
 }
 
+/// The most key sets whose maps one [`Decoder`] keeps.
+const SETS: usize = 4;
+
 /// Makes the frames of stored data entries again, of the key set that the caller
-/// gives. It keeps the map of each key set it was given and of the channels of the
-/// last entry, so a run of entries of one key set and one list of channels maps each
-/// series once. Each key set given to one decoder comes from one interner.
+/// gives. It keeps the map of each of the last [`SETS`] key sets it was given and of
+/// the channels of the last entry, so a run of entries of one key set and one list of
+/// channels maps each series once. Each key set given to one decoder comes from one
+/// interner.
 #[derive(Debug, Default)]
 pub(crate) struct Decoder {
-    /// The key set of the last frame.
-    set: Option<key_set::Key>,
-    /// The entry of each channel and type in each key set given so far.
-    entry_of: hash::Map<key_set::Key, EntryOf>,
+    /// The key and the entry of each channel and type of each of the last [`SETS`]
+    /// key sets given, the key set of the last frame first.
+    maps: Vec<(key_set::Key, EntryOf)>,
     /// The channel and type of each series of the last entry, in entry order.
     channels: Vec<(channel::Key, Type)>,
-    /// The entry in `set` and the position in `channels` of each series that `set`
-    /// holds, in increasing entry order.
+    /// The entry in the key set of the last frame and the position in `channels` of
+    /// each series that the key set holds, in increasing entry order.
     kept: Vec<(usize, usize)>,
     /// The start and length of each series in the body of the entry.
     spans: Vec<(usize, usize)>,
@@ -232,16 +235,24 @@ impl Decoder {
     fn map(&mut self, set: &KeySet, body: &[u8]) {
         let channels = || read(body).map(|series| (series.channel, series.data_type));
         let key = set.key();
-        if self.set == Some(key) && channels().eq(self.channels.iter().copied()) {
+        let last = self.maps.first().map(|&(last, _)| last);
+        if last == Some(key) && channels().eq(self.channels.iter().copied()) {
             return;
         }
-        self.set = Some(key);
-        let entry_of = self.entry_of.entry(key).or_insert_with(|| {
+        let at = self.maps.iter().position(|&(other, _)| other == key);
+        let at = at.unwrap_or_else(|| {
+            let evicted = (self.maps.len() == SETS).then(|| self.maps.pop());
+            let mut entry_of =
+                evicted.flatten().map(|(_, map)| map).unwrap_or_default();
+            entry_of.clear();
             let entries = set.entries().iter().enumerate();
-            entries
-                .map(|(at, entry)| ((entry.key, entry.data_type), at))
-                .collect()
+            entry_of
+                .extend(entries.map(|(at, entry)| ((entry.key, entry.data_type), at)));
+            self.maps.push((key, entry_of));
+            self.maps.len() - 1
         });
+        self.maps[..=at].rotate_right(1);
+        let entry_of = &self.maps[0].1;
         self.channels.clear();
         self.channels.extend(channels());
         self.kept.clear();
@@ -929,6 +940,36 @@ mod tests {
             assert_eq!(keys(&a, &first), at(&[1, 2]));
             assert_eq!(keys(&b, &second), at(&[1, 2, 3]));
             assert_eq!(keys(&b, &third), at(&[1, 3]));
+        }
+        #[test]
+        fn keeps_the_maps_of_the_last_key_sets_only() {
+            let all = data(&[2, 3, 4, 5, 6]);
+            let index = key(Slot::new(1));
+            let mut interner = create_interner(&[1], &[Group { index, data: &all }]);
+            let full = interner.intern(&[Group { index, data: &all }]);
+            let sets: Vec<_> = (2..=6)
+                .map(|n| {
+                    interner.intern(&[Group {
+                        index,
+                        data: &data(&[n]),
+                    }])
+                })
+                .collect();
+            let pool = create_pool(1 << 16);
+            let (_, stored) = stored(&pool, &full, 1);
+            let mut decoder = Decoder::default();
+            for n in [0, 1, 2, 3, 4, 0, 3] {
+                let set = &sets[n];
+                let made = decoder.frame(&pool, set, &stored);
+                let made = made.expect("room").expect("a data entry");
+                let keys: Vec<_> =
+                    series(&made, set).into_iter().map(|(k, _)| k).collect();
+                let slot = u32::try_from(n + 2).expect("few sets");
+                assert_eq!(keys, [key(Slot::new(1)), key(Slot::new(slot))]);
+            }
+            // The bound on memory shows in no frame, so this reads `maps`.
+            let held: Vec<_> = decoder.maps.iter().map(|&(set, _)| set).collect();
+            assert_eq!(held, [3, 0, 4, 2].map(|n| sets[n].key()));
         }
     }
 
