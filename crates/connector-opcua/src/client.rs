@@ -38,8 +38,8 @@ const HEADER: usize = 24;
 /// or a 64-bit integer (8 bytes). A GUID key (19 bytes) would need 18.
 const SPLIT: usize = 7;
 
-/// The value of a node until the answer of its request. No read gives it: a read ends
-/// only when each of its requests has its answer.
+/// The value of a slot that no read has written yet. No read gives it: a read ends only
+/// when each of its requests has its answer, which writes each of its values.
 const UNREAD: Result<Value, Status> = Err(Status::BAD_UNEXPECTED_ERROR);
 
 const _: () = assert!(
@@ -268,11 +268,16 @@ impl Client {
                 .into_iter()
                 .find(|&(bytes, most)| bytes > most)
         };
+        let zero = Node {
+            namespace: 0,
+            key: Key::Number(0),
+        };
+        // SAFETY: `zero` has no name.
+        let rest = unsafe { ffi::shim_read_item((&zero).into()) } - id_bytes(&zero);
         let mut counts: Vec<usize> = Vec::new();
         let mut ask = empty;
         for (index, node) in nodes.iter().enumerate() {
-            // SAFETY: the name of `node` lives through the call.
-            let item = unsafe { ffi::shim_read_item(node.into()) };
+            let item = rest + id_bytes(node);
             let count = counts.last().copied();
             let next = count.is_none_or(|count| {
                 self.per_read.is_some_and(|most| count == most.get())
@@ -503,8 +508,20 @@ impl Drop for Client {
     }
 }
 
+/// Gives the bytes of the `NodeId` of `node` in the shortest binary form, the form that
+/// open62541 encodes.
+fn id_bytes(node: &Node) -> usize {
+    match &node.key {
+        Key::Number(key) if node.namespace == 0 && *key <= 0xFF => 2,
+        Key::Number(key) if node.namespace <= 0xFF && *key <= 0xFFFF => 4,
+        Key::Number(_) => 7,
+        Key::Name(name) => 7 + name.as_str().len(),
+    }
+}
+
 /// The Read requests of a list of nodes, built once. It holds at most one request per
-/// node: the `MaxNodesPerRead` of the server and the count of nodes set its length.
+/// node: the count of nodes, the `MaxNodesPerRead` of the server, and the message sizes
+/// of the session set its length.
 pub(crate) struct Nodes {
     /// Each request, in node order.
     parts: Vec<Part>,
@@ -562,8 +579,7 @@ impl Nodes {
         }
     }
 
-    /// Gives the count of nodes of each request, in order. A server shows a wrong split
-    /// only as a failed read, so tests read the split here.
+    /// Gives the count of nodes of each request, in order.
     #[cfg(test)]
     fn counts(&self) -> Vec<usize> {
         self.parts.iter().map(|part| part.slots.count).collect()
@@ -573,11 +589,14 @@ impl Nodes {
     ///
     /// # Panics
     ///
-    /// If `self` has more than one request.
+    /// Unless `self` has exactly one request.
     #[cfg(feature = "sim")]
     pub(crate) fn raw(&self) -> *mut ffi::ReadRequest {
         let [part] = self.parts[..] else {
-            panic!("invariant: a bench reads a list of one request");
+            panic!(
+                "invariant: a bench reads a list of one request, not {}",
+                self.parts.len()
+            );
         };
         part.raw.as_ptr()
     }

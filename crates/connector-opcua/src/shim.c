@@ -760,9 +760,12 @@ UA_ReadRequest *shim_read_new(const shim_node *nodes, size_t count) {
     }
     request->nodesToReadSize = count;
     for(size_t i = 0; i < count; i++) {
-        UA_ReadValueId read;
-        read_value_init(&read, nodes[i]);
-        if(UA_ReadValueId_copy(&read, &request->nodesToRead[i]) != UA_STATUSCODE_GOOD) {
+        UA_ReadValueId *read = &request->nodesToRead[i];
+        read_value_init(read, nodes[i]);
+        /* The copy clears its target first, so a failed copy leaves no borrowed name
+         * for the delete. */
+        UA_NodeId name = read->nodeId;
+        if(UA_NodeId_copy(&name, &read->nodeId) != UA_STATUSCODE_GOOD) {
             UA_ReadRequest_delete(request);
             return NULL;
         }

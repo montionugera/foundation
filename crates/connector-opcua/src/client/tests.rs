@@ -17,7 +17,8 @@ use sim::{Sim, node};
 use types::time::Span;
 
 use super::{
-    Client, Large, Nodes, READS, Reads, Request, SPLIT, Slots, UNREAD, answer, most,
+    Client, Large, Nodes, READS, Reads, Request, SPLIT, Slots, UNREAD, answer,
+    id_bytes, most,
 };
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
@@ -1476,19 +1477,86 @@ fn a_request_takes_at_most_the_max_nodes_per_read_of_the_server() {
     assert_eq!(read_per(10, 0), (vec![], Ok(vec![]), vec![]));
 }
 
-/// A `MaxNodesPerRead` that the server lacks, or that is not a `UInt32`, is no limit.
+/// The size that `nodes` gives the read of each node is the size that open62541
+/// encodes, at each bound of each form of a `NodeId`.
+#[test]
+fn the_size_of_the_read_of_a_node_is_its_size_in_open62541() {
+    let zero = Node {
+        namespace: 0,
+        key: Key::Number(0),
+    };
+    // SAFETY: `zero` has no name.
+    let rest = unsafe { ffi::shim_read_item((&zero).into()) } - id_bytes(&zero);
+    let number = |namespace, key| Node {
+        namespace,
+        key: Key::Number(key),
+    };
+    let name = |namespace, text: &str| Node {
+        namespace,
+        key: Key::Name(Name::new(text).expect("a name")),
+    };
+    let nodes = [
+        number(0, 0xFF),
+        number(0, 0x100),
+        number(1, 0),
+        number(0xFF, 0xFFFF),
+        number(0xFF, 0x1_0000),
+        number(0x100, 0),
+        number(u16::MAX, u32::MAX),
+        name(0, "a"),
+        name(u16::MAX, "\u{e9}"),
+        name(3, &"n".repeat(300)),
+    ];
+    for node in &nodes {
+        // SAFETY: the name of `node` lives through the call.
+        let open62541 = unsafe { ffi::shim_read_item(node.into()) };
+        assert_eq!(rest + id_bytes(node), open62541, "{node:?}");
+    }
+}
+
+/// A `MaxNodesPerRead` that the server lacks, or that is not a `UInt32`, is no limit:
+/// the server gets one Read for the connect and one for the 25 nodes.
 #[test]
 fn a_max_nodes_per_read_that_is_absent_or_of_another_type_is_no_limit() {
-    let (counts, read, values) = read_on(24, |_| {});
-    assert_eq!((counts, read), (vec![25], Ok(values)));
-    let (counts, read, values) = read_on(24, |server| {
-        let node = Node {
-            namespace: 0,
-            key: Key::Number(ffi::MAX_NODES_PER_READ),
-        };
-        server.add_scalar(&node, Value::U64(1));
-    });
-    assert_eq!((counts, read), (vec![25], Ok(values)));
+    let wrong = Node {
+        namespace: 0,
+        key: Key::Number(ffi::MAX_NODES_PER_READ),
+    };
+    for limit in [None, Some(Value::U64(1))] {
+        let wrong = wrong.clone();
+        let ((read, values, responses), _) = run(0, async move |node| {
+            serve(&node, 4, async |mut peer| {
+                if let Some(limit) = limit {
+                    peer.server.add_scalar(&wrong, limit);
+                }
+                let nodes: Vec<_> = (0..25).map(numbered).collect();
+                let values: Vec<_> =
+                    (0..25).map(|index| Ok(Value::U32(index))).collect();
+                for (index, node) in (0..).zip(&nodes) {
+                    peer.server.add_scalar(node, Value::U32(index));
+                }
+                let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
+                let mut responses = 0;
+                let rewrite = |message: &mut Vec<u8>| {
+                    if handle(message).is_some() {
+                        responses += 1;
+                    }
+                };
+                let read = relayed(&node, &Relay::default(), rewrite, async {
+                    let mut client =
+                        peer.connect(&url).await.expect("the client connects");
+                    let nodes = client.nodes(&nodes).expect("the nodes fit");
+                    let read = client.read(&nodes).await.map(<[_]>::to_vec);
+                    client.close().await;
+                    read
+                })
+                .await;
+                (read, values, responses)
+            })
+            .await
+        });
+        assert_eq!((read, responses), (Ok(values), 2));
+    }
 }
 
 /// A read of more requests than the reads in flight sends each next request when one
