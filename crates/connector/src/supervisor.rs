@@ -4410,6 +4410,65 @@ mod tests {
         assert_eq!(read.got[2], Ok(vec![1]));
     }
 
+    /// The first run acks the frame at 100 ms. The frame at 1 s finds no room, so the
+    /// held position of each later run is at a lost seq.
+    #[test]
+    fn opens_a_held_reader_at_a_lost_frame_behind_each_time() {
+        let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);
+        let read = read_through(
+            Some(settings(hour)),
+            |mut ctx, got| async move {
+                let runs = got.lock().expect("no panic").len();
+                let mut reader = ctx.reader().expect("a reader");
+                let next = match reader.next().await {
+                    Ok(received) => {
+                        let position = received.position();
+                        let value = values(&received);
+                        reader.ack(position);
+                        Ok(value)
+                    }
+                    Err(ended) => Err(ended),
+                };
+                got.lock().expect("no panic").push(next.clone());
+                if runs == 0 {
+                    ctx.clock().sleep(ms(2_000)).await;
+                }
+                if runs == 2 {
+                    return Ok(());
+                }
+                next?;
+                Err(Error::Retry("again".into()))
+            },
+            |hub, clock| async move {
+                let channels = vec![name("plant.value")];
+                let mut writer =
+                    open_writer(&hub, "plant.other", Authority(1), channels).await;
+                let start = clock.now();
+                clock.sleep_until(start + ms(100)).await;
+                let stamp = writer.now().nanos();
+                let outcomes = write_value(&mut writer, stamp, 1);
+                assert!(
+                    matches!(outcomes[..], [hub::home::Outcome::Applied { .. }]),
+                    "{outcomes:?}"
+                );
+                clock.sleep_until(start + ms(1_000)).await;
+                let mut held = fill(&writer);
+                drop(held.pop());
+                let stamp = writer.now().nanos();
+                let outcomes = write_value(&mut writer, stamp, 2);
+                assert!(
+                    matches!(outcomes[..], [hub::home::Outcome::Lost { .. }]),
+                    "{outcomes:?}"
+                );
+                drop(held);
+            },
+        );
+        read.end.expect("ok");
+        // Known bug #2553: each open within the hold lands on the lost seq.
+        let behind = Err(hub::reader::Ended::Behind);
+        assert_eq!(read.got, [Ok(vec![1]), behind.clone(), behind]);
+    }
+
     /// The reader of a restart opens before the start status, as the first reader
     /// does, so each run reads `state` 0 of its own start. A run that gets no frame in
     /// 10 s records `None`.
