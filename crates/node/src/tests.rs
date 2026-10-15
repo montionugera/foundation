@@ -4415,12 +4415,12 @@ pub(crate) mod port {
 
         /// The first file of the mesh's log.
         const LOG: &str = "mesh/log/log-0";
-        /// A time by which the mesh of a node opens, and before its first write after
-        /// the open.
+        /// A time by which the mesh of a node opens and its group leads, with no write
+        /// of the log left.
         const OPEN: Span = Span::from_nanos(10_000_000);
-        /// The time after [`OPEN`], in nanoseconds, at which a write of [`LOG`] that
-        /// fails from [`OPEN`] stops the group in the sim.
-        const WRITE: i64 = 1_794_021_365;
+        /// The time after [`OPEN`], in nanoseconds, at which the failed write of
+        /// [`fail_write_at_open`] stops the group in the sim.
+        const WRITE: i64 = 98_549;
 
         /// Why the group stops when a write of [`LOG`] fails.
         fn write_failed() -> ::mesh::Stopped {
@@ -4429,6 +4429,20 @@ pub(crate) mod port {
                 operation: env::files::Operation::WriteAt,
                 code: 5,
             }))
+        }
+
+        /// At [`OPEN`], fails the next write of [`LOG`] on `host`, then sets the home
+        /// of a channel other than [`INDEX`] in the mesh of `node`, which makes that
+        /// write.
+        fn fail_write_at_open(node: &Node, host: &sim::node::Node) {
+            let at = sim::node::Config::default().monotonic + OPEN;
+            let own = host.clone();
+            node.operate(move |ops| async move {
+                own.clock().sleep_until(at).await;
+                own.fail_file(Path::new(LOG), env::files::Operation::WriteAt);
+                let set = ops.mesh().set_home(channel::Key::from_u128(8), OWN).await;
+                assert_eq!(set, Err(::mesh::Error::Stopped(write_failed())));
+            });
         }
 
         /// The member `key` with `private_key`, whose node listens on `host`.
@@ -5677,8 +5691,7 @@ pub(crate) mod port {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = keyed(&mut sim, 2);
             let node = start_alone(&host);
-            assert_eq!(sim.run_for(OPEN), Ok(()));
-            host.fail_file(Path::new(LOG), env::files::Operation::WriteAt);
+            fail_write_at_open(&node, &host);
             assert_eq!(sim.run(), Ok(()));
             assert_eq!(node.join(), Err(Error::Group(write_failed())));
             assert_eq!(
@@ -5700,6 +5713,7 @@ pub(crate) mod port {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = keyed(&mut sim, 2);
             let node = start_alone(&host);
+            fail_write_at_open(&node, &host);
             node.spawn(|_| {
                 let panics = Panics;
                 async move {
@@ -5707,8 +5721,6 @@ pub(crate) mod port {
                     drop(panics);
                 }
             });
-            assert_eq!(sim.run_for(OPEN), Ok(()));
-            host.fail_file(Path::new(LOG), env::files::Operation::WriteAt);
             assert_eq!(
                 sim.run(),
                 Err(sim::Error::Panicked {
@@ -5728,6 +5740,7 @@ pub(crate) mod port {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = keyed(&mut sim, 2);
             let node = start_alone(&host);
+            fail_write_at_open(&node, &host);
             let at = sim::node::Config::default().monotonic
                 + OPEN
                 + Span::from_nanos(WRITE - 1);
@@ -5736,8 +5749,6 @@ pub(crate) mod port {
                 own.clock().sleep_until(at).await;
                 panic!("a task panics");
             });
-            assert_eq!(sim.run_for(OPEN), Ok(()));
-            host.fail_file(Path::new(LOG), env::files::Operation::WriteAt);
             assert_eq!(
                 sim.run(),
                 Err(sim::Error::Panicked {
@@ -5756,7 +5767,7 @@ pub(crate) mod port {
         }
 
         /// A task that panics after the group stops, before the node sees the stop:
-        /// `join` gives the panic. At [`WRITE`], seven idle tasks that wake at that
+        /// `join` gives the panic. At [`WRITE`], eight idle tasks that wake at that
         /// instant make the sim run the group's stop, then this task, before the node
         /// sees the stop. The task asserts that the group stopped before it panics.
         #[test]
@@ -5764,9 +5775,10 @@ pub(crate) mod port {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = keyed(&mut sim, 2);
             let node = start_alone(&host);
+            fail_write_at_open(&node, &host);
             let at =
                 sim::node::Config::default().monotonic + OPEN + Span::from_nanos(WRITE);
-            for _ in 0..7 {
+            for _ in 0..8 {
                 let own = host.clone();
                 node.spawn(move |_| async move {
                     own.clock().sleep_until(at).await;
@@ -5782,8 +5794,6 @@ pub(crate) mod port {
                 assert_eq!(polled, Poll::Ready(Err(write_failed())));
                 panic!("a task panics");
             });
-            assert_eq!(sim.run_for(OPEN), Ok(()));
-            host.fail_file(Path::new(LOG), env::files::Operation::WriteAt);
             assert_eq!(
                 sim.run(),
                 Err(sim::Error::Panicked {
@@ -5802,13 +5812,14 @@ pub(crate) mod port {
         }
 
         /// Breaks the node's UDP socket from a task on shard 0 at `OPEN + after`, with
-        /// each write of the log failing from `OPEN`. `idle` more tasks on shard 0 wake
-        /// at that instant, which changes only the order of the sim's picks. Gives
+        /// the write of [`fail_write_at_open`] failing. `idle` more tasks on shard 0
+        /// wake at that instant, which changes only the order of the sim's picks. Gives
         /// whether the task ran, and the node's `join`.
         fn udp_fault_at(idle: usize, after: Span) -> (bool, Result<(), Error>) {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = keyed(&mut sim, 2);
             let node = start_alone(&host);
+            fail_write_at_open(&node, &host);
             let at = sim::node::Config::default().monotonic + OPEN + after;
             for _ in 0..idle {
                 let own = host.clone();
@@ -5825,8 +5836,6 @@ pub(crate) mod port {
                 done.store(true, Ordering::SeqCst);
                 std::future::pending::<()>().await;
             });
-            assert_eq!(sim.run_for(OPEN), Ok(()));
-            host.fail_file(Path::new(LOG), env::files::Operation::WriteAt);
             assert_eq!(sim.run(), Ok(()));
             (ran.load(Ordering::SeqCst), node.join())
         }
