@@ -18,5 +18,10 @@
   Each shard runs on its own hosted VM (`ubuntu-latest`, #2727). `cargo mutants` runs in
   a systemd scope with a memory cap, no swap, and `OOMPolicy=continue`, so a mutant that
   allocates in a loop kills only its test, and the shard reports the mutant. Cost: each
-  shard that gets a mutant builds and tests the code without mutants, so a PR with four
-  or more mutants spends four baselines in place of one.
+  shard that gets a mutant builds and tests the code without mutants, so a PR with eight
+  or more mutants spends eight baselines in place of one.
+  Amended (`laptop.monitor`, 2026-10-15, for the person: "Each mutant shard is taking
+  45 min + in some cases."): eight shards in place of four, `--shard <k>/8`, as hosted
+  runners are free. The test timeout is 3 times the test time of the baseline
+  (`--timeout-multiplier 3`), not the default 5, so a mutant that hangs costs about 14
+  min, not 23.5. Four jobs on 4 vCPU can run slower than the baseline, so not lower.
