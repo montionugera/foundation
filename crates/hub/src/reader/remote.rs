@@ -123,13 +123,14 @@ impl Remote {
     /// session, which dials the home, opens the session, and then takes its frames,
     /// and waits until the home opened it. A removal of a channel during the open ends
     /// the session at its first take. Returns the session, the slot of each channel of
-    /// `matched` in its order, and the open position that the home gave.
+    /// `matched` in its order, and the open position that the home gave, or `None`
+    /// when the session ended before the home opened it.
     pub(super) async fn open(
         state: &Rc<RefCell<State>>,
         home: types::node::Key,
         matched: Matched<(channel::Key, Type)>,
         mode: Mode,
-    ) -> Result<(Self, Box<[channel::Slot]>, u64), Error> {
+    ) -> Result<(Self, Box<[channel::Slot]>, Option<u64>), Error> {
         let (index, _) = matched.items[matched.index];
         let data: Vec<_> = matched
             .items
@@ -231,14 +232,14 @@ impl Drop for Remote {
 }
 
 impl Queue {
-    /// The result of the open once the task has it, else `Ok(0)` once the session
-    /// ended, as no frame comes, else `Pending` with the waker kept.
-    fn poll_open(&mut self, cx: &Context<'_>) -> Poll<Result<u64, Error>> {
+    /// The result of the open once the task has it, else `Ok(None)` once the session
+    /// ended, else `Pending` with the waker kept.
+    fn poll_open(&mut self, cx: &Context<'_>) -> Poll<Result<Option<u64>, Error>> {
         if let Some(opened) = self.opened.take() {
-            return Poll::Ready(opened);
+            return Poll::Ready(opened.map(Some));
         }
         if self.ended.is_some() {
-            return Poll::Ready(Ok(0));
+            return Poll::Ready(Ok(None));
         }
         keep(&mut self.taker, cx);
         Poll::Pending

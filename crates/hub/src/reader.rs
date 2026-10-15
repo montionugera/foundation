@@ -5,7 +5,6 @@ pub(crate) mod remote;
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::future::poll_fn;
-use std::mem;
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -347,9 +346,7 @@ pub struct Reader {
     source: Source,
     /// The slot of the reader's index.
     index: channel::Slot,
-    /// The seq of the first live sample that a complete reader did not get, or
-    /// `None` for a latest reader.
-    next: Option<u64>,
+    mode: Mode,
     lent: Lent,
     /// The frame that the last [`Received`] lends.
     frame: Option<Frame>,
@@ -357,18 +354,31 @@ pub struct Reader {
 
 /// What a reader lends to each [`Received`], by one reference, so that `Received`
 /// stays as small as with no names.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Lent {
     /// `None` for a reader of a client read. A box keeps the reader small.
     names: Option<Box<Names>>,
     /// The `live` of the last position that [`Received::position`] gave, or `None`
     /// before it gave one. The positions of a reader rise, so it is the highest.
     given: Cell<Option<u64>>,
-    /// The seqs of the index in the frame that the last [`Received`] lends.
+    /// The seqs of the index in the frame that the last [`Received`] lends, or the
+    /// empty range at the open position before the first frame.
     seqs: Range<u64>,
     /// The first live seq that the reader had not got before that frame: the start of
     /// its gap.
     from: u64,
+}
+
+impl Lent {
+    /// What a reader that opened at `live` lends before its first frame.
+    fn at(live: u64) -> Self {
+        Self {
+            names: None,
+            given: Cell::new(None),
+            seqs: live..live,
+            from: live,
+        }
+    }
 }
 
 /// Where a reader's frames come from.
@@ -504,8 +514,9 @@ impl Reader {
                 Self {
                     index: slots[index],
                     source: Source::Remote(Box::new(remote)),
-                    next: (mode == Mode::Complete).then_some(live),
-                    lent: Lent::default(),
+                    mode,
+                    // A session that ended before it opened gives no frame.
+                    lent: Lent::at(live.unwrap_or_default()),
                     frame: None,
                 }
             }
@@ -540,8 +551,8 @@ impl Reader {
         let reader = Self {
             source: Source::Local(local),
             index: slot,
-            next: (mode == Mode::Complete).then_some(live),
-            lent: Lent::default(),
+            mode,
+            lent: Lent::at(live),
             frame: None,
         };
         Ok((reader, live))
@@ -582,9 +593,9 @@ impl Reader {
                 Source::Remote(remote) => remote.take().await?,
             };
             let seqs = lens.seqs(&frame);
-            self.lent.from = match &mut self.next {
-                Some(next) => mem::replace(next, seqs.end),
-                None => seqs.start,
+            self.lent.from = match self.mode {
+                Mode::Complete => self.lent.seqs.end,
+                Mode::Latest => seqs.start,
             };
             self.lent.seqs = seqs;
             let frame = self.frame.insert(frame);
