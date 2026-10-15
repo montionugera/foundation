@@ -4365,6 +4365,51 @@ mod tests {
         assert_eq!(read.got, [Ok(vec![1]), Ok(vec![1]), Ok(vec![1])]);
     }
 
+    /// A run whose held reader reads from disk while the pool has no block gets
+    /// `Retry` from the end of its reader, and the next run reads the frame.
+    #[test]
+    fn retries_a_read_from_disk_while_the_pool_is_full() {
+        let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);
+        let read = read_through(
+            Some(settings(hour)),
+            |mut ctx, got| async move {
+                let runs = got.lock().expect("no panic").len();
+                let mut reader = ctx.reader().expect("a reader");
+                let held = if runs == 1 {
+                    let channels = status_names("plant.write", &[]);
+                    let writer = ctx.writer(channels, Authority(1), None).await;
+                    let writer = writer.expect("the writer opens");
+                    Some((fill(&writer), writer))
+                } else {
+                    None
+                };
+                let next = reader.next().await.map(|received| values(&received));
+                drop(held);
+                got.lock().expect("no panic").push(next.clone());
+                next?;
+                if runs == 0 {
+                    return Err(Error::Retry("again".into()));
+                }
+                Ok(())
+            },
+            |hub, clock| write_at(hub, clock, vec![(ms(100), 1)]),
+        );
+        read.end.expect("ok");
+        assert!(
+            matches!(
+                read.got[..],
+                [
+                    Ok(_),
+                    Err(hub::reader::Ended::Pool(block::Error::Exhausted { .. })),
+                    Ok(_)
+                ]
+            ),
+            "{:?}",
+            read.got
+        );
+        assert_eq!(read.got[2], Ok(vec![1]));
+    }
+
     /// The reader of a restart opens before the start status, as the first reader
     /// does, so each run reads `state` 0 of its own start. A run that gets no frame in
     /// 10 s records `None`.

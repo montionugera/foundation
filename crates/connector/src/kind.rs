@@ -506,7 +506,7 @@ fn writer_error(error: hub::writer::Error) -> Error {
 }
 
 /// The class of the end of the reader of a run, for a kind that returns it with `?`:
-/// `Retry` for `Behind`, `Removed`, `Replaced`, and `Buffer`.
+/// `Retry` for `Behind`, `Removed`, `Replaced`, `Buffer`, and `Pool`.
 ///
 /// # Panics
 ///
@@ -520,14 +520,15 @@ impl From<hub::reader::Ended> for Error {
     fn from(ended: hub::reader::Ended) -> Self {
         use hub::reader::Ended;
         match ended {
-            Ended::Behind | Ended::Removed(_) | Ended::Replaced | Ended::Buffer(_) => {
-                Self::Retry(Box::new(ended))
-            }
+            Ended::Behind
+            | Ended::Removed(_)
+            | Ended::Replaced
+            | Ended::Buffer(_)
+            | Ended::Pool(_) => Self::Retry(Box::new(ended)),
             Ended::Stream(_)
             | Ended::Refused(_)
             | Ended::Message(_)
             | Ended::Frame(_)
-            | Ended::Pool(_)
             | Ended::Credit { .. } => {
                 panic!("invariant: a named reader away from its home gave: {ended}")
             }
@@ -1273,21 +1274,6 @@ mod tests {
             types::frame::Error::OutOfRange {
                 entry: 2,
                 entries: 1,
-            },
-        )));
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "invariant: a named reader away from its home gave: the pool had \
-                    no block for the reader: pool is full: asked for 8 bytes, 0 bytes \
-                    free"
-    )]
-    fn panics_for_a_pool_end_of_a_reader_away_from_its_home() {
-        drop(Error::from(hub::reader::Ended::Pool(
-            block::Error::Exhausted {
-                requested: 8,
-                available: 0,
             },
         )));
     }
