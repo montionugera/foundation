@@ -135,13 +135,13 @@ impl fmt::Debug for Mesh {
 
 impl Mesh {
     /// Reads the log from `config.dir`, starts the group, and spawns its tasks on
-    /// `config.tasks`. The group starts as a follower, or it leads at once when this
-    /// node is the only voter of its configuration in force and that configuration is
-    /// not joint. It puts each chunk of the founding tree in `config.store`. It reads
-    /// the spec of the newest pointer that a file in `<config.dir>/spec` names, or the
-    /// founding spec when there is no file, and removes the file of each older pointer.
-    /// A spec that does not read or has problems is not an error: the node then uses no
-    /// spec, and [`Mesh::spec`] gives the cause in `behind`.
+    /// `config.tasks`. The group starts as a follower, or it leads at once when the
+    /// vote of this node is a quorum of its configuration in force. It puts each chunk
+    /// of the founding tree in `config.store`. It reads the spec of the newest pointer
+    /// that a file in `<config.dir>/spec` names, or the founding spec when there is no
+    /// file, and removes the file of each older pointer. A spec that does not read or
+    /// has problems is not an error: the node then uses no spec, and [`Mesh::spec`]
+    /// gives the cause in `behind`.
     ///
     /// At each open, its state starts at the founding: `pointer` gives version 0, and a
     /// watch gives each home of `config.founding.homes`. The state moves on when this
@@ -231,9 +231,8 @@ impl Mesh {
         .await?;
         let unapplied = written(&stored.entries).collect();
         let mut raft = follower(config.key, stored, voters)?;
-        let newest = raft.voters();
         // One voter cannot split a vote, so the election timeout buys nothing.
-        if newest.outgoing.is_empty() && newest.incoming.iter().eq([&config.key]) {
+        if raft.voters().quorum(|key| key == config.key).is_ok() {
             raft.campaign();
         }
         let group = Group::new(raft, state, unapplied, used);

@@ -395,9 +395,12 @@
   the file, because the operator cannot see which field differs and the region does not
   read back; one variant per field, four variants for one contract; the root of the
   definitions alone, because the file is then not the whole value.
-  Amended (2026-10-15, #2749): a group that opens as the only voter of its configuration
-  in force (the newest one in its log, or the founding voters when the log holds none),
-  with no outgoing voter, campaigns at once, with no election timeout: one voter cannot
-  split a vote. A joint configuration, or one with another voter, keeps the timeout.
-  Decided by `laptop.architect`, 2026-10-15T19:53:23Z:
-  https://github.com/synnaxlabs/foundation/issues/2749.
+  Amended (2026-10-15, #2749): a group that opens where its own vote is a quorum of its
+  configuration in force (the newest one in its log, or the founding voters when the log
+  holds none) campaigns at once, with no election timeout: one voter cannot split a
+  vote. Each other open keeps the timeout. This covers the open only: a voter that a
+  change of configuration leaves alone waits one election timeout (#2768). Decided by
+  `laptop.architect`, 2026-10-15T19:53:23Z:
+  https://github.com/synnaxlabs/foundation/issues/2749, and the quorum and the open only
+  at 2026-10-15T21:52:37Z:
+  https://github.com/synnaxlabs/foundation/pull/2755#issuecomment-6203047812.
