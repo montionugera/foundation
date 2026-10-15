@@ -42,9 +42,9 @@ Rules:
    https://github.com/synnaxlabs/foundation/pull/2724#issuecomment-6200305120), and
    `codec`, so its read tests decode the encoded series of each frame
    (`laptop.architect`, 2026-10-15T23:36:14Z,
-   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204521616). A crate
-   may also take itself, so its tests and benches build with its own `sim` feature
-   (STORED BENCH; `laptop.architect`, 2026-10-08T01:01:28Z:
+   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204521616).
+   A crate may also take itself, so its tests and benches build with its own `sim`
+   feature (STORED BENCH; `laptop.architect`, 2026-10-08T01:01:28Z:
    https://github.com/synnaxlabs/foundation/pull/1568#issuecomment-6049989224). A
    layer 3 crate may take `hub` with `sim`, so its tests build a hub through
    `hub::testing::open`, on the shard of `home::testing::shard` (`laptop.architect`,
