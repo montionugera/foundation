@@ -6,12 +6,40 @@ use crate::{logged, text};
 
 /// The exit status, the standard output, and the standard error of `output` after the
 /// log of the node.
+///
+/// # Panics
+///
+/// When the log is not the events of a run that `start` gives: none, `started` then
+/// `stopped`, or `stopped` alone.
 fn ended(output: &std::process::Output) -> (Option<i32>, &str, &str) {
-    (
-        output.status.code(),
-        text(&output.stdout),
-        logged(&output.stderr).1,
-    )
+    let (log, errors) = logged(&output.stderr);
+    let events: Vec<String> = log.lines().map(event).collect();
+    let events: Vec<&str> = events.iter().map(String::as_str).collect();
+    assert!(
+        [
+            &[][..],
+            &["INFO node: started", "INFO node: stopped"],
+            &["INFO node: started", "ERROR node: stopped"],
+            &["ERROR node: stopped"],
+        ]
+        .contains(&&events[..]),
+        "not the log of a run: {log:?}"
+    );
+    (output.status.code(), text(&output.stdout), errors)
+}
+
+/// The level, the target, and the message of the text or JSON log line `line`.
+fn event(line: &str) -> String {
+    if line.starts_with('{') {
+        let line: serde_json::Value = serde_json::from_str(line).expect("a JSON line");
+        let part =
+            |value: &serde_json::Value| value.as_str().expect("a string").to_owned();
+        let (level, target) = (part(&line["level"]), part(&line["target"]));
+        format!("{level} {target}: {}", part(&line["fields"]["message"]))
+    } else {
+        let line = line.get(28..).expect("a stamp");
+        line.split(' ').take(3).collect::<Vec<_>>().join(" ")
+    }
 }
 
 /// `log` with the stamp and the field `mesh_time` cut from each line: the OS gives
