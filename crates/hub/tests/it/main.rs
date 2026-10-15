@@ -139,6 +139,7 @@ impl Test {
             entropy: node.entropy(),
             layout,
             commit: COMMIT,
+            trimmed: false,
         };
         let buffer = buffer::Buffer::open(config, interner.slots())
             .await

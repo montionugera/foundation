@@ -694,6 +694,7 @@ impl Shard {
             layout: Layout::new(AREA, BODY_MAX)
                 .expect("invariant: the sizes make a ring"),
             commit: COMMIT,
+            trimmed: false,
         };
         let buffer = Buffer::open(config, &mut table).await?;
         let mut slots: Vec<Slot> =

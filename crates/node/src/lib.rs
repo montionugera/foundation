@@ -784,6 +784,7 @@ impl Open {
             entropy: self.entropy,
             layout: self.layout,
             commit: COMMIT,
+            trimmed: false,
         };
         let opened = async {
             let buffer = buffer::Buffer::open(config, interner.slots()).await?;
