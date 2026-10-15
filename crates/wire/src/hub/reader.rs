@@ -101,9 +101,8 @@ impl Reader {
     ///    session; for a head, [`Error::Places`] when it has more series than places,
     ///    [`Error::Backfill`] when it is on the backfill path, and [`Error::Seq`]
     ///    when it starts before the end of the head before it, or the first head
-    ///    of a complete session before the open position; [`Error::Run`] for a
-    ///    message with more ends than remain; and [`Error::Body`] for a message longer
-    ///    than the rest of the body.
+    ///    before the open position; [`Error::Run`] for a message with more ends than
+    ///    remain; and [`Error::Body`] for a message longer than the rest of the body.
     ///
     /// The session is then not valid ([`MALFORMED`](crate::header::MALFORMED)), and
     /// the caller stops it.

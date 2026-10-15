@@ -248,7 +248,9 @@
   A latest session opens at the first seq of the newest frame of the index, or at the
   live tail when there is none. `wire::hub::Reader` refuses a first head that starts
   before `live` with `Seq`, in each mode, as it refuses a head that starts before the
-  end of the head before it (`laptop.architect`, 2026-10-15T22:10:13Z:
+  end of the head before it. Lost: the live tail as the open position of a latest
+  session, which made the decoder and the fuzz harness check the mode
+  (`laptop.architect`, 2026-10-15T22:10:13Z:
   https://github.com/synnaxlabs/foundation/pull/2765#issuecomment-6203316949). A
   complete remote reader gives the seqs from `live` to its first frame as the gap of
   that frame (`hub::reader::Received::gap`). A complete client read gets `live`, from

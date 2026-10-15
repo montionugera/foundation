@@ -3,7 +3,8 @@
 //! after the end of the head before it or, for the first head, the open position of
 //! `Opened`, each refusal is one that the order, the mode, or the heads before it give,
 //! the body starts after the ends run and ends at its last end, the stream may end only
-//! after `Behind`, and each valid message that the home writes reads back. A latest and a complete session each read the input.
+//! after `Behind`, and each valid message that the home writes reads back. A latest and
+//! a complete session each read the input.
 //!
 //! Input: one byte, the places of the session less 1, then the messages from the home
 //! (`fuzz::messages`).
@@ -125,8 +126,8 @@ fn malformed(error: &Error) -> bool {
 }
 
 /// Whether a reader of `places` places in `mode` that must take `next`, and whose last
-/// head ended at `end`, or that opened as a complete session at `end` and took no head,
-/// refuses `message` with `error`. Only one error is correct.
+/// head ended at `end`, or that opened at `end` and took no head, refuses `message`
+/// with `error`. Only one error is correct.
 fn refused(
     next: Next,
     places: u32,
