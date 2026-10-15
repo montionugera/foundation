@@ -1,0 +1,567 @@
+//! Each behavior of a [`Reader`]: the open, the frames, and each error.
+
+use env::clock::Clock;
+use env::tasks::Tasks;
+use hub::writer::{self, Writer};
+use hub::{Hub, serve};
+use program::{Error, Reader, Session};
+use transport::Code;
+use transport::stream::{Incoming, Sender};
+use types::authority::Authority;
+use types::channel;
+use types::frame::{Form, Frame, Path, Range};
+use types::name::Selector;
+use types::sample::{Scalar, Type};
+use types::time::Span;
+use wire::header::MALFORMED;
+use wire::hub::client::{
+    Mode, OPEN_BYTES_MAX, Open, Place, Places, Read, Refusal, place,
+};
+use wire::hub::{Head, Reply, ends};
+
+use crate::agent::{AGENT, SUBJECT, name};
+use crate::common::{self, write};
+use crate::net::{header, own_pool};
+use crate::session::{admit, by_hand, connect, raw};
+use crate::sessions::{self, Got, Home, QUIET, closed_with, rules};
+
+const STAMP: Type = Type::Scalar(Scalar::Stamp);
+const I64: Type = Type::Scalar(Scalar::I64);
+
+/// How long after the home accepts the session its first write comes, so the program
+/// has opened its read by then.
+const START: Span = Span::from_nanos(100_000_000);
+
+/// The time between two writes: two commits of the home.
+const APART: Span = Span::from_nanos(20_000_000);
+
+fn key(key: u128) -> channel::Key {
+    channel::Key::from_u128(key)
+}
+
+fn select(channels: &[&str]) -> Selector {
+    Selector::new(channels.iter().copied()).expect("a selector")
+}
+
+fn place(at: u128, data_type: Type, channel: &str) -> Place {
+    Place {
+        key: key(at),
+        data_type,
+        name: name(channel),
+    }
+}
+
+/// The key of each entry of the key set of `reader`.
+fn keys(reader: &Reader) -> Vec<channel::Key> {
+    reader
+        .set()
+        .entries()
+        .iter()
+        .map(|entry| entry.key)
+        .collect()
+}
+
+/// Each series of `frame`, a frame of `reader`, as its entry and its samples decoded
+/// as the type of its place.
+fn samples(reader: &Reader, frame: &Frame) -> Vec<(usize, Vec<i64>)> {
+    let count = frame.range(0).expect("the index group").count;
+    let count = usize::try_from(count).expect("fits");
+    frame
+        .iter()
+        .map(|(entry, bytes)| {
+            let mut out = Vec::new();
+            let data_type = reader.places()[entry].data_type;
+            codec::decode(data_type, count, bytes, &mut out).expect("decodes");
+            let (chunks, _) = out.as_chunks::<8>();
+            let samples = chunks.iter().map(|chunk| i64::from_le_bytes(*chunk));
+            (entry, samples.collect())
+        })
+        .collect()
+}
+
+/// What the node gives for a read that the program dropped.
+fn dropped() -> Result<Got, serve::Error> {
+    Err(serve::Error::Stream(transport::Error::Reset {
+        code: Code(0),
+    }))
+}
+
+/// What the node gives for the hello of a session that the program closed.
+fn closed() -> Result<Got, serve::Error> {
+    Err(serve::Error::Stream(closed_with(0)))
+}
+
+/// Runs `program` with a session of [`SUBJECT`] on a hub with `time` and `value`,
+/// where a writer writes each of `values` to `value` in a frame of its own, [`APART`]
+/// apart from [`START`] on, at stamps that count up by 1 from the open of the hub.
+/// The program gets the clock of its node. Gives what the home saw.
+fn with_writes<P>(
+    seed: u64,
+    values: &'static [i64],
+    program: impl FnOnce(Session, Clock) -> P + Send + 'static,
+) -> Home
+where
+    P: Future<Output = ()> + 'static,
+{
+    let open = async |node: &sim::node::Node, tasks: &Tasks| {
+        let (hub, now) = common::hub(node, tasks.clone()).await;
+        (hub.clone(), (hub, now, node.clock(), tasks.clone()))
+    };
+    let ready = async move |(hub, now, clock, tasks): &(Hub, i64, Clock, Tasks)| {
+        let config = writer::Config {
+            subject: name("a"),
+            authority: Authority(1),
+            lease: None,
+            channels: vec![name("value")],
+        };
+        let mut writer = hub.writer(config).await.expect("opens");
+        let (clock, now) = (clock.clone(), *now);
+        tasks.spawn(async move {
+            clock.sleep(START).await;
+            for (stamp, &value) in (now..).zip(values) {
+                let draft = frame(&writer, stamp, value);
+                write(&mut writer, draft);
+                clock.sleep(APART).await;
+            }
+        });
+    };
+    sessions::serve_session(
+        seed,
+        sim::link::Config::default(),
+        Some(rules()),
+        open,
+        ready,
+        |node, tasks, at| async move {
+            let session = connect(&node, tasks, at, AGENT).await.expect("connects");
+            program(session, node.clock()).await;
+            node.clock().sleep(QUIET).await;
+        },
+    )
+}
+
+/// A frame of one sample of `writer`: `stamp` on `time`, and `value` on `value`.
+fn frame(writer: &Writer, stamp: i64, value: i64) -> types::frame::Draft {
+    let entries = writer.set().entries();
+    let entry = |at| {
+        let at = key(at);
+        entries
+            .iter()
+            .position(|entry| entry.key == at)
+            .expect("held")
+    };
+    let (time, data) = (entry(1), entry(2));
+    let mut series = [(time, 8), (data, 8)];
+    series.sort_unstable();
+    let mut draft = writer.draft(Form::Raw, &series).expect("a frame");
+    for (entry, sample) in [(time, stamp), (data, value)] {
+        let bytes = draft.series_mut(entry).expect("present");
+        bytes.copy_from_slice(&sample.to_le_bytes());
+    }
+    draft.set_count(entries[time].group, 1);
+    draft
+}
+
+/// The places of a read are the channels that its selector matches, in name order,
+/// then its index, and the entries of each frame are its places.
+#[test]
+fn gives_each_frame_of_a_complete_read_in_order() {
+    let home = with_writes(400, &[10, 20], |session, clock| async move {
+        let mut reader = session
+            .reader(select(&["value"]), Mode::Complete)
+            .await
+            .expect("opens");
+        assert_eq!(
+            reader.places(),
+            [place(2, I64, "value"), place(1, STAMP, "time")]
+        );
+        assert_eq!(keys(&reader), [key(2), key(1)]);
+        let mut stamps = Vec::new();
+        for value in [10, 20] {
+            let frame = reader.next().await.expect("a frame");
+            assert_eq!(frame.path(), Path::Live);
+            let got = samples(&reader, &frame);
+            assert_eq!(got[0], (0, vec![value]));
+            assert_eq!(got[1].0, 1);
+            stamps.extend(got[1].1.iter().copied());
+        }
+        assert_eq!(stamps[1], stamps[0] + 1, "{stamps:?}");
+        drop(reader);
+        clock.sleep(QUIET).await;
+    });
+    assert_eq!(home.served, [dropped(), closed()]);
+}
+
+#[test]
+fn gives_a_latest_read_its_index_once_when_its_selector_matches_it() {
+    let home = with_writes(401, &[10], |session, clock| async move {
+        let mut reader = session
+            .reader(select(&["value", "time"]), Mode::Latest)
+            .await
+            .expect("opens");
+        assert_eq!(
+            reader.places(),
+            [place(1, STAMP, "time"), place(2, I64, "value")]
+        );
+        assert_eq!(keys(&reader), [key(1), key(2)]);
+        let frame = reader.next().await.expect("a frame");
+        assert_eq!(samples(&reader, &frame)[1], (1, vec![10]));
+        drop(reader);
+        clock.sleep(QUIET).await;
+    });
+    assert_eq!(home.served, [dropped(), closed()]);
+}
+
+#[test]
+fn refuses_a_read_whose_selector_matches_no_channel() {
+    with_writes(402, &[], |session, _| async move {
+        let opened = session.reader(select(&["nope"]), Mode::Complete).await;
+        assert_eq!(opened.map(drop), Err(Error::Refused(Refusal::Unknown)));
+    });
+}
+
+/// The node sees no stream for an open over the cap: it serves only the hello.
+#[test]
+fn refuses_an_open_over_the_cap_with_nothing_sent() {
+    let names: Vec<String> = (0..300)
+        .map(|n| format!("n{n:03}{}", "x".repeat(240)))
+        .collect();
+    let select = Selector::new(names.iter().map(String::as_str)).expect("a selector");
+    let open = Open {
+        mode: Mode::Complete,
+        select: select.clone(),
+    };
+    let length = open.encoded_len();
+    assert!(u64::try_from(length).expect("fits") > OPEN_BYTES_MAX);
+    let home = with_writes(403, &[], move |session, _| async move {
+        let opened = session.reader(select, Mode::Complete).await;
+        assert_eq!(opened.map(drop), Err(Error::Open { length }));
+    });
+    assert_eq!(home.served, [closed()]);
+}
+
+/// A read takes no turn, so a request runs while a reader is open.
+#[test]
+fn runs_a_request_beside_an_open_reader() {
+    let home = with_writes(404, &[10], |session, clock| async move {
+        let mut reader = session
+            .reader(select(&["value"]), Mode::Complete)
+            .await
+            .expect("opens");
+        assert_eq!(session.request(b"ab").await, Ok(b"ba".to_vec()));
+        let frame = reader.next().await.expect("a frame");
+        assert_eq!(samples(&reader, &frame)[0], (0, vec![10]));
+        drop(reader);
+        clock.sleep(QUIET).await;
+    });
+    assert_eq!(
+        home.served[0],
+        Ok(Got::Request(name(SUBJECT), b"ab".to_vec()))
+    );
+    assert_eq!(home.served[1..], [dropped(), closed()]);
+}
+
+/// Sends `bytes` on `sender` as one message.
+async fn send(sender: &mut Sender, bytes: &[u8]) {
+    let message = own_pool().copy(bytes).expect("room");
+    sender.send(message).await.expect("sends");
+}
+
+/// Sends `reply` on `sender`.
+async fn reply(sender: &mut Sender, reply: Reply) {
+    let mut bytes = vec![0; reply.encoded_len()];
+    reply.encode(&mut bytes);
+    send(sender, &bytes).await;
+}
+
+/// Accepts the next read stream of `session` and takes its read and its open. Gives the
+/// stream.
+async fn accept_read(session: &transport::Session) -> Incoming {
+    let mut read = session.accept().await.expect("a stream");
+    header(&mut read).await;
+    let mut next = async || {
+        let message = read.receiver.recv().await.expect("receives");
+        message.expect("a message before the finish")
+    };
+    let mut body = Read::decode(&next().await).expect("a read").body();
+    while body.remain() > 0 {
+        body.take(&next().await).expect("bytes of the open");
+    }
+    read
+}
+
+/// Sends the start of a read on `read`: a places of `places` with its index at
+/// `index`, then the run of the first `sent` of `places`.
+async fn start(read: &mut Incoming, places: &[Place], index: u32, sent: usize) {
+    let sender = read.sender.as_mut().expect("two-way");
+    let mut bytes = [0; Places::LEN];
+    let count = u32::try_from(places.len()).expect("fits");
+    Places { count, index }.encode(&mut bytes);
+    send(sender, &bytes).await;
+    for message in place::messages(&places[..sent], 1 << 10) {
+        let mut bytes = vec![0; message.encoded_len()];
+        message.encode(&mut bytes);
+        send(sender, &bytes).await;
+    }
+}
+
+/// Accepts the next read and opens it with `places` and its index at `index`.
+async fn opened(
+    session: &transport::Session,
+    places: &[Place],
+    index: u32,
+) -> Incoming {
+    let mut read = accept_read(session).await;
+    start(&mut read, places, index, places.len()).await;
+    reply(read.sender.as_mut().expect("two-way"), Reply::Opened).await;
+    read
+}
+
+/// Sends a frame on `read`: a head of `count` samples from `seq`, the run of `ends`,
+/// and `body` in messages of the lengths of `cuts`.
+async fn send_frame(
+    read: &mut Incoming,
+    range: Range,
+    run: &[(u32, u32)],
+    body: &[u8],
+    cuts: &[usize],
+) {
+    let sender = read.sender.as_mut().expect("two-way");
+    let head = Head {
+        path: Path::Live,
+        range,
+        series: u32::try_from(run.len()).expect("fits"),
+    };
+    reply(sender, Reply::Head(head)).await;
+    let mut bytes = vec![0; run.len() * ends::LEN];
+    ends::encode(run.iter().copied(), &mut bytes);
+    send(sender, &bytes).await;
+    let mut rest = body;
+    for &cut in cuts {
+        let (message, after) = rest.split_at(cut);
+        send(sender, message).await;
+        rest = after;
+    }
+    assert!(rest.is_empty(), "the cuts take the whole body");
+}
+
+/// The places of a channel on `time` on each side of `time`.
+fn around() -> [Place; 3] {
+    [
+        place(10, I64, "a"),
+        place(1, STAMP, "time"),
+        place(11, I64, "b"),
+    ]
+}
+
+/// A frame of each place, with its body cut across two messages, then a frame of the
+/// index alone: each series lands at the entry of its place.
+#[test]
+fn gives_each_series_at_the_entry_of_its_place() {
+    let body: Vec<u8> = (0..24).collect();
+    let sent = body.clone();
+    by_hand(
+        410,
+        move |session, node| async move {
+            let mut read = opened(&session, &around(), 1).await;
+            let range = Range { seq: 5, count: 1 };
+            let run = [(0, 8), (1, 16), (2, 24)];
+            send_frame(&mut read, range, &run, &sent, &[10, 14]).await;
+            let range = Range { seq: 6, count: 1 };
+            send_frame(&mut read, range, &[(1, 8)], &sent[..8], &[8]).await;
+            node.clock().sleep(QUIET).await;
+        },
+        move |session, _| {
+            Box::pin(async move {
+                let mut reader = session
+                    .reader(select(&["a", "b"]), Mode::Complete)
+                    .await
+                    .expect("opens");
+                assert_eq!(reader.places(), around());
+                assert_eq!(keys(&reader), [key(10), key(1), key(11)]);
+                let frame = reader.next().await.expect("a frame");
+                assert_eq!(frame.range(0), Some(Range { seq: 5, count: 1 }));
+                assert_eq!(frame.form(), Form::Encoded);
+                let series: Vec<_> = frame.iter().collect();
+                assert_eq!(
+                    series,
+                    [(0, &body[..8]), (1, &body[8..16]), (2, &body[16..])]
+                );
+                let frame = reader.next().await.expect("a frame");
+                assert_eq!(frame.range(0), Some(Range { seq: 6, count: 1 }));
+                assert_eq!(frame.iter().collect::<Vec<_>>(), [(1, &body[..8])]);
+            })
+        },
+    );
+}
+
+/// `Behind` ends the reader, and each later call gives it again.
+#[test]
+fn gives_behind_at_each_call_after_the_node_sent_it() {
+    by_hand(
+        411,
+        |session, node| async move {
+            let mut read = opened(&session, &around(), 1).await;
+            let sender = read.sender.as_mut().expect("two-way");
+            reply(sender, Reply::Behind).await;
+            sender.finish().expect("finishes");
+            node.clock().sleep(QUIET).await;
+        },
+        |session, _| {
+            Box::pin(async move {
+                let mut reader = session
+                    .reader(select(&["a", "b"]), Mode::Complete)
+                    .await
+                    .expect("opens");
+                assert_eq!(reader.next().await.map(drop), Err(Error::Behind));
+                assert_eq!(reader.next().await.map(drop), Err(Error::Behind));
+            })
+        },
+    );
+}
+
+/// A stream that the node finishes before the last place gives the error of the
+/// places, and one that it finishes before `Opened` the error of the replies.
+#[test]
+fn refuses_a_read_finished_before_it_opened() {
+    let cases = [
+        (412, 2, Error::Message(wire::hub::client::Error::Finished)),
+        (413, 3, Error::Reply(wire::hub::Error::Finished)),
+    ];
+    for (seed, sent, error) in cases {
+        by_hand(
+            seed,
+            move |session, node| async move {
+                let mut read = accept_read(&session).await;
+                start(&mut read, &around(), 1, sent).await;
+                read.sender
+                    .as_mut()
+                    .expect("two-way")
+                    .finish()
+                    .expect("finishes");
+                node.clock().sleep(QUIET).await;
+            },
+            move |session, _| {
+                Box::pin(async move {
+                    let opened =
+                        session.reader(select(&["a", "b"]), Mode::Complete).await;
+                    assert_eq!(opened.map(drop), Err(error));
+                })
+            },
+        );
+    }
+}
+
+/// A read whose places name one channel twice is not valid: the program stops it as
+/// `MALFORMED`.
+#[test]
+fn stops_a_read_whose_places_repeat_a_channel() {
+    by_hand(
+        414,
+        |session, node| async move {
+            let places = [place(1, STAMP, "time"), place(1, STAMP, "again")];
+            let mut read = accept_read(&session).await;
+            start(&mut read, &places, 0, places.len()).await;
+            let got = read
+                .receiver
+                .recv()
+                .await
+                .map(|got| got.map(|b| b.to_vec()));
+            assert_eq!(
+                got,
+                Err(transport::Error::Reset {
+                    code: Code(MALFORMED)
+                })
+            );
+            node.clock().sleep(QUIET).await;
+        },
+        |session, node| {
+            Box::pin(async move {
+                let opened = session.reader(select(&["time"]), Mode::Complete).await;
+                assert_eq!(opened.map(drop), Err(Error::Repeated(key(1))));
+                node.clock().sleep(QUIET).await;
+            })
+        },
+    );
+}
+
+/// A frame that lacks its index, and a reply that `wire` refuses, each end the reader
+/// with their error, which each later call gives again, and stop the stream as
+/// `MALFORMED`.
+#[test]
+fn stops_a_read_at_a_frame_or_a_reply_that_is_not_valid() {
+    let lacks = types::frame::Error::IndexAbsent { entry: 0, index: 1 };
+    let cases = [
+        (415, true, Error::Frame(lacks)),
+        (
+            416,
+            false,
+            Error::Reply(wire::hub::Error::Reopen { kind: 1 }),
+        ),
+    ];
+    for (seed, frame, error) in cases {
+        by_hand(
+            seed,
+            move |session, node| async move {
+                let mut read = opened(&session, &around(), 1).await;
+                if frame {
+                    let range = Range { seq: 0, count: 1 };
+                    send_frame(&mut read, range, &[(0, 8)], &[0; 8], &[8]).await;
+                } else {
+                    reply(read.sender.as_mut().expect("two-way"), Reply::Opened).await;
+                }
+                let got = read
+                    .receiver
+                    .recv()
+                    .await
+                    .map(|got| got.map(|b| b.to_vec()));
+                assert_eq!(
+                    got,
+                    Err(transport::Error::Reset {
+                        code: Code(MALFORMED)
+                    })
+                );
+                node.clock().sleep(QUIET).await;
+            },
+            move |session, node| {
+                Box::pin(async move {
+                    let mut reader = session
+                        .reader(select(&["a", "b"]), Mode::Complete)
+                        .await
+                        .expect("opens");
+                    assert_eq!(reader.next().await.map(drop), Err(error.clone()));
+                    assert_eq!(reader.next().await.map(drop), Err(error));
+                    node.clock().sleep(QUIET).await;
+                })
+            },
+        );
+    }
+}
+
+/// A reader open when a challenge that `wire` refuses ends the renewal gives that
+/// error, not the error of the close.
+#[test]
+fn gives_the_error_of_the_renewal_to_an_open_reader() {
+    raw(
+        417,
+        |session, mut hello, node| async move {
+            admit(&mut hello, &node.clock()).await;
+            let _read = opened(&session, &around(), 1).await;
+            node.clock().sleep(APART).await;
+            let sender = hello.sender.as_mut().expect("two-way");
+            send(sender, &[0xff]).await;
+            drop(session.closed().await);
+        },
+        |node, tasks, at| async move {
+            let session = connect(&node, tasks, at, AGENT).await.expect("connects");
+            let mut reader = session
+                .reader(select(&["a", "b"]), Mode::Complete)
+                .await
+                .expect("opens");
+            let ended = Err(Error::Message(wire::hub::client::Error::Kind {
+                kind: 0xff,
+            }));
+            assert_eq!(reader.next().await.map(drop), ended);
+            assert_eq!(reader.next().await.map(drop), ended);
+        },
+    );
+}

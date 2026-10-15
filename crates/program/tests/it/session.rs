@@ -27,7 +27,7 @@ use crate::sessions::{Got, Home, OTHER, QUIET, rules, run_program, shrink_wall_e
 
 /// Connects to the home at `at` from `node` as [`SUBJECT`], signing with `key`, with a
 /// session pool that holds a body at the cap while the transport sends it.
-async fn connect(
+pub(super) async fn connect(
     node: &sim::node::Node,
     tasks: env::tasks::Tasks,
     at: Address,
@@ -281,7 +281,7 @@ fn refuses_a_body_over_the_cap_with_nothing_sent() {
 /// Runs a program whose session connects to a home that admits its hello on a link,
 /// then gives the transport session of the home to `rest`, which serves what follows
 /// by hand.
-fn by_hand<R>(
+pub(super) fn by_hand<R>(
     seed: u64,
     rest: impl FnOnce(transport::Session, sim::node::Node) -> R + Send + 'static,
     program: impl FnOnce(
@@ -560,7 +560,7 @@ fn gives_the_turn_past_a_request_that_left_the_line() {
 
 /// Runs a program whose session connects to a home that serves the hello stream by
 /// hand with `hello`, with no hub.
-fn raw<F, H, G, P>(seed: u64, hello: F, program: G)
+pub(super) fn raw<F, H, G, P>(seed: u64, hello: F, program: G)
 where
     F: FnOnce(transport::Session, Incoming, sim::node::Node) -> H + Send + 'static,
     H: Future<Output = ()> + 'static,
@@ -773,7 +773,7 @@ async fn take(hello: &mut Incoming) -> Signed {
 
 /// Sends a challenge on `hello` and takes the hello, then admits it with the next
 /// challenge and takes the renewal. Gives the time from the admission to the renewal.
-async fn admit(hello: &mut Incoming, clock: &env::clock::Clock) -> Span {
+pub(super) async fn admit(hello: &mut Incoming, clock: &env::clock::Clock) -> Span {
     let mut came = [Span::from_nanos(0); 2];
     for slot in &mut came {
         let sent = clock.now();
@@ -1013,8 +1013,8 @@ fn refuses_to_connect_from_a_pool_with_no_block_for_the_header() {
     assert_eq!(got, Err(Error::Pool(error)));
     assert_eq!(
         got.expect_err("refused").to_string(),
-        "no block of the pool holds a message: block of 3 bytes is above the largest \
-         block of 0 bytes"
+        "no block of the pool holds a message or a frame: block of 3 bytes is above \
+         the largest block of 0 bytes"
     );
 }
 
@@ -1147,8 +1147,31 @@ fn names_each_error() {
                 requested: 9,
                 available: 0,
             }),
-            "no block of the pool holds a message: pool is full: asked for 9 bytes, 0 \
-             bytes free",
+            "no block of the pool holds a message or a frame: pool is full: asked for 9 \
+             bytes, 0 bytes free",
+        ),
+        (
+            Error::Open { length: 70_000 },
+            "the open of the read has 70000 bytes, over the 65536 that a read holds",
+        ),
+        (
+            Error::Repeated(types::channel::Key::from_u128(1)),
+            "the node listed channel 00000000-0000-0000-0000-000000000001 in two \
+             places of a read",
+        ),
+        (
+            Error::Reply(wire::hub::Error::Reopen { kind: 1 }),
+            "the node sent a reply that is not valid: the hub message has kind 1, \
+             which opens the session, and the session is open",
+        ),
+        (
+            Error::Frame(types::frame::Error::IndexAbsent { entry: 0, index: 1 }),
+            "the node sent a frame that is not valid: entry 0 is present but its \
+             index, entry 1, is absent",
+        ),
+        (
+            Error::Behind,
+            "the reader reached a frame that the buffer lost: open a new reader",
         ),
     ];
     for (error, text) in cases {
