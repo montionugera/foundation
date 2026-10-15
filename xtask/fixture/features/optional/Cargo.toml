@@ -1,0 +1,11 @@
+[package]
+name = "optional"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[features]
+simulate = ["dep:hidden"]
+
+[dependencies]
+hidden = { path = "../patches/hidden", optional = true }
