@@ -4376,17 +4376,14 @@ mod tests {
     }
 
     #[test]
-    fn a_lone_voter_leads_after_one_election_timeout() {
+    fn a_lone_voter_leads_at_start_whatever_its_election_timeout() {
         for seed in 0..16 {
             solo_at(seed, move |node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
                 let clock = node.clock();
                 let opened = clock.now();
                 let (asked, _) = lead_at(&mesh, &clock, home_to(1)).await;
-                let asked = asked - opened;
-                // The timeout is 10 to 19 ticks, and `lead_at` asks once per tick.
-                let timeout = seconds(1)..=seconds(2);
-                assert!(timeout.contains(&asked), "run {seed}: it led at {asked}");
+                assert_eq!(asked - opened, Span::ZERO, "run {seed}");
             });
         }
     }
@@ -5981,15 +5978,6 @@ mod tests {
 
         use super::*;
         use crate::common::{proven_at, voters_entry_voted};
-
-        #[test]
-        fn a_lone_voter_leads_after_its_first_tick() {
-            solo(|node, tasks| async move {
-                let mesh = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
-                node.clock().sleep(TICK).await;
-                assert_eq!(mesh.group.borrow().raft.leader(), Some(key(1)));
-            });
-        }
 
         // Node 2 never answers.
         #[test]
