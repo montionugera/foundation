@@ -10,6 +10,12 @@ use crate::log::Carried;
 use crate::record::{ALIGN, BLOCK};
 use crate::wal::{Ends, Layout, Position, Writer};
 
+/// The blocks that each ring of the `wal` bench adds to its ID. With the three
+/// blocks that each record keeps free, each commit of 1 record then trims at 68 and
+/// 4100 blocks.
+#[doc(hidden)]
+pub const PHASE: u64 = 4;
+
 /// The body lengths of the records of a commit, in turn.
 const LENS: [usize; 5] = [8, 8, ALIGN, 8, 2 * ALIGN];
 
@@ -236,16 +242,16 @@ mod tests {
     }
 
     /// After the warm-up of the `wal` bench, each commit of 1 record trims on the
-    /// rings of the bench, so each time holds a trim. It reads the private writer:
-    /// `commit` gives nothing back.
+    /// rings of the bench, over more than 10 laps of each, so each time holds a trim.
+    /// It reads the private writer: `commit` gives nothing back.
     #[test]
     fn each_commit_of_1_record_trims_on_the_rings_of_the_bench() {
         for id in [64, 4096] {
-            let mut ring = Ring::new(id + 4);
+            let mut ring = Ring::new(id + PHASE);
             for _ in 0..2 * id {
                 ring.commit(1);
             }
-            for commit in 0..2000 {
+            for commit in 0..10 * id {
                 let tail = ring.writer.tail();
                 ring.commit(1);
                 assert!(

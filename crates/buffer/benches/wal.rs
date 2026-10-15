@@ -6,14 +6,9 @@
 //! writer shows smaller than it is. Each ring has [`PHASE`] blocks more than its
 //! argument, so that each commit of 1 record trims.
 
-use buffer::bench::Ring;
+use buffer::bench::{PHASE, Ring};
 use divan::Bencher;
 use divan::counter::ItemsCount;
-
-/// The blocks that each ring adds to its ID. With the three blocks that each record
-/// keeps free, each commit of 1 record trims at 68 and 4100 blocks, as the test
-/// `each_commit_of_1_record_trims_on_the_rings_of_the_bench` of `bench` checks.
-const PHASE: u64 = 4;
 
 fn main() {
     divan::main();
