@@ -810,7 +810,8 @@ impl Shard {
     /// data entry with samples. `set` is of one group, of the reader's index; each
     /// series whose channel and type `set` does not hold drops. It drops `entries` when
     /// the reader closed after the read started, also by a takeover or a shed of its
-    /// index.
+    /// index. Each `set` given to one shard comes from one interner: the key of a key
+    /// set names it only in its interner.
     ///
     /// # Errors
     ///
@@ -1631,17 +1632,32 @@ mod tests {
     /// Reads past which no test reads.
     const READS: usize = 1000;
 
-    /// The key set that the hub gives a read from disk of the index at `slot`: one
-    /// group, with a data channel of type `I64` at each other slot below 64.
+    /// The key set that the hub gives a read from disk of the index at `slot`, 0 or 2:
+    /// one group, with a data channel of type `I64` at each other slot below 64 that is
+    /// no index. One interner interns the sets of both indexes in turn at each call, so
+    /// a test cannot give one shard two sets with the same key.
+    ///
+    /// # Panics
+    ///
+    /// If `slot` is not 0 or 2.
     fn disk_set(slot: Slot) -> Arc<KeySet> {
+        const INDEXES: [u32; 2] = [0, 2];
         let data: Vec<_> = (0..64)
-            .filter(|&n| n != slot.get())
+            .filter(|n| !INDEXES.contains(n))
             .map(|n| (key(Slot::new(n)), Type::Scalar(Scalar::I64)))
             .collect();
-        intern(&[Group {
-            index: key(slot),
-            data: &data,
-        }])
+        let mut interner = create_interner(&INDEXES, &[]);
+        let [zero, two] = INDEXES.map(|n| {
+            interner.intern(&[Group {
+                index: key(Slot::new(n)),
+                data: &data,
+            }])
+        });
+        match slot.get() {
+            0 => zero,
+            2 => two,
+            n => panic!("a test reads index {n} from disk"),
+        }
     }
 
     /// Each frame that `reader` takes, with each read from disk that

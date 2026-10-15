@@ -50,4 +50,11 @@
   https://github.com/synnaxlabs/foundation/issues/2483#issuecomment-6131627109, and
   #2439, 2026-10-12 20:05 UTC:
   https://github.com/synnaxlabs/foundation/pull/2439#issuecomment-6131721896, which
-  supersedes the Limits sentence of 6131627109).
+  supersedes the Limits sentence of 6131627109). Outside the pool budget, each shard's
+  `home::stored::Decoder` holds on the heap the entry map of each of the last 4 key sets
+  that a read from disk filled onto, about 49 bytes for each channel of each set, and
+  scratch lists with the capacity of the largest entry that it decoded. Nothing frees
+  them before #2761 (#274 B1; `laptop.architect`, 2026-10-15T21:30:23Z:
+  https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6202690738, item 1;
+  this text: `laptop.architect`, 2026-10-15T21:41:11Z:
+  https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6202866145, item 2).
