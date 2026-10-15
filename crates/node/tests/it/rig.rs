@@ -1328,6 +1328,8 @@ fn a_walk_that_another_sweep_removes_ends_only_when_it_is_gone() {
     }
     let removed = Cell::new(false);
     let walked = writable_before(&dir, &|sub: &Path| {
+        let metadata = std::fs::metadata(sub).expect("read a mode");
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o500, "walked first");
         if !removed.replace(true) {
             mode(sub, 0o700);
             std::fs::remove_dir_all(sub).expect("remove a directory");
