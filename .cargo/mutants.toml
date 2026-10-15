@@ -76,6 +76,9 @@ exclude_re = [
   # `rows` fills bits 0 to 15 and `columns << 16` bits 16 to 31, so `|` and `^` give
   # the same `n`.
   'crates/home/src/stored\.rs:.*replace \| with \^ in codes',
+  # A false guard maps the series of each entry again onto the kept map of its set,
+  # which gives the same frame more slowly.
+  'crates/home/src/stored\.rs:.*guard Arc::ptr_eq.* with false in Decoder::map',
   # The oracle of `node.key` in the `node_identity` fuzz target and the property
   # tests. It panics only when `sector::written` disagrees with `encode` of `fields`,
   # and the mutants of `written` show that it does.
