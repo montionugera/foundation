@@ -780,7 +780,9 @@ mod tests {
 
     /// Reads the status frames of `connector` with `counts`, whose status channels
     /// have keys from [`STATUS`] on, into the vector it gives, in a task on `tasks`.
-    /// Panics on a frame that lacks one of [`status::channels`].
+    /// Panics on a frame that lacks one of [`status::channels`]. A status frame that
+    /// the home loses ends the reader `Behind`, so the task opens it again at the live
+    /// tail.
     async fn read_status(
         hub: &hub::Hub,
         connector: &str,
@@ -808,13 +810,24 @@ mod tests {
             name: None,
             hold: Span::ZERO,
         };
-        let reader = hub.reader(open).await;
+        let reader = hub.reader(open.clone()).await;
         let mut reader = reader.expect("the reader opens");
         let statuses = Rc::new(RefCell::new(Vec::new()));
         let into = Rc::clone(&statuses);
+        let hub = hub.clone();
         tasks.spawn(async move {
             let mut first = None;
-            while let Ok(received) = reader.next().await {
+            loop {
+                let received = match reader.next().await {
+                    Ok(received) => received,
+                    // A status frame lost for no room ends the reader `Behind`.
+                    Err(hub::reader::Ended::Behind) => {
+                        let again = hub.reader(open.clone()).await;
+                        reader = again.expect("the reader opens again");
+                        continue;
+                    }
+                    Err(_) => break,
+                };
                 let held: Vec<_> = (received.view().iter())
                     .map(|(entry, _)| received.name(entry))
                     .collect();

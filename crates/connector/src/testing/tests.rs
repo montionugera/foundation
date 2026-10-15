@@ -408,3 +408,21 @@ fn a_refused_config_opens_a_connector_that_ends_with_its_diagnostics() {
         },
     );
 }
+
+#[test]
+#[should_panic(
+    expected = "the status ends: the reader missed a frame and gets no later one"
+)]
+fn a_run_reads_its_status_after_a_long_sleep_until_behind() {
+    on_rig(
+        || Table::new().with("ticks", Ticks::default()),
+        |mut rig, clock| async move {
+            let config = Document::default();
+            let mut run = rig.supervise("ticks", name("plant.ticks"), config).await;
+            clock.sleep(Span::from_nanos(1_100_000_000_000)).await;
+            loop {
+                run.next().await;
+            }
+        },
+    );
+}
