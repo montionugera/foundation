@@ -1,7 +1,6 @@
 //! The client sessions that `Link::serve` serves, over a real transport from a program
 //! to a simulated node: the hello stream, and the request streams.
 
-use std::cell::Cell;
 use std::future::poll_fn;
 use std::pin::pin;
 use std::rc::Rc;
@@ -11,7 +10,7 @@ use access::proof::{Error as Refusal, Field};
 use hub::serve;
 use transport::{Address, Code, Session};
 use types::connection;
-use types::ed25519::{Pair, PrivateKey};
+use types::ed25519::Pair;
 use types::node;
 use types::time::Span;
 use wire::Protocol;
@@ -27,22 +26,9 @@ use crate::agent::{
 };
 use crate::net::{HOME, header, own_pool, public_key, transport};
 use crate::sessions::{
-    self, Got, HOLD, accept_on, answer, closed_after, closed_with, recorded, rules,
-    run_program, run_program_on, serve_each,
+    self, Got, HOLD, Home, OTHER, QUIET, accept_on, answer, closed_after, closed_with,
+    rules, run_program, serve_each, shrink_wall_error,
 };
-
-/// A key that the spec does not list.
-pub(super) const OTHER: PrivateKey = PrivateKey([4; 32]);
-/// How long the program waits for what must not come.
-pub(super) const QUIET: Span = Span::from_nanos(200_000_000);
-
-/// What the home saw: what `serve` gave for each stream, in the order they ended, and
-/// how the session ended.
-#[derive(Debug)]
-pub(super) struct Home {
-    pub(super) served: Vec<Result<Got, serve::Error>>,
-    pub(super) closed: transport::Error,
-}
 
 /// Runs one client session: the home's node makes a [`Test`] hub, with mesh time when
 /// `synced`, and serves each hub stream of the session on one `hub::Link`, once it
@@ -79,7 +65,7 @@ where
 
 /// As [`session_with`], where `program` runs on the program's node with the home's
 /// address, and dials it itself.
-pub(super) fn serve_session<G, P>(
+fn serve_session<G, P>(
     seed: u64,
     synced: bool,
     pool: usize,
@@ -117,35 +103,11 @@ where
     G: FnOnce(sim::node::Node, env::tasks::Tasks, Address) -> P + Send + 'static,
     P: Future<Output = ()> + 'static,
 {
-    let served = Arc::new(Mutex::new(Vec::new()));
-    let closed = Arc::new(Mutex::new(None));
-    let (kept, ended) = (Arc::clone(&served), Arc::clone(&closed));
-    let home = move |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
-        let (test, session, link) = accept(&node, &tasks, pool, synced, rules).await;
-        ready(&test).await;
-        let accepted = Rc::new(Cell::new(0));
-        serve_each(&session, &link, &tasks, &node.clock(), &kept, &accepted).await;
-        *ended.lock().expect("not poisoned") = Some(session.closed().await);
-        recorded(&node, &kept, accepted.get()).await;
-        drop((link, test));
+    let open = async move |node: &sim::node::Node, tasks: &env::tasks::Tasks| {
+        let test = home(node, tasks, pool, synced).await;
+        (test.hub.clone(), test)
     };
-    run_program_on(seed, wire, home, program);
-    let served = std::mem::take(&mut *served.lock().expect("not poisoned"));
-    let closed = closed.lock().expect("not poisoned").take();
-    Home {
-        served,
-        closed: closed.expect("the session closed"),
-    }
-}
-
-/// Makes the error of the wall clock of `node` unknown, and 10 ms one minute later.
-pub(super) fn shrink_wall_error(node: &sim::node::Node, tasks: &env::tasks::Tasks) {
-    node.set_wall_error(None);
-    let shrink = node.clone();
-    tasks.spawn(async move {
-        shrink.clock().sleep(Span::MINUTE).await;
-        shrink.set_wall_error(Some(Span::from_nanos(10_000_000)));
-    });
+    sessions::serve_session(seed, wire, rules, open, ready, program)
 }
 
 /// Runs [`sessions::sessions`] on a synced [`Test`] hub.
@@ -166,7 +128,7 @@ where
 
 /// A [`Test`] hub as [`home`] gives it, with `rules` set unless `None`, and the
 /// session of the first program that dials it, with its link.
-pub(super) async fn accept(
+async fn accept(
     node: &sim::node::Node,
     tasks: &env::tasks::Tasks,
     pool: usize,
@@ -179,7 +141,7 @@ pub(super) async fn accept(
 }
 
 /// A [`Test`] hub with a home pool of `pool` bytes, with mesh time when `synced`.
-pub(super) async fn home(
+async fn home(
     node: &sim::node::Node,
     tasks: &env::tasks::Tasks,
     pool: usize,

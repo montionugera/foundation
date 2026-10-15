@@ -21,11 +21,9 @@ use wire::hub::client::{
 };
 
 use crate::agent::{AGENT, SUBJECT, name};
-use crate::home::{
-    Home, OTHER, QUIET, accept, serve_session, serve_session_on, shrink_wall_error,
-};
+use crate::home::{accept, serve_session, serve_session_on};
 use crate::net::{HOME, NODE, header, own_pool, public_key, transport};
-use crate::sessions::{Got, rules, run_program};
+use crate::sessions::{Got, Home, OTHER, QUIET, rules, run_program, shrink_wall_error};
 
 /// Connects to the home at `at` from `node` as [`SUBJECT`], signing with `key`, with a
 /// client pool that holds a body at the cap while the transport sends it.
