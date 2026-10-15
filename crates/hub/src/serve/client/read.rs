@@ -148,7 +148,7 @@ async fn start(
 }
 
 /// Sends each frame of `reader` until `program` finishes, or `Behind` and the finish
-/// when the reader missed a frame.
+/// when the reader reached a frame that the buffer lost.
 async fn relay<F>(
     state: &RefCell<State>,
     mut reader: Reader,
