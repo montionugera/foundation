@@ -1,12 +1,13 @@
 //! The cost of one acknowledgment, which runs per message, of one live frame to the
-//! complete readers, which runs per frame, and of one floor, which the home reads when
-//! `buffer` trims.
+//! complete readers, and of one frame from disk to a complete reader, which run per
+//! frame, and of one floor, which the home reads when `buffer` trims.
 
 use std::sync::Arc;
 
 use delivery::complete::{Charge, Key};
 use delivery::{Next, Position, Reader, Readers, Start};
 use divan::Bencher;
+use divan::counter::ItemsCount;
 use types::channel;
 use types::frame::key_set::{Group, Interner, KeySet};
 use types::frame::{Draft, Form, Frame, Path};
@@ -106,6 +107,45 @@ fn release_waiting(bencher: Bencher<'_, '_>, sessions: usize) {
             }
         }
     });
+}
+
+/// [`BURST`] frames from disk to one recording reader that opened below them, as one
+/// read gives them, and its take of each: the cost of each frame of a catch-up, past
+/// the read.
+#[divan::bench]
+fn fill(bencher: Bencher<'_, '_>) {
+    let (frame, set) = frame();
+    bencher
+        .counter(ItemsCount::new(usize::try_from(BURST).expect("few")))
+        .with_inputs(|| {
+            let mut readers = Readers::new(0);
+            for seq in 0..BURST {
+                readers.queue(&frame, &set, seq..seq + 1);
+            }
+            let start = Start::At(Position {
+                live: 0,
+                backfill: None,
+            });
+            let key = readers
+                .open(Reader::Unnamed, start, u64::MAX, Charge::Whole)
+                .key;
+            readers.queue(&frame, &set, BURST..BURST + 1);
+            (readers, key)
+        })
+        .bench_local_refs(|(readers, key)| {
+            let Next::Disk { .. } = readers.take((*key).into()) else {
+                panic!("the reader reads from disk");
+            };
+            for seq in 0..BURST {
+                assert!(readers.fill(*key, &frame, &set, seq..seq + 1));
+            }
+            for _ in 0..BURST {
+                let Next::Frame(frame) = readers.take((*key).into()) else {
+                    panic!("each frame from disk waits for the reader");
+                };
+                divan::black_box(frame);
+            }
+        });
 }
 
 /// [`BURST`] lost live frames behind one queued frame, then its release, to `sessions`
