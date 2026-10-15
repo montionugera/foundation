@@ -1,17 +1,19 @@
 //! Runs the event loop of open62541 alone, and a connection manager with a server and
 //! clients on it, for benchmarks and allocation tests. [`client`] runs a server with
-//! clients that each have their own manager. Not part of the contract of the crate.
+//! clients that each have their own manager. [`kind`] writes the frames of the `opcua`
+//! kind with no server. Not part of the contract of the crate.
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
 pub mod client;
+pub mod kind;
 
 use std::cell::Cell;
 use std::ffi::{CString, c_void};
 use std::future::{Future as _, poll_fn};
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::net::{IpAddr, SocketAddr};
-use std::panic::{self, AssertUnwindSafe};
+use std::panic;
 use std::pin::{Pin, pin};
 use std::ptr::{self, NonNull};
 use std::task::{Context, Poll, Waker};
@@ -21,10 +23,14 @@ use env::net::Net;
 use env::rng::Rng;
 use types::time::{Monotonic, Span};
 
+use crate::alloc;
+use crate::client::Nodes;
 use crate::connection;
-use crate::event::Loop;
+use crate::event::{self, Loop};
 use crate::ffi::{self, Status};
+use crate::node::{Key, Node};
 use crate::server::Server;
+use crate::unwind::caught;
 
 /// A client of open62541 on its own event loop, which also runs a count of repeated
 /// timers that do nothing.
@@ -39,14 +45,22 @@ impl Client {
     ///
     /// # Panics
     ///
-    /// Panics if open62541 refuses the client, or, with the status name, if it gives a
-    /// status other than `Good` for the first run or a timer.
+    /// With the status name, if open62541 gives a status other than `Good` for the
+    /// first run or a timer.
+    ///
+    /// # Aborts
+    ///
+    /// When open62541 cannot allocate the loop or the client, as [`alloc::exhausted`]
+    /// says.
     #[must_use]
     pub fn new(clock: Clock, rng: &mut Rng, timers: usize) -> Self {
-        let events = Loop::new(clock, rng);
+        let events = Loop::new(event::Time::monotonic(clock), rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
-        let client = unsafe { ffi::shim_client_new(events.raw()) };
-        let raw = NonNull::new(client).expect("open62541 refused the client");
+        let client =
+            unsafe { ffi::shim_client_new(events.raw(), crate::connection::CHUNKS) };
+        let Some(raw) = NonNull::new(client) else {
+            alloc::exhausted()
+        };
         let mut client = Self { raw, events };
         client.run();
         let events = &client.events;
@@ -115,13 +129,15 @@ const PORT: u16 = 4840;
 const CONNECT_TIMEOUT: Span = Span::from_nanos(60_000_000_000);
 
 /// A connection manager over `env::net` with a test server of open62541 and `idle + 1`
-/// clients, each with an activated session and the namespaces of the server, on its
-/// loop. The first client reads; the others send nothing.
+/// clients, each with an activated session, on its loop. The first client reads; the
+/// others send nothing.
 pub struct Manager {
     clients: Vec<NonNull<ffi::Client>>,
     server: Server,
     /// C holds its address while a read waits.
     answers: Box<Answers>,
+    /// The read of the current time of the server.
+    time: Nodes,
     /// Only `close` drops it, after it deletes the server and the clients on its loop.
     /// After a panic of the close, nothing runs its loop again.
     connections: ManuallyDrop<connection::Manager>,
@@ -144,11 +160,16 @@ impl Manager {
     ///
     /// If `idle` is 65535 or more, as open62541 counts sessions in 16 bits, if a
     /// connect fails or does not end in 60 s of `clock`, if open62541 refuses the
-    /// server, a client, or a step of the close, if a channel of a client is not
-    /// closed after the close, or if the port is taken. A panic of the close leaks the
-    /// loop and its connections, and each server and client that it has not deleted,
-    /// and replaces a panic of the connect or `body`. A panic before the connect leaks
-    /// what was made by then: the manager, the server, and each client.
+    /// server or a step of the close, if a channel of a client is not closed after the
+    /// close, or if the port is taken. A panic of the close leaks the loop and its
+    /// connections, and each server and client that it has not deleted, and replaces a
+    /// panic of the connect or `body`. A panic before the connect leaks what was made
+    /// by then: the manager, the server, and each client.
+    ///
+    /// # Aborts
+    ///
+    /// When open62541 cannot allocate the loop, the connection manager, a client, or
+    /// the Read request of the time of the server, as [`alloc::exhausted`] says.
     pub async fn scope<T>(
         clock: Clock,
         net: Net,
@@ -178,8 +199,14 @@ impl Manager {
             .expect("open62541 counts sessions in 16 bits");
         let local = SocketAddr::new(address, PORT);
         let manager = ManuallyDrop::new(
-            connection::Manager::listening(clock, net, local, u32::from(sessions), rng)
-                .expect("the port is free"),
+            connection::Manager::listening(
+                event::Time::monotonic(clock),
+                net,
+                local,
+                u32::from(sessions),
+                rng,
+            )
+            .expect("the port is free"),
         );
         let events = manager.events();
         // SAFETY: the member takes its own loop.
@@ -192,8 +219,12 @@ impl Manager {
         let clients = (0..=idle)
             .map(|_| {
                 // SAFETY: the loop outlives the client, which `close` deletes.
-                let client = unsafe { ffi::shim_client_new(events.raw()) };
-                let client = NonNull::new(client).expect("open62541 refused a client");
+                let client = unsafe {
+                    ffi::shim_client_new(events.raw(), crate::connection::CHUNKS)
+                };
+                let Some(client) = NonNull::new(client) else {
+                    alloc::exhausted()
+                };
                 // SAFETY: the client lives, and copies the URL.
                 let status = Status(unsafe {
                     ffi::UA_Client_connectAsync(client.as_ptr(), url.as_ptr())
@@ -206,6 +237,10 @@ impl Manager {
             clients,
             server,
             answers: Box::default(),
+            time: Nodes::unchecked(&[Node {
+                namespace: 0,
+                key: Key::Number(ffi::test::TIME),
+            }]),
             connections: manager,
         }
     }
@@ -252,18 +287,17 @@ impl Manager {
     ///
     /// If open62541 refuses the read.
     pub fn ask(&self) {
-        self.drive_after(|| self.read(ffi::test::TIME));
+        self.drive_after(|| self.read(&self.time));
     }
 
-    /// Asks the first client for a read of the Value of `node` of namespace 0.
-    fn read(&self, node: u32) {
+    /// Asks the first client for the read of `nodes`, which holds one node.
+    fn read(&self, nodes: &Nodes) {
         let data = ptr::from_ref::<Answers>(&self.answers).cast_mut().cast();
-        // SAFETY: the client lives, and `answers` outlives it.
+        // SAFETY: the client and the request live, and `answers` outlives the client.
         let status = Status(unsafe {
             ffi::shim_client_read(
                 self.clients[0].as_ptr(),
-                0,
-                node,
+                nodes.raw(),
                 answer,
                 data,
                 ptr::null_mut(),
@@ -327,8 +361,7 @@ impl Manager {
         assert!(ready.is_ready(), "a drive whose run is ready ends");
     }
 
-    /// Gives the count of clients with the namespaces of the server, which a client
-    /// reads after its session activates.
+    /// Gives the count of clients whose session is active.
     ///
     /// # Panics
     ///
@@ -336,10 +369,11 @@ impl Manager {
     fn connected(&self) -> usize {
         let connected = |client: &&NonNull<ffi::Client>| {
             // SAFETY: the client lives.
-            let status = unsafe { state(**client) }.status;
+            let State {
+                session, status, ..
+            } = unsafe { state(**client) };
             assert!(status == Status::GOOD, "a connect failed: {status:?}");
-            // SAFETY: the client lives.
-            unsafe { ffi::test::shim_client_namespaced(client.as_ptr()) }
+            session == ffi::Session::ACTIVATED
         };
         self.clients.iter().filter(connected).count()
     }
@@ -348,6 +382,7 @@ impl Manager {
 /// The state of the channel and the connect of a client of a [`Manager`].
 struct State {
     channel: ffi::Channel,
+    session: ffi::Session,
     /// The status of the connect.
     status: Status,
 }
@@ -358,21 +393,28 @@ struct State {
 ///
 /// `client` lives.
 unsafe fn state(client: NonNull<ffi::Client>) -> State {
-    let (mut channel, mut status) = (MaybeUninit::uninit(), MaybeUninit::uninit());
+    let (mut channel, mut session) = (MaybeUninit::uninit(), MaybeUninit::uninit());
+    let mut status = MaybeUninit::uninit();
     // SAFETY: the client lives.
     unsafe {
         ffi::UA_Client_getState(
             client.as_ptr(),
             channel.as_mut_ptr(),
-            ptr::null_mut(),
+            session.as_mut_ptr(),
             status.as_mut_ptr(),
         );
     }
-    // SAFETY: the call writes each output that is not null.
+    // SAFETY: the call writes each output.
     let channel = unsafe { channel.assume_init() };
     // SAFETY: as above.
+    let session = unsafe { session.assume_init() };
+    // SAFETY: as above.
     let status = Status(unsafe { status.assume_init() });
-    State { channel, status }
+    State {
+        channel,
+        session,
+        status,
+    }
 }
 
 impl std::fmt::Debug for Manager {
@@ -389,37 +431,27 @@ impl std::fmt::Debug for Manager {
 ///
 /// # Safety
 ///
-/// `data` points at live `Answers`, and `value` at the answer when `status` is `Good`.
+/// `data` points at live `Answers`, and `response` at the answer.
 unsafe extern "C" fn answer(
     _: *mut ffi::Client,
     data: *mut c_void,
     _: u32,
-    status: u32,
-    value: *mut c_void,
+    response: *mut ffi::ReadResponse,
 ) {
     // SAFETY: `read` gives live answers.
     let answers = unsafe { &*data.cast::<Answers>() };
     answers.count.set(answers.count.get() + 1);
-    let mut status = Status(status);
+    // SAFETY: open62541 gives a live response.
+    let mut status = Status(unsafe { ffi::shim_response_result(response.cast()) });
     if status == Status::GOOD {
-        // SAFETY: open62541 gives the answer with `Good`.
+        // SAFETY: the response lives and has one result, as its request has one node.
+        let value = unsafe { ffi::shim_read_result(response, 0) };
+        // SAFETY: the value lives with the response.
         status = Status(unsafe { ffi::test::shim_value_status(value) });
     }
     if status != Status::GOOD && answers.failed.get().is_none() {
         answers.failed.set(Some(status));
     }
-}
-
-/// Runs `future` to its end, and gives the panic of a poll in place of a value.
-async fn caught<F: Future>(future: F) -> std::thread::Result<F::Output> {
-    let mut future = pin!(future);
-    poll_fn(|cx| {
-        match panic::catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(cx))) {
-            Ok(poll) => poll.map(Ok),
-            Err(panic) => Poll::Ready(Err(panic)),
-        }
-    })
-    .await
 }
 
 #[cfg(test)]
@@ -431,8 +463,11 @@ mod tests {
     use sim::{Sim, node};
     use types::time::Span;
 
-    use super::{Client, Manager, caught};
+    use super::{Client, Manager};
+    use crate::client::Nodes;
     use crate::ffi;
+    use crate::node::{Key, Node};
+    use crate::unwind::caught;
 
     /// The delay of the default link.
     fn delay() -> Span {
@@ -679,20 +714,6 @@ mod tests {
         });
     }
 
-    /// A client reads the namespaces after its session activates, and a scope waits for
-    /// them, so that its close cancels no read.
-    #[test]
-    fn a_scope_waits_for_the_namespaces_of_each_client() {
-        check(3, async |manager, _| {
-            for client in &manager.clients {
-                // SAFETY: the client lives.
-                let namespaced =
-                    unsafe { ffi::test::shim_client_namespaced(client.as_ptr()) };
-                assert!(namespaced, "{manager:?}");
-            }
-        });
-    }
-
     /// The stream of the connect opens after 200 s, and no request waits until then.
     #[test]
     #[should_panic(expected = "0 of 1 clients connected in 1m")]
@@ -743,7 +764,11 @@ mod tests {
     #[test]
     fn a_read_of_an_unknown_node_fails_with_its_status() {
         check(0, async |manager, clock| {
-            manager.drive_after(|| manager.read(999_999));
+            let unknown = Nodes::unchecked(&[Node {
+                namespace: 0,
+                key: Key::Number(999_999),
+            }]);
+            manager.drive_after(|| manager.read(&unknown));
             clock.sleep(delay()).await;
             manager.drive();
             clock.sleep(delay()).await;
@@ -759,8 +784,9 @@ mod tests {
         });
     }
 
-    /// The connect takes 4 ms on the default link. The node pauses for 61 s at 3.9 ms,
-    /// while the last answer is in flight, so the connect ends after 1m of `clock`.
+    /// The connect takes 3.5 ms on the default link. The node pauses for 61 s at
+    /// 3.4 ms, while the last answer is in flight, so the connect ends after 1m of
+    /// `clock`.
     #[test]
     #[should_panic(expected = "clients connected in 1m")]
     fn a_scope_whose_connect_ends_after_its_deadline_in_a_pause_panics() {
@@ -771,7 +797,7 @@ mod tests {
             let start = clock.now();
             let pauser = node.clone();
             tasks.spawn(async move {
-                clock.sleep_until(start + Span::from_nanos(3_900_000)).await;
+                clock.sleep_until(start + Span::from_nanos(3_400_000)).await;
                 pauser.pause(Span::from_nanos(61_000_000_000));
             });
             let body = async |_: &Manager| {};
@@ -819,15 +845,15 @@ mod tests {
         assert_eq!(message, "0 of 1 clients connected in 1m");
     }
 
-    /// With jitter, 10 of the 16 clients have their namespaces at 15.5 ms.
+    /// With jitter, 8 of the 16 clients have an active session at 13 ms.
     #[test]
     fn the_deadline_panic_gives_the_count_of_connected_clients() {
         let link = sim::link::Config {
             jitter: Span::from_nanos(1_000_000),
             ..sim::link::Config::default()
         };
-        let message = paused(link, 15, Span::from_nanos(15_500_000));
-        assert_eq!(message, "10 of 16 clients connected in 1m");
+        let message = paused(link, 15, Span::from_nanos(13_000_000));
+        assert_eq!(message, "8 of 16 clients connected in 1m");
     }
 
     #[test]

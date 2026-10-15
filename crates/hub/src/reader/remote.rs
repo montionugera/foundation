@@ -19,7 +19,7 @@ use types::sample::Type;
 use wire::Protocol;
 use wire::hub::{Credit, FromHome, Head, Open, Refusal, keys};
 
-use super::{Ended, Error, Lens, Mode, Streak, WINDOW};
+use super::{Ended, Error, Lens, Matched, Mode, Streak, WINDOW, to_usize};
 use crate::State;
 
 /// The most opens of one [`connect`]. The home's node dials only when it has no open
@@ -117,28 +117,28 @@ struct Inbound {
 }
 
 impl Remote {
-    /// Opens a session of `mode` on the channels of `data`, each with its sample type,
-    /// and their index `index` at `home`, another node. Spawns the task of the
+    /// Opens a session of `mode` on the channels of `matched`, each with its sample
+    /// type, at `home`, another node, the home of their index. Spawns the task of the
     /// session, which dials the home, opens the session, and then takes its frames,
-    /// and waits until the home opened it. A removal of a channel during the open
-    /// ends the session at its first take. Returns the session and the slot of its
-    /// index.
+    /// and waits until the home opened it. A removal of a channel during the open ends
+    /// the session at its first take. Returns the session and the slot of each channel
+    /// of `matched`, in its order.
     pub(super) async fn open(
         state: &Rc<RefCell<State>>,
         home: types::node::Key,
-        data: Vec<(channel::Key, Type)>,
-        index: channel::Key,
+        matched: Matched<(channel::Key, Type)>,
         mode: Mode,
-    ) -> Result<(Self, channel::Slot), Error> {
+    ) -> Result<(Self, Box<[channel::Slot]>), Error> {
+        let (index, _) = matched.items[matched.index];
+        let data: Vec<_> = matched
+            .items
+            .iter()
+            .copied()
+            .filter(|&(key, _)| key != index)
+            .collect();
         let keys = data.iter().map(|&(key, _)| key).chain([index]).collect();
         let queue = Rc::new(RefCell::new(Queue::default()));
         state.borrow_mut().remotes.add(keys, &queue);
-        let mut held = hash::Set::default();
-        held.insert(index);
-        let data: Vec<_> = data
-            .into_iter()
-            .filter(|&(key, _)| held.insert(key))
-            .collect();
         let group = Group { index, data: &data };
         let set = state.borrow_mut().interner.intern(&[group]);
         let task = session(
@@ -150,8 +150,19 @@ impl Remote {
         );
         state.borrow().tasks.spawn(task);
         let slot = set.entries()[set.groups()[0]].slot;
-        let slots = set.entries().iter().map(|entry| entry.slot);
-        let lens = Lens::new(&set, slots, slot);
+        let slots = {
+            let mut state = state.borrow_mut();
+            let assigned = state.interner.slots();
+            let slot_of = |&(key, sample)| {
+                if key == index {
+                    slot
+                } else {
+                    assigned.data(key, sample)
+                }
+            };
+            matched.items.iter().map(slot_of).collect()
+        };
+        let lens = Lens::new(&set, set.entries().iter().map(|entry| entry.slot), slot);
         let remote = Self {
             queue,
             credit: (mode == Mode::Complete).then_some(0),
@@ -160,7 +171,7 @@ impl Remote {
             streak: Streak::default(),
         };
         poll_fn(|cx| remote.queue.borrow_mut().poll_open(cx)).await?;
-        Ok((remote, slot))
+        Ok((remote, slots))
     }
 
     /// Adds the charge of `frame`, which the reader gave back, to the credit.
@@ -600,10 +611,11 @@ async fn dial(
 ) -> Result<transport::Session, Error> {
     let (transport, card) = {
         let state = state.borrow();
-        let region = state
+        let region = &state
             .region
             .as_ref()
-            .expect("invariant: only a node in a region has a remote home");
+            .expect("invariant: only a node in a region has a remote home")
+            .region;
         let member = region
             .mesh
             .member(home)
@@ -785,10 +797,6 @@ fn refusal(ended: &Ended) -> Option<Refusal> {
         | Ended::Stream(_)
         | Ended::Refused(_) => None,
     }
-}
-
-fn to_usize(value: u32) -> usize {
-    usize::try_from(value).expect("invariant: a usize holds a u32")
 }
 
 #[cfg(test)]

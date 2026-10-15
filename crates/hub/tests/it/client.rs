@@ -1271,6 +1271,7 @@ fn sends_a_body_at_the_cap_from_a_pool_of_one_chunk_on_each_link() {
             true,
             POOL,
             Some(rules()),
+            async |_| {},
             move |node, tasks, at| async move {
                 let config = block::Config::new(
                     u64::try_from(block::footprint(1 << 16))
@@ -1416,8 +1417,14 @@ fn reply_holds(end: End) -> (usize, usize, usize) {
     let kept = Arc::clone(&outcome);
     let home = move |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
         let transport = Rc::new(transport(&node, &tasks, &own_pool(), HOME, 1 << 16));
-        let region =
-            super::region::open(&node, &tasks, Rc::clone(&transport), Vec::new()).await;
+        let region = super::region::open(
+            &node,
+            &tasks,
+            Rc::clone(&transport),
+            Vec::new(),
+            super::channels(),
+        )
+        .await;
         let layout = buffer::Layout::new(super::AREA, super::BODY_MAX).expect("a ring");
         let mut test =
             super::Test::new(node.clone(), tasks.clone(), layout, POOL, Some(region))

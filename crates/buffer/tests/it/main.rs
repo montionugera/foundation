@@ -1103,7 +1103,7 @@ fn a_full_ring_queues_nothing() {
     run(5, |shard| async move {
         let mut slots = Slots::new();
         let buffer = shard
-            .open(layout(4 * BLOCK, BODY_MAX), &mut slots)
+            .open(layout(7 * BLOCK, BODY_MAX), &mut slots)
             .await
             .expect("opens");
         let a = slots.index(key(1));
@@ -1132,7 +1132,7 @@ fn a_batch_is_queued_whole_or_not_at_all() {
     run(6, |shard| async move {
         let mut slots = Slots::new();
         let buffer = shard
-            .open(layout(8 * BLOCK, 8183), &mut slots)
+            .open(layout(11 * BLOCK, 8183), &mut slots)
             .await
             .expect("opens");
         let a = slots.index(key(1));
@@ -1150,7 +1150,7 @@ fn a_batch_is_queued_whole_or_not_at_all() {
         assert_eq!(
             full,
             Err(Rejected::Full {
-                needed: 12288,
+                needed: 8192,
                 free: 4096
             }),
             "the first entry alone has room, the batch does not"
@@ -1160,7 +1160,7 @@ fn a_batch_is_queued_whole_or_not_at_all() {
         drop(buffer);
         let mut slots = Slots::new();
         let buffer = shard
-            .open(layout(8 * BLOCK, 8183), &mut slots)
+            .open(layout(11 * BLOCK, 8183), &mut slots)
             .await
             .expect("reopens");
         assert_eq!(buffer.tail(slots.index(key(1)), Path::Live), tail(3, None));
@@ -3685,8 +3685,8 @@ fn an_open_takes_a_carried_given_up_to_2_pow_63_less_one() {
     }
 }
 
-/// A carry body over `body_max` makes a record longer than the largest one of the
-/// layout. The walk cannot check such a record, of any kind, so it ends there.
+/// A carry body over `body_max` makes a record longer than the window of the layout.
+/// The walk cannot check such a record, of any kind, so it ends there.
 #[test]
 fn an_open_ends_at_a_carry_record_over_body_max() {
     run(162, |shard| async move {
@@ -3700,6 +3700,44 @@ fn an_open_ends_at_a_carry_record_over_body_max() {
         let buffer = buffer.expect("opens");
         let b = slots.index(key(2));
         assert_eq!(buffer.durable(b, Path::Live), tail(0, None));
+    });
+}
+
+/// A record that follows the chain with a body over `body_max` is a wrong shape, also
+/// within the window. At a `body_max` of 4088 the window is two blocks, so a body of
+/// 4120 bytes fits it.
+#[test]
+fn an_open_refuses_a_carry_body_over_body_max_within_the_window() {
+    run(162, |shard| async move {
+        let ring = layout(AREA, 4088);
+        {
+            let mut slots = Slots::new();
+            let buffer = shard.open(ring, &mut slots).await.expect("opens");
+            let a = slots.index(key(1));
+            for (first, stamp) in [(0, 30), (3, 60)] {
+                let parts = Parts::default();
+                buffer
+                    .append([entry(1, a, Path::Live, first, 3, Some(stamp), parts)])
+                    .expect("queues");
+                buffer.committed().await.expect("commits");
+            }
+        }
+        let tails: Vec<_> = (2..=99).map(|index| carried(index, 4, 0, None)).collect();
+        let body = carry_body(&tails);
+        assert!(body.len() > 4088, "a body of {} bytes", body.len());
+        shard.put_carry(3 * BLOCK, &body).await;
+        shard.open_invalid(ring, 3 * BLOCK).await;
+    });
+}
+
+/// A data record over `body_max` within the window is a wrong shape too: the header
+/// of a ring of three-block records says 4088, so its two-block record passes it.
+#[test]
+fn an_open_refuses_a_data_body_over_body_max_within_the_window() {
+    run(164, |shard| async move {
+        shard.create_long_record().await;
+        shard.tamper(BODY_MAX_AT, &4088_u32.to_le_bytes()).await;
+        shard.open_invalid(layout(AREA, 4088), BLOCK).await;
     });
 }
 
@@ -3729,6 +3767,114 @@ fn an_open_refuses_a_carry_record_of_the_wrong_shape() {
             shard.create_two_records().await;
             shard.put_carry(3 * BLOCK, &body).await;
             shard.open_invalid(layout(AREA, BODY_MAX), 3 * BLOCK).await;
+        });
+    }
+}
+
+/// A trim passed the record with the first entry with no samples that index 1 has at
+/// seq 3, and kept a record with two more. A carry record after the kept ones gives
+/// the count of them all. Each case: the seqs of the entries with no samples of each
+/// record, the count of a carry record at seq 3 in place of the first kept record,
+/// the carried count, and whether the open takes it. A carried count below the walked
+/// one, above it while a walked entry is not one at the carried seq, or above it
+/// after a carry record that came first, is a wrong shape.
+#[test]
+fn an_open_counts_the_entries_with_no_samples_that_a_trim_passed() {
+    type Records = &'static [&'static [u64]];
+    let cases: [(Records, Option<u64>, u64, bool); 4] = [
+        (&[&[3], &[3, 3]], None, 3, true),
+        (&[&[3], &[3, 3]], None, 1, false),
+        (&[&[3], &[3, 3], &[4]], None, 2, false),
+        (&[&[3], &[3], &[3]], Some(1), 3, false),
+    ];
+    for (records, first, given, taken) in cases {
+        run(188, move |shard| async move {
+            let ring = layout(AREA, BODY_MAX);
+            let mut slots = Slots::new();
+            let buffer = shard.open(ring, &mut slots).await.expect("opens");
+            let a = slots.index(key(1));
+            let empty =
+                |first| entry(1, a, Path::Live, first, 0, None, Parts::default());
+            for firsts in records {
+                buffer
+                    .append(firsts.iter().map(|&first| empty(first)))
+                    .expect("queues");
+                buffer.committed().await.expect("commits");
+            }
+            drop(buffer);
+            let carry = BLOCK * u64::try_from(records.len() + 1).expect("few records");
+            if let Some(first) = first {
+                let carried = carried(1, 3, first, Some(30));
+                shard.put_carry(2 * BLOCK, &carry_body(&[carried])).await;
+                for offset in (3 * BLOCK..carry).step_by(to_usize(BLOCK)) {
+                    shard.seal(offset).await;
+                }
+            }
+            let seq = *records.concat().last().expect("an entry");
+            let carried = carried(1, seq, given, Some(30));
+            shard.put_carry(carry, &carry_body(&[carried])).await;
+            let chain = to_usize(AREA_START + BLOCK) + 4;
+            let chain = shard.bytes().await[chain..chain + 4].to_vec();
+            shard.tamper(TAIL_AT, &(2 * BLOCK).to_le_bytes()).await;
+            shard.tamper(CHAIN_AT, &chain).await;
+            if !taken {
+                return shard.open_invalid(ring, carry).await;
+            }
+            let mut slots = Slots::new();
+            let buffer = shard.open(ring, &mut slots).await.expect("opens");
+            let a = slots.index(key(1));
+            assert_eq!(buffer.durable(a, Path::Live), tail(3, Some(30)));
+            let stored = || stored(3, 0, None, shard.block(0));
+            let read = buffer.read(a, Path::Live, mark(0, 0), usize::MAX).await;
+            let expected = Read {
+                gap: Some(0..3),
+                entries: vec![stored(), stored()],
+                next: mark(3, 3),
+            };
+            assert_eq!(read, Ok(expected));
+            let read = buffer.read(a, Path::Live, mark(3, 2), usize::MAX).await;
+            assert_eq!(read, Ok(whole(vec![stored()], mark(3, 3))));
+            let read = buffer.read(a, Path::Live, mark(3, 3), usize::MAX).await;
+            assert_eq!(read, Ok(whole(vec![], mark(3, 3))));
+            buffer.append([empty(3)]).expect("queues");
+            buffer.committed().await.expect("commits");
+            let read = buffer.read(a, Path::Live, mark(3, 3), usize::MAX).await;
+            assert_eq!(read, Ok(whole(vec![stored()], mark(3, 4))));
+        });
+    }
+}
+
+/// Data records at 1, 2, and 4 blocks each hold an entry with no samples at seq 3.
+/// The carry record at 3 blocks, written over the third, takes two more, which a
+/// trim passed. It gives an exact count, so the one at 5 blocks takes no more.
+#[test]
+fn an_open_refuses_more_entries_with_no_samples_after_a_carry_record_of_the_path() {
+    for (given, taken) in [(5, true), (6, false)] {
+        run(189, move |shard| async move {
+            let ring = layout(AREA, BODY_MAX);
+            let mut slots = Slots::new();
+            let buffer = shard.open(ring, &mut slots).await.expect("opens");
+            let a = slots.index(key(1));
+            for _ in 0..4 {
+                let empty = entry(1, a, Path::Live, 3, 0, None, Parts::default());
+                buffer.append([empty]).expect("queues");
+                buffer.committed().await.expect("commits");
+            }
+            drop(buffer);
+            shard
+                .put_carry(3 * BLOCK, &carry_body(&[carried(1, 3, 4, None)]))
+                .await;
+            shard.seal(4 * BLOCK).await;
+            shard
+                .put_carry(5 * BLOCK, &carry_body(&[carried(1, 3, given, None)]))
+                .await;
+            if !taken {
+                return shard.open_invalid(ring, 5 * BLOCK).await;
+            }
+            let mut slots = Slots::new();
+            let buffer = shard.open(ring, &mut slots).await.expect("opens");
+            let a = slots.index(key(1));
+            assert_eq!(buffer.durable(a, Path::Live), tail(3, None));
         });
     }
 }
@@ -3878,7 +4024,7 @@ fn opens_with_no_data_leave_room_for_the_largest_record() {
 fn opens_with_no_data_after_an_entry_leave_room_for_the_next() {
     for torn in [false, true] {
         run(25, move |shard| async move {
-            let ring = layout(6 * BLOCK, BODY_MAX);
+            let ring = layout(7 * BLOCK, BODY_MAX);
             let mut slots = Slots::new();
             let buffer = shard.open(ring, &mut slots).await.expect("opens");
             let a = slots.index(key(1));
@@ -3918,14 +4064,14 @@ fn opens_with_no_data_after_an_entry_leave_room_for_the_next() {
     }
 }
 
+/// Each record leaves a block free for the restart record of the next open, so a
+/// full ring reopens. It then takes no entry before its tail moves.
 #[test]
-fn a_full_ring_does_not_reopen_before_its_tail_moves() {
+fn a_full_ring_reopens_into_the_block_that_its_records_leave_free() {
     run(21, |shard| async move {
+        let ring = layout(7 * BLOCK, BODY_MAX);
         let mut slots = Slots::new();
-        let buffer = shard
-            .open(layout(4 * BLOCK, BODY_MAX), &mut slots)
-            .await
-            .expect("opens");
+        let buffer = shard.open(ring, &mut slots).await.expect("opens");
         let a = slots.index(key(1));
         let parts = Parts::from(shard.block(3900));
         for seq in 0..3 {
@@ -3935,12 +4081,14 @@ fn a_full_ring_does_not_reopen_before_its_tail_moves() {
         }
         buffer.committed().await.expect("commits");
         drop(buffer);
-        let opened = shard
-            .open(layout(4 * BLOCK, BODY_MAX), &mut Slots::new())
-            .await;
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("reopens");
+        let a = slots.index(key(1));
+        assert_eq!(buffer.tail(a, Path::Live), tail(3, None));
+        let full = buffer.append([entry(1, a, Path::Live, 3, 1, None, parts.clone())]);
         assert_eq!(
-            opened.map(drop),
-            Err(Error::Full {
+            full,
+            Err(Rejected::Full {
                 needed: 4096,
                 free: 0
             })
@@ -4854,23 +5002,28 @@ fn a_record_over_the_largest_block_of_the_pool_is_recovered() {
         let mut slots = Slots::new();
         let buffer = shard.open(ring, &mut slots).await.expect("opens");
         let a = slots.index(key(1));
-        let mut part = parts_pool.alloc(48_000).expect("the pool has a block");
+        let mut part = parts_pool.alloc(28_000).expect("the pool has a block");
         part.fill(7);
         let parts = Parts::from(part.freeze());
-        buffer
-            .append([
-                entry(1, a, Path::Live, 0, 1, Some(1), parts.clone()),
-                entry(1, a, Path::Live, 1, 1, Some(2), parts.clone()),
-                entry(1, a, Path::Live, 2, 1, Some(3), parts),
-            ])
-            .expect("queues");
+        let entries = (0..5u32).map(|seq| {
+            entry(
+                1,
+                a,
+                Path::Live,
+                u64::from(seq),
+                1,
+                Some(i64::from(seq) + 1),
+                parts.clone(),
+            )
+        });
+        buffer.append(entries).expect("queues");
         buffer.committed().await.expect("commits");
-        assert_eq!(buffer.durable(a, Path::Live), tail(3, Some(3)));
+        assert_eq!(buffer.durable(a, Path::Live), tail(5, Some(5)));
         drop(buffer);
         let mut slots = Slots::new();
         let opened = shard.open(ring, &mut slots).await;
         let tails = opened.map(|buffer| buffer.tail(slots.index(key(1)), Path::Live));
-        assert_eq!(tails, Ok(tail(3, Some(3))));
+        assert_eq!(tails, Ok(tail(5, Some(5))));
     });
 }
 
@@ -4914,41 +5067,40 @@ fn an_open_with_no_largest_block_free_fails_and_the_next_recovers() {
     });
 }
 
-/// `append` refuses an entry whose parts, joined, no block of the shard's pool
-/// holds, with `Limit::Block` for the first such entry, and takes nothing. An entry
-/// of the largest block, which takes the whole budget, commits, a read gives it,
-/// and an open recovers it.
+/// `append` refuses an entry whose parts, joined, pass `Buffer::block_max`, with
+/// `Limit::Block` for the first such entry, and takes nothing. An entry of
+/// `block_max` bytes commits, a read gives it, and an open recovers it.
 #[test]
-fn an_entry_over_the_largest_pool_block_is_large() {
+fn an_entry_over_block_max_is_large() {
     run(155, |mut shard| async move {
         let largest = 1 << 17;
-        let over = Parts::from([shard.block(largest), shard.block(1)]);
-        let more = Parts::from([shard.block(largest), shard.block(2)]);
-        let fits = Parts::from(shard.block(largest));
         let config = block::Config::new(
             u64::try_from(block::footprint(largest)).expect("a usize fits in a u64"),
         )
         .expect("the budget fits");
+        let own = Rc::clone(&shard.pool);
         shard.pool =
             Rc::new(Pool::new(config.clone(), Heap::new(config.reservation())));
         assert_eq!(shard.pool.largest(), largest);
         let ring = least(600_000);
         let mut slots = Slots::new();
         let buffer = shard.open(ring, &mut slots).await.expect("opens");
+        let max = buffer.block_max();
+        assert_eq!(max, 61_441);
+        let over = parts_of(&own, &[max, 1]);
+        let more = parts_of(&own, &[max, 2]);
+        let fits = parts_of(&own, &[max]);
         let a = slots.index(key(1));
         let large = buffer.append([
             entry(1, a, Path::Live, 0, 1, Some(1), over),
             entry(1, a, Path::Live, 1, 1, Some(2), more),
         ]);
-        let limit = Limit::Block {
-            len: largest + 1,
-            max: largest,
-        };
+        let limit = Limit::Block { len: max + 1, max };
         assert_eq!(large, Err(Rejected::Large(limit)));
         assert_eq!(
             Rejected::Large(limit).to_string(),
-            "an entry has 131073 bytes of parts, and a block of the pool holds at \
-             most 131072"
+            "an entry has 61442 bytes of parts, and an entry of this buffer holds at \
+             most 61441"
         );
         assert_eq!(buffer.tail(a, Path::Live), tail(0, None));
         buffer
@@ -4959,13 +5111,248 @@ fn an_entry_over_the_largest_pool_block_is_large() {
         let read = buffer.read(a, Path::Live, Mark::at(0), usize::MAX).await;
         let lens =
             read.map(|read| read.entries.iter().map(|e| e.bytes.len()).collect());
-        assert_eq!(lens, Ok(vec![largest]));
+        assert_eq!(lens, Ok(vec![max]));
         drop(buffer);
         let mut slots = Slots::new();
         let opened = shard.open(ring, &mut slots).await;
         let tails = opened.map(|buffer| buffer.tail(slots.index(key(1)), Path::Live));
         assert_eq!(tails, Ok(tail(1, Some(1))), "an open recovers it");
     });
+}
+
+/// One part of each of `lens` bytes from `pool`.
+fn parts_of(pool: &Pool, lens: &[usize]) -> Parts {
+    let mut blocks = lens.iter().map(|&len| {
+        let mut block = pool.alloc(len).expect("the pool has a block");
+        block.fill(7);
+        block.freeze()
+    });
+    match (blocks.next(), blocks.next(), blocks.next()) {
+        (first, None, None) => Parts::from(first),
+        (Some(first), Some(second), None) => Parts::from([first, second]),
+        _ => unreachable!("one part or two"),
+    }
+}
+
+/// Opens a buffer on a new pool of `budget` bytes, then appends one entry whose
+/// parts have the lengths that `split` gives for `Buffer::block_max`. The parts come
+/// from the new pool when `from_buffer`, or else from the pool of the test. Gives
+/// `block_max` and what the append and its commit returned.
+async fn append_split(
+    mut shard: Shard,
+    budget: u64,
+    from_buffer: bool,
+    split: impl FnOnce(usize) -> Vec<usize>,
+) -> (usize, Result<(), Rejected>) {
+    let own = Rc::clone(&shard.pool);
+    shard.pool = Rc::new(Pool::heap(
+        block::Config::new(budget).expect("the budget fits"),
+    ));
+    let mut slots = Slots::new();
+    let buffer = shard.open(least(600_000), &mut slots).await.expect("opens");
+    let max = buffer.block_max();
+    // The open leaves free blocks carved. A size whose blocks are all free goes
+    // back at its second purge, so the entry meets a fresh pool.
+    buffer.pool().purge();
+    buffer.pool().purge();
+    assert_eq!(buffer.pool().committed(), 0);
+    assert!(
+        max <= buffer.pool().largest(),
+        "a read holds the entry in a block"
+    );
+    let pool = if from_buffer { buffer.pool() } else { &*own };
+    let parts = parts_of(pool, &split(max));
+    let a = slots.index(key(1));
+    let appended = buffer.append([entry(1, a, Path::Live, 0, 1, Some(1), parts)]);
+    if appended.is_ok() {
+        buffer.committed().await.expect("commits");
+        assert_eq!(buffer.durable(a, Path::Live), tail(1, Some(1)));
+    }
+    (max, appended)
+}
+
+/// The defect of #1053: an entry of the largest block, made from the pool of the
+/// buffer, got `Pool(Exhausted)` on each try. It is over `block_max`.
+#[test]
+fn an_entry_of_the_largest_block_made_from_the_pool_of_the_buffer_is_large() {
+    run(201, |shard| async move {
+        let largest = 1 << 17;
+        let budget = u64::try_from(block::footprint(largest)).expect("fits in u64");
+        let (max, appended) =
+            append_split(shard, budget, true, |_| vec![largest]).await;
+        let limit = Limit::Block { len: largest, max };
+        assert_eq!(appended, Err(Rejected::Large(limit)));
+    });
+}
+
+/// The second case of #1053: an entry under the largest block that does not fit
+/// beside the blocks of its group.
+#[test]
+fn an_entry_under_the_largest_block_made_from_the_pool_of_the_buffer_is_large() {
+    run(202, |shard| async move {
+        let (max, appended) =
+            append_split(shard, 1 << 17, true, |_| vec![70_000]).await;
+        let limit = Limit::Block { len: 70_000, max };
+        assert_eq!(appended, Err(Rejected::Large(limit)));
+    });
+}
+
+/// An entry of exactly `block_max` bytes, made from the pool of the buffer, appends
+/// in one part and in the split that takes the most of the budget.
+#[test]
+fn an_entry_of_block_max_made_from_the_pool_of_the_buffer_appends() {
+    let budget = u64::try_from(block::footprint(1 << 17)).expect("fits in u64");
+    run(203, move |shard| async move {
+        let appended = append_split(shard, budget, true, |max| vec![max]).await;
+        assert_eq!(appended, (61_441, Ok(())));
+    });
+    run(204, move |shard| async move {
+        let appended =
+            append_split(shard, budget, true, |max| vec![57_345, max - 57_345]).await;
+        assert_eq!(appended, (61_441, Ok(())));
+    });
+}
+
+/// The limit of `block_max`: a free block of a size with a block in use keeps its
+/// budget, so an entry at `block_max` gets `Exhausted` when the pool keeps a second
+/// block of the size of a part. After two purges the pool commits nothing, and the
+/// same entry appends.
+#[test]
+fn an_entry_of_block_max_beside_a_free_block_of_its_size_is_exhausted() {
+    run(206, |mut shard| async move {
+        let budget = u64::try_from(block::footprint(1 << 17)).expect("fits in u64");
+        let config = block::Config::new(budget).expect("the budget fits");
+        shard.pool = Rc::new(Pool::heap(config));
+        let mut slots = Slots::new();
+        let buffer = shard.open(least(600_000), &mut slots).await.expect("opens");
+        let pool = buffer.pool();
+        pool.purge();
+        pool.purge();
+        let lens = [57_345, buffer.block_max() - 57_345];
+        let a = slots.index(key(1));
+        let parts = parts_of(pool, &lens);
+        drop(pool.alloc(lens[1]).expect("a second block of the size"));
+        let appended = buffer.append([entry(1, a, Path::Live, 0, 1, Some(1), parts)]);
+        let exhausted = block::Error::Exhausted {
+            requested: 52_186,
+            available: 57_216,
+        };
+        assert_eq!(appended, Err(Rejected::Pool(exhausted)));
+        pool.purge();
+        pool.purge();
+        assert_eq!(pool.committed(), 0);
+        let parts = parts_of(pool, &lens);
+        let appended = buffer.append([entry(1, a, Path::Live, 0, 1, Some(1), parts)]);
+        assert_eq!(appended, Ok(()));
+        buffer.committed().await.expect("commits");
+        assert_eq!(buffer.durable(a, Path::Live), tail(1, Some(1)));
+    });
+}
+
+/// An entry of `block_max` bytes in two parts, a head of 30 bytes and a body, as
+/// `home` makes a stored body, appends from the pool of a buffer just opened, with no
+/// purge: the open holds no block of the pool.
+#[test]
+fn an_entry_at_block_max_with_a_short_head_appends_after_an_open() {
+    for (case, budget, max) in [(207, 62_272, 4096), (208, 68_000, 8_257)] {
+        run(case, move |mut shard| async move {
+            let config = block::Config::new(budget).expect("the budget fits");
+            shard.pool = Rc::new(Pool::heap(config));
+            let mut slots = Slots::new();
+            let buffer = shard.open(least(600_000), &mut slots).await.expect("opens");
+            assert_eq!(buffer.block_max(), max);
+            let a = slots.index(key(1));
+            for first in 0..3 {
+                let parts = parts_of(buffer.pool(), &[30, max - 30]);
+                let appended =
+                    buffer.append([entry(1, a, Path::Live, first, 1, Some(1), parts)]);
+                assert_eq!(appended, Ok(()), "budget {budget}, append {first}");
+                buffer.committed().await.expect("commits");
+            }
+        });
+    }
+}
+
+/// An open fails with `Budget` when its pool holds no entry of
+/// `Layout::ENTRY_MAX_MIN` bytes beside the blocks of a group, also when its largest
+/// block is under that entry, and opens from `min`.
+#[test]
+fn an_open_fails_on_a_pool_that_holds_no_entry() {
+    run(205, |mut shard| async move {
+        let config = block::Config::new(62_271).expect("the budget fits");
+        shard.pool = Rc::new(Pool::heap(config));
+        let opened = shard.open(least(600_000), &mut Slots::new()).await;
+        let error = opened.map(drop).expect_err("the open fails");
+        assert_eq!(
+            error,
+            Error::Budget {
+                budget: 62_271,
+                min: 62_272
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "a pool of 62271 bytes holds no entry of 4032 bytes: give it 62272 bytes \
+             or more"
+        );
+        let config = block::Config::new(1_000).expect("the budget fits");
+        shard.pool = Rc::new(Pool::heap(config));
+        let opened = shard.open(least(600_000), &mut Slots::new()).await;
+        let error = opened.map(drop).expect_err("the open fails");
+        assert_eq!(
+            error,
+            Error::Budget {
+                budget: 1_000,
+                min: 62_272
+            }
+        );
+        let names = shard.files.list(FilePath::new("")).await.expect("lists");
+        assert_eq!(names, Vec::<PathBuf>::new());
+        let config = block::Config::new(62_272).expect("the budget fits");
+        shard.pool = Rc::new(Pool::heap(config));
+        let opened = shard.open(least(600_000), &mut Slots::new()).await;
+        assert_eq!(opened.map(|buffer| buffer.block_max()), Ok(4096));
+    });
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// On a pool of any budget that commits nothing before it takes the entry's
+    /// parts, an entry of `block_max` bytes in any split into one or two parts made
+    /// from that pool appends, and one byte more gets `Limit::Block`.
+    #[test]
+    fn block_max_bounds_an_entry_in_any_split(
+        seed in any::<u64>(),
+        budget in 62_272..=1u64 << 19,
+        two in any::<bool>(),
+        cut in 0.0..=1.0f64,
+        over in any::<bool>(),
+    ) {
+        let split = move |len: usize| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                clippy::cast_precision_loss,
+                reason = "a fraction of a length under 2^53"
+            )]
+            let first = (len as f64 * cut) as usize;
+            if two { vec![first, len - first] } else { vec![len] }
+        };
+        run(seed, move |shard| async move {
+            let (max, appended) = if over {
+                append_split(shard, budget, false, |max| split(max + 1)).await
+            } else {
+                append_split(shard, budget, true, split).await
+            };
+            let expected = if over {
+                Err(Rejected::Large(Limit::Block { len: max + 1, max }))
+            } else {
+                Ok(())
+            };
+            assert_eq!(appended, expected);
+        });
+    }
 }
 
 /// An open fails with `Pool(TooLarge)` when a recovered entry is over the largest
@@ -6021,7 +6408,7 @@ fn a_record_with_a_table_over_one_block_is_read() {
     run(154, |shard| async move {
         let mut slots = Slots::new();
         let buffer = shard
-            .open(layout(AREA, BODY_MAX * 4), &mut slots)
+            .open(layout(2 * AREA, BODY_MAX * 4), &mut slots)
             .await
             .expect("opens");
         let a = slots.index(key(1));
@@ -6367,7 +6754,7 @@ fn newest_with_no_block_for_the_entry_gives_the_pool_error() {
     run(186, |shard| async move {
         let mut slots = Slots::new();
         let buffer = shard
-            .open(layout(AREA, 3 * 4096), &mut slots)
+            .open(layout(2 * AREA, 3 * 4096), &mut slots)
             .await
             .expect("opens");
         let a = slots.index(key(1));

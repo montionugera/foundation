@@ -38,3 +38,12 @@
   path. Lost: a benchmark of `collect`. Ruled by `laptop.architect-2`
   (2026-10-11T11:43:20Z,
   https://github.com/synnaxlabs/foundation/pull/2389#issuecomment-6108659691).
+  The member record of a node holds a key for each name of `TABLE` (NODE MESH): the
+  founder makes its keys at the founding, from mesh time and `entropy`. A name of
+  `TABLE` that the member lacks has no channel: the publish task writes each channel
+  whose name the member holds, and no other. Later step: at the first release after a
+  shipped release that adds a name to `TABLE`, a `mesh` change gives a member a key for
+  each name that it lacks. Before a release ships, no stored record of a user lacks a
+  name. Each name of `TABLE` is at most 63 bytes (NODE NAME). By `laptop.architect-2`
+  (#728, 2026-10-12T16:02:04Z):
+  https://github.com/synnaxlabs/foundation/issues/728#issuecomment-6127912135.

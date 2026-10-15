@@ -7,6 +7,7 @@ use env::thread::{Error, Handle};
 use env::threads::Body;
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::Notify;
+use tracing::Dispatch;
 
 use crate::cores::Cores;
 use crate::{thread, unwind};
@@ -21,10 +22,11 @@ impl Driver {
 }
 
 impl env::threads::Driver for Driver {
-    fn start(&self, name: &str, body: Body) -> Result<Handle, Error> {
+    fn start(&self, name: &str, body: Body, log: Dispatch) -> Result<Handle, Error> {
         let cores = Arc::clone(&self.0);
         let build = move |name: &str| build(&cores, name);
-        thread::start(name.to_owned(), build, |runtime| serve(runtime, body))
+        let serve = |runtime| serve(runtime, body);
+        thread::start(name.to_owned(), build, serve, log)
     }
 }
 

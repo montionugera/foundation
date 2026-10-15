@@ -35,6 +35,8 @@ mod files;
 pub mod memory;
 #[cfg(all(feature = "net", any(target_os = "linux", target_os = "macos")))]
 mod net;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod paths;
 mod shards;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[expect(unsafe_code, reason = "a signal mask is an OS call")]
@@ -155,14 +157,46 @@ pub fn net() -> env::net::Net {
     env::net::Net::new(net::Driver)
 }
 
-/// The real disk under `dir/data`, and the handle of its I/O thread. It makes `dir`
-/// and `dir/data` when they are not there, but not the parents of `dir`. `os` keeps
-/// its own entries in `dir`, so give it a directory that nothing else uses. `threads`
-/// starts I/O thread `name`, which runs each call of the disk and of its files in the
-/// order they reach it, and ends after the disk and its files drop. Give each shard
-/// a disk of its own. The mode of each file and directory that it makes gives the
-/// group and other users no access. It does not change the mode of a file or
-/// directory that is there.
+/// The real files of the host by path. A write on a file or on nothing makes a hidden
+/// file with a random name beside `path`, syncs it, and renames it over `path`, so a
+/// reader or a crash sees the old file or the new one, and of two writes one wins
+/// whole. A write that fails removes its file, and gives the error of the remove when
+/// that fails. A crash during a write leaves the file. The hidden file has a name of 21
+/// bytes: where the OS refuses its path as too long, the write gives `Io` and makes no
+/// file.
+///
+/// The file that a write makes is a new file of this user, with permission bits that
+/// give the group and other users no access, also when it replaces a file that gave
+/// more. It takes nothing from the file that it replaces: not its owner, its group, its
+/// permission bits, or its access control list. `os` sets no access control list, so
+/// the file takes the entries that its directory gives to its new files: on macOS, such
+/// an entry can open the file to another user. Each other hard link of the replaced
+/// file keeps the old bytes.
+///
+/// A symbolic link, a device, or a pipe at `path` takes the bytes in place, with no
+/// hidden file and no rename: a reader, a crash, or a failed write can see or leave a
+/// part of them, and two writes at one time can leave a mix of the two. `os` sets no
+/// owner, group, or permission bit of the file, device, or pipe that takes them. A
+/// write on a symbolic link to nothing gives `NotFound` and makes no file.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[must_use]
+pub fn paths() -> env::paths::Paths {
+    env::paths::Paths::new(paths::Driver)
+}
+
+/// The real disk under `dir/data`, and the handle of its I/O thread. It makes `dir` and
+/// `dir/data` when they are not there, but not the parents of `dir`. `os` keeps its own
+/// entries in `dir`, so give it a directory that nothing else uses. `threads` starts
+/// I/O thread `name`, which runs each call of the disk and of its files in the order
+/// they reach it, and ends after the disk and its files drop. Give each shard a disk of
+/// its own. The mode of each file and directory that it makes gives the group and other
+/// users no access. It does not change the mode of a file or directory that is there.
+/// Each file that it opens is closed on exec. A child of the process holds a copy of
+/// each open file from its fork to its exec, or to its end. The copy does not hold the
+/// file: a write open succeeds after its handle closes. On a filesystem that fails the
+/// unlock, as NFS or a FUSE daemon can, the copy holds the file, and a write open gives
+/// [`env::files::Error::Busy`] until the copy closes. The copy keeps the room of a
+/// removed file, which counts as used until the copy closes.
 ///
 /// # Errors
 ///
@@ -178,6 +212,22 @@ pub fn files(
     name: &str,
 ) -> Result<(Disk, env::thread::Handle), Error> {
     Disk::new(dir, threads, name)
+}
+
+/// The real disk under `dir/data` and the handle of its I/O thread, as [`files`] gives
+/// them, for a directory that is there. It makes nothing.
+///
+/// # Errors
+///
+/// - [`Error::Dir`] when `dir/data` is not there or the OS cannot open it.
+/// - [`Error::Thread`] when the I/O thread cannot start.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn stored(
+    dir: &Path,
+    threads: &env::threads::Threads,
+    name: &str,
+) -> Result<(Disk, env::thread::Handle), Error> {
+    Disk::stored(dir, threads, name)
 }
 
 /// Holds SIGINT and SIGTERM: the first that comes does not end the process, and the

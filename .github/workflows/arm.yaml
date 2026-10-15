@@ -18,6 +18,7 @@ on:
       - 'clippy.toml'
       - 'rustfmt.toml'
       - 'deny.toml'
+      - 'docs/quickstart.md'
       - '.github/workflows/**'
 
 # On main each run ends, and only the newest waiting commit runs next.
@@ -61,6 +62,7 @@ jobs:
               - 'clippy.toml'
               - 'rustfmt.toml'
               - 'deny.toml'
+              - 'docs/quickstart.md'
               - '.github/workflows/**'
 
   test:

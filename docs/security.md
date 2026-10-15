@@ -34,7 +34,7 @@ attacker can use is a GitHub issue with the `security` label and a failing test.
 | Time source | Shift the clocks that follow it, within what the estimator accepts | |
 | Device | Send any bytes to a connector | Reach the core except through `hub` |
 | Local user that runs the node | Read and write the node's files and memory, and so hold its keys and cached secrets and become that member node. On the node that founds the root region, read `admin.key` and so be the first admin of the region, not only that node | |
-| Other local user | Read, write, or list a file or directory that the operator opens to it: one that is there with a wider mode, which `os` does not change, or one that an ACL of the data directory opens. With write, it can write the node's keys and so become that node. With write to the data directory before the start that founds the root region, it can write `admin.key`, which that start founds with, and so choose the first admin of the root region. With read of `admin.key`, it is the first admin | Read, write, or list another file or directory that `os` makes; read memory of the process |
+| Other local user | Read, write, or list a file or directory that the operator opens to it: one that is there with a wider mode, which `os` does not change, or one that an ACL opens: an ACL of the data directory, or the entries that a directory gives to its new files, which a file that `os::paths` writes there takes on macOS, also in place of a file that had none. With write, it can write the node's keys and so become that node. With write to the data directory before the start that founds the root region, it can write `admin.key`, which that start founds with, and so choose the first admin of the root region. With read of `admin.key`, it is the first admin | Read, write, or list another file or directory that `os` makes; read memory of the process |
 | Agent host | Use the key of the agent's subject, which the MCP process holds | Go past that subject's allows |
 | Dependency | Ship hostile or defective code in a crate we build | |
 
@@ -102,6 +102,12 @@ state on `main`.
   share 50 resets a second on each shard. One ID is enough, and a peer whose dial
   completes gets new IDs with no limit: noq-proto issues a new ID each time the peer
   retires one.
+- A peer that keeps back or reorders an acknowledgment, or that stops a stream and
+  never acknowledges its reset, makes a session hold at most `window_bytes` of sent
+  bytes (#2361). Each held run of over 1452 bytes holds its whole block, so the
+  session holds at most `window_bytes / 1453` blocks, plus two for each stream. Open:
+  #2434 (a session that sends small parts of large blocks, as `hub` does, holds up to
+  that many large blocks).
 - Open: #620 (a stop after the peer's reset gives the peer the stream's window twice,
   so a peer grows the connection's receive memory with no bound).
 - Fixed: #299 (a peer made the node hold certificates that are not valid for a
@@ -123,20 +129,24 @@ state on `main`.
 - The first message of a stream, and each datagram, starts with a `wire` header
   (PROTOCOL HEADER). `node` stops a stream whose header is not valid, and drops and
   counts such a datagram. A client opens only hub streams; `node` refuses the other
-  protocols from a client. A node with a region gives each `Mesh` stream of a peer
-  that proved a node key to `Mesh::serve`, which checks each message (NODE MESH), and
-  rejects a client's. It gives a `Hub` stream to the hub only when a member of its
-  region has the peer's public key, once, at the header (NODE PORT); it rejects a
-  client's until #1744. `node` stops and resets each other stream until its protocol
-  has a server. It reads no datagram yet (#1661). It admits each member of the region to
-  a session, and gives other peers at most 256 places (NODE PORT): one for each session
-  of a program, and one for the key of a node. At the bound, the oldest place frees for
-  the new peer, and its sessions close unless its peer is now a member. So a peer
-  outside the region keeps its session until 256 later peers took a place. A flood that
-  takes 256 places in the time that a peer needs to prove its right (a member, the
-  client hello of #1744, or the ticket of #1157) closes that peer's session; only a
-  limit on handshakes before admission bounds that rate (#563). It rejects a stream
-  whose header has not arrived within 10 s.
+  protocols from a client. A node with a region gives each `Mesh` stream of a peer that
+  proved a node key to `Mesh::serve`, which checks each message (NODE MESH), and rejects
+  a client's. It gives a node's `Hub` stream to the hub only when a member of its region
+  has the peer's public key, once, at the header (NODE PORT). With a region, it gives a
+  client's to the hub too, which admits the client by its hello against the access rules
+  of the root region of the spec in use, and of each later spec; `node` answers each
+  request that the hub verified with `ops::serve`. With no region, it rejects a
+  client's. `node` stops and resets each other stream until its protocol has a server.
+  It reads no datagram yet (#1661). It admits each member of the region to a session,
+  and gives other peers at most 256 places by default (`node::Settings::places_max`,
+  NODE PORT): one for each session of a program, and one for the key of a node. At the
+  bound, the oldest place frees for the new peer, and its sessions close unless its peer
+  is now a member. So a peer outside the region keeps its session until that many later
+  peers took a place. A flood that takes that many places in the time that a peer needs
+  to prove its right (a member, the client hello of #1744 (#2548), or the ticket of
+  #1157) closes that peer's session; only a limit on handshakes before admission bounds
+  that rate (#563). It rejects a stream whose header has not arrived within 10 s by
+  default (`node::Settings::header_wait`).
 
 ### Subject to owner
 
@@ -159,6 +169,12 @@ state on `main`.
 - Mesh to agent, to attack when `ops` gets real operations: text from a spec file
   or a peer that reaches a tool description or a tool result, as an instruction to
   the agent.
+- A change of each definition other than a channel needs `admin` on its key, because
+  a policy governs its whole region, a subject's keys decide who acts as it, a region
+  record makes a region, and a connector reaches channels by `select` (SERVE ACCESS).
+  So grant `admin` only to a subject that may change access, policy, and connectors
+  for the whole region. A changed channel also needs `apply` on the channel at each
+  of its edges.
 
 ### Node to node
 
@@ -260,11 +276,11 @@ state on `main`.
   each put in flight; then each put of a chunk that the disk does not hold stops with
   `FULL`. No code removes a chunk (#1233), so that room stays taken, and the node's own
   puts of new chunks then give `Error::Floor` too. `serve` holds at most one chunk in
-  memory for each stream. `transport` also holds each chunk whole until the peer
-  acknowledged each byte of it and each byte before it on the stream, so a get can hold
-  more than one chunk. Open: #2361 (a peer that holds back one acknowledgment makes a
-  get hold each chunk that its stream sends after it). Who may open a blob stream is not
-  built: `node` rejects each one until it routes them from member nodes only (#1229).
+  memory for each stream. `transport` also holds each chunk whole while noq keeps a sent
+  byte of it (STREAM WIRE), so a get can hold more than one chunk. The chunks that
+  `transport` holds for a session have at most `window_bytes` bytes together, plus two
+  chunks for each stream (#2361). Who may open a blob stream is not built: `node`
+  rejects each one until it routes them from member nodes only (#1229).
   The requester is not built (#1229). To attack when it lands: a binary that a peer
   serves under a hash it does not match (C9d).
 
@@ -288,7 +304,8 @@ state on `main`.
   reads the documents into definitions, and the influx kind reads the config of each
   `connector` block of kind `influx`. Fuzzed: `config_check`, which only the inputs
   `influx_*` take to the influx kind, through `connector::reader::read`,
-  `connector::http::uri`, and `connector_influx::Kind::parse` (#1817).
+  `connector::http::uri`, `secret::Source::read` (the inputs `influx_token_*`), and
+  `connector_influx::Kind::parse` (#1817).
 - A person or an agent reviews the files and the plan before `apply` (K3). Text
   that shows one thing and reads as another defeats that review. Questions for a
   decision, with no `security` label yet: #360 (a lone `\r` in a comment,
@@ -328,8 +345,17 @@ state on `main`.
   #393 (two CRC-valid fields stopped the node at open); the `area_16` and
   `below_tail_16` inputs hold the two fields of #393. The `carry` inputs hold a
   carry record (#160): one valid, one each with a count past the body, an unknown
-  path byte, and a carried tail below the path's tail, and one that continues the
-  chain only from the second header.
+  path byte, and a carried tail below the path's tail, one that continues the chain
+  only from the second header, one inside a data record, off the way, one that only
+  the older header reaches, one that passes the end of the area, and one after a
+  data record longer than the window. Six more reach the rule for a path that the
+  walk met: `carry_passed` gives a larger count to a path whose only entry has no
+  samples, which the open takes; `carry_seq`, `carry_stamp`, and
+  `carry_more_after_carry` give another seq, another stamp, and a larger count after
+  a carried tail, which it refuses; `carry_met_after_carry` gives a larger count
+  again after the open took one, which it refuses; and `carry_twice` lists one path
+  twice in one record, which it refuses. The `body_over_max` input holds a data
+  record that follows the chain with a body over `body_max`.
 
 ### Device to connector
 
@@ -365,10 +391,11 @@ state on `main`.
   private key in `admin.key` in its data directory (NODE MESH), at mode 0600 when `os`
   makes it, so no other local user can read it unless the operator opens it (Who
   attacks). A local user who can read that file is the first admin.
-- `ctx.secret(name)` is the only path to a secret value (SECRET STORES AS ADAPTERS).
+- `ctx.secret(source)` is the only path to a secret value (SECRET SOURCES, SECRET
+  STORES AS ADAPTERS).
   The built-in store seals each value to the X25519 seal key of each node that may
-  use it (BQ16, S8). The other adapters (an environment variable or a file, and the
-  external stores) do not. An external adapter authenticates with the node key, and
+  use it (BQ16, S8). The external stores do not. Neither does `env()` or `file()`
+  (SECRET SOURCES). An external adapter authenticates with the node key, and
   may cache values sealed to it, which delays revocation.
 - Sealing is HPKE base mode, so it does not prove who sealed. The signed record
   does: the caller seals and signs the `secret set` request with the `secret`
@@ -384,6 +411,28 @@ state on `main`.
   version and goes only to a node of the placement, so a node that leaves the
   placement keeps no copy in region state. The newest version of a name outlives a
   delete and the secret's removal. Not built (`mesh`).
+- A person who can apply a spec can make the node read any variable of its
+  environment and any file that its user can read, with `env()` and `file()`
+  (SECRET SOURCES), and send the value to the address of a connector. This includes
+  the files of the data directory: the node's keys and the sealed store. The refusal
+  of a `file()` path in the data directory is #2670, before a release of ONE NODE. In
+  ONE NODE, that person is the node's admin. A remote `plan` reads the sources only of
+  the connectors that its subject may apply, and a local `plan` reads each connector of
+  the node (SECRET SOURCES). Until #2694, a subject with `apply` and `admin` on the name
+  of a new connector alone learns from a remote `plan` the error of each source that
+  gives no value: whether it is set or there, whether it is empty, its size when over
+  64 KiB, the OS error of a failed file call, and, for `secret()`, the absolute path of
+  the data directory. Trigger for a limit that the node's operator sets, such as
+  directories and variable names given at start: a spec applied by a subject that does
+  not run the node.
+- Each `HeaderValue` made from the token of the `influx` kind, one at each read of the
+  token and one for each request, and the write buffer of hyper keep a copy of it, and
+  their memory is freed without zeros
+  (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6160767913).
+  While a run lives, `secret::Value` holds the token in clear, so the copies add only
+  the time until the allocator gives that memory again. Trigger for a request path
+  that clears them: an attacker who reads freed heap of the node and not its live
+  heap.
 - A join ticket is a secret (BQ11a).
 - Rule for every crate: no secret value in a log, a status channel, an error, or
   plan output.
@@ -393,8 +442,11 @@ state on `main`.
 - Each third-party crate needs a person's approval (`docs/dependencies.md`).
   `cargo deny check advisories bans licenses sources` runs in CI on each change to a
   manifest. aws-lc-rs is the only crypto provider, with one recorded exception.
-- `unsafe` is denied in the workspace. The crates that allow it (`block`, `ring`,
-  `counting`, `waker`) run under Miri in CI.
+- `unsafe` is denied in the workspace. Each use expects `unsafe_code` with a reason
+  (`docs/claude/rust.md`, "Unsafe"). `cargo xtask miri` runs each crate that names
+  `unsafe_code` under Miri, except `os` and `connector-opcua`, which Miri cannot run.
+  CI starts it on a change to a `models` path of `ci.yaml`, which names each crate
+  that it runs and each workspace crate that one of them depends on.
 - The `fuzz/` crate has its own lock file. The `deny` job of `ci.yaml` checks it with
   `cargo deny` on each change to it.
 - A local patch of a Rust crate (`patches/`) is a path package, which `cargo deny`
@@ -450,6 +502,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `types_selector` | `Pattern`, `Selector` | Agree with a second matcher |
 | `types_stamp` | `Stamp` | Printed text reads back to the same value |
 | `types_span` | `Span` | Printed text reads back to the same value |
+| `types_rate` | `time::Rate` text | An `Ok` rate is reduced, has a period of 1 ns or more, and has a denominator that divides 10^9 |
 | `types_range` | `Range` | Printed text reads back to the same value |
 | `types_byte_size` | `byte::Size` | Printed text reads back to the same value |
 | `types_channel` | `channel::Key` | Printed text reads back to the same key |
@@ -464,9 +517,13 @@ not reached from the corpus: `transport::message` (#55), the QUIC hello
 (`transport::quic::hello::Hello::decode`), the file `founding` of the mesh directory
 (`mesh::region::Founding::decode`, with `mesh::Member::decode` in it, #2311), the join
 answer (`mesh::Member::decode` from a peer, #336 adds its target),
-each connector's protocol parser, the file `name` of the data directory
-(`node::name::decode`, #2174), the file `budget` of the data directory
-(`node::budget::decode`, #2174), the parsers of
-`/proc/self/mountinfo` and `/proc/self/cgroup` in `os::memory` (#2226), the newest
-handoff record of each index in the ring (`home::handoff::read`, #2278), and the chunk
-processing of open62541 (`ua_securechannel.c`, #1990).
+each connector's protocol parser, the `node_id`
+text of the `opcua` kind
+(`connector_opcua::node`, #2523), its `address`, which `UA_parseEndpointUrl` of
+open62541 reads (`connector_opcua::Kind::parse`, #2523), the file `name` of the data
+directory (`node::name::decode`, #2174), the file `budget` of the data directory
+(`node::budget::decode`, #2174), the parsers of `/proc/self/mountinfo` and
+`/proc/self/cgroup` in `os::memory` (#2226), the request of a remote program and the
+reply of its node (`ops::serve`, #2563), the newest handoff record of each index in the
+ring (`home::handoff::read`, #2278), and the chunk processing of open62541
+(`ua_securechannel.c`, #1990).

@@ -12,7 +12,8 @@ use std::time::Duration;
 use env::clock::Clock;
 use types::time::Span;
 
-use crate::status::Connector;
+use crate::status::{self, Connector};
+use crate::text;
 
 /// How long [`Rig::wait`] and [`Rig::run`] wait: longer than the 60 s cap of a restart
 /// backoff.
@@ -36,6 +37,8 @@ pub(crate) struct Rig {
     pub(crate) dir: PathBuf,
     /// The disk budget that [`Rig::new`] keeps: 8 MiB for each core.
     pub(crate) disk: u64,
+    /// The environment variables that [`Rig::var`] sets.
+    vars: Vec<(String, String)>,
     clock: Clock,
     node: Option<Running>,
 }
@@ -46,7 +49,8 @@ impl Rig {
     /// get the same PID. On Unix, first removes the directory of each test process of
     /// this user that is gone, also when a node that it started still runs there. A
     /// directory in which such a node makes a file during the removal stays until a
-    /// later rig. Its data directory keeps a pool budget of 1 GiB and a disk budget of
+    /// later rig, and one whose PID the OS gave to another process stays while that
+    /// process runs. Its data directory keeps a pool budget of 1 GiB and a disk budget of
     /// 8 MiB for each core ([`Rig::keep`]), so a first start does not take a quarter of
     /// the host's free disk, and each shard's ring fits.
     pub(crate) fn new() -> Self {
@@ -74,6 +78,7 @@ impl Rig {
             dir,
             disk: u64::try_from(cores).expect("invariant: a core count fits u64")
                 * (8 << 20),
+            vars: Vec::new(),
             clock: os::clock(),
             node: None,
         };
@@ -89,6 +94,12 @@ impl Rig {
     /// Writes the file [`Rig::budget`] that keeps `pool` and `disk`.
     pub(crate) fn keep(&self, pool: u64, disk: u64) {
         keep(&self.budget(), pool, disk);
+    }
+
+    /// Sets the environment variable `name` to `value` in each later start of a node,
+    /// and in each later `foundation` of [`Rig::run`] and [`Rig::talk`].
+    pub(crate) fn var(&mut self, name: &str, value: &str) {
+        self.vars.push((name.into(), value.into()));
     }
 
     /// Writes `hcl` to `plant.hcl`.
@@ -180,7 +191,10 @@ impl Rig {
     /// `foundation` with `args` in [`Rig::dir`].
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_foundation"));
-        command.args(args).current_dir(&self.dir);
+        command
+            .args(args)
+            .envs(self.vars.iter().map(|(name, value)| (name, value)));
+        command.current_dir(&self.dir);
         command
     }
 
@@ -253,17 +267,36 @@ impl Rig {
         wait(&self.clock, PATIENCE, what, check)
     }
 
-    /// Plans `plant.hcl` into `plant.plan`, and applies that plan. Panics when either
-    /// command does not exit 0.
-    #[expect(clippy::todo, reason = "waits on #337, #1744")]
-    pub(crate) fn apply(&self) {
-        todo!("waits on #337, #1744")
+    /// Plans `plant.hcl` into `plant.plan`, and applies that plan. Gives the stdout of
+    /// each command. Panics when either command does not exit 0 with no stderr.
+    pub(crate) fn apply(&self) -> [String; 2] {
+        let commands: [&[&str]; 2] = [
+            &["plan", "plant.hcl", "--out", "plant.plan"],
+            &["apply", "plant.plan"],
+        ];
+        commands.map(|args| {
+            let output = self.run(args, b"");
+            let stderr = text(&output.stderr);
+            assert!(
+                output.status.success() && stderr.is_empty(),
+                "`foundation {}` exited with {}, stderr: {stderr}",
+                args.join(" "),
+                output.status
+            );
+            text(&output.stdout).to_owned()
+        })
     }
 
-    /// The connectors of `foundation status --json`, by name.
-    #[expect(clippy::todo, reason = "waits on #1735")]
+    /// The connectors of `foundation status --json`, by name. Panics when it fails.
     pub(crate) fn status(&self) -> BTreeMap<String, Connector> {
-        todo!("waits on #1735")
+        let output = self.run(&["status", "--json"], b"");
+        let stderr = text(&output.stderr);
+        assert!(
+            output.status.success() && stderr.is_empty(),
+            "`foundation status --json` exited with {}, stderr: {stderr}",
+            output.status
+        );
+        status::connectors(&output.stdout)
     }
 }
 
@@ -761,6 +794,30 @@ fn a_sweep_passes_over_a_directory_that_a_process_writes_in() {
     assert!(!dead.exists(), "{} is still there", dead.display());
 }
 
+/// A sweep passes over a directory that is gone before its remove, and panics on any
+/// other error of the remove.
+#[test]
+#[cfg(unix)]
+fn a_sweep_panics_when_a_remove_fails_with_another_error() {
+    let rig = Rig::new();
+    let made = rig
+        .dir
+        .join(format!("{PREFIX}{}-made-0", std::process::id()));
+    let dead = rig.dir.join(format!("{PREFIX}{}-denied-0", gone()));
+    for dir in [&made, &dead] {
+        std::fs::create_dir(dir).expect("make the directory");
+    }
+    sweep(&made, |_| Err(ErrorKind::NotFound.into()));
+    let swept = std::panic::AssertUnwindSafe(|| {
+        sweep(&made, |_| Err(ErrorKind::PermissionDenied.into()));
+    });
+    let panic = std::panic::catch_unwind(swept).expect_err("the sweep panics");
+    assert_eq!(
+        panic.downcast_ref::<String>().map(String::as_str),
+        Some(&*format!("remove {}: permission denied", dead.display()))
+    );
+}
+
 #[test]
 #[cfg(unix)]
 fn a_rig_keeps_a_file_with_the_name_of_a_directory() {
@@ -1187,8 +1244,14 @@ fn a_rig_does_not_sweep_a_directory_that_a_test_still_leaves() {
 /// Set in the test binary that [`a_sweep_removes_the_draft_of_a_run_that_died`] runs.
 const DIES: &str = "RIG_DIES";
 
-/// Aborts after it made the tree of [`create_tree`] and while [`create_left`] fills its
-/// draft, as a killed run does. Does nothing when [`DIES`] is not set.
+/// The status with which [`a_run_dies_while_it_leaves_a_directory`] exits. The test
+/// binary gives 0 or 101 in each other case.
+const DIED: i32 = 3;
+
+/// Exits with [`DIED`] after it made the tree of [`create_tree`] and while
+/// [`create_left`] fills its draft, as a killed run does: `exit` runs no destructor.
+/// Does nothing when [`DIES`] is not set. It does not abort, because on macOS each
+/// abort writes a crash report that no sweep removes.
 #[test]
 #[cfg(unix)]
 fn a_run_dies_while_it_leaves_a_directory() {
@@ -1198,7 +1261,12 @@ fn a_run_dies_while_it_leaves_a_directory() {
     )]
     if std::env::var_os(DIES).is_some() {
         create_tree(0);
-        create_left(gone(), "died", |_| std::process::abort());
+        #[expect(
+            clippy::disallowed_methods,
+            clippy::exit,
+            reason = "the child dies with no destructor, as a killed run does"
+        )]
+        create_left(gone(), "died", |_| std::process::exit(DIED));
     }
 }
 
@@ -1206,8 +1274,6 @@ fn a_run_dies_while_it_leaves_a_directory() {
 #[test]
 #[cfg(unix)]
 fn a_sweep_removes_the_draft_of_a_run_that_died() {
-    use std::os::unix::process::ExitStatusExt;
-
     let mut child = Command::new(std::env::current_exe().expect("the test binary"))
         .args(["--exact", "rig::a_run_dies_while_it_leaves_a_directory"])
         .env(DIES, "1")
@@ -1217,9 +1283,9 @@ fn a_sweep_removes_the_draft_of_a_run_that_died() {
         .expect("run the test binary");
     let status = child.wait().expect("wait for the test binary");
     assert_eq!(
-        status.signal(),
-        Some(6),
-        "the run does not abort in `create_left`"
+        status.code(),
+        Some(DIED),
+        "the run does not exit in `create_left`"
     );
     drop(Rig::new());
     // Any draft of the child, whatever its name.

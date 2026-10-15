@@ -41,6 +41,7 @@
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
+#[expect(dead_code, reason = "the bench uses only some of the helpers")]
 #[path = "../tests/common/mod.rs"]
 mod common;
 #[path = "../tests/common/node.rs"]

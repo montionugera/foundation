@@ -366,7 +366,6 @@ mod tests {
             assert!(block.iter().all(|&byte| byte == fill));
         }
         drop(blocks);
-        pool.reclaim();
         let first = pool.alloc(largest).unwrap();
         let available = (1 << 16) - pool.committed();
         assert_eq!(

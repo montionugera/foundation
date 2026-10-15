@@ -4,10 +4,10 @@ use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::task::Waker;
 
 use types::time::{Monotonic, Span, Stamp};
 
+use crate::log::Waker;
 use crate::state::lock;
 use crate::{drivers, net, shard};
 
@@ -214,16 +214,24 @@ impl Node {
     /// - Each `Files` that it gives acts as a clone of one: a write open, a remove, or
     ///   a rename from any of them waits for each call that a drop from any of them
     ///   left to run.
+    /// - `open_absolute` reads the file at its path in [`Node::paths`], the host's
+    ///   tree, when the open ends. The open and each read take the time of a file
+    ///   call, and [`Node::fail_file`] fails them. It gives `NotFound` when no file
+    ///   is there, and the error of a read of the tree, such as one of
+    ///   [`Node::fail_path`], as `Error::Io` with operation `Open`. A later write of
+    ///   the tree does not change the open file.
     #[must_use]
     pub fn files(&self) -> env::files::Files {
         env::files::Files::new(self.0.clone())
     }
 
-    /// The path of each file descriptor that the node closed or dropped, in order,
-    /// since the run started: the path of its open, or of the last rename that it made,
-    /// with only its names. A crash closes each descriptor of the node, a leaked one
-    /// too. Those that the drops of its futures close come first, in the order of the
-    /// drops. The leaked ones come last, in the order that their opens started.
+    /// The path of each file descriptor that the node closed or dropped, in order, from
+    /// the start of the run: the path of its open, or of the last rename that it made,
+    /// with only its names. That path is relative to the data directory, or absolute
+    /// for a file of `open_absolute`. A crash closes each descriptor of the node, a
+    /// leaked one too. Those that the drops of its futures close come first, in the
+    /// order of the drops. The leaked ones come last, in the order that their opens
+    /// started.
     #[must_use]
     pub fn file_closes(&self) -> Vec<PathBuf> {
         lock(&self.0.shared).files().closes(self.0.node)
@@ -250,6 +258,25 @@ impl Node {
         lock(&self.0.shared)
             .files()
             .fail(self.0.node, path, operation);
+    }
+
+    /// The files of the node's host by path: a tree in memory, apart from the node's
+    /// disk, with no file at first. A directory is there while a file is under it, so
+    /// a write makes each directory above its file. A relative path is under `/`, the
+    /// working directory. `.` and `..` act on the path as text. A call takes no time,
+    /// may come from any thread, and acts at once. A crash of the node keeps the tree.
+    /// A failure gives the code that Linux gives: 20 (`ENOTDIR`) for a path through a
+    /// file, and 21 (`EISDIR`) for a write on a directory.
+    #[must_use]
+    pub fn paths(&self) -> env::paths::Paths {
+        env::paths::Paths::new(self.0.clone())
+    }
+
+    /// Makes the next read or write of `path` on the node's host fail with
+    /// `env::paths::Error::Io` and `code`. Faults on one path fire in turn, one per
+    /// call, and a failed call changes no file.
+    pub fn fail_path(&self, path: &Path, code: i32) {
+        lock(&self.0.shared).paths().fail(self.0.node, path, code);
     }
 
     /// The node's IPv4 and IPv6 addresses, in that order: node `k`, from 0 in the

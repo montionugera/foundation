@@ -5,8 +5,9 @@
 ## Toolchain
 
 - Stable Rust, pinned in `rust-toolchain.toml`. Edition 2024.
-- Miri and cargo-fuzz need nightly. They run on one pinned nightly that only those
-  gates use. Builds and tests stay on stable (r16 64).
+- Miri, cargo-fuzz, and the sanitizer gate (`cargo xtask sanitizers`) need nightly.
+  They run on one pinned nightly that only those gates use. Every other build and test
+  stays on stable (r16 64).
 - One Cargo workspace. Crates live in `crates/<name>`, with `publish = false`. The
   package name is the bare module name (`types`, `hub`), so code reads `types::Frame`.
 - Dev tools live in `xtask` and run as `cargo xtask <task>`.
@@ -78,7 +79,9 @@ true`. CI denies warnings. r16 gives the reason for each lint.
 
 - Every public type implements `Debug`, and the output is never empty (r16 1).
 - Each public item has one path. Do not `pub use` an item that is public at its home
-  (r16 2). The one exception is `hub`, the layer-3 window (R16-10).
+  (r16 2). The exceptions are in R16-10: a crate re-exports, under the same name in one
+  of its modules, an item that its own public surface names, for callers that may not
+  depend on the home of the item (`hub::home::Error`, `home::reader::Next`).
 - Fields are all private, or all public on plain data with no invariant (r16 4).
 - A type with an invariant has a fallible constructor and no `From` that can panic
   (r16 5).
@@ -137,7 +140,10 @@ true`. CI denies warnings. r16 gives the reason for each lint.
   `allocate` module of `os` on macOS (architect, #931,
   https://github.com/synnaxlabs/foundation/issues/931#issuecomment-6030986099), the
   `signal` module of `os` (architect, #1732,
-  https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6086905545), and
+  https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6086905545), the
+  test module `tasks::tests::hooked` of `env` (laptop.architect-2, 2026-10-10 03:57
+  UTC, #2218,
+  https://github.com/synnaxlabs/foundation/pull/2218#issuecomment-6093523974), and
   later FFI connectors. Such a module uses `#[expect(unsafe_code, reason = "...")]`
   and runs under Miri (r16 24). Those modules of `os` only call the OS, which Miri
   cannot run, so tests on the real OS check them, and `cargo xtask miri` skips `os`
