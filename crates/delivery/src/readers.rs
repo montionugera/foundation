@@ -181,11 +181,11 @@ struct Owed {
 #[derive(Debug)]
 struct Credit {
     /// Bytes sent since the session opened.
-    spent_bytes: u64,
-    /// The highest grant.
-    limit_bytes: u64,
+    spent: u64,
+    /// The highest grant, in bytes since the session opened.
+    limit: u64,
     /// The most bytes left at the open or after a grant.
-    window_bytes: u64,
+    window: u64,
 }
 
 #[derive(Debug)]
@@ -644,13 +644,14 @@ impl Readers {
 
     /// Gives `frame`, of key set `set`, read from disk with the samples `seq`, to the
     /// complete session `key` that [`Next::Disk`] sent to disk, and spends its credit
-    /// with the session's charge. Drops `frame` when it gives nothing. Returns `true` when the session takes the next frame
-    /// read too. Returns `false`, and gives nothing: when the session is closed, not
-    /// on disk, or has no credit left; when `seq` starts past the session's next seq,
-    /// so the samples between were lost for no room and the session ends behind; or
-    /// when `seq` starts at or past the last released live frame, where the session
-    /// takes live frames again. Returns `false` after it gives `frame` when the session
-    /// has no credit left. A frame that holds the session's next seq comes whole.
+    /// with the session's charge. Drops `frame` when it gives nothing. Returns `true`
+    /// when the session takes the next frame read too. Returns `false`, and gives
+    /// nothing: when the session is closed, not on disk, or has no credit left; when
+    /// `seq` starts past the session's next seq, so the samples between were lost for
+    /// no room and the session ends behind; or when `seq` starts at or past the last
+    /// released live frame, where the session takes live frames again. Returns `false`
+    /// after it gives `frame` when the session has no credit left. A frame that holds
+    /// the session's next seq comes whole.
     ///
     /// # Panics
     ///
@@ -1007,37 +1008,37 @@ impl Credit {
     /// A credit of `limit_bytes` with nothing spent.
     fn new(limit_bytes: u64) -> Self {
         Self {
-            spent_bytes: 0,
-            limit_bytes,
-            window_bytes: limit_bytes,
+            spent: 0,
+            limit: limit_bytes,
+            window: limit_bytes,
         }
     }
 
     /// Raises the limit to `limit_bytes`. A lower limit changes nothing.
     fn grant(&mut self, limit_bytes: u64) {
-        self.limit_bytes = self.limit_bytes.max(limit_bytes);
-        self.window_bytes = self.window_bytes.max(self.left());
+        self.limit = self.limit.max(limit_bytes);
+        self.window = self.window.max(self.left());
     }
 
     /// Whether a read from disk fills enough of the credit left to be worth its
     /// cost: at least half the window is left.
     fn half(&self) -> bool {
-        self.left().saturating_mul(2) >= self.window_bytes
+        self.left().saturating_mul(2) >= self.window
     }
 
     /// The bytes left below the limit.
     fn left(&self) -> u64 {
-        self.limit_bytes.saturating_sub(self.spent_bytes)
+        self.limit.saturating_sub(self.spent)
     }
 
     /// Spends `bytes`, the charge of one frame, and returns `true` when less than the
     /// limit is spent: the frame may pass the limit. Otherwise returns `false` and
     /// spends nothing.
     fn spend(&mut self, bytes: u64) -> bool {
-        if self.spent_bytes >= self.limit_bytes {
+        if self.spent >= self.limit {
             return false;
         }
-        self.spent_bytes += bytes;
+        self.spent += bytes;
         true
     }
 }
