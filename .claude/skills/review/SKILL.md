@@ -185,28 +185,29 @@ command outside that worktree. Remove each worktree when its agent returns
    what goes wrong, the fix, and in round 3 the mark of its reviewer (Round cap). It
    links each test doc that the `reviewer` report names as the reason for a hand mutant
    (`docs/claude/testing.md`). It copies the `Revert:` line of the `reviewer` report
-   after the findings. It ends with four lines. First `Deferred:` and `none`, or the
-   issue of each deferred finding, each with the link to the architect's OK in a risk
-   crate, and to the OK of its design approver for a design flaw (Round cap), once it
-   exists. In a PR that changes a risk crate, the issue of a deferral that is not in a
-   risk crate has the words `not in a risk crate` after it. A later round keeps each
-   deferral of the round before it. Then `Later steps:` and `none`, or each later step
-   that a round, an architect review, an architect's ruling, or an issue that the PR
-   closes names, each with the link to the open issue or the decisions entry that holds
-   it ("Done"). Then `Public surface:` and `none`, or each item that
-   `.claude/agents/architecture.md` defines for that line (the `architecture` report
-   names them, and in a round with no `architecture` agent the `reviewer` report names
-   those of its range) and each rule change that Round 1 sends to `laptop.director`,
-   each with the link to its approval once it exists. An approval holds for the text at
-   the SHA that it approves: after a commit or an edit of the PR body changes the item,
-   the line gives it `approval owed` in place of the link until a new approval exists. A
-   later round keeps each item of the round before it. Then `Hot path:` as the
-   `architecture` report gives it, or, in a round with no `architecture` agent, the
-   `reviewer` report. A report that comes after its round comment goes in a new round
-   comment with the number of the round comment before it (Round cap), with its
-   findings. Its range is `<head>..<head>`, so it also runs `reviewer` and skips
-   `breaker` (Round comment). The old round adds the reviewer to its `Reviewers:` line,
-   and links the new comment after its findings.
+   after the findings, then the `Build or use:` line of the `architecture` report, or of
+   the `reviewer` report in a round with no `architecture` agent. It ends with four
+   lines. First `Deferred:` and `none`, or the issue of each deferred finding, each with
+   the link to the architect's OK in a risk crate, and to the OK of its design approver
+   for a design flaw (Round cap), once it exists. In a PR that changes a risk crate, the
+   issue of a deferral that is not in a risk crate has the words `not in a risk crate`
+   after it. A later round keeps each deferral of the round before it. Then
+   `Later steps:` and `none`, or each later step that a round, an architect review, an
+   architect's ruling, or an issue that the PR closes names, each with the link to the
+   open issue or the decisions entry that holds it ("Done"). Then `Public surface:` and
+   `none`, or each item that `.claude/agents/architecture.md` defines for that line (the
+   `architecture` report names them, and in a round with no `architecture` agent the
+   `reviewer` report names those of its range) and each rule change that Round 1 sends
+   to `laptop.director`, each with the link to its approval once it exists. An approval
+   holds for the text at the SHA that it approves: after a commit or an edit of the PR
+   body changes the item, the line gives it `approval owed` in place of the link until a
+   new approval exists. A later round keeps each item of the round before it. Then
+   `Hot path:` as the `architecture` report gives it, or, in a round with no
+   `architecture` agent, the `reviewer` report. A report that comes after its round
+   comment goes in a new round comment with the number of the round comment before it
+   (Round cap), with its findings. Its range is `<head>..<head>`, so it also runs
+   `reviewer` and skips `breaker` (Round comment). The old round adds the reviewer to
+   its `Reviewers:` line, and links the new comment after its findings.
 3. Fix each finding in this PR, or answer it on the PR. A deferral is an issue that
    states the item, linked in the answer, also when the code is already on `main` or
    another crate does the work. Before round 3 (Round cap), a finding whose fix is a
@@ -271,6 +272,8 @@ Findings: <count, or none>
 `design flaw`, or no mark>
 
 Revert: <the `Revert:` line of the `reviewer` report>
+Build or use: <the `Build or use:` line of the `architecture` report, or of the
+`reviewer` report>
 
 Text fixes:
 <each item and its exact new text, or a Low item's place and problem; leave out this
@@ -372,14 +375,14 @@ Review is done when the last round finds nothing (Round cap), and its last round
 ends at the PR head, or at a commit from which only clean merges of `main` and commits
 that only apply its `Text fixes:` items reach the head, each item applied as "Second
 round" step 2 says, each round comment names each reviewer its round requires (the first
-round comment of the PR: the table; a later round comment, whatever its number:
-`reviewer`, `breaker` unless the check counts no code change in its range,
-`architecture` when "Second round" step 1 asks for it, and `performance` with new
-numbers when its `Hot path:` line names a function), the `Deferred:` line of the last
-round comment lists each deferral of every round, each with the link to the OK of its
-architect in a risk crate, the `Public surface:` line of the
-last round comment links the approval of each item, at a SHA after which no commit
-changes the item's surface or the meaning of a ruling
+round comment of the PR: the table, and `architecture` when the paragraph after the
+table asks for it; a later round comment, whatever its number: `reviewer`, `breaker`
+unless the check counts no code change in its range, `architecture` when "Second round"
+step 1 asks for it, and `performance` with new numbers when its `Hot path:` line names a
+function), the `Deferred:` line of the last round comment lists each deferral of every
+round, each with the link to the OK of its architect in a risk crate, the
+`Public surface:` line of the last round comment links the approval of each item, at a
+SHA after which no commit changes the item's surface or the meaning of a ruling
 (`.claude/skills/architect/SKILL.md`, "Review before the person" step 3) and no edit of
 the PR body changes the approved text in the body, each run that Round 1 asks for (an OS
 that CI does not run, a `build.rs` that compiles C or C++) is linked on the PR, at a
