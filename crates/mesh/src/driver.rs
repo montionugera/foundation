@@ -134,18 +134,19 @@ impl fmt::Debug for Mesh {
 }
 
 impl Mesh {
-    /// Reads the log from `config.dir`, starts the group as a follower, and spawns
-    /// its tasks on `config.tasks`. It puts each chunk of the founding tree in
-    /// `config.store`. It reads the spec of the newest pointer that a file in
-    /// `<config.dir>/spec` names, or the founding spec when there is no file, and
-    /// removes the file of each older pointer. A spec that does not read or has
-    /// problems is not an error: the node then uses no spec, and [`Mesh::spec`] gives
-    /// the cause in `behind`.
+    /// Reads the log from `config.dir`, starts the group, and spawns its tasks on
+    /// `config.tasks`. The group starts as a follower, or it leads at once when this
+    /// node is the only voter of its configuration in force and that configuration is
+    /// not joint. It puts each chunk of the founding tree in `config.store`. It reads
+    /// the spec of the newest pointer that a file in `<config.dir>/spec` names, or the
+    /// founding spec when there is no file, and removes the file of each older pointer.
+    /// A spec that does not read or has problems is not an error: the node then uses no
+    /// spec, and [`Mesh::spec`] gives the cause in `behind`.
     ///
     /// At each open, its state starts at the founding: `pointer` gives version 0, and a
     /// watch gives each home of `config.founding.homes`. The state moves on when this
-    /// node applies the log, after it hears the leader. Until then, a watch can give a
-    /// founding home that the log moved, as at a follower behind the leader.
+    /// node applies the log. Until then, a watch can give a founding home that the log
+    /// moved, as at a follower behind the leader.
     ///
     /// The group sends its messages on a session to each member. It dials a member at
     /// the addresses of its card, at the first message for it, and again after the
@@ -2855,7 +2856,6 @@ mod tests {
                 // No write of the log ends from here on.
                 let _held = ManuallyDrop::new(fill(&pool));
                 let answers = Answers::default();
-                // Longer than each election timeout.
                 for _ in 0..30 {
                     node.clock().sleep(TICK).await;
                     forward(&mesh, &tasks, &answers);
@@ -2864,11 +2864,8 @@ mod tests {
                 let answers = answers.take();
                 let full = Err(exhausted(200));
                 let waits = answers.iter().position(|answer| *answer == full);
-                let (before, from) = answers.split_at(waits.unwrap());
-                let follows = Ok(Message::NotLeader { leader: None });
-                assert_eq!(before, vec![follows; before.len()]);
-                assert_eq!(from, vec![full; from.len()]);
-                assert_eq!(answers.len(), 30);
+                assert_eq!(waits, Some(0));
+                assert_eq!(answers, vec![full; 30]);
             });
         }
 
@@ -5974,8 +5971,6 @@ mod tests {
     }
 
     mod lone {
-        use raft::Role;
-
         use super::*;
         use crate::common::{proven_at, voters_entry_voted};
 
@@ -5985,9 +5980,10 @@ mod tests {
             solo(|node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &[1, 2], &[1, 2]).await.unwrap();
                 node.clock().sleep(TICK).await;
-                assert_eq!(mesh.group.borrow().raft.role(), Role::Follower);
+                assert!(quiet(&mesh, 2).await);
                 node.clock().sleep(seconds(2)).await;
-                assert_eq!(mesh.group.borrow().raft.role(), Role::PreCandidate);
+                let asked = now(pin!(pre_vote_term(&mesh, 2))).await;
+                assert!(asked.is_ready());
             });
         }
 
@@ -6005,9 +6001,10 @@ mod tests {
                     incoming: [key(1), key(2)].into(),
                     outgoing: [key(1)].into(),
                 };
+                // Without the joint configuration, a quiet node 2 shows nothing.
                 assert_eq!(again.group.borrow().raft.voters(), &joint);
                 node.clock().sleep(TICK).await;
-                assert_eq!(again.group.borrow().raft.role(), Role::Follower);
+                assert!(quiet(&again, 2).await);
             });
         }
 
@@ -6031,9 +6028,10 @@ mod tests {
                 drop(mesh);
                 node.clock().sleep(TICK).await;
                 let again = open(&node, &tasks, 1, &[1, 2], &[1, 2]).await.unwrap();
+                // Without the joint configuration, a quiet node 2 shows nothing.
                 assert_eq!(again.group.borrow().raft.voters(), &joint);
                 node.clock().sleep(TICK).await;
-                assert_eq!(again.group.borrow().raft.role(), Role::Follower);
+                assert!(quiet(&again, 2).await);
             });
         }
     }
