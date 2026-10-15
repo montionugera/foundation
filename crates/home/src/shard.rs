@@ -863,8 +863,6 @@ impl Shard {
         now.expect("invariant: mesh time stays once known")
     }
 
-    /// The place in `indexes` of the index at `slot`.
-    ///
     /// The open position of a latest session on the index at `place`: the first seq
     /// of its newest live frame, or its live tail when it has none.
     fn latest_live(&self, place: usize) -> u64 {
@@ -873,6 +871,8 @@ impl Shard {
             .unwrap_or_else(|| self.indexes[place].live_tail())
     }
 
+    /// The place in `indexes` of the index at `slot`.
+    ///
     /// # Panics
     ///
     /// If the shard does not carry `slot`.
@@ -999,10 +999,9 @@ fn spend<'a>(
                 Outcome::Applied { slot, range }
             }
             Ok(accepted) => {
-                let seq = accepted.seq();
-                let range = range(&seq);
+                let range = range(&accepted.seq());
                 index.spend(accepted);
-                readers.lost(claim.place, frozen, seq.start);
+                readers.lost(claim.place, frozen);
                 Outcome::Lost { slot, range }
             }
             Err(refusal) => Outcome::Refused { slot, refusal },
@@ -2037,6 +2036,22 @@ mod tests {
             );
             let live = frame(&test.pool, &set, &[(0, &[30]), (1, &[3])]);
             assert_eq!(shard.write(a, LIVE, live), Ok(&[applied(0, 2, 1)][..]));
+        });
+    }
+
+    #[test]
+    fn opens_a_latest_session_at_the_first_seq_of_its_newest_frame() {
+        run(17, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
+            let first = frame(&test.pool, &set, &[(0, &[10]), (1, &[1])]);
+            assert_eq!(shard.write(a, LIVE, first), Ok(&[applied(0, 0, 1)][..]));
+            let next = frame(&test.pool, &set, &[(0, &[20, 30]), (1, &[2, 3])]);
+            assert_eq!(shard.write(a, LIVE, next), Ok(&[applied(0, 1, 2)][..]));
+            let latest = shard.open_latest(Slot::new(0));
+            assert_eq!(latest.live, 1);
+            assert_eq!(taken(&mut shard, latest.key, 0), [seq(1, 2)]);
         });
     }
 

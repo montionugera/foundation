@@ -104,9 +104,6 @@ pub(crate) struct Set {
 struct Entry {
     slot: Slot,
     readers: Readers,
-    /// The first seq of the newest live frame that `readers` holds for its latest
-    /// sessions, or `None` before the first.
-    newest: Option<u64>,
     /// Whether the set lists the index.
     listed: bool,
 }
@@ -123,7 +120,6 @@ impl Set {
         self.entries.push(Entry {
             slot,
             readers: Readers::after(live, self.first.remove(&slot).unwrap_or(0)),
-            newest: None,
             listed: false,
         });
         // Room for every index, so that `applied` never grows the list.
@@ -221,7 +217,9 @@ impl Set {
     /// The first seq of the newest live frame of the index at `place`, which a latest
     /// session gets at its open, or `None` before the first.
     pub(crate) fn newest(&self, place: usize) -> Option<u64> {
-        self.entries[place].newest
+        let frame = self.entries[place].readers.newest()?;
+        let (_, range) = frame.ranges().next()?;
+        Some(range.seq)
     }
 
     /// Forgets the session `replaced` of the index at `place`, which a takeover
@@ -316,7 +314,6 @@ impl Set {
             return;
         }
         let entry = &mut self.entries[place];
-        entry.newest = Some(seq.start);
         entry.readers.queue(&frame, set, seq);
         wake(&mut self.keys, entry.slot, entry.readers.put(frame));
         if entry.readers.pending() && !mem::replace(&mut entry.listed, true) {
@@ -324,14 +321,14 @@ impl Set {
         }
     }
 
-    /// Makes `frame`, a live frame at `seq` that found no room in the buffer, the
-    /// newest frame of the index at `place`, or no frame when the pool had no block
-    /// for it. Only latest readers get it.
+    /// Makes `frame`, a live frame that found no room in the buffer, the newest frame
+    /// of the index at `place`, or no frame when the pool had no block for it. Only
+    /// latest readers get it.
     ///
     /// # Panics
     ///
     /// If `frame` is a backfill frame, which waits for room instead.
-    pub(crate) fn lost(&mut self, place: usize, frame: Option<Frame>, seq: u64) {
+    pub(crate) fn lost(&mut self, place: usize, frame: Option<Frame>) {
         let entry = &mut self.entries[place];
         if let Some(frame) = frame {
             assert_eq!(
@@ -339,7 +336,6 @@ impl Set {
                 Path::Live,
                 "invariant: only a live frame is lost"
             );
-            entry.newest = Some(seq);
             wake(&mut self.keys, entry.slot, entry.readers.put(frame));
         }
     }
@@ -538,7 +534,7 @@ mod tests {
             let mut set = carried(1);
             let latest = set.open_latest(0);
             let complete = set.open_complete(0, 0, u64::MAX, complete::Charge::Whole);
-            set.lost(0, Some(frames.frame(Path::Live, 0..2)), 0);
+            set.lost(0, Some(frames.frame(Path::Live, 0..2)));
             assert_eq!(woken(&mut set), [reader(0, latest)]);
             assert_eq!(set.listed(), []);
             assert_eq!(taken(&mut set, 0, latest), [range(0, 2)]);
@@ -554,7 +550,7 @@ mod tests {
             let mut set = carried(1);
             let complete = set.open_complete(0, 0, u64::MAX, complete::Charge::Whole);
             set.applied(0, frames.frame(Path::Live, 0..1), &frames.set, 0..1);
-            set.lost(0, Some(frames.frame(Path::Live, 1..3)), 1);
+            set.lost(0, Some(frames.frame(Path::Live, 1..3)));
             set.applied(0, frames.frame(Path::Live, 3..4), &frames.set, 3..4);
             assert_eq!(woken(&mut set), []);
             assert_eq!(released(&mut set, 0, 4), [complete]);
@@ -566,7 +562,7 @@ mod tests {
         fn panics_on_a_backfill_frame() {
             let frames = Frames::new();
             let mut set = carried(1);
-            set.lost(0, Some(frames.frame(Path::Backfill, 0..2)), 0);
+            set.lost(0, Some(frames.frame(Path::Backfill, 0..2)));
         }
     }
 

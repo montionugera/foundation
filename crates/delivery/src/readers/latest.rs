@@ -93,6 +93,13 @@ impl Readers {
         key
     }
 
+    /// The index's newest live frame, which a new latest session gets first, or `None`
+    /// before the first.
+    #[must_use]
+    pub fn newest(&self) -> Option<&Frame> {
+        self.newest.as_ref()
+    }
+
     /// Makes `frame`, which landed on the live path, the newest frame and the waiting
     /// frame of every latest session, and drops the frame it replaces. Returns the
     /// latest sessions that had no waiting frame, in key order: wake them.
@@ -212,6 +219,16 @@ mod tests {
             let latest = readers.open_latest();
             assert_eq!(taken(&mut readers, latest), Some(2));
             assert_eq!(taken(&mut readers, latest), None);
+        }
+
+        #[test]
+        fn keeps_the_newest_frame_for_a_new_session() {
+            let frames = Frames::new(4);
+            let mut readers = Readers::new(0);
+            assert!(readers.newest().is_none());
+            let _ = put(&mut readers, frames.frame(1));
+            let _ = put(&mut readers, frames.frame(2));
+            assert_eq!(readers.newest().map(number), Some(2));
         }
 
         #[test]
