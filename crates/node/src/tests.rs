@@ -4784,7 +4784,7 @@ pub(crate) mod port {
                 let node = start(&hosts[0], region(&members));
                 let set = Arc::new(Mutex::new(0));
                 let out = Arc::clone(&set);
-                peer(&hosts[1], members, move |mesh, own| async move {
+                peer(&hosts[1], &members, move |mesh, own| async move {
                     own.clock().sleep(Span::SECOND).await;
                     let mut sets = Vec::new();
                     for key in 100..150 {
