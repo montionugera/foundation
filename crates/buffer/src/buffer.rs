@@ -882,7 +882,7 @@ impl Buffer {
                     .push(pool, block_max, &state.writer, batch)
                     .map_err(rejected)?
             }
-            Err(full @ group::Rejected::Ring(_)) if shared.trimmed => {
+            Err(full @ group::Rejected::Ring(_)) => {
                 state.starved = true;
                 drop(guard);
                 shared.unpark();
@@ -2383,8 +2383,8 @@ mod tests {
         /// the record at 4096, and a refused append wakes a commit that writes a
         /// carry record of path 1 into the owed block and frees only block 0. The
         /// third open puts its restart record in the last block that a carry record
-        /// may take. Its commit needs no carry, since the walk read the first, and
-        /// trims.
+        /// may take. Its commit needs no carry, since the walk read the first, so the
+        /// head stays, and it trims past the old holder of path 1.
         #[test]
         fn a_commit_after_a_carry_and_an_open_of_a_full_ring_trims_with_no_carry() {
             let mut sim = sim::Sim::new(sim::Config::default());
@@ -2410,15 +2410,16 @@ mod tests {
                     let two = slots.index(channel::Key::from_u128(2));
                     let part = pool.alloc(100).expect("a block").freeze();
                     let next = || [entry(2, two, Path::Live, 3 * first, &part)];
-                    let tails = buffer.shared.state.borrow().writer.tails();
+                    let opened = room(&buffer);
                     let commits = buffer.commits();
                     let refused = buffer.append(next());
                     own.clock().sleep(Span::from_nanos(3_000_000)).await;
+                    let trimmed = room(&buffer);
                     let fits = buffer.append(next()).is_ok();
                     buffer.committed().await.expect("commits");
                     let tail = buffer.shared.state.borrow().header.tail.offset();
                     *given.lock().expect("no panic held the lock") = Some((
-                        tails,
+                        (opened, trimmed),
                         matches!(refused, Err(Rejected::Full { .. })),
                         commits + 1 == buffer.commits(),
                         (fits, tail),
@@ -2428,9 +2429,18 @@ mod tests {
                 },
             );
             let trimmed = found.lock().expect("no panic held the lock").take();
-            let (tails, refused, one_commit, fits, durable) =
+            let ((opened, trimmed), refused, one_commit, fits, durable) =
                 trimmed.expect("the shard gave the result");
-            assert_eq!(tails, 0, "the restart record took the last free block");
+            assert_eq!(
+                opened,
+                (0, 4096, 64 * 4096, Some(60 * 4096)),
+                "the restart record took the last free block"
+            );
+            assert_eq!(
+                trimmed,
+                (190, 9 * 4096, 64 * 4096, Some(60 * 4096)),
+                "no carry record, and the trim passes the old holder of path 1"
+            );
             assert!(refused, "the ring refuses the append before the trim");
             assert!(one_commit, "the commit of the trim has no data record");
             assert_eq!(
@@ -2443,6 +2453,57 @@ mod tests {
                 "the walk read the tail of path 1 from the carry"
             );
             assert_eq!(durable_after_open(&mut sim, &node), 9);
+        }
+
+        /// The first session fills the ring with no trim. In the second, the write of
+        /// the carry record that a refused append wakes fails, so no carry record is
+        /// durable. The third open writes over the restart record of the second, so
+        /// its commit has the owed block, and carries.
+        #[test]
+        fn a_commit_after_an_open_past_a_carry_that_was_not_durable_carries() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let first = fill(&mut sim, &node);
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            let own = node.clone();
+            with_trims(
+                &mut sim,
+                &node,
+                "lost",
+                move |buffer, mut slots, pool| async move {
+                    let two = slots.index(channel::Key::from_u128(2));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    let next = || [entry(2, two, Path::Live, 3 * first, &part)];
+                    let opened = room(&buffer);
+                    own.fail_file(
+                        &PathBuf::from("ring/ring"),
+                        files::Operation::WriteAt,
+                    );
+                    let refused = buffer.append(next());
+                    own.clock().sleep(Span::from_nanos(3_000_000)).await;
+                    let failed = buffer.append(next());
+                    *given.lock().expect("no panic held the lock") = Some((
+                        opened,
+                        matches!(refused, Err(Rejected::Full { .. })),
+                        matches!(failed, Err(Rejected::Files(_))),
+                    ));
+                    buffer
+                },
+            );
+            let lost = found.lock().expect("no panic held the lock").take();
+            let (opened, refused, failed) = lost.expect("the shard gave the result");
+            assert_eq!(opened, (97, 0, 62 * 4096, Some(3 * 4096)));
+            assert!(refused, "the full ring refuses the append");
+            assert!(failed, "the failed write of the carry record ends the task");
+            let (refused, before, after) = carry_while_held(&mut sim, &node, first);
+            assert!(refused, "the full ring refuses the append");
+            assert_eq!(before, opened, "the open wrote over the restart record");
+            assert_eq!(
+                after,
+                (97, 4096, 63 * 4096, Some(60 * 4096)),
+                "the carry takes the owed block"
+            );
         }
 
         /// 70 commits of one path trim the ring of 64 blocks, and the power cuts after
