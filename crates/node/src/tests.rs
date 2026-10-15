@@ -900,8 +900,8 @@ mod buffer {
     #[test]
     fn a_disk_budget_that_holds_no_ring_on_each_shard_starts_no_shard() {
         let smallest = ::buffer::Layout::fit(0, crate::BODY_MAX).unwrap_err().min;
-        let min = Size::from_bytes(8_437_760);
-        let cases = [(smallest, "4120KiB"), (2 * smallest - 1, "8437759B")];
+        let min = Size::from_bytes(8_462_336);
+        let cases = [(smallest, "4132KiB"), (2 * smallest - 1, "8462335B")];
         for (bytes, shown) in cases {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = host(&mut sim, 2);
@@ -930,7 +930,7 @@ mod buffer {
                 e.to_string(),
                 format!(
                     "the disk budget {shown} holds no ring on each of 2 shards; it \
-                     needs at least 8240KiB"
+                     needs at least 8264KiB"
                 )
             );
         }
@@ -3210,7 +3210,7 @@ mod port {
             ..config(&host, Size::MEBIBYTE, Box::new(heap))
         });
         assert_eq!(sim.run(), Ok(()));
-        let min = Size::from_bytes(8_437_760);
+        let min = Size::from_bytes(8_462_336);
         assert_eq!(
             node.join(),
             Err(Error::Disk {
@@ -6927,7 +6927,7 @@ mod port {
             });
             node.operate(|_| async {});
             assert_eq!(sim.run(), Ok(()));
-            let min = Size::from_bytes(8_437_760);
+            let min = Size::from_bytes(8_462_336);
             assert_eq!(
                 node.join(),
                 Err(Error::Disk {
@@ -7876,7 +7876,7 @@ mod budget {
         let disk = Error::Disk {
             disk: Size::from_bytes(1),
             cores: 2,
-            min: Size::from_bytes(8_437_760),
+            min: Size::from_bytes(8_462_336),
         };
         let small = [
             (budget(512 << 10, DISK.bytes()), 16, buffer),
