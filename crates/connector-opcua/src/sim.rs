@@ -42,12 +42,19 @@ struct Variable {
     text: String,
     node: Node,
     value: Value,
-    /// The status of each later read of this variable, in place of the status of all.
+    served: Vec<Served>,
+    #[cfg(test)]
+    hooks: Hooks,
+}
+
+/// What a test sets on a variable.
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct Hooks {
+    /// The status of each later read, in place of the status of all.
     quality: Option<Quality>,
     /// The value that a server holds in place of `value`, set before it starts.
-    #[cfg(test)]
     fixed: Option<Fixed>,
-    served: Vec<Served>,
 }
 
 /// A value of a variable that is not a scalar of [`Value`], which a server holds
@@ -82,10 +89,9 @@ impl Variables {
                 text: text.into(),
                 node,
                 value: Value::F64(0.0),
-                quality: None,
-                #[cfg(test)]
-                fixed: None,
                 served: Vec::new(),
+                #[cfg(test)]
+                hooks: Hooks::default(),
             });
         }
         Self(Arc::new(Mutex::new(State {
@@ -132,7 +138,7 @@ impl Variables {
     /// If no variable has `text`.
     #[cfg(test)]
     pub(crate) fn set_quality(&self, text: &str, quality: Quality) {
-        self.variable(text, |variable| variable.quality = Some(quality));
+        self.variable(text, |variable| variable.hooks.quality = Some(quality));
     }
 
     /// Makes a server that starts later hold `fixed` at the variable of `text`.
@@ -142,7 +148,7 @@ impl Variables {
     /// If no variable has `text`.
     #[cfg(test)]
     pub(crate) fn fix(&self, text: &str, fixed: Fixed) {
-        self.variable(text, |variable| variable.fixed = Some(fixed));
+        self.variable(text, |variable| variable.hooks.fixed = Some(fixed));
     }
 
     /// Makes a server refuse each Read of more than `most` nodes, and not tell the
@@ -150,6 +156,15 @@ impl Variables {
     #[cfg(test)]
     pub(crate) fn refuse_reads_past(&self, most: u32) {
         self.state().most = Some(most);
+    }
+
+    /// The most nodes of a Read of [`Variables::refuse_reads_past`], and the value of
+    /// [`Variables::fix`] of each variable.
+    #[cfg(test)]
+    fn hooks(&self) -> (Option<u32>, Vec<Option<Fixed>>) {
+        let state = self.state();
+        let fixed = state.variables.iter().map(|v| v.hooks.fixed).collect();
+        (state.most, fixed)
     }
 
     /// Calls `change` on the variable of `text`.
@@ -173,9 +188,10 @@ impl Variables {
     /// a Double.
     fn read(&self, index: usize, time: Monotonic) -> (Value, Quality) {
         let mut state = self.state();
-        let all = state.quality;
+        let quality = state.quality;
         let variable = &mut state.variables[index];
-        let quality = variable.quality.unwrap_or(all);
+        #[cfg(test)]
+        let quality = variable.hooks.quality.unwrap_or(quality);
         if let Value::F64(value) = variable.value {
             let served = Served {
                 time,
@@ -239,11 +255,7 @@ pub async fn serve(
         .map(|variable| variable.node.clone())
         .collect();
     #[cfg(test)]
-    let fixed: Vec<Option<Fixed>> = (variables.state().variables.iter())
-        .map(|variable| variable.fixed)
-        .collect();
-    #[cfg(test)]
-    let most = variables.state().most;
+    let (most, fixed) = variables.hooks();
     let add = |server: &mut Server| {
         #[cfg(test)]
         if let Some(most) = most {
