@@ -18,6 +18,12 @@ pub struct Read {
 }
 
 impl Read {
+    /// This read with a budget of `budget` pool bytes in place of the fixed one.
+    #[cfg(test)]
+    pub(crate) fn with_budget(self, budget: usize) -> Self {
+        Self { budget, ..self }
+    }
+
     /// Reads the reader's next durable entries of its index, up to a fixed budget of
     /// pool bytes.
     ///

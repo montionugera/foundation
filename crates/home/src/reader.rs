@@ -119,9 +119,6 @@ pub(crate) struct Set {
     /// goes on. A read from `Mark::at(seq)` gives each entry with no samples at `seq`
     /// again, so more of them than one read takes would stop the reader for ever.
     marks: hash::Map<complete::Key, Mark>,
-    /// The pool bytes of each read from disk in place of `BUDGET`, when set.
-    #[cfg(test)]
-    pub(crate) budget: Option<usize>,
 }
 
 /// The readers of one carried index.
@@ -313,13 +310,10 @@ impl Set {
         if mark.seq != from {
             *mark = Mark::at(from);
         }
-        let budget = BUDGET;
-        #[cfg(test)]
-        let budget = self.budget.unwrap_or(budget);
         Next::Disk(disk::Read {
             key,
             from: *mark,
-            budget,
+            budget: BUDGET,
             reader: buffer.reader(),
         })
     }
