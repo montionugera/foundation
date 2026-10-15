@@ -66,8 +66,8 @@ pub enum Error {
     Mesh(mesh::Stopped),
     /// The home's buffer failed. Code `FAILED`.
     Buffer(env::files::Error),
-    /// The home's pool had no block for a reply (`Exhausted` or `Refused`). Code
-    /// `BUSY`. A later open can succeed.
+    /// The home's pool had no block for a reply (`Exhausted` or `Refused`), or for a
+    /// read from disk of a session. Code `BUSY`. A later open can succeed.
     Pool(block::Error),
     /// The stream or its session failed. No code.
     Stream(transport::Error),
@@ -324,6 +324,7 @@ async fn serve(
                 return Ok(());
             }
             Err(Stop::Buffer(error)) => return Err(Error::Buffer(error)),
+            Err(Stop::Pool(error)) => return Err(Error::Pool(error)),
             Err(Stop::Removed(key)) => return Err(Error::Removed(key)),
             Err(Stop::Replaced) => {
                 unreachable!("invariant: a served session has no name to take over")

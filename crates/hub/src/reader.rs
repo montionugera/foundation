@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 
-use ::home::reader::Next;
+use ::home::reader::{Disk, Failure, Next};
 use types::channel;
 use types::frame::key_set::KeySet;
 use types::frame::{Frame, Mask, View};
@@ -32,11 +32,10 @@ pub enum Mode {
     /// Each live frame, after the commit that holds it. Once the frames that the
     /// reader has not given back (the one it holds and those it has not taken) reach
     /// a window, a later frame waits until the reader gives frames back. A frame that
-    /// still waits when the hub releases the next commit with frames of the index is
-    /// a miss: the session ends with [`Ended::Behind`] after the frames before it. A
-    /// live frame that finds no room in the buffer is a miss too, and so is each frame
-    /// that waits for the window then. So a reader that takes the frames of each
-    /// commit before the next such commit ends misses none while the buffer has room.
+    /// still waits when the hub releases the next commit with frames of the index
+    /// comes later from disk, in order. A live frame that finds no room in the buffer
+    /// is lost: a session that reaches it ends with [`Ended::Behind`] after the frames
+    /// before it.
     Complete,
     /// The newest live frame, before its commit.
     Latest,
@@ -58,9 +57,8 @@ pub struct Config {
     /// index: an open takes over the session of the same subject and name on its index.
     /// A named complete reader that opens while the home holds its position resumes at
     /// the position that the acks of its last complete session recorded, or where that
-    /// session opened when they recorded none. It ends with [`Ended::Behind`] when a
-    /// frame after that position was released, dropped because no complete session on
-    /// its index was open, or lost because the buffer had no room.
+    /// session opened when they recorded none. It ends with [`Ended::Behind`] when it
+    /// reaches a frame after that position that the buffer lost for no room.
     pub name: Option<Name>,
     /// How long the home holds a named complete reader's position after its session
     /// closes. Zero or more. It must be zero when the reader is unnamed or latest.
@@ -176,10 +174,10 @@ impl Lens {
 /// Why a reader session gives no more frames.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ended {
-    /// The shard's buffer failed.
+    /// The shard's buffer failed, or a read from disk of the reader failed.
     Buffer(env::files::Error),
-    /// A complete reader missed a frame: [`Mode::Complete`] and [`Config::name`] state
-    /// when.
+    /// A complete reader reached a frame that the buffer lost: [`Mode::Complete`] and
+    /// [`Config::name`] state when.
     Behind,
     /// A channel of the reader was removed from the definitions.
     Removed(channel::Key),
@@ -195,8 +193,8 @@ pub enum Ended {
     /// The ends of a frame from the home of another node break a rule of a frame. The
     /// reader stopped the stream with code `MALFORMED`.
     Frame(types::frame::Error),
-    /// The shard's pool had no block for a frame or a credit. The reader stopped the
-    /// stream with code `BUSY`.
+    /// The shard's pool had no block for a frame, a credit, or a read from disk. A
+    /// reader of the home of another node stopped the stream with code `BUSY`.
     Pool(block::Error),
     /// The home of another node started a frame once the charges of the frames that
     /// arrived reached the grant that the reader sent. The reader stopped the stream
@@ -593,14 +591,25 @@ impl Reader {
 /// Why a [`Session`] at this node's home gives no more frames.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Stop {
-    /// The shard's buffer failed.
+    /// The shard's buffer failed, or a read from disk of the session failed.
     Buffer(env::files::Error),
-    /// A complete session missed a frame.
+    /// A complete session reached a frame that the buffer lost.
     Behind,
+    /// The shard's pool had no block for a read from disk or its frames.
+    Pool(block::Error),
     /// A channel of the session was removed from the definitions.
     Removed(channel::Key),
     /// A later open of the same named reader took over the session.
     Replaced,
+}
+
+impl From<Failure> for Stop {
+    fn from(failure: Failure) -> Self {
+        match failure {
+            Failure::Files(error) => Self::Buffer(error),
+            Failure::Pool(error) => Self::Pool(error),
+        }
+    }
 }
 
 impl From<End> for Stop {
@@ -617,6 +626,7 @@ impl From<Stop> for Ended {
         match stop {
             Stop::Buffer(error) => Self::Buffer(error),
             Stop::Behind => Self::Behind,
+            Stop::Pool(error) => Self::Pool(error),
             Stop::Removed(key) => Self::Removed(key),
             Stop::Replaced => Self::Replaced,
         }
@@ -862,6 +872,8 @@ pub(crate) struct Session {
     /// The lens of the key set of the last frame.
     lens: Option<Lens>,
     streak: Streak,
+    /// Why a read from disk of the session failed.
+    failed: Option<Box<Stop>>,
 }
 
 /// The channels of a [`Session`]: the key and slot of each, and the slot of their
@@ -924,6 +936,7 @@ impl Session {
             index: channels.index,
             lens: None,
             streak: Streak::default(),
+            failed: None,
         }
     }
 
@@ -935,23 +948,44 @@ impl Session {
     /// [`Stop::Removed`] once a channel of the session is removed, or
     /// [`Stop::Replaced`] once a takeover ends it, before any frame that waits. Else
     /// [`Stop`] once no frame waits and the session can give no more. Either on this
-    /// and every later call: [`Stop::Behind`] before [`Stop::Buffer`].
+    /// and every later call: [`Stop::Behind`] before [`Stop::Buffer`]. Also
+    /// [`Stop::Buffer`] or [`Stop::Pool`] when a read from disk that the session needs
+    /// fails, on this and every later call.
     ///
     /// # Panics
     ///
     /// When the interner does not hold the key set of the frame, which a writer of
     /// this hub made.
     pub(crate) async fn take(&mut self) -> Result<(Frame, &Lens), Stop> {
-        let frame = poll_fn(|cx| {
-            if let Some(end) = self.ending.get() {
-                return Poll::Ready(Err(end.into()));
+        let frame = loop {
+            let taken = poll_fn(|cx| {
+                if let Some(end) = self.ending.get() {
+                    return Poll::Ready(Err(end.into()));
+                }
+                if let Some(failed) = &self.failed {
+                    return Poll::Ready(Err(Stop::clone(failed)));
+                }
+                ready!(self.streak.poll(cx));
+                let polled = poll_take(&mut self.state.borrow_mut(), self.key, cx);
+                self.streak.count(&polled);
+                polled
+            })
+            .await?;
+            let disk = match taken {
+                Taken::Frame(frame) => break frame,
+                Taken::Disk(disk) => disk,
+            };
+            let filled = match disk.read().await {
+                Ok(read) => {
+                    let state = &mut *self.state.borrow_mut();
+                    state.home.fill(read, &mut state.interner).map_err(Stop::Pool)
+                }
+                Err(failure) => Err(failure.into()),
+            };
+            if let Err(stop) = filled {
+                return Err(Stop::clone(self.failed.insert(Box::new(stop))));
             }
-            ready!(self.streak.poll(cx));
-            let polled = poll_take(&mut self.state.borrow_mut(), self.key, cx);
-            self.streak.count(&polled);
-            polled
-        })
-        .await?;
+        };
         let key = frame.key_set();
         let lens = match self.lens.take() {
             Some(lens) if lens.set.key() == key => self.lens.insert(lens),
@@ -968,15 +1002,23 @@ impl Session {
     }
 }
 
-/// The next frame of the session `key`, or the waker of `cx` kept to wake once one
-/// waits.
+/// What one take of a session gives.
+enum Taken {
+    Frame(Frame),
+    /// The read that the session needs before its next frame.
+    Disk(Disk),
+}
+
+/// The next frame of the session `key` or the read it needs, or the waker of `cx`
+/// kept to wake once one waits.
 fn poll_take(
     state: &mut State,
     key: ::home::reader::Key,
     cx: &Context<'_>,
-) -> Poll<Result<Frame, Stop>> {
+) -> Poll<Result<Taken, Stop>> {
     match state.home.take(key) {
-        Next::Frame(frame) => return Poll::Ready(Ok(frame)),
+        Next::Frame(frame) => return Poll::Ready(Ok(Taken::Frame(frame))),
+        Next::Disk(disk) => return Poll::Ready(Ok(Taken::Disk(disk))),
         Next::Behind => return Poll::Ready(Err(Stop::Behind)),
         Next::Empty => {}
     }

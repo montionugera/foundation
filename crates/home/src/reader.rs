@@ -48,18 +48,44 @@ impl Disk {
     ///
     /// # Errors
     ///
-    /// The error of the buffer's read.
-    pub async fn read(self) -> Result<Read, buffer::Error> {
+    /// [`Failure`] when the buffer's read fails.
+    pub async fn read(self) -> Result<Read, Failure> {
         let Self {
             key,
             from,
             budget,
             reader,
         } = self;
-        let read = reader.read(key.slot, Path::Live, from, budget).await?;
-        Ok(Read { key, read })
+        match reader.read(key.slot, Path::Live, from, budget).await {
+            Ok(read) => Ok(Read { key, read }),
+            Err(buffer::Error::Files(error)) => Err(Failure::Files(error)),
+            Err(buffer::Error::Pool(error)) => Err(Failure::Pool(error)),
+            Err(error) => {
+                unreachable!("a buffer read gives only Files and Pool: {error}")
+            }
+        }
     }
 }
+
+/// Why a [`Disk::read`] failed. The reader can give no more frames; the shard goes on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// A ring read failed, or a commit failed before the read ended.
+    Files(env::files::Error),
+    /// The pool had no block for the first entry of the read or its table.
+    Pool(block::Error),
+}
+
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Files(error) => write!(f, "a read from disk failed: {error}"),
+            Self::Pool(error) => write!(f, "the pool has no block for a read: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for Failure {}
 
 /// What a [`Disk`] read got, for [`Shard::fill`](crate::Shard::fill).
 #[derive(Debug)]
