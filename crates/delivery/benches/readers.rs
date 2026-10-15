@@ -130,14 +130,15 @@ fn fill(bencher: Bencher<'_, '_>) {
                 .open(Reader::Unnamed, start, u64::MAX, Charge::Whole)
                 .key;
             readers.queue(&frame, &set, BURST..BURST + 1);
-            (readers, key)
+            let read: Vec<_> = (0..BURST).map(|_| frame.clone()).collect();
+            (readers, key, read)
         })
-        .bench_local_refs(|(readers, key)| {
+        .bench_local_refs(|(readers, key, read)| {
             let Next::Disk { .. } = readers.take((*key).into()) else {
                 panic!("the reader reads from disk");
             };
-            for seq in 0..BURST {
-                let filled = readers.fill(*key, frame.clone(), &set, seq..seq + 1);
+            for (seq, frame) in (0..BURST).zip(read.drain(..)) {
+                let filled = readers.fill(*key, frame, &set, seq..seq + 1);
                 assert!(filled, "filled");
             }
             for _ in 0..BURST {
