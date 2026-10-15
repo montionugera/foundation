@@ -421,9 +421,8 @@ impl Kept {
     /// Counts in `left` each value of `values` that a frame leaves out: one that is
     /// not Good, or one whose type is not the sample type of its channel in `layout`.
     /// The note of `ctx` names the first node of another type, and a tick with none
-    /// clears it. Gives the
-    /// series of the frame that keeps the other values, with `values`, or `None` when
-    /// it keeps no value.
+    /// clears it. Gives the series of the frame that keeps the other values, with
+    /// `values`, or `None` when it keeps no value.
     fn sort<'s, 'v>(
         &'s mut self,
         left: &mut Left,

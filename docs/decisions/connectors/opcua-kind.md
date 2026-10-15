@@ -28,9 +28,8 @@
   a Good with a subcode counts as Good. A frame leaves out each value that is not Good
   and keeps the others: an Uncertain value adds 1 to the count `uncertain`, and each
   other one, also no value (`BadNoData`) and a `BadTypeMismatch` of the server, adds 1
-  to `bad`. A tick that leaves out each
-  value writes no frame. A quality channel comes with the quality model of the MVP
-  (question:
+  to `bad`. A tick that leaves out each value writes no frame. A quality channel comes
+  with the quality model of the MVP (question:
   https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6150343529).
   Approved by the person (2026-10-15T16:34:12Z:
   https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6197131223). A
