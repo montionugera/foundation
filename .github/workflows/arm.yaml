@@ -69,6 +69,10 @@ jobs:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.code != 'false'"
     runs-on: [self-hosted, Linux, ARM64]
+    # Each host runs one runner for each 2.7 vCPU and 10.7 GiB. At the CPU count of the
+    # host, the builds of its runners at once need more memory than it has (#2719).
+    env:
+      CARGO_BUILD_JOBS: 3
     steps:
       - uses: actions/checkout@v4
       - name: Add cargo to the path
