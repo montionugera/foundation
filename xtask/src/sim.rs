@@ -19,18 +19,14 @@ const RULE: &str = "A `sim` feature is test-only: only a dev-dependency, the fuz
 /// a member, also a tool or a benchmark, or a path crate outside the workspace. A
 /// field that is missing or of another shape is a problem too.
 pub(crate) fn check(graph: &Value) -> Vec<String> {
-    let reached = match built(graph) {
+    let reached = match built(graph).and_then(|reached| packages(graph, reached)) {
         Ok(reached) => reached,
         Err(e) => return vec![e],
     };
-    let packages = match field::list(graph, "packages") {
-        Ok(packages) => packages,
-        Err(e) => return vec![e],
-    };
     let mut problems = Vec::new();
-    for package in packages {
+    for package in reached {
         let found = local(package).and_then(|local| {
-            if local && reached.contains(field::text(package, "id")?) {
+            if local {
                 self::problems(package)
             } else {
                 Ok(Vec::new())
@@ -39,6 +35,25 @@ pub(crate) fn check(graph: &Value) -> Vec<String> {
         problems.extend(found.unwrap_or_else(|e| vec![e]));
     }
     problems
+}
+
+/// The package of `graph` for each id of `reached`.
+fn packages<'a>(
+    graph: &'a Value,
+    reached: BTreeSet<&str>,
+) -> Result<Vec<&'a Value>, String> {
+    let mut packages = BTreeMap::new();
+    for package in field::list(graph, "packages")? {
+        packages.insert(field::text(package, "id")?, package);
+    }
+    reached
+        .into_iter()
+        .map(|id| {
+            let package = packages.get(id).copied();
+            package
+                .ok_or_else(|| format!("JSON field `packages` has no package `{id}`"))
+        })
+        .collect()
 }
 
 /// The ids of the packages that a build of `graph` reaches: the members, and each
@@ -227,6 +242,7 @@ mod tests {
     fn checks_only_local_crates_and_names_a_malformed_graph() {
         assert_eq!(check(&json!({})), ["JSON has no array field `nodes`"]);
         let registry = json!({
+            "id": "a",
             "name": "a",
             "source": "registry+https://github.com/rust-lang/crates.io-index",
             "features": { "default": ["sim"] },
@@ -240,9 +256,14 @@ mod tests {
                 "packages": packages,
             })
         };
+        assert_eq!(check(&graph(json!([registry]))), Vec::<String>::new());
         assert_eq!(
-            check(&graph(json!([registry, { "id": "a" }]))),
+            check(&graph(json!([{ "id": "a" }]))),
             ["JSON has no string field `name`"]
+        );
+        assert_eq!(
+            check(&graph(json!([]))),
+            ["JSON field `packages` has no package `a`"]
         );
         assert_eq!(
             check(&graph(json!([member]))),
