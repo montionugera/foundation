@@ -63,13 +63,14 @@
   (https://github.com/synnaxlabs/foundation/pull/1812#issuecomment-6055539099).
   `types::ed25519::Pair` is the one Ed25519 sign. Each signer (`mesh::claim::Signer`,
   `mesh::card::Signed::sign`, `mesh::Ticket::admission`, `transport::Tls::new`, and
-  `client::Client` in #1748) builds one `Pair` and keeps no other signing key. The TLS
-  CertificateVerify is the exception: rustls signs it with the key of the PKCS#8
-  document that `transport` builds, as a step of the TLS 1.3 handshake. Lost: a
-  `PrivateKey` that owns the pair, which re-derives on each clone and changes each
-  constructor; and a `PrivateKey::sign`, which costs a scalar multiplication for each
-  claim and each request of `client::Client`. Decided by `laptop.architect` at
-  2026-10-08T08:12:49Z
+  `program::Session` in #1748; the name, `laptop.architect`, 2026-10-15T18:23:47Z,
+  https://github.com/synnaxlabs/foundation/pull/2724#issuecomment-6199257488) builds one
+  `Pair` and keeps no other signing key. The TLS CertificateVerify is the exception:
+  rustls signs it with the key of the PKCS#8 document that `transport` builds, as a step
+  of the TLS 1.3 handshake. Lost: a `PrivateKey` that owns the pair, which re-derives on
+  each clone and changes each constructor; and a `PrivateKey::sign`, which costs a
+  scalar multiplication for each claim and each request of `program::Session`. Decided
+  by `laptop.architect` at 2026-10-08T08:12:49Z
   (https://github.com/synnaxlabs/foundation/issues/1748#issuecomment-6055665349).
   `transport::fuzzing::peer(chain)` and `transport::fuzzing::certificate`, behind the
   `fuzzing` feature, give the fuzz target `transport_certificate` the server's

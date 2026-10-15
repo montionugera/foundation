@@ -191,8 +191,10 @@
   gives no session is `Error::Unanswered` with the address it dialed and the error of
   the transport; a broken socket of the program is `Error::Transport`, as a failed
   start of its transport is; a session or hello that fails after the dial is
-  `Error::Session` with the address and the error of `client`; a refused hello is
-  `Error::Refused`. Its pool is fixed, as the pool of `sector` is. Lost:
+  `Error::Session` with the address and the error of `program` (the name,
+  `laptop.architect`, 2026-10-15T18:23:47Z,
+  https://github.com/synnaxlabs/foundation/pull/2724#issuecomment-6199257488); a refused
+  hello is `Error::Refused`. Its pool is fixed, as the pool of `sector` is. Lost:
   `ops::Unreached`, worded in `ops`, which would name the files that only `node` reads
   and take `hub` for the error of a dial. Lost: `Error::Session` for a broken socket of
   the program, since the caller then cannot tell its own host from the node. Decided

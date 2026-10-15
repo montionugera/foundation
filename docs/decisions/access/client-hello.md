@@ -128,9 +128,10 @@
   `wire::hub::client::Reader` gives; `hub::Error::Finished` stays the home's. No variant
   of `wire::hub::client::Error` holds a `hub::Error`: the program gets the errors of the
   replies from the `hub::Reader` that `wire::hub::client::Reader` gives.
-  `client::Error::Message` holds a `wire::hub::client::Error`;
-  `hub::serve::Error::Client` holds one, code `MALFORMED`, and `serve::Error::Message`
-  keeps the errors from a reader's node. Lost: a variant
+  `program::Error::Message` (the name, `laptop.architect`, 2026-10-15T18:23:47Z,
+  https://github.com/synnaxlabs/foundation/pull/2724#issuecomment-6199257488) holds a
+  `wire::hub::client::Error`; `hub::serve::Error::Client` holds one, code `MALFORMED`,
+  and `serve::Error::Message` keeps the errors from a reader's node. Lost: a variant
   `wire::hub::client::Error::Hub(hub::Error)`, which brings back two levels of error and
   puts each variant that only a frame decoder gives in the type of the client wire. Why:
   a `hub::Error` that is not `Copy` cost each frame that a node or a program decodes,

@@ -1,14 +1,16 @@
-- **HUB CLIENT (2026-10-08)** `client::Client` is the session of a program with one
-  node. `Client::connect` dials on a `transport::Client`, sends the subject's hello, and
-  gives the client once the node admits it, so a refused hello is an error of `connect`.
-  A hello expires at the latest mesh time of its challenge, plus the time since the
-  challenge came on the monotonic clock, plus `client::LIFE` (10 minutes), or at the end
-  of mesh time when the sum passes it, as mesh time is the node's. Lost: an error of
-  `connect` for a challenge near the end of mesh time, a second guard of the node's own
-  checks of the expiry (`EXPIRED`). A task renews the hello at half of `LIFE` after each
-  admission, on the hello stream, until the session ends. A renewal waits for a block as
-  each message does, and the node closes the session if the hello ends first. A
-  challenge that `wire` refuses ends the renewal and closes the session with
+- **HUB CLIENT (2026-10-08)** `program::Session` is the session of a program with one
+  node (the crate `program` and its names, `laptop.architect`, 2026-10-15T18:23:47Z,
+  https://github.com/synnaxlabs/foundation/pull/2724#issuecomment-6199257488).
+  `Session::connect` dials on a `transport::Client`, sends the subject's hello, and
+  gives the session once the node admits it, so a refused hello is an error of
+  `connect`. A hello expires at the latest mesh time of its challenge, plus the time
+  since the challenge came on the monotonic clock, plus `program::LIFE` (10 minutes), or
+  at the end of mesh time when the sum passes it, as mesh time is the node's. Lost: an
+  error of `connect` for a challenge near the end of mesh time, a second guard of the
+  node's own checks of the expiry (`EXPIRED`). A task renews the hello at half of `LIFE`
+  after each admission, on the hello stream, until the session ends. A renewal waits for
+  a block as each message does, and the node closes the session if the hello ends first.
+  A challenge that `wire` refuses ends the renewal and closes the session with
   `MALFORMED`. From then on, each request that fails gives the error that ended the
   renewal, also a request that was in flight, in place of the error of the close
   (`laptop.architect`, 2026-10-09 01:14 UTC,
@@ -28,7 +30,7 @@
   windows from the stream credit, which ack loss can exceed; a `Bytes` body with no
   copy; a wait in `block::Pool` that wakes at each free. Two callers poll the pool now:
   the transport's reads and this client. Trigger: a third caller that waits for a block,
-  or a measured request latency from the poll, adds the wait to `block`. `Client` is
+  or a measured request latency from the poll, adds the wait to `block`. `Session` is
   `Clone`, and a clone is the same session. When the last clone drops, the client closes
   the session with `Code(0)`. A node's stop and close with a code are one error:
   `Error::Refused(wire::hub::client::Refusal)`, a closed set in `wire` with `from_code`
