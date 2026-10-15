@@ -191,7 +191,7 @@
   gives no session is `Error::Unanswered` with the address it dialed and the error of
   the transport; a broken socket of the program is `Error::Transport`, as a failed
   start of its transport is; a session or hello that fails after the dial is
-  `Error::Session` with the address and the error of `hub`; a refused hello is
+  `Error::Session` with the address and the error of `client`; a refused hello is
   `Error::Refused`. Its pool is fixed, as the pool of `sector` is. Lost:
   `ops::Unreached`, worded in `ops`, which would name the files that only `node` reads
   and take `hub` for the error of a dial. Lost: `Error::Session` for a broken socket of
