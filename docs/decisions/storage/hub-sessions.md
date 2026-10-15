@@ -62,7 +62,11 @@
   `lose::misses_a_held_frame_at_the_release_that_reaches_the_lost_samples` check the
   frame that waits for a grant then. A seq lost for no room stays a miss under the
   catch-up of #274 B1: a reader that reaches it ends with `Behind`, never a gap, and
-  the B1 plan states how it knows that seq. Supersedes item 4 of
+  the B1 plan states how it knows that seq. Superseded by #2553 (READER RULES): a seq
+  lost for no room is no miss, and the next frame gives it as its gap
+  (`laptop.architect`, 2026-10-15T18:12:25Z:
+  https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922).
+  Supersedes item 4 of
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159325971
   (`laptop.architect`, 2026-10-14T02:29:09Z:
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159543609).
@@ -417,9 +421,13 @@
   https://github.com/synnaxlabs/foundation/pull/2183#issuecomment-6089887271;
   `laptop.architect`, 2026-10-08T10:01:19Z and 2026-10-10T00:57:58Z:
   https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6057419592 and
-  https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6091895275), or
-  lost because the buffer had no room (`laptop.architect`, 2026-10-14T02:29:09Z:
-  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159543609).
+  https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6091895275). A
+  frame lost because the buffer had no room is not in the condition: the reader gets
+  the next frame with the lost seqs as its gap (#2553, `laptop.architect`,
+  2026-10-15T18:12:25Z:
+  https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922), which
+  supersedes `laptop.architect`, 2026-10-14T02:29:09Z:
+  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159543609.
   Supersedes the line of
   https://github.com/synnaxlabs/foundation/pull/2183#issuecomment-6089887271 that a
   frame lost for no room is not in the condition.
