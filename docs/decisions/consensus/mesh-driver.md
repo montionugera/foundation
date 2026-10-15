@@ -395,3 +395,8 @@
   the file, because the operator cannot see which field differs and the region does not
   read back; one variant per field, four variants for one contract; the root of the
   definitions alone, because the file is then not the whole value.
+  Amended (2026-10-15, #2749): a group that opens as the only voter of the newest
+  configuration in its log, with no outgoing voter, campaigns at once, with no election
+  timeout: one voter cannot split a vote. A joint configuration, or one with another
+  voter, keeps the timeout. Decided by `laptop.architect`:
+  https://github.com/synnaxlabs/foundation/issues/2749.
