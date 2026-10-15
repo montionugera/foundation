@@ -5,14 +5,68 @@ use std::mem;
 use std::ops::Range;
 use std::sync::Arc;
 
-use buffer::Buffer;
-pub use delivery::{Error, Next, Position, named};
+use buffer::{Buffer, Mark, Stored};
+pub use delivery::{Error, Position, named};
 use delivery::{Reader, Readers, Start};
 use types::channel::Slot;
 use types::frame::key_set::KeySet;
 use types::frame::{Frame, Path};
 use types::hash;
 use types::time::Stamp;
+
+/// Pool bytes that the entries of one read from disk take at most.
+const BUDGET: u64 = 256 * 1024;
+
+/// What a reader gets from [`Shard::take`](crate::Shard::take).
+#[derive(Debug)]
+pub enum Next {
+    /// The reader's next frame.
+    Frame(Frame),
+    /// No frame waits, the next frame waits for a grant or a commit, or the reader is
+    /// closed.
+    Empty,
+    /// The reader's next frames are on disk. Run [`Disk::read`] with no borrow of the
+    /// shard, give the result to [`Shard::fill`](crate::Shard::fill), then take
+    /// again.
+    Disk(Disk),
+    /// The complete reader reached live samples lost for no room: it gets no later
+    /// frame. It comes after the frames before them, on this and each later call.
+    Behind,
+}
+
+/// A read from disk that a complete reader needs before its next frame.
+#[derive(Debug)]
+pub struct Disk {
+    key: complete::Key,
+    from: Mark,
+    budget: usize,
+    reader: buffer::Reader,
+}
+
+impl Disk {
+    /// Reads the reader's next durable entries of its index, up to its credit.
+    ///
+    /// # Errors
+    ///
+    /// The error of the buffer's read.
+    pub async fn read(self) -> Result<Read, buffer::Error> {
+        let Self {
+            key,
+            from,
+            budget,
+            reader,
+        } = self;
+        let read = reader.read(key.slot, Path::Live, from, budget).await?;
+        Ok(Read { key, read })
+    }
+}
+
+/// What a [`Disk`] read got, for [`Shard::fill`](crate::Shard::fill).
+#[derive(Debug)]
+pub struct Read {
+    pub(crate) key: complete::Key,
+    read: buffer::Read,
+}
 
 /// An open reader on its shard, in either mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -93,6 +147,10 @@ pub(crate) struct Set {
     /// not carry now: above each key that the index had, so that a key never names two
     /// readers. An index with no number starts at 0.
     first: hash::Map<Slot, u64>,
+    /// Where the next read from disk of each open complete reader that read from disk
+    /// goes on. A read from `Mark::at(seq)` gives each entry with no samples at `seq`
+    /// again, so more of them than one read takes would stop the reader for ever.
+    marks: hash::Map<complete::Key, Mark>,
 }
 
 /// The readers of one carried index.
@@ -213,9 +271,17 @@ impl Set {
     /// Forgets the session `replaced` of the index at `place`, which a takeover
     /// closed.
     fn replaced(&mut self, place: usize, replaced: Option<delivery::Key>) {
-        if let Some(delivery::Key::Latest(latest)) = replaced {
-            self.forget(place, latest);
+        match replaced {
+            Some(delivery::Key::Latest(latest)) => self.forget(place, latest),
+            Some(delivery::Key::Complete(session)) => self.unmark(place, session),
+            None => {}
         }
+    }
+
+    /// Drops the mark of the closed complete reader `session` of the index at `place`.
+    fn unmark(&mut self, place: usize, session: delivery::complete::Key) {
+        let slot = self.entries[place].slot;
+        self.marks.remove(&complete::Key { slot, session });
     }
 
     /// Drops the position records of the index at `place`, until #274 appends them to
@@ -246,13 +312,92 @@ impl Set {
         self.entries[place].readers.grant(session, limit_bytes);
     }
 
-    /// Takes the next frame of the reader `session` on the index at `place`.
+    /// Takes the next frame of the reader `session` on the index at `place`. A read
+    /// from disk reads `buffer`.
     ///
     /// # Panics
     ///
     /// If the index never gave `session`.
-    pub(crate) fn take(&mut self, place: usize, session: delivery::Key) -> Next {
-        self.entries[place].readers.take(session)
+    pub(crate) fn take(
+        &mut self,
+        place: usize,
+        session: delivery::Key,
+        buffer: &Buffer,
+    ) -> Next {
+        let entry = &mut self.entries[place];
+        let (from, credit_bytes) = match entry.readers.take(session) {
+            delivery::Next::Frame(frame) => return Next::Frame(frame),
+            delivery::Next::Empty => return Next::Empty,
+            delivery::Next::Behind => return Next::Behind,
+            delivery::Next::Disk { from, credit_bytes } => (from, credit_bytes),
+        };
+        let delivery::Key::Complete(session) = session else {
+            unreachable!("invariant: a latest session never reads from disk");
+        };
+        let key = complete::Key {
+            slot: entry.slot,
+            session,
+        };
+        let mark = self.marks.entry(key).or_insert(Mark::at(from));
+        if mark.seq != from {
+            *mark = Mark::at(from);
+        }
+        let budget = credit_bytes.min(BUDGET);
+        Next::Disk(Disk {
+            key,
+            from: *mark,
+            budget: usize::try_from(budget)
+                .expect("invariant: the budget fits a usize"),
+            reader: buffer.reader(),
+        })
+    }
+
+    /// Gives the frames of `read` to its session on the index at `place`, whose live
+    /// frames on disk end at seq `durable`: the frame that `decode` makes of each
+    /// entry, or of none. Drops `read` when its session closed after it started.
+    ///
+    /// # Errors
+    ///
+    /// The error of `decode` for the first frame of `read`, which then gives nothing.
+    /// An error after a frame stops the fill there.
+    pub(crate) fn fill(
+        &mut self,
+        place: usize,
+        read: Read,
+        durable: u64,
+        mut decode: impl FnMut(
+            &Stored,
+        )
+            -> Result<Option<(Frame, Arc<KeySet>)>, block::Error>,
+    ) -> Result<(), block::Error> {
+        let Read { key, read } = read;
+        let Some(mark) = self.marks.get_mut(&key) else {
+            return Ok(());
+        };
+        *mark = read.next;
+        let entry = &mut self.entries[place];
+        let mut given = false;
+        for stored in &read.entries {
+            let (frame, set) = match decode(stored) {
+                Ok(Some(decoded)) => decoded,
+                Ok(None) => continue,
+                Err(error) if !given => return Err(error),
+                Err(_) => return Ok(()),
+            };
+            given = true;
+            let seq = stored.first..stored.first + u64::from(stored.len);
+            if !entry.readers.fill(key.session, &frame, &set, seq) {
+                return Ok(());
+            }
+        }
+        // A read that stopped at its budget below `durable` reads again.
+        if read.next.seq >= durable {
+            entry.readers.reached(key.session, read.next.seq);
+            if entry.readers.pending() && !mem::replace(&mut entry.listed, true) {
+                self.listed.push(place);
+            }
+        }
+        Ok(())
     }
 
     /// Closes the reader `session` on the index at `place` at mesh time `now`. Its
@@ -271,8 +416,9 @@ impl Set {
     ) {
         self.entries[place].readers.close(session, now);
         self.drop_records(place);
-        if let delivery::Key::Latest(latest) = session {
-            self.forget(place, latest);
+        match session {
+            delivery::Key::Latest(latest) => self.forget(place, latest),
+            delivery::Key::Complete(session) => self.unmark(place, session),
         }
     }
 
@@ -435,11 +581,11 @@ mod tests {
     }
 
     /// The range of each frame that the reader `session` of the index at `place` takes
-    /// before [`Next::Empty`].
+    /// before [`delivery::Next::Empty`].
     ///
     /// # Panics
     ///
-    /// If the reader gets [`Next::Behind`].
+    /// If the reader gets another [`delivery::Next`].
     #[track_caller]
     fn taken(
         set: &mut Set,
@@ -449,12 +595,12 @@ mod tests {
         let session = session.into();
         let mut ranges = Vec::new();
         loop {
-            match set.take(place, session) {
-                Next::Frame(frame) => {
+            match set.entries[place].readers.take(session) {
+                delivery::Next::Frame(frame) => {
                     ranges.push(frame.range(0).expect("the index is present"));
                 }
-                Next::Empty => return ranges,
-                Next::Behind => panic!("behind after {ranges:?}"),
+                delivery::Next::Empty => return ranges,
+                end => panic!("{end:?} after {ranges:?}"),
             }
         }
     }
@@ -519,11 +665,11 @@ mod tests {
         use super::*;
 
         /// The range of each frame that the reader `session` of the index at `place`
-        /// takes before [`Next::Behind`].
+        /// takes before [`delivery::Next::Behind`].
         ///
         /// # Panics
         ///
-        /// If the reader gets [`Next::Empty`].
+        /// If the reader gets another [`delivery::Next`].
         #[track_caller]
         fn missed(
             set: &mut Set,
@@ -533,12 +679,12 @@ mod tests {
             let session = session.into();
             let mut ranges = Vec::new();
             loop {
-                match set.take(place, session) {
-                    Next::Frame(frame) => {
+                match set.entries[place].readers.take(session) {
+                    delivery::Next::Frame(frame) => {
                         ranges.push(frame.range(0).expect("the index is present"));
                     }
-                    Next::Behind => return ranges,
-                    Next::Empty => panic!("empty after {ranges:?}"),
+                    delivery::Next::Behind => return ranges,
+                    end => panic!("{end:?} after {ranges:?}"),
                 }
             }
         }
