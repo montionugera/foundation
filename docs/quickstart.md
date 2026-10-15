@@ -111,15 +111,18 @@ foundation plan plant.hcl --out plant.plan
 + channel plant.trend
 + connector plc
 + channel plc.status.backoff
++ channel plc.status.bad
 + channel plc.status.class
 + channel plc.status.error
 + channel plc.status.in
 + channel plc.status.lost
 + channel plc.status.missed
++ channel plc.status.mistyped
 + channel plc.status.note
 + channel plc.status.restarts
 + channel plc.status.state
 + channel plc.status.time
++ channel plc.status.uncertain
 + connector influx
 + channel influx.status.backoff
 + channel influx.status.class
@@ -129,7 +132,7 @@ foundation plan plant.hcl --out plant.plan
 + channel influx.status.restarts
 + channel influx.status.state
 + channel influx.status.time
-24 to add, 0 to change, 0 to remove.
+27 to add, 0 to change, 0 to remove.
 note: 2 definitions that Foundation made are not in the files: @admin.@access, @admin.@subject
 ```
 
@@ -148,7 +151,7 @@ foundation apply plant.plan
 ```
 
 ```text
-Applied plant.plan: 24 added, 3 homes listed.
+Applied plant.plan: 27 added, 3 homes listed.
 ```
 
 `apply` refuses a plan when the node's config changed after the plan. Plan again.
