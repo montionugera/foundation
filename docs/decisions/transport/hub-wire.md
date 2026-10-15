@@ -250,6 +250,6 @@
   last run of ends it gives `Step::Draft`, the caller makes the draft of
   `Frames::layout` from its own pool and gives it back, and gets the body slice for
   `recv_into` and then the frame. A full pool is the caller's case: `hub` gives
-  `Ended::Pool`, and `program` waits. A layout error stays a `types::frame::Error` from `layout`, so
-  `wire::hub::Error` stays `Copy` (`laptop.architect`, 2026-10-15T23:41:49Z,
-  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204591536).
+  `Ended::Pool`, and `program` waits. A layout error stays a `types::frame::Error`
+  from `layout`, so `wire::hub::Error` stays `Copy` (`laptop.architect`,
+  2026-10-15T23:41:49Z, https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204591536).
