@@ -167,12 +167,9 @@ impl Shard {
     async fn put(&self, offset: usize, bytes: &[u8]) {
         let ring = self.files.open(FilePath::new(RING), Mode::Write).await;
         let ring = ring.expect("the ring opens to write");
-        let mut block = pool().alloc(bytes.len()).expect("a block");
-        block.copy_from_slice(bytes);
+        let block = pool().copy(bytes).expect("a block");
         let offset = u64::try_from(offset).expect("fits in u64");
-        ring.write_at(offset, &[block.freeze()])
-            .await
-            .expect("writes");
+        ring.write_at(offset, &[block]).await.expect("writes");
     }
 
     /// Puts `bytes` at `at` of both header blocks and fixes their CRCs.

@@ -3018,11 +3018,7 @@ pub(crate) mod port {
             };
             let (mut sender, mut receiver) =
                 session.open(Class::Complete).await.expect("a stream");
-            let message = |bytes: &[u8]| {
-                let mut block = pool.alloc(bytes.len()).unwrap();
-                block.copy_from_slice(bytes);
-                block.freeze()
-            };
+            let message = |bytes: &[u8]| pool.copy(bytes).unwrap();
             let bytes_max = sender.bytes_max();
             let mut sent = Ok(());
             for bytes in &first {
@@ -3493,11 +3489,7 @@ pub(crate) mod port {
                 .dial(KEY.public(), &[Address::Udp(listen)])
                 .await
                 .expect("a session");
-            let message = |bytes: &[u8]| {
-                let mut block = pool.alloc(bytes.len()).unwrap();
-                block.copy_from_slice(bytes);
-                block.freeze()
-            };
+            let message = |bytes: &[u8]| pool.copy(bytes).unwrap();
             let header = wire::header::encode(wire::Protocol::Mesh);
             let mut late = header.to_vec();
             late.resize(60 << 10, 0);
@@ -3558,18 +3550,16 @@ pub(crate) mod port {
                 .expect("a session");
             let mut late = wire::header::encode(wire::Protocol::Mesh).to_vec();
             late.resize(60 << 10, 0);
-            let mut block = pool.alloc(late.len()).unwrap();
-            block.copy_from_slice(&late);
+            let block = pool.copy(&late).unwrap();
             let (mut sender, mut reply) =
                 session.open(Class::Complete).await.expect("a stream");
             let start = own.clock().now();
-            sender.send(block.freeze()).await.expect("it sends");
+            sender.send(block).await.expect("it sends");
             let read = reply.recv().await.map(|m| m.map(|b| b.to_vec()));
             let waited = own.clock().now() - start;
             let sent = loop {
-                let mut block = pool.alloc(1).unwrap();
-                block.copy_from_slice(b"a");
-                if let Err(error) = sender.send(block.freeze()).await {
+                let block = pool.copy(b"a").unwrap();
+                if let Err(error) = sender.send(block).await {
                     break error;
                 }
                 own.clock().sleep(Span::MILLISECOND).await;
@@ -5539,9 +5529,8 @@ pub(crate) mod port {
             let mut sender = sender.expect("a stream");
             let header = wire::header::encode(wire::Protocol::Clock);
             loop {
-                let mut block = pool.alloc(header.len()).unwrap();
-                block.copy_from_slice(&header);
-                if let Err(error) = sender.send(block.freeze()).await {
+                let block = pool.copy(&header).unwrap();
+                if let Err(error) = sender.send(block).await {
                     return error;
                 }
                 host.clock().sleep(Span::MILLISECOND).await;
@@ -5577,11 +5566,7 @@ pub(crate) mod port {
                 let session = dialed.expect("the dial reaches the node");
                 let sender = session.open_sender(Class::Complete).await;
                 let mut sender = sender.expect("a stream");
-                let block = |bytes: &[u8]| {
-                    let mut block = pool.alloc(bytes.len()).unwrap();
-                    block.copy_from_slice(bytes);
-                    block.freeze()
-                };
+                let block = |bytes: &[u8]| pool.copy(bytes).unwrap();
                 let header = wire::header::encode(wire::Protocol::Mesh);
                 let mut sent = sender.send(block(&header)).await;
                 for _ in 0..100 {

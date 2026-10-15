@@ -976,11 +976,7 @@ async fn edit(
     }
     let blocks: Vec<Block> = image
         .chunks(BLOCK)
-        .map(|bytes| {
-            let mut block = pool.alloc(BLOCK).expect("the pool has a block");
-            block.copy_from_slice(bytes);
-            block.freeze()
-        })
+        .map(|bytes| pool.copy(bytes).expect("the pool has a block"))
         .collect();
     file.write_at(0, &blocks).await.expect("the ring writes");
     file.sync().await.expect("the ring syncs");
