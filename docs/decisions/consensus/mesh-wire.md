@@ -70,3 +70,31 @@
   of no known kind, was not clear next to `region::Refused::Unknown`, a ticket that is
   not recorded (decided by the architect, 2026-10-07T16:24:54Z:
   https://github.com/synnaxlabs/foundation/issues/1051#issuecomment-6042136383).
+  Each member takes a message of `message::BYTES_MIN` bytes: an `Append` with no proof
+  and no link, of one entry that holds a record of `change::BYTES_MAX` bytes, the
+  largest record of any kind. `mesh` gives `raft` the `Config::fits` "the byte form is
+  at most `BYTES_MIN`", so a member never needs the limit of each peer. The decode of an
+  `Append` refuses it when an entry is larger than one that holds a record of
+  `BYTES_MAX` bytes, so no node takes an entry that no `Append` fits. The log holds
+  only entries that the node took or proposed, so its decode has no such bound. The
+  bound of the decode of an `Append`: `laptop.architect`, 2026-10-12T19:45:38Z
+  (https://github.com/synnaxlabs/foundation/pull/2477#issuecomment-6131426790).
+  `Mesh::open` refuses a node that takes less than `BYTES_MIN` (`Error::Limit`), and
+  `propose_voters` refuses a set of more than 127 voters, so that the proof of a message
+  with no link fits. Both refusals land in the third PR of #1361. Lost: `mesh` cuts a
+  large message into parts and the receiver joins them, because nothing bounds what the
+  receiver holds before it decodes. Decided by `laptop.architect`, 2026-10-12T18:29:52Z
+  (https://github.com/synnaxlabs/foundation/issues/1361#issuecomment-6130215772).
+  The decode of the proof of a message refuses more than 254 grants, the two sets of a
+  joint configuration of 127 voters each, so that each proof that `raft` keeps fits a
+  message with no entry and no link. Decided by `laptop.architect`, 2026-10-12T20:07:11Z
+  (https://github.com/synnaxlabs/foundation/pull/2477#issuecomment-6131749653), and the
+  place of the bound 2026-10-12T20:18:47Z
+  (https://github.com/synnaxlabs/foundation/pull/2477#issuecomment-6131920823).
+  `Mesh::start` refuses a set of more than 127 voters with `Error::Voters`, so that each
+  proof that the node makes also fits a message with no entry and no link. Decided by
+  `laptop.architect`, 2026-10-12T20:38:56Z
+  (https://github.com/synnaxlabs/foundation/pull/2477#issuecomment-6132216407).
+  Supersedes point 3 of
+  https://github.com/synnaxlabs/foundation/pull/2477#issuecomment-6131920823 for the
+  founding set.

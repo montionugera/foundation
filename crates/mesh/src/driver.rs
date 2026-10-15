@@ -33,7 +33,7 @@ use crate::claim::{self, Known, Signer};
 use crate::error::{self, Error, Stopped};
 use crate::log::{self, Log};
 use crate::member::Member;
-use crate::message::Message;
+use crate::message::{self, Message};
 use crate::region::{self, Refused, Request};
 use crate::status::{self, Status};
 pub use founding::founding;
@@ -159,6 +159,8 @@ impl Mesh {
     ///   or the node of a home.
     /// - [`Error::WrongKey`] when `config.private_key` is not the key of this node in
     ///   `config.founding.members`.
+    /// - [`Error::Voters`] when the voters that the node starts with are more than one
+    ///   set can hold.
     /// - [`Error::Pool`] when the pool has no block for a chunk or the founding file,
     ///   and [`Error::Blob`] when a call of the store fails.
     /// - [`Error::Founding`] when the log holds a record and `config.dir` holds another
@@ -205,6 +207,12 @@ impl Mesh {
             definitions,
             homes,
         } = config.founding.clone();
+        if voters.len() > message::VOTERS_MAX {
+            return Err(Error::Voters {
+                voters: voters.len(),
+                most: message::VOTERS_MAX,
+            });
+        }
         let tree = spec::region::tree(&mut chunks, &definitions);
         let state =
             region::State::new(prefix, members, tree.root, voters.clone(), homes)
@@ -1043,6 +1051,7 @@ fn follower(
         key,
         election_ticks: ELECTION_TICKS,
         heartbeat_ticks: HEARTBEAT_TICKS,
+        fits: message::fits,
     };
     Ok(Raft::new(fixed, start)?)
 }
@@ -2127,6 +2136,97 @@ mod tests {
         };
         let pointers: BTreeMap<_, _> = IDS.map(|id| (id, moved)).into();
         assert_eq!(cluster.board().pointers, pointers);
+    }
+
+    // Two changes from one base, each of the most chunks, are over 64 KiB together.
+    // The second is refused as stale.
+    #[test]
+    fn a_late_voter_gets_two_spec_changes_of_the_most_chunks() {
+        let mut cluster = Cluster::new(2);
+        let founding = create_founding();
+        let base = Pointer {
+            version: 0,
+            root: spec::region::tree(&mut Chunks::default(), &founding).root,
+        };
+        cluster.board.lock().unwrap().founding = founding;
+        let change = |byte: u8| Change::Spec {
+            base,
+            root: common::digest(byte),
+            chunks: (0..CHUNKS_MAX)
+                .map(|at| {
+                    let mut chunk = [byte; 32];
+                    let at = u16::try_from(at).unwrap();
+                    chunk[..2].copy_from_slice(&at.to_be_bytes());
+                    Digest(chunk)
+                })
+                .collect(),
+            holders: IDS.map(key).into(),
+            homes: BTreeMap::new(),
+        };
+        let changes = [change(1), change(2), home_to(1)];
+        cluster.script_each(&changes.map(|change| encoded(&change)));
+        cluster.start_voter(1);
+        cluster.start_voter(2);
+        cluster.run(seconds(5));
+        assert_eq!(cluster.board.lock().unwrap().led.len(), 3);
+        cluster.start_voter(3);
+        cluster.run(seconds(10));
+        let moved = Pointer {
+            version: 1,
+            root: common::digest(1),
+        };
+        let pointers: BTreeMap<_, _> = IDS.map(|id| (id, moved)).into();
+        assert_eq!(cluster.board().pointers, pointers);
+    }
+
+    // The pointer of each voter after a change of the most chunks and `homes` homes,
+    // then one of `chunks` chunks, when voter 3 starts after both commit.
+    fn late(homes: u128, chunks: usize) -> BTreeMap<u8, Pointer> {
+        let mut cluster = Cluster::new(3);
+        let founding = create_founding();
+        let base = Pointer {
+            version: 0,
+            root: spec::region::tree(&mut Chunks::default(), &founding).root,
+        };
+        cluster.board.lock().unwrap().founding = founding;
+        let first = Change::Spec {
+            base,
+            root: common::digest(1),
+            chunks: (0..CHUNKS_MAX)
+                .map(|at| Digest::of(&at.to_le_bytes()))
+                .collect(),
+            holders: IDS.map(key).into(),
+            homes: (0..homes)
+                .map(|at| (channel::Key::from_u128(at.saturating_add(100)), key(2)))
+                .collect(),
+        };
+        let second = Change::Spec {
+            base: base.next(common::digest(1)),
+            root: common::digest(2),
+            chunks: (0..chunks)
+                .map(|at| Digest::of(&at.saturating_add(5000).to_le_bytes()))
+                .collect(),
+            holders: IDS.map(key).into(),
+            homes: BTreeMap::new(),
+        };
+        let changes = [first, second, home_to(1)];
+        cluster.script_each(&changes.map(|change| encoded(&change)));
+        cluster.start_voter(1);
+        cluster.start_voter(2);
+        cluster.run(seconds(5));
+        cluster.start_voter(3);
+        cluster.run(seconds(60));
+        cluster.board().pointers
+    }
+
+    #[test]
+    fn a_late_voter_gets_a_change_of_the_most_homes_and_one_of_512_chunks() {
+        let moved = Pointer {
+            version: 2,
+            root: common::digest(2),
+        };
+        let most = u128::try_from(crate::change::HOMES_MAX).unwrap();
+        assert_eq!(late(most, 512), IDS.map(|id| (id, moved)).into());
     }
 
     #[test]
@@ -5485,6 +5585,90 @@ mod tests {
                     node.files().list(Path::new("")).await,
                     Ok(vec![BLOB.into()])
                 );
+            });
+        }
+
+        #[test]
+        fn refuses_a_founding_set_of_more_voters_than_one_set_holds() {
+            solo(|node, tasks| async move {
+                let ids: Vec<u8> = (1..=128).collect();
+                let refused = open(&node, &tasks, 1, &ids, &ids).await.err().unwrap();
+                assert_eq!(
+                    refused,
+                    Error::Voters {
+                        voters: 128,
+                        most: 127
+                    }
+                );
+                let text = "the set holds 128 voters, more than the 127 that one set can \
+                            hold";
+                assert_eq!(refused.to_string(), text);
+                assert_eq!(
+                    node.files().list(Path::new("")).await,
+                    Ok(vec![BLOB.into()])
+                );
+                let ids = &ids[..127];
+                open(&node, &tasks, 1, ids, ids).await.unwrap();
+            });
+        }
+
+        // With 629 voters, the pre-vote proof of a candidate that each voter grants
+        // fits no message, and `raft` panics at its next `Vote`.
+        #[test]
+        fn refuses_a_founding_set_whose_pre_vote_proof_fits_no_message() {
+            fn peer_private(id: u16) -> PrivateKey {
+                let mut bytes = [0x5a; 32];
+                bytes[..2].copy_from_slice(&id.to_le_bytes());
+                PrivateKey(bytes)
+            }
+            fn peer_key(id: u16) -> node::Key {
+                node::Key::from_u128(u128::from(id))
+            }
+            fn peer_member(id: u16) -> Member {
+                let mut card = common::member(1).card.card().clone();
+                card.name = format!("plant.node{id}").parse().unwrap();
+                card.public_key = peer_private(id).public();
+                Member {
+                    card: card::Signed::sign(peer_key(id), card, &peer_private(id)),
+                    ..common::member(1)
+                }
+            }
+            solo(|node, tasks| async move {
+                let mut config = config(&node, &tasks, 1, &[1], &[1]).await;
+                let peers = 2..=629;
+                let founding = &mut config.founding;
+                founding.members.extend(peers.clone().map(peer_member));
+                founding.voters.extend(peers.clone().map(peer_key));
+                let mesh = match Mesh::start(config).await {
+                    Err(refused) => {
+                        let most = message::VOTERS_MAX;
+                        assert_eq!(refused, Error::Voters { voters: 629, most });
+                        return;
+                    }
+                    Ok(mesh) => mesh,
+                };
+                let sent = mesh.outgoing(key(2)).await.unwrap();
+                for id in peers {
+                    let answer = Answer::Granted(None);
+                    let mut ready = Ready {
+                        messages: vec![raft::Message {
+                            from: peer_key(id),
+                            to: key(1),
+                            term: sent.term,
+                            body: Body::PreVoteReply { answer },
+                            proof: None,
+                            chain: Vec::new(),
+                        }],
+                        ..Ready::default()
+                    };
+                    Signer::new(peer_key(id), &peer_private(id)).sign(&mut ready);
+                    let granted = ready.messages.remove(0);
+                    assert_eq!(
+                        mesh.receive(peer_private(id).public(), granted),
+                        Ok(())
+                    );
+                }
+                panic!("the mesh started with 629 voters");
             });
         }
 

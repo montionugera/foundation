@@ -126,6 +126,13 @@ pub enum Error {
         /// The most homes that one change gives.
         most: usize,
     },
+    /// A set of voters holds more voters than one set can hold. Give a smaller set.
+    Voters {
+        /// The count of voters in the set.
+        voters: usize,
+        /// The most voters that one set holds.
+        most: usize,
+    },
     /// `Config::founding` is not the region in the founding file of the mesh
     /// directory. Each field sets the state at version 0, so a node with another value
     /// applies the log to another state.
@@ -218,6 +225,11 @@ impl fmt::Display for Error {
                 f,
                 "the change gives {homes} homes, more than the {most} that one change \
                  can give"
+            ),
+            Self::Voters { voters, most } => write!(
+                f,
+                "the set holds {voters} voters, more than the {most} that one set can \
+                 hold"
             ),
             Self::Founding { stored, given } => founded(f, stored, given),
             Self::Unfounded { path } => write!(
