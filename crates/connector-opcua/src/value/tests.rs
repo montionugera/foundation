@@ -1,6 +1,6 @@
 use types::sample::{self, Scalar};
 
-use super::{Fault, SCALARS, Value};
+use super::{Fault, SCALARS, Type, Value};
 use crate::ffi::{self, Status};
 use crate::fuzz;
 
@@ -45,6 +45,16 @@ fn an_answer_of_another_type_gives_its_opc_ua_type() {
     );
     assert_eq!(fault(&[0x01, 0x8C, 0x00, 0, 0, 0]), "array of String");
     assert_eq!(fault(&[&[0x01, 0x0E][..], &[0; 16]].concat()), "Guid");
+}
+
+#[test]
+fn a_type_equals_only_the_same_type_of_the_same_shape() {
+    let [string, strings, double] =
+        ["String", "array of String", "Double"].map(Type::named);
+    assert_eq!(string, Type::named("String"));
+    assert_ne!(string, strings);
+    assert_ne!(string, double);
+    assert_eq!(format!("{strings:?}"), "array of String");
 }
 
 #[test]

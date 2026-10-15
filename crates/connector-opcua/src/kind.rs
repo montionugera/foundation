@@ -504,18 +504,11 @@ impl Kept {
 }
 
 impl Left {
-    /// Adds the counts of the values that one frame leaves out. A count of 0 stages
-    /// no status.
+    /// Adds the counts of the values that one frame leaves out.
     fn add(&self, bad: u64, uncertain: u64, mistyped: u64) {
-        for (count, value) in [
-            (&self.bad, bad),
-            (&self.uncertain, uncertain),
-            (&self.mistyped, mistyped),
-        ] {
-            if value > 0 {
-                count.add(value);
-            }
-        }
+        self.bad.add(bad);
+        self.uncertain.add(uncertain);
+        self.mistyped.add(mistyped);
     }
 
     /// Sets the note of `ctx` for `mistyped`: the read at a value of another type,
