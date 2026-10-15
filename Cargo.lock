@@ -697,6 +697,7 @@ version = "0.0.0"
 dependencies = [
  "block",
  "proptest",
+ "tracing",
  "types",
 ]
 
@@ -1361,6 +1362,7 @@ dependencies = [
  "proptest",
  "rustix",
  "tokio",
+ "tracing",
  "types",
 ]
 
@@ -1856,6 +1858,7 @@ dependencies = [
  "block",
  "env",
  "proptest",
+ "tracing",
  "types",
 ]
 

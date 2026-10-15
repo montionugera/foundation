@@ -16,7 +16,7 @@ repository. Each call of such a test that the list bans carries
 
 A simulated run never reads OS randomness, OS time, or a random hash order (r16
 43-46). Use `types::hash::Map` and `Set`. Never let hash iteration order decide
-behavior. Never print a pointer. No `thread_local!` state. Four exceptions: TLS draws
+behavior. Never print a pointer. No `thread_local!` state. Five exceptions: TLS draws
 its own randomness from aws-lc (TLS RANDOMNESS in
 `docs/decisions/transport/tls-randomness.md`). `sim::Sim::new` reads `Instant::now` once
 as the epoch of the run, and only differences from it are read. The `hyper` server of
@@ -25,7 +25,18 @@ header, which is off. It gets no `timer`, so no read changes what it does (the p
 https://github.com/synnaxlabs/foundation/issues/1151#issuecomment-6042756353,
 2026-10-07T17:04:29Z). The random state `UA_rng` of the open62541 copy is one per
 thread, so `connector-opcua` sets its start value on each thread that calls open62541
-(OPEN62541 SOURCE in `docs/decisions/connectors/open62541-source.md`).
+(OPEN62541 SOURCE in `docs/decisions/connectors/open62541-source.md`). The default
+dispatch of `tracing` is one per thread. `os` sets the log of a shard or a dedicated
+thread for the life of its OS thread and around its spawn, and `sim` enters the log of
+a thread around each call that runs its code: each poll, each drop of a task or a
+start, and each drop of a panic payload that it catches. A panic that a start passes
+to its caller is the caller's. Each waker of a net, serial, or file event wakes and
+drops with the log of the thread whose poll gave it, and so does the memory of its
+event. A waker given outside a poll keeps the default log where it is given: that of the
+thread in a drop of its code, else that of the caller. So an event goes only to the log
+of its node, or to no sink. No crate sets a default for the whole process (a lint), and
+the time of a line comes only from `clock` (`laptop.director`, 2026-10-13T21:12:40Z,
+https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155299486).
 
 ## Layers
 

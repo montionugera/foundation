@@ -78,6 +78,10 @@ disallowed-methods = [
   { path = "noq_proto::ServerConfig::with_single_cert", reason = "OS randomness breaks replay" },
   { path = "noq_proto::ClientConfig::new", reason = "use quic::settings" },
   { path = "noq_proto::ClientConfig::with_root_certificates", reason = "OS randomness breaks replay" },
+  # tracing: a default dispatch for the whole process is a mutable global. Each shard
+  # and thread gets the log of its node from `env`.
+  { path = "tracing::dispatcher::set_global_default", reason = "no mutable globals" },
+  { path = "tracing::subscriber::set_global_default", reason = "no mutable globals" },
 ]
 disallowed-types = [
   { path = "std::collections::HashMap", reason = "use types::hash::Map" },
