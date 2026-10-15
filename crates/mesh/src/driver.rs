@@ -2868,9 +2868,9 @@ mod tests {
             });
         }
 
-        // The change comes while the node writes the term that it now leads, and a
-        // power cut follows. A disk call takes 100 us at most, so the voter gives the
-        // change each 10 us for 500 us before and after each tick.
+        // The change comes while the node writes, at open, the term that it now leads,
+        // and a power cut follows. The voter gives the change each 10 us from the open
+        // until one answer waits for that write.
         #[test]
         fn a_position_in_an_answer_names_no_other_change_after_a_power_cut() {
             let mut reused = Vec::new();
@@ -2883,23 +2883,16 @@ mod tests {
                 let answered = sim
                     .run_on(&node, |node, tasks| async move {
                         let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-                        let clock = node.clock();
-                        let steps = |count| Span::from_nanos(count * 10_000);
-                        clock.sleep(steps(TICK.nanos() / 10_000 - 50)).await;
                         loop {
-                            for _ in 0..100 {
-                                let mut answer =
-                                    pin!(mesh.answer(public(1), home_to(3)));
-                                match now(answer.as_mut()).await {
-                                    Poll::Ready(Ok(Message::NotLeader {
-                                        leader: None,
-                                    })) => {}
-                                    Poll::Ready(first) => return first,
-                                    Poll::Pending => return answer.await,
-                                }
-                                clock.sleep(steps(1)).await;
+                            let mut answer = pin!(mesh.answer(public(1), home_to(3)));
+                            match now(answer.as_mut()).await {
+                                Poll::Ready(Ok(Message::NotLeader {
+                                    leader: None,
+                                })) => {}
+                                Poll::Ready(first) => panic!("no wait for {first:?}"),
+                                Poll::Pending => return answer.await,
                             }
-                            clock.sleep(steps(TICK.nanos() / 10_000 - 100)).await;
+                            node.clock().sleep(Span::from_nanos(10_000)).await;
                         }
                     })
                     .unwrap();
