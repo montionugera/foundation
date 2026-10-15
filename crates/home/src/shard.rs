@@ -5437,9 +5437,10 @@ mod tests {
                     let mut shard = test.shard(AREA).await;
                     let a = shard.open_writer(writer("w", 1, &set)).expect("synced");
                     let first = latest(&mut shard, "a", "r");
+                    assert_eq!(first.live, 0);
                     write(&test, &mut shard, a, &[10]);
                     let second = latest(&mut shard, "a", "r");
-                    assert_eq!(second.replaced, Some(first.key));
+                    assert_eq!((second.live, second.replaced), (1, Some(first.key)));
                     assert_eq!(woken(&mut shard), []);
                     assert_eq!(taken(&mut shard, second.key, 0), [seq(0, 1)]);
                 });
