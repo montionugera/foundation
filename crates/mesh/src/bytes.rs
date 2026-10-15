@@ -6,20 +6,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use block::{Block, Pool};
 use raft::{Change, Grant, Position, Proof, Signature, Term, Voters};
 use types::channel;
 use types::ed25519::PublicKey;
 use types::name::{Name, Prefix};
 use types::node;
 use types::time::{Span, Stamp};
-
-/// A block of `pool` that holds `bytes`.
-pub(crate) fn block(pool: &Pool, bytes: &[u8]) -> Result<Block, block::Error> {
-    let mut block = pool.alloc(bytes.len())?;
-    block.copy_from_slice(bytes);
-    Ok(block.freeze())
-}
 
 /// Takes `N` bytes.
 pub(crate) fn take<const N: usize>(bytes: &mut &[u8]) -> Option<[u8; N]> {
@@ -273,6 +265,23 @@ pub(crate) fn put_change(change: &Change, out: &mut Vec<u8>) {
     put_keys(&change.voters.outgoing, out);
     put_proof(&change.votes, out);
     put_signature(change.signature, out);
+}
+
+/// The bytes that [`put_proof`] adds for `proof`, with 64 for each signature, also one
+/// not yet made.
+pub(crate) fn proof_len(proof: &Proof) -> usize {
+    let voters = proof.voters.len().saturating_mul(16 + 64);
+    voters.saturating_add(1 + 16 + 8)
+}
+
+/// The bytes that [`put_change`] adds for `change`, with 64 for each signature, also
+/// one not yet made.
+pub(crate) fn change_len(change: &Change) -> usize {
+    let keys = |keys: &BTreeSet<node::Key>| keys.len().saturating_mul(16);
+    let voters = &change.voters;
+    let lengths = [keys(&voters.incoming), keys(&voters.outgoing)];
+    let proof = proof_len(&change.votes).saturating_add(8 + 8 + 64);
+    lengths.into_iter().fold(proof, usize::saturating_add)
 }
 
 /// Takes what [`put_change`] gives. `None` when keys or voters are not in rising

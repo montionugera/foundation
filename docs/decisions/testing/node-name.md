@@ -105,36 +105,73 @@
   card of the node. With no stored founding, it writes the given name. With no file
   `name`, a stored founding with no card of the node, because the file `node.key` is not
   there or its key has no card, stops the start in the claim with `Error::NoCard`, also
-  with `Region::Absent`. That start writes nothing: no file `name`, and no new
-  `node.key`, because the claim stops before the node loads its key. `node::name` with
-  no given name gives the same error. Both read the founding before `node.key`, and read
-  `node.key` also with no founding. A first start makes `node.key` durable before the
-  founding, so a read that sees the founding during a first start also sees the key, and
-  gives no `Error::NoCard`. The CLI prints the error as `node.failed`, as it prints
-  `Error::Key`, and the message states the way out: restore `node.key` from a backup of
-  this node, or give another data directory. Only a loss of files gives the state, such
-  as a removal by hand. A start with a file `name` reads no founding in the claim, as
-  before. With `Region::Stored`, a key with no card then gives `Error::Mesh` with
+  with `Region::Absent`. That start writes no file `name` and no new `node.key`, because
+  the claim stops before the node loads its key. `node::name` with no given name gives
+  the same error. Both read the founding before `node.key`, and read `node.key` also
+  with no founding. A first start makes `node.key` durable before the founding, so a
+  read that sees the founding during a first start also sees the key, and gives no
+  `Error::NoCard`. The CLI prints the error as `node.failed`, as it prints `Error::Key`,
+  and the message states the way out: restore `node.key` from a backup of this node, or
+  give another data directory. Only a loss of files gives the state, such as a removal
+  by hand. A start with a file `name` reads no founding in the claim, as before. With
+  `Region::Stored`, a key with no card then gives `Error::Mesh` with
   `mesh::Error::NotMember` from the open of the region. A start with `Region::Absent`
-  opens no region, so it gives no error for that key. Lost: the write as before, stated
-  here and in the text of `node.unnamed`. Once the first `node.key` is back, a start
-  with the card name then gives `Error::Renamed`, and a start with the written name runs
-  on a card with another name (#2355). Lost: no write, and a start that goes on to the
-  open of the region. A start with `Region::Absent` then runs a node with no stored
-  name, a start with no `node.key` makes a key that no region knows, and `node::name`
-  still gives `Error::Unnamed`, whose fix does not help. Lost: `Error::Key` for the
-  state. Its text says that the file is not a key that a node wrote, which is false for
-  a whole key and for no file. Trigger: the join by ticket (#1157). A node that joined
-  has no card in the founding, so the change of the trigger above, which takes the
-  stored name from the node's member in the region, also states when a node then gets
-  `Error::NoCard`. Decided by `laptop.architect-2`, #2433 (2026-10-11T20:13:04Z,
+  opens no region, so it gives no error for that key. A start makes a new `node.key`
+  only when the data directory has no directory of a mesh. A first start makes
+  `node.key` durable before the mesh makes that directory, so a mesh directory with no
+  `node.key` is a lost key: the start gives `Error::NoCard` and writes nothing other
+  than `lock` and `shards-<n>`, also with a file `name` and with `Region::Absent`. The
+  claim checks it after the claim of the data directory, which writes those two, and
+  before the start writes anything else. A `node.key` that a node did not write is
+  there, so the claim gives no `Error::Key`: the readers of its bytes give it,
+  `name::source` before the bind and `identity::load` after it. Lost: a claim that gives
+  `Error::Key` for such a file, which would move `Error::Key` before the bind in the doc
+  of `Node::join`, and leave the later reads a check that cannot fail. Lost: the claim
+  passes its one read on to `name::keep` and `identity::load`. It threads a value
+  through two layers of the start to save two reads of a 100-byte file once per start
+  (`laptop.architect-2`, 2026-10-12T23:51:07Z,
+  https://github.com/synnaxlabs/foundation/pull/2502#issuecomment-6134839475).
+  Supersedes "writes nothing" of
+  https://github.com/synnaxlabs/foundation/issues/2484#issuecomment-6131685955 and "The
+  claim checks it after the lock and before the start writes a file." of
+  https://github.com/synnaxlabs/foundation/pull/2502#issuecomment-6134515196.
+  Lost: the claim reads the founding on each start and gives `Error::NoCard` for each
+  founding with no card of the node. It changes rule 7 for a key with no card, which
+  writes nothing, and reads a founding on each start to stop a write that only `load`
+  makes. Lost: a new variant for a missing key. The state and the way out are those of
+  `Error::NoCard` (`laptop.architect-2`, 2026-10-12T20:02:51Z,
+  https://github.com/synnaxlabs/foundation/issues/2484#issuecomment-6131685955). Lost:
+  the check in `identity::load`, after `name::keep` and `budget::keep`. A start then
+  wrote the file `name` (a first start that stopped before it stored the founding, then
+  a removal by hand of `name` and `node.key`) or the file `budget`, and then gave
+  `Error::NoCard`, which the doc of `NoCard` rules out (`laptop.architect-2`,
+  2026-10-12T23:22:20Z,
+  https://github.com/synnaxlabs/foundation/pull/2502#issuecomment-6134515196). Lost: the
+  write as before, stated here and in the text of `node.unnamed`. Once the first
+  `node.key` is back, a start with the card name then gives `Error::Renamed`, and a
+  start with the written name runs on a card with another name (#2355). Lost: no write,
+  and a start that goes on to the open of the region. A start with `Region::Absent` then
+  runs a node with no stored name, a start with no `node.key` makes a key that no region
+  knows, and `node::name` still gives `Error::Unnamed`, whose fix does not help. Lost:
+  `Error::Key` for the state. Its text says that the file is not a key that a node
+  wrote, which is false for a whole key and for no file. Trigger: the join by ticket
+  (#1157). A node that joined has no card in the founding, so the change of the trigger
+  above, which takes the stored name from the node's member in the region, also states
+  when a node then gets `Error::NoCard`. Decided by `laptop.architect-2`, #2433
+  (2026-10-11T20:13:04Z,
   https://github.com/synnaxlabs/foundation/issues/2433#issuecomment-6113249462; rule 1,
   2026-10-11T21:02:22Z,
   https://github.com/synnaxlabs/foundation/issues/2433#issuecomment-6113716491).
   Supersedes "A founding with no card of that key gives no stored name. So does a data
   directory with no `node.key`." of
-  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495. The three
-  sentences on a start with a file `name`: given by `laptop.architect`
+  https://github.com/synnaxlabs/foundation/pull/2387#issuecomment-6108005495. Supersedes
+  "That start writes nothing: no file `name`, and no new `node.key`" of this record, and
+  rule 3, "The start writes nothing in that state.", of
+  https://github.com/synnaxlabs/foundation/issues/2433#issuecomment-6113249462: that
+  start writes no file `name` and no new `node.key` (the doc of `Error::NoCard`,
+  `laptop.architect-2`, 2026-10-12T23:51:07Z,
+  https://github.com/synnaxlabs/foundation/pull/2502#issuecomment-6134839475, item 2).
+  The three sentences on a start with a file `name`: given by `laptop.architect`
   (2026-10-11T22:58:15Z,
   https://github.com/synnaxlabs/foundation/pull/2444#issuecomment-6114847005), approved
   by `laptop.architect-2` at `5ac58719e` (2026-10-11T23:00:19Z,

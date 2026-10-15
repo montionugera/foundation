@@ -63,7 +63,6 @@ pub(crate) async fn frame(receiver: &mut Receiver, reader: &mut Reader) -> usize
 
 /// Sends `bytes` in one message.
 async fn send(pool: &Pool, sender: &mut Sender, bytes: &[u8]) {
-    let mut block = pool.alloc(bytes.len()).expect("the pool has room");
-    block.copy_from_slice(bytes);
-    sender.send(block.freeze()).await.expect("sends");
+    let block = pool.copy(bytes).expect("the pool has room");
+    sender.send(block).await.expect("sends");
 }

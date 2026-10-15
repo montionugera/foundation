@@ -833,6 +833,7 @@ fn follows(last: u64, entries: &[Entry]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::future::{pending, poll_fn};
     use std::pin::pin;
     use std::sync::Arc;
@@ -848,7 +849,6 @@ mod tests {
     use types::time::Span;
 
     use super::*;
-    use crate::bytes::block;
     use crate::bytes::{PRESENT, VOTE};
     use crate::common::{at, create_pool, key};
 
@@ -890,7 +890,7 @@ mod tests {
     async fn put(node: &sim::node::Node, file: &str, offset: u64, bytes: &[u8]) {
         let path = Path::new(DIR).join(file);
         let file = node.files().open(&path, Mode::Write).await.unwrap();
-        let block = block(&create_pool(), bytes).unwrap();
+        let block = create_pool().copy(bytes).unwrap();
         file.write_at(offset, &[block]).await.unwrap();
         file.sync().await.unwrap();
     }
@@ -2077,6 +2077,59 @@ mod tests {
         expected.extend(two.into_iter().chain([2; 64]));
         expected.extend(3_u128.to_le_bytes().into_iter().chain([3; 64]));
         assert_eq!(record[HEADER..], expected);
+    }
+
+    // The log holds only the proofs that this node wrote, so its decode bounds no
+    // grants: it opens a proof of 255 grants, one more than a message takes.
+    #[test]
+    fn the_log_opens_a_proof_of_more_grants_than_a_message_takes() {
+        let keys: BTreeSet<node::Key> = (1..=255).map(node::Key::from_u128).collect();
+        let config = raft::Config {
+            key: key(1),
+            election_ticks: 10,
+            heartbeat_ticks: 1,
+            fits: crate::message::fits,
+        };
+        let start = raft::Start {
+            voters: Voters {
+                incoming: keys.clone(),
+                outgoing: BTreeSet::new(),
+            },
+            ..raft::Start::default()
+        };
+        let mut raft = raft::Raft::new(config, start).unwrap();
+        raft.campaign();
+        drop(raft.ready());
+        for (&from, byte) in keys.iter().skip(1).zip(2..=u8::MAX) {
+            let body = raft::Body::PreVoteReply {
+                answer: raft::Answer::Granted(Some(Signature([byte; 64]))),
+            };
+            raft.step(raft::Message {
+                from,
+                to: key(1),
+                term: Term(1),
+                body,
+                proof: None,
+                chain: Vec::new(),
+            })
+            .unwrap();
+        }
+        let mut ready = raft.ready();
+        ready.sign(|_| Signature([1; 64]));
+        let hard = ready.hard.clone().unwrap();
+        assert_eq!(hard.proof.as_ref().unwrap().voters.len(), 255);
+        let (mut sim, node) = create_node(0);
+        let written = hard.clone();
+        sim.run_on(&node, |node, _| async move {
+            let (mut log, _) = open(&node).await.unwrap();
+            log.write(Some(written), &[]).await.unwrap();
+        })
+        .unwrap();
+        let expected = Stored {
+            hard,
+            entries: Vec::new(),
+        };
+        assert_eq!(stored(&mut sim, &node), Ok(expected));
     }
 
     #[test]

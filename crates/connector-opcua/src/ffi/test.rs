@@ -200,6 +200,7 @@ unsafe extern "C" {
         chunks: u32,
     );
     pub(crate) fn shim_client_receive(client: *mut super::Client, size: u32);
+    pub(crate) fn shim_server_reads(server: *mut Server, most: u32);
     pub(crate) fn UA_Client_getConnectionAttribute(
         client: *mut super::Client,
         key: QualifiedName,

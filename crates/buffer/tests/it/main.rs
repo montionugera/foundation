@@ -167,12 +167,9 @@ impl Shard {
     async fn put(&self, offset: usize, bytes: &[u8]) {
         let ring = self.files.open(FilePath::new(RING), Mode::Write).await;
         let ring = ring.expect("the ring opens to write");
-        let mut block = pool().alloc(bytes.len()).expect("a block");
-        block.copy_from_slice(bytes);
+        let block = pool().copy(bytes).expect("a block");
         let offset = u64::try_from(offset).expect("fits in u64");
-        ring.write_at(offset, &[block.freeze()])
-            .await
-            .expect("writes");
+        ring.write_at(offset, &[block]).await.expect("writes");
     }
 
     /// Puts `bytes` at `at` of both header blocks and fixes their CRCs.
@@ -1915,6 +1912,57 @@ fn an_entry_past_the_last_seq_is_a_broken_invariant() {
             seed: 11,
         })
     );
+}
+
+/// The ring file of a `Layout::fit` layout takes at most the given length, and less
+/// than one block under it.
+#[test]
+fn an_open_of_a_fit_layout_makes_a_file_of_at_most_its_length() {
+    let min = Layout::fit(0, BODY_MAX)
+        .expect_err("no ring in no bytes")
+        .min;
+    for len in [min, min + 1, min + 3 * BLOCK - 1, (1 << 30) + BLOCK / 2] {
+        run(187, move |shard| async move {
+            let ring = Layout::fit(len, BODY_MAX).expect("the length holds a ring");
+            let buffer = shard.open(ring, &mut Slots::new()).await;
+            drop(buffer.expect("opens"));
+            let file = shard.files.open(FilePath::new(RING), Mode::Read).await;
+            let file = file.expect("the ring opens").len();
+            assert!(file <= len, "a file of {file} bytes for {len}");
+            assert!(file > len - BLOCK, "a file of {file} bytes for {len}");
+        });
+    }
+}
+
+/// An entry of the pool's largest block, written under a larger pool: `newest` lets
+/// go of the table first.
+#[test]
+fn newest_gives_an_entry_of_the_largest_block() {
+    run(188, |mut shard| async move {
+        let largest = 1 << 17;
+        let fits = shard.block(largest);
+        let ring = least(600_000);
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("opens");
+        assert!(buffer.block_max() >= largest);
+        let a = slots.index(key(1));
+        buffer
+            .append([tagged(1, a, Path::Live, 0, 1, fits)])
+            .expect("queues");
+        buffer.committed().await.expect("commits");
+        drop(buffer);
+        let budget = u64::try_from(block::footprint(largest)).expect("fits in u64");
+        let config = block::Config::new(budget).expect("the budget fits");
+        shard.pool =
+            Rc::new(Pool::new(config.clone(), Heap::new(config.reservation())));
+        assert_eq!(shard.pool.largest(), largest);
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("reopens");
+        let found = buffer.newest(Path::Live, NonZeroU8::MIN).await;
+        let lens =
+            found.map(|f| f.iter().map(|(_, s)| s.bytes.len()).collect::<Vec<_>>());
+        assert_eq!(lens, Ok(vec![largest]));
+    });
 }
 
 #[test]

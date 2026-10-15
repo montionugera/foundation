@@ -39,6 +39,7 @@ fn a_leader_that_restarts_with_an_unsent_leave_leads_again() {
         key: key(id),
         election_ticks: ELECTION,
         heartbeat_ticks: 1,
+        fits: |_| true,
     };
     let start = |ids: &[u8]| Start {
         voters: plain(ids),

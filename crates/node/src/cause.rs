@@ -60,6 +60,7 @@ pub(crate) fn mesh(error: &mesh::Error) -> Option<&files::Error> {
         | mesh::Error::NotIndex(_)
         | mesh::Error::UnknownNode(_)
         | mesh::Error::Homes { .. }
+        | mesh::Error::Voters { .. }
         | mesh::Error::Founding { .. }
         | mesh::Error::Unfounded { .. } => None,
     }

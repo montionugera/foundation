@@ -74,6 +74,7 @@ use std::fmt;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::rc::Rc;
 
+use env::tasks::{Ended, Group};
 use types::ed25519::{PrivateKey, PublicKey};
 use types::time::Span;
 
@@ -83,7 +84,6 @@ pub use client::Client;
 pub use code::Code;
 pub use error::Error;
 pub use port::Port;
-pub use quic::Ended;
 pub use session::{Peer, Session};
 
 use table::Table;
@@ -126,6 +126,8 @@ const POOL_RULE: &str = "must hold a message of at least 1472 bytes";
 /// [`port::Part`], so a later dial gets no answer, and [`Transport::ended`] resolves.
 pub struct Transport {
     carrier: quic::Carrier,
+    /// Counts the task of the carrier.
+    group: Group,
     public_key: PublicKey,
     message_bytes_max: usize,
     table: Rc<RefCell<Table>>,
@@ -152,12 +154,18 @@ impl Transport {
     pub fn new(config: Config, part: port::Part) -> Result<Self, Error> {
         let public_key = config.private_key.public();
         let tasks = config.tasks.clone();
+        let group = Group::new(tasks.clone());
         let setup = config.setup()?;
         let message_bytes_max = setup.message_bytes_max;
+        let setup = quic::Setup {
+            tasks: group.tasks().clone(),
+            ..setup
+        };
         let carrier = quic::Carrier::new(setup, part);
         let table = Table::new(public_key, tasks, carrier.handle());
         Ok(Self {
             carrier,
+            group,
             public_key,
             message_bytes_max,
             table,
@@ -285,7 +293,7 @@ impl Transport {
     /// ```
     #[must_use]
     pub fn ended(&self) -> Ended {
-        self.carrier.ended()
+        self.group.ended()
     }
 }
 

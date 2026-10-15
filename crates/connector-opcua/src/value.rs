@@ -2,130 +2,164 @@
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
-use std::mem::{Discriminant, discriminant};
-
-use types::sample::Scalar;
+use types::sample::{self, Scalar};
 
 use crate::ffi::{self, Status};
 
-/// Defines [`Value`], `SCALARS`, and the map of a value to its sample type, its
-/// sample bytes, and its C scalar from one list, so no type can miss one of them. Each
-/// entry is the variant, which is also the name of its sample type, its Rust type, its
-/// kind in `ffi`, its field of `ffi::Scalar`, and the function of its little-endian
-/// bytes.
-macro_rules! values {
-    ($($variant:ident($rust:ty) = $kind:ident, $field:ident, $bytes:expr;)*) => {
-        /// The scalar value of an OPC UA variable, in the sample type of the same width
-        /// and sign: Boolean as `bool`, `SByte` to `UInt64` as `i8` to `u64`, Float as
-        /// `f32`, and Double as `f64`.
-        #[derive(Clone, Copy, Debug, PartialEq)]
-        pub(crate) enum Value {
-            $($variant($rust),)*
-        }
-
-        /// The sample types of a [`Value`], in the order of their OPC UA types.
-        pub(crate) const SCALARS: [Scalar; [$(stringify!($variant)),*].len()] =
-            [$(Scalar::$variant,)*];
-
-        impl Value {
-            /// Gives the scalar of `value`, an answer of a read. Else gives its
-            /// status when that is not Good (a Good with a subcode is Good),
-            /// `BadNoData` when it holds no value, or `BadTypeMismatch` for an array
-            /// or a type that is not one of [`Value`].
-            ///
-            /// # Safety
-            ///
-            /// `value` is a live `UA_DataValue`.
-            pub(crate) unsafe fn of(
-                value: *const ffi::DataValue,
-            ) -> Result<Self, Status> {
-                let mut scalar = ffi::Scalar { uint64: 0 };
-                let mut kind = 0;
-                // SAFETY: `value` is live, as the caller ensures, and the outputs are
-                // places to write.
-                let status = Status(unsafe {
-                    ffi::shim_value_scalar(value, &raw mut scalar, &raw mut kind)
-                });
-                if status != Status::GOOD {
-                    return Err(status);
-                }
-                Ok(match kind {
-                    $(
-                        // SAFETY: `shim_value_scalar` wrote the field of the kind.
-                        ffi::$kind => Self::$variant(unsafe { scalar.$field }),
-                    )*
-                    _ => panic!(
-                        "invariant: shim_value_scalar gives a kind of `ffi::Scalar`, \
-                         not {kind}"
-                    ),
-                })
-            }
-
-            /// The sample type of the value.
-            pub(crate) fn scalar(self) -> Scalar {
-                match self {
-                    $(Self::$variant(_) => Scalar::$variant,)*
-                }
-            }
-
-            /// The variant of a value of `scalar`, or `None` when `scalar` is not one
-            /// of [`SCALARS`].
-            pub(crate) fn variant(scalar: Scalar) -> Option<Discriminant<Self>> {
-                match scalar {
-                    $(Scalar::$variant => {
-                        Some(discriminant(&Self::$variant(<$rust>::default())))
-                    })*
-                    _ => None,
-                }
-            }
-
-            /// Writes the little-endian bytes of the value to `sample`.
-            ///
-            /// # Panics
-            ///
-            /// If `sample` is not as wide as the sample type of the value.
-            pub(crate) fn put(self, sample: &mut [u8]) {
-                match self {
-                    $(Self::$variant(value) => sample.copy_from_slice(&$bytes(value)),)*
-                }
-            }
-
-            /// The value 1 of `scalar`, which is `true` for `bool`.
-            ///
-            /// # Panics
-            ///
-            /// If `scalar` is not one of [`SCALARS`].
-            #[cfg(feature = "sim")]
-            pub(crate) fn one(scalar: Scalar) -> Self {
-                match scalar {
-                    $(Scalar::$variant => Self::$variant(<$rust>::from(true)),)*
-                    other => panic!("invariant: {other:?} is not one of `SCALARS`"),
-                }
-            }
-
-            /// Gives the C scalar of the value and its kind.
-            #[cfg(any(test, feature = "sim"))]
-            pub(crate) fn raw(self) -> (ffi::Scalar, u16) {
-                match self {
-                    $(Self::$variant($field) => (ffi::Scalar { $field }, ffi::$kind),)*
-                }
-            }
-        }
-    };
+/// The scalar value of an OPC UA variable, in the sample type of the same width and
+/// sign: Boolean as `bool`, `SByte` to `UInt64` as `i8` to `u64`, Float as `f32`, and
+/// Double as `f64`.
+// In the order of `sample::Value`, so that a map to it keeps the tag.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Value {
+    Bool(bool),
+    I8(i8),
+    I16(i16),
+    I32(i32),
+    I64(i64),
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    U64(u64),
+    F32(f32),
+    F64(f64),
 }
 
-values! {
-    Bool(bool) = BOOLEAN, boolean, |value| [u8::from(value)];
-    I8(i8) = SBYTE, sbyte, i8::to_le_bytes;
-    U8(u8) = BYTE, byte, u8::to_le_bytes;
-    I16(i16) = INT16, int16, i16::to_le_bytes;
-    U16(u16) = UINT16, uint16, u16::to_le_bytes;
-    I32(i32) = INT32, int32, i32::to_le_bytes;
-    U32(u32) = UINT32, uint32, u32::to_le_bytes;
-    I64(i64) = INT64, int64, i64::to_le_bytes;
-    U64(u64) = UINT64, uint64, u64::to_le_bytes;
-    F32(f32) = FLOAT, float, f32::to_le_bytes;
-    F64(f64) = DOUBLE, double, f64::to_le_bytes;
+/// The value 1 of each type of a [`Value`], in the order of their OPC UA types.
+const ONES: [Value; 11] = [
+    Value::Bool(true),
+    Value::I8(1),
+    Value::U8(1),
+    Value::I16(1),
+    Value::U16(1),
+    Value::I32(1),
+    Value::U32(1),
+    Value::I64(1),
+    Value::U64(1),
+    Value::F32(1.0),
+    Value::F64(1.0),
+];
+
+/// The sample types of a [`Value`], in the order of their OPC UA types.
+pub(crate) const SCALARS: [Scalar; 11] = {
+    let mut scalars = [Scalar::Bool; 11];
+    let mut at = 0;
+    while at < ONES.len() {
+        scalars[at] = ONES[at].sample().scalar();
+        at += 1;
+    }
+    scalars
+};
+
+impl Value {
+    /// Gives the scalar of `value`, an answer of a read. Else gives its status when
+    /// that is not Good (a Good with a subcode is Good), `BadNoData` when it holds no
+    /// value, or `BadTypeMismatch` for an array or a type that is not one of
+    /// [`Value`].
+    ///
+    /// # Safety
+    ///
+    /// `value` is a live `UA_DataValue`.
+    pub(crate) unsafe fn of(value: *const ffi::DataValue) -> Result<Self, Status> {
+        let mut scalar = ffi::Scalar { uint64: 0 };
+        let mut kind = 0;
+        // SAFETY: `value` is live, as the caller ensures, and the outputs are places
+        // to write.
+        let status = Status(unsafe {
+            ffi::shim_value_scalar(value, &raw mut scalar, &raw mut kind)
+        });
+        if status != Status::GOOD {
+            return Err(status);
+        }
+        Ok(match kind {
+            // SAFETY: `shim_value_scalar` wrote the field of `kind`.
+            ffi::BOOLEAN => Self::Bool(unsafe { scalar.boolean }),
+            // SAFETY: `shim_value_scalar` wrote the field of `kind`.
+            ffi::SBYTE => Self::I8(unsafe { scalar.sbyte }),
+            // SAFETY: `shim_value_scalar` wrote the field of `kind`.
+            ffi::BYTE => Self::U8(unsafe { scalar.byte }),
+            // SAFETY: `shim_value_scalar` wrote the field of `kind`.
+            ffi::INT16 => Self::I16(unsafe { scalar.int16 }),
+            // SAFETY: `shim_value_scalar` wrote the field of `kind`.
+            ffi::UINT16 => Self::U16(unsafe { scalar.uint16 }),
+            // SAFETY: `shim_value_scalar` wrote the field of `kind`.
+            ffi::INT32 => Self::I32(unsafe { scalar.int32 }),
+            // SAFETY: `shim_value_scalar` wrote the field of `kind`.
+            ffi::UINT32 => Self::U32(unsafe { scalar.uint32 }),
+            // SAFETY: `shim_value_scalar` wrote the field of `kind`.
+            ffi::INT64 => Self::I64(unsafe { scalar.int64 }),
+            // SAFETY: `shim_value_scalar` wrote the field of `kind`.
+            ffi::UINT64 => Self::U64(unsafe { scalar.uint64 }),
+            // SAFETY: `shim_value_scalar` wrote the field of `kind`.
+            ffi::FLOAT => Self::F32(unsafe { scalar.float }),
+            // SAFETY: `shim_value_scalar` wrote the field of `kind`.
+            ffi::DOUBLE => Self::F64(unsafe { scalar.double }),
+            _ => panic!(
+                "invariant: shim_value_scalar gives a kind of `ffi::Scalar`, not {kind}"
+            ),
+        })
+    }
+
+    /// The sample type of the value.
+    #[inline]
+    pub(crate) fn scalar(self) -> Scalar {
+        self.sample().scalar()
+    }
+
+    /// The sample value of the same type.
+    #[inline]
+    const fn sample(self) -> sample::Value {
+        match self {
+            Self::Bool(value) => sample::Value::Bool(value),
+            Self::I8(value) => sample::Value::I8(value),
+            Self::U8(value) => sample::Value::U8(value),
+            Self::I16(value) => sample::Value::I16(value),
+            Self::U16(value) => sample::Value::U16(value),
+            Self::I32(value) => sample::Value::I32(value),
+            Self::U32(value) => sample::Value::U32(value),
+            Self::I64(value) => sample::Value::I64(value),
+            Self::U64(value) => sample::Value::U64(value),
+            Self::F32(value) => sample::Value::F32(value),
+            Self::F64(value) => sample::Value::F64(value),
+        }
+    }
+
+    /// The value 1 of `scalar`, which is `true` for `bool`.
+    ///
+    /// # Panics
+    ///
+    /// If `scalar` is not one of [`SCALARS`].
+    #[cfg(feature = "sim")]
+    pub(crate) fn one(scalar: Scalar) -> Self {
+        ONES.into_iter()
+            .find(|one| one.scalar() == scalar)
+            .unwrap_or_else(|| panic!("invariant: {scalar:?} is not one of `SCALARS`"))
+    }
+
+    /// Gives the C scalar of the value and its kind.
+    #[cfg(any(test, feature = "sim"))]
+    pub(crate) fn raw(self) -> (ffi::Scalar, u16) {
+        match self {
+            Self::Bool(boolean) => (ffi::Scalar { boolean }, ffi::BOOLEAN),
+            Self::I8(sbyte) => (ffi::Scalar { sbyte }, ffi::SBYTE),
+            Self::U8(byte) => (ffi::Scalar { byte }, ffi::BYTE),
+            Self::I16(int16) => (ffi::Scalar { int16 }, ffi::INT16),
+            Self::U16(uint16) => (ffi::Scalar { uint16 }, ffi::UINT16),
+            Self::I32(int32) => (ffi::Scalar { int32 }, ffi::INT32),
+            Self::U32(uint32) => (ffi::Scalar { uint32 }, ffi::UINT32),
+            Self::I64(int64) => (ffi::Scalar { int64 }, ffi::INT64),
+            Self::U64(uint64) => (ffi::Scalar { uint64 }, ffi::UINT64),
+            Self::F32(float) => (ffi::Scalar { float }, ffi::FLOAT),
+            Self::F64(double) => (ffi::Scalar { double }, ffi::DOUBLE),
+        }
+    }
+}
+
+impl From<Value> for sample::Value {
+    #[inline]
+    fn from(value: Value) -> Self {
+        value.sample()
+    }
 }
 
 #[cfg(test)]

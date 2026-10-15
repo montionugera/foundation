@@ -17,7 +17,7 @@ use wire::header::MALFORMED;
 use wire::hub::client::{self, BODY_BYTES_MAX, Mode, Open, Place, Places, REFUSED};
 use wire::hub::{BUSY, FAILED, FromHome, NOT_HOME, UNKNOWN};
 
-use super::link::{Home, OTHER, QUIET, as_agent, serve_session_on};
+use super::link::{as_agent, serve_session_on};
 use super::serve::{decoded, got, places as placed};
 use super::{
     AREA, BODY_MAX, COMMIT, DataType, I64, NODE, POOL, RING, STAMP, TIME, TIME_B, Test,
@@ -25,7 +25,9 @@ use super::{
 };
 use crate::agent::{AGENT, Agent, SUBJECT, Stream, name, reset_with};
 use crate::net::{HOME, own_pool, transport};
-use crate::sessions::{Got, recorded, rules, run_program, serve_each};
+use crate::sessions::{
+    Got, Home, OTHER, QUIET, recorded, rules, run_program, serve_each,
+};
 
 /// How long after the home accepts the session its first write or change comes, so
 /// the program has opened its read by then.
@@ -659,6 +661,24 @@ where
     let given = given.lock().expect("not poisoned").take().expect("given");
     let served = std::mem::take(&mut *served.lock().expect("not poisoned"));
     (served, given)
+}
+
+/// A read that waits for the home of an index that never gets one stops with
+/// `UNKNOWN` at once when a spec in use removes its one channel, as a new read does.
+#[test]
+fn stops_a_read_whose_channel_is_removed_while_it_waits_for_a_home_as_unknown() {
+    let (served, ()) = homeless(
+        320,
+        async |test| test.set_spec(without(&["value"])).await,
+        |mut agent| async move {
+            agent.admit().await;
+            let mut stream = agent.read(Mode::Complete, &["value"]).await;
+            assert_eq!(stream.recv().await, reset_with(UNKNOWN));
+            finish(&mut agent).await;
+        },
+    );
+    let empty = serve::Error::Reader(Box::new(reader::Error::Empty));
+    assert_eq!(served, [Err(empty), Ok(Got::Ended)]);
 }
 
 /// A read that waits for the home of its index stops with `FAILED` when the mesh

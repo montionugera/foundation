@@ -109,9 +109,8 @@ fn reach_with_an_admin_key_that_no_node_wrote_gives_key() {
         let mode = env::files::Mode::Write;
         let file = files.open(Path::new(crate::admin::FILE), mode).await?;
         let pool = pool();
-        let mut block = pool.alloc(1).expect("a block");
-        block.copy_from_slice(b"x");
-        file.write_at(0, &[block.freeze()]).await
+        let block = pool.copy(b"x").expect("a block");
+        file.write_at(0, &[block]).await
     });
     assert_eq!(written, Ok(Ok(())));
     assert_eq!(reached(&mut sim, &host), Err(client::Error::Key));
@@ -233,7 +232,7 @@ fn reach_whose_hub_stream_ends_with_no_challenge_gives_session() {
         reached(&mut sim, &host),
         Err(client::Error::Session {
             at,
-            error: ::hub::client::Error::Unanswered,
+            error: program::Error::Unanswered,
         })
     );
 }
@@ -382,7 +381,7 @@ const OPERATOR: PrivateKey = PrivateKey([5; 32]);
 fn operator(
     sim: &mut sim::Sim,
     host: &sim::node::Node,
-) -> Result<Vec<u8>, ::hub::client::Error> {
+) -> Result<Vec<u8>, program::Error> {
     let out = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&out);
     shard(host, move |host, tasks| async move {
@@ -390,7 +389,7 @@ fn operator(
         let address = crate::address::read(&files).await.expect("a read");
         let address = address.expect("a node runs");
         let (transport, pool) = program(&host, tasks.clone());
-        let config = ::hub::client::Config {
+        let config = program::Config {
             via: address.key,
             node: address.public_key,
             addresses: vec![Address::Udp(address.bound)],
@@ -401,7 +400,7 @@ fn operator(
             tasks,
             pool,
         };
-        let client = ::hub::client::Client::connect(&transport, config).await;
+        let client = program::Session::connect(&transport, config).await;
         let reply = match client {
             Ok(client) => client.request(PLAN).await,
             Err(error) => Err(error),
@@ -424,7 +423,7 @@ fn a_hello_of_a_subject_that_a_later_spec_adds_is_admitted() {
     assert_eq!(sim.run_for(Span::SECOND), Ok(()));
     assert_eq!(
         operator(&mut sim, &host),
-        Err(::hub::client::Error::Refused(Refusal::Refused))
+        Err(program::Error::Refused(Refusal::Refused))
     );
     let applied = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&applied);

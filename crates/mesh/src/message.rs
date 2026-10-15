@@ -7,9 +7,9 @@ use raft::{Answer, Body, Link, Position, Term};
 use types::node;
 
 use crate::bytes::{
-    put_change, put_count, put_key, put_optional_proof, put_position, put_signature,
-    take, take_bool, take_change, take_count, take_key, take_position, take_proof,
-    take_signature,
+    change_len, proof_len, put_change, put_count, put_key, put_optional_proof,
+    put_position, put_signature, take, take_bool, take_change, take_count, take_key,
+    take_position, take_proof, take_signature,
 };
 use crate::change::Change;
 use crate::entry;
@@ -29,6 +29,52 @@ const HEARTBEAT_REPLY: u8 = 6;
 const APPEND: u8 = 7;
 const APPEND_REPLY: u8 = 8;
 const APPEND_REJECT: u8 = 9;
+
+/// The bytes of an `Append` with no proof and no link, of one entry of
+/// [`entry::BYTES_MAX`] bytes. Each member takes a message of this size.
+pub(crate) const BYTES_MIN: usize = APPEND_HEAD + entry::BYTES_MAX;
+
+// The bytes of an `Append` with no entry, no proof, and no link.
+const APPEND_HEAD: usize = 75;
+
+/// The most voters of one set of a configuration. A joint change of two such sets,
+/// with a proof of each of their grants, fits a message of [`BYTES_MIN`] bytes.
+pub(crate) const VOTERS_MAX: usize = 127;
+
+// The grants of the two sets of a joint configuration.
+const GRANTS_MAX: usize = 2 * VOTERS_MAX;
+
+/// Whether the byte form of `message` is at most [`BYTES_MIN`] bytes, for
+/// `raft::Config::fits`.
+pub(crate) fn fits(message: &raft::Message) -> bool {
+    len(message) <= BYTES_MIN
+}
+
+// The bytes of the byte form of `Message::Raft(message)`, with 64 for each signature,
+// also one not yet made.
+fn len(message: &raft::Message) -> usize {
+    let proof = message.proof.as_ref().map_or(0, proof_len);
+    let links = message.chain.iter();
+    let chain = links.map(|link| change_len(&link.change).saturating_add(16));
+    let answer = |answer: &Answer| match answer {
+        Answer::Refused => 1,
+        Answer::Granted(_) => 1 + 64,
+    };
+    let body = match &message.body {
+        Body::PreVote { .. } | Body::Vote { .. } => 16,
+        Body::PreVoteReply { answer: a } | Body::VoteReply { answer: a } => answer(a),
+        Body::Heartbeat { .. }
+        | Body::AppendReply { .. }
+        | Body::AppendReject { .. } => 8,
+        Body::HeartbeatReply => 0,
+        Body::Append { entries, .. } => entry::len(entries).saturating_add(16 + 8),
+    };
+    let head = 1 + 16 + 16 + 8 + 1 + 8 + 1;
+    chain
+        .fold(head, usize::saturating_add)
+        .saturating_add(proof)
+        .saturating_add(body)
+}
 
 /// One message between two nodes of a region.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,7 +139,9 @@ impl Message {
     }
 
     /// The message that `bytes` is the byte form of, or `None` when it is the byte
-    /// form of no message.
+    /// form of no message, of an `Append` with an entry of more than
+    /// [`entry::BYTES_MAX`] bytes, or of a proof of more grants than two sets of
+    /// [`VOTERS_MAX`] voters.
     pub(crate) fn decode(mut bytes: &[u8]) -> Option<Self> {
         let bytes = &mut bytes;
         let message = match u8::from_le_bytes(take(bytes)?) {
@@ -102,7 +150,11 @@ impl Message {
                 let to = take_key(bytes)?;
                 let term = Term(u64::from_le_bytes(take(bytes)?));
                 let proof = if take_bool(bytes)? {
-                    Some(take_proof(bytes)?)
+                    let proof = take_proof(bytes)?;
+                    if proof.voters.len() > GRANTS_MAX {
+                        return None;
+                    }
+                    Some(proof)
                 } else {
                     None
                 };
@@ -220,6 +272,11 @@ fn take_body(bytes: &mut &[u8]) -> Option<Body> {
             let prev = take_position(bytes)?;
             let commit = u64::from_le_bytes(take(bytes)?);
             let entries = entry::decode(std::mem::take(bytes))?;
+            // `raft` must fit each entry in an `Append` alone.
+            let alone = |one| entry::len(std::slice::from_ref(one)) <= entry::BYTES_MAX;
+            if !entries.iter().all(alone) {
+                return None;
+            }
             Body::Append {
                 prev,
                 entries,
@@ -273,6 +330,7 @@ mod tests {
     const LINK: usize = 16 + (8 + 3 * 16) * 2 + (1 + 16 + 8 + 3 * (16 + 64)) + 64;
 
     use super::*;
+    use crate::change;
     use crate::common::{at, key};
 
     fn a_position() -> impl Strategy<Value = Position> {
@@ -463,6 +521,61 @@ mod tests {
                 voters: [(key(1), Some(self::signature(5)))].into(),
             },
             signature,
+        }
+    }
+
+    // `proof` with no signature made.
+    fn unsigned_proof(proof: &mut Proof) {
+        for signature in proof.voters.values_mut() {
+            *signature = None;
+        }
+    }
+
+    fn unsigned_change(change: &mut raft::Change) {
+        unsigned_proof(&mut change.votes);
+        change.signature = None;
+    }
+
+    // `message` with no signature made, as `raft` gives it before `Ready::sign`.
+    fn unsigned(mut message: raft::Message) -> raft::Message {
+        message.proof.as_mut().map(unsigned_proof);
+        for link in &mut message.chain {
+            unsigned_change(&mut link.change);
+        }
+        match &mut message.body {
+            Body::PreVoteReply { answer } | Body::VoteReply { answer } => {
+                if let Answer::Granted(signature) = answer {
+                    *signature = None;
+                }
+            }
+            Body::Append { entries, .. } => {
+                for entry in entries {
+                    if let Data::Voters(change) = &mut entry.data {
+                        unsigned_change(change);
+                    }
+                }
+            }
+            Body::PreVote { .. }
+            | Body::Vote { .. }
+            | Body::Heartbeat { .. }
+            | Body::HeartbeatReply
+            | Body::AppendReply { .. }
+            | Body::AppendReject { .. } => {}
+        }
+        message
+    }
+
+    // The keys `from..to`.
+    fn keys_of(from: u128, to: u128) -> BTreeSet<node::Key> {
+        (from..to).map(node::Key::from_u128).collect()
+    }
+
+    // The votes of 254 voters for voter 0, none yet signed.
+    fn votes_of_254() -> Proof {
+        Proof {
+            grant: Grant::Vote,
+            candidate: key(0),
+            voters: keys_of(0, 254).into_iter().map(|key| (key, None)).collect(),
         }
     }
 
@@ -752,7 +865,175 @@ mod tests {
         .encode();
     }
 
+    #[test]
+    fn decode_refuses_an_append_of_a_record_over_bytes_max_bytes() {
+        let append = |bytes| {
+            raft(Body::Append {
+                prev: at(0, 0),
+                entries: vec![Entry {
+                    at: at(1, 1),
+                    data: Data::Bytes(vec![0; bytes]),
+                }],
+                commit: 0,
+            })
+        };
+        let most = append(change::BYTES_MAX);
+        assert_eq!(Message::decode(&most.encode()), Some(most));
+        assert_eq!(
+            Message::decode(&append(change::BYTES_MAX + 1).encode()),
+            None
+        );
+    }
+
+    #[test]
+    fn decode_refuses_a_proof_of_more_grants_than_two_sets_of_voters_max() {
+        let proven = |grants| {
+            let Message::Raft(message) = raft(Body::HeartbeatReply) else {
+                unreachable!()
+            };
+            let mut proof = votes_of_254();
+            proof.voters = keys_of(0, grants)
+                .into_iter()
+                .map(|key| (key, Some(Signature([7; 64]))))
+                .collect();
+            Message::Raft(raft::Message {
+                proof: Some(proof),
+                ..message
+            })
+        };
+        let most = u128::try_from(2 * VOTERS_MAX).unwrap();
+        assert_eq!(most, 254);
+        assert_eq!(Message::decode(&proven(most).encode()), Some(proven(most)));
+        assert_eq!(Message::decode(&proven(most + 1).encode()), None);
+    }
+
+    #[test]
+    fn decode_refuses_an_append_whose_last_entry_is_over_bytes_max_bytes() {
+        let append = |bytes| {
+            let entry = |index, bytes| Entry {
+                at: at(1, index),
+                data: Data::Bytes(vec![0; bytes]),
+            };
+            raft(Body::Append {
+                prev: at(0, 0),
+                entries: vec![entry(1, 1), entry(2, bytes)],
+                commit: 0,
+            })
+        };
+        let most = append(change::BYTES_MAX);
+        assert_eq!(Message::decode(&most.encode()), Some(most));
+        assert_eq!(
+            Message::decode(&append(change::BYTES_MAX + 1).encode()),
+            None
+        );
+    }
+
+    #[test]
+    fn decode_refuses_an_append_of_a_change_over_bytes_max_and_8_bytes() {
+        let append = |voters: u128| {
+            let change = raft::Change {
+                voters: Voters {
+                    incoming: (1..=voters).map(node::Key::from_u128).collect(),
+                    outgoing: BTreeSet::new(),
+                },
+                votes: Proof {
+                    grant: Grant::Vote,
+                    candidate: key(1),
+                    voters: [(key(1), Some(signature(1)))].into(),
+                },
+                signature: Some(signature(2)),
+            };
+            raft(Body::Append {
+                prev: at(0, 0),
+                entries: vec![Entry {
+                    at: at(1, 1),
+                    data: Data::Voters(change),
+                }],
+                commit: 0,
+            })
+        };
+        // The bytes of the change: the message less its head, the entry's position, and
+        // its kind.
+        let bytes = |voters| append(voters).encode().len() - (APPEND_HEAD + 16 + 1);
+        let most = 1 + u128::try_from(change::BYTES_MAX - bytes(1)).unwrap() / 16;
+        assert_eq!(bytes(most), change::BYTES_MAX - 6);
+        assert_eq!(bytes(most + 1), change::BYTES_MAX + 10);
+        assert_eq!(Message::decode(&append(most).encode()), Some(append(most)));
+        assert_eq!(Message::decode(&append(most + 1).encode()), None);
+    }
+
+    // The default message limit of a node is 64 KiB.
+    const _: () = assert!(BYTES_MIN < 1 << 16);
+
+    #[test]
+    fn an_append_of_one_record_of_bytes_max_bytes_is_bytes_min_bytes() {
+        let record = Entry {
+            at: at(1, 1),
+            data: Data::Bytes(vec![0; change::BYTES_MAX]),
+        };
+        let Message::Raft(mut message) = raft(Body::Append {
+            prev: at(0, 0),
+            entries: vec![record],
+            commit: 0,
+        }) else {
+            unreachable!()
+        };
+        assert_eq!(Message::Raft(message.clone()).encode().len(), BYTES_MIN);
+        assert!(fits(&message));
+        let Body::Append { entries, .. } = &mut message.body else {
+            unreachable!()
+        };
+        let Data::Bytes(bytes) = &mut entries[0].data else {
+            unreachable!()
+        };
+        bytes.push(0);
+        assert!(!fits(&message));
+    }
+
+    #[test]
+    fn a_joint_change_of_127_and_127_voters_and_its_largest_proof_fit() {
+        let most = u128::try_from(VOTERS_MAX).unwrap();
+        let change = raft::Change {
+            voters: Voters {
+                incoming: keys_of(0, most),
+                outgoing: keys_of(most, 2 * most),
+            },
+            votes: votes_of_254(),
+            signature: None,
+        };
+        let Message::Raft(append) = raft(Body::Append {
+            prev: at(0, 0),
+            entries: vec![Entry {
+                at: at(1, 1),
+                data: Data::Voters(change),
+            }],
+            commit: 0,
+        }) else {
+            unreachable!()
+        };
+        let reply = raft::Message {
+            proof: Some(votes_of_254()),
+            body: Body::VoteReply {
+                answer: Answer::Granted(None),
+            },
+            ..append.clone()
+        };
+        assert_eq!([len(&append), len(&reply)], [24_581, 20_461]);
+        assert!(fits(&append) && fits(&reply));
+    }
+
     proptest! {
+        #[test]
+        fn len_is_the_length_of_the_byte_form_also_with_no_signature_made(
+            message in a_message(),
+        ) {
+            if let Message::Raft(raft) = &message {
+                let length = message.encode().len();
+                prop_assert_eq!(len(raft), length);
+                prop_assert_eq!(len(&unsigned(raft.clone())), length);
+            }
+        }
+
         #[test]
         fn a_message_round_trips(message in a_message()) {
             prop_assert_eq!(Message::decode(&message.encode()), Some(message));
