@@ -59,6 +59,13 @@ Rules:
     `dep:sim` and other `simulate` features, never a `sim` feature. `cargo xtask`
     checks this (#1570) (`laptop.architect`, 2026-10-08T02:11:30Z:
     https://github.com/synnaxlabs/foundation/issues/1570#issuecomment-6050751380).
+    The check resolves with all features on, walks from each member along each edge
+    that is not only a dev-dependency, and checks each local crate that it reaches: a
+    member, a benchmark, `xtask`, or a path crate outside the workspace. A build
+    dependency counts, as it runs in each product build, and so does a benchmark or
+    `xtask`, as `cargo build --workspace` unifies its features with the binary's
+    (`laptop.architect`, 2026-10-09T20:33:17Z:
+    https://github.com/synnaxlabs/foundation/pull/2140#issuecomment-6088787290).
 
 Order: layer 1 (`block`, `ring`, `counting`, `waker`) -> `types` -> (`env`, `document`,
 `raft`, `estimate`, `control`, `delivery`) -> `codec` -> `wire` -> `spec` -> `access`;
