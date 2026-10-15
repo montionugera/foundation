@@ -77,9 +77,10 @@ names the test that kills it in a job that the mutants run does not see (Miri, l
 another OS). A mutant made by hand that `cargo mutants` never makes, and that only
 such an assertion kills, gets no entry, since one matches nothing. The doc of that test
 says why no caller or peer can see the mutant, and the round comment links that doc. A
-mutant that a test could kill but none does links its open issue. Miri, cargo-fuzz, and
-the sanitizer gate (`cargo xtask sanitizers`) run on one pinned nightly, named in
-`rust-toolchain-nightly`, that only those gates use.
+mutant that a test could kill but none does is a finding of its round, and `/review`,
+"Findings" step 3, decides where its test goes. Miri, cargo-fuzz, and the sanitizer gate
+(`cargo xtask sanitizers`) run on one pinned nightly, named in `rust-toolchain-nightly`,
+that only those gates use.
 
 ## Process tests
 
@@ -205,6 +206,19 @@ again once to prove that the failure replays (r16 59).
   compiles a file that names `loom` in a `cfg`, oracles included. `cargo xtask shuttle`
   does the same with `--cfg shuttle`. `cargo xtask miri` runs Miri on each crate whose
   source names `unsafe_code`, and fails when such a crate runs no tests.
+- **A wake protocol whose state is not `Send`** gets no loom model and no shuttle model,
+  because it has no order of threads. It gets `sim` tests through the production path in
+  which the two sides of the protocol are ready at one instant, each over 32 values of
+  `sim::Config::seed` or more. `sim` takes the order of two ready tasks from that value,
+  so a test in which one task is ready at a time runs one order for each value. The PR
+  states how many of the values ran each order. When a node gets the second order only
+  with an event that a test cannot put at that instant, the tests pin the one order, and
+  the PR states the cause.
+- **A `sim` test that drops a future** while a file call of it is in flight, and then
+  calls the same files again, runs over 64 values of `sim::Config::seed` or more. `sim`
+  takes the delay of each file call from that value, so one value runs one order of the
+  end of the dropped call and the next call. A test that runs fewer values states the
+  cause in a comment.
 - **Hot paths** of product code (`docs/claude/performance.md`) run under a counting
   allocator that fails on any allocation.
 - **Unit tests are co-located** in a `#[cfg(test)] mod tests` block. Group by subject
@@ -220,7 +234,11 @@ again once to prove that the failure replays (r16 59).
   the first-lookup state of the C library) gets a binary of its own with that one test,
   as a counting allocator does. Its module doc names that state. Helpers that binaries
   share go in `tests/common/`: `mod.rs`, and a file for a helper that only some binaries
-  use, which each of them mounts with `#[path]`.
+  use, which each of them mounts with `#[path]`. Cases of one contract that the tests of
+  two crates run go in `tests/common/` of the crate that owns the contract. Each crate
+  that mounts the file with `#[path]` has that crate as a dependency, and the file uses
+  only the public items of that crate and `std`. Its module doc names the crates that
+  mount it.
 
 ## Oracles
 
@@ -231,17 +249,19 @@ Agents add to them freely and never weaken them. Weakening means a removed test 
 assertion, a loosened threshold, a raised benchmark baseline, or a deleted fuzz input or
 proptest failure file. A change to the bytes of a fuzz input deletes the old input: keep
 the old file and add the new bytes as a new file. A PR that changes the byte form of a
-target adds, for each input that decoded on `main` and no longer does, a new file with
-the same content in the new form, and a test that decodes it. Each target's corpus,
-`oracles/fuzz/<target>/`, is its own oracle, and only a byte string that `main` held
-counts. When a PR renames or splits a target, an input of its corpus may move to the
-corpus of each target that replaces it. Such a move, or a move inside one corpus, keeps
-the bytes and is not a deletion. A byte string that only a PR branch held, such as the
-old bytes of an input that a PR adds and then changes before it merges, was never an
-oracle. A PR deletes an input when a byte string that `oracles/fuzz/<target>/` holds at
-its merge base with `main` (`git merge-base origin/main HEAD`) is in no file of
-`oracles/fuzz/<target>/` at its head, unless a target replaces it and the corpus of each
-such target holds it. An audit of `main` takes each state that
+target, or the path from a target to a decoder (a call that the target no longer makes,
+or a message that must now come first), adds, for each input that reached an arm of a
+decoder on `main` and no longer reaches it, a new file with the same content in the new
+form, and a test that pins its result. Each target's corpus, `oracles/fuzz/<target>/`,
+is its own oracle, and only a byte string that `main` held counts. When a PR renames or
+splits a target, an input of its corpus may move to the corpus of each target that
+replaces it. Such a move, or a move inside one corpus, keeps the bytes and is not a
+deletion. A byte string that only a PR branch held, such as the old bytes of an input
+that a PR adds and then changes before it merges, was never an oracle. A PR deletes an
+input when a byte string that `oracles/fuzz/<target>/` holds at its merge base with
+`main` (`git merge-base origin/main HEAD`) is in no file of `oracles/fuzz/<target>/` at
+its head, unless a target replaces it and the corpus of each such target holds it. An
+audit of `main` takes each state that
 `git log --first-parent origin/main -- oracles/fuzz/<target>` lists: a byte string that
 `oracles/fuzz/<target>/` holds in one state, and that no file of it holds on
 `origin/main`, was deleted, unless a target replaces it and the corpus of each such

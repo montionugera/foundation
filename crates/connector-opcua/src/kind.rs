@@ -1,7 +1,6 @@
 //! The `opcua` kind: reads OPC UA nodes at a fixed rate, and writes at most one frame
 //! per tick.
 
-use std::mem::{Discriminant, discriminant};
 use std::{fmt, future};
 
 use connector::kind::{self, Channels, Context, Error};
@@ -13,7 +12,7 @@ use hub::home::{Outcome, Refusal, order};
 use hub::writer::Writer;
 use types::authority::Authority;
 use types::frame::{self, Draft, Form, Label, Path, key_set};
-use types::sample::{Scalar, Type};
+use types::sample::{self, Scalar, Type};
 #[cfg(feature = "sim")]
 use types::time::Span;
 use types::time::Stamp;
@@ -170,7 +169,7 @@ pub async fn writes(
     let mut frames = Frames::open(ctx).await?;
     let types = frames.layout.types.iter().enumerate();
     let values: Vec<_> = types
-        .map(|(at, &(scalar, _))| {
+        .map(|(at, &scalar)| {
             if at < bad {
                 Err(Fault::Status(Status::BAD_NOT_FOUND))
             } else {
@@ -209,9 +208,8 @@ struct Frames<'a> {
 
 /// The series of the frame of each tick, and what fills each.
 struct Layout {
-    /// The sample type of the channel of each read, in order, and its variant of
-    /// [`Value`].
-    types: Vec<(Scalar, Discriminant<Value>)>,
+    /// The sample type of the channel of each read, in order.
+    types: Vec<Scalar>,
     /// Each entry of the key set and the bytes of its series.
     series: Vec<(usize, usize)>,
     /// The sample of each entry of the key set.
@@ -267,13 +265,9 @@ impl<'a> Frames<'a> {
         let (mut types, mut wrong) = (Vec::with_capacity(reads.len()), Vec::new());
         for (read, &entry) in reads.iter().zip(writer.entries()) {
             let data_type = entries[entry].data_type;
-            let variant = match data_type {
-                Type::Scalar(scalar) => Value::variant(scalar).map(|v| (scalar, v)),
-                _ => None,
-            };
-            match variant {
-                Some(pair) => types.push(pair),
-                None => wrong.push(sample_type(read, data_type)),
+            match data_type {
+                Type::Scalar(scalar) if SCALARS.contains(&scalar) => types.push(scalar),
+                _ => wrong.push(sample_type(read, data_type)),
             }
         }
         if !wrong.is_empty() {
@@ -407,19 +401,16 @@ impl Left {
         ctx: &Context<Config>,
         reads: &[Read],
         values: &[Result<Value, Fault>],
-        types: &[(Scalar, Discriminant<Value>)],
+        types: &[Scalar],
         kept: &mut Vec<bool>,
     ) -> bool {
-        let pairs = values.iter().zip(types);
-        if pairs
-            .clone()
-            .all(|(value, &(_, variant))| Leave::of(value, variant).is_none())
-        {
+        let mut pairs = values.iter().zip(types);
+        if pairs.all(|(value, &sample)| Leave::of(value, sample).is_none()) {
             return true;
         }
         let mut all = true;
-        for (at, (value, &(sample, variant))) in values.iter().zip(types).enumerate() {
-            match Leave::of(value, variant) {
+        for (at, (value, &sample)) in values.iter().zip(types).enumerate() {
+            match Leave::of(value, sample) {
                 None => continue,
                 Some(Leave::Bad) => self.bad.add(1),
                 Some(Leave::Uncertain) => self.uncertain.add(1),
@@ -472,11 +463,11 @@ enum Leave {
 }
 
 impl Leave {
-    /// Why a frame leaves out `value`, whose channel has samples of the variant
-    /// `variant` of [`Value`], or `None` when it keeps it.
-    fn of(value: &Result<Value, Fault>, variant: Discriminant<Value>) -> Option<Self> {
+    /// Why a frame leaves out `value`, whose channel has samples of type `sample`,
+    /// or `None` when it keeps it.
+    fn of(value: &Result<Value, Fault>, sample: Scalar) -> Option<Self> {
         match value {
-            Ok(value) if discriminant(value) == variant => None,
+            Ok(value) if value.scalar() == sample => None,
             Ok(value) => Some(Self::Mistyped(value.built_in())),
             Err(Fault::Type(built_in)) => Some(Self::Mistyped(*built_in)),
             Err(Fault::Status(status)) if status.uncertain() => Some(Self::Uncertain),
@@ -612,8 +603,8 @@ fn fill(
 ) {
     for (entry, bytes) in draft.iter_mut() {
         match fills[entry].read {
-            None => bytes.copy_from_slice(&stamp.nanos().to_le_bytes()),
-            Some(read) => values.get(read).put(bytes),
+            None => sample::Value::Stamp(stamp).write(bytes),
+            Some(read) => sample::Value::from(values.get(read)).write(bytes),
         }
     }
     for &group in groups {

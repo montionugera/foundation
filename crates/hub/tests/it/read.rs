@@ -17,7 +17,7 @@ use wire::header::MALFORMED;
 use wire::hub::client::{self, BODY_BYTES_MAX, Mode, Open, Place, Places, REFUSED};
 use wire::hub::{BUSY, FAILED, FromHome, NOT_HOME, UNKNOWN};
 
-use super::link::{Home, OTHER, QUIET, as_agent, serve_session_on};
+use super::link::{as_agent, serve_session_on};
 use super::serve::{decoded, got, places as placed};
 use super::{
     AREA, BODY_MAX, COMMIT, DataType, I64, NODE, POOL, RING, STAMP, TIME, TIME_B, Test,
@@ -25,7 +25,9 @@ use super::{
 };
 use crate::agent::{AGENT, Agent, SUBJECT, Stream, name, reset_with};
 use crate::net::{HOME, own_pool, transport};
-use crate::sessions::{Got, recorded, rules, run_program, serve_each};
+use crate::sessions::{
+    Got, Home, OTHER, QUIET, recorded, rules, run_program, serve_each,
+};
 
 /// How long after the home accepts the session its first write or change comes, so
 /// the program has opened its read by then.

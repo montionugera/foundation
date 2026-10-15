@@ -1348,8 +1348,7 @@ fn leaves_out_each_value_of_another_type_than_its_channel() {
     let [_, _, values] = extremes();
     for value in values {
         for sample in SCALARS {
-            let variant = crate::value::Value::variant(sample).expect("a type");
-            let left = Leave::of(&Ok(value), variant);
+            let left = Leave::of(&Ok(value), sample);
             if value.scalar() == sample {
                 assert_eq!(left, None);
             } else {
@@ -1362,15 +1361,15 @@ fn leaves_out_each_value_of_another_type_than_its_channel() {
 
 #[test]
 fn leaves_out_each_value_that_is_not_good() {
-    use crate::value::{Fault, Value};
-    let variant = Value::variant(Scalar::F64).expect("a type");
-    let leave = |status: u32| Leave::of(&Err(Fault::Status(Status(status))), variant);
+    use crate::value::Fault;
+    let leave =
+        |status: u32| Leave::of(&Err(Fault::Status(Status(status))), Scalar::F64);
     assert_eq!(leave(0x4000_0000), Some(Leave::Uncertain));
     assert_eq!(leave(0x7FFF_FFFF), Some(Leave::Uncertain));
     assert_eq!(leave(Status::BAD_NOT_FOUND.0), Some(Leave::Bad));
     assert_eq!(leave(0xC000_0000), Some(Leave::Bad));
     assert_eq!(leave(0x8000_0000), Some(Leave::Bad));
     let string = crate::value::BuiltIn::new(11);
-    let left = Leave::of(&Err(Fault::Type(string)), variant);
+    let left = Leave::of(&Err(Fault::Type(string)), Scalar::F64);
     assert_eq!(left, Some(Leave::Mistyped(string)));
 }

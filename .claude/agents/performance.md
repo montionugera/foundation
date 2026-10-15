@@ -44,8 +44,17 @@ does not, the run cannot show the cost check: it is a finding until the PR links
 comment with the numbers of the rerun on a quiet Linux host of BENCH BASELINES
 (`docs/decisions/testing/bench-baselines.md`), never a queued run, does what an
 amendment of that record asks in place of the rerun, or is a PR that an amendment of
-that record lets merge with no rerun. Run the same bench source on both commits. When
-one commit cannot run a bench case, remove that case on both, and say so in the report.
+that record lets merge with no rerun. Before you report a result at or over the cost
+limit, build the bench at both commits with no run
+(`cargo bench -p <crate> --bench <name> --no-run`), with the flags of the run, and
+compare the instructions of each function of the two binaries, with the absolute
+addresses removed. When each function that holds product code that the line runs in its
+timed loop is the same at both commits, say so, with the target and both commits. The
+result is then no cost and no gain of the change: it needs no rerun and no judgment, and
+the PR body and the decisions give it as a result of the bench file only. When only code
+of the bench file differs, that is a finding against the bench file: its line moves with
+no change of product code. Run the same bench source on both commits. When one commit
+cannot run a bench case, remove that case on both, and say so in the report.
 
 A slowdown under the cost limit is no finding: report its numbers and its cost at P1
 load. A slowdown at or over the limit is a finding, not a verdict. Report it as the P1

@@ -11,6 +11,7 @@ use hub::{Hub, Served, serve};
 use spec::definition::{Definition, Kind};
 use spec::subject::Subject;
 use transport::{Address, Code, Session};
+use types::ed25519::PrivateKey;
 use types::name::{Name, Prefix};
 use types::time::Span;
 
@@ -19,6 +20,10 @@ use crate::net::{HOME, PORT, header, own_pool, public_key, transport};
 
 /// How long the home holds a request before it replies.
 pub(crate) const HOLD: Span = Span::from_nanos(50_000_000);
+/// A key that the spec does not list.
+pub(crate) const OTHER: PrivateKey = PrivateKey([4; 32]);
+/// How long the program waits for what must not come.
+pub(crate) const QUIET: Span = Span::from_nanos(200_000_000);
 
 /// The rules of a root tree that lists `AGENT` for [`SUBJECT`], [`SECOND`], and
 /// [`THIRD`].
@@ -167,6 +172,65 @@ pub(crate) async fn recorded(node: &sim::node::Node, kept: &Kept, accepted: usiz
         );
         node.clock().sleep(Span::MICROSECOND).await;
     }
+}
+
+/// What the home saw: what `serve` gave for each stream, in the order they ended, and
+/// how the session ended.
+#[derive(Debug)]
+pub(crate) struct Home {
+    pub(crate) served: Vec<Result<Got, serve::Error>>,
+    pub(crate) closed: transport::Error,
+}
+
+/// Runs one session on `wire`. The home's node makes its hub with `open`, keeps what
+/// `open` gives with the hub, and accepts the session of `program`'s node through
+/// [`accept_on`] with `rules`. It gives what it keeps to `ready`, then serves each hub
+/// stream of the session as [`serve_each`] does, as `node` does. `program` runs on the
+/// program's node with the home's address, and dials it itself.
+pub(crate) fn serve_session<T, G, P>(
+    seed: u64,
+    wire: sim::link::Config,
+    rules: Option<access::Rules>,
+    open: impl AsyncFnOnce(&sim::node::Node, &env::tasks::Tasks) -> (Hub, T)
+    + Send
+    + 'static,
+    ready: impl AsyncFnOnce(&T) + Send + 'static,
+    program: G,
+) -> Home
+where
+    G: FnOnce(sim::node::Node, env::tasks::Tasks, Address) -> P + Send + 'static,
+    P: Future<Output = ()> + 'static,
+{
+    let served = Arc::new(Mutex::new(Vec::new()));
+    let closed = Arc::new(Mutex::new(None));
+    let (kept, ended) = (Arc::clone(&served), Arc::clone(&closed));
+    let home = move |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
+        let (hub, kept_open) = open(&node, &tasks).await;
+        let (session, link) = accept_on(&hub, &node, &tasks, rules).await;
+        ready(&kept_open).await;
+        let accepted = Rc::new(Cell::new(0));
+        serve_each(&session, &link, &tasks, &node.clock(), &kept, &accepted).await;
+        *ended.lock().expect("not poisoned") = Some(session.closed().await);
+        recorded(&node, &kept, accepted.get()).await;
+        drop((link, hub, kept_open));
+    };
+    run_program_on(seed, wire, home, program);
+    let served = std::mem::take(&mut *served.lock().expect("not poisoned"));
+    let closed = closed.lock().expect("not poisoned").take();
+    Home {
+        served,
+        closed: closed.expect("the session closed"),
+    }
+}
+
+/// Makes the error of the wall clock of `node` unknown, and 10 ms one minute later.
+pub(crate) fn shrink_wall_error(node: &sim::node::Node, tasks: &env::tasks::Tasks) {
+    node.set_wall_error(None);
+    let shrink = node.clone();
+    tasks.spawn(async move {
+        shrink.clock().sleep(Span::MINUTE).await;
+        shrink.set_wall_error(Some(Span::from_nanos(10_000_000)));
+    });
 }
 
 /// Sets `rules` on `hub` unless `None`, and gives the session of the first program

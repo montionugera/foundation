@@ -53,7 +53,7 @@ budget. One issue is in progress per crate. The coordinator keeps this table cur
 | Machine | Host | Crates |
 | --- | --- | --- |
 | laptop | the laptop, 16 cores | `node`, `config`, `config-hcl`, `document`, `ops`, `acceptance` |
-| box1 | `foundation-factory`, 64 vCPU | `hub`, `control`, `delivery`, `home`, `mesh`, `raft`, `spec`, `access`, `blob`, `buffer`, `replica`, `block`, `ring`, `types`, `codec`, `wire`, `counting`, `waker` |
+| box1 | `foundation-factory`, 64 vCPU | `hub`, `program`, `control`, `delivery`, `home`, `mesh`, `raft`, `spec`, `access`, `blob`, `buffer`, `replica`, `block`, `ring`, `types`, `codec`, `wire`, `counting`, `waker` |
 | box2 | `foundation-factory-2`, 32 vCPU | `transport`, `clock`, `estimate`, `sim`, `env`, `os`, `secret`, `connector`, `connector-<kind>`, `daqmx-stub` |
 
 The risk crates are `raft`, `buffer`, `delivery`, `block`, `ring`, `codec`, `wire`,
@@ -71,8 +71,12 @@ map needs `laptop.architect`.
 
 | Architect | Crates |
 | --- | --- |
-| `laptop.architect` | `types`, `hub`, `control`, `delivery`, `home`, `mesh`, `raft`, `access`, `blob`, `buffer`, `replica`, `block`, `ring`, `codec`, `wire`, `counting`, `waker` |
+| `laptop.architect` | `types`, `hub`, `program`, `control`, `delivery`, `home`, `mesh`, `raft`, `access`, `blob`, `buffer`, `replica`, `block`, `ring`, `codec`, `wire`, `counting`, `waker` |
 | `laptop.architect-2` | `spec`, `node`, `config`, `config-hcl`, `document`, `ops`, `acceptance`, `transport`, `clock`, `estimate`, `sim`, `env`, `os`, `secret`, `connector`, `connector-<kind>`, `daqmx-stub` |
+
+`program` comes out of `hub` and speaks its wire contract, so it has the architect of
+`hub` (`laptop.director`, 2026-10-15T18:26:51Z,
+https://github.com/synnaxlabs/foundation/pull/2724#issuecomment-6199316359).
 
 ## Milestones
 
