@@ -2,12 +2,13 @@
   `tracing` event at the level of `--log-level` or above.
   (1) Flags of `foundation start`: `--log-level error|warn|info|debug|trace`, default
   `info`, lower case only, and `--log-format text|json`, whose default is `json` with
-  `--json`, else `text`. A bad value is `ops.argument` with the message `` `<value>` is
-  not one of <the values>``. No `off`: send stderr to `/dev/null`. `--json` stays the
-  format of the command's own lines. The person approved structured events with a text
-  and a JSON output and a level flag: "Ok, this is fine" (2026-10-13T21:06:00Z,
+  `--json`, else `text`. A bad value is `ops.argument`, whose message ends with
+  `` `<value>` is not one of <the values>``. No `off`: send stderr to `/dev/null`.
+  `--json` stays the format of the command's own lines. The person approved structured
+  events with a text and a JSON output and a level flag: "Ok, this is fine"
+  (2026-10-13T21:06:00Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155197898). The
-  details by `laptop.architect-2` (item 3 of
+  details by `laptop.architect-2` (item 3 of 2026-10-13T21:13:43Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155317582).
   (2) The stamp of a line is the OS wall time of the node, in RFC 3339 UTC with six
   fraction digits, floored. Mesh time is the field `mesh_time`: absent for
@@ -15,9 +16,10 @@
   (JSON `null`) for `Unsynced` (CLOCK LOG gives the cases and the 2 ms). The person:
   "Yeah I agree. System clock first" (2026-10-13T21:17:06Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155377794). The
-  field by `laptop.architect-2`
-  (https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155519701, amended
-  by https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6160981810).
+  field by `laptop.architect-2` (2026-10-13T21:25:00Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155519701), amended
+  by 2026-10-14T04:35:24Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6160981810.
   (3) Text: `<stamp> <LEVEL> <target>: <message> <key>=<value>... [mesh_time=...]`,
   with `mesh_time` last. The message has `\` and each control character escaped as
   `char::escape_debug` gives them. A string value that is empty, or holds a space, `=`,
@@ -27,7 +29,7 @@
   are plain. JSON: one object, `{"timestamp", "level", "target", "fields":
   {"message", ...}, "mesh_time"}`, in that order, with the fields in event order,
   integers and booleans as JSON numbers and booleans, and each other value a string.
-  By `laptop.architect-2` (items 2 and 3 of
+  By `laptop.architect-2` (items 2 and 3 of 2026-10-15T20:27:52Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6201604736).
   (4) `node::log` builds the `fmt` layer of `tracing-subscriber` with a `FormatEvent`
   of its own, which reads `clock::log::Reader::now` once for each line and writes the
@@ -35,19 +37,19 @@
   `fmt` writes nothing of its own to stderr. A `LevelFilter` of `--log-level` is under
   it. `fmt` keeps the buffer of each thread, the one write of each line, and the span
   fields that a later step needs. Features `fmt`, `registry`, and `std` only: no
-  `ansi`, `json`, or `tracing-serde`. By `laptop.architect-2`
-  (https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6201622804).
+  `ansi`, `json`, or `tracing-serde`. By `laptop.architect-2` (2026-10-15T20:28:52Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6201622804).
   Lost: a `Layer` of our own, which builds again what `fmt` gives; the `json` format
   of `fmt`, which needs a second clock read or a splice for `mesh_time`. A write
   blocks the thread of its event until stderr takes the line. Later step (#2764): the
   node never blocks on its log reader, by `laptop.monitor` with the details of
-  `laptop.architect-2`
-  (https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202838819).
+  `laptop.architect-2` (2026-10-15T21:39:25Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202838819).
   (5) No dispatch is global (crate map rule 9, `clippy.toml`). `Node::start` makes the
   dispatch from `Config::log` and gives it to its shards through `Shards::logged`.
   `node::Log` holds the writer and the `ops::Log` that `start` parses, whose default
-  is text at `info`. By `laptop.architect-2`
-  (https://github.com/synnaxlabs/foundation/pull/2762#issuecomment-6202853376).
+  is text at `info`. By `laptop.architect-2` (2026-10-15T21:40:21Z,
+  https://github.com/synnaxlabs/foundation/pull/2762#issuecomment-6202853376).
   Shard 0 writes `started` (INFO, `name`, `address`: the bound address, `shards`) once
   the file `address` holds the address. `Node::join` writes `stopped`: INFO after a
   stop, ERROR with `error` after a failure, also a failure before any shard started.
@@ -58,4 +60,5 @@
   one (the thread of open62541) adds `Config::threads` and calls `Threads::logged`.
   The threads of `main` (`show`, `stop`, the I/O thread of each disk) get the dispatch
   with the first event one of them writes. By `laptop.architect-2`
-  (https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6201785053).
+  (2026-10-15T20:38:04Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6201785053).
