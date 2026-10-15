@@ -2869,8 +2869,8 @@ mod tests {
         }
 
         // The change comes while the node writes, at open, the term that it now leads,
-        // and a power cut follows. The voter gives the change each 10 us from the open
-        // until one answer waits for that write.
+        // and a power cut follows. The sleep of 1 ns lets the group start that write
+        // first, so the change goes in a later write.
         #[test]
         fn a_position_in_an_answer_names_no_other_change_after_a_power_cut() {
             let mut reused = Vec::new();
@@ -2883,17 +2883,12 @@ mod tests {
                 let answered = sim
                     .run_on(&node, |node, tasks| async move {
                         let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-                        loop {
-                            let mut answer = pin!(mesh.answer(public(1), home_to(3)));
-                            match now(answer.as_mut()).await {
-                                Poll::Ready(Ok(Message::NotLeader {
-                                    leader: None,
-                                })) => {}
-                                Poll::Ready(first) => panic!("no wait for {first:?}"),
-                                Poll::Pending => return answer.await,
-                            }
-                            node.clock().sleep(Span::from_nanos(10_000)).await;
+                        node.clock().sleep(Span::from_nanos(1)).await;
+                        let mut answer = pin!(mesh.answer(public(1), home_to(3)));
+                        if let Poll::Ready(first) = now(answer.as_mut()).await {
+                            panic!("no wait for {first:?}");
                         }
+                        answer.await
                     })
                     .unwrap();
                 let Ok(Message::Proposed { at: answered }) = answered else {
