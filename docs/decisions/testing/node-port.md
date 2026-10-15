@@ -4,17 +4,27 @@
   builds the transport with the node's private key once the last shard has opened its
   buffer (X42), so the node takes no session before that. Its limits are patches until
   #1662 makes them settings, as LIMITS of SHARD HOMES is: window 1 MiB, 64 streams of
-  each kind, idle 30 s, and messages of the smaller of 64 KiB and the pool's largest
-  block. Each session runs in its own future, and each stream of it reads its header in
-  its own future, so a late header delays no other stream. One exhaustive `match` on
+  each kind, idle 30 s, messages of the smaller of 64 KiB and the pool's largest
+  block, and the free floor of the blob store, 1 GiB (`blob::Config::floor_bytes`;
+  `laptop.architect-2`, 2026-10-09T03:49:41Z,
+  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6073881818). The
+  floor holds for each put, also a local one, so a start that founds a region stops
+  with `blob::Error::Floor` in `Error::Mesh` when a founding chunk would leave less
+  than 1 GiB free (`laptop.architect-2`, 2026-10-11T05:31:52Z,
+  https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6105857712). A start
+  whose store holds each founding chunk does not stop: those puts take no new room (BLOB
+  PEER; `laptop.architect`, 2026-10-11T06:01:24Z,
+  https://github.com/synnaxlabs/foundation/pull/2356#issuecomment-6106056805). Each
+  session runs in its own future, and each stream of it reads its header in its own
+  future, so a late header delays no other stream. One exhaustive `match` on
   `wire::Protocol` in `node` routes each stream; until a protocol has a server, its arm
   stops the stream with `Code(wire::header::REJECTED)` and resets the reply half with
   the same code, as for a header that does not decode, or for a first message with bytes
   after the header. The node reads no datagram until the first protocol that takes
-  datagrams has a server (#1661). The node admits every peer that
-  completes the handshake; the mesh checks each message of a mesh stream (NODE MESH).
-  With no mesh, at the stop, each session and stream future drops, then the transport.
-  The bound on the wait for a header is #1628.
+  datagrams has a server (#1661). The node admits each peer that completes the
+  handshake, within the bound on sessions of #1628 (below); the mesh checks each message
+  of a mesh stream (NODE MESH). With no mesh, at the stop, each session and stream
+  future drops, then the transport. A header has 10 s (#1628, below).
   Decided by `laptop.architect-2` (2026-10-07 21:09 UTC):
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669, on the
   plan https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046861267;
@@ -23,7 +33,7 @@
   Amended (2026-10-07, #1649 round 1, a finding of `performance` that
   `laptop.integrator-1` deferred, 23:41 UTC): the window caps a session at the window
   over the round trip, about 21 MB/s at 50 ms, until #1662 sizes it from the
-  bandwidth-delay product. The number of sessions has no bound until #1628.
+  bandwidth-delay product. #1628 bounds the number of sessions (below).
   https://github.com/synnaxlabs/foundation/pull/1649#issuecomment-6049077609.
   Amended (2026-10-08, #1647, by `laptop.architect-2`, 00:05 UTC): a transport that
   stops with an error stops the node, and `Node::join` gives `Error::Transport`. The
@@ -44,10 +54,16 @@
   peer's public key; else it stops with `Code(wire::header::REJECTED)`, and its reply
   half resets with the same code. A `Hub` stream of a `Peer::Client` session is
   rejected until #1744 (PR 4b of #585, by `laptop.architect-2`, 22:22 UTC,
-  https://github.com/synnaxlabs/foundation/pull/2021#issuecomment-6070221342). At the
-  stop, each session and stream future drops, then the mesh, and shard 0 waits for the
-  mesh's task to end before it drops `lock` (DATA DIRECTORY LOCK) and before
-  `Node::join` returns, so a restart at once opens the log:
+  https://github.com/synnaxlabs/foundation/pull/2021#issuecomment-6070221342).
+  Amended (2026-10-12, #1744, by `laptop.architect-2`, 2026-10-13T05:13:08Z,
+  https://github.com/synnaxlabs/foundation/pull/2545#issuecomment-6138748015): with a
+  mesh, it goes to the hub's link of the session, and `node` answers each
+  `Served::Request` with `ops::serve` for the subject of its hello, then `Reply::send`;
+  with no mesh, it is still rejected. Shard 0 gives its hub the access rules of the root
+  region of the spec in use, and of each later spec, the first before it takes the first
+  session. At the stop, each session and stream future drops, then the mesh, and shard 0
+  waits for the mesh's task to end before it drops `lock` (DATA DIRECTORY LOCK) and
+  before `Node::join` returns, so a restart at once opens the log:
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6051658475. For a
   node with a mesh, this supersedes the stop order of
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669.
@@ -64,48 +80,98 @@
   https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6069443456.
   Supersedes the #1780 clause of
   https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6068113010. Under
-  `sim`, the port is free once `lock` is, which a test pins. Under `os`, the carrier's
-  task can hold the socket after `lock` drops, until the runtime of shard 0 drops,
-  before `Node::join` returns: with a socket that works, the task ends only once each
-  connection drained and the runtime polls it. #2017 makes shard 0 wait for the task
-  before it drops `lock`, by `laptop.architect-2` (21:58 UTC, words of 22:23 UTC and
-  22:47 UTC):
+  `sim`, the port is free once `lock` is, which a test pins, by `laptop.architect-2`
+  (21:58 UTC, words of 22:23 UTC and 22:47 UTC):
   https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6069829972,
   https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6070247529,
   https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6070577797.
-  Supersedes the port clause of
-  https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6069568312. No test
-  sees the drop of the transport itself: the end of shard 0 drops the carrier's task,
-  which frees the socket also when a clone of the transport leaks, by
-  `laptop.architect-2` (21:39 UTC):
-  https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6069568312. Supersedes
-  the drop of the transport of
-  https://github.com/synnaxlabs/foundation/pull/1830#issuecomment-6054871235.
+  Amended (2026-10-09, #2017, by `laptop.architect-2`, 02:17 UTC:
+  https://github.com/synnaxlabs/foundation/issues/2017#issuecomment-6072896717, on
+  https://github.com/synnaxlabs/foundation/issues/2017): shard 0 drops `lock` only once
+  the transport has freed the port (`transport::Transport::ended`), also when the mesh
+  does not open, so a restart at once binds the port under `os` too. Once the node
+  has confirmed the handshake of a session, the close of that session leaves at the
+  drop: a peer whose one-way delay is under 3 s gets it before `lock` is free, unless
+  the link loses it, and a peer with a delay of 4 s gets it after, which a test pins
+  for each (`laptop.architect`, 04:36 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2089#issuecomment-6074355159; the
+  condition, 06:16 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2089#issuecomment-6075490388; this
+  text, 06:41 and 06:42 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2089#issuecomment-6075817836 and
+  https://github.com/synnaxlabs/foundation/pull/2089#issuecomment-6075828783). The node
+  confirms a session that a peer dialed when the transport gives it, and one that the
+  node dialed one round trip or more later. A close before then can be paced (the
+  `noq-proto` patch in `docs/dependencies.md`), so it can leave after `lock` is free,
+  or not at all when the pacer holds it until the transport frees the port. The peer
+  then waits for its idle time, as when the link loses the close. Each clone of the
+  transport and each session lives in a future that shard 0 drops before it waits for
+  the port, in a task of the mesh that it waits for, or in a task of the hub, which ends
+  at its next poll after the hub and each value and future that it gave drop (the doc of
+  `hub::Hub::new`; `laptop.architect`, 2026-10-10T09:04:25Z:
+  https://github.com/synnaxlabs/foundation/issues/2244#issuecomment-6095943720, which
+  supersedes the hub clause of
+  https://github.com/synnaxlabs/foundation/pull/2089#issuecomment-6089294422 of
+  2026-10-09T21:08:50Z). So, unless the socket broke, a leak holds the stop. The drop of
+  each session closes it. The drop of the transport closes each session that no caller
+  accepted and each handshake in flight, its own dials too (#2084, by
+  `laptop.architect-2`, 02:57 UTC:
+  https://github.com/synnaxlabs/foundation/issues/2084). The stop waits for each to
+  drain, in about 3 PTO, and at most 3 s after the last one ended, because a peer's
+  round trip sets the PTO with no bound (`laptop.architect`, 03:46 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2089#issuecomment-6073847772). The
+  `transport` surface, by `laptop.architect` (02:19 UTC):
+  https://github.com/synnaxlabs/foundation/issues/2017#issuecomment-6072912165.
+  Supersedes the `os` sentences of that port rule, and the sentence of
+  https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6069568312 that no
+  test sees the drop of the transport.
   Amended (2026-10-08, #1660, by `laptop.architect-2`, 19:52 UTC): `Config` has no key.
-  Once each buffer has opened, shard 0 reads the node's key and private key from the
-  file `node.key` in the data directory, before the hub, the transport, and the mesh
-  open. The file is 68 bytes: the tag `foundation/key/1`, the node key (big-endian;
-  UUIDv7 when shard 0 makes it), the Ed25519 private key, and the CRC32C of those 64
-  bytes (little-endian). It is one sector, which a crash keeps whole or old. At the
-  first start, shard 0 makes the file with `Mode::Create`, unless `node::create_key`
-  made it first (NODE MESH); a file with no bytes or with 68 zero bytes is a key not yet
-  written, so shard 0 makes a key (`types::node::Key::v7` at mesh time, once it has one,
-  from `Config::entropy`, and 32 random bytes). At each start, shard 0 writes the key
-  back and syncs the file and the directory before the transport proves it, because a
-  failed sync of an earlier start can leave a key that a read sees but a power cut
-  loses. A node that joins by ticket (#336) makes its key the same way at its first
-  start. A file of another length that is not 0, or of another tag or checksum, gives
+  Once each buffer has opened, shard 0 reads the node's key, private key, and seal key
+  from the file `node.key` in the data directory, before the hub, the transport, and the
+  mesh open. The file is 100 bytes: the tag `foundation/key/2`, the node key
+  (big-endian; UUIDv7 when shard 0 makes it), the Ed25519 private key, the X25519 seal
+  private key of `secret::seal::Opener` (S8), and the CRC32C of those 96 bytes
+  (little-endian). It is one sector. At the first start, when the file is not there,
+  shard 0 makes a key (`types::node::Key::v7` at mesh time, once it has one, from
+  `Config::entropy`, and 64 random bytes) and makes the file with `sector::publish`,
+  unless `node::create_key` made it first (NODE MESH). `publish` writes `node.key.new`,
+  syncs it, and renames it with no replace, so a reader sees no file or a whole one. A
+  start that finds a whole key writes nothing: the claim of the data directory syncs the
+  directory first, so a key that a crash left visible is durable before the transport
+  proves it. The bytes of a `node.key` that a restore copied in are the restore's to
+  sync: the claim syncs only the name. When a power cut loses them, the next start
+  gives `Error::Key`, and the same restore brings the key back (decided by
+  `laptop.architect-2`, 2026-10-11 10:16 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2384#issuecomment-6107980115). A node
+  that joins by ticket (#336) makes its key the same way at its first start. A file of
+  another length (also no bytes), tag, or checksum (also 100 zero bytes) gives
   `Error::Key`, which `Node::join` ranks above `Error::Blob`, `Error::Mesh`,
   `Error::Transport`, and `Error::Group`; the node never writes over it, because a new
-  key is a new node to its region. The file with no bytes, by `laptop.architect-2`
-  (01:08 UTC):
-  https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6072179320. Each other
+  key is a new node to its region. Amended (2026-10-11, #2305, by
+  `laptop.architect-2`, 2026-10-10 22:20 UTC):
+  https://github.com/synnaxlabs/foundation/pull/2172#issuecomment-6102792702. This
+  supersedes `Mode::Create` and the file with no bytes or with 68 zero bytes (100 since
+  `foundation/key/2`) as a key not yet written, of
+  https://github.com/synnaxlabs/foundation/pull/1962#issuecomment-6072179320, and the
+  write back at each start, of
+  https://github.com/synnaxlabs/foundation/pull/1991#issuecomment-6068373063. Each other
   file error on `node.key` gives `Error::Directory`. The form is not a contract: only
-  `node` reads it. The seal key goes into `node.key` with its first caller, as the tag
-  `foundation/key/2` with 32 more bytes. `admin.key` (#1744 PR 1b) shares this code when
-  it lands. `os` gives each new file the mode `0600` and each new directory `0700`, and
-  on Linux a new directory takes the setgid bit of its parent; the umask can clear more
-  bits. It does not change the mode of one that is there (#1988):
+  `node` reads it. The seal key is in `node.key`, not in a file of its own, because S8
+  rotates it with the Ed25519 key, and a restore of `node.key` alone must not give a
+  card whose seal key the node does not hold. The file `foundation/key/1`, with no seal
+  key, gives `Error::Key`: no node ran outside a test. `create_key` makes the seal key
+  from its `entropy` argument and gives its public half for the card. By
+  `laptop.architect-2` (#1744, plan revision 3, 2026-10-10 03:30 UTC):
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093320483, with
+  the `create_key` shape of 03:42 UTC:
+  https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6093413533, and
+  approved by `laptop.architect` (03:57 UTC):
+  https://github.com/synnaxlabs/foundation/pull/2229#issuecomment-6093523453.
+  `admin.key` has the same form, and is made with `sector::publish` (NODE MESH, #1744
+  PR 1b-3), as `node.key` is (#2305). `os` gives each new file the
+  mode `0600` and each new directory `0700`, and on Linux a new directory takes
+  the setgid bit of its parent; the umask can clear more bits. It does not change the
+  mode of one that is there (#1988):
   https://github.com/synnaxlabs/foundation/issues/1660#issuecomment-6067866831, on the
   plan https://github.com/synnaxlabs/foundation/issues/1660#issuecomment-6067848563. The
   umask, the setgid bit, and a file that is there, by `laptop.architect-2` (23:24 UTC):
@@ -118,15 +184,118 @@
   the same comment approves. The rank above `Error::Transport` and `Error::Group`, from
   the merge with #1936, by `laptop.architect-2` (21:48 UTC):
   https://github.com/synnaxlabs/foundation/pull/1991#issuecomment-6069688780. The load
-  before the hub and the write back at each start (the fix of a finding of `breaker` in
-  round 1 of #1991), by `laptop.architect-2` (20:23 UTC):
+  before the hub, and the write back at each start that #2305 supersedes (the fix of a
+  finding of `breaker` in round 1 of #1991), by `laptop.architect-2` (20:23 UTC):
   https://github.com/synnaxlabs/foundation/pull/1991#issuecomment-6068373063. This
   supersedes `Config::private_key`, the patch of
-  https://github.com/synnaxlabs/foundation/pull/1649#issuecomment-6048898047. While a
-  Rust caller gives `Config::region`, a founding with a dangling index or two channels
-  of one key makes shard 0 panic. The first PR that gives `node` a `spec::region::check`
-  before each define (#1744 or #1957 PR 2) runs it on `Config::region` too, and then a
-  founding with problems defines no channel (#1741), by `laptop.architect-2` (20:08
-  UTC): https://github.com/synnaxlabs/foundation/issues/1660#issuecomment-6068130409, on
-  the ruling of `laptop.architect` (20:08 UTC):
+  https://github.com/synnaxlabs/foundation/pull/1649#issuecomment-6048898047. `node`
+  runs no check of the spec: `mesh` uses only a spec with no problems (SPEC IN USE), so
+  a founding with problems gives no spec in use and the hub knows no channel, by
+  `laptop.architect-2` (2026-10-09T20:41:17Z, #1957 PR 2):
+  https://github.com/synnaxlabs/foundation/issues/1957#issuecomment-6088900310. This
+  supersedes the panic of a founding with a dangling index or two channels of one key,
+  and the check in `node` that was to end it, by
+  `laptop.architect-2` (2026-10-08 20:08 UTC):
+  https://github.com/synnaxlabs/foundation/issues/1660#issuecomment-6068130409, on the
+  ruling of `laptop.architect` (20:08 UTC):
   https://github.com/synnaxlabs/foundation/pull/1966#issuecomment-6068129791.
+  Amended (2026-10-09, #1628, by `laptop.architect-2`, 13:35 UTC):
+  https://github.com/synnaxlabs/foundation/issues/1628#issuecomment-6082002858, on the
+  plan https://github.com/synnaxlabs/foundation/issues/1628#issuecomment-6081954276. Two
+  bounds, patches until #1662 as the limits above are. A stream whose header has not
+  arrived 10 s after the stream did is rejected as a header that does not decode is. A
+  test cannot open a stream with no bytes, because the transport queues a stream at its
+  first byte, so a first message that is still arriving at 10 s tests the wait. Shard 0
+  gives peers outside the region (`Peer::Client`, and a `Peer::Node` whose key no member
+  holds in this node's view) at most 256 places, one for each session of a program and
+  one for the key of a node. It closes each session that gets no place at once with
+  `Code(wire::session::REFUSED)` (superseded by #2325, below). A node's new session
+  takes the place of its old one when the old one still holds it at `accept`. The
+  transport closes the old session as the new one arrives (ONE SESSION PER PEER), so at
+  the bound another peer can take the place first (this sentence superseded by #2325,
+  below)
+  (`laptop.architect-2`, 15:18 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6083798077). It never
+  refuses a member, so a flood of peers outside the region cannot lock a member out
+  (`laptop.architect`, 2026-10-11 01:03 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2296#issuecomment-6104020194).
+  Trigger: the PR that adds the change kind that removes a member (MESH DRIVER). That
+  change also closes each session of that node, with the code of a refused session, and
+  so ends its `Hub` and `Mesh` streams. The node then admits it again as any other peer.
+  The bound can lock out each peer outside the region, also a node that joins and the
+  admin's program, until #2325 (`laptop.architect-2`, 2026-10-10 23:40 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6103406280;
+  superseded by #2325, below).
+  Supersedes the deferrals of
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669 (item 5,
+  2026-10-07 21:09 UTC) and
+  https://github.com/synnaxlabs/foundation/pull/1649#issuecomment-6049077609 (23:41
+  UTC), and the sentence on the wait for a header of
+  https://github.com/synnaxlabs/foundation/issues/1628#issuecomment-6051519122
+  (2026-10-08 03:23 UTC).
+  Amended (2026-10-11, #2325, by `laptop.architect-2`, 05:11 UTC):
+  https://github.com/synnaxlabs/foundation/issues/2325#issuecomment-6105724327, on the
+  plan https://github.com/synnaxlabs/foundation/issues/2325#issuecomment-6105095546. At
+  the bound, a new peer outside the region gets a place: shard 0 frees the oldest place
+  for it. When the peer of that place is now a member (`member`, read again), its
+  sessions stay; else shard 0 closes each session that holds the place with
+  `Code(wire::session::REFUSED)`. So `accept` refuses no session for the bound. A place
+  is as old as the session that took it. A new session of a node key takes the key's
+  place while a session of the key still holds it at `accept`, and the place keeps its
+  age. When none holds it (the transport closes the old session as the new one arrives,
+  and shard 0 can drop it first), the new session takes a new place, as a new peer does,
+  and is one of the 256 later peers of the guarantee (`laptop.architect-2`, 07:28 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2363#issuecomment-6106676170). A place
+  holds each session of its peer that runs: the transport keeps the older session of a
+  node key when the newer one has already ended, so the bound closes both
+  (`laptop.architect-2`, 07:28 UTC, item 1 of
+  https://github.com/synnaxlabs/foundation/pull/2363#issuecomment-6106676170). A peer
+  that proves a right leaves the bound: its place frees and its sessions stay.
+  Membership is the one proof today, which shard 0 reads again for each held place as
+  each new session of a peer outside the region arrives. The client hello of #1744
+  (#2548) and the ticket join of #1157 must each free the place when its proof holds.
+  Guarantee: a peer outside the region keeps its session until 256 later peers took a
+  place, so the bound never closes a peer that proves its right before that. Limit: a
+  flood that takes 256 places in the time that a peer needs to prove closes that peer's
+  session. Only a limit on handshakes before admission bounds that rate (#563). The stop
+  rule holds: no clone of a session lives outside a future that shard 0 drops.
+  Supersedes the close of each session that gets no place of
+  https://github.com/synnaxlabs/foundation/issues/1628#issuecomment-6082002858
+  (2026-10-09 13:35 UTC), the sentence that at the bound another peer can take the place
+  first of https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6083798077
+  (2026-10-09 15:18 UTC), and the lockout until #2325 of
+  https://github.com/synnaxlabs/foundation/pull/2153#issuecomment-6103406280 (2026-10-10
+  23:40 UTC). Lost: a time bound on an unproven place with a share of places by source,
+  since one IPv6 /56 holds 256 /64s, a count by source after the handshake is in the
+  wrong crate (#563), and the programs behind one NAT address would share one share; the
+  proof in the handshake, since the client hello answers a challenge of the node that a
+  1-RTT handshake cannot carry without a new replay defense, and it moves `access`
+  checks into `transport`; a reserved place for a join, by the ruling on #2153.
+  Amended (2026-10-11, #2420, by `laptop.architect-2`): shard 0 binds the port once it
+  has claimed the data directory, before any buffer opens; a failed bind opens no
+  buffer (NODE START; 2026-10-11T15:33:00Z,
+  https://github.com/synnaxlabs/foundation/issues/2413#issuecomment-6110638754). This
+  supersedes the bind before any shard starts of
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669.
+  Amended (2026-10-12, #1662, by `laptop.architect-2`, 15:50 UTC):
+  https://github.com/synnaxlabs/foundation/issues/1662#issuecomment-6127728083. The
+  limits above, the 10 s wait for a header, and the 256 places are the defaults of
+  `node::Settings`, the field `settings` of `node::Config`, and are constants no more.
+  `foundation` gives the defaults. No spec sets them yet: a `node_settings` policy does
+  when a node applies one (#2453, after #2074), so the window keeps its cap until then.
+  The transport is the one place that refuses a value, as the buffer is for a part of
+  the pool budget (NODE SETTINGS). By then the node has claimed its data directory and
+  bound its port, and `Node::join` gives `Error::Transport` with the
+  `transport::Error::Config`. Lost: one field of `node::Config` for each value; the
+  constants until #2453, which lets no simulation run a node at small limits; a check in
+  `Node::start` before a shard starts, which states the rules of the transport a second
+  time for values that only a test gives until #2453. #2453 checks the values of a
+  policy before a node keeps them. Supersedes the limits as constants of
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6046900669
+  (2026-10-07 21:09 UTC), the floor as a patch of
+  https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6073881818
+  (2026-10-09 03:49 UTC), the two bounds as patches of
+  https://github.com/synnaxlabs/foundation/issues/1628#issuecomment-6082002858
+  (2026-10-09 13:35 UTC), and the window that #1662 sizes of
+  https://github.com/synnaxlabs/foundation/pull/1649#issuecomment-6049077609
+  (2026-10-07 23:41 UTC).

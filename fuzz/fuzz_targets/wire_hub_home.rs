@@ -70,7 +70,7 @@ fn credit_kind(credit: Credit) -> u8 {
 }
 
 /// Whether `error` says only that the bytes of a message are no open and no credit.
-fn malformed(error: Error) -> bool {
+fn malformed(error: &Error) -> bool {
     matches!(
         error,
         Error::Empty | Error::Kind { .. } | Error::Length { .. } | Error::Channels
@@ -79,28 +79,28 @@ fn malformed(error: Error) -> bool {
 
 /// Whether a home that must take `next` refuses `message` with `error`. Only one
 /// error is correct.
-fn refused(next: Next, message: &[u8], error: Error) -> bool {
+fn refused(next: Next, message: &[u8], error: &Error) -> bool {
     match next {
         Next::Open => match alone(message) {
             Ok(FromReader::Credit(credit)) => {
                 let kind = credit_kind(credit);
-                error == Error::Unopened { kind }
+                *error == Error::Unopened { kind }
             }
             Ok(_) => false,
-            Err(other) => malformed(other) && error == other,
+            Err(other) => malformed(&other) && *error == other,
         },
         Next::Keys { run, .. } => run.refused(message, error),
         Next::Credit { latest } => match alone(message) {
             Ok(FromReader::Open(open)) => {
                 let kind = open_kind(open);
-                error == Error::Reopen { kind }
+                *error == Error::Reopen { kind }
             }
             Ok(FromReader::Credit(credit)) => {
                 let kind = credit_kind(credit);
-                latest && error == Error::Latest { kind }
+                latest && *error == Error::Latest { kind }
             }
             Ok(_) => false,
-            Err(other) => malformed(other) && error == other,
+            Err(other) => malformed(&other) && *error == other,
         },
     }
 }
@@ -138,7 +138,7 @@ fn read(bytes: &[u8]) {
             }
             (next, Err(error)) => {
                 assert!(
-                    refused(next, message, error),
+                    refused(next, message, &error),
                     "{error:?} is not the refusal of {message:?} for {next:?}"
                 );
                 next

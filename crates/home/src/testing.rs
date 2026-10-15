@@ -25,24 +25,43 @@ pub struct Env {
 }
 
 /// A shard on the ring in `shard-0` of `env.files`, its interner, the mesh time once
-/// the clock has one (the midpoint of the clock's interval, as the shard stamps it),
-/// and the reader of that time.
+/// the clock has one ([`Shard::now`]), and the reader of that time.
 ///
 /// It makes a ring of 4 MiB when `shard-0` holds none, and opens the one there
 /// otherwise. A write waits at most 10 ms for its commit to start, and longer while an
 /// earlier commit runs. A commit takes whole 4 KiB blocks, and nothing frees the ring
-/// until #160, so a new ring fills at 1023 commits of one frame of a stamp and an `i64`
-/// sample.
+/// until #160, so a new ring fills after about a thousand commits of one frame of a
+/// stamp and an `i64` sample.
 ///
 /// # Panics
 ///
 /// When the ring does not open.
 pub async fn shard(env: Env) -> (Shard, Interner, Stamp, clock::Reader) {
-    let config = block::Config { budget: 1 << 23 };
+    let sleep = env.clock.clone();
+    let (shard, interner, mesh) = unsynced_shard(env, Span::ZERO).await;
+    loop {
+        if let Some(now) = shard.now() {
+            return (shard, interner, now, mesh);
+        }
+        sleep.sleep(Span::from_nanos(1)).await;
+    }
+}
+
+/// A shard as [`shard`] gives, whose mesh clock starts `delay` after the call, so the
+/// shard has no mesh time until then, its interner, and the reader of that time.
+///
+/// # Panics
+///
+/// When the ring does not open.
+pub async fn unsynced_shard(env: Env, delay: Span) -> (Shard, Interner, clock::Reader) {
+    let config = block::Config::new(1 << 23).expect("the budget fits");
     let pool = Rc::new(Pool::new(config.clone(), Heap::new(config.reservation())));
     let (clock, mesh) = clock::Clock::new(env.clock.clone());
-    let wall = env.wall;
-    env.tasks.spawn(async move { clock.run(wall).await });
+    let (wall, sleep) = (env.wall, env.clock.sleep(delay));
+    env.tasks.spawn(async move {
+        sleep.await;
+        clock.run(wall).await;
+    });
     let mut interner = Interner::new();
     let config = buffer::Config {
         files: env.files,
@@ -57,7 +76,7 @@ pub async fn shard(env: Env) -> (Shard, Interner, Stamp, clock::Reader) {
     let buffer = buffer::Buffer::open(config, interner.slots())
         .await
         .expect("opens");
-    let shard = Shard::new(crate::Config {
+    let shard = Shard::open(crate::Config {
         shard: 0,
         buffer,
         clock: mesh.clone(),
@@ -65,14 +84,10 @@ pub async fn shard(env: Env) -> (Shard, Interner, Stamp, clock::Reader) {
             earliest: Stamp::from_nanos(1),
             ahead: Span::from_nanos(1_000_000_000),
         },
-    });
-    loop {
-        if let Some(now) = mesh.now().mesh {
-            let midpoint = now.earliest.nanos().midpoint(now.latest.nanos());
-            return (shard, interner, Stamp::from_nanos(midpoint), mesh);
-        }
-        env.clock.sleep(Span::from_nanos(1)).await;
-    }
+    })
+    .await
+    .expect("opens");
+    (shard, interner, mesh)
 }
 
 #[cfg(test)]
@@ -130,6 +145,29 @@ mod tests {
         assert_eq!(len, (1 << 22) + 2 * 4096);
     }
 
+    #[test]
+    fn gives_no_mesh_time_before_the_delay_of_an_unsynced_shard() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config::default());
+        let (before, at) = sim
+            .run_on(&node, |node, tasks| async move {
+                let clock = node.clock();
+                let start = clock.now();
+                let delay = Span::from_nanos(2_000_000_000);
+                let (shard, _, _) = unsynced_shard(env(&node, tasks), delay).await;
+                clock.sleep_until(start + delay - Span::from_nanos(1)).await;
+                let before = shard.now();
+                while shard.now().is_none() {
+                    clock.sleep(Span::from_nanos(1_000_000)).await;
+                }
+                (before, clock.now() - start)
+            })
+            .expect("the run ends");
+        assert_eq!(before, None);
+        assert!(at >= Span::from_nanos(2_000_000_000), "mesh time at {at:?}");
+        assert!(at < Span::from_nanos(2_100_000_000), "mesh time at {at:?}");
+    }
+
     /// A writer on one index with one data channel, and its key set.
     fn open_writer(
         shard: &mut Shard,
@@ -141,7 +179,8 @@ mod tests {
             index,
             data: &channels,
         }]);
-        shard.carry(set.entries()[0].slot);
+        let entry = set.entries()[0];
+        assert!(shard.carry(entry.slot, entry.key));
         let writer = shard
             .open_writer(crate::writer::Writer {
                 subject: "a".parse().expect("a valid name"),
@@ -195,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn fills_a_new_ring_at_1023_one_frame_commits() {
+    fn fills_a_new_ring_at_1020_one_frame_commits() {
         let commits = run(
             sim::node::Config::default(),
             |_, mut shard, mut interner, now| async move {
@@ -210,7 +249,7 @@ mod tests {
             },
         );
 
-        assert_eq!(commits, 1023);
+        assert_eq!(commits, 1020);
     }
 
     #[test]
@@ -243,7 +282,7 @@ mod tests {
             .expect("the run ends");
 
         // The 10 commits before the open keep their blocks.
-        assert!(commits <= 1023 - 10, "{commits}");
+        assert!(commits <= 1020 - 10, "{commits}");
     }
 
     #[test]

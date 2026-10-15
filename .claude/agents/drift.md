@@ -9,7 +9,8 @@ model: sonnet
 
 Find:
 
-- Statements in `docs/decisions/` or `docs/rfc/` that the code contradicts.
+- Statements in `docs/decisions/`, `docs/claude/`, or `docs/rfc/` that the code or CI
+  contradicts.
 - Doc comments that no longer match what the function does.
 - Generated CLI, MCP, and docs output that differs from the operation table.
 - SDK implementations that disagree with the Rust reference on the conformance

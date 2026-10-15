@@ -12,6 +12,7 @@ use env::shards::{Config, Main};
 use env::tasks::{Task, Tasks};
 use env::thread::{Error, Handle};
 use tokio::runtime::{Builder, LocalOptions, LocalRuntime};
+use tracing::Dispatch;
 
 use crate::cores::Cores;
 use crate::{thread, unwind};
@@ -34,11 +35,16 @@ impl env::shards::Driver for Driver {
         !self.0.cpus.is_empty()
     }
 
-    fn start(&self, config: Config, main: Main) -> Result<Handle, Error> {
+    fn start(
+        &self,
+        config: Config,
+        main: Main,
+        log: Dispatch,
+    ) -> Result<Handle, Error> {
         let Config { name, core } = config;
         let cores = Arc::clone(&self.0);
         let build = move |name: &str| build(&cores, name, core);
-        thread::start(name, build, |runtime| serve(runtime, main))
+        thread::start(name, build, |runtime| serve(runtime, main), log)
     }
 }
 

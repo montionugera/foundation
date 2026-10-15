@@ -1,75 +1,37 @@
-//! The seam each secret store implements: the sealed store, a node environment
-//! variable or file, or an outside secret manager.
+//! The seam that each store that reads no file implements: the sealed store or an
+//! outside secret manager.
 
 use std::fmt;
 use std::pin::Pin;
 
 use types::name::Name;
 
-use crate::Value;
+use crate::{Error, Value};
 
+mod file;
 mod sealed;
 
+pub(crate) use file::File;
 pub use sealed::Sealed;
 
-/// A place that holds secret values.
-pub trait Store {
+/// A place that holds secret values. `Debug` never shows a value.
+pub trait Store: fmt::Debug {
     /// Reads the value of `name`, the secret's full name in the tree, such as
-    /// `site_a.secrets.influx_token`. Each store maps the name to its own key (an
-    /// environment variable, a Vault path) by its config.
+    /// `site_a.secrets.influx_token`. Each store maps the name to its own key (a
+    /// Vault path, a Kubernetes Secret) by its config.
     ///
     /// # Errors
     ///
-    /// [`Error::Missing`] when the store holds no value at that key,
-    /// [`Error::Denied`] when the store refuses this node's credentials, and
-    /// [`Error::Unavailable`] when the store does not answer or fails before it
-    /// decides.
+    /// [`Error::Missing`] when the store holds no value at that key, with why, and
+    /// where to put it when the store can say, [`Error::BadName`] when the store
+    /// cannot hold `name`, with how to rename it, [`Error::Denied`] when the store
+    /// refuses this node's credentials, and [`Error::Unavailable`] when the store
+    /// does not answer or fails before it decides, with the fix.
     fn get<'a>(&'a self, name: &'a Name) -> Request<'a>;
 }
 
 /// The future a store returns. It stays on the shard that made it.
 pub type Request<'a> = Pin<Box<dyn Future<Output = Result<Value, Error>> + 'a>>;
-
-/// Why a store gave no value.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Error {
-    /// The store has no value for the name.
-    Missing,
-    /// The store refused this node.
-    Denied {
-        /// The store's own text.
-        detail: String,
-    },
-    /// The store did not answer. Retrying may succeed.
-    Unavailable {
-        /// The store's own text.
-        detail: String,
-    },
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Missing => f.write_str(
-                "the store has no value. Add the value to the store, or point the \
-                 secret store policy at the store that holds it",
-            ),
-            Self::Denied { detail } => write!(
-                f,
-                "the store refused this node: {detail}. Grant the node access in the \
-                 store"
-            ),
-            Self::Unavailable { detail } => {
-                write!(
-                    f,
-                    "the store did not answer: {detail}. Retrying may succeed"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for Error {}
 
 #[cfg(test)]
 mod tests {
@@ -83,6 +45,7 @@ mod tests {
 
     /// Holds values in memory and answers after one pending poll, as a store that
     /// waits on I/O does.
+    #[derive(Debug)]
     struct Memory {
         values: BTreeMap<Name, Vec<u8>>,
         /// Not `Send`, as a store on one shard may be.
@@ -101,7 +64,9 @@ mod tests {
                     self.values
                         .get(name)
                         .map(|v| Value::new(v.clone()))
-                        .ok_or(Error::Missing),
+                        .ok_or_else(|| Error::Missing {
+                            detail: "no key".into(),
+                        }),
                 )
             }))
         }
@@ -138,33 +103,9 @@ mod tests {
         store.polls.set(0);
         assert_eq!(
             drive(&store, &name("site.secrets.key")).unwrap_err(),
-            Error::Missing
+            Error::Missing {
+                detail: "no key".into()
+            }
         );
-    }
-
-    #[test]
-    fn tells_the_caller_what_to_do() {
-        let cases = [
-            (
-                Error::Missing,
-                "the store has no value. Add the value to the store, or point the \
-                 secret store policy at the store that holds it",
-            ),
-            (
-                Error::Denied {
-                    detail: "403".into(),
-                },
-                "the store refused this node: 403. Grant the node access in the store",
-            ),
-            (
-                Error::Unavailable {
-                    detail: "timed out".into(),
-                },
-                "the store did not answer: timed out. Retrying may succeed",
-            ),
-        ];
-        for (error, message) in cases {
-            assert_eq!(error.to_string(), message);
-        }
     }
 }

@@ -127,9 +127,9 @@ pub enum Status {
 pub struct Time {
     /// A reading of the node's monotonic clock.
     pub monotonic: Monotonic,
-    /// Mesh time at `monotonic`. The true time is inside the interval, and its
-    /// midpoint is the clock's best guess. `None` until a majority of the clock's
-    /// sources first agree.
+    /// Mesh time at `monotonic`. The true time is inside the interval when the error
+    /// of the clock is known (less than 36500 days). `None` until a majority of the
+    /// clock's sources first agree.
     pub mesh: Option<Interval>,
 }
 
@@ -147,12 +147,25 @@ impl Reader {
     /// 2162 with an unknown error).
     #[must_use]
     pub fn now(&self) -> Time {
+        let (monotonic, mesh) = self.measure(Measurement::interval);
+        Time { monotonic, mesh }
+    }
+
+    /// The best guess of mesh time now ([`Measurement::time`]), or `None` before the
+    /// first mesh time.
+    pub(crate) fn best(&self) -> Option<Stamp> {
+        self.measure(Measurement::time).1
+    }
+
+    /// Reads the monotonic clock inside the cell read, so that a retry reads it again,
+    /// and gives `pick` of mesh time at that reading.
+    fn measure<T>(&self, pick: impl Fn(Measurement) -> T) -> (Monotonic, Option<T>) {
         self.cell.read(|discipline| {
             let monotonic = self.monotonic.now();
             let mesh = discipline
                 .slew()
-                .map(|slew| slew.at(monotonic, DRIFT).interval());
-            Time { monotonic, mesh }
+                .map(|slew| pick(slew.at(monotonic, DRIFT)));
+            (monotonic, mesh)
         })
     }
 
@@ -183,6 +196,18 @@ impl Reader {
                 reader.monotonic.sleep_until(wake).await;
             }
         }
+    }
+
+    /// Waits until the node's monotonic clock reaches `at`, never before. An `at` that
+    /// has passed completes at once. A drop cancels the wait.
+    ///
+    /// # Panics
+    ///
+    /// As [`env::clock::Clock::sleep_until`] does, on a thread that `env` did not
+    /// start.
+    #[must_use]
+    pub fn sleep_until(&self, at: Monotonic) -> env::clock::Sleep {
+        self.monotonic.sleep_until(at)
     }
 
     /// What the clock follows now, with mesh time at the call. It holds the result of

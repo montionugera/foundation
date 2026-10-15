@@ -18,6 +18,8 @@ use wire::Protocol;
 pub(crate) const PORT: u16 = 7000;
 pub(crate) const HOME: PrivateKey = PrivateKey([1; 32]);
 pub(crate) const PEER: PrivateKey = PrivateKey([2; 32]);
+/// The node key of the hub under test, which each hello names as its `via`.
+pub(crate) const NODE: types::node::Key = types::node::Key::from_u128(1);
 
 pub(crate) fn public_key(key: &PrivateKey) -> PublicKey {
     let pair = Ed25519KeyPair::from_seed_unchecked(&key.0).expect("a key pair");
@@ -66,7 +68,7 @@ pub(crate) fn transport_sized(
 
 /// A pool for a transport, so a test that fills the hub's pool does not fill it.
 pub(crate) fn own_pool() -> Rc<Pool> {
-    let config = block::Config { budget: 1 << 20 };
+    let config = block::Config::new(1 << 20).expect("the budget fits");
     Rc::new(Pool::new(
         config.clone(),
         block::Heap::new(config.reservation()),
@@ -83,6 +85,12 @@ pub(crate) async fn accept(transport: &Transport) -> (transport::Session, Incomi
 /// The next stream of `session`, after its header.
 pub(crate) async fn stream(session: &transport::Session) -> Incoming {
     let mut incoming = session.accept().await.expect("a stream");
+    header(&mut incoming).await;
+    incoming
+}
+
+/// Reads the header of `incoming`, and checks that it names the hub.
+pub(crate) async fn header(incoming: &mut Incoming) {
     let header = incoming.receiver.recv().await.expect("a header");
     let header = header.expect("the header comes before the finish");
     assert_eq!(
@@ -90,6 +98,4 @@ pub(crate) async fn stream(session: &transport::Session) -> Incoming {
         Ok((Protocol::Hub, &[][..])),
         "the stream is of the hub"
     );
-    drop(header);
-    incoming
 }

@@ -3,7 +3,7 @@
 
 use std::collections::VecDeque;
 use std::mem;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use block::Pool;
 use bytes::Bytes;
@@ -98,6 +98,40 @@ impl Connection {
         }
     }
 
+    /// When [`Connection::timeout`] must next run, if ever.
+    pub(super) fn deadline(&self) -> Option<Instant> {
+        let streams = self.streams.deadline(|| self.idle());
+        self.inner.poll_timeout().into_iter().chain(streams).min()
+    }
+
+    /// The idle timeout as noq-proto counts it, at least 3 PTO.
+    fn idle(&self) -> Duration {
+        let idle = self.inner.idle_timeout();
+        idle.expect("invariant: a `Setup` sets an idle timeout")
+    }
+
+    /// Runs the timers due at `now`, and queues in `events` the [`Event::Closed`] of a
+    /// fault that it finds. Gives whether one ran, so that the caller drives the
+    /// connection. The idle timeout goes first: a wake past it and the hello's bound
+    /// ends a silent peer with [`Error::TimedOut`].
+    pub(super) fn timeout(
+        &mut self,
+        now: Instant,
+        events: &mut VecDeque<Event>,
+    ) -> bool {
+        let ran = self.inner.poll_timeout().is_some_and(|due| due <= now);
+        if ran {
+            self.inner.handle_timeout(now);
+        }
+        if let Err(Fault(reason)) = self.streams.timeout(now, || self.idle())
+            && !self.inner.is_closed()
+        {
+            events.extend(self.fault(now, reason));
+            return true;
+        }
+        ran
+    }
+
     /// Moves the connection's events to `endpoint` and to `events` at `now`, and
     /// each datagram that arrives into a block from `pool`. Returns whether it
     /// drained: `endpoint` forgot it, and nothing more happens to it.
@@ -159,6 +193,7 @@ impl Connection {
                     return;
                 }
                 self.state = State::Open;
+                self.streams.start(now);
                 let peer = self.peer();
                 events.push_back(Event::Connected { key, peer });
             }
@@ -266,6 +301,31 @@ impl Connection {
         }
     }
 
+    /// Whether the handshake is in flight.
+    pub(super) fn handshaking(&self) -> bool {
+        matches!(self.state, State::Dialing { .. } | State::Accepting)
+    }
+
+    /// Closes with code 0 a connection whose handshake is in flight, in either
+    /// direction, and gives the [`Event::Closed`] of a dial.
+    ///
+    /// # Panics
+    ///
+    /// When the handshake is not in flight.
+    pub(super) fn abort(&mut self, now: Instant) -> Option<Event> {
+        match self.state {
+            State::Dialing { .. } => self.close(now, Code(0)),
+            State::Accepting => {
+                self.end();
+                self.inner.close(now, VarInt::from_u32(0), Bytes::new());
+                None
+            }
+            State::Open | State::Ended => {
+                panic!("invariant: the handshake is in flight")
+            }
+        }
+    }
+
     /// Ends a live connection after the socket broke, and gives its
     /// [`Event::Closed`] with [`Error::Network`] when the caller has the key.
     pub(super) fn fail(&mut self, error: &env::net::Error) -> Option<Event> {
@@ -287,9 +347,10 @@ impl Connection {
         mem::replace(&mut self.state, State::Ended)
     }
 
-    /// Gives `error` to the stream calls, and gives the [`Event::Closed`] of the
-    /// connection, which [`Connection::end`] ended.
-    fn closed(&self, error: Error) -> Event {
+    /// Gives `error` to the stream calls, frees the sending halves that no stream
+    /// call can reach now, and gives the [`Event::Closed`] of the connection, which
+    /// [`Connection::end`] ended.
+    fn closed(&mut self, error: Error) -> Event {
         self.streams.end(error.clone());
         Event::Closed {
             key: self.key,

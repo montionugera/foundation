@@ -36,6 +36,20 @@ sim = { path = "../sim" }
 name = "alloc"
 harness = false
 
+[[test]]
+name = "memory"
+harness = false
+
+[[bench]]
+name = "keyset"
+harness = false
+test = true
+
+[[bench]]
+name = "open"
+harness = false
+test = true
+
 [[bench]]
 name = "reader"
 harness = false

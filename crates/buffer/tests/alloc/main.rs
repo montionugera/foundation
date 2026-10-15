@@ -1,7 +1,8 @@
 //! `append` makes no heap allocation once the buffer has taken a batch of each
-//! shape: its slots, its entry count, and whether it closes the open record. This
-//! binary has no test harness: the count covers each thread, and a harness
-//! allocates on its own thread at any time.
+//! shape: its slots, its entry count, and whether it closes the open record. Nor
+//! does a `Commit` that waits and drops, or a commit of the logs that marks a range
+//! and trims. This binary has no test harness: the count covers each thread, and a
+//! harness allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -84,12 +85,41 @@ fn read_once(buffer: &Buffer, slot: channel::Slot) -> (Read, u64) {
     (read.expect("reads"), allocations)
 }
 
+/// Polls a `Commit` of queued entries once and drops it. From commit `WARM` on,
+/// checks that it made no allocation.
+fn wait_once(buffer: &Buffer, commit: u64) {
+    let (polled, allocations) = ALLOCATOR.count(|| {
+        let waiter = pin!(buffer.committed());
+        waiter.poll(&mut Context::from_waker(Waker::noop()))
+    });
+    assert!(polled.is_pending(), "a commit of queued entries waits");
+    if commit >= WARM {
+        assert_eq!(allocations, 0, "a wait allocated at commit {commit}");
+    }
+}
+
+/// Each trim drops the range that the commit before marked, so the ranges stay in
+/// the memory that the warm-up gave them.
+fn marked_trims_take_no_allocation() {
+    let mut logs = buffer::bench::Logs::new(4);
+    for _ in 0..64 {
+        logs.mark();
+    }
+    let ((), n) = ALLOCATOR.count(|| {
+        for _ in 0..1024 {
+            logs.mark();
+        }
+    });
+    assert_eq!(n, 0, "{n} allocations in 1024 marked trims");
+}
+
 fn main() {
     assert_eq!(
         ALLOCATOR.count(|| drop(Box::new(1_u8))).1,
         1,
         "the allocator counts"
     );
+    marked_trims_take_no_allocation();
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let clock = node.clock();
@@ -101,7 +131,7 @@ fn main() {
     let handle = node
         .shards()
         .start(config, move |tasks| async move {
-            let config = block::Config { budget: 1 << 21 };
+            let config = block::Config::new(1 << 21).expect("the budget fits");
             let pool =
                 Rc::new(Pool::new(config.clone(), Heap::new(config.reservation())));
             let mut slots = Slots::new();
@@ -135,6 +165,7 @@ fn main() {
                         );
                     }
                 }
+                wait_once(&buffer, commit);
                 buffer.committed().await.expect("commits");
             }
             let (read, allocations) = read_once(&buffer, channel::Slot::new(1));

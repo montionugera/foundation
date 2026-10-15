@@ -15,6 +15,8 @@ use tokio::sync::Notify;
 use tokio::time::timeout;
 
 #[cfg(target_os = "linux")]
+mod full;
+#[cfg(target_os = "linux")]
 #[path = "../../common/gso.rs"]
 mod gso;
 
@@ -278,6 +280,30 @@ fn a_batch_arrives_when_the_kernel_refuses_gso() {
     });
 }
 
+/// Each batch sent one datagram at a time arrives whole, also after the first.
+#[test]
+#[cfg(target_os = "linux")]
+fn each_batch_sent_one_datagram_at_a_time_arrives_whole() {
+    on_thread("udp-batches", || async {
+        let net = net();
+        let (mut sender, _) = loopback(&net);
+        gso::refuse(sender.local());
+        let (_, mut receiver) = loopback(&net);
+        let batch = Transmit {
+            segment: NonZeroUsize::new(2),
+            ..transmit(receiver.local(), b"abcd")
+        };
+        for round in ["first", "second", "third"] {
+            assert_eq!(send(&mut sender, &batch).await, Ok(()), "{round} batch");
+            let contents: Vec<_> = (receive(&mut receiver, 2).await)
+                .into_iter()
+                .map(|datagram| datagram.contents)
+                .collect();
+            assert_eq!(contents, [b"ab", b"cd"], "{round} batch");
+        }
+    });
+}
+
 /// macOS loses it: `a_datagram_over_the_path_mtu_is_lost`.
 #[test]
 #[cfg(target_os = "linux")]
@@ -319,6 +345,30 @@ fn a_datagram_over_the_path_mtu_is_lost() {
         assert_eq!(send(&mut sender, &to).await, Ok(()));
         let datagrams = receive(&mut receiver, 1).await;
         assert_eq!(datagrams[0].contents, b"after");
+    });
+}
+
+/// A segment of 65,500 bytes and its headers are over the 65,536-byte MTU of the
+/// Linux loopback, so the batch is over the path MTU with GSO.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_short_last_datagram_of_a_batch_over_the_path_mtu_arrives() {
+    on_thread("udp-mtu-batch", || async {
+        let net = net();
+        let local = SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 0);
+        let (mut sender, _) = bind(&net, local);
+        let (_, mut receiver) = bind(&net, local);
+        let contents = vec![7; udp::TRANSMIT_BYTES_MAX];
+        let big = Transmit {
+            segment: NonZeroUsize::new(65_500),
+            ..transmit(receiver.local(), &contents)
+        };
+        assert_eq!(send(&mut sender, &big).await, Ok(()));
+        let to = transmit(receiver.local(), b"after");
+        assert_eq!(send(&mut sender, &to).await, Ok(()));
+        let datagrams = receive(&mut receiver, 2).await;
+        let arrived: Vec<&[u8]> = datagrams.iter().map(|d| &d.contents[..]).collect();
+        assert_eq!(arrived, [&[7; 7][..], b"after"]);
     });
 }
 

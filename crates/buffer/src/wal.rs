@@ -21,6 +21,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::ops::Range;
 
+use crate::carry;
 use crate::entry::{self, ENTRIES_MAX};
 use crate::record::{
     self, ALIGN, AREA_START, BLOCK, Body, Check, HEADER_LEN, Head, Kind, Record,
@@ -29,9 +30,33 @@ use crate::record::{
 /// The body of a restart record: one chain value.
 const RESTART_LEN: usize = 4;
 
-/// Bytes of the whole blocks that hold a restart record: one block.
-const RESTART: usize = ALIGN;
-const _: () = assert!(HEADER_LEN + RESTART_LEN <= RESTART, "a restart record fits");
+/// The room of the carry record that a data record leaves free for the commit after
+/// the next open.
+const OWED: u64 = BLOCK;
+
+/// The room of one restart record: the block that holds it.
+const REOPEN: u64 = BLOCK;
+const _: () = assert!(HEADER_LEN + RESTART_LEN <= ALIGN, "a restart record fits");
+
+/// The room that each data record leaves free: the restart record of the next open,
+/// the carry record of the commit after it, and the restart record of a later open.
+/// An open writes over a restart record that no data or carry record follows, so a
+/// second open before a commit takes no more room.
+const SPARE: u64 = REOPEN + OWED + REOPEN;
+
+/// The room that a record of `kind` leaves free.
+///
+/// # Panics
+///
+/// When `kind` is [`Kind::Wrap`]: a wrap record goes only with the record after it.
+fn spare(kind: Kind) -> u64 {
+    match kind {
+        Kind::Data => SPARE,
+        Kind::Carry => REOPEN,
+        Kind::Restart => 0,
+        Kind::Wrap => unreachable!("invariant: a wrap goes with its record"),
+    }
+}
 
 /// The smallest body a layout allows: the rest of a block after the record header.
 /// A record takes whole blocks, so a smaller body saves no disk.
@@ -40,6 +65,10 @@ const _: () = assert!(entry::table_len(1) <= BODY_MIN, "a body holds one entry")
 
 /// Bytes of the whole blocks that hold a record header and the largest entry table.
 const TABLE: usize = (HEADER_LEN + entry::TABLE_MAX).next_multiple_of(ALIGN);
+const _: () = assert!(
+    carry::body_len(carry::TAILS_MAX) <= TABLE - HEADER_LEN,
+    "the walk holds a full carry body whole"
+);
 
 fn to_u64(len: usize) -> u64 {
     u64::try_from(len).expect("invariant: a length in memory fits in u64")
@@ -57,11 +86,11 @@ fn window(body_max: usize) -> Option<u64> {
 }
 
 /// The smallest area with a largest record of `window` bytes. It holds three
-/// commits of one record in a row and the blocks that one wrap skips, so, when each
-/// commit and each open trims, a steady load of one record in each commit gets no
-/// [`Full`].
+/// commits of one record in a row, the blocks that one wrap skips, and [`SPARE`], so,
+/// when each commit and each open trims, a steady load of one record in each commit
+/// gets no [`Full`].
 fn area_min(window: u64) -> u64 {
-    4 * window
+    4 * window + SPARE
 }
 
 /// An offset that is not on a block boundary.
@@ -143,8 +172,9 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// The least [`entry_max`](Self::entry_max) of any layout: the bytes of parts
-    /// that one entry alone holds in a record at the smallest `body_max`.
+    /// The least [`entry_max`](Self::entry_max) of any layout and the least
+    /// [`Buffer::block_max`](crate::Buffer::block_max) of any buffer: the bytes of
+    /// parts that one entry alone holds in a record at the smallest `body_max`.
     pub const ENTRY_MAX_MIN: usize = BODY_MIN - entry::table_len(1);
 
     /// A ring of `area` bytes whose records hold a body of at most `body_max` bytes.
@@ -155,9 +185,9 @@ impl Layout {
     /// header), over `u32::MAX`, or so large that the largest record does not fit in a
     /// `usize`. Also when `area` is not a multiple of [`ALIGN`], when it is less than
     /// four times the largest record (a 9-byte header and `body_max`, in whole
-    /// 4096-byte blocks), or when the ring file (two header blocks and the area) does
-    /// not fit in a `u64`. A ring of that area that holds only its restart record
-    /// takes any record, wherever the restart record is.
+    /// 4096-byte blocks) and three blocks, or when the ring file (two header blocks and
+    /// the area) does not fit in a `u64`. A ring of that area that holds only its
+    /// restart record takes any record, wherever the restart record is.
     pub fn new(area: u64, body_max: usize) -> Result<Self, Unfit> {
         match window(body_max) {
             Some(window)
@@ -232,11 +262,19 @@ impl Layout {
         self.body_max - entry::table_len(1)
     }
 
+    /// The most tails that one carry record of this layout holds: the fewer of
+    /// [`carry::TAILS_MAX`] and the tails that fit `body_max`. No other place
+    /// computes it.
+    #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
+    pub(crate) fn tails_max(self) -> usize {
+        carry::count(self.body_max)
+    }
+
     /// Checks a batch of `entries` entries, with `parts` parts and `bytes` bytes of
     /// parts in all, against the limits of one record of this ring, as
     /// [`Buffer::append`](crate::Buffer::append) does before it queues the batch.
-    /// It does not check [`Limit::Block`](crate::Limit::Block), which depends on
-    /// the pool.
+    /// It does not check [`Limit::Block`](crate::Limit::Block), which
+    /// [`Buffer::block_max`](crate::Buffer::block_max) gives.
     ///
     /// # Errors
     ///
@@ -291,12 +329,12 @@ pub enum Limit {
         /// The layout's `body_max`.
         max: usize,
     },
-    /// An entry whose parts, joined, no block of the shard's pool holds. A read
-    /// gives each entry in one block.
+    /// An entry whose parts, joined, pass
+    /// [`Buffer::block_max`](crate::Buffer::block_max).
     Block {
         /// Bytes of the entry's parts.
         len: usize,
-        /// The pool's largest block payload.
+        /// [`Buffer::block_max`](crate::Buffer::block_max).
         max: usize,
     },
 }
@@ -320,8 +358,8 @@ impl fmt::Display for Limit {
             ),
             Self::Block { len, max } => write!(
                 f,
-                "an entry has {len} bytes of parts, and a block of the pool holds at \
-                 most {max}"
+                "an entry has {len} bytes of parts, and an entry of this buffer holds \
+                 at most {max}"
             ),
         }
     }
@@ -334,7 +372,7 @@ pub(crate) struct Full {
     /// Bytes of the area that the record needs, with the rest it must skip.
     pub(crate) needed: u64,
     /// Bytes the record may take: the area not in use, or the offsets left before
-    /// the end, whichever is less.
+    /// the end, whichever is less, less the room that the record must leave free.
     pub(crate) free: u64,
 }
 
@@ -368,13 +406,15 @@ pub(crate) struct Plan {
     pub(crate) offset: u64,
     /// The offset after the record.
     pub(crate) next: u64,
+    /// The kind of the record.
+    kind: Kind,
     /// The length of the body the record was placed for.
     len: usize,
 }
 
 impl Plan {
-    /// Makes the headers of the data record, with `body` as its bytes, chained
-    /// from `chain`, and returns them with the boundaries after its records.
+    /// Makes the headers of the record, with `body` as its bytes, chained from
+    /// `chain`, and returns them with the boundaries after its records.
     ///
     /// # Panics
     ///
@@ -382,15 +422,6 @@ impl Plan {
     pub(crate) fn seal<'a>(
         self,
         chain: u32,
-        body: impl IntoIterator<Item = &'a [u8], IntoIter: Clone>,
-    ) -> (Sealed, Ends) {
-        self.headers(chain, Kind::Data, body)
-    }
-
-    fn headers<'a>(
-        self,
-        chain: u32,
-        kind: Kind,
         body: impl IntoIterator<Item = &'a [u8], IntoIter: Clone>,
     ) -> (Sealed, Ends) {
         let body = body.into_iter();
@@ -410,7 +441,7 @@ impl Plan {
             };
             (Write { place, header }, end)
         });
-        let (header, chain) = record::header(chain, kind, body);
+        let (header, chain) = record::header(chain, self.kind, body);
         let record = Write {
             place: self.place,
             header,
@@ -462,6 +493,12 @@ impl Writer {
         self.head
     }
 
+    /// The offset of the tail.
+    #[cfg(test)]
+    pub(crate) fn tail(&self) -> u64 {
+        self.tail
+    }
+
     /// The writer of an empty ring of `layout` with its tail at `offset`, after its
     /// restart record of one block.
     ///
@@ -477,17 +514,66 @@ impl Writer {
         cursor.writer(offset, 9).expect("the restart record fits").0
     }
 
-    /// Plans a record with a body of `len` bytes.
+    /// Plans a data record with a body of `len` bytes. It leaves [`SPARE`] free.
     ///
     /// # Errors
     ///
-    /// [`Full`] when the record does not fit before the tail. Nothing changes.
+    /// [`Full`] when the record and those three blocks do not fit before the tail.
+    /// Nothing changes.
     ///
     /// # Panics
     ///
     /// When `len` is more than the layout's maximum.
     pub(crate) fn append(&mut self, len: usize) -> Result<Plan, Full> {
-        let (skipped, size) = self.cost(len)?;
+        self.plan(Kind::Data, len)
+    }
+
+    /// Plans a carry record of `tails` tails. It leaves one block free, for the
+    /// restart record of the next open, and may take the rest of the blocks that
+    /// [`append`](Self::append) leaves free.
+    ///
+    /// # Errors
+    ///
+    /// [`Full`] when the record and that block do not fit before the tail. Nothing
+    /// changes.
+    ///
+    /// # Panics
+    ///
+    /// When `tails` is more than [`Layout::tails_max`].
+    #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
+    pub(crate) fn carry(&mut self, tails: usize) -> Result<Plan, Full> {
+        self.plan(Kind::Carry, carry::body_len(tails))
+    }
+
+    /// The most tails that a carry record planned now may hold: the fewer of
+    /// [`Layout::tails_max`] and the tails whose record fits as
+    /// [`carry`](Self::carry) checks it. Zero when no block is free for it.
+    #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
+    pub(crate) fn tails(&self) -> usize {
+        let free = self.free(spare(Kind::Carry));
+        let rest = self.layout.area - self.layout.place(self.head);
+        // A record over the rest skips it, so it may take what is free after it.
+        let size = free.min(rest).max(free.saturating_sub(rest));
+        // Near the end of the offsets, `free` is not whole blocks.
+        let size = (size / BLOCK * BLOCK).saturating_sub(to_u64(HEADER_LEN));
+        let body = usize::try_from(size).expect("invariant: a record fits in memory");
+        carry::count(body).min(self.layout.tails_max())
+    }
+
+    /// The offset that the trim of the next commit wants to move the tail to, when
+    /// that commit is as large as the records not yet synced. A path whose holder
+    /// is before it needs a carry now.
+    #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
+    pub(crate) fn reach(&self) -> u64 {
+        let queued = self.queued();
+        self.want(self.head.saturating_add(queued), queued)
+    }
+
+    /// Plans a record of `kind` with a body of `len` bytes. It leaves the room of
+    /// [`spare`] free.
+    #[inline]
+    fn plan(&mut self, kind: Kind, len: usize) -> Result<Plan, Full> {
+        let (skipped, size) = self.cost(len, spare(kind))?;
         let wrap = (skipped > 0).then(|| self.layout.place(self.head));
         let start = self.head + skipped;
         if skipped > 0 {
@@ -499,6 +585,7 @@ impl Writer {
             place: self.layout.place(start),
             offset: start,
             next: self.head,
+            kind,
             len,
         })
     }
@@ -508,8 +595,8 @@ impl Writer {
         self.layout
     }
 
-    /// Checks that a record with a body of `len` bytes fits before the tail.
-    /// [`append`](Self::append) with that body then succeeds.
+    /// Checks that a data record with a body of `len` bytes fits as
+    /// [`append`](Self::append) checks it. `append` with that body then succeeds.
     ///
     /// # Errors
     ///
@@ -519,7 +606,7 @@ impl Writer {
     ///
     /// When `len` is more than the layout's maximum.
     pub(crate) fn fits(&self, len: usize) -> Result<(), Full> {
-        self.cost(len).map(drop)
+        self.cost(len, spare(Kind::Data)).map(drop)
     }
 
     /// Frees the records before `tail`, an offset that an earlier plan gave.
@@ -561,30 +648,53 @@ impl Writer {
         }
     }
 
-    /// The tail that frees the oldest synced records, up to the first boundary
-    /// that leaves the headroom free. `None` when the headroom is free, or when no
-    /// record can go. The tail never passes the last synced record, or the offset
-    /// `kept`: the oldest record that must stay. Once the tail is durable,
-    /// [`release`](Self::release) frees the records.
+    /// Marks the records of `ends` synced, in order, then frees the records before
+    /// `tail`, which [`trimmed`](Self::trimmed) gave before their sync. Call it once
+    /// after each sync.
     ///
-    /// The headroom is three times the larger of the largest record and the records
-    /// not yet synced. The space of a trim is free only at its release. From one trim
-    /// to the release of the next, the ring takes the records of two commits and the
-    /// blocks that one wrap skips.
+    /// # Panics
+    ///
+    /// As [`synced`](Self::synced) and [`release`](Self::release).
     #[cfg_attr(
         not(any(test, feature = "sim")),
         expect(dead_code, reason = "a commit calls it")
     )]
-    pub(crate) fn trimmed(&self, kept: Option<u64>) -> Option<Position> {
-        let window = self.layout.window;
-        let synced = self.synced_end();
-        let mut queued = self.head - synced;
-        if synced <= self.skip.start {
-            queued -= self.skip.end - self.skip.start;
+    pub(crate) fn committed(
+        &mut self,
+        ends: impl IntoIterator<Item = Ends>,
+        tail: Option<Position>,
+    ) {
+        for ends in ends {
+            self.synced(ends);
         }
-        let room = queued.max(window).saturating_mul(3);
-        let spare = self.layout.area.saturating_sub(room);
-        let want = self.head.saturating_sub(spare);
+        if let Some(tail) = tail {
+            self.release(tail.offset);
+        }
+    }
+
+    /// The tail that frees the oldest synced records, up to the first boundary
+    /// that leaves the headroom free. `None` when the headroom is free, or when no
+    /// record can go. The tail never passes the last synced record, or the offset
+    /// `kept`: the oldest record that must stay. `land` gives, for that boundary,
+    /// the newest offset at or before it at which a trim may land, and the tail is
+    /// the newest boundary at or before that. Once the tail is durable,
+    /// [`release`](Self::release) frees the records.
+    ///
+    /// The headroom is three times the larger of the largest record and the records
+    /// not yet synced, and the three blocks that [`append`](Self::append) leaves free.
+    /// The space of a trim is free only at its release. From one trim to the release
+    /// of the next, the ring takes the records of two commits and the blocks that one
+    /// wrap skips.
+    #[cfg_attr(
+        not(any(test, feature = "sim")),
+        expect(dead_code, reason = "a commit calls it")
+    )]
+    pub(crate) fn trimmed(
+        &self,
+        kept: Option<u64>,
+        land: impl FnOnce(u64) -> u64,
+    ) -> Option<Position> {
+        let want = self.want(self.head, self.queued());
         if want <= self.tail {
             return None;
         }
@@ -593,7 +703,9 @@ impl Writer {
             .ends
             .partition_point(|end| kept.is_none_or(|kept| end.offset <= kept));
         let last = free.checked_sub(1)?;
-        self.ends.get(enough.min(last)).copied()
+        let landing = land(self.ends.get(enough.min(last))?.offset);
+        let at = self.ends.partition_point(|end| end.offset <= landing);
+        self.ends.get(at.checked_sub(1)?).copied()
     }
 
     /// The boundary after the last synced record, or the tail.
@@ -601,9 +713,38 @@ impl Writer {
         self.ends.back().map_or(self.tail, |end| end.offset)
     }
 
+    /// The bytes of the records not yet synced, less the blocks of a wrap skip
+    /// among them.
+    fn queued(&self) -> u64 {
+        let synced = self.synced_end();
+        let mut queued = self.head - synced;
+        if synced <= self.skip.start {
+            queued -= self.skip.end - self.skip.start;
+        }
+        queued
+    }
+
+    /// The offset that a trim wants the tail at, with the head at `head` and
+    /// `queued` bytes of records not yet synced: the headroom of
+    /// [`trimmed`](Self::trimmed) before the head.
+    fn want(&self, head: u64, queued: u64) -> u64 {
+        let room = queued.max(self.layout.window).saturating_mul(3);
+        let lead = self.layout.area.saturating_sub(SPARE + room);
+        head.saturating_sub(lead)
+    }
+
+    /// The bytes that a record may take and leave `spare` bytes free: the area not
+    /// in use, or the offsets left before the end, whichever is less, less `spare`.
+    fn free(&self, spare: u64) -> u64 {
+        let live = self.head - self.tail;
+        let free = (self.layout.area - live).min(u64::MAX - self.head);
+        free.saturating_sub(spare)
+    }
+
     /// The bytes a record with a body of `len` bytes skips at the end of the area
-    /// and the bytes it takes.
-    fn cost(&self, len: usize) -> Result<(u64, u64), Full> {
+    /// and the bytes it takes, when it leaves `spare` bytes free.
+    #[inline]
+    fn cost(&self, len: usize, spare: u64) -> Result<(u64, u64), Full> {
         assert!(
             len <= self.layout.body_max,
             "invariant: a body of {len} bytes is over the maximum of {}",
@@ -613,8 +754,7 @@ impl Writer {
         let area = self.layout.area;
         let rest = area - self.layout.place(self.head);
         let skipped = if size > rest { rest } else { 0 };
-        let live = self.head - self.tail;
-        let free = (area - live).min(u64::MAX - self.head);
+        let free = self.free(spare);
         let needed = skipped + size;
         if needed > free {
             return Err(Full { needed, free });
@@ -635,6 +775,8 @@ pub(crate) struct Window {
 pub(crate) enum Step<'a> {
     /// The body of the next data record.
     Data(Body<'a>),
+    /// The whole body of the next carry record.
+    Carry(&'a [u8]),
     /// A wrap or restart record. The cursor moved; ask for the next window.
     Moved,
     /// The record goes on past the bytes given; ask for the next window.
@@ -644,9 +786,9 @@ pub(crate) enum Step<'a> {
 }
 
 /// A record that follows the chain but that this version cannot read: a kind it
-/// does not know, a wrap or restart record of the wrong shape, or a record that
-/// ends past the end of the offsets. The ring is from another version or a defect
-/// wrote it.
+/// does not know, a body over `body_max`, a wrap, restart, or carry record of the
+/// wrong shape, or a record that ends past the end of the offsets. The ring is from
+/// another version or a defect wrote it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Invalid {
     pub(crate) offset: u64,
@@ -722,7 +864,7 @@ pub(crate) struct Cursor {
     layout: Layout,
     tail: u64,
     at: Position,
-    /// The boundary after the last data record read, or the tail.
+    /// The boundary after the last data or carry record read, or the tail.
     head: Position,
     /// The boundary after each record read, of any kind, oldest first.
     ends: VecDeque<Position>,
@@ -788,8 +930,7 @@ impl Cursor {
     }
 
     /// The largest window at the read position: the largest record, the rest of the
-    /// area,
-    /// or the rest of one lap.
+    /// area, or the rest of one lap.
     fn bound(&self) -> Window {
         let area = self.layout.area;
         let place = self.layout.place(self.at.offset);
@@ -890,10 +1031,14 @@ impl Cursor {
             crc,
         } = record;
         let offset = self.at.offset;
+        if body.len > self.layout.body_max {
+            return Err(Invalid { offset, kind });
+        }
         let unread = self.unread();
         let rest = self.layout.area - self.layout.place(offset);
         let (moved, chain, step) = match (Kind::decode(kind), body.whole()) {
             (Some(Kind::Data), _) => (to_u64(size), crc, Step::Data(body)),
+            (Some(Kind::Carry), Some(body)) => (to_u64(size), crc, Step::Carry(body)),
             (Some(Kind::Wrap), Some([])) if rest < unread => (rest, crc, Step::Moved),
             (Some(Kind::Restart), Some(&[c0, c1, c2, c3])) => {
                 let chain = u32::from_le_bytes([c0, c1, c2, c3]);
@@ -907,16 +1052,16 @@ impl Cursor {
             chain,
         };
         self.ends.push_back(self.at);
-        if let Step::Data(_) = step {
+        if let Step::Data(_) | Step::Carry(_) = step {
             self.head = self.at;
         }
         Ok(step)
     }
 
-    /// Makes the writer that continues the ring after the last data record walked,
-    /// or from the tail when the walk read none, with the records before the offset
-    /// `tail` released, and seals its restart record with `chain`, a new random
-    /// value, as the body. The chain continues from `chain`.
+    /// Makes the writer that continues the ring after the last data or carry
+    /// record walked, or from the tail when the walk read none, with the records
+    /// before the offset `tail` released, and seals its restart record with `chain`,
+    /// a new random value, as the body. The chain continues from `chain`.
     ///
     /// # Errors
     ///
@@ -927,7 +1072,7 @@ impl Cursor {
     /// # Panics
     ///
     /// Before [`Step::End`], or when `tail` is before the tail of the walk or past
-    /// the end of its last data record.
+    /// the end of its last data or carry record.
     pub(crate) fn writer(
         self,
         tail: u64,
@@ -935,7 +1080,8 @@ impl Cursor {
     ) -> Result<(Writer, Sealed), Full> {
         assert!(self.ended, "invariant: the chain ends at the last step");
         let Self { head, mut ends, .. } = self;
-        // The restart record goes over the records after the last data record.
+        // The restart record goes over the records after the last data or carry
+        // record.
         ends.truncate(ends.partition_point(|end| end.offset <= head.offset));
         let mut writer = Writer {
             layout: self.layout,
@@ -945,9 +1091,9 @@ impl Cursor {
             skip: 0..0,
         };
         writer.release(tail);
-        let plan = writer.append(RESTART_LEN)?;
+        let plan = writer.plan(Kind::Restart, RESTART_LEN)?;
         let body = chain.to_le_bytes();
-        let (sealed, ends) = plan.headers(head.chain, Kind::Restart, [&body[..]]);
+        let (sealed, ends) = plan.seal(head.chain, [&body[..]]);
         // The open syncs the restart record before the first commit, and the chain
         // continues from its body.
         let offset = plan.next;
@@ -962,9 +1108,9 @@ mod tests {
     use super::*;
     use env::files::SECTOR;
     use proptest::prelude::*;
-    use std::{iter, mem};
+    use std::{iter, mem, slice};
 
-    const BLOCKS: u64 = 16;
+    const BLOCKS: u64 = 19;
     const AREA: u64 = BLOCKS * 4096;
     const BODY_MAX: usize = 3 * ALIGN;
 
@@ -997,8 +1143,8 @@ mod tests {
     }
 
     /// A ring of `blocks` blocks that [`Layout::new`] refuses: less than four of its
-    /// largest record. No public call makes one, so its tests build it from its
-    /// fields.
+    /// largest record and three blocks. No public call makes one, so its tests build it
+    /// from its fields.
     fn refused(blocks: u64) -> Layout {
         assert!(blocks < BLOCKS, "{blocks} blocks are not under the minimum");
         Layout {
@@ -1014,7 +1160,8 @@ mod tests {
     }
 
     /// A ring of 32 blocks whose largest record takes 4, so the headroom of a trim
-    /// is 12 blocks when every record is synced.
+    /// is 15 blocks when every record is synced: three of its largest record and
+    /// the three kept blocks.
     fn wide() -> Layout {
         Layout::new(32 * 4096, BODY_MAX).expect("the test sizes make a ring")
     }
@@ -1047,7 +1194,7 @@ mod tests {
             asked += to_u64(len);
             match cursor.next(&area[index(place)..index(place) + len])? {
                 Step::Data(body) => data.push(whole(area, place, body)),
-                Step::Moved | Step::More => {}
+                Step::Carry(_) | Step::Moved | Step::More => {}
                 Step::End => {
                     let walked = cursor.at.offset - tail.offset;
                     let window =
@@ -1159,6 +1306,24 @@ mod tests {
 
         fn append(&mut self, body: &[u8]) -> Result<Plan, Full> {
             let plan = self.writer.append(body.len())?;
+            self.put(plan, body);
+            Ok(plan)
+        }
+
+        /// [`append`](Self::append) that leaves no block free: it plans as a restart
+        /// record does, and seals the record as data. No writer fills the ring so,
+        /// but a walk reads any ring.
+        fn fill(&mut self, body: &[u8]) -> Result<Plan, Full> {
+            let plan = Plan {
+                kind: Kind::Data,
+                ..self.writer.plan(Kind::Restart, body.len())?
+            };
+            self.put(plan, body);
+            Ok(plan)
+        }
+
+        /// Writes and syncs the data record of `plan`.
+        fn put(&mut self, plan: Plan, body: &[u8]) {
             let area = self.layout.area;
             assert_eq!(plan.offset % area, plan.place, "the offset is at the place");
             assert!(
@@ -1169,7 +1334,6 @@ mod tests {
             self.apply(&sealed, body, true);
             self.head = ends.record;
             self.writer.synced(ends);
-            Ok(plan)
         }
 
         fn release(&mut self, count: usize) {
@@ -1194,7 +1358,7 @@ mod tests {
         /// Trims as a commit does: moves the tail where the writer says and frees
         /// the records before it. `kept` is the offset of a record that must stay.
         fn trim(&mut self, kept: Option<u64>) -> Option<Position> {
-            let tail = self.writer.trimmed(kept)?;
+            let tail = self.writer.trimmed(kept, |offset| offset)?;
             assert!(
                 self.bounds().contains(&tail),
                 "a trim to {tail:?}, which is not after a record"
@@ -1206,11 +1370,12 @@ mod tests {
         }
 
         /// Trims and checks the tail against the records of the model, which are
-        /// all synced: the headroom is three of the largest record. The tail is the
-        /// first boundary that leaves it free, or the last one that `kept` permits.
+        /// all synced: the headroom is three of the largest record and the three
+        /// blocks that each append keeps. The tail is the first boundary that leaves
+        /// it free, or the last one that `kept` permits.
         fn check_trim(&mut self, kept: Option<u64>) {
             let (area, head, old) = (self.layout.area, self.head.offset, self.tail);
-            let room = 3 * self.layout.window;
+            let room = 3 * self.layout.window + SPARE;
             let short = |tail: u64| area - (head - tail) < room;
             let bounds = self.bounds();
             let free = bounds.iter();
@@ -1323,7 +1488,7 @@ mod tests {
             let area = ring.layout.area;
             let free = match op {
                 Op::Reopen(_) => area - (after.offset - ring.tail.offset),
-                _ => area - (head - ring.tail.offset),
+                _ => (area - (head - ring.tail.offset)).saturating_sub(SPARE),
             };
             let live = ring.data();
             let result = match op {
@@ -1348,7 +1513,13 @@ mod tests {
                 assert_eq!(full.free, free, "free bytes at {op:?}");
                 assert!(full.needed > free, "a record that fits was refused");
                 assert_eq!(ring.writer.head(), head, "a refusal moved the head");
-                assert!(!live.is_empty(), "a ring with no data refused {op:?}");
+                // A ring that `Layout::new` refuses may have no room for the blocks
+                // that a record leaves free.
+                let made = Layout::new(ring.layout.area, ring.layout.body_max).is_ok();
+                assert!(
+                    !live.is_empty() || !made,
+                    "a ring with no data refused {op:?}"
+                );
             }
         }
     }
@@ -1377,13 +1548,13 @@ mod tests {
                 ("an area of one record of one block", block, 4087),
                 ("an area of two records", 4 * block, 4088),
                 (
-                    "an area of four one-block records less a block",
-                    3 * block,
+                    "an area of four one-block records and one block",
+                    5 * block,
                     4087,
                 ),
                 (
-                    "an area of four two-block records less a block",
-                    7 * block,
+                    "an area of four two-block records and one block",
+                    9 * block,
                     4088,
                 ),
                 ("a body over u32::MAX", u64::MAX - 4095, usize::MAX),
@@ -1453,30 +1624,41 @@ mod tests {
         }
 
         #[test]
+        fn tails_max_is_the_tails_that_fit_body_max() {
+            let tails =
+                |area, body_max| Layout::new(area, body_max).map(Layout::tails_max);
+            assert_eq!(tails(7 * 4096, 4087), Ok(97));
+            assert_eq!(tails(67 * 4096, 65527), Ok(carry::TAILS_MAX));
+        }
+
+        #[test]
         fn holds_an_entry_of_4032_bytes_at_the_smallest_body() {
             assert_eq!(Layout::ENTRY_MAX_MIN, 4032);
             assert_eq!(
-                Layout::new(4 * 4096, 4087).map(Layout::entry_max),
+                Layout::new(7 * 4096, 4087).map(Layout::entry_max),
                 Ok(Layout::ENTRY_MAX_MIN)
             );
         }
 
         #[test]
-        fn takes_an_area_of_four_records() {
-            assert_eq!(Layout::new(4 * 4096, 4087).map(Layout::area), Ok(4 * 4096));
-            assert_eq!(Layout::new(8 * 4096, 4088).map(Layout::area), Ok(8 * 4096));
+        fn takes_an_area_of_four_records_and_three_blocks() {
+            assert_eq!(Layout::new(7 * 4096, 4087).map(Layout::area), Ok(7 * 4096));
+            assert_eq!(
+                Layout::new(11 * 4096, 4088).map(Layout::area),
+                Ok(11 * 4096)
+            );
         }
 
         #[test]
         fn fits_the_smallest_ring_in_its_file_and_no_ring_in_a_byte_less() {
-            let min = 6 * 4096;
+            let min = 9 * 4096;
             assert_eq!(Layout::fit(min, 4087).map(Layout::file_len), Ok(min));
             for len in [min - 1, 8191, 0] {
                 assert_eq!(Layout::fit(len, 4087), Err(Small { len, min }));
             }
             assert_eq!(
                 Small { len: 8191, min }.to_string(),
-                "a ring file of 8191 bytes holds no ring; it needs at least 24576 bytes"
+                "a ring file of 8191 bytes holds no ring; it needs at least 36864 bytes"
             );
             let _: &dyn std::error::Error = &Small { len: 8191, min };
         }
@@ -1534,20 +1716,20 @@ mod tests {
         }
 
         proptest! {
-            /// The smallest area is four times the largest record. A ring of that
-            /// area that holds only its restart record takes its largest record,
-            /// wherever the restart record is.
+            /// The smallest area is four times the largest record and three blocks. A
+            /// ring of that area that holds only its restart record takes its largest
+            /// record, wherever the restart record is.
             #[test]
             fn takes_the_largest_record_after_the_restart_record_at_any_tail(
                 body_max in BODY_MIN..=3 * ALIGN - HEADER_LEN,
                 tail in 0..64u64,
             ) {
                 let record = to_u64((HEADER_LEN + body_max).next_multiple_of(ALIGN));
-                let under = 4 * record - 4096;
+                let min = 4 * record + 3 * 4096;
+                let under = min - 4096;
                 let unfit = Unfit { area: under, body_max };
                 prop_assert_eq!(Layout::new(under, body_max), Err(unfit));
-                let layout =
-                    Layout::new(4 * record, body_max).expect("the smallest area");
+                let layout = Layout::new(min, body_max).expect("the smallest area");
                 let mut cursor = Cursor::new(layout, at(tail, 0), PIECE);
                 let zeros = vec![0; cursor.window().len];
                 prop_assert_eq!(cursor.next(&zeros), Ok(Step::End));
@@ -1600,6 +1782,7 @@ mod tests {
                 place,
                 offset,
                 next,
+                kind: Kind::Data,
                 len,
             };
             assert_eq!(first, plan(None, 4096, 4096, 2 * 4096, 1));
@@ -1618,11 +1801,11 @@ mod tests {
 
         #[test]
         fn puts_a_wrap_record_when_a_record_does_not_fit_in_the_rest() {
-            let mut writer = writer(14, 15);
+            let mut writer = writer(17, 18);
             let plan = writer.append(ALIGN).expect("the ring has room");
             assert_eq!(
                 (plan.wrap, plan.place, plan.next),
-                (Some(15 * 4096), 0, 18 * 4096)
+                (Some(18 * 4096), 0, 21 * 4096)
             );
             let (sealed, ends) = plan.seal(9, [[7; ALIGN].as_slice()]);
             let (wrap, after_wrap) = record::header(9, Kind::Wrap, []);
@@ -1630,14 +1813,14 @@ mod tests {
                 record::header(after_wrap, Kind::Data, [[7; ALIGN].as_slice()]);
             let expected = Sealed {
                 wrap: Some(Write {
-                    place: 15 * 4096,
+                    place: 18 * 4096,
                     header: wrap,
                 }),
                 record: Write { place: 0, header },
             };
             let boundaries = Ends {
-                wrap: Some(at(16, after_wrap)),
-                record: at(18, after),
+                wrap: Some(at(19, after_wrap)),
+                record: at(21, after),
             };
             assert_eq!((sealed, ends), (expected, boundaries));
         }
@@ -1687,9 +1870,9 @@ mod tests {
 
         #[test]
         fn is_full_at_the_end_of_the_offsets() {
-            let mut writer = Writer::empty(layout(), u64::MAX - 12287);
+            let mut writer = Writer::empty(layout(), u64::MAX - 24575);
             let plan = writer.append(8);
-            assert_eq!(plan.map(|plan| plan.next), Ok(u64::MAX - 4095));
+            assert_eq!(plan.map(|plan| plan.next), Ok(u64::MAX - 16383));
             let full = Full {
                 needed: 4096,
                 free: 4095,
@@ -1699,29 +1882,29 @@ mod tests {
 
         #[test]
         fn is_full_when_the_wrap_passes_the_end_of_the_offsets() {
-            let small = Layout::new(15 * 4096, 4088).expect("the sizes make a ring");
-            let mut writer = Writer::empty(small, u64::MAX - 12287);
+            let small = Layout::new(19 * 4096, 4088).expect("the sizes make a ring");
+            let mut writer = Writer::empty(small, u64::MAX - 28671);
             let full = Full {
                 needed: 3 * 4096,
-                free: 8191,
+                free: 12287,
             };
             assert_eq!(writer.append(4088), Err(full));
             let plan = writer.append(8);
-            assert_eq!(plan.map(|plan| plan.next), Ok(u64::MAX - 4095));
+            assert_eq!(plan.map(|plan| plan.next), Ok(u64::MAX - 20479));
         }
 
         #[test]
         fn wraps_before_the_end_of_the_offsets() {
-            let mut writer = Writer::empty(layout(), u64::MAX - 73727);
+            let mut writer = Writer::empty(layout(), u64::MAX - 106_495);
             let plan = writer.append(ALIGN).expect("fits");
-            assert_eq!(plan.wrap, Some(61440));
+            assert_eq!(plan.wrap, Some(18 * 4096));
             assert_eq!(plan.place, 0);
-            assert_eq!(plan.next, u64::MAX - 57343);
+            assert_eq!(plan.next, u64::MAX - 90111);
         }
 
         #[test]
         fn refuses_a_record_that_does_not_fit_before_the_tail() {
-            let mut writer = writer(1, 15);
+            let mut writer = writer(4, 18);
             let head = writer.head();
             let full = Full {
                 needed: 3 * 4096,
@@ -1729,7 +1912,7 @@ mod tests {
             };
             assert_eq!(writer.append(ALIGN), Err(full));
             assert_eq!(writer.head(), head);
-            writer.release(2 * 4096);
+            writer.release(5 * 4096);
             let plan = writer.append(ALIGN);
             assert_eq!(plan.map(|plan| plan.place), Ok(0));
         }
@@ -1762,52 +1945,55 @@ mod tests {
 
         #[test]
         fn trimmed_gives_no_tail_while_three_of_the_largest_record_fit() {
-            assert_eq!(filled(12).trimmed(None), None);
+            assert_eq!(filled(9).trimmed(None, |offset| offset), None);
         }
 
         #[test]
         fn trimmed_frees_records_until_three_of_the_largest_record_fit() {
-            assert_eq!(filled(13).trimmed(None), Some(at(1, 9)));
-            assert_eq!(filled(14).trimmed(None), Some(at(2, 1)));
+            assert_eq!(filled(10).trimmed(None, |offset| offset), Some(at(1, 9)));
+            assert_eq!(filled(11).trimmed(None, |offset| offset), Some(at(2, 1)));
         }
 
         #[test]
         fn trimmed_leaves_three_times_the_records_not_yet_synced_free() {
-            let mut writer = filled(11);
-            let queued: Vec<Ends> = (12..=14)
+            let mut writer = filled(8);
+            let queued: Vec<Ends> = (9..=11)
                 .map(|chain| queue(&mut writer, 8, chain).expect("the ring has room"))
                 .collect();
-            assert_eq!(writer.trimmed(None), Some(at(8, 7)));
+            assert_eq!(writer.trimmed(None, |offset| offset), Some(at(8, 7)));
             for ends in queued {
                 writer.synced(ends);
             }
-            assert_eq!(writer.trimmed(None), Some(at(2, 1)));
+            assert_eq!(writer.trimmed(None, |offset| offset), Some(at(2, 1)));
         }
 
         #[test]
         fn trimmed_stops_at_the_last_synced_record() {
             let mut writer = filled(2);
-            for chain in 3..=15 {
+            for chain in 3..=12 {
                 queue(&mut writer, 8, chain).expect("the ring has room");
             }
-            assert_eq!(writer.trimmed(None), Some(at(3, 2)));
+            assert_eq!(writer.trimmed(None, |offset| offset), Some(at(3, 2)));
             writer.release(3 * 4096);
-            assert_eq!(writer.trimmed(None), None);
+            assert_eq!(writer.trimmed(None, |offset| offset), None);
         }
 
         #[test]
         fn trimmed_stops_at_the_record_that_must_stay() {
-            let mut writer = filled(15);
-            assert_eq!(writer.trimmed(None), Some(at(3, 2)));
-            assert_eq!(writer.trimmed(Some(2 * 4096)), Some(at(2, 1)));
-            assert_eq!(writer.trimmed(Some(4096)), Some(at(1, 9)));
+            let mut writer = filled(12);
+            assert_eq!(writer.trimmed(None, |offset| offset), Some(at(3, 2)));
+            assert_eq!(
+                writer.trimmed(Some(2 * 4096), |offset| offset),
+                Some(at(2, 1))
+            );
+            assert_eq!(writer.trimmed(Some(4096), |offset| offset), Some(at(1, 9)));
             writer.release(4096);
-            assert_eq!(writer.trimmed(Some(4096)), None);
+            assert_eq!(writer.trimmed(Some(4096), |offset| offset), None);
         }
 
         /// A ring of 32 blocks: one record of 4 blocks queued after it skips 3 blocks
-        /// leaves a headroom of 12 blocks, not 21. A record of one block after it
-        /// makes the headroom 15 blocks.
+        /// leaves a headroom of 15 blocks, not 24. A record of one block after it
+        /// makes the headroom 18 blocks.
         #[test]
         fn trimmed_leaves_the_blocks_of_a_queued_wrap_out_of_the_headroom() {
             let mut writer = Writer::empty(wide(), 0);
@@ -1815,16 +2001,20 @@ mod tests {
                 let ends = queue(&mut writer, 8, chain).expect("the ring has room");
                 writer.synced(ends);
             }
-            writer.release(8 * 4096);
+            writer.release(9 * 4096);
             let ends = queue(&mut writer, BODY_MAX, 99).expect("the ring has room");
             assert_eq!(ends.wrap.map(|wrap| wrap.offset), Some(32 * 4096));
             assert_eq!(writer.head(), 36 * 4096);
-            assert_eq!(writer.trimmed(None), Some(at(16, 15)));
+            assert_eq!(writer.trimmed(None, |offset| offset), Some(at(19, 18)));
             let next = queue(&mut writer, 8, 100).expect("the ring has room");
-            assert_eq!(writer.trimmed(None), Some(at(20, 19)));
+            assert_eq!(writer.trimmed(None, |offset| offset), Some(at(23, 22)));
             writer.synced(ends);
             writer.synced(next);
-            assert_eq!(writer.trimmed(None), Some(at(17, 16)), "all synced");
+            assert_eq!(
+                writer.trimmed(None, |offset| offset),
+                Some(at(20, 19)),
+                "all synced"
+            );
         }
 
         /// A record not synced before the wrap: the skip of 3 blocks stays out.
@@ -1839,7 +2029,7 @@ mod tests {
             queue(&mut writer, 8, 28).expect("the ring has room");
             let ends = queue(&mut writer, BODY_MAX, 99).expect("the ring has room");
             assert_eq!(ends.wrap.map(|wrap| wrap.offset), Some(32 * 4096));
-            assert_eq!(writer.trimmed(None), Some(at(19, 18)));
+            assert_eq!(writer.trimmed(None, |offset| offset), Some(at(22, 21)));
         }
 
         /// The skipped blocks of a wrap are enough for the headroom, so the trim
@@ -1855,17 +2045,17 @@ mod tests {
             let tails: Vec<Option<u64>> = (0..8).map(|_| fill(&mut ring)).collect();
             let (first, last) = tails.split_at(4);
             assert_eq!(first, [None; 4]);
-            assert_eq!(last, [Some(1), Some(5), Some(9), Some(17)]);
+            assert_eq!(last, [Some(5), Some(9), Some(13), Some(21)]);
             let wrapped = ring.live.back().expect("a record").clone();
             assert_eq!(
                 (wrapped.start.offset, wrapped.offset),
                 (29 * 4096, 32 * 4096)
             );
-            let tails: Vec<Option<u64>> = (0..3).map(|_| fill(&mut ring)).collect();
-            assert_eq!(tails, [Some(21), Some(25), Some(29)]);
-            ring.append(&[7; ALIGN]).expect("the ring has room");
+            let tails: Vec<Option<u64>> = (0..2).map(|_| fill(&mut ring)).collect();
+            assert_eq!(tails, [Some(25), Some(29)]);
+            ring.append(&long).expect("the ring has room");
             assert_eq!(ring.trim(None), wrapped.wrap);
-            assert_eq!(ring.walk().0.len(), 5);
+            assert_eq!(ring.walk().0.len(), 4);
         }
 
         /// Runs commits as the commit task does, and gives the first refusal with
@@ -1880,7 +2070,7 @@ mod tests {
             let mut writer = Writer::empty(layout, 0);
             let mut queued = Vec::new();
             for (commit, (during, after)) in commits.into_iter().enumerate() {
-                let tail = writer.trimmed(None);
+                let tail = writer.trimmed(None, |offset| offset);
                 let synced = mem::take(&mut queued);
                 for len in during {
                     match queue(&mut writer, len, 1) {
@@ -1888,12 +2078,7 @@ mod tests {
                         Err(full) => return Some((commit, full)),
                     }
                 }
-                for ends in synced {
-                    writer.synced(ends);
-                }
-                if let Some(tail) = tail {
-                    writer.release(tail.offset);
-                }
+                writer.committed(synced, tail);
                 for len in after {
                     match queue(&mut writer, len, 1) {
                         Ok(ends) => queued.push(ends),
@@ -1913,7 +2098,7 @@ mod tests {
 
         #[test]
         fn a_steady_load_loses_no_record_to_a_full_ring() {
-            let layout = Layout::new(16 * 4096, BODY_MAX).expect("a ring");
+            let layout = Layout::new(19 * 4096, BODY_MAX).expect("a ring");
             let lens = [BODY_MAX, BODY_MAX, 2 * ALIGN];
             let commits = (0..100_000).map(|commit| (vec![lens[commit % 3]], vec![]));
             assert_eq!(steady(layout, commits), None);
@@ -1982,7 +2167,8 @@ mod tests {
 
         /// A trim cannot free the commit in its sync, so the ring must hold three
         /// commits in a row: three times a steady commit, and four times it when one
-        /// commit is twice the commit before it.
+        /// commit is twice the commit before it. It also holds the three blocks that a
+        /// record leaves free.
         #[test]
         fn a_ring_that_does_not_hold_the_commits_of_the_headroom_refuses_a_record() {
             let layout = Layout::new(1024 * 4096, BODY_MAX).expect("a ring");
@@ -1993,23 +2179,25 @@ mod tests {
             let even = |count: usize| {
                 steady(layout, (0..1000).map(|_| (vec![8; count], vec![])))
             };
-            assert_eq!(even(341), None);
-            assert_eq!(even(342), Some((2, full)));
+            assert_eq!(even(340), None);
+            assert_eq!(even(341), Some((2, full)));
             let doubled = |count: usize| {
                 let counts = iter::repeat_n(count, 400).chain([2 * count, count]);
                 steady(layout, counts.map(|count| (vec![8; count], vec![])))
             };
-            assert_eq!(doubled(256), None);
-            assert_eq!(doubled(257), Some((400, full)));
+            assert_eq!(doubled(255), None);
+            assert_eq!(doubled(256), Some((400, full)));
         }
 
-        /// The ring must also hold the blocks that a wrap skips in those commits. The
-        /// first record takes one block, so only the first wrap must skip: 3 blocks.
-        /// With 1 to 5 commits before the doubled one, that wrap is in the commit after
-        /// it, in it (2 and 3), in the commit before it, or in the one two before it.
+        /// The ring must also hold the blocks that a wrap skips in those commits. This
+        /// one holds the three commits, the three blocks that a record leaves free,
+        /// and one block more. The first record takes one block, so only the first wrap
+        /// must skip: 3 blocks. With 2 to 6 commits before the doubled one, that wrap
+        /// is in the commit after it, in it (3 and 4), in the commit before it, or in
+        /// the one two before it.
         #[test]
         fn a_ring_that_holds_three_commits_and_no_wrap_skip_refuses_a_record() {
-            let layout = Layout::new(1024 * 4096, BODY_MAX).expect("a ring");
+            let layout = Layout::new(1028 * 4096, BODY_MAX).expect("a ring");
             let doubled = |before: usize| {
                 let ends = [vec![BODY_MAX; 128], vec![BODY_MAX; 64]];
                 let commits = iter::repeat_n(vec![BODY_MAX; 64], before).chain(ends);
@@ -2017,23 +2205,21 @@ mod tests {
             };
             let got: Vec<_> = (0..=7).map(doubled).collect();
             let full = |commit| {
-                let (needed, free) = (16384, 4096);
+                let (needed, free) = (16384, 8192);
                 Some((commit, Full { needed, free }))
             };
-            let (needed, free) = (28672, 16384);
-            let first = Some((2, Full { needed, free }));
-            let skipped = [first, first, full(3), full(4), full(5)];
-            assert_eq!(got, [vec![None], skipped.to_vec(), vec![None; 2]].concat());
+            let skipped = [full(3), full(3), full(4), full(5), full(6)];
+            assert_eq!(got, [vec![None; 2], skipped.to_vec(), vec![None]].concat());
         }
 
-        /// Four of the largest record hold three commits of one record, not of two.
+        /// The smallest ring holds three commits of one record, not of two.
         #[test]
-        fn a_ring_of_four_records_refuses_a_steady_load_of_two_records_a_commit() {
-            let layout = Layout::new(16 * 4096, BODY_MAX).expect("a ring");
+        fn the_smallest_ring_refuses_a_steady_load_of_two_records_a_commit() {
+            let layout = Layout::new(19 * 4096, BODY_MAX).expect("a ring");
             let commits = (0..1000).map(|_| (vec![BODY_MAX, ALIGN], vec![]));
             let full = Full {
-                needed: 28672,
-                free: 16384,
+                needed: 8192,
+                free: 0,
             };
             assert_eq!(steady(layout, commits), Some((2, full)));
         }
@@ -2060,15 +2246,15 @@ mod tests {
         }
 
         proptest! {
-            /// A ring of four of its largest record refuses no record when each
-            /// commit holds one, of any length, placed before or after the release
-            /// of the trim before it.
+            /// A ring of four of its largest record and three blocks refuses no record
+            /// when each commit holds one, of any length, placed before or after the
+            /// release of the trim before it.
             #[test]
             fn a_ring_of_four_records_refuses_no_record_of_a_steady_load(
                 extra in 0..8u64,
                 lens in prop::collection::vec((bodies(), any::<bool>()), 0..400),
             ) {
-                let area = (16 + extra) * 4096;
+                let area = (19 + extra) * 4096;
                 let layout = Layout::new(area, BODY_MAX).expect("a ring");
                 prop_assert_eq!(singles(layout, lens), None);
             }
@@ -2090,27 +2276,36 @@ mod tests {
                 prop_assert_eq!(singles(layout, lens.collect()), None);
             }
 
-            /// One block less than the minimum still holds three records and the
-            /// blocks of one wrap skip.
+            /// One block less than the minimum still holds three records, the
+            /// blocks of one wrap skip, and the three blocks that a record leaves free.
             #[test]
-            fn four_records_less_one_block_refuse_no_record_of_a_steady_load(
+            fn the_minimum_less_one_block_refuses_no_record_of_a_steady_load(
                 lens in prop::collection::vec((bodies(), any::<bool>()), 0..400),
             ) {
-                prop_assert_eq!(singles(refused(15), lens), None);
+                prop_assert_eq!(singles(refused(18), lens), None);
             }
         }
 
-        /// Commits of 2, 4, 4, and 4 blocks. A trim cannot free the commit in its
-        /// sync, so the ring must hold the last three and the blocks that the wrap
-        /// skips.
+        /// Commits of 4 blocks after the restart record and a commit of one block
+        /// wrap with 3 blocks left at the end of 17. A trim cannot free the commit in
+        /// its sync, so the ring must hold the last three, the blocks that the wrap
+        /// skips, and the three blocks that each data record leaves free: 18 blocks.
+        /// A first commit of two blocks puts the same wrap at the end of 18.
         #[test]
-        fn a_ring_under_four_records_less_one_block_refuses_a_steady_load() {
-            let lens = [2 * ALIGN - HEADER_LEN, BODY_MAX, BODY_MAX, BODY_MAX];
-            let load = || lens.iter().map(|len| (*len, false)).collect();
-            let full = |needed, free| Some((3, Full { needed, free }));
-            assert_eq!(singles(refused(13), load()), full(24576, 20480));
-            assert_eq!(singles(refused(14), load()), full(28672, 24576));
-            assert_eq!(singles(refused(15), load()), None);
+        fn a_ring_under_the_minimum_less_one_block_refuses_a_steady_load() {
+            let load = |first: &[usize]| {
+                let lens = first.iter().chain(&[BODY_MAX; 4]);
+                lens.map(|len| (*len, false)).collect()
+            };
+            let full = Full {
+                needed: 28672,
+                free: 24576,
+            };
+            assert_eq!(
+                singles(refused(17), load(&[ALIGN - HEADER_LEN])),
+                Some((4, full))
+            );
+            assert_eq!(singles(refused(18), load(&[2 * ALIGN - HEADER_LEN])), None);
         }
 
         #[test]
@@ -2133,6 +2328,157 @@ mod tests {
         fn panics_on_a_synced_record_past_the_head() {
             let (wrap, record) = (None, at(2, 1));
             Writer::empty(layout(), 0).synced(Ends { wrap, record });
+        }
+
+        /// A writer of an empty ring with 15 synced data records of one block after
+        /// its restart record, so 3 of its 19 blocks are free.
+        fn fifteen() -> Writer {
+            let mut writer = Writer::empty(layout(), 0);
+            for chain in 0..15 {
+                let ends = queue(&mut writer, 1, chain).expect("the ring has room");
+                writer.synced(ends);
+            }
+            writer
+        }
+
+        /// The three free blocks are for the restart record of the next open, the
+        /// carry record of the commit after it, and the restart record of a later
+        /// open, so no data record fits in them.
+        #[test]
+        fn cost_keeps_the_owed_room_and_the_restart_block() {
+            let mut writer = fifteen();
+            assert_eq!(writer.head(), 16 * 4096);
+            let full = Full {
+                needed: 4096,
+                free: 0,
+            };
+            assert_eq!(writer.fits(1), Err(full));
+            assert_eq!(writer.append(1), Err(full));
+        }
+
+        /// After the restart record of an open, a carry record takes the block that
+        /// the data records leave for it, and leaves the block of the restart record
+        /// of a later open.
+        #[test]
+        fn a_carry_takes_the_owed_room() {
+            let mut writer = fifteen();
+            writer
+                .plan(Kind::Restart, RESTART_LEN)
+                .expect("the restart block is free");
+            let plan = writer.carry(1).expect("the owed block is free");
+            assert_eq!((plan.offset, plan.next), (17 * 4096, 18 * 4096));
+            let full = Full {
+                needed: 4096,
+                free: 0,
+            };
+            assert_eq!(writer.carry(1), Err(full));
+            assert!(
+                writer.plan(Kind::Restart, RESTART_LEN).is_ok(),
+                "the restart block is free"
+            );
+        }
+
+        /// One free block holds 97 tails, and an empty ring holds the most of the
+        /// layout.
+        #[test]
+        fn tails_is_zero_with_no_free_block() {
+            let empty = Writer::empty(layout(), 0);
+            assert_eq!(empty.tails(), layout().tails_max());
+            let mut writer = fifteen();
+            writer
+                .plan(Kind::Restart, RESTART_LEN)
+                .expect("the restart block is free");
+            assert_eq!(writer.tails(), 97);
+            writer.carry(1).expect("the owed block is free");
+            assert_eq!(writer.tails(), 0);
+        }
+
+        /// Near the end of the offsets, the free bytes are not whole blocks, and
+        /// `tails` counts only the whole blocks.
+        #[test]
+        fn tails_counts_whole_blocks_at_the_end_of_the_offsets() {
+            let start = u64::MAX / 4096 * 4096 - 3 * 4096;
+            let mut writer = Writer::empty(layout(), start);
+            assert_eq!(u64::MAX - writer.head(), 3 * 4096 - 1);
+            assert_eq!(writer.tails(), 97);
+            writer
+                .carry(97)
+                .expect("one block is free for the carry record");
+        }
+
+        /// A writer of a ring of `blocks` blocks after each op of `ops`: a synced
+        /// data record with a body of `len` bytes, then, when `freed`, the release of
+        /// the oldest record not yet released. An op whose record does not fit only
+        /// releases.
+        fn written(blocks: u64, ops: &[(usize, bool)]) -> Writer {
+            let layout = Layout::new(blocks * 4096, BODY_MAX).expect("a ring");
+            let mut writer = Writer::empty(layout, 0);
+            let mut held = VecDeque::new();
+            for (chain, &(len, freed)) in (0..).zip(ops) {
+                if let Ok(ends) = queue(&mut writer, len, chain) {
+                    writer.synced(ends);
+                    held.push_back(ends.record.offset);
+                }
+                if let Some(offset) = freed.then(|| held.pop_front()).flatten() {
+                    writer.release(offset);
+                }
+            }
+            writer
+        }
+
+        proptest! {
+            /// `tails` gives the most tails whose carry record fits.
+            #[test]
+            fn tails_is_the_most_that_a_carry_record_holds(
+                blocks in 19..40u64,
+                ops in prop::collection::vec((0..=BODY_MAX, any::<bool>()), 0..80),
+            ) {
+                let tails = written(blocks, &ops).tails();
+                if tails > 0 {
+                    let fits = written(blocks, &ops).carry(tails);
+                    prop_assert!(fits.is_ok(), "{tails} tails do not fit");
+                }
+                if tails < layout().tails_max() {
+                    let over = written(blocks, &ops).carry(tails + 1);
+                    prop_assert!(over.is_err(), "{} tails fit", tails + 1);
+                }
+            }
+        }
+
+        /// With each record synced, the want of the next trim is three of the
+        /// largest record and the three kept blocks behind the head. A queued record
+        /// of the largest size moves it by twice its size: once as the head, once as
+        /// the commit that syncs it.
+        #[test]
+        fn reach_is_the_want_of_the_next_trim() {
+            let mut writer = Writer::empty(layout(), 0);
+            for chain in 0..9 {
+                let ends = queue(&mut writer, 1, chain).expect("the ring has room");
+                writer.synced(ends);
+            }
+            assert_eq!(writer.reach(), 6 * 4096);
+            let tail = writer.trimmed(None, |offset| offset).map(Position::offset);
+            assert_eq!(tail, Some(writer.reach()));
+            queue(&mut writer, BODY_MAX, 9).expect("the ring has room");
+            assert_eq!(writer.reach(), 14 * 4096);
+        }
+
+        /// A commit marks its records synced and frees the records before the tail
+        /// that its trim gave before the sync.
+        #[test]
+        fn committed_syncs_before_it_releases() {
+            let mut writer = Writer::empty(layout(), 0);
+            for chain in 0..9 {
+                let ends = queue(&mut writer, 1, chain).expect("the ring has room");
+                writer.synced(ends);
+            }
+            let ends: Vec<Ends> = (9..11)
+                .map(|chain| queue(&mut writer, 1, chain).expect("the ring has room"))
+                .collect();
+            let tail = writer.trimmed(None, |offset| offset);
+            assert_eq!(tail.map(Position::offset), Some(8 * 4096));
+            writer.committed(ends, tail);
+            assert_eq!((writer.tail, writer.synced_end()), (8 * 4096, 12 * 4096));
         }
 
         #[test]
@@ -2175,15 +2521,19 @@ mod tests {
         /// The size of a record longer than one piece.
         const LONG: usize = 28 * ALIGN;
 
+        /// The least area for a body of `LONG - HEADER_LEN`: four records and the
+        /// three blocks that the writer keeps free.
+        const LONG_AREA: usize = 4 * LONG + 3 * ALIGN;
+
         /// A ring that holds the long record and its restart record.
         fn long_layout() -> Layout {
-            Layout::new(to_u64(4 * LONG), LONG - HEADER_LEN)
+            Layout::new(to_u64(LONG_AREA), LONG - HEADER_LEN)
                 .expect("the long sizes make a ring")
         }
 
         /// The area of [`long_layout`] with one long data record at its start.
         fn long_area() -> Vec<u8> {
-            let mut area = vec![0; 4 * LONG];
+            let mut area = vec![0; LONG_AREA];
             let body = vec![7; LONG - HEADER_LEN];
             put(&mut area, 0, START.chain, Kind::Data.byte(), &body);
             area
@@ -2244,7 +2594,7 @@ mod tests {
         fn refuses_a_writer_when_the_ring_is_full_until_the_tail_moves() {
             let mut ring = Ring::new();
             for _ in 1..BLOCKS {
-                ring.append(b"a").expect("the ring has room");
+                ring.fill(b"a").expect("the ring has room");
             }
             let (_, cursor) = walk(&ring.area, START).expect("a valid ring");
             let full = Full {
@@ -2254,7 +2604,7 @@ mod tests {
             assert_eq!(cursor.writer(0, 1).map(drop), Err(full));
             let (_, cursor) = walk(&ring.area, START).expect("a valid ring");
             let (writer, sealed) = cursor.writer(4096, 1).expect("one block is free");
-            assert_eq!((sealed.record.place, writer.head()), (0, 17 * 4096));
+            assert_eq!((sealed.record.place, writer.head()), (0, 20 * 4096));
         }
 
         /// Each open writes its restart record right after the last data record,
@@ -2294,13 +2644,47 @@ mod tests {
         #[test]
         fn gives_the_writer_the_end_of_an_earlier_restart_record() {
             let mut ring = Ring::with(wide());
-            for _ in 0..19 {
+            for _ in 0..16 {
                 ring.append(b"a").expect("the ring has room");
             }
             assert_eq!(ring.trim(None), None);
             ring.reopen(5).expect("the restart record fits");
             assert_eq!(ring.trim(None), Some(at(1, 1)));
-            assert_eq!(ring.walk().0.len(), 19);
+            assert_eq!(ring.walk().0.len(), 16);
+        }
+
+        /// An open of a ring that `append` filled puts its restart record in a kept
+        /// block, and the commit after it still has a block for its carry record.
+        #[test]
+        fn a_commit_after_an_open_of_a_full_ring_has_a_block_for_its_carry() {
+            let mut ring = Ring::new();
+            while ring.append(b"a").is_ok() {}
+            assert_eq!(ring.writer.head(), 16 * 4096);
+            ring.reopen(5).expect("the restart block is free");
+            assert_eq!(ring.writer.head(), 17 * 4096);
+            assert_eq!(ring.writer.tails(), 97);
+            assert!(ring.writer.carry(1).is_ok(), "the owed block is free");
+        }
+
+        /// A second open before a commit writes over the restart record of the
+        /// first, so the commit after both carries and trims.
+        #[test]
+        fn a_commit_after_two_opens_of_a_full_ring_carries_and_trims() {
+            let mut ring = Ring::new();
+            while ring.append(b"a").is_ok() {}
+            ring.reopen(5).expect("the restart block is free");
+            ring.reopen(6)
+                .expect("the restart record goes over the last one");
+            assert_eq!(ring.writer.head(), 17 * 4096);
+            let plan = ring.writer.carry(1).expect("the owed block is free");
+            let body = vec![0; carry::body_len(1)];
+            let (sealed, ends) = plan.seal(ring.head.chain, [&body[..]]);
+            ring.apply(&sealed, &body, false);
+            ring.head = ends.record;
+            ring.writer.synced(ends);
+            assert_eq!(ring.writer.head(), 18 * 4096);
+            let tail = ring.trim(None).map(Position::offset);
+            assert_eq!(tail, Some(14 * 4096), "the headroom is 15 blocks");
         }
 
         /// The restart record of an open goes over the records after the last data
@@ -2314,6 +2698,67 @@ mod tests {
             ring.reopen(5).expect("the restart record fits");
             assert_eq!(end.offset, 6 * 4096);
             assert_eq!(ring.trim(None), Some(end));
+        }
+
+        /// A carry record comes whole, and the restart record of an open goes right
+        /// after it.
+        #[test]
+        fn gives_a_carry_record_whole_and_starts_a_writer_after_it() {
+            let mut area = vec![0; index(AREA)];
+            let chain = put(&mut area, 0, START.chain, Kind::Data.byte(), b"a");
+            let chain = put(&mut area, 1, chain, Kind::Carry.byte(), b"tails");
+            put(
+                &mut area,
+                2,
+                chain,
+                Kind::Restart.byte(),
+                &5u32.to_le_bytes(),
+            );
+            let mut cursor = Cursor::new(layout(), START, PIECE);
+            let steps = [data(b"a"), Step::Carry(b"tails"), Step::Moved, Step::End];
+            for (block, step) in steps.into_iter().enumerate() {
+                let window = Window {
+                    place: to_u64(block * ALIGN),
+                    len: ALIGN,
+                };
+                assert_eq!(cursor.window(), window, "block {block}");
+                let read = cursor.next(&area[block * ALIGN..(block + 1) * ALIGN]);
+                assert_eq!(read, Ok(step), "block {block}");
+            }
+            let (writer, sealed) = cursor.writer(0, 6).expect("the ring has room");
+            assert_eq!((sealed.record.place, writer.head()), (2 * 4096, 3 * 4096));
+        }
+
+        /// The length of the body of the carry record of `len` bytes at the start
+        /// of a long ring, as the walk gives it.
+        fn carried(len: usize) -> Result<usize, Invalid> {
+            let mut area = vec![0; LONG_AREA];
+            put(&mut area, 0, START.chain, Kind::Carry.byte(), &vec![4; len]);
+            let mut cursor = Cursor::new(long_layout(), START, PIECE);
+            for _ in 0..LONG / ALIGN {
+                let Window { place, len } = cursor.window();
+                match cursor.next(&area[index(place)..index(place) + len])? {
+                    Step::Moved | Step::More => {}
+                    Step::Carry(body) if body.iter().all(|byte| *byte == 4) => {
+                        return Ok(body.len());
+                    }
+                    other => panic!("the walk read {other:?}"),
+                }
+            }
+            panic!("the walk did not reach the carry record");
+        }
+
+        /// The walk holds a carry record whole only within the table bound.
+        #[test]
+        fn gives_a_carry_record_whole_only_within_the_table_bound() {
+            let bound = TABLE - HEADER_LEN;
+            for len in [0, ALIGN - HEADER_LEN, ALIGN - HEADER_LEN + 1, bound] {
+                assert_eq!(carried(len), Ok(len), "a body of {len} bytes");
+            }
+            let invalid = Invalid { offset: 0, kind: 4 };
+            for len in [bound + 1, LONG - HEADER_LEN] {
+                assert_eq!(carried(len), Err(invalid), "a body of {len} bytes");
+            }
         }
 
         /// The writer starts before the restart records after the last data record,
@@ -2331,8 +2776,8 @@ mod tests {
         /// with no data, so it takes its largest record.
         #[test]
         fn takes_the_largest_record_after_opens_with_no_data() {
-            let layout = Layout::new(4 * 4096, 4087).expect("the smallest area");
-            let mut area = vec![0; 4 * 4096];
+            let layout = Layout::new(7 * 4096, 4087).expect("the smallest area");
+            let mut area = vec![0; 7 * 4096];
             for chain in 1..=5 {
                 let mut cursor = Cursor::new(layout, START, PIECE);
                 loop {
@@ -2374,7 +2819,7 @@ mod tests {
         fn asks_for_no_bytes_past_one_lap() {
             let mut ring = Ring::new();
             for _ in 2..BLOCKS {
-                ring.append(b"a").expect("the ring has room");
+                ring.fill(b"a").expect("the ring has room");
             }
             let mut cursor = Cursor::new(layout(), START, PIECE);
             for _ in 1..BLOCKS {
@@ -2382,13 +2827,17 @@ mod tests {
                 let step = cursor.next(&ring.area[index(place)..index(place) + len]);
                 assert!(matches!(step, Ok(Step::Data(_) | Step::Moved)), "{step:?}");
             }
+            let end = BLOCKS - 1;
             let last = Window {
-                place: 15 * 4096,
+                place: end * 4096,
                 len: 4096,
             };
             assert_eq!(cursor.window(), last);
-            ring.append(b"a").expect("the ring has room");
-            assert_eq!(cursor.next(&ring.area[15 * ALIGN..]), Ok(data(b"a")));
+            ring.fill(b"a").expect("the ring has room");
+            assert_eq!(
+                cursor.next(&ring.area[index(end) * ALIGN..]),
+                Ok(data(b"a"))
+            );
             assert_eq!(cursor.window(), Window { place: 0, len: 0 });
             assert_eq!(cursor.next(&[]), Ok(Step::End));
         }
@@ -2396,8 +2845,8 @@ mod tests {
         #[test]
         fn reports_a_record_of_a_kind_it_does_not_know() {
             let mut area = vec![0; index(AREA)];
-            put(&mut area, 0, START.chain, 4, b"");
-            let invalid = Invalid { offset: 0, kind: 4 };
+            put(&mut area, 0, START.chain, 5, b"");
+            let invalid = Invalid { offset: 0, kind: 5 };
             assert_eq!(walk(&area, START).map(drop), Err(invalid));
         }
 
@@ -2437,8 +2886,8 @@ mod tests {
         #[test]
         fn reports_a_record_that_passes_the_end_of_the_offsets() {
             let mut area = vec![0; index(AREA)];
-            let chain = put(&mut area, 14, 5, Kind::Data.byte(), b"x");
-            put(&mut area, 15, chain, Kind::Data.byte(), b"y");
+            let chain = put(&mut area, 3, 5, Kind::Data.byte(), b"x");
+            put(&mut area, 4, chain, Kind::Data.byte(), b"y");
             let tail = Position::new(u64::MAX - 8191, 5).expect("aligned");
             let invalid = Invalid {
                 offset: u64::MAX - 4095,
@@ -2638,14 +3087,15 @@ mod tests {
             assert_eq!(cursor.next(&area[..ALIGN]), Ok(Step::End));
             let last = at(BLOCKS - 1, 5);
             let (header, _) = record::header(5, Kind::Data, [[1; ALIGN].as_slice()]);
-            area[15 * ALIGN..15 * ALIGN + HEADER_LEN].copy_from_slice(&header);
+            let end = index(BLOCKS - 1) * ALIGN;
+            area[end..end + HEADER_LEN].copy_from_slice(&header);
             let mut cursor = Cursor::new(layout(), last, PIECE);
-            assert_eq!(cursor.next(&area[15 * ALIGN..]), Ok(Step::End));
+            assert_eq!(cursor.next(&area[end..]), Ok(Step::End));
             assert_eq!(cursor.window().len, 4096);
             let mut cursor = Cursor::new(layout(), at(0, 5), PIECE);
             cursor.at = last;
             assert_eq!(cursor.window().len, 4096);
-            assert_eq!(cursor.next(&area[15 * ALIGN..]), Ok(Step::End));
+            assert_eq!(cursor.next(&area[end..]), Ok(Step::End));
         }
 
         /// A crash in the last write of a ring: the operations before it, its
@@ -2676,40 +3126,60 @@ mod tests {
             )
         }
 
+        /// Whether the bytes at `end` read as a record that follows its chain, so
+        /// that a walk goes on past `end`.
+        fn goes_on(ring: &Ring, end: Position) -> bool {
+            let place = index(end.offset % ring.layout.area);
+            record::read(&ring.area[place..], end.chain).is_some()
+        }
+
         /// A crash leaves any subset of the sectors of the last write. The record
-        /// is live when every sector it wrote survives; lost padding does not
-        /// count. A flipped bit in it drops it.
+        /// is live when every byte it wrote is on disk, also from a lost sector
+        /// whose old byte was the same; lost padding does not count. A flipped
+        /// bit in it drops it. No bytes read as a record where a walk must end, as
+        /// a random restart chain and a CRC make it: else the walk reads them.
         fn keeps_the_last_record(
             layout: Layout,
             (ops, last, kept, damaged, flip, chain, after): Crash,
         ) -> Result<(), TestCaseError> {
-            let opened = |op: &Op| matches!(op, Op::Reopen(c) if *c == chain);
-            prop_assume!(chain != 1 && !ops.iter().any(opened));
             let mut ring = Ring::with(layout);
-            run(&mut ring, &ops);
+            for op in &ops {
+                if matches!(op, Op::Reopen(_)) {
+                    prop_assume!(
+                        !goes_on(&ring, ring.head),
+                        "old bytes at the end of a reopen of the ops"
+                    );
+                }
+                run(&mut ring, slice::from_ref(op));
+            }
             let before = ring.area.clone();
+            let head = ring.head;
             let Ok(plan) = ring.append(&last) else {
                 return Err(TestCaseError::reject("the ring is full"));
             };
-            let mut sectors = Vec::new();
-            for (place, len) in plan
-                .wrap
-                .map(|place| (place, HEADER_LEN))
-                .into_iter()
-                .chain([(plan.place, HEADER_LEN + last.len())])
-            {
-                let first = index(place) / SECTOR;
-                sectors.extend(first..=(index(place) + len - 1) / SECTOR);
-            }
+            let written = ring.area.clone();
             for (sector, _) in kept.iter().enumerate().filter(|(_, kept)| !**kept) {
                 let bytes = sector * SECTOR..(sector + 1) * SECTOR;
                 ring.area[bytes.clone()].copy_from_slice(&before[bytes]);
             }
-            let whole = sectors.iter().all(|sector| kept[*sector]);
+            let wrote = |place: u64, len: usize| {
+                let bytes = index(place)..index(place) + len;
+                ring.area[bytes.clone()] == written[bytes]
+            };
+            let wrapped = plan.wrap.is_none_or(|place| wrote(place, HEADER_LEN));
+            let whole = wrapped && wrote(plan.place, HEADER_LEN + last.len());
             if whole && damaged {
-                let written = HEADER_LEN + last.len();
-                ring.area[index(plan.place) + flip.index(written)] ^= 1;
+                let len = HEADER_LEN + last.len();
+                ring.area[index(plan.place) + flip.index(len)] ^= 1;
             }
+            let end = match (whole && !damaged, wrapped) {
+                (true, _) => ring.head,
+                (false, true) => {
+                    ring.live.back().and_then(|live| live.wrap).unwrap_or(head)
+                }
+                (false, false) => head,
+            };
+            prop_assume!(!goes_on(&ring, end), "old bytes at the end of the reopen");
             if !whole || damaged {
                 ring.live.pop_back();
             }
@@ -2718,9 +3188,93 @@ mod tests {
             prop_assume!(found.is_ok());
             prop_assert_eq!(found, Ok(expected.clone()));
             prop_assume!(ring.append(&after).is_ok());
+            prop_assume!(
+                !goes_on(&ring, ring.head),
+                "old bytes at the end of the record after"
+            );
             expected.push(after);
             prop_assert_eq!(ring.walk().0, expected);
             Ok(())
+        }
+
+        /// Old bytes where a walk ends read as a record of the chain there. A second
+        /// reopen with chain 5 puts the torn last record over the old record `[7]`,
+        /// sealed with 5, and a reopen with the chain value after `[7]` puts it over
+        /// the old record `[8]`. The chain of a later reopen seals a record in an old
+        /// body. A reopen of the ops reads `[7]` after the second reopen with chain 5,
+        /// and the chain value after `after` seals the old `[8]` after it. A torn
+        /// record after a whole wrap record runs: the walk ends at the area start. A
+        /// torn wrap record ends the walk at the head, also when the record after it
+        /// is whole, and a second reopen with chain 5 puts a torn wrap record over
+        /// the old `[7]` at the head. The counts of the cases are for a ring of 16
+        /// blocks.
+        #[test]
+        fn keeps_the_last_record_only_where_old_bytes_end_the_walk() {
+            use proptest::strategy::ValueTree;
+            let fill = |ops: &mut Vec<Op>, body: u8, count: usize| {
+                for _ in 0..count {
+                    ops.extend([Op::Append(vec![body]), Op::Release(3)]);
+                }
+            };
+            let torn = vec![9; ALIGN + 100];
+            let mut cases = Vec::new();
+            let (_, after_seven) = record::header(5, Kind::Data, [[7u8].as_slice()]);
+            let reopens = [(12, 13, 5, 14), (11, 14, after_seven, 14), (13, 13, 5, 15)];
+            for (before, then, last, lost) in reopens {
+                let mut ops = Vec::new();
+                fill(&mut ops, 8, before);
+                ops.push(Op::Reopen(5));
+                fill(&mut ops, 7, 1);
+                fill(&mut ops, 8, 1);
+                fill(&mut ops, 6, then);
+                ops.push(Op::Reopen(last));
+                cases.push((ops, Some(lost), torn.clone(), 7, Some("the reopen")));
+            }
+            let mut ops = cases[0].0.clone();
+            ops.push(Op::Reopen(9));
+            cases.push((ops, None, vec![9], 11, Some("a reopen of the ops")));
+            let reopen = 0xC0FF_EE11;
+            let (forged, _) = record::header(reopen, Kind::Data, [[42u8].as_slice()]);
+            let mut old = vec![3; ALIGN + 1];
+            old[ALIGN - HEADER_LEN..ALIGN].copy_from_slice(&forged);
+            old[ALIGN] = 42;
+            let mut ops = vec![Op::Append(old), Op::Release(3)];
+            fill(&mut ops, 8, 14);
+            ops.push(Op::Reopen(reopen));
+            cases.push((ops, Some(2), torn.clone(), 7, Some("the reopen")));
+            let mut ops = Vec::new();
+            fill(&mut ops, 8, 20);
+            cases.push((ops, None, vec![9], 0x77D9_AA89, Some("the record after")));
+            let mut ops = Vec::new();
+            fill(&mut ops, 8, 14);
+            cases.push((ops.clone(), Some(0), torn.clone(), 7, None));
+            cases.push((ops, Some(15), torn, 7, None));
+            for (ops, lost, last, chain, walk) in cases {
+                let mut kept = vec![true; 16 * ALIGN / SECTOR];
+                if let Some(block) = lost {
+                    kept[block * ALIGN / SECTOR] = false;
+                }
+                let mut runner = proptest::test_runner::TestRunner::deterministic();
+                let flip = any::<prop::sample::Index>()
+                    .new_tree(&mut runner)
+                    .expect("an index")
+                    .current();
+                let crash = (ops, last, kept, false, flip, chain, vec![10]);
+                let result = keeps_the_last_record(refused(16), crash);
+                let Some(walk) = walk else {
+                    assert!(result.is_ok(), "the case of a wrap: {result:?}");
+                    continue;
+                };
+                let Err(TestCaseError::Reject(reason)) = &result else {
+                    panic!("the case of {walk} runs: {result:?}");
+                };
+                assert!(
+                    reason
+                        .message()
+                        .ends_with(&format!("old bytes at the end of {walk}")),
+                    "a reject for another reason: {reason}"
+                );
+            }
         }
 
         fn gives_the_live_data(
@@ -2786,14 +3340,14 @@ mod tests {
             }
 
             #[test]
-            fn keeps_a_last_record_only_when_its_sectors_survive(
+            fn keeps_a_last_record_only_when_its_bytes_survive(
                 crash in crash(layout()),
             ) {
                 keeps_the_last_record(layout(), crash)?;
             }
 
             #[test]
-            fn keeps_a_last_record_only_when_its_sectors_survive_on_the_recorded_ring(
+            fn keeps_a_last_record_only_when_its_bytes_survive_on_the_recorded_ring(
                 crash in crash(recorded()),
             ) {
                 keeps_the_last_record(recorded(), crash)?;

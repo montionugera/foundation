@@ -1,10 +1,23 @@
 //! One run of the open62541 event loop with due timers allocates nothing, in C or in
-//! Rust. The count covers each thread, so this binary has no test harness.
+//! Rust, and the fuzz round trip makes a fixed count of allocations, and none after a
+//! decode that fails. A read through the connection manager makes a fixed count of
+//! allocations, and a drive with nothing ready makes none. A tick of the `opcua` kind
+//! allocates only what its read allocates, and the write of its frame allocates
+//! nothing for a channel of any width. The count covers each thread, so this
+//! binary has no test harness.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
-use connector_opcua::bench::Client;
+use std::future::{Future as _, poll_fn};
+use std::pin::pin;
+
+use connector_opcua::bench::{Client, Manager, client};
+#[path = "common/kind.rs"]
+#[expect(dead_code, reason = "this binary measures only the ticks")]
+mod kind;
+use env::rng::Rng;
 use sim::Sim;
+use types::sample::Scalar;
 use types::time::Span;
 
 #[global_allocator]
@@ -14,19 +27,26 @@ fn main() {
     the_count_holds_the_allocations_of_c();
     a_run_allocates_nothing();
     the_drop_frees_the_client();
+    the_fuzz_round_trip_allocates_for_each_step();
+    a_failed_decode_stops_the_round_trip();
+    a_read_through_the_manager_allocates_a_fixed_count();
+    a_read_of_a_client_allocates_a_fixed_count();
+    a_tick_of_the_kind_allocates_what_its_read_allocates();
+    a_write_of_a_frame_of_any_type_allocates_nothing();
 }
 
-fn sim() -> (Sim, env::clock::Clock) {
+fn sim() -> (Sim, env::clock::Clock, Rng) {
     let mut sim = Sim::new(sim::Config::default());
-    let clock = sim.node(sim::node::Config::default()).clock();
-    (sim, clock)
+    let node = sim.node(sim::node::Config::default());
+    (sim, node.clock(), node.entropy().rng())
 }
 
-/// The positive control: the copy allocates one entry for each timer.
+/// The positive control: the copy allocates one entry for each timer. The two loops
+/// live at once on this thread, so they take one `Rng`.
 fn the_count_holds_the_allocations_of_c() {
-    let ((_sim, none), (_other, timers)) = (sim(), sim());
-    let (none, base) = ALLOCATOR.count(|| Client::new(none, 0));
-    let (timers, count) = ALLOCATOR.count(|| Client::new(timers, 100));
+    let ((_sim, none, mut rng), (_other, timers, _)) = (sim(), sim());
+    let (none, base) = ALLOCATOR.count(|| Client::new(none, &mut rng, 0));
+    let (timers, count) = ALLOCATOR.count(|| Client::new(timers, &mut rng, 100));
     assert_eq!(count - base, 100, "the timers of 100 against 0 allocated");
     drop((none, timers));
 }
@@ -35,8 +55,9 @@ fn the_count_holds_the_allocations_of_c() {
 /// too. After each run, the timers wait 1 ms more.
 fn a_run_allocates_nothing() {
     for timers in [1, 100, 10_000] {
-        let (mut sim, clock) = sim();
-        let mut client = Client::new(env::clock::Clock::clone(&clock), timers);
+        let (mut sim, clock, mut rng) = sim();
+        let mut client =
+            Client::new(env::clock::Clock::clone(&clock), &mut rng, timers);
         for at in 1..=2000 {
             sim.run_for(Span::MILLISECOND).expect("the run has no task");
             let ((), count) = ALLOCATOR.count(|| client.run());
@@ -54,8 +75,155 @@ fn a_run_allocates_nothing() {
 const URI: &[u8] = b"urn:open62541.unconfigured.application";
 
 fn the_drop_frees_the_client() {
-    let (_sim, clock) = sim();
-    let client = Client::new(clock, 0);
+    let (_sim, clock, mut rng) = sim();
+    let client = Client::new(clock, &mut rng, 0);
     let ((), freed) = ALLOCATOR.freed_holding(URI, || drop(client));
     assert_eq!(freed, 1, "the drop freed the URI of the client");
+}
+
+/// A `Variant` (23, as `ffi` is private) of 7 `ExtensionObject` values, then the
+/// zeros that #435 needs.
+fn the_fuzz_round_trip_allocates_for_each_step() {
+    let mut data = vec![23, 0, 0x96, 7, 0, 0, 0];
+    data.resize(data.len() + 7 * 4, 0);
+    let ((), count) = ALLOCATOR.count(|| connector_opcua::fuzz::decode(&data));
+    assert_eq!(count, 10, "the round trip of a Variant");
+}
+
+/// A `Boolean` (0) with no byte fails before C allocates, so only the memory of the
+/// value is allocated.
+fn a_failed_decode_stops_the_round_trip() {
+    let ((), count) = ALLOCATOR.count(|| connector_opcua::fuzz::decode(&[0, 0]));
+    assert_eq!(count, 1, "a failed decode");
+    // A `Variant` of a `Boolean` with no byte: C allocates the `Boolean` first.
+    let ((), count) = ALLOCATOR.count(|| connector_opcua::fuzz::decode(&[23, 0, 0x01]));
+    assert_eq!(count, 2, "a failed decode after C allocates");
+}
+
+/// The delay of the default link.
+fn delay() -> Span {
+    sim::link::Config::default().delay
+}
+
+/// The allocations of each drive of reads 2 to 100 with `idle` idle clients: the ask,
+/// the answer of the server, the read of the answer, and a drive with nothing ready.
+fn reads(idle: usize) -> Vec<[u64; 4]> {
+    let mut sim = Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    let run = move |node: sim::node::Node, _| async move {
+        let (clock, address) = (node.clock(), node.addresses()[0]);
+        let body = async |manager: &Manager| {
+            let mut counts = Vec::new();
+            for read in 1..=100 {
+                let ((), ask) = ALLOCATOR.count(|| manager.ask());
+                clock.sleep(delay()).await;
+                let ((), answer) = ALLOCATOR.count(|| manager.drive());
+                clock.sleep(delay()).await;
+                let ((), receive) = ALLOCATOR.count(|| manager.drive());
+                let ((), pass) = ALLOCATOR.count(|| manager.drive());
+                assert_eq!(manager.answers(), read, "{idle} idle");
+                if read > 1 {
+                    counts.push([ask, answer, receive, pass]);
+                }
+            }
+            counts
+        };
+        let rng = &mut node.entropy().rng();
+        Manager::scope(node.clock(), node.net(), address, idle, rng, body).await
+    };
+    sim.run_on(&node, run).expect("the run ends")
+}
+
+/// open62541 allocates for each message it sends and decodes, and the sim net
+/// allocates a segment for each write, one in the ask and one in the answer. So a read
+/// is not free. The count is the same for each read and each count of idle
+/// connections, so a Rust allocation on the path of a message adds one to a count.
+fn a_read_through_the_manager_allocates_a_fixed_count() {
+    for idle in [0, 15] {
+        for (at, counts) in reads(idle).into_iter().enumerate() {
+            let read = at + 2;
+            assert_eq!(counts, [3, 5, 2, 0], "{idle} idle, read {read}");
+        }
+    }
+}
+
+/// The allocations in the polls of reads 2 to 100 of `count` copies of `variable` by
+/// one client. The server runs on its own manager, outside the polls.
+fn client_reads(variable: client::Variable, count: usize) -> Vec<u64> {
+    let mut sim = Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    let run = move |node: sim::node::Node, _| async move {
+        let address = node.addresses()[0];
+        let body = async |server: &client::Server| {
+            let mut client = server.connect(count).await;
+            let mut counts = Vec::new();
+            for _ in 1..=100 {
+                let mut read = pin!(client.read(variable));
+                let mut count = 0;
+                poll_fn(|cx| {
+                    let (poll, allocations) =
+                        ALLOCATOR.count(|| read.as_mut().poll(cx));
+                    count += allocations;
+                    poll
+                })
+                .await;
+                counts.push(count);
+            }
+            client.close().await;
+            counts.split_off(1)
+        };
+        let rng = node.entropy().rng();
+        client::Server::scope(node.clock(), node.net(), address, rng, body).await
+    };
+    sim.run_on(&node, run).expect("the run ends")
+}
+
+/// As through the manager, the ask allocates 3 and the answer allocates 1 for its
+/// results array and 1 for the value of each node. Each read is a new drive, whose
+/// sleep until the next timer of the loop allocates 1 more. The client swaps two
+/// buffers of values, and read 2 is the first to fill the second. The sim net
+/// allocates one more for each segment of 1460 bytes past the first: the ask of 64
+/// names takes 2.
+fn a_read_of_a_client_allocates_a_fixed_count() {
+    let cases = [
+        (client::Variable::Number, 1, 6),
+        (client::Variable::Name, 1, 6),
+        (client::Variable::Number, 64, 69),
+        (client::Variable::Name, 64, 70),
+    ];
+    for (variable, count, each) in cases {
+        let mut counts = vec![each + 1];
+        counts.extend([each; 98]);
+        assert_eq!(
+            client_reads(variable, count),
+            counts,
+            "reads 2 to 100 of {count} of {variable:?}"
+        );
+    }
+}
+
+/// Ticks 3 to 100 of a run of the `opcua` kind allocate what a read of a client
+/// allocates for its count of nodes, and nothing more: the frame and its write
+/// allocate nothing. Tick 1 connects, and tick 2 fills the second buffer of values.
+fn a_tick_of_the_kind_allocates_what_its_read_allocates() {
+    for (nodes, read) in [(1, 6), (64, 69)] {
+        let ticks = kind::run(nodes, 100, |poll| ALLOCATOR.count(poll).1).ticks;
+        assert_eq!(ticks[2..], [read; 98], "ticks 3 to 100 of {nodes} nodes");
+    }
+}
+
+/// Writes 21 to 100 of a frame of the `opcua` kind allocate nothing, for channels of
+/// each width. The test home grows the `Vec`s of its groups in its first two commits,
+/// which the first 20 writes cover, as in the `kind` bench.
+fn a_write_of_a_frame_of_any_type_allocates_nothing() {
+    let widths: [&[Scalar]; 4] = [
+        &[Scalar::Bool],
+        &[Scalar::I16],
+        &[Scalar::F32],
+        &[Scalar::F64],
+    ];
+    for scalars in widths {
+        let writes = kind::writes(64, scalars, 100, |work| ALLOCATOR.count(work).1).0;
+        assert_eq!(writes[20..], [0; 80], "writes 21 to 100 of {scalars:?}");
+    }
 }

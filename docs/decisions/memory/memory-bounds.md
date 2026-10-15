@@ -19,3 +19,35 @@
   allocation fails with `Error::Refused`, a separate error from a full pool (the person
   on 2026-10-05: "I approve the separate error"). The carve counts do not change, the
   sizes given back stay given back, and a later allocation may succeed (#475, #542).
+  Outside the pool budget, each QUIC connection holds on the heap: the sent data that
+  noq keeps (STREAM WIRE says how long), at most `window_bytes` (`send_window`) plus,
+  for each stream, the copied stretch at its front, at most the peer's
+  `message_bytes_max`, which noq frees only once the peer acknowledges each byte of it,
+  or the stream resets; the rest of each copied stretch that noq has not taken, at most
+  the peer's window (the send budget); the stretch buffer of `send_parts`, under twice
+  the peer's `message_bytes_max`; and the parts list of each sending stream, 24 bytes
+  for each part of its capacity, at least 4 parts once it keeps one, which grows by
+  doubling to the most parts that the stream kept of one message and stays until the
+  stream ends (a count that the caller's messages bound, not the peer) (STREAM WIRE;
+  `laptop.architect-2`, #1879, 2026-10-08 16:29 UTC:
+  https://github.com/synnaxlabs/foundation/pull/1879#issuecomment-6064411384, #2304,
+  2026-10-10 22:35 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2304#issuecomment-6102910746, and #2304,
+  2026-10-10 23:27 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2304#issuecomment-6103308877, which
+  supersedes the parts-list clause of 6102910746; the copied stretch at the front of
+  each stream: `laptop.architect-2`, #2439, 2026-10-12 19:46 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2439#issuecomment-6131444028, which
+  supersedes the bound of the sent data in 6064411384; its free at a reset:
+  `laptop.architect-2`, #2361, 2026-10-11 17:39 UTC:
+  https://github.com/synnaxlabs/foundation/issues/2361#issuecomment-6111809297). A
+  stream ends at the last of its sends, at a peer stop, at a cancel that resets it, and
+  at the close of its connection by either side (the same 6103308877). Limits: the heap
+  of the sent data that noq keeps is more than these bytes: each kept copy of a short
+  write keeps its whole allocation, and the queue slot of each kept segment, the shared
+  header of each copy, and the owner box of each block that noq keeps a run of are not
+  counted (#2483; `laptop.architect-2`, #2483, 2026-10-12 19:58 UTC:
+  https://github.com/synnaxlabs/foundation/issues/2483#issuecomment-6131627109, and
+  #2439, 2026-10-12 20:05 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2439#issuecomment-6131721896, which
+  supersedes the Limits sentence of 6131627109).
