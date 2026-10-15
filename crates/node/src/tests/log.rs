@@ -240,7 +240,7 @@ fn written(json: bool, events: impl FnOnce()) -> String {
 /// The line of an event with `field` and other fields.
 fn line(json: bool, field: &str) -> String {
     written(json, || {
-        tracing::info!(target: "test", field, count = 3_u64, ok = true, "a\nb");
+        tracing::info!(target: "test", field, count = 3_u64, delta = -2_i64, ok = true, "a\nb");
     })
 }
 
@@ -250,7 +250,7 @@ fn a_newline_and_a_backslash_in_a_field_stay_on_one_line() {
         line(false, "x\ny\\z\"q"),
         concat!(
             r#"2026-01-01T00:00:00.000000Z INFO test: a\nb field="x\ny\\z\"q" count=3 "#,
-            "ok=true mesh_time=none\n",
+            "delta=-2 ok=true mesh_time=none\n",
         )
     );
     assert_eq!(
@@ -258,7 +258,7 @@ fn a_newline_and_a_backslash_in_a_field_stay_on_one_line() {
         concat!(
             r#"{"timestamp":"2026-01-01T00:00:00.000000Z","level":"INFO","#,
             r#""target":"test","fields":{"message":"a\nb","field":"x\ny\\z\"q","#,
-            r#""count":3,"ok":true},"mesh_time":null}"#,
+            r#""count":3,"delta":-2,"ok":true},"mesh_time":null}"#,
             "\n",
         )
     );
