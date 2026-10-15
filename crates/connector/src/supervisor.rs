@@ -194,6 +194,10 @@ struct Ready {
 }
 
 /// The reader open of one run.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one for each run, which the run loop unpacks at once"
+)]
 enum Opening {
     /// `cancel` is cancelled, so no run starts.
     Cancelled,
