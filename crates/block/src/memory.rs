@@ -214,7 +214,7 @@ mod tests {
         memory.committed.borrow().clone()
     }
 
-    /// Reads `committed`, since the first `ALIGN` bytes hold only the header of the
+    /// Reads `committed`, because the first `ALIGN` bytes hold only the header of the
     /// region, which holds no byte of a block, so no caller can see their erase. A
     /// commit next to a range that adds a range in place of a join erases the same
     /// bytes, so a caller sees only a longer record.
