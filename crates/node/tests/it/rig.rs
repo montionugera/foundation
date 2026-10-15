@@ -12,7 +12,8 @@ use std::time::Duration;
 use env::clock::Clock;
 use types::time::Span;
 
-use crate::status::Connector;
+use crate::status::{self, Connector};
+use crate::text;
 
 /// How long [`Rig::wait`] and [`Rig::run`] wait: longer than the 60 s cap of a restart
 /// backoff.
@@ -36,6 +37,8 @@ pub(crate) struct Rig {
     pub(crate) dir: PathBuf,
     /// The disk budget that [`Rig::new`] keeps: 8 MiB for each core.
     pub(crate) disk: u64,
+    /// The environment variables that [`Rig::var`] sets.
+    vars: Vec<(String, String)>,
     clock: Clock,
     node: Option<Running>,
 }
@@ -75,6 +78,7 @@ impl Rig {
             dir,
             disk: u64::try_from(cores).expect("invariant: a core count fits u64")
                 * (8 << 20),
+            vars: Vec::new(),
             clock: os::clock(),
             node: None,
         };
@@ -90,6 +94,12 @@ impl Rig {
     /// Writes the file [`Rig::budget`] that keeps `pool` and `disk`.
     pub(crate) fn keep(&self, pool: u64, disk: u64) {
         keep(&self.budget(), pool, disk);
+    }
+
+    /// Sets the environment variable `name` to `value` in each later start of a node,
+    /// and in each later `foundation` of [`Rig::run`] and [`Rig::talk`].
+    pub(crate) fn var(&mut self, name: &str, value: &str) {
+        self.vars.push((name.into(), value.into()));
     }
 
     /// Writes `hcl` to `plant.hcl`.
@@ -181,7 +191,10 @@ impl Rig {
     /// `foundation` with `args` in [`Rig::dir`].
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_foundation"));
-        command.args(args).current_dir(&self.dir);
+        command
+            .args(args)
+            .envs(self.vars.iter().map(|(name, value)| (name, value)));
+        command.current_dir(&self.dir);
         command
     }
 
@@ -254,17 +267,36 @@ impl Rig {
         wait(&self.clock, PATIENCE, what, check)
     }
 
-    /// Plans `plant.hcl` into `plant.plan`, and applies that plan. Panics when either
-    /// command does not exit 0.
-    #[expect(clippy::todo, reason = "waits on #337, #1744")]
-    pub(crate) fn apply(&self) {
-        todo!("waits on #337, #1744")
+    /// Plans `plant.hcl` into `plant.plan`, and applies that plan. Gives the stdout of
+    /// each command. Panics when either command does not exit 0 with no stderr.
+    pub(crate) fn apply(&self) -> [String; 2] {
+        let commands: [&[&str]; 2] = [
+            &["plan", "plant.hcl", "--out", "plant.plan"],
+            &["apply", "plant.plan"],
+        ];
+        commands.map(|args| {
+            let output = self.run(args, b"");
+            let stderr = text(&output.stderr);
+            assert!(
+                output.status.success() && stderr.is_empty(),
+                "`foundation {}` exited with {}, stderr: {stderr}",
+                args.join(" "),
+                output.status
+            );
+            text(&output.stdout).to_owned()
+        })
     }
 
-    /// The connectors of `foundation status --json`, by name.
-    #[expect(clippy::todo, reason = "waits on #1735")]
+    /// The connectors of `foundation status --json`, by name. Panics when it fails.
     pub(crate) fn status(&self) -> BTreeMap<String, Connector> {
-        todo!("waits on #1735")
+        let output = self.run(&["status", "--json"], b"");
+        let stderr = text(&output.stderr);
+        assert!(
+            output.status.success() && stderr.is_empty(),
+            "`foundation status --json` exited with {}, stderr: {stderr}",
+            output.status
+        );
+        status::connectors(&output.stdout)
     }
 }
 
@@ -350,13 +382,22 @@ fn remove(path: &Path) -> std::io::Result<()> {
 /// Gives `NotFound` only when `path` is gone.
 #[cfg(unix)]
 fn writable(path: &Path) -> std::io::Result<()> {
+    writable_before(path, &|_| {})
+}
+
+/// As [`writable`], and calls `before` with each directory in `path` after the listing
+/// that names it and before the walk into it.
+#[cfg(unix)]
+fn writable_before(path: &Path, before: &impl Fn(&Path)) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
     for entry in std::fs::read_dir(path)? {
         let entry = entry?;
         if entry.file_type()?.is_dir() {
-            match writable(&entry.path()) {
+            let sub = entry.path();
+            before(&sub);
+            match writable_before(&sub, before) {
                 // Another sweep removed it.
                 Err(error) if error.kind() == ErrorKind::NotFound => {}
                 walked => walked?,
@@ -1216,7 +1257,7 @@ const DIES: &str = "RIG_DIES";
 /// binary gives 0 or 101 in each other case.
 const DIED: i32 = 3;
 
-/// Exits with [`DIED`] after it made the tree of [`create_tree`] and while
+/// Exits with [`DIED`] after it made a tree of [`create_tree`] and while
 /// [`create_left`] fills its draft, as a killed run does: `exit` runs no destructor.
 /// Does nothing when [`DIES`] is not set. It does not abort, because on macOS each
 /// abort writes a crash report that no sweep removes.
@@ -1228,7 +1269,7 @@ fn a_run_dies_while_it_leaves_a_directory() {
         reason = "the parent test sets it for the child"
     )]
     if std::env::var_os(DIES).is_some() {
-        create_tree(0);
+        create_tree(0, 1, 1);
         #[expect(
             clippy::disallowed_methods,
             clippy::exit,
@@ -1269,44 +1310,53 @@ fn a_sweep_removes_the_draft_of_a_run_that_died() {
     assert_eq!(left, Vec::<std::ffi::OsString>::new());
 }
 
-/// A sweep that makes a directory writable while another sweep removes it gives
-/// `NotFound` only once the directory is gone, so it never leaves the directory.
+/// A walk whose directory another sweep removes after the listing skips it and walks
+/// the rest, and a walk of a removed directory gives `NotFound`.
 #[test]
 #[cfg(unix)]
 fn a_walk_that_another_sweep_removes_ends_only_when_it_is_gone() {
-    for run in 0..20 {
-        let dir = create_tree(run);
-        let path = dir.clone();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "another sweep removes the directory during the walk"
-        )]
-        let removal = std::thread::spawn(move || std::fs::remove_dir_all(path));
-        let ended = loop {
-            let finished = removal.is_finished();
-            if let Err(error) = writable(&dir) {
-                break (error.kind(), dir.exists());
-            }
-            assert!(
-                !finished,
-                "a walk after the removal of {} gave no error",
-                dir.display()
-            );
-        };
-        removal.join().expect("join the removal").expect("remove");
-        assert_eq!(ended, (ErrorKind::NotFound, false), "run {run}");
+    use std::cell::Cell;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = create_tree(0, 2, 1);
+    let mode = |path: &Path, mode: u32| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+            .expect("set a mode");
+    };
+    for sub in ["d0", "d1"] {
+        mode(&dir.join(sub), 0o500);
     }
+    let removed = Cell::new(false);
+    let walked = writable_before(&dir, &|sub: &Path| {
+        let metadata = std::fs::metadata(sub).expect("read a mode");
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o500, "walked first");
+        if !removed.replace(true) {
+            mode(sub, 0o700);
+            std::fs::remove_dir_all(sub).expect("remove a directory");
+        }
+    });
+    assert_eq!(walked.map_err(|error| error.kind()), Ok(()));
+    let kept: Vec<_> = (std::fs::read_dir(&dir).expect("read the tree"))
+        .map(|entry| {
+            let metadata = entry.expect("read the tree").metadata();
+            metadata.expect("read a mode").permissions().mode() & 0o777
+        })
+        .collect();
+    assert_eq!(kept, [0o700]);
+    std::fs::remove_dir_all(&dir).expect("remove the tree");
+    let gone = writable(&dir).map_err(|error| error.kind());
+    assert_eq!(gone, Err(ErrorKind::NotFound));
 }
 
-/// Makes the tree that [`a_walk_that_another_sweep_removes_ends_only_when_it_is_gone`]
-/// walks in its `run`: 300 directories of 10 files each.
+/// Makes the draft `walked-<run>` of this run: `dirs` directories of `files` files
+/// each.
 #[cfg(unix)]
-fn create_tree(run: u32) -> PathBuf {
+fn create_tree(run: u32, dirs: u32, files: u32) -> PathBuf {
     let dir = draft(&format!("walked-{run}"));
-    for sub in 0..300 {
+    for sub in 0..dirs {
         let sub = dir.join(format!("d{sub}"));
         std::fs::create_dir_all(&sub).expect("make a directory");
-        for file in 0..10 {
+        for file in 0..files {
             std::fs::write(sub.join(format!("f{file}")), "").expect("make a file");
         }
     }

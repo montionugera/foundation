@@ -89,7 +89,7 @@ impl Peer {
     }
 
     pub(super) fn block(&self, bytes: &[u8]) -> block::Block {
-        crate::bytes::block(&self.pool, bytes).unwrap()
+        self.pool.copy(bytes).unwrap()
     }
 }
 
@@ -160,7 +160,7 @@ where
     M: Future<Output = ()> + 'static,
     P: Future<Output: Send + 'static> + 'static,
 {
-    let mut sim = Sim::new(sim::Config::default());
+    let mut sim = Sim::new(common::simulation(0));
     let nodes = [1, 2].map(|_| sim.node(sim::node::Config::default()));
     start(&nodes[0], "mesh", mesh);
     let read = start_peer(&nodes[1], id, limit, peer);
@@ -283,7 +283,7 @@ fn a_session_that_the_peer_closes_gives_way_to_a_new_session() {
 // before node 3 stops its stream.
 #[test]
 fn a_session_that_fails_leaves_the_session_to_each_other_member() {
-    let mut sim = Sim::new(sim::Config::default());
+    let mut sim = Sim::new(common::simulation(0));
     let nodes = IDS.map(|_| sim.node(sim::node::Config::default()));
     start(&nodes[0], "mesh", hold);
     drop(start_peer(&nodes[1], 2, LIMIT, |peer| async move {
@@ -740,7 +740,7 @@ fn a_proposal_whose_write_waits_gives_a_removed_stop() {
         *written.lock().unwrap() = Some((proposed, watched));
         pending::<()>().await;
     };
-    let mut sim = Sim::new(sim::Config::default());
+    let mut sim = Sim::new(common::simulation(0));
     let nodes = [1, 2].map(|_| sim.node(sim::node::Config::default()));
     start(&nodes[0], "mesh", mesh);
     drop(start_peer(&nodes[1], 2, 1472, |peer| async move {

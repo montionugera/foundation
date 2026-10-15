@@ -1,12 +1,13 @@
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, CString, c_void};
 use std::ptr;
+use std::rc::Rc;
 
 use env::rng::Rng;
 use sim::Sim;
-use types::time::{Monotonic, Span};
+use types::time::{Monotonic, Span, Stamp};
 
-use super::Loop;
+use super::{Loop, Time};
 use crate::child;
 use crate::ffi::{self, DelayedCallback, EventLoop, Status};
 
@@ -17,6 +18,8 @@ const UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
 struct Fixture {
     sim: Sim,
     clock: env::clock::Clock,
+    /// The wall time that the loop reads.
+    wall: Rc<Cell<Stamp>>,
     events: Loop,
     probe: Box<Probe>,
 }
@@ -45,8 +48,13 @@ impl Fixture {
         let mut sim = Sim::new(sim::Config::default());
         let node = sim.node(node);
         let clock = node.clock();
-        let events =
-            Loop::new(env::clock::Clock::clone(&clock), &mut Rng::from_seed(0));
+        let wall = Rc::new(Cell::new(Stamp::EPOCH));
+        let read = Rc::clone(&wall);
+        let time = Time {
+            clock: env::clock::Clock::clone(&clock),
+            wall: Box::new(move || read.get()),
+        };
+        let events = Loop::new(time, &mut Rng::from_seed(0));
         let probe = Box::new(Probe {
             ran: RefCell::new(Vec::new()),
             raw: events.raw(),
@@ -55,6 +63,7 @@ impl Fixture {
         Self {
             sim,
             clock,
+            wall,
             events,
             probe,
         }
@@ -244,8 +253,20 @@ fn number(n: usize) -> *mut c_void {
     ptr::without_provenance_mut(n)
 }
 
+/// The monotonic time, the wall time, and the UTC offset that the loop of `f` gives.
+fn times(f: &Fixture) -> (i64, i64, i64) {
+    let (raw, members) = (f.events.raw(), f.members());
+    // SAFETY: each member takes its own loop.
+    let monotonic = unsafe { (members.now_monotonic)(raw) };
+    // SAFETY: as above.
+    let now = unsafe { (members.now)(raw) };
+    // SAFETY: as above.
+    let offset = unsafe { (members.utc_offset)(raw) };
+    (monotonic, now, offset)
+}
+
 #[test]
-fn the_loop_reads_its_clock() {
+fn the_loop_reads_its_clock_and_its_wall() {
     let mut f = Fixture::new();
     f.advance(Span::from_nanos(1_234_567));
     let ticks = i64::try_from(f.now().0).unwrap() / 100;
@@ -254,25 +275,38 @@ fn the_loop_reads_its_clock() {
         12_345,
         "a tick is 100 ns, and the rest drops"
     );
-    let raw = f.events.raw();
-    let members = f.members();
-    // SAFETY: each member takes its own loop.
-    let monotonic = unsafe { (members.now_monotonic)(raw) };
-    // SAFETY: as above.
-    let now = unsafe { (members.now)(raw) };
-    // SAFETY: as above.
-    let offset = unsafe { (members.utc_offset)(raw) };
+    // 2026-01-01T00:00:00.000123456Z.
+    f.wall.set(Stamp::from_nanos(1_767_225_600_000_123_456));
+    let wall = 17_672_256_000_001_234;
+    assert_eq!(times(&f), (ticks, wall + UNIX_EPOCH_TICKS, 0));
+    f.wall.set(Stamp::from_nanos(-1));
     assert_eq!(
-        (monotonic, now, offset),
-        (ticks, ticks + UNIX_EPOCH_TICKS, 0)
+        times(&f),
+        (ticks, UNIX_EPOCH_TICKS - 1, 0),
+        "a wall time before the Unix epoch rounds down"
     );
+}
+
+#[test]
+fn the_monotonic_wall_of_a_test_loop_gives_the_last_stamp_past_it() {
+    let mut sim = Sim::new(sim::Config::default());
+    let clock = sim
+        .node(sim::node::Config {
+            monotonic: Monotonic(u64::MAX - 1000),
+            ..sim::node::Config::default()
+        })
+        .clock();
+    let events = Loop::new(Time::monotonic(clock), &mut Rng::from_seed(0));
+    // SAFETY: the member takes its own loop.
+    let now = unsafe { (events.members().now)(events.raw()) };
+    assert_eq!(now, i64::MAX / 100 + UNIX_EPOCH_TICKS);
 }
 
 /// Four values of open62541's generator after a loop with `rng` of `seed`.
 fn draws(seed: u64) -> [u32; 4] {
     let mut sim = Sim::new(sim::Config::default());
     let clock = sim.node(sim::node::Config::default()).clock();
-    let _events = Loop::new(clock, &mut Rng::from_seed(seed));
+    let _events = Loop::new(Time::monotonic(clock), &mut Rng::from_seed(seed));
     // SAFETY: it draws from the generator of this thread.
     std::array::from_fn(|_| unsafe { ffi::test::UA_UInt32_random() })
 }
@@ -814,17 +848,10 @@ fn drop_65_passes() {
 }
 
 #[test]
-#[cfg(unix)]
 fn the_drop_aborts_after_64_passes() {
-    use std::os::unix::process::ExitStatusExt;
-    const SIGABRT: i32 = 6;
-    let output = child::output("event::tests::drop_65_passes", &[]);
-    assert_eq!(output.status.signal(), Some(SIGABRT));
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "connector-opcua: open62541 queued delayed callbacks for 64 passes of a loop \
-         free\n"
-    );
+    let line = "connector-opcua: open62541 queued delayed callbacks for 64 passes of a loop \
+                free\n";
+    child::aborted_in_c("event::tests::drop_65_passes", &[], line);
 }
 
 #[test]

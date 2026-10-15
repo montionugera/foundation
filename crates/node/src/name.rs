@@ -14,10 +14,13 @@ use mesh::region::Founding;
 use types::name::Name;
 
 use crate::sector::{self, Held};
-use crate::{Error, directory, identity};
+use crate::{Error, directory, identity, status};
 
 /// The name of the file.
 pub(crate) const FILE: &str = "name";
+/// The most bytes of a node's name, so `<name>.<status>` fits a name for each name of
+/// the status table.
+pub(crate) const MAX_BYTES: usize = Name::MAX_BYTES - 1 - status::MAX_BYTES;
 /// The first bytes of the file; a new form gets a new tag.
 const TAG: &[u8; 17] = b"foundation/name/1";
 /// The length of the tag, the length of the name, and the name with its padding.
@@ -97,15 +100,13 @@ async fn source(files: &Files) -> Result<Source, Error> {
 /// The founding that the data directory of `files` stores. Makes the pool of the read,
 /// whose reservation is over 2 MiB, only when the mesh's directory is there.
 async fn founding(files: &Files) -> Result<Option<Founding>, Error> {
-    let dir = directory::mesh();
-    if let Err(error) = files.list(&dir).await {
-        return match error {
-            env::files::Error::NotFound { .. } => Ok(None),
-            error => Err(Error::Directory(error)),
-        };
+    if !directory::meshed(files).await? {
+        return Ok(None);
     }
     let pool = Rc::new(block::Pool::heap(POOL));
-    mesh::founding(files, &dir, pool).await.map_err(Error::Mesh)
+    mesh::founding(files, &directory::mesh(), pool)
+        .await
+        .map_err(Error::Mesh)
 }
 
 /// Writes `name` to the file `name` of `files` and makes it durable, when the file is

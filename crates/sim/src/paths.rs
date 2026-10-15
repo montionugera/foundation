@@ -5,9 +5,7 @@ use std::path::{Component, Path, PathBuf};
 
 use env::paths::{Error, Found, names_directory};
 
-/// `ENOTDIR` and `EISDIR` on Linux.
-const NOT_DIRECTORY: i32 = 20;
-const DIRECTORY: i32 = 21;
+use crate::{DIRECTORY, NOT_DIRECTORY};
 
 /// The files of the hosts of a run. A directory is there while a file is under it.
 #[derive(Default)]

@@ -2,15 +2,16 @@
 //! of a shard's home.
 
 mod channel;
-pub mod client;
 mod commit;
 mod gate;
 mod link;
+mod pending;
 pub mod reader;
 pub mod serve;
 mod task;
 #[cfg(feature = "sim")]
 pub mod testing;
+mod used;
 pub mod writer;
 
 use std::cell::{Cell, RefCell};
@@ -74,18 +75,31 @@ pub struct Config {
     /// The source of each challenge's nonce.
     pub entropy: env::entropy::Entropy,
     /// The node's region, or `None` for a node with no region. With `None`, this node
-    /// is the home of each index.
+    /// is the home of each index. With a region, the hub takes its definitions only
+    /// from the region's mesh: the spec in use at [`Hub::new`], each later spec in use,
+    /// and the spec in use at each open of a writer, a reader, or a served session,
+    /// when its pointer moved. So an open works on a spec no older than each spec that
+    /// the mesh gave any task before the open. A later spec ends each session on a
+    /// channel that it removes, as [`Hub::set_definitions`] states, with no open.
     pub region: Option<Region>,
 }
 
-/// What the hub of a node in a region reads homes from, and reaches them on.
+/// What the hub of a node in a region takes its definitions and homes from, and
+/// reaches the homes on.
 #[derive(Debug)]
 pub struct Region {
-    /// The region's mesh. It names the home of each index and the addresses of each
-    /// member.
+    /// The region's mesh. It gives the spec in use, names the home of each index, and
+    /// gives the addresses of each member.
     pub mesh: ::mesh::Mesh,
     /// The transport of this shard. The hub dials the home of each remote reader on it.
     pub transport: Rc<transport::Transport>,
+}
+
+/// The region of a hub, and the spec in use that the hub applied last.
+#[derive(Debug)]
+struct Regional {
+    region: Region,
+    applied: used::Applied,
 }
 
 /// The state of one shard's hub, which each session shares. No borrow of it lasts
@@ -101,16 +115,16 @@ struct State {
     remotes: reader::remote::Sessions,
     /// The waker of each reader that waits for a frame.
     wakers: hash::Map<::home::reader::Key, Waker>,
-    /// Each served open from its first key to its session, by a key from `opened`.
-    opens: Sessions<u64>,
+    /// The channels of each open that waits, by a key from `opened`.
+    opens: Sessions<pending::Key>,
     /// The waker of each open in `opens`.
-    waiting: hash::Map<u64, Waker>,
-    /// The count of served opens.
+    waiting: hash::Map<pending::Key, Waker>,
+    /// The count of opens ever registered in `opens`.
     opened: u64,
     /// The readers that [`::home::Shard::woken`] gave last.
     woken: Vec<::home::reader::Key>,
     commit: commit::Task,
-    /// The gate task, woken at each writer open and close.
+    /// The gate task, woken at each new carry and each writer open and close.
     gate: task::Waiter,
     /// The error that ended the home's buffer.
     failed: Option<env::files::Error>,
@@ -119,21 +133,23 @@ struct State {
     entropy: env::entropy::Entropy,
     /// Empty, so refusing each hello, until [`Hub::set_rules`] first runs.
     rules: access::Rules,
-    region: Option<Region>,
+    region: Option<Regional>,
     /// Where the hub spawns the task of each remote reader.
     tasks: env::tasks::Tasks,
     bodies: serve::client::Bodies,
 }
 
 impl Hub {
-    /// A hub over `config.home` that knows no channel yet. Spawns two tasks on
+    /// A hub over `config.home` that knows each channel of the spec that the mesh of
+    /// `config.region` uses, or no channel with no region. Spawns two tasks on
     /// `config.tasks`: one that ends when the home's buffer fails, and one that applies
-    /// the end of each control lease and grace at the home. The hub holds the home
-    /// and `config.region` until the hub and each value and future that it gave,
-    /// directly or through another such value, drop. Each task of the hub ends at its
-    /// next poll after that, and then holds neither. So a `::home::Commit` taken before
-    /// `new` and awaited after that drop resolves once the buffer's task ended, and
-    /// when the caller holds no other part of the home, the ring closes when that
+    /// the end of each control lease and grace at the home. With a region, it spawns a
+    /// third, which applies each later spec in use ([`Config::region`]). The hub holds
+    /// the home and `config.region` until the hub and each value and future that it
+    /// gave, directly or through another such value, drop. Each task of the hub ends at
+    /// its next poll after that, and then holds neither. So a `::home::Commit` taken
+    /// before `new` and awaited after that drop resolves once the buffer's task ended,
+    /// and when the caller holds no other part of the home, the ring closes when that
     /// commit drops.
     #[must_use]
     pub fn new(config: Config) -> Self {
@@ -147,6 +163,13 @@ impl Hub {
             region,
         } = config;
         let next = home.next_commit();
+        let (region, used) = region
+            .map(|region| {
+                let used = region.mesh.used();
+                let applied = used::Applied::new(region.mesh.watch_spec(), &used);
+                (Regional { region, applied }, used)
+            })
+            .unzip();
         let state = Rc::new(RefCell::new(State {
             home,
             interner,
@@ -172,6 +195,10 @@ impl Hub {
         }));
         tasks.spawn(commit::run(Rc::downgrade(&state)));
         tasks.spawn(gate::run(Rc::downgrade(&state), time));
+        if let Some(used) = used {
+            state.borrow_mut().define(&*used.definitions);
+            tasks.spawn(used::run(Rc::downgrade(&state)));
+        }
         Self(state)
     }
 
@@ -189,25 +216,25 @@ impl Hub {
     ///
     /// # Panics
     ///
-    /// Before any change, when two channels of `definitions` have one key or one
-    /// name, or the index of a data channel is not an index of `definitions`.
+    /// If the hub has a region: its definitions come from the region's mesh. Before
+    /// any change, when two channels of `definitions` have one key or one name, or the
+    /// index of a data channel is not an index of `definitions`.
     pub fn set_definitions<'d>(
         &self,
         definitions: impl IntoIterator<Item = (&'d Name, &'d Definition)>,
     ) {
-        let channels: Vec<_> = definitions
-            .into_iter()
-            .filter_map(|(name, definition)| match definition {
-                Definition::Channel(channel) => Some((name, channel)),
-                _ => None,
-            })
-            .collect();
-        self.0.borrow_mut().set(&checked(&channels));
+        let mut state = self.0.borrow_mut();
+        assert!(
+            state.region.is_none(),
+            "a hub with a region takes its definitions from the region's mesh"
+        );
+        state.define(definitions);
     }
 
     /// Opens a writer session on `config.channels` and the index of each. It waits
     /// for the node's first mesh time, and while the mesh names no home for an index,
-    /// for one.
+    /// for one. A later spec in use that removes or changes one of its channels ends
+    /// that wait, and it checks its names again.
     ///
     /// # Errors
     ///
@@ -223,16 +250,18 @@ impl Hub {
         Writer::open(&self.0, config).await
     }
 
-    /// Opens a reader session on the channels that `config.select` matches, which
-    /// share one index. While the mesh names no home for the index, it waits for one.
-    /// At the home of another node, each open reader holds one stream of the one
-    /// session to it, so it also waits while that home allows this node no more
-    /// streams, until another reader there drops. It gets each frame of the index, as
-    /// a view of only its channels and their index. An unnamed complete reader gets
-    /// each live frame written after the returned future resolves, until it misses one
-    /// ([`reader::Mode::Complete`]). A named reader takes over the open session of its
-    /// subject and name, which ends with [`reader::Ended::Replaced`], and a named
-    /// complete one resumes as [`reader::Config::name`] says.
+    /// Opens a reader session on the channels that `config.select` matches, which share
+    /// one index. While the mesh names no home for the index, it waits for one. A later
+    /// spec in use that removes or changes one of its channels ends that wait, and it
+    /// matches the selector again. At the home of another node, each open reader holds
+    /// one stream of the one session to it, so it also waits while that home allows
+    /// this node no more streams, until another reader there drops. It gets each frame
+    /// of the index, as a view of only its channels and their index. An unnamed
+    /// complete reader gets each live frame written after the returned future resolves,
+    /// until it misses one ([`reader::Mode::Complete`]). A named reader takes over the
+    /// open session of its subject and name, which ends with
+    /// [`reader::Ended::Replaced`], and a named complete one resumes as
+    /// [`reader::Config::name`] says.
     ///
     /// # Errors
     ///
@@ -357,32 +386,15 @@ impl<K> Default for Sessions<K> {
 
 impl<K: Copy + Ord + Hash> Sessions<K> {
     /// Opens the session `key` on `keys`, so that a removal of one of them ends it.
-    fn add(&mut self, key: K, keys: Box<[Key]>) -> Ending {
+    fn add(&mut self, key: K, keys: Vec<Key>) -> Ending {
         let ending = Ending::default();
         let open = Open {
-            keys: keys.into_vec(),
+            keys,
             ending: ending.clone(),
         };
         let added = self.0.insert(key, open);
         assert!(added.is_none(), "invariant: each key is added once");
         ending
-    }
-
-    /// The channels of the open session `key`, to add to.
-    fn keys_mut(&mut self, key: K) -> &mut Vec<Key> {
-        &mut self
-            .0
-            .get_mut(&key)
-            .expect("invariant: the session is open")
-            .keys
-    }
-
-    /// Makes the open session `key` not open, and gives its channels.
-    fn take(&mut self, key: K) -> Vec<Key> {
-        self.0
-            .remove(&key)
-            .expect("invariant: the session is open")
-            .keys
     }
 
     /// Returns whether the session `key` was open, and makes it not open.
@@ -407,6 +419,21 @@ impl<K: Copy + Ord + Hash> Sessions<K> {
     }
 }
 
+impl Sessions<pending::Key> {
+    /// Adds `keys` to the channels of the open `key`.
+    ///
+    /// # Panics
+    ///
+    /// When `key` is not open.
+    fn extend(&mut self, key: pending::Key, keys: &[Key]) {
+        let open = self
+            .0
+            .get_mut(&key)
+            .expect("invariant: the open is registered");
+        open.keys.extend_from_slice(keys);
+    }
+}
+
 impl Sessions<::home::reader::Key> {
     /// Makes the open reader session `key` not open, and ends it with
     /// [`End::Replaced`].
@@ -417,13 +444,34 @@ impl Sessions<::home::reader::Key> {
 }
 
 impl State {
-    /// Makes `channels` the defined channels, as [`Hub::set_definitions`] says.
-    fn set(&mut self, channels: &hash::Map<&Name, &spec::channel::Channel>) {
-        let removed = self.channels.set(channels);
+    /// Makes the channels of `definitions` the defined channels, as
+    /// [`Hub::set_definitions`] says.
+    fn define<'d>(
+        &mut self,
+        definitions: impl IntoIterator<Item = (&'d Name, &'d Definition)>,
+    ) {
+        let channels: Vec<_> = definitions
+            .into_iter()
+            .filter_map(|(name, definition)| match definition {
+                Definition::Channel(channel) => Some((name, channel)),
+                _ => None,
+            })
+            .collect();
+        let removed = self.channels.set(&checked(&channels));
         self.end(&removed.channels);
         for key in removed.indexes {
             let slot = self.interner.slots().index(key);
             self.home.shed(slot);
+        }
+    }
+
+    /// Applies the spec that the region's mesh uses now. Does nothing with no region.
+    fn catch_up(&mut self) {
+        if let Some(regional) = &mut self.region {
+            let spec = regional.region.mesh.used();
+            if regional.applied.advance(&spec) {
+                self.define(&*spec.definitions);
+            }
         }
     }
 
@@ -498,10 +546,13 @@ impl State {
         })
     }
 
-    /// Carries `index` at the home. A later carry does nothing.
+    /// Carries `index` at the home. Wakes the gate task when the carry is new: only
+    /// then can it make the home's deadline earlier.
     fn carry(&mut self, index: types::channel::Key) {
         let slot = self.interner.slots().index(index);
-        self.home.carry(slot);
+        if self.home.carry(slot, index) {
+            self.gate.wake();
+        }
     }
 
     /// Carries `index` at the home, and gives the slot of each of `keys` in its role:
@@ -571,7 +622,10 @@ async fn homes(
             let (watch, node) = {
                 let state = state.borrow();
                 (
-                    state.region.as_ref().map(|region| region.mesh.watch(index)),
+                    state
+                        .region
+                        .as_ref()
+                        .map(|regional| regional.region.mesh.watch(index)),
                     state.node,
                 )
             };

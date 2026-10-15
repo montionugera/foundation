@@ -277,9 +277,8 @@ fn a_lone_voter_sets_a_home_when_it_leads() {
         let clock = node.clock();
         let start = clock.now();
         assert_eq!(mesh.set_home(INDEX, key(2)).await, Ok(()));
-        // The call proposes again at each tick, so it waits for no more than the
-        // longest election timeout and one tick.
-        assert!(clock.now() - start <= Span::from_nanos(21 * TICK.nanos()));
+        // A lone voter leads at open, so the set ends within one tick.
+        assert!(clock.now() - start < TICK);
         assert_eq!(mesh.watch(INDEX).next().await, Ok(Some(key(2))));
     });
 }
@@ -553,7 +552,7 @@ impl Leader {
             loop {
                 if !silent.get() {
                     let beat = proven(2, 1, Body::Heartbeat { commit: 0 });
-                    let beat = block(&pool, &Message::Raft(beat).encode()).unwrap();
+                    let beat = pool.copy(&Message::Raft(beat).encode()).unwrap();
                     beats.send(beat).await.unwrap();
                 }
                 clock.sleep(BEAT).await;

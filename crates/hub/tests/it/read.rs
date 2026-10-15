@@ -14,20 +14,20 @@ use types::channel;
 use types::sample::Type;
 use types::time::Span;
 use wire::header::MALFORMED;
-use wire::hub::client::{
-    self, BODY_BYTES_MAX, FromNode, Mode, Open, Place, Places, REFUSED,
-};
+use wire::hub::client::{self, BODY_BYTES_MAX, Mode, Open, Place, Places, REFUSED};
 use wire::hub::{BUSY, FAILED, FromHome, NOT_HOME, UNKNOWN};
 
-use super::link::{Home, OTHER, QUIET, as_agent, serve_session_on};
-use super::serve::{decoded, got, next, places as placed};
+use super::link::{as_agent, serve_session_on};
+use super::serve::{decoded, got, places as placed};
 use super::{
     AREA, BODY_MAX, COMMIT, DataType, I64, NODE, POOL, RING, STAMP, TIME, TIME_B, Test,
     channels, region, without, write, write_wide,
 };
 use crate::agent::{AGENT, Agent, SUBJECT, Stream, name, reset_with};
 use crate::net::{HOME, own_pool, transport};
-use crate::sessions::{Got, recorded, rules, run_program, serve_each};
+use crate::sessions::{
+    Got, Home, OTHER, QUIET, recorded, rules, run_program, serve_each,
+};
 
 /// How long after the home accepts the session its first write or change comes, so
 /// the program has opened its read by then.
@@ -99,33 +99,6 @@ fn place(key: u128, data_type: Type, channel: &str) -> Place {
     }
 }
 
-/// Reads the start of a read in `mode`: the places, their run, and `Opened`. Gives
-/// the places, the run, and the decoder of the frames.
-async fn opened(
-    stream: &mut Stream,
-    mode: Mode,
-) -> (Places, Vec<Place>, wire::hub::Reader) {
-    let mut start = client::Reader::new(mode);
-    let message = next(&mut stream.receiver).await;
-    let Ok(FromNode::Places(places)) = start.decode(&message) else {
-        panic!("the places come first");
-    };
-    let mut run = Vec::new();
-    let mut reader = loop {
-        let message = next(&mut stream.receiver).await;
-        let Ok(FromNode::Run { places, home }) = start.decode(&message) else {
-            panic!("a message of the run of places");
-        };
-        run.extend(places);
-        if let Some(home) = home {
-            break home;
-        }
-    };
-    let message = next(&mut stream.receiver).await;
-    assert!(matches!(reader.decode(&message), Ok(FromHome::Opened)));
-    (places, run, reader)
-}
-
 /// Finishes the hello stream and waits, so the hello stream ends as `Ended`.
 async fn finish(agent: &mut Agent) {
     agent.hello.sender.finish().expect("finishes");
@@ -140,7 +113,7 @@ fn sends_the_places_and_each_frame_of_a_complete_read() {
     let home = read_session(300, ready, |mut agent| async move {
         agent.admit().await;
         let mut stream = agent.read(Mode::Complete, &["value"]).await;
-        let (places, run, mut reader) = opened(&mut stream, Mode::Complete).await;
+        let (places, run, mut reader) = stream.opened().await;
         assert_eq!(places, Places { count: 2, index: 1 });
         assert_eq!(run, [place(2, I64, "value"), place(1, STAMP, "time")]);
         for value in [10, 20] {
@@ -163,7 +136,7 @@ fn sends_a_latest_read_the_index_once_when_its_selector_matches_it() {
     let home = read_session(301, ready, |mut agent| async move {
         agent.admit().await;
         let mut stream = agent.read(Mode::Latest, &["value", "time"]).await;
-        let (places, run, mut reader) = opened(&mut stream, Mode::Latest).await;
+        let (places, run, mut reader) = stream.opened().await;
         assert_eq!(places, Places { count: 2, index: 0 });
         assert_eq!(run, [place(1, STAMP, "time"), place(2, I64, "value")]);
         let got = got(&mut stream.receiver, &mut reader)
@@ -278,13 +251,13 @@ fn opens_reads_beside_a_request_and_stops_ones_over_the_share_as_busy() {
             let mut busy = agent.read(Mode::Complete, &["time", "value"]).await;
             assert_eq!(busy.recv().await, reset_with(BUSY));
             let mut stream = agent.read(Mode::Complete, &["value"]).await;
-            let (places, _, _) = opened(&mut stream, Mode::Complete).await;
+            let (places, _, _) = stream.opened().await;
             assert_eq!(places, Places { count: 2, index: 1 });
             drop(held);
             agent.sleep(Span::MILLISECOND).await;
             for _ in 0..2 {
                 let mut stream = agent.read(Mode::Complete, &["time", "value"]).await;
-                let (places, _, _) = opened(&mut stream, Mode::Complete).await;
+                let (places, _, _) = stream.opened().await;
                 assert_eq!(places, Places { count: 2, index: 0 });
             }
         },
@@ -317,11 +290,13 @@ fn frees_the_share_of_the_open_of_a_read_once_it_decodes() {
             let mut streams = Vec::new();
             for _ in 0..2 {
                 let mut stream = agent.read(Mode::Complete, &["value"]).await;
-                let (places, _, _) = opened(&mut stream, Mode::Complete).await;
+                let (places, _, _) = stream.opened().await;
                 assert_eq!(places, Places { count: 2, index: 1 });
                 streams.push(stream);
             }
             drop((held, streams));
+            // So each reset reaches the home before the finish ends the session.
+            agent.sleep(QUIET).await;
             finish(&mut agent).await;
         },
     );
@@ -350,7 +325,8 @@ fn frees_the_share_of_the_open_of_a_read_before_its_places_go_out() {
         test.define(names.iter().enumerate().map(|(n, channel)| {
             let key = 100 + u128::try_from(n).expect("fits");
             (key, channel.as_str(), DataType::Sample(I64), 1)
-        }));
+        }))
+        .await;
     };
     read_session(318, ready, |mut agent| async move {
         agent.admit().await;
@@ -360,8 +336,8 @@ fn frees_the_share_of_the_open_of_a_read_before_its_places_go_out() {
         agent.sleep(Span::from_nanos(10_000_000)).await;
         let mut stream = agent.read(Mode::Complete, &["value"]).await;
         agent.sleep(Span::from_nanos(10_000_000)).await;
-        opened(&mut wide, Mode::Complete).await;
-        let (places, _, _) = opened(&mut stream, Mode::Complete).await;
+        wide.opened().await;
+        let (places, _, _) = stream.opened().await;
         assert_eq!(places, Places { count: 2, index: 1 });
         drop((held, wide, stream));
         finish(&mut agent).await;
@@ -379,13 +355,14 @@ fn opens_a_read_whose_places_pass_the_share() {
         test.define(names.iter().enumerate().map(|(n, channel)| {
             let key = 100 + u128::try_from(n).expect("fits");
             (key, channel.as_str(), DataType::Sample(I64), 1)
-        }));
+        }))
+        .await;
         writes(test, &[10]).await;
     };
     let home = read_session(313, ready, |mut agent| async move {
         agent.admit().await;
         let mut stream = agent.read(Mode::Complete, &["w.**", "value"]).await;
-        let (places, run, mut reader) = opened(&mut stream, Mode::Complete).await;
+        let (places, run, mut reader) = stream.opened().await;
         let time = u32::try_from(MANY + 1).expect("fits");
         assert_eq!(
             places,
@@ -424,7 +401,7 @@ fn stops_a_read_whose_channel_is_removed_as_unknown() {
     let home = read_session(306, ready, |mut agent| async move {
         agent.admit().await;
         let mut stream = agent.read(Mode::Complete, &["value"]).await;
-        opened(&mut stream, Mode::Complete).await;
+        stream.opened().await;
         assert_eq!(stream.recv().await, reset_with(UNKNOWN));
         finish(&mut agent).await;
     });
@@ -446,7 +423,7 @@ fn stops_a_read_that_gets_a_message_after_its_open_as_malformed() {
         |mut agent| async move {
             agent.admit().await;
             let mut stream = agent.read(Mode::Latest, &["value"]).await;
-            opened(&mut stream, Mode::Latest).await;
+            stream.opened().await;
             stream.send(b"x").await;
             assert_eq!(stream.recv().await, reset_with(MALFORMED));
             finish(&mut agent).await;
@@ -472,7 +449,7 @@ fn stops_a_read_whose_buffer_failed_as_failed() {
     let home = read_session(311, ready, |mut agent| async move {
         agent.admit().await;
         let mut stream = agent.read(Mode::Complete, &["value"]).await;
-        opened(&mut stream, Mode::Complete).await;
+        stream.opened().await;
         assert_eq!(stream.recv().await, reset_with(FAILED));
         finish(&mut agent).await;
     });
@@ -496,7 +473,7 @@ fn stop_while_frames_come(
     read_session(310, ready, move |mut agent| async move {
         agent.admit().await;
         let mut stream = agent.read(Mode::Complete, &["value"]).await;
-        let (_, _, mut reader) = opened(&mut stream, Mode::Complete).await;
+        let (_, _, mut reader) = stream.opened().await;
         agent.sleep(Span::SECOND).await;
         stop(&mut stream).await;
         let mut frames = 0;
@@ -551,6 +528,27 @@ fn ends_a_read_at_a_finish_that_comes_with_its_open() {
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
+/// A read that is still open when the session finishes ends as closed.
+#[test]
+fn ends_a_read_that_is_open_at_the_finish_of_its_session_as_closed() {
+    let home = read_session(
+        320,
+        async |_| {},
+        |mut agent| async move {
+            agent.admit().await;
+            let mut stream = agent.read(Mode::Complete, &["value"]).await;
+            let (places, _, _) = stream.opened().await;
+            assert_eq!(places, Places { count: 2, index: 1 });
+            finish(&mut agent).await;
+            drop(stream);
+        },
+    );
+    let closed = serve::Error::Stream(transport::Error::Closed {
+        code: transport::Code(0),
+    });
+    assert_eq!(home.served, [Ok(Got::Ended), Err(closed)]);
+}
+
 /// The channels of a read are removed while its run of places waits for room in the
 /// program's window.
 #[test]
@@ -562,7 +560,8 @@ fn stops_a_read_whose_channel_is_removed_while_its_places_wait_as_unknown() {
         test.define(names.iter().enumerate().map(|(n, channel)| {
             let key = 100 + u128::try_from(n).expect("fits");
             (key, channel.as_str(), DataType::Sample(I64), 1)
-        }));
+        }))
+        .await;
         let (clock, hub) = (test.clock.clone(), test.hub.clone());
         test.tasks.spawn(async move {
             clock.sleep(START).await;
@@ -598,7 +597,7 @@ fn sends_behind_and_finishes_a_complete_read_that_misses_a_frame() {
     let home = read_session(308, ready, |mut agent| async move {
         agent.admit().await;
         let mut stream = agent.read(Mode::Complete, &["value"]).await;
-        let (_, _, mut reader) = opened(&mut stream, Mode::Complete).await;
+        let (_, _, mut reader) = stream.opened().await;
         agent.sleep(Span::SECOND).await;
         let mut frames = 0;
         while got(&mut stream.receiver, &mut reader).await.is_some() {
@@ -630,7 +629,8 @@ where
     let home = move |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
         let transport = Rc::new(transport(&node, &tasks, &own_pool(), HOME, 1 << 16));
         let region =
-            region::open(&node, &tasks, Rc::clone(&transport), Vec::new()).await;
+            region::open(&node, &tasks, Rc::clone(&transport), Vec::new(), channels())
+                .await;
         let layout = buffer::Layout::new(AREA, BODY_MAX).expect("a ring");
         let mut test =
             Test::new(node.clone(), tasks.clone(), layout, POOL, Some(region)).await;
@@ -658,6 +658,24 @@ where
     let given = given.lock().expect("not poisoned").take().expect("given");
     let served = std::mem::take(&mut *served.lock().expect("not poisoned"));
     (served, given)
+}
+
+/// A read that waits for the home of an index that never gets one stops with
+/// `UNKNOWN` at once when a spec in use removes its one channel, as a new read does.
+#[test]
+fn stops_a_read_whose_channel_is_removed_while_it_waits_for_a_home_as_unknown() {
+    let (served, ()) = homeless(
+        320,
+        async |test| test.set_spec(without(&["value"])).await,
+        |mut agent| async move {
+            agent.admit().await;
+            let mut stream = agent.read(Mode::Complete, &["value"]).await;
+            assert_eq!(stream.recv().await, reset_with(UNKNOWN));
+            finish(&mut agent).await;
+        },
+    );
+    let empty = serve::Error::Reader(Box::new(reader::Error::Empty));
+    assert_eq!(served, [Err(empty), Ok(Got::Ended)]);
 }
 
 /// A read that waits for the home of its index stops with `FAILED` when the mesh
@@ -739,11 +757,13 @@ fn holds_the_share_of_the_open_of_a_read_while_it_waits_for_a_home() {
             let mut streams = Vec::new();
             for _ in 0..2 {
                 let mut stream = agent.read(Mode::Complete, &["value"]).await;
-                let (places, _, _) = opened(&mut stream, Mode::Complete).await;
+                let (places, _, _) = stream.opened().await;
                 assert_eq!(places, Places { count: 2, index: 1 });
                 streams.push(stream);
             }
             drop((held, streams));
+            // So each reset reaches the home before the finish ends the session.
+            agent.sleep(QUIET).await;
             finish(&mut agent).await;
         },
     );
@@ -755,18 +775,15 @@ fn holds_the_share_of_the_open_of_a_read_while_it_waits_for_a_home() {
     let reset = serve::Error::Stream(transport::Error::Reset {
         code: transport::Code(0),
     });
-    let closed = serve::Error::Stream(transport::Error::Closed {
-        code: transport::Code(0),
-    });
     assert_eq!(
         served,
         [
             Err(share),
             Ok(Got::Ended),
+            Err(reset.clone()),
+            Err(reset.clone()),
             Err(reset),
-            Ok(Got::Ended),
-            Err(closed.clone()),
-            Err(closed)
+            Ok(Got::Ended)
         ]
     );
 }
@@ -780,7 +797,8 @@ fn stops_a_read_whose_home_is_another_node_as_not_home() {
     let home = move |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
         let transport = Rc::new(transport(&node, &tasks, &own_pool(), HOME, 1 << 16));
         let region =
-            region::open(&node, &tasks, Rc::clone(&transport), Vec::new()).await;
+            region::open(&node, &tasks, Rc::clone(&transport), Vec::new(), channels())
+                .await;
         let layout = buffer::Layout::new(AREA, BODY_MAX).expect("a ring");
         let mut test =
             Test::new(node.clone(), tasks.clone(), layout, POOL, Some(region)).await;
@@ -823,4 +841,57 @@ fn stops_a_read_whose_home_is_another_node_as_not_home() {
     );
     let (before, after) = sets.lock().expect("not poisoned").take().expect("counted");
     assert_eq!(after, before + 1);
+}
+
+/// A client read that opens after the mesh puts in use a spec that adds `added`, and
+/// before the spec task of the hub runs, opens on `added`.
+#[test]
+fn a_client_read_opens_on_a_channel_that_a_spec_in_use_adds() {
+    let (served, ()) = homeless(
+        318,
+        async |test| {
+            test.set_home(TIME, NODE).await;
+            test.pause.pause();
+            let mut added = channels();
+            added.insert(
+                name("added"),
+                super::definition(9, DataType::Sample(I64), 1),
+            );
+            test.set_spec(added).await;
+        },
+        |mut agent| async move {
+            agent.admit().await;
+            agent
+                .sleep(Span::from_nanos(10 * Span::SECOND.nanos()))
+                .await;
+            let mut stream = agent.read(Mode::Latest, &["added"]).await;
+            let (places, _, _) = stream.opened().await;
+            assert_eq!(places, Places { count: 2, index: 1 });
+            drop(stream);
+            finish(&mut agent).await;
+        },
+    );
+    assert_eq!(served.len(), 2, "{served:?}");
+}
+
+/// A read stream that is open when the session of its client closes ends with that
+/// close.
+#[test]
+fn ends_a_read_that_is_open_at_the_close_of_its_session_as_closed() {
+    let (served, ()) = homeless(
+        318,
+        async |test| test.set_home(TIME, NODE).await,
+        |mut agent| async move {
+            agent.admit().await;
+            let mut stream = agent.read(Mode::Latest, &["value"]).await;
+            let (places, _, _) = stream.opened().await;
+            assert_eq!(places, Places { count: 2, index: 1 });
+            finish(&mut agent).await;
+            drop(stream);
+        },
+    );
+    let closed = serve::Error::Stream(transport::Error::Closed {
+        code: transport::Code(0),
+    });
+    assert_eq!(served, [Ok(Got::Ended), Err(closed)]);
 }

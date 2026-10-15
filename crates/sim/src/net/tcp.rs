@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io::IoSlice;
 use std::mem;
 use std::net::SocketAddr;
-use std::task::{Poll, Waker};
+use std::task::{self, Poll};
 
 use env::net::{Error, tcp};
 use types::time::Monotonic;
@@ -14,6 +14,7 @@ use types::time::Monotonic;
 use super::wire::{Packet, Wire};
 use super::{EPHEMERAL, Fate, NOT_AVAILABLE, addresses, ip_header, node, receives};
 use crate::EIO;
+use crate::log::Waker;
 
 /// The key and the pair of the end of a stream that a listener accepts, or its error.
 type Accepted = Result<(u64, Pair), Error>;
@@ -416,7 +417,7 @@ impl<'a> Tcp<'a> {
                 listening.node == node && listening.local == local
             })?;
         listening.failed = true;
-        let waker = (listening.waker.take()).unwrap_or_else(|| Waker::noop().clone());
+        let waker = (listening.waker.take()).unwrap_or_else(Waker::noop);
         let ends = &self.sockets.ends;
         let (accepting, queued) = (listening.queue.iter())
             .partition(|key| ends[key].phase == Phase::Accepting(listener));
@@ -445,7 +446,7 @@ impl<'a> Tcp<'a> {
     pub(crate) fn accept(
         &mut self,
         listener: u64,
-        waker: &Waker,
+        waker: &task::Waker,
     ) -> (Poll<Accepted>, Option<Waker>) {
         let Some(listening) = self.sockets.listeners.get_mut(&listener) else {
             return (Poll::Pending, None);
@@ -457,7 +458,10 @@ impl<'a> Tcp<'a> {
             if listening.failed {
                 return (Poll::Ready(Err(Error::Io { code: EIO })), None);
             }
-            return (Poll::Pending, listening.waker.replace(waker.clone()));
+            return (
+                Poll::Pending,
+                listening.waker.replace(Waker::new(waker.clone())),
+            );
         };
         let key = (listening.queue.remove(index)).expect("invariant: found");
         let end = (ends.get_mut(&key)).expect("invariant: queued");
@@ -518,11 +522,14 @@ impl<'a> Tcp<'a> {
     pub(crate) fn connected(
         &mut self,
         key: u64,
-        waker: &Waker,
+        waker: &task::Waker,
     ) -> (Poll<Result<(), Error>>, Option<Waker>) {
         let end = self.end(key);
         match end.phase {
-            Phase::Connecting => (Poll::Pending, end.writing.replace(waker.clone())),
+            Phase::Connecting => (
+                Poll::Pending,
+                end.writing.replace(Waker::new(waker.clone())),
+            ),
             Phase::Refused => {
                 let remote = end.pair.peer;
                 (Poll::Ready(Err(Error::Refused { remote })), None)
@@ -537,7 +544,7 @@ impl<'a> Tcp<'a> {
         &mut self,
         now: Monotonic,
         key: u64,
-        waker: &Waker,
+        waker: &task::Waker,
         buffer: &mut [u8],
     ) -> (Poll<Result<usize, Error>>, Option<Waker>) {
         let end = (self.sockets.ends.get_mut(&key))
@@ -551,7 +558,10 @@ impl<'a> Tcp<'a> {
             } else if end.peer_closed {
                 Poll::Ready(Ok(0))
             } else {
-                return (Poll::Pending, end.reading.replace(waker.clone()));
+                return (
+                    Poll::Pending,
+                    end.reading.replace(Waker::new(waker.clone())),
+                );
             };
             return (poll, None);
         }
@@ -580,7 +590,7 @@ impl<'a> Tcp<'a> {
         &mut self,
         now: Monotonic,
         key: u64,
-        waker: &Waker,
+        waker: &task::Waker,
         buffers: &[IoSlice<'_>],
     ) -> (Poll<Result<usize, Error>>, Option<Waker>) {
         let end = self.end(key);
@@ -595,7 +605,10 @@ impl<'a> Tcp<'a> {
         let held = end.outbox.len() + (end.sent - end.acked);
         let room = end.options.send_buffer_bytes.saturating_sub(held);
         if end.outbox.len() >= end.options.unsent_bytes_max.get() || room == 0 {
-            return (Poll::Pending, end.writing.replace(waker.clone()));
+            return (
+                Poll::Pending,
+                end.writing.replace(Waker::new(waker.clone())),
+            );
         }
         let mut n = 0;
         for buffer in buffers {
@@ -992,7 +1005,7 @@ mod tests {
         let mut buffer = [0; 4_096];
         let mut tcp = Tcp::new(&mut sockets, &mut wire);
         tcp.rst(key);
-        let (poll, _) = tcp.read(Monotonic(0), key, Waker::noop(), &mut buffer);
+        let (poll, _) = tcp.read(Monotonic(0), key, task::Waker::noop(), &mut buffer);
         assert!(matches!(poll, Poll::Ready(Ok(4_096))));
         assert!(sockets.lanes.floors.is_empty());
     }

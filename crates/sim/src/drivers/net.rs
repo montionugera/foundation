@@ -12,6 +12,7 @@ use types::time::Monotonic;
 
 use super::{Node, Owner};
 use crate::EAGAIN;
+use crate::log;
 use crate::name::{self, Answer};
 use crate::net::tcp::{Pair, Tcp};
 use crate::net::udp::Bound;
@@ -286,7 +287,7 @@ impl receiver::Driver for Receiver {
         meta: &mut [Meta],
     ) -> Poll<Result<usize, Error>> {
         self.owner.check(&self.node);
-        let waker = cx.waker().clone();
+        let waker = log::Waker::new(cx.waker().clone());
         let (poll, unused) = lock(&self.node.shared)
             .net()
             .udp()

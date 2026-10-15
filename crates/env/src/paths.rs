@@ -7,8 +7,9 @@ use std::rc::Rc;
 /// The files of the host by the paths that a user gave, as on a command line. A
 /// relative path is relative to the working directory of the process. A path that
 /// ends in `/`, `.`, or `..` names a directory, and the empty path names nothing.
-/// Each call blocks its thread until the OS answers, so a shard never calls one: the
-/// files of a node are [`crate::files`].
+/// Each call blocks its thread until the OS answers, and so delays each task of that
+/// thread: a shard of a node never calls one, and the files of a node are
+/// [`crate::files`].
 ///
 /// ```
 /// use std::path::Path;
@@ -35,8 +36,9 @@ impl Paths {
     }
 
     /// What is at `path`: the bytes of a file of at most `most` bytes, or the path of
-    /// each entry of a directory whose entry paths hold at most `most` bytes in all,
-    /// in name order.
+    /// each entry of a directory whose entry paths hold at most `most` bytes in all, in
+    /// name order. It reads through one open of `path`: a later rename or replace at
+    /// `path` does not change what it reads.
     ///
     /// # Errors
     ///

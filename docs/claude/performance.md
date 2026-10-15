@@ -12,9 +12,11 @@ a documented workload, or a measured per-frame cost that shows P1 cannot hold wi
 smaller frames on the cores of the measured machine. With no source, the path counts as
 once per sample. The other limits are in `docs/decisions/memory/p1.md`. The judgment
 states how often the path runs (per sample, frame, session, or start), its absolute cost
-against the P1 budget, the noise of the machine, and what the change buys. The architect
-accepts or rejects it on those facts. A slowdown under the cost limit needs nothing but
-its numbers.
+against the P1 budget, the noise of the machine, and what the change buys. The cost is
+the cost on the `os` driver. A judgment with no `os` measure gives each `os` number that
+the PR, its rounds, or its deferrals hold, and the architect judges on the largest. The
+architect accepts or rejects it on those facts. A slowdown under the cost limit needs
+nothing but its numbers.
 
 Evidence: `docs/research/r1-thread-model.md`, `docs/research/r11-memory-sync.md`, and
 `docs/research/r11-mem-bench/`. The numbers below are from an M3 Max. Rerun on Linux
@@ -31,7 +33,8 @@ only for tests and benchmarks, such as a counting `GlobalAlloc`, needs only rule
    free 1.1 ns, against 4.2 ns for mimalloc and 9.2 ns for macOS malloc). A counting
    allocator in tests fails any hot-path allocation. One exception: the heap copies of
    `send_parts` that STREAM WIRE (`docs/decisions/transport/stream-wire.md`) states.
-   Each stretch of short runs and zeros is copied, and noq keeps the copy until the ACK.
+   Each stretch of short runs and zeros is copied, and noq keeps the copy until the peer
+   acknowledges it and each byte before it on its stream, or the stream resets.
 2. **One reference count per frame, never per series.** Fan-out is 18-26x cheaper. One
    shared `Arc` under 8 threads costs about 430 ns: no shared reference-count hot
    spots.

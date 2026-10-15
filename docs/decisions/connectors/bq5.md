@@ -28,7 +28,8 @@
   Supersedes, as 6057225033 rules, the default name for a `None` `settings.name` of
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6053530272 and
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6053886044.
-  Secrets and run commands wait for #2300. It is
-  not `Send`: a kind's own thread takes clones of the parts it needs
+  Run commands wait for #2300. `secret(&Name)` reads a secret from the store of the
+  supervisor (SECRET STORES AS ADAPTERS). It is not `Send`: a kind's own thread takes
+  clones of the parts it needs
   (`laptop.architect-2`, 2026-10-08T18:07:05Z:
   https://github.com/synnaxlabs/foundation/pull/1944#issuecomment-6066078510).

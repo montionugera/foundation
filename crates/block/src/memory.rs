@@ -1,8 +1,14 @@
 //! The address space a pool cuts its blocks from.
 
 use std::alloc::{Layout, alloc_zeroed, dealloc};
+use std::cell::RefCell;
 use std::fmt;
+use std::iter;
+use std::ops::Range;
 use std::ptr::NonNull;
+use std::slice;
+
+use zeroize::Zeroize;
 
 use crate::ALIGN;
 
@@ -128,5 +134,129 @@ impl Drop for Heap {
     fn drop(&mut self) {
         // SAFETY: `new` got `allocation` from the allocator with this layout.
         unsafe { dealloc(self.allocation.as_ptr(), self.layout) };
+    }
+}
+
+/// Heap memory, as [`Heap`] gives it, for blocks that hold a secret. At the drop, it
+/// writes zero over the first [`ALIGN`] bytes and over each range that
+/// [`Memory::commit`] got, with writes that the compiler keeps, before it frees them.
+pub(crate) struct Erased {
+    heap: Heap,
+    /// The first [`ALIGN`] bytes and the ranges that `commit` got.
+    committed: RefCell<Vec<Range<usize>>>,
+}
+
+impl Erased {
+    /// Allocates `len` zeroed bytes aligned to [`ALIGN`], as [`Heap::new`] does.
+    ///
+    /// # Panics
+    ///
+    /// If `len` is 0 or too large to allocate.
+    #[must_use]
+    pub(crate) fn new(len: usize) -> Self {
+        Self {
+            heap: Heap::new(len),
+            committed: RefCell::new(iter::once(0..ALIGN.min(len)).collect()),
+        }
+    }
+}
+
+// SAFETY: `base` and `len` are those of `heap`, whose bytes are usable from the start,
+// and `commit` and `purge` change no byte.
+unsafe impl Memory for Erased {
+    fn base(&self) -> NonNull<u8> {
+        self.heap.base()
+    }
+
+    fn len(&self) -> usize {
+        self.heap.len()
+    }
+
+    fn commit(&self, offset: usize, len: usize) -> Result<(), Refused> {
+        let end = offset.checked_add(len).filter(|&end| end <= self.len());
+        let end = end.expect("a commit lies in the memory");
+        let mut committed = self.committed.borrow_mut();
+        // A pool commits each class from the start of its span up, so a new range
+        // mostly touches one in the record. A join keeps the union, so no committed
+        // byte leaves the record.
+        let touched = committed
+            .iter_mut()
+            .find(|range| range.start <= end && offset <= range.end);
+        match touched {
+            Some(range) => *range = range.start.min(offset)..range.end.max(end),
+            None => committed.push(offset..end),
+        }
+        Ok(())
+    }
+
+    fn purge(&self, _offset: usize, _len: usize) {}
+}
+
+impl Drop for Erased {
+    fn drop(&mut self) {
+        for range in self.committed.get_mut().drain(..) {
+            // SAFETY: each range lies in the `len` bytes at `base`.
+            let start = unsafe { self.heap.base().add(range.start) };
+            // SAFETY: the bytes are initialized, since `Heap::new` zeroed them, and
+            // nothing else holds them at the drop.
+            let bytes =
+                unsafe { slice::from_raw_parts_mut(start.as_ptr(), range.len()) };
+            bytes.zeroize();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn committed(memory: &Erased) -> Vec<Range<usize>> {
+        memory.committed.borrow().clone()
+    }
+
+    /// Reads `committed`, because the first `ALIGN` bytes hold only the header of the
+    /// region, which holds no byte of a block, so no caller can see their erase. A
+    /// commit next to a range that adds a range in place of a join erases the same
+    /// bytes, so a caller sees only a longer record.
+    #[test]
+    fn erased_records_the_first_bytes_and_merges_a_commit_that_touches_a_range() {
+        let memory = Erased::new(4096);
+        let first = slice::from_ref(&(0..ALIGN));
+        assert_eq!(committed(&memory), first, "the first bytes");
+        let commits = [
+            ((1000, 100), [0..ALIGN, 1000..1100]),
+            ((ALIGN, 100), [0..164, 1000..1100]),
+            ((1100, 50), [0..164, 1000..1150]),
+            ((950, 50), [0..164, 950..1150]),
+            ((1000, 10), [0..164, 950..1150]),
+        ];
+        for ((offset, len), ranges) in commits {
+            memory.commit(offset, len).expect("heap memory commits");
+            assert_eq!(committed(&memory), ranges, "after a commit at {offset}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "a commit lies in the memory")]
+    fn erased_panics_on_a_commit_past_its_end() {
+        let memory = Erased::new(4096);
+        memory.commit(4000, 97).expect("the commit panics first");
+    }
+
+    #[test]
+    #[cfg(not(loom))]
+    fn erased_erases_a_pool_that_drops_before_its_block() {
+        use crate::{Config, Pool};
+
+        let config = Config::new(1 << 14).expect("the budget fits");
+        let pool = Pool::erased(config);
+        let mut block = pool.alloc(3000).expect("the budget has room");
+        block.fill(0x5a);
+        let block = block.freeze();
+        drop(pool);
+        assert!(
+            block.iter().all(|&byte| byte == 0x5a),
+            "the block outlives its pool"
+        );
     }
 }

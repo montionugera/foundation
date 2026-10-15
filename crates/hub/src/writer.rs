@@ -14,6 +14,7 @@ use types::name::Name;
 use types::sample::Type;
 use types::time::{Span, Stamp};
 
+use crate::pending::Pending;
 use crate::{Away, Ending, State};
 
 /// What a writer session opens with.
@@ -103,11 +104,12 @@ impl std::error::Error for Failure {}
 type Indexed = (channel::Key, Vec<(channel::Key, Type)>);
 
 /// The key of each of `channels`, and their data channels by index, in the order of
-/// `channels`.
+/// `channels`, after the spec in use applies.
 fn resolve(
-    state: &State,
+    state: &mut State,
     channels: &[Name],
 ) -> Result<(Vec<channel::Key>, Vec<Indexed>), Error> {
+    state.catch_up();
     let mut groups: Vec<Indexed> = Vec::new();
     let mut keys = Vec::with_capacity(channels.len());
     let mut positions = hash::Map::default();
@@ -181,19 +183,17 @@ impl Writer {
         };
         // An unknown name fails before the wait. Each mesh time reaches the first
         // stamp, so once the node has mesh time, the wait is ready at once.
-        resolve(&state.borrow(), &channels)?;
+        resolve(&mut state.borrow_mut(), &channels)?;
         let time = state.borrow().time.reach(Stamp::from_nanos(i64::MIN));
         time.await;
         let (mut keys, groups) = loop {
-            let (_, groups) = resolve(&state.borrow(), &channels)?;
+            let (keys, groups) = resolve(&mut state.borrow_mut(), &channels)?;
             let checked = indexes(&groups);
-            let homed = crate::homes(state, &checked).await;
-            // A call of `set_definitions` while the open waits can change a channel,
-            // and then the home of an index it left does not matter.
-            let (keys, again) = resolve(&state.borrow(), &channels)?;
-            if indexes(&again) == checked {
+            let pending = Pending::new(state, keys.clone());
+            // A change of a channel ends the wait at once, and the names resolve again.
+            if let Ok(homed) = pending.wait(crate::homes(state, &checked)).await {
                 homed?;
-                break (keys, again);
+                break (keys, groups);
             }
         };
         let mut borrowed = state.borrow_mut();
@@ -219,7 +219,7 @@ impl Writer {
         let key = borrowed.home.open_writer(writer).map_err(Error::Home)?;
         borrowed.gate.wake();
         keys.extend(groups.iter().map(|group| group.index));
-        let ending = borrowed.writers.add(key, keys.into());
+        let ending = borrowed.writers.add(key, keys);
         Ok(Self {
             state: Rc::clone(state),
             key,
@@ -249,13 +249,14 @@ impl Writer {
     /// after the one before it
     /// ([`order::Error::Backwards`](crate::home::order::Error::Backwards)).
     #[must_use]
-    #[expect(
-        clippy::missing_panics_doc,
-        reason = "a writer opens only after mesh time, which stays"
-    )]
     pub fn now(&self) -> Stamp {
-        let now = self.state.borrow().home.now();
-        now.expect("invariant: mesh time stays once known")
+        now(&self.state)
+    }
+
+    /// The mesh time of the writer's hub, as [`Writer::now`] gives it.
+    #[must_use]
+    pub fn time(&self) -> Time {
+        Time(Rc::clone(&self.state))
     }
 
     /// A frame of the writer's key set to fill, from the shard's pool, as
@@ -316,4 +317,22 @@ impl Drop for Writer {
     fn drop(&mut self) {
         self.state.borrow_mut().close_writer(self.key);
     }
+}
+
+/// Mesh time of the hub of a writer, which a caller can keep apart from the writer.
+/// It reads what [`Writer::now`] reads, also after the writer drops.
+#[derive(Clone, Debug)]
+pub struct Time(Rc<RefCell<State>>);
+
+impl Time {
+    /// As [`Writer::now`].
+    #[must_use]
+    pub fn now(&self) -> Stamp {
+        now(&self.0)
+    }
+}
+
+fn now(state: &RefCell<State>) -> Stamp {
+    let now = state.borrow().home.now();
+    now.expect("invariant: mesh time stays once known")
 }

@@ -17,7 +17,7 @@ use env::shards::Config;
 use tokio::sync::Notify;
 use tokio::time::timeout;
 
-use crate::common::assert_joins;
+use crate::panics::assert_joins;
 
 mod udp;
 

@@ -52,6 +52,62 @@ delay before the drain starts and the time to send `WRITTEN` at the drain rate m
 in the lab. `laptop.architect-2` decided this at 2026-10-07T16:31:12Z (#1477:
 https://github.com/synnaxlabs/foundation/issues/1477#issuecomment-6042249280).
 
+Amendment (2026-10-13): STORE AND FORWARD waits until the new sessions start, and no
+session starts new work on it before then. `laptop.monitor` says on #1737 when the new
+sessions have started. Of the PRs in flight on its issues, #2461 and #2477 finish, and
+the drafts #2565 and #2454 wait. The store half of #1232, which item 6 of the path of
+the ONE NODE plan (#1737) holds, was ONE NODE work (`laptop.architect`,
+2026-10-08T02:17:18Z:
+https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6050814109), and is on
+`main` (64446144f, PR 1 of #1741). An issue of this milestone that `laptop.monitor`
+gives in a batch of the production path of #1737 moves to the ONE NODE milestone, as
+#160 did (the person, 2026-10-13T21:15:26Z:
+https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6155351878).
+`laptop.monitor` decided this, and tells the person each such move
+(https://github.com/synnaxlabs/foundation/pull/2604#issuecomment-6156005178). Each issue
+that stays on this milestone waits, also protocol 4 of #1232. The ONE NODE amendment of
+2026-10-13 gives the work that takes its place, the person's words, and the orders of
+`laptop.monitor` with their links. Supersedes, until the new sessions start, "It runs
+beside FIRST SLICE" of this entry (the person's decision of 2026-10-06, which has no
+link).
+
+Amendment (2026-10-15): items B1 to B4 and B7 of part B of batch 2 of #1737 start now,
+before the new sessions: #1712, #1724, #1723 with #1726, #620, and the bench #977 (B1);
+#2283, then PR 5 of #336, then #2074, then #1157 (B2); #2565 (PR 2a of #1229), then
+#1231 and #1232 (B3); the two acceptance tests of #1150 (B4); and the merge of #2454
+(B7). The person approved each item through `laptop.monitor` (factory messages of
+2026-10-15), recorded with the person's words for each at 2026-10-15T16:51:23Z:
+https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6197468644. Their
+issues stay on this milestone, and #2283 joins it: the person started this milestone now
+("start STORE AND FORWARD now"), the ONE NODE exit tests do not need them, and the batch
+rule of `laptop.monitor` moves only the ONE NODE items of a batch (`laptop.monitor`,
+factory message `da7e7ee6`, recorded at 2026-10-15T17:20:28Z:
+https://github.com/synnaxlabs/foundation/pull/2710#issuecomment-6198034604). #2074, the
+open prerequisite of #1157, is part of B2, not a new item, so that B2 finishes
+(`laptop.monitor`, factory messages `8a7a297c` and `2056bf91`, recorded at
+2026-10-15T17:33Z and 17:49Z:
+https://github.com/synnaxlabs/foundation/pull/2710#issuecomment-6198296586 and
+https://github.com/synnaxlabs/foundation/pull/2710#issuecomment-6198600435). #1441 (B5)
+and #1329 (B6) wait for a later batch. Supersedes, for these items only, of the
+amendment of 2026-10-13 above: "no session starts new work on it before then"
+(https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6154908233), "Each
+issue that stays on this milestone waits, also protocol 4 of #1232"
+(https://github.com/synnaxlabs/foundation/pull/2604#issuecomment-6155940965, approved by
+`laptop.monitor`:
+https://github.com/synnaxlabs/foundation/pull/2604#issuecomment-6156005178), and "the
+drafts #2565 and #2454 wait"
+(https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6155099588); and of
+the ONE NODE amendment of 2026-10-13 below: "each session starts only ONE NODE work" and
+"no session starts new STORE AND FORWARD work"
+(https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6154908233), and "the
+drafts #2565 and #2454 wait"
+(https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6155099588).
+Supersedes, for each issue that a batch of #1737 gives as STORE AND FORWARD work, "moves
+to the ONE NODE milestone" of the amendment of 2026-10-13 above
+(https://github.com/synnaxlabs/foundation/pull/2604#issuecomment-6156005178): such an
+issue stays on this milestone, and an issue that a batch gives as ONE NODE work still
+moves.
+
 **ONE NODE (2026-10-08)** A milestone beside FIRST SLICE, which keeps priority: one real
 node moves OPC UA samples to InfluxDB. The `foundation` binary starts a node from a
 config, on a real disk and network, reads an OPC UA server through `connector-opcua`,
@@ -72,3 +128,33 @@ work beside FIRST SLICE ("Yes, that's fine. I really think that first slice shou
 to focus on the 'guts' the internals while ONE NODE work should be focused on developer
 APIs and connectors.", 2026-10-08T02:45:18Z,
 https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6051113411).
+
+Amendment (2026-10-13): until the new sessions start, each session starts only ONE NODE
+work. It makes the current node production grade, with better connector infrastructure,
+CLIs that are intuitive, and better performance and reliability. It sets up the common
+parts that make more connectors easier and better to build later, and it improves the
+developer experience. The person decided ("Ok, so here's what I want to focus on.
+Instead of diong store and forward, we are giong to defer that. What we are going to
+work on doing is making the current ONE NODE infrastructure as production grade and high
+quality. That is improving connector infrastructure, making the CLIs actually intuitive,
+improving system perforfmance reliability. If we wanted to ship the current ONE NODE set
+up to production, and builda ll of the relevant componentry to make it easier to build
+other production grade connectors what would it be? We should use all of the remainin
+gsessions in that extended effort, ten we will continue STORE AND FORWARD once we have
+the new sessions", 2026-10-13T20:47:30Z), relayed by `laptop.monitor` in factory message
+`fd562224` and recorded at 2026-10-13T20:48:58Z:
+https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6154908233, and
+widened the scope ("It's not jus tproduction gaps, its also what we can set up to make
+additional connector infrastructure easier/better to build in the future, and dx
+experiences we can improve upon", 2026-10-13T20:49:30Z), relayed by `laptop.monitor` in
+factory message `3e5b1dba` and recorded at 2026-10-13T20:51:24Z:
+https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6154948753. With the
+relay, `laptop.monitor` ordered that no session starts new STORE AND FORWARD work and
+that the ONE NODE PRs in flight finish
+(https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6154908233). It
+decided later that the STORE AND FORWARD PRs #2461 and #2477 finish and the drafts #2565
+and #2454 wait, that the wider ONE NODE work of 2026-10-13 gets a new part of the path
+of #1737, that ONE NODE stays open after the five tests of #1733 pass until the new
+sessions start, and that it says on #1737 when they have started (factory message
+`4226c412`, recorded at 2026-10-13T21:00:24Z:
+https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6155099588).

@@ -11,18 +11,16 @@
 
 use std::net::SocketAddr;
 use std::pin::{Pin, pin};
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
+use std::task::Poll;
 
 use block::{Block, Pool};
 use sim::Sim;
 use sim::node::Node;
-use transport::{Address, Class, Error, Transport};
-use types::time::Span;
+use transport::{Error, Transport};
 
-use crate::ALLOCATOR;
-use crate::common::{CLIENT, PORT, SERVER, config, filled, part};
+use crate::common::{PORT, SERVER, config, filled, part};
+use crate::{ALLOCATOR, READ, SHORT, send};
 
 /// The bytes of the pattern, longer than a packet.
 const PATTERN: usize = 4096;
@@ -31,8 +29,6 @@ const PATTERN: usize = 4096;
 const FULL: usize = 83_600;
 /// A message that comes in 65 chunks in this sim, one past a full list.
 const PAST: usize = 84_900;
-/// The bytes of the message after the long one on the stream.
-const SHORT: usize = 1000;
 /// Where the pattern starts in a long message. Each packet but the last carries
 /// between 1000 and 1472 bytes of a message, so the pattern lies past its first 64
 /// packets and inside its first 128: only a second copy of a full list holds it.
@@ -41,10 +37,6 @@ const SECOND: usize = 110_000;
 /// bytes, so no second copy holds it. A third copy needs 193 chunks, so packets of
 /// fewer than 1140 bytes.
 const LAST: usize = 200_000;
-/// When the server reads after it accepts the stream, once both messages are in.
-const READ: Span = Span::from_nanos(1_000_000_000);
-/// How long the client lives after its sends: past the server's reads.
-const LIVE: Span = Span::from_nanos(2_000_000_000);
 
 /// The server's one poll of a read, the heap blocks that hold the pattern that the
 /// poll frees, and the allocations the poll makes.
@@ -151,24 +143,9 @@ fn run(pattern: &[u8], len: usize, at: usize, mode: Mode) -> Out {
     let out = Arc::new(Mutex::new([(Poll::Pending, 0, 0), (Poll::Pending, 0, 0)]));
     serve(&server, pattern.to_vec(), mode, Arc::clone(&out));
     let message = pattern.to_vec();
-    sim.run_on(&client, move |node, tasks| async move {
-        let config = config(&node, tasks, CLIENT);
-        let pool = Rc::clone(&config.pool);
-        let transport = Transport::new(config, part(&node, 0)).expect("a transport");
-        let session = transport
-            .dial(SERVER.public(), &[Address::Udp(address)])
-            .await
-            .expect("a session");
-        let mut sender = session
-            .open_sender(Class::Complete)
-            .await
-            .expect("a stream");
-        let long = patterned(&pool, &message, len, at);
-        sender.send(long).await.expect("sent");
-        sender.send(filled(&pool, SHORT)).await.expect("sent");
-        node.clock().sleep(LIVE).await;
-    })
-    .expect("the run ends");
+    send(&mut sim, &client, address, move |pool| {
+        vec![patterned(pool, &message, len, at), filled(pool, SHORT)]
+    });
     out.lock().expect("not poisoned").clone()
 }
 
@@ -217,9 +194,8 @@ fn once<T>(
     pattern: &[u8],
     read: Pin<&mut impl Future<Output = T>>,
 ) -> (Poll<T>, u64, u64) {
-    let mut cx = Context::from_waker(Waker::noop());
-    let ((poll, freed), allocated) =
-        ALLOCATOR.count(|| ALLOCATOR.freed_holding(pattern, || read.poll(&mut cx)));
+    let ((poll, allocated), freed) =
+        ALLOCATOR.freed_holding(pattern, || crate::once(read));
     (poll, freed, allocated)
 }
 

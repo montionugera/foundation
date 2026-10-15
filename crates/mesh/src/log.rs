@@ -849,7 +849,6 @@ mod tests {
     use types::time::Span;
 
     use super::*;
-    use crate::bytes::block;
     use crate::bytes::{PRESENT, VOTE};
     use crate::common::{at, create_pool, key};
 
@@ -863,10 +862,7 @@ mod tests {
     }
 
     fn create_node(seed: u64) -> (Sim, sim::node::Node) {
-        let mut sim = Sim::new(sim::Config {
-            seed,
-            ..sim::Config::default()
-        });
+        let mut sim = Sim::new(crate::common::simulation(seed));
         let node = sim.node(sim::node::Config::default());
         (sim, node)
     }
@@ -891,7 +887,7 @@ mod tests {
     async fn put(node: &sim::node::Node, file: &str, offset: u64, bytes: &[u8]) {
         let path = Path::new(DIR).join(file);
         let file = node.files().open(&path, Mode::Write).await.unwrap();
-        let block = block(&create_pool(), bytes).unwrap();
+        let block = create_pool().copy(bytes).unwrap();
         file.write_at(offset, &[block]).await.unwrap();
         file.sync().await.unwrap();
     }
@@ -3080,26 +3076,15 @@ mod tests {
     #[test]
     fn a_write_after_an_open_after_a_dropped_write_is_durable() {
         let mut lost = Vec::new();
-        for seed in 0..64 {
-            let (mut sim, node) = create_node(seed);
+        for run in 0..64 {
+            let (mut sim, node) = create_node(run);
             let names = sim
                 .run_on(&node, |node, _| async move {
                     let (mut log, _) = open(&node).await.unwrap();
                     let large = [bytes(1, LARGE)];
                     assert!(cut(log.write(None, &large), 0).await.is_none());
                     drop(log);
-                    // An open that lists `log-0` before the remove ends gets
-                    // `NotFound` from its open of `log-0`, which waits for it
-                    // (#1186).
-                    let opened = match open(&node).await {
-                        Err(Error::Files(files::Error::NotFound { path }))
-                            if path == file("log-0") =>
-                        {
-                            open(&node).await
-                        }
-                        opened => opened,
-                    };
-                    let (mut log, stored) = opened.unwrap();
+                    let (mut log, stored) = open(&node).await.unwrap();
                     assert_eq!(stored, Stored::default());
                     log.write(None, &[bytes(1, 10)]).await.unwrap();
                     drop(log);
@@ -3109,14 +3094,49 @@ mod tests {
             sim.crash(&node, Crash::Power);
             let kept = stored(&mut sim, &node).unwrap();
             if kept.entries != [bytes(1, 10)] {
-                lost.push((seed, names, kept.entries));
+                lost.push((run, names, kept.entries));
             }
         }
         assert_eq!(
             lost,
             [],
-            "(seed, the files after the write, the entries of the next open)"
+            "(run, the files after the write, the entries of the next open)"
         );
+    }
+
+    // The write of a record that does not fit removes `log-0` and makes it again. The
+    // caller drops the write at each wait, so also while the remove or the create is
+    // in flight. Few run values reach an open that lists before the dropped call ends.
+    #[test]
+    fn an_open_after_a_dropped_write_opens_in_each_run() {
+        let mut failed = Vec::new();
+        for run in 0..64 {
+            for waits in 0.. {
+                let (mut sim, node) = create_node(run);
+                let (ended, error) = sim
+                    .run_on(&node, move |node, _| async move {
+                        let (mut log, _) = open(&node).await.unwrap();
+                        let large = [bytes(1, LARGE)];
+                        let ended = cut(log.write(None, &large), waits).await.is_some();
+                        drop(log);
+                        let error = match open(&node).await {
+                            Ok((mut log, _)) => {
+                                log.write(None, &[bytes(1, 10)]).await.err()
+                            }
+                            Err(error) => Some(error),
+                        };
+                        (ended, error)
+                    })
+                    .unwrap();
+                if let Some(error) = error {
+                    failed.push((run, waits, error.to_string()));
+                }
+                if ended {
+                    break;
+                }
+            }
+        }
+        assert_eq!(failed, [], "(run, the wait of the drop, the error)");
     }
 
     // An open removes the spare `log-1`. The caller drops the open at each wait, so
@@ -3154,33 +3174,35 @@ mod tests {
     #[test]
     fn a_write_after_an_open_after_a_dropped_open_is_durable() {
         let mut lost = Vec::new();
-        for waits in 0.. {
-            let (mut sim, node) = create_node(0);
-            create_spare(&mut sim, &node, 512);
-            let ended = sim
-                .run_on(&node, move |node, _| async move {
-                    let ended = match cut(open(&node), waits).await {
-                        Some(opened) => {
-                            opened.unwrap();
-                            true
-                        }
-                        None => false,
-                    };
-                    let (mut log, _) = open(&node).await.unwrap();
-                    log.write(None, &[bytes(2, LARGE)]).await.unwrap();
-                    ended
-                })
-                .unwrap();
-            sim.crash(&node, Crash::Power);
-            let kept = stored(&mut sim, &node).unwrap();
-            if kept.entries != [bytes(1, 10), bytes(2, LARGE)] {
-                lost.push(waits);
-            }
-            if ended {
-                break;
+        for run in 0..16 {
+            for waits in 0.. {
+                let (mut sim, node) = create_node(run);
+                create_spare(&mut sim, &node, 512);
+                let ended = sim
+                    .run_on(&node, move |node, _| async move {
+                        let ended = match cut(open(&node), waits).await {
+                            Some(opened) => {
+                                opened.unwrap();
+                                true
+                            }
+                            None => false,
+                        };
+                        let (mut log, _) = open(&node).await.unwrap();
+                        log.write(None, &[bytes(2, LARGE)]).await.unwrap();
+                        ended
+                    })
+                    .unwrap();
+                sim.crash(&node, Crash::Power);
+                let kept = stored(&mut sim, &node).unwrap();
+                if kept.entries != [bytes(1, 10), bytes(2, LARGE)] {
+                    lost.push((run, waits));
+                }
+                if ended {
+                    break;
+                }
             }
         }
-        assert_eq!(lost, [], "the waits at which the open dropped");
+        assert_eq!(lost, [], "(run, the wait at which the open dropped)");
     }
 
     #[test]
@@ -3221,7 +3243,7 @@ mod tests {
 
     /// A node whose disk holds `disk_bytes`.
     fn create_small_node(disk_bytes: u64) -> (Sim, sim::node::Node) {
-        let mut sim = Sim::new(sim::Config::default());
+        let mut sim = Sim::new(crate::common::simulation(0));
         let node = sim.node(sim::node::Config {
             disk_bytes,
             ..sim::node::Config::default()
@@ -3611,6 +3633,8 @@ mod tests {
     // can be lost when the record after them is not.
     #[test]
     fn a_power_cut_keeps_no_bytes_of_a_stopped_write_after_a_record() {
+        // 10 times the most turns of 1 µs before the write starts in a correct run.
+        const TURNS: u32 = 7_280;
         let mut kept = [0, 0];
         for run in 0..128 {
             let (mut sim, node) = create_node(run);
@@ -3626,8 +3650,14 @@ mod tests {
                 pending::<()>().await;
             });
             drop(handle.unwrap());
+            let mut turns = 0_u32;
             while phase.load(Ordering::Relaxed) == 0 {
+                assert!(
+                    turns < TURNS,
+                    "run {run}: the write did not start in {TURNS} turns"
+                );
                 sim.run_for(Span::from_nanos(1_000)).unwrap();
+                turns += 1;
             }
             sim.run_for(Span::from_nanos(2_000 * i64::try_from(run).unwrap()))
                 .unwrap();

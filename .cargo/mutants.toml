@@ -93,9 +93,6 @@ exclude_re = [
   # No caller sees the bytes that `file` gives: `identity` panics only when a `check`
   # does. The unit test `a_file_is_its_bytes_or_its_body_with_the_checksum` reads them.
   'crates/node/src/fuzz\.rs:.*replace file -> ',
-  # No public call reads the entries that an open leaks. The unit test
-  # `an_open_keeps_no_entry_once_it_drops` reads them.
-  'crates/hub/src/serve\.rs:.*replace <impl Drop for Opening<._>>::drop with \(\)',
   # Only Miri sees the stub task that a skipped clear leaks, and the miri job runs
   # those tests.
   'crates/connector-ni/src/daqmx\.rs:.*replace <impl Drop for Task>::drop with \(\)',
@@ -147,10 +144,31 @@ exclude_re = [
   'crates/hub/src/reader/remote\.rs:.*replace > with >= in Sessions::add',
   # Equal keys get no rule (ONE SESSION PER PEER, rule 4), so no test can pin `<`.
   'crates/transport/src/table\.rs:.*replace < with <= in Table::arrive',
-  # Only the `logs` bench calls `buffer::bench::Logs`, and `commit` gives nothing
-  # back. `each_commit_of_the_logs_syncs_one_entry_of_each_index` kills it through the
-  # private logs.
+  # Only the `logs` bench calls `buffer::bench::Logs::commit`, and it gives nothing
+  # back. Its test kills the mutants through the private logs.
   'crates/buffer/src/bench\.rs:.*replace Logs::commit with \(\)$',
+  'crates/buffer/src/bench\.rs:.* in Logs::commit$',
+  # Only the `logs` bench calls `buffer::bench::Logs::append`, and it gives nothing
+  # back. Its test kills the mutants through the private logs.
+  'crates/buffer/src/bench\.rs:.*replace Logs::append with \(\)$',
+  'crates/buffer/src/bench\.rs:.* in Logs::append$',
+  # Only the `logs` bench calls `buffer::bench::Logs::carry`, and it gives nothing
+  # back. Its test kills the mutants through the private logs.
+  'crates/buffer/src/bench\.rs:.*replace Logs::carry with \(\)$',
+  'crates/buffer/src/bench\.rs:.* in Logs::carry$',
+  # Only the `logs` bench calls `buffer::bench::Logs::trim`, and it gives nothing
+  # back. Its test kills the mutants through the private logs and tails.
+  'crates/buffer/src/bench\.rs:.*replace Logs::trim with \(\)$',
+  'crates/buffer/src/bench\.rs:.* in Logs::trim$',
+  # Only the `logs` bench and the `alloc` test call `buffer::bench::Logs::mark`,
+  # and it gives nothing back. Its test kills the mutants through the private logs.
+  'crates/buffer/src/bench\.rs:.*replace Logs::mark with \(\)$',
+  'crates/buffer/src/bench\.rs:.* in Logs::mark$',
+  # No caller reads `State::kept` until the commit trims (#160, step 3c, which removes
+  # these lines). Only the private reads of
+  # `a_read_holds_the_record_it_waits_on_until_it_ends_or_drops` kill the mutants.
+  'crates/buffer/src/buffer\.rs:.*replace State::kept -> Option<u64> with',
+  'crates/buffer/src/buffer\.rs:.*replace <impl Drop for Hold<.*>>::drop with \(\)$',
   # A connector on another node runs here only in a mesh of two nodes, which no test of
   # `Node` starts yet (#2272, whose test removes this entry). The test of `Runs`
   # `a_connector_on_another_node_starts_no_run` kills it.
@@ -160,4 +178,7 @@ exclude_re = [
   # test of `node` opens sessions yet (#2370). The unit test
   # `a_session_whose_hold_drops_leaves_its_place` kills it through `Places::take`.
   'crates/node/src/route\.rs:.*replace <impl Drop for Hold>::drop with \(\)',
+  # The loop of the constant assertion of the status names: a mutant that skips it
+  # still builds, and no test sees a check that runs at compile time.
+  'crates/node/src/status\.rs:.*replace < with (==|>)$',
 ]

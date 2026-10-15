@@ -4,13 +4,15 @@
 //! `Buffer::read` gives each path of a ring that opens as its doc says: every entry
 //! up to the tail, a gap only for seqs that no entry holds, each entry that its
 //! budget takes, and the same entries in one read, in reads of a small budget, from
-//! inside an entry or a gap, and after a reopen.
+//! inside an entry or a gap, and after a reopen. A carry record can give a path a
+//! tail past its entries, with a stamp that no entry gives: a read then gives the
+//! seqs up to the tail as a gap with no entry.
 //!
 //! Input: batches that the production path writes, then edits on the file bytes.
 //! A batch makes a record of one to four blocks, with a table of up to four.
 //! Two edits seal a CRC: a header block and a record. One edit writes a tail and
 //! its chain value in the first header block: a block of the area, on one of the
-//! first 128 laps or the last 128.
+//! first 128 laps or the last 128 that hold the block.
 //!
 //! The target follows the offsets of the ring ([`Room`]) while no edit other than a
 //! move of the tail changed it. Each append, open, and reopen must then fit, or give
@@ -51,9 +53,9 @@ use types::time::{Span, Stamp};
 const BLOCK: usize = 4096;
 /// The largest record, in blocks.
 const RECORD_BLOCKS: usize = 4;
-/// Blocks in the area: four of the largest record, the least area of a ring. A power
-/// of two, so the last lap of the offsets holds all of the area but its last byte.
-const BLOCKS: usize = 4 * RECORD_BLOCKS;
+/// Blocks in the area: four of the largest record and the three blocks that each
+/// record leaves free, the least area of a ring.
+const BLOCKS: usize = 4 * RECORD_BLOCKS + 3;
 const AREA: u64 = (BLOCKS * BLOCK) as u64;
 /// The first block of the area: the two header blocks come before it.
 const AREA_START: usize = 2;
@@ -96,14 +98,18 @@ const CHECK_LAST: Stamp = Stamp::from_nanos(9);
 /// share a tag differ in `first`.
 const BUILD_TAG: u8 = 0x01;
 const CHECK_TAG: u8 = 0x81;
-/// The last lap of the area that a `u64` offset holds.
-const LAP_LAST: u64 = u64::MAX / AREA;
 /// The last offset of a ring.
 const OFFSET_LAST: u128 = u64::MAX as u128;
 
 /// The ring offset of `block` of the file on `lap`.
 fn offset(block: usize, lap: u64) -> u64 {
     lap * AREA + ((block - AREA_START) * BLOCK) as u64
+}
+
+/// The last lap whose `block` of the file a `u64` offset holds. Since the area is no
+/// power of two, the first blocks have one more lap than the last.
+fn lap_last(block: usize) -> u64 {
+    (u64::MAX - offset(block, 0)) / AREA
 }
 
 /// The block of the file and the lap of ring offset `offset`: the inverse of
@@ -121,12 +127,43 @@ fn word(image: &[u8], at: usize) -> u32 {
 mod header {
     use super::{BLOCK, word};
 
+    const MAGIC: &[u8] = b"FNDNRING";
+    const BODY_MAX_AT: usize = 18;
     const TAIL_AT: usize = 22;
     const CHAIN_AT: usize = 30;
+    const SEQ_AT: usize = 34;
     /// The CRC, right after the fields.
     const CRC_AT: usize = 42;
     /// The CRC covers the first sector of a header block.
     const SECTOR: usize = 512;
+
+    /// The start of the header block that the open reads: the newer whole one by
+    /// its wrapped seq, the first on a tie, or none when neither is whole.
+    pub(super) fn read(image: &[u8]) -> Option<usize> {
+        let seq = |start: usize| {
+            let bytes = &image[start + SEQ_AT..start + SEQ_AT + 8];
+            u64::from_le_bytes(bytes.try_into().expect("invariant: eight bytes"))
+        };
+        match (whole(image, 0), whole(image, BLOCK)) {
+            (true, true) if seq(BLOCK).wrapping_sub(seq(0)).cast_signed() > 0 => {
+                Some(BLOCK)
+            }
+            (true, _) => Some(0),
+            (false, true) => Some(BLOCK),
+            (false, false) => None,
+        }
+    }
+
+    /// Whether the header block at `start` has the magic and a right CRC.
+    fn whole(image: &[u8], start: usize) -> bool {
+        image[start..].starts_with(MAGIC)
+            && word(image, start + CRC_AT) == crc(image, start)
+    }
+
+    /// The most bytes of a record body.
+    pub(super) fn body_max(image: &[u8]) -> usize {
+        usize::try_from(word(image, BODY_MAX_AT)).expect("invariant: a u32 fits")
+    }
 
     /// The tail offset.
     pub(super) fn tail(image: &[u8]) -> u64 {
@@ -152,9 +189,15 @@ mod header {
     pub(super) fn seal(image: &mut [u8], second: bool) {
         let start = if second { BLOCK } else { 0 };
         let at = start + CRC_AT;
-        let crc = crc32c::crc32c(&image[start..at]);
-        let crc = crc32c::crc32c_append(crc, &image[at + 4..start + SECTOR]);
+        let crc = crc(image, start);
         image[at..at + 4].copy_from_slice(&crc.to_le_bytes());
+    }
+
+    /// The CRC of the header block at `start`, over its first sector less the CRC.
+    fn crc(image: &[u8], start: usize) -> u32 {
+        let at = start + CRC_AT;
+        let crc = crc32c::crc32c(&image[start..at]);
+        crc32c::crc32c_append(crc, &image[at + 4..start + SECTOR])
     }
 }
 
@@ -169,6 +212,7 @@ mod record {
     pub(super) const DATA: u8 = 1;
     pub(super) const WRAP: u8 = 2;
     pub(super) const RESTART: u8 = 3;
+    pub(super) const CARRY: u8 = 4;
 
     pub(super) fn len(image: &[u8], block: usize) -> usize {
         usize::try_from(word(image, block * BLOCK)).expect("invariant: a u32 fits")
@@ -206,7 +250,7 @@ mod record {
 
     /// Whether the record at `block` has a kind and its CRC continues from `chain`.
     pub(super) fn sealed(image: &[u8], block: usize, chain: u32) -> bool {
-        matches!(kind(image, block), DATA | WRAP | RESTART)
+        matches!(kind(image, block), DATA | WRAP | RESTART | CARRY)
             && crc(image, block, chain) == word(image, block * BLOCK + CRC_AT)
     }
 }
@@ -240,7 +284,8 @@ impl Fit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Offsets {
     tail: u128,
-    /// The end of the last data record: where an open puts its restart record.
+    /// The end of the last data or carry record: where an open puts its restart
+    /// record.
     data: u128,
     /// The end of the last record: where the next record goes.
     end: u128,
@@ -248,12 +293,15 @@ struct Offsets {
 
 impl Offsets {
     /// The bytes that a record of `size` bytes at `at` takes with the rest of the
-    /// area it skips, as `Writer::cost` of `buffer` gives them.
-    fn cost(self, at: u128, size: u128) -> std::result::Result<u128, Fit> {
+    /// area it skips, and leaves `kept` bytes free, as `Writer::cost` of `buffer`
+    /// gives them.
+    fn cost(self, at: u128, size: u128, kept: u128) -> std::result::Result<u128, Fit> {
         let area = u128::from(AREA);
         let rest = area - at % area;
         let skipped = if size > rest { rest } else { 0 };
-        let free = (area - (at - self.tail)).min(OFFSET_LAST - at);
+        let free = (area - (at - self.tail))
+            .min(OFFSET_LAST - at)
+            .saturating_sub(kept);
         let needed = skipped + size;
         let bytes = |bytes| u64::try_from(bytes).expect("invariant: under an area");
         if needed > free {
@@ -281,9 +329,9 @@ impl Room {
         }))
     }
 
-    /// The room an open finds in `image` after `edits`, from the records on the
-    /// way from the tail that are sealed. Unknown after an edit other than
-    /// `MoveTail`, whose records the open can read in other ways.
+    /// The room an open finds in `image` after `edits`, from the records that it
+    /// takes ([`taken`]). Unknown after an edit other than `MoveTail`, whose records
+    /// the open can read in other ways.
     fn walked(image: &[u8], edits: &[Edit]) -> Self {
         if !edits
             .iter()
@@ -291,23 +339,11 @@ impl Room {
         {
             return Self(None);
         }
-        let way = walk(image);
         let tail = u128::from(header::tail(image));
         let (mut data, mut end) = (tail, tail);
-        for step in way.windows(2) {
-            let [(block, chain), (next, _)] = *step else {
-                unreachable!("a window of two")
-            };
-            if next > AREA_START + BLOCKS || !record::sealed(image, block, chain) {
-                break;
-            }
-            let blocks = if next > block {
-                next - block
-            } else {
-                next + BLOCKS - block
-            };
+        for (block, blocks) in taken(image) {
             end += (blocks * BLOCK) as u128;
-            if record::kind(image, block) == record::DATA {
+            if matches!(record::kind(image, block), record::DATA | record::CARRY) {
                 data = end;
             }
         }
@@ -315,7 +351,7 @@ impl Room {
     }
 
     /// An open: it walks to the end of the last record, then puts its restart
-    /// record of one block at the end of the last data record.
+    /// record of one block at the end of the last data or carry record.
     fn open(&mut self) -> Fit {
         let Some(offsets) = &mut self.0 else {
             return Fit::Unknown;
@@ -323,7 +359,7 @@ impl Room {
         if offsets.end > OFFSET_LAST {
             return Fit::Past;
         }
-        match offsets.cost(offsets.data, BLOCK as u128) {
+        match offsets.cost(offsets.data, BLOCK as u128, 0) {
             Ok(needed) => {
                 offsets.end = offsets.data + needed;
                 Fit::Fits
@@ -332,12 +368,14 @@ impl Room {
         }
     }
 
-    /// An append of a record of `blocks` blocks after the last record.
+    /// An append of a record of `blocks` blocks after the last record. It leaves
+    /// three blocks free: for the restart record of the next open, the carry record
+    /// of the commit after it, and the restart record of a later open.
     fn take(&mut self, blocks: usize) -> Fit {
         let Some(offsets) = &mut self.0 else {
             return Fit::Unknown;
         };
-        match offsets.cost(offsets.end, (blocks * BLOCK) as u128) {
+        match offsets.cost(offsets.end, (blocks * BLOCK) as u128, 3 * BLOCK as u128) {
             Ok(needed) => {
                 offsets.end += needed;
                 offsets.data = offsets.end;
@@ -510,14 +548,16 @@ impl<'a> Arbitrary<'a> for Input {
                 3 => Edit::SealRecord {
                     block: u.int_in_range(blocks.clone())?,
                 },
-                _ => Edit::MoveTail {
-                    block: u.int_in_range(blocks.clone())?,
-                    // The first 128 laps, or the last 128.
-                    lap: match u.arbitrary::<u8>()? {
-                        low @ ..128 => u64::from(low),
-                        high => LAP_LAST - u64::from(255 - high),
-                    },
-                },
+                _ => {
+                    let block = u.int_in_range(blocks.clone())?;
+                    Edit::MoveTail {
+                        block,
+                        lap: match u.arbitrary::<u8>()? {
+                            low @ ..128 => u64::from(low),
+                            high => lap_last(block) - u64::from(255 - high),
+                        },
+                    }
+                }
             });
         }
         // Last, so an input that ends before these has no small entry and the least
@@ -593,6 +633,38 @@ fn walk(image: &[u8]) -> Vec<(usize, u32)> {
         block = next;
     }
     way
+}
+
+/// The records that the open takes on the way from the tail in the first header
+/// block: the block each starts at, and the blocks to the next. It ends before the
+/// first record that is not sealed, whose body is over the header's `body_max`, or
+/// that passes the end of the area, the tail one lap later, or the largest record of
+/// the header's `body_max`.
+fn taken(image: &[u8]) -> Vec<(usize, usize)> {
+    let largest = (record::HEAD + header::body_max(image)).div_ceil(BLOCK);
+    let mut lap = BLOCKS;
+    let mut records = Vec::new();
+    for step in walk(image).windows(2) {
+        let [(block, chain), (next, _)] = *step else {
+            unreachable!("a window of two")
+        };
+        let size = (record::HEAD + record::len(image, block)).div_ceil(BLOCK);
+        let bound = largest.min(AREA_START + BLOCKS - block).min(lap);
+        if size > bound
+            || record::len(image, block) > header::body_max(image)
+            || !record::sealed(image, block, chain)
+        {
+            break;
+        }
+        let blocks = if next > block {
+            next - block
+        } else {
+            next + BLOCKS - block
+        };
+        lap = lap.saturating_sub(blocks);
+        records.push((block, blocks));
+    }
+    records
 }
 
 fn key(index: usize) -> channel::Key {
@@ -744,13 +816,13 @@ fn limit(
 }
 
 /// Every entry of each path from the start, in slot then path order.
-async fn read_paths(buffer: &Buffer, slots: &[Slot]) -> Vec<Vec<Given>> {
+async fn read_paths(buffer: &Buffer, slots: &[Slot], carried: bool) -> Vec<Vec<Given>> {
     let mut paths = Vec::new();
     for slot in slots {
         for path in PATHS {
-            let whole = read_path(buffer, *slot, path, usize::MAX).await;
+            let whole = read_path(buffer, *slot, path, usize::MAX, carried).await;
             for budget in [1, BUDGET] {
-                let stepped = read_path(buffer, *slot, path, budget).await;
+                let stepped = read_path(buffer, *slot, path, budget, carried).await;
                 assert_eq!(stepped, whole, "reads of {budget} gave other entries");
             }
             let mut at = 0;
@@ -798,6 +870,7 @@ async fn read_path(
     slot: Slot,
     path: frame::Path,
     budget: usize,
+    carried: bool,
 ) -> Vec<Given> {
     let tail = buffer.durable(slot, path);
     let mut given: Vec<Given> = Vec::new();
@@ -810,11 +883,19 @@ async fn read_path(
             .expect("a read of an open ring");
         assert!(read.next.seq <= tail.seq, "a read went past the tail");
         if read.entries.is_empty() {
-            assert_eq!(read.gap, None, "a gap with no entry");
+            if let Some(gap) = read.gap {
+                assert!(carried, "a gap with no entry and no carry record");
+                assert_eq!(gap, from.seq..tail.seq, "a gap with no entry");
+                assert_eq!(read.next.seq, tail.seq, "a gap with no entry");
+                from = read.next;
+                continue;
+            }
             assert_eq!(read.next, from, "an empty read moved the mark");
             assert_eq!(from.seq, tail.seq, "the reads did not end at the tail");
             let stamp = given.iter().rev().find_map(|entry| entry.last);
-            assert_eq!(stamp, tail.stamp, "the reads did not give the tail stamp");
+            if stamp.is_some() || !carried {
+                assert_eq!(stamp, tail.stamp, "the reads did not give the tail stamp");
+            }
             return given;
         }
         assert!(
@@ -857,8 +938,14 @@ fn tails(buffer: &Buffer, slots: &[Slot]) -> Vec<Tail> {
         .collect()
 }
 
-/// Applies the edits to the ring file, and gives the room an open then finds.
-async fn edit(file: &File, pool: &Rc<Pool>, edits: &[Edit], built: Room) -> Room {
+/// Applies the edits to the ring file. Gives the room an open then finds, and
+/// whether the open takes a carry record ([`carries`]).
+async fn edit(
+    file: &File,
+    pool: &Rc<Pool>,
+    edits: &[Edit],
+    built: Room,
+) -> (Room, bool) {
     let mut image = Vec::with_capacity(FILE_LEN);
     for block in 0..FILE_LEN / BLOCK {
         let into = pool.alloc(BLOCK).expect("the pool has a block");
@@ -874,10 +961,7 @@ async fn edit(file: &File, pool: &Rc<Pool>, edits: &[Edit], built: Room) -> Room
         "the records of the build do not seal as written up to its last"
     );
     let written = image.clone();
-    let way = walk(&written);
-    let sealed =
-        |&&(block, chain): &&(usize, u32)| record::sealed(&written, block, chain);
-    for &(block, _) in way.iter().take_while(sealed) {
+    for (block, _) in taken(&written) {
         apply(&mut image, &Edit::SealRecord { block });
         assert!(
             image == written,
@@ -892,15 +976,23 @@ async fn edit(file: &File, pool: &Rc<Pool>, edits: &[Edit], built: Room) -> Room
     }
     let blocks: Vec<Block> = image
         .chunks(BLOCK)
-        .map(|bytes| {
-            let mut block = pool.alloc(BLOCK).expect("the pool has a block");
-            block.copy_from_slice(bytes);
-            block.freeze()
-        })
+        .map(|bytes| pool.copy(bytes).expect("the pool has a block"))
         .collect();
     file.write_at(0, &blocks).await.expect("the ring writes");
     file.sync().await.expect("the ring syncs");
-    Room::walked(&image, edits)
+    let carried = header::read(&image).is_some_and(|start| {
+        let mut chosen = image.clone();
+        chosen.copy_within(start..start + BLOCK, 0);
+        carries(&chosen)
+    });
+    (Room::walked(&image, edits), carried)
+}
+
+/// Whether the open takes a carry record of `image` ([`taken`]).
+fn carries(image: &[u8]) -> bool {
+    taken(image)
+        .into_iter()
+        .any(|(block, _)| record::kind(image, block) == record::CARRY)
 }
 
 /// Opens the changed ring, which must open or refuse as `room` says. With no edits,
@@ -913,7 +1005,15 @@ async fn edit(file: &File, pool: &Rc<Pool>, edits: &[Edit], built: Room) -> Room
 /// The commit is one entry at each tail, of the input's `check_part` bytes. A record
 /// edit can put a tail at `u64::MAX`, a precondition of `append`, so such a ring is
 /// not checked.
-async fn check(shard: &Shard, input: &Input, built: &Built, mut room: Room) {
+///
+/// `carried` says whether the open takes a carry record of the ring ([`carries`]).
+async fn check(
+    shard: &Shard,
+    input: &Input,
+    built: &Built,
+    mut room: Room,
+    carried: bool,
+) {
     let fit = room.open();
     let (buffer, slots) = match (shard.open().await, fit) {
         (Err(Error::Pool(_) | Error::Files(_)), _) => {
@@ -927,7 +1027,7 @@ async fn check(shard: &Shard, input: &Input, built: &Built, mut room: Room) {
             panic!("an open gave {opened:?} where the ring gives {fit:?}")
         }
     };
-    let read = read_paths(&buffer, &slots).await;
+    let read = read_paths(&buffer, &slots, carried).await;
     // An edit can change the sizes in the header, and the ring keeps them.
     let body_max = buffer.layout().body_max();
     if input.edits.is_empty() {
@@ -994,7 +1094,7 @@ async fn check(shard: &Shard, input: &Input, built: &Built, mut room: Room) {
     );
     buffer.committed().await.expect("the entries commit");
     let durable = tails(&buffer, &slots);
-    let stored = read_paths(&buffer, &slots).await;
+    let stored = read_paths(&buffer, &slots, carried).await;
     // The paths of the build come first.
     for (given, commit) in stored.iter().zip(&commits) {
         assert_eq!(given.last(), Some(commit), "a read lost the commit");
@@ -1017,7 +1117,7 @@ async fn check(shard: &Shard, input: &Input, built: &Built, mut room: Room) {
         .collect();
     assert_eq!(recovered, durable, "a reopen lost what committed reported");
     assert_eq!(
-        read_paths(&reopened, &slots).await,
+        read_paths(&reopened, &slots, carried).await,
         stored,
         "a reopen changed what a read gives"
     );
@@ -1048,9 +1148,10 @@ fuzz_target!(|input: Input| {
                 .open(Path::new(RING), Mode::Write)
                 .await
                 .expect("the ring is there");
-            let room = edit(&file, &shard.pool, &input.edits, built.room).await;
+            let (room, carried) =
+                edit(&file, &shard.pool, &input.edits, built.room).await;
             drop(file);
-            check(&shard, &input, &built, room).await;
+            check(&shard, &input, &built, room, carried).await;
         })
         .expect("the shard starts");
     sim.run().expect("the run ends");

@@ -419,7 +419,8 @@ impl Drop for Waiter<'_> {
 
 /// A put in flight. It holds [`State::Writing`] for its digest, and its drop sets the
 /// next state and wakes the calls that waited. A drop drops the file call in flight:
-/// the next write open or remove of the path waits for it in `env::files`.
+/// the next write open or remove of the path, and the next `Files::free`, wait for it
+/// in `env::files`.
 struct Flight<'a> {
     store: &'a Store,
     digest: Digest,
@@ -679,9 +680,8 @@ mod tests {
         bytes: &[u8],
     ) {
         let file = node.files().open(&path(digest), Mode::Write).await.unwrap();
-        let mut block = create_pool(BUDGET).alloc(bytes.len()).unwrap();
-        block.copy_from_slice(bytes);
-        file.write_at(offset, &[block.freeze()]).await.unwrap();
+        let block = create_pool(BUDGET).copy(bytes).unwrap();
+        file.write_at(offset, &[block]).await.unwrap();
         file.sync().await.unwrap();
         file.close().await;
     }
@@ -2396,6 +2396,51 @@ mod tests {
                 assert_eq!(&get.await.unwrap().unwrap()[..], &block[..]);
             })
             .unwrap();
+        }
+
+        // One put at a time, each dropped at a random wait. The floor leaves room for
+        // one chunk, and no put is in flight at the check.
+        #[test]
+        fn puts_one_at_a_time_keep_the_floor_free() {
+            for run in 0..600 {
+                let (mut sim, node) = create_node(run, 1 << 20);
+                sim.run_on(&node, move |node, _| async move {
+                    let mut rng = env::rng::Rng::from_seed(run);
+                    node.files().create_dir(Path::new(DIR)).await.unwrap();
+                    let floor_bytes = node.files().free().await.unwrap() - 1000;
+                    let store = open_leaving(&node, floor_bytes).await;
+                    let (mut stored, mut refused) = (0, 0);
+                    for index in 0..8 {
+                        let (digest, block) = chunk(index + 1, 1000);
+                        let mut put = pin!(store.put(digest, &block));
+                        for _ in 0..rng.below(40) {
+                            match poll_once(&mut put).await {
+                                Poll::Pending => {}
+                                Poll::Ready(Ok(())) => {
+                                    stored += 1;
+                                    break;
+                                }
+                                Poll::Ready(Err(Error::Floor { .. })) => {
+                                    refused += 1;
+                                    break;
+                                }
+                                Poll::Ready(Err(error)) => panic!("{error:?}"),
+                            }
+                            node.clock().sleep(Span::from_nanos(5_000)).await;
+                        }
+                    }
+                    node.clock().sleep(Span::SECOND).await;
+                    let files = node.files().list(Path::new(DIR)).await.unwrap().len();
+                    let free_bytes = node.files().free().await.unwrap();
+                    assert!(
+                        free_bytes >= floor_bytes,
+                        "run {run}: {free_bytes} bytes are free and the floor is \
+                         {floor_bytes}; {files} files, {stored} puts stored, \
+                         {refused} puts gave Floor"
+                    );
+                })
+                .unwrap();
+            }
         }
     }
 }

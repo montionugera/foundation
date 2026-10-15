@@ -407,9 +407,7 @@ mod tests {
     }
 
     fn block(pool: &Pool, bytes: &[u8]) -> Block {
-        let mut unique = pool.alloc(bytes.len()).expect("the pool has room");
-        unique.copy_from_slice(bytes);
-        unique.freeze()
+        pool.copy(bytes).expect("the pool has room")
     }
 
     fn key(value: u128) -> channel::Key {
@@ -660,6 +658,7 @@ mod tests {
                         let start = index(place) + HEADER_LEN;
                         bodies.push(self.bytes[start..start + body.len].to_vec());
                     }
+                    Step::Carry(_) => panic!("the group writes no carry record"),
                     Step::Moved | Step::More => {}
                     Step::End => return bodies,
                 }
@@ -826,9 +825,9 @@ mod tests {
         );
     }
 
-    /// Ten records of three blocks follow the restart block, so a record of two
-    /// blocks does not fit in the last block and wraps once the tail moves past
-    /// the first record.
+    /// Ten records of three blocks follow the restart block, with the tail past the
+    /// second record, so a record of two blocks does not fit in the last block and
+    /// wraps.
     #[test]
     fn a_closed_group_holds_the_wrap_header_when_the_record_wraps() {
         let mut area = Area::new();
@@ -840,14 +839,14 @@ mod tests {
             let closed = group.close(&mut area.writer);
             let sealed = area.commit(closed);
             area.writer.synced(sealed.ends());
-            if first == 0 {
+            if first == 1 {
                 tail = sealed.ends().record;
+                area.writer.release(tail.offset());
             }
             group = sealed.clear();
         }
         assert_eq!(area.writer.head(), 31 * 4096);
-        assert_eq!(tail.offset(), 4 * 4096);
-        area.writer.release(tail.offset());
+        assert_eq!(tail.offset(), 7 * 4096);
         let part = block(&area.pool, &[7; 4096]);
         area.push(&mut group, header(1, Path::Live, 100), part.into());
         let closed = group.close(&mut area.writer);
@@ -864,8 +863,8 @@ mod tests {
         assert_eq!(sealed.offset(), 32 * 4096, "the offset is past the wrap");
         assert_eq!(sealed.ends().record.offset(), 34 * 4096);
         let bodies = area.walk_from(tail);
-        assert_eq!(bodies.len(), 10);
-        assert_eq!(bodies[9].len(), table_len(1) + 4096);
+        assert_eq!(bodies.len(), 9);
+        assert_eq!(bodies[8].len(), table_len(1) + 4096);
     }
 
     /// A part given as `Some` or `None` writes like one given as a block or as
@@ -979,10 +978,10 @@ mod tests {
                 Err(rejected) => break rejected,
             }
         };
-        // Ten records of three blocks follow the restart block and leave one block,
-        // which the next record skips to wrap.
+        // Nine records of three blocks follow the restart block and leave four, of
+        // which three stay free.
         let full = Full {
-            needed: 4 * 4096,
+            needed: 3 * 4096,
             free: 4096,
         };
         assert_eq!(rejected, Rejected::Ring(full));
@@ -1036,7 +1035,6 @@ mod tests {
         assert!(group.is_empty());
         assert_eq!(group.body_len_with(0, 0), table_len(0));
         assert_eq!(capacity(&group), before);
-        area.pool.reclaim();
         assert_eq!(
             area.pool.committed(),
             lent,
@@ -1301,21 +1299,28 @@ mod tests {
         assert_eq!(group.bytes, 2 * third);
     }
 
-    /// Ten records of three blocks follow the restart block. With the restart
-    /// block released, a one-block record fits the last block, but the group with a
-    /// second entry would skip it and not fit: the batch is not refused, the group
-    /// closes first.
+    /// Records of nine times three blocks, two blocks, and one block follow the
+    /// restart block. With the tail past the first record, a one-block record fits
+    /// the last block and leaves the three blocks that each record keeps free, but
+    /// the group with a second entry would skip it and not fit: the batch is not
+    /// refused, the group closes first.
     #[test]
     fn a_batch_that_fits_its_own_record_asks_for_a_close_before_full() {
         let mut area = Area::new();
         let mut group = Group::default();
-        for first in 0..10 {
-            let part = block(&area.pool, &vec![7; BODY_MAX - table_len(1)]);
+        let sizes = [BODY_MAX - table_len(1); 9].into_iter().chain([4096, 100]);
+        for (first, size) in (0..).zip(sizes) {
+            let part = block(&area.pool, &vec![7; size]);
             area.push(&mut group, header(1, Path::Live, 2 * first), part.into());
             let closed = group.close(&mut area.writer);
-            group = area.commit(closed).clear();
+            let sealed = area.commit(closed);
+            area.writer.synced(sealed.ends());
+            if first == 0 {
+                area.writer.release(sealed.ends().record.offset());
+            }
+            group = sealed.clear();
         }
-        area.writer.release(4096);
+        assert_eq!(area.writer.head(), 31 * 4096);
         let big = block(&area.pool, &[7; 4000]);
         area.push(&mut group, header(1, Path::Live, 20), big.into());
         let small = block(&area.pool, &[7; 100]);
@@ -1367,7 +1372,6 @@ mod tests {
         assert_eq!(rejected, Err(Rejected::Pool(exhausted)));
         assert!(group.is_empty());
         assert!(group.meta.is_none(), "the meta block goes back");
-        area.pool.reclaim();
         assert_eq!(area.pool.committed(), block::footprint(META_LEN));
     }
 

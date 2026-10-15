@@ -20,6 +20,7 @@ use env::shards::{Config, Main};
 use env::tasks::Task;
 use env::thread::{Error, Handle};
 use env::threads::Body;
+use tracing::Dispatch;
 use types::time::Monotonic;
 
 use crate::shard::Fault;
@@ -40,10 +41,12 @@ impl fmt::Debug for Node {
 
 impl Node {
     /// Adds a thread that runs when the scheduler picks its first task.
-    fn thread(&self, name: String, start: Start) -> Handle {
-        let (thread, crashed) = lock(&self.shared).start(self.node, name, start);
+    fn thread(&self, name: String, start: Start, log: Dispatch) -> Handle {
+        let (thread, crashed) = lock(&self.shared).start(self.node, name, start, log);
         // After the lock: the drop may start a thread.
-        drop(crashed);
+        if let Some((start, log)) = crashed {
+            tracing::dispatcher::with_default(&log, || drop(start));
+        }
         let (shared, node) = (Arc::clone(&self.shared), self.node);
         Handle::new(move || {
             let state = lock(&shared);
@@ -173,16 +176,23 @@ impl env::shards::Driver for Node {
         lock(&self.shared).pinnable(self.node)
     }
 
-    fn start(&self, config: Config, main: Main) -> Result<Handle, Error> {
+    fn start(
+        &self,
+        config: Config,
+        main: Main,
+        log: Dispatch,
+    ) -> Result<Handle, Error> {
         let fault = lock(&self.shared).shards(self.node).record(&config);
         let name = config.name;
         let main = match fault {
             None => main,
             Some((_, Fault::Start)) => {
+                tracing::dispatcher::with_default(&log, || drop(main));
                 let reason = "injected".into();
                 return Err(Error::Start { name, reason });
             }
             Some((core, Fault::Pin)) => {
+                tracing::dispatcher::with_default(&log, || drop(main));
                 let reason = "injected".into();
                 return Err(Error::Pin { name, core, reason });
             }
@@ -196,7 +206,7 @@ impl env::shards::Driver for Node {
                 })
             }),
         };
-        Ok(self.thread(name, Start::Shard(main)))
+        Ok(self.thread(name, Start::Shard(main), log))
     }
 }
 
@@ -214,8 +224,8 @@ pub(crate) fn yield_now() -> impl Future<Output = ()> {
 }
 
 impl env::threads::Driver for Node {
-    fn start(&self, name: &str, body: Body) -> Result<Handle, Error> {
-        Ok(self.thread(name.into(), Start::Body(body)))
+    fn start(&self, name: &str, body: Body, log: Dispatch) -> Result<Handle, Error> {
+        Ok(self.thread(name.into(), Start::Body(body), log))
     }
 }
 

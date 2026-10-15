@@ -22,6 +22,7 @@ use std::ptr::NonNull;
 use std::slice;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
+use memory::Erased;
 pub use memory::{Heap, Memory, Refused};
 use sync::{AtomicUsize, Track};
 
@@ -307,6 +308,20 @@ impl Pool {
         Self::new(config, heap)
     }
 
+    /// Creates a pool on heap memory, as [`Pool::heap`] does, for blocks that hold a
+    /// secret. When the pool and every block from it have dropped, it writes zero over
+    /// the first [`ALIGN`] bytes and over each range that the pool committed, with
+    /// writes that the compiler keeps, before it frees the memory.
+    ///
+    /// # Panics
+    ///
+    /// If the heap cannot allocate [`Config::reservation`] bytes.
+    #[must_use]
+    pub fn erased(config: Config) -> Self {
+        let memory = Erased::new(config.reservation());
+        Self::new(config, memory)
+    }
+
     /// The most bytes the pool commits at once: the budget of its [`Config`].
     #[must_use]
     pub fn budget(&self) -> usize {
@@ -408,9 +423,8 @@ impl Pool {
     }
 
     /// Takes back the blocks that holders dropped, so that `alloc` can use them
-    /// again. `alloc` calls it when it has no free block; the owner shard may call it
-    /// from its loop to spread the cost.
-    pub fn reclaim(&self) {
+    /// again.
+    fn reclaim(&self) {
         let returned = &self.shared().returned;
         if returned.load(Relaxed) != NONE {
             self.take(returned.swap(NONE, Acquire));
@@ -422,8 +436,8 @@ impl Pool {
     /// A size is idle when no block of it is in use now and no block of it returned
     /// since the previous `purge` call. The shard calls it on its own timer: a size
     /// keeps its pages for one to two timer intervals after its last block returned,
-    /// and `alloc` carves it again on demand. It takes back returned blocks first, as
-    /// `reclaim` does. Returns the bytes of the budget given back.
+    /// and `alloc` carves it again on demand. It takes back returned blocks first.
+    /// Returns the bytes of the budget given back.
     pub fn purge(&self) -> usize {
         self.reclaim();
         let purges = self.purges.get();

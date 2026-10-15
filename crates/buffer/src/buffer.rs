@@ -26,6 +26,7 @@ use types::hash;
 use types::time::Span;
 use types::wait;
 
+use crate::carry;
 use crate::entry::{self, ENTRIES_MAX, Entry};
 use crate::group::{self, Closed, Group, Sealed};
 use crate::header::{self, Header};
@@ -33,6 +34,9 @@ use crate::log::{self, Found, Logs, Mark, Tail};
 use crate::read::{self, Read, Reading, Stored};
 use crate::record::{self, ALIGN, AREA_START, Body};
 use crate::wal::{self, Cursor, Layout, Limit, Step, Unfit, Window, Writer};
+
+/// How many reads at once hold records with no allocation.
+const HOLDS: usize = 16;
 
 /// What one shard's buffer is given at open.
 #[derive(Debug)]
@@ -174,15 +178,17 @@ pub enum Rejected {
     /// The batch alone is over a [`Limit`], so this buffer never takes it. The
     /// limit is the first one it is over, in the order of [`Limit`].
     Large(Limit),
-    /// The ring has no room for the batch. Room returns only when records leave the
-    /// ring at its tail, and never when the offsets left before their end are under
+    /// The ring has no room for the batch: three blocks stay free, for the restart
+    /// record of the next open, the carry record of the commit after it, and the
+    /// restart record of a later open. Room returns only when records leave the ring
+    /// at its tail, and never when the offsets left before their end are under
     /// `needed`. Nothing moves records out of the ring yet.
     Full {
         /// Bytes of the area that the batch's record needs, with the rest of the
         /// area it must skip.
         needed: u64,
         /// Bytes the record may take: the area not in use, or the offsets left
-        /// before their end, whichever is less.
+        /// before their end, whichever is less, less the three blocks that stay free.
         free: u64,
     },
     /// The pool has no block for the record header.
@@ -296,6 +302,8 @@ struct State {
     queue: Vec<Closed>,
     /// Where each path stands, and the records that hold it.
     logs: Logs,
+    /// The record that each read in progress holds, in no order.
+    held: Vec<u64>,
     /// How many deadlines took the groups to write.
     taken: u64,
     /// How many deadlines ended with no error.
@@ -354,6 +362,14 @@ impl State {
         self.ended = true;
         self.committing.drain(woken);
         self.ending.drain(woken);
+    }
+
+    /// The oldest record that a trim must keep: the oldest that holds the durable
+    /// tail of a path or that a read in progress holds. `None` when no record does.
+    #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
+    fn kept(&mut self) -> Option<u64> {
+        let held = self.held.iter().min().copied();
+        self.logs.kept().into_iter().chain(held).min()
     }
 
     /// The key of the next [`Commit`] or [`End`].
@@ -450,6 +466,7 @@ impl Buffer {
                 spares: Vec::new(),
                 queue: Vec::new(),
                 logs,
+                held: Vec::with_capacity(HOLDS),
                 taken: 0,
                 commits: 0,
                 committing: wait::Set::new(),
@@ -574,6 +591,9 @@ impl Buffer {
         } = &*self.shared;
         let mut records = self.shared.state.borrow().logs.tagged(path, tag);
         records.sort_unstable_by_key(|&(offset, ..)| offset);
+        // A trim frees the oldest records first, so holding the oldest holds each.
+        let _hold =
+            (records.first()).map(|&(offset, ..)| Hold::new(&self.shared, offset));
         let mut found = Vec::with_capacity(records.len());
         for record in records.chunk_by(|a, b| a.0 == b.0) {
             let [(offset, ..), ..] = *record else {
@@ -596,10 +616,14 @@ impl Buffer {
         slot: Slot,
         path: Path,
     ) -> Result<(), Error> {
+        // No await comes between a lookup and its hold, or between the drop of a
+        // hold and the next lookup, so no trim passes the records the read goes on
+        // to.
         while let Some(from) = reading.next() {
             let found = self.shared.state.borrow().logs.find(slot, path, from);
             match found {
                 Found::Run(index, run) => {
+                    let _hold = Hold::new(&self.shared, run.offset);
                     if !reading.record(index, run).await? {
                         break;
                     }
@@ -850,9 +874,7 @@ async fn create_header(
     layout: Layout,
 ) -> Result<Header, Error> {
     let header = Header::new(layout, random(entropy));
-    let mut block = pool.alloc(ALIGN)?;
-    block.copy_from_slice(&header.encode());
-    let block = block.freeze();
+    let block = pool.copy(&header.encode())?;
     file.write_at(0, &[block.clone(), block]).await?;
     file.sync().await?;
     Ok(header)
@@ -871,7 +893,7 @@ async fn walk(
     slots: &mut Slots,
 ) -> Result<(Cursor, Logs), Error> {
     let mut cursor = Cursor::new(header.layout, header.tail, pool.largest());
-    let mut logs = Logs::default();
+    let mut logs = Logs::new(header.layout.area());
     loop {
         let Window { place, len } = cursor.window();
         let bytes = file.read_at(AREA_START + place, pool.alloc(len)?).await?;
@@ -880,6 +902,7 @@ async fn walk(
             Step::Data(body) => {
                 recover(body, offset, pool.largest(), slots, &mut logs)?;
             }
+            Step::Carry(body) => recover_carried(body, offset, slots, &mut logs)?,
             Step::Moved | Step::More => {}
             Step::End => break,
         }
@@ -910,6 +933,23 @@ fn recover(
         let slot = slots.index(header.index);
         logs.append(slot, &header).map_err(misplaced)?;
         logs.sync(slot, &header, offset).map_err(misplaced)?;
+    }
+    Ok(())
+}
+
+/// Feeds the logs the tails of a carry record body at `offset`.
+fn recover_carried(
+    body: &[u8],
+    offset: u64,
+    slots: &mut Slots,
+    logs: &mut Logs,
+) -> Result<(), Error> {
+    let unread = |_: entry::Invalid| Error::Invalid { offset };
+    let misplaced = |_: log::Invalid| Error::Invalid { offset };
+    for tail in carry::parse(body).map_err(unread)? {
+        let tail = tail.map_err(unread)?;
+        let slot = slots.index(tail.index);
+        logs.carry(slot, &tail, offset).map_err(misplaced)?;
     }
     Ok(())
 }
@@ -1074,6 +1114,27 @@ impl Future for End {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.waiter.poll(cx, State::outcome)
+    }
+}
+
+/// A record that a read in progress holds, which no trim frees, until the drop.
+struct Hold<'a> {
+    shared: &'a Shared,
+    offset: u64,
+}
+
+impl<'a> Hold<'a> {
+    fn new(shared: &'a Shared, offset: u64) -> Self {
+        shared.state.borrow_mut().held.push(offset);
+        Self { shared, offset }
+    }
+}
+
+impl Drop for Hold<'_> {
+    fn drop(&mut self) {
+        let held = &mut self.shared.state.borrow_mut().held;
+        let at = held.iter().position(|&offset| offset == self.offset);
+        held.swap_remove(at.expect("invariant: a hold is in `held`"));
     }
 }
 
@@ -1296,15 +1357,21 @@ mod tests {
                     buffer.append(batch).expect("the ring has room");
                     buffer.committed().await.expect("commits");
                 }
-                let trimmed = buffer.shared.state.borrow().writer.trimmed(None);
+                let trimmed = buffer
+                    .shared
+                    .state
+                    .borrow()
+                    .writer
+                    .trimmed(None, |offset| offset);
                 *found.lock().expect("no panic held the lock") = trimmed;
                 buffer
             },
         );
         // The restart record and 60 records of one block are synced. The headroom
-        // is three records of two blocks.
+        // is three records of two blocks and the three blocks that each record keeps
+        // free.
         let tail = tail.lock().expect("no panic held the lock");
-        assert_eq!(tail.map(crate::wal::Position::offset), Some(3 * 4096));
+        assert_eq!(tail.map(crate::wal::Position::offset), Some(6 * 4096));
     }
 
     /// Three commits put [0, 3), [3, 6), and [6, 9) of one path in the records at
@@ -1427,6 +1494,136 @@ mod tests {
         let found = found.lock().expect("no panic held the lock");
         let tagged = vec![(Slot::new(0), 0)];
         assert_eq!(*found, [tagged.clone(), tagged, vec![]]);
+    }
+
+    /// A read holds the record it waits on, and `newest` holds the oldest record it
+    /// reads, until the read ends or drops. The tagged entry and [0, 3), [3, 6),
+    /// and [6, 9) of one path are in the records at 4096, 8192, and 12288, so the
+    /// tail of the path holds 12288.
+    #[test]
+    fn a_read_holds_the_record_it_waits_on_until_it_ends_or_drops() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config::default());
+        let kept = Arc::new(Mutex::new(Vec::new()));
+        let given = Arc::clone(&kept);
+        with_buffer(
+            &mut sim,
+            &node,
+            "write",
+            |buffer, mut slots, pool| async move {
+                let one = slots.index(channel::Key::from_u128(1));
+                let part = pool.alloc(100).expect("a block").freeze();
+                let tagged = Entry {
+                    len: 0,
+                    tag: 1,
+                    ..entry(1, one, Path::Live, 0, &part)
+                };
+                for batch in [
+                    vec![tagged, entry(1, one, Path::Live, 0, &part)],
+                    vec![entry(1, one, Path::Live, 3, &part)],
+                    vec![entry(1, one, Path::Live, 6, &part)],
+                ] {
+                    buffer.append(batch).expect("the ring has room");
+                    buffer.committed().await.expect("commits");
+                }
+                let kept_now = || buffer.shared.state.borrow_mut().kept();
+                let mut kept = vec![kept_now()];
+                {
+                    let mut read = pin!(read_from(&buffer, one, 0));
+                    let first = poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
+                    assert!(first.is_pending(), "the read waits on a file read");
+                    kept.push(kept_now());
+                    read.await;
+                }
+                kept.push(kept_now());
+                {
+                    let mut read = pin!(read_from(&buffer, one, 3));
+                    let first = poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
+                    assert!(first.is_pending(), "the read waits on a file read");
+                    kept.push(kept_now());
+                }
+                kept.push(kept_now());
+                {
+                    let mut newest = pin!(buffer.newest(Path::Live, NonZeroU8::MIN));
+                    let first =
+                        poll_fn(|cx| Poll::Ready(newest.as_mut().poll(cx))).await;
+                    assert!(first.is_pending(), "newest waits on a file read");
+                    kept.push(kept_now());
+                    newest.await.expect("reads");
+                }
+                kept.push(kept_now());
+                {
+                    let mut newest = pin!(buffer.newest(Path::Live, NonZeroU8::MIN));
+                    let first =
+                        poll_fn(|cx| Poll::Ready(newest.as_mut().poll(cx))).await;
+                    assert!(first.is_pending(), "newest waits on a file read");
+                    kept.push(kept_now());
+                }
+                kept.push(kept_now());
+                *given.lock().expect("no panic held the lock") = kept;
+                buffer
+            },
+        );
+        let kept = kept.lock().expect("no panic held the lock");
+        let expected = [12288, 4096, 12288, 8192, 12288, 4096, 12288, 4096, 12288];
+        assert_eq!(*kept, expected.map(Some));
+    }
+
+    /// A read from (0, 1) holds the record at 8192, whose entry with no samples at
+    /// seq 0 comes after the one at 4096. A walk from 8192 would count it from
+    /// (0, 0), so the trim lands at 4096, though 57 more records want more room.
+    /// No commit trims yet, so the test asks the writer.
+    #[test]
+    fn a_trim_held_after_entries_with_no_samples_at_a_seq_lands_before_them() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config::default());
+        let tails = Arc::new(Mutex::new(Vec::new()));
+        let found = Arc::clone(&tails);
+        with_buffer(
+            &mut sim,
+            &node,
+            "write",
+            |buffer, mut slots, pool| async move {
+                let one = slots.index(channel::Key::from_u128(1));
+                let part = pool.alloc(100).expect("a block").freeze();
+                let empty = Entry {
+                    len: 0,
+                    last: None,
+                    ..entry(1, one, Path::Live, 0, &part)
+                };
+                let mut batches = vec![vec![empty.clone()], vec![empty]];
+                let more = (0..58)
+                    .map(|commit| vec![entry(1, one, Path::Live, 3 * commit, &part)]);
+                batches.extend(more);
+                for batch in batches {
+                    buffer.append(batch).expect("the ring has room");
+                    buffer.committed().await.expect("commits");
+                }
+                let trimmed = || {
+                    let mut state = buffer.shared.state.borrow_mut();
+                    let kept = state.kept();
+                    let tail = state
+                        .writer
+                        .trimmed(kept, |offset| state.logs.marked().land(offset));
+                    (kept, tail.map(crate::wal::Position::offset))
+                };
+                let mut tails = vec![trimmed()];
+                {
+                    let from = Mark::at(0).after(0, 0);
+                    let mut read = pin!(buffer.read(one, Path::Live, from, usize::MAX));
+                    let first = poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
+                    assert!(first.is_pending(), "the read waits on a file read");
+                    tails.push(trimmed());
+                }
+                *found.lock().expect("no panic held the lock") = tails;
+                buffer
+            },
+        );
+        let tails = tails.lock().expect("no panic held the lock");
+        assert_eq!(
+            *tails,
+            [(Some(60 * 4096), Some(6 * 4096)), (Some(8192), Some(4096))]
+        );
     }
 
     /// The durable end counts the entries with no samples at its seq. A read that

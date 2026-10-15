@@ -2,6 +2,8 @@ connector "influx" {
   kind = "influx"
   node = "cloud"
   address = "http://influx:8086"
+  database = "edge"
+  measurement = "telemetry"
   select = "edge.*"
   reader {
     mode = "complete"

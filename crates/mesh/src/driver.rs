@@ -28,7 +28,6 @@ use types::time::{Span, Stamp};
 use wire::Protocol;
 
 use crate::applied::Applied;
-use crate::bytes::block;
 use crate::change::{Change, Join, Malformed};
 use crate::claim::{self, Known, Signer};
 use crate::error::{self, Error, Stopped};
@@ -55,7 +54,7 @@ const ELECTION_TICKS: u32 = 10;
 
 /// The header that goes first on each stream that this node opens.
 fn header(pool: &Pool) -> Result<Block, block::Error> {
-    block(pool, &wire::header::encode(Protocol::Mesh))
+    pool.copy(&wire::header::encode(Protocol::Mesh))
 }
 const HEARTBEAT_TICKS: u32 = 1;
 /// The most messages that wait for one member.
@@ -89,7 +88,7 @@ pub struct Config {
     pub clock: Clock,
     /// Gives each election timeout its random part.
     pub entropy: Entropy,
-    /// Runs the group's task and the tasks that send.
+    /// Runs each task that the mesh spawns.
     pub tasks: Tasks,
     /// Gives the blocks of the log's reads and writes, of each message that the group
     /// sends, and of each answer to a forwarded proposal. A write that finds the pool
@@ -135,18 +134,19 @@ impl fmt::Debug for Mesh {
 }
 
 impl Mesh {
-    /// Reads the log from `config.dir`, starts the group as a follower, and spawns
-    /// its task on `config.tasks`. It puts each chunk of the founding tree in
-    /// `config.store`. It reads the spec of the newest pointer that a file in
-    /// `<config.dir>/spec` names, or the founding spec when there is no file, and
-    /// removes the file of each older pointer. A spec that does not read or has
-    /// problems is not an error: the node then uses no spec, and [`Mesh::spec`] gives
-    /// the cause in `behind`.
+    /// Reads the log from `config.dir`, starts the group, and spawns its tasks on
+    /// `config.tasks`. The group starts as a follower, or it leads at once when the
+    /// vote of this node is a quorum of its configuration in force. It puts each chunk
+    /// of the founding tree in `config.store`. It reads the spec of the newest pointer
+    /// that a file in `<config.dir>/spec` names, or the founding spec when there is no
+    /// file, and removes the file of each older pointer. A spec that does not read or
+    /// has problems is not an error: the node then uses no spec, and [`Mesh::spec`]
+    /// gives the cause in `behind`.
     ///
     /// At each open, its state starts at the founding: `pointer` gives version 0, and a
     /// watch gives each home of `config.founding.homes`. The state moves on when this
-    /// node applies the log, after it hears the leader. Until then, a watch can give a
-    /// founding home that the log moved, as at a follower behind the leader.
+    /// node applies the log. Until then, a watch can give a founding home that the log
+    /// moved, as at a follower behind the leader.
     ///
     /// The group sends its messages on a session to each member. It dials a member at
     /// the addresses of its card, at the first message for it, and again after the
@@ -251,7 +251,11 @@ impl Mesh {
         })
         .await?;
         let unapplied = written(&stored.entries).collect();
-        let raft = follower(config.key, stored, voters)?;
+        let mut raft = follower(config.key, stored, voters)?;
+        // One voter cannot split a vote, so the election timeout buys nothing.
+        if raft.voters().quorum(|key| key == config.key).is_ok() {
+            raft.campaign();
+        }
         let group = Group::new(raft, state, unapplied, used);
         let group = Rc::new(RefCell::new(group));
         let weak = Rc::downgrade(&group);
@@ -280,10 +284,9 @@ impl Mesh {
         })
     }
 
-    /// Gives a future that resolves once each task of the mesh has ended: the group's
-    /// task and each task that sends. The future holds no clone, so it does not keep
-    /// the group running. Once it resolves, the mesh holds no file, and a new open of
-    /// its directory can take the log.
+    /// Gives a future that resolves once each task that the mesh spawned has ended. The
+    /// future holds no clone, so it does not keep the group running. Once it resolves,
+    /// the mesh holds no file, and a new open of its directory can take the log.
     #[must_use]
     pub fn ended(&self) -> tasks::Ended {
         self.tasks.ended()
@@ -1807,10 +1810,7 @@ mod tests {
 
     impl Cluster {
         fn new(seed: u64) -> Self {
-            let mut sim = Sim::new(sim::Config {
-                seed,
-                ..sim::Config::default()
-            });
+            let mut sim = Sim::new(crate::common::simulation(seed));
             let node = |_| sim.node(sim::node::Config::default());
             Self {
                 nodes: IDS.map(node).into(),
@@ -2492,10 +2492,7 @@ mod tests {
         seed: u64,
         body: impl FnOnce(sim::node::Node, Tasks) -> F + Send + 'static,
     ) {
-        let mut sim = Sim::new(sim::Config {
-            seed,
-            ..sim::Config::default()
-        });
+        let mut sim = Sim::new(crate::common::simulation(seed));
         let node = sim.node(sim::node::Config::default());
         sim.run_on(&node, body).unwrap();
     }
@@ -2872,7 +2869,7 @@ mod tests {
     fn solo_stored<F: Future<Output = ()> + 'static>(
         body: impl FnOnce(sim::node::Node, Tasks) -> F + Send + 'static,
     ) -> Vec<Entry> {
-        let mut sim = Sim::new(sim::Config::default());
+        let mut sim = Sim::new(crate::common::simulation(0));
         let node = sim.node(sim::node::Config::default());
         sim.run_on(&node, body).unwrap();
         sim.crash(&node, Crash::Power);
@@ -3053,7 +3050,6 @@ mod tests {
                 // No write of the log ends from here on.
                 let _held = ManuallyDrop::new(fill(&pool));
                 let answers = Answers::default();
-                // Longer than each election timeout.
                 for _ in 0..30 {
                     node.clock().sleep(TICK).await;
                     forward(&mesh, &tasks, &answers);
@@ -3062,47 +3058,29 @@ mod tests {
                 let answers = answers.take();
                 let full = Err(exhausted(200));
                 let waits = answers.iter().position(|answer| *answer == full);
-                let (before, from) = answers.split_at(waits.unwrap());
-                let follows = Ok(Message::NotLeader { leader: None });
-                assert_eq!(before, vec![follows; before.len()]);
-                assert_eq!(from, vec![full; from.len()]);
-                assert_eq!(answers.len(), 30);
+                assert_eq!(waits, Some(0));
+                assert_eq!(answers, vec![full; 30]);
             });
         }
 
-        // The change comes while the node writes the term that it now leads, and a
-        // power cut follows. A disk call takes 100 us at most, so the voter gives the
-        // change each 10 us for 500 us before and after each tick.
+        // The change comes while the node writes, at open, the term that it now leads,
+        // and a power cut follows. The sleep of 1 ns lets the group start that write
+        // first, so the change goes in a later write.
         #[test]
         fn a_position_in_an_answer_names_no_other_change_after_a_power_cut() {
             let mut reused = Vec::new();
             for seed in 0..16 {
-                let mut sim = Sim::new(sim::Config {
-                    seed,
-                    ..sim::Config::default()
-                });
+                let mut sim = Sim::new(crate::common::simulation(seed));
                 let node = sim.node(sim::node::Config::default());
                 let answered = sim
                     .run_on(&node, |node, tasks| async move {
                         let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-                        let clock = node.clock();
-                        let steps = |count| Span::from_nanos(count * 10_000);
-                        clock.sleep(steps(TICK.nanos() / 10_000 - 50)).await;
-                        loop {
-                            for _ in 0..100 {
-                                let mut answer =
-                                    pin!(mesh.answer(public(1), home_to(3)));
-                                match now(answer.as_mut()).await {
-                                    Poll::Ready(Ok(Message::NotLeader {
-                                        leader: None,
-                                    })) => {}
-                                    Poll::Ready(first) => return first,
-                                    Poll::Pending => return answer.await,
-                                }
-                                clock.sleep(steps(1)).await;
-                            }
-                            clock.sleep(steps(TICK.nanos() / 10_000 - 100)).await;
+                        node.clock().sleep(Span::from_nanos(1)).await;
+                        let mut answer = pin!(mesh.answer(public(1), home_to(3)));
+                        if let Poll::Ready(first) = now(answer.as_mut()).await {
+                            panic!("no wait for {first:?}");
                         }
+                        answer.await
                     })
                     .unwrap();
                 let Ok(Message::Proposed { at: answered }) = answered else {
@@ -4574,17 +4552,14 @@ mod tests {
     }
 
     #[test]
-    fn a_lone_voter_leads_after_one_election_timeout() {
+    fn a_lone_voter_leads_at_start_whatever_its_election_timeout() {
         for seed in 0..16 {
             solo_at(seed, move |node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
                 let clock = node.clock();
                 let opened = clock.now();
                 let (asked, _) = lead_at(&mesh, &clock, home_to(1)).await;
-                let asked = asked - opened;
-                // The timeout is 10 to 19 ticks, and `lead_at` asks once per tick.
-                let timeout = seconds(1)..=seconds(2);
-                assert!(timeout.contains(&asked), "run {seed}: it led at {asked}");
+                assert_eq!(asked - opened, Span::ZERO, "run {seed}");
             });
         }
     }
@@ -5028,10 +5003,7 @@ mod tests {
         let mut lost = Vec::new();
         let mut gave = 0_usize;
         for run in 0..64 {
-            let mut sim = Sim::new(sim::Config {
-                seed: run,
-                ..sim::Config::default()
-            });
+            let mut sim = Sim::new(crate::common::simulation(run));
             let node = sim.node(sim::node::Config::default());
             sim.run_on(&node, |node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
@@ -5954,10 +5926,7 @@ mod tests {
         }
 
         fn create_sim(run: u64) -> (Sim, sim::node::Node) {
-            let mut sim = Sim::new(sim::Config {
-                seed: run,
-                ..sim::Config::default()
-            });
+            let mut sim = Sim::new(crate::common::simulation(run));
             let node = sim.node(sim::node::Config::default());
             (sim, node)
         }
@@ -6209,10 +6178,7 @@ mod tests {
         fn keeps_the_founding_and_the_log_through_a_power_cut_right_after() {
             let names = |names: &[&str]| Ok(names.iter().map(PathBuf::from).collect());
             for seed in 0..32 {
-                let mut sim = Sim::new(sim::Config {
-                    seed,
-                    ..sim::Config::default()
-                });
+                let mut sim = Sim::new(crate::common::simulation(seed));
                 let node = sim.node(sim::node::Config::default());
                 sim.run_on(&node, |node, tasks| async move {
                     let config = Config {
@@ -6243,10 +6209,7 @@ mod tests {
         #[test]
         fn keeps_a_directory_of_two_parts_in_its_parent_through_a_power_cut() {
             for seed in 0..32 {
-                let mut sim = Sim::new(sim::Config {
-                    seed,
-                    ..sim::Config::default()
-                });
+                let mut sim = Sim::new(crate::common::simulation(seed));
                 let node = sim.node(sim::node::Config::default());
                 sim.run_on(&node, |node, tasks| async move {
                     let files = node.files();
@@ -6301,6 +6264,72 @@ mod tests {
                 });
                 let held = Unfit::Held { key: key(2) };
                 assert_eq!(Mesh::start(config).await.err(), Some(Error::Member(held)));
+            });
+        }
+    }
+
+    mod lone {
+        use super::*;
+        use crate::common::{proven_at, voters_entry_voted};
+
+        // Node 2 never answers.
+        #[test]
+        fn a_voter_of_two_campaigns_only_after_the_timeout() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1, 2], &[1, 2]).await.unwrap();
+                node.clock().sleep(TICK).await;
+                assert!(quiet(&mesh, 2).await);
+                node.clock().sleep(seconds(2)).await;
+                let asked = now(pin!(pre_vote_term(&mesh, 2))).await;
+                assert!(asked.is_ready());
+            });
+        }
+
+        // Node 2 never answers, so the joint entry that adds it does not commit.
+        #[test]
+        fn a_lone_voter_whose_newest_configuration_adds_a_voter_waits() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
+                lead(&mesh, &node.clock(), home_to(1)).await;
+                mesh.propose_voters([key(1), key(2)].into()).await.unwrap();
+                drop(mesh);
+                node.clock().sleep(TICK).await;
+                let again = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
+                let joint = Voters {
+                    incoming: [key(1), key(2)].into(),
+                    outgoing: [key(1)].into(),
+                };
+                // Without the joint configuration, a quiet node 2 shows nothing.
+                assert_eq!(again.group.borrow().raft.voters(), &joint);
+                node.clock().sleep(TICK).await;
+                assert!(quiet(&again, 2).await);
+            });
+        }
+
+        // The joint entry that removes node 2 needs its vote too.
+        #[test]
+        fn a_lone_incoming_voter_of_a_joint_configuration_waits() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1, 2], &[1, 2]).await.unwrap();
+                let joint = Voters {
+                    incoming: [key(1)].into(),
+                    outgoing: [key(1), key(2)].into(),
+                };
+                let append = Body::Append {
+                    prev: Position::default(),
+                    entries: vec![voters_entry_voted(2, at(1), joint.clone(), &[1, 2])],
+                    commit: 0,
+                };
+                let append = proven_at(2, 1, common::TERM, &[(1, 1), (2, 2)], append);
+                assert_eq!(mesh.receive(public(2), append), Ok(()));
+                node.clock().sleep(TICK).await;
+                drop(mesh);
+                node.clock().sleep(TICK).await;
+                let again = open(&node, &tasks, 1, &[1, 2], &[1, 2]).await.unwrap();
+                // Without the joint configuration, a quiet node 2 shows nothing.
+                assert_eq!(again.group.borrow().raft.voters(), &joint);
+                node.clock().sleep(TICK).await;
+                assert!(quiet(&again, 2).await);
             });
         }
     }
@@ -6768,7 +6797,7 @@ mod tests {
 
         impl Run {
             fn new() -> Self {
-                let mut sim = Sim::new(sim::Config::default());
+                let mut sim = Sim::new(crate::common::simulation(0));
                 let node = |_| sim.node(sim::node::Config::default());
                 Self {
                     nodes: MEMBERS.map(node).into(),
@@ -7500,7 +7529,7 @@ mod tests {
         // proposal, node 1 holds the whole log of node 2 after the next heartbeat.
         #[test]
         fn a_follower_that_cut_a_run_holds_the_whole_log_after_the_next_heartbeat() {
-            let mut sim = Sim::new(sim::Config::default());
+            let mut sim = Sim::new(crate::common::simulation(0));
             let nodes = [1, 2].map(|_| sim.node(sim::node::Config::default()));
             let bodies = Arc::new(Mutex::new(Vec::new()));
             for (node, id) in nodes.iter().zip([1, 2]) {

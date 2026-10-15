@@ -9,7 +9,7 @@ use types::digest::Digest;
 use types::sample::{Scalar, Type};
 use types::time::Span;
 
-use super::{Collector, TABLE, Value};
+use super::{Collector, TABLE, Value, names};
 
 fn host() -> (sim::Sim, Node) {
     let mut sim = sim::Sim::new(sim::Config::default());
@@ -85,6 +85,18 @@ fn lists_the_channels() {
         "blob.failures",
     ];
     assert_eq!(names, expected);
+}
+
+/// One name for each channel, so no name of the table is there twice, and no name is
+/// reserved.
+#[test]
+fn names_each_channel_once() {
+    let table: Vec<&str> = TABLE.iter().map(|c| c.name).collect();
+    let parsed = names();
+    assert!(parsed.iter().all(|name| !name.reserved()), "{parsed:?}");
+    let names: Vec<String> = parsed.iter().map(ToString::to_string).collect();
+    assert_eq!(names.len(), TABLE.len());
+    assert!(table.iter().all(|name| names.iter().any(|n| n == name)));
 }
 
 #[test]
@@ -167,9 +179,7 @@ fn a_get_whose_read_fails_gives_one_failure_of_the_chunk_store() {
         let collector = Collector::new(reader, Rc::clone(&store));
         let zero = Some(Value::U64(0));
         assert_eq!(counts(&collector), [zero, zero]);
-        let mut chunk = pool.alloc(5).expect("a block");
-        chunk.copy_from_slice(b"chunk");
-        let chunk = chunk.freeze();
+        let chunk = pool.copy(b"chunk").expect("a block");
         let digest = Digest::of(&chunk);
         store.put(digest, &chunk).await.expect("the put stores");
         let path = crate::directory::blob().join(digest.to_string());

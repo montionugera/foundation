@@ -22,7 +22,7 @@ struct Peer {
 
 impl Peer {
     async fn send(&self, sender: &mut Sender, bytes: &[u8]) {
-        let block = crate::bytes::block(&self.pool, bytes).unwrap();
+        let block = self.pool.copy(bytes).unwrap();
         sender.send(block).await.unwrap();
     }
 
@@ -89,10 +89,7 @@ where
     M: Future<Output: Send + 'static> + 'static,
     P: Future<Output: Send + 'static> + 'static,
 {
-    let mut sim = Sim::new(sim::Config {
-        seed,
-        ..sim::Config::default()
-    });
+    let mut sim = Sim::new(common::simulation(seed));
     let nodes = [1, 2].map(|_| sim.node(sim::node::Config::default()));
     let at = SocketAddr::new(nodes[0].addresses()[0], PORT);
     let served = Arc::new(Mutex::new(None));
@@ -748,6 +745,9 @@ fn serve_gives_no_answer_when_the_pool_has_no_block_for_it() {
             let (mesh, first) = leader(&node, &tasks, pool).await;
             let mut watch = mesh.watch(INDEX);
             assert_eq!(watch.next().await, Ok(Some(key(1))));
+            // The write of a proposal frees a block that the next log write reuses, so
+            // only the block of the answer is new.
+            assert_eq!(mesh.propose(home_to(1)).await, Ok(after(first, 1)));
             switch.refuse();
             let served = mesh.serve(public(1), incoming).await;
             switch.allow();
@@ -764,7 +764,7 @@ fn serve_gives_no_answer_when_the_pool_has_no_block_for_it() {
     );
     assert_eq!(served, Err(error));
     // The group took the change.
-    assert_eq!((taken, later), (Ok(Some(key(3))), Ok(after(first, 2))));
+    assert_eq!((taken, later), (Ok(Some(key(3))), Ok(after(first, 3))));
     // No code of the mesh.
     assert_eq!(seen, codes(Code(0)));
 }

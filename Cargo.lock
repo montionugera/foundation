@@ -164,9 +164,11 @@ dependencies = [
 name = "block"
 version = "0.0.0"
 dependencies = [
+ "counting",
  "divan",
  "loom",
  "proptest",
+ "zeroize",
 ]
 
 [[package]]
@@ -416,6 +418,7 @@ dependencies = [
  "hyper",
  "loom",
  "proptest",
+ "secret",
  "sim",
  "spec",
  "types",
@@ -427,6 +430,7 @@ name = "connector-influx"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "codec",
  "connector",
  "connector-influx",
  "counting",
@@ -438,6 +442,7 @@ dependencies = [
  "influxdb-line-protocol",
  "proptest",
  "sim",
+ "spec",
  "types",
  "unicode-properties",
 ]
@@ -465,12 +470,19 @@ dependencies = [
 name = "connector-opcua"
 version = "0.0.0"
 dependencies = [
+ "block",
  "cc",
+ "codec",
+ "connector",
  "connector-opcua",
  "counting",
  "divan",
+ "document",
  "env",
+ "hub",
+ "proptest",
  "sim",
+ "spec",
  "types",
 ]
 
@@ -685,6 +697,7 @@ version = "0.0.0"
 dependencies = [
  "block",
  "proptest",
+ "tracing",
  "types",
 ]
 
@@ -1162,6 +1175,7 @@ dependencies = [
 name = "node"
 version = "0.0.0"
 dependencies = [
+ "access",
  "blob",
  "block",
  "buffer",
@@ -1171,6 +1185,7 @@ dependencies = [
  "config-hcl",
  "connector",
  "connector-influx",
+ "connector-opcua",
  "counting",
  "crc32c",
  "divan",
@@ -1185,8 +1200,11 @@ dependencies = [
  "node",
  "ops",
  "os",
+ "program",
  "proptest",
  "secret",
+ "serde",
+ "serde_json",
  "sim",
  "spec",
  "transport",
@@ -1306,22 +1324,27 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 name = "ops"
 version = "0.0.0"
 dependencies = [
+ "access",
  "blob",
  "block",
  "clap",
  "config",
  "config-hcl",
  "connector",
+ "counting",
  "document",
  "env",
+ "hub",
  "mesh",
  "schemars",
+ "secret",
  "serde",
  "serde_json",
  "sim",
  "spec",
  "transport",
  "types",
+ "wire",
 ]
 
 [[package]]
@@ -1340,6 +1363,7 @@ dependencies = [
  "proptest",
  "rustix",
  "tokio",
+ "tracing",
  "types",
 ]
 
@@ -1437,6 +1461,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "program"
+version = "0.0.0"
+dependencies = [
+ "access",
+ "aws-lc-rs",
+ "block",
+ "env",
+ "hub",
+ "sim",
+ "spec",
+ "transport",
+ "types",
+ "wire",
 ]
 
 [[package]]
@@ -1650,9 +1690,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
@@ -1726,7 +1766,9 @@ name = "secret"
 version = "0.0.0"
 dependencies = [
  "aws-lc-rs",
+ "block",
  "counting",
+ "document",
  "env",
  "proptest",
  "sim",
@@ -1833,6 +1875,7 @@ dependencies = [
  "block",
  "env",
  "proptest",
+ "tracing",
  "types",
 ]
 

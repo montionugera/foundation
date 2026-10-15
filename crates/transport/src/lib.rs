@@ -74,6 +74,7 @@ use std::fmt;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::rc::Rc;
 
+use env::tasks::{Ended, Group};
 use types::ed25519::{PrivateKey, PublicKey};
 use types::time::Span;
 
@@ -83,7 +84,6 @@ pub use client::Client;
 pub use code::Code;
 pub use error::Error;
 pub use port::Port;
-pub use quic::Ended;
 pub use session::{Peer, Session};
 
 use table::Table;
@@ -126,6 +126,8 @@ const POOL_RULE: &str = "must hold a message of at least 1472 bytes";
 /// [`port::Part`], so a later dial gets no answer, and [`Transport::ended`] resolves.
 pub struct Transport {
     carrier: quic::Carrier,
+    /// Counts the task of the carrier.
+    group: Group,
     public_key: PublicKey,
     message_bytes_max: usize,
     table: Rc<RefCell<Table>>,
@@ -152,12 +154,18 @@ impl Transport {
     pub fn new(config: Config, part: port::Part) -> Result<Self, Error> {
         let public_key = config.private_key.public();
         let tasks = config.tasks.clone();
+        let group = Group::new(tasks.clone());
         let setup = config.setup()?;
         let message_bytes_max = setup.message_bytes_max;
+        let setup = quic::Setup {
+            tasks: group.tasks().clone(),
+            ..setup
+        };
         let carrier = quic::Carrier::new(setup, part);
         let table = Table::new(public_key, tasks, carrier.handle());
         Ok(Self {
             carrier,
+            group,
             public_key,
             message_bytes_max,
             table,
@@ -285,7 +293,7 @@ impl Transport {
     /// ```
     #[must_use]
     pub fn ended(&self) -> Ended {
-        self.carrier.ended()
+        self.group.ended()
     }
 }
 
@@ -346,10 +354,18 @@ pub struct Config {
     /// exchange their limits in the handshake, and each sender checks the peer's.
     pub message_bytes_max: NonZeroUsize,
     /// The most bytes in flight per session in each direction: sent and not yet
-    /// acknowledged, or received and not yet taken. It bounds the memory of a session.
-    /// Size it near bandwidth times round trip. Must be at least twice the message
-    /// limit (the smaller of `message_bytes_max` and `pool.largest()`), so a message
-    /// of one class leaves room for a message of the other.
+    /// acknowledged, or received and not yet taken. A sent byte stays in flight until
+    /// the peer acknowledges it and each byte before it on its stream, or the stream
+    /// resets, so a session holds at most this many sent bytes against any peer. While
+    /// the window is full, the session takes no new byte to send, of any class. Each
+    /// held run of over 1452 bytes of a block holds the whole block: at most
+    /// `window_bytes / 1453` blocks, plus two for each stream. Size it near bandwidth
+    /// times round trip, and larger for a path that loses or reorders packets, where
+    /// each gap holds the window until its repair: with 1 ms of jitter at 12.5 MB/s and
+    /// a round trip of 20 ms, a window of about 1, 4, and 8 times that product sent
+    /// 16 MiB in 4.3 s, 2.5 s, and 2.2 s. Must be at least twice the message limit (the
+    /// smaller of `message_bytes_max` and `pool.largest()`), so a message of one class
+    /// leaves room for a message of the other.
     pub window_bytes: usize,
     /// The most two-way streams, and apart from them the most one-way streams, a peer
     /// may have open to this node at once, per session. Size it near the rate of new

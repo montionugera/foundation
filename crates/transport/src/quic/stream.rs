@@ -36,10 +36,10 @@ pub(crate) struct Key {
 
 /// The sending half of a stream. The caller gives it to each write call, and to
 /// [`Endpoint::reset`](super::Endpoint::reset) to end it. The connection keeps the
-/// stream's message in hand. It sends the rest by itself once the stream finished or
-/// when the message came from a write that does not wait, and else at the caller's
-/// next write. Dropping the sender does nothing to the stream, so finish or reset it
-/// first: until then, the message in hand keeps its send budget and its turn.
+/// stream's message in hand. It sends the rest by itself once the stream finished, or
+/// when no write comes back for the message, and else at the caller's next write.
+/// Dropping the sender does nothing to the stream, so finish or reset it first: until
+/// then, the message in hand keeps its send budget and its turn.
 #[derive(Debug)]
 pub(crate) struct Sender {
     key: Key,
@@ -86,8 +86,8 @@ struct Half {
 enum Rest {
     /// The caller, at its next write.
     Caller,
-    /// The stream, with no call from the caller: the message came from a write that
-    /// does not wait.
+    /// The stream, with no call from the caller: no write comes back for the message.
+    /// It came from a write that does not wait, or from a write that never ended.
     Pump,
     /// The stream, which then finishes: the caller finished it.
     Finish,
@@ -381,6 +381,15 @@ impl Half {
         self.left() > 0
     }
 
+    /// Makes the rest of the message in hand the stream's ([`Rest::Pump`]) when it is
+    /// the caller's. A caller calls it on a new write, which shows that the write that
+    /// gave the rest never ended, as a leaked future.
+    fn adopt(&mut self) {
+        if self.rest == Rest::Caller {
+            self.rest = Rest::Pump;
+        }
+    }
+
     /// Ends the stream with `error`, which each later write and finish gives. The
     /// parts list gives back its capacity, which no later message can use.
     fn close(&mut self, error: Error) {
@@ -523,8 +532,9 @@ impl Source {
 }
 
 /// The longest chunk that noq-proto copies into its own buffer: `MAX_COMBINE` of its
-/// `send_buffer` in 1.3.0. It keeps a longer chunk until the ACK.
-const COPIED_MAX: usize = 1452;
+/// `send_buffer` in 1.3.0. It keeps a longer chunk until the peer acknowledges it and
+/// each byte before it on its stream, or the stream resets.
+pub(crate) const COPIED_MAX: usize = 1452;
 
 /// The parts of a message that the stream has not taken all of, the first one cut at
 /// the first byte not taken. The list keeps its capacity.
@@ -1169,25 +1179,19 @@ impl Sending {
         pushed
     }
 
-    /// Writes the rest of the message that the half of stream `id` holds to `inner`.
-    /// Gives the half once it holds no message, and `None` while it holds one.
-    ///
-    /// # Errors
-    ///
-    /// As [`Half::check`].
-    fn resume<'a>(
+    /// Writes the rest of the message that `half` holds to `inner`. `Pending` while it
+    /// holds part of it, and `Ready` else. A half that a reset or a stop ended holds
+    /// none.
+    fn resume(
         &mut self,
         inner: &mut noq_proto::Connection,
-        halves: &'a mut Map<StreamId, Half>,
-        id: StreamId,
-    ) -> Result<Option<&'a mut Half>, Error> {
-        let half = halves.get_mut(&id).expect(HALF);
+        half: &mut Half,
+    ) -> Poll<()> {
         half.notified = false;
-        half.check()?;
-        if half.holds() && self.write(inner, half, None).is_pending() {
-            return Ok(None);
+        if half.holds() {
+            return self.write(inner, half, None);
         }
-        Ok(Some(half))
+        Poll::Ready(())
     }
 
     fn push(
@@ -1553,17 +1557,31 @@ impl Streams {
         parts: &[Part],
         bytes: usize,
     ) -> Result<Poll<()>, Error> {
-        let resumed = self
-            .sending
-            .resume(inner, &mut self.halves, sender.key.id)?;
-        let Some(half) = resumed else {
+        let half = self.halves.get_mut(&sender.key.id).expect(HALF);
+        if message.is_some() {
+            half.adopt();
+        }
+        let resumed = self.sending.resume(inner, half);
+        half.check()?;
+        if resumed.is_pending() {
             return Ok(Poll::Pending);
-        };
+        }
         let Some(message) = message.take() else {
             return Ok(Poll::Ready(()));
         };
         half.load(message, bytes, Rest::Caller);
         Ok(self.sending.write(inner, half, Some(parts)))
+    }
+
+    /// Writes the rest of the message that `sender`'s stream of `inner` holds, for a
+    /// write that the size check refused. When the rest is the caller's, the write
+    /// that gave it never ended, as a leaked future, and the stream adopts the rest
+    /// ([`Rest::Pump`]). A stream that a reset or a stop ended writes nothing.
+    pub(super) fn adopt(&mut self, inner: &mut noq_proto::Connection, sender: &Sender) {
+        let half = self.halves.get_mut(&sender.key.id).expect(HALF);
+        half.adopt();
+        // `pump` writes a rest that waits.
+        let _waits = self.sending.resume(inner, half).is_pending();
     }
 
     /// Writes the rest of the message that `sender`'s stream of `inner` holds, then
@@ -1585,12 +1603,13 @@ impl Streams {
         parts: &[Part],
         bytes: usize,
     ) -> Result<(), Error> {
-        let resumed = self
-            .sending
-            .resume(inner, &mut self.halves, sender.key.id)?;
-        let Some(half) = resumed else {
+        let half = self.halves.get_mut(&sender.key.id).expect(HALF);
+        half.adopt();
+        let resumed = self.sending.resume(inner, half);
+        half.check()?;
+        if resumed.is_pending() {
             return Ok(());
-        };
+        }
         let Sending {
             budget,
             turns,
@@ -1611,10 +1630,10 @@ impl Streams {
     }
 
     /// Gives each stream that got room or the turn [`Event::Writable`] in `events`,
-    /// so that its caller writes the rest. A stream whose message came from a write
-    /// that does not wait, or that the caller finished, writes the rest to `inner`
-    /// itself, and gets the event once noq-proto took it all. A finished stream then
-    /// finishes, with no event.
+    /// so that its caller writes the rest. A stream whose rest no write comes back
+    /// for, or that the caller finished, writes the rest to `inner` itself, and gets
+    /// the event once noq-proto took it all. A finished stream then finishes, with no
+    /// event.
     pub(super) fn pump(
         &mut self,
         inner: &mut noq_proto::Connection,
@@ -1684,16 +1703,20 @@ impl Streams {
         }
     }
 
-    /// Takes the message in hand out of `sender`'s stream of `inner`, and gives back
-    /// its send budget and its turn. When a byte of it went, its header included,
-    /// it also resets the stream with `Code(0)`, and each later write and finish
-    /// gives [`Error::Reset`].
+    /// Takes the message in hand out of `sender`'s stream of `inner` when the caller
+    /// writes its rest, and gives back its send budget and its turn. When a byte of
+    /// it went, its header included, it also resets the stream with `Code(0)`, and
+    /// each later write and finish gives [`Error::Reset`]. Does nothing to a stream
+    /// that holds no such message. Returns whether it took a message.
     pub(super) fn cancel(
         &mut self,
         inner: &mut noq_proto::Connection,
         sender: &Sender,
-    ) {
+    ) -> bool {
         let half = self.halves.get_mut(&sender.key.id).expect(HALF);
+        if half.rest != Rest::Caller || !half.holds() {
+            return false;
+        }
         if half.sent() {
             reset(inner, half.key.id, Code(0));
             half.close(Error::Reset { code: Code(0) });
@@ -1702,6 +1725,7 @@ impl Streams {
             half.started = false;
         }
         self.sending.end(half);
+        true
     }
 
     /// Stops `receiver`'s stream of `inner` with `code`, drops the message in its
@@ -2038,6 +2062,8 @@ mod tests {
     use crate::quic::pair::{self, Pair, Side};
     use crate::testing::{self, Shard};
     use crate::tls;
+
+    mod gap;
 
     /// The link delay each way.
     const DELAY: Duration = Duration::from_millis(10);
@@ -2675,7 +2701,7 @@ mod tests {
                     assert!(matches!(read, Ok(Poll::Pending)), "{read:?}");
                     let len = usize::from(LEN);
                     let held = (Some((usize::from(have), len)), 0);
-                    // Private: the copy outside the pool shows in no public count.
+                    // Private: no public call shows a part of a message.
                     assert_eq!(receiver.reader.held(), held);
                 }
                 assert!(kept.iter().all(Bytes::is_unique));
@@ -2719,7 +2745,8 @@ mod tests {
                 kept.iter().all(Bytes::is_unique),
                 "a chunk of the message keeps a receive buffer alive past the read"
             );
-            // Private: the copy outside the pool shows in no public count.
+            // Private: no public call shows how the reader holds the message that a
+            // `TooLarge` keeps.
             assert_eq!(receiver.reader.held(), (Some((100, 100)), 0));
         });
     }
@@ -2743,7 +2770,7 @@ mod tests {
             for receiver in &mut receivers {
                 let read = pair.server.endpoint.read(now, receiver, |_, _| None);
                 assert!(matches!(read, Ok(Poll::Pending)), "{read:?}");
-                // Private: the copy outside the pool shows in no public count.
+                // Private: no public call shows a message that waits for a block.
                 // tests/memory/held.rs counts the heap that a read frees.
                 assert_eq!(receiver.reader.held(), (Some((1_000, 1_000)), 0));
             }
@@ -3275,7 +3302,7 @@ mod tests {
             // The stream sends the rest only at the caller's next write.
             let held = half(&mut pair.client, &sender);
             assert_eq!((held.unsent.is_empty(), held.body), (true, 100));
-            pair.client.endpoint.cancel(now, &sender);
+            pair.client.endpoint.cancel(|| now, &sender);
             let reset = Error::Reset { code: Code(0) };
             let message = shard.block(b"d");
             let written = pair::write(
@@ -3318,7 +3345,7 @@ mod tests {
             let incoming = accept(&mut pair.server);
             let now = pair.now();
             pair.server.endpoint.stop(now, incoming.receiver, Code(9));
-            pair.client.endpoint.cancel(now, &sender);
+            pair.client.endpoint.cancel(|| now, &sender);
             pair.run(RUN);
             let now = pair.now();
             let message = shard.block(b"d");
@@ -3331,6 +3358,108 @@ mod tests {
             assert_eq!(written, Err(Error::Reset { code: Code(0) }));
             let finished = pair.client.endpoint.finish(now, &mut sender);
             assert_eq!(finished, Err(Error::Reset { code: Code(0) }));
+        });
+    }
+
+    #[test]
+    fn a_cancel_leaves_a_message_of_a_try_write_or_a_finish_whole() {
+        for finished in [false, true] {
+            testing::run(1, move |shard| {
+                let mut pair = narrow(shard);
+                let mut sender = open_sender(&mut pair, Class::Complete);
+                let left = message::prefix(100).len();
+                let mut sent = spend(&mut pair, shard, &mut sender, left).to_vec();
+                let (now, message) = (pair.now(), shard.block(&[0xc; 100]));
+                if finished {
+                    let mut message = Some(message);
+                    let endpoint = &mut pair.client.endpoint;
+                    let written = pair::write(endpoint, now, &sender, &mut message);
+                    assert_eq!(written, Ok(Poll::Pending));
+                    assert_eq!(endpoint.finish(now, &mut sender), Ok(()));
+                } else {
+                    let endpoint = &mut pair.client.endpoint;
+                    let written = pair::try_write(endpoint, now, &sender, message);
+                    assert_eq!(written.map(|left| left.is_none()), Ok(true));
+                }
+                // Only the half shows that the header went: `spend` opened the
+                // stream, and the peer reads only whole messages.
+                assert!(half(&mut pair.client, &sender).sent(), "the header went");
+                pair.client.endpoint.cancel(untimed, &sender);
+                pair.run(RUN);
+                let mut incoming = accept(&mut pair.server);
+                sent.push(100);
+                // The stream stays open: a later message follows the cut one.
+                let mut last = (!finished).then_some(1);
+                let (mut read, mut ended) = (Vec::new(), false);
+                for _ in 0..10 {
+                    let now = pair.now();
+                    let drained = drain(&mut pair.server, now, &mut incoming.receiver);
+                    read.extend(drained.0.iter().map(Vec::len));
+                    ended |= drained.1;
+                    if read.len() == sent.len()
+                        && let Some(len) = last.take()
+                    {
+                        sent.push(len);
+                        let message = &mut Some(shard.block(b"d"));
+                        let endpoint = &mut pair.client.endpoint;
+                        let written = pair::write(endpoint, now, &sender, message);
+                        assert_eq!(written, Ok(Poll::Ready(())));
+                    }
+                    pair.run(RUN);
+                }
+                assert_eq!((read, ended), (sent, finished), "finished {finished}");
+            });
+        }
+    }
+
+    /// The time of a cancel that takes no message.
+    fn untimed() -> Monotonic {
+        panic!("a cancel that takes no message reads the clock")
+    }
+
+    #[test]
+    fn a_cancel_of_a_stream_that_holds_no_message_does_nothing() {
+        testing::run(1, |shard| {
+            let mut pair = narrow(shard);
+            let sender = open_sender(&mut pair, Class::Complete);
+            for message in [b"a", b"b"] {
+                let (now, mut message) = (pair.now(), Some(shard.block(message)));
+                let endpoint = &mut pair.client.endpoint;
+                let written = pair::write(endpoint, now, &sender, &mut message);
+                assert_eq!(written, Ok(Poll::Ready(())));
+                endpoint.cancel(untimed, &sender);
+                pair.run(RUN);
+            }
+            let mut incoming = accept(&mut pair.server);
+            let now = pair.now();
+            let read = drain(&mut pair.server, now, &mut incoming.receiver);
+            assert_eq!(read, (vec![b"a".to_vec(), b"b".to_vec()], false));
+        });
+    }
+
+    #[test]
+    fn a_cancel_that_resets_queues_the_reset_at_once() {
+        testing::run(1, |shard| {
+            let mut pair = narrow(shard);
+            let mut sender = open_sender(&mut pair, Class::Complete);
+            let message = shard.block(&[0xc; 100]);
+            spend(&mut pair, shard, &mut sender, message::prefix(100).len());
+            let now = pair.now();
+            let written = pair::write(
+                &mut pair.client.endpoint,
+                now,
+                &sender,
+                &mut Some(message),
+            );
+            assert_eq!(written, Ok(Poll::Pending));
+            pair.run(RUN);
+            let now = pair.now();
+            let mut buffer = Vec::new();
+            assert!(pair.client.endpoint.transmit(now, &mut buffer).is_none());
+            pair.client.endpoint.cancel(|| now, &sender);
+            let mut buffer = Vec::new();
+            let sent = pair.client.endpoint.transmit(now, &mut buffer).is_some();
+            assert!(sent, "the reset goes at once");
         });
     }
 
@@ -3351,7 +3480,7 @@ mod tests {
             );
             assert_eq!(written, Ok(Poll::Pending));
             assert_eq!(half(&mut pair.client, &second).unsent.start, 1);
-            pair.client.endpoint.cancel(now, &second);
+            pair.client.endpoint.cancel(|| now, &second);
             let id = second.key().id;
             let message = shard.block(b"d");
             let written = pair::write(
@@ -3386,7 +3515,7 @@ mod tests {
             );
             assert_eq!(written, Ok(Poll::Pending));
             assert_eq!(half(&mut pair.client, &sender).unsent.start, 1);
-            pair.client.endpoint.cancel(now, &sender);
+            pair.client.endpoint.cancel(|| now, &sender);
             let finished = pair.client.endpoint.finish(now, &mut sender);
             assert_eq!(finished, Ok(()));
             pair.run(RUN);
@@ -3433,7 +3562,7 @@ mod tests {
                 assert_eq!(written, Ok(Poll::Pending));
             }
             let seen = pair.client.events.len();
-            pair.client.endpoint.cancel(now, &third);
+            pair.client.endpoint.cancel(|| now, &third);
             pair.run(Duration::ZERO);
             let writable = Event::Writable {
                 stream: fourth.key(),
@@ -4029,25 +4158,24 @@ mod tests {
     }
 
     #[test]
-    fn a_reset_sender_gives_back_its_blocks_when_the_peer_acknowledges() {
+    fn a_reset_sender_gives_back_its_blocks_at_once() {
         testing::run(1, |shard| {
             let mut pair = connected(shard);
             // noq-proto copies a write of 1452 bytes or less, and holds a larger one
-            // until the peer acknowledges it. A 2000-byte block takes 2112 bytes of
-            // the budget.
+            // until the peer acknowledges it and each byte before it, or the stream
+            // resets. A 2000-byte block takes 2112 bytes of the budget.
             let config = block::Config::new(3000).expect("the budget fits");
             let memory = Heap::new(config.reservation());
             let pool = Pool::new(config, memory);
             let mut sender = open_sender(&mut pair, Class::Complete);
             let (now, message) = (pair.now(), pool.alloc(2000).expect("room").freeze());
             write(&mut pair.client, now, &mut sender, &[message]);
-            pair.client.endpoint.reset(now, &mut sender, Code(9));
             let exhausted = block::Error::Exhausted {
                 requested: 2000,
                 available: 888,
             };
             assert_eq!(pool.alloc(2000).err(), Some(exhausted));
-            pair.run(RUN);
+            pair.client.endpoint.reset(now, &mut sender, Code(9));
             assert_eq!(pool.alloc(2000).err(), None);
         });
     }
@@ -4603,7 +4731,7 @@ mod tests {
             pair.run(RUN);
             let id = sender.key().id;
             let now = pair.now();
-            pair.client.endpoint.cancel(now, &sender);
+            pair.client.endpoint.cancel(|| now, &sender);
             // The stop goes before the client's reset arrives. The link loses it and
             // the next datagram, so the resent stop comes after the reset's ACK.
             let over = VarInt::from_u64(1 << 32).expect("a varint");
@@ -4915,84 +5043,6 @@ mod tests {
         });
     }
 
-    /// 2000 parts of one byte and one zero each.
-    fn spread() -> Vec<Part> {
-        (0..2000)
-            .map(|at| Part {
-                range: at..at + 1,
-                zeros: 1,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn a_stream_that_the_peer_stopped_keeps_no_parts_list() {
-        testing::run(1, |shard| {
-            let mut pair = connected(shard);
-            let mut sender = open_sender(&mut pair, Class::Complete);
-            let now = pair.now();
-            write(&mut pair.client, now, &mut sender, &[shard.block(b"a")]);
-            let mut bulk = open_sender(&mut pair, Class::CatchUp);
-            fill(&mut pair, shard, &mut bulk);
-            pair.run(RUN);
-            let id = accept(&mut pair.server).receiver.key().id;
-            let now = pair.now();
-            let written = pair.client.endpoint.write(
-                now,
-                &sender,
-                &mut Some(shard.block(&[7; 2000])),
-                &spread(),
-            );
-            assert_eq!(written, Ok(Poll::Pending));
-            let kept = half(&mut pair.client, &sender).parts.parts.capacity();
-            assert_eq!(kept, 2000, "the stream keeps the parts");
-            let stopped = pair.server.connection().recv_stream(id).stop(7u32.into());
-            stopped.expect("stopped");
-            pair.run(RUN);
-            let now = pair.now();
-            let written = pair::write(
-                &mut pair.client.endpoint,
-                now,
-                &sender,
-                &mut Some(shard.block(b"b")),
-            );
-            assert_eq!(written, Err(Error::Stopped { code: Code(7) }));
-            let kept = half(&mut pair.client, &sender).parts.parts.capacity();
-            assert_eq!(kept, 0, "the parts list of the stopped stream");
-        });
-    }
-
-    #[test]
-    fn a_stream_that_a_cancel_reset_keeps_no_parts_list() {
-        testing::run(1, |shard| {
-            let mut pair = narrow(shard);
-            let mut sender = open_sender(&mut pair, Class::Complete);
-            // Runs over 1452 bytes go as slices, so the stream keeps each part left.
-            let runs: Vec<Part> = (0..45)
-                .map(|at| Part {
-                    range: at * 1500..at * 1500 + 1453,
-                    zeros: 0,
-                })
-                .collect();
-            let prefix = message::prefix(45 * 1453).len();
-            spend(&mut pair, shard, &mut sender, prefix + 1);
-            let now = pair.now();
-            let block = shard.block(&vec![7; 45 * 1500]);
-            let written =
-                pair.client
-                    .endpoint
-                    .write(now, &sender, &mut Some(block), &runs);
-            assert_eq!(written, Ok(Poll::Pending));
-            let kept = half(&mut pair.client, &sender).parts.parts.capacity();
-            assert_eq!(kept, 45, "the stream keeps the parts");
-            pair.client.endpoint.cancel(now, &sender);
-            let finished = pair.client.endpoint.finish(now, &mut sender);
-            assert_eq!(finished, Err(Error::Reset { code: Code(0) }));
-            let kept = half(&mut pair.client, &sender).parts.parts.capacity();
-            assert_eq!(kept, 0, "the parts list of the reset stream");
-        });
-    }
-
     #[test]
     fn stopped_by_the_peer_reset_at_once() {
         testing::run(1, |shard| {
@@ -5165,13 +5215,26 @@ mod tests {
         raw(pair.client.connection(), Dir::Uni, bytes, true);
         pair.run(RUN);
         let mut incoming = accept(&mut pair.server);
-        let now = pair.now();
-        let read = next(&mut pair.server, now, &mut incoming.receiver);
-        let broken = Error::Broken {
+        assert_each_read_broken(pair, &mut incoming.receiver, reason);
+    }
+
+    /// Asserts that each read of `receiver` on the server, before and after the
+    /// connection closes, gives the fault of `reason`, and that the reader holds no
+    /// bytes after it.
+    fn assert_each_read_broken(pair: &mut Pair, receiver: &mut Receiver, reason: &str) {
+        let broken = Err(Error::Broken {
             reason: reason.into(),
-        };
-        assert_eq!(read, Err(broken));
+        });
+        for _ in 0..2 {
+            let now = pair.now();
+            assert_eq!(next(&mut pair.server, now, receiver), broken);
+            // Private: only a peer that misframes breaks a stream, and no
+            // `Transport` call can misframe.
+            assert_eq!(receiver.reader.held(), (None, 0));
+        }
         assert_broken(pair, true, reason);
+        let now = pair.now();
+        assert_eq!(next(&mut pair.server, now, receiver), broken);
     }
 
     #[test]
@@ -5193,6 +5256,32 @@ mod tests {
                 misframe(&mut pair, &bytes, "the stream ended inside a message");
             });
         }
+    }
+
+    #[test]
+    fn that_end_inside_a_held_message_break_the_connection() {
+        testing::run(1, |shard| {
+            let mut pair = connected(shard);
+            let connection = pair.client.connection();
+            let id = raw(
+                connection,
+                Dir::Uni,
+                &[byte(Class::Complete), 5, 1, 2],
+                false,
+            );
+            pair.run(RUN);
+            let mut receiver = accept(&mut pair.server).receiver;
+            let now = pair.now();
+            let read = next(&mut pair.server, now, &mut receiver);
+            assert_eq!(read, Ok(Poll::Pending));
+            // Private: no public call shows a part of a message.
+            assert_eq!(receiver.reader.held(), (Some((2, 5)), 0));
+            let mut send = pair.client.connection().send_stream(id);
+            send.finish().expect("finished");
+            pair.run(RUN);
+            let reason = "the stream ended inside a message";
+            assert_each_read_broken(&mut pair, &mut receiver, reason);
+        });
     }
 
     #[test]
@@ -5510,6 +5599,39 @@ mod tests {
                 bytes_max: MESSAGE_MAX,
             };
             assert_eq!(written, Err(large));
+        });
+    }
+
+    #[test]
+    fn a_too_large_write_after_writable_sends_the_held_rest_at_once() {
+        testing::run(1, |shard| {
+            let mut pair = connected(shard);
+            let mut sender = open_sender(&mut pair, Class::Complete);
+            fill(&mut pair, shard, &mut sender);
+            pair.run(RUN);
+            let mut incoming = accept(&mut pair.server);
+            let now = pair.now();
+            let (_, ended) = drain(&mut pair.server, now, &mut incoming.receiver);
+            assert!(!ended);
+            pair.run(RUN);
+            let writable = Event::Writable {
+                stream: sender.key(),
+            };
+            assert!(events(&pair.client).contains(&&writable));
+            let now = pair.now();
+            let mut buffer = Vec::new();
+            assert!(pair.client.endpoint.transmit(now, &mut buffer).is_none());
+            let over = shard.block(&vec![1; MESSAGE_MAX + 1]);
+            let written =
+                pair::write(&mut pair.client.endpoint, now, &sender, &mut Some(over));
+            let large = Error::TooLarge {
+                bytes: MESSAGE_MAX + 1,
+                bytes_max: MESSAGE_MAX,
+            };
+            assert_eq!(written, Err(large));
+            let mut buffer = Vec::new();
+            let sent = pair.client.endpoint.transmit(now, &mut buffer).is_some();
+            assert!(sent, "the rest goes at once");
         });
     }
 
@@ -7434,7 +7556,7 @@ mod tests {
                 assert_eq!(write(&waiting, 1000), Ok(Poll::Pending));
                 assert_eq!(owed(&mut pair), 0);
                 let seen = pair.client.events.len();
-                pair.client.endpoint.cancel(now, &catch_up);
+                pair.client.endpoint.cancel(|| now, &catch_up);
                 pair.run(Duration::ZERO);
                 let writable = Event::Writable {
                     stream: waiting.key(),
@@ -8195,7 +8317,7 @@ mod tests {
                     &mut Some(message),
                 );
                 assert_eq!(written, Ok(Poll::Pending));
-                pair.client.endpoint.cancel(now, &cancelled);
+                pair.client.endpoint.cancel(|| now, &cancelled);
                 for _ in 0..4 {
                     flush(&mut pair, &mut receivers, &mut read, &[&catch_up]);
                 }
