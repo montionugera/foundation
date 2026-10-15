@@ -1,7 +1,9 @@
 //! `stored` and `split`, for the bench targets only. Not a stable surface.
 
+use std::sync::Arc;
+
 use types::channel;
-use types::frame::key_set::KeySet;
+use types::frame::key_set::{Interner, KeySet};
 use types::frame::{Draft, Frame};
 use types::sample::Type;
 use types::time::Stamp;
@@ -22,6 +24,56 @@ pub fn entry(
 /// Calls `stored::read`, and gives each series' channel, type, and bytes.
 pub fn read(body: &[u8]) -> impl Iterator<Item = (channel::Key, Type, &[u8])> {
     stored::read(body).map(|series| (series.channel, series.data_type, series.bytes))
+}
+
+/// The stored entry that a read from disk gives for `frame`, an index frame of `set`.
+///
+/// # Errors
+///
+/// [`block::Error`] when `pool` has no block for the entry.
+pub fn stored(
+    pool: &block::Pool,
+    frame: &Frame,
+    set: &KeySet,
+) -> Result<buffer::Stored, block::Error> {
+    let entry =
+        stored::entry(pool, frame, set, Stamp::from_nanos(7), Stamp::from_nanos(9))?;
+    let body: Vec<u8> = entry
+        .parts
+        .into_iter()
+        .flat_map(|part| part.to_vec())
+        .collect();
+    let mut bytes = pool.alloc(body.len())?;
+    bytes.copy_from_slice(&body);
+    Ok(buffer::Stored {
+        first: entry.first,
+        len: entry.len,
+        stored_at: entry.stored_at,
+        last: entry.last,
+        tag: entry.tag,
+        bytes: bytes.freeze(),
+    })
+}
+
+/// Wraps `stored::Decoder`.
+#[derive(Debug, Default)]
+pub struct Decoder(stored::Decoder);
+
+impl Decoder {
+    /// Calls `stored::Decoder::frame`.
+    ///
+    /// # Errors
+    ///
+    /// [`block::Error`] when `pool` has no block for the frame.
+    pub fn frame(
+        &mut self,
+        pool: &block::Pool,
+        interner: &mut Interner,
+        index: channel::Key,
+        stored: &buffer::Stored,
+    ) -> Result<Option<(Frame, Arc<KeySet>)>, block::Error> {
+        self.0.frame(pool, interner, index, stored)
+    }
 }
 
 /// The buffers of [`split`], which a shard keeps from one write to the next.

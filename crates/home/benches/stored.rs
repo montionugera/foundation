@@ -1,6 +1,7 @@
-//! The time to make the stored entry of an index frame and drop it, and to read each
-//! series of its body, for frames of 16, 1000, and 100,000 series of one sample: each
-//! an `f32`, or a mix of scalars, an array, a matrix, a list, a string, and bytes.
+//! The time to make the stored entry of an index frame and drop it, to read each
+//! series of its body, and to make the frame of a read entry again, for frames of 16,
+//! 1000, and 100,000 series of one sample: each an `f32`, or a mix of scalars, an
+//! array, a matrix, a list, a string, and bytes.
 
 mod common;
 
@@ -10,7 +11,7 @@ use std::sync::Arc;
 use common::MIXED;
 use divan::Bencher;
 use divan::counter::ItemsCount;
-use types::frame::key_set::KeySet;
+use types::frame::key_set::{Interner, KeySet};
 use types::frame::{Draft, Form, Frame, Path};
 use types::sample::{Scalar, Type};
 use types::time::Stamp;
@@ -114,5 +115,31 @@ fn read(bencher: Bencher<'_, '_>, case: &Case) {
             for series in home::bench::read(divan::black_box(&body)) {
                 divan::black_box(series);
             }
+        });
+}
+
+#[divan::bench(args = cases(), sample_count = 1000)]
+fn frame(bencher: Bencher<'_, '_>, case: &Case) {
+    let pool = block::Pool::heap(POOL);
+    let frame = case.frame(&pool);
+    let stored = home::bench::stored(&pool, &frame, &case.set).expect("room");
+    let index = case.set.entries()[case.set.groups()[0]].key;
+    let mut interner = Interner::new();
+    let mut decoder = home::bench::Decoder::default();
+    let (made, _) = decoder
+        .frame(&pool, &mut interner, index, &stored)
+        .expect("room")
+        .expect("a data entry");
+    assert_eq!(
+        made.body()[..],
+        frame.body()[..],
+        "{case}: the body is not the same"
+    );
+    bencher
+        .counter(ItemsCount::new(case.series))
+        .bench_local(|| {
+            let made =
+                decoder.frame(&pool, &mut interner, index, divan::black_box(&stored));
+            drop(divan::black_box(made));
         });
 }
