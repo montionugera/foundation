@@ -236,69 +236,32 @@ impl Node {
     /// If the disk budget holds a ring on each of more than `u32::MAX` cores.
     #[must_use = "a dropped Node leaves its shards running"]
     pub fn start<M: block::Memory + 'static>(config: Config<M>) -> Self {
-        let cores = config.shards.cores().get();
-        if config.name.reserved() {
-            let name = config.name.clone();
-            return Self::failed(Error::Reserved { name }, config);
-        }
-        if config.name.as_str().len() > name::MAX_BYTES {
-            let name = config.name.clone();
-            return Self::failed(Error::Long { name }, config);
-        }
-        if unreachable(config.listen.ip()) {
-            let listen = config.listen;
-            return Self::failed(Error::Listen { listen }, config);
-        }
-        let parts = match parts(config.budget.pool, config.budget.disk, cores) {
-            Ok(parts) => parts,
-            Err(small) => {
-                let count =
-                    u64::try_from(cores).expect("invariant: a core count fits a u64");
-                let min =
-                    types::byte::Size::from_bytes(small.min.saturating_mul(count));
-                let error = Error::Disk {
-                    disk: config.budget.disk,
-                    cores,
-                    min,
-                };
-                return Self::failed(error, config);
-            }
-        };
-        let Ok(count) = u32::try_from(cores) else {
-            panic!("the host has {cores} cores, more than a node numbers");
-        };
-        let parts = parts
-            .into_iter()
-            .map(|(pool, layout)| Ok((block::Config::new(pool)?, layout)))
-            .collect::<Result<Vec<_>, block::Unfit>>();
-        let Ok(parts) = parts else {
-            let pool = config.budget.pool;
-            return Self::failed(Error::Pool { pool, cores }, config);
-        };
-        Self::launch(config, parts.into_iter().zip(0..count))
-    }
-
-    /// A node of `config` that failed with `error` before any shard started.
-    fn failed<M>(error: Error, config: Config<M>) -> Self {
-        let (_, mesh) = clock::Clock::new(config.clock);
-        Self {
-            stop: Stop::default(),
-            shards: Vec::new(),
-            failed: Some(error),
-            queue: task::pair().0,
-            regional: !matches!(config.region, Region::Absent),
-            log: log::dispatch(config.log, config.wall, mesh),
+        let (mesh, time) = clock::Clock::new(config.clock.clone());
+        let regional = !matches!(config.region, Region::Absent);
+        match parts_of(&config) {
+            Ok(parts) => Self::launch(config, parts, (mesh, time), regional),
+            Err(error) => Self {
+                stop: Stop::default(),
+                shards: Vec::new(),
+                failed: Some(error),
+                queue: task::pair().0,
+                regional,
+                log: log::dispatch(config.log, config.wall, time),
+            },
         }
     }
 
-    /// Starts the shards of `config`, each with its part and its number in `parts`.
+    /// Starts the shards of `config`, each with its part in `parts`,
+    /// with the mesh clock and its reader in `clock`.
     #[expect(
         clippy::too_many_lines,
         reason = "the start of each shard, whose parts each come from the one before"
     )]
     fn launch<M: block::Memory + 'static>(
         config: Config<M>,
-        parts: impl Iterator<Item = ((block::Config, buffer::Layout), u32)>,
+        parts: Vec<(block::Config, buffer::Layout)>,
+        (mesh, clock): (clock::Clock, clock::Reader),
+        regional: bool,
     ) -> Self {
         let bind = Bind::new(&config);
         let Config {
@@ -315,7 +278,6 @@ impl Node {
         let cores = shards.cores().get();
         let handoff::Chain { first, last, links } = handoff::chain(cores);
         let (queue, inbox) = task::pair();
-        let (mesh, clock) = clock::Clock::new(monotonic.clone());
         let log = log::dispatch(log, wall.clone(), clock.clone());
         let shards = shards.logged(log.clone());
         let serve = Serve {
@@ -327,11 +289,11 @@ impl Node {
             name: config.name.clone(),
             shards: cores,
         };
-        let roles = Role::all(mesh, wall, first, bind, serve, config.name, cores);
+        let roles = Role::all(mesh, wall, first, bind, serve, cores);
         let mut started = Vec::new();
         let mut error = None;
-        for (core, ((((config, layout), number), role), (take, give))) in
-            parts.zip(roles).zip(links).enumerate()
+        for (core, (((config, layout), role), (take, give))) in
+            parts.into_iter().zip(roles).zip(links).enumerate()
         {
             let pool = match memory(config.reservation()) {
                 Ok(m) => block::Pool::new(config, m),
@@ -348,7 +310,7 @@ impl Node {
             let guard = stop.guard();
             let failed = Arc::new(OnceLock::new());
             let open = Open {
-                shard: number,
+                shard: u32::try_from(core).expect("invariant: `parts_of` checked it"),
                 take,
                 give,
                 monotonic: monotonic.clone(),
@@ -374,7 +336,7 @@ impl Node {
             shards: started,
             failed: error,
             queue,
-            regional: !matches!(config.region, Region::Absent),
+            regional,
             log,
         }
     }
@@ -587,8 +549,6 @@ struct Open {
 /// node's tasks.
 struct First {
     mesh: clock::Clock,
-    /// The node's name, which the claim keeps in the data directory.
-    name: types::name::Name,
     wall: env::wall::Wall,
     give: Give<Interner>,
     bind: Bind,
@@ -615,14 +575,12 @@ impl Role {
         give: Give<Interner>,
         bind: Bind,
         serve: Serve,
-        name: types::name::Name,
         cores: usize,
     ) -> impl Iterator<Item = Self> {
         let (ends, closed): (Vec<_>, Vec<_>) =
             (1..cores).map(|_| handoff::pair()).unzip();
         let first = First {
             mesh,
-            name,
             wall,
             give,
             bind,
@@ -637,6 +595,53 @@ impl Role {
 fn unreachable(ip: IpAddr) -> bool {
     let ip = ip.to_canonical();
     ip.is_multicast() || ip == Ipv4Addr::BROADCAST
+}
+
+/// The part and the layout of each shard of `config`, in order of core, else the
+/// error that stops the node before any shard starts.
+///
+/// # Panics
+///
+/// If the disk budget holds a ring on each of more than `u32::MAX` cores.
+fn parts_of<M>(
+    config: &Config<M>,
+) -> Result<Vec<(block::Config, buffer::Layout)>, Error> {
+    let cores = config.shards.cores().get();
+    if config.name.reserved() {
+        let name = config.name.clone();
+        return Err(Error::Reserved { name });
+    }
+    if config.name.as_str().len() > name::MAX_BYTES {
+        let name = config.name.clone();
+        return Err(Error::Long { name });
+    }
+    if unreachable(config.listen.ip()) {
+        let listen = config.listen;
+        return Err(Error::Listen { listen });
+    }
+    let parts =
+        parts(config.budget.pool, config.budget.disk, cores).map_err(|small| {
+            let count =
+                u64::try_from(cores).expect("invariant: a core count fits a u64");
+            Error::Disk {
+                disk: config.budget.disk,
+                cores,
+                min: types::byte::Size::from_bytes(small.min.saturating_mul(count)),
+            }
+        })?;
+    assert!(
+        u32::try_from(cores).is_ok(),
+        "the host has {cores} cores, more than a node numbers"
+    );
+    let parts = parts
+        .into_iter()
+        .map(|(pool, layout)| Ok((block::Config::new(pool)?, layout)))
+        .collect::<Result<Vec<_>, block::Unfit>>();
+    let Ok(parts) = parts else {
+        let pool = config.budget.pool;
+        return Err(Error::Pool { pool, cores });
+    };
+    Ok(parts)
 }
 
 /// The part of `budget` of each shard, and the layout of its ring from its part of
@@ -678,7 +683,6 @@ impl Open {
             Role::First(first) => {
                 let First {
                     mesh,
-                    name,
                     wall,
                     give,
                     bind,
@@ -686,8 +690,8 @@ impl Open {
                     closed,
                 } = *first;
                 tasks.spawn(async { mesh.run(wall).await });
-                let cores = closed.len() + 1;
-                let claimed = self.claim(&files, cores, &name, bind, give).await;
+                let (cores, name) = (serve.shards, &serve.name);
+                let claimed = self.claim(&files, cores, name, bind, give).await;
                 let Some((lock, endpoint)) = claimed else {
                     return;
                 };
