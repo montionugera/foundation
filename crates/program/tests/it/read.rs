@@ -437,7 +437,7 @@ fn gives_each_series_at_the_entry_of_its_place() {
 #[test]
 fn gives_a_frame_whose_draft_waited_at_a_call_that_dropped() {
     const LEN: usize = 40_000;
-    let body: Vec<u8> = (0..LEN).map(|n| (n % 251) as u8).collect();
+    let body: Vec<u8> = (0..=250).cycle().take(LEN).collect();
     let sent = body.clone();
     raw(
         418,
