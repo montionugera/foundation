@@ -1232,12 +1232,12 @@ fn closes_the_session_at_the_end_of_each_run() {
 #[test]
 fn closes_the_session_at_each_end_with_an_error() {
     let outcome = run(Setup::three(), |scene| async move {
-        scene.variables.change(Quality(0x8000_0000));
+        scene.variables.refuse_reads_past(2);
         scene.supervise(ms(30_050)).await
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
-    let bad = "the node `ns=3;s=SpikeData` of the channel `plant.a` gives Bad";
-    assert_eq!(errors(&outcome.statuses), [(DEVICE, bad.to_owned())]);
+    let failed = "the read failed with BadTooManyOperations";
+    assert_eq!(errors(&outcome.statuses), [(DEVICE, failed.to_owned())]);
     assert_eq!(last(&outcome.statuses, RESTARTS), 5);
 }
 

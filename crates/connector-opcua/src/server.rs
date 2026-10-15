@@ -228,6 +228,14 @@ impl Server {
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
     }
 
+    /// Refuses each Read of more than `most` nodes, 0 for none, with
+    /// `BadTooManyOperations`. It adds no variable `ns=0;i=11705`, so a client does
+    /// not know the limit.
+    pub(crate) fn refuse_reads_past(&self, most: u32) {
+        // SAFETY: the server lives.
+        unsafe { ffi::test::shim_server_reads(self.raw(), most) };
+    }
+
     /// Sets the limits of each later channel of the server.
     #[cfg(test)]
     pub(crate) fn set_limits(&self, limits: Limits) {
@@ -249,8 +257,7 @@ impl Server {
     ///
     /// On a second call, as open62541 refuses the second add of the variable.
     pub(crate) fn set_per_read(&self, most: u32) {
-        // SAFETY: the server lives.
-        unsafe { ffi::test::shim_server_reads(self.raw(), most) };
+        self.refuse_reads_past(most);
         let node = Node {
             namespace: 0,
             key: Key::Number(ffi::MAX_NODES_PER_READ),

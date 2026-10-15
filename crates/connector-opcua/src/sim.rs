@@ -31,6 +31,9 @@ struct State {
     variables: Vec<Variable>,
     /// The status of each later read.
     quality: Quality,
+    /// The most nodes of a Read that a server answers, set before it starts.
+    #[cfg(test)]
+    most: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -88,6 +91,8 @@ impl Variables {
         Self(Arc::new(Mutex::new(State {
             variables,
             quality: Quality::GOOD,
+            #[cfg(test)]
+            most: None,
         })))
     }
 
@@ -138,6 +143,13 @@ impl Variables {
     #[cfg(test)]
     pub(crate) fn fix(&self, text: &str, fixed: Fixed) {
         self.variable(text, |variable| variable.fixed = Some(fixed));
+    }
+
+    /// Makes a server refuse each Read of more than `most` nodes, and not tell the
+    /// client the limit.
+    #[cfg(test)]
+    pub(crate) fn refuse_reads_past(&self, most: u32) {
+        self.state().most = Some(most);
     }
 
     /// Calls `change` on the variable of `text`.
@@ -230,7 +242,13 @@ pub async fn serve(
     let fixed: Vec<Option<Fixed>> = (variables.state().variables.iter())
         .map(|variable| variable.fixed)
         .collect();
+    #[cfg(test)]
+    let most = variables.state().most;
     let add = |server: &mut Server| {
+        #[cfg(test)]
+        if let Some(most) = most {
+            server.refuse_reads_past(most);
+        }
         let top = nodes.iter().map(|node| node.namespace).max().unwrap_or(0);
         for namespace in 2..=top {
             let uri = CString::new(format!("urn:foundation:sim:{namespace}"))
