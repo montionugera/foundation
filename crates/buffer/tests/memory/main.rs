@@ -47,7 +47,28 @@ fn first_shrink() -> u32 {
     for _ in 0..300 {
         logs.trim(1, 16);
     }
-    let mut commit = 300;
+    shrink(&mut logs, 300)
+}
+
+/// As [`first_shrink`], then a read holds the next 16 records, and then none. Gives
+/// the number of the commit whose trim next gives back bytes. The lap that the first
+/// shrink starts ends with no shrink, and the lap after it shrinks. So it fails when
+/// the first shrink starts its lap at the tail of the hide, not at the trim.
+fn next_shrink() -> u32 {
+    let mut logs = buffer::bench::Logs::new(1);
+    for _ in 0..300 {
+        logs.trim(1, 16);
+    }
+    let commit = shrink(&mut logs, 300);
+    for held in 1..=16 {
+        logs.trim(1, held);
+    }
+    shrink(&mut logs, commit + 16)
+}
+
+/// Commits with no record held, from the one after `commit`. Gives the number of the
+/// first whose trim gives back bytes.
+fn shrink(logs: &mut buffer::bench::Logs, mut commit: u32) -> u32 {
     loop {
         let before = ALLOCATOR.held();
         logs.trim(1, 0);
@@ -152,6 +173,11 @@ fn main() {
         first_shrink(),
         769,
         "the lap that starts at 512 ends at 768"
+    );
+    assert_eq!(
+        next_shrink(),
+        1281,
+        "the lap that starts at 768 ends at 1024, and the next at 1280"
     );
     let shrunk = |paths: isize| -> isize { -paths * (32 - 4) * RUN.cast_signed() };
     assert_eq!(

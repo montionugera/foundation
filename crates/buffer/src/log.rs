@@ -2616,7 +2616,11 @@ mod tests {
         assert!(laps.due.is_empty());
     }
 
-    /// A trim in the wait meets 8 runs, so the end needs no shrink.
+    /// A trim in the wait meets 8 runs, so the end needs no shrink. Only this test,
+    /// through `Laps::due`, kills a drain that takes a shrink for a path that needs
+    /// none: a caller sees it only when a path in the queue meets 4 times more runs
+    /// than at its lap end before its turn comes, which no harness through
+    /// `bench::Logs` makes.
     #[test]
     fn a_lap_that_waits_and_needs_no_shrink_at_its_close_ends_with_none_left() {
         let (mut laps, mut budget) = (Laps::new(), budget(0));
@@ -2640,6 +2644,10 @@ mod tests {
         assert_eq!((room_of(&log), budget.used), ((6, 3), 1));
     }
 
+    /// Only this test, through `Laps::due`, kills a lap end that goes ahead of a path
+    /// that waits: a caller sees the order of the queue only when a lap end comes while
+    /// paths wait from an earlier `hide`, which needs paths whose laps start in other
+    /// hides, and each path of `bench::Logs` starts its laps in the same one.
     #[test]
     fn a_lap_end_that_needs_a_shrink_waits_behind_a_path_that_waits() {
         let (mut laps, mut budget) = (Laps::new(), budget(1));
@@ -2671,8 +2679,8 @@ mod tests {
     /// trims to its own record, and the lap that holds 2 runs needs a shrink of each
     /// path at the trim of record 12. That `hide`, and each `hide` after it, trims
     /// 100,000 runs, so it shrinks 256 + 25,000 paths, first in, first out, until
-    /// each has room for 4. A path that waits starts its next lap at the tail of the
-    /// `hide` that ends its wait.
+    /// each has room for 4. A path that shrinks at its trim starts its next lap there,
+    /// and one that waits at the tail of the `hide` that ends its wait.
     #[test]
     fn a_hide_shrinks_256_paths_and_one_for_each_four_trims_and_the_rest_wait_in_turn()
     {
@@ -2720,10 +2728,8 @@ mod tests {
         assert_eq!(shrunk, expected);
         assert!(logs.laps.due.is_empty());
         assert!(logs.paths.iter().all(|log| log.runs.capacity() == 4));
-        assert_eq!(
-            (logs.paths[0].lap, logs.paths[budget].lap),
-            (4096 * 16, 4096 * 14)
-        );
+        let laps = [0, budget - 1, budget].map(|at| logs.paths[at].lap);
+        assert_eq!(laps, [4096 * 16, 4096 * 16, 4096 * 14]);
     }
 
     /// 4096 paths each hold a run in records 1 to 9, and a carry record takes the
