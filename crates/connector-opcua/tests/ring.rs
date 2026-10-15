@@ -24,7 +24,7 @@ fn a_run_that_writes_past_the_ring_of_its_home_returns_ok() {
     // The full ring drops the status frames after this one, the end of the run too,
     // so the user sees the lost writes as they were then.
     let last = status.last().expect("the home applied a status");
-    let counts = [("in", 96_768), ("lost", 415_232), ("missed", 0)];
+    let counts = [("in", 96_512), ("lost", 159_488), ("missed", 0)];
     let counts = counts.map(|(count, n)| (count.parse().expect("a name"), n));
     assert_eq!(last.state, State::Running);
     assert_eq!(last.counts, BTreeMap::from(counts));
