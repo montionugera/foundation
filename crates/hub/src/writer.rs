@@ -176,6 +176,7 @@ impl Writer {
         if channels.is_empty() {
             return Err(Error::Empty);
         }
+        state.borrow_mut().catch_up();
         let indexes = |groups: &[Indexed]| -> Vec<channel::Key> {
             groups.iter().map(|&(index, _)| index).collect()
         };
@@ -188,7 +189,7 @@ impl Writer {
             let (_, groups) = resolve(&state.borrow(), &channels)?;
             let checked = indexes(&groups);
             let homed = crate::homes(state, &checked).await;
-            // A call of `set_definitions` while the open waits can change a channel,
+            // A change of the definitions while the open waits can change a channel,
             // and then the home of an index it left does not matter.
             let (keys, again) = resolve(&state.borrow(), &channels)?;
             if indexes(&again) == checked {
@@ -249,13 +250,14 @@ impl Writer {
     /// after the one before it
     /// ([`order::Error::Backwards`](crate::home::order::Error::Backwards)).
     #[must_use]
-    #[expect(
-        clippy::missing_panics_doc,
-        reason = "a writer opens only after mesh time, which stays"
-    )]
     pub fn now(&self) -> Stamp {
-        let now = self.state.borrow().home.now();
-        now.expect("invariant: mesh time stays once known")
+        now(&self.state)
+    }
+
+    /// The mesh time of the writer's hub, as [`Writer::now`] gives it.
+    #[must_use]
+    pub fn time(&self) -> Time {
+        Time(Rc::clone(&self.state))
     }
 
     /// A frame of the writer's key set to fill, from the shard's pool, as
@@ -316,4 +318,22 @@ impl Drop for Writer {
     fn drop(&mut self) {
         self.state.borrow_mut().close_writer(self.key);
     }
+}
+
+/// Mesh time of the hub of a writer, which a caller can keep apart from the writer.
+/// It reads what [`Writer::now`] reads, also after the writer drops.
+#[derive(Clone, Debug)]
+pub struct Time(Rc<RefCell<State>>);
+
+impl Time {
+    /// As [`Writer::now`].
+    #[must_use]
+    pub fn now(&self) -> Stamp {
+        now(&self.0)
+    }
+}
+
+fn now(state: &RefCell<State>) -> Stamp {
+    let now = state.borrow().home.now();
+    now.expect("invariant: mesh time stays once known")
 }

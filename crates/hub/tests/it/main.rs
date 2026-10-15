@@ -116,7 +116,8 @@ struct Test {
 
 impl Test {
     /// A hub on a new ring of `node` with `layout`, a pool of `pool` bytes, and
-    /// `region`, whose mesh clock does not run yet.
+    /// `region`, whose mesh clock does not run yet. The founding of `region` must hold
+    /// [`channels`].
     async fn new(
         node: sim::node::Node,
         tasks: Tasks,
@@ -169,7 +170,9 @@ impl Test {
                 transport: Rc::clone(&region.transport),
             }),
         });
-        hub.set_definitions(&channels());
+        if region.is_none() {
+            hub.set_definitions(&channels());
+        }
         Self {
             clock: node.clock(),
             node,
@@ -233,8 +236,8 @@ impl Test {
     }
 
     /// Sets [`CHANNELS`] and `more`, each `(key, name, data type, index)`, as the
-    /// definitions.
-    fn define<'a>(
+    /// definitions: in a spec that the mesh puts in use, with a region.
+    async fn define<'a>(
         &self,
         more: impl IntoIterator<Item = (u128, &'a str, DataType, u128)>,
     ) {
@@ -242,7 +245,10 @@ impl Test {
         channels.extend(more.into_iter().map(|(key, channel, data_type, index)| {
             (name(channel), definition(key, data_type, index))
         }));
-        self.hub.set_definitions(&channels);
+        match self.region {
+            Some(_) => self.set_spec(channels).await,
+            None => self.hub.set_definitions(&channels),
+        }
     }
 
     async fn reader(&self, channels: &[&str], mode: Mode) -> reader::Reader {
@@ -493,6 +499,12 @@ fn keys(received: &Received<'_>) -> Vec<u128> {
     present.map(channel::Key::as_u128).collect()
 }
 
+/// The name of each channel of the view of `received`, in entry order.
+fn names<'a>(received: &Received<'a>) -> Vec<&'a str> {
+    let view = received.view();
+    view.iter().map(|(entry, _)| received.name(entry)).collect()
+}
+
 /// Writes frame `n` of a run from `now`: 1000 samples per series, with values that
 /// do not compress.
 fn write_wide(writer: &mut Writer, now: i64, n: i64) {
@@ -678,6 +690,96 @@ fn gives_a_reader_each_channel_that_its_selector_matches() {
 }
 
 #[test]
+fn gives_the_name_of_each_channel_of_the_view_with_the_index() {
+    run(43, |test| async move {
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value", "value-c"]).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (2, &[7]), (5, &[9])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(names(&received), ["time", "value"]);
+    });
+}
+
+#[test]
+#[should_panic(expected = "the entry 2 is not a channel of the reader")]
+fn panics_on_the_name_of_an_entry_outside_the_view() {
+    run(44, |test| async move {
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value", "value-c"]).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (2, &[7]), (5, &[9])]);
+        let received = reader.next().await.expect("a frame");
+        let _name = received.name(entry(received.set(), 5));
+    });
+}
+
+#[test]
+#[should_panic(expected = "the entry 3 is not a channel of the reader")]
+fn panics_on_the_name_of_an_entry_past_the_set() {
+    run(47, |test| async move {
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value", "value-c"]).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (2, &[7]), (5, &[9])]);
+        let received = reader.next().await.expect("a frame");
+        let _name = received.name(received.set().entries().len());
+    });
+}
+
+#[test]
+#[should_panic(expected = "the entry 1 is not a channel of the reader")]
+fn panics_on_the_name_of_an_entry_whose_place_a_key_set_before_held() {
+    run(48, |test| async move {
+        let mut reader = test.reader(&["value-c"], Mode::Complete).await;
+        let mut first = test.writer("a", &["value", "value-c"]).await;
+        let now = test.now();
+        write_series(&mut first, &[(1, &[now]), (2, &[7]), (5, &[9])]);
+        drop(first);
+        let received = reader.next().await.expect("a frame");
+        let held = entry(received.set(), 5);
+        assert_eq!(names(&received), ["time", "value-c"]);
+        let mut second = test.writer("b", &["value"]).await;
+        write_series(&mut second, &[(1, &[now + 1]), (2, &[7])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(names(&received), ["time"]);
+        let _name = received.name(held);
+    });
+}
+
+#[test]
+fn gives_a_named_reader_the_name_of_each_channel_with_the_index() {
+    run(45, |test| async move {
+        let config = reader::Config {
+            name: Some(name("named")),
+            ..unnamed(&["value"], Mode::Complete)
+        };
+        let mut reader = test.hub.reader(config).await.expect("opens");
+        let mut writer = test.writer("a", &["value", "value-c"]).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (2, &[7]), (5, &[9])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(names(&received), ["time", "value"]);
+    });
+}
+
+#[test]
+fn gives_a_channel_defined_again_at_a_new_key_its_name_at_the_new_open() {
+    run(46, |test| async move {
+        let mut changed = channels();
+        changed.insert(name("value"), definition(9, DataType::Sample(I64), 1));
+        test.hub.set_definitions(&changed);
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value"]).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (9, &[7])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(keys(&received), [1, 9]);
+        assert_eq!(names(&received), ["time", "value"]);
+    });
+}
+
+#[test]
 fn leaves_a_channel_that_an_exclusion_matches_out_of_the_view() {
     run(42, |test| async move {
         let select = ["**", "!time-b", "!value-b", "!value-c"];
@@ -733,6 +835,23 @@ fn opens_a_writer_once_the_node_has_mesh_time_and_a_reader_before() {
         assert_eq!(write(&mut writer, &[now.nanos()], &[1]), [applied(0)]);
         let received = reader.next().await.expect("a frame");
         assert_eq!(samples(&received, 2), [1]);
+    });
+}
+
+#[test]
+fn the_time_of_a_writer_reads_mesh_time_also_after_the_writer_drops() {
+    run(5, |test| async move {
+        let writer = test.writer("a", &["value"]).await;
+        let time = writer.time();
+        test.clock.sleep(Span::SECOND).await;
+        let last = writer.now();
+        assert_eq!(time.now(), last);
+        assert_eq!(last.nanos(), test.now());
+        drop(writer);
+        test.clock.sleep(Span::SECOND).await;
+        let after = time.clone().now();
+        assert!(after >= last, "{after} is before {last}");
+        assert_eq!(after.nanos(), test.now());
     });
 }
 
@@ -793,31 +912,60 @@ fn written_after_cut<F>(
 where
     F: Future<Output = ()> + 'static,
 {
+    let (mut sim, node) = create_sim(seed);
+    cut_after(&mut sim, &node, Span::from_nanos(2_000_000_000), before);
+    written_on(&mut sim, &node, subject)
+}
+
+/// A simulation with one node.
+fn create_sim(seed: u64) -> (sim::Sim, sim::node::Node) {
     let mut sim = sim::Sim::new(sim::Config {
         seed,
         ..sim::Config::default()
     });
     let node = sim.node(sim::node::Config::default());
-    let start = |node, tasks| async move {
-        let layout = buffer::Layout::new(AREA, BODY_MAX).expect("a ring");
-        let mut test = Test::new(node, tasks, layout, POOL, None).await;
-        test.sync().await;
-        test
-    };
+    (sim, node)
+}
+
+/// A test on a hub of `node`, once the node has mesh time.
+async fn started(node: sim::node::Node, tasks: Tasks) -> Test {
+    let layout = buffer::Layout::new(AREA, BODY_MAX).expect("a ring");
+    let mut test = Test::new(node, tasks, layout, POOL, None).await;
+    test.sync().await;
+    test
+}
+
+/// Runs `before` on a hub of `node` for `span`, then cuts the power. `before` must not
+/// end, so that its sessions stay open until the cut.
+fn cut_after<F>(
+    sim: &mut sim::Sim,
+    node: &sim::node::Node,
+    span: Span,
+    before: impl FnOnce(Test) -> F + Send + 'static,
+) where
+    F: Future<Output = ()> + 'static,
+{
     let config = env::shards::Config {
         name: "shard-0".into(),
         core: None,
     };
     let started = node.shards().start(config, {
         let node = node.clone();
-        move |tasks| async move { before(start(node, tasks).await).await }
+        move |tasks| async move { before(started(node, tasks).await).await }
     });
     let _shard = started.expect("the shard starts");
-    sim.run_for(Span::from_nanos(2_000_000_000))
-        .expect("the run goes on");
-    sim.crash(&node, sim::Crash::Power);
-    sim.run_on(&node, move |node, tasks| async move {
-        let test = start(node, tasks).await;
+    sim.run_for(span).expect("the run goes on");
+    sim.crash(node, sim::Crash::Power);
+}
+
+/// The outcome of a write of `subject` on `value` in a new run of `node`.
+fn written_on(
+    sim: &mut sim::Sim,
+    node: &sim::node::Node,
+    subject: &'static str,
+) -> Vec<Outcome> {
+    sim.run_on(node, move |node, tasks| async move {
+        let test = started(node, tasks).await;
         let mut writer = test.writer(subject, &["value"]).await;
         write(&mut writer, &[test.now()], &[2])
     })
@@ -911,6 +1059,37 @@ fn records_the_handoff_at_the_end_of_a_lease_that_the_end_of_a_lease_starts() {
             "subject-c",
         );
         assert_eq!(after, [applied(0)], "seed {seed}");
+    }
+}
+
+/// A restored holder with no writer on its index loses control at the end of its
+/// grace, which only the wake at the carry of the reader's open lets the gate task
+/// see.
+#[test]
+fn records_the_drop_of_a_restored_holder_with_a_reader_and_no_writer() {
+    for seed in 0..32 {
+        let (mut sim, node) = create_sim(seed);
+        cut_after(
+            &mut sim,
+            &node,
+            Span::from_nanos(2_000_000_000),
+            |test| async move {
+                let mut a = test.writer("subject-a", &["value"]).await;
+                assert_eq!(write(&mut a, &[test.now()], &[1]), [applied(0)]);
+                std::future::pending::<()>().await;
+            },
+        );
+        // Past the grace of 10 s from the open.
+        let span = Span::from_nanos(12_000_000_000);
+        cut_after(&mut sim, &node, span, |test| async move {
+            let _reader = test.reader(&["value"], Mode::Complete).await;
+            std::future::pending::<()>().await;
+        });
+        assert_eq!(
+            written_on(&mut sim, &node, "subject-b"),
+            [applied(1)],
+            "seed {seed}"
+        );
     }
 }
 
@@ -1076,6 +1255,24 @@ fn wakes_a_complete_reader_for_a_commit_before_the_first_poll_of_the_task() {
     });
 }
 
+/// A carry can make the home's deadline earlier only when it is new, so only the first
+/// open of a reader on an index polls the gate task.
+#[test]
+fn polls_the_gate_task_at_a_reader_open_only_when_its_index_is_new() {
+    run(23, |test| async move {
+        test.clock.sleep(SETTLE).await;
+        let before = test.pause.polls.get();
+        let first = test.reader(&["value"], Mode::Latest).await;
+        test.clock.sleep(SETTLE).await;
+        let new = test.pause.polls.get() - before;
+        let second = test.reader(&["value"], Mode::Latest).await;
+        test.clock.sleep(SETTLE).await;
+        let carried = test.pause.polls.get() - before - new;
+        assert_eq!((new, carried), (1, 0));
+        drop((first, second));
+    });
+}
+
 /// Writes that append nothing do not wake the commit task, as no commit follows them.
 #[test]
 fn does_not_wake_the_commit_task_for_writes_with_no_samples() {
@@ -1142,8 +1339,10 @@ fn drops_the_commit_it_waits_for_with_the_hub() {
             ended,
             mut commit,
             hub,
+            pause,
             ..
         } = test;
+        pause.pause();
         drop((hub, reader, writer));
         assert_eq!((&mut commit).await, Ok(()));
         let open = || async {
@@ -1158,6 +1357,7 @@ fn drops_the_commit_it_waits_for_with_the_hub() {
         assert_eq!(open().await, Err(busy), "seed {seed}");
         drop(commit);
         assert_eq!(open().await, Ok(()), "seed {seed}");
+        pause.resume();
         clock.sleep(Span::from_nanos(1)).await;
         assert_eq!(ended.get(), 2, "the commit and gate tasks ended");
         first
@@ -1389,7 +1589,8 @@ fn releases_the_lent_frame_of_a_latest_reader_at_the_next_call() {
 #[test]
 fn writes_and_reads_a_channel_of_a_variable_type() {
     run(19, |test| async move {
-        test.define([(6, "text", DataType::Sample(Type::String), 1)]);
+        test.define([(6, "text", DataType::Sample(Type::String), 1)])
+            .await;
         let mut reader = test.reader(&["text"], Mode::Complete).await;
         let mut writer = test.writer("a", &["text"]).await;
         let now = test.now();
@@ -1425,7 +1626,8 @@ fn writes_and_reads_a_channel_of_a_variable_type() {
 #[test]
 fn refuses_a_string_sample_that_is_not_utf8() {
     run(19, |test| async move {
-        test.define([(6, "text", DataType::Sample(Type::String), 1)]);
+        test.define([(6, "text", DataType::Sample(Type::String), 1)])
+            .await;
         let mut writer = test.writer("a", &["text"]).await;
         let now = test.now();
         let set = Arc::clone(writer.set());
@@ -1612,7 +1814,8 @@ fn gives_a_writer_the_sample_type_of_each_data_channel() {
         test.define([
             (6, "text", DataType::Sample(Type::String), 1),
             (7, "quality", DataType::Quality, 1),
-        ]);
+        ])
+        .await;
         let writer = test.writer("a", &["text", "quality"]).await;
         let entries: Vec<_> = writer
             .set()
@@ -1865,6 +2068,62 @@ fn ends_a_complete_reader_after_its_waiting_frames_when_it_misses_a_frame() {
         assert!(20 < taken && taken < 200, "{taken}");
         first
     });
+}
+
+/// A reader that sleeps while a writer writes one frame each second gets the frames
+/// before its miss, then `Behind`: frames of 128 samples pass the window before they
+/// fill the ring, and frames of 1 sample fill the ring first, so the reader gets each
+/// frame that the hub applied.
+#[test]
+fn ends_a_complete_reader_that_sleeps_past_its_window_or_its_ring_as_behind() {
+    for samples in [128, 1] {
+        run(21, move |test| async move {
+            let mut reader = test.reader(&["value"], Mode::Complete).await;
+            let mut writer = test.writer("a", &["value"]).await;
+            let mut outcomes = Vec::new();
+            for _ in 0..1_100 {
+                let stamps: Vec<_> = (test.now()..).take(samples).collect();
+                outcomes.extend(write(&mut writer, &stamps, &scrambled(&stamps)));
+                test.clock.sleep(Span::SECOND).await;
+            }
+            let applied = outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, Outcome::Applied { .. }))
+                .count();
+            let (mut taken, mut spent) = (0, 0);
+            let ended = loop {
+                match within(&test.clock, Span::SECOND, reader.next()).await {
+                    Some(Ok(received)) => {
+                        taken += 1;
+                        spent += charge(&received.view());
+                    }
+                    Some(Err(ended)) => break ended,
+                    None => panic!(
+                        "{samples} samples a frame: no end after {taken} frames of \
+                         {spent} bytes, of {applied} applied"
+                    ),
+                }
+            };
+            assert_behind(&ended);
+            assert!(taken < 1_100, "{taken} frames");
+            // The ring fills before the window, so each applied frame comes first.
+            if samples == 1 {
+                assert_eq!(taken, applied);
+            }
+        });
+    }
+}
+
+/// What `future` gives within `span` of `clock`, or `None`.
+async fn within<F: Future>(clock: &Clock, span: Span, future: F) -> Option<F::Output> {
+    let (mut future, mut sleep) = (pin!(future), pin!(clock.sleep(span)));
+    std::future::poll_fn(|cx| {
+        if let Poll::Ready(output) = future.as_mut().poll(cx) {
+            return Poll::Ready(Some(output));
+        }
+        sleep.as_mut().poll(cx).map(|()| None)
+    })
+    .await
 }
 
 #[test]

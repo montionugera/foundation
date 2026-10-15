@@ -138,6 +138,20 @@
   the group; `env::files::Files::within`, because `env` then gives two ways to scope
   the files of a crate, beside `buffer::Config::dir`. A change that wants it later
   moves `buffer` and `mesh` together.
+  Amended (2026-10-10, #2064): the mesh spawns each task through one
+  `env::tasks::Group` made from its `Tasks`, and `Mesh::ended` returns the
+  `env::tasks::Ended` that `Group::ended` gives. `mesh::Ended` leaves the exports of
+  `mesh`. The contract above holds. Decided by `laptop.architect`
+  (2026-10-09T20:44:15Z):
+  https://github.com/synnaxlabs/foundation/issues/2064#issuecomment-6088942460.
+  `Ended` is a type of another crate, under the rule above (`laptop.architect`,
+  2026-10-10T03:02:58Z:
+  https://github.com/synnaxlabs/foundation/pull/2218#issuecomment-6093108453), and the
+  `Debug` text of `Ended` above is that of `env::tasks::Ended`, set in ENV SEAMS by
+  `laptop.architect-2` (2026-10-09T21:02:50Z):
+  https://github.com/synnaxlabs/foundation/issues/2064#issuecomment-6089208454. This
+  supersedes the `mesh::Ended` of
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6051912643.
   `Mesh::holder(PublicKey) -> Option<node::Key>` gives the member whose card holds a
   public key, by a scan of the members, so a caller such as `node` serves a `Hub` stream
   of a peer only when a member holds the key that its transport proves. It gives the
@@ -164,15 +178,19 @@
   `laptop.architect` (2026-10-09T01:46:26Z:
   https://github.com/synnaxlabs/foundation/issues/1756#issuecomment-6072570741).
   Amended (2026-10-09, #2179): `Mesh::watch_spec() -> used::Watch` watches the spec
-  that this node uses, so `node` gives the hub the definitions of each new spec in use,
-  also of a change that another node proposed. The first `next` gives the spec in use at
-  once. Each later `next` waits until the pointer in use differs from the one it last
-  gave, and gives the newest spec, so two changes between calls give one result. A
-  change of only `behind` wakes no watch. The wake comes where the pointer of the spec
-  in use changes, in the same call. After a stop, `next` gives `Stopped` as
-  `Mesh::watch` does. Its `Debug` gives its last pointer, and its `Drop` frees its slot.
-  Lost: `Mesh::spec_after(pointer)`, a call with no state that waits for a pointer other
-  than the one given: one type less, but the caller keeps the last pointer, and the two
+  that this node uses, so the hub of a node in a region takes the definitions of each
+  new spec in use (`laptop.architect`, 2026-10-10T23:49:57Z:
+  https://github.com/synnaxlabs/foundation/issues/2326#issuecomment-6103471301;
+  supersedes "`node` gives the hub the definitions of each new spec in use" of
+  https://github.com/synnaxlabs/foundation/issues/2179#issuecomment-6088928607), also of
+  a change that another node proposed. The first `next` gives the spec in use at once.
+  Each later `next` waits until the pointer in use differs from the one it last gave,
+  and gives the newest spec, so two changes between calls give one result. A change of
+  only `behind` wakes no watch. The wake comes where the pointer of the spec in use
+  changes, in the same call. After a stop, `next` gives `Stopped` as `Mesh::watch` does.
+  Its `Debug` gives its last pointer, and its `Drop` frees its slot. Lost:
+  `Mesh::spec_after(pointer)`, a call with no state that waits for a pointer other than
+  the one given: one type less, but the caller keeps the last pointer, and the two
   watches of `Mesh` have two forms. Decided by `laptop.architect` (2026-10-09T20:43:17Z:
   https://github.com/synnaxlabs/foundation/issues/2179#issuecomment-6088928607).
   Amended (2026-10-10, #1744): the free function `mesh::founding(files, dir, pool)`
@@ -190,12 +208,14 @@
   https://github.com/synnaxlabs/foundation/issues/2225#issuecomment-6093336972).
   Amended (2026-10-11, #2326): `Mesh::used() -> used::Spec` gives the spec that this
   node uses now, with no wait, as `pointer` and `holder` do, also after the group
-  stops. The hub reads it at each open (#2326 PR 2), so an open sees each spec that a
-  task told by `Mesh::spec` or a spec watch knows of. Lost: a hub task that follows the
-  spec watch alone, which `keep` wakes in the same step as the told task; a doc that
-  states the window and a call that waits for the hub. Decided by `laptop.architect`
-  (2026-10-10T23:49:57Z:
-  https://github.com/synnaxlabs/foundation/issues/2326#issuecomment-6103471301).
+  stops. The hub reads it at each open (#2326 PR 2), so an open works on a spec no
+  older than each spec that a task told by `Mesh::spec` or a spec watch knows of.
+  Lost: a hub task that follows the spec watch alone, which `keep` wakes in the same
+  step as the told task; a doc that states the window and a call that waits for the
+  hub. Decided by `laptop.architect` (2026-10-10T23:49:57Z:
+  https://github.com/synnaxlabs/foundation/issues/2326#issuecomment-6103471301; the
+  text, 2026-10-12T19:41:06Z:
+  https://github.com/synnaxlabs/foundation/pull/2476#issuecomment-6131357049).
   Lost also: `Mesh::pointer_used() -> Option<Pointer>`, after which an open calls
   `Mesh::spec`, which can wait for a read (`laptop.architect`, 2026-10-11T17:40:47Z:
   https://github.com/synnaxlabs/foundation/pull/2422#issuecomment-6111819824).
@@ -207,3 +227,10 @@
   or the new spec by the time of its read. Decided by `laptop.architect`
   (2026-10-11T16:47:07Z:
   https://github.com/synnaxlabs/foundation/pull/2422#issuecomment-6111328950).
+  Amended (2026-10-12, #2224): `Mesh::ended` waits for each task that the mesh spawned.
+  Its doc and this entry list no tasks, because a list goes stale when the mesh adds a
+  task. Supersedes "the group's task and each task that sends" of the amendment of
+  2026-10-08 above (2026-10-08T04:00:49Z:
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6051912643). Decided
+  by `laptop.architect` (2026-10-12T23:18:24Z:
+  https://github.com/synnaxlabs/foundation/pull/2506#issuecomment-6134467487).

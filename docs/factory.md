@@ -38,7 +38,8 @@ Code with `--name <role>`, the factory mod, and the role's skill. The architects
 director run at `xhigh` effort, the others at `high`. The director owns the quality bar
 and the issue queue, decides the hard calls an architect sends it, and approves each
 red-team PR. The monitor keeps the work moving: it unblocks sessions and watches
-efficiency.
+efficiency. It is also the design approver in place of `laptop.director` on a PR that
+`laptop.director` wrote (`/review`, "Round cap").
 
 A builder works one issue per context. When its PR merges, it calls the factory mod's
 `next` tool, which runs `/clear` and then `/build` by itself.

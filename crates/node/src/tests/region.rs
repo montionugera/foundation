@@ -104,9 +104,29 @@ fn admin(sim: &mut sim::Sim, host: &sim::node::Node) -> PrivateKey {
     PrivateKey(bytes[18..50].try_into().unwrap())
 }
 
+/// The status of the one member of `founding`, after a check that it holds a distinct
+/// UUIDv7 key after the Unix epoch for each name of [`crate::status::names`], and no
+/// other name.
+fn keys(founding: &Founding) -> Status {
+    let [member] = founding.members.as_slice() else {
+        panic!("one member: {founding:?}");
+    };
+    let status = member.status.as_map();
+    assert!(status.keys().eq(&crate::status::names()), "{status:?}");
+    let distinct: BTreeSet<_> = status.values().collect();
+    assert_eq!(distinct.len(), status.len(), "{status:?}");
+    for key in status.values() {
+        let bits = key.as_u128();
+        assert_eq!(bits >> 76 & 0xf, 7, "the version of {key}");
+        assert_eq!(bits >> 62 & 0b11, 0b10, "the variant of {key}");
+        assert_ne!(bits >> 80, 0, "the time of {key}");
+    }
+    member.status.clone()
+}
+
 /// The root region that the node [`OWN`] on `host` founds alone, as `edge`, whose spec
-/// holds the first admin `admin`.
-fn root(host: &sim::node::Node, admin: &PrivateKey) -> Founding {
+/// holds the first admin `admin`, with the status keys of `stored` ([`keys`]).
+fn root(host: &sim::node::Node, admin: &PrivateKey, stored: &Founding) -> Founding {
     let card = Card {
         name: "edge".parse().unwrap(),
         public_key: KEY.public(),
@@ -118,7 +138,7 @@ fn root(host: &sim::node::Node, admin: &PrivateKey) -> Founding {
         card: card::Signed::sign(OWN, card, &KEY),
         admission: [0; 64],
         ephemeral: None,
-        status: Status::new(BTreeMap::new()).unwrap(),
+        status: keys(stored),
     };
     Founding {
         prefix: Prefix::ROOT,
@@ -136,7 +156,8 @@ fn the_first_start_founds_the_root_region_alone() {
     assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
     let admin = admin(&mut sim, &host);
     assert_ne!(admin.0, KEY.0, "the admin is not the node");
-    assert_eq!(stored(&mut sim, &host), Some(root(&host, &admin)));
+    let stored = stored(&mut sim, &host).expect("a founding");
+    assert_eq!(stored, root(&host, &admin, &stored));
 }
 
 /// Two first starts on two hosts make two admin keys from the entropy.
@@ -196,8 +217,8 @@ fn a_first_start_founds_with_the_admin_key_of_the_corpus() {
     let host = keyed(&mut sim, 2);
     write(&mut sim, &host, FILE, valid.to_vec());
     assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
-    let founded = root(&host, &PrivateKey([7; 32]));
-    assert_eq!(stored(&mut sim, &host), Some(founded));
+    let stored = stored(&mut sim, &host).expect("a founding");
+    assert_eq!(stored, root(&host, &PrivateKey([7; 32]), &stored));
     assert_eq!(bytes(&mut sim, &host, FILE), Some(valid.to_vec()));
 }
 
@@ -211,7 +232,8 @@ fn a_first_start_removes_a_new_admin_key_that_a_crash_left() {
         write(&mut sim, &host, NEW, bytes);
         assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
         let admin = admin(&mut sim, &host);
-        assert_eq!(stored(&mut sim, &host), Some(root(&host, &admin)));
+        let stored = stored(&mut sim, &host).expect("a founding");
+        assert_eq!(stored, root(&host, &admin, &stored));
         assert!(!listed(&mut sim, &host, "").contains(&PathBuf::from(NEW)));
     }
 }
@@ -260,9 +282,9 @@ fn a_power_cut_during_the_first_start_keeps_the_admin_of_the_region() {
             if let Some(written) = written {
                 assert_eq!(written.0, admin.0, "{seed} {after:?}");
             }
-            let founded = Some(root(&host, &admin));
-            assert_eq!(stored(&mut sim, &host), founded, "{seed} {after:?}");
-            if kept.is_some() {
+            let founded = stored(&mut sim, &host).expect("a founding");
+            assert_eq!(founded, root(&host, &admin, &founded), "{seed} {after:?}");
+            if let Some(kept) = kept {
                 assert_eq!(kept, founded, "{seed} {after:?}");
                 break;
             }
@@ -349,9 +371,72 @@ fn a_failed_file_call_on_the_admin_key_stops_the_node() {
         if path == FILE {
             assert_eq!(admin.0, [7; 32], "{operation:?} {path}");
         }
-        let founded = Some(root(&host, &admin));
-        assert_eq!(stored(&mut sim, &host), founded, "{operation:?} {path}");
+        let founded = stored(&mut sim, &host).expect("a founding");
+        let root = root(&host, &admin, &founded);
+        assert_eq!(founded, root, "{operation:?} {path}");
     }
+}
+
+/// A stored founding whose member has no status keys starts, and a later start keeps
+/// it as it is: the start gives no keys to a record that lacks them.
+#[test]
+fn a_later_start_keeps_a_stored_member_with_no_status_keys() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    let first = start_and_stop(&mut sim, &host);
+    assert_eq!(first, Ok(()));
+    let mut given = stored(&mut sim, &host).expect("a founding");
+    given.members[0].status = Status::new(BTreeMap::new()).unwrap();
+    let host = keyed(&mut sim, 3);
+    let node = Node::start(Config {
+        region: Region::Given(given.clone()),
+        ..config(&host, Size::MEBIBYTE, Box::new(heap))
+    });
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    node.stop();
+    assert_eq!(sim.run(), Ok(()));
+    assert_eq!(node.join(), Ok(()));
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    assert_eq!(stored(&mut sim, &host), Some(given));
+}
+
+/// A name of 192 bytes leaves no room for `.<status>` in a name of 255 bytes, so the
+/// start gives `Error::Long`, starts no shard, and keeps no name. A name of 191 bytes
+/// founds the region, and its member holds each status name.
+#[test]
+fn a_name_longer_than_191_bytes_starts_no_shard() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    let long: types::name::Name = "a".repeat(192).parse().unwrap();
+    let (made, starts) = (listed(&mut sim, &host, ""), host.shard_starts());
+    let node = Node::start(Config {
+        region: Region::Stored,
+        name: long.clone(),
+        ..config(&host, Size::MEBIBYTE, Box::new(heap))
+    });
+    assert_eq!(sim.run(), Ok(()));
+    let error = Error::Long { name: long };
+    assert_eq!(node.join(), Err(error.clone()));
+    assert_eq!(host.shard_starts(), starts);
+    assert_eq!(listed(&mut sim, &host, ""), made, "keeps no name");
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "the name {} is longer than 191 bytes, the most that leaves room for the \
+             name of each status channel of the node",
+            "a".repeat(192)
+        )
+    );
+    let node = Node::start(Config {
+        region: Region::Stored,
+        name: "a".repeat(191).parse().unwrap(),
+        ..config(&host, Size::MEBIBYTE, Box::new(heap))
+    });
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    node.stop();
+    assert_eq!(sim.run(), Ok(()));
+    assert_eq!(node.join(), Ok(()));
+    keys(&stored(&mut sim, &host).expect("a founding"));
 }
 
 /// A founding that does not read stops the node before it makes `admin.key`.
