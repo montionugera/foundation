@@ -152,12 +152,28 @@ fn frame(bencher: Bencher<'_, '_>, case: &Case) {
 /// data channel, which the frame does not hold.
 #[divan::bench(args = cases(), sample_count = 1000)]
 fn frame_alternating(bencher: Bencher<'_, '_>, case: &Case) {
+    alternate(bencher, case, case.series);
+}
+
+/// As `frame_alternating`, with sets of 100,000 and 100,001 channels for frames of 16
+/// series, as when two sessions read a few channels of a large group.
+#[divan::bench(
+    args = cases().into_iter().filter(|case| case.series == 16),
+    sample_count = 1000,
+)]
+fn frame_alternating_large_set(bencher: Bencher<'_, '_>, case: &Case) {
+    alternate(bencher, case, 100_000);
+}
+
+/// Makes the frame of `case` of the other of two key sets of `channels` and
+/// `channels + 1` channels in turn.
+fn alternate(bencher: Bencher<'_, '_>, case: &Case, channels: usize) {
     let pool = block::Pool::heap(POOL);
     let frame = case.frame(&pool);
     let stored = home::bench::stored(&pool, &frame, &case.set).expect("room");
     let mut interner = Interner::new();
-    let one = common::intern(&mut interner, case.series, case.types);
-    let other = common::intern(&mut interner, case.series + 1, case.types);
+    let one = common::intern(&mut interner, channels, case.types);
+    let other = common::intern(&mut interner, channels + 1, case.types);
     let sets = [&one, &other];
     let mut decoder = home::bench::Decoder::default();
     let mut turn = 0;

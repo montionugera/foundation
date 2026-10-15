@@ -72,7 +72,9 @@
   session that missed frames `Next::Disk` only while the session has at least half its
   window of credit left, or has acked each frame it was given and has credit left. Its
   window is the most credit it had left at its open or at a grant, as a session can get
-  its credit back one frame at a time. A session whose window shrinks below half of that
-  most credit, and that never acks, then reads no more frames, so the change that adapts
-  the window does #2753 first (`laptop.architect`, 2026-10-15T18:23:12Z:
-  https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6199246153, item 3).
+  its credit back one frame at a time. A session whose grants then give it less than
+  half of that most credit, and that never acks, reads no more frames, so the change
+  that adapts the window does #2753 first (`laptop.architect`, 2026-10-15T18:23:12Z:
+  https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6199246153, item 3;
+  the window and #2753, 2026-10-15T20:23:30Z:
+  https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6201526357, item 1).
