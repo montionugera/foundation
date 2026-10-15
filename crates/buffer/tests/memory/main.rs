@@ -56,11 +56,12 @@ fn first_shrink() -> u32 {
     }
 }
 
-/// S4: each path keeps at most 446 bytes, and room for four paths when there are
-/// fewer. A carry record takes the tail of each of `paths` paths, and a trim to it
+/// S4: each path keeps at most 454 bytes, and room for four paths when there are fewer,
+/// of which 8 bytes are its place in the queue of laps that wait. No lap waits here, so
+/// 446 bytes. A carry record takes the tail of each of `paths` paths, and a trim to it
 /// leaves each with no run. The holder items of the two records, 4 bytes each in a
-/// deque that doubles, are a term of S4 per record and path. At 3585 paths the map
-/// of places is at its least load, and at 4097 the vector of logs.
+/// deque that doubles, are a term of S4 per record and path. At 3585 paths the map of
+/// places is at its least load, and at 4097 the vector of logs.
 fn per_path(paths: u32) {
     let before = ALLOCATOR.held();
     let mut logs = buffer::bench::Logs::new(paths);
