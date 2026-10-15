@@ -1,0 +1,51 @@
+name: Test times
+
+# Prints the time of each test of one crate on the runner of `check`, slowest first.
+# It runs only by hand, on the branch that it is dispatched on:
+# `gh workflow run times.yaml --ref <branch> -f crate=node`.
+on:
+  workflow_dispatch:
+    inputs:
+      crate:
+        description: The crate whose tests it times
+        default: node
+      threads:
+        description: The threads of each test binary
+        default: '4'
+
+jobs:
+  times:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # With `shell: bash`, a step runs with `pipefail`, so a failed build fails the step.
+    defaults:
+      run:
+        shell: bash
+    env:
+      CRATE: ${{ inputs.crate }}
+      THREADS: ${{ inputs.threads }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: |
+          cargo test -p "$CRATE" --all-features --tests --no-run --message-format json \
+            | jq -r 'select(.executable != null and .profile.test)
+                | "\(.manifest_path | rtrimstr("/Cargo.toml")) \(.executable)"' \
+            > bins
+      # Each binary runs in its crate, as `cargo test` runs it. `--report-time` is
+      # unstable, so only the run of the binary gets RUSTC_BOOTSTRAP.
+      - name: Times
+        run: |
+          status=0
+          while read -r dir bin; do
+            (cd "$dir" && CARGO_MANIFEST_DIR="$dir" RUSTC_BOOTSTRAP=1 "$bin" \
+              --test-threads "$THREADS" -Z unstable-options --report-time \
+              --format json) >> times.json || status=1
+          done < bins
+          jq -r 'select(.type == "test" and .exec_time != null)
+              | "\(.exec_time)\t\(.event)\t\(.name)"' times.json | sort -rn
+          jq -r 'select(.type == "suite" and .exec_time != null)
+              | "suite \(.event): \(.passed) passed, \(.failed) failed,"
+                + " \(.exec_time) s"' times.json
+          exit "$status"
