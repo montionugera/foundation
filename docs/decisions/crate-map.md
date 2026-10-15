@@ -39,7 +39,10 @@ Rules:
    https://github.com/synnaxlabs/foundation/pull/2724#issuecomment-6199257488), and
    `spec`, so its tests build the rules that admit a hello (`laptop.architect`,
    2026-10-15T19:16:41Z,
-   https://github.com/synnaxlabs/foundation/pull/2724#issuecomment-6200305120). A crate
+   https://github.com/synnaxlabs/foundation/pull/2724#issuecomment-6200305120), and
+   `codec`, so its read tests decode the encoded series of each frame
+   (`laptop.architect`, 2026-10-15T23:36:14Z,
+   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204521616). A crate
    may also take itself, so its tests and benches build with its own `sim` feature
    (STORED BENCH; `laptop.architect`, 2026-10-08T01:01:28Z:
    https://github.com/synnaxlabs/foundation/pull/1568#issuecomment-6049989224). A
