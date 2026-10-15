@@ -9,16 +9,17 @@ use crate::ffi::{self, Status};
 /// The scalar value of an OPC UA variable, in the sample type of the same width and
 /// sign: Boolean as `bool`, `SByte` to `UInt64` as `i8` to `u64`, Float as `f32`, and
 /// Double as `f64`.
+// In the order of `sample::Value`, so that a map to it keeps the tag.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Value {
     Bool(bool),
     I8(i8),
-    U8(u8),
     I16(i16),
-    U16(u16),
     I32(i32),
-    U32(u32),
     I64(i64),
+    U8(u8),
+    U16(u16),
+    U32(u32),
     U64(u64),
     F32(f32),
     F64(f64),

@@ -308,7 +308,11 @@ impl Value {
     /// # Panics
     ///
     /// When `sample` is not `self.scalar().width()` bytes.
-    #[inline]
+    #[expect(
+        clippy::inline_always,
+        reason = "with `inline`, a caller in another crate called it for each sample"
+    )]
+    #[inline(always)]
     pub fn write(self, sample: &mut [u8]) {
         match self {
             Self::Bool(value) => *sized(sample) = [u8::from(value)],
