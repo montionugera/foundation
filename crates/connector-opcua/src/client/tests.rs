@@ -27,7 +27,7 @@ use crate::ffi::{self, Status};
 use crate::node::{Key, Name, Node};
 use crate::server::{Limits, Server};
 use crate::unwind::caught;
-use crate::value::{BuiltIn, Fault, Value};
+use crate::value::{self, Fault, Value};
 
 /// The port of the test server.
 const PORT: u16 = 4840;
@@ -332,12 +332,7 @@ enum Exact {
 
 /// The fault of a Good value of the OPC UA type `name`, such as `array of Double`.
 fn mistyped(name: &str) -> Result<Value, Fault> {
-    let kinds = (0..31).flat_map(|kind| [kind, kind | ffi::ARRAY]);
-    let mut built_ins = kinds.map(BuiltIn::new);
-    let built_in = built_ins.find(|built_in| built_in.to_string() == name);
-    Err(Fault::Type(
-        built_in.unwrap_or_else(|| panic!("no type {name:?}")),
-    ))
+    Err(Fault::Type(value::Type::named(name)))
 }
 
 fn exact(value: Result<Value, Fault>) -> Result<Exact, Fault> {

@@ -22,7 +22,7 @@ use crate::config::{self, Config, Read};
 use crate::event;
 use crate::ffi::Status;
 use crate::node::Node;
-use crate::value::{BuiltIn, Fault, SCALARS, Value};
+use crate::value::{self, Fault, SCALARS, Value};
 
 #[cfg(test)]
 #[cfg(feature = "sim")]
@@ -518,7 +518,7 @@ impl Left {
         &mut self,
         ctx: &Context<Config>,
         read: &Read,
-        value: BuiltIn,
+        value: value::Type,
         sample: Scalar,
     ) {
         self.noted = true;
@@ -538,7 +538,7 @@ enum Why {
     Bad,
     Uncertain,
     /// The value is Good, of this type, which is not the type of its channel.
-    Mistyped(BuiltIn),
+    Mistyped(value::Type),
 }
 
 impl Why {
@@ -547,8 +547,8 @@ impl Why {
     fn of(value: &Result<Value, Fault>, sample: Scalar) -> Option<Self> {
         match value {
             Ok(value) if value.scalar() == sample => None,
-            Ok(value) => Some(Self::Mistyped(value.built_in())),
-            Err(Fault::Type(built_in)) => Some(Self::Mistyped(*built_in)),
+            Ok(value) => Some(Self::Mistyped(value.type_of())),
+            Err(Fault::Type(opc_type)) => Some(Self::Mistyped(*opc_type)),
             Err(Fault::Status(status)) if status.uncertain() => Some(Self::Uncertain),
             Err(Fault::Status(_)) => Some(Self::Bad),
         }

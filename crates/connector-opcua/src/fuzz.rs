@@ -76,7 +76,7 @@ fn read_of(value: &Value) -> String {
     match unsafe { crate::value::Value::of(value.pointer().cast()) } {
         Ok(read) => format!("{read:?}"),
         Err(Fault::Status(status)) => status.name().to_owned(),
-        Err(Fault::Type(built_in)) => built_in.to_string(),
+        Err(Fault::Type(opc_type)) => opc_type.to_string(),
     }
 }
 

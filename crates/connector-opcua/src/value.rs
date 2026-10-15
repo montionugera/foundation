@@ -64,10 +64,16 @@ impl Value {
     pub(crate) unsafe fn of(value: *const ffi::DataValue) -> Result<Self, Fault> {
         let mut scalar = ffi::Scalar { uint64: 0 };
         let mut kind = 0;
+        let mut data_type = std::ptr::null();
         // SAFETY: `value` is live, as the caller ensures, and the outputs are places
         // to write.
         let status = Status(unsafe {
-            ffi::shim_value_scalar(value, &raw mut scalar, &raw mut kind)
+            ffi::shim_value_scalar(
+                value,
+                &raw mut scalar,
+                &raw mut kind,
+                &raw mut data_type,
+            )
         });
         if status != Status::GOOD {
             return Err(Fault::Status(status));
@@ -95,7 +101,7 @@ impl Value {
             ffi::FLOAT => Self::F32(unsafe { scalar.float }),
             // SAFETY: `shim_value_scalar` wrote the field of `kind`.
             ffi::DOUBLE => Self::F64(unsafe { scalar.double }),
-            kind => return Err(mistyped(kind)),
+            kind => return Err(mistyped(kind, data_type)),
         })
     }
 
@@ -124,8 +130,13 @@ impl Value {
     }
 
     /// The OPC UA type of the value.
-    pub(crate) fn built_in(self) -> BuiltIn {
-        BuiltIn::new(self.raw().1)
+    pub(crate) fn type_of(self) -> Type {
+        // The kind of a scalar of `Value` is its index in `UA_TYPES`: `shim.c` asserts
+        // both.
+        Type {
+            data_type: &ffi::types()[usize::from(self.raw().1)],
+            array: false,
+        }
     }
 
     /// The value 1 of `scalar`, which is `true` for `bool`.
@@ -165,48 +176,20 @@ impl From<Value> for sample::Value {
     }
 }
 
-/// The fault of a Good answer of the open62541 kind `kind`, apart from the Ok path of
-/// [`Value::of`].
+/// The fault of a Good answer of the open62541 kind `kind` and the type `data_type`,
+/// apart from the Ok path of [`Value::of`].
 #[cold]
 #[inline(never)]
-fn mistyped(kind: u16) -> Fault {
-    Fault::Type(BuiltIn::new(kind))
+fn mistyped(kind: u16, data_type: *const ffi::DataType) -> Fault {
+    // SAFETY: `shim_value_scalar` wrote the type of the value, which lives while the
+    // client that decoded the value lives. The client registers no type of its own, so
+    // the type is of `UA_TYPES`, which lives to the end of the process.
+    let data_type = unsafe { &*data_type };
+    Fault::Type(Type {
+        data_type,
+        array: kind & ffi::ARRAY != 0,
+    })
 }
-
-/// The name of each built-in type of OPC UA, by its kind in open62541.
-const NAMES: [&str; ffi::KINDS] = [
-    "Boolean",
-    "SByte",
-    "Byte",
-    "Int16",
-    "UInt16",
-    "Int32",
-    "UInt32",
-    "Int64",
-    "UInt64",
-    "Float",
-    "Double",
-    "String",
-    "DateTime",
-    "Guid",
-    "ByteString",
-    "XmlElement",
-    "NodeId",
-    "ExpandedNodeId",
-    "StatusCode",
-    "QualifiedName",
-    "LocalizedText",
-    "ExtensionObject",
-    "DataValue",
-    "Variant",
-    "DiagnosticInfo",
-    "Decimal",
-    "Enumeration",
-    "Structure",
-    "Structure",
-    "Union",
-    "Structure",
-];
 
 /// Why an answer of a read gives no [`Value`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -216,38 +199,56 @@ pub(crate) enum Fault {
     Status(Status),
     /// The type of a Good answer that is an array, or a scalar of another type than
     /// those of [`Value`].
-    Type(BuiltIn),
+    Type(Type),
 }
 
-/// The OPC UA type of a value: a built-in type, or an array of one. Its text is the
-/// name, such as `String` or `array of Double`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct BuiltIn(u16);
+/// The OPC UA type of a value: a type of open62541, or an array of one. Its text is
+/// the name, such as `String`, `Range`, or `array of Double`.
+#[derive(Clone, Copy)]
+pub(crate) struct Type {
+    data_type: &'static ffi::DataType,
+    array: bool,
+}
 
-impl BuiltIn {
-    /// The type of the open62541 kind `kind`, plus [`ffi::ARRAY`] for an array.
+impl Type {
+    /// The type of the text `name`, such as `array of Double`, from `UA_TYPES`.
     ///
     /// # Panics
     ///
-    /// If `kind` is not one of [`NAMES`], which open62541 never gives.
-    pub(crate) fn new(kind: u16) -> Self {
-        let scalar = usize::from(kind & !ffi::ARRAY);
-        assert!(
-            scalar < NAMES.len(),
-            "invariant: no open62541 kind is {kind}"
-        );
-        Self(kind)
+    /// If no type of `UA_TYPES` has the name.
+    #[cfg(test)]
+    pub(crate) fn named(name: &str) -> Self {
+        let (array, scalar) = match name.strip_prefix("array of ") {
+            Some(scalar) => (true, scalar),
+            None => (false, name),
+        };
+        let mut types = ffi::types().iter();
+        let data_type = types.find(|data_type| data_type.name() == scalar);
+        Self {
+            data_type: data_type.unwrap_or_else(|| panic!("no type {name:?}")),
+            array,
+        }
     }
 }
 
-impl fmt::Display for BuiltIn {
+impl PartialEq for Type {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.data_type, other.data_type) && self.array == other.array
+    }
+}
+
+impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = NAMES[usize::from(self.0 & !ffi::ARRAY)];
-        if self.0 & ffi::ARRAY == 0 {
-            f.write_str(name)
-        } else {
-            write!(f, "array of {name}")
+        if self.array {
+            f.write_str("array of ")?;
         }
+        f.write_str(self.data_type.name())
+    }
+}
+
+impl fmt::Debug for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 

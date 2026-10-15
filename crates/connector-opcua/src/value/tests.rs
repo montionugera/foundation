@@ -1,15 +1,12 @@
 use types::sample::{self, Scalar};
 
-use super::{BuiltIn, Fault, SCALARS, Value};
+use super::{Fault, SCALARS, Value};
 use crate::ffi::{self, Status};
 use crate::fuzz;
 
-/// The index of `DataValue` in `UA_TYPES`.
-const DATA_VALUE: usize = 22;
-
 /// Decodes `bytes`, the binary encoding of a `DataValue`.
 fn decoded(bytes: &[u8]) -> fuzz::Value {
-    let data_type = &ffi::types()[DATA_VALUE];
+    let data_type = &ffi::types()[ffi::DATA_VALUE];
     let (value, read) = fuzz::Value::decode(data_type, bytes).expect("a DataValue");
     assert_eq!(read, bytes.len());
     value
@@ -17,7 +14,7 @@ fn decoded(bytes: &[u8]) -> fuzz::Value {
 
 #[test]
 fn an_answer_with_a_good_status_and_no_value_fails_with_no_data() {
-    assert_eq!(ffi::types()[DATA_VALUE].name(), "DataValue");
+    assert_eq!(ffi::types()[ffi::DATA_VALUE].name(), "DataValue");
     // The mask 0x00 encodes no field, and 0x02 encodes only the status, GoodClamped.
     let answers = [decoded(&[0x00]), decoded(&[0x02, 0x00, 0x00, 0x30, 0x00])];
     // SAFETY: each answer is a decoded `UA_DataValue` that lives to the end.
@@ -32,7 +29,7 @@ fn fault(bytes: &[u8]) -> String {
     let answer = decoded(bytes);
     // SAFETY: the answer is a decoded `UA_DataValue` that lives to the end.
     match unsafe { Value::of(answer.pointer().cast()) } {
-        Err(Fault::Type(built_in)) => built_in.to_string(),
+        Err(Fault::Type(opc_type)) => opc_type.to_string(),
         other => panic!("not a value of another type: {other:?}"),
     }
 }
@@ -48,6 +45,14 @@ fn an_answer_of_another_type_gives_its_opc_ua_type() {
     );
     assert_eq!(fault(&[0x01, 0x8C, 0x00, 0, 0, 0]), "array of String");
     assert_eq!(fault(&[&[0x01, 0x0E][..], &[0; 16]].concat()), "Guid");
+}
+
+#[test]
+fn an_answer_of_a_decoded_structure_gives_the_name_of_the_structure() {
+    // An ExtensionObject (22) of the binary encoding of `Range` (ns 0, id 886), with a
+    // body of two Doubles.
+    let range = [0x01, 0x16, 0x01, 0x00, 0x76, 0x03, 0x01, 16, 0, 0, 0];
+    assert_eq!(fault(&[&range[..], &[0; 16]].concat()), "Range");
 }
 
 #[test]
@@ -85,18 +90,12 @@ fn each_value_gives_the_opc_ua_name_of_its_type() {
         Value::F32(0.0),
         Value::F64(0.0),
     ];
-    let names = values.map(|value| value.built_in().to_string());
+    let names = values.map(|value| value.type_of().to_string());
     let expected = [
         "Boolean", "SByte", "Byte", "Int16", "UInt16", "Int32", "UInt32", "Int64",
         "UInt64", "Float", "Double",
     ];
     assert_eq!(names, expected);
-}
-
-#[test]
-#[should_panic(expected = "invariant: no open62541 kind is 31")]
-fn a_kind_past_the_built_in_types_panics() {
-    let _: BuiltIn = BuiltIn::new(31);
 }
 
 /// A value of each type, in the order of [`SCALARS`].

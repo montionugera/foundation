@@ -1373,7 +1373,7 @@ fn leaves_out_each_value_of_another_type_than_its_channel() {
             if value.scalar() == sample {
                 assert_eq!(left, None);
             } else {
-                let mistyped = Why::Mistyped(value.built_in());
+                let mistyped = Why::Mistyped(value.type_of());
                 assert_eq!(left, Some(mistyped), "{value:?} into {sample:?}");
             }
         }
@@ -1389,7 +1389,7 @@ fn leaves_out_each_value_that_is_not_good() {
     assert_eq!(leave(Status::BAD_NOT_FOUND.0), Some(Why::Bad));
     assert_eq!(leave(0xC000_0000), Some(Why::Bad));
     assert_eq!(leave(0x8000_0000), Some(Why::Bad));
-    let string = crate::value::BuiltIn::new(11);
+    let string = crate::value::Type::named("String");
     let left = Why::of(&Err(Fault::Type(string)), Scalar::F64);
     assert_eq!(left, Some(Why::Mistyped(string)));
 }
