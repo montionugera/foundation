@@ -429,7 +429,7 @@ fn fill(
 ) {
     for (entry, bytes) in draft.iter_mut() {
         match fills[entry].read {
-            None => bytes.copy_from_slice(&stamp.nanos().to_le_bytes()),
+            None => sample::Value::Stamp(stamp).write(bytes),
             Some(read) => sample::Value::from(values.get(read)).write(bytes),
         }
     }
