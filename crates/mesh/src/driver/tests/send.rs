@@ -309,7 +309,7 @@ fn a_session_that_fails_leaves_the_session_to_each_other_member() {
 #[test]
 fn a_message_that_the_pool_has_no_block_for_drops_and_its_stream_stays() {
     let mesh = |node: sim::node::Node, tasks: Tasks| async move {
-        let pool = small_pool();
+        let pool = open_pool();
         let config = create_config(&node, &tasks, Rc::clone(&pool)).await;
         let _mesh = Mesh::open(config).await.unwrap();
         let clock = node.clock();
@@ -342,7 +342,7 @@ fn a_message_that_the_pool_has_no_block_for_drops_and_its_stream_stays() {
 #[test]
 fn no_stream_comes_while_the_pool_has_no_block_for_its_header() {
     let mesh = |node: sim::node::Node, tasks: Tasks| async move {
-        let pool = small_pool();
+        let pool = open_pool();
         let config = create_config(&node, &tasks, Rc::clone(&pool)).await;
         let _mesh = Mesh::open(config).await.unwrap();
         let blocks = fill(&pool);
@@ -366,7 +366,7 @@ fn no_stream_comes_while_the_pool_has_no_block_for_its_header() {
 #[test]
 fn a_task_that_waits_in_a_dial_holds_no_block() {
     solo(|node, tasks| async move {
-        let pool = small_pool();
+        let pool = open_pool();
         let free = fill(&pool).len();
         let config = create_config(&node, &tasks, Rc::clone(&pool)).await;
         let _mesh = Mesh::open(config).await.unwrap();
@@ -710,7 +710,7 @@ fn a_proposal_whose_write_waits_gives_a_removed_stop() {
     let outcome = Arc::new(Mutex::new(None));
     let written = Arc::clone(&outcome);
     let mesh = move |node: sim::node::Node, tasks: Tasks| async move {
-        let pool = small_pool();
+        let pool = open_pool();
         let config = create_config(&node, &tasks, Rc::clone(&pool)).await;
         let transport = Rc::clone(&config.transport);
         let mesh = Mesh::open(config).await.unwrap();

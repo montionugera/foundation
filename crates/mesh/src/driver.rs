@@ -1585,7 +1585,19 @@ mod tests {
 
     /// A pool of one page.
     fn small_pool() -> Rc<Pool> {
-        let budget = block::Config::new(4096).expect("the budget fits");
+        pool_of(4096)
+    }
+
+    /// The smallest pool that `Mesh::open` takes.
+    fn open_pool() -> Rc<Pool> {
+        let pool = pool_of(1 << 16);
+        assert!(pool.largest() >= message::BYTES_MIN);
+        pool
+    }
+
+    /// A pool of a budget of `bytes`.
+    fn pool_of(bytes: u64) -> Rc<Pool> {
+        let budget = block::Config::new(bytes).expect("the budget fits");
         let memory = block::Heap::new(budget.reservation());
         Rc::new(Pool::new(budget, memory))
     }
@@ -5797,10 +5809,8 @@ mod tests {
         fn refuses_a_pool_whose_largest_block_is_below_an_append_of_the_largest_record()
         {
             solo(|node, tasks| async move {
-                let budget = block::Config::new(1 << 15).expect("the budget fits");
-                let memory = block::Heap::new(budget.reservation());
                 let config = Config {
-                    pool: Rc::new(Pool::new(budget, memory)),
+                    pool: pool_of(1 << 15),
                     ..config(&node, &tasks, 1, &IDS, &IDS).await
                 };
                 assert_eq!(config.transport.message_bytes_max(), 1 << 16);
