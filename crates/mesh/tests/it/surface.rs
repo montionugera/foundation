@@ -192,7 +192,7 @@ fn solo<F: Future<Output = ()> + 'static>(
 fn run<F: Future<Output = ()> + 'static>(
     body: impl FnOnce(sim::node::Node, Tasks) -> F + Send + 'static,
 ) -> Result<(), sim::Error> {
-    let mut sim = Sim::new(sim::Config::default());
+    let mut sim = Sim::new(crate::steps::simulation(0));
     let node = sim.node(sim::node::Config::default());
     sim.run_on(&node, body)
 }
@@ -309,6 +309,24 @@ async fn accept(mesh: Mesh, transport: Rc<Transport>, tasks: Tasks) {
     }
 }
 
+#[test]
+fn a_run_that_waits_forever_fails_at_the_bound_of_steps() {
+    let ran = run(|node, tasks| async move {
+        let mesh = Mesh::open(create_config(&node, &tasks).await)
+            .await
+            .unwrap();
+        pending::<()>().await;
+        drop(mesh);
+    });
+    assert_eq!(
+        ran,
+        Err(sim::Error::Steps {
+            max: 1_600_000,
+            seed: 0
+        })
+    );
+}
+
 /// The index whose home node `id` sets.
 fn index(id: u8) -> channel::Key {
     channel::Key::from_u128(u128::from(id))
@@ -317,7 +335,7 @@ fn index(id: u8) -> channel::Key {
 // Only one node leads, so at least two of the calls go through the leader.
 #[test]
 fn each_voter_of_a_region_gets_the_home_that_each_voter_sets() {
-    let mut sim = Sim::new(sim::Config::default());
+    let mut sim = Sim::new(crate::steps::simulation(0));
     let nodes = IDS.map(|_| sim.node(sim::node::Config::default()));
     let member = |(id, node): (u8, &sim::node::Node)| {
         let address = SocketAddr::new(node.addresses()[0], PORT);
@@ -393,7 +411,7 @@ fn the_debug_of_a_config_does_not_show_the_private_key() {
 // The peer is not a member. `serve` refuses the bytes before it reads who sent them.
 #[test]
 fn serve_refuses_a_message_that_is_not_valid_and_stops_its_stream() {
-    let mut sim = Sim::new(sim::Config::default());
+    let mut sim = Sim::new(crate::steps::simulation(0));
     let nodes = [1, 2].map(|_| sim.node(sim::node::Config::default()));
     let at = Address::Udp(SocketAddr::new(nodes[0].addresses()[0], PORT));
     let served = Arc::new(Mutex::new(None));
