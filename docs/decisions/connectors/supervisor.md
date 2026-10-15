@@ -271,12 +271,12 @@
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6089396653).
   Supersedes the bound of 12 frames of
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6088160535. `state`
-  3 and the next state stay two frames also when no task is left, unless `state` 3
-  falls in an outage of the home longer than `SETTLE` (below), because `state` 3 marks
-  the end of the run (`laptop.architect-2`, 2026-10-09T19:51:38Z:
-  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6088160535). After
-  such an outage, the next frame that the home applies replaces both, as the bound for
-  each outage below states. This supersedes "stay two frames" of
+  3 and the next state stay two frames also when no task is left, because `state` 3
+  marks the end of the run (`laptop.architect-2`, 2026-10-09T19:51:38Z:
+  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6088160535). In an
+  outage of the home longer than `SETTLE` (below), the next frame that the home applies
+  replaces both, as the bound for each outage below states. This supersedes "stay two
+  frames" of
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6088160535 for such
   an outage (`laptop.architect-2`, 2026-10-14T05:09:04Z:
   https://github.com/synnaxlabs/foundation/pull/2680#issuecomment-6161372464).

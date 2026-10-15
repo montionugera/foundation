@@ -121,8 +121,8 @@ impl Opened<'_> {
     /// status channels as the connector: the whole status at each start and change of
     /// state, and a change of counts alone at most once each second. Each change of
     /// state, a start too, waits until the home applied the state before it, `cancel`
-    /// is cancelled, or 10 s passed since the first change that the home did not apply
-    /// and after which it applied no frame.
+    /// is cancelled, or 10 s passed since the oldest change of state that the home did
+    /// not apply.
     ///
     /// Returns `Ok` when `run` returns `Ok`, when the mesh stopped before the status
     /// channels opened, or when `cancel` is cancelled: at once while the channels are
