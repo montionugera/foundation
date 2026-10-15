@@ -9,7 +9,7 @@ use wire::hub::client::Refusal;
 use crate::{address, admin};
 
 /// The pool of the transport and of the `program::Session`. Its largest block holds a
-/// datagram, and the client sends a body in chunks of its largest block.
+/// datagram, and the session sends a body in chunks of its largest block.
 const POOL: block::Config = match block::Config::new(1 << 21) {
     Ok(config) => config,
     Err(_) => panic!("invariant: the budget fits"),
@@ -31,9 +31,9 @@ pub struct Config {
     pub tasks: env::tasks::Tasks,
 }
 
-/// A client of the node that runs on the data directory of `config`, as its first
-/// admin. It reads `address` and `admin.key`, and makes and locks nothing. It dials
-/// the loopback IP of the family in place of an unspecified IP in `address`.
+/// A `program::Session` with the node that runs on the data directory of `config`, as
+/// its first admin. It reads `address` and `admin.key`, and makes and locks nothing. It
+/// dials the loopback IP of the family in place of an unspecified IP in `address`.
 ///
 /// # Errors
 ///
@@ -85,7 +85,7 @@ pub async fn reach(config: Config) -> Result<program::Session, Error> {
         })
 }
 
-/// Why [`reach`] gave no client.
+/// Why [`reach`] gave no session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// No node runs on the directory: its file `address` holds no address of a node.

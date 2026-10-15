@@ -37,9 +37,11 @@ Rules:
    `program` may take `hub` with `sim`, so its tests run a session against the real
    serve of a hub (`laptop.architect`, 2026-10-15T18:23:47Z,
    https://github.com/synnaxlabs/foundation/pull/2724#issuecomment-6199257488), and
-   `spec`, so its tests build the rules that admit a hello. A crate may also take
-   itself, so its tests and benches build with its own `sim` feature (STORED BENCH;
-   `laptop.architect`, 2026-10-08T01:01:28Z:
+   `spec`, so its tests build the rules that admit a hello (`laptop.architect`,
+   2026-10-15T19:16:41Z,
+   https://github.com/synnaxlabs/foundation/pull/2724#issuecomment-6200305120). A crate
+   may also take itself, so its tests and benches build with its own `sim` feature
+   (STORED BENCH; `laptop.architect`, 2026-10-08T01:01:28Z:
    https://github.com/synnaxlabs/foundation/pull/1568#issuecomment-6049989224). A
    layer 3 crate may take `hub` with `sim`, so its tests build a hub through
    `hub::testing::open`, on the shard of `home::testing::shard` (`laptop.architect`,

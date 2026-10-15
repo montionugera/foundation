@@ -29,10 +29,10 @@
   no block of the pool can hold a message that the session sends. Lost: a bound of two
   windows from the stream credit, which ack loss can exceed; a `Bytes` body with no
   copy; a wait in `block::Pool` that wakes at each free. Two callers poll the pool now:
-  the transport's reads and this session. Trigger: a third caller that waits for a block,
-  or a measured request latency from the poll, adds the wait to `block`. `Session` is
-  `Clone`, and a clone is the same session. When the last clone drops, it closes
-  the session with `Code(0)`. A node's stop and close with a code are one error:
+  the transport's reads and this session. Trigger: a third caller that waits for a
+  block, or a measured request latency from the poll, adds the wait to `block`.
+  `Session` is `Clone`, and a clone is the same session. When the last clone drops, it
+  closes the session with `Code(0)`. A node's stop and close with a code are one error:
   `Error::Refused(wire::hub::client::Refusal)`, a closed set in `wire` with `from_code`
   and `code`, of each code that a node stops a client stream or closes a client session
   with (`MALFORMED`, `BUSY`, and `REFUSED` to `CHANGED`). Each meaning of a code is
