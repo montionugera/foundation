@@ -1,11 +1,15 @@
 //! `wal::Writer` and `log::Logs`, for the bench targets and the `alloc` test only. Not
 //! a stable surface.
 
+use std::{iter, mem};
+
+use block::{Block, Heap, Pool};
 use types::channel::{self, Slot};
 use types::frame::Path;
 use types::time::Stamp;
 
-use crate::entry::Header;
+use crate::entry::{Entry, Header};
+use crate::group;
 use crate::log::Carried;
 use crate::record::{ALIGN, BLOCK};
 use crate::wal::{Ends, Layout, Position, Writer};
@@ -70,6 +74,80 @@ impl Ring {
         }
         let tail = self.writer.trimmed(None, |offset| offset);
         self.writer.committed(self.ends.drain(..), tail);
+    }
+}
+
+/// A group commit with no file: the groups of a buffer over the writer of a ring that
+/// opened empty.
+#[derive(Debug)]
+pub struct Group {
+    writer: Writer,
+    pool: Pool,
+    block_max: usize,
+    /// The bytes of each entry.
+    part: Block,
+    /// The cleared group of the last commit, with its capacity.
+    spare: group::Group,
+    batch: Vec<Entry>,
+    chain: u32,
+}
+
+impl Group {
+    /// An empty ring of `blocks` blocks of 4096 bytes, with bodies of at most two
+    /// blocks, and a pool for the group headers.
+    ///
+    /// # Panics
+    ///
+    /// When `blocks` makes no valid layout.
+    #[must_use]
+    pub fn new(blocks: u64) -> Self {
+        let area = blocks.checked_mul(BLOCK).expect("a valid layout");
+        let layout = Layout::new(area, 2 * ALIGN).expect("a valid layout");
+        let config = block::Config::new(1 << 21).expect("the budget fits");
+        let pool = Pool::new(config.clone(), Heap::new(config.reservation()));
+        let block_max = group::block_max(&pool).expect("the budget holds an entry");
+        let part = pool.alloc(100).expect("the pool has room").freeze();
+        Self {
+            writer: Writer::empty(layout, 0),
+            pool,
+            block_max,
+            part,
+            spare: group::Group::default(),
+            batch: Vec::new(),
+            chain: 9,
+        }
+    }
+
+    /// One commit of one group of `entries` entries of 100 bytes each: the push of
+    /// the entries, which checks that the record fits, then the close, the seal, the
+    /// trim, and the sync of the record. The time also holds the bench's own work to
+    /// make the entries.
+    ///
+    /// # Panics
+    ///
+    /// When the ring or the pool has no room for the group.
+    pub fn commit(&mut self, entries: usize) {
+        let entry = Entry {
+            index: channel::Key::from_u128(1),
+            slot: Slot::new(0),
+            path: Path::Live,
+            first: 0,
+            len: 1,
+            stored_at: Stamp::from_nanos(7),
+            last: Some(Stamp::from_nanos(9)),
+            tag: 0,
+            parts: self.part.clone().into(),
+        };
+        self.batch.extend(iter::repeat_n(entry, entries));
+        let mut group = mem::take(&mut self.spare);
+        group
+            .push(&self.pool, self.block_max, &self.writer, &mut self.batch)
+            .expect("the ring has room");
+        let sealed = group.close(&mut self.writer).seal(self.chain);
+        self.chain = sealed.ends().record.chain();
+        let tail = self.writer.trimmed(None, |offset| offset);
+        self.writer.committed([sealed.ends()], tail);
+        self.spare = sealed.clear();
     }
 }
 
@@ -257,6 +335,27 @@ mod tests {
                 assert!(
                     ring.writer.tail() > tail,
                     "commit {commit} on the ring of ID {id} trims"
+                );
+            }
+        }
+    }
+
+    /// After the warm-up of the `wal` bench, each group commit of 1 and of 32 entries
+    /// trims on the ring of the bench, over more than 10 laps, so each time holds a
+    /// trim. It reads the private writer: `commit` gives nothing back.
+    #[test]
+    fn each_group_commit_trims_on_the_ring_of_the_bench() {
+        for entries in [1, 32] {
+            let mut ring = Group::new(64 + PHASE);
+            for _ in 0..2 * 64 {
+                ring.commit(entries);
+            }
+            for commit in 0..10 * 64 {
+                let tail = ring.writer.tail();
+                ring.commit(entries);
+                assert!(
+                    ring.writer.tail() > tail,
+                    "commit {commit} of {entries} entries trims"
                 );
             }
         }
