@@ -285,7 +285,7 @@ jobs:
       !cancelled() && needs.changes.outputs.rust != 'false' &&
       github.event_name == 'pull_request'
     # A mutant that hangs runs until its timeout, so the run needs parallel jobs. Each
-    # shard runs a fourth of the mutants, round robin, on its own hosted 4-core ARM VM,
+    # shard runs a fourth of the mutants, round robin, on its own hosted 4-core VM,
     # which no other job shares (#2726). The rule that a missed mutant fails CI is in
     # `docs/claude/testing.md`.
     name: mutants shard ${{ matrix.shard }}
@@ -293,7 +293,7 @@ jobs:
       fail-fast: false
       matrix:
         shard: [0, 1, 2, 3]
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
       contents: read
