@@ -123,15 +123,12 @@ pinned nightly, may depend on any crate, and no crate depends on it (#252;
 https://github.com/synnaxlabs/foundation/pull/2099#issuecomment-6074164278).
 
 Outside the binary: the Rust SDK `sdk` builds on `program`, and the Python SDK wraps
-`sdk` with PyO3 (C6: the person chose A at 2026-10-15T17:40Z, relayed by
-`laptop.architect-2` at 2026-10-15T17:45:08Z,
-https://github.com/synnaxlabs/foundation/issues/2177#issuecomment-6198508264; the crate,
-`laptop.architect`, 2026-10-15T17:56:55Z,
+`sdk` with PyO3 (C6, SDK DATA PATH; the crate, `laptop.architect`,
+2026-10-15T17:56:55Z,
 https://github.com/synnaxlabs/foundation/issues/2177#issuecomment-6198730147; its name,
 `laptop.architect`, 2026-10-15T18:23:47Z,
 https://github.com/synnaxlabs/foundation/pull/2724#issuecomment-6199257488; its
 dependency on `access`, `laptop.architect`, 2026-10-15T18:05:02Z,
 https://github.com/synnaxlabs/foundation/issues/2722#issuecomment-6198883707). Other
-SDKs hand-write their data path against golden vectors (D12). Supersedes, for the
-Python SDK, the hand-written data path of C7 + D12 REJECTED, and "the Rust SDK reuses
-`block`, `types`, `codec`, and `wire`".
+SDKs hand-write their data path against golden vectors (D12). Supersedes "the Rust
+SDK reuses `block`, `types`, `codec`, and `wire`".
