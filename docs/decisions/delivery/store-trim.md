@@ -15,8 +15,10 @@
   record that no data or carry record follows. So an open of a full ring has its
   block, and the commit after it has a block for its carry record, after any count of
   opens (#160,
+  https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6177122793,
+  2026-10-14T19:58:01Z, which supersedes the two blocks of
   https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6158992463,
-  https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6177122793).
+  2026-10-14T01:42:08Z).
   `set_floor` and `usage` wait for their first effect, the B1 warning (#1080). Lost: a
   `trim` call from the home (it needs the commit rate, a late trim gives a second gap,
   and the edge cases of the ring move up into `home`). Decided by the architect (#160,
@@ -92,7 +94,7 @@
   2026-10-08T04:07:38Z). The blocks that stay free and the least area, which move the
   figures above by those blocks, are decided by the architect: two blocks (#160,
   https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6158992463,
-  2026-10-14T01:42:08Z), then three, so that a commit after an open of a full ring has
-  a block for its carry record (#2683,
+  2026-10-14T01:42:08Z), then three, which supersedes two, so that a commit after an
+  open of a full ring has a block for its carry record (#2683,
   https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6177122793,
   2026-10-14T19:58:01Z).

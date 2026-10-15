@@ -4,13 +4,13 @@
   STORED BENCH does for `home`. Only the bench `benches/wal.rs` (`test = true`) uses it.
   `commit` appends its records, takes `trimmed`, syncs each record, and releases to the
   trimmed tail, so a time holds the writer's cost for each commit. The bench runs
-  commits of 1 and 8 records, in rings of 64 and 4096 blocks: 1 record gives the cost
+  commits of 1 and 8 records, with the bench IDs 64 and 4096: 1 record gives the cost
   for each commit (`trimmed`, `release`), 8 the cost for each record (`append`,
   `synced`). Each ring has 4 blocks more than its bench ID (68 and 4100 blocks): with
-  the three blocks that each record keeps free (#160), only those sizes trim at each
-  commit of 1 record, as 64 and 4096 did before. The IDs stay, so the baseline
-  compares the same work. Decided by `laptop.architect` (#2683,
-  2026-10-14T19:58:01Z):
+  the three blocks that each record keeps free (#160), each commit of 1 record trims
+  at those sizes, as at 64 and 4096 before, and a test of `bench` checks it. Both
+  benches use the same rings. The IDs stay, so the baseline compares the same work.
+  Decided by `laptop.architect` (#2683, 2026-10-14T19:58:01Z):
   https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6177122793.
   Lost: a copy of `wal.rs` in the bench through `#[path]`, which needs `entry`,
   `record`, and `crc32c` copied too and the workspace lints off; a time of
