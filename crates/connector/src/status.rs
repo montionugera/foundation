@@ -33,7 +33,7 @@ use loom::sync::Mutex;
 use loom::sync::atomic::{AtomicBool, Ordering};
 
 use crate::stamp::Stamps;
-use crate::{cancel, kind};
+use crate::{cancel, deadline, kind};
 
 mod reading;
 
@@ -75,6 +75,11 @@ const TEXT_MAX: usize = 1024;
 const MARK: &str = "…";
 /// The least time between two writes of a change of counts alone.
 const PERIOD: Span = Span::SECOND;
+/// The most time that the changes of state wait for the home to apply the status,
+/// from the first change that it did not apply, and that the last frame of a call
+/// waits. After it, each change goes on, and the next frame that the home applies
+/// holds the whole status.
+const SETTLE: Span = Span::from_nanos(10 * Span::SECOND.nanos());
 
 /// The status channels of `connector`: the name of their index, then the name and
 /// sample type of each channel on it, the supervisor's first, then each of `counts`
@@ -489,7 +494,7 @@ impl Writer {
             error,
             note,
             started: false,
-            unapplied: false,
+            unapplied: None,
             closed: false,
         };
         let writer = Self {
@@ -550,47 +555,54 @@ impl Writer {
         self.set(|session| session.phase = Phase::Stopped).await;
     }
 
-    /// Writes the change of state that `change` makes, after the home applied the
-    /// change before it or `cancel` is cancelled, so that no state replaces a state
-    /// that the home did not apply.
+    /// Writes the change of state that `change` makes, after [`Self::applied`], so
+    /// that no state replaces a state that the home did not apply in normal load.
     async fn set(&self, change: impl FnOnce(&mut Session)) {
         self.applied().await;
         self.change(change);
     }
 
-    /// Waits until the home applied the last change of state or `cancel` is
-    /// cancelled.
+    /// Waits until the home applied the last change of state, `cancel` is cancelled,
+    /// or [`SETTLE`] passed after the first change that the home did not apply.
     async fn applied(&self) {
-        self.settle(|| self.session.borrow().unapplied).await;
+        let Some(first) = self.session.borrow().unapplied else {
+            return;
+        };
+        let pending = || self.session.borrow().unapplied.is_some();
+        self.settle(pending, first + SETTLE).await;
     }
 
     /// Writes the status while `pending`, at most once each [`PERIOD`] after the last
-    /// write, until `cancel` is cancelled.
-    async fn settle(&self, pending: impl Fn() -> bool) {
-        self.cancel
-            .race(async {
-                while pending() {
-                    self.write_staged().await;
-                }
-            })
-            .await;
+    /// write, until `cancel` is cancelled or `until`.
+    async fn settle(&self, pending: impl Fn() -> bool, until: Monotonic) {
+        let writes = async {
+            while pending() {
+                self.write_staged().await;
+            }
+        };
+        let bound = self.clock.sleep_until(until);
+        self.cancel.race(deadline::before(writes, bound)).await;
     }
 
     /// Writes the change of state that `change` makes.
     fn change(&self, change: impl FnOnce(&mut Session)) {
         let mut session = self.session.borrow_mut();
         change(&mut session);
-        session.unapplied = true;
-        session.write(&self.values, self.clock.now());
+        let now = self.clock.now();
+        session.unapplied.get_or_insert(now);
+        session.write(&self.values, now);
     }
 
     /// Polls `run` to its end. Meanwhile it writes the status that a kind staged or
     /// the home did not apply, at most once each [`PERIOD`] after the last write.
     /// Then it writes it the same way until the home applied it, the writer writes no
-    /// more, or `cancel` is cancelled.
+    /// more, `cancel` is cancelled, or [`SETTLE`] passed after `run` ended. The
+    /// supervisor ends `run` at its last change of state, so that bound counts from
+    /// that change.
     pub(crate) async fn during<T>(&self, run: impl Future<Output = T>) -> T {
         let output = beside(run, self.flush()).await;
-        self.settle(|| self.values.staged.get()).await;
+        let until = self.clock.now() + SETTLE;
+        self.settle(|| self.values.staged.get(), until).await;
         output
     }
 
@@ -661,9 +673,9 @@ struct Session {
     note: Text,
     /// Set at the first start, after which each start is a restart.
     started: bool,
-    /// Set while the last change of state waits for a frame that the home applies,
-    /// until the writer writes no more.
-    unapplied: bool,
+    /// The time of the first change of state that the home did not apply, while no
+    /// frame after it applied and the writer writes more.
+    unapplied: Option<Monotonic>,
     /// Set after the hub refused a write as `Removed` or the home failed on disk,
     /// after which the session writes nothing. Each write after it clears `unapplied`
     /// and the staged flag, which ends each wait for the home.
@@ -722,7 +734,7 @@ impl Session {
             }
         }
         if self.closed {
-            self.unapplied = false;
+            self.unapplied = None;
             return;
         }
         self.wrote = now;
@@ -743,7 +755,7 @@ impl Session {
             }
         }
         if !values.staged.get() {
-            self.unapplied = false;
+            self.unapplied = None;
         }
     }
 

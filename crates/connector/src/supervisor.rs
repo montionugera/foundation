@@ -120,19 +120,24 @@ impl Opened<'_> {
     /// [`Context::tasks`] ended, or after `cancel` is cancelled. Writes the connector's
     /// status channels as the connector: the whole status at each start and change of
     /// state, and a change of counts alone at most once each second. Each change of
-    /// state, a start too, waits until the home applied the state before it or `cancel`
-    /// is cancelled.
+    /// state, a start too, waits until the home applied the state before it, `cancel`
+    /// is cancelled, or 10 s passed since the oldest change of state that the home did
+    /// not apply.
     ///
     /// Returns `Ok` when `run` returns `Ok`, when the mesh stopped before the status
     /// channels opened, or when `cancel` is cancelled: at once while the channels are
     /// not open, with no new run while a reader open waits (the open of
     /// [`Supervisor::open`] too), and otherwise once the run returned. It returns, with
     /// `Ok` or an error, only once each task of its last run ended, and the home
-    /// applied its last status frame or `cancel` is cancelled. Neither wait holds once
-    /// the home refused a status frame because the status channels were removed or its
-    /// disk failed: after it, the call writes no more status. A drop of the future
-    /// cancels the run and does not wait for its tasks: to wait, cancel `cancel` and
-    /// await the future. The future is not `Send`: call it on a shard.
+    /// applied its last status frame, `cancel` is cancelled, or 10 s passed since the
+    /// write of its last state. So however late the home applies status frames, once
+    /// its last run returned `Ok` or a config error, it returns at most 30 s after that
+    /// run returned, or 10 s after the last task of that run ended when that is later.
+    /// Neither wait holds once the home refused a status frame because the status
+    /// channels were removed or its disk failed: after it, the call writes no more
+    /// status. A drop of the future cancels the run and does not wait for its tasks: to
+    /// wait, cancel `cancel` and await the future. The future is not `Send`: call it on
+    /// a shard.
     ///
     /// # Errors
     ///
@@ -1749,12 +1754,16 @@ mod tests {
         );
     }
 
-    /// The status frames of one connector of [`Script`] that returns `Ok` at once,
-    /// whose frames another writer refuses until `held`, and when the call returned.
-    fn refused_until(held: Span, cancel: Option<Span>) -> (Vec<Written>, Span) {
+    /// The status frames of one connector of [`Script`] that plays `steps`, whose
+    /// frames another writer refuses until `held`, and when the call returned.
+    fn refused_until(
+        steps: Vec<Step>,
+        held: Span,
+        cancel: Option<Span>,
+    ) -> (Vec<Written>, Span) {
         run_on(move |node, tasks| async move {
             let script = Script {
-                steps: Mutex::new([Step::Done].into()),
+                steps: Mutex::new(steps.into()),
                 ..Script::default()
             };
             let kinds = Table::new().with("script", script);
@@ -1795,7 +1804,7 @@ mod tests {
 
     #[test]
     fn writes_a_refused_last_frame_again_before_the_call_returns() {
-        let (statuses, returned) = refused_until(ms(500), None);
+        let (statuses, returned) = refused_until(vec![Step::Done], ms(500), None);
         assert_eq!(
             states(&statuses),
             [(0, 0, 0), (3, 0, 0), (2, 0, 0)],
@@ -1810,7 +1819,7 @@ mod tests {
 
     #[test]
     fn writes_a_last_frame_refused_twice_until_the_home_applies_it() {
-        let (statuses, returned) = refused_until(ms(1_500), None);
+        let (statuses, returned) = refused_until(vec![Step::Done], ms(1_500), None);
         assert_eq!(
             states(&statuses),
             [(0, 0, 0), (3, 0, 0), (2, 0, 0)],
@@ -1872,8 +1881,62 @@ mod tests {
     }
 
     #[test]
+    fn returns_after_a_bound_on_each_outage_while_the_home_refuses_each_frame() {
+        let (statuses, returned) = refused_until(vec![Step::Done], ms(60_000), None);
+        assert_eq!(
+            states(&statuses),
+            [],
+            "the call returned before the home applied"
+        );
+        assert_eq!(
+            returned,
+            ms(20_000),
+            "10 s from `state` 0, then `state` 3 and `state` 2 at once, and 10 s for \
+             the last frame"
+        );
+    }
+
+    #[test]
+    fn restarts_after_a_bound_on_each_outage_while_the_home_refuses_each_frame() {
+        let steps = vec![Step::Retry, Step::Done];
+        let (statuses, returned) = refused_until(steps, ms(15_000), None);
+        assert_eq!(
+            states(&statuses),
+            [(2, 0, 1)],
+            "the first frame that the home applies holds the restart"
+        );
+        assert!(
+            returned > ms(15_000) && returned <= ms(16_000),
+            "returns at the first write after the home applies: {returned:?}"
+        );
+    }
+
+    #[test]
+    fn writes_a_last_frame_refused_for_5_s_until_the_home_applies_it() {
+        let (statuses, returned) = refused_until(vec![Step::Done], ms(5_000), None);
+        assert_eq!(
+            states(&statuses),
+            [(0, 0, 0), (3, 0, 0), (2, 0, 0)],
+            "each state after the one that the home refused waits for it"
+        );
+        assert_eq!(returned, ms(5_000), "returns once the frame of 5 s applied");
+    }
+
+    #[test]
+    fn writes_a_frame_refused_for_9_5_s_before_the_next_state() {
+        let (statuses, returned) = refused_until(vec![Step::Done], ms(9_500), None);
+        assert_eq!(
+            states(&statuses),
+            [(0, 0, 0), (3, 0, 0), (2, 0, 0)],
+            "the write at 10 s comes before the bound"
+        );
+        assert_eq!(returned, ms(10_000));
+    }
+
+    #[test]
     fn returns_at_a_cancel_while_the_last_frame_waits() {
-        let (statuses, returned) = refused_until(ms(2_500), Some(ms(500)));
+        let (statuses, returned) =
+            refused_until(vec![Step::Done], ms(2_500), Some(ms(500)));
         assert_eq!(states(&statuses), [], "no frame after the cancel");
         assert_eq!(returned, ms(500));
     }
@@ -2157,21 +2220,81 @@ mod tests {
 
     #[test]
     fn waits_for_a_full_pool_after_its_status_channels_are_removed() {
+        assert_eq!(
+            removed_with_a_full_pool(ms(5_100)),
+            ms(6_500),
+            "state 3 waits until the pool frees"
+        );
+    }
+
+    #[test]
+    fn returns_after_a_bound_on_a_full_pool_after_its_status_channels_are_removed() {
+        assert_eq!(
+            removed_with_a_full_pool(ms(40_100)),
+            ms(21_500),
+            "10 s for state 3, then 10 s for the last frame"
+        );
+    }
+
+    /// Fills the pool at 0.5 s, removes a status channel, and frees the pool `held`
+    /// later, while a run ends at 1.5 s. Gives the length of the call.
+    fn removed_with_a_full_pool(held: Span) -> Span {
         let run = |ctx: Context<()>| async move {
             ctx.clock().sleep(ms(1_500)).await;
             Ok(())
         };
-        let returned = timed(run, |scene| async move {
+        timed(run, move |scene| async move {
             let hog = rival(&scene.hub, tally_statuses(&["state", "error"])).await;
             scene.node.clock().sleep(ms(500)).await;
-            let held = fill(&hog);
+            let pool = fill(&hog);
             scene.remove("samples");
             // Off the status writes at 1.5 s plus each whole second, where the order of
             // the two tasks is random.
-            scene.node.clock().sleep(ms(20_100)).await;
+            scene.node.clock().sleep(held).await;
+            drop(pool);
+        })
+    }
+
+    /// The pool frees at 3 s and so ends the first outage. A refusal at 8 s then waits
+    /// a full `SETTLE`, and the last frame its own.
+    #[test]
+    fn waits_a_full_bound_for_a_refusal_after_a_frame_applied() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(Mutex::new(None));
+        let started = Arc::clone(&start);
+        let run = move |ctx: Context<()>| {
+            let first = runs.fetch_add(1, Ordering::Relaxed) == 0;
+            let start = Arc::clone(&started);
+            async move {
+                let clock = ctx.clock();
+                if first {
+                    *start.lock().expect("not poisoned") = Some(clock.now());
+                    clock.sleep(ms(1_000)).await;
+                    return Err(Error::Retry("busy".into()));
+                }
+                let origin = start.lock().expect("not poisoned").expect("set");
+                clock.sleep_until(origin + ms(8_000)).await;
+                Ok(())
+            }
+        };
+        let returned = timed(run, |scene| async move {
+            let clock = scene.node.clock();
+            let origin = clock.now();
+            let hog = rival(&scene.hub, tally_statuses(&["state", "error"])).await;
+            clock.sleep_until(origin + ms(500)).await;
+            let held = fill(&hog);
+            clock.sleep_until(origin + ms(3_000)).await;
+            drop(held);
+            clock.sleep_until(origin + ms(7_000)).await;
+            let held = fill(&hog);
+            clock.sleep(ms(60_000)).await;
             drop(held);
         });
-        assert_eq!(returned, ms(21_500), "state 3 waits until the pool frees");
+        assert_eq!(
+            returned,
+            ms(28_000),
+            "10 s from 8 s, then 10 s for the last frame"
+        );
     }
 
     #[test]
@@ -2202,10 +2325,10 @@ mod tests {
                 "the shard failed on disk at 1.4 s: {written:?}"
             );
             held.extend(fill(&hog));
-            clock.sleep(ms(19_800)).await;
+            clock.sleep(ms(4_200)).await;
             drop(held);
         });
-        assert_eq!(returned, ms(21_500), "state 3 waits until the pool frees");
+        assert_eq!(returned, ms(6_500), "state 3 waits until the pool frees");
     }
 
     #[test]
