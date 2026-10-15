@@ -571,6 +571,7 @@ impl Writer {
 
     /// Plans a record of `kind` with a body of `len` bytes. It leaves the room of
     /// [`spare`] free.
+    #[inline]
     fn plan(&mut self, kind: Kind, len: usize) -> Result<Plan, Full> {
         let (skipped, size) = self.cost(len, spare(kind))?;
         let wrap = (skipped > 0).then(|| self.layout.place(self.head));
@@ -742,6 +743,7 @@ impl Writer {
 
     /// The bytes a record with a body of `len` bytes skips at the end of the area
     /// and the bytes it takes, when it leaves `spare` bytes free.
+    #[inline]
     fn cost(&self, len: usize, spare: u64) -> Result<(u64, u64), Full> {
         assert!(
             len <= self.layout.body_max,
