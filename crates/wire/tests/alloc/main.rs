@@ -1,6 +1,7 @@
-//! The hub messages on a frame's path make no heap allocation. This binary has no
-//! test harness: the count covers each thread, and a harness allocates on its own
-//! thread at any time.
+//! The hub messages on a frame's path, the blob heads, and the body counters of client
+//! requests and blob chunks, make no heap allocation, and the place messages of a read
+//! make a known count. This binary has no test harness: the count covers each thread,
+//! and a harness allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -32,6 +33,10 @@ fn main() {
         ends(series);
     }
     ends_by_place();
+    client_body();
+    blob_body();
+    blob_heads();
+    place_messages();
 }
 
 /// A reader that has decoded `Opened` and a head of `series` series.
@@ -52,7 +57,7 @@ fn reader(series: u32) -> Reader {
 
 fn head() {
     let head = Head {
-        path: Path::Backfill,
+        path: Path::Live,
         range: Range { seq: 7, count: 1 },
         series: 3,
     };
@@ -138,4 +143,126 @@ fn ends_by_place() {
         allocations, 0,
         "the encode of a run split by place allocated"
     );
+}
+
+/// The take of each message of a client request body.
+fn client_body() {
+    let body = [7; 1_000];
+    let request = wire::hub::client::Request {
+        length: 1_000,
+        signature: [0; 64],
+    };
+    let mut rest = request.body();
+    let (taken, allocations) = ALLOCATOR.count(|| {
+        body.chunks(300)
+            .map(|message| rest.take(message).expect("a body message").len())
+            .sum::<usize>()
+    });
+    assert_eq!(allocations, 0, "the take of a client body allocated");
+    assert_eq!(taken, body.len(), "the whole body was taken");
+}
+
+/// The take of each message of a blob chunk's body.
+fn blob_body() {
+    let body = [7; 1_000];
+    let put = wire::blob::Put {
+        digest: types::digest::Digest([0; 32]),
+        len: 1_000,
+    };
+    let mut rest = put.body();
+    let (taken, allocations) = ALLOCATOR.count(|| {
+        body.chunks(300)
+            .map(|message| rest.take(message).expect("a body message").len())
+            .sum::<usize>()
+    });
+    assert_eq!(allocations, 0, "the take of a blob body allocated");
+    assert_eq!(taken, body.len(), "the whole body was taken");
+}
+
+/// The decode of a put and a get at the server, and of each reply at the requester.
+fn blob_heads() {
+    use types::digest::Digest;
+    use wire::blob::{FromRequester, Put, Reply, Requester, Server, get};
+
+    let digest = Digest([7; 32]);
+    let mut put = [0; Put::LEN];
+    Put { digest, len: 64 }.encode(&mut put);
+    let mut get = vec![0; get::encoded_len(2)];
+    get::encode(&[digest, digest], &mut get);
+    let server = Server::new(1 << 20);
+    let (decoded, allocations) = ALLOCATOR.count(|| {
+        [put.as_slice(), &get].map(|message| match server.decode(message) {
+            Ok(FromRequester::Put(put)) => put.digest == digest,
+            Ok(FromRequester::Get(mut digests)) => digests.all(|got| got == digest),
+            other => panic!("a put or a get: {other:?}"),
+        })
+    });
+    assert_eq!(allocations, 0, "the decode of a blob request allocated");
+    assert_eq!(decoded, [true, true], "the put and the get decoded");
+
+    let replies = [
+        Reply::Chunk { digest, len: 64 },
+        Reply::Absent { digest },
+        Reply::Stored { digest },
+    ]
+    .map(|reply| {
+        let mut out = vec![0; reply.encoded_len()];
+        reply.encode(&mut out);
+        out
+    });
+    let requester = Requester::new(1 << 20);
+    let (decoded, allocations) = ALLOCATOR.count(|| {
+        replies
+            .each_ref()
+            .map(|message| match requester.decode(message) {
+                Ok(Reply::Chunk { digest: got, len }) => got == digest && len == 64,
+                Ok(Reply::Absent { digest: got } | Reply::Stored { digest: got }) => {
+                    got == digest
+                }
+                other => panic!("a reply: {other:?}"),
+            })
+    });
+    assert_eq!(allocations, 0, "the decode of a blob reply allocated");
+    assert_eq!(decoded, [true, true, true], "each reply decoded");
+}
+
+/// The cut and the encode of a run of 3 places, one place a message. Each place is
+/// formatted once at each cut that tries it and once at its encode: 8 times in all.
+fn place_messages() {
+    use wire::hub::client::{FromNode, Mode, Place, Places, Reader, place};
+
+    let places =
+        [(1, "timestamp"), (2, "u8"), (3, "u8")].map(|(key, data_type)| Place {
+            key: channel::Key::from_u128(key),
+            data_type: data_type.parse().expect("a sample type"),
+            name: "a".parse().expect("a name"),
+        });
+    let mut out = [0; 70];
+    let mut lens = [0; 3];
+    let ((), allocations) = ALLOCATOR.count(|| {
+        let mut rest = &mut out[..];
+        for (message, len) in place::messages(&places, 28).zip(&mut lens) {
+            *len = message.encoded_len();
+            let (into, after) = rest.split_at_mut(*len);
+            message.encode(into);
+            rest = after;
+        }
+    });
+    assert_eq!(allocations, 8, "the place messages allocated another count");
+    assert_eq!(lens, [28, 21, 21], "each place is a message");
+    let mut reader = Reader::new(Mode::Complete);
+    let mut first = [0; Places::LEN];
+    Places { count: 3, index: 0 }.encode(&mut first);
+    reader.decode(&first).expect("the places decode");
+    let mut rest = &out[..];
+    let mut decoded = Vec::new();
+    for len in lens {
+        let (message, after) = rest.split_at(len);
+        match reader.decode(message) {
+            Ok(FromNode::Run { places, .. }) => decoded.extend(places),
+            other => panic!("a message of the run: {other:?}"),
+        }
+        rest = after;
+    }
+    assert_eq!(decoded, places, "the run round trips");
 }

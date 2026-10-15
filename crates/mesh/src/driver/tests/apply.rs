@@ -12,6 +12,7 @@ use spec::subject::Subject;
 use super::send::stop;
 use super::*;
 use crate::change::HOMES_MAX;
+use crate::common::name;
 
 impl Cluster {
     /// Node `node` proposes the spec change of `definitions` on `base` at its next
@@ -117,7 +118,7 @@ pub(super) fn base() -> Pointer {
 fn apply_gives_each_problem_of_the_spec_and_proposes_nothing() {
     let entries = solo_stored(|node, tasks| async move {
         let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-        lead(&mesh, &node.clock(), home(1)).await;
+        lead(&mesh, &node.clock(), home_to(1)).await;
         let mut definitions = create_subjects(&["other.a"], 1);
         let misplaced = name("plant.b");
         let subject = definitions.values().next().unwrap().clone();
@@ -318,7 +319,7 @@ fn of_two_applies_from_one_base_one_gives_the_pointer_and_the_other_stale() {
         cluster.apply(leader, base(), &a);
         cluster.apply(follower, base(), &b);
         cluster.run(seconds(5));
-        cluster.script(|_| home(9));
+        cluster.script(|_| home_to(9));
         cluster.run(seconds(5));
         let board = cluster.board();
         // The two calls end on two nodes, in either order.
@@ -399,7 +400,7 @@ fn two_calls_of_one_change_from_one_base_give_one_pointer() {
     cluster.apply(follower, base(), &definitions);
     cluster.run(seconds(5));
     // A home after the changes gives the pointer of each node to the board.
-    cluster.script(|_| home(9));
+    cluster.script(|_| home_to(9));
     cluster.run(seconds(5));
     let board = cluster.board();
     let mut applied = board.applied.clone();
@@ -676,7 +677,7 @@ fn each_member_refuses_a_change_whose_holders_lack_a_majority_of_its_voters() {
     let definitions = create_subjects(&["plant.a"], 1);
     cluster.apply_held(1, base(), &definitions, [1].into(), BTreeMap::new());
     cluster.run(seconds(5));
-    cluster.script(|_| home(9));
+    cluster.script(|_| home_to(9));
     cluster.run(seconds(5));
     let board = cluster.board();
     let quorum = Error::Quorum { held: 1, voters: 2 };
@@ -811,10 +812,6 @@ fn specs(entries: &[Entry]) -> Vec<Change> {
     };
     let spec = |change: &Change| matches!(change, Change::Spec { .. });
     entries.iter().filter_map(change).filter(spec).collect()
-}
-
-fn name(text: &str) -> Name {
-    text.parse().unwrap()
 }
 
 /// An index channel of key `7 + at` at the tree key `plant.i<at>`, for each `at` below
@@ -987,11 +984,67 @@ fn two_equal_calls_with_a_kept_home_give_ok() {
     });
 }
 
+// `INDEX` has a home, so the change leaves the pointer, and a later apply on it
+// applies.
+#[test]
+fn an_apply_of_the_tree_of_its_base_with_each_index_homed_gives_the_base() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
+        let a = create_indexes(1);
+        let moved = pointer(1, &a);
+        let first = create_homes(1, "plant.node1");
+        assert_eq!(mesh.apply(base(), a.clone(), first).await, Ok(moved));
+        let other = create_homes(1, "plant.node2");
+        assert_eq!(mesh.apply(moved, a, other).await, Ok(moved));
+        assert_eq!(mesh.pointer(), moved);
+        assert_eq!(mesh.spec().await.unwrap().pointer, Some(moved));
+        assert_eq!(mesh.watch(INDEX).next().await, Ok(Some(key(1))));
+        let b = create_indexes(2);
+        let next = pointer(2, &b);
+        assert_eq!(mesh.apply(moved, b, BTreeMap::new()).await, Ok(next));
+    });
+}
+
+// The second call gives `INDEX` a home, so the pointer moves to the root of `moved`
+// at the next version, and the third call, which leaves the pointer, finds it.
+#[test]
+fn an_apply_of_the_tree_of_a_replaced_base_gives_stale() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
+        let a = create_indexes(1);
+        let moved = pointer(1, &a);
+        let applied = mesh.apply(base(), a.clone(), BTreeMap::new()).await;
+        assert_eq!(applied, Ok(moved));
+        let homes = create_homes(1, "plant.node1");
+        let next = pointer(2, &a);
+        assert_eq!(mesh.apply(moved, a.clone(), homes).await, Ok(next));
+        let stale = Error::Stale {
+            base: moved,
+            pointer: next,
+        };
+        assert_eq!(mesh.apply(moved, a, BTreeMap::new()).await, Err(stale));
+    });
+}
+
+#[test]
+fn an_apply_at_the_root_of_its_base_that_gives_a_home_moves_the_pointer() {
+    solo(|node, tasks| async move {
+        let mesh = open_founded(&node, &tasks, 1).await;
+        let definitions = create_indexes(2);
+        let founded = pointer(0, &definitions);
+        let moved = pointer(1, &definitions);
+        let homes = create_homes(2, "plant.node2");
+        assert_eq!(mesh.apply(founded, definitions, homes).await, Ok(moved));
+        assert_eq!(mesh.watch(INDEX).next().await, Ok(Some(key(1))));
+        assert_eq!(mesh.watch(SECOND).next().await, Ok(Some(key(2))));
+    });
+}
+
 #[test]
 fn apply_gives_ok_when_a_listed_index_keeps_the_home_it_had() {
     solo(|node, tasks| async move {
         let mesh = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
-        lead(&mesh, &node.clock(), home(1)).await;
+        lead(&mesh, &node.clock(), home_to(1)).await;
         let definitions = create_indexes(1);
         let moved = pointer(1, &definitions);
         let homes = create_homes(1, "plant.node2");
@@ -1015,7 +1068,7 @@ fn a_lost_answer_gives_the_result_of_a_call_with_a_home_kept() {
             cluster.sim.link(&a, &b, config);
             cluster.sim.link(&b, &a, config);
         }
-        cluster.script(|_| home(1));
+        cluster.script(|_| home_to(1));
         cluster.run(seconds(5));
         let definitions = create_indexes(1);
         let moved = pointer(1, &definitions);
@@ -1034,7 +1087,7 @@ fn a_lost_answer_gives_the_result_of_a_call_with_a_home_kept() {
 }
 
 /// A waker that counts its wakes.
-struct Counted(AtomicUsize);
+pub(super) struct Counted(pub(super) AtomicUsize);
 
 impl Wake for Counted {
     fn wake(self: Arc<Self>) {
@@ -1047,7 +1100,7 @@ impl Wake for Counted {
 fn a_spec_change_wakes_the_watches_only_when_it_gives_a_home() {
     solo(|node, tasks| async move {
         let mesh = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
-        lead(&mesh, &node.clock(), home(1)).await;
+        lead(&mesh, &node.clock(), home_to(1)).await;
         let counted = Arc::new(Counted(AtomicUsize::new(0)));
         let waker = Waker::from(Arc::clone(&counted));
         let mut cx = Context::from_waker(&waker);
@@ -1069,7 +1122,7 @@ fn a_spec_change_wakes_the_watches_only_when_it_gives_a_home() {
 fn apply_refuses_a_home_of_a_name_that_is_not_an_index_and_proposes_nothing() {
     let entries = solo_stored(|node, tasks| async move {
         let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-        lead(&mesh, &node.clock(), home(1)).await;
+        lead(&mesh, &node.clock(), home_to(1)).await;
         let mut definitions = create_indexes(1);
         definitions.extend(create_subjects(&["plant.a"], 1));
         let quality = spec::channel::Data::new(
@@ -1104,7 +1157,7 @@ fn apply_refuses_a_home_of_a_name_that_is_not_an_index_and_proposes_nothing() {
 fn apply_refuses_a_home_on_a_node_that_is_not_a_member_and_proposes_nothing() {
     let entries = solo_stored(|node, tasks| async move {
         let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-        lead(&mesh, &node.clock(), home(1)).await;
+        lead(&mesh, &node.clock(), home_to(1)).await;
         let homes = [(Kind::Channel.key("plant.i1").unwrap(), name("plant.node2"))];
         let applied = mesh.apply(base(), create_indexes(2), homes.into()).await;
         let error = Error::UnknownNode(name("plant.node2"));
@@ -1256,7 +1309,7 @@ fn each_member_reads_the_homes_of_a_spec_change_and_a_later_change_keeps_them() 
     cluster.run(seconds(5));
     cluster.apply_held(3, moved, &b, IDS.into(), both);
     cluster.run(seconds(5));
-    cluster.script(|_| home(9));
+    cluster.script(|_| home_to(9));
     cluster.run(seconds(5));
     let board = cluster.board();
     let stale = Error::Stale {
@@ -1282,7 +1335,7 @@ fn each_member_reads_the_homes_of_a_spec_change_and_a_later_change_keeps_them() 
 fn an_index_that_gets_a_home_while_the_call_reads_the_base_tree_needs_no_known_node() {
     solo(|node, tasks| async move {
         let mesh = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
-        lead(&mesh, &node.clock(), home(1)).await;
+        lead(&mesh, &node.clock(), home_to(1)).await;
         let a = create_subjects(&["plant.a"], 1);
         let moved = pointer(1, &a);
         assert_eq!(

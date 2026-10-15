@@ -1,17 +1,19 @@
 //! `config::plan` against applied specs that the tests build and apply.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::slice;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use config::plan::Plan;
 use config::{Definition, Entry};
 use connector::cancel;
 use connector::kind::{self, Channels, Context, Kind, Table};
-use document::diagnostic::Diagnostic;
+use document::diagnostic::{Code, Diagnostic, Note};
+use document::encoding::Checked;
 use document::{Document, Source, read as reader};
 use spec::Pointer;
-use spec::channel::Channel;
+use spec::channel::{Channel, Data};
 use spec::compression::{self, Mode};
+use spec::data_type::DataType;
 use spec::definition::Definition as Stored;
 use spec::time::{self, Peers};
 use spec::tree::{self, Chunks};
@@ -19,11 +21,21 @@ use types::channel::Key;
 use types::digest::Digest;
 use types::ed25519::PrivateKey;
 use types::name::{Name, Selector};
+use types::sample::{Scalar, Type};
 
+mod check;
 mod codec;
 
 const EDGE: &str = include_str!("../../../acceptance/tests/it/fixtures/edge.hcl");
 const INFLUX: &str = include_str!("../../../acceptance/tests/it/fixtures/influx.hcl");
+const CONTROL: &str = include_str!("../../../acceptance/tests/it/fixtures/control.hcl");
+/// The device fixtures of `acceptance`. Each ends with its connector block.
+const DEVICES: [&str; 4] = [
+    include_str!("../../../acceptance/tests/it/fixtures/opcua.hcl"),
+    include_str!("../../../acceptance/tests/it/fixtures/modbus_tcp.hcl"),
+    include_str!("../../../acceptance/tests/it/fixtures/modbus_rtu.hcl"),
+    include_str!("../../../acceptance/tests/it/fixtures/ni.hcl"),
+];
 
 /// One index, placed on `n`, and a data channel on it.
 const PLANT: &str = "\
@@ -40,24 +52,31 @@ placement \"a\" {
 }
 ";
 
-/// A kind whose config is one attribute, `writes`: the channels it writes to the mesh.
+/// A kind whose config is `writes`, the channels it writes to the mesh, and an optional
+/// `counts`, the counts of its status.
 struct Writer;
 
 impl Kind for Writer {
-    type Config = Vec<Name>;
+    type Config = (Vec<Name>, Vec<Name>);
 
-    fn parse(&self, config: &Document) -> Result<Vec<Name>, Vec<Diagnostic>> {
-        let writes = config
-            .attributes
-            .get("writes")
-            .expect("a `writes` attribute");
-        reader::names(&writes.value).map_err(|diagnostic| vec![diagnostic])
+    fn parse(&self, config: &Document) -> Result<Self::Config, Vec<Diagnostic>> {
+        let names = |attribute: &document::Attribute| {
+            reader::names(&attribute.value).map_err(|diagnostic| vec![diagnostic])
+        };
+        let writes = config.attributes.get("writes");
+        let writes = names(writes.expect("a `writes` attribute"))?;
+        let counts = config.attributes.get("counts").map(names);
+        Ok((writes, counts.transpose()?.unwrap_or_default()))
     }
 
-    fn check(&self, writes: &Vec<Name>) -> Result<Channels, Vec<Diagnostic>> {
+    fn check(
+        &self,
+        (writes, counts): &Self::Config,
+    ) -> Result<Channels, Vec<Diagnostic>> {
         Ok(Channels {
-            reads: Vec::new(),
+            reader: None,
             writes: writes.clone(),
+            counts: counts.clone(),
         })
     }
 
@@ -70,7 +89,7 @@ impl Kind for Writer {
 
     fn run(
         &self,
-        _: Context<Vec<Name>>,
+        _: Context<Self::Config>,
     ) -> impl Future<Output = Result<(), kind::Error>> {
         std::future::ready(Ok(()))
     }
@@ -96,16 +115,15 @@ impl Spec {
         }
     }
 
+    /// Plans `texts` on the nodes `members`, and asserts that `check` agrees.
     fn plan(&self, texts: &[&str], members: &[&str]) -> Result<Plan, Vec<Diagnostic>> {
         let members = members.iter().map(|member| name(member)).collect();
         let applied = self.definitions();
-        config::plan::plan(
-            &documents(texts),
-            self.pointer,
-            &applied,
-            &members,
-            &kinds(),
-        )
+        let documents = documents(texts);
+        let planned =
+            config::plan::plan(&documents, self.pointer, &applied, &members, &kinds());
+        agrees(&documents, &applied, &planned, &members);
+        planned
     }
 
     /// Each stored definition, by tree key.
@@ -169,6 +187,70 @@ impl Spec {
     }
 }
 
+/// Asserts that `config::plan::check` gives each problem of `planned` but
+/// `config.wrong-channel`, with no span, when `config::check` finds none in
+/// `documents`. It checks the definitions of the plan, or, when `plan` refuses, the
+/// definitions that the files make.
+fn agrees(
+    documents: &[Document],
+    applied: &BTreeMap<Name, Stored>,
+    planned: &Result<Plan, Vec<Diagnostic>>,
+    members: &BTreeSet<Name>,
+) {
+    let Ok(entries) = config::check(documents, &kinds()) else {
+        return;
+    };
+    let (definitions, mut expected) = match planned {
+        Ok(plan) => {
+            let mut made = 0;
+            let key = || {
+                made += 1;
+                Key::from_u128((1 << 100) | made)
+            };
+            (
+                plan.definitions(applied, key).expect("definitions"),
+                Vec::new(),
+            )
+        }
+        Err(diagnostics) => {
+            let rules = diagnostics.iter().cloned();
+            let rules =
+                rules.filter(|found| found.code.as_str() != "config.wrong-channel");
+            (made(&entries), problems(Err(rules.collect())))
+        }
+    };
+    let checked = config::plan::check(&definitions, members, &kinds());
+    let mut found = match checked {
+        Ok(()) => Vec::new(),
+        Err(diagnostics) => problems(Err(diagnostics)),
+    };
+    for problem in &mut expected {
+        problem.1 = None;
+    }
+    expected.sort();
+    found.sort();
+    assert_eq!(found, expected);
+}
+
+/// The definitions of `entries`. Each channel has the key of its place in name order,
+/// and an edge to a name that no entry holds has the key 0.
+fn made(entries: &BTreeMap<Name, Entry>) -> BTreeMap<Name, Stored> {
+    let keys: BTreeMap<_, _> = entries.keys().zip(1..).collect();
+    let key = |name: &Name| Key::from_u128(keys.get(name).copied().unwrap_or(0));
+    let made = entries.iter().map(|(name, entry)| {
+        let definition = match &entry.definition {
+            Definition::Spec(definition) => definition.clone(),
+            Definition::Channel(kind) => Stored::Channel(Channel {
+                key: key(name),
+                kind: kind.clone().map(|to| key(&to)),
+            }),
+            definition => panic!("a new kind of definition: {definition:?}"),
+        };
+        (name.clone(), definition)
+    });
+    made.collect()
+}
+
 fn encode(name: &Name, entry: &Entry, keys: &BTreeMap<Name, Key>) -> Vec<u8> {
     match &entry.definition {
         Definition::Spec(definition) => definition.encode(),
@@ -183,21 +265,28 @@ fn encode(name: &Name, entry: &Entry, keys: &BTreeMap<Name, Key>) -> Vec<u8> {
     }
 }
 
-/// A kind whose one attribute, `writes`, names the channels that it reads from the mesh
-/// and writes to its device.
+/// A kind that reads the channels of its `select` attribute from the mesh and writes
+/// them to its device.
 struct Commander;
 
 impl Kind for Commander {
-    type Config = Vec<Name>;
+    type Config = connector::reader::Settings;
 
-    fn parse(&self, config: &Document) -> Result<Vec<Name>, Vec<Diagnostic>> {
-        Writer.parse(config)
+    fn parse(
+        &self,
+        config: &Document,
+    ) -> Result<connector::reader::Settings, Vec<Diagnostic>> {
+        connector::reader::read(config, &[], &[])
     }
 
-    fn check(&self, writes: &Vec<Name>) -> Result<Channels, Vec<Diagnostic>> {
+    fn check(
+        &self,
+        settings: &connector::reader::Settings,
+    ) -> Result<Channels, Vec<Diagnostic>> {
         Ok(Channels {
-            reads: writes.clone(),
+            reader: Some(settings.clone()),
             writes: Vec::new(),
+            counts: Vec::new(),
         })
     }
 
@@ -210,8 +299,50 @@ impl Kind for Commander {
 
     fn run(
         &self,
-        _: Context<Vec<Name>>,
+        _: Context<connector::reader::Settings>,
     ) -> impl Future<Output = Result<(), kind::Error>> {
+        std::future::ready(Ok(()))
+    }
+}
+
+/// A kind that writes `a.time` on its first check and refuses each later check, as a
+/// device that goes away does.
+#[derive(Default)]
+struct Once {
+    checks: AtomicUsize,
+}
+
+impl Kind for Once {
+    type Config = ();
+
+    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+        if self.checks.fetch_add(1, Ordering::SeqCst) > 0 {
+            return Err(vec![Diagnostic::new(
+                Code::new("once.gone"),
+                None,
+                "the device is gone".into(),
+                "Connect the device".into(),
+            )]);
+        }
+        Ok(Channels {
+            reader: None,
+            writes: vec![name("a.time")],
+            counts: Vec::new(),
+        })
+    }
+
+    fn discover(
+        &self,
+        _: &cancel::Token,
+    ) -> impl Future<Output = Result<Vec<Document>, kind::Error>> {
+        std::future::ready(Ok(Vec::new()))
+    }
+
+    fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), kind::Error>> {
         std::future::ready(Ok(()))
     }
 }
@@ -301,17 +432,12 @@ fn adds_each_definition_of_the_fixtures_to_the_empty_spec() {
         .map(|(key, entry)| (key, None, Some(entry)))
         .collect();
     assert_eq!(changes(&plan), added);
-    let influx = plan
-        .changes
-        .values()
-        .last()
-        .and_then(|change| change.new.as_ref());
+    let influx = plan.changes[&name("influx")].new.as_ref();
     let influx = influx.and_then(|entry| entry.label_span);
     assert_eq!(influx.map(document::Span::source), Some(Source(1)));
-    assert_eq!(
-        plan.homes,
-        BTreeMap::from([(name("edge.time"), name("edge"))])
-    );
+    let homes = [("edge.time", "edge"), ("influx.status.time", "cloud")];
+    let homes = homes.map(|(index, home)| (name(index), name(home)));
+    assert_eq!(plan.homes, BTreeMap::from(homes));
     assert_eq!(plan.base, spec.pointer);
 }
 
@@ -322,10 +448,43 @@ fn plans_no_change_after_its_apply() {
     spec.apply(&spec.plan(&[EDGE, INFLUX], &members).expect("no problems"));
     let plan = spec.plan(&[EDGE, INFLUX], &members).expect("no problems");
     assert_eq!(changes(&plan), []);
-    let homes = BTreeMap::from([(name("edge.time"), name("edge"))]);
-    assert_eq!(plan.homes, homes);
+    let homes = [("edge.time", "edge"), ("influx.status.time", "cloud")];
+    let homes = homes.map(|(index, home)| (name(index), name(home)));
+    assert_eq!(plan.homes, BTreeMap::from(homes));
     assert_eq!(plan.base.version, 1);
     assert_eq!(plan.base, spec.pointer);
+}
+
+/// A device fixture with the kind of its connector made a [`Writer`] of `dev.p`, the
+/// channel that a `read` block writes. A `command` block only reads, so `dev.q_time`
+/// needs the placement.
+#[test]
+fn places_each_index_of_a_device_fixture_at_its_connector() {
+    for device in DEVICES {
+        let connector = device.find("connector \"dev\"").expect("a connector");
+        let start = connector + device[connector..].find("kind = ").expect("a kind");
+        let end = start + device[start..].find('\n').expect("a line");
+        let text = format!(
+            "{}kind = \"writer\"\n  writes = [\"dev.p\"]{}",
+            &device[..start],
+            &device[end..]
+        );
+        let mut spec = Spec::create_empty();
+        let plan = spec
+            .plan(&[&text, CONTROL], &["edge"])
+            .expect("no problems");
+        let homes = BTreeMap::from([
+            (name("dev.q_time"), name("edge")),
+            (name("dev.status.time"), name("edge")),
+            (name("dev.time"), name("edge")),
+        ]);
+        assert_eq!(plan.homes, homes);
+        spec.apply(&plan);
+        let plan = spec
+            .plan(&[&text, CONTROL], &["edge"])
+            .expect("no problems");
+        assert_eq!(changes(&plan), []);
+    }
 }
 
 #[test]
@@ -349,8 +508,23 @@ fn removes_a_definition_that_no_file_holds() {
     let members = ["cloud", "edge"];
     spec.apply(&spec.plan(&[EDGE, INFLUX], &members).expect("no problems"));
     let plan = spec.plan(&[EDGE], &members).expect("no problems");
-    let old = Digest::of(spec.get("influx"));
-    assert_eq!(changes(&plan), [(&name("influx"), Some(old), None)]);
+    let removed = [
+        "influx",
+        "influx.status.backoff",
+        "influx.status.class",
+        "influx.status.confirmed",
+        "influx.status.error",
+        "influx.status.note",
+        "influx.status.restarts",
+        "influx.status.state",
+        "influx.status.time",
+    ]
+    .map(name);
+    let removed: Vec<_> = removed
+        .iter()
+        .map(|key| (key, Some(Digest::of(spec.get(key.as_str()))), None))
+        .collect();
+    assert_eq!(changes(&plan), removed);
 }
 
 #[test]
@@ -505,7 +679,13 @@ connector \"w2\" {
     let plan = Spec::create_empty()
         .plan(&[text], &["w"])
         .expect("no problems");
-    assert_eq!(plan.homes, BTreeMap::from([(name("a.time"), name("w"))]));
+    let homes = [
+        ("a.time", "w"),
+        ("w1.status.time", "w"),
+        ("w2.status.time", "w"),
+    ];
+    let homes = homes.map(|(index, home)| (name(index), name(home)));
+    assert_eq!(plan.homes, BTreeMap::from(homes));
 }
 
 #[test]
@@ -515,19 +695,25 @@ fn makes_no_writer_of_a_connector_that_writes_to_its_device() {
 connector \"c1\" {{
   kind = \"commander\"
   node = \"n1\"
-  writes = [\"a.value\"]
+  select = \"a.value\"
 }}
 connector \"c2\" {{
   kind = \"commander\"
   node = \"n2\"
-  writes = [\"a.value\"]
+  select = \"a.value\"
 }}
 "
     );
     let plan = Spec::create_empty()
         .plan(&[&text], &["n", "n1", "n2"])
         .expect("no problems");
-    assert_eq!(plan.homes, BTreeMap::from([(name("a.time"), name("n"))]));
+    let homes = [
+        ("a.time", "n"),
+        ("c1.status.time", "n1"),
+        ("c2.status.time", "n2"),
+    ];
+    let homes = homes.map(|(index, home)| (name(index), name(home)));
+    assert_eq!(plan.homes, BTreeMap::from(homes));
 }
 
 /// The fix of `config.unplaced` when the node of a connector has a second role in the
@@ -559,18 +745,6 @@ placement \"d_2\" {
   select = \"d.*\"
   home = \"m\"
 }
-channel \"e.time\" {
-  kind = \"index\"
-}
-placement \"e\" {
-  select = \"e.*\"
-  standby = \"n\"
-}
-connector \"w\" {
-  kind = \"writer\"
-  node = \"n\"
-  writes = [\"e.time\"]
-}
 ";
     let found = problems(Spec::create_empty().plan(&[text], &["m", "n"]));
     let unplaced = |index, message: &str, fix: &str| {
@@ -594,12 +768,6 @@ connector \"w\" {
             "the placements `d_1` and `d_2` select the name with the same specificity",
             "Change the `select` of one of the two placements, so that one selects the \
              name more specifically",
-        ),
-        unplaced(
-            "e.time",
-            "the node `n` of a connector is the home and has another role in the \
-             placement `e`",
-            OVERLAP,
         ),
     ];
     assert_eq!(found, expected);
@@ -701,6 +869,462 @@ connector \"a\" {
         "Name `n` as the `home`, and keep `n` out of `standby` and `copies`",
     );
     assert_eq!(found, [expected]);
+}
+
+/// The definitions of one connector, `rogue`, of `kind` on the node `nowhere`, with
+/// `config`.
+fn rogue(kind: &str, config: &str) -> BTreeMap<Name, Stored> {
+    BTreeMap::from([connector("rogue", kind, config)])
+}
+
+/// The connector `key` of `kind` on the node `nowhere`, with `config`.
+fn connector(key: &str, kind: &str, config: &str) -> (Name, Stored) {
+    let config = Checked::new(read(0, config)).expect("a shallow config");
+    let connector =
+        spec::connector::Connector::new(name(kind), name("nowhere"), config);
+    (name(key), Stored::Connector(connector))
+}
+
+#[test]
+fn check_refuses_only_a_connector_of_a_kind_that_the_build_lacks() {
+    let members = BTreeSet::from([name("n")]);
+    let select = Selector::new(["rogue"]).expect("a selector");
+    let nodes = spec::placement::Nodes {
+        home: Some(name("n")),
+        ..spec::placement::Nodes::default()
+    };
+    let policy = spec::placement::Policy::new(select, nodes).expect("a policy");
+    let mut definitions = rogue("nothing", "");
+    definitions.insert(name("rogue.@placement"), Stored::Placement(policy));
+    let found = config::plan::check(&definitions, &members, &kinds());
+    let expected = (
+        "connector.unknown-kind",
+        None,
+        "this build has no connector kind \"nothing\"".into(),
+        "Use one of [\"commander\", \"influx\", \"writer\"]".into(),
+    );
+    assert_eq!(problems(found.map(|()| unreachable())), [expected]);
+}
+
+#[test]
+fn check_refuses_only_a_config_that_its_kind_refuses_as_plan_does() {
+    let text = "\
+connector \"rogue\" {
+  kind = \"writer\"
+  node = \"nowhere\"
+  writes = 1
+}
+";
+    let planned = problems(Spec::create_empty().plan(&[text], &["n"]));
+    let members = BTreeSet::from([name("n")]);
+    let found = config::plan::check(&rogue("writer", "writes = 1"), &members, &kinds());
+    let found = problems(found.map(|()| unreachable()));
+    let text = |problems: Vec<Problem>| {
+        let problems = problems.into_iter();
+        problems
+            .map(|(code, _, message, fix)| (code, message, fix))
+            .collect::<Vec<_>>()
+    };
+    let codes: Vec<_> = planned.iter().map(|problem| problem.0).collect();
+    assert_eq!(codes, ["document.bad-name"]);
+    assert_eq!(text(found), text(planned));
+}
+
+#[test]
+fn check_refuses_each_connector_that_the_kinds_refuse() {
+    let members = BTreeSet::from([name("n")]);
+    let definitions = BTreeMap::from([
+        connector("a", "nothing", ""),
+        connector("b", "writer", "writes = 1"),
+    ]);
+    let found = config::plan::check(&definitions, &members, &kinds());
+    let expected = [
+        (
+            "connector.unknown-kind",
+            None,
+            "this build has no connector kind \"nothing\"".into(),
+            "Use one of [\"commander\", \"influx\", \"writer\"]".into(),
+        ),
+        (
+            "document.bad-name",
+            None,
+            "a name is a string or a reference, not an integer".into(),
+            "Write a name such as \"site_a.node_1\"".into(),
+        ),
+    ];
+    assert_eq!(problems(found.map(|()| unreachable())), expected);
+}
+
+/// The definitions of a spec on which `COUNTED` applied, on the node `n`.
+fn counted() -> BTreeMap<Name, Stored> {
+    let mut spec = Spec::create_empty();
+    spec.apply(&spec.plan(&[COUNTED], &["n"]).expect("no problems"));
+    spec.definitions()
+}
+
+/// The diagnostic of `check` for the status channel `channel` of `c` that the
+/// definitions lack or hold as another channel.
+fn implied(channel: &str) -> Problem {
+    (
+        "config.implied-channel",
+        None,
+        format!(
+            "the connector `c` implies the channel `{channel}`, so the spec must hold \
+             it as the connector gives it"
+        ),
+        "Make the plan file with `plan`".into(),
+    )
+}
+
+/// `plan::check` refuses definitions that leave out or change a status channel
+/// that a connector implies.
+#[test]
+fn check_refuses_definitions_without_the_status_channels_of_a_connector() {
+    let members = BTreeSet::from([name("n")]);
+    let mut definitions = counted();
+    config::plan::check(&definitions, &members, &kinds()).expect("no problems");
+    definitions
+        .remove(&name("c.status.state"))
+        .expect("implied");
+    let found = config::plan::check(&definitions, &members, &kinds());
+    assert_eq!(
+        problems(found.map(|()| unreachable())),
+        [implied("c.status.state")]
+    );
+}
+
+#[test]
+fn check_refuses_a_status_channel_of_another_data_type() {
+    let members = BTreeSet::from([name("n")]);
+    let mut definitions = counted();
+    let Some(Stored::Channel(channel)) = definitions.get_mut(&name("c.status.state"))
+    else {
+        panic!("the status channel `c.status.state`");
+    };
+    let spec::channel::Kind::Data(data) = &channel.kind else {
+        panic!("a data channel");
+    };
+    let data_type = DataType::Sample(Type::Scalar(Scalar::U64));
+    let data = Data::new(*data.index(), None, data_type, None).expect("no unit");
+    channel.kind = spec::channel::Kind::Data(data);
+    let found = config::plan::check(&definitions, &members, &kinds());
+    assert_eq!(
+        problems(found.map(|()| unreachable())),
+        [implied("c.status.state")]
+    );
+}
+
+#[test]
+fn check_refuses_a_status_channel_on_another_index() {
+    let members = BTreeSet::from([name("n")]);
+    let mut spec = Spec::create_empty();
+    let index = "channel \"a.time\" { kind = \"index\" }\n";
+    let text = format!("{COUNTED}{index}{}", placement("a", "\"a.time\"", "n"));
+    spec.apply(&spec.plan(&[&text], &["n"]).expect("no problems"));
+    let mut definitions = spec.definitions();
+    let Some(Stored::Channel(index)) = definitions.get(&name("a.time")) else {
+        panic!("the index `a.time`");
+    };
+    let index = index.key;
+    let Some(Stored::Channel(channel)) = definitions.get_mut(&name("c.status.state"))
+    else {
+        panic!("the status channel `c.status.state`");
+    };
+    let spec::channel::Kind::Data(data) = &channel.kind else {
+        panic!("a data channel");
+    };
+    let data_type = data.data_type().clone();
+    let data = Data::new(index, None, data_type, None).expect("no unit");
+    channel.kind = spec::channel::Kind::Data(data);
+    let found = config::plan::check(&definitions, &members, &kinds());
+    assert_eq!(
+        problems(found.map(|()| unreachable())),
+        [implied("c.status.state")]
+    );
+}
+
+/// The problems of `plan::check` on `COUNTED` with the index `a.time` and its data
+/// channel `a.x`, after `edit` of the kind of `channel`, with the key of each
+/// definition by name.
+fn pointed(
+    channel: &str,
+    edit: impl FnOnce(&mut spec::channel::Kind<Key>, &BTreeMap<Name, Key>),
+) -> Vec<Problem> {
+    let members = BTreeSet::from([name("n")]);
+    let mut spec = Spec::create_empty();
+    let a = "channel \"a.time\" { kind = \"index\" }\n\
+             channel \"a.x\" {\n  data_type = \"f64\"\n  index = \"a.time\"\n}\n";
+    let text = format!("{COUNTED}{a}{}", placement("a", "\"a.time\"", "n"));
+    spec.apply(&spec.plan(&[&text], &["n"]).expect("no problems"));
+    let mut definitions = spec.definitions();
+    let keys = definitions
+        .iter()
+        .filter_map(|(name, stored)| match stored {
+            Stored::Channel(channel) => Some((name.clone(), channel.key)),
+            _ => None,
+        })
+        .collect();
+    let Some(Stored::Channel(stored)) = definitions.get_mut(&name(channel)) else {
+        panic!("the channel `{channel}`");
+    };
+    edit(&mut stored.kind, &keys);
+    problems(
+        config::plan::check(&definitions, &members, &kinds()).map(|()| unreachable()),
+    )
+}
+
+/// The diagnostic of `check` for `from`, which points at the status channel
+/// `channel` of `c`.
+fn points(from: &str, channel: &str) -> Problem {
+    (
+        "config.implied-channel",
+        None,
+        format!(
+            "the connector `c` implies the channel `{channel}`, so the channel \
+             `{from}` cannot point at it"
+        ),
+        "Make the plan file with `plan`".into(),
+    )
+}
+
+/// Only the connector writes its status, so no other channel is on its status index.
+#[test]
+fn check_refuses_a_data_channel_on_a_status_index() {
+    let found = pointed("a.x", |kind, keys| {
+        let spec::channel::Kind::Data(data) = kind else {
+            panic!("a data channel");
+        };
+        let index = keys[&name("c.status.time")];
+        let data_type = data.data_type().clone();
+        *data = Data::new(index, None, data_type, None).expect("no unit");
+    });
+    assert_eq!(found, [points("a.x", "c.status.time")]);
+}
+
+#[test]
+fn check_refuses_an_index_whose_control_channel_is_a_status_channel() {
+    let found = pointed("a.time", |kind, keys| {
+        let control = keys[&name("c.status.state")];
+        *kind = spec::channel::Kind::Index {
+            error: None,
+            control: Some(control),
+        };
+    });
+    assert_eq!(found, [points("a.time", "c.status.state")]);
+}
+
+#[test]
+fn check_refuses_a_data_channel_whose_quality_channel_is_a_status_channel() {
+    let found = pointed("a.x", |kind, keys| {
+        let spec::channel::Kind::Data(data) = kind else {
+            panic!("a data channel");
+        };
+        let quality = keys[&name("c.status.state")];
+        let data_type = data.data_type().clone();
+        let index = *data.index();
+        *data = Data::new(index, Some(quality), data_type, None).expect("no unit");
+    });
+    assert_eq!(found, [points("a.x", "c.status.state")]);
+}
+
+#[test]
+fn check_refuses_an_index_whose_error_channel_is_a_status_channel() {
+    let found = pointed("a.time", |kind, keys| {
+        let error = keys[&name("c.status.state")];
+        *kind = spec::channel::Kind::Index {
+            error: Some(error),
+            control: None,
+        };
+    });
+    assert_eq!(found, [points("a.time", "c.status.state")]);
+}
+
+#[test]
+fn check_refuses_two_edges_to_one_status_channel_once() {
+    let found = pointed("a.time", |kind, keys| {
+        let state = keys[&name("c.status.state")];
+        *kind = spec::channel::Kind::Index {
+            error: Some(state),
+            control: Some(state),
+        };
+    });
+    assert_eq!(found, [points("a.time", "c.status.state")]);
+}
+
+#[test]
+fn check_refuses_an_index_and_a_quality_channel_on_one_status_channel_once() {
+    let found = pointed("a.x", |kind, keys| {
+        let spec::channel::Kind::Data(data) = kind else {
+            panic!("a data channel");
+        };
+        let index = keys[&name("c.status.time")];
+        let data_type = data.data_type().clone();
+        *data = Data::new(index, Some(index), data_type, None).expect("no unit");
+    });
+    assert_eq!(found, [points("a.x", "c.status.time")]);
+}
+
+#[test]
+fn check_refuses_edges_to_two_status_channels_once_each() {
+    let found = pointed("a.x", |kind, keys| {
+        let spec::channel::Kind::Data(data) = kind else {
+            panic!("a data channel");
+        };
+        let index = keys[&name("c.status.time")];
+        let quality = keys[&name("c.status.state")];
+        let data_type = data.data_type().clone();
+        *data = Data::new(index, Some(quality), data_type, None).expect("no unit");
+    });
+    assert_eq!(
+        found,
+        [
+            points("a.x", "c.status.time"),
+            points("a.x", "c.status.state")
+        ]
+    );
+}
+
+/// The problems of `plan::check` on `counted` after `edit` of the kind of the
+/// status channel `channel`, with the key of `c.status.state`.
+fn edited(
+    channel: &str,
+    edit: impl FnOnce(&mut spec::channel::Kind<Key>, Key),
+) -> Vec<Problem> {
+    let members = BTreeSet::from([name("n")]);
+    let mut definitions = counted();
+    let Some(Stored::Channel(state)) = definitions.get(&name("c.status.state")) else {
+        panic!("the status channel `c.status.state`");
+    };
+    let state = state.key;
+    let Some(Stored::Channel(stored)) = definitions.get_mut(&name(channel)) else {
+        panic!("the status channel `{channel}`");
+    };
+    edit(&mut stored.kind, state);
+    problems(
+        config::plan::check(&definitions, &members, &kinds()).map(|()| unreachable()),
+    )
+}
+
+/// `plan::check` refuses a status data channel with a unit.
+#[test]
+fn check_refuses_a_status_channel_with_a_unit() {
+    let found = edited("c.status.restarts", |kind, _| {
+        let spec::channel::Kind::Data(data) = kind else {
+            panic!("a data channel");
+        };
+        let unit = Some(spec::unit::Unit::new("s").expect("a unit"));
+        let data_type = data.data_type().clone();
+        *data = Data::new(*data.index(), None, data_type, unit).expect("a number");
+    });
+    assert_eq!(found, [implied("c.status.restarts")]);
+}
+
+/// `plan::check` refuses a status data channel with a quality channel.
+#[test]
+fn check_refuses_a_status_channel_with_a_quality_channel() {
+    let found = edited("c.status.restarts", |kind, state| {
+        let spec::channel::Kind::Data(data) = kind else {
+            panic!("a data channel");
+        };
+        let data_type = data.data_type().clone();
+        *data =
+            Data::new(*data.index(), Some(state), data_type, None).expect("no unit");
+    });
+    assert_eq!(found, [implied("c.status.restarts")]);
+}
+
+/// `plan::check` refuses a status index with an error channel.
+#[test]
+fn check_refuses_a_status_index_with_an_error_channel() {
+    let found = edited("c.status.time", |kind, state| {
+        *kind = spec::channel::Kind::Index {
+            error: Some(state),
+            control: None,
+        };
+    });
+    assert_eq!(found, [implied("c.status.time")]);
+}
+
+/// `plan::check` refuses a status index with a control channel.
+#[test]
+fn check_refuses_a_status_index_with_a_control_channel() {
+    let found = edited("c.status.time", |kind, state| {
+        *kind = spec::channel::Kind::Index {
+            error: None,
+            control: Some(state),
+        };
+    });
+    assert_eq!(found, [implied("c.status.time")]);
+}
+
+/// An index at a status data name, with no other status channel, is refused at each
+/// status channel.
+#[test]
+fn check_refuses_an_index_at_a_status_data_name() {
+    let text = format!("{COUNTED}{}", placement("c", "\"c\"", "n"));
+    let entries = config::check(&documents(&[&text]), &kinds()).expect("entries");
+    let mut definitions = made(&entries);
+    let index = definitions
+        .remove(&name("c.status.time"))
+        .expect("the status index");
+    definitions.retain(|key, _| !key.as_str().starts_with("c.status."));
+    definitions.insert(name("c.status.state"), index);
+    let members = BTreeSet::from([name("n")]);
+    let found = config::plan::check(&definitions, &members, &kinds());
+    let expected = [
+        "c.status.time",
+        "c.status.state",
+        "c.status.class",
+        "c.status.restarts",
+        "c.status.backoff",
+        "c.status.error",
+        "c.status.note",
+        "c.status.confirmed",
+    ];
+    assert_eq!(
+        problems(found.map(|()| unreachable())),
+        expected.map(implied)
+    );
+}
+
+/// A plan for `problems` to refuse, which a `check` that refuses never gives.
+fn unreachable() -> Plan {
+    unreachable!("check refuses")
+}
+
+#[test]
+fn names_the_nodes_of_writer_nodes_in_the_order_of_the_connector_names() {
+    let text = format!(
+        "{PLANT}\
+connector \"w2\" {{
+  kind = \"writer\"
+  node = \"n2\"
+  writes = [\"a.time\"]
+}}
+connector \"w1\" {{
+  kind = \"writer\"
+  node = \"n1\"
+  writes = [\"a.value\"]
+}}
+"
+    );
+    let members = ["n", "n1", "n2"];
+    let planned = problems(Spec::create_empty().plan(&[&text], &members));
+    let entries = config::check(&documents(&[&text]), &kinds()).expect("entries");
+    let members = members.iter().map(|member| name(member)).collect();
+    let found = config::plan::check(&made(&entries), &members, &kinds());
+    let message = |first, second| {
+        format!(
+            "connectors on the nodes `{first}` and `{second}` write the index \
+             `a.time`, so it has no one home"
+        )
+    };
+    let fix = "Run each connector that writes `a.time` on one node";
+    let at = (0, value(&text, "node", "\"n2\""));
+    let expected = problem("config.writer-nodes", at, &message("n1", "n2"), fix);
+    assert_eq!(planned, [expected]);
+    let expected = ("config.writer-nodes", None, message("n1", "n2"), fix.into());
+    assert_eq!(problems(found.map(|()| unreachable())), [expected]);
 }
 
 /// Asserts that `refused` gives each code and fix of `expected`, and that `fixed`, the
@@ -1022,7 +1646,14 @@ connector \"c\" {
     let plan = Spec::create_empty()
         .plan(&[text], &["m", "n"])
         .expect("no problems");
-    let homes = [("a.time", "n"), ("b.time", "n"), ("c.time", "m")];
+    let homes = [
+        ("a.status.time", "n"),
+        ("a.time", "n"),
+        ("b.status.time", "n"),
+        ("b.time", "n"),
+        ("c.status.time", "m"),
+        ("c.time", "m"),
+    ];
     let homes = homes.map(|(index, home)| (name(index), name(home)));
     assert_eq!(plan.homes, BTreeMap::from(homes));
 }
@@ -1132,7 +1763,7 @@ connector \"a\" {
 }
 
 #[test]
-fn checks_an_index_only_against_the_nearest_connector_above_it() {
+fn checks_an_index_only_against_the_connector_that_writes_it() {
     let text = |e: &str| {
         format!(
             "\
@@ -1164,7 +1795,13 @@ connector \"d.e\" {{
     let plan = Spec::create_empty()
         .plan(&[&text("d.e.**")], &nodes)
         .expect("no problems");
-    assert_eq!(plan.homes, BTreeMap::from([(name("d.e.time"), name("m"))]));
+    let homes = [
+        ("d.e.status.time", "m"),
+        ("d.e.time", "m"),
+        ("d.status.time", "n"),
+    ];
+    let homes = homes.map(|(index, home)| (name(index), name(home)));
+    assert_eq!(plan.homes, BTreeMap::from(homes));
     let text = text("d.e");
     let found = problems(Spec::create_empty().plan(&[&text], &nodes));
     let expected = split(
@@ -1176,6 +1813,160 @@ connector \"d.e\" {{
         "d.e",
     );
     assert_eq!(found, [expected]);
+}
+
+#[test]
+fn checks_an_index_against_the_connector_that_writes_it_whatever_its_name() {
+    let text = |select: &str| {
+        format!(
+            "\
+channel \"site.time\" {{
+  kind = \"index\"
+}}
+connector \"site\" {{
+  kind = \"writer\"
+  node = \"m\"
+  writes = []
+}}
+connector \"edge\" {{
+  kind = \"writer\"
+  node = \"n\"
+  writes = [\"site.time\"]
+}}
+{}",
+            placement("p", select, "n")
+        )
+    };
+    let nodes = ["m", "n"];
+    let refused = text("\"site.time\"");
+    let found = problems(Spec::create_empty().plan(&[&refused], &nodes));
+    let expected = split(
+        &refused,
+        "p",
+        "the placement `p` wins for the index `site.time`, but no placement selects \
+         the connector `edge`",
+        "p",
+        "edge",
+    );
+    assert_eq!(found, [expected]);
+    let fixed = text("\"site.time\", \"edge\"");
+    let plan = Spec::create_empty()
+        .plan(&[&fixed], &nodes)
+        .expect("no problems");
+    let homes = [
+        ("edge.status.time", "n"),
+        ("site.status.time", "m"),
+        ("site.time", "n"),
+    ];
+    let homes = homes.map(|(index, home)| (name(index), name(home)));
+    assert_eq!(plan.homes, BTreeMap::from(homes));
+}
+
+#[test]
+fn checks_the_index_of_each_channel_that_a_connector_writes() {
+    let text = |select: &str, home: &str| {
+        format!(
+            "\
+channel \"plant.time\" {{
+  kind = \"index\"
+}}
+channel \"plant.spike\" {{
+  data_type = \"f64\"
+  index = \"plant.time\"
+}}
+connector \"plc\" {{
+  kind = \"writer\"
+  node = \"edge\"
+  writes = [\"plant.spike\"]
+}}
+{}{}",
+            placement("plant", "\"plant.*\"", "core"),
+            placement("plc", select, home)
+        )
+    };
+    let nodes = ["core", "edge"];
+    let refused = text("\"plc\"", "edge");
+    let found = problems(Spec::create_empty().plan(&[&refused], &nodes));
+    let expected = split(
+        &refused,
+        "plant",
+        "the placement `plant` wins for the index `plant.time`, but the placement \
+         `plc` wins for the connector `plc`",
+        "plc",
+        "plc",
+    );
+    assert_eq!(found, [expected]);
+    let fixed = text("\"plc\", \"plant.time\"", "edge");
+    let plan = Spec::create_empty()
+        .plan(&[&fixed], &nodes)
+        .expect("no problems");
+    let homes = [("plant.time", "edge"), ("plc.status.time", "edge")];
+    let homes = homes.map(|(index, home)| (name(index), name(home)));
+    assert_eq!(plan.homes, BTreeMap::from(homes));
+}
+
+#[test]
+fn checks_no_index_that_a_connector_only_reads() {
+    let text = format!(
+        "\
+channel \"valve.time\" {{
+  kind = \"index\"
+}}
+channel \"valve.open\" {{
+  data_type = \"f64\"
+  index = \"valve.time\"
+}}
+connector \"valve\" {{
+  kind = \"commander\"
+  node = \"edge\"
+  select = \"valve.open\"
+}}
+{}{}",
+        placement("program", "\"valve.time\"", "core"),
+        placement("valve", "\"valve\"", "edge")
+    );
+    let plan = Spec::create_empty()
+        .plan(&[&text], &["core", "edge"])
+        .expect("no problems");
+    let homes = [("valve.status.time", "edge"), ("valve.time", "core")];
+    let homes = homes.map(|(index, home)| (name(index), name(home)));
+    assert_eq!(plan.homes, BTreeMap::from(homes));
+}
+
+#[test]
+fn excludes_a_connector_whose_index_has_a_writer_on_another_node() {
+    let text = format!(
+        "\
+channel \"a.time\" {{
+  kind = \"index\"
+}}
+channel \"a.value\" {{
+  data_type = \"f64\"
+  index = \"a.time\"
+}}
+connector \"a\" {{
+  kind = \"writer\"
+  node = \"n\"
+  writes = [\"a.time\"]
+}}
+connector \"b\" {{
+  kind = \"writer\"
+  node = \"m\"
+  writes = [\"a.value\"]
+}}
+{}",
+        placement("p", "\"a\", \"a.*\"", "m")
+    );
+    let found = problems(Spec::create_empty().plan(&[&text], &["m", "n"]));
+    let found: Vec<_> = found.into_iter().map(|p| (p.0, p.3)).collect();
+    let expected = [
+        (
+            "config.writer-nodes",
+            "Run each connector that writes `a.time` on one node".into(),
+        ),
+        ("config.connector-home", exclude("a", "`p`", "n")),
+    ];
+    assert_eq!(found, expected);
 }
 
 #[test]
@@ -1235,6 +2026,14 @@ connector \"f\" {
              the connector `c`",
             "c",
             "c",
+        ),
+        split(
+            text,
+            "fx",
+            "the placement `fx` wins for the index `fx.time`, but no placement selects \
+             the connector `f`",
+            "fx",
+            "f",
         ),
     ];
     assert_eq!(found, expected);
@@ -1630,7 +2429,7 @@ connector \"b\" {
 }
 
 #[test]
-fn gives_no_split_placement_after_a_tie_at_the_nearest_connector() {
+fn gives_no_split_placement_after_a_tie_at_the_writer() {
     let text = "\
 channel \"d.e.time\" {
   kind = \"index\"
@@ -1706,14 +2505,6 @@ connector \"e\" {
             "the placement `c_time` wins for the index and names no home, and no \
              connector writes the index",
             "Name a `home` in the placement, or write the index with a connector",
-        ),
-        split(
-            text,
-            "c_time",
-            "the placement `c_time` wins for the index `c.time`, but the placement `c` \
-             wins for the connector `c`",
-            "c",
-            "c",
         ),
         problem(
             "config.unplaced",
@@ -1809,8 +2600,10 @@ placement \"p\" {{
 
 #[test]
 fn plans_after_the_overlap_move_and_its_connector_home_fix() {
-    let standby = |select: &str| {
-        format!("placement \"p\" {{\n  select = [{select}]\n  standby = \"k\"\n}}\n")
+    let standby = |select: &str, node: &str| {
+        format!(
+            "placement \"p\" {{\n  select = [{select}]\n  standby = \"{node}\"\n}}\n"
+        )
     };
     let index = "\
 channel \"c.time\" {
@@ -1819,11 +2612,6 @@ channel \"c.time\" {
 connector \"c\" {
   kind = \"writer\"
   node = \"n\"
-  writes = []
-}
-connector \"w\" {
-  kind = \"writer\"
-  node = \"k\"
   writes = [\"c.time\"]
 }
 ";
@@ -1843,222 +2631,36 @@ connector \"d\" {
     let connectors_fixed = connectors.to_owned()
         + &placement("p", "\"d\"", "k")
         + &placement("q", "\"c\"", "n");
-    // `k` is the one node of `p`, and `p` wins for `c` on `n`. In the first case, each
-    // name that `p` wins is on `n`.
+    // The node of `standby` is the one node of `p`, and `p` wins for `c` on `n`. In the
+    // first case, each name that `p` wins is on `n`.
     let excluded = exclude("c", "`p`", "n");
     let cases = [
-        (index, "\"c\", \"c.time\"", RENAMED.to_owned(), index_fixed),
-        (connectors, "\"c\", \"d\"", excluded, connectors_fixed),
+        (
+            index,
+            "\"c\", \"c.time\"",
+            "n",
+            2,
+            RENAMED.to_owned(),
+            index_fixed,
+        ),
+        (
+            connectors,
+            "\"c\", \"d\"",
+            "k",
+            1,
+            excluded,
+            connectors_fixed,
+        ),
     ];
-    let overlap = [("config.unplaced", OVERLAP.to_owned())];
-    for (common, select, fix, fixed) in cases {
-        let refused = common.to_owned() + &standby(select);
+    let overlap = ("config.unplaced", OVERLAP.to_owned());
+    for (common, select, node, overlaps, fix, fixed) in cases {
+        let refused = common.to_owned() + &standby(select, node);
         let found = problems(Spec::create_empty().plan(&[&refused], &["k", "m", "n"]));
         let found: Vec<_> = found.into_iter().map(|p| (p.0, p.3)).collect();
-        assert_eq!(found, overlap, "{refused}");
+        assert_eq!(found, vec![overlap.clone(); overlaps], "{refused}");
         let moved = common.to_owned() + &placement("p", select, "k");
         plans_after_connector_home(&moved, &[fix], &fixed);
     }
-}
-
-/// The fix of each diagnostic of `connector` on `node` when its placement to win,
-/// `winner`, names no `home` and an index of `connector` has no writer.
-fn homed(winner: &str, connector: &str, node: &str) -> String {
-    format!(
-        "Name `{node}` as the `home` of `{winner}`, keep `{node}` out of its `standby` \
-         and `copies`, and make `{winner}` win for the connector `{connector}` and its \
-         indexes"
-    )
-}
-
-/// The index `c.time` and the connectors `c` on `n` and `d` on `m`, which write
-/// nothing, then `placements`.
-fn unwritten(placements: &str) -> String {
-    format!(
-        "\
-channel \"c.time\" {{
-  kind = \"index\"
-}}
-connector \"c\" {{
-  kind = \"writer\"
-  node = \"n\"
-  writes = []
-}}
-connector \"d\" {{
-  kind = \"writer\"
-  node = \"m\"
-  writes = []
-}}
-{placements}"
-    )
-}
-
-#[test]
-fn plans_after_the_split_placement_fix_that_names_a_home_for_an_unwritten_index() {
-    let t = "\
-placement \"t\" {
-  select = [\"c\"]
-  standby = \"k\"
-}
-";
-    let r = "\
-placement \"r\" {
-  select = [\"c.time\"]
-  home = \"n\"
-}
-";
-    let fixed = unwritten(
-        "\
-placement \"t\" {
-  select = [\"c\", \"c.time\"]
-  home = \"n\"
-  standby = \"k\"
-}
-",
-    );
-    let split = ("config.split-placement", homed("t", "c", "n"));
-    let selected = unwritten(&format!("{t}{r}"));
-    plans_after(&selected, slice::from_ref(&split), &fixed);
-    // No placement selects `c.time`.
-    let unselected = (
-        "config.unplaced",
-        "Select the index with a placement that names a `home`, or write it with a \
-         connector"
-            .to_owned(),
-    );
-    plans_after(&unwritten(t), &[unselected, split], &fixed);
-}
-
-#[test]
-fn plans_after_the_split_placement_fix_of_a_connector_whose_placement_overlaps() {
-    let refused = unwritten(
-        "\
-placement \"p\" {
-  select = [\"c\"]
-  standby = \"n\"
-}
-placement \"r\" {
-  select = [\"c.time\"]
-  home = \"n\"
-}
-",
-    );
-    let fixed = unwritten(
-        "\
-placement \"p\" {
-  select = [\"c\", \"c.time\"]
-  home = \"n\"
-}
-",
-    );
-    let expected = [
-        ("config.unplaced", OVERLAP.to_owned()),
-        ("config.split-placement", homed("p", "c", "n")),
-    ];
-    plans_after(&refused, &expected, &fixed);
-}
-
-#[test]
-fn plans_after_the_split_placement_fix_that_names_a_home_with_no_connector_placement() {
-    let refused = unwritten(
-        "\
-placement \"o\" {
-  select = [\"c.time\"]
-  standby = \"k\"
-}
-",
-    );
-    let fixed = unwritten(
-        "\
-placement \"o\" {
-  select = [\"c\", \"c.time\"]
-  home = \"n\"
-  standby = \"k\"
-}
-",
-    );
-    let expected = [
-        (
-            "config.unplaced",
-            "Name a `home` in the placement, or write the index with a connector"
-                .into(),
-        ),
-        ("config.split-placement", homed("o", "c", "n")),
-    ];
-    plans_after(&refused, &expected, &fixed);
-}
-
-#[test]
-fn moves_an_unwritten_index_when_its_placement_wins_on_another_node() {
-    let refused = unwritten(
-        "\
-placement \"t\" {
-  select = [\"c\", \"d\"]
-  standby = \"k\"
-}
-placement \"r\" {
-  select = [\"c.time\"]
-  home = \"n\"
-}
-",
-    );
-    let fixed = unwritten(
-        "\
-placement \"t\" {
-  select = [\"c\", \"d\", \"!c\", \"!c.time\"]
-  standby = \"k\"
-}
-placement \"r\" {
-  select = [\"c.time\", \"!c\", \"!c.time\"]
-  home = \"n\"
-}
-placement \"c\" {
-  select = [\"c\", \"c.time\"]
-  home = \"n\"
-}
-",
-    );
-    let expected = [("config.split-placement", exclude("c", "`t` and `r`", "n"))];
-    plans_after(&refused, &expected, &fixed);
-}
-
-#[test]
-fn moves_an_unwritten_index_when_its_own_placement_wins_on_another_node() {
-    let refused = unwritten(
-        "\
-placement \"o\" {
-  select = [\"c.time\", \"d\"]
-  standby = \"k\"
-}
-",
-    );
-    let fixed = unwritten(
-        "\
-placement \"o\" {
-  select = [\"c.time\", \"d\", \"!c.time\"]
-  standby = \"k\"
-}
-placement \"c\" {
-  select = [\"c\", \"c.time\"]
-  home = \"n\"
-}
-",
-    );
-    let expected = [
-        (
-            "config.unplaced",
-            "Name a `home` in the placement, or write the index with a connector"
-                .into(),
-        ),
-        (
-            "config.split-placement",
-            "Exclude the indexes of the connector `c` from the `select` of `o`, and \
-             select the connector and its indexes with another placement whose `home` \
-             is `n`"
-                .into(),
-        ),
-    ];
-    plans_after(&refused, &expected, &fixed);
 }
 
 #[test]
@@ -2093,29 +2695,29 @@ connector \"b\" {
 }
 
 #[test]
-fn takes_the_first_writer_in_source_order_in_any_order_of_the_files() {
+fn takes_the_first_writer_in_name_order_in_any_order_of_the_files() {
     let first = format!(
         "{PLANT}\
-connector \"w1\" {{
+connector \"w2\" {{
   kind = \"writer\"
   node = \"n2\"
-  writes = [\"a.value\"]
+  writes = [\"a.time\"]
 }}
 "
     );
     let second = "\
-connector \"w2\" {
+connector \"w1\" {
   kind = \"writer\"
   node = \"n1\"
-  writes = [\"a.time\"]
+  writes = [\"a.value\"]
 }
 ";
     let members = BTreeSet::from([name("n"), name("n1"), name("n2")]);
     let spec = Spec::create_empty();
     let expected = [problem(
         "config.writer-nodes",
-        (1, value(second, "node", "\"n1\"")),
-        "connectors on the nodes `n2` and `n1` write the index `a.time`, so it has no \
+        (0, value(&first, "node", "\"n2\"")),
+        "connectors on the nodes `n1` and `n2` write the index `a.time`, so it has no \
          one home",
         "Run each connector that writes `a.time` on one node",
     )];
@@ -2191,4 +2793,976 @@ channel \"a.other\" {
         ),
     ];
     assert_eq!(codes, expected);
+}
+
+#[test]
+fn check_gives_the_codes_of_plan_when_the_first_writer_in_the_files_differs() {
+    let text = "\
+channel \"a.time\" {
+  kind = \"index\"
+}
+channel \"a.value\" {
+  data_type = \"f64\"
+  index = \"a.time\"
+}
+placement \"a\" {
+  select = \"a.*\"
+  standby = \"n2\"
+}
+connector \"w2\" {
+  kind = \"writer\"
+  node = \"n2\"
+  writes = [\"a.time\"]
+}
+connector \"w1\" {
+  kind = \"writer\"
+  node = \"n1\"
+  writes = [\"a.value\"]
+}
+";
+    let planned = problems(Spec::create_empty().plan(&[text], &["n1", "n2"]));
+    let expected = problem(
+        "config.writer-nodes",
+        (0, value(text, "node", "\"n2\"")),
+        "connectors on the nodes `n1` and `n2` write the index `a.time`, so it has no \
+         one home",
+        "Run each connector that writes `a.time` on one node",
+    );
+    assert_eq!(planned, [expected]);
+}
+
+#[test]
+fn gives_one_unknown_node_for_a_copy_that_a_placement_repeats() {
+    let text = "\
+channel \"a.time\" {
+  kind = \"index\"
+}
+placement \"a\" {
+  select = \"a.*\"
+  home = \"n\"
+  copies = [\"ghost\", \"ghost\"]
+}
+";
+    let planned = problems(Spec::create_empty().plan(&[text], &["n"]));
+    let expected = problem(
+        "config.unknown-node",
+        (0, offset(text, "\"ghost\"")),
+        "no node of the mesh is named `ghost`",
+        "Name a node of the mesh",
+    );
+    assert_eq!(planned, [expected]);
+}
+
+#[test]
+fn checks_each_connector_once_in_a_plan() {
+    let text = "\
+channel \"a.time\" {
+  kind = \"index\"
+}
+placement \"a\" {
+  select = \"**\"
+  home = \"n\"
+}
+connector \"a\" {
+  kind = \"once\"
+  node = \"n\"
+}
+";
+    let kinds = Table::new().with("once", Once::default());
+    let spec = Spec::create_empty();
+    let plan = config::plan::plan(
+        &[read(0, text)],
+        spec.pointer,
+        &spec.definitions(),
+        &BTreeSet::from([name("n")]),
+        &kinds,
+    )
+    .expect("the one check of the connector passes");
+    let homes = [("a.status.time", "n"), ("a.time", "n")];
+    let homes = homes.map(|(index, home)| (name(index), name(home)));
+    assert_eq!(plan.homes, BTreeMap::from(homes));
+}
+
+/// The fix that makes `winner` win for each of `connectors`, a list such as "`a` and
+/// `b`", and their indexes.
+fn wins(winner: &str, connectors: &str) -> String {
+    format!(
+        "Make the placement `{winner}` win for the connectors {connectors} and their \
+         indexes"
+    )
+}
+
+/// The connectors `names` on `n`, each of which writes the indexes of `writes`, by
+/// position, then `more`.
+fn writers(names: &[&str], writes: &[&str], more: &str) -> String {
+    let mut indexes: Vec<_> = writes.iter().flat_map(|w| w.split(", ")).collect();
+    indexes.sort_unstable();
+    indexes.dedup();
+    let indexes = indexes
+        .into_iter()
+        .map(|index| format!("channel {index} {{\n  kind = \"index\"\n}}\n"));
+    let connectors = names.iter().zip(writes).map(|(name, writes)| {
+        format!(
+            "connector \"{name}\" {{\n  kind = \"writer\"\n  node = \"n\"\n  \
+             writes = [{writes}]\n}}\n"
+        )
+    });
+    indexes.chain(connectors).collect::<String>() + more
+}
+
+#[test]
+fn plans_after_the_one_fix_of_two_writers_of_an_index_with_two_winners() {
+    let text = |more: &str| writers(&["a", "b"], &["\"i.time\""; 2], more);
+    let refused = text(
+        &(placement("p", "\"a\", \"i.time\"", "n") + &placement("q", "\"b\"", "n")),
+    );
+    let found = problems(Spec::create_empty().plan(&[&refused], &["n"]));
+    let found: Vec<_> = found.into_iter().map(|p| (p.0, p.2, p.3)).collect();
+    let expected = [(
+        "config.split-placement",
+        "the placement `p` wins for the index `i.time`, but the placement `q` wins for \
+         the connector `b`"
+            .to_owned(),
+        wins("p", "`a` and `b`"),
+    )];
+    assert_eq!(found, expected);
+    let fixed = text(&placement("p", "\"a\", \"b\", \"i.time\"", "n"));
+    let plan = Spec::create_empty().plan(&[&fixed], &["n"]);
+    assert!(plan.is_ok(), "{fixed}: {plan:?}");
+}
+
+#[test]
+fn lists_each_writer_of_an_index_that_no_placement_selects() {
+    let text = |more: &str| writers(&["c1", "c2"], &["\"x.time\""; 2], more);
+    let refused =
+        text(&(placement("p", "\"c1\"", "n") + &placement("q", "\"c2\"", "n")));
+    let found = problems(Spec::create_empty().plan(&[&refused], &["n"]));
+    let expected = [(
+        "config.split-placement",
+        Some((Source(0), label(&refused, "p"))),
+        "no placement selects the index `x.time`, but the placement `p` wins for the \
+         connector `c1`, and the placement `q` wins for the connector `c2`"
+            .to_owned(),
+        wins("p", "`c1` and `c2`"),
+    )];
+    assert_eq!(found, expected);
+    let fixed = text(&placement("p", "\"c1\", \"c2\", \"x.time\"", "n"));
+    let plan = Spec::create_empty().plan(&[&fixed], &["n"]);
+    assert!(plan.is_ok(), "{fixed}: {plan:?}");
+}
+
+#[test]
+fn gives_one_target_to_the_connectors_that_a_chain_of_indexes_links() {
+    let writes = ["\"i.time\"", "\"j.time\"", "\"i.time\", \"j.time\""];
+    let text = |more: &str| writers(&["a", "b", "c"], &writes, more);
+    let refused = text(
+        &(placement("p", "\"a\", \"i.time\"", "n")
+            + &placement("q", "\"b\", \"j.time\"", "n")),
+    );
+    let found = problems(Spec::create_empty().plan(&[&refused], &["n"]));
+    let found: Vec<_> = found.into_iter().map(|p| (p.0, p.2, p.3)).collect();
+    let fix = wins("p", "`a`, `b`, and `c`");
+    let expected = [
+        (
+            "config.split-placement",
+            "the placement `p` wins for the index `i.time`, but no placement selects \
+             the connector `c`"
+                .to_owned(),
+            fix.clone(),
+        ),
+        (
+            "config.split-placement",
+            "the placement `q` wins for the index `j.time`, but no placement selects \
+             the connector `c`"
+                .to_owned(),
+            fix,
+        ),
+    ];
+    assert_eq!(found, expected);
+    let all = "\"a\", \"b\", \"c\", \"i.time\", \"j.time\"";
+    let fixed = text(&placement("p", all, "n"));
+    let plan = Spec::create_empty().plan(&[&fixed], &["n"]);
+    assert!(plan.is_ok(), "{fixed}: {plan:?}");
+}
+
+#[test]
+fn names_no_winner_of_an_index_whose_writers_are_on_two_nodes_in_a_fix() {
+    let text = format!(
+        "\
+channel \"i.time\" {{
+  kind = \"index\"
+}}
+channel \"j.time\" {{
+  kind = \"index\"
+}}
+connector \"a\" {{
+  kind = \"writer\"
+  node = \"n\"
+  writes = [\"i.time\", \"j.time\"]
+}}
+connector \"x\" {{
+  kind = \"writer\"
+  node = \"m\"
+  writes = [\"i.time\"]
+}}
+{}{}",
+        placement("r", "\"j.time\"", "n"),
+        placement("s", "\"i.time\"", "n")
+    );
+    let found = problems(Spec::create_empty().plan(&[&text], &["m", "n"]));
+    let found: Vec<_> = found.into_iter().map(|p| (p.0, p.3)).collect();
+    let expected = [
+        (
+            "config.writer-nodes",
+            "Run each connector that writes `i.time` on one node".into(),
+        ),
+        ("config.split-placement", win("r", "a")),
+    ];
+    assert_eq!(found, expected);
+}
+
+#[test]
+fn plans_after_the_one_exclude_fix_of_two_writers_of_an_index() {
+    let z =
+        "connector \"z\" {\n  kind = \"writer\"\n  node = \"m\"\n  writes = []\n}\n";
+    let text =
+        |more: &str| writers(&["a", "b"], &["\"i.time\""; 2], &(z.to_owned() + more));
+    let refused = text(&placement("p", "\"a\", \"b\", \"i.time\", \"z\"", "m"));
+    let fix = "Exclude the connectors `a` and `b` and their indexes from the `select` \
+               of `p`, and select them with another placement whose `home` is `n`";
+    let expected = [
+        ("config.connector-home", fix.to_owned()),
+        ("config.connector-home", fix.to_owned()),
+    ];
+    let fixed = text(
+        &(placement(
+            "p",
+            "\"a\", \"b\", \"i.time\", \"z\", \"!a\", \"!b\", \"!i.time\"",
+            "m",
+        ) + &placement("ab", "\"a\", \"b\", \"i.time\"", "n")),
+    );
+    plans_after(&refused, &expected, &fixed);
+}
+
+#[test]
+fn plans_after_the_one_regroup_fix_of_two_writers_of_an_index() {
+    let text = |more: &str| writers(&["a", "b"], &["\"i.time\""; 2], more);
+    let refused = text(&placement("r", "\"i.time\"", "m"));
+    let fix = "Exclude the indexes of the connectors `a` and `b` from the `select` of \
+               `r`, and select the connectors and their indexes with another placement \
+               whose `home` is `n`";
+    let expected = [("config.split-placement", fix.to_owned())];
+    let fixed = text(
+        &(placement("r", "\"i.time\", \"!i.time\"", "m")
+            + &placement("ab", "\"a\", \"b\", \"i.time\"", "n")),
+    );
+    plans_after(&refused, &expected, &fixed);
+}
+
+#[test]
+fn plans_after_the_one_fix_of_a_unit_whose_second_winner_names_another_home() {
+    let z =
+        "connector \"z\" {\n  kind = \"writer\"\n  node = \"m\"\n  writes = []\n}\n";
+    let text =
+        |more: &str| writers(&["a", "b"], &["\"i.time\""; 2], &(z.to_owned() + more));
+    let fixed = text(
+        &(placement("p", "\"a\", \"b\", \"i.time\"", "n")
+            + &placement("q", "\"z\"", "m")),
+    );
+    for select in ["\"a\"", "\"a\", \"i.time\""] {
+        let refused =
+            text(&(placement("p", select, "n") + &placement("q", "\"b\", \"z\"", "m")));
+        let fix = wins("p", "`a` and `b`");
+        let expected = [
+            ("config.split-placement", fix.clone()),
+            ("config.connector-home", fix),
+        ];
+        plans_after(&refused, &expected, &fixed);
+    }
+}
+
+#[test]
+fn excludes_each_winner_of_a_unit_whose_target_is_elsewhere_and_spread() {
+    let z =
+        "connector \"z\" {\n  kind = \"writer\"\n  node = \"m\"\n  writes = []\n}\n";
+    let text =
+        |more: &str| writers(&["a", "b"], &["\"i.time\""; 2], &(z.to_owned() + more));
+    let refused = text(
+        &(placement("p", "\"a\", \"i.time\", \"z\"", "m")
+            + &placement("q", "\"b\"", "n")),
+    );
+    let fix = "Exclude the connectors `a` and `b` and their indexes from the `select` \
+               of `p` and `q`, and select them with another placement whose `home` is \
+               `n`";
+    let expected = [
+        ("config.split-placement", fix.to_owned()),
+        ("config.connector-home", fix.to_owned()),
+    ];
+    let fixed = text(
+        &(placement("p", "\"a\", \"i.time\", \"z\", \"!a\", \"!i.time\"", "m")
+            + &placement("q", "\"b\", \"!b\"", "n")
+            + &placement("ab", "\"a\", \"b\", \"i.time\"", "n")),
+    );
+    plans_after(&refused, &expected, &fixed);
+}
+
+#[test]
+fn gives_the_exclude_fix_of_a_unit_at_the_connector_home_of_a_second_winner() {
+    let z =
+        "connector \"z\" {\n  kind = \"writer\"\n  node = \"m\"\n  writes = []\n}\n";
+    let text =
+        |more: &str| writers(&["a", "b"], &["\"i.time\""; 2], &(z.to_owned() + more));
+    let refused = text(
+        &(placement("p", "\"a\", \"i.time\", \"z\"", "m")
+            + &placement("q", "\"b\"", "k")),
+    );
+    let fix = "Exclude the connectors `a` and `b` and their indexes from the `select` \
+               of `p` and `q`, and select them with another placement whose `home` is \
+               `n`";
+    let expected = [
+        ("config.split-placement", fix.to_owned()),
+        ("config.connector-home", fix.to_owned()),
+        ("config.connector-home", fix.to_owned()),
+    ];
+    let fixed = text(
+        &(placement("p", "\"a\", \"i.time\", \"z\", \"!a\", \"!i.time\"", "m")
+            + &placement("q", "\"b\", \"!b\"", "k")
+            + &placement("ab", "\"a\", \"b\", \"i.time\"", "n")),
+    );
+    plans_after(&refused, &expected, &fixed);
+}
+
+#[test]
+fn names_the_home_at_each_connector_home_of_the_target_of_a_unit() {
+    let text = |home: &str| {
+        writers(
+            &["a", "b"],
+            &["\"i.time\""; 2],
+            &placement("p", "\"a\", \"b\", \"i.time\"", home),
+        )
+    };
+    plans_after_connector_home(
+        &text("m"),
+        &[RENAMED.into(), RENAMED.into()],
+        &text("n"),
+    );
+}
+
+#[test]
+fn takes_the_target_of_a_unit_from_the_first_connector_that_a_placement_wins_for() {
+    let refused = writers(
+        &["a", "b"],
+        &["\"i.time\""; 2],
+        &(placement("t1", "\"a\"", "n")
+            + &placement("t2", "\"a\"", "n")
+            + &placement("q", "\"b\"", "n")
+            + &placement("p", "\"i.time\"", "n")),
+    );
+    let found = problems(Spec::create_empty().plan(&[&refused], &["n"]));
+    let split: Vec<_> = found
+        .into_iter()
+        .filter(|problem| problem.0 == "config.split-placement")
+        .map(|problem| problem.3)
+        .collect();
+    assert_eq!(split, [wins("q", "`a` and `b`")]);
+}
+
+#[test]
+fn reports_the_splits_at_one_placement_in_unit_order() {
+    let refused = writers(
+        &["a", "b"],
+        &["\"x.time\"", "\"w.time\""],
+        &(placement("p", "\"x.time\", \"w.time\"", "n")
+            + &placement("q", "\"a\", \"b\"", "n")),
+    );
+    let found = problems(Spec::create_empty().plan(&[&refused], &["n"]));
+    let found: Vec<_> = found
+        .into_iter()
+        .filter(|problem| problem.0 == "config.split-placement")
+        .map(|problem| problem.2)
+        .collect();
+    let split = |index: &str, connector: &str| {
+        format!(
+            "the placement `p` wins for the index `{index}`, but the placement `q` \
+             wins for the connector `{connector}`"
+        )
+    };
+    assert_eq!(found, [split("x.time", "a"), split("w.time", "b")]);
+}
+
+/// A connector `c` on `n` with the count `confirmed`.
+const COUNTED: &str = "\
+connector \"c\" {
+  kind = \"writer\"
+  node = \"n\"
+  writes = []
+  counts = [\"confirmed\"]
+}
+";
+
+/// A status channel of `c` with `sample`.
+fn status(sample: Type) -> spec::channel::Kind<Name> {
+    let data = Data::new(name("c.status.time"), None, DataType::Sample(sample), None);
+    spec::channel::Kind::Data(data.expect("no unit"))
+}
+
+#[test]
+fn implies_the_status_channels_of_each_connector_at_its_label() {
+    let mut spec = Spec::create_empty();
+    let plan = spec.plan(&[COUNTED], &["n"]).expect("no problems");
+    let index = spec::channel::Kind::Index {
+        error: None,
+        control: None,
+    };
+    let expected = [
+        ("c.status.backoff", status(Type::Scalar(Scalar::Span))),
+        ("c.status.class", status(Type::Scalar(Scalar::U8))),
+        ("c.status.confirmed", status(Type::Scalar(Scalar::U64))),
+        ("c.status.error", status(Type::String)),
+        ("c.status.note", status(Type::String)),
+        ("c.status.restarts", status(Type::Scalar(Scalar::U64))),
+        ("c.status.state", status(Type::Scalar(Scalar::U8))),
+        ("c.status.time", index),
+    ];
+    let at = Some((Source(0), label(COUNTED, "c")));
+    let expected: Vec<_> = expected
+        .into_iter()
+        .map(|(key, kind)| (name(key), None, Some((Definition::Channel(kind), at))))
+        .collect();
+    let found: Vec<_> = changes(&plan)
+        .into_iter()
+        .filter(|(key, _, _)| key.as_str() != "c")
+        .map(|(key, old, new)| {
+            let new = new.map(|entry| {
+                let at = entry.label_span.map(|at| (at.source(), at.start().offset));
+                (entry.definition.clone(), at)
+            });
+            (key.clone(), old, new)
+        })
+        .collect();
+    assert_eq!(found, expected);
+    let homes = BTreeMap::from([(name("c.status.time"), name("n"))]);
+    assert_eq!(plan.homes, homes);
+    spec.apply(&plan);
+    let plan = spec.plan(&[COUNTED], &["n"]).expect("no problems");
+    assert_eq!(changes(&plan), []);
+}
+
+#[test]
+fn places_a_status_index_with_its_connector_whatever_selects_it() {
+    let text = format!(
+        "{COUNTED}{}{}",
+        placement("c", "\"c\"", "n"),
+        placement("status", "\"c.status.*\"", "m")
+    );
+    let plan = Spec::create_empty()
+        .plan(&[&text], &["m", "n"])
+        .expect("no problems");
+    let homes = BTreeMap::from([(name("c.status.time"), name("n"))]);
+    assert_eq!(plan.homes, homes);
+}
+
+#[test]
+fn refuses_a_block_at_the_name_of_a_status_channel_in_any_case() {
+    for implied in ["c.status.state", "C.Status.State"] {
+        let channel = format!(
+            "channel \"{implied}\" {{\n  data_type = \"u8\"\n  index = \"a.time\"\n}}\n"
+        );
+        let documents = documents(&[COUNTED, PLANT, &channel]);
+        let found = config::check(&documents, &kinds()).expect_err("problems");
+        let span = |document: &Document| document.blocks[0].labels[0].span;
+        let mut expected = Diagnostic::new(
+            Code::new("config.implied-channel"),
+            span(&documents[2]),
+            "the connector `c` implies the channel `c.status.state`, so a block \
+             cannot have its name"
+                .into(),
+            "Give the block another name".into(),
+        );
+        expected.notes.push(Note {
+            span: span(&documents[0]).expect("a span"),
+            text: "the connector".into(),
+        });
+        assert_eq!(found, [expected]);
+    }
+}
+
+#[test]
+fn refuses_each_block_at_the_name_of_a_status_channel() {
+    let channel = |name: &str| {
+        format!(
+            "channel \"{name}\" {{\n  data_type = \"u8\"\n  index = \"a.time\"\n}}\n"
+        )
+    };
+    let (lower, upper) = (channel("c.status.state"), channel("C.Status.State"));
+    let documents = documents(&[COUNTED, PLANT, &lower, &upper]);
+    let found = config::check(&documents, &kinds()).expect_err("problems");
+    let found: Vec<_> = (found.iter())
+        .map(|diagnostic| (diagnostic.code.as_str(), diagnostic.span))
+        .collect();
+    let span = |document: &Document| document.blocks[0].labels[0].span;
+    let expected = [
+        ("config.implied-channel", span(&documents[2])),
+        ("config.implied-channel", span(&documents[3])),
+        ("config.duplicate-name", span(&documents[3])),
+    ];
+    assert_eq!(found, expected);
+}
+
+/// Of the connectors at a name that repeats, the first in span order implies its
+/// channels, so the order of the files changes no problem.
+#[test]
+fn implies_the_channels_of_the_first_connector_at_a_name_that_repeats() {
+    let uncounted = COUNTED.replace("  counts = [\"confirmed\"]\n", "");
+    let channel = "channel \"c.status.confirmed\" {\n  data_type = \"u8\"\n  \
+                   index = \"a.time\"\n}\n";
+    let documents = documents(&[COUNTED, &uncounted, PLANT, channel]);
+    let mut reversed = documents.clone();
+    reversed.reverse();
+    let codes = |documents: &[Document]| -> Vec<_> {
+        let found = config::check(documents, &kinds()).expect_err("problems");
+        (found.into_iter())
+            .map(|diagnostic| (diagnostic.code.as_str().to_owned(), diagnostic.span))
+            .collect()
+    };
+    let span = |document: &Document| document.blocks[0].labels[0].span;
+    let expected = [
+        ("config.duplicate-name".to_owned(), span(&documents[1])),
+        ("config.implied-channel".to_owned(), span(&documents[3])),
+    ];
+    assert_eq!(codes(&documents), expected);
+    assert_eq!(codes(&reversed), expected);
+}
+
+/// A connector whose check fails keeps its key, so the next connector at its name
+/// implies nothing.
+#[test]
+fn implies_nothing_at_a_repeated_name_whose_first_connector_fails() {
+    let nodeless = COUNTED.replace("  node = \"n\"\n", "");
+    let uncounted = COUNTED.replace("  counts = [\"confirmed\"]\n", "");
+    let channel = "channel \"c.status.state\" {\n  data_type = \"u8\"\n  \
+                   index = \"a.time\"\n}\n";
+    let documents = documents(&[&nodeless, &uncounted, PLANT, channel]);
+    let found = config::check(&documents, &kinds()).expect_err("problems");
+    let found: Vec<_> = (found.iter())
+        .map(|diagnostic| (diagnostic.code.as_str(), diagnostic.span))
+        .collect();
+    let span = |document: &Document| document.blocks[0].labels[0].span;
+    let expected = [
+        (
+            "document.missing-attribute",
+            documents[0].blocks[0].keyword_span,
+        ),
+        ("config.duplicate-name", span(&documents[1])),
+    ];
+    assert_eq!(found, expected);
+}
+
+/// A connector at the key of an earlier channel block implies nothing.
+#[test]
+fn implies_nothing_at_the_key_of_an_earlier_channel() {
+    let index = "channel \"c\" {\n  kind = \"index\"\n}\n";
+    let channel = "channel \"c.status.state\" {\n  data_type = \"u8\"\n  \
+                   index = \"a.time\"\n}\n";
+    let documents = documents(&[index, COUNTED, PLANT, channel]);
+    let found = config::check(&documents, &kinds()).expect_err("problems");
+    let found: Vec<_> = (found.iter())
+        .map(|diagnostic| (diagnostic.code.as_str(), diagnostic.span))
+        .collect();
+    let span = documents[1].blocks[0].labels[0].span;
+    assert_eq!(found, [("config.duplicate-name", span)]);
+}
+
+/// A later connector at the key of one whose check fails writes nothing.
+#[test]
+fn refuses_no_write_of_a_later_connector_at_the_key_of_one_that_fails() {
+    let nodeless = "connector \"d\" {\n  kind = \"writer\"\n  \
+                    writes = [\"c.status.state\"]\n}\n";
+    let writer = "connector \"d\" {\n  kind = \"writer\"\n  node = \"n\"\n  \
+                  writes = [\"c.status.state\"]\n}\n";
+    let documents = documents(&[COUNTED, nodeless, writer]);
+    let found = config::check(&documents, &kinds()).expect_err("problems");
+    let found: Vec<_> = (found.iter())
+        .map(|diagnostic| (diagnostic.code.as_str(), diagnostic.span))
+        .collect();
+    let expected = [
+        (
+            "document.missing-attribute",
+            documents[1].blocks[0].keyword_span,
+        ),
+        (
+            "config.duplicate-name",
+            documents[2].blocks[0].labels[0].span,
+        ),
+    ];
+    assert_eq!(found, expected);
+}
+
+/// A later connector at the key of one that fails, in another case, writes nothing.
+#[test]
+fn refuses_no_write_of_a_later_connector_at_the_key_of_one_that_fails_in_any_case() {
+    let nodeless = "connector \"d\" {\n  kind = \"writer\"\n  \
+                    writes = [\"c.status.state\"]\n}\n";
+    let writer = "connector \"D\" {\n  kind = \"writer\"\n  node = \"n\"\n  \
+                  writes = [\"c.status.state\"]\n}\n";
+    let documents = documents(&[COUNTED, nodeless, writer]);
+    let found = config::check(&documents, &kinds()).expect_err("problems");
+    let found: Vec<_> = (found.iter())
+        .map(|diagnostic| (diagnostic.code.as_str(), diagnostic.span))
+        .collect();
+    let expected = [
+        (
+            "document.missing-attribute",
+            documents[1].blocks[0].keyword_span,
+        ),
+        (
+            "config.duplicate-name",
+            documents[2].blocks[0].labels[0].span,
+        ),
+    ];
+    assert_eq!(found, expected);
+}
+
+/// A later connector at the key of another in another case implies nothing.
+#[test]
+fn implies_nothing_at_a_repeated_name_in_another_case() {
+    let later = COUNTED.replace("connector \"c\"", "connector \"C\"");
+    let channel = "channel \"c.status.state\" {\n  data_type = \"u8\"\n  \
+                   index = \"a.time\"\n}\n";
+    let documents = documents(&[COUNTED, &later, PLANT, channel]);
+    let found = config::check(&documents, &kinds()).expect_err("problems");
+    let found: Vec<_> = (found.iter())
+        .map(|diagnostic| (diagnostic.code.as_str(), diagnostic.span))
+        .collect();
+    let span = |document: &Document| document.blocks[0].labels[0].span;
+    let expected = [
+        ("config.duplicate-name", span(&documents[1])),
+        ("config.implied-channel", span(&documents[3])),
+    ];
+    assert_eq!(found, expected);
+}
+
+/// Of the connectors at a name that repeats, only the first in span order writes
+/// channels, so the order of the files changes no problem.
+#[test]
+fn refuses_the_writes_of_the_first_connector_at_a_name_that_repeats() {
+    let block = |writes: &str| {
+        format!(
+            "connector \"d\" {{\n  kind = \"writer\"\n  node = \"n\"\n  \
+             writes = [{writes}]\n}}\n"
+        )
+    };
+    let (writer, idle) = (block("\"c.status.state\""), block(""));
+    let documents = documents(&[COUNTED, &writer, &idle]);
+    let mut reversed = documents.clone();
+    reversed.reverse();
+    let codes = |documents: &[Document]| -> Vec<_> {
+        let found = config::check(documents, &kinds()).expect_err("problems");
+        (found.into_iter())
+            .map(|diagnostic| (diagnostic.code.as_str().to_owned(), diagnostic.span))
+            .collect()
+    };
+    let span = |document: &Document| document.blocks[0].labels[0].span;
+    let expected = [
+        ("config.implied-channel".to_owned(), span(&documents[1])),
+        ("config.duplicate-name".to_owned(), span(&documents[2])),
+    ];
+    assert_eq!(codes(&documents), expected);
+    assert_eq!(codes(&reversed), expected);
+}
+
+/// `plan` refuses a connector that writes a status channel of a connector on another
+/// node.
+#[test]
+fn refuses_a_connector_on_another_node_that_writes_a_status_channel() {
+    let writer = "connector \"d\" {\n  kind = \"writer\"\n  node = \"m\"\n  \
+                  writes = [\"c.status.state\"]\n}\n";
+    let found = problems(Spec::create_empty().plan(&[COUNTED, writer], &["n", "m"]));
+    let expected = problem(
+        "config.implied-channel",
+        (1, label(writer, "d")),
+        "the connector `c` implies the channel `c.status.state`, so the connector `d` \
+         cannot write it",
+        "Write another channel from the connector `d`",
+    );
+    assert_eq!(found, [expected]);
+}
+
+/// Only the connector writes its status channels, in any ASCII case.
+#[test]
+fn refuses_a_connector_that_writes_a_status_channel_of_another() {
+    let writer = "connector \"d\" {\n  kind = \"writer\"\n  node = \"n\"\n  \
+                  writes = [\"C.Status.State\"]\n}\n";
+    let documents = documents(&[COUNTED, writer]);
+    let found = config::check(&documents, &kinds()).expect_err("problems");
+    let span = |document: &Document| document.blocks[0].labels[0].span;
+    let mut expected = Diagnostic::new(
+        Code::new("config.implied-channel"),
+        span(&documents[1]),
+        "the connector `c` implies the channel `c.status.state`, so the connector `d` \
+         cannot write it"
+            .into(),
+        "Write another channel from the connector `d`".into(),
+    );
+    expected.notes.push(Note {
+        span: span(&documents[0]).expect("a span"),
+        text: "the connector".into(),
+    });
+    assert_eq!(found, [expected]);
+}
+
+/// A kind that writes a status channel of another twice, in any ASCII case, gives one
+/// problem.
+#[test]
+fn refuses_a_status_channel_of_another_that_a_kind_writes_twice_once() {
+    for second in ["c.status.state", "C.STATUS.STATE"] {
+        let writer = format!(
+            "connector \"d\" {{\n  kind = \"writer\"\n  node = \"n\"\n  \
+             writes = [\"c.status.state\", \"{second}\"]\n}}\n"
+        );
+        let documents = documents(&[COUNTED, &writer]);
+        let found = config::check(&documents, &kinds()).expect_err("problems");
+        let span = |document: &Document| document.blocks[0].labels[0].span;
+        let mut expected = Diagnostic::new(
+            Code::new("config.implied-channel"),
+            span(&documents[1]),
+            "the connector `c` implies the channel `c.status.state`, so the connector \
+             `d` cannot write it"
+                .into(),
+            "Write another channel from the connector `d`".into(),
+        );
+        expected.notes.push(Note {
+            span: span(&documents[0]).expect("a span"),
+            text: "the connector".into(),
+        });
+        assert_eq!(found, [expected], "second: {second}");
+    }
+}
+
+/// Two connectors that write one status channel of another each give one problem.
+#[test]
+fn refuses_each_connector_that_writes_one_status_channel_of_another() {
+    let writer = |key: &str| {
+        format!(
+            "connector \"{key}\" {{\n  kind = \"writer\"\n  node = \"n\"\n  \
+             writes = [\"c.status.state\"]\n}}\n"
+        )
+    };
+    let documents = documents(&[COUNTED, &writer("d"), &writer("e")]);
+    let found = config::check(&documents, &kinds()).expect_err("problems");
+    let span = |document: &Document| document.blocks[0].labels[0].span;
+    let expected = |at: &Document, key: &str| {
+        let mut expected = Diagnostic::new(
+            Code::new("config.implied-channel"),
+            span(at),
+            format!(
+                "the connector `c` implies the channel `c.status.state`, so the \
+                 connector `{key}` cannot write it"
+            ),
+            format!("Write another channel from the connector `{key}`"),
+        );
+        expected.notes.push(Note {
+            span: span(&documents[0]).expect("a span"),
+            text: "the connector".into(),
+        });
+        expected
+    };
+    let expected = [expected(&documents[1], "d"), expected(&documents[2], "e")];
+    assert_eq!(found, expected);
+}
+
+/// A kind cannot write a status channel of its own connector either.
+#[test]
+fn refuses_a_connector_that_writes_its_own_status_channel() {
+    let text = COUNTED.replace("writes = []", "writes = [\"c.status.time\"]");
+    let documents = documents(&[&text]);
+    let found = config::check(&documents, &kinds()).expect_err("problems");
+    let span = documents[0].blocks[0].labels[0].span;
+    let mut expected = Diagnostic::new(
+        Code::new("config.implied-channel"),
+        span,
+        "the connector `c` implies the channel `c.status.time`, so the connector `c` \
+         cannot write it"
+            .into(),
+        "Write another channel from the connector `c`".into(),
+    );
+    expected.notes.push(Note {
+        span: span.expect("a span"),
+        text: "the connector".into(),
+    });
+    assert_eq!(found, [expected]);
+}
+
+/// The definitions of `COUNTED`, with a connector `d` of the kind `writer` on `node`
+/// that writes `writes`, and its status channels.
+fn with_writer(node: &str, writes: &[&str]) -> BTreeMap<Name, Stored> {
+    let entries = config::check(&documents(&[COUNTED]), &kinds()).expect("entries");
+    let mut definitions = made(&entries);
+    let writes: Vec<String> = writes.iter().map(|name| format!("{name:?}")).collect();
+    let writes = writes.join(", ");
+    let text = format!(
+        "connector \"d\" {{\n  kind = \"writer\"\n  node = \"{node}\"\n  \
+         writes = [{writes}]\n}}\n"
+    );
+    let alone = config::check(&documents(&[&text]), &kinds()).expect("d alone");
+    // `made` gives the same keys to both, so the keys of `d` move apart.
+    let apart = |key: Key| Key::from_u128(key.as_u128() + 1000);
+    for (name, mut definition) in made(&alone) {
+        if let Stored::Channel(channel) = &mut definition {
+            channel.key = apart(channel.key);
+            channel.kind = channel.kind.clone().map(apart);
+        }
+        definitions.insert(name, definition);
+    }
+    definitions
+}
+
+/// `check` refuses a connector that writes a status channel of another on any node.
+#[test]
+fn check_refuses_a_connector_that_writes_a_status_channel_of_another() {
+    let members = BTreeSet::from([name("n"), name("m")]);
+    for node in ["m", "n"] {
+        let definitions = with_writer(node, &["c.status.state"]);
+        let found = config::plan::check(&definitions, &members, &kinds());
+        let expected = (
+            "config.implied-channel",
+            None,
+            "the connector `c` implies the channel `c.status.state`, so the connector \
+             `d` cannot write it"
+                .into(),
+            "Write another channel from the connector `d`".into(),
+        );
+        assert_eq!(problems(found.map(|()| unreachable())), [expected]);
+    }
+}
+
+/// A name that repeats stops `check` before the write of a status channel of another.
+#[test]
+fn check_refuses_a_repeated_name_before_a_write_of_a_status_channel_of_another() {
+    let members = BTreeSet::from([name("n"), name("m")]);
+    let mut definitions = with_writer("m", &["c.status.state"]);
+    let Some(Stored::Channel(index)) = definitions.get(&name("c.status.time")) else {
+        panic!("the status index");
+    };
+    let mut repeated = index.clone();
+    repeated.key = Key::from_u128(5000);
+    definitions.insert(name("C.status.time"), Stored::Channel(repeated));
+    let found = config::plan::check(&definitions, &members, &kinds());
+    let expected = (
+        "config.duplicate-name",
+        None,
+        "the name \"c.status.time\" repeats the earlier `channel` name \
+         \"C.status.time\""
+            .into(),
+        "Give each `channel` block a name that differs by more than case".into(),
+    );
+    assert_eq!(problems(found.map(|()| unreachable())), [expected]);
+}
+
+/// Stage 3 gives a write of a status channel of another before a missing status
+/// channel.
+#[test]
+fn check_gives_a_write_of_a_status_channel_before_a_missing_one() {
+    let members = BTreeSet::from([name("n"), name("m")]);
+    let mut definitions = with_writer("m", &["c.status.state"]);
+    definitions
+        .remove(&name("d.status.state"))
+        .expect("implied");
+    let found = config::plan::check(&definitions, &members, &kinds());
+    let write = (
+        "config.implied-channel",
+        None,
+        "the connector `c` implies the channel `c.status.state`, so the connector \
+         `d` cannot write it"
+            .into(),
+        "Write another channel from the connector `d`".into(),
+    );
+    let missing = (
+        "config.implied-channel",
+        None,
+        "the connector `d` implies the channel `d.status.state`, so the spec must hold \
+         it as the connector gives it"
+            .into(),
+        "Make the plan file with `plan`".into(),
+    );
+    assert_eq!(problems(found.map(|()| unreachable())), [write, missing]);
+}
+
+/// A kind that writes a status channel of another twice, in any ASCII case, gives
+/// `check` one problem.
+#[test]
+fn check_refuses_a_status_channel_of_another_that_a_kind_writes_twice_once() {
+    let members = BTreeSet::from([name("n"), name("m")]);
+    for second in ["c.status.state", "C.STATUS.STATE"] {
+        let definitions = with_writer("n", &["c.status.state", second]);
+        let found = config::plan::check(&definitions, &members, &kinds());
+        let expected = (
+            "config.implied-channel",
+            None,
+            "the connector `c` implies the channel `c.status.state`, so the connector \
+             `d` cannot write it"
+                .into(),
+            "Write another channel from the connector `d`".into(),
+        );
+        let found = problems(found.map(|()| unreachable()));
+        assert_eq!(found, [expected], "second: {second}");
+    }
+}
+
+/// Only the connector writes its status, so `check` refuses a channel on its status
+/// index that another connector writes, before the rules of `plan` count writers.
+#[test]
+fn check_refuses_a_channel_that_another_connector_writes_on_a_status_index() {
+    let mut definitions = with_writer("m", &["x"]);
+    let Some(Stored::Channel(index)) = definitions.get(&name("c.status.time")) else {
+        panic!("the status index");
+    };
+    let index = index.key;
+    let scalar = DataType::Sample(Type::Scalar(Scalar::F64));
+    let data = Data::new(name("c.status.time"), None, scalar, None).expect("no unit");
+    let x = Channel {
+        key: Key::from_u128(999),
+        kind: spec::channel::Kind::Data(data).map(|_| index),
+    };
+    definitions.insert(name("x"), Stored::Channel(x));
+    let members = BTreeSet::from([name("n"), name("m")]);
+    let found = config::plan::check(&definitions, &members, &kinds());
+    let expected = points("x", "c.status.time");
+    assert_eq!(problems(found.map(|()| unreachable())), [expected]);
+}
+
+#[test]
+fn refuses_a_connector_whose_status_names_are_too_long() {
+    let long = "c".repeat(244);
+    let text = COUNTED.replace("\"c\"", &format!("\"{long}\""));
+    let found = problems(Spec::create_empty().plan(&[&text], &["n"]));
+    let expected = problem(
+        "config.long-name",
+        (0, label(&text, &long)),
+        &format!(
+            "the name of a status channel of the connector `{long}` is 256 bytes, and \
+             the most is 255"
+        ),
+        "Shorten the name of the connector",
+    );
+    assert_eq!(found, std::slice::from_ref(&expected));
+    let members = BTreeSet::from([name("n")]);
+    let definitions = BTreeMap::from([connector(&long, "writer", "writes = []")]);
+    let found = config::plan::check(&definitions, &members, &kinds());
+    let (code, _, message, fix) = expected;
+    assert_eq!(
+        problems(found.map(|()| unreachable())),
+        [(code, None, message, fix)]
+    );
+}
+
+#[test]
+fn planned_holds_only_for_a_file_kind_at_the_key_of_an_unreserved_label() {
+    use spec::definition::Kind;
+    let planned = |key: &str, kind| config::plan::planned(&name(key), kind);
+    assert!(planned("plant.@access", Kind::Access));
+    assert!(planned("plant.temp", Kind::Channel));
+    assert!(!planned("@admin.@access", Kind::Access), "a founding key");
+    assert!(!planned("plant", Kind::Access), "no tree key of the kind");
+    assert!(!planned("child.@region", Kind::Region), "no file block");
 }

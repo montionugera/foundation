@@ -55,7 +55,7 @@ fn frame() -> (Frame, Arc<KeySet>) {
         index: channel::Key::from_u128(1),
         data: &[],
     }]);
-    let config = block::Config { budget: 1 << 16 };
+    let config = block::Config::new(1 << 16).expect("the budget fits");
     let pool = block::Pool::new(config.clone(), block::Heap::new(config.reservation()));
     let frame = Draft::new(&pool, &set, Form::Raw, &[(0, 8)])
         .expect("the pool holds the frame")
@@ -108,6 +108,38 @@ fn release_waiting(bencher: Bencher<'_, '_>, sessions: usize) {
     });
 }
 
+/// [`BURST`] lost live frames behind one queued frame, then its release, to `sessions`
+/// recording readers that keep up: each session misses them.
+#[divan::bench(args = [1, 16])]
+fn lose(bencher: Bencher<'_, '_>, sessions: usize) {
+    let (frame, set) = frame();
+    bencher
+        .with_inputs(|| {
+            let (mut readers, _) = opened(sessions, u64::MAX);
+            readers.queue(&frame, &set, 0..1);
+            readers
+        })
+        .bench_local_refs(|readers| {
+            for seq in 1..=BURST {
+                divan::black_box(readers.lose(seq..seq + 1));
+            }
+            divan::black_box(readers.release(BURST + 1).len())
+        });
+}
+
+/// One lost live frame with no frame queued, as when the ring is full, to `sessions`
+/// recording readers. Each session misses the first, so later ones walk sessions that
+/// are behind.
+#[divan::bench(args = [1, 16, 256])]
+fn lose_at_once(bencher: Bencher<'_, '_>, sessions: usize) {
+    let (mut readers, _) = opened(sessions, u64::MAX);
+    let mut seq = 0;
+    bencher.bench_local(|| {
+        divan::black_box(readers.lose(seq..seq + 1).len());
+        seq += 1;
+    });
+}
+
 /// The channels of [`wide`]: one index and its data channels.
 const CHANNELS: usize = 100_000;
 
@@ -126,7 +158,7 @@ fn wide() -> (Frame, Arc<KeySet>) {
         index: channel::Key::from_u128(1),
         data: &data,
     }]);
-    let config = block::Config { budget: 1 << 22 };
+    let config = block::Config::new(1 << 22).expect("the budget fits");
     let pool = block::Pool::new(config.clone(), block::Heap::new(config.reservation()));
     let lens: Vec<_> = (0..CHANNELS).map(|entry| (entry, 8)).collect();
     let frame = Draft::new(&pool, &set, Form::Raw, &lens)
@@ -236,7 +268,7 @@ fn release_places_alternating(bencher: Bencher<'_, '_>, channels: usize) {
         index: channel::Key::from_u128(1),
         data: &db,
     }]);
-    let config = block::Config { budget: 1 << 24 };
+    let config = block::Config::new(1 << 24).expect("the budget fits");
     let pool = block::Pool::new(config.clone(), block::Heap::new(config.reservation()));
     let build = |set: &Arc<KeySet>| {
         let lens: Vec<_> = (0..set.entries().len()).map(|entry| (entry, 8)).collect();

@@ -1,6 +1,7 @@
 //! The names in the data directory: the lock, the record of the shard count, the
-//! directory of each shard's ring, the mesh's directory, and the chunk store's
-//! directory.
+//! directory of each shard's ring, the mesh's directory, the chunk store's
+//! directory, and the directory of secrets. The node's name is in `name`
+//! ([`crate::name`]).
 
 use std::path::{Path, PathBuf};
 
@@ -18,6 +19,8 @@ const SHARD: &str = "shard-";
 const MESH: &str = "mesh";
 /// The name of the chunk store's directory.
 const BLOB: &str = "blob";
+/// The name of the directory of secrets, one file for each.
+const SECRETS: &str = "secrets";
 
 /// The directory of the mesh of the node's region.
 pub(crate) fn mesh() -> PathBuf {
@@ -27,6 +30,11 @@ pub(crate) fn mesh() -> PathBuf {
 /// The directory of the node's chunk store.
 pub(crate) fn blob() -> PathBuf {
     PathBuf::from(BLOB)
+}
+
+/// The directory of the secrets that connectors read.
+pub(crate) fn secrets() -> PathBuf {
+    PathBuf::from(SECRETS)
 }
 
 /// The directory of the ring of the shard on `core`.
@@ -82,4 +90,14 @@ fn count(name: &Path, prefix: &str) -> Option<usize> {
     let rest = name.to_str()?.strip_prefix(prefix)?;
     let count = rest.parse::<usize>().ok()?;
     (count.to_string() == rest).then_some(count)
+}
+
+#[cfg(test)]
+mod tests {
+    /// SECRET STORES AS ADAPTERS tells a person to write a secret to
+    /// `<--data>/data/secrets/<full name>`.
+    #[test]
+    fn the_secrets_are_where_the_record_says() {
+        assert_eq!(super::secrets(), super::Path::new("secrets"));
+    }
 }

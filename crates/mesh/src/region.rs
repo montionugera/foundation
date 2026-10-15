@@ -11,11 +11,15 @@ use types::ed25519::PublicKey;
 use types::name::{Name, Prefix};
 use types::node;
 
-use raft::Voters;
+use raft::{NoMajority, Voters};
 use spec::definition::Definition;
 
+use crate::bytes::{
+    put_channel, put_count, put_key, put_keys, put_name, put_prefix, take_channel,
+    take_count, take_key, take_keys, take_name, take_prefix, take_rising,
+};
 use crate::card;
-use crate::change::{Change, Join, Malformed};
+use crate::change::{self, Change, Join, Undecoded};
 use crate::member::Member;
 use crate::status::Status;
 use crate::ticket::{self, Options, Record};
@@ -41,6 +45,75 @@ pub struct Founding {
     /// channel key to the key of a member. An index with no entry has no home until a
     /// spec change gives one.
     pub homes: BTreeMap<channel::Key, node::Key>,
+}
+
+impl Founding {
+    /// The byte form: the prefix, the members in key order, the voters, the
+    /// definitions in name order, and the homes in channel key order. Two values that
+    /// differ only in the order of their members have one byte form.
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        put_prefix(&self.prefix, &mut out);
+        let mut members: Vec<&Member> = self.members.iter().collect();
+        members.sort_by_key(|member| member.card.key());
+        put_count(members.len(), &mut out);
+        for member in members {
+            member.encode(&mut out);
+        }
+        put_keys(&self.voters, &mut out);
+        put_count(self.definitions.len(), &mut out);
+        for (name, definition) in &self.definitions {
+            put_name(name, &mut out);
+            let definition = definition.encode();
+            put_count(definition.len(), &mut out);
+            out.extend(definition);
+        }
+        put_count(self.homes.len(), &mut out);
+        for (&index, &home) in &self.homes {
+            put_channel(index, &mut out);
+            put_key(home, &mut out);
+        }
+        out
+    }
+
+    /// Reads what [`Founding::encode`] gives, with the members in key order. `None`
+    /// when `bytes` are not that form, also with bytes after it.
+    pub(crate) fn decode(mut bytes: &[u8]) -> Option<Self> {
+        let bytes = &mut bytes;
+        let prefix = take_prefix(bytes)?;
+        let mut members: Vec<Member> = Vec::new();
+        for _ in 0..take_count(bytes)? {
+            let member = Member::decode(bytes)?;
+            if members
+                .last()
+                .is_some_and(|last| last.card.key() >= member.card.key())
+            {
+                return None;
+            }
+            members.push(member);
+        }
+        let voters = take_keys(bytes)?;
+        let mut definitions = BTreeMap::new();
+        take_rising(bytes, take_name, |name, bytes| {
+            let len = usize::try_from(take_count(bytes)?).ok()?;
+            let (definition, rest) = bytes.split_at_checked(len)?;
+            *bytes = rest;
+            definitions.insert(name, Definition::decode(definition).ok()?);
+            Some(())
+        })?;
+        let mut homes = BTreeMap::new();
+        take_rising(bytes, take_channel, |index, bytes| {
+            homes.insert(index, take_key(bytes)?);
+            Some(())
+        })?;
+        bytes.is_empty().then_some(Self {
+            prefix,
+            members,
+            voters,
+            definitions,
+            homes,
+        })
+    }
 }
 
 /// The region state that this node holds: its members, its tickets, the founding homes
@@ -109,6 +182,14 @@ impl State {
         self.members.get(&key)
     }
 
+    /// The name of each member.
+    pub(crate) fn names(&self) -> BTreeSet<Name> {
+        self.members
+            .values()
+            .map(|member| member.card.card().name.clone())
+            .collect()
+    }
+
     /// The key of the member whose card holds `public_key`, or `None` when none does.
     pub(crate) fn holder(&self, public_key: PublicKey) -> Option<node::Key> {
         let mut members = self.members.iter();
@@ -172,7 +253,7 @@ impl State {
                 homes,
                 ..
             } => {
-                self.move_pointer(base, root, &holders)?;
+                self.swap_pointer(base, root, &holders, &homes)?;
                 let mut moved = false;
                 for (index, home) in homes {
                     if let Entry::Vacant(vacant) = self.homes.entry(index) {
@@ -191,13 +272,15 @@ impl State {
         self.voters = voters;
     }
 
-    // Moves the pointer by compare-and-swap on `base`, when the holders of its chunks
-    // are a quorum. The chunks are never read here.
-    fn move_pointer(
+    // Compares `base` with the pointer and, when the holders of its chunks are a
+    // quorum, sets the pointer that the change makes. The chunks are never read
+    // here.
+    fn swap_pointer(
         &mut self,
         base: Pointer,
         root: Digest,
         holders: &BTreeSet<node::Key>,
+        homes: &BTreeMap<channel::Key, node::Key>,
     ) -> Result<(), Refused> {
         if base != self.pointer {
             return Err(Refused::Stale {
@@ -205,32 +288,53 @@ impl State {
                 pointer: self.pointer,
             });
         }
-        quorum(&self.voters, holders)?;
-        self.pointer = base.next(root);
+        self.voters.quorum(|key| holders.contains(&key))?;
+        self.pointer = change::pointer(base, root, homes);
         Ok(())
+    }
+
+    /// Checks `join` as [`State::apply`] does, with no change to the state.
+    ///
+    /// # Errors
+    ///
+    /// The [`Refused`] that [`State::apply`] gives for `join`.
+    pub(crate) fn check(&self, join: &Join) -> Result<(), Refused> {
+        self.admitted(join).map(drop)
     }
 
     // Admits the node of `join`. The ticket counts a use only when all checks pass.
     fn join(&mut self, join: Join) -> Result<(), Refused> {
-        let card = join.card.check().map_err(Refused::Forged)?;
-        let names = self.fits(&card, &join.status)?;
-        let record =
-            self.tickets
-                .get_mut(&join.ticket.to_bytes())
-                .ok_or(Refused::Unknown {
-                    public_key: join.ticket,
-                })?;
-        record
-            .admit(&card, &join.admission, join.at)
-            .map_err(Refused::Ticket)?;
+        let (card, names) = self.admitted(&join)?;
+        let record = self
+            .tickets
+            .get_mut(&join.ticket.to_bytes())
+            .expect("invariant: admitted checks that the ticket is recorded");
+        record.count();
         let member = Member {
             card,
             admission: join.admission,
-            ephemeral: record.options.ephemeral,
+            ephemeral: record.ephemeral(),
             status: join.status,
         };
         self.insert(member, names);
         Ok(())
+    }
+
+    // The checked card of `join` and its names from `fits`, when the region admits
+    // it.
+    fn admitted(&self, join: &Join) -> Result<(card::Signed, Vec<String>), Refused> {
+        let card = join.card.clone().check().map_err(Refused::Forged)?;
+        let names = self.fits(&card, &join.status)?;
+        let record =
+            self.tickets
+                .get(&join.ticket.to_bytes())
+                .ok_or(Refused::Unknown {
+                    public_key: join.ticket,
+                })?;
+        record
+            .check(&card, &join.admission, join.at)
+            .map_err(Refused::Ticket)?;
+        Ok((card, names))
     }
 
     // Adds `member`, whose names `fits` gave.
@@ -316,28 +420,6 @@ impl State {
     }
 }
 
-/// Whether `holders` are a majority of each half of `voters`.
-///
-/// # Errors
-///
-/// [`Refused::Quorum`] for the first half that lacks a majority, the incoming half
-/// first.
-pub(crate) fn quorum(
-    voters: &Voters,
-    holders: &BTreeSet<node::Key>,
-) -> Result<(), Refused> {
-    let outgoing = (!voters.outgoing.is_empty()).then_some(&voters.outgoing);
-    for half in std::iter::once(&voters.incoming).chain(outgoing) {
-        let held = half.intersection(holders).count();
-        // `held` is at most `half.len()`, so neither side overflows.
-        if held.saturating_mul(2) <= half.len() {
-            let voters = half.len();
-            return Err(Refused::Quorum { held, voters });
-        }
-    }
-    Ok(())
-}
-
 /// What a node that joins gives the voter that admits it.
 #[cfg_attr(
     not(test),
@@ -397,13 +479,17 @@ pub(crate) enum Refused {
         voters: usize,
     },
     /// The bytes of a committed entry of a known kind are not the body of that kind,
-    /// as [`Malformed::Body`].
-    Body {
-        /// The kind byte.
-        kind: u8,
-        /// The length of the bytes.
-        length: usize,
-    },
+    /// as [`change::Malformed::Body`].
+    Body(Undecoded),
+}
+
+impl From<NoMajority> for Refused {
+    fn from(short: NoMajority) -> Self {
+        Self::Quorum {
+            held: short.counted,
+            voters: short.voters,
+        }
+    }
 }
 
 impl From<Unfit> for Refused {
@@ -436,11 +522,7 @@ impl fmt::Display for Refused {
                 "{held} of {voters} voters hold the chunks of a spec change, not a \
                  majority"
             ),
-            Self::Body { kind, length } => Malformed::Body {
-                kind: *kind,
-                length: *length,
-            }
-            .fmt(f),
+            Self::Body(undecoded) => undecoded.fmt(f),
         }
     }
 }
@@ -535,8 +617,8 @@ mod tests {
     use super::*;
     use crate::common::{
         EPHEMERAL, EXPIRY, create_members, digest, home, index, join, key as node,
-        member, name, options, private, public, record, signed, spec, status, ticket,
-        with_status,
+        member, name, options, private, public, signed, spec, status, ticket,
+        ticket_change, unchecked, with_status,
     };
 
     const FOUNDING: Digest = Digest([1; 32]);
@@ -561,7 +643,7 @@ mod tests {
     fn state() -> State {
         let mut state =
             create_state(name("plant").into(), create_members(&[1, 2])).unwrap();
-        let recorded = state.apply(record(7, options("plant.edge", false)));
+        let recorded = state.apply(ticket_change(7, options("plant.edge", false)));
         assert_eq!(recorded, Ok(false));
         state
     }
@@ -598,8 +680,25 @@ mod tests {
             root: digest(2),
         };
         assert_eq!(state.pointer(), moved);
+        assert_eq!(state.apply(homed(spec(1, 2, 2, &[]), &[(7, 1)])), Ok(true));
+        assert_eq!(state.pointer(), moved.next(digest(2)));
+    }
+
+    #[test]
+    fn a_spec_change_at_the_base_root_with_no_home_leaves_the_pointer() {
+        let mut state = state();
+        assert_eq!(state.apply(spec(0, 1, 2, &[3])), Ok(false));
+        let moved = state.pointer();
         assert_eq!(state.apply(spec(1, 2, 2, &[])), Ok(false));
-        assert_eq!(state.pointer().version, 2);
+        assert_eq!(state.pointer(), moved);
+        let refused = Refused::Stale {
+            base: Pointer {
+                version: 0,
+                root: FOUNDING,
+            },
+            pointer: moved,
+        };
+        assert_eq!(state.apply(spec(0, 1, 1, &[])), Err(refused));
     }
 
     /// `spec` with the home `[(index, home)]` of each pair of `homes`.
@@ -640,6 +739,16 @@ mod tests {
     }
 
     #[test]
+    fn a_spec_change_that_lists_a_home_moves_the_version_also_when_it_gives_none() {
+        let mut state = state();
+        assert_eq!(state.apply(homed(spec(0, 1, 2, &[]), &[(7, 2)])), Ok(true));
+        let moved = state.pointer();
+        assert_eq!(state.apply(homed(spec(1, 2, 2, &[]), &[(7, 1)])), Ok(false));
+        assert_eq!(state.home(index(7)), Some(node(2)));
+        assert_eq!(state.pointer(), moved.next(digest(2)));
+    }
+
+    #[test]
     fn named_gives_the_key_of_the_member_with_the_name() {
         let state = state();
         assert_eq!(state.named(&name("plant.node2")), Some(node(2)));
@@ -662,6 +771,7 @@ mod tests {
     fn holders_are_a_quorum_only_as_a_majority_of_each_half() {
         let short = |held, voters| Err(Refused::Quorum { held, voters });
         let cases = [
+            (voters(&[], &[]), keys(&[]), Ok(())),
             (voters(&[1], &[]), keys(&[1]), Ok(())),
             (voters(&[1], &[]), keys(&[]), short(0, 1)),
             (voters(&[1, 2], &[]), keys(&[1]), short(1, 2)),
@@ -673,8 +783,15 @@ mod tests {
             (voters(&[1, 2, 3], &[1, 2]), keys(&[1, 2]), Ok(())),
         ];
         for (voters, holders, expected) in cases {
-            let quorum = quorum(&voters, &holders);
-            assert_eq!(quorum, expected, "{voters:?} {holders:?}");
+            let mut state = state();
+            state.set_voters(voters.clone());
+            let mut change = spec(0, 1, 2, &[]);
+            let Change::Spec { holders: held, .. } = &mut change else {
+                unreachable!()
+            };
+            *held = holders.clone();
+            let applied = state.apply(change).map(drop);
+            assert_eq!(applied, expected, "{voters:?} {holders:?}");
         }
         assert_eq!(
             Refused::Quorum { held: 1, voters: 2 }.to_string(),
@@ -792,7 +909,10 @@ mod tests {
         let mut members = create_members(&[1, 2]);
         members[1].card = signed(2, "factory.node2");
         let mut state = create_state(Prefix::ROOT, members).unwrap();
-        assert_eq!(state.apply(record(8, options("site_a", false))), Ok(false));
+        assert_eq!(
+            state.apply(ticket_change(8, options("site_a", false))),
+            Ok(false)
+        );
         let join = join(8, 3, "site_a.pt_1");
         assert_eq!(state.apply(Change::Join(Box::new(join))), Ok(false));
         let names = [1, 2, 3]
@@ -821,7 +941,7 @@ mod tests {
         let mut state = state();
         let before = state.clone();
         assert_eq!(
-            state.apply(record(7, options("plant", true))),
+            state.apply(ticket_change(7, options("plant", true))),
             Err(Refused::Recorded {
                 public_key: public(7)
             })
@@ -834,22 +954,25 @@ mod tests {
         let mut state = state();
         let before = state.clone();
         assert_eq!(
-            state.apply(record(8, options("plants.edge", false))),
+            state.apply(ticket_change(8, options("plants.edge", false))),
             Err(Refused::Outside {
                 prefix: name("plants.edge"),
                 region: name("plant").into()
             })
         );
         assert_eq!(state, before);
-        assert_eq!(state.apply(record(8, options("plant", false))), Ok(false));
+        assert_eq!(
+            state.apply(ticket_change(8, options("plant", false))),
+            Ok(false)
+        );
     }
 
     #[test]
     fn a_join_admits_the_node_with_the_ticket_options() {
         let mut state = state();
-        let join = join(7, 3, "plant.edge.a");
-        let admission = join.admission;
-        assert_eq!(state.apply(Change::Join(Box::new(join))), Ok(false));
+        let first = join(7, 3, "plant.edge.a");
+        let admission = first.admission;
+        assert_eq!(apply_join(&mut state, first), Ok(false));
         let expected = Member {
             card: signed(3, "plant.edge.a"),
             admission,
@@ -857,7 +980,15 @@ mod tests {
             status: status([(name("disk"), index(9))]),
         };
         assert_eq!(state.member(node(3)), Some(&expected));
-        assert_eq!(state.ticket(public(7)).map(|record| record.uses), Some(1));
+        assert_eq!(
+            apply_join(
+                &mut state,
+                with_status(join(7, 4, "plant.edge.b"), &[("disk", 10)])
+            ),
+            Err(Refused::Ticket(ticket::Refused::Used {
+                public_key: public(7)
+            }))
+        );
     }
 
     #[test]
@@ -907,11 +1038,7 @@ mod tests {
         let card = holding(3, 1, "plant.edge.a");
         let mut join = join(7, 3, "plant.edge.a");
         join.admission = ticket(7).admission(&card);
-        join.card = card::Unchecked {
-            key: node(3),
-            card: card.card().clone(),
-            signature: *card.signature(),
-        };
+        join.card = unchecked(&card);
         let held = Unfit::Held { key: node(1) };
         assert_eq!(
             held.to_string(),
@@ -947,7 +1074,10 @@ mod tests {
     #[test]
     fn a_join_with_a_reserved_name_is_refused_and_counts_no_use() {
         let mut state = state();
-        assert_eq!(state.apply(record(8, options("plant", false))), Ok(false));
+        assert_eq!(
+            state.apply(ticket_change(8, options("plant", false))),
+            Ok(false)
+        );
         let before = state.clone();
         assert_eq!(
             apply_join(&mut state, join(8, 3, "plant.@changes")),
@@ -957,14 +1087,16 @@ mod tests {
             .into())
         );
         assert_eq!(state, before);
-        assert_eq!(state.ticket(public(8)).map(|record| record.uses), Some(0));
     }
 
     // `plant.@changes` is the region's changes channel.
     #[test]
     fn a_join_with_a_reserved_status_name_is_refused() {
         let mut state = state();
-        assert_eq!(state.apply(record(8, options("plant", true))), Ok(false));
+        assert_eq!(
+            state.apply(ticket_change(8, options("plant", true))),
+            Ok(false)
+        );
         let before = state.clone();
         let mut reserved = join(8, 3, "plant");
         reserved.status = status([(name("@changes"), index(9))]);
@@ -1029,7 +1161,10 @@ mod tests {
     // Member 1 is `plant.node1`. Ticket 8 admits any node under `plant`.
     fn open_state() -> State {
         let mut state = state();
-        assert_eq!(state.apply(record(8, options("plant", true))), Ok(false));
+        assert_eq!(
+            state.apply(ticket_change(8, options("plant", true))),
+            Ok(false)
+        );
         state
     }
 
@@ -1053,7 +1188,6 @@ mod tests {
             );
             assert_eq!(state, before);
         }
-        assert_eq!(state.ticket(public(8)).map(|record| record.uses), Some(0));
     }
 
     #[test]
@@ -1073,10 +1207,17 @@ mod tests {
             .into())
         );
         assert_eq!(state, before);
-        assert_eq!(state.ticket(public(7)).map(|record| record.uses), Some(0));
         let other = with_status(join(7, 4, "plant.edge.b"), &[("disk", 10)]);
         assert_eq!(apply_join(&mut state, other), Ok(false));
-        assert_eq!(state.ticket(public(7)).map(|record| record.uses), Some(1));
+        assert_eq!(
+            apply_join(
+                &mut state,
+                with_status(join(7, 5, "plant.edge.c"), &[("disk", 11)])
+            ),
+            Err(Refused::Ticket(ticket::Refused::Used {
+                public_key: public(7)
+            }))
+        );
     }
 
     #[test]
@@ -1270,10 +1411,10 @@ mod tests {
                 ),
             ),
             (
-                Refused::Body {
+                Refused::Body(Undecoded {
                     kind: 2,
                     length: 40,
-                },
+                }),
                 "a change of kind 2 and 40 bytes is not in the byte form of its kind"
                     .to_owned(),
             ),
@@ -1354,7 +1495,9 @@ mod tests {
             prop::sample::select(vec!["plant.edge", "plant", "factory"]),
             any::<bool>(),
         )
-            .prop_map(|(id, prefix, reusable)| record(id, options(prefix, reusable)));
+            .prop_map(|(id, prefix, reusable)| {
+                ticket_change(id, options(prefix, reusable))
+            });
         let homes = prop::collection::btree_map(0..3_u128, 1..3_u8, 0..3);
         let specs = (0..3_u64, 1..3_u8, 1..4_u8, homes).prop_map(
             |(version, base, root, homes)| {
@@ -1385,8 +1528,13 @@ mod tests {
                     }
                     (Ok(moved), Change::Spec { base, root, homes, .. }) => {
                         prop_assert_eq!(before.pointer(), base);
-                        let next = base.version.checked_add(1).unwrap();
-                        prop_assert_eq!(state.pointer(), Pointer { version: next, root });
+                        let next = if root == base.root && homes.is_empty() {
+                            base
+                        } else {
+                            let version = base.version.checked_add(1).unwrap();
+                            Pointer { version, root }
+                        };
+                        prop_assert_eq!(state.pointer(), next);
                         for (&index, &home) in &homes {
                             let kept = before.home(index).unwrap_or(home);
                             prop_assert_eq!(state.home(index), Some(kept));
@@ -1399,23 +1547,23 @@ mod tests {
             }
         }
 
-        // More holders never lose a quorum, and every voter is one.
+        // A check of a join gives what its apply gives, and changes nothing.
         #[test]
-        fn more_holders_keep_a_quorum(
-            incoming in prop::collection::btree_set(0..6_u8, 1..5),
-            outgoing in prop::collection::btree_set(0..6_u8, 0..5),
-            holders in prop::collection::btree_set(0..6_u8, 0..6),
-            more in prop::collection::btree_set(0..6_u8, 0..6),
+        fn a_check_of_a_join_gives_the_result_of_its_apply(
+            steps in prop::collection::vec(steps(), 0..16),
         ) {
-            let voters = Voters {
-                incoming: keys(&incoming),
-                outgoing: keys(&outgoing),
-            };
-            let all = keys(holders.union(&more));
-            if quorum(&voters, &keys(&holders)).is_ok() {
-                prop_assert_eq!(quorum(&voters, &all), Ok(()));
+            let mut state =
+                create_state(name("plant").into(), create_members(&[1, 2])).unwrap();
+            for step in steps {
+                if let Change::Join(join) = &step {
+                    let before = state.clone();
+                    let checked = state.check(join);
+                    prop_assert_eq!(&state, &before);
+                    prop_assert_eq!(checked, state.apply(step).map(drop));
+                } else {
+                    let _applied = state.apply(step);
+                }
             }
-            prop_assert_eq!(quorum(&voters, &keys(incoming.union(&outgoing))), Ok(()));
         }
 
         // The applied state is the last home that each index was given.
@@ -1436,6 +1584,91 @@ mod tests {
                     last.get(&i).map(|&h| node::Key::from_u128(h))
                 );
             }
+        }
+    }
+
+    // A founding from a small set of prefixes, members in any order, voters,
+    // definitions, and homes.
+    fn foundings() -> impl Strategy<Value = Founding> {
+        let ids = vec![1, 2, 3, 4, 5_u8];
+        let labels = vec!["plant.a", "plant.b", "plant.c"];
+        (
+            prop::sample::select(vec!["", "plant", "plant.cell"]),
+            prop::sample::subsequence(ids.clone(), 0..=5).prop_shuffle(),
+            prop::sample::subsequence(ids, 0..=5),
+            prop::sample::subsequence(labels, 0..=3),
+            prop::collection::btree_map(0..4_u128, 1..=5_u128, 0..=4),
+        )
+            .prop_map(|(prefix, members, voters, labels, homes)| {
+                let definitions = (1..).zip(labels).map(|(id, label)| {
+                    let key = spec::definition::Kind::Subject.key(label).unwrap();
+                    let subject = spec::subject::Subject::new(vec![public(id)]);
+                    (key, Definition::Subject(subject.unwrap()))
+                });
+                Founding {
+                    prefix: prefix.parse().unwrap(),
+                    members: create_members(&members),
+                    voters: voters.into_iter().map(node).collect(),
+                    definitions: definitions.collect(),
+                    homes: homes
+                        .into_iter()
+                        .map(|(i, h)| (index(i), node::Key::from_u128(h)))
+                        .collect(),
+                }
+            })
+    }
+
+    #[test]
+    fn a_founding_with_members_out_of_order_or_of_one_key_does_not_decode() {
+        let members = create_members(&[1, 2]);
+        let none = Founding {
+            prefix: Prefix::ROOT,
+            members: Vec::new(),
+            voters: [node(1)].into(),
+            definitions: BTreeMap::new(),
+            homes: BTreeMap::new(),
+        };
+        let mut head = Vec::new();
+        put_prefix(&Prefix::ROOT, &mut head);
+        put_count(0, &mut head);
+        let with = |order: [usize; 2]| {
+            let mut bytes = Vec::new();
+            put_prefix(&Prefix::ROOT, &mut bytes);
+            put_count(2, &mut bytes);
+            for i in order {
+                members[i].encode(&mut bytes);
+            }
+            bytes.extend(none.encode().strip_prefix(head.as_slice()).unwrap());
+            Founding::decode(&bytes)
+        };
+        let founding = Founding {
+            members: members.clone(),
+            ..none.clone()
+        };
+        assert_eq!(with([0, 1]), Some(founding));
+        assert_eq!(with([1, 0]), None);
+        assert_eq!(with([0, 0]), None);
+    }
+
+    proptest! {
+        // The byte form reads back as the founding with its members in key order, and
+        // no cut of it, or it with a byte more, reads.
+        #[test]
+        fn a_founding_reads_back_from_its_byte_form(
+            founding in foundings(),
+            cut in any::<prop::sample::Index>(),
+            extra in any::<u8>(),
+        ) {
+            let bytes = founding.encode();
+            let mut sorted = founding.clone();
+            sorted.members.sort_by_key(|member| member.card.key());
+            prop_assert_eq!(sorted.encode(), bytes.clone());
+            prop_assert_eq!(Founding::decode(&bytes), Some(sorted));
+            let cut = &bytes[..cut.index(bytes.len())];
+            prop_assert_eq!(Founding::decode(cut), None);
+            let mut longer = bytes;
+            longer.push(extra);
+            prop_assert_eq!(Founding::decode(&longer), None);
         }
     }
 }

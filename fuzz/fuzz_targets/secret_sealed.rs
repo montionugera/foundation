@@ -6,13 +6,14 @@
 //! Input: an 8-byte big-endian version, a name, a NUL, then the sealed bytes.
 
 #![no_main]
+#![expect(clippy::disallowed_methods, reason = "fuzz_target! calls File::create")]
 
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
 use libfuzzer_sys::fuzz_target;
 use secret::seal::{self, Opener};
-use secret::store::{self, Sealed, Store};
+use secret::store::{Sealed, Store};
 use types::name::Name;
 
 /// The private key that [`SEALED`] is sealed to.
@@ -64,7 +65,9 @@ fuzz_target!(|input: &[u8]| {
     let value = if real {
         Ok(VALUE.to_vec())
     } else {
-        Err(store::Error::Missing)
+        Err(secret::Error::Missing {
+            detail: "the region holds no sealed value of this name".into(),
+        })
     };
     assert_eq!(get(&empty, &name), value, "the empty store");
     assert_eq!(
@@ -75,7 +78,7 @@ fuzz_target!(|input: &[u8]| {
 });
 
 /// The value of `name` in `store`, which answers on the first poll.
-fn get(store: &Sealed, name: &Name) -> Result<Vec<u8>, store::Error> {
+fn get(store: &Sealed, name: &Name) -> Result<Vec<u8>, secret::Error> {
     let mut request = pin!(store.get(name));
     match request
         .as_mut()

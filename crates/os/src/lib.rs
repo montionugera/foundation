@@ -1,6 +1,6 @@
 //! Implements the `env` seams on the real operating system: monotonic and wall clocks,
 //! files, randomness, and threads, and the memory of block pools. The only crate
-//! allowed to call them.
+//! allowed to call them. It also holds the signals that ask the process to stop.
 //!
 //! # Panics in shards and threads
 //!
@@ -35,7 +35,12 @@ mod files;
 pub mod memory;
 #[cfg(all(feature = "net", any(target_os = "linux", target_os = "macos")))]
 mod net;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod paths;
 mod shards;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[expect(unsafe_code, reason = "a signal mask is an OS call")]
+mod signal;
 mod thread;
 mod threads;
 mod unwind;
@@ -54,7 +59,8 @@ pub use files::Disk;
 /// none or it has no timer. Each thread that `os` starts has one with a timer, but a
 /// runtime that its body starts may not. A sleep completes about 2 ms late on an idle
 /// machine, and later under load. A sleep that waits across a suspend completes up to
-/// 1 s late.
+/// 1 s late. A timer wakes its task early at most a second after each poll, until it
+/// is due.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[must_use]
 pub fn clock() -> env::clock::Clock {
@@ -131,8 +137,15 @@ pub fn threads() -> Result<env::threads::Threads, Error> {
 /// send of that sender ends. Each thread that `os` starts has a runtime with an I/O
 /// driver. Needs the cargo feature `net`.
 ///
+/// Each socket that `os` opens is closed on exec. On macOS, a child that another
+/// thread spawns while `os` opens or accepts a socket may hold it, and its port, until
+/// the child ends.
+///
 /// [`env::net::Net::resolve`] looks up a host name as each other program on this
-/// machine does, on an OS thread of its own for each lookup.
+/// machine does, on an OS thread of its own for each lookup. On macOS, a child that
+/// another thread spawns during a lookup may hold the sockets that the C library opens
+/// for it, and a child spawned after a lookup may hold a socket that the C library
+/// keeps open.
 ///
 /// # Panics
 ///
@@ -144,17 +157,53 @@ pub fn net() -> env::net::Net {
     env::net::Net::new(net::Driver)
 }
 
-/// The real disk under `dir/data`, which it makes when it is not there, and the
-/// handle of its I/O thread. `os` keeps its own entries in `dir`, so give it a
-/// directory that nothing else uses. `threads` starts I/O thread `name`, which runs
-/// each call of the disk and of its files in the order they reach it, and ends after
-/// the disk and its files drop. Give each shard a disk of its own. The mode of each
-/// file and directory that it makes gives the group and other users no access. It does
-/// not change the mode of a file or directory that is there.
+/// The real files of the host by path. A write on a file or on nothing makes a hidden
+/// file with a random name beside `path`, syncs it, and renames it over `path`, so a
+/// reader or a crash sees the old file or the new one, and of two writes one wins
+/// whole. A write that fails removes its file, and gives the error of the remove when
+/// that fails. A crash during a write leaves the file. The hidden file has a name of 21
+/// bytes: where the OS refuses its path as too long, the write gives `Io` and makes no
+/// file.
+///
+/// The file that a write makes is a new file of this user, with permission bits that
+/// give the group and other users no access, also when it replaces a file that gave
+/// more. It takes nothing from the file that it replaces: not its owner, its group, its
+/// permission bits, or its access control list. `os` sets no access control list, so
+/// the file takes the entries that its directory gives to its new files: on macOS, such
+/// an entry can open the file to another user. Each other hard link of the replaced
+/// file keeps the old bytes.
+///
+/// A symbolic link, a device, or a pipe at `path` takes the bytes in place, with no
+/// hidden file and no rename: a reader, a crash, or a failed write can see or leave a
+/// part of them, and two writes at one time can leave a mix of the two. `os` sets no
+/// owner, group, or permission bit of the file, device, or pipe that takes them. A
+/// write on a symbolic link to nothing gives `NotFound` and makes no file.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[must_use]
+pub fn paths() -> env::paths::Paths {
+    env::paths::Paths::new(paths::Driver)
+}
+
+/// The real disk under `dir/data`, and the handle of its I/O thread. It makes `dir` and
+/// `dir/data` when they are not there, but not the parents of `dir`. `os` keeps its own
+/// entries in `dir`, so give it a directory that nothing else uses. `threads` starts
+/// I/O thread `name`, which runs each call of the disk and of its files in the order
+/// they reach it, and ends after the disk and its files drop. Give each shard a disk of
+/// its own. The mode of each file and directory that it makes gives the group and other
+/// users no access. It does not change the mode of a file or directory that is there.
+/// Each file that it opens is closed on exec. A child of the process holds a copy of
+/// each open file from its fork to its exec, or to its end. The copy does not hold the
+/// file: a write open succeeds after its handle closes. On a filesystem that fails the
+/// unlock, as NFS or a FUSE daemon can, the copy holds the file, and a write open gives
+/// [`env::files::Error::Busy`] until the copy closes. The copy keeps the room of a
+/// removed file, which counts as used until the copy closes.
 ///
 /// # Errors
 ///
-/// - [`Error::Dir`] when the OS cannot open `dir`, or open or make `dir/data`.
+/// - [`Error::Dir`] when the OS cannot open or make `dir` or `dir/data`, or cannot open
+///   or sync the directory that holds each. It does not sync the holder of a
+///   directory on another device than that holder, such as a mount point of another
+///   file system: that entry is the mount's to keep.
 /// - [`Error::Thread`] when the I/O thread cannot start.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn files(
@@ -165,14 +214,52 @@ pub fn files(
     Disk::new(dir, threads, name)
 }
 
-/// Why `os` could not build a seam.
+/// The real disk under `dir/data` and the handle of its I/O thread, as [`files`] gives
+/// them, for a directory that is there. It makes nothing.
+///
+/// # Errors
+///
+/// - [`Error::Dir`] when `dir/data` is not there or the OS cannot open it.
+/// - [`Error::Thread`] when the I/O thread cannot start.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn stored(
+    dir: &Path,
+    threads: &env::threads::Threads,
+    name: &str,
+) -> Result<(Disk, env::thread::Handle), Error> {
+    Disk::stored(dir, threads, name)
+}
+
+/// Holds SIGINT and SIGTERM: the first that comes does not end the process, and the
+/// future completes at it, also when it came before the first poll. A second one ends
+/// the process as it does with no hold, so a stop that hangs can still be ended. It
+/// changes only what a signal that reaches the process does, never which signals reach
+/// it: it leaves out each of them that the calling thread blocks or whose action is
+/// `SIG_IGN`, and that signal keeps its block or its ignore. When it leaves out both,
+/// it starts no thread, and the future never completes. Call it once, on the main
+/// thread, before the process starts any other thread: a thread that was there before
+/// still takes them, and ends the process on one. It takes a signal sent to the
+/// process, as Ctrl-C and `kill` send it, not one sent to a single thread.
+///
+/// # Errors
+///
+/// [`Error::Thread`] when the thread that waits for them cannot start.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn interrupt() -> Result<impl Future<Output = ()> + Send + 'static, Error> {
+    signal::hold().map_err(Error::Thread)
+}
+
+/// Why `os` could not build a seam or hold the signals.
 #[derive(Debug)]
 pub enum Error {
     /// The OS could not give the cores of the calling thread.
     Cores(std::io::Error),
-    /// The OS could not open or make the data directory.
+    /// The OS could not open, make, or sync the data directory or its parent.
     Dir(std::io::Error),
-    /// The I/O thread could not start.
+    /// The OS could not give the available memory.
+    Memory(std::io::Error),
+    /// A thread of `os` could not start: the I/O thread of [`files`] or the thread
+    /// of [`interrupt`].
     Thread(env::thread::Error),
     /// The OS refused a read of its wall clock.
     Wall(std::io::Error),
@@ -182,7 +269,13 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Cores(e) => write!(f, "cannot read the cores of this thread: {e}"),
-            Self::Dir(e) => write!(f, "cannot open the data directory: {e}"),
+            Self::Dir(e) => {
+                write!(
+                    f,
+                    "cannot open, make, or sync the data directory or its parent: {e}"
+                )
+            }
+            Self::Memory(e) => write!(f, "cannot read the available memory: {e}"),
             Self::Thread(e) => write!(f, "{e}"),
             Self::Wall(e) => write!(f, "cannot read the wall clock: {e}"),
         }
@@ -192,7 +285,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Cores(e) | Self::Dir(e) | Self::Wall(e) => Some(e),
+            Self::Cores(e) | Self::Dir(e) | Self::Memory(e) | Self::Wall(e) => Some(e),
             Self::Thread(e) => std::error::Error::source(e),
         }
     }
@@ -211,6 +304,17 @@ mod tests {
         );
         let source = std::error::Error::source(&e).map(ToString::to_string);
         assert_eq!(source.as_deref(), Some("no affinity"));
+    }
+
+    #[test]
+    fn a_memory_error_names_the_os_error_as_its_source() {
+        let e = Error::Memory(std::io::Error::other("no meminfo"));
+        assert_eq!(
+            e.to_string(),
+            "cannot read the available memory: no meminfo"
+        );
+        let source = std::error::Error::source(&e).map(ToString::to_string);
+        assert_eq!(source.as_deref(), Some("no meminfo"));
     }
 
     #[test]

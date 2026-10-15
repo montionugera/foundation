@@ -2,8 +2,15 @@
 # `sim` is mutated and tested.
 all_features = true
 
-# Mutants that no test can catch, each with the reason.
+# Mutants that no caller or peer can see, that only a job outside the mutants run
+# kills, or that no test kills yet (with its open issue). Each has its reason.
 exclude_re = [
+  # A type name shows only in a panic of `connector_opcua::fuzz::decode`, which a
+  # correct open62541 never gives. `fuzz::tests` checks the names.
+  'crates/connector-opcua/src/ffi\.rs:.*replace DataType::name -> &.static str with',
+  # A larger size only allocates more for a decoded value, and no count sees it.
+  # `fuzz::tests` checks the sizes.
+  'crates/connector-opcua/src/ffi\.rs:.*replace & with (\||\^) in DataType::size',
   # Benchmarks ship in no binary; the run itself checks them.
   '^bench/',
   # `main` reads the arguments and calls a task. Each task has its own tests.
@@ -11,19 +18,38 @@ exclude_re = [
   # Miri needs the pinned nightly, which only the miri CI job installs. A deliberate
   # break in that job shows that it fails.
   'xtask/src/miri\.rs:.*(replace run ->| in run$)',
-  # Calls the GitHub API. The review workflow runs it on each PR: a round with findings
-  # shows that it fails.
-  'xtask/src/review\.rs:.*(replace run ->| in run$)',
+  # The run needs the pinned nightly, which the mutants job does not install. A planted
+  # overflow in the shim fails the sanitizers job.
+  'xtask/src/sanitizers\.rs:.*(replace run ->| in run$)',
+  # The build and the runs need the pinned nightly and cargo-fuzz, which no test has. A
+  # crash planted in a target must fail the `fuzz` job of `ci.yaml` (#2105).
+  'xtask/src/fuzz\.rs:.*(replace run_one ->| in run$)',
   # Calls the GitHub API. The review workflow runs it on each PR: with no PR record,
   # the status is `error`.
-  'xtask/src/review\.rs:.*(replace gh ->| in gh$)',
+  'xtask/src/gh\.rs:.*(replace api ->| in api$)',
   # Empty outside loom. The loom models fail when a marker is removed.
   'crates/block/src/sync\.rs:.*Track::(read|write)',
+  # The stub is built only under loom, so no test of another build sees its mutant.
+  # The real `net` has no mutant that builds.
+  'crates/node/src/main\.rs:.*replace net -> env::net::Net with Default::default\(\)$',
+  # Empty outside a build with the address sanitizer, which `cargo xtask sanitizers`
+  # and the fuzz builds make. In `cargo xtask sanitizers`,
+  # `asan_reports_a_write_before_a_block` fails without it.
+  'crates/connector-opcua/src/alloc\.rs:.*replace poison with \(\)$',
+  # Empty outside a build with the address sanitizer. In `cargo xtask sanitizers`,
+  # `block` reads the header, and the alloc tests fail without it.
+  'crates/connector-opcua/src/alloc\.rs:.*replace unpoison with \(\)$',
+  # `moves` is a `sim` hook, so no caller or peer sees it. Only the private reads of
+  # `sends_from_one_run_on_one_connection_ask_for_one_move` and
+  # `a_send_from_a_run_with_no_value_moves_on_only_its_connection` kill the mutant.
+  'crates/connector-opcua/src/connection\.rs:.*replace \+ with \* in State::move_on$',
   # The fields of a UUIDv7 share no bit, so `^` gives the same bits as `|`.
   'crates/types/src/uuid\.rs:.*replace \| with \^ in v7$',
   # Class 4 is 320 bytes on either side of the branch: `ALIGN * 5` and
   # `(ALIGN << 0) * 5`.
   'crates/block/src/lib\.rs:.*replace < with <= in class_payload',
+  # At `index == CLASSES_MAX` both arms give `CLASSES_MAX`. `Ord::min` is not `const`.
+  'crates/block/src/lib\.rs:.*replace < with <= in classes$',
   # Stubs that panic until #68 fills them; #68 removes these lines.
   'crates/transport/src/datagram\.rs:',
   'crates/transport/src/session\.rs:.*Session::datagrams\b',
@@ -50,6 +76,26 @@ exclude_re = [
   # `rows` fills bits 0 to 15 and `columns << 16` bits 16 to 31, so `|` and `^` give
   # the same `n`.
   'crates/home/src/stored\.rs:.*replace \| with \^ in codes',
+  # The oracle of `node.key` in the `node_identity` fuzz target and the property
+  # tests. It panics only when `sector::written` disagrees with `encode` of `fields`,
+  # and the mutants of `written` show that it does.
+  'crates/node/src/identity\.rs:.*replace check with \(\)',
+  # The oracle of `admin.key` in the same target and tests, for the same reason.
+  'crates/node/src/admin\.rs:.*replace check with \(\)',
+  # The check that `identity::check`, `admin::check`, and `address::check` call, for
+  # the same reason. The unit tests `panics_when_a_decode_*` in `sector.rs` show that
+  # it panics.
+  'crates/node/src/sector\.rs:.*replace check with \(\)',
+  # The oracle of `address` in the same target and tests, for the same reason.
+  'crates/node/src/address\.rs:.*replace check with \(\)',
+  # The entry of the target, which panics only when a `check` does.
+  'crates/node/src/fuzz\.rs:.*replace identity with \(\)',
+  # No caller sees the bytes that `file` gives: `identity` panics only when a `check`
+  # does. The unit test `a_file_is_its_bytes_or_its_body_with_the_checksum` reads them.
+  'crates/node/src/fuzz\.rs:.*replace file -> ',
+  # No public call reads the entries that an open leaks. The unit test
+  # `an_open_keeps_no_entry_once_it_drops` reads them.
+  'crates/hub/src/serve\.rs:.*replace <impl Drop for Opening<._>>::drop with \(\)',
   # Only Miri sees the stub task that a skipped clear leaks, and the miri job runs
   # those tests.
   'crates/connector-ni/src/daqmx\.rs:.*replace <impl Drop for Task>::drop with \(\)',
@@ -65,8 +111,14 @@ exclude_re = [
   # An out connector has no device channel. `Ok(Channels::default())` is what the body
   # returns.
   'crates/connector-influx/src/lib\.rs:.*replace <impl kind::Kind for Kind>::check ->',
+  # `root::free_drops_by_the_bytes_of_a_created_file` kills both, in the `Root tests`
+  # step of the `check` job, which the mutants run does not see.
+  'crates/os/src/files\.rs:.*in <impl env::files::Driver for Disk>::free$',
   # macOS only. CI runs Linux and does not build it; its tests run on macOS.
   'crates/os/src/allocate\.rs:',
+  # macOS only, as above. `this_host_has_whole_pages_available` and
+  # `the_free_inactive_and_purgeable_pages_are_available` catch its mutants.
+  'crates/os/src/memory/available\.rs:.*macos::',
   # macOS only, as above. `a_write_takes_at_most_the_unsent_bound` catches its
   # mutants.
   'crates/os/src/net/unsent\.rs:.*Bound::new',
@@ -84,7 +136,52 @@ exclude_re = [
   'crates/os/src/net/resolve\.rs:.*delete match arm \(libc::EAI_(AGAIN|MEMORY), _\)',
   # The list is C memory, so no test sees a leak (#1928).
   'crates/os/src/net/resolve\.rs:.*replace <impl Drop for List>::drop with \(\)',
+  # The flags of a socket share no bit, so `|` and `^` give the same flags.
+  'crates/os/src/net\.rs:.*replace \| with \^ in socket$',
   # Only a pool whose largest block is 1472 bytes tells `<` from `<=`. Block sizes are
   # 64 times 2^k times 5 to 8, so none is 1472: 1280, then 1536.
   'crates/transport/src/client\.rs:.*replace < with <= in Config::setup',
+  # A kept `Weak` of a reader that went changes only the memory of the hub, and no
+  # counting-allocator test opens remote readers yet (#2015). The unit test of
+  # `Sessions::add` kills it through the length of the list.
+  'crates/hub/src/reader/remote\.rs:.*replace > with >= in Sessions::add',
+  # Equal keys get no rule (ONE SESSION PER PEER, rule 4), so no test can pin `<`.
+  'crates/transport/src/table\.rs:.*replace < with <= in Table::arrive',
+  # Only the `logs` bench calls `buffer::bench::Logs::commit`, and it gives nothing
+  # back. Its test kills the mutants through the private logs.
+  'crates/buffer/src/bench\.rs:.*replace Logs::commit with \(\)$',
+  'crates/buffer/src/bench\.rs:.* in Logs::commit$',
+  # Only the `logs` bench calls `buffer::bench::Logs::append`, and it gives nothing
+  # back. Its test kills the mutants through the private logs.
+  'crates/buffer/src/bench\.rs:.*replace Logs::append with \(\)$',
+  'crates/buffer/src/bench\.rs:.* in Logs::append$',
+  # Only the `logs` bench calls `buffer::bench::Logs::carry`, and it gives nothing
+  # back. Its test kills the mutants through the private logs.
+  'crates/buffer/src/bench\.rs:.*replace Logs::carry with \(\)$',
+  'crates/buffer/src/bench\.rs:.* in Logs::carry$',
+  # Only the `logs` bench calls `buffer::bench::Logs::trim`, and it gives nothing
+  # back. Its test kills the mutants through the private logs and tails.
+  'crates/buffer/src/bench\.rs:.*replace Logs::trim with \(\)$',
+  'crates/buffer/src/bench\.rs:.* in Logs::trim$',
+  # Only the `logs` bench and the `alloc` test call `buffer::bench::Logs::mark`,
+  # and it gives nothing back. Its test kills the mutants through the private logs.
+  'crates/buffer/src/bench\.rs:.*replace Logs::mark with \(\)$',
+  'crates/buffer/src/bench\.rs:.* in Logs::mark$',
+  # No caller reads `State::kept` until the commit trims (#160, step 3c, which removes
+  # these lines). Only the private reads of
+  # `a_read_holds_the_record_it_waits_on_until_it_ends_or_drops` kill the mutants.
+  'crates/buffer/src/buffer\.rs:.*replace State::kept -> Option<u64> with',
+  'crates/buffer/src/buffer\.rs:.*replace <impl Drop for Hold<.*>>::drop with \(\)$',
+  # A connector on another node runs here only in a mesh of two nodes, which no test of
+  # `Node` starts yet (#2272, whose test removes this entry). The test of `Runs`
+  # `a_connector_on_another_node_starts_no_run` kills it.
+  'crates/node/src/connectors\.rs:.*\*connector\.node\(\) == self\.node with true',
+  # A kept clone of an ended session holds only memory of shard 0 (its carrier slot)
+  # while its place lives, and a close of an ended session does nothing. No counting
+  # test of `node` opens sessions yet (#2370). The unit test
+  # `a_session_whose_hold_drops_leaves_its_place` kills it through `Places::take`.
+  'crates/node/src/route\.rs:.*replace <impl Drop for Hold>::drop with \(\)',
+  # The loop of the constant assertion of the status names: a mutant that skips it
+  # still builds, and no test sees a check that runs at compile time.
+  'crates/node/src/status\.rs:.*replace < with (==|>)$',
 ]

@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use env::thread;
 use sim::shard::Fault;
@@ -10,8 +10,13 @@ use types::byte::Size;
 use types::ed25519::PrivateKey;
 use types::time::Span;
 
+use secret::seal::Opener;
+
 use crate::identity::{self, Identity};
-use crate::{Config, Error, Node};
+use crate::{Budget, Config, Error, Node, Region};
+
+mod address;
+mod region;
 
 struct Run {
     seed: u64,
@@ -26,6 +31,8 @@ const PORT: u16 = 7000;
 const KEY: PrivateKey = PrivateKey([2; 32]);
 /// The node's key in the data directory of [`keyed`].
 const OWN: types::node::Key = types::node::Key::from_u128(1);
+/// The bytes of the seal key in the data directory of [`keyed`].
+const SEAL: [u8; 32] = [3; 32];
 
 /// A disk budget of two rings of 64 MiB, with their header blocks.
 const DISK: Size = Size::from_bytes(2 * (8192 + (64 << 20)));
@@ -57,12 +64,19 @@ fn refuse(refused: usize, error: os::memory::Error) -> Memory {
 
 /// The seams of `host`, with a pool budget of `budget` from `memory`, a disk budget
 /// of [`DISK`], and the port at [`listen`].
-fn config(host: &sim::node::Node, budget: Size, memory: Memory) -> Config<block::Heap> {
+fn config<M>(
+    host: &sim::node::Node,
+    budget: Size,
+    memory: Box<dyn FnMut(usize) -> Result<M, os::memory::Error>>,
+) -> Config<M> {
     Config {
         shards: host.shards(),
         clock: host.clock(),
         wall: host.wall(),
-        budget,
+        budget: Budget {
+            pool: budget,
+            disk: DISK,
+        },
         memory,
         files: {
             let host = host.clone();
@@ -72,10 +86,12 @@ fn config(host: &sim::node::Node, budget: Size, memory: Memory) -> Config<block:
             })
         },
         entropy: host.entropy(),
-        disk: DISK,
         net: host.net(),
         listen: listen(host),
-        region: None,
+        region: Region::Absent,
+        name: "edge".parse().expect("a name"),
+        settings: crate::Settings::default(),
+        vars: std::collections::BTreeMap::new(),
     }
 }
 
@@ -178,6 +194,28 @@ fn stop_before_the_shards_run_ends_them_and_repeats_freely() {
     run.node.stop();
     assert_eq!(run.sim.run(), Ok(()));
     assert_eq!(run.node.join(), Ok(()));
+}
+
+#[test]
+fn a_stopper_from_another_thread_stops_its_node() {
+    fn sendable<T: Send + Sync + 'static>(_: &T) {}
+    let mut run = start(7, 2, &[]);
+    let stopper = run.node.stopper();
+    sendable(&stopper);
+    assert_eq!(run.sim.run_for(Span::HOUR), Ok(()));
+    stopper.clone().stop();
+    assert_eq!(run.sim.run(), Ok(()));
+    assert_eq!(run.node.join(), Ok(()));
+}
+
+#[test]
+fn a_stop_after_the_node_ended_does_nothing() {
+    let mut run = start(7, 2, &[]);
+    let stopper = run.node.stopper();
+    run.node.stop();
+    assert_eq!(run.sim.run(), Ok(()));
+    assert_eq!(run.node.join(), Ok(()));
+    stopper.stop();
 }
 
 #[test]
@@ -313,9 +351,13 @@ fn each_shard_reserves_its_part_of_the_budget_and_core_0_takes_the_rest() {
     run.node.stop();
     assert_eq!(run.sim.run(), Ok(()));
     assert_eq!(run.node.join(), Ok(()));
-    let part = usize::try_from(budget.bytes() / 3).unwrap();
-    assert_eq!(part * 3 + 2, usize::try_from(budget.bytes()).unwrap());
-    let reservation = |budget| block::Config { budget }.reservation();
+    let part = budget.bytes() / 3;
+    assert_eq!(part * 3 + 2, budget.bytes());
+    let reservation = |budget| {
+        block::Config::new(budget)
+            .expect("the budget fits")
+            .reservation()
+    };
     assert_eq!(
         *calls.lock().unwrap(),
         [reservation(part + 2), reservation(part), reservation(part)]
@@ -348,10 +390,9 @@ fn a_shard_with_no_memory_stops_the_node_before_later_shards_start() {
 #[test]
 fn join_gives_a_shard_with_no_memory_over_one_that_panicked() {
     for seed in 0..32 {
-        let len = block::Config {
-            budget: (1 << 20) / 3,
-        }
-        .reservation();
+        let len = block::Config::new((1 << 20) / 3)
+            .expect("the budget fits")
+            .reservation();
         let error = os::memory::Error::Reserve { len, code: 12 };
         let mut run = start_with(
             seed,
@@ -371,7 +412,7 @@ fn join_gives_a_shard_with_no_memory_over_one_that_panicked() {
 }
 
 #[test]
-fn a_config_shows_its_budget_and_entropy_but_not_its_memory_or_files() {
+fn a_config_shows_its_budget_entropy_and_settings_but_not_its_memory_or_files() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = sim.node(sim::node::Config::default());
     let config = config(&host, Size::from_bytes(4096), Box::new(heap));
@@ -380,23 +421,37 @@ fn a_config_shows_its_budget_and_entropy_but_not_its_memory_or_files() {
         format!("{config:?}"),
         format!(
             "Config {{ shards: Shards {{ .. }}, clock: {clock:?}, wall: {wall:?}, \
-             budget: Size(4096), entropy: {entropy:?}, disk: {DISK:?}, \
-             listen: {listen:?}, region: None, .. }}",
+             budget: Budget {{ pool: Size(4096), disk: {DISK:?} }}, entropy: {entropy:?}, \
+             listen: {listen:?}, region: Absent, name: Name(\"edge\"), \
+             settings: {settings:?}, .. }}",
             listen = config.listen,
+            settings = config.settings,
         )
     );
 }
 
+/// No part of the largest pool budget fits a shard's reservation. No shard starts,
+/// and a task given to the node is dropped unrun.
 #[test]
-#[should_panic(expected = "pool budget 18446744073709551615 is too large")]
-fn a_budget_past_the_address_space_panics_at_start() {
-    drop(start_with(
-        7,
-        1,
-        &[],
-        Size::from_bytes(u64::MAX),
-        Box::new(heap),
-    ));
+fn a_pool_reservation_past_usize_max_starts_no_shard() {
+    let pool = Size::from_bytes(u64::MAX);
+    for cores in [1, 2] {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, cores);
+        let node = Node::start(config(&host, pool, Box::new(heap)));
+        assert_eq!(host.shard_starts(), [], "{cores} cores");
+        assert_eq!(fate(&probe(&node)), Fate::Dropped, "{cores} cores");
+        assert_eq!(sim.run(), Ok(()));
+        let e = node.join().unwrap_err();
+        assert_eq!(e, Error::Pool { pool, cores });
+        assert_eq!(
+            e.to_string(),
+            format!(
+                "the pool budget 18446744073709551615B gives one of {cores} shards a \
+                 pool that needs more address space than this host has"
+            )
+        );
+    }
 }
 
 #[test]
@@ -431,7 +486,10 @@ fn run_on_disk(
     disk: u64,
 ) -> Result<(), Error> {
     let node = Node::start(Config {
-        disk: Size::from_bytes(disk),
+        budget: Budget {
+            pool: Size::MEBIBYTE,
+            disk: Size::from_bytes(disk),
+        },
         ..config(host, Size::MEBIBYTE, Box::new(heap))
     });
     assert_eq!(sim.run_for(Span::HOUR), Ok(()));
@@ -452,6 +510,49 @@ fn listed(sim: &mut sim::Sim, host: &sim::node::Node, dir: &str) -> Vec<PathBuf>
     listed
 }
 
+/// Writes `bytes` to a new file `path` in the data directory of `host`.
+fn write(sim: &mut sim::Sim, host: &sim::node::Node, path: &str, bytes: Vec<u8>) {
+    let path = PathBuf::from(path);
+    sim.run_on(host, move |host, _| async move {
+        let files = host.files();
+        let mode = env::files::Mode::Create {
+            len: bytes.len() as u64,
+        };
+        let file = files.open(&path, mode).await.expect("opens");
+        if !bytes.is_empty() {
+            let pool =
+                block::Pool::heap(block::Config::new(4096).expect("the budget fits"));
+            let block = pool.copy(&bytes).expect("a block");
+            file.write_at(0, &[block]).await.expect("writes");
+        }
+        file.sync().await.expect("syncs");
+        files.sync_dir(Path::new("")).await.expect("syncs");
+    })
+    .expect("the run ends");
+}
+
+/// The bytes of the file `path` in the data directory of `host`, or `None` when it
+/// is not there.
+fn bytes(sim: &mut sim::Sim, host: &sim::node::Node, path: &str) -> Option<Vec<u8>> {
+    let path = PathBuf::from(path);
+    sim.run_on(host, |host, _| async move {
+        let files = host.files();
+        let file = match files.open(&path, env::files::Mode::Read).await {
+            Err(env::files::Error::NotFound { .. }) => return None,
+            file => file.expect("opens"),
+        };
+        let len = usize::try_from(file.len()).unwrap();
+        if len == 0 {
+            return Some(Vec::new());
+        }
+        let pool =
+            block::Pool::heap(block::Config::new(4096).expect("the budget fits"));
+        let into = pool.alloc(len).expect("a block");
+        Some(file.read_at(0, into).await.expect("reads").to_vec())
+    })
+    .expect("the run ends")
+}
+
 fn host(sim: &mut sim::Sim, cores: usize) -> sim::node::Node {
     sim.node(sim::node::Config {
         cores: NonZeroUsize::new(cores).unwrap(),
@@ -459,20 +560,49 @@ fn host(sim: &mut sim::Sim, cores: usize) -> sim::node::Node {
     })
 }
 
+/// Takes the lock of the data directory of `host` once the node frees it. Gives the
+/// lock, and whether it waited.
+async fn take_lock(host: &sim::node::Node) -> (env::files::File, bool) {
+    let (files, clock) = (host.files(), host.clock());
+    let mut waited = false;
+    loop {
+        let mode = env::files::Mode::Create { len: 0 };
+        match files.open(Path::new("lock"), mode).await {
+            Err(env::files::Error::Busy { .. }) => {
+                waited = true;
+                clock.sleep(Span::from_nanos(1_000)).await;
+            }
+            opened => break (opened.expect("the lock opens"), waited),
+        }
+    }
+}
+
 /// A host of `sim` with `cores` cores, whose data directory holds the key [`OWN`]
 /// and the private key [`KEY`].
 fn keyed(sim: &mut sim::Sim, cores: usize) -> sim::node::Node {
-    let host = host(sim, cores);
+    keyed_on(
+        sim,
+        sim::node::Config {
+            cores: NonZeroUsize::new(cores).unwrap(),
+            ..sim::node::Config::default()
+        },
+    )
+}
+
+/// As [`keyed`], on a host of `config`.
+fn keyed_on(sim: &mut sim::Sim, config: sim::node::Config) -> sim::node::Node {
+    let host = sim.node(config);
     let identity = Identity {
         key: OWN,
         private_key: KEY,
+        opener: Opener::from_bytes(SEAL),
     };
-    create_key(sim, &host, identity::encode(&identity).to_vec());
+    write_key(sim, &host, identity::encode(&identity).to_vec());
     host
 }
 
-/// Writes `bytes` to a new file `node.key` on `host`.
-fn create_key(sim: &mut sim::Sim, host: &sim::node::Node, bytes: Vec<u8>) {
+/// Writes `bytes` to a new file `node.key` on `host`, durably.
+fn write_key(sim: &mut sim::Sim, host: &sim::node::Node, bytes: Vec<u8>) {
     sim.run_on(host, move |host, _| async move {
         let files = host.files();
         let mode = env::files::Mode::Create {
@@ -480,10 +610,12 @@ fn create_key(sim: &mut sim::Sim, host: &sim::node::Node, bytes: Vec<u8>) {
         };
         let path = Path::new(identity::FILE);
         let file = files.open(path, mode).await.expect("opens");
-        let pool = block::Pool::heap(block::Config { budget: 4096 });
+        let pool =
+            block::Pool::heap(block::Config::new(4096).expect("the budget fits"));
         let block = pool.copy(&bytes).expect("a block");
         file.write_at(0, &[block]).await.expect("writes");
         file.sync().await.expect("syncs");
+        files.sync_dir(Path::new("")).await.expect("syncs");
     })
     .expect("the run ends");
 }
@@ -501,7 +633,7 @@ struct Probe(Arc<Mutex<Fate>>);
 
 impl Drop for Probe {
     fn drop(&mut self) {
-        let mut fate = self.0.lock().unwrap();
+        let mut fate = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         if *fate == Fate::Waiting {
             *fate = Fate::Dropped;
         }
@@ -517,6 +649,22 @@ fn probe(node: &Node) -> Arc<Mutex<Fate>> {
         async {}
     });
     fate
+}
+
+#[test]
+fn a_probe_with_a_poisoned_lock_does_not_abort_a_test_that_panics() {
+    let fate = Arc::new(Mutex::new(Fate::Waiting));
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _held = fate.lock().unwrap();
+        panic!("poison the lock");
+    }));
+    poisoned.expect_err("the lock is poisoned");
+    let probe = Probe(fate);
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _probe = probe;
+        panic!("the test broke");
+    }));
+    unwound.expect_err("the test panics");
 }
 
 fn fate(fate: &Mutex<Fate>) -> Fate {
@@ -539,6 +687,17 @@ fn join_gives_a_later_shard_error_over_an_earlier_panic() {
     assert_eq!(crate::error(None, all), Err(shards));
 }
 
+/// An unnamed reader on the channel named `channel`.
+fn unnamed(channel: &str, mode: ::hub::reader::Mode) -> ::hub::reader::Config {
+    ::hub::reader::Config {
+        select: types::name::Selector::new([channel]).expect("a selector"),
+        mode,
+        subject: "test".parse().expect("a name"),
+        name: None,
+        hold: Span::ZERO,
+    }
+}
+
 mod buffer {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -553,7 +712,7 @@ mod buffer {
     /// Writes one entry of index `key` to the ring of shard `core` of `host`.
     fn write(sim: &mut sim::Sim, host: &sim::node::Node, core: usize, key: u128) {
         sim.run_on(host, move |host, tasks| async move {
-            let config = block::Config { budget: 1 << 20 };
+            let config = block::Config::new(1 << 20).expect("the budget fits");
             let memory = block::Heap::new(config.reservation());
             let pool = Rc::new(block::Pool::new(config, memory));
             let config = ::buffer::Config {
@@ -572,7 +731,7 @@ mod buffer {
             let index = Key::from_u128(key);
             let entry = Entry {
                 index,
-                slot: slots.assign(index),
+                slot: slots.index(index),
                 path: Stream::Live,
                 first: 0,
                 len: 1,
@@ -593,7 +752,7 @@ mod buffer {
     /// # Panics
     ///
     /// When the node dropped `probe`, or when the opens go on after 10 ms.
-    fn all_opened(probe: &Mutex<Fate>, after: Span) -> bool {
+    pub(super) fn all_opened(probe: &Mutex<Fate>, after: Span) -> bool {
         let fate = fate(probe);
         assert_ne!(fate, Fate::Dropped, "{after:?}");
         assert!(after < Span::from_nanos(10_000_000), "the opens go on");
@@ -630,13 +789,12 @@ mod buffer {
         let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
         let assigned = Arc::new(Mutex::new(Vec::new()));
         let out = Arc::clone(&assigned);
-        let clock = host.clock();
         node.spawn(move |hub| async move {
             let names = ["c", "b", "a"];
             let channels = [3, 2, 1].map(super::hub::index);
             let channels: Vec<_> = names.into_iter().zip(channels).collect();
             super::hub::define(&hub, &channels);
-            let writer = super::hub::writer(&hub, &clock, &names).await;
+            let writer = super::hub::writer(&hub, &names).await;
             let entries = writer.set().entries();
             let slot = |key| entries.iter().find(|e| e.key == Key::from_u128(key));
             let slots = [3, 2, 1].map(|key| slot(key).expect("an entry").slot.get());
@@ -649,30 +807,31 @@ mod buffer {
         assert_eq!(node.join(), Ok(()));
     }
 
-    /// A shard's part of the budget must hold the block that its buffer's open
-    /// takes first. A shard that waits for the interner does not open after it.
+    /// A shard's part of the budget must hold the least budget of its buffer. A shard
+    /// that waits for the interner does not open after it.
     #[test]
     fn a_shard_part_too_small_for_the_buffer_stops_the_node() {
         let budget = Size::from_bytes(512 << 10);
         let mut run = start_with(7, 16, &[], budget, Box::new(heap));
         assert_eq!(run.sim.run(), Ok(()));
         let e = run.node.join().unwrap_err();
-        let pool = block::Error::TooLarge {
-            requested: 52186,
-            largest: 28672,
-        };
         assert_eq!(
             e,
             Error::Buffer {
                 core: 0,
-                error: ::buffer::Error::Pool(pool),
+                error: ::buffer::Error::Budget {
+                    budget: 32_768,
+                    min: 62_272,
+                },
             }
         );
         assert_eq!(
             e.to_string(),
-            "cannot open the buffer of shard-0: the pool has no block: block of 52186 \
-             bytes is above the largest block of 28672 bytes"
+            "cannot open the buffer of shard-0: a pool of 32768 bytes holds no entry \
+             of 4032 bytes: give it 62272 bytes or more"
         );
+        let made = ["lock", "name", "shards-16"].map(PathBuf::from);
+        assert_eq!(listed(&mut run.sim, &run.host, ""), made);
     }
 
     #[test]
@@ -681,7 +840,10 @@ mod buffer {
         let host = host(&mut sim, 2);
         assert_eq!(run_on(&mut sim, &host), Ok(()));
         let shards = ["shard-0", "shard-1"];
-        let made = ["lock", "node.key", "shard-0", "shard-1", "shards-2"];
+        let made = [
+            "address", "budget", "lock", "name", "node.key", "shard-0", "shard-1",
+            "shards-2",
+        ];
         assert_eq!(listed(&mut sim, &host, ""), made.map(PathBuf::from));
         for shard in shards {
             assert_eq!(listed(&mut sim, &host, shard), [PathBuf::from("ring")]);
@@ -738,14 +900,17 @@ mod buffer {
     #[test]
     fn a_disk_budget_that_holds_no_ring_on_each_shard_starts_no_shard() {
         let smallest = ::buffer::Layout::fit(0, crate::BODY_MAX).unwrap_err().min;
-        let min = Size::from_bytes(8_437_760);
-        let cases = [(smallest, "4120KiB"), (2 * smallest - 1, "8437759B")];
+        let min = Size::from_bytes(8_462_336);
+        let cases = [(smallest, "4132KiB"), (2 * smallest - 1, "8462335B")];
         for (bytes, shown) in cases {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = host(&mut sim, 2);
             let disk = Size::from_bytes(bytes);
             let node = Node::start(Config {
-                disk,
+                budget: Budget {
+                    pool: Size::MEBIBYTE,
+                    disk,
+                },
                 ..config(&host, Size::MEBIBYTE, Box::new(heap))
             });
             assert_eq!(host.shard_starts(), [], "{shown}");
@@ -765,13 +930,35 @@ mod buffer {
                 e.to_string(),
                 format!(
                     "the disk budget {shown} holds no ring on each of 2 shards; it \
-                     needs at least 8240KiB"
+                     needs at least 8264KiB"
                 )
             );
         }
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = host(&mut sim, 2);
         assert_eq!(run_on_disk(&mut sim, &host, 2 * smallest), Ok(()));
+    }
+
+    /// The test rig of `tests/it` gives each core 8 MiB of disk.
+    #[test]
+    fn a_disk_budget_of_8_mib_for_each_core_starts_a_host_of_any_size() {
+        for cores in [1, 64, 1024] {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, cores);
+            let per_core =
+                |bytes: u64| Size::from_bytes(u64::try_from(cores).unwrap() * bytes);
+            let node = Node::start(Config {
+                budget: Budget {
+                    pool: per_core(1 << 20),
+                    disk: per_core(8 << 20),
+                },
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(host.shard_starts().len(), cores, "{cores} cores");
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()), "{cores} cores");
+        }
     }
 
     /// The core count comes from the host. With 2^43 cores no `u64` budget holds a
@@ -784,10 +971,38 @@ mod buffer {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = host(&mut sim, cores);
             let node = Node::start(Config {
-                disk,
+                budget: Budget {
+                    pool: Size::MEBIBYTE,
+                    disk,
+                },
                 ..config(&host, Size::MEBIBYTE, Box::new(heap))
             });
             assert_eq!(host.shard_starts(), []);
+            assert_eq!(node.join(), Err(Error::Disk { disk, cores, min }));
+        }
+    }
+
+    /// With two least rings less one byte, shard 0's part of the disk fits, and its
+    /// part of the pool does not.
+    #[test]
+    fn a_disk_budget_that_holds_no_ring_wins_over_a_pool_reservation_past_usize_max() {
+        let smallest = ::buffer::Layout::fit(0, crate::BODY_MAX).unwrap_err().min;
+        for (cores, bytes, min) in
+            [(1, 1, smallest), (2, 2 * smallest - 1, 2 * smallest)]
+        {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, cores);
+            let disk = Size::from_bytes(bytes);
+            let node = Node::start(Config {
+                budget: Budget {
+                    pool: Size::from_bytes(u64::MAX),
+                    disk,
+                },
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(host.shard_starts(), [], "{cores} cores");
+            assert_eq!(sim.run(), Ok(()));
+            let min = Size::from_bytes(min);
             assert_eq!(node.join(), Err(Error::Disk { disk, cores, min }));
         }
     }
@@ -890,10 +1105,10 @@ mod buffer {
     /// leaves the claim alone.
     #[test]
     fn a_stop_ends_the_steps_that_started_and_starts_no_other() {
-        let all = ["lock", "shard-0", "shard-1", "shard-2", "shards-3"];
+        let all = ["lock", "name", "shard-0", "shard-1", "shard-2", "shards-3"];
         let all = all.map(PathBuf::from);
-        let mut seen = [false; 6];
-        for step in 0..200 {
+        let mut seen = [false; 7];
+        for step in 0..250 {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = host(&mut sim, 3);
             let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
@@ -903,17 +1118,18 @@ mod buffer {
             assert_eq!(sim.run(), Ok(()), "at {after:?}");
             assert_eq!(node.join(), Ok(()), "at {after:?}");
             let mut listed = listed(&mut sim, &host, "");
-            let key = PathBuf::from("node.key");
-            // Shard 0 reads the key once each ring has opened.
-            if listed.contains(&key) {
-                listed.retain(|name| *name != key);
+            let late = ["budget", "node.key", "address"].map(PathBuf::from);
+            // Shard 0 keeps the budgets, then reads the key, then writes `address`,
+            // once each ring has opened.
+            if listed.contains(&late[0]) {
+                listed.retain(|name| !late.contains(name));
                 assert_eq!(listed, all, "at {after:?}");
             }
             let made: Vec<PathBuf> = if listed.is_empty() {
                 Vec::new()
             } else {
                 let held = listed.len() - 1;
-                all[..held].iter().chain(&all[4..]).cloned().collect()
+                all[..held].iter().chain(&all[5..]).cloned().collect()
             };
             assert_eq!(listed, made, "at {after:?}");
             seen[listed.len()] = true;
@@ -933,7 +1149,7 @@ mod buffer {
                 assert_eq!(ring, len, "{dir:?} at {after:?}");
             }
         }
-        assert_eq!(seen[2..], [true; 4], "a stop after each step");
+        assert_eq!(seen[3..], [true; 4], "a stop after each step");
     }
 
     /// A crash at any point of the claim and the first opens leaves a data directory
@@ -1037,7 +1253,7 @@ mod buffer {
         assert_eq!(panics(&mut run), Vec::<String>::new());
         assert_eq!(fate(&probe), Fate::Dropped);
         assert_eq!(run.node.join(), Err(opened(1)));
-        let made = ["lock", "shard-0", "shards-3"].map(PathBuf::from);
+        let made = ["lock", "name", "shard-0", "shards-3"].map(PathBuf::from);
         assert_eq!(listed(&mut run.sim, &run.host, ""), made);
     }
 
@@ -1168,7 +1384,10 @@ mod directory {
         assert_eq!(run_on(&mut sim, &host), Ok(()));
         let listed = listed(&mut sim, &host, "");
         let made = [
+            "address",
+            "budget",
             "lock",
+            "name",
             "node.key",
             "other-3",
             "shard-0",
@@ -1256,7 +1475,7 @@ mod directory {
             assert_eq!(e, Error::Directory(io), "{operation:?}");
             assert_eq!(
                 e.to_string(),
-                format!("cannot claim the data directory: {text}")
+                format!("cannot use the data directory: {text}")
             );
             let made: Vec<PathBuf> = made.iter().map(PathBuf::from).collect();
             assert_eq!(listed(&mut sim, &host, ""), made, "{operation:?}");
@@ -1279,7 +1498,10 @@ mod directory {
         .expect("the run ends");
         assert_eq!(run_on(&mut sim, &host), Ok(()));
         let listed = listed(&mut sim, &host, "");
-        let made = ["lock", "node.key", "shard-0", "shard-1", &name, "shards-2"];
+        let made = [
+            "address", "budget", "lock", "name", "node.key", "shard-0", "shard-1",
+            &name, "shards-2",
+        ];
         assert_eq!(listed, made.map(PathBuf::from));
     }
 
@@ -1301,8 +1523,10 @@ mod directory {
             })
             .expect("the run ends");
             assert_eq!(run_on(&mut sim, &host), Ok(()), "{name}");
-            let mut made =
-                ["lock", "node.key", "shard-0", "shard-1", &name, "shards-2"];
+            let mut made = [
+                "address", "budget", "lock", "name", "node.key", "shard-0", "shard-1",
+                &name, "shards-2",
+            ];
             made.sort_unstable();
             let made = made.map(PathBuf::from);
             assert_eq!(listed(&mut sim, &host, ""), made, "{name}");
@@ -1529,7 +1753,7 @@ mod home {
         let (give, take) = handoff::pair();
         give.give(Interner::new());
         let (give, next) = handoff::pair();
-        let config = block::Config { budget: 1 << 22 };
+        let config = block::Config::new(1 << 22).expect("the budget fits");
         let memory = block::Heap::new(config.reservation());
         let pool = block::Pool::new(config, memory);
         let open = Open {
@@ -1559,13 +1783,13 @@ mod home {
             let mut home = opened.expect("the buffer opens");
             let mut interner = next.await.expect("the open gives the interner");
             let (index, values) = (Key::from_u128(1), Key::from_u128(2));
-            let slot = interner.slots().assign(index);
-            interner.slots().assign(values);
+            let slot = interner.slots().index(index);
+            interner.slots().data(values, Type::Scalar(Scalar::I64));
             let set = interner.intern(&[Group {
                 index,
                 data: &[(values, Type::Scalar(Scalar::I64))],
             }]);
-            home.carry(slot);
+            assert!(home.carry(slot, index));
             let now = mesh_now(&clock, &host.clock()).await;
             let key = home
                 .open_writer(writer::Writer {
@@ -1654,6 +1878,55 @@ mod home {
             ]
         );
     }
+
+    /// A read of the ring that fails at a restart over a handoff record fails the
+    /// node with its error, in the open of the buffer and in the open of the home
+    /// over it: the fault lands at each step of 25 us until the opens are done. Then
+    /// the node runs a task.
+    #[test]
+    fn a_failed_read_at_a_restart_over_a_handoff_fails_the_node() {
+        use super::hub::{I64, data, define, index, write, writer};
+
+        let ring = Path::new("shard-0/ring");
+        let error = Error::Buffer {
+            core: 0,
+            error: ::buffer::Error::Files(env::files::Error::Io {
+                path: ring.to_owned(),
+                operation: env::files::Operation::ReadAt,
+                code: 5,
+            }),
+        };
+        for after in (0..).step_by(25_000).map(Span::from_nanos) {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 1);
+            let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+            node.spawn(move |hub| async move {
+                define(&hub, &[("time", index(1)), ("value", data(2, I64, 1))]);
+                let mut writer = writer(&hub, &["value"]).await;
+                let stamp = writer.now().nanos();
+                write(&mut writer, stamp, 7);
+                std::future::pending::<()>().await;
+            });
+            assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+            sim.crash(&host, sim::Crash::Process);
+            drop(node);
+            let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+            let probe = probe(&node);
+            assert_eq!(sim.run_for(after), Ok(()), "{after:?}");
+            host.fail_file(ring, env::files::Operation::ReadAt);
+            assert_eq!(sim.run_for(Span::SECOND), Ok(()), "{after:?}");
+            node.stop();
+            assert_eq!(sim.run(), Ok(()), "{after:?}");
+            match node.join() {
+                Ok(()) => {
+                    assert_eq!(fate(&probe), Fate::Ran, "{after:?}");
+                    break;
+                }
+                joined => assert_eq!(joined, Err(error.clone()), "{after:?}"),
+            }
+            assert!(after < Span::from_nanos(10_000_000), "the opens go on");
+        }
+    }
 }
 
 mod lock {
@@ -1687,14 +1960,130 @@ mod lock {
         assert_eq!(e, Err(busy()));
         assert_eq!(
             busy().to_string(),
-            "cannot claim the data directory: file lock is open for writing in \
+            "cannot use the data directory: file lock is open for writing in \
              another handle"
         );
         first.stop();
         assert_eq!(sim.run(), Ok(()));
         assert_eq!(first.join(), Ok(()));
-        let made = ["lock", "node.key", "shard-0", "shard-1", "shards-2"];
+        let made = [
+            "address", "budget", "lock", "name", "node.key", "shard-0", "shard-1",
+            "shards-2",
+        ];
         assert_eq!(listed(&mut sim, &host, ""), made.map(PathBuf::from));
+    }
+
+    /// A second node at the port of a node that serves on the same data directory: the
+    /// claim comes before the bind, so the data directory refuses it.
+    #[test]
+    fn a_second_node_at_the_port_of_a_running_node_is_refused_by_the_lock() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let first = start_on(&host, 0);
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+        let second = start_on(&host, 0);
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+        assert_eq!(second.join(), Err(busy()));
+        first.stop();
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(first.join(), Ok(()));
+    }
+
+    /// A stop at any point of the start or while the node serves, then a second node
+    /// at once at the same port: the stop holds the lock until the port is free, so
+    /// each node serves or finds the lock held, one of them claims, and no port fails
+    /// to bind.
+    #[test]
+    fn a_start_during_the_stop_of_a_node_at_its_port_never_fails_on_the_port() {
+        let mut seen = [false; 2];
+        let steps = (0..400).map(|step| Span::from_nanos(step * 5_000));
+        for after in steps.chain([Span::SECOND]) {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            let first = start_on(&host, 0);
+            assert_eq!(sim.run_for(after), Ok(()), "at {after:?}");
+            first.stop();
+            let second = start_on(&host, 0);
+            assert_eq!(sim.run_for(Span::SECOND), Ok(()), "at {after:?}");
+            second.stop();
+            assert_eq!(sim.run(), Ok(()), "at {after:?}");
+            let outcomes = [first, second].map(|node| {
+                let joined = node.join();
+                let outcome = [Ok(()), Err(busy())].iter().position(|o| *o == joined);
+                outcome.unwrap_or_else(|| panic!("at {after:?}: {joined:?}"))
+            });
+            assert_ne!(outcomes, [1, 1], "at {after:?}");
+            seen[outcomes[1]] = true;
+        }
+        assert_eq!(seen, [true; 2]);
+    }
+
+    /// Which of the stop of a node that serves and the start of a second node at its
+    /// port comes first.
+    #[derive(Clone, Copy)]
+    enum Order {
+        Stop,
+        Start,
+    }
+
+    /// Runs a node that serves and a second node at its port, with the second of
+    /// `order` 5 µs times `step` after the first. Returns whether the second node
+    /// served, and asserts that it gave `Err(busy())` when it did not.
+    fn second_served(order: Order, step: i64) -> bool {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let first = start_on(&host, 0);
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()), "at {step}");
+        let delay = Span::from_nanos(step * 5_000);
+        let (second, probe) = match order {
+            Order::Stop => {
+                first.stop();
+                assert_eq!(sim.run_for(delay), Ok(()), "at {step}");
+                let second = start_on(&host, 0);
+                let probe = probe(&second);
+                (second, probe)
+            }
+            Order::Start => {
+                let second = start_on(&host, 0);
+                let probe = probe(&second);
+                assert_eq!(sim.run_for(delay), Ok(()), "at {step}");
+                first.stop();
+                (second, probe)
+            }
+        };
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()), "at {step}");
+        second.stop();
+        assert_eq!(sim.run(), Ok(()), "at {step}");
+        assert_eq!(first.join(), Ok(()), "at {step}");
+        let served = fate(&probe) == Fate::Ran;
+        let expected = if served { Ok(()) } else { Err(busy()) };
+        assert_eq!(second.join(), expected, "at {step}");
+        served
+    }
+
+    /// A node that serves stops, and a second node at its port starts at a step of
+    /// that stop: the second node finds the lock held or serves, and never fails on
+    /// the port.
+    #[test]
+    fn a_start_at_each_step_of_the_stop_of_a_node_at_its_port_never_fails_on_the_port()
+    {
+        let mut seen = [false; 2];
+        for step in 0..400 {
+            seen[usize::from(second_served(Order::Stop, step))] = true;
+        }
+        assert_eq!(seen, [true; 2]);
+    }
+
+    /// A second node starts at the port of a node that serves, and the first node
+    /// stops at a step of that start: the second node finds the lock held or serves,
+    /// and never fails on the port.
+    #[test]
+    fn a_stop_at_each_step_of_a_start_at_the_port_of_a_node_never_fails_on_the_port() {
+        let mut seen = [false; 2];
+        for step in 0..400 {
+            seen[usize::from(second_served(Order::Start, step))] = true;
+        }
+        assert_eq!(seen, [true; 2]);
     }
 
     /// Two nodes that start at once on a new data directory: one claims it, and the
@@ -1719,7 +2108,10 @@ mod lock {
             assert_eq!(joined[claimed], Ok(()), "seed {seed}");
             assert_eq!(joined[1 - claimed], Err(busy()), "seed {seed}");
             seen[claimed] = true;
-            let made = ["lock", "node.key", "shard-0", "shard-1", "shards-2"];
+            let made = [
+                "address", "budget", "lock", "name", "node.key", "shard-0", "shard-1",
+                "shards-2",
+            ];
             let made = made.map(PathBuf::from);
             assert_eq!(listed(&mut sim, &host, ""), made, "seed {seed}");
         }
@@ -1774,19 +2166,8 @@ mod lock {
             node.stop();
             let (waited, rings) = sim
                 .run_on(&host, |host, _| async move {
+                    let (lock, waited) = take_lock(&host).await;
                     let files = host.files();
-                    let clock = host.clock();
-                    let mut waited = false;
-                    let lock = loop {
-                        let mode = env::files::Mode::Create { len: 0 };
-                        match files.open(Path::new("lock"), mode).await {
-                            Err(env::files::Error::Busy { .. }) => {
-                                waited = true;
-                                clock.sleep(Span::from_nanos(1_000)).await;
-                            }
-                            opened => break opened.expect("the lock opens"),
-                        }
-                    };
                     let mut rings = Vec::new();
                     for core in 0..3 {
                         let ring = crate::directory::shard(core).join("ring");
@@ -1874,38 +2255,26 @@ mod hub {
             .iter()
             .map(|(n, c)| (name(n), Definition::Channel(c.clone())))
             .collect();
-        hub.define(
+        hub.set_definitions(
             definitions
                 .iter()
                 .map(|(name, definition)| (name, definition)),
         );
     }
 
-    /// A writer on `channels`, opened again each millisecond of `clock` until the node
-    /// has mesh time.
-    pub(super) async fn writer(
-        hub: &Hub,
-        clock: &env::clock::Clock,
-        channels: &[&str],
-    ) -> Writer {
+    /// A writer on `channels`.
+    pub(super) async fn writer(hub: &Hub, channels: &[&str]) -> Writer {
         let config = writer::Config {
             subject: name("a"),
             authority: Authority(1),
             lease: None,
             channels: channels.iter().map(|n| name(n)).collect(),
         };
-        loop {
-            match hub.writer(config.clone()).await {
-                Err(writer::Error::Home(::hub::home::writer::Error::Unsynced)) => {
-                    clock.sleep(Span::MILLISECOND).await;
-                }
-                opened => return opened.expect("the writer opens"),
-            }
-        }
+        hub.writer(config).await.expect("the writer opens")
     }
 
     /// The position of channel `key` in `set`.
-    fn entry(set: &KeySet, key: u128) -> usize {
+    pub(super) fn entry(set: &KeySet, key: u128) -> usize {
         let key = Key::from_u128(key);
         let entries = set.entries();
         entries.iter().position(|e| e.key == key).expect("an entry")
@@ -1913,8 +2282,19 @@ mod hub {
 
     /// Writes one sample at `stamp` to `time` and `value` to `value`.
     pub(super) fn write(writer: &mut Writer, stamp: i64, value: i64) {
+        write_at(writer, [1, 2], stamp, value);
+    }
+
+    /// Writes one sample at `stamp` to the index of key `time` and `value` to the
+    /// data channel of key `data`.
+    pub(super) fn write_at(
+        writer: &mut Writer,
+        [time, data]: [u128; 2],
+        stamp: i64,
+        value: i64,
+    ) {
         let set = writer.set();
-        let (time, data) = (entry(set, 1), entry(set, 2));
+        let (time, data) = (entry(set, time), entry(set, data));
         let group = set.entries()[time].group;
         let mut series = [(time, 8), (data, 8)];
         series.sort_unstable();
@@ -1930,20 +2310,49 @@ mod hub {
 
     /// The samples of channel `key` in `received`.
     pub(super) fn samples(received: &Received<'_>, key: u128) -> Vec<i64> {
-        let entry = entry(received.set, key);
-        let entries = received.set.entries();
-        let range = received.view.range(entries[entry].group).expect("a range");
+        let entry = entry(received.set(), key);
+        let entries = received.set().entries();
+        let range = received
+            .view()
+            .range(entries[entry].group)
+            .expect("a range");
         let count = usize::try_from(range.count).expect("a count");
         let (_, bytes) = received
-            .view
+            .view()
             .iter()
             .find(|&(present, _)| present == entry)
             .expect("the view holds the series");
-        let mut out = vec![0; count * 8];
+        let mut out = Vec::new();
         codec::decode(entries[entry].data_type, count, bytes, &mut out)
             .expect("decodes");
         let (chunks, _) = out.as_chunks::<8>();
         chunks.iter().map(|c| i64::from_le_bytes(*c)).collect()
+    }
+
+    /// Each sample of the `u8` series of `key` in `received`.
+    pub(super) fn bytes(received: &Received<'_>, key: u128) -> Vec<u8> {
+        let entry = entry(received.set(), key);
+        let entries = received.set().entries();
+        let range = received
+            .view()
+            .range(entries[entry].group)
+            .expect("a range");
+        let count = usize::try_from(range.count).expect("a count");
+        let (_, bytes) = received
+            .view()
+            .iter()
+            .find(|&(present, _)| present == entry)
+            .expect("the view holds the series");
+        let mut out = vec![0; count];
+        codec::decode(entries[entry].data_type, count, bytes, &mut out)
+            .expect("decodes");
+        out
+    }
+
+    /// The seq of the first sample of the group of `key` in `received`.
+    pub(super) fn seq(received: &Received<'_>, key: u128) -> u64 {
+        let group = received.set().entries()[entry(received.set(), key)].group;
+        received.view().range(group).expect("a range").seq
     }
 
     /// A node of `cores` shards on a new host, with the host.
@@ -1958,17 +2367,16 @@ mod hub {
     #[test]
     fn a_task_writes_and_reads_through_the_hub_of_shard_0() {
         let mut sim = sim::Sim::new(sim::Config::default());
-        let (host, node) = node(&mut sim, 2);
+        let (_, node) = node(&mut sim, 2);
         let read = Arc::new(Mutex::new(None));
         let out = Arc::clone(&read);
-        let clock = host.clock();
         let probe = probe(&node);
         node.spawn(move |hub| async move {
             define(&hub, &[("time", index(1)), ("value", data(2, I64, 1))]);
-            let reader = hub.reader(&[name("value")], Mode::Complete).await;
+            let reader = hub.reader(unnamed("value", Mode::Complete)).await;
             let mut reader = reader.expect("the reader opens");
-            let mut writer = writer(&hub, &clock, &["value"]).await;
-            let stamp = WALL;
+            let mut writer = writer(&hub, &["value"]).await;
+            let stamp = writer.now().nanos();
             write(&mut writer, stamp, 7);
             let received = reader.next().await.expect("a frame");
             let samples = (samples(&received, 1), samples(&received, 2));
@@ -2098,8 +2506,25 @@ mod hub {
 
     impl Drop for Dropped {
         fn drop(&mut self) {
-            *self.0.lock().unwrap() = true;
+            *self.0.lock().unwrap_or_else(PoisonError::into_inner) = true;
         }
+    }
+
+    #[test]
+    fn a_dropped_with_a_poisoned_lock_does_not_abort_a_test_that_panics() {
+        let flag = Arc::new(Mutex::new(false));
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = flag.lock().unwrap();
+            panic!("poison the lock");
+        }));
+        poisoned.expect_err("the lock is poisoned");
+        let dropped = Dropped(flag);
+        let unwound =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                let _dropped = dropped;
+                panic!("the test broke");
+            }));
+        unwound.expect_err("the test panics");
     }
 
     /// A stop drops a task that holds a reader and waits for a frame, so the ring
@@ -2113,7 +2538,7 @@ mod hub {
         node.spawn(move |hub| async move {
             let _task = task;
             define(&hub, &[("time", index(1))]);
-            let reader = hub.reader(&[name("time")], Mode::Complete).await;
+            let reader = hub.reader(unnamed("time", Mode::Complete)).await;
             let mut reader = reader.expect("the reader opens");
             drop(reader.next().await);
             unreachable!("no frame comes");
@@ -2141,7 +2566,6 @@ mod hub {
             let stop = Stop::default();
             let (open, pool, next, time) =
                 super::home::create_open(&host, &tasks, 0, stop.clone());
-            let monotonic = host.clock();
             let entropy = host.entropy();
             let spawn = tasks.clone();
             let hold = async move |home, guard| {
@@ -2153,10 +2577,10 @@ mod hub {
                     node: types::node::Key::from_u128(1),
                     time,
                     entropy,
-                    mesh: None,
+                    region: None,
                 });
                 define(&hub, &[("time", index(1)), ("value", data(2, I64, 1))]);
-                let writer = writer(&hub, &monotonic, &["value"]).await;
+                let writer = writer(&hub, &["value"]).await;
                 drop(guard);
                 drop((writer, hub));
             };
@@ -2266,6 +2690,172 @@ mod hub {
     }
 }
 
+mod pool {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use ::hub::writer::Writer;
+    use block::testing::{Scarce, Switch};
+    use types::frame::{self, Form};
+    use types::time::Monotonic;
+
+    use super::hub::{I64, data, define, entry, index, writer};
+    use super::*;
+
+    const SECOND_NS: i64 = Span::SECOND.nanos();
+
+    /// A shard gives the pages of a block size back to the system 10 to 20 s after
+    /// the last block of that size returned. The last return falls at the open of
+    /// the writer and at each of 1 to 9 s after the start. A return at the open also
+    /// keeps its pages until 20 s after the start, before which the timer cannot
+    /// purge twice.
+    #[test]
+    fn a_shard_gives_back_the_pages_of_an_idle_block_size_in_10_to_20_s() {
+        for phase in 0..10 {
+            let phase = Span::from_nanos(phase * SECOND_NS);
+            let early = Span::from_nanos(10 * SECOND_NS - 1);
+            let held = kept(phase, Since::Return, early);
+            assert!(held, "the size keeps its pages at {phase:?}");
+            let late = Span::from_nanos(20 * SECOND_NS + 1);
+            let idle = !kept(phase, Since::Return, late);
+            assert!(idle, "the pages went back at {phase:?}");
+        }
+        let early = Span::from_nanos(20 * SECOND_NS - 1);
+        let held = kept(Span::ZERO, Since::Start, early);
+        assert!(held, "the size keeps its pages until 20 s after the start");
+    }
+
+    /// The timer runs from before the open of the buffer, whose reads take blocks of
+    /// 4 KiB. The timer starts less than 1 ms after the start of the node, so that
+    /// size goes back by 20 s and 1 ms after it.
+    #[test]
+    fn a_size_that_the_open_of_the_buffer_used_goes_back_20_s_after_the_start() {
+        let refused = frame::Error::Pool(block::Error::Refused { requested: 4056 });
+        let early = probe(4000, Span::ZERO);
+        assert_eq!(early, Ok(()), "the open of the buffer carved the size");
+        let late = probe(4000, Span::from_nanos(20 * SECOND_NS + 1_000_000));
+        assert_eq!(late, Err(refused), "the pages of the size went back");
+    }
+
+    /// The instant from which [`kept`] counts its wait.
+    enum Since {
+        /// The start of the node.
+        Start,
+        /// The return of the last block of the size.
+        Return,
+    }
+
+    /// Whether a block size keeps its pages `wait` after the instant `since`. The last
+    /// block of the size returns at `phase` after the start, or at the open of the
+    /// writer when it comes later. The size keeps its pages when a take of its block
+    /// succeeds while the memory refuses. The memory shows a purge only through its
+    /// next commit: while it refuses, a commit of bytes that the system still holds
+    /// succeeds, and a commit of purged bytes gives `Refused`.
+    fn kept(phase: Span, since: Since, wait: Span) -> bool {
+        let (new, carved, again, later) = on_writer(4096, async move |rig| {
+            let phase = rig.start.checked_add(phase).expect("in range");
+            rig.clock.sleep_until(phase).await;
+            rig.switch.refuse();
+            let new = rig.take();
+            rig.switch.allow();
+            let carved = rig.take();
+            rig.switch.refuse();
+            let again = rig.take();
+            let base = match since {
+                Since::Start => rig.start,
+                Since::Return => rig.clock.now(),
+            };
+            rig.clock
+                .sleep_until(base.checked_add(wait).expect("in range"))
+                .await;
+            let later = rig.take();
+            rig.switch.allow();
+            (new, carved, again, later)
+        });
+        let refused = frame::Error::Pool(block::Error::Refused { requested: 4152 });
+        assert_eq!(new, Err(refused.clone()), "a new size needs a commit");
+        assert_eq!(carved, Ok(()), "the pool carves the block");
+        assert_eq!(again, Ok(()), "a carved size needs no commit");
+        if let Err(error) = &later {
+            assert_eq!(error, &refused, "the memory refused the take");
+        }
+        later.is_ok()
+    }
+
+    /// The take of a block for `bytes` of samples, at `at` after the start of the
+    /// node, while the memory refuses.
+    fn probe(bytes: usize, at: Span) -> Result<(), frame::Error> {
+        on_writer(bytes, async move |rig| {
+            let at = rig.start.checked_add(at).expect("in range");
+            rig.clock.sleep_until(at).await;
+            rig.switch.refuse();
+            let taken = rig.take();
+            rig.switch.allow();
+            taken
+        })
+    }
+
+    /// A writer on a node of one shard whose memory is `Scarce`.
+    struct Rig {
+        writer: Writer,
+        series: [(usize, usize); 2],
+        switch: Switch,
+        clock: env::clock::Clock,
+        start: Monotonic,
+    }
+
+    impl Rig {
+        /// Takes a block for a frame of the rig's samples and drops it at once.
+        fn take(&self) -> Result<(), frame::Error> {
+            self.writer.draft(Form::Raw, &self.series).map(drop)
+        }
+    }
+
+    /// Runs `task` on a writer of 8 bytes of times and `bytes` of values, on a node
+    /// of one shard whose memory is `Scarce`. Returns its output after 40 s of the
+    /// sim, and after the node stops.
+    fn on_writer<T: Send + 'static>(
+        bytes: usize,
+        task: impl AsyncFnOnce(Rig) -> T + Send + 'static,
+    ) -> T {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 1);
+        let switch = Rc::new(RefCell::new(None));
+        let made = Rc::clone(&switch);
+        let memory = Box::new(move |len| {
+            let (memory, switch) = Scarce::new(len);
+            *made.borrow_mut() = Some(switch);
+            Ok(memory)
+        });
+        let start = host.clock().now();
+        let node = Node::start(config(&host, Size::MEBIBYTE, memory));
+        let switch = switch.take().expect("the shard got its memory");
+        let seen = Arc::new(Mutex::new(None));
+        let (out, clock) = (Arc::clone(&seen), host.clock());
+        node.spawn(move |hub| async move {
+            define(&hub, &[("time", index(1)), ("value", data(2, I64, 1))]);
+            let writer = writer(&hub, &["value"]).await;
+            let (time, value) = (entry(writer.set(), 1), entry(writer.set(), 2));
+            let mut series = [(time, 8), (value, bytes)];
+            series.sort_unstable();
+            let rig = Rig {
+                writer,
+                series,
+                switch,
+                clock,
+                start,
+            };
+            *out.lock().unwrap() = Some(task(rig).await);
+        });
+        assert_eq!(sim.run_for(Span::from_nanos(40 * SECOND_NS)), Ok(()));
+        let seen = seen.lock().unwrap().take();
+        node.stop();
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Ok(()));
+        seen.expect("the task ran to its end")
+    }
+}
+
 mod port {
     use std::num::NonZeroU32;
     use std::rc::Rc;
@@ -2273,6 +2863,9 @@ mod port {
     use transport::{Address, Class, Code, Peer, Transport};
 
     use super::*;
+
+    mod client;
+    mod settings;
 
     /// The key of the peer that dials the node.
     const CLIENT: PrivateKey = PrivateKey([1; 32]);
@@ -2300,15 +2893,17 @@ mod port {
 
     /// A pool of 1 MiB to send on.
     fn pool() -> Rc<block::Pool> {
-        let config = block::Config { budget: 1 << 20 };
+        let config = block::Config::new(1 << 20).expect("the budget fits");
         let memory = block::Heap::new(config.reservation());
         Rc::new(block::Pool::new(config, memory))
     }
 
-    /// A part of a port at a free address of `host`, and a pool of 1 MiB to send on.
-    fn port(host: &sim::node::Node) -> (Rc<block::Pool>, transport::port::Part) {
+    /// A part of a port of `host` at `at`, and a pool of 1 MiB to send on.
+    fn port(
+        host: &sim::node::Node,
+        at: SocketAddr,
+    ) -> (Rc<block::Pool>, transport::port::Part) {
         let pool = pool();
-        let at = SocketAddr::new(host.addresses()[0], 0);
         let bound = transport::Port::bind(&host.net(), at).expect("a port");
         let part = bound.split(NonZeroUsize::MIN).pop().expect("one part");
         (pool, part)
@@ -2320,7 +2915,18 @@ mod port {
         tasks: env::tasks::Tasks,
         key: PrivateKey,
     ) -> (Transport, Rc<block::Pool>) {
-        let (pool, part) = port(host);
+        let at = SocketAddr::new(host.addresses()[0], 0);
+        transport_at(host, tasks, key, at)
+    }
+
+    /// A transport on `host` with `key`, at `at`, with its pool.
+    fn transport_at(
+        host: &sim::node::Node,
+        tasks: env::tasks::Tasks,
+        key: PrivateKey,
+        at: SocketAddr,
+    ) -> (Transport, Rc<block::Pool>) {
+        let (pool, part) = port(host, at);
         let config = transport::Config {
             private_key: key,
             message_bytes_max: NonZeroUsize::new(1 << 16).unwrap(),
@@ -2335,22 +2941,34 @@ mod port {
         (Transport::new(config, part).expect("a transport"), pool)
     }
 
+    /// Runs `act` on a new shard of `host`, with the host and the shard's tasks.
+    fn shard<F: Future<Output = ()> + 'static>(
+        host: &sim::node::Node,
+        act: impl FnOnce(sim::node::Node, env::tasks::Tasks) -> F + Send + 'static,
+    ) {
+        let shard = env::shards::Config {
+            name: "peer".into(),
+            core: None,
+        };
+        let own = host.clone();
+        let started = host.shards().start(shard, move |tasks| act(own, tasks));
+        drop(started.expect("the peer starts"));
+    }
+
     /// A program's transport on `host`, at a free port, with its pool.
     fn program(
         host: &sim::node::Node,
         tasks: env::tasks::Tasks,
     ) -> (transport::Client, Rc<block::Pool>) {
-        let (pool, part) = port(host);
+        let pool = pool();
         let config = transport::client::Config {
+            net: host.net(),
             clock: host.clock(),
             entropy: host.entropy(),
             tasks,
             pool: Rc::clone(&pool),
         };
-        (
-            transport::Client::new(config, part).expect("a client"),
-            pool,
-        )
+        (transport::Client::new(config).expect("a client"), pool)
     }
 
     /// Starts a peer on a new host of `sim` that dials the node at `listen` of `host`
@@ -2504,8 +3122,8 @@ mod port {
         assert_eq!(read, Err(transport::Error::Reset { code }));
     }
 
-    /// The node stops a hub stream of a program, and resets its reply half, with the
-    /// code of a rejected header.
+    /// A node with no region stops a hub stream of a program, and resets its reply
+    /// half, with the code of a rejected header.
     #[test]
     fn rejects_a_hub_stream_of_a_program() {
         let header = wire::header::encode(wire::Protocol::Hub);
@@ -2585,11 +3203,14 @@ mod port {
         let held = host.net().udp(&udp).expect("the port binds");
         let disk = Size::from_bytes(1);
         let node = Node::start(Config {
-            disk,
+            budget: Budget {
+                pool: Size::MEBIBYTE,
+                disk,
+            },
             ..config(&host, Size::MEBIBYTE, Box::new(heap))
         });
         assert_eq!(sim.run(), Ok(()));
-        let min = Size::from_bytes(8_437_760);
+        let min = Size::from_bytes(8_462_336);
         assert_eq!(
             node.join(),
             Err(Error::Disk {
@@ -2601,9 +3222,29 @@ mod port {
         drop(held);
     }
 
-    /// A port that does not bind starts no shard, and `join` gives why.
+    /// The pool check comes before the bind, which shard 0 does after its claim.
     #[test]
-    fn a_port_that_does_not_bind_starts_no_shard() {
+    fn a_pool_reservation_past_usize_max_wins_over_a_port_that_does_not_bind() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 1);
+        let listen = listen(&host);
+        let udp = env::net::udp::Config {
+            local: listen,
+            send_buffer_bytes: 1 << 16,
+            recv_buffer_bytes: 1 << 16,
+        };
+        let held = host.net().udp(&udp).expect("the port binds");
+        let pool = Size::from_bytes(u64::MAX);
+        let node = Node::start(config(&host, pool, Box::new(heap)));
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Err(Error::Pool { pool, cores: 1 }));
+        drop(held);
+    }
+
+    /// A port that does not bind stops the node once shard 0 claimed the data
+    /// directory, and no buffer opens. A later start there at a free port serves.
+    #[test]
+    fn a_port_that_does_not_bind_opens_no_buffer() {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = host(&mut sim, 2);
         let listen = listen(&host);
@@ -2620,7 +3261,8 @@ mod port {
             error: env::net::Error::AddressInUse { local: listen },
         };
         assert_eq!(node.join(), Err(error.clone()));
-        assert_eq!(host.shard_starts().len(), 0);
+        let claimed = ["lock", "name", "shards-2"].map(PathBuf::from);
+        assert_eq!(listed(&mut sim, &host, ""), claimed);
         assert_eq!(
             error.to_string(),
             format!(
@@ -2628,6 +3270,101 @@ mod port {
             )
         );
         drop(held);
+        let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+        let probe = probe(&node);
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+        node.stop();
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Ok(()));
+        assert_eq!(fate(&probe), Fate::Ran);
+    }
+
+    /// A multicast IP or the IPv4 broadcast IP, also as an IPv4-mapped IPv6 address,
+    /// starts no shard and makes no file.
+    #[test]
+    fn a_listen_that_no_peer_reaches_starts_no_shard() {
+        let refused = [
+            "224.0.0.1:0",
+            "239.255.255.255:7000",
+            "255.255.255.255:0",
+            "[ff02::1]:0",
+            "[ff0e::1]:7000",
+            "[::ffff:224.0.0.1]:0",
+            "[::ffff:255.255.255.255]:0",
+        ];
+        for text in refused {
+            let listen: SocketAddr = text.parse().expect("a socket address");
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            let node = Node::start(Config {
+                listen,
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Err(Error::Listen { listen }), "{text}");
+            assert_eq!(host.shard_starts().len(), 0, "{text}");
+            assert_eq!(listed(&mut sim, &host, ""), Vec::<PathBuf>::new(), "{text}");
+        }
+        let listen = "[::ffff:224.0.0.1]:0".parse().expect("a socket address");
+        assert_eq!(
+            Error::Listen { listen }.to_string(),
+            "cannot bind the node's port at [::ffff:224.0.0.1]:0: a multicast or \
+             broadcast IP is not an address of a host"
+        );
+    }
+
+    /// An IP next to the refused ones goes to the bind.
+    #[test]
+    fn a_listen_next_to_a_refused_ip_goes_to_the_bind() {
+        let bound = [
+            "10.255.255.255:0",
+            "192.168.1.255:0",
+            "223.255.255.255:0",
+            "240.0.0.0:0",
+            "255.255.255.254:0",
+            "[feff::1]:0",
+            "[::ffff:223.255.255.255]:0",
+            "[::ffff:240.0.0.0]:0",
+        ];
+        for text in bound {
+            let listen: SocketAddr = text.parse().expect("a socket address");
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            let node = Node::start(Config {
+                listen,
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run(), Ok(()));
+            let error = env::net::Error::Io { code: 99 };
+            assert_eq!(node.join(), Err(Error::Port { listen, error }), "{text}");
+        }
+    }
+
+    /// The refused listen comes after a reserved name and before a disk budget that
+    /// holds no ring.
+    #[test]
+    fn a_refused_listen_comes_between_a_reserved_name_and_a_small_disk() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let listen = "224.0.0.1:0".parse().expect("a socket address");
+        let small = || Config {
+            listen,
+            budget: Budget {
+                pool: Size::MEBIBYTE,
+                disk: Size::from_bytes(1),
+            },
+            ..config(&host, Size::MEBIBYTE, Box::new(heap))
+        };
+        let reserved: types::name::Name = "@x".parse().expect("a name");
+        let named = Node::start(Config {
+            name: reserved.clone(),
+            ..small()
+        });
+        let unnamed = Node::start(small());
+        assert_eq!(sim.run(), Ok(()));
+        let name = reserved;
+        assert_eq!(named.join(), Err(Error::Reserved { name }));
+        assert_eq!(unnamed.join(), Err(Error::Listen { listen }));
     }
 
     /// The node takes no session when a buffer does not open.
@@ -2791,9 +3528,240 @@ mod port {
         assert_eq!(node.join(), Ok(()));
     }
 
+    /// The node rejects a stream whose header has not arrived 10 s after the stream
+    /// did. On a link of 4 KB/s, a first message of 60 KiB takes about 16 s, so the
+    /// stream stops, and its reply half resets, before the message arrives.
+    #[test]
+    fn a_header_late_by_10_s_is_rejected() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = keyed(&mut sim, 2);
+        let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+        let peer = sim.node(sim::node::Config::default());
+        let slow = sim::link::Config {
+            rate: Some(std::num::NonZeroU64::new(4_000).unwrap()),
+            ..sim::link::Config::default()
+        };
+        sim.link(&peer, &host, slow);
+        let listen = listen(&host);
+        let out = Arc::new(Mutex::new(None));
+        let seen = Arc::clone(&out);
+        let shard = env::shards::Config {
+            name: "peer".into(),
+            core: None,
+        };
+        let own = peer.clone();
+        let started = peer.shards().start(shard, move |tasks| async move {
+            let (transport, pool) = transport(&own, tasks, CLIENT);
+            let session = transport
+                .dial(KEY.public(), &[Address::Udp(listen)])
+                .await
+                .expect("a session");
+            let mut late = wire::header::encode(wire::Protocol::Mesh).to_vec();
+            late.resize(60 << 10, 0);
+            let mut block = pool.alloc(late.len()).unwrap();
+            block.copy_from_slice(&late);
+            let (mut sender, mut reply) =
+                session.open(Class::Complete).await.expect("a stream");
+            let start = own.clock().now();
+            sender.send(block.freeze()).await.expect("it sends");
+            let read = reply.recv().await.map(|m| m.map(|b| b.to_vec()));
+            let waited = own.clock().now() - start;
+            let sent = loop {
+                let mut block = pool.alloc(1).unwrap();
+                block.copy_from_slice(b"a");
+                if let Err(error) = sender.send(block.freeze()).await {
+                    break error;
+                }
+                own.clock().sleep(Span::MILLISECOND).await;
+            };
+            *seen.lock().unwrap() = Some((waited, read, sent));
+            session.closed().await;
+            drop((sender, transport));
+        });
+        drop(started.expect("the peer starts"));
+        assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
+        let (waited, read, sent) = out.lock().unwrap().take().expect("the peer reads");
+        let code = Code(wire::header::REJECTED);
+        assert_eq!(read, Err(transport::Error::Reset { code }));
+        assert_eq!(sent, transport::Error::Stopped { code });
+        let (header, bound) = (10 * Span::SECOND.nanos(), 11 * Span::SECOND.nanos());
+        assert!(
+            (header..bound).contains(&waited.nanos()),
+            "reset after {waited:?}"
+        );
+        node.stop();
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Ok(()));
+    }
+
+    /// What the peer and the probe of [`stop_with_a_peer`] see.
+    #[derive(Clone, Debug, PartialEq)]
+    enum Event {
+        /// The peer's session closed with this error.
+        Closed(transport::Error),
+        /// The probe took the lock, then bound the node's port with this result.
+        Locked(Result<(), env::net::Error>),
+    }
+
+    /// The node drains a peer's session before it frees the lock: the peer sees its
+    /// close before a probe can take the lock, and the probe then binds the node's
+    /// port at once.
+    #[test]
+    fn a_peer_sees_its_close_before_the_lock_is_free() {
+        let closed = transport::Error::PeerClosed { code: Code(0) };
+        let delay = Span::from_nanos(10 * Span::MILLISECOND.nanos());
+        let (seen, _) =
+            stop_with_a_peer(delay, Span::from_nanos(30 * Span::SECOND.nanos()));
+        assert_eq!(seen, [Event::Closed(closed), Event::Locked(Ok(()))]);
+    }
+
+    /// The node waits at most 3 s for the drain, so a probe takes the lock before a
+    /// peer with a one-way delay of 4 s sees its close. The close is not paced, so it
+    /// leaves at the drop and arrives one delay later, also when the node stops 12.1 s
+    /// in, when a paced close would wait about 0.57 s.
+    #[test]
+    fn a_peer_with_a_delay_over_3_s_sees_its_close_after_the_lock_is_free() {
+        let closed = transport::Error::PeerClosed { code: Code(0) };
+        let delay = Span::from_nanos(4 * Span::SECOND.nanos());
+        let run = Span::from_nanos(12_100 * Span::MILLISECOND.nanos());
+        let (seen, after) = stop_with_a_peer(delay, run);
+        assert_eq!(seen, [Event::Locked(Ok(())), Event::Closed(closed)]);
+        let late = after.nanos() - delay.nanos();
+        assert!(
+            (0..Span::MILLISECOND.nanos()).contains(&late),
+            "the peer saw its close {after:?} after the stop, not {delay:?}"
+        );
+    }
+
+    /// A peer whose one-way delay is under 3 s sees its close first, also when the
+    /// node stops 14.7 s in, when the pacer of the connection would hold the close
+    /// until after the lock is free.
+    #[test]
+    fn a_peer_with_a_delay_under_3_s_sees_its_close_first_after_the_handshake() {
+        let closed = transport::Error::PeerClosed { code: Code(0) };
+        let delay = Span::from_nanos(2_900 * Span::MILLISECOND.nanos());
+        let run = Span::from_nanos(14_700 * Span::MILLISECOND.nanos());
+        let (seen, _) = stop_with_a_peer(delay, run);
+        assert_eq!(seen, [Event::Closed(closed), Event::Locked(Ok(()))]);
+    }
+
+    /// Stops a node `run` after its start, while a peer holds a session over links
+    /// with a one-way `delay`. Gives, in order, what the peer and a probe that takes
+    /// the lock as soon as it is free see, and the time from the stop to the peer's
+    /// close.
+    fn stop_with_a_peer(delay: Span, run: Span) -> (Vec<Event>, Span) {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = keyed(&mut sim, 2);
+        let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+        let peer = sim.node(sim::node::Config::default());
+        let link = sim::link::Config {
+            delay,
+            ..sim::link::Config::default()
+        };
+        sim.link(&peer, &host, link);
+        sim.link(&host, &peer, link);
+        let listen = listen(&host);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let at = Arc::new(Mutex::new(None));
+        let (seen, closed_at) = (Arc::clone(&events), Arc::clone(&at));
+        let shard = env::shards::Config {
+            name: "peer".into(),
+            core: None,
+        };
+        let own = peer.clone();
+        let started = peer.shards().start(shard, move |tasks| async move {
+            let (transport, _pool) = transport(&own, tasks, CLIENT);
+            let session = transport
+                .dial(KEY.public(), &[Address::Udp(listen)])
+                .await
+                .expect("a session");
+            let closed = session.closed().await;
+            *closed_at.lock().unwrap() = Some(own.clock().now());
+            seen.lock().unwrap().push(Event::Closed(closed));
+            drop(transport);
+        });
+        drop(started.expect("the peer starts"));
+        assert_eq!(sim.run_for(run), Ok(()));
+        let stopped = peer.clock().now();
+        node.stop();
+        let seen = Arc::clone(&events);
+        sim.run_on(&host, move |host, _| async move {
+            let (lock, _) = take_lock(&host).await;
+            let bound = transport::Port::bind(&host.net(), listen).map(drop);
+            seen.lock().unwrap().push(Event::Locked(bound));
+            drop(lock);
+        })
+        .expect("the probe ends");
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Ok(()));
+        let closed = at.lock().unwrap().expect("the peer's session closed");
+        (events.lock().unwrap().clone(), closed - stopped)
+    }
+
+    /// A program with no key starts a handshake that gets no answer, and sends its
+    /// first packet again on each PTO, which keeps the handshake from the idle time.
+    /// The stop holds the lock for the cut of 3 s, which ends the drain of that
+    /// handshake before its 3 PTO of 1024 ms, and less than 1 ms for its other steps.
+    #[test]
+    fn a_handshake_in_flight_holds_the_lock_at_most_3_s() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = keyed(&mut sim, 2);
+        let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+        let peer = sim.node(sim::node::Config::default());
+        let cut = sim::link::Config {
+            loss: 1.0,
+            ..sim::link::Config::default()
+        };
+        sim.link(&host, &peer, cut);
+        let listen = listen(&host);
+        let shard = env::shards::Config {
+            name: "peer".into(),
+            core: None,
+        };
+        let own = peer.clone();
+        let started = peer.shards().start(shard, move |tasks| async move {
+            let (client, _pool) = program(&own, tasks);
+            let dialed = client.dial(KEY.public(), &[Address::Udp(listen)]).await;
+            let refused = dialed.expect_err("the dial fails");
+            assert!(
+                matches!(refused, transport::Error::Unreachable { .. }),
+                "{refused:?}"
+            );
+        });
+        drop(started.expect("the peer starts"));
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+        node.stop();
+        let waited = sim
+            .run_on(&host, move |host, _| async move {
+                let before = host.clock().now();
+                drop(take_lock(&host).await);
+                host.clock().now() - before
+            })
+            .expect("the probe ends");
+        let bound = Span::from_nanos(3001 * Span::MILLISECOND.nanos());
+        assert!(waited <= bound, "the stop held the lock {waited:?}");
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Ok(()));
+    }
+
     mod key {
+        use types::node::SealKey;
+
         use super::*;
         use crate::identity::{FILE, LEN};
+
+        /// The file that `sector::publish` renames to [`FILE`].
+        const NEW: &str = "node.key.new";
+
+        /// Through the public fuzz entry, which panics when the decode is wrong.
+        #[test]
+        fn a_key_decodes_and_a_key_with_another_tag_does_not() {
+            let mut body = [7; 96];
+            body[..16].copy_from_slice(b"foundation/key/2");
+            crate::fuzz::identity(&body);
+            body[0] ^= 1;
+            crate::fuzz::identity(&body);
+        }
 
         /// The bytes of `node.key` on `host`.
         fn read(sim: &mut sim::Sim, host: &sim::node::Node) -> Vec<u8> {
@@ -2802,24 +3770,42 @@ mod port {
                 let mode = env::files::Mode::Read;
                 let file = files.open(Path::new(FILE), mode).await.expect("opens");
                 let len = usize::try_from(file.len()).unwrap();
-                let pool = block::Pool::heap(block::Config { budget: 4096 });
+                let pool = block::Pool::heap(
+                    block::Config::new(4096).expect("the budget fits"),
+                );
                 let into = pool.alloc(len).expect("a block");
                 file.read_at(0, into).await.expect("reads").to_vec()
             })
             .expect("the run ends")
         }
 
-        /// Whether `node.key` holds a key.
-        fn key_written(sim: &mut sim::Sim, host: &sim::node::Node) -> bool {
-            sim.run_on(host, |host, _| async move {
-                let mode = env::files::Mode::Create { len: LEN as u64 };
-                let file = host.files().open(Path::new(FILE), mode).await;
-                let pool = block::Pool::heap(block::Config { budget: 4096 });
-                let into = pool.alloc(LEN).expect("a block");
-                let read = file.expect("opens").read_at(0, into).await;
-                read.expect("reads").starts_with(b"foundation/key/1")
-            })
-            .expect("the run ends")
+        /// The identity in `node.key` on `host`, or `None` when the file is not
+        /// there. Opens it to read only, so it makes nothing. It checks the file
+        /// between a crash and a start, where no public call reads it.
+        ///
+        /// # Panics
+        ///
+        /// When the file holds no key.
+        fn found(sim: &mut sim::Sim, host: &sim::node::Node) -> Option<Vec<u8>> {
+            let bytes = sim
+                .run_on(host, |host, _| async move {
+                    let mode = env::files::Mode::Read;
+                    let file = match host.files().open(Path::new(FILE), mode).await {
+                        Err(env::files::Error::NotFound { .. }) => return None,
+                        file => file.expect("opens"),
+                    };
+                    assert_eq!(file.len(), LEN as u64, "the length of a key");
+                    let pool = block::Pool::heap(
+                        block::Config::new(4096).expect("the budget fits"),
+                    );
+                    let into = pool.alloc(LEN).expect("a block");
+                    let read = file.read_at(0, into).await.expect("reads");
+                    Some(<[u8; LEN]>::try_from(&*read).expect("a read fills it"))
+                })
+                .expect("the run ends")?;
+            let tag = b"foundation/key/2";
+            assert!(crate::sector::written(&bytes, tag), "a key: {bytes:02x?}");
+            Some(bytes.to_vec())
         }
 
         /// The bytes of the identity [`OWN`], [`KEY`].
@@ -2827,6 +3813,7 @@ mod port {
             let identity = Identity {
                 key: OWN,
                 private_key: KEY,
+                opener: Opener::from_bytes(SEAL),
             };
             identity::encode(&identity).to_vec()
         }
@@ -2884,12 +3871,13 @@ mod port {
             assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
             let made = read(&mut sim, &host);
             assert_eq!(made.len(), LEN);
-            assert_eq!(&made[..16], b"foundation/key/1");
+            assert_eq!(&made[..16], b"foundation/key/2");
             let key = u128::from_be_bytes(made[16..32].try_into().unwrap());
             assert_eq!(key >> 76 & 0xf, 7, "version 7");
             let millis = i64::try_from(key >> 80).unwrap();
             let wall = super::super::hub::WALL / 1_000_000;
             assert!((wall..wall + 1_000).contains(&millis), "{millis} at {wall}");
+            assert_ne!(made[64..96], made[32..64], "the seal key is its own");
             let public = PrivateKey(made[32..64].try_into().unwrap()).public();
             let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
             assert_eq!(dial(&mut sim, &host, public), Ok(Peer::Node(public)));
@@ -2910,47 +3898,129 @@ mod port {
             });
             assert_ne!(made[0][16..32], made[1][16..32], "keys");
             assert_ne!(made[0][32..64], made[1][32..64], "private keys");
+            assert_ne!(made[0][64..96], made[1][64..96], "seal keys");
         }
 
-        #[test]
-        fn a_node_proves_the_key_in_its_data_directory() {
+        /// A node started on the `node.key` `bytes` proves the public half of
+        /// `private_key` and keeps the bytes.
+        fn proves(bytes: &[u8], private_key: &PrivateKey) {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = host(&mut sim, 2);
-            create_key(&mut sim, &host, own());
+            write_key(&mut sim, &host, bytes.to_vec());
             let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
-            let public = KEY.public();
+            let public = private_key.public();
             assert_eq!(dial(&mut sim, &host, public), Ok(Peer::Node(public)));
             node.stop();
             assert_eq!(sim.run(), Ok(()));
             assert_eq!(node.join(), Ok(()));
-            assert_eq!(read(&mut sim, &host), own());
+            assert_eq!(read(&mut sim, &host), bytes);
         }
 
-        /// 68 zero bytes are a key that a crash kept from being written.
         #[test]
-        fn a_node_makes_a_key_over_zero_bytes() {
-            let mut sim = sim::Sim::new(sim::Config::default());
-            let host = host(&mut sim, 2);
-            create_key(&mut sim, &host, vec![0; LEN]);
-            assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
-            assert_eq!(&read(&mut sim, &host)[..16], b"foundation/key/1");
+        fn a_node_proves_the_key_in_its_data_directory() {
+            proves(&own(), &KEY);
         }
 
-        /// A file of another length, tag, or checksum stops the node, which keeps the
-        /// file.
+        /// Each input of the fuzz corpus that decoded in the form `foundation/key/1`
+        /// has a copy in the new form: `valid-2`, which a node proves and keeps, and
+        /// `valid-body-2`, which with its CRC32C is `valid-2`.
+        #[test]
+        fn a_node_proves_the_key_of_each_valid_input_of_the_corpus() {
+            let valid: &[u8; LEN] =
+                include_bytes!("../../../oracles/fuzz/node_identity/valid-2");
+            let body =
+                include_bytes!("../../../oracles/fuzz/node_identity/valid-body-2");
+            assert_eq!(crate::sector::summed(body).as_ref(), Some(valid));
+            proves(valid, &PrivateKey([7; 32]));
+        }
+
+        /// The node never leaves a `node.key` with no bytes or with 100 zero bytes, so
+        /// such a file stops the node, which keeps it.
+        #[test]
+        fn a_zero_or_empty_key_stops_the_node() {
+            for bytes in [Vec::new(), vec![0; LEN]] {
+                let mut sim = sim::Sim::new(sim::Config::default());
+                let host = host(&mut sim, 2);
+                write(&mut sim, &host, FILE, bytes.clone());
+                assert_eq!(start_and_stop(&mut sim, &host), Err(Error::Key));
+                assert_eq!(read(&mut sim, &host), bytes, "keeps the file");
+            }
+        }
+
+        /// A start removes the file `node.key.new` that a crash left, of any length,
+        /// and makes the key.
+        #[test]
+        fn a_start_removes_a_new_key_that_a_crash_left() {
+            for bytes in [Vec::new(), vec![7; LEN], vec![7; 3]] {
+                let mut sim = sim::Sim::new(sim::Config::default());
+                let host = host(&mut sim, 2);
+                write(&mut sim, &host, NEW, bytes);
+                assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+                assert!(found(&mut sim, &host).is_some(), "a key");
+                assert!(!listed(&mut sim, &host, "").contains(&PathBuf::from(NEW)));
+            }
+        }
+
+        /// A crash every 25 µs of the first start, on seeds 0 to 7, leaves no key or a
+        /// whole one, and a start after a crash that left one proves it.
+        #[test]
+        fn a_crash_during_the_first_start_leaves_no_key_or_a_whole_key() {
+            let crashes = [sim::Crash::Process, sim::Crash::Power];
+            for (seed, crash) in
+                (0..8).flat_map(|seed| crashes.map(|crash| (seed, crash)))
+            {
+                for after in (0..).step_by(25_000).map(Span::from_nanos) {
+                    let at = format!("seed {seed}: {crash:?} at {after:?}");
+                    let mut sim = sim::Sim::new(sim::Config {
+                        seed,
+                        ..sim::Config::default()
+                    });
+                    let host = host(&mut sim, 2);
+                    let node =
+                        Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+                    assert_eq!(sim.run_for(after), Ok(()), "{at}");
+                    sim.crash(&host, crash);
+                    drop(node);
+                    let Some(made) = found(&mut sim, &host) else {
+                        continue;
+                    };
+                    let public = PrivateKey(made[32..64].try_into().unwrap()).public();
+                    let node =
+                        Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+                    let dialed = dial(&mut sim, &host, public);
+                    assert_eq!(dialed, Ok(Peer::Node(public)), "{at}");
+                    node.stop();
+                    assert_eq!(sim.run(), Ok(()), "{at}");
+                    assert_eq!(node.join(), Ok(()), "{at}");
+                    break;
+                }
+            }
+        }
+
+        /// A file of another length, or of another tag or checksum, stops the node,
+        /// which keeps the file.
         #[test]
         fn a_key_that_is_not_valid_stops_the_node() {
-            let mut tag = own();
-            tag[15] = b'2';
-            let crc = crc32c::crc32c(&tag[..64]);
-            tag[64..].copy_from_slice(&crc.to_le_bytes());
+            // Each tag byte with one bit changed, and the tag of the next form.
+            let edits = (0..16).map(|i| (i, own()[i] ^ 1)).chain([(15, b'3')]);
+            let tags = edits.map(|(i, byte)| {
+                let mut tag = <[u8; LEN]>::try_from(own()).unwrap();
+                tag[i] = byte;
+                crate::sector::checksum(&mut tag);
+                tag.to_vec()
+            });
             let mut changed = own();
             changed[40] ^= 1;
             let short = own()[..LEN - 1].to_vec();
-            for bytes in [short, tag, changed] {
+            let long = [own(), vec![0]].concat();
+            // The form before the seal key: the tag `foundation/key/1`, the node key,
+            // and the private key.
+            let old = [b"foundation/key/1".as_slice(), &own()[16..64]].concat();
+            let old = crate::sector::summed::<68>(&old).unwrap().to_vec();
+            for bytes in [short, long, changed, old].into_iter().chain(tags) {
                 let mut sim = sim::Sim::new(sim::Config::default());
                 let host = host(&mut sim, 2);
-                create_key(&mut sim, &host, bytes.clone());
+                write_key(&mut sim, &host, bytes.clone());
                 let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
                 assert_eq!(sim.run(), Ok(()));
                 assert_eq!(node.join(), Err(Error::Key));
@@ -2958,31 +4028,196 @@ mod port {
             }
             assert_eq!(
                 Error::Key.to_string(),
-                "the file node.key in the data directory is not a node key; restore \
+                "the file `node.key` in the data directory is not a node key; restore \
                  it from a backup of this node"
             );
         }
 
-        /// A failed file call on a new key stops the node, and the next start makes
-        /// one.
+        /// What [`crate::create_key`] gives on `host` for [`OWN`] and `private_key`.
+        #[expect(
+            clippy::unwrap_in_result,
+            reason = "a test helper panics on a run that does not end"
+        )]
+        fn create(
+            sim: &mut sim::Sim,
+            host: &sim::node::Node,
+            private_key: PrivateKey,
+        ) -> Result<SealKey, Error> {
+            sim.run_on(host, move |host, _| async move {
+                crate::create_key(&host.files(), &host.entropy(), OWN, private_key)
+                    .await
+            })
+            .expect("the run ends")
+        }
+
+        /// Checks that `made` holds [`OWN`], [`KEY`], and the private half of
+        /// `seal_key`, with the tag and the checksum.
+        fn assert_created(made: &[u8], seal_key: SealKey) {
+            let made: &[u8; LEN] = made.try_into().expect("the length of a key");
+            let opener = Opener::from_bytes(made[64..96].try_into().unwrap());
+            assert_eq!(opener.public(), seal_key, "the seal key");
+            let identity = Identity {
+                key: OWN,
+                private_key: KEY,
+                opener,
+            };
+            assert_eq!(identity::encode(&identity), *made);
+        }
+
+        /// Each start proves the key that `create_key` writes, and keeps its seal key.
         #[test]
-        fn a_failed_file_call_on_the_key_stops_the_node() {
-            use env::files::Operation::{Open, ReadAt, Sync, WriteAt};
-            for operation in [Open, ReadAt, WriteAt, Sync] {
+        fn a_node_proves_the_key_that_create_key_writes() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            let seal_key = create(&mut sim, &host, KEY).expect("creates");
+            let made = read(&mut sim, &host);
+            assert_created(&made, seal_key);
+            let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+            let public = KEY.public();
+            assert_eq!(dial(&mut sim, &host, public), Ok(Peer::Node(public)));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            assert_eq!(read(&mut sim, &host), made);
+        }
+
+        /// Two calls of `create_key` on two hosts make two seal keys.
+        #[test]
+        fn create_key_makes_a_seal_key_from_the_entropy() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [host(&mut sim, 1), host(&mut sim, 1)];
+            let made = hosts.map(|host| create(&mut sim, &host, KEY).expect("creates"));
+            assert_ne!(made[0], made[1]);
+        }
+
+        /// `create_key` writes nothing over a file that is there: a key, valid or
+        /// not, a file of another length, and one with no bytes or 100 zero bytes. It
+        /// leaves no `node.key.new`, which would hold its keys.
+        #[test]
+        fn create_key_writes_nothing_over_a_file() {
+            let mut changed = own();
+            changed[40] ^= 1;
+            let short = own()[..LEN - 1].to_vec();
+            let exists = env::files::Error::Exists {
+                path: PathBuf::from("node.key"),
+            };
+            for bytes in [own(), changed, short, Vec::new(), vec![0; LEN]] {
                 let mut sim = sim::Sim::new(sim::Config::default());
                 let host = host(&mut sim, 2);
-                host.fail_file(Path::new(FILE), operation);
+                write(&mut sim, &host, FILE, bytes.clone());
+                let created = create(&mut sim, &host, PrivateKey([9; 32]));
+                assert_eq!(created, Err(Error::Directory(exists.clone())));
+                assert_eq!(read(&mut sim, &host), bytes, "keeps the file");
+                let staged = PathBuf::from(NEW);
+                assert!(
+                    !listed(&mut sim, &host, "").contains(&staged),
+                    "no staged key"
+                );
+            }
+            assert_eq!(
+                Error::Directory(exists).to_string(),
+                "cannot use the data directory: path node.key is already there"
+            );
+        }
+
+        /// A power cut after `create_key` finds a file leaves no `node.key.new` with
+        /// its keys, also after a start.
+        #[test]
+        fn a_power_cut_after_create_key_finds_a_file_leaves_no_staged_key() {
+            for seed in 0..32 {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let host = host(&mut sim, 2);
+                write(&mut sim, &host, FILE, own());
+                let created = create(&mut sim, &host, PrivateKey([9; 32]));
+                let exists = env::files::Error::Exists {
+                    path: PathBuf::from("node.key"),
+                };
+                assert_eq!(created, Err(Error::Directory(exists)), "seed {seed}");
+                sim.crash(&host, sim::Crash::Power);
+                assert_eq!(start_and_stop(&mut sim, &host), Ok(()), "seed {seed}");
+                assert_eq!(bytes(&mut sim, &host, NEW), None, "seed {seed}");
+                assert_eq!(bytes(&mut sim, &host, FILE), Some(own()), "seed {seed}");
+            }
+        }
+
+        /// A power cut after `create_key` keeps the key.
+        #[test]
+        fn a_created_key_survives_a_power_cut() {
+            for seed in 0..16 {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let host = host(&mut sim, 2);
+                let seal_key = create(&mut sim, &host, KEY).expect("creates");
+                sim.crash(&host, sim::Crash::Power);
+                assert_created(&read(&mut sim, &host), seal_key);
+            }
+        }
+
+        /// A failed file call of `create_key` gives its error, and leaves no
+        /// `node.key`.
+        #[test]
+        fn a_failed_file_call_of_create_key_gives_its_error() {
+            use env::files::Operation::{Open, Remove, Rename, Sync, SyncDir, WriteAt};
+            let calls = [Remove, Open, WriteAt, Sync, Rename].map(|call| (NEW, call));
+            let others = [(FILE, Open), ("", SyncDir)];
+            for (path, operation) in calls.into_iter().chain(others) {
+                let mut sim = sim::Sim::new(sim::Config::default());
+                let host = host(&mut sim, 2);
+                host.fail_file(Path::new(path), operation);
                 let error = env::files::Error::Io {
-                    path: PathBuf::from(FILE),
+                    path: PathBuf::from(path),
+                    operation,
+                    code: 5,
+                };
+                let created = create(&mut sim, &host, KEY);
+                assert_eq!(created, Err(Error::Directory(error)), "{operation:?}");
+                if operation != SyncDir {
+                    assert_eq!(found(&mut sim, &host), None, "{operation:?}");
+                }
+            }
+        }
+
+        /// A failed file call on `node.key`, or on the `node.key.new` that makes it,
+        /// stops the node, and the next start proves a key. A failed read keeps the
+        /// key that the file holds.
+        #[test]
+        fn a_failed_file_call_on_the_key_stops_the_node() {
+            use env::files::Operation::{Open, ReadAt, Remove, Rename, Sync, WriteAt};
+            for (path, operation) in [
+                (NEW, Remove),
+                (NEW, Open),
+                (NEW, WriteAt),
+                (NEW, Sync),
+                (NEW, Rename),
+                (FILE, Open),
+                (FILE, ReadAt),
+            ] {
+                let mut sim = sim::Sim::new(sim::Config::default());
+                let host = host(&mut sim, 2);
+                if path == FILE {
+                    write_key(&mut sim, &host, own());
+                }
+                host.fail_file(Path::new(path), operation);
+                let error = env::files::Error::Io {
+                    path: PathBuf::from(path),
                     operation,
                     code: 5,
                 };
                 assert_eq!(
                     start_and_stop(&mut sim, &host),
-                    Err(Error::Directory(error))
+                    Err(Error::Directory(error)),
+                    "{operation:?} {path}"
                 );
-                assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
-                assert_eq!(&read(&mut sim, &host)[..16], b"foundation/key/1");
+                assert_eq!(start_and_stop(&mut sim, &host), Ok(()), "{operation:?}");
+                let made = found(&mut sim, &host).expect("a key");
+                if path == FILE {
+                    assert_eq!(made, own(), "{operation:?} {path}");
+                }
             }
         }
 
@@ -3068,56 +4303,62 @@ mod port {
                 assert_eq!(sim.run_for(Span::SECOND), Ok(()));
                 node.stop();
                 assert_eq!(sim.run(), Ok(()));
-                node.join() == error && key_written(&mut sim, &host)
+                node.join() == error && found(&mut sim, &host).is_some()
             });
             assert!(stopped, "no start stopped at the sync of the directory");
         }
 
-        /// A failed sync of a new key stops the node, and can leave the key in the
-        /// cache only. A start that proves that key makes it durable, so a power cut
-        /// after it keeps the key.
+        /// A process crash can leave a key that a read sees but a power cut loses.
+        /// The claim of the next start makes it durable, also when the start fails
+        /// after it. Takes the first crash time, on seeds 0 to 7, at which a read sees
+        /// the key, and checks that a power cut then can lose it.
         #[test]
-        fn a_key_proven_after_a_failed_sync_survives_a_power_cut() {
-            let mut tried = Vec::new();
-            for seed in 0..16 {
+        fn a_later_start_makes_the_key_durable() {
+            let mut lost = 0;
+            let crashed = |seed, after| {
                 let mut sim = sim::Sim::new(sim::Config {
                     seed,
                     ..sim::Config::default()
                 });
                 let host = host(&mut sim, 2);
-                host.fail_file(Path::new(FILE), env::files::Operation::Sync);
+                let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+                assert_eq!(sim.run_for(after), Ok(()), "seed {seed} at {after:?}");
+                sim.crash(&host, sim::Crash::Process);
+                drop(node);
+                let made = found(&mut sim, &host);
+                (sim, host, made)
+            };
+            for seed in 0..8 {
+                let (after, made) = (0..)
+                    .step_by(5_000)
+                    .map(Span::from_nanos)
+                    .find_map(|after| crashed(seed, after).2.map(|made| (after, made)))
+                    .expect("a crash leaves the key");
+                let (mut sim, host, _) = crashed(seed, after);
+                sim.crash(&host, sim::Crash::Power);
+                if found(&mut sim, &host).is_none() {
+                    lost += 1;
+                }
+                let (mut sim, host, _) = crashed(seed, after);
+                let operation = env::files::Operation::Open;
+                host.fail_file(Path::new(FILE), operation);
                 let error = env::files::Error::Io {
                     path: PathBuf::from(FILE),
-                    operation: env::files::Operation::Sync,
+                    operation,
                     code: 5,
                 };
-                assert_eq!(
-                    start_and_stop(&mut sim, &host),
-                    Err(Error::Directory(error))
-                );
-                let made = read(&mut sim, &host);
-                if made == [0; LEN] {
-                    continue;
-                }
-                let public = PrivateKey(made[32..64].try_into().unwrap()).public();
-                let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
-                let dialed = dial(&mut sim, &host, public);
-                node.stop();
-                assert_eq!(sim.run(), Ok(()));
-                assert_eq!(node.join(), Ok(()));
-                if dialed.is_err() {
-                    continue;
-                }
-                tried.push(seed);
+                let started = start_and_stop(&mut sim, &host);
+                let at = format!("seed {seed} at {after:?}");
+                assert_eq!(started, Err(Error::Directory(error)), "{at}");
                 sim.crash(&host, sim::Crash::Power);
-                assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
-                assert_eq!(read(&mut sim, &host), made, "seed {seed}");
+                assert_eq!(found(&mut sim, &host), Some(made), "{at}");
             }
-            assert!(!tried.is_empty(), "no seed kept the key in the cache");
+            assert!(lost > 0, "no power cut lost the key");
         }
     }
 
     mod mesh {
+        use std::cell::{Cell, RefCell};
         use std::collections::BTreeMap;
         use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -3134,10 +4375,11 @@ mod port {
         use spec::subject::Subject;
         use spec::tree::Chunks;
         use types::channel;
+        use types::name::Name;
         use types::node::SealKey;
 
         use super::*;
-        use crate::{Endpoint, route};
+        use crate::{Endpoint, Opening, route};
 
         /// The key and private key of a second node.
         const OTHER: (types::node::Key, PrivateKey) =
@@ -3158,7 +4400,7 @@ mod port {
         const OPEN: Span = Span::from_nanos(10_000_000);
         /// The time after [`OPEN`], in nanoseconds, at which a write of [`LOG`] that
         /// fails from [`OPEN`] stops the group in the sim.
-        const WRITE: i64 = 1_792_553_323;
+        const WRITE: i64 = 1_793_725_638;
 
         /// Why the group stops when a write of [`LOG`] fails.
         fn write_failed() -> ::mesh::Stopped {
@@ -3204,7 +4446,7 @@ mod port {
         /// Starts the node on `host`, which [`keyed`] made, with `region`.
         fn start(host: &sim::node::Node, region: Founding) -> Node {
             Node::start(Config {
-                region: Some(region),
+                region: Region::Given(region),
                 ..config(host, Size::MEBIBYTE, Box::new(heap))
             })
         }
@@ -3240,12 +4482,12 @@ mod port {
             let node = start(host, founded(host));
             let read = Arc::new(Mutex::new(None));
             let out = Arc::clone(&read);
-            let clock = host.clock();
             node.spawn(move |hub| async move {
-                let value = "plant.value".parse().unwrap();
-                let reader = hub.reader(&[value], ::hub::reader::Mode::Complete).await;
+                let reader = hub
+                    .reader(unnamed("plant.value", ::hub::reader::Mode::Complete))
+                    .await;
                 let mut reader = reader.expect("the reader opens");
-                let mut writer = writer(&hub, &clock, &["plant.value"]).await;
+                let mut writer = writer(&hub, &["plant.value"]).await;
                 write(&mut writer, stamp, 7);
                 let received = reader.next().await.expect("a frame");
                 *out.lock().unwrap() =
@@ -3269,36 +4511,44 @@ mod port {
             assert_eq!(read, Some((vec![stamp], vec![7])));
         }
 
-        /// A founding with a data channel whose index the spec does not hold fails the
-        /// node at its first open.
+        /// A founding with a data channel whose index the spec does not hold has
+        /// problems, so the node runs and defines no channel.
         #[test]
-        fn a_founding_with_a_dangling_index_fails_the_node() {
+        fn a_founding_with_a_dangling_index_defines_no_channel() {
             use super::super::hub::{I64, data};
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = keyed(&mut sim, 2);
             let mut founding = region(&[member(OWN, &KEY, &host)]);
-            let name = "plant.value".parse().unwrap();
+            let value: Name = "plant.value".parse().unwrap();
             let channel = Definition::Channel(data(2, I64, 1));
-            founding.definitions.insert(name, channel);
+            founding.definitions.insert(value.clone(), channel);
             let node = start(&host, founding);
-            let index = types::channel::Key::from_u128(1);
-            assert_eq!(
-                sim.run(),
-                Err(sim::Error::Panicked {
-                    thread: "shard-0".into(),
-                    message: format!(
-                        "the index {index} of channel plant.value is not a known index"
-                    ),
-                    seed: 0,
-                })
-            );
+            let empty = ::hub::reader::Error::Empty;
+            assert_eq!(readers(&mut sim, &node, &["plant.value"]), [Some(empty)]);
+            node.stop();
             assert_eq!(sim.run(), Ok(()));
-            assert_eq!(
-                node.join(),
-                Err(Error::Panicked(thread::Panicked {
-                    name: "shard-0".into()
-                }))
-            );
+            assert_eq!(node.join(), Ok(()));
+        }
+
+        /// The error of a reader that a task on `node` opens on each of `names`, or
+        /// `None` for one that opens.
+        fn readers(
+            sim: &mut sim::Sim,
+            node: &Node,
+            names: &[&str],
+        ) -> Vec<Option<::hub::reader::Error>> {
+            let names: Vec<String> = names.iter().map(|name| (*name).into()).collect();
+            let errors = Arc::new(Mutex::new(Vec::new()));
+            let out = Arc::clone(&errors);
+            node.spawn(move |hub| async move {
+                for name in names {
+                    let mode = ::hub::reader::Mode::Complete;
+                    let reader = hub.reader(unnamed(&name, mode)).await;
+                    out.lock().unwrap().push(reader.err());
+                }
+            });
+            assert_eq!(sim.run_for(TEN), Ok(()));
+            errors.lock().unwrap().drain(..).collect()
         }
 
         /// The node defines the founding channels at each open, not only at the
@@ -3318,9 +4568,10 @@ mod port {
         }
 
         /// The hub reads the homes of the node's mesh, so a reader of a channel whose
-        /// index has its home at another node gets that home.
+        /// index has its home at another node dials that home. The address of
+        /// [`OTHER`] is this node's port, so the dial fails on its key.
         #[test]
-        fn a_reader_of_a_channel_whose_home_is_another_node_gets_the_home() {
+        fn a_reader_of_a_channel_whose_home_is_another_node_dials_the_home() {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = keyed(&mut sim, 2);
             let mut founding = founded(&host);
@@ -3333,16 +4584,25 @@ mod port {
             let opened = Arc::new(Mutex::new(None));
             let out = Arc::clone(&opened);
             node.spawn(move |hub| async move {
-                let value = "plant.value".parse().unwrap();
-                let reader = hub.reader(&[value], ::hub::reader::Mode::Complete).await;
+                let reader = hub
+                    .reader(unnamed("plant.value", ::hub::reader::Mode::Complete))
+                    .await;
                 *out.lock().unwrap() = Some(reader.err());
             });
             assert_eq!(sim.run_for(TEN), Ok(()));
             node.stop();
             assert_eq!(sim.run(), Ok(()));
             assert_eq!(node.join(), Ok(()));
-            let remote = ::hub::reader::Error::Remote { home: OTHER.0 };
-            assert_eq!(opened.lock().unwrap().take(), Some(Some(remote)));
+            let peer = OTHER.1.public();
+            let unreachable = transport::Error::Unreachable {
+                peer,
+                attempts: vec![(
+                    Address::Udp(listen(&host)),
+                    transport::Error::Authentication { expected: peer },
+                )],
+            };
+            let error = ::hub::reader::Error::Transport(unreachable);
+            assert_eq!(opened.lock().unwrap().take(), Some(Some(error)));
         }
 
         /// The node with key [`OWN`] on `host`, the one member and voter of its region.
@@ -3350,66 +4610,38 @@ mod port {
             start(host, region(&[member(OWN, &KEY, host)]))
         }
 
-        /// Starts the member [`OTHER`] of `members` on `host` without a `Node`: an
-        /// endpoint and a hub with its key, which serve the mesh as a node's do. Runs
-        /// `act` with the mesh, then drops the mesh and its port.
+        /// The operations of the member `key` of `mesh` on `hub`, as a node makes them,
+        /// with the secrets on `files`.
+        fn operations(
+            mesh: &::mesh::Mesh,
+            key: types::node::Key,
+            hub: &::hub::Hub,
+            clock: env::clock::Clock,
+            time: &clock::Reader,
+            entropy: &env::entropy::Entropy,
+            files: env::files::Files,
+        ) -> Rc<ops::Node> {
+            let member = mesh.member(key).expect("the peer is a member");
+            let name = member.card.card().name.clone();
+            Rc::new(ops::Node::new(ops::Config {
+                mesh: mesh.clone(),
+                keys: crate::channel_keys(time, entropy),
+                front_ends: crate::front_ends(),
+                kinds: Arc::new(crate::kinds()),
+                hub: hub.clone(),
+                clock,
+                name,
+                secrets: connector::testing::create_secrets(files),
+            }))
+        }
+
+        /// As [`peer_hub`], with the region of `members`, and `act` gets only the mesh.
         fn peer<F: Future<Output = ()> + 'static>(
             host: &sim::node::Node,
-            members: Vec<Member>,
+            members: &[Member],
             act: impl FnOnce(::mesh::Mesh, sim::node::Node) -> F + Send + 'static,
         ) {
-            let shard = env::shards::Config {
-                name: "peer".into(),
-                core: None,
-            };
-            let own = host.clone();
-            let started = host.shards().start(shard, move |tasks| async move {
-                let bound =
-                    transport::Port::bind(&own.net(), listen(&own)).expect("a port");
-                let identity = Identity {
-                    key: OTHER.0,
-                    private_key: OTHER.1,
-                };
-                let endpoint = Endpoint {
-                    part: bound.split(NonZeroUsize::MIN).pop().expect("one part"),
-                    region: Some(region(&members)),
-                    clock: own.clock(),
-                    entropy: own.entropy(),
-                };
-                let pool = super::pool();
-                let stop = crate::stop::Stop::default();
-                let (open, buffer, next, time) =
-                    super::super::home::create_open(&own, &tasks, 0, stop);
-                let opened =
-                    open.run(own.files(), Rc::new(buffer), tasks.clone()).await;
-                let home = opened.expect("the buffer opens");
-                let interner = next.await.expect("the open gives the interner");
-                let (key, entropy) = (identity.key, endpoint.entropy.clone());
-                let (transport, mesh) = endpoint
-                    .open(identity, own.files(), pool, tasks.clone())
-                    .await
-                    .expect("the mesh opens");
-                let mesh = mesh.expect("the peer has a region");
-                let hub = ::hub::Hub::new(::hub::Config {
-                    home,
-                    interner,
-                    tasks: tasks.clone(),
-                    node: key,
-                    time,
-                    entropy,
-                    mesh: Some(mesh.clone()),
-                });
-                hub.define(&region(&members).definitions);
-                let port = route::accept(transport, Some(mesh.clone()), hub, tasks);
-                let (mut port, mut act) = (pin!(port), pin!(act(mesh, own)));
-                poll_fn(|cx| {
-                    let stopped = port.as_mut().poll(cx);
-                    assert!(stopped.is_pending(), "the peer's transport stopped");
-                    act.as_mut().poll(cx)
-                })
-                .await;
-            });
-            drop(started.expect("the peer starts"));
+            peer_hub(host, region(members), |_, mesh, own| act(mesh, own));
         }
 
         /// The members of the region of the node [`OWN`] on `hosts[0]` and the peer
@@ -3432,7 +4664,7 @@ mod port {
             let node = start(&hosts[0], region(&members));
             let set = Arc::new(Mutex::new(Vec::new()));
             let out = Arc::clone(&set);
-            peer(&hosts[1], members, move |mesh, _| async move {
+            peer(&hosts[1], &members, move |mesh, _| async move {
                 let set = mesh.set_home(INDEX, OTHER.0).await;
                 out.lock().unwrap().push(set);
             });
@@ -3440,6 +4672,52 @@ mod port {
             assert_eq!(*set.lock().unwrap(), [Ok(())]);
             node.stop();
             assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+        }
+
+        /// A task's reader of a channel whose home is the peer holds a session to the
+        /// peer when the node stops. The stop drops the hub and the reader, and each
+        /// task of the hub then lets go of the transport (`hub::Hub::new`), so the
+        /// port is free within the drain bound of 3 s.
+        #[test]
+        fn a_stop_frees_the_port_while_a_reader_holds_a_session_to_a_home() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let founding = paired(&hosts, OTHER.0);
+            let node = start(&hosts[0], founding.clone());
+            peer_hub(&hosts[1], founding, |_, _, host| async move {
+                host.clock().sleep(Span::MINUTE).await;
+            });
+            let opened = Arc::new(Mutex::new(None));
+            let out = Arc::clone(&opened);
+            node.spawn(move |hub| async move {
+                match hub
+                    .reader(unnamed("plant.value", ::hub::reader::Mode::Complete))
+                    .await
+                {
+                    Ok(mut reader) => {
+                        *out.lock().unwrap() = Some(Ok(()));
+                        let next = reader.next().await;
+                        panic!("the reader ended before the stop: {next:?}");
+                    }
+                    Err(error) => *out.lock().unwrap() = Some(Err(error)),
+                }
+            });
+            assert_eq!(sim.run_for(TEN), Ok(()));
+            assert_eq!(*opened.lock().unwrap(), Some(Ok(())));
+            let stopped = hosts[0].clock().now();
+            node.stop();
+            let (after, bound) = sim
+                .run_on(&hosts[0], move |host, _| async move {
+                    let (_lock, _) = take_lock(&host).await;
+                    let after = host.clock().now() - stopped;
+                    let bound = transport::Port::bind(&host.net(), listen(&host));
+                    (after, bound.map(drop))
+                })
+                .expect("the probe ends");
+            assert_eq!(bound, Ok(()));
+            let drain = Span::from_nanos(3 * Span::SECOND.nanos());
+            assert!(after <= drain, "the lock was free {after:?} after the stop");
             assert_eq!(node.join(), Ok(()));
         }
 
@@ -3488,14 +4766,15 @@ mod port {
             assert_eq!(read, Err(transport::Error::Reset { code }));
         }
 
-        /// The node stops a hub stream of a program, and resets its reply half, with
-        /// the code of a rejected header.
+        /// The node gives a hub stream of a program to its hub, which takes it as the
+        /// hello stream and closes the session at its first message, which is no
+        /// hello, with the code of a malformed message.
         #[test]
-        fn rejects_a_hub_stream_of_a_program_of_a_region() {
+        fn a_hub_stream_of_a_program_of_a_region_goes_to_the_hub() {
             let Seen { sent, read, .. } = opened(Dialer::Program);
-            let code = Code(wire::header::REJECTED);
-            assert_eq!(sent, transport::Error::Stopped { code });
-            assert_eq!(read, Err(transport::Error::Reset { code }));
+            let code = Code(wire::header::MALFORMED);
+            assert_eq!(sent, transport::Error::PeerClosed { code });
+            assert_eq!(read, Err(transport::Error::PeerClosed { code }));
         }
 
         /// The mesh serves a mesh stream: at the first message that is not a mesh
@@ -3508,6 +4787,705 @@ mod port {
             let code = Code(wire::header::MALFORMED);
             assert_eq!(sent, transport::Error::Stopped { code });
             assert_eq!(read, Err(transport::Error::Reset { code }));
+        }
+
+        /// Under a header setting of zero, a mesh stream whose header arrived when
+        /// the node first reads it still goes to the mesh.
+        #[test]
+        fn a_header_that_arrived_routes_under_a_header_wait_of_zero() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let node = Node::start(Config {
+                region: Region::Given(region(&[member(OWN, &KEY, &host)])),
+                settings: crate::Settings {
+                    header_wait: Span::ZERO,
+                    ..crate::Settings::default()
+                },
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            let header = wire::header::encode(wire::Protocol::Mesh);
+            let seen = dial(&mut sim, &host, Dialer::Node(CLIENT), &[&header]);
+            let Seen { sent, read, .. } = watch(sim, node, &seen);
+            let code = Code(wire::header::MALFORMED);
+            assert_eq!(sent, transport::Error::Stopped { code });
+            assert_eq!(read, Err(transport::Error::Reset { code }));
+        }
+
+        /// The node stops a mesh stream of a program, and resets its reply half, with
+        /// the code of a rejected header. The mesh gets no message of it: it stops a
+        /// stream at its first message that is not a mesh message with `MALFORMED`.
+        #[test]
+        fn rejects_a_mesh_stream_of_a_program() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let node = start_alone(&host);
+            let header = wire::header::encode(wire::Protocol::Mesh);
+            let seen = dial(&mut sim, &host, Dialer::Program, &[&header, b"after"]);
+            let Seen {
+                peer, sent, read, ..
+            } = watch(sim, node, &seen);
+            let code = Code(wire::header::REJECTED);
+            assert_eq!(peer, Peer::Node(KEY.public()));
+            assert_eq!(sent, transport::Error::Stopped { code });
+            assert_eq!(read, Err(transport::Error::Reset { code }));
+        }
+
+        /// `count` sessions that `program` dials to the node [`OWN`] at `at`, in order.
+        async fn create_sessions(
+            program: &transport::Client,
+            at: &[Address],
+            count: usize,
+        ) -> Vec<transport::Session> {
+            let mut held = Vec::new();
+            for _ in 0..count {
+                held.push(program.dial(KEY.public(), at).await.expect("a session"));
+            }
+            held
+        }
+
+        /// The index and the error of each of `sessions` that closes, in the order that
+        /// they close.
+        fn closings(
+            sessions: &[transport::Session],
+            tasks: &env::tasks::Tasks,
+        ) -> Rc<RefCell<Vec<(usize, transport::Error)>>> {
+            let closed = Rc::new(RefCell::new(Vec::new()));
+            for (index, session) in sessions.iter().enumerate() {
+                let (session, out) = (session.clone(), Rc::clone(&closed));
+                tasks.spawn(async move {
+                    let error = session.closed().await;
+                    out.borrow_mut().push((index, error));
+                });
+            }
+            closed
+        }
+
+        /// The error of a session that the node closed to free its place.
+        fn refused() -> transport::Error {
+            let code = Code(wire::session::REFUSED);
+            transport::Error::PeerClosed { code }
+        }
+
+        /// The error of [`sent_clock`] on a session that the node admitted.
+        fn admitted() -> transport::Error {
+            let code = Code(wire::header::REJECTED);
+            transport::Error::Stopped { code }
+        }
+
+        /// Runs `sim` for a minute, then stops `node` and runs `sim` to its end.
+        fn run_and_stop(sim: &mut sim::Sim, node: &Node) {
+            assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+        }
+
+        /// 256 programs hold each place for peers outside the region. A new program
+        /// gets a session, the session of the oldest closes with the code of a
+        /// refused session, and the other 255 stay. The next program closes the
+        /// second oldest.
+        #[test]
+        fn the_oldest_place_frees_for_a_new_peer_at_the_bound() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            let listen = listen(&hosts[0]);
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&hosts[1], move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let (program, pool) = program(&own, tasks.clone());
+                let mut held = create_sessions(&program, &at, 256).await;
+                let closed = closings(&held, &tasks);
+                let (mut sent, mut after) = (Vec::new(), Vec::new());
+                for _ in 0..2 {
+                    let new = program.dial(KEY.public(), &at).await.expect("a session");
+                    sent.push(sent_clock(&new, &pool, &own).await);
+                    own.clock().sleep(Span::SECOND).await;
+                    after.push(closed.borrow().clone());
+                    held.push(new);
+                }
+                *seen.lock().unwrap() = Some((sent, after));
+                drop((held, program));
+            });
+            run_and_stop(&mut sim, &node);
+            assert_eq!(node.join(), Ok(()));
+            let (sent, after) = out.lock().unwrap().take().expect("the peer ran");
+            assert_eq!(sent, vec![admitted(), admitted()]);
+            let first = vec![(0, refused())];
+            let second = vec![(0, refused()), (1, refused())];
+            assert_eq!(after, vec![first, second]);
+        }
+
+        /// Under a setting of 3 places, 3 programs hold each place. A new program
+        /// gets a session, and the session of the oldest closes with the code of a
+        /// refused session.
+        #[test]
+        fn the_oldest_place_frees_at_the_setting() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let settings = crate::Settings {
+                places_max: NonZeroUsize::new(3).unwrap(),
+                ..crate::Settings::default()
+            };
+            let node = Node::start(Config {
+                region: Region::Given(region(&pair(&hosts))),
+                settings,
+                ..config(&hosts[0], Size::MEBIBYTE, Box::new(heap))
+            });
+            let listen = listen(&hosts[0]);
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&hosts[1], move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let (program, pool) = program(&own, tasks.clone());
+                let held = create_sessions(&program, &at, 3).await;
+                let closed = closings(&held, &tasks);
+                let new = program.dial(KEY.public(), &at).await.expect("a session");
+                let sent = sent_clock(&new, &pool, &own).await;
+                own.clock().sleep(Span::SECOND).await;
+                *seen.lock().unwrap() = Some((sent, closed.borrow().clone()));
+                drop((held, new, program));
+            });
+            run_and_stop(&mut sim, &node);
+            assert_eq!(node.join(), Ok(()));
+            let (sent, closed) = out.lock().unwrap().take().expect("the peer ran");
+            assert_eq!(sent, admitted());
+            assert_eq!(closed, vec![(0, refused())]);
+        }
+
+        /// 256 programs fill the bound, then a member dials: it takes no place, so no
+        /// session closes. The next program closes the oldest program, and the
+        /// member's session stays.
+        #[test]
+        fn the_bound_closes_no_session_of_a_member() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            let listen = listen(&hosts[0]);
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&hosts[1], move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let (program, pool) = program(&own, tasks.clone());
+                let held = create_sessions(&program, &at, 256).await;
+                let closed = closings(&held, &tasks);
+                let (node, node_pool) = transport(&own, tasks.clone(), OTHER.1);
+                let member = node.dial(KEY.public(), &at).await.expect("a session");
+                let of_member = closings(std::slice::from_ref(&member), &tasks);
+                let sent_member = sent_clock(&member, &node_pool, &own).await;
+                let at_member = closed.borrow().clone();
+                let new = program.dial(KEY.public(), &at).await.expect("a session");
+                let sent = sent_clock(&new, &pool, &own).await;
+                own.clock().sleep(Span::SECOND).await;
+                let closed = (
+                    at_member,
+                    of_member.borrow().clone(),
+                    closed.borrow().clone(),
+                );
+                *seen.lock().unwrap() = Some((sent, sent_member, closed));
+                drop((held, new, member, node, program));
+            });
+            run_and_stop(&mut sim, &node);
+            assert_eq!(node.join(), Ok(()));
+            let (sent, sent_member, closed) =
+                out.lock().unwrap().take().expect("the peer ran");
+            assert_eq!(sent, admitted());
+            assert_eq!(sent_member, admitted());
+            assert_eq!(closed, (vec![], vec![], vec![(0, refused())]));
+        }
+
+        /// A program that closes its session frees its place, so at the bound the
+        /// next program closes no session.
+        #[test]
+        fn a_peer_that_closes_its_session_frees_its_place() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            let listen = listen(&hosts[0]);
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&hosts[1], move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let (program, pool) = program(&own, tasks.clone());
+                let mut held = create_sessions(&program, &at, 256).await;
+                held.remove(100).close(Code(0));
+                let closed = closings(&held, &tasks);
+                own.clock().sleep(Span::SECOND).await;
+                let new = program.dial(KEY.public(), &at).await.expect("a session");
+                let sent = sent_clock(&new, &pool, &own).await;
+                own.clock().sleep(Span::SECOND).await;
+                *seen.lock().unwrap() = Some((sent, closed.borrow().clone()));
+                drop((held, new, program));
+            });
+            run_and_stop(&mut sim, &node);
+            assert_eq!(node.join(), Ok(()));
+            let (sent, closed) = out.lock().unwrap().take().expect("the peer ran");
+            assert_eq!(sent, admitted());
+            assert_eq!(closed, vec![]);
+        }
+
+        /// A node outside the region that holds a place, and that is a member now,
+        /// frees its place and keeps its session: at the bound, no session closes. It
+        /// calls `Places::take`, since no path makes a node a member at run time until
+        /// the join of #336, so no session through `accept` can show it.
+        #[test]
+        fn a_peer_that_is_a_member_now_frees_its_place() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [
+                sim.node(sim::node::Config::default()),
+                sim.node(sim::node::Config::default()),
+            ];
+            let listen = listen(&hosts[0]);
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&hosts[0], move |own, tasks| async move {
+                let (transport, _) = transport_at(&own, tasks.clone(), KEY, listen);
+                let now = Peer::Node(CLIENT.public());
+                let joined = Cell::new(false);
+                let mut places =
+                    route::Places::new(crate::Settings::default().places_max);
+                let (mut sessions, mut holds) = (Vec::new(), Vec::new());
+                for _ in 0..257 {
+                    let session = transport.accept().await.expect("a session");
+                    let hold =
+                        places.take(&session, |peer| joined.get() && peer == now);
+                    assert!(hold.is_some());
+                    joined.set(joined.get() || session.peer() == now);
+                    holds.push(hold);
+                    sessions.push(session);
+                }
+                let closed = closings(&sessions, &tasks);
+                own.clock().sleep(Span::SECOND).await;
+                *seen.lock().unwrap() = Some(closed.borrow().clone());
+                drop((holds, sessions, transport));
+            });
+            shard(&hosts[1], move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let (program, _) = program(&own, tasks.clone());
+                let first = create_sessions(&program, &at, 1).await;
+                let (node, _) = transport(&own, tasks, CLIENT);
+                let member = node.dial(KEY.public(), &at).await.expect("a session");
+                let held = create_sessions(&program, &at, 255).await;
+                own.clock().sleep(Span::MINUTE).await;
+                drop((first, member, held, program, node));
+            });
+            assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
+            assert_eq!(out.lock().unwrap().take(), Some(vec![]));
+        }
+
+        /// A session whose hold drops leaves its place: at the bound, the place closes
+        /// only the sessions that still hold it. It calls `Places::take`, since through
+        /// `accept` a hold drops only as its session ends, and a close of an ended
+        /// session does nothing.
+        #[test]
+        fn a_session_whose_hold_drops_leaves_its_place() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [
+                sim.node(sim::node::Config::default()),
+                sim.node(sim::node::Config::default()),
+            ];
+            let listen = listen(&hosts[0]);
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&hosts[0], move |own, tasks| async move {
+                let (transport, _) = transport_at(&own, tasks.clone(), KEY, listen);
+                let mut places =
+                    route::Places::new(crate::Settings::default().places_max);
+                let left = transport.accept().await.expect("a session");
+                let hold = places.take(&left, |_| false);
+                let ended = transport.accept().await.expect("a session");
+                let kept = places.take(&ended, |_| false);
+                drop(hold);
+                let (mut sessions, mut holds) = (Vec::new(), Vec::new());
+                for _ in 0..256 {
+                    let session = transport.accept().await.expect("a session");
+                    holds.push(places.take(&session, |_| false));
+                    sessions.push(session);
+                }
+                let closed = closings(std::slice::from_ref(&left), &tasks);
+                own.clock().sleep(Span::SECOND).await;
+                *seen.lock().unwrap() = Some(closed.borrow().clone());
+                drop((kept, holds, sessions, left, ended, transport));
+            });
+            shard(&hosts[1], move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let (first, _) = transport(&own, tasks.clone(), CLIENT);
+                let open = first.dial(KEY.public(), &at).await.expect("a session");
+                let (second, _) = transport(&own, tasks.clone(), CLIENT);
+                let ended = second.dial(KEY.public(), &at).await.expect("a session");
+                ended.close(Code(0));
+                own.clock().sleep(Span::SECOND).await;
+                let (program, _) = program(&own, tasks);
+                let held = create_sessions(&program, &at, 256).await;
+                own.clock().sleep(Span::MINUTE).await;
+                drop((open, ended, held, program, first, second));
+            });
+            assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
+            assert_eq!(out.lock().unwrap().take(), Some(vec![]));
+        }
+
+        /// A node with no region: 255 programs and the node [`CLIENT`] fill the bound,
+        /// and the node of a second key closes the oldest program. [`CLIENT`] holds
+        /// one place by its key: once it closes its session, the next program closes
+        /// no session.
+        #[test]
+        fn a_node_outside_the_region_holds_one_place_by_its_key() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = Node::start(config(&hosts[0], Size::MEBIBYTE, Box::new(heap)));
+            let listen = listen(&hosts[0]);
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&hosts[1], move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let (program, pool) = program(&own, tasks.clone());
+                let held = create_sessions(&program, &at, 255).await;
+                let closed = closings(&held, &tasks);
+                let (first, _) = transport(&own, tasks.clone(), CLIENT);
+                let placed = first.dial(KEY.public(), &at).await.expect("a session");
+                let (second, second_pool) = transport(&own, tasks, OTHER.1);
+                let other = second.dial(KEY.public(), &at).await.expect("a session");
+                let of_other = sent_clock(&other, &second_pool, &own).await;
+                placed.close(Code(0));
+                own.clock().sleep(Span::SECOND).await;
+                let new = program.dial(KEY.public(), &at).await.expect("a session");
+                let of_new = sent_clock(&new, &pool, &own).await;
+                own.clock().sleep(Span::SECOND).await;
+                *seen.lock().unwrap() =
+                    Some((of_other, of_new, closed.borrow().clone()));
+                drop((held, other, new, first, second, program));
+            });
+            run_and_stop(&mut sim, &node);
+            assert_eq!(node.join(), Ok(()));
+            let (of_other, of_new, closed) =
+                out.lock().unwrap().take().expect("the peer ran");
+            assert_eq!(of_other, admitted());
+            assert_eq!(of_new, admitted());
+            assert_eq!(closed, vec![(0, refused())]);
+        }
+
+        /// A program on one host holds the oldest place, and 254 programs and one
+        /// node outside the region on another host fill the bound. Once that host's
+        /// links drop every packet, its sessions time out and free their places, so
+        /// a later program closes no session: the oldest stays.
+        #[test]
+        fn places_free_when_the_peers_outside_the_region_vanish() {
+            const LATE: Span = Span::from_nanos(150_000_000_000);
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            let listen = listen(&hosts[0]);
+            let attacker = sim.node(sim::node::Config::default());
+            let late = sim.node(sim::node::Config::default());
+            let filled = Arc::new(AtomicBool::new(false));
+            let out = Arc::new(Mutex::new(None));
+            let done = Arc::clone(&filled);
+            shard(&attacker, move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                own.clock().sleep(Span::SECOND).await;
+                let (program, _) = program(&own, tasks.clone());
+                let (outsider, _) = transport(&own, tasks, CLIENT);
+                let mut held = create_sessions(&program, &at, 254).await;
+                held.push(outsider.dial(KEY.public(), &at).await.expect("a session"));
+                done.store(true, Ordering::SeqCst);
+                std::future::pending::<()>().await;
+                drop((held, program, outsider));
+            });
+            let seen = Arc::clone(&out);
+            shard(&late, move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let (program, pool) = program(&own, tasks.clone());
+                let oldest = program.dial(KEY.public(), &at).await.expect("a session");
+                let closed = closings(std::slice::from_ref(&oldest), &tasks);
+                own.clock().sleep(LATE).await;
+                let new = program.dial(KEY.public(), &at).await.expect("a session");
+                let sent = sent_clock(&new, &pool, &own).await;
+                own.clock().sleep(Span::SECOND).await;
+                *seen.lock().unwrap() = Some((sent, closed.borrow().clone()));
+                drop((oldest, new, program));
+            });
+            assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
+            assert!(
+                filled.load(Ordering::SeqCst),
+                "the attacker filled the bound"
+            );
+            let cut = sim::link::Config {
+                loss: 1.0,
+                ..sim::link::Config::default()
+            };
+            sim.link(&attacker, &hosts[0], cut);
+            sim.link(&hosts[0], &attacker, cut);
+            assert_eq!(sim.run_for(LATE), Ok(()));
+            let seen = out.lock().unwrap().take();
+            assert_eq!(seen, Some((admitted(), vec![])));
+            drop(node);
+        }
+
+        /// 255 programs and the old session of a node outside the region fill the
+        /// bound, and the node dials again while a program dials too. Both get a
+        /// session, and the program closes the oldest program. A redial after the
+        /// program's session keeps the node's place, so no other session closes.
+        /// When both arrive at once, the redial closes at most the second oldest.
+        #[test]
+        fn a_node_that_dials_again_at_the_bound_races_a_program_for_its_place() {
+            let first = vec![(0, refused())];
+            let second = vec![(0, refused()), (1, refused())];
+            for seed in 0..4 {
+                let seen = redial_with_program(seed, true);
+                let want = (Some(admitted()), Some(admitted()), first.clone());
+                assert_eq!(seen, want, "seed {seed}");
+            }
+            for seed in 0..16 {
+                let (of_node, of_program, closed) = redial_with_program(seed, false);
+                assert_eq!(of_node, Some(admitted()), "seed {seed}");
+                assert_eq!(of_program, Some(admitted()), "seed {seed}");
+                let one = [first.clone(), second.clone()];
+                assert!(one.contains(&closed), "seed {seed}: {closed:?}");
+            }
+        }
+
+        /// What the new session of [`CLIENT`] and a program saw, and each program
+        /// session that closed, when 255 programs and the old session of [`CLIENT`]
+        /// fill the bound. [`CLIENT`] dials again once the program's session is done
+        /// when `after`, else at the program's dial.
+        fn redial_with_program(
+            seed: u64,
+            after: bool,
+        ) -> (
+            Option<transport::Error>,
+            Option<transport::Error>,
+            Vec<(usize, transport::Error)>,
+        ) {
+            let mut sim = sim::Sim::new(sim::Config {
+                seed,
+                ..sim::Config::default()
+            });
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            let listen = listen(&hosts[0]);
+            let attacker = sim.node(sim::node::Config::default());
+            let (of_node, of_program, of_held) = (
+                Arc::new(Mutex::new(None)),
+                Arc::new(Mutex::new(None)),
+                Arc::new(Mutex::new(Vec::new())),
+            );
+            let (seen_node, seen_program, seen_held) = (
+                Arc::clone(&of_node),
+                Arc::clone(&of_program),
+                Arc::clone(&of_held),
+            );
+            shard(&attacker, move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let (programs, _) = program(&own, tasks.clone());
+                let (late, late_pool) = program(&own, tasks.clone());
+                let held = create_sessions(&programs, &at, 255).await;
+                let closed = closings(&held, &tasks);
+                let (first, _) = transport(&own, tasks.clone(), CLIENT);
+                let old = first.dial(KEY.public(), &at).await.expect("a session");
+                own.clock().sleep(Span::SECOND).await;
+                let (second, pool) = transport(&own, tasks.clone(), CLIENT);
+                let (other, out) = (own.clone(), Arc::clone(&seen_program));
+                tasks.spawn(async move {
+                    let session =
+                        late.dial(KEY.public(), &at).await.expect("a session");
+                    let sent = sent_clock(&session, &late_pool, &other).await;
+                    *out.lock().unwrap() = Some(sent);
+                    other.clock().sleep(Span::MINUTE).await;
+                    drop((session, late));
+                });
+                while after && seen_program.lock().unwrap().is_none() {
+                    own.clock().sleep(Span::MILLISECOND).await;
+                }
+                let new = second.dial(KEY.public(), &at).await.expect("a session");
+                *seen_node.lock().unwrap() = Some(sent_clock(&new, &pool, &own).await);
+                own.clock().sleep(Span::SECOND).await;
+                *seen_held.lock().unwrap() = closed.borrow().clone();
+                own.clock().sleep(Span::MINUTE).await;
+                drop((held, programs, first, second, new, old));
+            });
+            assert_eq!(sim.run_for(Span::MINUTE), Ok(()));
+            drop(node);
+            let of_node = of_node.lock().unwrap().take();
+            let of_held = of_held.lock().unwrap().clone();
+            (of_node, of_program.lock().unwrap().take(), of_held)
+        }
+
+        /// A node outside the region holds the oldest place with its old
+        /// session, then dials again from a new transport and closes the new session
+        /// at once. Then 256 programs dial. The old session must not outlive the
+        /// bound: it closes, as the newer session won, or as the oldest place.
+        #[test]
+        fn a_redial_that_ends_at_once_keeps_no_session_past_the_bound() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            let listen = listen(&hosts[0]);
+            let attacker = sim.node(sim::node::Config::default());
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&attacker, move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let (first, first_pool) = transport(&own, tasks.clone(), CLIENT);
+                let old = first.dial(KEY.public(), &at).await.expect("a session");
+                let of_old = closings(std::slice::from_ref(&old), &tasks);
+                own.clock().sleep(Span::SECOND).await;
+                let (second, _) = transport(&own, tasks.clone(), CLIENT);
+                let dead = second.dial(KEY.public(), &at).await.expect("a session");
+                dead.close(Code(0));
+                own.clock().sleep(Span::SECOND).await;
+                let after_redial = of_old.borrow().clone();
+                let (program, _) = program(&own, tasks.clone());
+                let held = create_sessions(&program, &at, 256).await;
+                let closed = closings(&held, &tasks);
+                own.clock().sleep(Span::SECOND).await;
+                let old_closed = of_old.borrow().clone();
+                let sent_old = if old_closed.is_empty() {
+                    Some(sent_clock(&old, &first_pool, &own).await)
+                } else {
+                    None
+                };
+                *seen.lock().unwrap() =
+                    Some((after_redial, old_closed, closed.borrow().clone(), sent_old));
+                drop((held, program, first, second, old, dead));
+            });
+            run_and_stop(&mut sim, &node);
+            assert_eq!(node.join(), Ok(()));
+            let (after_redial, old_closed, closed, sent_old) =
+                out.lock().unwrap().take().expect("the peer ran");
+            assert_eq!(
+                (after_redial, old_closed, closed, sent_old),
+                (vec![], vec![(0, refused())], vec![], None),
+            );
+        }
+
+        /// 8 node keys outside the region each hold a session and send a
+        /// dead redial, then 512 programs dial. At most 256 sessions of peers outside
+        /// the region may stay open, so each old session of the 8 must close.
+        #[test]
+        fn redials_that_end_at_once_hold_no_session_over_the_bound() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            let listen = listen(&hosts[0]);
+            let attacker = sim.node(sim::node::Config::default());
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&attacker, move |own, tasks| async move {
+                let at = [Address::Udp(listen)];
+                let mut keep = Vec::new();
+                let mut olds = Vec::new();
+                for n in 0..8u8 {
+                    let (first, _) =
+                        transport(&own, tasks.clone(), PrivateKey([100 + n; 32]));
+                    let old = first.dial(KEY.public(), &at).await.expect("a session");
+                    let (second, _) =
+                        transport(&own, tasks.clone(), PrivateKey([100 + n; 32]));
+                    let dead = second.dial(KEY.public(), &at).await.expect("a session");
+                    dead.close(Code(0));
+                    olds.push(old);
+                    keep.push((first, second, dead));
+                }
+                own.clock().sleep(Span::SECOND).await;
+                let of_olds = closings(&olds, &tasks);
+                let (program, _) = program(&own, tasks.clone());
+                let held = create_sessions(&program, &at, 512).await;
+                let closed = closings(&held, &tasks);
+                own.clock().sleep(Span::SECOND).await;
+                let open_programs = held.len() - closed.borrow().len();
+                let open_olds = olds.len() - of_olds.borrow().len();
+                *seen.lock().unwrap() = Some((open_olds, open_programs));
+                drop((held, program, olds, keep));
+            });
+            run_and_stop(&mut sim, &node);
+            assert_eq!(node.join(), Ok(()));
+            let (open_olds, open_programs) =
+                out.lock().unwrap().take().expect("the peer ran");
+            assert!(
+                open_olds + open_programs <= 256,
+                "{open_olds} old node sessions and {open_programs} programs are open"
+            );
+        }
+
+        /// A node outside the region holds the oldest place, 255 programs fill the
+        /// bound, and the node dials again from a new transport. The transport of the
+        /// started node closes the old session as the new one arrives. When the old
+        /// session still holds the place at `accept`, the new one keeps its age, and
+        /// the next program closes it; else the new one takes a new place, and the next
+        /// program closes the oldest program. No other session closes, and each
+        /// outcome occurs at some seed.
+        #[test]
+        fn a_node_that_dials_again_keeps_its_age_or_takes_a_new_place() {
+            let kept = (vec![(0, refused())], vec![]);
+            let fresh = (vec![], vec![(0, refused())]);
+            let mut outcomes = Vec::new();
+            for seed in 0..32 {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+                let node = start(&hosts[0], region(&pair(&hosts)));
+                let listen = listen(&hosts[0]);
+                let attacker = sim.node(sim::node::Config::default());
+                let out = Arc::new(Mutex::new(None));
+                let seen = Arc::clone(&out);
+                shard(&attacker, move |own, tasks| async move {
+                    let at = [Address::Udp(listen)];
+                    let (first, _) = transport(&own, tasks.clone(), CLIENT);
+                    let old = first.dial(KEY.public(), &at).await.expect("a session");
+                    own.clock().sleep(Span::SECOND).await;
+                    let (program, _) = program(&own, tasks.clone());
+                    let held = create_sessions(&program, &at, 255).await;
+                    let closed = closings(&held, &tasks);
+                    let (second, _) = transport(&own, tasks.clone(), CLIENT);
+                    let new = second.dial(KEY.public(), &at).await.expect("a session");
+                    let of_old = old.closed().await;
+                    own.clock().sleep(Span::SECOND).await;
+                    let next =
+                        program.dial(KEY.public(), &at).await.expect("a session");
+                    let later = [new, next];
+                    let of_later = closings(&later, &tasks);
+                    own.clock().sleep(Span::SECOND).await;
+                    let of_later = of_later.borrow().clone();
+                    *seen.lock().unwrap() =
+                        Some((of_old, (of_later, closed.borrow().clone())));
+                    drop((held, program, first, second, later));
+                });
+                run_and_stop(&mut sim, &node);
+                assert_eq!(node.join(), Ok(()));
+                let (of_old, outcome) =
+                    out.lock().unwrap().take().expect("the peer ran");
+                assert_eq!(of_old, transport::Error::PeerClosed { code: Code(0) });
+                assert!(
+                    outcome == kept || outcome == fresh,
+                    "seed {seed}: {outcome:?}"
+                );
+                outcomes.push(outcome);
+            }
+            assert!(
+                outcomes.contains(&kept) && outcomes.contains(&fresh),
+                "{outcomes:?}"
+            );
+        }
+
+        /// The error of the first send that fails on a one-way stream of `session`
+        /// whose header names the clock protocol, which the node rejects.
+        async fn sent_clock(
+            session: &transport::Session,
+            pool: &block::Pool,
+            host: &sim::node::Node,
+        ) -> transport::Error {
+            let sender = session.open_sender(Class::Complete).await;
+            let mut sender = sender.expect("a stream");
+            let header = wire::header::encode(wire::Protocol::Clock);
+            loop {
+                let mut block = pool.alloc(header.len()).unwrap();
+                block.copy_from_slice(&header);
+                if let Err(error) = sender.send(block.freeze()).await {
+                    return error;
+                }
+                host.clock().sleep(Span::MILLISECOND).await;
+            }
         }
 
         /// The error of the first send that fails, when a peer that is not a member
@@ -3703,7 +5681,9 @@ mod port {
         }
 
         /// A task that panics after the group stops, before the node sees the stop:
-        /// `join` gives the panic. At [`WRITE`], the sim runs the group's stop first.
+        /// `join` gives the panic. At [`WRITE`], three idle tasks that wake at that
+        /// instant make the sim run the group's stop, then this task, before the node
+        /// sees the stop. The task asserts that the group stopped before it panics.
         #[test]
         fn a_panic_before_the_node_sees_the_group_stop_gives_the_panic() {
             let mut sim = sim::Sim::new(sim::Config::default());
@@ -3711,9 +5691,20 @@ mod port {
             let node = start_alone(&host);
             let at =
                 sim::node::Config::default().monotonic + OPEN + Span::from_nanos(WRITE);
+            for _ in 0..3 {
+                let own = host.clone();
+                node.spawn(move |_| async move {
+                    own.clock().sleep_until(at).await;
+                    std::future::pending::<()>().await;
+                });
+            }
             let own = host.clone();
-            node.spawn(move |_| async move {
+            node.operate(move |ops| async move {
+                let mut watch = ops.mesh().watch(INDEX);
                 own.clock().sleep_until(at).await;
+                let mut next = pin!(watch.next());
+                let polled = poll_fn(|cx| Poll::Ready(next.as_mut().poll(cx))).await;
+                assert_eq!(polled, Poll::Ready(Err(write_failed())));
                 panic!("a task panics");
             });
             assert_eq!(sim.run_for(OPEN), Ok(()));
@@ -3736,13 +5727,21 @@ mod port {
         }
 
         /// Breaks the node's UDP socket from a task on shard 0 at `OPEN + after`, with
-        /// each write of the log failing from `OPEN`. Gives whether the task ran, and
-        /// the node's `join`.
-        fn udp_fault_at(after: Span) -> (bool, Result<(), Error>) {
+        /// each write of the log failing from `OPEN`. `idle` more tasks on shard 0 wake
+        /// at that instant, which changes only the order of the sim's picks. Gives
+        /// whether the task ran, and the node's `join`.
+        fn udp_fault_at(idle: usize, after: Span) -> (bool, Result<(), Error>) {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = keyed(&mut sim, 2);
             let node = start_alone(&host);
             let at = sim::node::Config::default().monotonic + OPEN + after;
+            for _ in 0..idle {
+                let own = host.clone();
+                node.spawn(move |_| async move {
+                    own.clock().sleep_until(at).await;
+                    std::future::pending::<()>().await;
+                });
+            }
             let ran = Arc::new(AtomicBool::new(false));
             let (own, done) = (host.clone(), Arc::clone(&ran));
             node.spawn(move |_| async move {
@@ -3758,24 +5757,34 @@ mod port {
         }
 
         /// Of a transport and a group that stop, `join` gives the one that the node
-        /// sees first, which at one instant can be either.
+        /// sees first. At `WRITE`, the order of the picks decides which one that is,
+        /// and whether the fault task runs before the node stops.
         #[test]
         fn join_gives_the_stop_that_the_node_sees_first() {
-            let error = transport::Error::Network {
-                error: env::net::Error::Io { code: 5 },
+            let transport = || {
+                Err(Error::Transport(transport::Error::Network {
+                    error: env::net::Error::Io { code: 5 },
+                }))
             };
-            assert_eq!(
-                udp_fault_at(Span::from_nanos(WRITE - 1)),
-                (true, Err(Error::Transport(error)))
-            );
-            assert_eq!(
-                udp_fault_at(Span::from_nanos(WRITE)),
-                (true, Err(Error::Group(write_failed())))
-            );
-            assert_eq!(
-                udp_fault_at(Span::from_nanos(WRITE + 1)),
-                (false, Err(Error::Group(write_failed())))
-            );
+            let group = || Err(Error::Group(write_failed()));
+            for idle in 0..8 {
+                assert_eq!(
+                    udp_fault_at(idle, Span::from_nanos(WRITE - 1)),
+                    (true, transport()),
+                    "{idle} idle tasks"
+                );
+                let tie = udp_fault_at(idle, Span::from_nanos(WRITE));
+                assert!(
+                    [(true, transport()), (true, group()), (false, group())]
+                        .contains(&tie),
+                    "{idle} idle tasks: {tie:?}"
+                );
+                assert_eq!(
+                    udp_fault_at(idle, Span::from_nanos(WRITE + 1)),
+                    (false, group()),
+                    "{idle} idle tasks"
+                );
+            }
         }
 
         /// A stop of the node from a task on shard 0, in the poll that breaks the
@@ -3801,6 +5810,30 @@ mod port {
             assert_eq!(node.join(), Ok(()));
         }
 
+        /// A restart with another region, after the log holds a record, stops the
+        /// node, and `join` gives the region that the first start kept.
+        #[test]
+        fn a_restart_with_another_region_stops_the_node() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start_alone(&hosts[0]);
+            // Past the longest election timeout, so the node votes for itself.
+            let elected = Span::from_nanos(3 * Span::SECOND.nanos());
+            assert_eq!(sim.run_for(elected), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let mut members = pair(&hosts);
+            let node = start(&hosts[0], region(&members));
+            assert_eq!(sim.run(), Ok(()));
+            members.sort_by_key(|member| member.card.key());
+            let error = ::mesh::Error::Founding {
+                stored: Box::new(region(&[member(OWN, &KEY, &hosts[0])])),
+                given: Box::new(region(&members)),
+            };
+            assert_eq!(node.join(), Err(Error::Mesh(error)));
+        }
+
         /// A chunk store that does not open stops the node, and `join` gives why.
         #[test]
         fn a_chunk_store_that_does_not_open_stops_the_node() {
@@ -3821,42 +5854,197 @@ mod port {
             );
         }
 
-        /// Takes the lock of `host` as soon as it is free, then opens the mesh's log
-        /// to write. Gives whether the lock was held, and the open of the log.
+        /// The chunk store of a node leaves 1 GiB free: on a disk of 1 GiB, the put of
+        /// the first founding chunk stops the node, and `join` gives the floor.
+        #[test]
+        fn a_founding_chunk_under_the_free_floor_stops_the_node() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed_on(
+                &mut sim,
+                sim::node::Config {
+                    cores: NonZeroUsize::new(2).unwrap(),
+                    disk_bytes: 1 << 30,
+                    ..sim::node::Config::default()
+                },
+            );
+            let mut region = region(&[member(OWN, &KEY, &host)]);
+            let subject = Subject::new([KEY.public()].into()).unwrap();
+            let label = Kind::Subject.key("plant.operator").unwrap();
+            region.definitions = [(label, Definition::Subject(subject))].into();
+            let mut chunks = Chunks::default();
+            let tree = spec::region::tree(&mut chunks, &region.definitions);
+            let len = chunks.get(tree.chunks[0]).expect("a chunk").len();
+            let node = start(&host, region);
+            assert_eq!(sim.run(), Ok(()));
+            let free_bytes = sim
+                .run_on(&host, |host, _| async move { host.files().free().await })
+                .expect("the run ends")
+                .expect("the free bytes");
+            let error = ::mesh::Error::Blob(blob::Error::Floor {
+                len,
+                free_bytes,
+                floor_bytes: 1 << 30,
+            });
+            assert_eq!(node.join(), Err(Error::Mesh(error)));
+        }
+
+        /// Under a floor setting of 64 GiB, on a disk of 64 GiB, the put of the first
+        /// founding chunk stops the node, and `join` gives the floor of the setting.
+        #[test]
+        fn a_founding_chunk_under_the_floor_setting_stops_the_node() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let mut region = region(&[member(OWN, &KEY, &host)]);
+            let subject = Subject::new([KEY.public()].into()).unwrap();
+            let label = Kind::Subject.key("plant.operator").unwrap();
+            region.definitions = [(label, Definition::Subject(subject))].into();
+            let mut chunks = Chunks::default();
+            let tree = spec::region::tree(&mut chunks, &region.definitions);
+            let len = chunks.get(tree.chunks[0]).expect("a chunk").len();
+            let settings = crate::Settings {
+                floor_bytes: 64 << 30,
+                ..crate::Settings::default()
+            };
+            let node = Node::start(Config {
+                region: Region::Given(region),
+                settings,
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run(), Ok(()));
+            let free_bytes = sim
+                .run_on(&host, |host, _| async move { host.files().free().await })
+                .expect("the run ends")
+                .expect("the free bytes");
+            let error = ::mesh::Error::Blob(blob::Error::Floor {
+                len,
+                free_bytes,
+                floor_bytes: 64 << 30,
+            });
+            assert_eq!(node.join(), Err(Error::Mesh(error)));
+        }
+
+        /// A node whose chunk store holds each founding chunk starts again after
+        /// another writer took the disk under 1 GiB free: the puts of its founding
+        /// chunks take no new room.
+        #[test]
+        fn a_restart_on_a_disk_under_the_free_floor_opens_the_mesh() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let mut region = region(&[member(OWN, &KEY, &host)]);
+            let subject = Subject::new([KEY.public()].into()).unwrap();
+            let label = Kind::Subject.key("plant.operator").unwrap();
+            region.definitions = [(label, Definition::Subject(subject))].into();
+            let node = start(&host, region.clone());
+            assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let free_bytes = sim
+                .run_on(&host, |host, _| async move {
+                    let files = host.files();
+                    let free_bytes = files.free().await.expect("the free bytes");
+                    let len = free_bytes - (1 << 30) + 1;
+                    let mode = env::files::Mode::Create { len };
+                    let file = files.open(Path::new("other"), mode).await;
+                    let file = file.expect("the file of the other writer opens");
+                    file.sync().await.expect("syncs");
+                    file.close().await;
+                    files.sync_dir(Path::new("")).await.expect("syncs");
+                    files.free().await.expect("the free bytes")
+                })
+                .expect("the run ends");
+            assert_eq!(free_bytes, (1 << 30) - 1);
+            let node = start(&host, region);
+            assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+        }
+
+        /// Takes the lock of `host` as soon as it is free, then binds the node's port
+        /// and opens the mesh's log to write. Gives whether the lock was held, the
+        /// bind, the open of the log, and the file closes of `host` before the
+        /// probe's own.
         fn probe(
             sim: &mut sim::Sim,
             host: &sim::node::Node,
-        ) -> (bool, Result<(), env::files::Error>) {
+        ) -> (
+            bool,
+            Result<(), env::net::Error>,
+            Result<(), env::files::Error>,
+            Vec<PathBuf>,
+        ) {
             sim.run_on(host, |host, _| async move {
+                let (lock, waited) = take_lock(&host).await;
                 let files = host.files();
-                let clock = host.clock();
-                let mut waited = false;
-                let lock = loop {
-                    let mode = env::files::Mode::Create { len: 0 };
-                    match files.open(Path::new("lock"), mode).await {
-                        Err(env::files::Error::Busy { .. }) => {
-                            waited = true;
-                            clock.sleep(Span::from_nanos(1_000)).await;
-                        }
-                        opened => break opened.expect("the lock opens"),
-                    }
+                let udp = env::net::udp::Config {
+                    local: listen(&host),
+                    send_buffer_bytes: 1 << 16,
+                    recv_buffer_bytes: 1 << 16,
                 };
+                let port = host.net().udp(&udp).map(drop);
                 let mode = env::files::Mode::Write;
-                let log = files.open(Path::new(LOG), mode).await.map(drop);
+                let log = files.open(Path::new(LOG), mode).await;
+                let closes = host.file_closes();
                 drop(lock);
-                (waited, log)
+                (waited, port, log.map(drop), closes)
             })
             .expect("the probe ends")
         }
 
+        /// The peer runs no node, so a dial of the mesh to it is in flight at the stop.
+        /// The stop closes that dial, and holds the lock for at most 3 s of its drain
+        /// and less than 1 ms for its other steps.
+        #[test]
+        fn a_dial_to_a_peer_that_is_down_holds_the_lock_at_most_3_s() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            assert_eq!(sim.run_for(TEN), Ok(()));
+            node.stop();
+            let waited = sim
+                .run_on(&hosts[0], |host, _| async move {
+                    let before = host.clock().now();
+                    drop(take_lock(&host).await);
+                    host.clock().now() - before
+                })
+                .expect("the probe ends");
+            let bound = Span::from_nanos(3001 * Span::MILLISECOND.nanos());
+            assert!(waited <= bound, "the stop held the lock {waited:?}");
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+        }
+
+        /// Starts the peer [`OTHER`] of `members` on `host`, which sets a home in the
+        /// mesh, one after another, until a set waits [`TEN`].
+        fn set_homes(host: &sim::node::Node, members: &[Member]) {
+            peer(host, members, |mesh, host| async move {
+                let clock = host.clock();
+                for key in 100.. {
+                    let key = channel::Key::from_u128(key);
+                    let mut set = pin!(mesh.set_home(key, OTHER.0));
+                    let mut late = pin!(clock.sleep(TEN));
+                    let set = poll_fn(|cx| match set.as_mut().poll(cx) {
+                        Poll::Ready(set) => Poll::Ready(set.is_ok()),
+                        Poll::Pending => late.as_mut().poll(cx).map(|()| false),
+                    });
+                    if !set.await {
+                        break;
+                    }
+                }
+            });
+        }
+
         /// A stop at any point of the start and the run of a node whose mesh writes
         /// its log for each home that the peer sets, then a probe that takes the
-        /// lock as soon as it is free: the mesh's log is never busy then. The order
-        /// of the two closes waits on #1835. The peer ends once a set waits [`TEN`],
-        /// so the probe's run ends.
+        /// lock as soon as it is free: the node closes the mesh's log before the lock,
+        /// the log is never busy then, and the port of a node that held the lock
+        /// binds once the lock is free. A node stopped before its claim holds no
+        /// lock, so its port can still be bound. The peer ends once a set waits
+        /// [`TEN`], so the probe's run ends.
         #[test]
         fn the_log_of_the_mesh_is_free_once_the_lock_is() {
-            let (mut held, mut logged) = (false, false);
+            let (mut held, mut logged, mut ordered) = (false, false, false);
             // The mesh opens at about 1.5 ms, and from 1.6 s the log writes a home
             // about each 0.7 ms.
             let opens = (0..200).map(|step| step * 13_000);
@@ -3866,37 +6054,47 @@ mod port {
                 let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
                 let members = pair(&hosts);
                 let node = start(&hosts[0], region(&members));
-                peer(&hosts[1], members, |mesh, host| async move {
-                    let clock = host.clock();
-                    for key in 100.. {
-                        let key = channel::Key::from_u128(key);
-                        let mut set = pin!(mesh.set_home(key, OTHER.0));
-                        let mut late = pin!(clock.sleep(TEN));
-                        let set = poll_fn(|cx| match set.as_mut().poll(cx) {
-                            Poll::Ready(set) => Poll::Ready(set.is_ok()),
-                            Poll::Pending => late.as_mut().poll(cx).map(|()| false),
-                        });
-                        if !set.await {
-                            break;
-                        }
-                    }
-                });
+                set_homes(&hosts[1], &members);
                 let after = Span::from_nanos(after);
                 assert_eq!(sim.run_for(after), Ok(()), "at {after:?}");
                 node.stop();
-                let (waited, log) = probe(&mut sim, &hosts[0]);
+                let (waited, port, log, closes) = probe(&mut sim, &hosts[0]);
                 held |= waited;
                 logged |= log.is_ok();
                 let busy = matches!(log, Err(env::files::Error::Busy { .. }));
                 assert!(!busy, "at {after:?}: {log:?}");
+                let last = |path| closes.iter().rposition(|c| c == Path::new(path));
+                if let (Some(log), Some(lock)) = (last(LOG), last("lock")) {
+                    assert!(log < lock, "at {after:?}: {closes:?}");
+                    ordered = true;
+                }
                 // A probe that takes the lock before the claim refuses the node.
                 let refused = Error::Directory(env::files::Error::Busy {
                     path: PathBuf::from("lock"),
                 });
                 let joined = node.join();
                 assert!(joined == Ok(()) || joined == Err(refused), "at {after:?}");
+                if waited {
+                    assert_eq!(port, Ok(()), "at {after:?}");
+                }
             }
-            assert!(held && logged);
+            assert!(held && logged && ordered);
+        }
+
+        /// When the mesh's group stops the node while a peer holds a session with it,
+        /// the port binds once the lock is free.
+        #[test]
+        fn the_port_is_free_once_the_lock_is_after_the_group_stops() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let members = pair(&hosts);
+            let node = start(&hosts[0], region(&members));
+            set_homes(&hosts[1], &members);
+            assert_eq!(sim.run_for(Span::from_nanos(1_700_000_000)), Ok(()));
+            hosts[0].fail_file(Path::new(LOG), env::files::Operation::WriteAt);
+            let (waited, port, _, _) = probe(&mut sim, &hosts[0]);
+            assert_eq!((waited, port), (true, Ok(())));
+            assert_eq!(node.join(), Err(Error::Group(write_failed())));
         }
 
         /// A node started with a region with founding definitions puts the chunks of
@@ -3925,13 +6123,16 @@ mod port {
             let held = Arc::new(Mutex::new(Vec::new()));
             let out = Arc::clone(&held);
             let started = host.shards().start(shard, move |_| async move {
-                let pool = block::Config { budget: 1 << 20 };
+                let pool = block::Config::new(1 << 20).expect("the budget fits");
                 let memory = block::Heap::new(pool.reservation());
                 let pool = Rc::new(block::Pool::new(pool, memory));
+                // A node gives no read of its chunk store, so the test opens the store
+                // at its private path.
                 let store = blob::Store::open(blob::Config {
                     files: own.files(),
                     dir: crate::directory::blob(),
                     pool,
+                    floor_bytes: 0,
                 })
                 .await
                 .expect("the store opens");
@@ -3963,7 +6164,7 @@ mod port {
                 let node = start(&hosts[0], region(&members));
                 let set = Arc::new(Mutex::new(Vec::new()));
                 let out = Arc::clone(&set);
-                peer(&hosts[1], members.clone(), move |mesh, host| async move {
+                peer(&hosts[1], &members, move |mesh, host| async move {
                     let set = mesh.set_home(INDEX, OTHER.0).await;
                     out.lock().unwrap().push(set);
                     host.clock().sleep(TEN).await;
@@ -3986,6 +6187,1774 @@ mod port {
                 assert_eq!(sim.run(), Ok(()), "cut {cut}");
                 assert_eq!(node.join(), Ok(()), "cut {cut}");
             }
+        }
+
+        /// The founding of [`pair`] with `plant.time` (key 1), homed at `home`, and
+        /// `plant.value` (key 2).
+        fn paired(hosts: &[sim::node::Node; 2], home: types::node::Key) -> Founding {
+            use super::super::hub::{I64, data, index};
+            let mut founding = region(&pair(hosts));
+            let channels = [("plant.time", index(1)), ("plant.value", data(2, I64, 1))];
+            for (name, channel) in channels {
+                let name = name.parse().unwrap();
+                founding
+                    .definitions
+                    .insert(name, Definition::Channel(channel));
+            }
+            founding
+                .homes
+                .insert(types::channel::Key::from_u128(1), home);
+            founding
+        }
+
+        /// Starts the member [`OTHER`] of the region `founding` on `host` without a
+        /// `Node`: an endpoint and a hub with its key, which serve the mesh as a node's
+        /// do. Runs `act` with the hub and the mesh, then drops the mesh and its port.
+        fn peer_hub<F: Future<Output = ()> + 'static>(
+            host: &sim::node::Node,
+            founding: Founding,
+            act: impl FnOnce(::hub::Hub, ::mesh::Mesh, sim::node::Node) -> F
+            + Send
+            + 'static,
+        ) {
+            let shard = env::shards::Config {
+                name: "peer".into(),
+                core: None,
+            };
+            let own = host.clone();
+            let started = host.shards().start(shard, move |tasks| async move {
+                let bound =
+                    transport::Port::bind(&own.net(), listen(&own)).expect("a port");
+                let identity = Identity {
+                    key: OTHER.0,
+                    private_key: OTHER.1,
+                    opener: Opener::from_bytes(SEAL),
+                };
+                let (opening, clock) = (Opening::Given(founding), own.clock());
+                let (entropy, settings) = (own.entropy(), crate::Settings::default());
+                let endpoint =
+                    Endpoint::new(bound, opening, clock, entropy, own.net(), settings);
+                let pool = super::pool();
+                let stop = crate::stop::Stop::default();
+                let (open, buffer, given, time) =
+                    super::super::home::create_open(&own, &tasks, 0, stop);
+                let opened =
+                    open.run(own.files(), Rc::new(buffer), tasks.clone()).await;
+                let home = opened.expect("the buffer opens");
+                let interner = given.await.expect("the open gives the interner");
+                let (key, entropy) = (identity.key, endpoint.entropy.clone());
+                let opened =
+                    endpoint.open(identity, own.files(), pool, &time, tasks.clone());
+                let (transport, mesh) = opened.await.expect("the transport opens");
+                let mesh = mesh.expect("the mesh opens");
+                let mesh = mesh.expect("the peer has a region");
+                let hub = ::hub::Hub::new(::hub::Config {
+                    home,
+                    interner,
+                    tasks: tasks.clone(),
+                    node: key,
+                    time: time.clone(),
+                    entropy: entropy.clone(),
+                    region: Some(::hub::Region {
+                        mesh: mesh.clone(),
+                        transport: Rc::clone(&transport),
+                    }),
+                });
+                let clock = own.clock();
+                let files = own.files();
+                let ops =
+                    operations(&mesh, key, &hub, clock.clone(), &time, &entropy, files);
+                let port = route::accept(
+                    transport,
+                    crate::task::Handles {
+                        hub: hub.clone(),
+                        ops: Some(ops),
+                    },
+                    clock,
+                    tasks,
+                    settings.header_wait,
+                    settings.places_max,
+                );
+                let (mut port, mut act) =
+                    (pin!(port), pin!(act(hub, mesh.clone(), own)));
+                poll_fn(|cx| {
+                    let stopped = port.as_mut().poll(cx);
+                    assert!(stopped.is_pending(), "the peer's transport stopped");
+                    act.as_mut().poll(cx)
+                })
+                .await;
+                drop(mesh);
+            });
+            drop(started.expect("the peer starts"));
+        }
+
+        /// A task of the node reads the frames that the peer, the home, writes.
+        #[test]
+        fn a_node_reads_from_the_home_of_a_peer() {
+            use super::super::hub::{samples, write, writer};
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let founding = paired(&hosts, OTHER.0);
+            let node = start(&hosts[0], founding.clone());
+            let read = Arc::new(Mutex::new(None));
+            let out = Arc::clone(&read);
+            node.spawn(move |hub| async move {
+                let reader = hub
+                    .reader(unnamed("plant.value", ::hub::reader::Mode::Complete))
+                    .await;
+                let mut reader = match reader {
+                    Ok(reader) => reader,
+                    Err(error) => {
+                        *out.lock().unwrap() = Some(Err(error.to_string()));
+                        return;
+                    }
+                };
+                let received = reader.next().await;
+                *out.lock().unwrap() = Some(match received {
+                    Ok(received) => Ok(samples(&received, 2)),
+                    Err(ended) => Err(ended.to_string()),
+                });
+            });
+            peer_hub(&hosts[1], founding, move |hub, _, host| async move {
+                let clock = host.clock();
+                let mut writer = writer(&hub, &["plant.value"]).await;
+                for at in 0..1000 {
+                    write(&mut writer, super::super::hub::WALL + at, 7);
+                    clock.sleep(Span::from_nanos(10_000_000)).await;
+                }
+                std::future::pending::<()>().await;
+            });
+            assert_eq!(sim.run_for(TWENTY), Ok(()));
+            node.stop();
+            assert_eq!(sim.run_for(TEN), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            assert_eq!(read.lock().unwrap().take(), Some(Ok(vec![7])));
+        }
+
+        /// A node stops while a task holds a reader at the peer's home, or waits in
+        /// its open.
+        #[test]
+        fn a_node_stops_while_a_reader_at_a_peer_is_open() {
+            use super::super::hub::{WALL, write, writer};
+            for opened in [true, false] {
+                let mut sim = sim::Sim::new(sim::Config::default());
+                let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+                let founding = paired(&hosts, OTHER.0);
+                let mut theirs = founding.clone();
+                if !opened {
+                    theirs.homes.clear();
+                }
+                let node = start(&hosts[0], founding);
+                let read = Arc::new(Mutex::new(Vec::new()));
+                let out = Arc::clone(&read);
+                node.spawn(move |hub| async move {
+                    let reader = hub
+                        .reader(unnamed("plant.value", ::hub::reader::Mode::Complete))
+                        .await;
+                    out.lock().unwrap().push(reader.is_ok());
+                    let mut reader = reader.expect("the reader opens");
+                    let next = reader.next().await.is_ok();
+                    out.lock().unwrap().push(next);
+                    std::future::pending::<()>().await;
+                });
+                peer_hub(&hosts[1], theirs, move |hub, _, host| async move {
+                    if opened {
+                        let clock = host.clock();
+                        let mut writer = writer(&hub, &["plant.value"]).await;
+                        for at in 0..100 {
+                            write(&mut writer, WALL + at, 7);
+                            clock.sleep(Span::from_nanos(10_000_000)).await;
+                        }
+                    }
+                    std::future::pending::<()>().await;
+                });
+                assert_eq!(sim.run_for(TEN), Ok(()), "opened {opened}");
+                assert_eq!(
+                    *read.lock().unwrap(),
+                    if opened { vec![true, true] } else { vec![] },
+                    "opened {opened}"
+                );
+                node.stop();
+                assert_eq!(sim.run_for(TEN), Ok(()), "opened {opened}");
+                assert_eq!(node.join(), Ok(()), "opened {opened}");
+                let node = start(&hosts[0], paired(&hosts, OTHER.0));
+                assert_eq!(sim.run_for(TEN), Ok(()), "opened {opened}");
+                node.stop();
+                assert_eq!(sim.run_for(TEN), Ok(()), "opened {opened}");
+                assert_eq!(node.join(), Ok(()), "opened {opened}");
+            }
+        }
+
+        /// A home that the peer sets, while it holds readers at the node's home,
+        /// commits while the readers leave its mesh a stream to the node.
+        #[test]
+        fn readers_at_a_home_leave_the_mesh_a_stream() {
+            for seed in 0..8 {
+                assert!(set_with_readers(seed, 63), "seed {seed}");
+            }
+            // A known bug: 64 readers take each stream, so a peer that is a follower
+            // cannot forward the change. #2019 asserts that each seed commits.
+            let committed = (0..8).filter(|&seed| set_with_readers(seed, 64)).count();
+            assert!(committed < 8, "64 readers: {committed} of 8 seeds commit");
+        }
+
+        /// Whether a home that the peer sets, while it holds `count` readers at the
+        /// node's home, commits in a run of `seed`.
+        fn set_with_readers(seed: u64, count: usize) -> bool {
+            let case = (seed, count);
+            let mut sim = sim::Sim::new(sim::Config {
+                seed,
+                ..sim::Config::default()
+            });
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let founding = paired(&hosts, OWN);
+            let node = start(&hosts[0], founding.clone());
+            assert_eq!(sim.run_for(TEN), Ok(()), "case {case:?}");
+            let results = Arc::new(Mutex::new((0, Vec::new())));
+            let out = Arc::clone(&results);
+            peer_hub(&hosts[1], founding, move |hub, mesh, host| async move {
+                host.clock().sleep(Span::SECOND).await;
+                let mut readers = Vec::new();
+                for _ in 0..count {
+                    let mode = ::hub::reader::Mode::Latest;
+                    let reader = hub.reader(unnamed("plant.value", mode)).await;
+                    readers.push(reader.expect("the reader opens"));
+                    out.lock().unwrap().0 += 1;
+                }
+                let set = mesh.set_home(INDEX, OTHER.0).await;
+                out.lock().unwrap().1.push(set);
+                std::future::pending::<()>().await;
+            });
+            assert_eq!(sim.run_for(Span::MINUTE), Ok(()), "case {case:?}");
+            let committed = {
+                let (opened, set) = &*results.lock().unwrap();
+                assert_eq!(*opened, count, "case {case:?}");
+                match set.as_slice() {
+                    [] => false,
+                    [Ok(())] => true,
+                    other => panic!("{case:?}: {other:?}"),
+                }
+            };
+            node.stop();
+            assert_eq!(sim.run_for(TEN), Ok(()), "case {case:?}");
+            assert_eq!(node.join(), Ok(()), "case {case:?}");
+            committed
+        }
+
+        /// The peer reads the frames that a task of the node, the home, writes.
+        #[test]
+        fn a_peer_reads_from_the_home_of_the_node() {
+            use super::super::hub::{samples, write, writer};
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let founding = paired(&hosts, OWN);
+            let node = start(&hosts[0], founding.clone());
+            let clock = hosts[0].clock();
+            node.spawn(move |hub| async move {
+                let mut writer = writer(&hub, &["plant.value"]).await;
+                for at in 0..1000 {
+                    write(&mut writer, super::super::hub::WALL + at, 7);
+                    clock.sleep(Span::from_nanos(10_000_000)).await;
+                }
+                std::future::pending::<()>().await;
+            });
+            let read = Arc::new(Mutex::new(None));
+            let out = Arc::clone(&read);
+            peer_hub(&hosts[1], founding, move |hub, _, _| async move {
+                let reader = hub
+                    .reader(unnamed("plant.value", ::hub::reader::Mode::Complete))
+                    .await;
+                let mut reader = match reader {
+                    Ok(reader) => reader,
+                    Err(error) => {
+                        *out.lock().unwrap() = Some(Err(error.to_string()));
+                        return;
+                    }
+                };
+                let received = reader.next().await;
+                *out.lock().unwrap() = Some(match received {
+                    Ok(received) => Ok(samples(&received, 2)),
+                    Err(ended) => Err(ended.to_string()),
+                });
+                std::future::pending::<()>().await;
+            });
+            assert_eq!(sim.run_for(TWENTY), Ok(()));
+            assert_eq!(read.lock().unwrap().take(), Some(Ok(vec![7])));
+            node.stop();
+            assert_eq!(sim.run_for(TEN), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+        }
+
+        /// A line that `ssh-keygen -t ed25519` wrote, and its key.
+        const OPERATOR: &str = concat!(
+            "ssh-ed25519 ",
+            "AAAAC3NzaC1lZDI1NTE5AAAAIGVVuOR8JKYpAcWLMUveadmJ1wUAmYGgIDtqlhFe7Yhg",
+        );
+        const OPERATOR_KEY: [u8; 32] = [
+            0x65, 0x55, 0xb8, 0xe4, 0x7c, 0x24, 0xa6, 0x29, 0x01, 0xc5, 0x8b, 0x31,
+            0x4b, 0xde, 0x69, 0xd9, 0x89, 0xd7, 0x05, 0x00, 0x99, 0x81, 0xa0, 0x20,
+            0x3b, 0x6a, 0x96, 0x11, 0x5e, 0xed, 0x88, 0x60,
+        ];
+
+        /// A node whose region has founding definitions plans no change for files
+        /// with the same definitions, at its first open and at a second open with
+        /// the same region.
+        #[test]
+        fn a_plan_of_the_founding_definitions_gives_no_change() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let mut region = region(&[member(OWN, &KEY, &host)]);
+            let key = types::ed25519::PublicKey::new(OPERATOR_KEY).unwrap();
+            let subject = Subject::new([key].into()).unwrap();
+            let label = Kind::Subject.key("plant.operator").unwrap();
+            region.definitions = [(label, Definition::Subject(subject))].into();
+            let text =
+                format!("subject \"plant.operator\" {{ keys = [\"{OPERATOR}\"] }}\n");
+            for open in ["first", "second"] {
+                let node = start(&host, region.clone());
+                let planned = Arc::new(Mutex::new(None));
+                let out = Arc::clone(&planned);
+                let files = vec![(std::path::PathBuf::from("plant.hcl"), text.clone())];
+                node.operate(move |ops| async move {
+                    let plan = ops.plan(files).await;
+                    *out.lock().unwrap() = Some(plan.map(|(_, output)| output));
+                });
+                assert_eq!(sim.run_for(Span::SECOND), Ok(()), "{open} open");
+                node.stop();
+                assert_eq!(sim.run(), Ok(()), "{open} open");
+                assert_eq!(node.join(), Ok(()), "{open} open");
+                let output = planned.lock().unwrap().take().expect("a plan");
+                let output =
+                    output.unwrap_or_else(|error| panic!("{open} open: {error}"));
+                let changes = output["changes"].as_array().map(Vec::len);
+                assert_eq!(changes, Some(0), "{open} open: {output}");
+            }
+        }
+
+        /// A channel that an apply makes has a UUIDv7 key at mesh time.
+        #[test]
+        fn an_applied_channel_has_a_key_at_mesh_time() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let millis = i64::try_from(applied_key(&mut sim, &host).as_u128() >> 80);
+            let start = sim::node::Config::default().wall.nanos() / 1_000_000;
+            let millis = millis.unwrap();
+            assert!(
+                (start..start + 1_000).contains(&millis),
+                "{millis} ms is not in the first second of {start} ms"
+            );
+        }
+
+        /// A channel that an apply makes while mesh time is before 1970 has the time 0.
+        #[test]
+        fn an_applied_channel_before_1970_has_a_key_at_the_epoch() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = sim.node(sim::node::Config {
+                cores: NonZeroUsize::new(2).unwrap(),
+                wall: types::time::Stamp::EPOCH - Span::HOUR,
+                ..sim::node::Config::default()
+            });
+            let identity = Identity {
+                key: OWN,
+                private_key: KEY,
+                opener: Opener::from_bytes(SEAL),
+            };
+            write_key(&mut sim, &host, identity::encode(&identity).to_vec());
+            assert_eq!(applied_key(&mut sim, &host).as_u128() >> 80, 0);
+        }
+
+        /// A key made after the error of the wall clock becomes known is no earlier
+        /// than a key made while it was unknown, and both are near the wall.
+        #[test]
+        fn a_channel_key_after_the_wall_error_shrinks_is_no_earlier() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = sim.node(sim::node::Config {
+                cores: NonZeroUsize::new(2).unwrap(),
+                wall_error: None,
+                ..sim::node::Config::default()
+            });
+            let identity = Identity {
+                key: OWN,
+                private_key: KEY,
+                opener: Opener::from_bytes(SEAL),
+            };
+            write_key(&mut sim, &host, identity::encode(&identity).to_vec());
+            let ten_ms = Span::from_nanos(10 * Span::MILLISECOND.nanos());
+            let [first, second] = key_times(&mut sim, &host, move |host| {
+                host.set_wall_error(Some(ten_ms));
+            });
+            let start = sim::node::Config::default().wall.nanos() / 1_000_000;
+            assert!((start..start + 1_000).contains(&first), "{first} ms");
+            let wall = first + 600_000..first + 605_000;
+            assert!(wall.contains(&second), "{second} ms is not in {wall:?}");
+        }
+
+        /// A key made after the wall steps back from past 2162 is no earlier than a key
+        /// made before the step, though the latest edge of mesh time stops at the end
+        /// of the stamp range.
+        #[test]
+        fn a_channel_key_after_the_wall_steps_back_from_2171_is_no_earlier() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let jump = Span::from_nanos(145 * 365 * Span::DAY.nanos());
+            host.step_wall(jump);
+            let back = Span::from_nanos(-jump.nanos());
+            let [first, second] =
+                key_times(&mut sim, &host, move |host| host.step_wall(back));
+            let start = (sim::node::Config::default().wall + jump).nanos() / 1_000_000;
+            assert!((start..start + 1_000).contains(&first), "{first} ms");
+            assert!(first <= second, "{second} ms is before {first} ms");
+        }
+
+        /// A key made while the clock holds over, after the wall error becomes
+        /// unknown, has mesh time, not the time 0.
+        #[test]
+        fn a_channel_key_in_holdover_has_mesh_time() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let [first, second] =
+                key_times(&mut sim, &host, |host| host.set_wall_error(None));
+            let wall = first + 600_000..first + 605_000;
+            assert!(wall.contains(&second), "{second} ms is not in {wall:?}");
+        }
+
+        /// The key times in ms of `plant.a` and `plant.b`, which a node of `host`
+        /// applies 600 s apart, with `change` called on `host` between them.
+        fn key_times(
+            sim: &mut sim::Sim,
+            host: &sim::node::Node,
+            change: impl FnOnce(&sim::node::Node) + Send + 'static,
+        ) -> [i64; 2] {
+            let node = start(host, region(&[member(OWN, &KEY, host)]));
+            let made = Arc::new(Mutex::new(Vec::new()));
+            let out = Arc::clone(&made);
+            let host = host.clone();
+            node.operate(move |ops| async move {
+                let first = apply_index(&ops, "a").await;
+                change(&host);
+                host.clock()
+                    .sleep(Span::from_nanos(600 * Span::SECOND.nanos()))
+                    .await;
+                let second = apply_index(&ops, "b").await;
+                out.lock().unwrap().extend([first, second]);
+            });
+            let eleven_minutes = Span::from_nanos(660 * Span::SECOND.nanos());
+            assert_eq!(sim.run_for(eleven_minutes), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let millis: Vec<i64> = made
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|key| i64::try_from(key.as_u128() >> 80).unwrap())
+                .collect();
+            millis.try_into().expect("two keys")
+        }
+
+        /// A channel key made before the clock has mesh time has the time 0. It calls
+        /// `channel_key` directly: through `operate` the clock always has mesh time,
+        /// since shard 0 runs it before the mesh opens and the source measures at once.
+        #[test]
+        fn a_channel_key_before_mesh_time_has_the_time_0() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 1);
+            let key = sim
+                .run_on(&host, |host, _| async move {
+                    let (_driver, clock) = ::clock::Clock::new(host.clock());
+                    crate::channel_key(&clock, &host.entropy())
+                })
+                .expect("the run ends");
+            assert_eq!(key.as_u128() >> 80, 0);
+        }
+
+        /// The key of the index `plant.time` that an apply makes on a node of `host`,
+        /// which [`keyed`] made, alone in its region.
+        fn applied_key(sim: &mut sim::Sim, host: &sim::node::Node) -> channel::Key {
+            let node = start(host, region(&[member(OWN, &KEY, host)]));
+            let made = Arc::new(Mutex::new(None));
+            let out = Arc::clone(&made);
+            node.operate(move |ops| async move {
+                *out.lock().unwrap() = Some(apply_index(&ops, "time").await);
+            });
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            made.lock().unwrap().take().expect("a channel")
+        }
+
+        const HALF_MINUTE: Span = Span::from_nanos(30 * Span::SECOND.nanos());
+
+        /// Applies the index `plant.<name>` homed on [`OWN`] through `ops`, and gives
+        /// its key.
+        async fn apply_index(ops: &ops::Node, name: &str) -> channel::Key {
+            key_of(&apply(ops, text(name, &[])).await, name)
+        }
+
+        /// The text of a spec with the index `plant.<index>` homed on [`OWN`] and an
+        /// `i64` data channel `plant.<name>` on it for each of `data`.
+        fn text(index: &str, data: &[&str]) -> String {
+            use std::fmt::Write as _;
+            let mut text = format!(
+                "channel \"plant.{index}\" {{ kind = \"index\" }}\n\
+                 placement \"plant\" {{\n  select = \"plant.*\"\n  home = \"plant.node{OWN}\"\n}}\n"
+            );
+            for name in data {
+                writeln!(
+                    text,
+                    "channel \"plant.{name}\" {{\n  data_type = \"i64\"\n  index = \"plant.{index}\"\n}}"
+                )
+                .unwrap();
+            }
+            text
+        }
+
+        /// Applies `text` through `ops`, and gives the definitions of the spec in use
+        /// after it.
+        async fn apply(ops: &ops::Node, text: String) -> BTreeMap<Name, Definition> {
+            let files = vec![(std::path::PathBuf::from("plant.hcl"), text)];
+            let (plan, _) = ops.plan(files).await.expect("a plan");
+            let path = std::path::Path::new("plant.plan");
+            ops.apply(path, &plan).await.expect("an apply");
+            Rc::unwrap_or_clone(ops.mesh().spec().await.expect("a spec").definitions)
+        }
+
+        /// The key of the channel `plant.<name>` of `definitions`.
+        fn key_of(
+            definitions: &BTreeMap<Name, Definition>,
+            name: &str,
+        ) -> channel::Key {
+            let label = Kind::Channel.key(&format!("plant.{name}")).unwrap();
+            let Some(Definition::Channel(channel)) = definitions.get(&label) else {
+                panic!("a channel at plant.{name}");
+            };
+            channel.key
+        }
+
+        /// Starts the node [`OWN`] on `host` with `founding` and applies `text` through
+        /// its operations, then gives the node and the definitions after the apply.
+        fn applied(
+            sim: &mut sim::Sim,
+            host: &sim::node::Node,
+            founding: Founding,
+            text: String,
+        ) -> (Node, BTreeMap<Name, Definition>) {
+            let node = start(host, founding);
+            let applied = Arc::new(Mutex::new(None));
+            let out = Arc::clone(&applied);
+            node.operate(move |ops| async move {
+                let definitions = apply(&ops, text).await;
+                *out.lock().unwrap() = Some(definitions);
+            });
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            let definitions = applied.lock().unwrap().take().expect("an apply");
+            (node, definitions)
+        }
+
+        /// The hub knows each channel that an apply adds, so a task opens a writer and
+        /// a reader on them by name.
+        #[test]
+        fn a_task_opens_sessions_on_the_channels_that_an_apply_adds() {
+            use super::super::hub::{WALL, samples, write_at, writer};
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let founding = region(&[member(OWN, &KEY, &host)]);
+            let (node, definitions) =
+                applied(&mut sim, &host, founding, text("time", &["value"]));
+            let keys =
+                ["time", "value"].map(|name| key_of(&definitions, name).as_u128());
+            let read = Arc::new(Mutex::new(None));
+            let out = Arc::clone(&read);
+            node.spawn(move |hub| async move {
+                let mode = ::hub::reader::Mode::Complete;
+                let reader = hub.reader(unnamed("plant.value", mode)).await;
+                let mut reader = reader.expect("the reader opens");
+                let mut writer = writer(&hub, &["plant.value"]).await;
+                write_at(&mut writer, keys, WALL, 7);
+                let received = reader.next().await.expect("a frame");
+                *out.lock().unwrap() =
+                    Some((samples(&received, keys[0]), samples(&received, keys[1])));
+            });
+            assert_eq!(sim.run_for(TEN), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            assert_eq!(read.lock().unwrap().take(), Some((vec![WALL], vec![7])));
+        }
+
+        /// A task that a caller of `Mesh::spec` tells of a spec in use opens a reader on
+        /// a channel of that spec, in each order of the tasks that the seed picks.
+        #[test]
+        fn a_task_told_of_a_spec_in_use_opens_a_reader_on_its_channel() {
+            let mut failed = Vec::new();
+            for seed in 0..32 {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let host = keyed(&mut sim, 2);
+                let node = start(&host, region(&[member(OWN, &KEY, &host)]));
+                let told = Arc::new(Mutex::new((false, None::<std::task::Waker>)));
+                let opened = Arc::new(Mutex::new(None));
+                let (wait, out) = (Arc::clone(&told), Arc::clone(&opened));
+                node.spawn(move |hub| async move {
+                    poll_fn(|cx| {
+                        let mut told = wait.lock().unwrap();
+                        if told.0 {
+                            return Poll::Ready(());
+                        }
+                        told.1 = Some(cx.waker().clone());
+                        Poll::Pending
+                    })
+                    .await;
+                    let mode = ::hub::reader::Mode::Complete;
+                    let reader = hub.reader(unnamed("plant.value", mode)).await;
+                    *out.lock().unwrap() = Some(reader.err().map(|e| format!("{e:?}")));
+                });
+                let tell = Arc::clone(&told);
+                node.operate(move |ops| async move {
+                    apply(&ops, text("time", &["value"])).await;
+                    let waker = {
+                        let mut told = tell.lock().unwrap();
+                        told.0 = true;
+                        told.1.take()
+                    };
+                    if let Some(waker) = waker {
+                        waker.wake();
+                    }
+                });
+                assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+                node.stop();
+                assert_eq!(sim.run(), Ok(()));
+                assert_eq!(node.join(), Ok(()));
+                let opened = opened.lock().unwrap().take();
+                if opened != Some(None) {
+                    failed.push((seed, opened));
+                }
+            }
+            assert_eq!(failed, []);
+        }
+
+        /// An apply that removes a channel ends each reader on it.
+        #[test]
+        fn an_apply_that_removes_a_channel_ends_each_reader_on_it() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let founding = region(&[member(OWN, &KEY, &host)]);
+            let (node, definitions) =
+                applied(&mut sim, &host, founding, text("time", &["value"]));
+            let ended = Arc::new(Mutex::new(None));
+            let out = Arc::clone(&ended);
+            node.spawn(move |hub| async move {
+                let mode = ::hub::reader::Mode::Complete;
+                let reader = hub.reader(unnamed("plant.value", mode)).await;
+                let mut reader = reader.expect("the reader opens");
+                *out.lock().unwrap() = Some(reader.next().await.map(|_| ()));
+            });
+            assert_eq!(sim.run_for(TEN), Ok(()));
+            assert_eq!(*ended.lock().unwrap(), None);
+            node.operate(|ops| async move {
+                apply(&ops, text("time", &[])).await;
+            });
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let removed = ::hub::reader::Ended::Removed(key_of(&definitions, "value"));
+            assert_eq!(ended.lock().unwrap().take(), Some(Err(removed)));
+        }
+
+        /// A node that opens again after an apply defines the spec in use, not the
+        /// founding.
+        #[test]
+        fn a_node_that_opens_again_after_an_apply_knows_the_applied_channels() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let (node, _) =
+                applied(&mut sim, &host, founded(&host), text("time", &["flow"]));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let node = start(&host, founded(&host));
+            let empty = ::hub::reader::Error::Empty;
+            let readers = readers(&mut sim, &node, &["plant.value", "plant.flow"]);
+            assert_eq!(readers, [Some(empty), None]);
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+        }
+
+        /// A node with a region whose port does not bind drops a task of `operate`
+        /// uncalled, as `spawn` does, and `join` gives the port error.
+        #[test]
+        fn operate_on_a_regional_node_that_failed_drops_the_task() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let udp = env::net::udp::Config {
+                local: listen(&host),
+                send_buffer_bytes: 1 << 16,
+                recv_buffer_bytes: 1 << 16,
+            };
+            let held = host.net().udp(&udp).expect("the port binds");
+            let node = start(&host, region(&[member(OWN, &KEY, &host)]));
+            node.operate(|_| async {});
+            assert_eq!(sim.run(), Ok(()));
+            let listen = listen(&host);
+            let error = Error::Port {
+                listen,
+                error: env::net::Error::AddressInUse { local: listen },
+            };
+            assert_eq!(node.join(), Err(error));
+            drop(held);
+        }
+
+        /// A node with a region whose disk budget holds no ring drops a task of
+        /// `operate` uncalled, and `join` gives the disk error.
+        #[test]
+        fn operate_on_a_regional_node_with_too_little_disk_drops_the_task() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let smallest = ::buffer::Layout::fit(0, crate::BODY_MAX).unwrap_err().min;
+            let disk = Size::from_bytes(smallest);
+            let node = Node::start(Config {
+                region: Region::Given(region(&[member(OWN, &KEY, &host)])),
+                budget: Budget {
+                    pool: Size::MEBIBYTE,
+                    disk,
+                },
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            node.operate(|_| async {});
+            assert_eq!(sim.run(), Ok(()));
+            let min = Size::from_bytes(8_462_336);
+            assert_eq!(
+                node.join(),
+                Err(Error::Disk {
+                    disk,
+                    cores: 2,
+                    min
+                })
+            );
+        }
+
+        /// A plan through `operate` takes each connector kind of the node, and gives
+        /// `connector.unknown-kind` for another kind.
+        #[test]
+        fn a_plan_knows_the_connector_kinds_of_the_node() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let node = start(&host, region(&[member(OWN, &KEY, &host)]));
+            let planned = Arc::new(Mutex::new(Vec::new()));
+            let out = Arc::clone(&planned);
+            node.operate(move |ops| async move {
+                for kind in ["influx", "modbus"] {
+                    let files = vec![(PathBuf::from("plant.hcl"), connector(kind))];
+                    let plan = ops.plan(files).await;
+                    let plan = plan.map(|_| ()).map_err(|error| error.to_string());
+                    out.lock().unwrap().push(plan);
+                }
+            });
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let unknown = concat!(
+                r#"{"errors":[{"code":"connector.unknown-kind","#,
+                r#""fix":"Use one of [\"influx\", \"opcua\"]","#,
+                r#""message":"this build has no connector kind \"modbus\"","#,
+                r#""notes":[],"place":{"column":10,"file":"plant.hcl","line":2}}]}"#,
+            );
+            assert_eq!(*planned.lock().unwrap(), [Ok(()), Err(unknown.to_owned())]);
+        }
+
+        /// The node runs a connector that an apply places on it, and runs it again when
+        /// an apply changes its config. Its status gives how the run ended: `influx`
+        /// ends with a config error, since its `select` matches no channel, and does
+        /// not restart. The reader opens after the first run, because the status
+        /// channels come with the connector.
+        #[test]
+        fn a_node_runs_a_connector_that_an_apply_places_on_it() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let founding = region(&[member(OWN, &KEY, &host)]);
+            let text = connector("influx");
+            let (node, definitions) = applied(&mut sim, &host, founding, text.clone());
+            let read = read_status(&node, &definitions);
+            assert_eq!(sim.run_for(TEN), Ok(()));
+            node.operate(|ops| async move {
+                apply(&ops, text.replace("influx:8086", "influx:8087")).await;
+            });
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            // `state` running, ending, then stopped; `class` none, then config.
+            assert_eq!(*read.lock().unwrap(), [(3, 0, 0), (4, 3, 1), (5, 2, 1)]);
+        }
+
+        /// `status` through `operate` gives the connector that an apply places on the
+        /// node, read through its hub as a subject that may read its status.
+        #[test]
+        fn status_gives_the_connector_on_the_node() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let founding = region(&[member(OWN, &KEY, &host)]);
+            let watch = format!(
+                "subject \"plant.operator\" {{ keys = [\"{OPERATOR}\"] }}\n\
+                 access \"plant.watch\" {{\n  subjects = \"plant.operator\"\n  \
+                 select = \"plant.influx.**\"\n  allow = [read]\n}}\n"
+            );
+            let text = format!("{}{watch}", connector("influx"));
+            let (node, _) = applied(&mut sim, &host, founding, text);
+            assert_eq!(sim.run_for(TEN), Ok(()));
+            let replied = Arc::new(Mutex::new(None));
+            let out = Arc::clone(&replied);
+            node.operate(move |ops| async move {
+                let subject = "plant.operator".parse().expect("a name");
+                let reply = ops::serve(&ops, &subject, b"{\"status\":{}}\n").await;
+                *out.lock().unwrap() = Some(String::from_utf8(reply).expect("UTF-8"));
+            });
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let reply = replied.lock().unwrap().take().expect("a reply");
+            let connectors = concat!(
+                r#"{"output":{"connectors":[{"name":"plant.influx","kind":"influx","#,
+                r#""state":"stopped","address":"http://influx:8086","restarts":0,"#,
+                r#""counts":{"confirmed":0},"error":{"class":"config","text":"#,
+                r#""the selector matches no channel. Select a channel that the spec "#,
+                r#"defines"},"note":null}]}}"#,
+                "\n",
+            );
+            assert_eq!(reply, connectors);
+        }
+
+        /// A node that starts on a spec that places a connector on it applies that
+        /// spec to its runs: it runs the connector at the start, before any apply.
+        /// `influx` ends with a config error, since its `select` matches no channel, so
+        /// each later apply runs it again, also one that keeps it. That apply adds
+        /// `plant.other`, so the run reads it until the next apply changes the config.
+        /// The reader opens after the run of the start, which no reader sees: its open
+        /// and the open of that run wait for the same home. The seq of the first frame
+        /// that it reads counts the three frames of that run.
+        #[test]
+        fn a_node_applies_the_spec_it_starts_on_to_its_runs() {
+            for seed in 0..16 {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let host = keyed(&mut sim, 2);
+                let founding = region(&[member(OWN, &KEY, &host)]);
+                let placed = connector("influx");
+                let (node, definitions) =
+                    applied(&mut sim, &host, founding.clone(), placed.clone());
+                node.stop();
+                assert_eq!(sim.run(), Ok(()));
+                assert_eq!(node.join(), Ok(()));
+                let node = start(&host, founding);
+                assert_eq!(sim.run_for(TEN), Ok(()));
+                let read = read_status(&node, &definitions);
+                assert_eq!(sim.run_for(TEN), Ok(()));
+                let other = text("other", &[]);
+                let kept = format!("{placed}{other}");
+                let changed = kept.replace("influx:8086", "influx:8087");
+                for text in [kept, changed] {
+                    node.operate(|ops| async move {
+                        apply(&ops, text).await;
+                    });
+                    assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+                }
+                node.stop();
+                assert_eq!(sim.run(), Ok(()));
+                assert_eq!(node.join(), Ok(()));
+                let read = read.lock().unwrap();
+                let runs = [(6, 0, 0), (7, 3, 0), (8, 2, 0), (9, 0, 0)];
+                assert_eq!(*read, runs, "seed {seed}");
+            }
+        }
+
+        /// A connector that an apply moves from another member to this node keeps its
+        /// status index and that index's home on the other member, so its run panics
+        /// shard 0 (#2337).
+        #[test]
+        fn a_connector_that_an_apply_moves_to_the_node_panics_its_shard() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let mut founding = region(&pair(&hosts));
+            founding.voters = [OWN].into_iter().collect();
+            let own = connector("influx");
+            let away = own.replace(
+                &format!("node = \"plant.node{OWN}\""),
+                &format!("node = \"plant.node{}\"", OTHER.0),
+            );
+            let (node, _) = applied(&mut sim, &hosts[0], founding, away);
+            node.operate(|ops| async move {
+                apply(&ops, own).await;
+            });
+            let message = format!(
+                "the status channels of the connector plant.influx do not open: the \
+                 home of an index of the writer is node {}, and a writer writes only \
+                 at this node",
+                OTHER.0,
+            );
+            assert_eq!(
+                sim.run_for(HALF_MINUTE),
+                Err(sim::Error::Panicked {
+                    thread: "shard-0".into(),
+                    message,
+                    seed: 0,
+                })
+            );
+            assert_eq!(sim.run(), Ok(()));
+            let error = node.join().unwrap_err();
+            assert_eq!(
+                error,
+                crate::Error::Panicked(env::thread::Panicked {
+                    name: "shard-0".into()
+                })
+            );
+            assert_eq!(error.to_string(), "thread shard-0 panicked");
+        }
+
+        /// Reads each seq, `state`, and `class` of `plant.influx` that `node` writes,
+        /// from a task on `node`, by the keys of `definitions`.
+        fn read_status(
+            node: &Node,
+            definitions: &BTreeMap<Name, Definition>,
+        ) -> Arc<Mutex<Vec<(u64, u8, u8)>>> {
+            use super::super::hub::{bytes, seq};
+            let [state, class] = ["state", "class"]
+                .map(|name| key_of(definitions, &format!("influx.status.{name}")));
+            let read = Arc::new(Mutex::new(Vec::new()));
+            let out = Arc::clone(&read);
+            node.spawn(move |hub| async move {
+                let select = ["plant.influx.status.state", "plant.influx.status.class"];
+                let config = ::hub::reader::Config {
+                    select: types::name::Selector::new(select).expect("a selector"),
+                    ..unnamed(
+                        "plant.influx.status.state",
+                        ::hub::reader::Mode::Complete,
+                    )
+                };
+                let mut reader = hub.reader(config).await.expect("the reader opens");
+                while let Ok(received) = reader.next().await {
+                    let first = seq(&received, state.as_u128());
+                    let [state, class] =
+                        [state, class].map(|key| bytes(&received, key.as_u128()));
+                    let seqs = (first..).zip(state).zip(class);
+                    out.lock()
+                        .unwrap()
+                        .extend(seqs.map(|((seq, s), c)| (seq, s, c)));
+                }
+            });
+            read
+        }
+
+        /// The config of the connector `plant.influx`: its body without `kind` and
+        /// `node`.
+        const INFLUX: &str = "address = \"http://influx:8086\"\nselect = \"plant.*\"\n\
+                              database = \"plant\"\nmeasurement = \"telemetry\"\n\
+                              reader {\n  mode = \"complete\"\n}\n";
+
+        /// The text of a spec with the connector `plant.influx` of `kind` on [`OWN`].
+        fn connector(kind: &str) -> String {
+            format!(
+                "connector \"plant.influx\" {{\n  kind = \"{kind}\"\n  \
+                 node = \"plant.node{OWN}\"\n{INFLUX}}}\n"
+            )
+        }
+
+        /// `operate` refuses a node with no region, which has no mesh to operate on.
+        #[test]
+        #[should_panic(expected = "`operate` on a node with no region")]
+        fn operate_refuses_a_node_with_no_region() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+            node.operate(|_| async {});
+        }
+    }
+}
+
+mod name {
+    use types::name::Name;
+
+    use super::*;
+    use crate::name::{FILE, LEN};
+
+    const NEW: &str = "name.new";
+
+    fn name(text: &str) -> Name {
+        text.parse().expect("a name")
+    }
+
+    /// What [`crate::name`] gives on `host` for `given`.
+    #[expect(
+        clippy::unwrap_in_result,
+        reason = "a test helper panics on a run that does not end"
+    )]
+    fn resolve(
+        sim: &mut sim::Sim,
+        host: &sim::node::Node,
+        given: Option<&str>,
+    ) -> Result<Name, Error> {
+        let given = given.map(name);
+        sim.run_on(host, move |host, _| async move {
+            crate::name(&host.files(), given).await
+        })
+        .expect("the run ends")
+    }
+
+    /// The bytes of the file `name` on `host`, or `None` when it is not there.
+    fn read(sim: &mut sim::Sim, host: &sim::node::Node) -> Option<Vec<u8>> {
+        bytes(sim, host, FILE)
+    }
+
+    /// Starts a node named `text` on `host`, runs `sim` for a second, then stops it
+    /// and gives the error of its join.
+    fn start_and_stop(
+        sim: &mut sim::Sim,
+        host: &sim::node::Node,
+        text: &str,
+    ) -> Result<(), Error> {
+        let node = Node::start(Config {
+            name: name(text),
+            ..config(host, Size::MEBIBYTE, Box::new(heap))
+        });
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+        node.stop();
+        assert_eq!(sim.run(), Ok(()));
+        node.join()
+    }
+
+    #[test]
+    fn a_data_directory_with_no_name_gives_the_given_one_and_writes_nothing() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        assert_eq!(resolve(&mut sim, &host, None), Err(Error::Unnamed));
+        assert_eq!(resolve(&mut sim, &host, Some("edge")), Ok(name("edge")));
+        assert_eq!(read(&mut sim, &host), None);
+        assert_eq!(
+            Error::Unnamed.to_string(),
+            "the data directory holds no node name; give the node a name"
+        );
+    }
+
+    #[test]
+    fn the_text_of_no_card_states_the_two_ways_out() {
+        assert_eq!(
+            Error::NoCard.to_string(),
+            "the data directory stores a region and holds no file `name`, and the file \
+             `node.key` is not there or holds a key that the founding of the region \
+             does not hold; restore `node.key` from a backup of this node, or give \
+             another data directory"
+        );
+    }
+
+    #[test]
+    fn the_first_start_keeps_its_name_for_each_later_start() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        assert_eq!(start_and_stop(&mut sim, &host, "site_a.edge"), Ok(()));
+        let kept = read(&mut sim, &host).expect("the file");
+        assert_eq!(kept.len(), 277);
+        assert_eq!(&kept[..17], b"foundation/name/1");
+        assert_eq!(kept[17], 11);
+        assert_eq!(&kept[18..29], b"site_a.edge");
+        assert_eq!(kept[29..273], [0; 244]);
+        let crc = crc32c::crc32c(&kept[..273]).to_le_bytes();
+        assert_eq!(kept[273..], crc, "little-endian");
+        assert_eq!(resolve(&mut sim, &host, None), Ok(name("site_a.edge")));
+        let given = resolve(&mut sim, &host, Some("site_a.edge"));
+        assert_eq!(given, Ok(name("site_a.edge")));
+        assert_eq!(start_and_stop(&mut sim, &host, "site_a.edge"), Ok(()));
+        assert_eq!(read(&mut sim, &host), Some(kept));
+    }
+
+    #[test]
+    fn a_name_of_the_most_bytes_is_kept() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let long = "a".repeat(191);
+        assert_eq!(start_and_stop(&mut sim, &host, &long), Ok(()));
+        let kept = read(&mut sim, &host).expect("the file");
+        assert_eq!((kept.len(), kept[17]), (277, 191));
+        assert_eq!(resolve(&mut sim, &host, None), Ok(name(&long)));
+        assert_eq!(start_and_stop(&mut sim, &host, &long), Ok(()));
+    }
+
+    /// Each file call on the name that fails stops the node with its error, at the
+    /// first start and at a later one. A failed first start leaves no name, and the
+    /// next start makes it.
+    #[test]
+    fn a_failed_file_call_on_the_name_stops_the_node() {
+        use env::files::Operation::{Open, ReadAt, Remove, Rename, Sync, WriteAt};
+        for (path, operation, text) in [
+            (NEW, Remove, "remove of name.new failed with OS error 5"),
+            (NEW, Open, "open of name.new failed with OS error 5"),
+            (NEW, WriteAt, "write_at of name.new failed with OS error 5"),
+            (NEW, Sync, "sync of name.new failed with OS error 5"),
+            (NEW, Rename, "rename of name.new failed with OS error 5"),
+            (FILE, Open, "open of name failed with OS error 5"),
+            (FILE, ReadAt, "read_at of name failed with OS error 5"),
+        ] {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            if path == FILE {
+                assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+            }
+            host.fail_file(Path::new(path), operation);
+            let error = Error::Directory(env::files::Error::Io {
+                path: PathBuf::from(path),
+                operation,
+                code: 5,
+            });
+            let started = start_and_stop(&mut sim, &host, "edge");
+            assert_eq!(started, Err(error.clone()), "{operation:?} {path}");
+            assert_eq!(
+                error.to_string(),
+                format!("cannot use the data directory: {text}")
+            );
+            if path == NEW {
+                assert_eq!(resolve(&mut sim, &host, None), Err(Error::Unnamed));
+            }
+            assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+            assert_eq!(resolve(&mut sim, &host, None), Ok(name("edge")));
+        }
+    }
+
+    /// A read of the name that fails gives its error, not a name or no name.
+    #[test]
+    fn a_failed_read_of_the_name_gives_its_error() {
+        use env::files::Operation::{Open, ReadAt};
+        for operation in [Open, ReadAt] {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+            host.fail_file(Path::new(FILE), operation);
+            let error = Error::Directory(env::files::Error::Io {
+                path: PathBuf::from(FILE),
+                operation,
+                code: 5,
+            });
+            let found = resolve(&mut sim, &host, None);
+            assert_eq!(found, Err(error), "{operation:?}");
+            host.fail_file(Path::new(FILE), operation);
+            let given = resolve(&mut sim, &host, Some("cloud"));
+            assert_eq!(given, Ok(name("cloud")), "reads nothing: {operation:?}");
+        }
+    }
+
+    /// `node::name` gives a given name and reads nothing, so only the start, under
+    /// the lock, refuses another name.
+    #[test]
+    fn a_start_with_another_name_stops_and_keeps_the_file() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+        let kept = read(&mut sim, &host);
+        let renamed = Error::Renamed {
+            stored: name("edge"),
+            given: name("cloud"),
+        };
+        let given = resolve(&mut sim, &host, Some("cloud"));
+        assert_eq!(given, Ok(name("cloud")));
+        let started = start_and_stop(&mut sim, &host, "cloud");
+        assert_eq!(started, Err(renamed.clone()));
+        assert_eq!(read(&mut sim, &host), kept, "keeps the file");
+        assert_eq!(
+            renamed.to_string(),
+            "the data directory holds the node edge, not cloud; give edge, or another \
+             data directory"
+        );
+    }
+
+    /// A region refuses a reserved name, so a start keeps none, and a later start
+    /// with another name runs.
+    #[test]
+    fn a_reserved_name_stops_the_start_and_keeps_no_name() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        for given in ["@x", "a.@b"] {
+            let reserved = Error::Reserved { name: name(given) };
+            assert_eq!(start_and_stop(&mut sim, &host, given), Err(reserved));
+            assert_eq!(read(&mut sim, &host), None, "keeps no name: {given}");
+        }
+        assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+        assert_eq!(
+            Error::Reserved { name: name("a.@b") }.to_string(),
+            "the name a.@b has a segment that starts with `@`, which is reserved for \
+             Foundation; give another name"
+        );
+    }
+
+    /// A reserved name that is not the stored name stops the start as reserved, not
+    /// as renamed, and the node keeps the stored name. `node::name` does not check it.
+    #[test]
+    fn a_reserved_name_comes_before_the_stored_name() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+        let kept = read(&mut sim, &host);
+        assert_eq!(resolve(&mut sim, &host, Some("@x")), Ok(name("@x")));
+        let started = start_and_stop(&mut sim, &host, "@x");
+        assert_eq!(started, Err(Error::Reserved { name: name("@x") }));
+        assert_eq!(read(&mut sim, &host), kept, "keeps the file");
+    }
+
+    /// The claim checks the shard count before the name.
+    #[test]
+    fn another_shard_count_comes_before_another_name() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+        let kept = read(&mut sim, &host);
+        write(&mut sim, &host, "shards-3", Vec::new());
+        let started = start_and_stop(&mut sim, &host, "cloud");
+        assert_eq!(
+            started,
+            Err(Error::Shards {
+                stored: 3,
+                cores: 2
+            })
+        );
+        assert_eq!(read(&mut sim, &host), kept, "keeps the file");
+    }
+
+    /// A name that fails the claim stops the start before any ring opens.
+    #[test]
+    fn a_name_that_fails_the_claim_opens_no_ring() {
+        enum Stored {
+            Zeros,
+            Kept(Name),
+        }
+        let renamed = Error::Renamed {
+            stored: name("edge"),
+            given: name("cloud"),
+        };
+        let cases = [
+            (Stored::Zeros, Error::Name),
+            (Stored::Kept(name("edge")), renamed),
+        ];
+        for (stored, error) in cases {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            match stored {
+                Stored::Kept(stored) => sim
+                    .run_on(&host, move |host, _| async move {
+                        crate::name::keep(&host.files(), &stored).await
+                    })
+                    .expect("the run ends")
+                    .expect("keeps the name"),
+                Stored::Zeros => write(&mut sim, &host, FILE, vec![0; LEN]),
+            }
+            let started = start_and_stop(&mut sim, &host, "cloud");
+            assert_eq!(started, Err(error.clone()));
+            let made = ["lock", "name", "shards-2"].map(PathBuf::from);
+            assert_eq!(listed(&mut sim, &host, ""), made, "{error}");
+        }
+    }
+
+    /// A reserved name is the first failure, also before a disk budget that holds no
+    /// ring.
+    #[test]
+    fn a_reserved_name_starts_no_shard_and_comes_before_a_small_disk() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let node = Node::start(Config {
+            name: name("@x"),
+            ..config(&host, Size::MEBIBYTE, Box::new(heap))
+        });
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Err(Error::Reserved { name: name("@x") }));
+        assert_eq!(host.shard_starts().len(), 0);
+        let disk = Size::from_bytes(1);
+        let node = Node::start(Config {
+            name: name("@x"),
+            budget: Budget {
+                pool: Size::MEBIBYTE,
+                disk,
+            },
+            ..config(&host, Size::MEBIBYTE, Box::new(heap))
+        });
+        assert_eq!(sim.run(), Ok(()));
+        assert_eq!(node.join(), Err(Error::Reserved { name: name("@x") }));
+    }
+
+    /// A name longer than 191 bytes stops a start with no region before the claim,
+    /// and a later start with another name runs.
+    #[test]
+    fn a_long_name_stops_the_start_and_keeps_no_name() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let long = "a".repeat(192);
+        let error = Error::Long { name: name(&long) };
+        assert_eq!(start_and_stop(&mut sim, &host, &long), Err(error));
+        assert_eq!(host.shard_starts().len(), 0);
+        assert_eq!(read(&mut sim, &host), None, "keeps no name");
+        assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+    }
+
+    /// A long name fails after a reserved name, and before a listen address that no
+    /// peer reaches and a disk budget that holds no ring.
+    #[test]
+    fn a_long_name_comes_after_a_reserved_name_and_before_the_other_checks() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let long = name(&"a".repeat(192));
+        let reserved = name(&format!("@{}", "a".repeat(191)));
+        let cases = [
+            (long.clone(), Error::Long { name: long }),
+            (reserved.clone(), Error::Reserved { name: reserved }),
+        ];
+        for (given, error) in cases {
+            let node = Node::start(Config {
+                name: given,
+                listen: "224.0.0.1:0".parse().expect("a socket address"),
+                budget: Budget {
+                    pool: Size::MEBIBYTE,
+                    disk: Size::from_bytes(1),
+                },
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Err(error));
+        }
+        assert_eq!(host.shard_starts().len(), 0);
+    }
+
+    /// A file of another length that is not 0, or that `encode` does not give, is
+    /// not a name: also one whose padding is not zero, under a checksum that holds.
+    #[test]
+    fn a_file_that_no_node_wrote_stops_the_node_which_keeps_it() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+        let kept = read(&mut sim, &host).expect("the file");
+        let mut changed = kept.clone();
+        changed[20] ^= 1;
+        let mut padded = kept.clone();
+        padded[22] = b'x';
+        let checksum = crc32c::crc32c(&padded[..LEN - 4]).to_le_bytes();
+        padded[LEN - 4..].copy_from_slice(&checksum);
+        let short = kept[..LEN - 1].to_vec();
+        let long = [kept, vec![0]].concat();
+        for bytes in [short, long, changed, padded] {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = super::host(&mut sim, 2);
+            write(&mut sim, &host, FILE, bytes.clone());
+            assert_eq!(resolve(&mut sim, &host, None), Err(Error::Name));
+            let given = resolve(&mut sim, &host, Some("edge"));
+            assert_eq!(given, Ok(name("edge")));
+            assert_eq!(start_and_stop(&mut sim, &host, "edge"), Err(Error::Name));
+            assert_eq!(read(&mut sim, &host), Some(bytes), "keeps the file");
+        }
+        assert_eq!(
+            Error::Name.to_string(),
+            "the file `name` in the data directory is not a node name; remove it, and \
+             start the node with its name"
+        );
+    }
+
+    /// The node never leaves a file `name` with no bytes or with zeros, so such a
+    /// file is not a name.
+    #[test]
+    fn an_empty_or_zero_file_is_not_a_name() {
+        for bytes in [Vec::new(), vec![0; LEN]] {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            write(&mut sim, &host, FILE, bytes.clone());
+            assert_eq!(resolve(&mut sim, &host, None), Err(Error::Name));
+            assert_eq!(start_and_stop(&mut sim, &host, "edge"), Err(Error::Name));
+            assert_eq!(read(&mut sim, &host), Some(bytes), "keeps the file");
+        }
+    }
+
+    /// A start removes the file `name.new` that a crash left, of any length, and
+    /// makes the name.
+    #[test]
+    fn a_start_removes_a_new_name_that_a_crash_left() {
+        for bytes in [Vec::new(), vec![7; LEN], vec![7; 3]] {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            write(&mut sim, &host, NEW, bytes);
+            assert_eq!(start_and_stop(&mut sim, &host, "edge"), Ok(()));
+            assert_eq!(resolve(&mut sim, &host, None), Ok(name("edge")));
+            assert!(!listed(&mut sim, &host, "").contains(&PathBuf::from(NEW)));
+        }
+    }
+
+    /// The error of a start whose shard 0 cannot make its directory.
+    fn shard_dir_failed() -> Error {
+        Error::Buffer {
+            core: 0,
+            error: ::buffer::Error::Files(env::files::Error::Io {
+                path: PathBuf::from("shard-0"),
+                operation: env::files::Operation::CreateDir,
+                code: 5,
+            }),
+        }
+    }
+
+    /// A first start that fails after the claim, before any other sync of the data
+    /// directory, has made the name durable.
+    #[test]
+    fn a_first_start_makes_the_name_durable() {
+        for seed in 0..8 {
+            let mut sim = sim::Sim::new(sim::Config {
+                seed,
+                ..sim::Config::default()
+            });
+            let host = host(&mut sim, 2);
+            host.fail_file(Path::new("shard-0"), env::files::Operation::CreateDir);
+            let started = start_and_stop(&mut sim, &host, "edge");
+            assert_eq!(started, Err(shard_dir_failed()), "seed {seed}");
+            sim.crash(&host, sim::Crash::Power);
+            assert_eq!(resolve(&mut sim, &host, None), Ok(name("edge")), "{seed}");
+        }
+    }
+
+    /// A process crash can leave a name that a read sees but a power cut loses. The
+    /// claim of the next start makes it durable, also when the start fails after it.
+    /// Takes the first crash time, on seeds 0 to 7, at which a read sees the name,
+    /// and checks that a power cut then can lose it.
+    #[test]
+    fn a_later_start_makes_the_name_durable() {
+        let mut lost = 0;
+        let crashed = |seed, after| {
+            let mut sim = sim::Sim::new(sim::Config {
+                seed,
+                ..sim::Config::default()
+            });
+            let host = host(&mut sim, 2);
+            let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+            assert_eq!(sim.run_for(after), Ok(()), "seed {seed} at {after:?}");
+            sim.crash(&host, sim::Crash::Process);
+            drop(node);
+            let found = resolve(&mut sim, &host, None);
+            (sim, host, found)
+        };
+        for seed in 0..8 {
+            let after = (0..10_000_000)
+                .step_by(5_000)
+                .map(Span::from_nanos)
+                .find(|&after| crashed(seed, after).2 == Ok(name("edge")))
+                .expect("a crash leaves the name");
+            let (mut sim, host, _) = crashed(seed, after);
+            sim.crash(&host, sim::Crash::Power);
+            if resolve(&mut sim, &host, None) == Err(Error::Unnamed) {
+                lost += 1;
+            }
+            let (mut sim, host, _) = crashed(seed, after);
+            host.fail_file(Path::new("shard-0"), env::files::Operation::CreateDir);
+            let started = start_and_stop(&mut sim, &host, "edge");
+            assert_eq!(started, Err(shard_dir_failed()), "seed {seed} at {after:?}");
+            sim.crash(&host, sim::Crash::Power);
+            let found = resolve(&mut sim, &host, None);
+            assert_eq!(found, Ok(name("edge")), "seed {seed} at {after:?}");
+        }
+        assert!(lost > 0, "no power cut lost the name");
+    }
+
+    /// Reads the name on `host` `count` times, on a shard of its own, while the run
+    /// goes on. Gives each result.
+    fn reads(
+        host: &sim::node::Node,
+        count: usize,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<Result<Name, Error>>>> {
+        let found = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (slot, own) = (std::sync::Arc::clone(&found), host.clone());
+        let config = env::shards::Config {
+            name: "reader".into(),
+            core: None,
+        };
+        let start = host.shards().start(config, move |_| async move {
+            for _ in 0..count {
+                let read = crate::name(&own.files(), None).await;
+                slot.lock().unwrap().push(read);
+            }
+        });
+        drop(start.expect("starts"));
+        found
+    }
+
+    /// A read while a node starts on the data directory, for the first time or a
+    /// later time, gives no name or the whole name.
+    #[test]
+    fn a_read_during_a_start_gives_no_name_or_the_name() {
+        reads_during_a_start(&Region::Absent, 0..64);
+    }
+
+    /// As [`a_read_during_a_start_gives_no_name_or_the_name`], with a start that founds
+    /// a region.
+    #[test]
+    fn a_read_during_a_start_that_founds_a_region_gives_no_name_or_the_name() {
+        reads_during_a_start(&Region::Stored, 0..16);
+    }
+
+    /// Reads the name during a first and a later start with `region`, on each of
+    /// `seeds`, and checks that each read gives no name or the whole name.
+    fn reads_during_a_start(region: &Region, seeds: std::ops::Range<u64>) {
+        for (seed, later) in seeds.flat_map(|seed| [(seed, false), (seed, true)]) {
+            for offset in (0..200_000).step_by(20_000) {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let host = host(&mut sim, 2);
+                let start = || {
+                    Node::start(Config {
+                        region: region.clone(),
+                        ..config(&host, Size::MEBIBYTE, Box::new(heap))
+                    })
+                };
+                if later {
+                    let node = start();
+                    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+                    node.stop();
+                    assert_eq!(sim.run(), Ok(()));
+                    assert_eq!(node.join(), Ok(()));
+                }
+                let node = start();
+                assert_eq!(sim.run_for(Span::from_nanos(offset)), Ok(()));
+                let found = reads(&host, 400);
+                assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+                node.stop();
+                assert_eq!(sim.run(), Ok(()));
+                assert_eq!(node.join(), Ok(()));
+                let kept: &[_] = if later {
+                    &[Ok(name("edge"))]
+                } else {
+                    &[Ok(name("edge")), Err(Error::Unnamed)]
+                };
+                for read in found.lock().unwrap().iter() {
+                    let at = format!("seed {seed}, later {later}, at {offset}");
+                    assert!(kept.contains(read), "{read:?}: {at}");
+                }
+            }
+        }
+    }
+
+    /// A crash every 25 µs of the first start, on seeds 0 to 7, leaves no name or the
+    /// whole name, and the whole name once each ring has opened.
+    #[test]
+    fn a_crash_during_the_first_start_leaves_no_name_or_the_whole_name() {
+        crashes_during_the_first_start(&Region::Absent, 0..8);
+    }
+
+    /// As [`a_crash_during_the_first_start_leaves_no_name_or_the_whole_name`], with a
+    /// start that founds a region.
+    #[test]
+    fn a_crash_during_a_first_start_that_founds_a_region_leaves_no_name_or_the_name() {
+        crashes_during_the_first_start(&Region::Stored, 0..4);
+    }
+
+    /// Crashes the first start with `region` every 25 µs, on each of `seeds`, and checks
+    /// the name that a read then gives.
+    fn crashes_during_the_first_start(region: &Region, seeds: std::ops::Range<u64>) {
+        let crashes = [sim::Crash::Process, sim::Crash::Power];
+        for (seed, crash) in seeds.flat_map(|seed| crashes.map(|crash| (seed, crash))) {
+            for after in (0..).step_by(25_000).map(Span::from_nanos) {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let host = host(&mut sim, 2);
+                let node = Node::start(Config {
+                    region: region.clone(),
+                    ..config(&host, Size::MEBIBYTE, Box::new(heap))
+                });
+                let probe = probe(&node);
+                let run = sim.run_for(after);
+                assert_eq!(run, Ok(()), "seed {seed}: {crash:?} at {after:?}");
+                let opened = super::buffer::all_opened(&probe, after);
+                sim.crash(&host, crash);
+                drop(node);
+                let found = resolve(&mut sim, &host, None);
+                if opened {
+                    let at = format!("seed {seed}: {crash:?} at {after:?}");
+                    assert_eq!(found, Ok(name("edge")), "{at}");
+                    break;
+                }
+                let kept = [Ok(name("edge")), Err(Error::Unnamed)];
+                assert!(
+                    kept.contains(&found),
+                    "{found:?}: seed {seed}: {crash:?} at {after:?}"
+                );
+            }
+        }
+    }
+}
+
+mod budget {
+    use super::*;
+    use crate::budget::{FILE, LEN};
+
+    const NEW: &str = "budget.new";
+
+    /// What [`crate::budget`] gives on `host`.
+    #[expect(
+        clippy::unwrap_in_result,
+        reason = "a test helper panics on a run that does not end"
+    )]
+    fn kept(
+        sim: &mut sim::Sim,
+        host: &sim::node::Node,
+    ) -> Result<Option<Budget>, Error> {
+        sim.run_on(
+            host,
+            |host, _| async move { crate::budget(&host.files()).await },
+        )
+        .expect("the run ends")
+    }
+
+    fn budget(pool: u64, disk: u64) -> Budget {
+        Budget {
+            pool: Size::from_bytes(pool),
+            disk: Size::from_bytes(disk),
+        }
+    }
+
+    /// Starts a node with `budget` on `host`, runs `sim` for a second, then stops it
+    /// and gives the error of its join.
+    fn start_and_stop(
+        sim: &mut sim::Sim,
+        host: &sim::node::Node,
+        budget: Budget,
+    ) -> Result<(), Error> {
+        let node = Node::start(Config {
+            budget,
+            ..config(host, Size::MEBIBYTE, Box::new(heap))
+        });
+        assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+        node.stop();
+        assert_eq!(sim.run(), Ok(()));
+        node.join()
+    }
+
+    #[test]
+    fn a_data_directory_with_no_budgets_keeps_none() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        assert_eq!(kept(&mut sim, &host), Ok(None));
+        assert_eq!(bytes(&mut sim, &host, FILE), None);
+    }
+
+    /// A later start with other budgets runs on them, and leaves the kept ones.
+    #[test]
+    fn the_first_start_keeps_its_budgets_and_a_later_one_leaves_them() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let first = budget(1 << 20, DISK.bytes());
+        assert_eq!(start_and_stop(&mut sim, &host, first), Ok(()));
+        let file = bytes(&mut sim, &host, FILE).expect("the file");
+        assert_eq!(file.len(), LEN);
+        assert_eq!(&file[..19], b"foundation/budget/1");
+        assert_eq!(file[19..27], (1u64 << 20).to_le_bytes());
+        assert_eq!(file[27..35], DISK.bytes().to_le_bytes());
+        assert_eq!(kept(&mut sim, &host), Ok(Some(first)));
+        let later = budget(2 << 20, 2 * DISK.bytes());
+        assert_eq!(start_and_stop(&mut sim, &host, later), Ok(()));
+        assert_eq!(bytes(&mut sim, &host, FILE), Some(file));
+        assert_eq!(kept(&mut sim, &host), Ok(Some(first)));
+    }
+
+    /// A start that fails before each shard has opened its buffer keeps nothing, so
+    /// the next start can give other budgets.
+    #[test]
+    fn a_start_that_fails_before_each_buffer_opens_keeps_no_budgets() {
+        let buffer = Error::Buffer {
+            core: 0,
+            error: ::buffer::Error::Budget {
+                budget: 32_768,
+                min: 62_272,
+            },
+        };
+        let disk = Error::Disk {
+            disk: Size::from_bytes(1),
+            cores: 2,
+            min: Size::from_bytes(8_462_336),
+        };
+        let small = [
+            (budget(512 << 10, DISK.bytes()), 16, buffer),
+            (budget(1 << 20, 1), 2, disk),
+        ];
+        for (small, cores, error) in small {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, cores);
+            let started = start_and_stop(&mut sim, &host, small);
+            assert_eq!(started, Err(error));
+            assert_eq!(kept(&mut sim, &host), Ok(None), "{small:?}");
+            let first = budget(16 << 20, DISK.bytes() * 8);
+            assert_eq!(start_and_stop(&mut sim, &host, first), Ok(()));
+            assert_eq!(kept(&mut sim, &host), Ok(Some(first)));
+        }
+    }
+
+    /// A file of another length, or that `encode` does not give, is not budgets.
+    #[test]
+    fn a_file_that_no_node_wrote_stops_the_node_which_keeps_it() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let host = host(&mut sim, 2);
+        let first = budget(1 << 20, DISK.bytes());
+        assert_eq!(start_and_stop(&mut sim, &host, first), Ok(()));
+        let file = bytes(&mut sim, &host, FILE).expect("the file");
+        let mut changed = file.clone();
+        changed[20] ^= 1;
+        let short = file[..LEN - 1].to_vec();
+        let long = [file, vec![0]].concat();
+        for bytes in [short, long, changed, Vec::new(), vec![0; LEN]] {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = super::host(&mut sim, 2);
+            write(&mut sim, &host, FILE, bytes.clone());
+            assert_eq!(kept(&mut sim, &host), Err(Error::Budget));
+            let started = start_and_stop(&mut sim, &host, first);
+            assert_eq!(started, Err(Error::Budget));
+            assert_eq!(super::bytes(&mut sim, &host, FILE), Some(bytes));
+        }
+        assert_eq!(
+            Error::Budget.to_string(),
+            "the file `budget` in the data directory does not hold budgets that a \
+             node wrote; remove it, and the next start writes it again"
+        );
+    }
+
+    /// Each file call on the budgets that fails stops the node with its error. A
+    /// failed keep leaves no budgets, and the next start keeps them.
+    #[test]
+    fn a_failed_file_call_on_the_budgets_stops_the_node() {
+        use env::files::Operation::{Open, ReadAt, Remove, Rename, Sync, WriteAt};
+        let first = budget(1 << 20, DISK.bytes());
+        for (path, operation) in [
+            (NEW, Remove),
+            (NEW, Open),
+            (NEW, WriteAt),
+            (NEW, Sync),
+            (NEW, Rename),
+            (FILE, Open),
+            (FILE, ReadAt),
+        ] {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = host(&mut sim, 2);
+            if path == FILE {
+                assert_eq!(start_and_stop(&mut sim, &host, first), Ok(()));
+            }
+            host.fail_file(Path::new(path), operation);
+            let error = Error::Directory(env::files::Error::Io {
+                path: PathBuf::from(path),
+                operation,
+                code: 5,
+            });
+            let started = start_and_stop(&mut sim, &host, first);
+            assert_eq!(started, Err(error), "{operation:?} {path}");
+            if path == NEW {
+                assert_eq!(kept(&mut sim, &host), Ok(None));
+            }
+            assert_eq!(start_and_stop(&mut sim, &host, first), Ok(()));
+            assert_eq!(kept(&mut sim, &host), Ok(Some(first)));
         }
     }
 }

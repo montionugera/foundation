@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use bytes::Bytes;
 use env::net::{self, Listener};
 use env::tasks::Tasks;
-use http::header::CONTENT_ENCODING;
+use http::header::{AUTHORIZATION, CONTENT_ENCODING};
 use http::{Method, Request, Response, StatusCode};
 
 use super::Store;
@@ -23,9 +23,10 @@ use super::Store;
 /// than `ns` gives 400 and stores nothing; a missing or empty `precision` is `ns`.
 /// Any other path gives 404, and another method on a write path gives 405. A request
 /// whose `content-encoding` names a coding other than `identity` gets 415 and stores
-/// nothing. It checks the path, then the method, then the `content-encoding`, then
-/// the query, and gives the answer of the first check that fails. It checks no
-/// token.
+/// nothing. `token`, when given, is the one token that it takes, as `Token <token>`
+/// in `Authorization`. A request without it gets 401 and stores nothing. It checks
+/// the path, then the method, then the token, then the `content-encoding`, then the
+/// query, and gives the answer of the first check that fails.
 ///
 /// It runs until the listener fails, and returns that error.
 pub async fn serve(
@@ -33,8 +34,12 @@ pub async fn serve(
     tasks: Tasks,
     store: Arc<Mutex<Store>>,
     database: String,
+    token: Option<String>,
 ) -> net::Error {
-    let answer = move |request: Request<Bytes>| route(&request, &store, &database);
+    let header = token.map(|token| format!("Token {token}"));
+    let answer = move |request: Request<Bytes>| {
+        route(&request, &store, &database, header.as_deref())
+    };
     connector::http::sim::serve(listener, tasks, answer).await
 }
 
@@ -42,6 +47,7 @@ fn route(
     request: &Request<Bytes>,
     store: &Mutex<Store>,
     database: &str,
+    header: Option<&str>,
 ) -> Response<Bytes> {
     let (method, uri) = (request.method(), request.uri());
     let key = match uri.path() {
@@ -54,6 +60,15 @@ fn route(
             StatusCode::METHOD_NOT_ALLOWED,
             format!("{} takes POST, not {method}", uri.path()),
         );
+    }
+    if let Some(header) = header {
+        let given = request.headers().get(AUTHORIZATION);
+        if given.is_none_or(|given| given.as_bytes() != header.as_bytes()) {
+            return reply(
+                StatusCode::UNAUTHORIZED,
+                r#"{"code":"unauthorized","message":"unauthorized access"}"#.into(),
+            );
+        }
     }
     let lines = request.headers().get_all(CONTENT_ENCODING).iter();
     let refused = (lines.flat_map(|line| line.as_bytes().split(|&byte| byte == b',')))

@@ -3,11 +3,11 @@
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroUsize;
-use std::path::Path;
-use std::task::Waker;
+use std::path::{Path, PathBuf};
 
 use types::time::{Monotonic, Span, Stamp};
 
+use crate::log::Waker;
 use crate::state::lock;
 use crate::{drivers, net, shard};
 
@@ -211,9 +211,30 @@ impl Node {
     /// - A failure gives the code that Linux gives: 20 (`ENOTDIR`) for a path
     ///   through a file, 21 (`EISDIR`) for a file call on a directory, and 17
     ///   (`EEXIST`) for `create_dir` on a file.
+    /// - Each `Files` that it gives acts as a clone of one: a write open, a remove, or
+    ///   a rename from any of them waits for each call that a drop from any of them
+    ///   left to run.
+    /// - `open_absolute` reads the file at its path in [`Node::paths`], the host's
+    ///   tree, when the open ends. The open and each read take the time of a file
+    ///   call, and [`Node::fail_file`] fails them. It gives `NotFound` when no file
+    ///   is there, and the error of a read of the tree, such as one of
+    ///   [`Node::fail_path`], as `Error::Io` with operation `Open`. A later write of
+    ///   the tree does not change the open file.
     #[must_use]
     pub fn files(&self) -> env::files::Files {
         env::files::Files::new(self.0.clone())
+    }
+
+    /// The path of each file descriptor that the node closed or dropped, in order, from
+    /// the start of the run: the path of its open, or of the last rename that it made,
+    /// with only its names. That path is relative to the data directory, or absolute
+    /// for a file of `open_absolute`. A crash closes each descriptor of the node, a
+    /// leaked one too. Those that the drops of its futures close come first, in the
+    /// order of the drops. The leaked ones come last, in the order that their opens
+    /// started.
+    #[must_use]
+    pub fn file_closes(&self) -> Vec<PathBuf> {
+        lock(&self.0.shared).files().closes(self.0.node)
     }
 
     /// Makes the next call of `operation` on `path` on the node fail with
@@ -237,6 +258,25 @@ impl Node {
         lock(&self.0.shared)
             .files()
             .fail(self.0.node, path, operation);
+    }
+
+    /// The files of the node's host by path: a tree in memory, apart from the node's
+    /// disk, with no file at first. A directory is there while a file is under it, so
+    /// a write makes each directory above its file. A relative path is under `/`, the
+    /// working directory. `.` and `..` act on the path as text. A call takes no time,
+    /// may come from any thread, and acts at once. A crash of the node keeps the tree.
+    /// A failure gives the code that Linux gives: 20 (`ENOTDIR`) for a path through a
+    /// file, and 21 (`EISDIR`) for a write on a directory.
+    #[must_use]
+    pub fn paths(&self) -> env::paths::Paths {
+        env::paths::Paths::new(self.0.clone())
+    }
+
+    /// Makes the next read or write of `path` on the node's host fail with
+    /// `env::paths::Error::Io` and `code`. Faults on one path fire in turn, one per
+    /// call, and a failed call changes no file.
+    pub fn fail_path(&self, path: &Path, code: i32) {
+        lock(&self.0.shared).paths().fail(self.0.node, path, code);
     }
 
     /// The node's IPv4 and IPv6 addresses, in that order: node `k`, from 0 in the
@@ -315,11 +355,17 @@ pub struct Config {
     pub wall_error: Option<Span>,
     /// The bytes of the node's disk.
     pub disk_bytes: u64,
+    /// The longest wait that a timer arms for, as `os` arms each Tokio sleep for at
+    /// most a second. A timer with a later deadline wakes its task early, and arms
+    /// again only at its next poll. A deadline past the end of true time at the poll
+    /// gets no early wake. `None` arms each timer for its deadline. A span must be
+    /// positive.
+    pub arm_max: Option<Span>,
 }
 
 impl Default for Config {
     /// Four cores that can pin, one hour after boot, at 2026-01-01T00:00:00Z, with a
-    /// wall error of 10 ms and a disk of 64 GiB.
+    /// wall error of 10 ms, a disk of 64 GiB, and each timer armed for at most 1 s.
     fn default() -> Self {
         Self {
             cores: NonZeroUsize::new(4).expect("four is not zero"),
@@ -328,6 +374,7 @@ impl Default for Config {
             wall: Stamp::from_nanos(1_767_225_600 * Span::SECOND.nanos()),
             wall_error: Some(Span::from_nanos(10 * Span::MILLISECOND.nanos())),
             disk_bytes: 64 << 30,
+            arm_max: Some(Span::SECOND),
         }
     }
 }

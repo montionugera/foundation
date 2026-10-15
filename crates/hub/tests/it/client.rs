@@ -3,8 +3,6 @@
 
 use std::cell::Cell;
 use std::future::poll_fn;
-use std::net::SocketAddr;
-use std::num::NonZeroUsize;
 use std::pin::pin;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -13,7 +11,7 @@ use std::task::Poll;
 use hub::client::{Client, Config, Error, LIFE};
 use hub::serve;
 use transport::stream::Incoming;
-use transport::{Address, Code, Port};
+use transport::{Address, Code};
 use types::ed25519::PrivateKey;
 use types::time::{Interval, Span, Stamp};
 use wire::header::MALFORMED;
@@ -22,12 +20,11 @@ use wire::hub::client::{
     BODY_BYTES_MAX, Challenge, REFUSED, Refusal, Request, Response, Signed,
 };
 
-use super::link::{
-    AGENT, Got, OTHER, QUIET, SUBJECT, accept, header, name, rules, run_program,
-    serve_session, serve_session_on,
-};
-use super::serve::{HOME, PORT, own_pool, public_key, transport};
+use super::link::{OTHER, QUIET, accept, serve_session, serve_session_on};
 use super::{NODE, POOL};
+use crate::agent::{AGENT, SUBJECT, name};
+use crate::net::{HOME, header, own_pool, public_key, transport};
+use crate::sessions::{Got, rules, run_program};
 
 /// Connects to the home at `at` from `node` as [`SUBJECT`], signing with `key`, with a
 /// client pool that holds a body at the cap while the transport sends it.
@@ -37,7 +34,7 @@ async fn connect(
     at: Address,
     key: PrivateKey,
 ) -> Result<Client, Error> {
-    let config = block::Config { budget: 2 << 24 };
+    let config = block::Config::new(2 << 24).expect("the budget fits");
     let pool = block::Pool::new(config.clone(), block::Heap::new(config.reservation()));
     connect_with(node, tasks, at, key, Rc::new(pool)).await
 }
@@ -51,18 +48,14 @@ async fn connect_with(
     key: PrivateKey,
     pool: Rc<block::Pool>,
 ) -> Result<Client, Error> {
-    let own = SocketAddr::new(node.addresses()[0], PORT);
-    let mut parts = Port::bind(&node.net(), own)
-        .expect("binds")
-        .split(NonZeroUsize::MIN);
     let config = transport::client::Config {
+        net: node.net(),
         clock: node.clock(),
         entropy: node.entropy(),
         tasks: tasks.clone(),
         pool: own_pool(),
     };
-    let transport = transport::Client::new(config, parts.pop().expect("one part"))
-        .expect("a client");
+    let transport = transport::Client::new(config).expect("a client");
     let config = Config {
         via: NODE,
         node: public_key(&HOME),
@@ -140,6 +133,19 @@ fn closes_the_session_when_the_last_clone_drops() {
         Ok(Got::Request(name(SUBJECT), b"ab".to_vec()))
     );
     assert_eq!(home.closed, transport::Error::PeerClosed { code: Code(0) });
+}
+
+/// The home keeps the end of each stream, whichever task the sim picks first.
+#[test]
+fn keeps_the_end_of_each_stream_at_each_seed() {
+    for seed in 0..16 {
+        let home = with_client(seed, |client, node| async move {
+            assert_eq!(client.request(b"ab").await, Ok(b"ba".to_vec()));
+            drop(client);
+            node.clock().sleep(QUIET).await;
+        });
+        assert_eq!(home.served.len(), 2, "seed {seed}: {:?}", home.served);
+    }
 }
 
 #[test]
@@ -418,7 +424,9 @@ fn refuses_a_response_whose_body_ends_early() {
             Box::pin(async move {
                 assert_eq!(
                     client.request(b"abcd").await,
-                    Err(Error::Message(wire::hub::Error::Unfinished { remain: 2 }))
+                    Err(Error::Message(wire::hub::client::Error::Unfinished {
+                        remain: 2
+                    }))
                 );
             })
         },
@@ -454,7 +462,9 @@ fn gives_the_turn_after_a_response_that_is_not_valid() {
             Box::pin(async move {
                 assert_eq!(
                     client.request(b"ab").await,
-                    Err(Error::Message(wire::hub::Error::Kind { kind: 0xff }))
+                    Err(Error::Message(wire::hub::client::Error::Kind {
+                        kind: 0xff
+                    }))
                 );
                 let next = within(&node.clock(), QUIET, client.request(b"cd")).await;
                 assert_eq!(next, Some(Ok(b"dc".to_vec())));
@@ -642,7 +652,104 @@ fn closes_the_session_on_a_challenge_that_is_not_valid() {
             node.clock().sleep(LIFE).await;
             assert_eq!(
                 client.request(b"ab").await,
-                Err(Error::Message(wire::hub::Error::Kind { kind: 0xff }))
+                Err(Error::Message(wire::hub::client::Error::Kind {
+                    kind: 0xff
+                }))
+            );
+        },
+    );
+}
+
+/// Each request after the end of the renewal gives the error that ended it, not only
+/// the first.
+#[test]
+fn gives_the_error_of_the_renewal_to_each_later_request() {
+    raw(
+        135,
+        |session, mut hello, node| async move {
+            admit(&mut hello, &node.clock()).await;
+            let sender = hello.sender.as_mut().expect("two-way");
+            let refused = own_pool().copy(&[0xff]).expect("room");
+            sender.send(refused).await.expect("sends");
+            drop(session.closed().await);
+        },
+        |node, tasks, at| async move {
+            let client = connect(&node, tasks, at, AGENT).await.expect("connects");
+            node.clock().sleep(LIFE).await;
+            let ended = Err(Error::Message(wire::hub::client::Error::Kind {
+                kind: 0xff,
+            }));
+            assert_eq!(client.request(b"ab").await, ended);
+            assert_eq!(client.request(b"cd").await, ended);
+        },
+    );
+}
+
+/// A request in flight when a challenge that `wire` refuses ends the renewal gives
+/// that error, not the error of the close.
+#[test]
+fn gives_the_error_of_the_renewal_to_a_request_in_flight() {
+    raw(
+        135,
+        |session, mut hello, node| async move {
+            admit(&mut hello, &node.clock()).await;
+            let _request = read_request(&session).await;
+            let sender = hello.sender.as_mut().expect("two-way");
+            let refused = own_pool().copy(&[0xff]).expect("room");
+            sender.send(refused).await.expect("sends");
+            drop(session.closed().await);
+        },
+        |node, tasks, at| async move {
+            let client = connect(&node, tasks, at, AGENT).await.expect("connects");
+            assert_eq!(
+                client.request(b"ab").await,
+                Err(Error::Message(wire::hub::client::Error::Kind {
+                    kind: 0xff
+                }))
+            );
+        },
+    );
+}
+
+/// A request in flight when the node finishes the hello stream gives
+/// [`Error::Unanswered`], the error that ended the renewal.
+#[test]
+fn gives_an_unanswered_renewal_to_a_request_in_flight() {
+    raw(
+        136,
+        |session, mut hello, node| async move {
+            admit(&mut hello, &node.clock()).await;
+            let _request = read_request(&session).await;
+            let sender = hello.sender.as_mut().expect("two-way");
+            sender.finish().expect("finishes");
+            drop(session.closed().await);
+        },
+        |node, tasks, at| async move {
+            let client = connect(&node, tasks, at, AGENT).await.expect("connects");
+            assert_eq!(client.request(b"ab").await, Err(Error::Unanswered));
+        },
+    );
+}
+
+/// A body over the cap gives [`Error::Body`] also once the renewal ended.
+#[test]
+fn gives_the_body_error_first_after_the_renewal_ended() {
+    raw(
+        152,
+        |session, mut hello, node| async move {
+            admit(&mut hello, &node.clock()).await;
+            let sender = hello.sender.as_mut().expect("two-way");
+            let refused = own_pool().copy(&[0xff]).expect("room");
+            sender.send(refused).await.expect("sends");
+            drop(session.closed().await);
+        },
+        |node, tasks, at| async move {
+            let client = connect(&node, tasks, at, AGENT).await.expect("connects");
+            node.clock().sleep(LIFE).await;
+            let length = usize::try_from(BODY_BYTES_MAX).expect("fits") + 1;
+            assert_eq!(
+                client.request(&vec![0; length]).await,
+                Err(Error::Body { length })
             );
         },
     );
@@ -854,7 +961,7 @@ fn ends_the_life_of_a_hello_at_the_end_of_time() {
 
 /// A pool of 1 MiB over memory that a test can make refuse, and the switch for it.
 fn scarce() -> (Rc<block::Pool>, block::testing::Switch) {
-    let config = block::Config { budget: 1 << 20 };
+    let config = block::Config::new(1 << 20).expect("the budget fits");
     let (memory, switch) = block::testing::Scarce::new(config.reservation());
     (Rc::new(block::Pool::new(config, memory)), switch)
 }
@@ -940,7 +1047,7 @@ fn refuses_to_connect_from_a_pool_with_no_block_for_the_header() {
         POOL,
         Some(rules()),
         |node, tasks, at| async move {
-            let config = block::Config { budget: 0 };
+            let config = block::Config::new(0).expect("the budget fits");
             let heap = block::Heap::new(config.reservation());
             let pool = Rc::new(block::Pool::new(config, heap));
             let refused = connect_with(&node, tasks, at, AGENT, pool).await.map(drop);
@@ -969,7 +1076,7 @@ fn sends_a_body_over_the_largest_block_of_its_pool() {
         POOL,
         Some(rules()),
         |node, tasks, at| async move {
-            let config = block::Config { budget: 1 << 16 };
+            let config = block::Config::new(1 << 16).expect("the budget fits");
             let pool = block::Pool::new(
                 config.clone(),
                 block::Heap::new(config.reservation()),
@@ -998,7 +1105,7 @@ fn sends_a_body_over_the_room_of_its_pool() {
         POOL,
         Some(rules()),
         |node, tasks, at| async move {
-            let config = block::Config { budget: 1 << 17 };
+            let config = block::Config::new(1 << 17).expect("the budget fits");
             let pool = block::Pool::new(
                 config.clone(),
                 block::Heap::new(config.reservation()),
@@ -1093,13 +1200,13 @@ fn gives_the_turn_in_the_order_requests_began() {
 #[test]
 fn names_each_error() {
     let cases = [
-        (Error::Refused(Refusal::Expired), "the hello expired"),
+        (Error::Refused(Refusal::Expired), "the hello ended"),
         (
             Error::Transport(transport::Error::TimedOut),
             "the session failed: the peer stopped answering",
         ),
         (
-            Error::Message(wire::hub::Error::Empty),
+            Error::Message(wire::hub::client::Error::Empty),
             "the node sent a message that is not valid: the hub message is empty",
         ),
         (
@@ -1164,10 +1271,13 @@ fn sends_a_body_at_the_cap_from_a_pool_of_one_chunk_on_each_link() {
             true,
             POOL,
             Some(rules()),
+            async |_| {},
             move |node, tasks, at| async move {
-                let config = block::Config {
-                    budget: block::footprint(1 << 16),
-                };
+                let config = block::Config::new(
+                    u64::try_from(block::footprint(1 << 16))
+                        .expect("a usize fits in a u64"),
+                )
+                .expect("the budget fits");
                 let pool = block::Pool::new(
                     config.clone(),
                     block::Heap::new(config.reservation()),
@@ -1182,4 +1292,194 @@ fn sends_a_body_at_the_cap_from_a_pool_of_one_chunk_on_each_link() {
             },
         );
     }
+}
+
+/// Asserts that a program connects to a home whose node has mesh time with
+/// `wall_error`.
+fn connects_at_wall_error(seed: u64, wall_error: Option<Span>) {
+    let (connected, served) = (Arc::new(Mutex::new(None)), Arc::new(Mutex::new(None)));
+    let (client_end, home_end) = (Arc::clone(&connected), Arc::clone(&served));
+    run_program(
+        seed,
+        move |node, tasks| async move {
+            node.set_wall_error(wall_error);
+            let (test, session, link) =
+                accept(&node, &tasks, POOL, true, Some(rules())).await;
+            let mut hello = session.accept().await.expect("a hello stream");
+            header(&mut hello).await;
+            let result = link.serve(hello).await.map(drop);
+            *home_end.lock().expect("not poisoned") = Some(result);
+            drop((link, test));
+        },
+        move |node, tasks, at| async move {
+            let result = connect(&node, tasks, at, AGENT).await.map(drop);
+            *client_end.lock().expect("not poisoned") = Some(result);
+        },
+    );
+    let served = served.lock().expect("not poisoned").take();
+    let connected = connected.lock().expect("not poisoned").take();
+    assert_eq!(connected, Some(Ok(())), "the home gave {served:?}");
+}
+
+#[test]
+fn connects_to_a_node_whose_mesh_time_has_an_error_of_minutes() {
+    connects_at_wall_error(170, Some(Span::from_nanos(3 * Span::MINUTE.nanos())));
+}
+
+#[test]
+fn connects_to_a_node_whose_mesh_time_has_an_unknown_error() {
+    connects_at_wall_error(171, None);
+}
+
+/// A node with no time source admits a program, then gets one, so its error
+/// shrinks from unknown to 10 ms. The program's session lives on: its renewals pass.
+#[test]
+fn keeps_a_session_when_the_error_of_mesh_time_shrinks() {
+    let (got, served) = (Arc::new(Mutex::new(None)), Arc::new(Mutex::new(Vec::new())));
+    let (kept, seen) = (Arc::clone(&got), Arc::clone(&served));
+    run_program(
+        172,
+        move |node, tasks| async move {
+            super::link::shrink_wall_error(&node, &tasks);
+            let (test, session, link) =
+                accept(&node, &tasks, POOL, true, Some(rules())).await;
+            crate::sessions::serve_each(
+                &session,
+                &link,
+                &tasks,
+                &node.clock(),
+                &seen,
+                &Rc::default(),
+            )
+            .await;
+            drop((link, test));
+        },
+        move |node, tasks, at| async move {
+            let client = connect(&node, tasks, at, AGENT).await.expect("connects");
+            node.clock()
+                .sleep(Span::from_nanos(2 * LIFE.nanos() + Span::SECOND.nanos()))
+                .await;
+            let late = client.request(b"late").await;
+            *kept.lock().expect("not poisoned") = Some(late);
+            drop(client);
+            node.clock().sleep(QUIET).await;
+        },
+    );
+    let served = std::mem::take(&mut *served.lock().expect("not poisoned"));
+    let got = got.lock().expect("not poisoned").take();
+    assert_eq!(got, Some(Ok(b"etal".to_vec())), "the home gave {served:?}");
+}
+
+/// Polls `hello` beside `other` until `other` resolves.
+async fn beside<T>(
+    hello: &mut std::pin::Pin<
+        Box<impl Future<Output = Result<hub::Served, serve::Error>>>,
+    >,
+    other: impl Future<Output = T>,
+) -> T {
+    let mut other = pin!(other);
+    poll_fn(|cx| {
+        drop(hello.as_mut().poll(cx));
+        other.as_mut().poll(cx)
+    })
+    .await
+}
+
+/// The reply of a request that `Link::serve` gave holds the region after the hub, the
+/// link, and each future of serve drop, and the hub lets go once the reply drops.
+#[test]
+fn holds_the_transport_until_the_reply_of_a_request_drops() {
+    let (held, with_reply, without_reply) = reply_holds(End::Drop);
+    assert_eq!(with_reply, held, "the reply holds the hub");
+    assert_eq!(without_reply, 1, "no task holds the transport");
+}
+
+/// The hub lets go of the region once a reply, sent after the hub, the link, and each
+/// future of serve drop, ends its send.
+#[test]
+fn lets_go_of_the_transport_once_the_send_of_a_reply_ends() {
+    let (held, with_reply, without_reply) = reply_holds(End::Send);
+    assert_eq!(with_reply, held, "the reply holds the hub");
+    assert_eq!(without_reply, 1, "no task holds the transport");
+}
+
+/// How the test ends the reply of a served request.
+enum End {
+    Drop,
+    Send,
+}
+
+/// The count of the transport of a home with one served request: before the hub, its
+/// link, and the future of serve drop, after, and once the reply ends as `end` says and
+/// the region drops.
+fn reply_holds(end: End) -> (usize, usize, usize) {
+    let outcome = Arc::new(Mutex::new(None));
+    let kept = Arc::clone(&outcome);
+    let home = move |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
+        let transport = Rc::new(transport(&node, &tasks, &own_pool(), HOME, 1 << 16));
+        let region = super::region::open(
+            &node,
+            &tasks,
+            Rc::clone(&transport),
+            Vec::new(),
+            super::channels(),
+        )
+        .await;
+        let layout = buffer::Layout::new(super::AREA, super::BODY_MAX).expect("a ring");
+        let mut test =
+            super::Test::new(node.clone(), tasks.clone(), layout, POOL, Some(region))
+                .await;
+        test.sync().await;
+        test.hub.set_rules(rules());
+        let session = transport.accept().await.expect("a session");
+        let link = test.hub.link(session.clone());
+        let mut hello = session.accept().await.expect("a stream");
+        header(&mut hello).await;
+        let mut hello = Box::pin(link.serve(hello));
+        let mut incoming = beside(&mut hello, session.accept())
+            .await
+            .expect("a stream");
+        beside(&mut hello, header(&mut incoming)).await;
+        let served = beside(&mut hello, link.serve(incoming)).await;
+        let Ok(hub::Served::Request(request)) = served else {
+            panic!("a request: {served:?}");
+        };
+        let held = Rc::strong_count(&transport);
+        let super::Test {
+            clock, hub, region, ..
+        } = test;
+        drop((hub, link, hello));
+        clock.sleep(Span::SECOND).await;
+        let with_reply = Rc::strong_count(&transport);
+        match end {
+            End::Drop => drop(request),
+            End::Send => request
+                .reply
+                .send(b"cd")
+                .await
+                .expect("the response is sent"),
+        }
+        drop((region, session));
+        clock.sleep(Span::SECOND).await;
+        let without_reply = Rc::strong_count(&transport);
+        *kept.lock().expect("not poisoned") = Some((held, with_reply, without_reply));
+    };
+    run_program(139, home, |node, tasks, at| async move {
+        let client = connect(&node, tasks, at, AGENT).await.expect("connects");
+        let mut request = pin!(client.request(b"ab"));
+        let mut quiet = pin!(
+            node.clock()
+                .sleep(Span::from_nanos(3 * Span::SECOND.nanos()))
+        );
+        poll_fn(|cx| match request.as_mut().poll(cx) {
+            Poll::Ready(_) => Poll::Ready(()),
+            Poll::Pending => quiet.as_mut().poll(cx),
+        })
+        .await;
+    });
+    outcome
+        .lock()
+        .expect("not poisoned")
+        .take()
+        .expect("the home ran")
 }

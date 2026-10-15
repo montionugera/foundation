@@ -37,8 +37,8 @@ pub(crate) enum Change {
         /// What the ticket admits.
         options: Options,
     },
-    /// Moves the spec pointer from `base` to version `base.version + 1` at `root`, and
-    /// gives each index of `homes` that has no home its listed one.
+    /// Moves the spec pointer from `base` to [`pointer`] of `base`, `root`, and
+    /// `homes`, and gives each index of `homes` that has no home its listed one.
     Spec {
         /// The pointer that the change was made on.
         base: Pointer,
@@ -70,6 +70,25 @@ pub(crate) struct Join {
     pub(crate) admission: [u8; 64],
     /// The node's status channel keys, by name under the node's name.
     pub(crate) status: Status,
+}
+
+/// The pointer after a `Spec` change of `base`, `root`, and `homes` applies: `base`
+/// when `root` is the root of `base` and `homes` is empty, as such a change changes
+/// nothing, and else version `base.version + 1` at `root`.
+///
+/// # Panics
+///
+/// When the pointer moves and `base.version` is `u64::MAX`.
+pub(crate) fn pointer(
+    base: Pointer,
+    root: Digest,
+    homes: &BTreeMap<channel::Key, node::Key>,
+) -> Pointer {
+    if root == base.root && homes.is_empty() {
+        base
+    } else {
+        base.next(root)
+    }
 }
 
 const HOME: u8 = 1;
@@ -189,10 +208,10 @@ impl Change {
         };
         take_body(&mut rest)
             .filter(|_| rest.is_empty())
-            .ok_or(Malformed::Body {
+            .ok_or(Malformed::Body(Undecoded {
                 kind,
                 length: bytes.len(),
-            })
+            }))
     }
 }
 
@@ -279,28 +298,39 @@ pub(crate) enum Malformed {
     /// The bytes are not a change of a kind that this build knows.
     Unknown(Unknown),
     /// The rest of the bytes is not the body of a change of that kind.
-    Body {
-        /// The kind byte.
-        kind: u8,
-        /// The length of the bytes.
-        length: usize,
-    },
+    Body(Undecoded),
 }
 
 impl fmt::Display for Malformed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unknown(unknown) => unknown.fmt(f),
-            Self::Body { kind, length } => write!(
-                f,
-                "a change of kind {kind} and {length} bytes \
-                 is not in the byte form of its kind"
-            ),
+            Self::Body(undecoded) => undecoded.fmt(f),
         }
     }
 }
 
 impl std::error::Error for Malformed {}
+
+/// Bytes of a change of a known kind that are not the byte form of that kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Undecoded {
+    /// The kind byte.
+    pub(crate) kind: u8,
+    /// The length of the bytes.
+    pub(crate) length: usize,
+}
+
+impl fmt::Display for Undecoded {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self { kind, length } = self;
+        write!(
+            f,
+            "a change of kind {kind} and {length} bytes is not in the byte form of \
+             its kind"
+        )
+    }
+}
 
 impl From<Unknown> for Malformed {
     fn from(unknown: Unknown) -> Self {
@@ -338,15 +368,9 @@ mod tests {
 
     use super::*;
     use crate::common::{
-        digest, home, index, join, key, name, options, public, record, spec,
-        status_bytes, with_status,
+        digest, encoded, home, index, join, key, name, options, public, spec,
+        status_bytes, ticket_change, with_status,
     };
-
-    fn encoded(change: &Change) -> Vec<u8> {
-        let mut out = Vec::new();
-        change.encode(&mut out);
-        out
-    }
 
     #[test]
     fn a_home_change_has_a_fixed_byte_form() {
@@ -384,10 +408,13 @@ mod tests {
         expected.extend(1_000_i64.to_le_bytes());
         expected.push(1);
         expected.extend(60_i64.to_le_bytes());
-        assert_eq!(encoded(&record(7, options("plant.edge", true))), expected);
+        assert_eq!(
+            encoded(&ticket_change(7, options("plant.edge", true))),
+            expected
+        );
         let mut options = options("plant.edge", false);
         options.ephemeral = None;
-        let bytes = encoded(&record(7, options));
+        let bytes = encoded(&ticket_change(7, options));
         assert_eq!(bytes[44..], [0, 0xe8, 0x03, 0, 0, 0, 0, 0, 0, 0]);
     }
 
@@ -431,7 +458,7 @@ mod tests {
             }
             let length = bytes.len();
             let error = Change::decode(&bytes).unwrap_err();
-            assert_eq!(error, Malformed::Body { kind: 4, length });
+            assert_eq!(error, Malformed::Body(Undecoded { kind: 4, length }));
         }
     }
 
@@ -447,7 +474,7 @@ mod tests {
         let length = bytes.len();
         assert_eq!(
             Change::decode(&bytes),
-            Err(Malformed::Body { kind: 4, length })
+            Err(Malformed::Body(Undecoded { kind: 4, length }))
         );
     }
 
@@ -469,7 +496,7 @@ mod tests {
             bytes.extend([0, 0]);
             let length = bytes.len();
             let error = Change::decode(&bytes).unwrap_err();
-            assert_eq!(error, Malformed::Body { kind: 4, length });
+            assert_eq!(error, Malformed::Body(Undecoded { kind: 4, length }));
         }
     }
 
@@ -484,7 +511,7 @@ mod tests {
             bytes.extend([0; 4]);
             let length = bytes.len();
             let error = Change::decode(&bytes).unwrap_err();
-            assert_eq!(error, Malformed::Body { kind: 4, length });
+            assert_eq!(error, Malformed::Body(Undecoded { kind: 4, length }));
         }
     }
 
@@ -499,7 +526,7 @@ mod tests {
         let length = bytes.len();
         assert_eq!(
             Change::decode(&bytes),
-            Err(Malformed::Body { kind: 4, length })
+            Err(Malformed::Body(Undecoded { kind: 4, length }))
         );
     }
 
@@ -523,7 +550,7 @@ mod tests {
         let length = bytes.len();
         assert_eq!(
             Change::decode(&bytes),
-            Err(Malformed::Body { kind: 4, length })
+            Err(Malformed::Body(Undecoded { kind: 4, length }))
         );
     }
 
@@ -607,7 +634,7 @@ mod tests {
     #[test]
     fn decode_refuses_an_unknown_kind() {
         let mut bytes = encoded(&home(1, 2));
-        for kind in [0, 5] {
+        for kind in std::iter::once(0).chain(SPEC + 1..=u8::MAX) {
             bytes[0] = kind;
             let error = Change::decode(&bytes).unwrap_err();
             assert_eq!(error, Malformed::Unknown(Unknown::Kind { kind }));
@@ -622,7 +649,7 @@ mod tests {
             let mut cut = bytes.clone();
             cut.resize(length, 0);
             let error = Change::decode(&cut).unwrap_err();
-            assert_eq!(error, Malformed::Body { kind: 1, length });
+            assert_eq!(error, Malformed::Body(Undecoded { kind: 1, length }));
             assert_eq!(
                 error.to_string(),
                 format!(
@@ -635,12 +662,12 @@ mod tests {
 
     #[test]
     fn decode_refuses_a_reusable_byte_that_is_neither_value() {
-        let mut bytes = encoded(&record(7, options("plant.edge", false)));
+        let mut bytes = encoded(&ticket_change(7, options("plant.edge", false)));
         assert_eq!(bytes[44], 0);
         bytes[44] = 2;
         let length = bytes.len();
         let error = Change::decode(&bytes).unwrap_err();
-        assert_eq!(error, Malformed::Body { kind: 3, length });
+        assert_eq!(error, Malformed::Body(Undecoded { kind: 3, length }));
     }
 
     #[test]
@@ -661,7 +688,7 @@ mod tests {
         let length = bytes.len();
         assert_eq!(
             Change::decode(&bytes),
-            Err(Malformed::Body { kind: 2, length })
+            Err(Malformed::Body(Undecoded { kind: 2, length }))
         );
     }
 
@@ -700,7 +727,7 @@ mod tests {
             prop::option::of(any::<i64>()),
         )
             .prop_map(|(id, prefix, reusable, expiry, ephemeral)| {
-                record(
+                ticket_change(
                     id,
                     Options {
                         prefix: name(&prefix),
@@ -750,12 +777,14 @@ mod tests {
             let mut bytes = encoded(&change);
             for length in 1..bytes.len() {
                 let error = Change::decode(&bytes[..length]).unwrap_err();
-                prop_assert_eq!(error, Malformed::Body { kind: bytes[0], length });
+                let body = Malformed::Body(Undecoded { kind: bytes[0], length });
+                prop_assert_eq!(error, body);
             }
             bytes.push(extra);
             let length = bytes.len();
             let error = Change::decode(&bytes).unwrap_err();
-            prop_assert_eq!(error, Malformed::Body { kind: bytes[0], length });
+            let body = Malformed::Body(Undecoded { kind: bytes[0], length });
+            prop_assert_eq!(error, body);
         }
 
         // Every byte form that decodes is the one that its change encodes to.

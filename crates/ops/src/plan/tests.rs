@@ -5,8 +5,10 @@ use std::path::PathBuf;
 
 use connector::kind::Table;
 use document::diagnostic::{Code, Diagnostic, Note};
-use document::{Position, Source, Span};
+use document::encoding::Checked;
+use document::{Document, Position, Span};
 use spec::channel::{self, Channel, Data};
+use spec::connector::Connector;
 use spec::data_type::DataType;
 use spec::definition::Definition;
 use spec::subject::Subject;
@@ -14,10 +16,12 @@ use types::channel::Key;
 use types::name::Name;
 use types::sample;
 
-use super::{Output, plan};
-use crate::common::{PLANT, Reader, SITE, files, front_ends, hcl, name, placed_site};
+use super::Output;
+use crate::common::{
+    ADMIN, SITE, create_kinds, files, front_ends, name, placed_site, plan, plant, shown,
+};
 use crate::error::Error;
-use crate::front_end::{self, File, FrontEnd};
+use crate::front_end::{File, FrontEnd, FrontEnds};
 
 fn empty() -> spec::Pointer {
     spec::Pointer {
@@ -30,7 +34,7 @@ fn run(
     texts: &[(&str, &str)],
     applied: &BTreeMap<Name, Definition>,
 ) -> Result<Output, Error> {
-    let kinds = Table::new().with("influx", Reader).with("opcua", Reader);
+    let kinds = create_kinds();
     let members = BTreeSet::from([name("edge")]);
     plan(
         &files(texts),
@@ -65,7 +69,7 @@ const INDEX: channel::Kind = channel::Kind::Index {
 
 #[test]
 fn shows_each_definition_in_file_order_then_the_counts() {
-    let planned = run(&[("plant.hcl", PLANT)], &BTreeMap::new()).expect("a plan");
+    let planned = run(&[("plant.hcl", plant())], &BTreeMap::new()).expect("a plan");
     assert_eq!(
         planned.text(),
         "\
@@ -74,8 +78,26 @@ fn shows_each_definition_in_file_order_then_the_counts() {
 + channel plant.dip
 + channel plant.trend
 + connector plc
++ channel plc.status.backoff
++ channel plc.status.class
++ channel plc.status.error
++ channel plc.status.in
++ channel plc.status.lost
++ channel plc.status.missed
++ channel plc.status.note
++ channel plc.status.restarts
++ channel plc.status.state
++ channel plc.status.time
 + connector influx
-6 to add, 0 to change, 0 to remove.
++ channel influx.status.backoff
++ channel influx.status.class
++ channel influx.status.confirmed
++ channel influx.status.error
++ channel influx.status.note
++ channel influx.status.restarts
++ channel influx.status.state
++ channel influx.status.time
+24 to add, 0 to change, 0 to remove.
 "
     );
 }
@@ -144,19 +166,8 @@ fn gives_the_json_of_the_site_plan() {
 
 #[test]
 fn gives_each_problem_with_its_place_and_fix() {
-    let wrong = PLANT.replacen("data_type", "datatype", 1);
-    assert_eq!(
-        problems(&[("plant.hcl", &wrong)]).text(),
-        "\
-error[document.missing-attribute]: the `channel` block has no `data_type`
-  --> plant.hcl:5:1
-fix: Add a `data_type` attribute such as \"f64\"
-
-error[document.unknown-attribute]: `datatype` is not an attribute of the `channel` block
-  --> plant.hcl:6:3
-fix: Use `kind`, `data_type`, `index`, `quality`, or `unit`, or remove it
-"
-    );
+    let wrong = plant().replacen("data_type", "datatype", 1);
+    assert_eq!(problems(&[("plant.hcl", &wrong)]).text(), shown("error["));
 }
 
 #[test]
@@ -192,20 +203,6 @@ fix: Use a file that ends in `.hcl`
                 "notes": [],
             },
         ]})
-    );
-}
-
-#[test]
-fn names_each_extension_of_the_table_in_the_fix() {
-    let mut front_ends = front_ends();
-    front_ends.insert("toml", FrontEnd { read: hcl });
-    let two = front_end::unknown(Source(0), &front_ends);
-    assert_eq!(two.fix, "Use a file that ends in `.hcl` or `.toml`");
-    front_ends.insert("yaml", FrontEnd { read: hcl });
-    let diagnostic = front_end::unknown(Source(0), &front_ends);
-    assert_eq!(
-        diagnostic.fix,
-        "Use a file that ends in `.hcl`, `.toml`, or `.yaml`"
     );
 }
 
@@ -258,12 +255,12 @@ fn reads_a_file_named_only_by_its_extension() {
 #[test]
 #[should_panic(expected = "invariant: a front end gives a problem with each error")]
 fn refuses_a_front_end_error_with_no_problem() {
-    let front_ends = BTreeMap::from([(
+    let front_ends = FrontEnds::new(
         "hcl",
         FrontEnd {
             read: |_, _| Err(Vec::new()),
         },
-    )]);
+    );
     let applied = BTreeMap::from([(name("a.time"), channel(1, INDEX))]);
     drop(plan(
         &files(&[("a.hcl", "")]),
@@ -372,21 +369,8 @@ fn gives_the_json_of_a_change_and_a_removal() {
 }
 
 #[test]
-#[should_panic(expected = "invariant: `node` gives a front end")]
-fn refuses_an_empty_table_of_front_ends() {
-    drop(plan(
-        &[],
-        empty(),
-        &BTreeMap::new(),
-        &BTreeSet::new(),
-        &BTreeMap::new(),
-        &Table::new(),
-    ));
-}
-
-#[test]
 fn names_one_problem_or_the_count_and_exits_with_2() {
-    let wrong = PLANT.replacen("data_type", "datatype", 1);
+    let wrong = plant().replacen("data_type", "datatype", 1);
     let two = problems(&[("plant.hcl", &wrong)]);
     assert_eq!(
         (two.to_string(), two.status()),
@@ -400,7 +384,7 @@ fn names_one_problem_or_the_count_and_exits_with_2() {
 
 #[test]
 fn escapes_a_control_character_in_the_text_of_a_problem() {
-    let front_ends = BTreeMap::from([(
+    let front_ends = FrontEnds::new(
         "hcl",
         FrontEnd {
             read: |source, _| {
@@ -422,7 +406,7 @@ fn escapes_a_control_character_in_the_text_of_a_problem() {
                 Err(vec![diagnostic])
             },
         },
-    )]);
+    );
     let error = plan(
         &files(&[("a\u{1b}\\.hcl", "")]),
         empty(),
@@ -649,4 +633,158 @@ fn gives_no_fingerprints_for_another_kind() {
             .iter()
             .all(|change| change.get("fingerprints").is_none())
     );
+}
+
+#[test]
+fn breaker_names_the_applied_channel_that_a_connector_replaces() {
+    let applied = BTreeMap::from([(name("plc"), channel(9, INDEX))]);
+    let kinds = create_kinds();
+    let members = BTreeSet::from([name("edge")]);
+    let (output, planned) = plan(
+        &files(&[("plant.hcl", plant())]),
+        empty(),
+        &applied,
+        &members,
+        &front_ends(),
+        &kinds,
+    )
+    .expect("a plan");
+    let mut next = 100;
+    let definitions = planned
+        .definitions(&applied, || {
+            next += 1;
+            Key::from_u128(next)
+        })
+        .expect("the definitions of the apply");
+    assert!(
+        !matches!(definitions.get(&name("plc")), Some(Definition::Channel(_))),
+        "the apply keeps the channel"
+    );
+    let changes = &json(&output)["changes"];
+    let lines = changes.as_array().expect("changes");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line["kind"] == "channel" && line["name"] == "plc"),
+        "the apply drops channel plc, and the plan shows:\n{}",
+        output.text()
+    );
+}
+
+#[test]
+fn shows_a_kind_change_as_an_add_and_a_removal() {
+    let applied = BTreeMap::from([(name("plc"), channel(9, INDEX))]);
+    let planned = run(&[("plant.hcl", plant())], &applied).expect("a plan");
+    assert_eq!(
+        planned.text(),
+        "\
++ channel plant.time
++ channel plant.spike
++ channel plant.dip
++ channel plant.trend
++ connector plc
++ channel plc.status.backoff
++ channel plc.status.class
++ channel plc.status.error
++ channel plc.status.in
++ channel plc.status.lost
++ channel plc.status.missed
++ channel plc.status.note
++ channel plc.status.restarts
++ channel plc.status.state
++ channel plc.status.time
++ connector influx
++ channel influx.status.backoff
++ channel influx.status.class
++ channel influx.status.confirmed
++ channel influx.status.error
++ channel influx.status.note
++ channel influx.status.restarts
++ channel influx.status.state
++ channel influx.status.time
+- channel plc
+24 to add, 0 to change, 1 to remove.
+"
+    );
+}
+
+#[test]
+fn shows_a_channel_that_replaces_a_connector_as_an_add_and_a_removal() {
+    let config = Checked::new(Document::default()).expect("a config");
+    let connector = Connector::new(name("opcua"), name("edge"), config);
+    let applied =
+        BTreeMap::from([(name("plant.time"), Definition::Connector(connector))]);
+    let planned = run(&[("plant.hcl", plant())], &applied).expect("a plan");
+    assert_eq!(
+        planned.text(),
+        "\
++ channel plant.time
++ channel plant.spike
++ channel plant.dip
++ channel plant.trend
++ connector plc
++ channel plc.status.backoff
++ channel plc.status.class
++ channel plc.status.error
++ channel plc.status.in
++ channel plc.status.lost
++ channel plc.status.missed
++ channel plc.status.note
++ channel plc.status.restarts
++ channel plc.status.state
++ channel plc.status.time
++ connector influx
++ channel influx.status.backoff
++ channel influx.status.class
++ channel influx.status.confirmed
++ channel influx.status.error
++ channel influx.status.note
++ channel influx.status.restarts
++ channel influx.status.state
++ channel influx.status.time
+- connector plant.time
+24 to add, 0 to change, 1 to remove.
+"
+    );
+}
+
+#[test]
+fn ends_with_a_note_of_each_definition_that_foundation_made() {
+    let applied = spec::founding::create(ADMIN.public());
+    let planned = run(&[], &applied).expect("a plan");
+    assert_eq!(
+        planned.text(),
+        "0 to add, 0 to change, 0 to remove.\nnote: 2 definitions that Foundation \
+         made are not in the files: @admin.@access, @admin.@subject\n"
+    );
+    let reserved = serde_json::json!([
+        { "name": "@admin", "kind": "access", "key": "@admin.@access" },
+        { "name": "@admin", "kind": "subject", "key": "@admin.@subject" },
+    ]);
+    assert_eq!(json(&planned)["reserved"], reserved);
+}
+
+#[test]
+fn notes_one_definition_that_foundation_made_in_the_singular() {
+    let mut applied = spec::founding::create(ADMIN.public());
+    applied.remove(&name("@admin.@access")).expect("the policy");
+    let planned = run(&[("site.hcl", &placed_site())], &applied).expect("a plan");
+    let text = planned.text();
+    let (_, note) = text.split_once(" to remove.\n").expect("the counts");
+    assert_eq!(
+        note,
+        "note: 1 definition that Foundation made is not in the files: @admin.@subject\n"
+    );
+}
+
+#[test]
+fn a_spec_with_no_definition_that_foundation_made_gets_no_note() {
+    let placed = placed_site();
+    let planned = run(&[("site.hcl", &placed)], &BTreeMap::new()).expect("a plan");
+    assert!(
+        planned.text().ends_with(" to remove.\n"),
+        "{}",
+        planned.text()
+    );
+    assert_eq!(json(&planned)["reserved"], serde_json::json!([]));
 }

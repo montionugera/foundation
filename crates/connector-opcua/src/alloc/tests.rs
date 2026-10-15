@@ -4,8 +4,9 @@ use std::ffi::c_void;
 
 use super::{
     connector_opcua_calloc as calloc, connector_opcua_free as free,
-    connector_opcua_malloc as malloc, connector_opcua_realloc as realloc,
+    connector_opcua_malloc as malloc, connector_opcua_realloc as realloc, exhausted,
 };
+use crate::child;
 
 /// Asserts that `ptr` is a block for C, aligned to 16.
 fn assert_aligned(ptr: *mut c_void) {
@@ -124,4 +125,116 @@ fn realloc_to_0_gives_a_pointer_as_malloc_of_0() {
 fn free_of_null_does_nothing() {
     // SAFETY: NULL is allowed.
     unsafe { free(std::ptr::null_mut()) };
+}
+
+/// Writes the byte `offset` bytes before `ptr` with C's `memset`, which the address
+/// sanitizer checks.
+#[cfg(asan)]
+fn write_before(ptr: *mut c_void, offset: usize) {
+    unsafe extern "C" {
+        fn memset(
+            dest: *mut c_void,
+            byte: std::ffi::c_int,
+            count: usize,
+        ) -> *mut c_void;
+    }
+    assert!(
+        (1..=super::ALIGN).contains(&offset),
+        "offset {offset} is outside the header of {} bytes",
+        super::ALIGN
+    );
+    // SAFETY: the header of the block holds the `ALIGN` bytes before `ptr`.
+    let before = unsafe { ptr.cast::<u8>().sub(offset) };
+    // SAFETY: `before` is in a live block.
+    unsafe { memset(before.cast(), 0, 1) };
+}
+
+#[cfg(asan)]
+#[test]
+fn writes_before_a_block_of_malloc() {
+    if crate::child::running() {
+        write_before(malloc(8), 1);
+    }
+}
+
+#[cfg(asan)]
+#[test]
+fn writes_at_the_start_of_the_header_of_a_block() {
+    if crate::child::running() {
+        write_before(malloc(8), super::ALIGN);
+    }
+}
+
+#[cfg(asan)]
+#[test]
+fn writes_before_a_block_of_calloc() {
+    if crate::child::running() {
+        write_before(calloc(2, 4), 1);
+    }
+}
+
+#[cfg(asan)]
+#[test]
+fn writes_before_a_block_of_realloc() {
+    if crate::child::running() {
+        // SAFETY: the block of `malloc` is live.
+        write_before(unsafe { realloc(malloc(8), 64) }, 1);
+    }
+}
+
+#[cfg(asan)]
+#[test]
+fn writes_before_a_block_that_a_failed_realloc_keeps() {
+    if crate::child::running() {
+        let ptr = malloc(8);
+        // SAFETY: `ptr` is live.
+        assert!(unsafe { realloc(ptr, HUGE) }.is_null());
+        write_before(ptr, 1);
+    }
+}
+
+#[cfg(asan)]
+#[test]
+fn asan_reports_a_write_before_a_block() {
+    for name in [
+        "alloc::tests::writes_before_a_block_of_malloc",
+        "alloc::tests::writes_at_the_start_of_the_header_of_a_block",
+        "alloc::tests::writes_before_a_block_of_calloc",
+        "alloc::tests::writes_before_a_block_of_realloc",
+        "alloc::tests::writes_before_a_block_that_a_failed_realloc_keeps",
+    ] {
+        let output = crate::child::output(
+            name,
+            &[("ASAN_OPTIONS", "allocator_may_return_null=1")],
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success()
+                && stderr.contains("ERROR: AddressSanitizer: use-after-poison"),
+            "{name}: {stderr}"
+        );
+    }
+}
+
+/// Stops the process through `exhausted` in a child process, and does nothing outside
+/// one.
+#[test]
+fn exhausts() {
+    if child::running() {
+        exhausted();
+    }
+}
+
+/// No test reaches a caller of `exhausted`: a constructor of `shim.c` gives NULL only
+/// when the global allocator fails, and an allocator that fails on demand is a mutable
+/// global. #2566 lists each caller, and holds a fix of `shim_client_new` and a test of
+/// what `Client::connect` reaches.
+#[test]
+fn exhausted_aborts_with_the_size_of_a_header() {
+    assert_eq!(
+        String::from_utf8(child::aborted("alloc::tests::exhausts", &[]).stderr)
+            .unwrap(),
+        "memory allocation of 16 bytes failed\nnote: run with `RUST_BACKTRACE=1` \
+         environment variable to display a backtrace\n"
+    );
 }

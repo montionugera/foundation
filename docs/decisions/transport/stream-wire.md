@@ -12,25 +12,120 @@
   a higher class has bytes to send, so a steady higher class starves the lower ones. It
   orders only the bytes that QUIC holds. All classes share one QUIC send window, so a
   message can wait for bytes of a lower class to be acknowledged (#797). The QUIC send
-  window, not the send budget, bounds what QUIC holds. A message that QUIC does not take
-  in full waits its turn, by class, then oldest first. Only the first sender in turn
-  writes, and only it wakes when QUIC has room. A write of a class ahead of every
-  waiter goes first; any other write waits, and a `try_send` gives the message back.
+  window, not the send budget, bounds what QUIC holds: each byte that it took, until
+  the peer acknowledges that byte and each byte before it on its stream. QUIC holds no
+  byte of a stream after its reset. While a gap in the acknowledgments keeps the window
+  full, QUIC takes no byte of the session, of a `Command` too, until the peer
+  acknowledges the gap (#797). Lost: to free each acknowledged run that is not at the
+  front of its stream, whose bound is the blocks with a byte that is not acknowledged,
+  about 54 MiB for a window of 1 MiB, and to count the held bytes under a second limit
+  beside the window, which is this rule with a larger window and one more limit
+  (`laptop.architect-2`, 2026-10-11T17:39:39Z,
+  https://github.com/synnaxlabs/foundation/issues/2361#issuecomment-6111809297). On a
+  path that reorders packets, a small window costs speed. Measured on box2 in sim time
+  (16 MiB as 256 messages of 64 KiB, 12.5 MB/s, 10 ms each way, 1 ms of jitter on both
+  links, the mean of 8 runs): a window of 256 KiB, 1 MiB, 1.5 MiB, and 2 MiB sends in
+  4340 ms, 2536 ms, 2308 ms, and 2151 ms, and holds at most 5, 17, 25, and 33 blocks of
+  64 KiB. The count before this rule sends in 2203 ms and 2094 ms at 256 KiB and 1 MiB,
+  and holds up to 29 and 136 blocks: it got its speed from bytes that it did not count.
+  With 100 µs of jitter the two differ by under 1% (`laptop.architect-2`,
+  2026-10-11T20:30:16Z,
+  https://github.com/synnaxlabs/foundation/issues/2361#issuecomment-6113419278). The
+  same value is the receive window, half of the stream credit, and the send budget that
+  the peer gets, so a larger window for such a path also raises what the node takes in.
+  Lost: a send window apart from the receive window. The size comes from the path, which
+  the two directions share, a lost packet holds the bytes after it at the receiver too,
+  and each caller gives one constant. Look again when the window is a setting of a node
+  (`laptop.architect-2`, 2026-10-11T21:18:40Z,
+  https://github.com/synnaxlabs/foundation/pull/2439#issuecomment-6113874516). A message
+  that QUIC does not take in full waits its turn, by class, then oldest first. Only the
+  first sender in turn writes, and only it wakes when QUIC has room. A write of a class
+  ahead of every waiter goes first; any other write waits, and a `try_send` gives the
+  message back.
   Stream credit is twice the connection window, so a stream never waits on its own
   credit while the connection has room. This relies on reader-granted credits (B3): a
   node takes every byte it granted credit for. A peer that gives less stalls only its
   own connection (#819). The turn goes `Command`, then `Latest` and `Complete` by share,
   then `CatchUp`. While streams of both `Latest` and `Complete` hold a message to send,
   QUIC takes 3 bytes of `Complete` for each byte of `Latest`, within about one window:
-  `Complete` goes ahead while it is owed bytes. A class alone makes no debt and no
-  credit, and pays off what it owes or is owed. Room that a stream got and its caller
-  has not taken counts for neither class, and a message that `try_send` gave back is not
-  held. The send budget gives room in the order of the turn. Room that a message of the
-  owed class frees waits for that class's next message while the other class holds room,
-  so neither class can take the share through the budget (#819). A change of this
-  share changes the share bound of `transport/benches/send.rs` in the same PR. Decided
-  by architect-2 (#977, 2026-10-07 17:15 UTC):
-  https://github.com/synnaxlabs/foundation/issues/977#issuecomment-6042983190. Lost: a
+  `Complete` goes ahead while it is owed bytes. A class competes while a stream of it
+  holds a message, and for one peer window of the other class's bytes after QUIC took a
+  byte of it or after a `try_send` of it was given back. A class that competes alone
+  makes no debt and no credit, and pays off what it owes or is owed. While both
+  classes wait, a class is owed at most one peer window of `Latest` bytes, so the
+  credit of a whole message is never lost. A class that does not wait keeps no credit
+  past one peer window of its own bytes once the other class sent one peer window alone.
+  So a class that starts again after the other sent alone goes ahead of it by its
+  credit, at most one window, and the rest of each of its messages that holds room in
+  the send budget, at most one more window. When the other class holds no message as its
+  credit ends, as a `Latest` stream on `try_send` between its calls, it also takes the
+  rest of that step of credit, at most one more window. After a pause in which neither
+  class sends, each keeps the credit of the time both waited, at most one peer window of
+  `Latest` bytes, because no byte moves in the pause and the share has no clock. When a
+  simulation of a deployed load shows `Latest` behind `Complete` by more than these
+  bounds after such a pause, the share gets a signal of the pause. A class that holds
+  less than its share when QUIC gives room sends what it holds first, and the core holds
+  no QUIC room for its later messages. So one `Latest` stream on `try_send` sends at
+  most one message for each step of credit. So the share bounds a `Latest` stream on
+  `try_send` only while its samples are at least one step of credit; smaller samples go
+  once each step. Lost: a stream that takes a second sample while QUIC holds the first,
+  because that sample then waits behind an older one, and the core holds QUIC room for a
+  later message: architect-2 (#1998, 2026-10-09 04:40 UTC):
+  https://github.com/synnaxlabs/foundation/pull/1998#issuecomment-6074392062. Room that
+  a stream got and its caller has not taken counts for neither class, and a message that
+  `try_send` gave back is not held. The caller of `send` writes the rest of its message;
+  the stream writes the rest of a message from `try_send` or of a finished stream. It
+  also writes the rest of a message whose `send` future leaked, from the next use of the
+  sender (CANCELLED SEND; `laptop.architect-2`, 2026-10-11T17:27:26Z:
+  https://github.com/synnaxlabs/foundation/pull/2399#issuecomment-6111698287). A rest
+  that the stream held for a waiting caller would take each freed byte before the other
+  class's caller wakes. The send budget gives room in the order of the turn. While the
+  owed class competes and a claim of the other class holds room, room that a message of
+  the owed class frees waits for that class's next message, and the budget starts no new
+  message of the other class, so neither class can take the share through the budget
+  (#819). A change of this share changes the share bound of `transport/benches/send.rs`
+  in the same PR. The share holds because each window is at least twice the message
+  limit, so one message of each class fits: architect-2 (#1998, 2026-10-09 03:45 UTC):
+  https://github.com/synnaxlabs/foundation/pull/1998#issuecomment-6073837407. The
+  share: architect-2 (#977, 2026-10-07 17:15 UTC):
+  https://github.com/synnaxlabs/foundation/issues/977#issuecomment-6042983190. The
+  competition memory and the cap: architect-2 (#1311, 2026-10-07 11:14 UTC and 12:09
+  UTC): https://github.com/synnaxlabs/foundation/issues/1311#issuecomment-6036747607 and
+  https://github.com/synnaxlabs/foundation/issues/1311#issuecomment-6037588359.
+  Supersedes, for `Complete`, the cap of rule 3 of
+  https://github.com/synnaxlabs/foundation/issues/1311#issuecomment-6037588359.
+  Supersedes the cap of
+  https://github.com/synnaxlabs/foundation/pull/1998#issuecomment-6069398776. Decided
+  by architect-2 (#1998, 2026-10-08 21:44 UTC):
+  https://github.com/synnaxlabs/foundation/pull/1998#issuecomment-6069633568. The cut
+  of the credit of a class that does not wait: architect-2 (#1998, 2026-10-08 22:51
+  UTC): https://github.com/synnaxlabs/foundation/pull/1998#issuecomment-6070623279.
+  Supersedes the sentence on the credit of a class that does not wait of
+  https://github.com/synnaxlabs/foundation/pull/1998#issuecomment-6069633568, and
+  https://github.com/synnaxlabs/foundation/pull/1998#issuecomment-6070164489. The lead
+  after the credit: architect-2 (#1998, 2026-10-09 01:34 UTC):
+  https://github.com/synnaxlabs/foundation/pull/1998#issuecomment-6072445520, and
+  architect-2 (#1998, 2026-10-09 03:15 UTC):
+  https://github.com/synnaxlabs/foundation/pull/1998#issuecomment-6073524571. The rests
+  in the lead: architect-2 (#1998, 2026-10-09 06:15 UTC):
+  https://github.com/synnaxlabs/foundation/pull/1998#issuecomment-6075478571.
+  Supersedes the rest of one message for each stream of
+  https://github.com/synnaxlabs/foundation/pull/1998#issuecomment-6073524571 and the
+  lead sentence of
+  https://github.com/synnaxlabs/foundation/pull/1998#issuecomment-6074595514.
+  Supersedes the sentence on the lead and the trigger bound of
+  https://github.com/synnaxlabs/foundation/pull/1998#issuecomment-6070623279. Lost: a
+  ration of the class with credit while the owed class competes only by its memory, and
+  a refused `try_send` that holds room in the budget, because each holds QUIC credit
+  idle until the `Latest` caller calls again, and with no clock that wait has no bound.
+  Lost: a `try_send` that keeps its newest refused message in the core, because it
+  changes the `try_send` contract and holds a pool block for each such stream. Who
+  writes the rest: architect-2 (#1311, 2026-10-07 17:18 UTC):
+  https://github.com/synnaxlabs/foundation/issues/1311#issuecomment-6043036616. The
+  admission of new messages: architect-2 (#1311, 2026-10-08 05:49 UTC, and #1998,
+  2026-10-08 21:12 UTC):
+  https://github.com/synnaxlabs/foundation/issues/1311#issuecomment-6053290214 and
+  https://github.com/synnaxlabs/foundation/pull/1998#issuecomment-6069147833. Lost: a
   connection per class, because four handshakes and four congestion controllers
   compete on one path (#55). Settled by the advisor and the coordinator under the
   person's delegation (#789).
@@ -83,24 +178,43 @@
   adds no round trip. The hello has its own one-way stream: a node lets the peer open
   `streams_max` + 1 one-way streams, and does not give back the credit of the peer's
   hello stream when it ends, so after the hello the peer has at most `streams_max` open.
-  Until the peer's hello arrives, a node opens and accepts no stream; the caller bounds
-  that wait, with its other limits before admission (#563). A sender obeys only the
-  peer's values: each message is at most the peer's `message_bytes_max`, and the send
-  budget is the peer's `window_bytes`. A value over what the node can count counts as
-  the largest it can count. A peer breaks the protocol when its hello ends inside a
+  Until the peer's hello arrives, a node opens and accepts no stream; a peer whose hello
+  has not arrived twice the idle timeout after the handshake breaks the protocol, with
+  the reason `a peer with no hello`. A check that comes after the idle timeout was also
+  due ends the session as timed out. QUIC counts the idle timeout again from each packet
+  from the peer, and from this side's first send after it that asks for an ack
+  (`laptop.architect-2`, #2149, 2026-10-09 16:42 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2149#issuecomment-6085189583; 17:07 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2149#issuecomment-6085581998; 18:14 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2149#issuecomment-6086657957). A link
+  that loses most datagrams can also end an honest session with this error, when the
+  peer's hello and each resend of it are lost until the bound (`laptop.architect-2`,
+  #2149, 2026-10-09 17:21 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2149#issuecomment-6085801016). The idle
+  timeout is QUIC's: `idle`, or 3 PTO when that is longer. The second idle timeout is
+  for the probe that resends a hello that a cut the session lives through (PROBE GAP)
+  held back (`laptop.architect-2`, #1628, 2026-10-09 13:35 UTC:
+  https://github.com/synnaxlabs/foundation/issues/1628#issuecomment-6082002858; twice
+  the idle timeout and `noq_proto::Connection::idle_timeout`, after a finding of
+  `breaker` on #2149, by `laptop.architect-2`, 14:19 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2149#issuecomment-6082780054).
+  Supersedes the rule that the caller bounds that wait (#55, #563). A sender obeys only
+  the peer's values: each message is at most the peer's `message_bytes_max`, and the
+  send budget is the peer's `window_bytes`. A value over what the node can count counts
+  as the largest it can count. A peer breaks the protocol when its hello ends inside a
   pair, misses a required id, has an id out of order, is over 256 bytes, has a
   `message_bytes_max` below 1472 (architect, #1198:
-  https://github.com/synnaxlabs/foundation/issues/1198) or a `window_bytes` below it, or
-  resets. A peer whose QUIC transport parameters cannot take this node's whole hello at
-  once (no one-way stream, or a stream or connection window under the hello) also breaks
-  it, with the reason `a peer with no room for the hello`. A dial that breaks so gets
-  `Error::Broken` with no `Connected` before it, and an accept gives the caller no
-  event. Before the handshake is confirmed, QUIC gives the peer no reason, only
-  APPLICATION_ERROR. A Foundation node always has room: `streams_max` is at least 1, and
-  `window_bytes` is at least `message_bytes_max`, which is at least 1472. A compile-time
-  assertion holds 1472 at or above the hello limit, so only a foreign peer gets this.
-  Lost: send the hello later when credit comes, because `open` then needs a second gate
-  and a state that only a foreign peer reaches. `Endpoint::write` gives
+  https://github.com/synnaxlabs/foundation/issues/1198) or a `window_bytes` below twice
+  it, or resets. A peer whose QUIC transport parameters cannot take this node's whole
+  hello at once (no one-way stream, or a stream or connection window under the hello)
+  also breaks it, with the reason `a peer with no room for the hello`. A dial that
+  breaks so gets `Error::Broken` with no `Connected` before it, and an accept gives the
+  caller no event. Before the handshake is confirmed, QUIC gives the peer no reason,
+  only APPLICATION_ERROR. A Foundation node always has room: `streams_max` is at least
+  1, and `window_bytes` is at least twice `message_bytes_max`, which is at least 1472. A
+  compile-time assertion holds 1472 at or above the hello limit, so only a foreign peer
+  gets this. Lost: send the hello later when credit comes, because `open` then needs a
+  second gate and a state that only a foreign peer reaches. `Endpoint::write` gives
   `Error::TooLarge` for a message over the peer's limit; a caller that forwards a
   writer's frame gives the writer `Large`, and the writer splits the frame (LARGE
   FRAME). Proposed by `network` in #55; approved by the coordinator on PR #407. The
@@ -145,14 +259,18 @@
   UTC:
   https://github.com/synnaxlabs/foundation/issues/68#issuecomment-6044783047, and
   2026-10-07 20:44 UTC:
-  https://github.com/synnaxlabs/foundation/issues/68#issuecomment-6046501911). The
+  https://github.com/synnaxlabs/foundation/issues/68#issuecomment-6046501911). Lost:
+  a list that gives back its capacity at the end of each message, because it allocates
+  for each message that waits (`laptop.architect-2`, #2304, 2026-10-10 22:35 UTC:
+  https://github.com/synnaxlabs/foundation/pull/2304#issuecomment-6102910746). The
   block's count changes once for each run over 1452 bytes. A short run changes no count.
   Decided by `laptop.architect-2` (#68, 2026-10-08 07:29 UTC:
   https://github.com/synnaxlabs/foundation/issues/68#issuecomment-6054932643). A
   stretch that is only the last part, of at most 1452 bytes with no zeros, goes to noq
   from the block. Each other stretch of at most 1452 bytes goes to noq from the buffer,
   and noq copies it in the same `write` (design point 2 of 6044783047). A longer one is
-  copied into a new buffer of its length, which noq keeps until the ACK. A partial write
+  copied into a new buffer of its length, which noq keeps until the peer acknowledges
+  it and each byte before it on its stream, or the stream resets. A partial write
   of it keeps the rest and copies nothing again. Lost: writes of at most 1452 bytes,
   because noq-proto allocates about 3 times for each segment that they fill (1.87x
   copy-then-send and 13 allocations over `send` for 1000 ranges of 8 B); and writes of
@@ -167,9 +285,14 @@
   its length, because the second walk costs more than the second copy (2.31x
   copy-then-send for 1000 ranges of 8 B); a copy into a new `Vec` as the walk goes,
   because the `Vec` grows, or takes the rest of the message and noq holds the extra
-  capacity until the ACK; and a last long run that takes the block, because it gave no
-  time gain on box2 and adds a case. Decided by `laptop.architect-2` (#68, 2026-10-08
-  08:13 UTC, one walk:
+  capacity until the peer acknowledges it and each byte before it on its stream, or the
+  stream resets; and a last long run that takes the block, because it gave no time gain
+  on box2 and adds a case. Lost: a copy of a longer stretch into a block of the shard's
+  pool, because noq still copies each shorter stretch to the heap, and a write would
+  wait for a block in the middle of a message, with no end when each block is held by a
+  write that waits (`laptop.architect-2`, #1879, 2026-10-08 16:29 UTC:
+  https://github.com/synnaxlabs/foundation/pull/1879#issuecomment-6064411384). Decided
+  by `laptop.architect-2` (#68, 2026-10-08 08:13 UTC, one walk:
   https://github.com/synnaxlabs/foundation/issues/68#issuecomment-6055676016; and 08:25
   UTC, the connection's buffer:
   https://github.com/synnaxlabs/foundation/issues/68#issuecomment-6055859489; and

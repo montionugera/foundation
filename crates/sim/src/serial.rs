@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::task::{Poll, Waker};
+use std::task::Poll;
 
 use env::rng::Rng;
 use env::serial::{Config, Error, Settings};
@@ -12,6 +12,7 @@ use types::time::{Monotonic, Rate};
 use crate::EIO;
 use crate::chance::roll;
 use crate::line;
+use crate::log::Waker;
 
 /// The bytes that each end holds not yet arrived, and not yet read: the transmit
 /// buffer of a Linux UART and the read buffer of a Linux TTY.

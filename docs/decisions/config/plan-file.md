@@ -6,14 +6,14 @@
   The bytes hold no span. Another version is `plan::Error::Version`, which says to plan
   again; other bytes are `plan::Error::Malformed` at the offset of the field that holds
   the first wrong byte, or of the field that the bytes cut. `decode` checks only the
-  form. `definitions` refuses the cases below, and `spec::region::check` refuses each
-  problem of the definitions after the plan. Neither checks `homes`, and neither refuses
-  a change only because its new bytes equal the stored bytes: with a true `old`, at a
-  planned name and kind, such a change states nothing false and changes nothing. #337 PR
-  2b, which applies the homes, does no check of its own: `Mesh::apply` refuses a name
-  that is not an index (`NotIndex`) and, for an index with no home, a home that is no
-  member (`UnknownNode`), and gives no home to an index that has one
-  (`laptop.architect`, 2026-10-08T18:35:16Z:
+  form. `definitions` refuses the cases below, and `spec::region::check` and
+  `config::plan::check` (below) refuse problems of the definitions after the plan. None
+  checks `homes`, and none refuses a change only because its new bytes equal the stored
+  bytes: with a true `old`, at a planned name and kind, such a change states nothing
+  false and changes nothing. #337 PR 2b, which applies the homes, does no check of its
+  own: `Mesh::apply` refuses a name that is not an index (`NotIndex`) and, for an index
+  with no home, a home that is no member (`UnknownNode`), and gives no home to an index
+  that has one (`laptop.architect`, 2026-10-08T18:35:16Z:
   https://github.com/synnaxlabs/foundation/issues/1931#issuecomment-6066553633). No
   check of its own decided by `laptop.architect-2`, 2026-10-08T21:30:44Z
   (https://github.com/synnaxlabs/foundation/pull/2007#issuecomment-6069434343), which
@@ -73,3 +73,44 @@
   and the index has no home until a later change gives one (SPEC APPLY). Decided by
   `laptop.architect-2` (2026-10-08T23:51:37Z, items 3 and 4 of
   https://github.com/synnaxlabs/foundation/pull/2035#issuecomment-6071339913).
+  `config::plan::check(definitions, members, kinds)` checks the definitions after the
+  plan, with no span or note. It gives the first stage with problems:
+  `config.private-key` for each string of a definition; then, together, what the kind
+  table refuses in the kind and config of each connector, `config.long-name` for each
+  connector with a status name that is too long, `config.duplicate-name`, and
+  `config.subject-is-connector`; then, together, `config.implied-channel` for each
+  status channel that the kind of a connector writes (STATUS PLACEMENT; #2295;
+  `laptop.architect-2`, 2026-10-10T22:35:37Z,
+  https://github.com/synnaxlabs/foundation/pull/2257#issuecomment-6102913855), then for
+  each status channel of a connector that the definitions lack or hold as another
+  channel (STATUS PLACEMENT; `laptop.architect-2`, 2026-10-12T21:39:19Z, item 2 of
+  https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133099350; the reason
+  of the stage, 2026-10-12T21:48:03Z,
+  https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133221337; the stage
+  of the write check, 2026-10-12T22:33:22Z,
+  https://github.com/synnaxlabs/foundation/pull/2498#issuecomment-6133885580), then
+  for each other channel with an edge to a status channel (STATUS PLACEMENT); then
+  `config.unplaced`, `config.connector-home`, `config.split-placement`,
+  `config.writer-nodes`, and `config.unknown-node`.
+  `spec::access::Policy::new` refuses an empty `allow`, so `Plan::decode` refuses it.
+  The `ops` apply calls `check` after `definitions` and before `Mesh::apply`, with the
+  members and the kind table of the node that applies, as both can change after `plan`.
+  Decided by `laptop.architect-2`, 2026-10-08T21:36:36Z
+  (https://github.com/synnaxlabs/foundation/issues/2013). The rules are in `config`
+  once, on one model of the definitions that `plan` builds with spans, and both take the
+  connectors of an index in name order, so each gives the same problems. Name order, and
+  an empty `allow` refused in `spec`: `laptop.architect-2`, 2026-10-09T00:48:39Z
+  (https://github.com/synnaxlabs/foundation/issues/2013#issuecomment-6071969872).
+  This changes the first-writer order of
+  https://github.com/synnaxlabs/foundation/pull/1886#issuecomment-6061802143. A message
+  of a later stage can quote a string of a definition, so no later stage runs on a key.
+  The problems of the second stage each read one definition or one name, and none needs
+  another to pass. The plan rules read the kind of each connector and each name, so an
+  unknown kind or a duplicate name gives false problems there. Lost: one stage with all
+  problems. The stages: decided by `laptop.architect-2`, 2026-10-09T01:57:07Z
+  (https://github.com/synnaxlabs/foundation/pull/2067#issuecomment-6072680913).
+  `check` gives `config.duplicate-name` in name order, as the definitions of a plan hold
+  no file order; `config::check` gives it in file order, at the later block. Lost: name
+  order in both, which puts the span on the first block, where a person does not look.
+  Decided by `laptop.architect-2`, 2026-10-09T03:19:32Z, item 2 of
+  https://github.com/synnaxlabs/foundation/pull/2067#issuecomment-6073571855.

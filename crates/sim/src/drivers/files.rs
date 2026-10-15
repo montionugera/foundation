@@ -1,17 +1,24 @@
 //! The `env::files` drivers of a simulated node.
 
-use std::cell::RefCell;
+use std::future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use block::{Block, Unique};
-use env::files::{Mode, Request};
+use env::files::{Error, Mode, Operation, Request};
+use env::paths::Found;
 
 use super::Node;
+use crate::DIRECTORY;
 use crate::disk::Handle;
 use crate::files::{Call, Done, Ended, Held};
+use crate::log::{self, Kept};
 use crate::state::lock;
+
+/// The data directory that [`env::files::Driver::shown`] joins to, as `os` gives an
+/// absolute path.
+const ROOT: &str = "/data";
 
 impl Node {
     /// Starts `call` on `path` now, keeping `held` until it ends.
@@ -19,11 +26,13 @@ impl Node {
     /// # Panics
     ///
     /// Outside a thread that the sim started, and on a thread of another node.
-    fn submit(&self, path: &Path, call: Call, held: Option<Held>) -> Wait {
+    fn submit(&self, path: PathBuf, call: Call, held: Option<Held>) -> Wait {
         self.running("a file call");
         let mut state = lock(&self.shared);
         let now = state.now();
-        let key = state.files().submit(now, self.node, path, call, held);
+        let key = state
+            .files()
+            .submit(now, self.node, path, call, held.map(Kept::new));
         drop(state);
         Wait {
             node: self.clone(),
@@ -39,7 +48,7 @@ impl Node {
         call: Call,
         map: impl FnOnce(Done) -> T + 'a,
     ) -> Request<'a, T> {
-        let wait = self.submit(path, call, None);
+        let wait = self.submit(path.to_path_buf(), call, None);
         Box::pin(async move { Ok(map(wait.await.result?)) })
     }
 }
@@ -54,15 +63,48 @@ impl env::files::Driver for Node {
             let Done::Open { handle, len } = done else {
                 unreachable!("invariant: an open gives a file")
             };
+            lock(&self.shared).files().opened(self.node, handle, path);
             let node = self.clone();
-            let path = RefCell::new(path.to_path_buf());
-            let descriptor: Box<dyn env::files::Descriptor> = Box::new(Descriptor {
-                node,
-                path,
-                handle,
-                len,
-            });
+            let descriptor: Box<dyn env::files::Descriptor> =
+                Box::new(Descriptor { node, handle, len });
             descriptor
+        })
+    }
+
+    fn open_absolute<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Request<'a, Box<dyn env::files::Descriptor>> {
+        let wait = self.submit(path.to_path_buf(), Call::Host(Operation::Open), None);
+        let key = wait.key;
+        Box::pin(async move {
+            wait.await.result?;
+            let found = lock(&self.shared).paths().read(self.node, path, usize::MAX);
+            let io = |code| Error::Io {
+                path: path.to_path_buf(),
+                operation: Operation::Open,
+                code,
+            };
+            match found {
+                Ok(Found::File(bytes)) => {
+                    lock(&self.shared).files().opened_host(self.node, key, path);
+                    let descriptor: Box<dyn env::files::Descriptor> = Box::new(Host {
+                        node: self.clone(),
+                        key,
+                        path: path.to_path_buf(),
+                        bytes,
+                    });
+                    Ok(descriptor)
+                }
+                Ok(Found::Directory(_)) => Err(io(DIRECTORY)),
+                Ok(Found::Large) => {
+                    unreachable!("invariant: no file is over usize::MAX")
+                }
+                Err(env::paths::Error::NotFound) => Err(Error::NotFound {
+                    path: path.to_path_buf(),
+                }),
+                Err(env::paths::Error::Io { code }) => Err(io(code)),
+            }
         })
     }
 
@@ -95,6 +137,10 @@ impl env::files::Driver for Node {
             bytes
         })
     }
+
+    fn shown(&self, path: &Path) -> PathBuf {
+        Path::new(ROOT).join(path)
+    }
 }
 
 /// A file call in flight. A drop before the call ends leaves it to end in the run.
@@ -109,7 +155,7 @@ impl Future for Wait {
     type Output = Ended;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Ended> {
-        let waker = cx.waker().clone();
+        let waker = log::Waker::new(cx.waker().clone());
         let (poll, unused) = lock(&self.node.shared).files().poll(self.key, waker);
         drop(unused);
         self.taken = poll.is_ready();
@@ -129,10 +175,18 @@ impl Drop for Wait {
 /// One open file of a node. A drop closes it.
 struct Descriptor {
     node: Node,
-    /// Its path now: a rename changes it.
-    path: RefCell<PathBuf>,
     handle: Handle,
     len: u64,
+}
+
+impl Descriptor {
+    /// Starts `call` on the path of this descriptor now, keeping `held` until it ends.
+    fn submit(&self, call: Call, held: Option<Held>) -> Wait {
+        let path = lock(&self.node.shared)
+            .files()
+            .path(self.node.node, self.handle);
+        self.node.submit(path, call, held)
+    }
 }
 
 impl env::files::Descriptor for Descriptor {
@@ -148,7 +202,7 @@ impl env::files::Descriptor for Descriptor {
             bytes,
         };
         let held = Some(Held::Parts(parts.to_vec()));
-        let wait = self.node.submit(&self.path.borrow(), call, held);
+        let wait = self.submit(call, held);
         Box::pin(async move { wait.await.result.map(drop) })
     }
 
@@ -159,11 +213,10 @@ impl env::files::Descriptor for Descriptor {
             offset,
             len,
         };
-        let wait = self
-            .node
-            .submit(&self.path.borrow(), call, Some(Held::Into(into)));
+        let wait = self.submit(call, Some(Held::Into(into)));
         Box::pin(async move {
             let Ended { result, held } = wait.await;
+            let held = held.map(Kept::into_inner);
             let (Done::Read(bytes), Some(Held::Into(mut into))) = (result?, held)
             else {
                 unreachable!("invariant: a read gives bytes and keeps its block")
@@ -177,7 +230,8 @@ impl env::files::Descriptor for Descriptor {
         let call = Call::Sync {
             handle: self.handle,
         };
-        self.node.request(&self.path.borrow(), call, drop)
+        let wait = self.submit(call, None);
+        Box::pin(async move { wait.await.result.map(drop) })
     }
 
     fn rename<'a>(&'a self, from: &'a Path, to: &'a Path) -> Request<'a, ()> {
@@ -185,12 +239,7 @@ impl env::files::Descriptor for Descriptor {
             handle: self.handle,
             to: to.to_path_buf(),
         };
-        let wait = self.node.submit(from, call, None);
-        Box::pin(async move {
-            wait.await.result?;
-            *self.path.borrow_mut() = to.to_path_buf();
-            Ok(())
-        })
+        self.node.request(from, call, drop)
     }
 
     fn close(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()>>> {
@@ -204,12 +253,10 @@ impl env::files::Descriptor for Descriptor {
         let call = Call::Unlink {
             handle: self.handle,
         };
-        let wait = self.node.submit(&path, call, None);
-        Box::pin(async move {
-            let result = wait.await.result.map(drop);
-            Close(Some(*self)).await;
-            result
-        })
+        let wait = self.node.submit(path, call, None);
+        // The call holds the file until it ends, as the descriptor of `os` does.
+        drop(self);
+        Box::pin(async move { wait.await.result.map(drop) })
     }
 }
 
@@ -220,8 +267,74 @@ impl Drop for Descriptor {
         // node.
         let unused = lock(&self.node.shared)
             .files()
-            .release(self.node.node, self.handle);
+            .close(self.node.node, self.handle);
         drop(unused);
+    }
+}
+
+/// A file of the host, read whole at its open. `File` opens it to read only, so it
+/// never writes, renames, or removes it.
+struct Host {
+    node: Node,
+    /// The key of its open, which keys its descriptor.
+    key: u64,
+    path: PathBuf,
+    bytes: Vec<u8>,
+}
+
+impl env::files::Descriptor for Host {
+    fn len(&self) -> u64 {
+        u64::try_from(self.bytes.len()).expect("invariant: usize fits u64")
+    }
+
+    fn write_at<'a>(&'a self, _: u64, _: &'a [Block]) -> Request<'a, ()> {
+        unreachable!("invariant: a host file is open to read")
+    }
+
+    fn read_at(&self, offset: u64, into: Unique) -> Request<'_, Unique> {
+        let call = Call::Host(Operation::ReadAt);
+        let held = Some(Held::Into(into));
+        let wait = self.node.submit(self.path.clone(), call, held);
+        Box::pin(async move {
+            let Ended { result, held } = wait.await;
+            let held = held.map(Kept::into_inner);
+            result?;
+            let Some(Held::Into(mut into)) = held else {
+                unreachable!("invariant: a read keeps its block")
+            };
+            let start = usize::try_from(offset).expect("invariant: File checked it");
+            let bytes = self.bytes.get(start..start + into.len());
+            into.copy_from_slice(bytes.expect("invariant: File checked the range"));
+            Ok(into)
+        })
+    }
+
+    fn sync(&self) -> Request<'_, ()> {
+        Box::pin(future::ready(Ok(())))
+    }
+
+    fn rename<'a>(&'a self, _: &'a Path, _: &'a Path) -> Request<'a, ()> {
+        unreachable!("invariant: a host file is open to read")
+    }
+
+    fn close(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()>>> {
+        Box::pin(future::ready(()))
+    }
+
+    fn remove(
+        self: Box<Self>,
+        _: PathBuf,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>>>> {
+        unreachable!("invariant: a host file is open to read")
+    }
+}
+
+impl Drop for Host {
+    fn drop(&mut self) {
+        // As for `Descriptor`, no drop follows the crash that closed it.
+        lock(&self.node.shared)
+            .files()
+            .close_host(self.node.node, self.key);
     }
 }
 
@@ -234,7 +347,7 @@ impl Future for Close {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         let descriptor =
             (self.0.as_ref()).expect("invariant: a close is not polled after it ends");
-        let waker = cx.waker().clone();
+        let waker = log::Waker::new(cx.waker().clone());
         let (poll, unused) = lock(&descriptor.node.shared)
             .files()
             .poll_close(descriptor.handle, waker);
