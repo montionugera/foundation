@@ -30,7 +30,7 @@ mod used;
 use error::Error;
 pub use error::Failure;
 pub use front_end::{FrontEnd, FrontEnds};
-pub use node::Node;
+pub use node::{Config, Node};
 use operation::Parsed;
 pub use serve::serve;
 pub use start::Start;

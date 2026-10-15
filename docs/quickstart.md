@@ -116,6 +116,7 @@ foundation plan plant.hcl --out plant.plan
 + channel plc.status.in
 + channel plc.status.lost
 + channel plc.status.missed
++ channel plc.status.note
 + channel plc.status.restarts
 + channel plc.status.state
 + channel plc.status.time
@@ -124,10 +125,11 @@ foundation plan plant.hcl --out plant.plan
 + channel influx.status.class
 + channel influx.status.confirmed
 + channel influx.status.error
++ channel influx.status.note
 + channel influx.status.restarts
 + channel influx.status.state
 + channel influx.status.time
-22 to add, 0 to change, 0 to remove.
+24 to add, 0 to change, 0 to remove.
 note: 2 definitions that Foundation made are not in the files: @admin.@access, @admin.@subject
 ```
 
@@ -142,7 +144,7 @@ foundation apply plant.plan
 ```
 
 ```text
-Applied plant.plan: 22 added, 3 homes listed.
+Applied plant.plan: 24 added, 3 homes listed.
 ```
 
 `apply` refuses a plan when the node's config changed after the plan. Plan again.
@@ -154,13 +156,13 @@ foundation status
 ```
 
 ```text
-CONNECTOR  KIND    STATE    ADDRESS                    IN    CONFIRMED
-influx     influx  running  http://localhost:8086      -     1517
-plc        opcua   running  opc.tcp://localhost:50000  1520  -
+CONNECTOR  KIND    STATE    ADDRESS                    COUNTS
+influx     influx  running  http://localhost:8086      confirmed=1517
+plc        opcua   running  opc.tcp://localhost:50000  in=1520 lost=0 missed=0
 ```
 
-`IN` counts the samples that the connector read from the server and the node stored.
-`CONFIRMED` counts the samples that InfluxDB confirmed. Run `status` again, and both
+`in` counts the samples that the connector read from the server and the node stored.
+`confirmed` counts the samples that InfluxDB confirmed. Run `status` again, and both
 grow.
 
 See the samples in InfluxDB:

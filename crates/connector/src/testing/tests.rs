@@ -292,8 +292,12 @@ fn the_second_connector_of_a_rig_gets_the_status_keys_after_the_first() {
             let mut keys: Vec<_> =
                 received.set().entries().iter().map(|e| e.key).collect();
             keys.sort_unstable();
+            let (_, channels) =
+                crate::status::channels(&name("plant.a"), &[name("ticks")])
+                    .expect("valid status names");
+            let per = u128::try_from(1 + channels.len()).expect("a small count");
             let first = 1_u128 << 64;
-            let want: Vec<_> = (first + 7..first + 14)
+            let want: Vec<_> = (first + per..first + 2 * per)
                 .map(channel::Key::from_u128)
                 .collect();
             assert_eq!(keys, want);
@@ -401,6 +405,24 @@ fn a_refused_config_opens_a_connector_that_ends_with_its_diagnostics() {
             };
             assert_eq!(diagnostics, [refused()]);
             assert_undefined(&rig, "plant.refuses.status.state").await;
+        },
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "the status ends: the reader missed a frame and gets no later one"
+)]
+fn a_run_reads_its_status_after_a_long_sleep_until_behind() {
+    on_rig(
+        || Table::new().with("ticks", Ticks::default()),
+        |mut rig, clock| async move {
+            let config = Document::default();
+            let mut run = rig.supervise("ticks", name("plant.ticks"), config).await;
+            clock.sleep(Span::from_nanos(1_100_000_000_000)).await;
+            loop {
+                run.next().await;
+            }
         },
     );
 }

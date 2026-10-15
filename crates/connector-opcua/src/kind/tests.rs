@@ -39,14 +39,14 @@ const DATA: &[&str] = &["plant.a", "plant.b", "plant.c"];
 const PLC: &str = "plant.plc";
 
 /// The first key of the status channels of [`PLC`]: the index, then `state`,
-/// `class`, `restarts`, `backoff`, `error`, `in`, `missed`, and `lost`.
+/// `class`, `restarts`, `backoff`, `error`, `note`, `in`, `missed`, and `lost`.
 const STATUS: u128 = 100;
 const CLASS: u128 = STATUS + 2;
 const RESTARTS: u128 = STATUS + 3;
 const ERROR: u128 = STATUS + 5;
-const IN: u128 = STATUS + 6;
-const MISSED: u128 = STATUS + 7;
-const LOST: u128 = STATUS + 8;
+const IN: u128 = STATUS + 7;
+const MISSED: u128 = STATUS + 8;
+const LOST: u128 = STATUS + 9;
 
 /// The class of a device error in the status.
 const DEVICE: u64 = 2;
@@ -150,7 +150,8 @@ fn decode(received: &Received<'_>) -> Frame {
     frame
 }
 
-/// Reads each frame of `names` into the vector it gives, in a task on `tasks`.
+/// Reads each frame of `names` into the vector it gives, in a task on `tasks`. A
+/// frame that the home loses ends the reader `Behind`, so the task opens it again.
 async fn record(
     hub: &hub::Hub,
     names: &[Name],
@@ -163,12 +164,20 @@ async fn record(
         name: None,
         hold: Span::ZERO,
     };
-    let mut reader = hub.reader(config).await.expect("the reader opens");
+    let mut reader = hub.reader(config.clone()).await.expect("the reader opens");
     let frames = Rc::new(RefCell::new(Vec::new()));
     let into = Rc::clone(&frames);
+    let hub = hub.clone();
     tasks.spawn(async move {
-        while let Ok(received) = reader.next().await {
-            into.borrow_mut().push(decode(&received));
+        loop {
+            match reader.next().await {
+                Ok(received) => into.borrow_mut().push(decode(&received)),
+                Err(hub::reader::Ended::Behind) => {
+                    let again = hub.reader(config.clone()).await;
+                    reader = again.expect("the reader opens again");
+                }
+                Err(_) => break,
+            }
         }
     });
     frames

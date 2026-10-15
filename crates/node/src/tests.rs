@@ -91,6 +91,7 @@ fn config<M>(
         region: Region::Absent,
         name: "edge".parse().expect("a name"),
         settings: crate::Settings::default(),
+        vars: std::collections::BTreeMap::new(),
     }
 }
 
@@ -4609,7 +4610,8 @@ mod port {
             start(host, region(&[member(OWN, &KEY, host)]))
         }
 
-        /// The operations of the member `key` of `mesh` on `hub`, as a node makes them.
+        /// The operations of the member `key` of `mesh` on `hub`, as a node makes them,
+        /// with the secrets on `files`.
         fn operations(
             mesh: &::mesh::Mesh,
             key: types::node::Key,
@@ -4617,11 +4619,20 @@ mod port {
             clock: env::clock::Clock,
             time: &clock::Reader,
             entropy: &env::entropy::Entropy,
+            files: env::files::Files,
         ) -> Rc<ops::Node> {
             let member = mesh.member(key).expect("the peer is a member");
             let name = member.card.card().name.clone();
-            let kinds = Arc::new(crate::kinds());
-            crate::operations(mesh, name, hub.clone(), clock, time, entropy, kinds)
+            Rc::new(ops::Node::new(ops::Config {
+                mesh: mesh.clone(),
+                keys: crate::channel_keys(time, entropy),
+                front_ends: crate::front_ends(),
+                kinds: Arc::new(crate::kinds()),
+                hub: hub.clone(),
+                clock,
+                name,
+                secrets: connector::testing::create_secrets(files),
+            }))
         }
 
         /// As [`peer_hub`], with the region of `members`, and `act` gets only the mesh.
@@ -6225,12 +6236,12 @@ mod port {
                     Endpoint::new(bound, opening, clock, entropy, own.net(), settings);
                 let pool = super::pool();
                 let stop = crate::stop::Stop::default();
-                let (open, buffer, next, time) =
+                let (open, buffer, given, time) =
                     super::super::home::create_open(&own, &tasks, 0, stop);
                 let opened =
                     open.run(own.files(), Rc::new(buffer), tasks.clone()).await;
                 let home = opened.expect("the buffer opens");
-                let interner = next.await.expect("the open gives the interner");
+                let interner = given.await.expect("the open gives the interner");
                 let (key, entropy) = (identity.key, endpoint.entropy.clone());
                 let opened =
                     endpoint.open(identity, own.files(), pool, &time, tasks.clone());
@@ -6250,7 +6261,9 @@ mod port {
                     }),
                 });
                 let clock = own.clock();
-                let ops = operations(&mesh, key, &hub, clock.clone(), &time, &entropy);
+                let files = own.files();
+                let ops =
+                    operations(&mesh, key, &hub, clock.clone(), &time, &entropy, files);
                 let port = route::accept(
                     transport,
                     crate::task::Handles {
@@ -7012,7 +7025,7 @@ mod port {
                 r#""state":"stopped","address":"http://influx:8086","restarts":0,"#,
                 r#""counts":{"confirmed":0},"error":{"class":"config","text":"#,
                 r#""the selector matches no channel. Select a channel that the spec "#,
-                r#"defines"}}]}}"#,
+                r#"defines"},"note":null}]}}"#,
                 "\n",
             );
             assert_eq!(reply, connectors);
