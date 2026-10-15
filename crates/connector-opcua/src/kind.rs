@@ -1,5 +1,5 @@
-//! The `opcua` kind: reads OPC UA nodes at a fixed rate, and writes one frame per
-//! tick.
+//! The `opcua` kind: reads OPC UA nodes at a fixed rate, and writes at most one frame
+//! per tick.
 
 use std::mem::{Discriminant, discriminant};
 use std::{fmt, future};
@@ -13,7 +13,6 @@ use hub::home::{Outcome, Refusal, order};
 use hub::writer::Writer;
 use types::authority::Authority;
 use types::frame::{self, Draft, Form, Label, Path, key_set};
-use types::name::Name;
 use types::sample::{Scalar, Type};
 #[cfg(feature = "sim")]
 use types::time::Span;
@@ -24,7 +23,7 @@ use crate::config::{self, Config, Read};
 use crate::event;
 use crate::ffi::Status;
 use crate::node::Node;
-use crate::value::{SCALARS, Value};
+use crate::value::{BuiltIn, Fault, SCALARS, Value};
 
 #[cfg(test)]
 #[cfg(feature = "sim")]
@@ -34,11 +33,12 @@ const SAMPLE_TYPE: Code = Code::new("opcua.sample-type");
 const LARGE_READ: Code = Code::new("opcua.large-read");
 
 /// The counts of the status of each connector: the samples that the home applied,
-/// the ticks that the timer skipped, and the samples that a frame lost.
-const COUNTS: [&str; 3] = ["in", "missed", "lost"];
+/// the ticks that the timer skipped, the samples that a frame lost, and the values
+/// that a frame leaves out as Bad, as Uncertain, and as of another type.
+const COUNTS: [&str; 6] = ["in", "missed", "lost", "bad", "uncertain", "mistyped"];
 
-/// The `opcua` kind: reads the Value of OPC UA nodes at a fixed rate, one Read
-/// request of all of them per tick, and writes one frame per tick.
+/// The `opcua` kind: reads the Value of OPC UA nodes at a fixed rate, and writes at
+/// most one frame per tick.
 #[derive(Debug, Default)]
 #[non_exhaustive]
 pub struct Kind;
@@ -53,7 +53,7 @@ impl kind::Kind for Kind {
     }
 
     /// Gives the channel of each `read` block as a write, in order, and the counts
-    /// `in`, `missed`, and `lost`.
+    /// `in`, `missed`, `lost`, `bad`, `uncertain`, and `mistyped`.
     fn check(&self, config: &Config) -> Result<Channels, Vec<Diagnostic>> {
         let counts = COUNTS.map(|count| count.parse().expect("a count is a name"));
         Ok(Channels {
@@ -76,9 +76,15 @@ impl kind::Kind for Kind {
     }
 
     /// Connects to the server, and reads each node once per tick of the rate until
-    /// the cancel. Each tick writes one frame, stamped at the midpoint of the read.
-    /// The connect is not raced with the cancel: it ends in the request timeout of the
-    /// client (5 s). Each end closes the session.
+    /// the cancel. Each tick writes a frame of the values that are Good and of the
+    /// sample type of their channel (Boolean for `bool`, `SByte` to `UInt64` for `i8`
+    /// to `u64`, Float for `f32`, and Double for `f64`), stamped at the midpoint of the
+    /// read. It leaves out each other value: an Uncertain one adds 1 to the count
+    /// `uncertain`, another one that is not Good adds 1 to `bad`, and one of another
+    /// type adds 1 to `mistyped` and, for the first such node of the run, sets the
+    /// note. A tick that leaves out each value writes no frame. The connect is not
+    /// raced with the cancel: it ends in the request timeout of the client (5 s). Each
+    /// end closes the session.
     ///
     /// # Errors
     ///
@@ -86,9 +92,7 @@ impl kind::Kind for Kind {
     /// with `opcua.sample-type` for each channel whose sample type is not `bool`, `i8`
     /// to `u64`, `f32`, or `f64`, and with `opcua.large-read` when one Read of all
     /// nodes is past one message of the server. [`Error::Device`] when the connect or a
-    /// read fails, or a node gives a bad status or a value whose type is not the
-    /// sample type of its channel: Boolean for `bool`, `SByte` to `UInt64` for `i8` to
-    /// `u64`, Float for `f32`, and Double for `f64`.
+    /// read fails.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         run(ctx)
     }
@@ -116,7 +120,7 @@ async fn run(ctx: Context<Config>) -> Result<(), Error> {
     result
 }
 
-/// Reads each node once per tick until the cancel, and writes one frame per tick.
+/// Reads each node once per tick until the cancel, and writes the frame of each tick.
 async fn read(
     ctx: &Context<Config>,
     client: &mut Client,
@@ -178,13 +182,15 @@ pub async fn writes(
 }
 
 /// The frames of the ticks of a run: one sample in each series of the key set of its
-/// writer, the stamp in each index and a value in each other.
+/// writer that a tick keeps, the stamp in each index and a value in each other.
 struct Frames<'a> {
-    /// The reads of the values of each frame, in order.
-    reads: &'a [Read],
+    /// The context of the run, whose reads give the values of each frame, in order.
+    ctx: &'a Context<Config>,
     layout: Layout,
     out: Out,
     stamps: Stamps,
+    left: Left,
+    tick: Tick,
     /// The series of the groups that a frame writes again.
     again: Vec<(usize, usize)>,
     /// The groups that the home refused as `Backwards`, in order.
@@ -203,6 +209,28 @@ struct Layout {
     /// The count of data samples of each group in one frame, by its number.
     samples: Vec<u64>,
     /// The group of each index, in the order of the key set.
+    groups: Vec<u32>,
+}
+
+/// The counts of the values that a frame leaves out.
+struct Left {
+    bad: status::Count,
+    uncertain: status::Count,
+    mistyped: status::Count,
+    /// Whether the note names a node of another type.
+    noted: bool,
+}
+
+/// The series of the frame of a tick that leaves out a value, kept across ticks.
+#[derive(Default)]
+struct Tick {
+    /// Whether the frame keeps the value of each read, in order.
+    kept: Vec<bool>,
+    /// Each entry of the key set in the frame and the bytes of its series.
+    series: Vec<(usize, usize)>,
+    /// The count of data samples of each group in the frame, by its number.
+    samples: Vec<u64>,
+    /// The group of each index in the frame, in the order of the key set.
     groups: Vec<u32>,
 }
 
@@ -264,7 +292,7 @@ impl<'a> Frames<'a> {
         };
         let series: Vec<_> = entries.iter().map(width).enumerate().collect();
         Ok(Self {
-            reads,
+            ctx,
             again: Vec::with_capacity(series.len()),
             backwards: Vec::with_capacity(samples.len()),
             layout: Layout {
@@ -280,6 +308,13 @@ impl<'a> Frames<'a> {
                 writer,
             },
             stamps: Stamps::default(),
+            left: Left {
+                bad: ctx.count("bad"),
+                uncertain: ctx.count("uncertain"),
+                mistyped: ctx.count("mistyped"),
+                noted: false,
+            },
+            tick: Tick::default(),
         })
     }
 
@@ -288,51 +323,60 @@ impl<'a> Frames<'a> {
         self.stamps.request(&self.out.writer, request).await
     }
 
-    /// Writes one frame of `values`, the values of the reads in order, at `stamp`. A
-    /// group that the home refuses as `Backwards` is written again once, after the
-    /// stamp that the refusal gives.
+    /// Writes one frame of `values`, the values of the reads in order, at `stamp`,
+    /// with each value that is Good and of the sample type of its channel. It counts
+    /// each other value in [`Left`], and writes no frame when it keeps none. A group
+    /// that the home refuses as `Backwards` is written again once, after the stamp
+    /// that the refusal gives.
     ///
     /// # Errors
     ///
-    /// [`Error::Device`] when a value is a bad status or has another type than its
-    /// channel, with no write. As [`Out::send`].
+    /// As [`Out::send`].
     ///
     /// # Panics
     ///
     /// When the home refuses a group as `Backwards` again.
     fn write(
         &mut self,
-        values: &[Result<Value, Status>],
+        values: &[Result<Value, Fault>],
         stamp: Stamp,
     ) -> Result<(), Error> {
-        let values = Values::new(values, &self.layout.types).map_err(|(at, bad)| {
-            device(Failure::Value {
-                channel: self.reads[at].channel.clone(),
-                node: self.reads[at].node.clone(),
-                bad,
-            })
-        })?;
         let Self {
-            reads: _,
+            ctx,
             layout,
             out,
             stamps,
+            left,
+            tick,
             again,
             backwards,
         } = self;
-        let (all, groups) = (&layout.series, &layout.groups);
-        let Some(before) = out.send(layout, all, groups, values, stamp, backwards)?
-        else {
+        let reads = &ctx.config().reads;
+        let all = left.sort(ctx, reads, values, &layout.types, &mut tick.kept);
+        let (series, groups, samples) = if all {
+            (&layout.series, &layout.groups, &layout.samples)
+        } else {
+            tick.keep(layout);
+            if tick.groups.is_empty() {
+                return Ok(());
+            }
+            (&tick.series, &tick.groups, &tick.samples)
+        };
+        let values = Values(values);
+        let fills = &layout.fills;
+        let first =
+            out.send(fills, samples, series, groups, values, stamp, backwards)?;
+        let Some(before) = first else {
             return Ok(());
         };
         let stamp = stamps.after(before);
-        let refused = |&&(entry, _): &&(usize, usize)| {
-            backwards.contains(&layout.fills[entry].group)
-        };
+        let refused =
+            |&&(entry, _): &&(usize, usize)| backwards.contains(&fills[entry].group);
         again.clear();
-        again.extend(all.iter().filter(refused));
+        again.extend(series.iter().filter(refused));
         let none = &mut Vec::new();
-        if let Some(again) = out.send(layout, again, backwards, values, stamp, none)? {
+        let last = out.send(fills, samples, again, backwards, values, stamp, none)?;
+        if let Some(again) = last {
             panic!(
                 "invariant: a frame stamped after {before}, the last stamp of its \
                  index, is not backwards, but the home gives {again} as last"
@@ -342,10 +386,122 @@ impl<'a> Frames<'a> {
     }
 }
 
+impl Left {
+    /// Counts each value of `values` that a frame leaves out: one that is not Good,
+    /// or one whose type is not the sample type of its channel in `types`. The first
+    /// node of another type of the run sets the note of `ctx`. Gives whether the
+    /// frame keeps each value, else puts in `kept` whether it keeps the value of each
+    /// read of `reads`.
+    fn sort(
+        &mut self,
+        ctx: &Context<Config>,
+        reads: &[Read],
+        values: &[Result<Value, Fault>],
+        types: &[(Scalar, Discriminant<Value>)],
+        kept: &mut Vec<bool>,
+    ) -> bool {
+        let mut all = true;
+        for (at, (value, &(sample, variant))) in values.iter().zip(types).enumerate() {
+            match Leave::of(value, variant) {
+                None => continue,
+                Some(Leave::Bad) => self.bad.add(1),
+                Some(Leave::Uncertain) => self.uncertain.add(1),
+                Some(Leave::Mistyped(value)) => {
+                    self.mistyped(ctx, &reads[at], value, sample);
+                }
+            }
+            if all {
+                all = false;
+                kept.clear();
+                kept.resize(values.len(), true);
+            }
+            kept[at] = false;
+        }
+        all
+    }
+
+    /// Counts a value of the type `value` of `read`, whose channel has samples of
+    /// type `sample`, and sets the note for the first of the run.
+    #[cold]
+    fn mistyped(
+        &mut self,
+        ctx: &Context<Config>,
+        read: &Read,
+        value: BuiltIn,
+        sample: Scalar,
+    ) {
+        self.mistyped.add(1);
+        if self.noted {
+            return;
+        }
+        self.noted = true;
+        ctx.note(&format_args!(
+            "leaves out the values of the node `{}` of the channel `{}`: they are of \
+             type {value}, and the channel has samples of type {}",
+            read.node,
+            read.channel,
+            Type::Scalar(sample),
+        ));
+    }
+}
+
+/// Why a frame leaves out a value.
+#[derive(Debug, PartialEq)]
+enum Leave {
+    Bad,
+    Uncertain,
+    /// The value is Good, of this type, which is not the type of its channel.
+    Mistyped(BuiltIn),
+}
+
+impl Leave {
+    /// Why a frame leaves out `value`, whose channel has samples of the variant
+    /// `variant` of [`Value`], or `None` when it keeps it.
+    fn of(value: &Result<Value, Fault>, variant: Discriminant<Value>) -> Option<Self> {
+        match value {
+            Ok(value) if discriminant(value) == variant => None,
+            Ok(value) => Some(Self::Mistyped(value.built_in())),
+            Err(Fault::Type(built_in)) => Some(Self::Mistyped(*built_in)),
+            Err(Fault::Status(status)) if status.uncertain() => Some(Self::Uncertain),
+            Err(Fault::Status(_)) => Some(Self::Bad),
+        }
+    }
+}
+
+impl Tick {
+    /// Puts in the tick the series of `layout` that it keeps: the series of each read
+    /// that [`Tick::kept`] keeps, and the index of each group that keeps one of them.
+    fn keep(&mut self, layout: &Layout) {
+        let Self {
+            kept,
+            series,
+            samples,
+            groups,
+        } = self;
+        samples.clear();
+        samples.resize(layout.samples.len(), 0);
+        for fill in &layout.fills {
+            if fill.read.is_some_and(|read| kept[read]) {
+                samples[to_usize(fill.group)] += 1;
+            }
+        }
+        let held = |&&(entry, _): &&(usize, usize)| {
+            let Fill { group, read } = layout.fills[entry];
+            read.map_or(samples[to_usize(group)] > 0, |read| kept[read])
+        };
+        series.clear();
+        series.extend(layout.series.iter().filter(held));
+        groups.clear();
+        let present = |&&group: &&u32| samples[to_usize(group)] > 0;
+        groups.extend(layout.groups.iter().filter(present));
+    }
+}
+
 impl Out {
-    /// Writes one frame of `series` of `layout` with `values` at `stamp`, and counts
-    /// its samples. `groups` are the groups of the indexes of `series`, in order. A
-    /// frame for which the pool has no block now loses its samples.
+    /// Writes one frame of `series` with `values` at `stamp`, each series filled as
+    /// `fills` gives, and counts its samples. `groups` are the groups of the indexes
+    /// of `series`, in order, and `samples` the count of data samples of each group in
+    /// the frame. A frame for which the pool has no block now loses its samples.
     ///
     /// Returns the latest stamp that the home gives for a group that it refuses as
     /// `Backwards`, and puts those groups in `backwards`.
@@ -359,16 +515,20 @@ impl Out {
     ///
     /// When the home refuses a group as `Expired` or `Codec`, which a writer with no
     /// lease and a raw frame never gets.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a tick that leaves out a value gives its own series and counts"
+    )]
     fn send(
         &mut self,
-        layout: &Layout,
+        fills: &[Fill],
+        samples: &[u64],
         series: &[(usize, usize)],
         groups: &[u32],
         values: Values<'_>,
         stamp: Stamp,
         backwards: &mut Vec<u32>,
     ) -> Result<Option<Stamp>, Error> {
-        let Layout { fills, samples, .. } = layout;
         let mut draft = match self.writer.draft(Form::Raw, series) {
             Ok(draft) => draft,
             Err(frame::Error::Pool(
@@ -444,47 +604,12 @@ fn fill(
     }
 }
 
-/// The values of one read, each good and of the sample type of its channel.
+/// The values of one read. Each value that a frame holds is Good and of the sample
+/// type of its channel.
 #[derive(Clone, Copy)]
-struct Values<'a>(&'a [Result<Value, Status>]);
+struct Values<'a>(&'a [Result<Value, Fault>]);
 
-/// Why a value of a read is not in [`Values`].
-#[derive(Debug, PartialEq)]
-enum Bad {
-    Status(Status),
-    /// The value has the type `value`, and its channel `sample`.
-    Type {
-        value: Scalar,
-        sample: Scalar,
-    },
-}
-
-impl<'a> Values<'a> {
-    /// Gives `values`, or the position of the first bad one and why. `types` are the
-    /// sample types of the channels of the values, in order, each with its variant of
-    /// [`Value`].
-    fn new(
-        values: &'a [Result<Value, Status>],
-        types: &[(Scalar, Discriminant<Value>)],
-    ) -> Result<Self, (usize, Bad)> {
-        let bad =
-            (values.iter().zip(types).enumerate()).find_map(|(at, pair)| match pair {
-                (Ok(value), &(_, variant)) if discriminant(value) == variant => None,
-                (Ok(value), &(sample, _)) => Some((
-                    at,
-                    Bad::Type {
-                        value: value.scalar(),
-                        sample,
-                    },
-                )),
-                (Err(status), _) => Some((at, Bad::Status(*status))),
-            });
-        match bad {
-            Some(bad) => Err(bad),
-            None => Ok(Self(values)),
-        }
-    }
-
+impl Values<'_> {
     /// The value of the read at `at`.
     fn get(self, at: usize) -> Value {
         match self.0[at] {
@@ -498,8 +623,8 @@ impl<'a> Values<'a> {
 /// the loop of a send stores nothing per sample for the message.
 #[cold]
 #[inline(never)]
-fn broken(at: usize, value: Result<Value, Status>) -> ! {
-    panic!("invariant: read {at} is {value:?}, which `Values::new` refuses")
+fn broken(at: usize, value: Result<Value, Fault>) -> ! {
+    panic!("invariant: read {at} is {value:?}, which `Left::sort` leaves out")
 }
 
 /// The diagnostic of the channel of `read`, whose sample type `data_type` is not one
@@ -538,7 +663,6 @@ fn large_read(nodes: usize, Large { bytes, most }: Large) -> Error {
 enum Failure {
     Connect { address: String, status: Status },
     Read(Status),
-    Value { channel: Name, node: Node, bad: Bad },
 }
 
 impl fmt::Display for Failure {
@@ -548,22 +672,6 @@ impl fmt::Display for Failure {
                 write!(f, "the connect to {address} failed with {}", status.name())
             }
             Self::Read(status) => write!(f, "the read failed with {}", status.name()),
-            Self::Value { channel, node, bad } => match bad {
-                Bad::Status(status) => {
-                    let status = status.name();
-                    write!(
-                        f,
-                        "the node `{node}` of the channel `{channel}` gives {status}"
-                    )
-                }
-                Bad::Type { value, sample } => write!(
-                    f,
-                    "the node `{node}` of the channel `{channel}` gives a value of \
-                     type {}, and the channel has samples of type {}",
-                    Type::Scalar(*value),
-                    Type::Scalar(*sample),
-                ),
-            },
         }
     }
 }

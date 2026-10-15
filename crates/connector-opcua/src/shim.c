@@ -833,15 +833,20 @@ UA_StatusCode shim_value_status(const void *value) {
 }
 
 /* Writes the scalar of `value`, an answer of a read, to `out`, and its kind to `kind`.
- * Else gives the status of `shim_value_status`, or `BadTypeMismatch` for an array or a
- * kind that `shim_scalar` does not hold. */
+ * Else gives the status of `shim_value_status`, `BadNoData` for an empty Variant, or
+ * `BadTypeMismatch` for an array or a kind that `shim_scalar` does not hold, with that
+ * kind in `kind`, plus `SHIM_ARRAY` for an array. */
 UA_StatusCode shim_value_scalar(const void *value, shim_scalar *out, UA_UInt16 *kind) {
     UA_StatusCode status = shim_value_status(value);
     if(status != UA_STATUSCODE_GOOD)
         return status;
     const UA_Variant *variant = &((const UA_DataValue *)value)->value;
-    if(!UA_Variant_isScalar(variant))
+    if(UA_Variant_isEmpty(variant))
+        return UA_STATUSCODE_BADNODATA;
+    if(!UA_Variant_isScalar(variant)) {
+        *kind = (UA_UInt16)(variant->type->typeKind | SHIM_ARRAY);
         return UA_STATUSCODE_BADTYPEMISMATCH;
+    }
     /* A load of fixed size for each kind, since a `memcpy` of `memSize` calls glibc. */
     const void *data = variant->data;
     switch(variant->type->typeKind) {
@@ -856,7 +861,9 @@ UA_StatusCode shim_value_scalar(const void *value, shim_scalar *out, UA_UInt16 *
     case UA_DATATYPEKIND_UINT64: out->uint64 = *(const UA_UInt64 *)data; break;
     case UA_DATATYPEKIND_FLOAT: out->float_ = *(const UA_Float *)data; break;
     case UA_DATATYPEKIND_DOUBLE: out->double_ = *(const UA_Double *)data; break;
-    default: return UA_STATUSCODE_BADTYPEMISMATCH;
+    default:
+        *kind = (UA_UInt16)variant->type->typeKind;
+        return UA_STATUSCODE_BADTYPEMISMATCH;
     }
     *kind = (UA_UInt16)variant->type->typeKind;
     return UA_STATUSCODE_GOOD;

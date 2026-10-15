@@ -39,8 +39,28 @@ struct Variable {
     text: String,
     node: Node,
     value: Value,
+    /// The status of each later read of this variable, in place of the status of all.
+    quality: Option<Quality>,
+    /// The value that a server holds in place of `value`, set before it starts.
+    fixed: Option<Fixed>,
     served: Vec<Served>,
 }
+
+/// A value of a variable that is not a scalar of [`Value`], which a server holds
+/// with no change and the status Good, and does not record.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Fixed {
+    /// The String `text`.
+    String,
+    /// An array of two Doubles.
+    Doubles,
+}
+
+/// No value of a variable is fixed outside the tests of this crate.
+#[cfg(not(test))]
+#[derive(Clone, Copy, Debug)]
+enum Fixed {}
 
 impl Variables {
     /// The variables at the node ids `nodes`, each with the value 0 and the status
@@ -63,6 +83,8 @@ impl Variables {
                 text: text.into(),
                 node,
                 value: Value::F64(0.0),
+                quality: None,
+                fixed: None,
                 served: Vec::new(),
             });
         }
@@ -100,6 +122,35 @@ impl Variables {
             .value = value;
     }
 
+    /// Gives each later read of the variable of `text` the status `quality`, in place
+    /// of the status of [`Variables::change`].
+    ///
+    /// # Panics
+    ///
+    /// If no variable has `text`.
+    #[cfg(test)]
+    pub(crate) fn set_quality(&self, text: &str, quality: Quality) {
+        self.variable(text, |variable| variable.quality = Some(quality));
+    }
+
+    /// Makes a server that starts later hold `fixed` at the variable of `text`.
+    ///
+    /// # Panics
+    ///
+    /// If no variable has `text`.
+    #[cfg(test)]
+    pub(crate) fn fix(&self, text: &str, fixed: Fixed) {
+        self.variable(text, |variable| variable.fixed = Some(fixed));
+    }
+
+    /// Calls `change` on the variable of `text`.
+    #[cfg(test)]
+    fn variable(&self, text: &str, change: impl FnOnce(&mut Variable)) {
+        let mut state = self.state();
+        let variable = state.variables.iter_mut().find(|v| v.text == text);
+        change(variable.unwrap_or_else(|| panic!("no variable {text:?}")));
+    }
+
     /// Each read that a server answered, by the text of its node in
     /// [`Variables::new`], in the order of the answers.
     #[must_use]
@@ -113,8 +164,9 @@ impl Variables {
     /// a Double.
     fn read(&self, index: usize, time: Monotonic) -> (Value, Quality) {
         let mut state = self.state();
-        let quality = state.quality;
+        let all = state.quality;
         let variable = &mut state.variables[index];
+        let quality = variable.quality.unwrap_or(all);
         if let Value::F64(value) = variable.value {
             let served = Served {
                 time,
@@ -174,21 +226,35 @@ pub async fn serve(
         wall: Box::new(wall),
     };
     let manager = Manager::accepting(time, net, listener, rng);
-    let nodes: Vec<Node> = (variables.state().variables.iter())
-        .map(|variable| variable.node.clone())
+    let nodes: Vec<(Node, Option<Fixed>)> = (variables.state().variables.iter())
+        .map(|variable| (variable.node.clone(), variable.fixed))
         .collect();
     let add = |server: &mut Server| {
-        let top = nodes.iter().map(|node| node.namespace).max().unwrap_or(0);
+        let top = nodes
+            .iter()
+            .map(|(node, _)| node.namespace)
+            .max()
+            .unwrap_or(0);
         for namespace in 2..=top {
             let uri = CString::new(format!("urn:foundation:sim:{namespace}"))
                 .expect("invariant: a URI with no NUL");
             let added = server.add_namespace(&uri);
             assert_eq!(added, namespace, "open62541 refused a namespace");
         }
-        for (index, node) in nodes.iter().enumerate() {
-            let (variables, clock) =
-                (Variables::clone(variables), Clock::clone(&clock));
-            server.add_source(node, move || variables.read(index, clock.now()));
+        for (index, (node, fixed)) in nodes.iter().enumerate() {
+            match fixed {
+                #[cfg(test)]
+                Some(Fixed::String) => server.add_string(node),
+                #[cfg(test)]
+                Some(Fixed::Doubles) => server.add_doubles(node),
+                #[cfg(not(test))]
+                Some(never) => match *never {},
+                None => {
+                    let (variables, clock) =
+                        (Variables::clone(variables), Clock::clone(&clock));
+                    server.add_source(node, move || variables.read(index, clock.now()));
+                }
+            }
         }
     };
     Server::serve(manager, SESSIONS, add, until).await;

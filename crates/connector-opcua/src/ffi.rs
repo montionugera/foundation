@@ -80,6 +80,11 @@ impl Status {
     #[cfg(test)]
     pub(crate) const BAD_SECURITY_MODE_REJECTED: Self = Self(0x8054_0000);
 
+    /// Whether the code is of the severity Uncertain.
+    pub(crate) fn uncertain(self) -> bool {
+        self.0 >> 30 == 0b01
+    }
+
     /// Gives the name of the code, such as `BadNodeIdUnknown`.
     pub(crate) fn name(self) -> &'static str {
         // SAFETY: `UA_StatusCode_name` takes any code and gives a static C string.
@@ -159,6 +164,9 @@ pub(crate) const INT64: u16 = 7;
 pub(crate) const UINT64: u16 = 8;
 pub(crate) const FLOAT: u16 = 9;
 pub(crate) const DOUBLE: u16 = 10;
+
+/// The bit that `shim_value_scalar` adds to the kind of an array, `SHIM_ARRAY`.
+pub(crate) const ARRAY: u16 = 0x8000;
 
 /// The index of `ByteString` in `UA_TYPES`.
 pub(crate) const BYTE_STRING: usize = 14;

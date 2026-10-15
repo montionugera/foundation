@@ -188,6 +188,7 @@ unsafe extern "C" {
         kind: u16,
     ) -> u32;
     pub(crate) fn shim_server_add_doubles(server: *mut Server, node: Node<'_>) -> u32;
+    pub(crate) fn shim_server_add_string(server: *mut Server, node: Node<'_>) -> u32;
     pub(crate) fn shim_server_add_bytes(
         server: *mut Server,
         node: Node<'_>,

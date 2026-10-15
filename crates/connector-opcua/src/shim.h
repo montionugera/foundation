@@ -32,6 +32,9 @@ typedef union {
     UA_Double double_;
 } shim_scalar;
 
+/* The bit that `shim_value_scalar` adds to the kind of an array. */
+#define SHIM_ARRAY 0x8000
+
 /* Gives the id of `node`, which borrows its name. */
 static inline UA_NodeId shim_node_id(shim_node node) {
     if(node.name == NULL)

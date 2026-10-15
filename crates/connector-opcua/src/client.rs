@@ -19,7 +19,7 @@ use crate::connection::{CHUNKS, Manager, SENDS};
 use crate::event::Time;
 use crate::ffi::{self, Status};
 use crate::node::Node;
-use crate::value::Value;
+use crate::value::{Fault, Value};
 
 #[cfg(test)]
 mod tests;
@@ -56,7 +56,7 @@ pub(crate) struct Client {
     /// The values of the last read, which [`Client::read`] gives. It swaps them with
     /// [`Reads::values`]. An answer with more values than nodes fails before it is
     /// copied, so neither grows past the most nodes of a read.
-    values: Vec<Result<Value, Status>>,
+    values: Vec<Result<Value, Fault>>,
     clock: Clock,
     /// The request timeout of the client.
     timeout: Span,
@@ -84,7 +84,7 @@ struct Reads {
     /// The status of the answer of the last read: `Good` when [`Reads::values`]
     /// holds its values.
     answer: Cell<Option<Status>>,
-    values: Cell<Vec<Result<Value, Status>>>,
+    values: Cell<Vec<Result<Value, Fault>>>,
     /// The reads that open62541 took and has not called back, at most [`READS`].
     pending: Cell<u16>,
 }
@@ -222,8 +222,8 @@ impl Client {
 
     /// Reads the Value of each node of `nodes` in one request, and gives the value of
     /// each node in order: its scalar, the status of its value when that is not Good
-    /// (a Good with a subcode is Good), or `BadTypeMismatch` for an array or a type
-    /// that is not one of [`Value`]. A read of no nodes gives no values and sends
+    /// (a Good with a subcode is Good), or the type of an array or of a scalar that
+    /// is not one of [`Value`]. A read of no nodes gives no values and sends
     /// nothing. A read that times out or whose future dropped stays in flight
     /// until the server answers it or the connection closes. While [`READS`] are in
     /// flight, a read first waits until one ends.
@@ -243,7 +243,7 @@ impl Client {
     pub(crate) async fn read(
         &mut self,
         nodes: &Nodes,
-    ) -> Result<&[Result<Value, Status>], Status> {
+    ) -> Result<&[Result<Value, Fault>], Status> {
         assert!(
             Rc::ptr_eq(&nodes.client, &self.key),
             "invariant: a client reads only the nodes that it checked"

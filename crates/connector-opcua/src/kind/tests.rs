@@ -22,7 +22,7 @@ use spec::channel::{Channel, Data};
 use spec::data_type::DataType;
 use spec::definition::Definition;
 use types::channel;
-use types::name::Selector;
+use types::name::{Name, Selector};
 use types::quality::Quality;
 
 use super::*;
@@ -39,14 +39,18 @@ const DATA: &[&str] = &["plant.a", "plant.b", "plant.c"];
 const PLC: &str = "plant.plc";
 
 /// The first key of the status channels of [`PLC`]: the index, then `state`,
-/// `class`, `restarts`, `backoff`, `error`, `note`, `in`, `missed`, and `lost`.
+/// `class`, `restarts`, `backoff`, `error`, `note`, then each of [`COUNTS`].
 const STATUS: u128 = 100;
 const CLASS: u128 = STATUS + 2;
 const RESTARTS: u128 = STATUS + 3;
 const ERROR: u128 = STATUS + 5;
+const NOTE: u128 = STATUS + 6;
 const IN: u128 = STATUS + 7;
 const MISSED: u128 = STATUS + 8;
 const LOST: u128 = STATUS + 9;
+const BAD: u128 = STATUS + 10;
+const UNCERTAIN: u128 = STATUS + 11;
+const MISTYPED: u128 = STATUS + 12;
 
 /// The class of a device error in the status.
 const DEVICE: u64 = 2;
@@ -120,6 +124,27 @@ fn errors(statuses: &[Frame]) -> Vec<(u64, String)> {
     }
     errors.dedup();
     errors
+}
+
+/// Each text of `note` in `statuses` that is not empty, once for each run of equal
+/// texts.
+fn notes(statuses: &[Frame]) -> Vec<String> {
+    let mut notes = Vec::new();
+    for frame in statuses {
+        if let Some(Samples::Texts(texts)) = frame.get(&NOTE) {
+            notes.extend(texts.iter().filter(|text| !text.is_empty()).cloned());
+        }
+    }
+    notes.dedup();
+    notes
+}
+
+/// The keys of each of `frames`.
+fn keys(frames: &[Frame]) -> Vec<Vec<u128>> {
+    frames
+        .iter()
+        .map(|frame| frame.keys().copied().collect())
+        .collect()
 }
 
 /// The series of `received`, by key.
@@ -713,18 +738,26 @@ fn adds_the_missed_ticks_and_lost_samples_of_each_run_to_those_before() {
 }
 
 #[test]
-fn ends_the_run_with_a_device_error_on_a_bad_status() {
+fn leaves_out_and_counts_each_value_that_is_not_good() {
     let outcome = run(Setup::three(), |scene| async move {
         scene.after(ms(1_050), |scene| async move {
-            scene.variables.change(Quality(0x8000_0000));
+            scene.variables.set_quality(A, Quality(0x8000_0000));
+            scene.variables.set_quality(B, Quality(0x4000_0000));
         });
-        scene.supervise(ms(1_550)).await
+        scene.supervise(ms(2_050)).await
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
-    let errors = errors(&outcome.statuses);
-    let bad = "the node `ns=3;s=SpikeData` of the channel `plant.a` gives Bad";
-    assert_eq!(errors, [(DEVICE, bad.to_owned())]);
-    assert_eq!(outcome.frames.len(), 11);
+    assert_eq!(errors(&outcome.statuses), []);
+    let frames = &outcome.frames;
+    let mut expected = vec![vec![1, 2, 3, 4]; 11];
+    expected.extend(vec![vec![1, 4]; 10]);
+    assert_eq!(keys(frames), expected);
+    assert_eq!(values(frames, 4), served(&outcome, C));
+    let statuses = &outcome.statuses;
+    assert_eq!(last(statuses, BAD), 10);
+    assert_eq!(last(statuses, UNCERTAIN), 10);
+    assert_eq!(last(statuses, MISTYPED), 0);
+    assert_eq!(last(statuses, IN), 11 * 3 + 10);
 }
 
 #[test]
@@ -744,15 +777,61 @@ fn writes_the_value_of_a_good_status_with_a_subcode() {
 
 /// The error names the read of the first bad status, also past the first read.
 #[test]
-fn names_the_read_of_a_bad_status_past_the_first() {
+fn counts_a_node_that_the_server_does_not_have_as_bad() {
     let mut setup = Setup::three();
     setup.reads[1].1 = "ns=3;s=Missing".into();
     let outcome = run(setup, |scene| async move { scene.supervise(ms(350)).await });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
-    let bad =
-        "the node `ns=3;s=Missing` of the channel `plant.b` gives BadNodeIdUnknown";
-    assert_eq!(errors(&outcome.statuses), [(DEVICE, bad.to_owned())]);
-    assert_eq!(outcome.frames.len(), 0);
+    assert_eq!(errors(&outcome.statuses), []);
+    assert_eq!(keys(&outcome.frames), vec![vec![1, 2, 4]; 4]);
+    assert_eq!(last(&outcome.statuses, BAD), 4);
+}
+
+/// A tick that leaves out each value writes no frame, and the frames start again
+/// with the first Good value.
+#[test]
+fn writes_no_frame_when_each_value_is_left_out() {
+    let outcome = run(Setup::three(), |scene| async move {
+        scene.after(ms(1_050), |scene| async move {
+            scene.variables.change(Quality(0x8000_0000));
+        });
+        scene.after(ms(1_550), |scene| async move {
+            scene.variables.change(Quality::GOOD);
+        });
+        scene.supervise(ms(2_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let frames = &outcome.frames;
+    assert_eq!(keys(frames), vec![vec![1, 2, 3, 4]; 16]);
+    let start = stamp(&frames[0], 1);
+    assert_eq!(stamp(&frames[11], 1) - start, ms(1_600).nanos());
+    assert_eq!(last(&outcome.statuses, BAD), 15);
+    assert_eq!(last(&outcome.statuses, IN), 16 * 3);
+}
+
+/// A group whose data series a tick leaves out keeps its index and its other
+/// series, and a group with no series left writes no stamp.
+#[test]
+fn writes_the_index_of_each_group_with_a_value_left() {
+    let mut setup = Setup::three();
+    setup.channels.extend([("plant.other", index(10))]);
+    setup.channels[3] = ("plant.c", data(4, 10, F64));
+    let outcome = run(setup, |scene| async move {
+        scene.variables.set_quality(A, Quality(0x8000_0000));
+        scene.after(ms(550), |scene| async move {
+            scene.variables.set_quality(C, Quality(0x8000_0000));
+        });
+        scene.supervise(ms(1_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let (frames, other) = (&outcome.frames, &outcome.indexes[&10]);
+    assert_eq!(keys(frames), vec![vec![1, 3]; 11]);
+    assert_eq!(keys(other), vec![vec![4, 10]; 6]);
+    for (frame, other) in frames.iter().zip(other) {
+        assert_eq!(stamp(frame, 1), stamp(other, 10));
+    }
+    assert_eq!(last(&outcome.statuses, BAD), 11 + 5);
+    assert_eq!(last(&outcome.statuses, IN), 11 + 6);
 }
 
 #[test]
@@ -971,23 +1050,34 @@ fn writes_each_type_of_a_value_into_a_channel_of_its_type() {
     assert_eq!(written, EXTREMES);
 }
 
+/// The note names the first node of another type of a run, and keeps it when
+/// another node is of another type later.
 #[test]
-fn ends_the_run_with_a_device_error_on_a_value_of_another_type_than_its_channel() {
+fn leaves_out_a_value_of_another_type_and_notes_its_node() {
     let outcome = run(Setup::three(), |scene| async move {
         scene.after(ms(1_050), |scene| async move {
             scene.variables.set(B, crate::value::Value::I32(7));
         });
-        scene.supervise(ms(1_550)).await
+        scene.after(ms(1_550), |scene| async move {
+            scene.variables.set(C, crate::value::Value::F32(1.0));
+        });
+        scene.supervise(ms(2_050)).await
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
-    let bad = "the node `ns=3;i=7` of the channel `plant.b` gives a value of type i32, \
-               and the channel has samples of type f64";
-    assert_eq!(errors(&outcome.statuses), [(DEVICE, bad.to_owned())]);
-    assert_eq!(outcome.frames.len(), 11);
+    assert_eq!(errors(&outcome.statuses), []);
+    let mut expected = vec![vec![1, 2, 3, 4]; 11];
+    expected.extend(vec![vec![1, 2, 4]; 5]);
+    expected.extend(vec![vec![1, 2]; 5]);
+    assert_eq!(keys(&outcome.frames), expected);
+    let note = "leaves out the values of the node `ns=3;i=7` of the channel `plant.b`: \
+                they are of type Int32, and the channel has samples of type f64";
+    assert_eq!(notes(&outcome.statuses), [note]);
+    assert_eq!(last(&outcome.statuses, MISTYPED), 10 + 5);
+    assert_eq!(last(&outcome.statuses, BAD), 0);
 }
 
 #[test]
-fn ends_the_run_with_a_device_error_on_a_value_of_another_type_of_the_same_width() {
+fn leaves_out_a_value_of_another_type_of_the_same_width() {
     let outcome = run(typed(), |scene| async move {
         let [_, _, values] = extremes();
         for (node, value) in TYPED_NODES.iter().zip(values) {
@@ -998,12 +1088,45 @@ fn ends_the_run_with_a_device_error_on_a_value_of_another_type_of_the_same_width
                 .variables
                 .set(TYPED_NODES[9], crate::value::Value::I32(1));
         });
-        scene.supervise(ms(1_550)).await
+        scene.supervise(ms(2_050)).await
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
-    let bad = "the node `ns=2;i=10` of the channel `plant.f32` gives a value of type \
-               i32, and the channel has samples of type f32";
-    assert_eq!(errors(&outcome.statuses), [(DEVICE, bad.to_owned())]);
+    let held = |frame: &Frame| frame.contains_key(&11);
+    let held: Vec<_> = outcome.frames.iter().map(held).collect();
+    let mut expected = vec![true; 11];
+    expected.extend([false; 10]);
+    assert_eq!(held, expected);
+    let note = "leaves out the values of the node `ns=2;i=10` of the channel \
+                `plant.f32`: they are of type Int32, and the channel has samples of \
+                type f32";
+    assert_eq!(notes(&outcome.statuses), [note]);
+    assert_eq!(last(&outcome.statuses, MISTYPED), 10);
+}
+
+/// A node whose value is no scalar of a sample type adds 1 to `mistyped` each tick,
+/// and the note names its OPC UA type.
+#[test]
+fn leaves_out_a_node_whose_value_is_no_scalar_of_a_sample_type() {
+    use crate::sim::Fixed;
+    for (fixed, type_) in [
+        (Fixed::String, "String"),
+        (Fixed::Doubles, "array of Double"),
+    ] {
+        let outcome = run(Setup::three(), move |scene| async move {
+            scene.stop().await;
+            scene.variables.fix(B, fixed);
+            scene.serve();
+            scene.supervise(ms(1_050)).await
+        });
+        assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+        assert_eq!(keys(&outcome.frames), vec![vec![1, 2, 4]; 11], "{type_}");
+        let note = format!(
+            "leaves out the values of the node `ns=3;i=7` of the channel `plant.b`: \
+             they are of type {type_}, and the channel has samples of type f64"
+        );
+        assert_eq!(notes(&outcome.statuses), [note]);
+        assert_eq!(last(&outcome.statuses, MISTYPED), 11, "{type_}");
+    }
 }
 
 #[test]
@@ -1173,75 +1296,49 @@ fn stamps_each_frame_within_its_read() {
     }
 }
 
-/// Builds `Values` past `Values::new`, which no call of the crate can do:
-/// `Frames::write` gives `Error::Device` for a bad value before each send, so no
-/// caller or peer sees the panic of `get`. This test is the only kill of a `get`
-/// that gives a value for a bad read in place of the panic.
+/// Builds `Values` with a value that `Left::sort` leaves out, which no call of the
+/// crate can do. This test is the only kill of a `get` that gives a value for a left
+/// out read in place of the panic.
 #[test]
 #[should_panic(
-    expected = "invariant: read 2 is Err(BadNotFound), which `Values::new` refuses"
+    expected = "invariant: read 2 is Err(Status(BadNotFound)), which `Left::sort` \
+                leaves out"
 )]
-fn panics_with_the_read_whose_value_is_bad() {
-    use crate::value::Value;
-    let bad = Err(Status::BAD_NOT_FOUND);
+fn panics_with_the_read_whose_value_is_left_out() {
+    use crate::value::{Fault, Value};
+    let bad = Err(Fault::Status(Status::BAD_NOT_FOUND));
     let values = [Ok(Value::F64(1.0)), bad, bad];
     Values(&values).get(2);
 }
 
-/// Each of `scalars` with its variant of [`Value`](crate::value::Value).
-fn types(scalars: &[Scalar]) -> Vec<(Scalar, Discriminant<crate::value::Value>)> {
-    let variant = |&scalar| {
-        (
-            scalar,
-            crate::value::Value::variant(scalar).expect("a type"),
-        )
-    };
-    scalars.iter().map(variant).collect()
-}
-
 #[test]
-fn refuses_each_value_of_another_type_than_its_channel() {
+fn leaves_out_each_value_of_another_type_than_its_channel() {
     let [_, _, values] = extremes();
     for value in values {
         for sample in SCALARS {
-            let values = [Ok(value)];
-            let refused = Values::new(&values, &types(&[sample])).map(|_| ());
+            let variant = crate::value::Value::variant(sample).expect("a type");
+            let left = Leave::of(&Ok(value), variant);
             if value.scalar() == sample {
-                assert_eq!(refused, Ok(()));
+                assert_eq!(left, None);
             } else {
-                let bad = Bad::Type {
-                    value: value.scalar(),
-                    sample,
-                };
-                assert_eq!(refused, Err((0, bad)), "{value:?} into {sample:?}");
+                let mistyped = Leave::Mistyped(value.built_in());
+                assert_eq!(left, Some(mistyped), "{value:?} into {sample:?}");
             }
         }
     }
 }
 
 #[test]
-fn gives_the_first_value_that_is_bad_or_of_another_type_than_its_channel() {
-    use crate::value::Value;
-    let scalars = [Scalar::F64, Scalar::F64, Scalar::I32];
-    let values = [
-        Ok(Value::F64(1.0)),
-        Ok(Value::F32(1.0)),
-        Err(Status::BAD_NOT_FOUND),
-    ];
-    let refused = Values::new(&values, &types(&scalars)).map(|_| ());
-    let mismatch = Bad::Type {
-        value: Scalar::F32,
-        sample: Scalar::F64,
-    };
-    assert_eq!(refused, Err((1, mismatch)));
-    let refused = Values::new(&values[2..], &types(&scalars[2..])).map(|_| ());
-    assert_eq!(refused, Err((0, Bad::Status(Status::BAD_NOT_FOUND))));
-    let good = [Ok(Value::F64(1.0)), Ok(Value::I32(-1))];
-    let scalars = [Scalar::F64, Scalar::I32];
-    let types = types(&scalars);
-    let values = Values::new(&good, &types).expect("each value has its type");
-    assert_eq!(
-        (values.get(0), values.get(1)),
-        (Value::F64(1.0), Value::I32(-1))
-    );
+fn leaves_out_each_value_that_is_not_good() {
+    use crate::value::{Fault, Value};
+    let variant = Value::variant(Scalar::F64).expect("a type");
+    let leave = |status: u32| Leave::of(&Err(Fault::Status(Status(status))), variant);
+    assert_eq!(leave(0x4000_0000), Some(Leave::Uncertain));
+    assert_eq!(leave(0x7FFF_FFFF), Some(Leave::Uncertain));
+    assert_eq!(leave(Status::BAD_NOT_FOUND.0), Some(Leave::Bad));
+    assert_eq!(leave(0xC000_0000), Some(Leave::Bad));
+    assert_eq!(leave(0x8000_0000), Some(Leave::Bad));
+    let string = crate::value::BuiltIn::new(11);
+    let left = Leave::of(&Err(Fault::Type(string)), variant);
+    assert_eq!(left, Some(Leave::Mistyped(string)));
 }

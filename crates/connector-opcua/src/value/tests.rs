@@ -3,7 +3,7 @@ use std::mem::discriminant;
 use proptest::prelude::*;
 use types::sample::Scalar;
 
-use super::{SCALARS, Value};
+use super::{BuiltIn, Fault, SCALARS, Value};
 use crate::ffi::{self, Status};
 use crate::fuzz;
 
@@ -27,7 +27,79 @@ fn an_answer_with_a_good_status_and_no_value_fails_with_no_data() {
     let reads = answers
         .each_ref()
         .map(|answer| unsafe { Value::of(answer.pointer().cast()) });
-    assert_eq!(reads, [Err(Status::BAD_NO_DATA); 2]);
+    assert_eq!(reads, [Err(Fault::Status(Status::BAD_NO_DATA)); 2]);
+}
+
+/// The text of the fault of the answer `bytes`, an encoded `DataValue`.
+fn fault(bytes: &[u8]) -> String {
+    let answer = decoded(bytes);
+    // SAFETY: the answer is a decoded `UA_DataValue` that lives to the end.
+    match unsafe { Value::of(answer.pointer().cast()) } {
+        Err(Fault::Type(built_in)) => built_in.to_string(),
+        other => panic!("not a value of another type: {other:?}"),
+    }
+}
+
+#[test]
+fn an_answer_of_another_type_gives_its_opc_ua_type() {
+    // The mask 0x01 encodes only the value. A Variant starts with its type id (1 for
+    // Boolean), plus 0x80 for an array, which a count of Int32 follows.
+    assert_eq!(fault(&[0x01, 0x0C, 0x02, 0, 0, 0, b'a', b'b']), "String");
+    assert_eq!(
+        fault(&[0x01, 0x8B, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        "array of Double"
+    );
+    assert_eq!(fault(&[0x01, 0x8C, 0x00, 0, 0, 0]), "array of String");
+    assert_eq!(fault(&[&[0x01, 0x0E][..], &[0; 16]].concat()), "Guid");
+}
+
+#[test]
+fn an_answer_with_an_empty_value_fails_with_no_data() {
+    let answer = decoded(&[0x01, 0x00]);
+    // SAFETY: the answer is a decoded `UA_DataValue` that lives to the end.
+    let read = unsafe { Value::of(answer.pointer().cast()) };
+    assert_eq!(read, Err(Fault::Status(Status::BAD_NO_DATA)));
+}
+
+#[test]
+fn an_answer_with_the_status_bad_type_mismatch_gives_that_status() {
+    // The mask 0x03 encodes a Double 0, then the status 0x80740000.
+    let mut bytes = vec![0x03, 0x0B];
+    bytes.extend([0; 8]);
+    bytes.extend(0x8074_0000_u32.to_le_bytes());
+    let answer = decoded(&bytes);
+    // SAFETY: the answer is a decoded `UA_DataValue` that lives to the end.
+    let read = unsafe { Value::of(answer.pointer().cast()) };
+    assert_eq!(read, Err(Fault::Status(Status::BAD_TYPE_MISMATCH)));
+}
+
+#[test]
+fn each_value_gives_the_opc_ua_name_of_its_type() {
+    let values = [
+        Value::Bool(false),
+        Value::I8(0),
+        Value::U8(0),
+        Value::I16(0),
+        Value::U16(0),
+        Value::I32(0),
+        Value::U32(0),
+        Value::I64(0),
+        Value::U64(0),
+        Value::F32(0.0),
+        Value::F64(0.0),
+    ];
+    let names = values.map(|value| value.built_in().to_string());
+    let expected = [
+        "Boolean", "SByte", "Byte", "Int16", "UInt16", "Int32", "UInt32", "Int64",
+        "UInt64", "Float", "Double",
+    ];
+    assert_eq!(names, expected);
+}
+
+#[test]
+#[should_panic(expected = "invariant: no open62541 kind is 31")]
+fn a_kind_past_the_built_in_types_panics() {
+    let _ = BuiltIn::new(31);
 }
 
 /// A value of any type.

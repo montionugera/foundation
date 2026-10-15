@@ -58,3 +58,7 @@
   client cannot process on an open channel also ends the connect, or the session, with
   no new dial; its status is #2592 (`laptop.architect-2`, 2026-10-13T19:25:56Z:
   https://github.com/synnaxlabs/foundation/issues/2592#issuecomment-6153426912).
+  The read gives each value, or its status, or the OPC UA type of a value that is not
+  a scalar of a sample type; the kind leaves out each value that is not Good or not of
+  the type of its channel (OPCUA KIND; `laptop.architect-2`, 2026-10-14T02:31:51Z:
+  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6159574954).

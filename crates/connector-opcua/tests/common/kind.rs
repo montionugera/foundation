@@ -38,7 +38,7 @@ use types::time::{Monotonic, Span};
 const PERIOD: Span = Span::from_nanos(100_000_000);
 
 /// The counts of the `opcua` kind.
-const COUNTS: [&str; 3] = ["in", "missed", "lost"];
+const COUNTS: [&str; 6] = ["in", "missed", "lost", "bad", "uncertain", "mistyped"];
 
 /// What a measure gives for each poll of a run: the time of the poll and the value.
 type Polls = Arc<Mutex<Vec<(Monotonic, u64)>>>;

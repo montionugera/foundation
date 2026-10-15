@@ -2,6 +2,7 @@
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
+use std::fmt;
 use std::mem::{Discriminant, discriminant};
 
 use types::sample::Scalar;
@@ -30,24 +31,27 @@ macro_rules! values {
         impl Value {
             /// Gives the scalar of `value`, an answer of a read. Else gives its
             /// status when that is not Good (a Good with a subcode is Good),
-            /// `BadNoData` when it holds no value, or `BadTypeMismatch` for an array
-            /// or a type that is not one of [`Value`].
+            /// `BadNoData` when it holds no value, or the type of an array or of a
+            /// scalar that is not one of [`Value`].
             ///
             /// # Safety
             ///
             /// `value` is a live `UA_DataValue`.
             pub(crate) unsafe fn of(
                 value: *const ffi::DataValue,
-            ) -> Result<Self, Status> {
+            ) -> Result<Self, Fault> {
                 let mut scalar = ffi::Scalar { uint64: 0 };
-                let mut kind = 0;
+                let mut kind = NO_KIND;
                 // SAFETY: `value` is live, as the caller ensures, and the outputs are
                 // places to write.
                 let status = Status(unsafe {
                     ffi::shim_value_scalar(value, &raw mut scalar, &raw mut kind)
                 });
                 if status != Status::GOOD {
-                    return Err(status);
+                    return Err(match kind {
+                        NO_KIND => Fault::Status(status),
+                        kind => Fault::Type(BuiltIn::new(kind)),
+                    });
                 }
                 Ok(match kind {
                     $(
@@ -62,9 +66,17 @@ macro_rules! values {
             }
 
             /// The sample type of the value.
+            #[cfg(test)]
             pub(crate) fn scalar(self) -> Scalar {
                 match self {
                     $(Self::$variant(_) => Scalar::$variant,)*
+                }
+            }
+
+            /// The OPC UA type of the value.
+            pub(crate) fn built_in(self) -> BuiltIn {
+                match self {
+                    $(Self::$variant(_) => BuiltIn::new(ffi::$kind),)*
                 }
             }
 
@@ -126,6 +138,87 @@ values! {
     U64(u64) = UINT64, uint64, u64::to_le_bytes;
     F32(f32) = FLOAT, float, f32::to_le_bytes;
     F64(f64) = DOUBLE, double, f64::to_le_bytes;
+}
+
+/// The kind that `shim_value_scalar` writes only for a value of another type.
+const NO_KIND: u16 = u16::MAX;
+
+/// The name of each built-in type of OPC UA, by its kind in open62541.
+const NAMES: [&str; 31] = [
+    "Boolean",
+    "SByte",
+    "Byte",
+    "Int16",
+    "UInt16",
+    "Int32",
+    "UInt32",
+    "Int64",
+    "UInt64",
+    "Float",
+    "Double",
+    "String",
+    "DateTime",
+    "Guid",
+    "ByteString",
+    "XmlElement",
+    "NodeId",
+    "ExpandedNodeId",
+    "StatusCode",
+    "QualifiedName",
+    "LocalizedText",
+    "ExtensionObject",
+    "DataValue",
+    "Variant",
+    "DiagnosticInfo",
+    "Decimal",
+    "Enumeration",
+    "Structure",
+    "Structure",
+    "Union",
+    "Structure",
+];
+
+/// Why an answer of a read gives no [`Value`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Fault {
+    /// The status of the answer, which is not Good, or `BadNoData` when it holds no
+    /// value.
+    Status(Status),
+    /// The type of a Good answer that is an array, or a scalar of another type than
+    /// those of [`Value`].
+    Type(BuiltIn),
+}
+
+/// The OPC UA type of a value: a built-in type, or an array of one. Its text is the
+/// name, such as `String` or `array of Double`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BuiltIn(u16);
+
+impl BuiltIn {
+    /// The type of the open62541 kind `kind`, plus [`ffi::ARRAY`] for an array.
+    ///
+    /// # Panics
+    ///
+    /// If `kind` is not one of [`NAMES`], which open62541 never gives.
+    pub(crate) fn new(kind: u16) -> Self {
+        let scalar = usize::from(kind & !ffi::ARRAY);
+        assert!(
+            scalar < NAMES.len(),
+            "invariant: no open62541 kind is {kind}"
+        );
+        Self(kind)
+    }
+}
+
+impl fmt::Display for BuiltIn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = NAMES[usize::from(self.0 & !ffi::ARRAY)];
+        if self.0 & ffi::ARRAY == 0 {
+            f.write_str(name)
+        } else {
+            write!(f, "array of {name}")
+        }
+    }
 }
 
 #[cfg(test)]

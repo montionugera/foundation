@@ -11,7 +11,7 @@ use crate::client::Client;
 use crate::event;
 use crate::ffi::Status;
 use crate::node::Node;
-use crate::value::Value;
+use crate::value::{Fault, Value};
 
 const SPIKE: &str = "ns=3;s=SpikeData";
 const DIP: &str = "ns=3;i=7";
@@ -20,11 +20,11 @@ const CLAMPED: Quality = Quality(0x0030_0000);
 const UNCERTAIN: Quality = Quality(0x4090_0000);
 const QUALITIES: [Quality; 4] = [Quality::GOOD, CLAMPED, UNCERTAIN, BAD];
 /// The reads of a variable with each of [`QUALITIES`] in turn.
-const READS: [Result<Value, Status>; 4] = [
+const READS: [Result<Value, Fault>; 4] = [
     Ok(Value::F64(1.0)),
     Ok(Value::F64(2.0)),
-    Err(Status(UNCERTAIN.0)),
-    Err(Status(BAD.0)),
+    Err(Fault::Status(Status(UNCERTAIN.0))),
+    Err(Fault::Status(Status(BAD.0))),
 ];
 
 /// Binds a listener of `node` on its port 4840.
