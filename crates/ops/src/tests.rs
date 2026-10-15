@@ -10,9 +10,9 @@ use document::Source;
 use serde_json::{Map, Value, json};
 
 use crate::error::{Action, Among, Error, On, Unread};
-use crate::front_end;
 use crate::operation::{self, Response, TABLE};
 use crate::{FrontEnd, FrontEnds};
+use crate::{front_end, plan};
 
 /// The fix of `ops.argument`.
 const HELP: &str =
@@ -603,7 +603,7 @@ fn error_codes_and_fixes_match_the_golden_file() {
     let every = every();
     for error in &every {
         // A new variant fails this match, so it joins `every` and the golden file.
-        // `Config` holds the codes of the front ends, of `config`, and the one below.
+        // `Config` holds the codes of the front ends, of `config`, and the ones below.
         // `Node` holds the codes of `node`, and `Remote` the codes of a reply.
         match error {
             Error::Argument { .. }
@@ -641,7 +641,8 @@ fn error_codes_and_fixes_match_the_golden_file() {
     );
     let unknown = front_end::unknown(Source(0), &front_ends);
     let not_utf8 = front_end::not_utf8(Path::new("plant.yaml"));
-    for diagnostic in [unknown, not_utf8] {
+    let unresolved = plan::unresolved(None, String::new());
+    for diagnostic in [unknown, not_utf8, unresolved] {
         lines.push(format!("{}\t{}\n", diagnostic.code, diagnostic.fix));
     }
     let codes: BTreeSet<_> = lines.iter().map(|line| line.split('\t').next()).collect();

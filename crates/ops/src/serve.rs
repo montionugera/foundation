@@ -434,7 +434,12 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Body, Error
         return Err(check.denied(Action::Plan, On::Spec));
     }
     let (base, applied) = spec.newest()?;
-    let (output, plan) = files.plan(base, &applied, &node.mesh.names(), &node.kinds)?;
+    // A subject that may not apply a connector learns nothing of its sources, and
+    // `apply` of a connector needs `admin` too.
+    let readable = |name: &Name| {
+        check.allows(Action::Apply, name) && check.allows(Action::Admin, name)
+    };
+    let (output, plan) = files.plan(node, base, &applied, readable).await?;
     let mut reply = Body::line(&Answer::Done { output: &output })?;
     reply.add(&plan.encode())?;
     Ok(reply)
@@ -479,7 +484,7 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Body, Error>
     if plan.changes.is_empty() && plan.homes.is_empty() {
         return Err(check.denied(Action::Apply, On::Nothing));
     }
-    let effect = apply::apply(plan, spec, &node.mesh, &node.kinds, &node.key).await?;
+    let effect = apply::apply(plan, spec, &node.mesh, &node.kinds, &node.keys).await?;
     Ok(Body::line(&Answer::Done { output: &effect })?)
 }
 

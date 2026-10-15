@@ -190,6 +190,7 @@
   | `restarts` | `u64` | the restarts in this call |
   | `backoff` | `Span` | the wait from this sample to the next try, 0 unless `state` is 1 |
   | `error` | `String` | the text of the error that ended the last run, or that the running kind shows, empty when `class` is 0 |
+  | `note` | `String` | the note that the running kind shows (below), empty when it shows none |
   | each count of the kind | `u64` | as the kind sets it through `Context::count` |
 
   A count holds across the runs of one call. A kind adds to it with `Count::add`, or
@@ -201,15 +202,16 @@
   (`laptop.architect-2`, 2026-10-08T06:29:21Z:
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186). The
   text of `error` is the text of the `Device` or `Retry` source, or the diagnostics of
-  `Config` joined with `"; "`, cut to at most 1024 bytes at a char boundary, so a long
-  device error does not make a frame too large. `backoff` is the wait that is left to
-  the next try by the node's clock at the write, less the time by which the frame is
-  stamped after the hub's time (below). So a frame written again later gives the wait
-  that is left, a frame stamped ahead gives a wait that ends at the next try, and a step
-  of the hub's time during the wait does not change it. The wait is by the node's
-  clock, so while the hub's time slews, the next try is up to 500 ppm (MESH SLEW) of
-  the wait from the frame's time plus `backoff`. Decided by the `connector` builder in
-  the plan on #420 (2026-10-10T03:22:36Z:
+  `Config` joined with `"; "`. A text of more than 1024 bytes keeps its first and last
+  510 bytes or less at char boundaries, joined by `…`, so a long device error does not
+  make a frame too large and keeps its reason at the end. `backoff` is the wait that is
+  left to the next try by the node's clock at the write, less the time by which the
+  frame is stamped after the hub's time (below). So a frame written again later gives
+  the wait that is left, a frame stamped ahead gives a wait that ends at the next try,
+  and a step of the hub's time during the wait does not change it. The wait is by the
+  node's clock, so while the hub's time slews, the next try is up to 500 ppm (MESH
+  SLEW) of the wait from the frame's time plus `backoff`. Decided by the `connector`
+  builder in the plan on #420 (2026-10-10T03:22:36Z:
   https://github.com/synnaxlabs/foundation/issues/420#issuecomment-6093259074),
   measured from the frame's time after round 1 of PR #2227 (finding 2,
   2026-10-10T03:55:58Z:
@@ -220,9 +222,12 @@
   (2026-10-10T05:38:31Z:
   https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6094282904) and with
   "next try" (2026-10-11T10:03:33Z:
-  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6107853141). The cut
-  and the join are approved by `laptop.architect-2` (2026-10-10T04:00:21Z:
-  https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6093545130). Each run
+  https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6107853141). The join
+  is approved by `laptop.architect-2` (2026-10-10T04:00:21Z:
+  https://github.com/synnaxlabs/foundation/pull/2227#issuecomment-6093545130), and the
+  cut of the first and last 510 bytes on 2026-10-14T19:50:51Z
+  (https://github.com/synnaxlabs/foundation/pull/2687#issuecomment-6176991169), which
+  supersedes the cut of 6093545130. Each run
   opens its reader before its start status (`laptop.architect-2`, 2026-10-11T07:34:44Z:
   https://github.com/synnaxlabs/foundation/pull/2371#issuecomment-6106726413). A try is
   the reader open of a restart, or, when `check` gives no reader settings, its start
@@ -254,19 +259,27 @@
   supersedes "at once" of rule 3 for it. The same value again writes nothing. The end of
   the run replaces both. A call after the run returned shows nothing
   (`laptop.architect-2`, 2026-10-13T04:01:43Z:
-  https://github.com/synnaxlabs/foundation/pull/2535#issuecomment-6137947506). When a
+  https://github.com/synnaxlabs/foundation/pull/2535#issuecomment-6137947506). A running
+  kind shows a note with `Context::note`: a short text of how the run works other than
+  its spec asks, such as a mode that the device forces, cut as `error`. A note is of one
+  run: each run starts with none, a new note replaces it, and the frame of `state` 3
+  holds an empty `note`. A change of the note is written within one second, as a change
+  of the shown error, and the same text again writes nothing. A call after the run
+  returned shows nothing (`laptop.architect-2`, 2026-10-13T23:48:35Z:
+  https://github.com/synnaxlabs/foundation/issues/2630#issuecomment-6157620934). When a
   run returns, `state` 3 with the class of that end is written as soon as
   the home applied the state before it. When each task of the run ended, `state` 1, or 2
   when the call returns (`laptop.architect-2`, 2026-10-08T19:07:43Z:
   https://github.com/synnaxlabs/foundation/issues/420#issuecomment-6067099903). A run
   whose last task ends T after its start gives at most 1 + ⌊T / 1 s⌋ + 2 frames: the
-  start, at most one frame of counts or a shown error in each second, then `state` 3
-  and the next state. So a kind that counts 10,000 samples over 10 s gives at most 13.
-  When the run itself sets its last count and ends at the flush at 10 s, that flush
-  writes no frame, and it gives 12. T runs to the end of the last task, because a task
-  that outlives the run can set counts between `state` 3 and the next state
-  (`laptop.architect-2`,
-  2026-10-09T21:16:18Z:
+  start, at most one frame of counts, a shown error, or a note in each second (the note
+  by `laptop.architect-2`, 2026-10-13T23:48:35Z,
+  https://github.com/synnaxlabs/foundation/issues/2630#issuecomment-6157620934), then
+  `state` 3 and the next state. So a kind that counts 10,000 samples over 10 s gives at
+  most 13. When the run itself sets its last count and ends at the flush at 10 s, that
+  flush writes no frame, and it gives 12. T runs to the end of the last task, because a
+  task that outlives the run can set counts between `state` 3 and the next state
+  (`laptop.architect-2`, 2026-10-09T21:16:18Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6089396653).
   Supersedes the bound of 12 frames of
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6088160535. `state`
