@@ -1974,7 +1974,7 @@ fn assert_behind(ended: &Ended) {
     assert_eq!(*ended, Ended::Behind);
     assert_eq!(
         ended.to_string(),
-        "the reader missed a frame and gets no later one: open a new reader"
+        "the reader reached a frame that the buffer lost: open a new reader"
     );
 }
 

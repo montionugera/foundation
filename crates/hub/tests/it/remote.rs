@@ -1546,7 +1546,7 @@ fn a_complete_reader_that_the_home_ends_with_behind_gets_behind_at_each_next() {
             assert_eq!(ended, Ended::Behind);
             assert_eq!(
                 ended.to_string(),
-                "the reader missed a frame and gets no later one: open a new reader"
+                "the reader reached a frame that the buffer lost: open a new reader"
             );
             assert_eq!(reader.next().await.expect_err("ended"), Ended::Behind);
         },

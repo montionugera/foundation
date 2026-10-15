@@ -211,7 +211,7 @@ impl fmt::Display for Ended {
         match self {
             Self::Buffer(error) => write!(f, "the buffer of the shard failed: {error}"),
             Self::Behind => f.write_str(
-                "the reader missed a frame and gets no later one: open a new reader",
+                "the reader reached a frame that the buffer lost: open a new reader",
             ),
             Self::Removed(key) => {
                 write!(f, "channel {key} was removed: open a new reader")
