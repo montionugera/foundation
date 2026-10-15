@@ -8,9 +8,10 @@
   `Rejected::Full` only when the records queued since the last commit do not fit after
   the trim: the full disk queue of B5, which is the commit queue. A read reports the
   trimmed seqs of a path as `Read::gap`, also when the path holds no entry, and the
-  gap's length is the count of samples lost (B2). A hub reader gives the seqs that a
-  trim freed, and those lost for no room, as the gap of its next frame,
-  `hub::reader::Received::gap` (#2553, `laptop.architect`, 2026-10-15T18:12:25Z:
+  gap's length is the count of samples lost (B2). A hub reader gives the seqs lost for
+  no room as the gap of its next frame, `hub::reader::Received::gap`, and the seqs that
+  a trim freed once it reads from disk (#2723) (#2553, `laptop.architect`,
+  2026-10-15T18:12:25Z:
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922). Each
   data record leaves three blocks free: for the restart record of the next open, the
   carry record of the commit after

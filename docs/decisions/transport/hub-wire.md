@@ -248,8 +248,9 @@
   `wire::hub::Reader` refuses a first head of a complete session that starts before
   `live` with `Seq`, as it refuses a head that starts before the end of the head before
   it. A latest session also gets the newest frame below `live`. A complete remote reader
-  and a complete client read give the seqs from `live` to the first frame as its gap
-  (`hub::reader::Received::gap`). Lost: `Opened` with no field, so a loss between the
-  open and the first frame was silent. Decided by `laptop.architect`
-  (2026-10-15T19:40:52Z,
+  gives the seqs from `live` to its first frame as the gap of that frame
+  (`hub::reader::Received::gap`). A complete client read gets `live`, from which the
+  client finds the seqs before the seq of its first head. Lost: `Opened` with no field,
+  so a loss between the open and the first frame was silent. Decided by
+  `laptop.architect` (2026-10-15T19:40:52Z,
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6200757306).

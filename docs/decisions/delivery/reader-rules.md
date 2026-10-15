@@ -80,8 +80,9 @@
   A6, A8, B2, B3, S10, X14, #41.
   Amended (#2553): a live frame that finds no room in the buffer is no miss. It ends no
   session, and a named session that the home holds over it resumes with no `Behind`. The
-  next frame that a complete session gets gives the lost seqs as its gap, with a run
-  that a trim freed, from `hub::reader::Received::gap` (`laptop.architect`,
+  next frame that a complete session gets gives the lost seqs as its gap, from
+  `hub::reader::Received::gap`. A run that a trim freed joins the gap once a reader
+  reads from disk (#2723) (`laptop.architect`,
   2026-10-15T18:12:25Z:
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922).
   Supersedes the three rulings of #2649 above on a frame that finds no room.

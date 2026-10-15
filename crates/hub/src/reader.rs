@@ -121,11 +121,9 @@ impl<'a> Received<'a> {
         position
     }
 
-    /// The seqs of the index just before this frame that the reader did not get: a run
-    /// that a trim freed (STORE TRIM) or that was lost for no room. `None` for most
-    /// frames, and never an empty range. Its end is the seq of the frame's first
-    /// sample. A session that opens again at the same position gives the same gap with
-    /// the same frame.
+    /// The seqs of the index just before this frame that the reader did not get, as
+    /// they were lost for no room. `None` for most frames, and never an empty range.
+    /// Its end is the seq of the frame's first sample.
     #[must_use]
     pub fn gap(&self) -> Option<Range<u64>> {
         let start = self.lent.seqs.start;
