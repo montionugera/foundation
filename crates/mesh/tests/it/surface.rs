@@ -309,6 +309,24 @@ async fn accept(mesh: Mesh, transport: Rc<Transport>, tasks: Tasks) {
     }
 }
 
+#[test]
+fn a_run_that_waits_forever_fails_at_the_bound_of_steps() {
+    let ran = run(|node, tasks| async move {
+        let mesh = Mesh::open(create_config(&node, &tasks).await)
+            .await
+            .unwrap();
+        pending::<()>().await;
+        drop(mesh);
+    });
+    assert_eq!(
+        ran,
+        Err(sim::Error::Steps {
+            max: 1_600_000,
+            seed: 0
+        })
+    );
+}
+
 /// The index whose home node `id` sets.
 fn index(id: u8) -> channel::Key {
     channel::Key::from_u128(u128::from(id))
