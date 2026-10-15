@@ -87,6 +87,8 @@ jobs:
                       print(tests[-1])
                       if event["event"] == "failed":
                           print(event.get("stdout", ""), end="")
+                          if "message" in event:
+                              print(event["message"])
               code = run.wait()
               failed |= code != 0
               print(f"binary {name}: exit {code}, {time.monotonic() - start:.2f} s")
