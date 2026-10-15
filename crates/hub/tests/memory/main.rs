@@ -37,8 +37,8 @@ use transport::{Class, Code};
 use types::channel;
 use types::name::Selector;
 use types::time::Span;
-use wire::hub::client::{self, BODY_BYTES_MAX, FromNode, OPEN_BYTES_MAX, Place};
-use wire::hub::{BUSY, FromHome, Open, keys};
+use wire::hub::client::{self, BODY_BYTES_MAX, OPEN_BYTES_MAX, Place};
+use wire::hub::{BUSY, Open, keys};
 
 #[global_allocator]
 static ALLOCATOR: counting::Bytes = counting::Bytes::new();
@@ -547,25 +547,6 @@ fn defines_no_channel_again_at_the_first_poll_of_the_spec_task() {
 /// run, and `Opened`. The program holds nothing of the places.
 async fn opened(agent: &Agent, select: &str) -> agent::Stream {
     let mut stream = agent.read(client::Mode::Complete, &[select]).await;
-    let mut start = client::Reader::new(client::Mode::Complete);
-    let mut next = async || {
-        let message = stream.recv().await.expect("receives");
-        message.expect("a message before the finish")
-    };
-    let Ok(FromNode::Places(_)) = start.decode(&next().await) else {
-        panic!("the places come first");
-    };
-    let mut reader = loop {
-        let Ok(FromNode::Run { home, .. }) = start.decode(&next().await) else {
-            panic!("a message of the run of places");
-        };
-        if let Some(home) = home {
-            break home;
-        }
-    };
-    assert!(
-        matches!(reader.decode(&next().await), Ok(FromHome::Opened)),
-        "then `Opened`"
-    );
+    stream.opened().await;
     stream
 }

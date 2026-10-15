@@ -880,6 +880,11 @@ async fn create(
         Mesh::Synced => hub::testing::open(env).await.0,
         Mesh::Late(synced) => hub::testing::open_unsynced(env, synced).await,
     };
+    let secrets = secret::Resolver::new(
+        Arc::default(),
+        node.files(),
+        &crate::directory::secrets(),
+    );
     count(connector::supervisor::Config {
         kinds: Arc::new(kinds),
         clock: node.clock(),
@@ -887,6 +892,7 @@ async fn create(
         net: node.net(),
         tasks: tasks.clone(),
         hub,
+        secrets,
     })
 }
 
@@ -1383,8 +1389,8 @@ async fn regional(
         private_key,
         opener: secret::seal::Opener::from_bytes([3; 32]),
     };
-    let (hub, mesh, _) = mesh::hub(node, tasks, identity, founding).await;
-    (hub, mesh)
+    let opened = mesh::open(node, tasks, identity, founding).await;
+    (opened.hub, opened.mesh)
 }
 
 /// Applies `first`, then `second` 1 s after `first` is in use, each with its channels,
@@ -1407,6 +1413,11 @@ fn in_region(
             (Starts::default(), Starts::default(), Starts::default());
         let kinds = kinds(None, &starts, &cancels, &got);
         let (hub, mesh) = regional(&node, &tasks, &[1, 101, 201, 902]).await;
+        let secrets = secret::Resolver::new(
+            Arc::default(),
+            node.files(),
+            &crate::directory::secrets(),
+        );
         let config = connector::supervisor::Config {
             kinds: Arc::new(kinds),
             clock: node.clock(),
@@ -1414,6 +1425,7 @@ fn in_region(
             net: node.net(),
             tasks: tasks.clone(),
             hub,
+            secrets,
         };
         let clock = node.clock();
         let mut runs = Runs::new(config, name(NODE));

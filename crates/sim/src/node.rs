@@ -4,10 +4,10 @@ use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::task::Waker;
 
 use types::time::{Monotonic, Span, Stamp};
 
+use crate::log::Waker;
 use crate::state::lock;
 use crate::{drivers, net, shard};
 
@@ -214,16 +214,24 @@ impl Node {
     /// - Each `Files` that it gives acts as a clone of one: a write open, a remove, or
     ///   a rename from any of them waits for each call that a drop from any of them
     ///   left to run.
+    /// - `open_absolute` reads the file at its path in [`Node::paths`], the host's
+    ///   tree, when the open ends. The open and each read take the time of a file
+    ///   call, and [`Node::fail_file`] fails them. It gives `NotFound` when no file
+    ///   is there, and the error of a read of the tree, such as one of
+    ///   [`Node::fail_path`], as `Error::Io` with operation `Open`. A later write of
+    ///   the tree does not change the open file.
     #[must_use]
     pub fn files(&self) -> env::files::Files {
         env::files::Files::new(self.0.clone())
     }
 
-    /// The path of each file descriptor that the node closed or dropped, in order,
-    /// since the run started: the path of its open, or of the last rename that it made,
-    /// with only its names. A crash closes each descriptor of the node, a leaked one
-    /// too. Those that the drops of its futures close come first, in the order of the
-    /// drops. The leaked ones come last, in the order that their opens started.
+    /// The path of each file descriptor that the node closed or dropped, in order, from
+    /// the start of the run: the path of its open, or of the last rename that it made,
+    /// with only its names. That path is relative to the data directory, or absolute
+    /// for a file of `open_absolute`. A crash closes each descriptor of the node, a
+    /// leaked one too. Those that the drops of its futures close come first, in the
+    /// order of the drops. The leaked ones come last, in the order that their opens
+    /// started.
     #[must_use]
     pub fn file_closes(&self) -> Vec<PathBuf> {
         lock(&self.0.shared).files().closes(self.0.node)

@@ -8,25 +8,12 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use env::shards::{Config, Shards};
 use env::tasks::Tasks;
 use tokio::sync::oneshot;
 use tokio::task::yield_now;
 
-use crate::common::{
-    Armed, Bomb, Relay, Relayed, Stuck, assert_aborts, assert_joins, panicked,
-};
-
-fn shards() -> Shards {
-    os::shards().expect("the OS gives the cores of this process")
-}
-
-fn config(name: &str) -> Config {
-    Config {
-        name: name.into(),
-        core: None,
-    }
-}
+use crate::common::{Relay, Relayed, Stuck};
+use crate::panics::{Bomb, assert_joins, config, panicked, shards};
 
 /// A flag that a [`Dropped`] sets.
 fn flag() -> Arc<AtomicBool> {
@@ -279,6 +266,8 @@ fn a_name_with_a_nul_starts_and_panicked_keeps_the_whole_name() {
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use env::shards::Config;
+
     use super::*;
     use crate::common::affinity;
 
@@ -392,48 +381,6 @@ fn a_panic_whose_payload_panics_in_its_drop_in_a_tokio_task_ends_the_shard() {
     };
     let handle = shards().start(config("shard-15"), main).unwrap();
     assert_joins(handle, panicked("shard-15"));
-}
-
-#[test]
-fn a_panic_in_the_poll_and_then_the_drop_of_a_tokio_task_aborts_the_process() {
-    assert_aborts(|| {
-        let main = |_: Tasks| async {
-            drop(tokio::task::spawn_local(Armed {
-                faulty: true,
-                _bomb: Bomb,
-            }));
-            pending::<()>().await;
-        };
-        let handle = shards().start(config("shard-16"), main).unwrap();
-        assert_joins(handle, Ok(()));
-    });
-}
-
-#[test]
-fn a_panic_over_a_local_that_panics_in_its_drop_in_a_task_aborts_the_process() {
-    assert_aborts(|| {
-        let main = |tasks: Tasks| async move {
-            tasks.spawn(async {
-                let _bomb = Bomb;
-                panic!("task");
-            });
-            pending::<()>().await;
-        };
-        let handle = shards().start(config("shard-17"), main).unwrap();
-        assert_joins(handle, panicked("shard-17"));
-    });
-}
-
-#[test]
-fn a_panic_over_a_local_that_panics_in_its_drop_in_main_aborts_the_process() {
-    assert_aborts(|| {
-        let main = |_: Tasks| async {
-            let _bomb = Bomb;
-            panic!("main");
-        };
-        let handle = shards().start(config("shard-18"), main).unwrap();
-        assert_joins(handle, panicked("shard-18"));
-    });
 }
 
 #[test]

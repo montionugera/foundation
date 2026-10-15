@@ -144,8 +144,8 @@ fn a_client_frees_what_it_holds() {
         let body = async |server: &client::Server| {
             let mut held = Vec::new();
             for _ in 0..4 {
-                let mut client = server.connect().await;
-                client.read().await;
+                let mut client = server.connect(64).await;
+                client.read(client::Variable::Number).await;
                 client.close().await;
                 held.push(ALLOCATOR.held());
             }

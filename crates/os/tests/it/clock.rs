@@ -9,7 +9,7 @@ use env::clock::Clock;
 use env::shards::Config;
 use types::time::{Monotonic, Span};
 
-use crate::common::assert_joins;
+use crate::panics::assert_joins;
 
 /// Runs `body` on a dedicated thread of `os` and waits for it to end.
 fn on_a_thread<F>(body: impl FnOnce() -> F + Send + 'static)

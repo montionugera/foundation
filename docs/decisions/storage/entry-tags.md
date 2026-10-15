@@ -30,12 +30,19 @@
   2026-10-10T05:39:15Z). On box1, the tags take 84 B in all up to 3 pairs of a log
   and a nonzero tag, then 19.4 to 38.9 B for each pair, 2.2 MB at 100k logs with a
   handoff. A change that writes a second nonzero tag on a log states its bytes for
-  each log and tag in its PR. Over 48 B, it needs a P1 judgment. Decided by
-  `laptop.architect` (#2236,
-  https://github.com/synnaxlabs/foundation/pull/2236#issuecomment-6094432871,
+  each log and tag in its PR. Those bytes are a cost for each carried index, so P1 says
+  when they need a judgment. At the count of P1, that is 5 B or more for each log: 0.5
+  MB of idle memory at 100,000 logs. The 48 B bound of the rulings holds only for the
+  `HANDOFF` tag, which they accepted with what it buys. Decided by `laptop.architect`
+  (#2236, https://github.com/synnaxlabs/foundation/pull/2236#issuecomment-6094432871,
   2026-10-10T05:58:44Z,
   https://github.com/synnaxlabs/foundation/pull/2236#issuecomment-6094544644,
   2026-10-10T06:13:43Z, and
   https://github.com/synnaxlabs/foundation/pull/2236#issuecomment-6094641167,
   2026-10-10T06:26:36Z). The bytes replace those in item 3 of
-  https://github.com/synnaxlabs/foundation/pull/2236#issuecomment-6094432871.
+  https://github.com/synnaxlabs/foundation/pull/2236#issuecomment-6094432871. The
+  trigger of a second tag supersedes "Over 48 B, it needs a P1 judgment" of those
+  rulings (`laptop.architect`, 2026-10-12T16:12:06Z,
+  https://github.com/synnaxlabs/foundation/pull/2423#issuecomment-6128077132, amended at
+  2026-10-12T16:50:47Z,
+  https://github.com/synnaxlabs/foundation/pull/2423#issuecomment-6128684558).

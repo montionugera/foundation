@@ -138,6 +138,20 @@
   the group; `env::files::Files::within`, because `env` then gives two ways to scope
   the files of a crate, beside `buffer::Config::dir`. A change that wants it later
   moves `buffer` and `mesh` together.
+  Amended (2026-10-10, #2064): the mesh spawns each task through one
+  `env::tasks::Group` made from its `Tasks`, and `Mesh::ended` returns the
+  `env::tasks::Ended` that `Group::ended` gives. `mesh::Ended` leaves the exports of
+  `mesh`. The contract above holds. Decided by `laptop.architect`
+  (2026-10-09T20:44:15Z):
+  https://github.com/synnaxlabs/foundation/issues/2064#issuecomment-6088942460.
+  `Ended` is a type of another crate, under the rule above (`laptop.architect`,
+  2026-10-10T03:02:58Z:
+  https://github.com/synnaxlabs/foundation/pull/2218#issuecomment-6093108453), and the
+  `Debug` text of `Ended` above is that of `env::tasks::Ended`, set in ENV SEAMS by
+  `laptop.architect-2` (2026-10-09T21:02:50Z):
+  https://github.com/synnaxlabs/foundation/issues/2064#issuecomment-6089208454. This
+  supersedes the `mesh::Ended` of
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6051912643.
   `Mesh::holder(PublicKey) -> Option<node::Key>` gives the member whose card holds a
   public key, by a scan of the members, so a caller such as `node` serves a `Hub` stream
   of a peer only when a member holds the key that its transport proves. It gives the
@@ -213,3 +227,10 @@
   or the new spec by the time of its read. Decided by `laptop.architect`
   (2026-10-11T16:47:07Z:
   https://github.com/synnaxlabs/foundation/pull/2422#issuecomment-6111328950).
+  Amended (2026-10-12, #2224): `Mesh::ended` waits for each task that the mesh spawned.
+  Its doc and this entry list no tasks, because a list goes stale when the mesh adds a
+  task. Supersedes "the group's task and each task that sends" of the amendment of
+  2026-10-08 above (2026-10-08T04:00:49Z:
+  https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6051912643). Decided
+  by `laptop.architect` (2026-10-12T23:18:24Z:
+  https://github.com/synnaxlabs/foundation/pull/2506#issuecomment-6134467487).

@@ -4,9 +4,11 @@
 #[cfg(not(loom))]
 mod tests;
 
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use estimate::Measurement;
+use types::name::Name;
 use types::sample::{Scalar, Type};
 use types::time::Span;
 
@@ -64,6 +66,25 @@ pub(crate) const TABLE: [Channel; 5] = [
         read: |pulled| Some(Value::U64(pulled.store.failures)),
     },
 ];
+
+/// The most bytes of a name of [`TABLE`]. Fixed: a larger value lowers
+/// [`crate::name::MAX_BYTES`], so a node with a name that an earlier release kept
+/// stops. A new status name must fit.
+pub(crate) const MAX_BYTES: usize = 63;
+const _: () = {
+    let mut i = 0;
+    while i < TABLE.len() {
+        assert!(TABLE[i].name.len() <= MAX_BYTES, "a status name fits");
+        i += 1;
+    }
+};
+
+/// The name of each status channel of [`TABLE`], under the node's name. The member
+/// record of the node holds a key for each.
+pub(crate) fn names() -> BTreeSet<Name> {
+    let name = |c: &Channel| c.name.parse().expect("invariant: a status name parses");
+    TABLE.iter().map(name).collect()
+}
 
 /// One sample of a status channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

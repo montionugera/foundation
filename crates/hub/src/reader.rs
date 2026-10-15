@@ -34,9 +34,10 @@ pub enum Mode {
     /// reader has not given back (the one it holds and those it has not taken) reach
     /// a window, a later frame waits until the reader gives frames back. A frame that
     /// still waits when the hub releases the next commit with frames of the index is
-    /// a miss: the session ends with [`Ended::Behind`] after the frames before it. So
-    /// a reader that takes the frames of each commit before the next such commit ends
-    /// misses none.
+    /// a miss: the session ends with [`Ended::Behind`] after the frames before it. A
+    /// live frame that finds no room in the buffer is a miss too, and so is each frame
+    /// that waits for the window then. So a reader that takes the frames of each
+    /// commit before the next such commit ends misses none while the buffer has room.
     Complete,
     /// The newest live frame, before its commit.
     Latest,
@@ -59,8 +60,8 @@ pub struct Config {
     /// A named complete reader that opens while the home holds its position resumes at
     /// the position that the acks of its last complete session recorded, or where that
     /// session opened when they recorded none. It ends with [`Ended::Behind`] when a
-    /// frame after that position was released, or dropped because no complete session
-    /// on its index was open.
+    /// frame after that position was released, dropped because no complete session on
+    /// its index was open, or lost because the buffer had no room.
     pub name: Option<Name>,
     /// How long the home holds a named complete reader's position after its session
     /// closes. Zero or more. It must be zero when the reader is unnamed or latest.
@@ -73,8 +74,7 @@ pub struct Config {
 pub struct Received<'a> {
     view: View<'a>,
     lens: &'a Lens,
-    /// The `given` of the reader.
-    given: &'a Cell<Option<u64>>,
+    lent: &'a Lent,
 }
 
 impl<'a> Received<'a> {
@@ -90,12 +90,30 @@ impl<'a> Received<'a> {
         &self.lens.set
     }
 
+    /// The name of the channel at `entry` of [`Self::set`], as it was when the reader
+    /// opened. The entry's `data_type` is the type of its samples.
+    ///
+    /// # Panics
+    ///
+    /// If `entry` is not an entry that [`Self::view`] gives.
+    #[must_use]
+    pub fn name(&self, entry: usize) -> &'a str {
+        let names =
+            self.lent.names.as_deref().expect(
+                "invariant: the hub calls no `name` on a reader of a client read",
+            );
+        let place = names.find(&self.lens.set, entry).unwrap_or_else(|| {
+            panic!("the entry {entry} is not a channel of the reader")
+        });
+        names.get(place)
+    }
+
     /// The reader's position after this frame. Give it to [`Reader::ack`] when the
     /// frame is safe at its target.
     #[must_use]
     pub fn position(&self) -> Position {
         let position = self.lens.after(self.view.frame());
-        self.given.set(Some(position.live));
+        self.lent.given.set(Some(position.live));
         position
     }
 }
@@ -314,11 +332,20 @@ pub struct Reader {
     source: Source,
     /// The slot of the reader's index.
     index: channel::Slot,
+    lent: Lent,
+    /// The frame that the last [`Received`] lends.
+    frame: Option<Frame>,
+}
+
+/// What a reader lends to each [`Received`], by one reference, so that `Received`
+/// stays as small as with no names.
+#[derive(Debug, Default)]
+struct Lent {
+    /// `None` for a reader of a client read. A box keeps the reader small.
+    names: Option<Box<Names>>,
     /// The `live` of the last position that [`Received::position`] gave, or `None`
     /// before it gave one. The positions of a reader rise, so it is the highest.
     given: Cell<Option<u64>>,
-    /// The frame that the last [`Received`] lends.
-    frame: Option<Frame>,
 }
 
 /// Where a reader's frames come from.
@@ -422,35 +449,41 @@ impl Reader {
             "a hold of {hold} for a reader that is unnamed or latest"
         );
         let named = name.map(|name| ::home::reader::named::Key { subject, name });
-        let item = |channel: &Channel| (channel.key(), channel.sample());
-        let (matched, home) =
-            find(state, || &select, |_, channel| item(channel)).await?;
-        let home = match home {
-            Home::Here(channels) => {
-                return Self::local(state, channels, mode, named, hold);
-            }
-            Home::Away(home) => home,
+        let mut listed = None;
+        let items = |found: &[(&Name, &Channel)]| {
+            listed = Some(Names::new(found));
+            let item =
+                |&(_, channel): &(&Name, &Channel)| (channel.key(), channel.sample());
+            found.iter().map(item).collect()
         };
-        if named.is_some() {
-            return Err(Error::Remote { home });
-        }
-        let (index, _) = matched.items[matched.index];
-        let data = matched
-            .items
-            .into_iter()
-            .filter(|&(key, _)| key != index)
-            .collect();
-        let (remote, slot) = Remote::open(state, home, data, index, mode).await?;
-        Ok(Self {
-            index: slot,
-            source: Source::Remote(Box::new(remote)),
-            given: Cell::new(None),
-            frame: None,
-        })
+        let (matched, home) = find(state, || &select, items).await?;
+        let mut listed =
+            listed.expect("invariant: `find` calls `items` before it returns");
+        let mut reader = match home {
+            Home::Here(channels) => {
+                listed.slot(&channels.slots);
+                Self::local(state, channels, mode, named, hold)?
+            }
+            Home::Away(home) if named.is_some() => return Err(Error::Remote { home }),
+            Home::Away(home) => {
+                let index = matched.index;
+                let (remote, slots) = Remote::open(state, home, matched, mode).await?;
+                listed.slot(&slots);
+                Self {
+                    index: slots[index],
+                    source: Source::Remote(Box::new(remote)),
+                    lent: Lent::default(),
+                    frame: None,
+                }
+            }
+        };
+        reader.lent.names = Some(Box::new(listed));
+        Ok(reader)
     }
 
     /// Opens an unnamed reader on `channels` from [`Home::Here`], with no wait since
-    /// [`find`] gave them.
+    /// [`find`] gave them. It holds no names: the places of a served read carry them,
+    /// so [`Received::name`] panics.
     pub(crate) fn here(
         state: &Rc<RefCell<State>>,
         channels: Channels,
@@ -472,7 +505,7 @@ impl Reader {
         Ok(Self {
             source: Source::Local(local),
             index: slot,
-            given: Cell::new(None),
+            lent: Lent::default(),
             frame: None,
         })
     }
@@ -515,7 +548,7 @@ impl Reader {
             Ok(Received {
                 view: View::new(frame, &lens.mask),
                 lens,
-                given: &self.given,
+                lent: &self.lent,
             })
         }
     }
@@ -537,7 +570,7 @@ impl Reader {
             position.index == self.index,
             "the position is of another index than the reader's"
         );
-        let Some(given) = self.given.get() else {
+        let Some(given) = self.lent.given.get() else {
             panic!(
                 "the position is past each position that this reader gave: it gave none"
             );
@@ -591,6 +624,112 @@ impl From<Stop> for Ended {
     }
 }
 
+/// The name of each channel of a reader, in the order of its channels, in one text,
+/// so an open makes no allocation for each name, and the places of the key set of the
+/// last name.
+#[derive(Debug)]
+struct Names {
+    /// The end in `text` of the name of each channel.
+    ends: Box<[usize]>,
+    text: Box<str>,
+    /// Made again on the first name after each change of key set, so a reader that
+    /// gives no name does no work for them.
+    places: RefCell<Places>,
+}
+
+impl Names {
+    /// The names of `found`, in their order, with no slots.
+    fn new(found: &[(&Name, &Channel)]) -> Self {
+        let len = found.iter().map(|(name, _)| name.as_str().len()).sum();
+        let mut text = String::with_capacity(len);
+        let ends = found
+            .iter()
+            .map(|(name, _)| {
+                text.push_str(name.as_str());
+                text.len()
+            })
+            .collect();
+        Self {
+            ends,
+            text: text.into_boxed_str(),
+            places: RefCell::default(),
+        }
+    }
+
+    /// Gives the slot of each channel, in their order.
+    fn slot(&mut self, slots: &[channel::Slot]) {
+        self.places.get_mut().channels =
+            slots.iter().map(|&slot| (slot, Places::NONE)).collect();
+    }
+
+    /// The place in the channels of `entry` of `set`, or `None` when it is not one.
+    fn find(&self, set: &Arc<KeySet>, entry: usize) -> Option<usize> {
+        let mut places = self.places.borrow_mut();
+        places.make(set);
+        let place = *places.entries.get(entry)?;
+        (place != Places::NONE).then(|| to_usize(place))
+    }
+
+    /// The name of the channel at `place`.
+    fn get(&self, place: usize) -> &str {
+        let start = place.checked_sub(1).map_or(0, |before| self.ends[before]);
+        &self.text[start..self.ends[place]]
+    }
+}
+
+/// The place in a reader's channels of each entry of one key set.
+#[derive(Debug, Default)]
+struct Places {
+    /// The key set that the entries are of, or `None` before the first name. Held, so
+    /// that no other key set has its key.
+    set: Option<Arc<KeySet>>,
+    /// The slot of each channel, and its entry in `set` or [`Places::NONE`]. Empty
+    /// until the open knows the home of the index.
+    channels: Box<[(channel::Slot, u32)]>,
+    /// The place of each entry of `set`, or [`Places::NONE`]. As long as the largest
+    /// key set so far, with [`Places::NONE`] past `set`, so that a new key set
+    /// allocates only when it is larger.
+    entries: Vec<u32>,
+}
+
+impl Places {
+    /// The place of an entry that is not a channel of the reader.
+    const NONE: u32 = u32::MAX;
+
+    /// Makes the places those of `set`. It costs a search of `set` for each channel,
+    /// and work for each other entry of `set` only when `set` is larger than each key
+    /// set before it.
+    fn make(&mut self, set: &Arc<KeySet>) {
+        if self
+            .set
+            .as_ref()
+            .is_some_and(|held| held.key() == set.key())
+        {
+            return;
+        }
+        for &(_, entry) in &self.channels {
+            if entry != Self::NONE {
+                self.entries[to_usize(entry)] = Self::NONE;
+            }
+        }
+        let len = self.entries.len().max(set.entries().len());
+        self.entries.resize(len, Self::NONE);
+        for (place, (slot, entry)) in self.channels.iter_mut().enumerate() {
+            *entry = set.find(*slot).map_or(Self::NONE, |at| {
+                self.entries[at] = u32::try_from(place)
+                    .expect("invariant: a reader has fewer than u32::MAX channels");
+                u32::try_from(at)
+                    .expect("invariant: a key set has fewer than u32::MAX entries")
+            });
+        }
+        self.set = Some(Arc::clone(set));
+    }
+}
+
+fn to_usize(value: u32) -> usize {
+    usize::try_from(value).expect("invariant: a usize holds a u32")
+}
+
 /// What the selector of a reader matched.
 #[derive(Debug)]
 pub(crate) struct Matched<T> {
@@ -613,14 +752,15 @@ pub(crate) enum Home {
 }
 
 /// What the selector that `select` gives matches once the home of its index is known,
-/// with an item that `item` makes for each channel, and that home. It applies the spec
-/// in use before each match. A change of a channel that it matched ends a wait for the
-/// home at once, and it matches again. It calls `select` before and after each wait for
-/// the home, and keeps no selector or item across a wait.
+/// with the items that `items` makes, one for each channel in the order of the
+/// channels it gets, and that home. It applies the spec in use before each match. A
+/// change of a channel that it matched ends a wait for the home at once, and it matches
+/// again. It calls `select` before and after each wait for the home, and keeps no
+/// selector or item across a wait. It calls `items` once, after the last wait.
 pub(crate) async fn find<S: std::borrow::Borrow<Selector>, T>(
     state: &Rc<RefCell<State>>,
     mut select: impl FnMut() -> S,
-    mut item: impl FnMut(&Name, &Channel) -> T,
+    mut items: impl FnMut(&[(&Name, &Channel)]) -> Vec<T>,
 ) -> Result<(Matched<T>, Home), Error> {
     let (index, homed) = loop {
         let (index, keys) = {
@@ -642,7 +782,7 @@ pub(crate) async fn find<S: std::borrow::Borrow<Selector>, T>(
         Err(Away::Mesh(stopped)) => return Err(Error::Mesh(stopped)),
     };
     // A spec that only adds a channel ends no wait, and the selector can match it now.
-    let (keys, found) = matched(&state.borrow(), select().borrow(), &mut item)?;
+    let (keys, found) = matched(&state.borrow(), select().borrow(), &mut items)?;
     assert_eq!(
         keys[found.index], index,
         "invariant: no registered channel changed, so the index stays"
@@ -684,33 +824,31 @@ fn defined<'a>(
 }
 
 /// The key of each channel that `select` matches, in name order, then of their one
-/// index when `select` does not match it, and what `select` matched, with the item
-/// that `item` makes for each.
+/// index when `select` does not match it, and what `select` matched, with the items
+/// that `items` makes.
 fn matched<T>(
     state: &State,
     select: &Selector,
-    mut item: impl FnMut(&Name, &Channel) -> T,
+    mut items: impl FnMut(&[(&Name, &Channel)]) -> Vec<T>,
 ) -> Result<(Box<[channel::Key]>, Matched<T>), Error> {
-    let found = defined(state, select)?;
+    let mut found = defined(state, select)?;
     let index = found[0].1.index();
-    let mut keys: Vec<_> = found.iter().map(|(_, channel)| channel.key()).collect();
-    let mut items: Vec<_> = found
-        .iter()
-        .map(|&(name, channel)| item(name, channel))
-        .collect();
-    let at = if let Some(at) = keys.iter().position(|&key| key == index) {
+    let at = if let Some(at) =
+        found.iter().position(|(_, channel)| channel.key() == index)
+    {
         at
     } else {
-        let (name, channel) = state
+        let named = state
             .channels
             .iter()
             .find(|(_, channel)| channel.key() == index)
             .expect("invariant: the index of a defined channel is defined");
-        keys.push(index);
-        items.push(item(name, channel));
-        keys.len() - 1
+        found.push(named);
+        found.len() - 1
     };
-    Ok((keys.into(), Matched { items, index: at }))
+    let keys = found.iter().map(|(_, channel)| channel.key()).collect();
+    let items = items(&found);
+    Ok((keys, Matched { items, index: at }))
 }
 
 /// A session at the shard's home, through a mask of the reader's channels: the frames
@@ -925,6 +1063,13 @@ mod tests {
     use wire::hub::Refusal;
 
     use super::*;
+
+    /// `Reader::next` returns a `Received` for each frame, so the names add no word
+    /// to it.
+    #[test]
+    fn keeps_a_received_at_32_bytes() {
+        assert_eq!(size_of::<Received<'_>>(), 32);
+    }
 
     #[test]
     fn names_the_code_of_a_refusal_and_what_the_home_meant() {
