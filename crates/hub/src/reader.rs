@@ -962,11 +962,9 @@ impl Session {
                 if let Some(end) = self.ending.get() {
                     return Poll::Ready(Err(end.into()));
                 }
-                if let Some(failed) = &self.failed {
-                    return Poll::Ready(Err(Stop::clone(failed)));
-                }
                 ready!(self.streak.poll(cx));
-                let polled = poll_take(&mut self.state.borrow_mut(), self.key, cx);
+                let state = &mut self.state.borrow_mut();
+                let polled = poll_take(state, self.key, self.failed.as_deref(), cx);
                 self.streak.count(&polled);
                 polled
             })
@@ -1014,17 +1012,23 @@ enum Taken {
 }
 
 /// The next frame of the session `key` or the read it needs, or the waker of `cx`
-/// kept to wake once one waits.
+/// kept to wake once one waits. `failed` is why a read from disk of the session
+/// failed, which ends it once no frame waits.
 fn poll_take(
     state: &mut State,
     key: ::home::reader::Key,
+    failed: Option<&Stop>,
     cx: &Context<'_>,
 ) -> Poll<Result<Taken, Stop>> {
-    match state.home.take(key) {
-        Next::Frame(frame) => return Poll::Ready(Ok(Taken::Frame(frame))),
-        Next::Disk(disk) => return Poll::Ready(Ok(Taken::Disk(disk))),
-        Next::Behind => return Poll::Ready(Err(Stop::Behind)),
-        Next::Empty => {}
+    // After a failed read, the session's next take is that read again, or none.
+    match (state.home.take(key), failed) {
+        (Next::Frame(frame), _) => return Poll::Ready(Ok(Taken::Frame(frame))),
+        (Next::Disk(_) | Next::Empty, Some(failed)) => {
+            return Poll::Ready(Err(failed.clone()));
+        }
+        (Next::Disk(disk), None) => return Poll::Ready(Ok(Taken::Disk(disk))),
+        (Next::Behind, _) => return Poll::Ready(Err(Stop::Behind)),
+        (Next::Empty, None) => {}
     }
     if let Some(error) = &state.failed {
         return Poll::Ready(Err(Stop::Buffer(error.clone())));
