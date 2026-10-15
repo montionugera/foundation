@@ -978,7 +978,10 @@ impl Session {
             let filled = match disk.read().await {
                 Ok(read) => {
                     let state = &mut *self.state.borrow_mut();
-                    state.home.fill(read, &mut state.interner).map_err(Stop::Pool)
+                    state
+                        .home
+                        .fill(read, &mut state.interner)
+                        .map_err(Stop::Pool)
                 }
                 Err(failure) => Err(failure.into()),
             };

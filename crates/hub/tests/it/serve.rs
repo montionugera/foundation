@@ -652,7 +652,8 @@ fn sends_behind_and_finishes_when_a_complete_session_misses_a_lost_frame() {
     let kept = Arc::clone(&result);
     let home = move |test: Test, link: Link, incoming| async move {
         let mut writer = test.writer("a", &["value"]).await;
-        let (clock, pool, now) = (test.clock.clone(), Rc::clone(&test.pool), test.now());
+        let (clock, pool, now) =
+            (test.clock.clone(), Rc::clone(&test.pool), test.now());
         test.tasks.spawn(async move {
             clock.sleep(SETTLE).await;
             write_wide(&mut writer, now, 0);
@@ -660,7 +661,10 @@ fn sends_behind_and_finishes_when_a_complete_session_misses_a_lost_frame() {
             let mut blocks = fill(&pool);
             drop(blocks.pop());
             let outcomes = write(&mut writer, &[now + 1000], &[8]);
-            assert!(matches!(outcomes[..], [Outcome::Lost { .. }]), "{outcomes:?}");
+            assert!(
+                matches!(outcomes[..], [Outcome::Lost { .. }]),
+                "{outcomes:?}"
+            );
             drop(blocks);
             clock.sleep(SETTLE).await;
         });
@@ -669,7 +673,10 @@ fn sends_behind_and_finishes_when_a_complete_session_misses_a_lost_frame() {
     };
     session(48, Class::Complete, false, home, |mut peer| async move {
         let mut reader = open_complete(&mut peer, &[1, 2], 1 << 20).await;
-        assert!(got(peer.receiver(), &mut reader).await.is_some(), "the first frame");
+        assert!(
+            got(peer.receiver(), &mut reader).await.is_some(),
+            "the first frame"
+        );
         assert!(got(peer.receiver(), &mut reader).await.is_none(), "behind");
     });
     let served = result.lock().expect("not poisoned").take();
