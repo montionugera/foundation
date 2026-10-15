@@ -84,9 +84,10 @@
   until #2558, as `laptop.architect-2` decided on 2026-10-13T06:20:10Z
   (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6139570127). A
   restart within the `hold` of the reader sends the batch in flight again: the next run
-  reads its frames again from disk (#274 B1). With no `hold`, or after it, the next run
-  reads from the live frames, so those lines are lost. Decided by the ONE NODE record,
-  section 4, on 2026-10-13T00:50:41Z
+  reads its frames again from disk (#274 B1; `laptop.architect-2`, 2026-10-15T18:05:36Z:
+  https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6198895692). With no
+  `hold`, or after it, the next run reads from the live frames, so those lines are lost.
+  Decided by the ONE NODE record, section 4, on 2026-10-13T00:50:41Z
   (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6135595217), and
   the plan that `laptop.architect-2` approved on #1734
   (https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6135905432).
