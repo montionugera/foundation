@@ -410,7 +410,7 @@ fn a_refused_config_opens_a_connector_that_ends_with_its_diagnostics() {
 }
 
 /// A run whose status reader sleeps until the buffer has no room reads each status
-/// frame that the hub applied, with no end.
+/// frame that the hub applied, with no gap and no end.
 #[test]
 fn a_run_reads_its_status_after_a_long_sleep_past_the_frames_lost_for_no_room() {
     on_rig(
@@ -432,7 +432,8 @@ fn a_run_reads_its_status_after_a_long_sleep_past_the_frames_lost_for_no_room() 
                 })
                 .await;
                 let Some(received) = received else { break };
-                received.expect("a status frame");
+                let received = received.expect("a status frame");
+                assert_eq!(received.gap(), None, "frame {taken}");
                 taken += 1;
             }
             assert!(1_000 < taken && taken < 1_100, "{taken} taken");
