@@ -59,20 +59,20 @@
   `secret()` only, because Docker and Kubernetes mount a secret file with mode 0444 or
   0644. A local `plan` reads each source of each connector of the planning node. A
   remote `plan` reads them only for each connector that its subject may apply (`apply`
-  and `admin` on its name), through a clone of the resolver of the shard, as a run
-  does, and drops the value. Until #2694, a subject with `apply` and `admin` on the
-  name of a new connector but not on its status channels learns from a remote `plan`
-  the error of each source that gives no value: whether it is set or there, whether it
-  is empty, its size when over 64 KiB, and the OS error of a failed file call. A remote
-  `plan` reads no source of another connector, so a subject that may only plan learns
-  nothing of the files and the environment of the node. Each source that gives no value,
-  `BadName` too, is a `secret.unresolved` problem at its call, with the text `the secret
-  <source>: <error>`. These problems come after those of `config::plan::plan` in one
-  list: the connectors in name order, and the sources of each in the order of its
-  config. A plan that `config::check` refuses reads no source. A plan file that a
-  subject who may not apply a connector made has no read of its sources, also when a
-  subject who may apply it applies the file, until `apply` reads them (#2694). This is
-  the plan of item 7
+  and `admin` on its name), through a clone of the resolver of the shard, as a run does,
+  and drops the value. Until #2694, a subject with `apply` and `admin` on the name of a
+  new connector but not on its status channels learns from a remote `plan` the error of
+  each source that gives no value: whether it is set or there, whether it is empty, its
+  size when over 64 KiB, the OS error of a failed file call, and, for `secret()`, the
+  absolute path of the data directory. A remote `plan` reads no source of another
+  connector, so a subject that may only plan learns nothing of the files and the
+  environment of the node. Each source that gives no value, `BadName` too, is a
+  `secret.unresolved` problem at its call, with the text `the secret <source>: <error>`.
+  These problems come after those of `config::plan::plan` in one list: the connectors in
+  name order, and the sources of each in the order of its config. A plan that
+  `config::check` refuses reads no source. A plan file that a subject who may not apply
+  a connector made has no read of its sources, also when a subject who may apply it
+  applies the file, until `apply` reads them (#2694). This is the plan of item 7
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6161179051), with
   the filter by subject that `laptop.architect-2` approved on 2026-10-14T19:52:43Z
   (https://github.com/synnaxlabs/foundation/pull/2692#issuecomment-6177025658). For a
