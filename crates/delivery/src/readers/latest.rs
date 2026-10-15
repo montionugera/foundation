@@ -152,7 +152,7 @@ mod tests {
     use super::*;
     use crate::complete::Charge;
     use crate::readers::tests::{
-        Frames, dropped, missed, number, reader, taken as complete_taken,
+        Frames, dropped, number, read, reader, taken as complete_taken,
     };
     use crate::{Next, Position, Reader, Record, Start, complete};
 
@@ -189,7 +189,7 @@ mod tests {
         match readers.take(key.into()) {
             Next::Frame(frame) => Some(number(&frame)),
             Next::Empty => None,
-            Next::Behind => panic!("a latest session is behind"),
+            Next::Disk { .. } | Next::Behind => panic!("a latest session is behind"),
         }
     }
 
@@ -391,9 +391,9 @@ mod tests {
             assert_eq!(next, complete::Key(2));
             assert!(matches!(readers.take(next.into()), Next::Empty));
             let below = readers
-                .open(Reader::Unnamed, Start::At(live(2)), 0, Charge::Whole)
+                .open(Reader::Unnamed, Start::At(live(2)), 1, Charge::Whole)
                 .key;
-            assert_eq!(missed(&mut readers, below), []);
+            assert_eq!(read(&mut readers, below), (vec![], 2, 1));
             let named = Reader::Named {
                 reader: reader("s", "b"),
                 hold: Span::from_nanos(10),

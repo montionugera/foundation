@@ -40,11 +40,22 @@ impl From<latest::Key> for Key {
 pub enum Next {
     /// The session's next frame.
     Frame(Frame),
-    /// No frame waits, the next frame waits for a grant, or the session is closed.
+    /// No frame waits, the next frame waits for a grant or a commit, or the session
+    /// is closed.
     Empty,
-    /// The complete session missed a live frame, so it gets no later frame. It comes
-    /// after the frames before the miss, on this and each later call. A latest session
-    /// never gives it.
+    /// The complete session's next frames are on disk, from seq `from`. It comes after
+    /// the waiting frames, while the session has credit. Give the frames that a read
+    /// from `from` gets to [`Readers::fill`], in order, then call [`Readers::reached`]
+    /// at the durable end. A latest session never gives it.
+    Disk {
+        /// The session's next seq.
+        from: u64,
+        /// The session's credit left.
+        credit_bytes: u64,
+    },
+    /// The complete session reached live samples lost for no room, so it gets no
+    /// later frame. It comes after the frames before them, on this and each later
+    /// call. A latest session never gives it.
     Behind,
 }
 
@@ -72,6 +83,8 @@ pub struct Readers {
     held: usize,
     /// The complete sessions that wait for a grant.
     owing: usize,
+    /// The complete sessions that wait for a commit.
+    committing: usize,
     /// The key set of each run of queued frames of one key set, oldest first. The
     /// front may be the set of frames already released. Each frame in `queue` has its
     /// set here, in the same order.
@@ -79,8 +92,12 @@ pub struct Readers {
     /// The end of the last live frame queued, or the live seq at start.
     queued: u64,
     /// The end of the newest live frame with samples that was released, lost, or
-    /// dropped with no complete session open. A session that opens below it is behind.
+    /// dropped with no complete session open. A session that opens below it reads
+    /// from disk.
     released: u64,
+    /// The newest run of live samples lost for no room, or an empty range. A loss right
+    /// after it adds to it.
+    lost: Range<u64>,
     /// Named readers that still hold after their session closed.
     closed: Vec<Closed>,
     /// The latest sessions, sorted by key.
@@ -136,7 +153,12 @@ enum Lag {
     None,
     /// The session waits for a grant on a held frame, after the frames of `waiting`.
     Owed(Owed),
-    /// The session missed a frame, so it gets no later frame.
+    /// The session reads its frames from disk, from seq `from`, after the frames of
+    /// `waiting`.
+    Disk { from: u64 },
+    /// The session waits for the commit of seq `from`, then reads it from disk.
+    Commit { from: u64 },
+    /// The session reached lost samples, so it gets no later frame.
     Behind,
 }
 
@@ -183,9 +205,11 @@ impl Readers {
             queue: VecDeque::new(),
             held: 0,
             owing: 0,
+            committing: 0,
             sets: VecDeque::new(),
             queued: live,
             released: live,
+            lost: live..live,
             closed: Vec::new(),
             latest: Vec::new(),
             newest: None,
@@ -266,8 +290,8 @@ impl Readers {
     /// Starts a complete session with credit for `limit_bytes` since it opens, its
     /// first grant, that `charge` charges for each frame. The open session of the same
     /// named reader, in either mode, is taken over. A session that starts below a live
-    /// frame that memory no longer holds gets no live frame: [`Readers::take`] gives
-    /// [`Next::Behind`] at once, and no [`Readers::release`] names it.
+    /// frame that memory no longer holds reads from disk: [`Readers::take`] gives
+    /// [`Next::Disk`] at once, and no [`Readers::release`] names it.
     ///
     /// # Panics
     ///
@@ -313,7 +337,9 @@ impl Readers {
             cost: complete::Cost::new(charge),
             waiting: VecDeque::with_capacity(WAITING),
             lag: if position.live < self.released {
-                Lag::Behind
+                Lag::Disk {
+                    from: position.live,
+                }
             } else {
                 Lag::None
             },
@@ -406,13 +432,14 @@ impl Readers {
     }
 
     /// Records that the live samples `seq` found no room on disk. Each complete session
-    /// whose position `seq` ends past misses them: it takes each frame queued before
-    /// them, then [`Next::Behind`], and a session that waits for a grant misses that
-    /// frame too. Applies at once when no queued frame waits to be on disk, else at the
-    /// [`Readers::release`] that gives the last frame before them. An empty `seq`
-    /// changes nothing. With no complete session open, a session that opens later at a
-    /// position below `seq.end` starts behind, as for a frame given then. Returns the
-    /// sessions to wake now, as `release` does.
+    /// on the live path whose position `seq` ends past misses them: it takes each frame
+    /// queued before them, then [`Next::Behind`]. A session that waits for a grant
+    /// reads from that frame on disk, and reaches them there. Applies at once when no
+    /// queued frame waits to be on disk, else at the [`Readers::release`] that gives
+    /// the last frame before them. An empty `seq` changes nothing. With no complete
+    /// session open, a session that opens later at a position below `seq.end` reads
+    /// from disk, as for a frame given then. Returns the sessions to wake now, as
+    /// `release` does.
     ///
     /// # Panics
     ///
@@ -426,7 +453,12 @@ impl Readers {
         if seq.is_empty() {
             return &self.woken_complete;
         }
-        if self.pending() {
+        if self.lost.end == seq.start {
+            self.lost.end = seq.end;
+        } else {
+            self.lost = seq.clone();
+        }
+        if self.queue.len() > self.held {
             // `miss` reads only the end, so a run of losses keeps one entry.
             if let Some((Queued::Lost, last)) = self.queue.back_mut() {
                 last.end = seq.end;
@@ -443,14 +475,18 @@ impl Readers {
     /// on disk, to each complete session whose position it ends past, in seq order. A
     /// frame that finds the session's credit spent waits for a grant, and so does each
     /// later frame. A frame that still waits for a grant when a later call releases a
-    /// frame is a miss: it drops, and the session gets no later frame. Applies each
-    /// miss that [`Readers::lose`] queued once the frames before it are given, whatever
-    /// `durable` is. Returns the complete sessions that had no frame to take and now
-    /// have one, or that missed a frame now and have none to take, each once: wake
-    /// them.
+    /// frame drops, and the session reads it from disk. Applies each miss that
+    /// [`Readers::lose`] queued once the frames before it are given, whatever
+    /// `durable` is. A session that waits for the commit of a seq below `durable` reads
+    /// it from disk. Returns the complete sessions that had no frame to take and now
+    /// have one, that read from disk now, or that missed a frame now, and have none to
+    /// take, each once: wake them.
     #[must_use]
     pub fn release(&mut self, durable: u64) -> &[complete::Key] {
         self.woken_complete.clear();
+        if self.committing != 0 {
+            self.committed(durable);
+        }
         if self.owing != 0 {
             let releases = self.queue.get(self.held);
             if releases.is_none_or(|(_, seq)| seq.end > durable) {
@@ -528,21 +564,41 @@ impl Readers {
         self.held = at.frame;
     }
 
-    /// Makes each complete session miss that waits for a grant, or that the lost
-    /// samples ending at `lost` end past. Adds those with no frame to take to the
-    /// sessions to wake, and drops the held frames. With `lost`, each frame before the
-    /// lost samples was released.
+    /// Sends each complete session that waits for a commit below `durable` to disk,
+    /// and adds those with no frame to take to the sessions to wake.
+    fn committed(&mut self, durable: u64) {
+        for (session, flow) in iter::zip(&self.complete, &mut self.flows) {
+            let Lag::Commit { from } = flow.lag else {
+                continue;
+            };
+            if from < durable {
+                flow.lag = Lag::Disk { from };
+                self.committing -= 1;
+                if flow.waiting.is_empty() {
+                    self.woken_complete.push(session.key);
+                }
+            }
+        }
+    }
+
+    /// Sends each complete session that waits for a grant to disk, from the frame it
+    /// waits on, and ends each on the live path that the lost samples ending at `lost`
+    /// end past behind. Adds those with no frame to take to the sessions to wake, and
+    /// drops the held frames. With `lost`, each frame before the lost samples was
+    /// released.
     fn miss(&mut self, lost: Option<u64>) {
         for (session, flow) in iter::zip(&self.complete, &mut self.flows) {
-            let missed = match flow.lag {
-                Lag::Owed(_) => true,
-                Lag::None => lost.is_some_and(|end| end > session.position.live),
-                Lag::Behind => false,
+            flow.lag = match flow.lag {
+                Lag::Owed(owed) => Lag::Disk {
+                    from: self.queue[owed.frame].1.start,
+                },
+                Lag::None if lost.is_some_and(|end| end > session.position.live) => {
+                    Lag::Behind
+                }
+                Lag::None | Lag::Disk { .. } | Lag::Commit { .. } | Lag::Behind => {
+                    continue;
+                }
             };
-            if !missed {
-                continue;
-            }
-            flow.lag = Lag::Behind;
             // A session with frames to take sees the miss after it takes them.
             if flow.waiting.is_empty() {
                 self.woken_complete.push(session.key);
@@ -577,18 +633,103 @@ impl Readers {
         self.held = 0;
     }
 
-    /// Whether a queued live frame waits to be on disk. While one does, call
-    /// [`Readers::release`] after each commit.
+    /// Whether a queued live frame waits to be on disk, or a complete session waits
+    /// for its next frames to be on disk. While one does, call [`Readers::release`]
+    /// after each commit.
     #[must_use]
     pub fn pending(&self) -> bool {
-        self.queue.len() > self.held
+        self.queue.len() > self.held || self.committing != 0
+    }
+
+    /// Gives `frame`, of key set `set`, read from disk with the samples `seq`, to the
+    /// complete session `key` that [`Next::Disk`] sent to disk, and spends its credit
+    /// with the session's charge. Returns `true` when the session takes the next frame
+    /// read too. Returns `false`, and gives nothing: when the session is closed, not
+    /// on disk, or has no credit left; when `seq` starts past the session's next seq,
+    /// so the samples between were lost for no room and the session ends behind; or
+    /// when `seq` starts at or past the last released live frame, where the session
+    /// takes live frames again. Returns `false` after it gives `frame` when the session
+    /// has no credit left. A frame that holds the session's next seq comes whole.
+    ///
+    /// # Panics
+    ///
+    /// If this `Readers` never gave `key`, or `set` is not the frame's key set.
+    pub fn fill(
+        &mut self,
+        key: complete::Key,
+        frame: &Frame,
+        set: &Arc<KeySet>,
+        seq: Range<u64>,
+    ) -> bool {
+        assert!(
+            set.key() == frame.key_set(),
+            "the frame is of key set {} and `set` is key set {}",
+            frame.key_set().get(),
+            set.key().get()
+        );
+        let Some(i) = self.find(key) else {
+            return false;
+        };
+        let flow = &mut self.flows[i];
+        let Lag::Disk { from } = flow.lag else {
+            return false;
+        };
+        if seq.start > from {
+            flow.lag = Lag::Behind;
+            return false;
+        }
+        if seq.start >= self.released {
+            flow.lag = Lag::None;
+            return false;
+        }
+        if !flow
+            .credit
+            .spend(flow.cost.charge(frame, set, frame.charge()))
+        {
+            return false;
+        }
+        flow.waiting.push_back(frame.clone());
+        flow.lag = Lag::Disk {
+            from: from.max(seq.end),
+        };
+        flow.credit.left() != 0
+    }
+
+    /// Records that a read from disk for the complete session `key` gave each durable
+    /// frame below `end`. Call it when the durable frames of the index end at `end`,
+    /// or a gap of skipped seqs ends there. At or past the last released live frame,
+    /// the session takes live frames again. Past the session's next seq, or at live
+    /// samples lost for no room, the session ends behind. Else its next frames are not
+    /// on disk yet: it waits, and the [`Readers::release`] after their commit names
+    /// it. A closed session, or one not on disk, changes nothing.
+    ///
+    /// # Panics
+    ///
+    /// If this `Readers` never gave `key`.
+    pub fn reached(&mut self, key: complete::Key, end: u64) {
+        let Some(i) = self.find(key) else {
+            return;
+        };
+        let flow = &mut self.flows[i];
+        let Lag::Disk { from } = flow.lag else {
+            return;
+        };
+        flow.lag = if end > from || self.lost.contains(&end) {
+            Lag::Behind
+        } else if end >= self.released {
+            Lag::None
+        } else {
+            self.committing += 1;
+            Lag::Commit { from: end }
+        };
     }
 
     /// Takes the session's next frame. A latest session has at most one; a complete
-    /// session has the frames that [`Readers::release`] gave it, in seq order, a
-    /// frame that waits for a grant only while the bytes the session spent are below
-    /// its credit, then [`Next::Behind`] once it missed a live frame. A session can
-    /// miss one at its open, which no `release` names.
+    /// session has the frames that [`Readers::release`] and [`Readers::fill`] gave
+    /// it, in seq order, a frame that waits for a grant only while the bytes the
+    /// session spent are below its credit, [`Next::Disk`] while it reads from disk and
+    /// has credit, and [`Next::Behind`] once it reached lost samples. A session can
+    /// read from disk from its open, which no `release` names.
     ///
     /// # Panics
     ///
@@ -611,14 +752,24 @@ impl Readers {
     }
 
     /// Takes the next frame of the complete session at `i`, which has no frame
-    /// waiting: the frame that waits for a grant, if its credit covers it.
+    /// waiting: the frame that waits for a grant, if its credit covers it, or a read
+    /// from disk.
     // Out of line, so that `take` stays small: inline, it made each take slower.
     #[inline(never)]
     fn take_owed(&mut self, i: usize) -> Next {
         let flow = &mut self.flows[i];
         let owed = match &mut flow.lag {
-            Lag::None => return Next::Empty,
+            Lag::None | Lag::Commit { .. } => return Next::Empty,
             Lag::Behind => return Next::Behind,
+            Lag::Disk { from } => {
+                return match flow.credit.left() {
+                    0 => Next::Empty,
+                    credit_bytes => Next::Disk {
+                        from: *from,
+                        credit_bytes,
+                    },
+                };
+            }
             Lag::Owed(owed) => owed,
         };
         let (Queued::Frame(frame), _) = &self.queue[owed.frame] else {
@@ -792,8 +943,10 @@ impl Readers {
     }
 
     fn remove(&mut self, i: usize) -> Session {
-        if matches!(self.flows.remove(i).lag, Lag::Owed(_)) {
-            self.paid();
+        match self.flows.remove(i).lag {
+            Lag::Owed(_) => self.paid(),
+            Lag::Commit { .. } => self.committing -= 1,
+            Lag::None | Lag::Disk { .. } | Lag::Behind => {}
         }
         self.complete.remove(i)
     }
@@ -855,6 +1008,11 @@ impl Credit {
     /// Raises the limit to `limit_bytes`. A lower limit changes nothing.
     fn grant(&mut self, limit_bytes: u64) {
         self.limit_bytes = self.limit_bytes.max(limit_bytes);
+    }
+
+    /// The bytes left below the limit.
+    fn left(&self) -> u64 {
+        self.limit_bytes.saturating_sub(self.spent_bytes)
     }
 
     /// Spends `bytes`, the charge of one frame, and returns `true` when less than the
@@ -984,7 +1142,9 @@ pub(super) mod tests {
         loop {
             match readers.take(key) {
                 Next::Frame(frame) => frames.push(frame),
-                end @ (Next::Empty | Next::Behind) => return (frames, end),
+                end @ (Next::Empty | Next::Disk { .. } | Next::Behind) => {
+                    return (frames, end);
+                }
             }
         }
     }
@@ -994,12 +1154,12 @@ pub(super) mod tests {
     ///
     /// # Panics
     ///
-    /// If the session gets [`Next::Behind`].
+    /// If the session gets another [`Next`].
     #[track_caller]
     pub(super) fn taken(readers: &mut Readers, key: impl Into<Key>) -> Vec<u64> {
         let (frames, end) = drain(readers, key);
         let numbers = frames.iter().map(number).collect();
-        assert!(matches!(end, Next::Empty), "behind after {numbers:?}");
+        assert!(matches!(end, Next::Empty), "{end:?} after {numbers:?}");
         numbers
     }
 
@@ -1008,13 +1168,32 @@ pub(super) mod tests {
     ///
     /// # Panics
     ///
-    /// If the session gets [`Next::Empty`].
+    /// If the session gets another [`Next`].
     #[track_caller]
     pub(super) fn missed(readers: &mut Readers, key: impl Into<Key>) -> Vec<u64> {
         let (frames, end) = drain(readers, key);
         let numbers = frames.iter().map(number).collect();
-        assert!(matches!(end, Next::Behind), "not behind after {numbers:?}");
+        assert!(matches!(end, Next::Behind), "{end:?} after {numbers:?}");
         numbers
+    }
+
+    /// The number of each frame that the session `key` takes before [`Next::Disk`],
+    /// and the seq and credit that it gives.
+    ///
+    /// # Panics
+    ///
+    /// If the session gets another [`Next`].
+    #[track_caller]
+    pub(super) fn read(
+        readers: &mut Readers,
+        key: impl Into<Key>,
+    ) -> (Vec<u64>, u64, u64) {
+        let (frames, end) = drain(readers, key);
+        let numbers = frames.iter().map(number).collect::<Vec<_>>();
+        let Next::Disk { from, credit_bytes } = end else {
+            panic!("{end:?} after {numbers:?}");
+        };
+        (numbers, from, credit_bytes)
     }
 
     fn at(nanos: i64) -> Stamp {
@@ -2213,7 +2392,7 @@ pub(super) mod tests {
             let current = opened(&mut readers, 4, 10);
             readers.queue(&frames.frame(2), &frames.set, 4..6);
             assert_eq!(released(&mut readers, 6), [current]);
-            assert_eq!(missed(&mut readers, below), []);
+            assert_eq!(read(&mut readers, below), (vec![], 2, 10 * CHARGE));
             assert_eq!(taken(&mut readers, current), [2]);
         }
 
@@ -2227,7 +2406,7 @@ pub(super) mod tests {
             let behind = opened(&mut readers, 3, 10);
             readers.queue(&frames.frame(2), &frames.set, 4..6);
             assert_eq!(released(&mut readers, 6), []);
-            assert_eq!(missed(&mut readers, behind), []);
+            assert_eq!(read(&mut readers, behind), (vec![], 3, 10 * CHARGE));
             assert_eq!(taken(&mut readers, first), [1, 2]);
         }
 
@@ -2241,7 +2420,7 @@ pub(super) mod tests {
             readers.queue(&frames.frame(3), &frames.set, 4..6);
             assert_eq!(released(&mut readers, 6), [first]);
             let behind = opened(&mut readers, 5, 10);
-            assert_eq!(missed(&mut readers, behind), []);
+            assert_eq!(read(&mut readers, behind), (vec![], 5, 10 * CHARGE));
             assert_eq!(taken(&mut readers, first), [1]);
         }
 
@@ -2252,7 +2431,7 @@ pub(super) mod tests {
             let key = opened(&mut readers, 5, 10);
             readers.queue(&frames.frame(1), &frames.set, 10..12);
             assert_eq!(released(&mut readers, 12), []);
-            assert_eq!(missed(&mut readers, key), []);
+            assert_eq!(read(&mut readers, key), (vec![], 5, 10 * CHARGE));
         }
 
         #[test]
@@ -2262,7 +2441,7 @@ pub(super) mod tests {
             let key = opened(&mut readers, 5, 10);
             readers.queue(&frames.frame(1), &frames.set, 10..12);
             assert_eq!(released(&mut readers, 12), []);
-            assert_eq!(missed(&mut readers, key), []);
+            assert_eq!(read(&mut readers, key), (vec![], 5, 10 * CHARGE));
         }
 
         #[test]
@@ -2349,7 +2528,7 @@ pub(super) mod tests {
             readers.queue(&frames.frame(3), &frames.set, 2..3);
             assert_eq!(released(&mut readers, 3), []);
             readers.grant(key, 10 * CHARGE);
-            assert_eq!(missed(&mut readers, key), [1]);
+            assert_eq!(read(&mut readers, key), (vec![1], 1, 9 * CHARGE));
         }
 
         #[test]
@@ -2394,7 +2573,7 @@ pub(super) mod tests {
             readers.grant(key, 10 * CHARGE);
             readers.queue(&frames.frame(3), &frames.set, 2..3);
             assert_eq!(released(&mut readers, 3), []);
-            assert_eq!(missed(&mut readers, key), [1]);
+            assert_eq!(read(&mut readers, key), (vec![1], 1, 9 * CHARGE));
         }
 
         #[test]
@@ -2489,7 +2668,9 @@ pub(super) mod tests {
                 readers.queue(&frame, &frames.set, count..count + 1);
                 assert_eq!(released(&mut readers, count + 1), [prompt]);
                 assert_eq!(taken(&mut readers, prompt), [1]);
-                assert_eq!(missed(&mut readers, idle).len(), 8);
+                assert_eq!(taken(&mut readers, idle).len(), 8);
+                readers.grant(idle, 2 * WINDOW);
+                assert_eq!(read(&mut readers, idle), (vec![], 8, WINDOW));
             }
         }
 
@@ -2623,10 +2804,11 @@ pub(super) mod tests {
             assert_eq!(taken(&mut readers, key), []);
             readers.queue(&frames.frame(3), &frames.set, 2..3);
             assert_eq!(released(&mut readers, 3), [key]);
-            assert_eq!(missed(&mut readers, key), []);
+            assert_eq!(taken(&mut readers, key), []);
             readers.queue(&frames.frame(4), &frames.set, 3..4);
             assert_eq!(released(&mut readers, 4), []);
-            assert_eq!(missed(&mut readers, key), []);
+            readers.grant(key, 10 * CHARGE);
+            assert_eq!(read(&mut readers, key), (vec![], 1, 9 * CHARGE));
         }
 
         #[test]
@@ -2641,7 +2823,8 @@ pub(super) mod tests {
             readers.queue(&frames.frame(3), &frames.set, 2..3);
             readers.queue(&frames.frame(4), &frames.set, 3..4);
             assert_eq!(released(&mut readers, 4), [key]);
-            assert_eq!(missed(&mut readers, key), []);
+            readers.grant(key, 10 * CHARGE);
+            assert_eq!(read(&mut readers, key), (vec![], 1, 9 * CHARGE));
         }
 
         #[test]
@@ -2655,11 +2838,12 @@ pub(super) mod tests {
             assert_eq!(released(&mut readers, 2), []);
             readers.queue(&frames.frame(3), &frames.set, 2..3);
             assert_eq!(released(&mut readers, 3), []);
-            assert_eq!(missed(&mut readers, key), [1]);
+            readers.grant(key, 10 * CHARGE);
+            assert_eq!(read(&mut readers, key), (vec![1], 1, 9 * CHARGE));
         }
 
         #[test]
-        fn gives_no_closed_session_as_behind() {
+        fn gives_no_closed_session_a_read_from_disk() {
             let frames = Frames::new(2);
             let mut readers = Readers::new(0);
             let key = opened(&mut readers, 0, 0);
@@ -2667,8 +2851,9 @@ pub(super) mod tests {
             assert_eq!(released(&mut readers, 1), []);
             readers.queue(&frames.frame(2), &frames.set, 1..2);
             assert_eq!(released(&mut readers, 2), [key]);
-            assert_eq!(missed(&mut readers, key), []);
-            assert_eq!(missed(&mut readers, key), []);
+            readers.grant(key, 10 * CHARGE);
+            assert_eq!(read(&mut readers, key), (vec![], 0, 10 * CHARGE));
+            assert_eq!(read(&mut readers, key), (vec![], 0, 10 * CHARGE));
             readers.close(key.into(), None);
             assert_eq!(taken(&mut readers, key), []);
         }
@@ -2751,7 +2936,7 @@ pub(super) mod tests {
             assert!(frames.spare());
             let later = opened(&mut readers, 0, 10);
             assert_eq!(released(&mut readers, 1), []);
-            assert_eq!(missed(&mut readers, later), []);
+            assert_eq!(read(&mut readers, later), (vec![], 0, 10 * CHARGE));
         }
 
         #[test]
@@ -2781,7 +2966,7 @@ pub(super) mod tests {
                 .key;
             readers.queue(&frames.frame(2), &frames.set, 1..2);
             assert_eq!(released(&mut readers, 2), []);
-            assert_eq!(missed(&mut readers, later), []);
+            assert_eq!(read(&mut readers, later), (vec![], 0, 10 * CHARGE));
         }
 
         #[test]
@@ -3007,21 +3192,21 @@ pub(super) mod tests {
         }
 
         #[test]
-        fn misses_the_frame_that_a_session_waits_for_a_grant_on() {
+        fn reads_the_frame_that_a_session_waits_for_a_grant_on_from_disk() {
             let frames = Frames::new(1);
             let mut readers = Readers::new(0);
             let key = opened(&mut readers, 0, 0);
             readers.queue(&frames.frame(1), &frames.set, 0..1);
             assert_eq!(released(&mut readers, 1), []);
             assert_eq!(lost(&mut readers, 1..2), [key]);
-            assert_eq!(missed(&mut readers, key), []);
+            assert_eq!(taken(&mut readers, key), []);
             readers.grant(key, 10 * CHARGE);
-            assert_eq!(missed(&mut readers, key), []);
+            assert_eq!(read(&mut readers, key), (vec![], 0, 10 * CHARGE));
         }
 
         #[test]
-        fn misses_a_held_frame_at_the_release_that_reaches_the_lost_samples() {
-            let frames = Frames::new(2);
+        fn reads_a_held_frame_from_disk_at_the_release_that_reaches_the_lost_samples() {
+            let frames = Frames::new(3);
             let mut readers = Readers::new(0);
             let key = opened(&mut readers, 0, 1);
             readers.queue(&frames.frame(1), &frames.set, 0..1);
@@ -3029,7 +3214,12 @@ pub(super) mod tests {
             assert_eq!(lost(&mut readers, 2..3), []);
             assert_eq!(released(&mut readers, 2), [key]);
             assert!(!readers.pending());
-            assert_eq!(missed(&mut readers, key), [1]);
+            assert_eq!(taken(&mut readers, key), [1]);
+            readers.grant(key, 10 * CHARGE);
+            assert_eq!(read(&mut readers, key), (vec![], 1, 9 * CHARGE));
+            assert!(readers.fill(key, &frames.frame(2), &frames.set, 1..2));
+            readers.reached(key, 2);
+            assert_eq!(missed(&mut readers, key), [2]);
         }
 
         #[test]
@@ -3043,7 +3233,8 @@ pub(super) mod tests {
             readers.queue(&frames.frame(2), &frames.set, 1..2);
             assert_eq!(lost(&mut readers, 2..3), []);
             assert_eq!(released(&mut readers, 2), [owed]);
-            assert_eq!(missed(&mut readers, owed), []);
+            readers.grant(owed, 10 * CHARGE);
+            assert_eq!(read(&mut readers, owed), (vec![], 0, 10 * CHARGE));
             assert_eq!(missed(&mut readers, paid), [1, 2]);
         }
 
@@ -3052,6 +3243,8 @@ pub(super) mod tests {
             let mut readers = Readers::new(0);
             assert_eq!(lost(&mut readers, 0..2), []);
             let key = opened(&mut readers, 1, 10);
+            assert_eq!(read(&mut readers, key), (vec![], 1, 10 * CHARGE));
+            readers.reached(key, 1);
             assert_eq!(missed(&mut readers, key), []);
             let past = opened(&mut readers, 2, 10);
             assert_eq!(taken(&mut readers, past), []);
@@ -3111,6 +3304,275 @@ pub(super) mod tests {
         fn panics_on_samples_below_the_live_seq_at_start() {
             let mut readers = Readers::new(5);
             lost(&mut readers, 3..4);
+        }
+    }
+
+    mod disk {
+        use super::*;
+
+        /// Opens a complete session at live seq `seq` with credit for `frames` frames.
+        fn opened(readers: &mut Readers, seq: u64, frames: u64) -> complete::Key {
+            readers
+                .open(
+                    Reader::Unnamed,
+                    Start::At(live(seq)),
+                    frames * CHARGE,
+                    Charge::Whole,
+                )
+                .key
+        }
+
+        fn released(readers: &mut Readers, durable: u64) -> Vec<complete::Key> {
+            readers.release(durable).to_vec()
+        }
+
+        fn lost(readers: &mut Readers, seq: Range<u64>) -> Vec<complete::Key> {
+            readers.lose(seq).to_vec()
+        }
+
+        /// Gives frame `n` with the samples `seq` from disk to `key`.
+        fn fill(
+            readers: &mut Readers,
+            frames: &Frames,
+            key: complete::Key,
+            n: u64,
+            seq: Range<u64>,
+        ) -> bool {
+            readers.fill(key, &frames.frame(n), &frames.set, seq)
+        }
+
+        #[test]
+        fn open_below_released_reads_disk_then_live_with_no_repeat() {
+            let frames = Frames::new(6);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 0..2);
+            readers.queue(&frames.frame(2), &frames.set, 2..4);
+            let key = opened(&mut readers, 0, 10);
+            readers.queue(&frames.frame(3), &frames.set, 4..6);
+            assert_eq!(read(&mut readers, key), (vec![], 0, 10 * CHARGE));
+            assert!(fill(&mut readers, &frames, key, 1, 0..2));
+            assert!(fill(&mut readers, &frames, key, 2, 2..4));
+            assert!(!fill(&mut readers, &frames, key, 3, 4..6));
+            assert_eq!(taken(&mut readers, key), [1, 2]);
+            assert_eq!(released(&mut readers, 6), [key]);
+            assert_eq!(taken(&mut readers, key), [3]);
+        }
+
+        #[test]
+        fn owed_session_reads_disk_from_the_owed_start() {
+            let frames = Frames::new(6);
+            let mut readers = Readers::new(0);
+            let key = opened(&mut readers, 0, 1);
+            readers.queue(&frames.frame(1), &frames.set, 0..2);
+            readers.queue(&frames.frame(2), &frames.set, 2..4);
+            assert_eq!(released(&mut readers, 4), [key]);
+            assert_eq!(taken(&mut readers, key), [1]);
+            readers.queue(&frames.frame(3), &frames.set, 4..6);
+            assert_eq!(released(&mut readers, 6), [key]);
+            readers.grant(key, 4 * CHARGE);
+            assert_eq!(read(&mut readers, key), (vec![], 2, 3 * CHARGE));
+            assert!(fill(&mut readers, &frames, key, 2, 2..4));
+            assert!(fill(&mut readers, &frames, key, 3, 4..6));
+            readers.reached(key, 6);
+            readers.queue(&frames.frame(4), &frames.set, 6..8);
+            assert_eq!(taken(&mut readers, key), [2, 3]);
+            assert_eq!(released(&mut readers, 8), [key]);
+            assert_eq!(taken(&mut readers, key), [4]);
+        }
+
+        #[test]
+        fn fill_spends_credit_and_stops_with_none_left() {
+            let frames = Frames::new(5);
+            let mut readers = Readers::new(0);
+            for n in 0..3 {
+                readers.queue(&frames.frame(n + 1), &frames.set, 2 * n..2 * n + 2);
+            }
+            let key = opened(&mut readers, 0, 2);
+            assert_eq!(read(&mut readers, key), (vec![], 0, 2 * CHARGE));
+            assert!(fill(&mut readers, &frames, key, 1, 0..2));
+            assert!(!fill(&mut readers, &frames, key, 2, 2..4));
+            assert!(!fill(&mut readers, &frames, key, 3, 4..6));
+            assert_eq!(taken(&mut readers, key), [1, 2]);
+            readers.grant(key, 3 * CHARGE + 1);
+            assert_eq!(read(&mut readers, key), (vec![], 4, CHARGE + 1));
+        }
+
+        #[test]
+        fn fill_at_released_gives_nothing_and_goes_live() {
+            let frames = Frames::new(6);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 0..2);
+            let key = opened(&mut readers, 0, 10);
+            readers.queue(&frames.frame(2), &frames.set, 2..4);
+            assert_eq!(released(&mut readers, 4), []);
+            readers.queue(&frames.frame(3), &frames.set, 4..6);
+            assert!(fill(&mut readers, &frames, key, 1, 0..2));
+            assert!(fill(&mut readers, &frames, key, 2, 2..4));
+            assert!(!fill(&mut readers, &frames, key, 3, 4..6));
+            assert!(!fill(&mut readers, &frames, key, 3, 4..6));
+            readers.reached(key, 6);
+            assert_eq!(taken(&mut readers, key), [1, 2]);
+            assert_eq!(released(&mut readers, 6), [key]);
+            assert_eq!(taken(&mut readers, key), [3]);
+        }
+
+        #[test]
+        fn fill_gives_a_frame_that_holds_the_next_seq_whole() {
+            let frames = Frames::new(4);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 0..3);
+            readers.queue(&frames.frame(2), &frames.set, 3..5);
+            let key = opened(&mut readers, 1, 10);
+            assert_eq!(read(&mut readers, key), (vec![], 1, 10 * CHARGE));
+            assert!(fill(&mut readers, &frames, key, 1, 0..3));
+            assert!(fill(&mut readers, &frames, key, 2, 3..5));
+            readers.reached(key, 5);
+            assert_eq!(taken(&mut readers, key), [1, 2]);
+        }
+
+        #[test]
+        fn fill_past_the_next_seq_ends_behind() {
+            let frames = Frames::new(4);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 0..2);
+            assert_eq!(lost(&mut readers, 2..4), []);
+            readers.queue(&frames.frame(2), &frames.set, 4..6);
+            let key = opened(&mut readers, 0, 10);
+            assert_eq!(read(&mut readers, key), (vec![], 0, 10 * CHARGE));
+            assert!(fill(&mut readers, &frames, key, 1, 0..2));
+            assert!(!fill(&mut readers, &frames, key, 2, 4..6));
+            assert_eq!(missed(&mut readers, key), [1]);
+            assert!(!fill(&mut readers, &frames, key, 2, 4..6));
+            assert_eq!(missed(&mut readers, key), []);
+        }
+
+        #[test]
+        fn reached_at_the_lost_tail_ends_behind() {
+            let frames = Frames::new(2);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 0..2);
+            assert_eq!(lost(&mut readers, 2..3), []);
+            assert_eq!(lost(&mut readers, 3..5), []);
+            let key = opened(&mut readers, 0, 10);
+            assert!(fill(&mut readers, &frames, key, 1, 0..2));
+            readers.reached(key, 2);
+            assert_eq!(missed(&mut readers, key), [1]);
+        }
+
+        #[test]
+        fn reached_past_the_next_seq_ends_behind() {
+            let frames = Frames::new(2);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 0..2);
+            assert_eq!(lost(&mut readers, 2..4), []);
+            readers.queue(&frames.frame(2), &frames.set, 4..6);
+            let key = opened(&mut readers, 2, 10);
+            readers.reached(key, 6);
+            assert_eq!(missed(&mut readers, key), []);
+        }
+
+        #[test]
+        fn reached_below_released_waits_for_the_commit() {
+            let frames = Frames::new(4);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 0..2);
+            readers.queue(&frames.frame(2), &frames.set, 2..4);
+            let key = opened(&mut readers, 0, 10);
+            assert!(!readers.pending());
+            assert_eq!(read(&mut readers, key), (vec![], 0, 10 * CHARGE));
+            assert!(fill(&mut readers, &frames, key, 1, 0..2));
+            readers.reached(key, 2);
+            assert!(readers.pending());
+            assert_eq!(taken(&mut readers, key), [1]);
+            assert_eq!(released(&mut readers, 2), []);
+            assert_eq!(taken(&mut readers, key), []);
+            assert_eq!(released(&mut readers, 4), [key]);
+            assert!(!readers.pending());
+            assert_eq!(read(&mut readers, key), (vec![], 2, 9 * CHARGE));
+        }
+
+        #[test]
+        fn wakes_no_session_with_frames_waiting_at_the_commit() {
+            let frames = Frames::new(4);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 0..2);
+            readers.queue(&frames.frame(2), &frames.set, 2..4);
+            let key = opened(&mut readers, 0, 10);
+            assert!(fill(&mut readers, &frames, key, 1, 0..2));
+            readers.reached(key, 2);
+            assert_eq!(released(&mut readers, 4), []);
+            assert_eq!(read(&mut readers, key), (vec![1], 2, 9 * CHARGE));
+        }
+
+        #[test]
+        fn loss_ends_a_live_session_behind_and_skips_one_on_disk() {
+            let frames = Frames::new(4);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 0..2);
+            readers.queue(&frames.frame(2), &frames.set, 2..4);
+            let disk = opened(&mut readers, 0, 10);
+            let live = opened(&mut readers, 4, 10);
+            assert_eq!(lost(&mut readers, 4..6), [live]);
+            assert_eq!(missed(&mut readers, live), []);
+            assert_eq!(read(&mut readers, disk), (vec![], 0, 10 * CHARGE));
+            assert!(fill(&mut readers, &frames, disk, 1, 0..2));
+            assert!(fill(&mut readers, &frames, disk, 2, 2..4));
+            readers.reached(disk, 4);
+            assert_eq!(missed(&mut readers, disk), [1, 2]);
+        }
+
+        #[test]
+        fn ends_behind_at_the_first_lost_run_after_the_commit() {
+            let frames = Frames::new(4);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 0..2);
+            let key = opened(&mut readers, 0, 10);
+            assert_eq!(lost(&mut readers, 2..4), []);
+            readers.queue(&frames.frame(2), &frames.set, 4..6);
+            assert_eq!(lost(&mut readers, 6..8), []);
+            assert!(fill(&mut readers, &frames, key, 1, 0..2));
+            readers.reached(key, 2);
+            assert_eq!(taken(&mut readers, key), [1]);
+            assert_eq!(released(&mut readers, 6), [key]);
+            assert_eq!(read(&mut readers, key), (vec![], 2, 9 * CHARGE));
+            assert!(!fill(&mut readers, &frames, key, 2, 4..6));
+            assert_eq!(missed(&mut readers, key), []);
+        }
+
+        #[test]
+        fn a_close_ends_the_wait_for_a_commit() {
+            let frames = Frames::new(3);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 0..2);
+            readers.queue(&frames.frame(2), &frames.set, 2..4);
+            let key = opened(&mut readers, 0, 10);
+            assert!(fill(&mut readers, &frames, key, 1, 0..2));
+            readers.reached(key, 2);
+            readers.close(key.into(), None);
+            assert!(!readers.pending());
+            dropped(&mut readers, key.into());
+            assert!(!fill(&mut readers, &frames, key, 2, 2..4));
+            readers.reached(key, 4);
+            assert_eq!(released(&mut readers, 4), []);
+        }
+
+        #[test]
+        fn a_takeover_ends_the_wait_for_a_commit() {
+            let frames = Frames::new(3);
+            let mut readers = Readers::new(0);
+            readers.queue(&frames.frame(1), &frames.set, 0..2);
+            readers.queue(&frames.frame(2), &frames.set, 2..4);
+            let open = |readers: &mut Readers| {
+                let start = resume(live(0));
+                readers.open(named("a", 10), start, 10 * CHARGE, Charge::Whole)
+            };
+            let key = open(&mut readers).key;
+            assert!(fill(&mut readers, &frames, key, 1, 0..2));
+            readers.reached(key, 2);
+            let next = open(&mut readers);
+            assert_eq!(next.replaced, Some(key.into()));
+            assert!(!readers.pending());
+            assert_eq!(read(&mut readers, next.key), (vec![], 0, 10 * CHARGE));
         }
     }
 
@@ -3752,15 +4214,25 @@ pub(super) mod tests {
         /// by number, and how many it took.
         #[derive(Default)]
         struct Got {
-            behind: bool,
+            mode: Mode,
             /// The session missed a frame that waited for credit, in the last release.
             missed: bool,
             limit: u64,
             spent: u64,
             frames: Vec<u64>,
-            /// The frames that wait for credit, oldest first.
-            owed: Vec<u64>,
+            /// The frames that wait for credit, by number and first seq, oldest first.
+            owed: Vec<(u64, u64)>,
             taken: usize,
+        }
+
+        /// Where a session of the model gets its next frames.
+        #[derive(Clone, Copy, Debug, Default, PartialEq)]
+        enum Mode {
+            #[default]
+            Live,
+            /// From disk, from the seq.
+            Disk(u64),
+            Behind,
         }
 
         impl Got {
@@ -3769,7 +4241,7 @@ pub(super) mod tests {
             fn pay(&mut self) {
                 if !self.owed.is_empty() && self.spent < self.limit {
                     self.spent += CHARGE;
-                    self.frames.push(self.owed.remove(0));
+                    self.frames.push(self.owed.remove(0).0);
                 }
             }
         }
@@ -3796,8 +4268,8 @@ pub(super) mod tests {
             position.max(seq.start) < seq.end
         }
 
-        /// Makes each session of `open` that waits for credit, or that `seq` ends
-        /// past, miss the lost samples `seq`.
+        /// Makes each session of `open` that waits for credit read from disk, and
+        /// each on the live path that `seq` ends past miss the lost samples `seq`.
         fn miss(
             open: &mut BTreeMap<complete::Key, Got>,
             readers: &Model,
@@ -3805,11 +4277,14 @@ pub(super) mod tests {
         ) {
             for (key, got) in open {
                 let position = readers.open[key].1.live;
-                if got.behind || got.owed.is_empty() && !holds(seq, position) {
+                if let Some(&(_, start)) = got.owed.first() {
+                    got.owed.clear();
+                    got.mode = Mode::Disk(start);
+                } else if got.mode == Mode::Live && holds(seq, position) {
+                    got.mode = Mode::Behind;
+                } else {
                     continue;
                 }
-                got.owed.clear();
-                got.behind = true;
                 got.missed = true;
             }
         }
@@ -3908,8 +4383,8 @@ pub(super) mod tests {
                 for got in self.open.values_mut() {
                     got.missed = releases && !got.owed.is_empty();
                     if got.missed {
+                        got.mode = Mode::Disk(got.owed[0].1);
                         got.owed.clear();
-                        got.behind = true;
                     }
                 }
                 let held = self.queued.iter_mut().filter(|queued| queued.held);
@@ -3925,14 +4400,14 @@ pub(super) mod tests {
                     queued.held = false;
                     for (key, got) in &mut self.open {
                         let position = self.readers.open[key].1.live;
-                        if got.behind || !holds(&queued.seq, position) {
+                        if got.mode != Mode::Live || !holds(&queued.seq, position) {
                             continue;
                         }
                         if got.owed.is_empty() && got.spent < got.limit {
                             got.spent += CHARGE;
                             got.frames.push(n);
                         } else {
-                            got.owed.push(n);
+                            got.owed.push((n, queued.seq.start));
                         }
                     }
                 }
@@ -3954,10 +4429,14 @@ pub(super) mod tests {
                 }
                 let n = got.frames.get(got.taken).copied();
                 got.taken += usize::from(n.is_some());
-                match n {
-                    Some(n) => Told::Frame(n),
-                    None if got.behind => Told::Behind,
-                    None => Told::Empty,
+                let credit_bytes = got.limit.saturating_sub(got.spent);
+                match (n, got.mode) {
+                    (Some(n), _) => Told::Frame(n),
+                    (None, Mode::Disk(from)) if credit_bytes != 0 => {
+                        Told::Disk { from, credit_bytes }
+                    }
+                    (None, Mode::Behind) => Told::Behind,
+                    (None, _) => Told::Empty,
                 }
             }
         }
@@ -3995,8 +4474,13 @@ pub(super) mod tests {
             if let Some(Key::Complete(replaced)) = opened.replaced {
                 model.open.remove(&replaced);
             }
+            let start = opened.position.live;
             let got = Got {
-                behind: model.behind(opened.position.live),
+                mode: if model.behind(start) {
+                    Mode::Disk(start)
+                } else {
+                    Mode::Live
+                },
                 limit,
                 ..Got::default()
             };
@@ -4006,13 +4490,15 @@ pub(super) mod tests {
         /// Checks the live path against a model of the rules: a session gets each
         /// released frame with a sample at or past its position, in seq order, while it
         /// has credit. A frame with no credit, and each after it, waits for a grant,
-        /// and one that still waits at the next release that gives a frame is a miss. A
-        /// session that starts at or below a sample no longer in memory gets none, and
-        /// nothing is kept with no session open. A named reader that resumes starts
-        /// where its last session stopped. Lost samples apply once each frame before
-        /// them is released, whatever `durable` is: each session that waits for credit
-        /// or that they end past misses them. A release or a loss wakes each session
-        /// that had no frame waiting and now has one or missed one.
+        /// and one that still waits at the next release that gives a frame is a miss:
+        /// the session reads from that frame on disk. A session that starts at or below
+        /// a sample no longer in memory reads from disk, and nothing is kept with no
+        /// session open. A named reader that resumes starts where its last session
+        /// stopped. Lost samples apply once each frame before them is released,
+        /// whatever `durable` is: each session that waits for credit reads from disk,
+        /// and each on the live path that they end past misses them. A release or a
+        /// loss wakes each session that had no frame waiting and now has one, reads
+        /// from disk, or missed one. This check gives no frame from disk.
         ///
         /// The `n`th open takes `limits[n]`, or 0 past the end of `limits`.
         fn check_live(steps: Vec<Live>, limits: &[u64]) {
@@ -4086,11 +4572,255 @@ pub(super) mod tests {
             }
         }
 
+        #[derive(Clone, Copy, Debug)]
+        enum Reading {
+            /// Opens a session at the count below the end of the newest live seq, with
+            /// the credit.
+            Open(u64, u64),
+            Close(usize),
+            Grant(usize, u64),
+            Queue(u64),
+            Lose(u64),
+            /// Commits the count of the next frames not on disk.
+            Commit(usize),
+            /// Applies the read of the session, or takes and starts a read of at most
+            /// the count of frames.
+            Take(usize, usize),
+        }
+
+        /// A read from disk that waits to be applied: the frames by number and seq,
+        /// and the seq after them.
+        struct Pending {
+            frames: Vec<(u64, Range<u64>)>,
+            next: u64,
+        }
+
+        /// A complete session: its position at the open, the frames it took, by
+        /// number, and the read it waits on.
+        struct Reads {
+            start: u64,
+            got: Vec<u64>,
+            read: Option<Pending>,
+            behind: bool,
+        }
+
+        /// The live entries in seq order, by number, or `None` for lost samples, and
+        /// the count of them on disk.
+        struct Log {
+            entries: Vec<(Option<u64>, Range<u64>)>,
+            committed: usize,
+        }
+
+        impl Log {
+            /// The first live seq not on disk: lost samples never are.
+            fn durable(&self) -> u64 {
+                let on_disk = self.entries[..self.committed].iter().rev();
+                let mut frames = on_disk.filter(|(n, _)| n.is_some());
+                frames.next().map_or(0, |(_, seq)| seq.end)
+            }
+
+            /// The end of the newest live seq.
+            fn end(&self) -> u64 {
+                self.entries.last().map_or(0, |(_, seq)| seq.end)
+            }
+
+            /// Queues the next frame with `len` samples in both.
+            fn queue(&mut self, readers: &mut Readers, frames: &Frames, len: u64) {
+                let n = u64::try_from(self.entries.len()).expect("fits") + 1;
+                let seq = self.end()..self.end() + len;
+                readers.queue(&frames.frame(n), &frames.set, seq.clone());
+                self.entries.push((Some(n), seq));
+            }
+
+            /// Loses the next `len` samples in both. The check takes no wakes.
+            fn lose(&mut self, readers: &mut Readers, len: u64) {
+                let seq = self.end()..self.end() + len;
+                let _woken = readers.lose(seq.clone());
+                self.entries.push((None, seq));
+            }
+
+            /// Commits the next `count` frames not on disk, and releases them.
+            fn commit(&mut self, readers: &mut Readers, count: usize) {
+                let mut left = count;
+                while left != 0 && self.committed < self.entries.len() {
+                    left -= usize::from(self.entries[self.committed].0.is_some());
+                    self.committed += 1;
+                }
+                let _woken = readers.release(self.durable());
+            }
+
+            /// The frames that a session at `start` gets, and whether it ends behind
+            /// after them.
+            fn expected(&self, start: u64) -> (Vec<u64>, bool) {
+                let mut frames = Vec::new();
+                for (n, seq) in &self.entries {
+                    match n {
+                        Some(n) if seq.end > start => frames.push(*n),
+                        None if seq.end > start => return (frames, true),
+                        _ => {}
+                    }
+                }
+                (frames, false)
+            }
+
+            /// A read from disk from `from`, with `credit_bytes`, of at most `cut`
+            /// frames.
+            fn read(&self, from: u64, credit_bytes: u64, cut: usize) -> Pending {
+                let on_disk = self.entries[..self.committed].iter();
+                let mut frames = Vec::new();
+                let mut bytes = 0;
+                for (n, seq) in on_disk.filter(|(_, seq)| seq.end > from) {
+                    let Some(n) = n else { continue };
+                    if bytes >= credit_bytes || frames.len() == cut {
+                        break;
+                    }
+                    bytes += CHARGE;
+                    frames.push((*n, seq.clone()));
+                }
+                let next = frames.last().map_or(from, |(_, seq)| seq.end);
+                Pending { frames, next }
+            }
+        }
+
+        fn reading_input() -> impl Strategy<Value = Reading> {
+            prop_oneof![
+                (0..8_u64, 0..4 * CHARGE).prop_map(|(back, b)| Reading::Open(back, b)),
+                any::<usize>().prop_map(Reading::Close),
+                (any::<usize>(), 0..6 * CHARGE).prop_map(|(i, b)| Reading::Grant(i, b)),
+                (1..4_u64).prop_map(Reading::Queue),
+                (1..4_u64).prop_map(Reading::Lose),
+                (0..3_usize).prop_map(Reading::Commit),
+                (any::<usize>(), 1..4_usize).prop_map(|(i, cut)| Reading::Take(i, cut)),
+            ]
+        }
+
+        /// Gives the frames of `read` to `key` until a fill returns `false`, then, when
+        /// all went and the read reached `durable`, the seq after them.
+        fn apply_read(
+            readers: &mut Readers,
+            frames: &Frames,
+            key: complete::Key,
+            read: &Pending,
+            durable: u64,
+        ) {
+            for (n, seq) in &read.frames {
+                if !readers.fill(key, &frames.frame(*n), &frames.set, seq.clone()) {
+                    return;
+                }
+            }
+            if read.next >= durable {
+                readers.reached(key, read.next);
+            }
+        }
+
+        /// Takes the frames of `key`, checks them against `log`, and returns the
+        /// read from disk that the session starts.
+        fn take_reads(
+            readers: &mut Readers,
+            log: &Log,
+            key: complete::Key,
+            reads: &mut Reads,
+            cut: usize,
+        ) -> Option<Pending> {
+            let (taken, end) = drain(readers, key);
+            reads.got.extend(taken.iter().map(number));
+            let (expected, behind) = log.expected(reads.start);
+            assert!(
+                expected.starts_with(&reads.got),
+                "{key:?} got {:?}",
+                reads.got
+            );
+            match end {
+                Next::Disk { from, credit_bytes } => {
+                    Some(log.read(from, credit_bytes, cut))
+                }
+                Next::Behind => {
+                    assert!(behind, "{key:?} ends behind with no loss");
+                    assert_eq!(reads.got, expected, "{key:?}");
+                    reads.behind = true;
+                    None
+                }
+                Next::Frame(_) | Next::Empty => None,
+            }
+        }
+
+        /// Checks reads from disk: a complete session gets each frame that ends past
+        /// its position at the open, in seq order, once, up to the first lost samples
+        /// that end past it, and then ends behind. A read from disk can stop at its
+        /// budget, and commits can come between a read and its fill.
+        fn check_reads(steps: Vec<Reading>) {
+            let frames = Frames::new(steps.len() * 16 + 64);
+            let mut readers = Readers::new(0);
+            let mut log = Log {
+                entries: Vec::new(),
+                committed: 0,
+            };
+            let mut open: BTreeMap<complete::Key, Reads> = BTreeMap::new();
+            let pick = |open: &BTreeMap<_, _>, i: usize| {
+                open.keys().nth(i % open.len().max(1)).copied()
+            };
+            for step in steps {
+                match step {
+                    Reading::Open(back, limit) => {
+                        let start = Start::At(live(log.end().saturating_sub(back)));
+                        let opened =
+                            readers.open(Reader::Unnamed, start, limit, Charge::Whole);
+                        let reads = Reads {
+                            start: opened.position.live,
+                            got: Vec::new(),
+                            read: None,
+                            behind: false,
+                        };
+                        open.insert(opened.key, reads);
+                    }
+                    Reading::Close(i) => {
+                        let Some(key) = pick(&open, i) else { continue };
+                        readers.close(key.into(), None);
+                        open.remove(&key);
+                    }
+                    Reading::Grant(i, limit) => {
+                        let Some(key) = pick(&open, i) else { continue };
+                        readers.grant(key, limit);
+                    }
+                    Reading::Queue(len) => log.queue(&mut readers, &frames, len),
+                    Reading::Lose(len) => log.lose(&mut readers, len),
+                    Reading::Commit(count) => log.commit(&mut readers, count),
+                    Reading::Take(i, cut) => {
+                        let Some(key) = pick(&open, i) else { continue };
+                        let reads = open.get_mut(&key).expect("the session is open");
+                        if let Some(read) = reads.read.take() {
+                            let durable = log.durable();
+                            apply_read(&mut readers, &frames, key, &read, durable);
+                        } else {
+                            reads.read =
+                                take_reads(&mut readers, &log, key, reads, cut);
+                        }
+                    }
+                }
+            }
+            log.commit(&mut readers, usize::MAX);
+            for (&key, reads) in &mut open {
+                readers.grant(key, u64::MAX);
+                if let Some(read) = reads.read.take() {
+                    apply_read(&mut readers, &frames, key, &read, log.durable());
+                }
+                while let Some(read) =
+                    take_reads(&mut readers, &log, key, reads, usize::MAX)
+                {
+                    apply_read(&mut readers, &frames, key, &read, log.durable());
+                }
+                let (expected, behind) = log.expected(reads.start);
+                assert_eq!((&reads.got, reads.behind), (&expected, behind), "{key:?}");
+            }
+            assert!(!readers.pending());
+        }
+
         /// A [`Next`] as the model states it, with a frame by its number.
         #[derive(Debug, PartialEq)]
         enum Told {
             Frame(u64),
             Empty,
+            Disk { from: u64, credit_bytes: u64 },
             Behind,
         }
 
@@ -4098,6 +4828,7 @@ pub(super) mod tests {
             match next {
                 Next::Frame(frame) => Told::Frame(number(&frame)),
                 Next::Empty => Told::Empty,
+                Next::Disk { from, credit_bytes } => Told::Disk { from, credit_bytes },
                 Next::Behind => Told::Behind,
             }
         }
@@ -4143,6 +4874,13 @@ pub(super) mod tests {
                 limits in proptest::collection::vec(0..6 * CHARGE, 0..80),
             ) {
                 check_live(steps, &limits);
+            }
+
+            #[test]
+            fn follow_the_disk_rules(
+                steps in proptest::collection::vec(reading_input(), 0..100),
+            ) {
+                check_reads(steps);
             }
 
             #[test]
