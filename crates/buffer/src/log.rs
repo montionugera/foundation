@@ -384,7 +384,8 @@ const SHRINKS: usize = 256;
 /// The trims of a [`Logs::hide`] for each shrink that it adds to [`SHRINKS`].
 const TRIMS: usize = 4;
 
-/// The paths whose lap end waits for a shrink, and the shrinks of a [`Logs::hide`].
+/// The paths whose lap end waits for a shrink, and the shrinks of a [`Logs::hide`]
+/// with no trim.
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 struct Laps {
@@ -2619,9 +2620,7 @@ mod tests {
 
     /// A trim in the wait meets 8 runs, so the end needs no shrink. Only this test,
     /// through `Laps::due`, kills a drain that takes a shrink for a path that needs
-    /// none: a caller sees it only when a path in the queue meets 4 times more runs
-    /// than at its lap end before its turn comes, which no harness through
-    /// `bench::Logs` makes.
+    /// none. #2774 moves the kill to `tests/memory`.
     #[test]
     fn a_lap_that_waits_and_needs_no_shrink_at_its_close_ends_with_none_left() {
         let (mut laps, mut budget) = (Laps::new(), budget(0));
@@ -2646,9 +2645,7 @@ mod tests {
     }
 
     /// Only this test, through `Laps::due`, kills a lap end that goes ahead of a path
-    /// that waits: a caller sees the order of the queue only when a lap end comes while
-    /// paths wait from an earlier `hide`, which needs paths whose laps start in other
-    /// hides, and each path of `bench::Logs` starts its laps in the same one.
+    /// that waits. #2774 moves the kill to `tests/memory`.
     #[test]
     fn a_lap_end_that_needs_a_shrink_waits_behind_a_path_that_waits() {
         let (mut laps, mut budget) = (Laps::new(), budget(1));
@@ -2736,7 +2733,8 @@ mod tests {
     /// 4096 paths each hold a run in records 1 to 9, and a carry record takes the
     /// tail of each. A hide drops the runs, and the hide of the carry record ends the
     /// lap of each with no run to drop: it counts the 4096 carried tails as trims, so
-    /// it shrinks 256 + 1024 paths.
+    /// it shrinks 256 + 1024 paths. It reads private state: #2774 moves the kill to
+    /// `tests/memory`.
     #[test]
     fn a_hide_counts_each_carried_tail_as_a_trim() {
         let paths: u32 = 4096;
