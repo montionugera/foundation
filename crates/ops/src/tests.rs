@@ -842,7 +842,9 @@ mod start {
             "[possible values: error, warn, info, debug, trace]",
             "[possible values: text, json]",
         ] {
-            assert!(exit.stdout.contains(flag), "{flag}: {}", exit.stdout);
+            // clap wraps the help to the width of the terminal.
+            let help = exit.stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(help.contains(flag), "{flag}: {}", exit.stdout);
         }
     }
 
