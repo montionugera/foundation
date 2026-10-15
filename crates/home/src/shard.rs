@@ -2174,7 +2174,7 @@ mod tests {
             let over_block = over_block(&set, 1000, &[(2, &[stamp])]);
             assert_eq!(
                 shard.write(b, LIVE, over_block),
-                Ok(&[lost(0, 600, 240_000), lost(2, 16, 1)][..])
+                Ok(&[lost(0, 600, 240_000), lost(2, 13, 1)][..])
             );
         });
     }

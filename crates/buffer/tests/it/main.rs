@@ -1103,7 +1103,7 @@ fn a_full_ring_queues_nothing() {
     run(5, |shard| async move {
         let mut slots = Slots::new();
         let buffer = shard
-            .open(layout(4 * BLOCK, BODY_MAX), &mut slots)
+            .open(layout(7 * BLOCK, BODY_MAX), &mut slots)
             .await
             .expect("opens");
         let a = slots.index(key(1));
@@ -1132,7 +1132,7 @@ fn a_batch_is_queued_whole_or_not_at_all() {
     run(6, |shard| async move {
         let mut slots = Slots::new();
         let buffer = shard
-            .open(layout(8 * BLOCK, 8183), &mut slots)
+            .open(layout(11 * BLOCK, 8183), &mut slots)
             .await
             .expect("opens");
         let a = slots.index(key(1));
@@ -1150,7 +1150,7 @@ fn a_batch_is_queued_whole_or_not_at_all() {
         assert_eq!(
             full,
             Err(Rejected::Full {
-                needed: 12288,
+                needed: 8192,
                 free: 4096
             }),
             "the first entry alone has room, the batch does not"
@@ -1160,7 +1160,7 @@ fn a_batch_is_queued_whole_or_not_at_all() {
         drop(buffer);
         let mut slots = Slots::new();
         let buffer = shard
-            .open(layout(8 * BLOCK, 8183), &mut slots)
+            .open(layout(11 * BLOCK, 8183), &mut slots)
             .await
             .expect("reopens");
         assert_eq!(buffer.tail(slots.index(key(1)), Path::Live), tail(3, None));
@@ -3979,7 +3979,7 @@ fn opens_with_no_data_leave_room_for_the_largest_record() {
 fn opens_with_no_data_after_an_entry_leave_room_for_the_next() {
     for torn in [false, true] {
         run(25, move |shard| async move {
-            let ring = layout(6 * BLOCK, BODY_MAX);
+            let ring = layout(7 * BLOCK, BODY_MAX);
             let mut slots = Slots::new();
             let buffer = shard.open(ring, &mut slots).await.expect("opens");
             let a = slots.index(key(1));
@@ -4019,14 +4019,14 @@ fn opens_with_no_data_after_an_entry_leave_room_for_the_next() {
     }
 }
 
+/// Each record leaves a block free for the restart record of the next open, so a
+/// full ring reopens. It then takes no entry before its tail moves.
 #[test]
-fn a_full_ring_does_not_reopen_before_its_tail_moves() {
+fn a_full_ring_reopens_into_the_block_that_its_records_leave_free() {
     run(21, |shard| async move {
+        let ring = layout(7 * BLOCK, BODY_MAX);
         let mut slots = Slots::new();
-        let buffer = shard
-            .open(layout(4 * BLOCK, BODY_MAX), &mut slots)
-            .await
-            .expect("opens");
+        let buffer = shard.open(ring, &mut slots).await.expect("opens");
         let a = slots.index(key(1));
         let parts = Parts::from(shard.block(3900));
         for seq in 0..3 {
@@ -4036,12 +4036,14 @@ fn a_full_ring_does_not_reopen_before_its_tail_moves() {
         }
         buffer.committed().await.expect("commits");
         drop(buffer);
-        let opened = shard
-            .open(layout(4 * BLOCK, BODY_MAX), &mut Slots::new())
-            .await;
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("reopens");
+        let a = slots.index(key(1));
+        assert_eq!(buffer.tail(a, Path::Live), tail(3, None));
+        let full = buffer.append([entry(1, a, Path::Live, 3, 1, None, parts.clone())]);
         assert_eq!(
-            opened.map(drop),
-            Err(Error::Full {
+            full,
+            Err(Rejected::Full {
                 needed: 4096,
                 free: 0
             })
@@ -6361,7 +6363,7 @@ fn a_record_with_a_table_over_one_block_is_read() {
     run(154, |shard| async move {
         let mut slots = Slots::new();
         let buffer = shard
-            .open(layout(AREA, BODY_MAX * 4), &mut slots)
+            .open(layout(2 * AREA, BODY_MAX * 4), &mut slots)
             .await
             .expect("opens");
         let a = slots.index(key(1));
@@ -6707,7 +6709,7 @@ fn newest_with_no_block_for_the_entry_gives_the_pool_error() {
     run(186, |shard| async move {
         let mut slots = Slots::new();
         let buffer = shard
-            .open(layout(AREA, 3 * 4096), &mut slots)
+            .open(layout(2 * AREA, 3 * 4096), &mut slots)
             .await
             .expect("opens");
         let a = slots.index(key(1));
