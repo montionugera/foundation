@@ -45,8 +45,9 @@ pub enum Next {
     Empty,
     /// The complete session's next frames are on disk, from seq `from`. It comes after
     /// the waiting frames, while the session has at least half the most credit it had
-    /// since it opened, or has acked each frame it took. Give the frames that a read
-    /// from `from` gets to [`Readers::fill`], in order, then call [`Readers::reached`].
+    /// since it opened, or has acked each frame it took and has credit left. Give the
+    /// frames that a read from `from` gets to [`Readers::fill`], in order, then call
+    /// [`Readers::reached`].
     /// A latest session never gives it.
     Disk {
         /// The session's next seq.
@@ -739,10 +740,11 @@ impl Readers {
     }
 
     /// Takes the session's next frame. A latest session has at most one; a complete
-    /// session has the frames that [`Readers::release`] and [`Readers::fill`] gave
-    /// it, in seq order, a frame that waits for a grant only while the bytes the
-    /// session spent are below its credit, [`Next::Disk`] while it reads from disk and
-    /// has credit, and [`Next::Behind`] once it reached lost samples. A session can
+    /// session has the frames that [`Readers::release`] and [`Readers::fill`] gave it,
+    /// in seq order, a frame that waits for a grant only while the bytes the session
+    /// spent are below its credit, [`Next::Disk`] while it reads from disk and has at
+    /// least half its window of credit left, or has acked each frame it took and has
+    /// credit left, and [`Next::Behind`] once it reached lost samples. A session can
     /// read from disk from its open, which no `release` names.
     ///
     /// # Panics

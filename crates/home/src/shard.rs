@@ -756,7 +756,9 @@ impl Shard {
 
     /// Records that the complete reader `key` has each sample of its index below
     /// `position`. A named reader that opens again starts there. An ack to a closed
-    /// reader changes nothing.
+    /// reader changes nothing. An ack can make the next [`take`](Self::take) of the
+    /// reader give [`Next::Disk`](reader::Next::Disk), and [`woken`](Self::woken) does
+    /// not name the reader for it: take after the ack.
     ///
     /// # Errors
     ///

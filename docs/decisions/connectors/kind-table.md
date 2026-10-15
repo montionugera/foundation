@@ -52,7 +52,7 @@
   come back as the sessions of the shard drain (#274 B1; `laptop.architect-2`,
   2026-10-15T18:05:36Z:
   https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6198895692, finding
-  4).
+  1).
   `Config`: writer `Home` `Large` (`connector.large-frame`, with the fix "Give the
   connector fewer channels"), because only a spec change or a kind that splits its
   frames fixes it. A panic with `invariant:`: reader `Stream`, `Refused`, `Message`,
