@@ -513,7 +513,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `node_identity` | `node::sector::written` with `node::identity::fields` and `encode` (the checks `node::identity::check` and `node::admin::check`, which call `node::sector::check`), by `node::fuzz::identity` (feature `sim`), on 100 bytes, or on 96 bytes with their CRC32C; the same for `admin.key`, on 54 bytes, or on 50 bytes with their CRC32C; and the decode and encode of `address` (the check `node::address::check`), on 99 bytes, or on 95 bytes with their CRC32C | Gives an identity or an admin key exactly for bytes with the tag and the CRC32C, and an address exactly for the bytes that the encode writes, with the tag and the CRC32C, and that value encodes to the same bytes |
 
 No target yet, because the decoder is private, not built, not reached from a file, or
-not reached from the corpus: `transport::message` (#55), the QUIC hello
+not reached from the corpus: `transport::message` (#2139), the QUIC hello
 (`transport::quic::hello::Hello::decode`), the file `founding` of the mesh directory
 (`mesh::region::Founding::decode`, with `mesh::Member::decode` in it, #2311), the join
 answer (`mesh::Member::decode` from a peer, #336 adds its target),
