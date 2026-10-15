@@ -61,7 +61,10 @@ fn built(graph: &Value) -> Result<BTreeSet<&str>, String> {
         if !reached.insert(id) {
             continue;
         }
-        for dep in deps.get(id).copied().unwrap_or_default() {
+        let node = deps.get(id).copied();
+        let node = node
+            .ok_or_else(|| format!("JSON field `resolve.nodes` has no node `{id}`"))?;
+        for dep in node {
             let mut kinds = field::list(dep, "dep_kinds")?.iter();
             if kinds.any(|kind| kind["kind"] != "dev") {
                 next.push(field::text(dep, "pkg")?);
@@ -244,6 +247,18 @@ mod tests {
         assert_eq!(
             check(&graph(json!([member]))),
             ["`a`: JSON field `source` is neither null nor a string"]
+        );
+        let unresolved = json!({
+            "workspace_members": ["a"],
+            "resolve": { "nodes": [{
+                "id": "a",
+                "deps": [{ "pkg": "b", "dep_kinds": [{ "kind": null }] }],
+            }] },
+            "packages": [],
+        });
+        assert_eq!(
+            check(&unresolved),
+            ["JSON field `resolve.nodes` has no node `b`"]
         );
     }
 }
