@@ -76,9 +76,9 @@ a PR that it replaces, on each issue that it closes, and linked from a round com
 and the text of each issue that it closes: each later step or trigger that one names,
 and that lacks the record that "Done" in the `review` skill asks for, is a finding. So
 is each change that one puts in this PR, with no commit at the head and no answer. A
-report gives, after the summary, the `Public surface:` and `Hot path:` lines that
-`.claude/agents/architecture.md` defines: in a second round for the range, and in a
-round 1 that runs no `architecture` agent for the PR.
+report gives, after the summary, the `Public surface:`, `Hot path:`, and `Build or use:`
+lines that `.claude/agents/architecture.md` defines: in a second round for the range,
+and in a round 1 that runs no `architecture` agent for the PR.
 
 Check:
 
@@ -118,25 +118,26 @@ Check:
   covers? For each sentence of a public doc that new code in the PR must keep (a driver
   of an `env` seam, an impl of a public trait), which test fails when that code breaks
   it, on each OS that the code runs on? Does a test assert through a field or call that
-  is private to the type under test, or compare the `Debug` string of that type, other
-  than in the test of a hand-written `Debug` impl itself (`testing.md`), with no written
-  reason that holds? Name the public call that shows the same behavior. A reason that no
-  public call or sim run shows the behavior holds only when you tried to show it through
-  each seam that the crate's tests use, and you list each try. When the test is the only
-  kill of a mutant, its reason holds only when it says why no caller or peer can see the
-  mutant (`testing.md`). A mutant that a caller can see and that no seam of the tests
-  reaches is a finding against the seam. When the PR replaces such a compare, or another
-  compare of a whole value, or changes the input or the expected value of an assertion,
-  name each part or case that the old assertion checked, and the test that now fails
-  when a call changes it. A part or case that no `cargo test` test pins is a finding.
-  When the PR, or a commit of the range, changes the steps that come before an assertion
-  of a test that is on `main` (a pause, a held task, a fault, a sleep, the order of two
-  calls), and the assertion stays, find the commit that added the test
-  (`git log -S '<test name>'`). When that commit is a fix, make its defect by hand and
-  run the changed test. A test that passes is a finding. When a test asserts through a
-  field or call that is private to the type under test, or compares that `Debug` string,
-  with a reason that holds, list the mutants that CI makes in each file that it checks:
-  write `gh pr diff <n>` to `pr.patch` in the worktree, then run
+  is private to the type or module under test, or compare the `Debug` string of that
+  type, other than in the test of a hand-written `Debug` impl itself (`testing.md`),
+  with no written reason that holds? Name the public call that shows the same behavior.
+  A reason that no public call or sim run shows the behavior holds only when you tried
+  to show it through each seam that the crate's tests use, and you list each try. When
+  the test is the only kill of a mutant, its reason holds only when it says why no
+  caller or peer can see the mutant (`testing.md`). A mutant that a caller can see and
+  that no seam of the tests reaches is a finding against the seam. When the PR replaces
+  such a compare, or another compare of a whole value, or changes the input or the
+  expected value of an assertion, name each part or case that the old assertion checked,
+  and the test that now fails when a call changes it. A part or case that no
+  `cargo test` test pins is a finding. When the PR, or a commit of the range, changes
+  the steps that come before an assertion of a test that is on `main` (a pause, a held
+  task, a fault, a sleep, the order of two calls), and the assertion stays, find the
+  commit that added the test (`git log -S '<test name>'`). When that commit is a fix,
+  make its defect by hand and run the changed test. A test that passes is a finding.
+  When a test asserts through a field or call that is private to the type or module
+  under test, or compares that `Debug` string, with a reason that holds, list the
+  mutants that CI makes in each file that it checks: write `gh pr diff <n>` to
+  `pr.patch` in the worktree, then run
   `cargo mutants --list --in-diff pr.patch --file <file>`, which builds nothing. Make by
   hand each one, such as `<` to `<=`, and remove each statement whose only effect that
   test checks. Run the other tests of the crate with `--all-features`, as CI does. A
@@ -157,10 +158,13 @@ Check:
   order of the race, and only a hook that only tests use could force the order), check
   instead that the fixed test passes in each order and still fails when its defect
   happens in the order that reaches it, and that the PR links the failing runs. Do both
-  again in each round whose range changes the fix or that test. Does each new
-  `.cargo/mutants.toml` entry meet the rule in `testing.md`? Does an entry skip code
-  that the PR adds or changes, when the entry is wider than one function or its reason
-  ends with the PR (a stub that it fills)? The PR narrows or removes that entry.
+  again in each round whose range changes the fix or that test. The report gives, after
+  the summary, a `Revert:` line: the regression test and the message with which it fails
+  with the fix reverted, or `none` when the PR fixes no bug or the range changes neither
+  the fix nor that test. Does each new `.cargo/mutants.toml` entry meet the rule in
+  `testing.md`? Does an entry skip code that the PR adds or changes, when the entry is
+  wider than one function or its reason ends with the PR (a stub that it fills)? The PR
+  narrows or removes that entry.
 - Copies: when the PR corrects what a doc, a comment, or a decision states, or renames
   or removes a name that a text uses (a code, an item, a key), search the workspace
   (`git grep`) and the open issues (`gh issue list --search`) for each other copy of the

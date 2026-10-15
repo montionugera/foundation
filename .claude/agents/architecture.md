@@ -68,6 +68,9 @@ So is a stub that its caller on record will run so, and code in a crate's `src/`
 exists only for tests and benchmarks and that a benchmark runs in its timed loop, such
 as a counting `GlobalAlloc`. A change to a bench file alone is not one.
 
+Then `Build or use: none`, or each parser, protocol, or transport that the PR adds or
+grows, also in test code and in `xtask`, with file and line.
+
 A PR gets at most 3 review rounds, so report every finding that you can show in this one
 report, never a few at a time. In the run after round 3 (`review` skill, "Round cap"),
 your two lines cover the whole range after round 3 and also name each decision or public

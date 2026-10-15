@@ -37,11 +37,14 @@ or the report names the one that covers it. For each changed result, give its co
 against the P1 target that it counts against (`docs/decisions/memory/p1.md`): for CPU,
 the extra time per call times the calls per second of the path at 100M samples/s; for
 latest-mode latency, the extra p99 per hop; for memory, start, and size, the extra MB,
-ms, or bytes per sample. In the same run, report one benchmark whose code did not
-change. How far it moves is the noise of the run. Apply that percent to each changed
-result. When the slowdown reaches the cost limit of P1 and the slowdown minus the noise
-does not, the run cannot show the cost check: it is a finding until the PR links the
-comment with the numbers of the rerun on a quiet Linux host of BENCH BASELINES
+ms, or bytes per sample. A memory cost for each item (a connector, a session, a reader)
+counts times the number of that item that a decision or a documented workload gives for
+the target. The report states that number and its source. With no source, the cost is at
+the cost limit. In the same run, report one benchmark whose code did not change. How far
+it moves is the noise of the run. Apply that percent to each changed result. When the
+slowdown reaches the cost limit of P1 and the slowdown minus the noise does not, the run
+cannot show the cost check: it is a finding until the PR links the comment with the
+numbers of the rerun on a quiet Linux host of BENCH BASELINES
 (`docs/decisions/testing/bench-baselines.md`), never a queued run, does what an
 amendment of that record asks in place of the rerun, or is a PR that an amendment of
 that record lets merge with no rerun. Before you report a result at or over the cost
