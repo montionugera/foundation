@@ -31,7 +31,7 @@
 | Access policy | Spec; `{ subjects, select, allow, authority }` | Files | `access`, called by the owners (`home`, `mesh`) | `spec`, `access` |
 | Subject | Files as `subject "<name>" { keys }`, then Spec as `spec::subject::Subject` at `<name>.@subject` | People, agents | `access::admit` (#1747), `plan` (#1082) | `spec` (definition), `config` (OpenSSH read) |
 | Secret store policy | Spec; selects secret names | Files | The secret resolver | `spec` |
-| Connector | Files, then Spec as `spec::connector::Connector { kind, node, config }`, keyed by its name | People, `discover` | Supervisor on the placed node, the kind | `spec` (shell) |
+| Connector | Files, then Spec as `spec::connector::Connector { kind, node, config }`, keyed by its name | People | Supervisor on the placed node, the kind | `spec` (shell) |
 | Kind config | Kind-owned: an opaque Document in the spec (canonical form, no source positions, so hashes stay stable) | Files | The kind's check at plan, `ctx.config()` at run | `connector-<kind>` |
 | Calculation | A connector of kind `calc`; program text is kind-owned; outputs on its own index | Files | `connector-calc` | `connector-calc` |
 | Open folder (A2) | Files, then Spec (mechanism: X28) | People | `hub`, `mesh` | `spec`, `mesh` |
