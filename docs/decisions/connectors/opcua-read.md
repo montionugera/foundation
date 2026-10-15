@@ -35,7 +35,8 @@
   splits a string. The largest such value of a Read today is a Double (8 bytes), so the
   check takes 7 bytes off each chunk but the last (`SPLIT`). The answer takes it on
   trust: a server that leaves more gives a read near the bound `BadSecureChannelClosed`.
-  The change that adds a GUID key also changes `SPLIT`, to 18: a test of the client
+  The change that adds a GUID key also changes `SPLIT`, to 18, and `id_bytes`, whose
+  match does not build until it gives the size of the new form: a test of the client
   fails to build until it gives the size of each form of a key. Decided by
   `laptop.architect-2` (2026-10-13T03:51:25Z:
   https://github.com/synnaxlabs/foundation/issues/2524#issuecomment-6137826207, the
