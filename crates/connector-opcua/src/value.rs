@@ -24,20 +24,31 @@ pub(crate) enum Value {
     F64(f64),
 }
 
-/// The sample types of a [`Value`], in the order of their OPC UA types.
-pub(crate) const SCALARS: [Scalar; 11] = [
-    Scalar::Bool,
-    Scalar::I8,
-    Scalar::U8,
-    Scalar::I16,
-    Scalar::U16,
-    Scalar::I32,
-    Scalar::U32,
-    Scalar::I64,
-    Scalar::U64,
-    Scalar::F32,
-    Scalar::F64,
+/// The value 1 of each type of a [`Value`], in the order of their OPC UA types.
+const ONES: [Value; 11] = [
+    Value::Bool(true),
+    Value::I8(1),
+    Value::U8(1),
+    Value::I16(1),
+    Value::U16(1),
+    Value::I32(1),
+    Value::U32(1),
+    Value::I64(1),
+    Value::U64(1),
+    Value::F32(1.0),
+    Value::F64(1.0),
 ];
+
+/// The sample types of a [`Value`], in the order of their OPC UA types.
+pub(crate) const SCALARS: [Scalar; 11] = {
+    let mut scalars = [Scalar::Bool; 11];
+    let mut at = 0;
+    while at < ONES.len() {
+        scalars[at] = ONES[at].sample().scalar();
+        at += 1;
+    }
+    scalars
+};
 
 impl Value {
     /// Gives the scalar of `value`, an answer of a read. Else gives its status when
@@ -91,7 +102,25 @@ impl Value {
     /// The sample type of the value.
     #[inline]
     pub(crate) fn scalar(self) -> Scalar {
-        sample::Value::from(self).scalar()
+        self.sample().scalar()
+    }
+
+    /// The sample value of the same type.
+    #[inline]
+    const fn sample(self) -> sample::Value {
+        match self {
+            Self::Bool(value) => sample::Value::Bool(value),
+            Self::I8(value) => sample::Value::I8(value),
+            Self::U8(value) => sample::Value::U8(value),
+            Self::I16(value) => sample::Value::I16(value),
+            Self::U16(value) => sample::Value::U16(value),
+            Self::I32(value) => sample::Value::I32(value),
+            Self::U32(value) => sample::Value::U32(value),
+            Self::I64(value) => sample::Value::I64(value),
+            Self::U64(value) => sample::Value::U64(value),
+            Self::F32(value) => sample::Value::F32(value),
+            Self::F64(value) => sample::Value::F64(value),
+        }
     }
 
     /// The value 1 of `scalar`, which is `true` for `bool`.
@@ -101,20 +130,9 @@ impl Value {
     /// If `scalar` is not one of [`SCALARS`].
     #[cfg(feature = "sim")]
     pub(crate) fn one(scalar: Scalar) -> Self {
-        match scalar {
-            Scalar::Bool => Self::Bool(true),
-            Scalar::I8 => Self::I8(1),
-            Scalar::U8 => Self::U8(1),
-            Scalar::I16 => Self::I16(1),
-            Scalar::U16 => Self::U16(1),
-            Scalar::I32 => Self::I32(1),
-            Scalar::U32 => Self::U32(1),
-            Scalar::I64 => Self::I64(1),
-            Scalar::U64 => Self::U64(1),
-            Scalar::F32 => Self::F32(1.0),
-            Scalar::F64 => Self::F64(1.0),
-            _ => panic!("invariant: {scalar:?} is not one of `SCALARS`"),
-        }
+        ONES.into_iter()
+            .find(|one| one.scalar() == scalar)
+            .unwrap_or_else(|| panic!("invariant: {scalar:?} is not one of `SCALARS`"))
     }
 
     /// Gives the C scalar of the value and its kind.
@@ -139,19 +157,7 @@ impl Value {
 impl From<Value> for sample::Value {
     #[inline]
     fn from(value: Value) -> Self {
-        match value {
-            Value::Bool(value) => Self::Bool(value),
-            Value::I8(value) => Self::I8(value),
-            Value::U8(value) => Self::U8(value),
-            Value::I16(value) => Self::I16(value),
-            Value::U16(value) => Self::U16(value),
-            Value::I32(value) => Self::I32(value),
-            Value::U32(value) => Self::U32(value),
-            Value::I64(value) => Self::I64(value),
-            Value::U64(value) => Self::U64(value),
-            Value::F32(value) => Self::F32(value),
-            Value::F64(value) => Self::F64(value),
-        }
+        value.sample()
     }
 }
 
