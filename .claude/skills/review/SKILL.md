@@ -318,10 +318,10 @@ nothing checked again. So when round 1 led to fix commits:
    `breaker`, and its round comment says so. The `reviewer` also gets each answer that
    changed no code, and checks it (`.claude/agents/reviewer.md`). The round comment puts
    each deferral that its report names on its `Deferred:` line. Its report gives the
-   `Public surface:` and `Hot path:` lines for the range. The round comment adds each
-   item of the first to its own `Public surface:` line, and copies the second. When the
-   `Hot path:` line names a function, run `performance` again on the range, and update
-   the Performance section with its numbers.
+   `Public surface:`, `Hot path:`, and `Build or use:` lines for the range. The round
+   comment adds each item of the first to its own `Public surface:` line, and copies the
+   second. When the `Hot path:` line names a function, run `performance` again on the
+   range, and update the Performance section with its numbers.
 2. Handle their findings as above. A round that has a finding gets another round, up to
    round 3 (Round cap). A finding in text only (a `.md` file, a `.rs` comment line that,
    trimmed, starts with `//` and is not a doctest line, the PR title or body, an end

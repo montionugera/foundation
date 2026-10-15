@@ -53,10 +53,10 @@ Check:
 - Shape decisions: read the PR's "Shape decisions" section. Challenge any choice where
   a rejected alternative is the better architecture.
 
-Start the report with two lines. First `Public surface: none`, or each public item of a
-crate in the crate map (its signature or doc) and crate dependency that the PR changes,
-and each change to the meaning of a ruling that an architect comment on the PR, on a PR
-that it replaces, or on an issue that it closes gave or approved
+Start the report with three lines. First `Public surface: none`, or each public item of
+a crate in the crate map (its signature or doc) and crate dependency that the PR
+changes, and each change to the meaning of a ruling that an architect comment on the PR,
+on a PR that it replaces, or on an issue that it closes gave or approved
 (`.claude/skills/architect/SKILL.md`, "Review before the person" step 3), in a doc or a
 decisions entry, with file and line. Give such a change as `departs from <link of that
 comment>`: that comment does not approve the change. Then `Hot path: none`, or each
@@ -73,10 +73,10 @@ grows, also in test code and in `xtask`, with file and line.
 
 A PR gets at most 3 review rounds, so report every finding that you can show in this one
 report, never a few at a time. In the run after round 3 (`review` skill, "Round cap"),
-your two lines cover the whole range after round 3 and also name each decision or public
-doc that states what a crate does and that the range changes. Mark each finding `defect`
-or `design flaw` as that section defines them. Put first each flaw that costs the most
-to change after merge: a wrong boundary, owner of state, or public surface.
+your three lines cover the whole range after round 3 and also name each decision or
+public doc that states what a crate does and that the range changes. Mark each finding
+`defect` or `design flaw` as that section defines them. Put first each flaw that costs
+the most to change after merge: a wrong boundary, owner of state, or public surface.
 
 For each finding: file and line, the rule, why it matters here, and the fix. Most
 severe first. Report nothing you cannot point to in the code.
