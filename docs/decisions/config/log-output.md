@@ -38,9 +38,16 @@
   `ansi`, `json`, or `tracing-serde`. By `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6201622804).
   Lost: a `Layer` of our own, which builds again what `fmt` gives; the `json` format
-  of `fmt`, which needs a second clock read or a splice for `mesh_time`.
+  of `fmt`, which needs a second clock read or a splice for `mesh_time`. A write
+  blocks the thread of its event until stderr takes the line. Later step (#2764): the
+  node never blocks on its log reader, by `laptop.monitor` with the details of
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202838819).
   (5) No dispatch is global (crate map rule 9, `clippy.toml`). `Node::start` makes the
   dispatch from `Config::log` and gives it to its shards through `Shards::logged`.
+  `node::Log` holds the writer and the `ops::Log` that `start` parses, whose default
+  is text at `info`. By `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2762#issuecomment-6202853376).
   Shard 0 writes `started` (INFO, `name`, `address`: the bound address, `shards`) once
   the file `address` holds the address. `Node::join` writes `stopped`: INFO after a
   stop, ERROR with `error` after a failure, also a failure before any shard started.
