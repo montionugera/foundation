@@ -229,7 +229,12 @@ impl Mesh {
         })
         .await?;
         let unapplied = written(&stored.entries).collect();
-        let raft = follower(config.key, stored, voters)?;
+        let mut raft = follower(config.key, stored, voters)?;
+        let newest = raft.voters();
+        // One voter cannot split a vote, so the election timeout buys nothing.
+        if newest.outgoing.is_empty() && newest.incoming.iter().eq([&config.key]) {
+            raft.campaign();
+        }
         let group = Group::new(raft, state, unapplied, used);
         let group = Rc::new(RefCell::new(group));
         let weak = Rc::downgrade(&group);
@@ -5967,6 +5972,80 @@ mod tests {
                 });
                 let held = Unfit::Held { key: key(2) };
                 assert_eq!(Mesh::start(config).await.err(), Some(Error::Member(held)));
+            });
+        }
+    }
+
+    mod lone {
+        use raft::Role;
+
+        use super::*;
+        use crate::common::{proven_at, voters_entry_voted};
+
+        #[test]
+        fn a_lone_voter_leads_after_its_first_tick() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
+                node.clock().sleep(TICK).await;
+                assert_eq!(mesh.group.borrow().raft.leader(), Some(key(1)));
+            });
+        }
+
+        // Node 2 never answers.
+        #[test]
+        fn a_voter_of_two_campaigns_only_after_the_timeout() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1, 2], &[1, 2]).await.unwrap();
+                node.clock().sleep(TICK).await;
+                assert_eq!(mesh.group.borrow().raft.role(), Role::Follower);
+                node.clock().sleep(seconds(2)).await;
+                assert_eq!(mesh.group.borrow().raft.role(), Role::PreCandidate);
+            });
+        }
+
+        // Node 2 never answers, so the joint entry that adds it does not commit.
+        #[test]
+        fn a_lone_voter_whose_newest_configuration_adds_a_voter_waits() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
+                lead(&mesh, &node.clock(), home_to(1)).await;
+                mesh.propose_voters([key(1), key(2)].into()).await.unwrap();
+                drop(mesh);
+                node.clock().sleep(TICK).await;
+                let again = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
+                let joint = Voters {
+                    incoming: [key(1), key(2)].into(),
+                    outgoing: [key(1)].into(),
+                };
+                assert_eq!(again.group.borrow().raft.voters(), &joint);
+                node.clock().sleep(TICK).await;
+                assert_eq!(again.group.borrow().raft.role(), Role::Follower);
+            });
+        }
+
+        // The joint entry that removes node 2 needs its vote too.
+        #[test]
+        fn a_lone_incoming_voter_of_a_joint_configuration_waits() {
+            solo(|node, tasks| async move {
+                let mesh = open(&node, &tasks, 1, &[1, 2], &[1, 2]).await.unwrap();
+                let joint = Voters {
+                    incoming: [key(1)].into(),
+                    outgoing: [key(1), key(2)].into(),
+                };
+                let append = Body::Append {
+                    prev: Position::default(),
+                    entries: vec![voters_entry_voted(2, at(1), joint.clone(), &[1, 2])],
+                    commit: 0,
+                };
+                let append = proven_at(2, 1, common::TERM, &[(1, 1), (2, 2)], append);
+                assert_eq!(mesh.receive(public(2), append), Ok(()));
+                node.clock().sleep(TICK).await;
+                drop(mesh);
+                node.clock().sleep(TICK).await;
+                let again = open(&node, &tasks, 1, &[1, 2], &[1, 2]).await.unwrap();
+                assert_eq!(again.group.borrow().raft.voters(), &joint);
+                node.clock().sleep(TICK).await;
+                assert_eq!(again.group.borrow().raft.role(), Role::Follower);
             });
         }
     }
