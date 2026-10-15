@@ -83,3 +83,14 @@
   changes in the range after round 3, what a round comment with the number of the one
   before it holds, that a PR after round 3 is a new design, or the OK of a deferred
   design flaw outside a risk crate.
+  Amended (2026-10-15, merge check of #2455): when the crate's architect, or
+  `laptop.architect` for a contract between the two lists, wrote a commit of the PR, the
+  other architect is the design approver, as item 42 rules for Round 1
+  (`laptop.director`, 2026-10-11T16:02:05Z:
+  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6110904042).
+  Supersedes "the next round starts where the last round of the old PR ends" of item 45
+  (`laptop.director`, 2026-10-11T17:20:58Z:
+  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6111639867). The
+  answers and approvals of the old PR still count at their SHA. Decided by
+  `laptop.director`, 2026-10-15T16:32:24Z:
+  https://github.com/synnaxlabs/foundation/pull/2455#issuecomment-6197095582.

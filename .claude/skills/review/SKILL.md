@@ -161,8 +161,10 @@ links the run in which each one fails.
 
 When a new PR replaces one under review, close the old one first (`gh pr close <old>
 --comment "Replaced by #<new>"`), and link its round comments in the first round comment
-of the new PR (Round cap). A close that waits for the person does not hold the new PR
-while the old PR is a draft and gets no push.
+of the new PR (Round cap). When the head of the old PR is an ancestor of the head of the
+new one, each answer and approval of the old PR counts for the new PR at its SHA. A
+close that waits for the person does not hold the new PR while the old PR is a draft and
+gets no push.
 
 The `reviewer`, `architecture`, and `breaker` agents each make their own worktree, so
 no two share a copy. Never give one another path: its permission check refuses every
