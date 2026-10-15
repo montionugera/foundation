@@ -148,8 +148,11 @@ impl Driver for Slow {
 /// Whether a socket holds `listen`. A free address stays free: the probe frees it at
 /// once.
 fn held(listen: SocketAddr) -> bool {
-    let probe = transport::Port::bind(&os::net(), listen);
-    matches!(probe, Err(env::net::Error::AddressInUse { .. }))
+    match transport::Port::bind(&os::net(), listen) {
+        Ok(_) => false,
+        Err(env::net::Error::AddressInUse { .. }) => true,
+        Err(error) => panic!("the probe of {listen} fails: {error}"),
+    }
 }
 
 /// Takes the lock of the data directory as soon as no node holds it.
