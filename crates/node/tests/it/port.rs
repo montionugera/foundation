@@ -35,7 +35,8 @@ fn the_port_binds_at_once_when_the_lock_is_free() {
     let listen = free();
     let region = node::Region::Absent;
     let node = start_node(&rig, &shards, &threads, &io, listen, region, |disk| disk);
-    // A task runs once the node takes sessions.
+    // A task runs once the node takes sessions. The peer dials only then: a dial waits
+    // 30 s, and a loaded host can take longer to serve.
     let (serves, serving) = mpsc::channel();
     node.spawn(move |_| {
         serves.send(()).unwrap();
