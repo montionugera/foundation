@@ -1865,7 +1865,7 @@ mod tests {
 
         #[test]
         fn wraps_before_the_end_of_the_offsets() {
-            let mut writer = Writer::empty(layout(), u64::MAX - 106495);
+            let mut writer = Writer::empty(layout(), u64::MAX - 106_495);
             let plan = writer.append(ALIGN).expect("fits");
             assert_eq!(plan.wrap, Some(18 * 4096));
             assert_eq!(plan.place, 0);
@@ -2332,7 +2332,9 @@ mod tests {
         #[test]
         fn a_carry_takes_the_owed_room() {
             let mut writer = fifteen();
-            writer.plan(RESTART_LEN, 0).expect("the restart block is free");
+            writer
+                .plan(RESTART_LEN, 0)
+                .expect("the restart block is free");
             let plan = writer.carry(1).expect("the owed block is free");
             assert_eq!((plan.offset, plan.next), (17 * 4096, 18 * 4096));
             let full = Full {
@@ -2353,7 +2355,9 @@ mod tests {
             let empty = Writer::empty(layout(), 0);
             assert_eq!(empty.tails(), layout().tails_max());
             let mut writer = fifteen();
-            writer.plan(RESTART_LEN, 0).expect("the restart block is free");
+            writer
+                .plan(RESTART_LEN, 0)
+                .expect("the restart block is free");
             assert_eq!(writer.tails(), 97);
             writer.carry(1).expect("the owed block is free");
             assert_eq!(writer.tails(), 0);
@@ -2639,7 +2643,8 @@ mod tests {
             let mut ring = Ring::new();
             while ring.append(b"a").is_ok() {}
             ring.reopen(5).expect("the restart block is free");
-            ring.reopen(6).expect("the restart record goes over the last one");
+            ring.reopen(6)
+                .expect("the restart record goes over the last one");
             assert_eq!(ring.writer.head(), 17 * 4096);
             let plan = ring.writer.carry(1).expect("the owed block is free");
             let body = vec![0; carry::body_len(1)];
