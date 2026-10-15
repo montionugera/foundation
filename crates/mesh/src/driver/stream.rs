@@ -152,6 +152,7 @@ fn code(error: &Error) -> Option<Code> {
         | Error::NotIndex(_)
         | Error::UnknownNode(_)
         | Error::Homes { .. }
+        | Error::Voters { .. }
         | Error::Founding { .. }
         | Error::Unfounded { .. } => Some(REFUSED),
     }

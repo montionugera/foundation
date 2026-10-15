@@ -26,6 +26,7 @@ fn leader(entries: u64) -> Raft {
         key: key(1),
         election_ticks: u32::MAX,
         heartbeat_ticks: 1,
+        fits: |_| true,
     };
     let start = Start {
         voters: Voters {
