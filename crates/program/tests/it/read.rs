@@ -1,6 +1,10 @@
 //! Each behavior of a [`Reader`]: the open, the frames, and each error.
 
 use std::collections::BTreeMap;
+use std::future::poll_fn;
+use std::pin::pin;
+use std::rc::Rc;
+use std::task::Poll;
 
 use env::clock::Clock;
 use env::tasks::Tasks;
@@ -28,7 +32,7 @@ use wire::hub::{Head, Reply, ends};
 use crate::agent::{AGENT, SUBJECT, name};
 use crate::net::{header, own_pool};
 use crate::node::env;
-use crate::session::{admit, by_hand, connect, raw};
+use crate::session::{admit, by_hand, connect, connect_with, raw};
 use crate::sessions::{self, Got, Home, QUIET, closed_with, rules};
 
 const STAMP: Type = Type::Scalar(Scalar::Stamp);
@@ -424,6 +428,58 @@ fn gives_each_series_at_the_entry_of_its_place() {
                 assert_eq!(frame.range(0), Some(Range { seq: 6, count: 1 }));
                 assert_eq!(frame.iter().collect::<Vec<_>>(), [(1, &body[..8])]);
             })
+        },
+    );
+}
+
+/// A call of `next` that drops while the draft of a frame waits for the pool leaves
+/// the frame to the next call.
+#[test]
+fn gives_a_frame_whose_draft_waited_at_a_call_that_dropped() {
+    const LEN: usize = 40_000;
+    let body: Vec<u8> = (0..LEN).map(|n| (n % 251) as u8).collect();
+    let sent = body.clone();
+    raw(
+        418,
+        move |session, mut hello, node| async move {
+            admit(&mut hello, &node.clock()).await;
+            let mut read = opened(&session, &around(), 1).await;
+            let end = u32::try_from(LEN).expect("fits");
+            for seq in [0, 1] {
+                let range = Range { seq, count: 1 };
+                send_frame(&mut read, range, &[(1, end)], &sent, &[1000; 40]).await;
+            }
+            node.clock().sleep(QUIET).await;
+        },
+        move |node, tasks, at| async move {
+            let config = block::Config::new(
+                u64::try_from(block::footprint(1 << 16)).expect("a usize fits a u64"),
+            )
+            .expect("the budget fits");
+            let pool = block::Pool::new(
+                config.clone(),
+                block::Heap::new(config.reservation()),
+            );
+            let session = connect_with(&node, tasks, at, AGENT, Rc::new(pool))
+                .await
+                .expect("connects");
+            let mut reader = session
+                .reader(select(&["a", "b"]), Mode::Complete)
+                .await
+                .expect("opens");
+            let first = reader.next().await.expect("a frame");
+            node.clock().sleep(APART).await;
+            {
+                let mut next = pin!(reader.next());
+                let waits =
+                    poll_fn(|cx| Poll::Ready(next.as_mut().poll(cx).is_pending()));
+                assert!(waits.await, "the draft waits for the pool");
+            }
+            drop(first);
+            let second = reader.next().await.expect("a frame");
+            assert_eq!(second.range(0), Some(Range { seq: 1, count: 1 }));
+            assert_eq!(second.iter().collect::<Vec<_>>(), [(1, &body[..])]);
+            node.clock().sleep(QUIET).await;
         },
     );
 }

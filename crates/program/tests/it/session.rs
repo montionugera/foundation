@@ -40,7 +40,7 @@ pub(super) async fn connect(
 
 /// As [`connect`], where the session sends from `pool`, and the transport from a pool
 /// of its own.
-async fn connect_with(
+pub(super) async fn connect_with(
     node: &sim::node::Node,
     tasks: env::tasks::Tasks,
     at: Address,

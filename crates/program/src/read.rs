@@ -30,6 +30,9 @@ pub struct Reader {
     /// The frame that is arriving: its head, its ends, and its draft.
     head: Option<Head>,
     ends: Vec<(usize, usize)>,
+    /// Whether the ends are whole and the draft is not made. A call of `next` that
+    /// drops while the draft waits for the pool leaves it set.
+    drafting: bool,
     draft: Option<Draft>,
     /// The error that ended the read.
     ended: Option<Error>,
@@ -63,6 +66,7 @@ impl Reader {
             decoder,
             head: None,
             ends: Vec::new(),
+            drafting: false,
             draft: None,
             ended: None,
         })
@@ -116,6 +120,19 @@ impl Reader {
             .as_mut()
             .expect("invariant: a reader holds its stream until it ends");
         loop {
+            if self.drafting {
+                let layout =
+                    Layout::from_ends(&self.set, &self.ends).map_err(Error::Frame)?;
+                let shared = &self.session.0;
+                let draft = shared
+                    .retry(|| layout.draft(&shared.pool, Form::Encoded))
+                    .await?;
+                self.drafting = false;
+                self.draft = Some(draft);
+                if self.decoder.body().is_none() {
+                    return Ok(self.freeze());
+                }
+            }
             if let Some(start) = self.decoder.body() {
                 let draft = self
                     .draft
@@ -146,18 +163,7 @@ impl Reader {
                     self.ends.extend(
                         ends.map(|(place, end)| (to_usize(place), to_usize(end))),
                     );
-                    if last {
-                        let layout = Layout::from_ends(&self.set, &self.ends)
-                            .map_err(Error::Frame)?;
-                        let shared = &self.session.0;
-                        let draft = shared
-                            .retry(|| layout.draft(&shared.pool, Form::Encoded))
-                            .await?;
-                        self.draft = Some(draft);
-                        if self.decoder.body().is_none() {
-                            return Ok(self.freeze());
-                        }
-                    }
+                    self.drafting = last;
                 }
                 FromHome::Behind => return Err(Error::Behind),
                 FromHome::Opened | FromHome::Body { .. } => {
