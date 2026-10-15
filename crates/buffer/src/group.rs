@@ -300,7 +300,7 @@ impl Closed {
         let (header, table) = tail.split_at_mut(record::HEADER_LEN);
         let parts = group.writes.iter().map(|part| &**part);
         let body = iter::once(&*table).chain(parts);
-        let (sealed, ends) = plan.seal(chain, record::Kind::Data, body);
+        let (sealed, ends) = plan.seal(chain, body);
         header.copy_from_slice(&sealed.record.header);
         group.writes.insert(0, meta.freeze().skip(start));
         let wrap = sealed.wrap.map(|write| {

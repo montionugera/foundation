@@ -235,6 +235,27 @@ mod tests {
         Ring::new(15).commit(8);
     }
 
+    /// After the warm-up of the `wal` bench, each commit of 1 record trims on the
+    /// rings of the bench, so each time holds a trim. It reads the private writer:
+    /// `commit` gives nothing back.
+    #[test]
+    fn each_commit_of_1_record_trims_on_the_rings_of_the_bench() {
+        for id in [64, 4096] {
+            let mut ring = Ring::new(id + 4);
+            for _ in 0..2 * id {
+                ring.commit(1);
+            }
+            for commit in 0..2000 {
+                let tail = ring.writer.tail();
+                ring.commit(1);
+                assert!(
+                    ring.writer.tail() > tail,
+                    "commit {commit} on the ring of ID {id} trims"
+                );
+            }
+        }
+    }
+
     /// The ring has room for each commit only if each commit releases the space of
     /// the one before.
     #[test]
