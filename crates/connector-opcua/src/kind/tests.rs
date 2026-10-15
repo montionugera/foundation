@@ -1373,3 +1373,29 @@ fn leaves_out_each_value_that_is_not_good() {
     let left = Leave::of(&Err(Fault::Type(string)), Scalar::F64);
     assert_eq!(left, Some(Leave::Mistyped(string)));
 }
+
+/// The frame of a tick drops the index of a group with no kept read.
+#[test]
+fn keeps_no_index_of_a_group_with_no_kept_read() {
+    let fill = |group, read| Fill { group, read };
+    let layout = Layout {
+        types: vec![Scalar::F64; 2],
+        series: vec![(0, 8), (1, 8), (2, 8), (3, 8)],
+        fills: vec![
+            fill(0, None),
+            fill(0, Some(0)),
+            fill(1, None),
+            fill(1, Some(1)),
+        ],
+        samples: vec![1, 1],
+        groups: vec![0, 1],
+    };
+    let mut tick = Tick {
+        kept: vec![true, false],
+        ..Tick::default()
+    };
+    tick.keep(&layout);
+    assert_eq!(tick.series, vec![(0, 8), (1, 8)]);
+    assert_eq!(tick.samples, vec![1, 0]);
+    assert_eq!(tick.groups, vec![0]);
+}
