@@ -144,7 +144,7 @@ values! {
 const NO_KIND: u16 = u16::MAX;
 
 /// The name of each built-in type of OPC UA, by its kind in open62541.
-const NAMES: [&str; 31] = [
+const NAMES: [&str; ffi::KINDS] = [
     "Boolean",
     "SByte",
     "Byte",

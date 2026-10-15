@@ -134,6 +134,22 @@ _Static_assert(UA_DATATYPEKIND_BOOLEAN == 0 && UA_DATATYPEKIND_SBYTE == 1 &&
                    UA_DATATYPEKIND_UINT64 == 8 && UA_DATATYPEKIND_FLOAT == 9 &&
                    UA_DATATYPEKIND_DOUBLE == 10,
                "the kinds of the scalar types moved");
+_Static_assert(UA_DATATYPEKINDS == 31 && UA_DATATYPEKIND_STRING == 11 &&
+                   UA_DATATYPEKIND_DATETIME == 12 && UA_DATATYPEKIND_GUID == 13 &&
+                   UA_DATATYPEKIND_BYTESTRING == 14 &&
+                   UA_DATATYPEKIND_XMLELEMENT == 15 && UA_DATATYPEKIND_NODEID == 16 &&
+                   UA_DATATYPEKIND_EXPANDEDNODEID == 17 &&
+                   UA_DATATYPEKIND_STATUSCODE == 18 &&
+                   UA_DATATYPEKIND_QUALIFIEDNAME == 19 &&
+                   UA_DATATYPEKIND_LOCALIZEDTEXT == 20 &&
+                   UA_DATATYPEKIND_EXTENSIONOBJECT == 21 &&
+                   UA_DATATYPEKIND_DATAVALUE == 22 && UA_DATATYPEKIND_VARIANT == 23 &&
+                   UA_DATATYPEKIND_DIAGNOSTICINFO == 24 &&
+                   UA_DATATYPEKIND_DECIMAL == 25 && UA_DATATYPEKIND_ENUM == 26 &&
+                   UA_DATATYPEKIND_STRUCTURE == 27 && UA_DATATYPEKIND_OPTSTRUCT == 28 &&
+                   UA_DATATYPEKIND_UNION == 29 &&
+                   UA_DATATYPEKIND_BITFIELDCLUSTER == 30,
+               "UA_DataTypeKind changed");
 _Static_assert(UA_TYPES_BYTESTRING == 14, "UA_TYPES_BYTESTRING moved");
 _Static_assert(UA_TYPES_VARIANT == 23, "UA_TYPES_VARIANT moved");
 _Static_assert(UA_NS0ID_SERVER_SERVERSTATUS_CURRENTTIME == 2258,

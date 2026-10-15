@@ -165,6 +165,10 @@ pub(crate) const UINT64: u16 = 8;
 pub(crate) const FLOAT: u16 = 9;
 pub(crate) const DOUBLE: u16 = 10;
 
+/// The count of the kinds of open62541, `UA_DATATYPEKINDS`. `shim.c` asserts it and
+/// the kind of each name of `value::NAMES`.
+pub(crate) const KINDS: usize = 31;
+
 /// The bit that `shim_value_scalar` adds to the kind of an array, `SHIM_ARRAY`.
 pub(crate) const ARRAY: u16 = 0x8000;
 
