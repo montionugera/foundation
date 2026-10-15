@@ -767,7 +767,7 @@ mod reader {
     /// step of each of its messages.
     #[test]
     fn reads_each_run_input_of_the_fuzz_target_to_its_last_place() {
-        let cases: [(&[u8], Vec<Step>); 3] = [
+        let cases: [(&[u8], Vec<Step>); 5] = [
             (
                 corpus!("reader_behind"),
                 vec![
@@ -795,6 +795,25 @@ mod reader {
                     Step::Event(Ok(Event::Last(vec![pt(2, "timestamp", "a.time")]))),
                     Step::Reply(Err(hub::Error::Length { len: 1 })),
                     Step::Reply(Err(hub::Error::Unopened { kind: 2 })),
+                ],
+            ),
+            (
+                corpus!("reader_behind_live"),
+                vec![
+                    places(2, 0),
+                    Step::Event(Ok(Event::Last(vec![stamp(1), pt(2, "f64", "b")]))),
+                    Step::Reply(Ok(Home::Opened(0))),
+                    Step::Reply(Ok(Home::Behind)),
+                ],
+            ),
+            (
+                corpus!("reader_run_live"),
+                vec![
+                    places(2, 1),
+                    Step::Event(Ok(Event::Run(vec![byte(1)]))),
+                    Step::Event(Ok(Event::Last(vec![pt(2, "timestamp", "a.time")]))),
+                    Step::Reply(Ok(Home::Opened(0))),
+                    Step::Reply(Ok(Home::Head(2))),
                 ],
             ),
         ];

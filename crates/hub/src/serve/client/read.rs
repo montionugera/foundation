@@ -89,8 +89,9 @@ async fn open(
 }
 
 /// Opens the reader of `open` at this node, the home of its index, and gives it with
-/// its open position, its places, and their layout, or `None` when `program` finishes first. Holds the
-/// reservation of `open` until the open decodes after the wait for the home.
+/// its open position, its places, and their layout, or `None` when `program` finishes
+/// first. Holds the reservation of `open` until the open decodes after the wait for the
+/// home.
 async fn here<F>(
     state: &Rc<RefCell<State>>,
     open: Held,

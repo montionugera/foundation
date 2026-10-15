@@ -1,11 +1,10 @@
 //! `wire::hub::Reader` never panics, each event encodes to its message and comes in the
 //! order of a session, each head is live, ends at or below `u64::MAX`, and starts at or
-//! after the end of the head before it or, for the first, the open position of
-//! `Opened`, each refusal is one that the order, the mode,
-//! or the heads before it give, the body
-//! starts after the ends run and ends at its last end, the stream may end only after
-//! `Behind`, and each valid message that the home writes reads back. A latest and a
-//! complete session each read the input.
+//! after the end of the head before it or, for the first head of a complete session,
+//! the open position of `Opened`, each refusal is one that the order, the mode, or the
+//! heads before it give, the body starts after the ends run and ends at its last end,
+//! the stream may end only after `Behind`, and each valid message that the home writes
+//! reads back. A latest and a complete session each read the input.
 //!
 //! Input: one byte, the places of the session less 1, then the messages from the home
 //! (`fuzz::messages`).
@@ -127,7 +126,8 @@ fn malformed(error: &Error) -> bool {
 }
 
 /// Whether a reader of `places` places in `mode` that must take `next`, and whose last
-/// head ended at `end`, or that opened at `end` and took no head, refuses `message` with `error`. Only one error is correct.
+/// head ended at `end`, or that opened as a complete session at `end` and took no head,
+/// refuses `message` with `error`. Only one error is correct.
 fn refused(
     next: Next,
     places: u32,
@@ -144,7 +144,9 @@ fn refused(
             Err(other) => malformed(&other) && *error == other,
         },
         Next::Head => match reply(message) {
-            Ok(reply @ Reply::Opened { .. }) => *error == Error::Reopen { kind: kind(reply) },
+            Ok(reply @ Reply::Opened { .. }) => {
+                *error == Error::Reopen { kind: kind(reply) }
+            }
             Ok(Reply::Head(head)) => refusal(head, places, end).as_ref() == Some(error),
             Ok(Reply::Behind) => {
                 let kind = kind(Reply::Behind);
@@ -186,7 +188,9 @@ fn read_session(places: u32, mode: Mode, rest: &[u8]) {
                 let mut out = vec![0; Reply::Opened { live }.encoded_len()];
                 Reply::Opened { live }.encode(&mut out);
                 assert_eq!(out, message, "the opened changed");
-                end = live;
+                if mode == COMPLETE {
+                    end = live;
+                }
                 Next::Head
             }
             (Next::Head, Ok(FromHome::Head(head))) => {
@@ -325,7 +329,9 @@ fn write(input: &mut Unstructured) -> arbitrary::Result<()> {
     let mut out = vec![0; Reply::Opened { live }.encoded_len()];
     Reply::Opened { live }.encode(&mut out);
     match reader(1, COMPLETE).decode(&out) {
-        Ok(FromHome::Opened { live: read }) => assert_eq!(read, live, "the opened changed"),
+        Ok(FromHome::Opened { live: read }) => {
+            assert_eq!(read, live, "the opened changed")
+        }
         other => panic!("an opened did not read back: {other:?}"),
     }
     Ok(())
