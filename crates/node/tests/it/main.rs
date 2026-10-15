@@ -34,7 +34,7 @@ fn logged(stderr: &[u8]) -> (&str, &str) {
     let text = text(stderr);
     let log = (text.split_inclusive('\n'))
         .take_while(|line| {
-            let level = line.get(26..).and_then(|rest| rest.strip_prefix("Z "));
+            let level = after_stamp(line);
             line.starts_with("{\"timestamp\":")
                 || level.is_some_and(|level| {
                     ["ERROR ", "WARN ", "INFO ", "DEBUG ", "TRACE "]
@@ -45,6 +45,12 @@ fn logged(stderr: &[u8]) -> (&str, &str) {
         .map(str::len)
         .sum();
     text.split_at(log)
+}
+
+/// The text log line `line` after its stamp and the space, or `None` when it starts
+/// with no stamp.
+fn after_stamp(line: &str) -> Option<&str> {
+    line.get(26..)?.strip_prefix("Z ")
 }
 
 /// The commit of `HEAD` that `git` reads here, or `None` when it fails.

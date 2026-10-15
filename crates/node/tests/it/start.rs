@@ -2,7 +2,7 @@
 
 use crate::quickstart::shown;
 use crate::rig::{self, Rig};
-use crate::{logged, text};
+use crate::{after_stamp, logged, text};
 
 /// The exit status, the standard output, and the standard error of `output` after the
 /// log of the node.
@@ -37,7 +37,7 @@ fn event(line: &str) -> String {
         let (level, target) = (part(&line["level"]), part(&line["target"]));
         format!("{level} {target}: {}", part(&line["fields"]["message"]))
     } else {
-        let line = line.get(28..).expect("a stamp");
+        let line = after_stamp(line).expect("a stamp");
         line.split(' ').take(3).collect::<Vec<_>>().join(" ")
     }
 }
@@ -47,7 +47,7 @@ fn event(line: &str) -> String {
 fn unstamped(log: &str) -> Vec<&str> {
     (log.lines())
         .map(|line| {
-            let line = line.get(28..).expect("a stamp");
+            let line = after_stamp(line).expect("a stamp");
             line.split_once(" mesh_time=")
                 .map_or(line, |(line, _)| line)
         })
