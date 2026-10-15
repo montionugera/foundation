@@ -2,7 +2,7 @@
 //! defines `UA_malloc`, `UA_calloc`, `UA_realloc`, and `UA_free` as these functions,
 //! so each C allocation goes through the global allocator of the binary. Each keeps
 //! the C contract: a failure gives NULL and never panics, and each pointer is aligned
-//! to 16.
+//! to 16. [`exhausted`] stops the process when a constructor of `shim.c` gives NULL.
 
 #![expect(unsafe_code, reason = "C allocates through these functions")]
 
@@ -15,6 +15,20 @@ use std::ptr;
 const ALIGN: usize = 16;
 
 const _: () = assert!(size_of::<usize>() <= ALIGN, "the size fits in the header");
+
+/// The layout of a header alone, the smallest block.
+const HEADER: Layout = match Layout::from_size_align(ALIGN, ALIGN) {
+    Ok(layout) => layout,
+    Err(_) => panic!("a header alone is a layout"),
+};
+
+/// Stops the process as the Rust allocator does when it has no memory, for a C
+/// constructor that gives NULL. A constructor does not give the size of the block that
+/// failed, so the size in the message is that of a header alone, the smallest block
+/// that this allocator asks for, not the size of the block that failed.
+pub(crate) fn exhausted() -> ! {
+    alloc::handle_alloc_error(HEADER)
+}
 
 /// Gives the layout of a block of `size` bytes and its header, or `None` when it is
 /// too large.

@@ -1,7 +1,8 @@
 //! At the start of the next run, and at each 10 ms of the sim clock from the start of
 //! a run that ends with a device or retry error of 1 MiB, or with a device error whose
-//! text comes in two pieces of 1023 and 1 bytes, the process holds less than the cut
-//! text twice over the same run in a twin sim, where it ends with an error of 1 byte.
+//! text comes in two pieces of 1023 and 1 bytes, the process holds at most the bytes
+//! of [`Pool::over`] more than over the same run in a twin sim, where it ends with an
+//! error of 1 byte.
 //! The run has a task that lives 2 s more. In a second set of twins, a rival writer
 //! keeps the pool full around the run, so the home applies its frames late. The twins
 //! add their larger steps of memory at the same runs, so the steps cancel. This binary
@@ -19,12 +20,10 @@ use std::sync::atomic::Ordering::Relaxed;
 
 use connector::cancel::Token;
 use connector::kind::{Channels, Context, Error, Kind, Table};
-use connector::supervisor::Supervisor;
-use connector::testing;
+use connector::testing::Rig;
 use document::Document;
 use document::diagnostic::Diagnostic;
 use types::authority::Authority;
-use types::channel;
 use types::frame::{self, Form};
 use types::name::Name;
 use types::time::Span;
@@ -57,6 +56,22 @@ enum Last {
 enum Pool {
     Free,
     Full,
+}
+
+impl Pool {
+    /// The most bytes that run [`SHORT`] holds over its twin: the text of 1024 bytes of
+    /// [`Last::Pieces`] less the twin's 1, then 32 bytes of room. With the pool free,
+    /// the home also writes the status frame, so its encode scratch grows to 1090 bytes
+    /// in place of 128. A spare capacity in that text that is 33 bytes or more over the
+    /// spare in the twin's text of 1 byte fails the test. The cut text of a longer
+    /// error is 1023 bytes.
+    fn over(self) -> usize {
+        let (text, room) = (1_023, 32);
+        match self {
+            Self::Free => text + (1_090 - 128) + room,
+            Self::Full => text + room,
+        }
+    }
 }
 
 /// An error whose text comes in two pieces, of 1023 bytes then 1, so that the string
@@ -146,7 +161,7 @@ fn fill(writer: &hub::writer::Writer) -> Vec<frame::Draft> {
 /// Keeps the pool full as [`Pool::Full`] states, with a writer of lower authority on
 /// the status channels of `plant.large`.
 async fn hog(hub: hub::Hub, clock: env::clock::Clock, runs: Arc<AtomicUsize>) {
-    let channels = ["state", "class", "restarts", "backoff", "error"]
+    let channels = ["state", "class", "restarts", "backoff", "error", "note"]
         .map(|c| {
             format!("plant.large.status.{c}")
                 .parse()
@@ -197,21 +212,14 @@ fn held(last: Last, pool: Pool) -> usize {
             tasks: tasks.clone(),
         };
         let kinds = Table::new().with("large", kind);
-        let config = testing::create_config(env, node.net(), kinds).await;
+        let mut rig = Rig::open(env, node.net(), kinds).await;
         let connector: Name = "plant.large".parse().expect("a valid name");
-        let status =
-            testing::create_status(&connector, &[], channel::Key::from_u128(100));
-        config
-            .hub
-            .set_definitions(status.iter().map(|(name, def)| (name, def)));
         if let Pool::Full = pool {
-            tasks.spawn(hog(config.hub.clone(), clock.clone(), Arc::clone(&runs)));
+            tasks.spawn(hog(rig.hub().clone(), clock.clone(), Arc::clone(&runs)));
         }
-        let supervisor = Supervisor::new(config);
         let (token, config) = (Token::new(), Document::default());
         let mut run = pin!(
-            supervisor
-                .open("large", connector, &config, &token)
+            rig.open_connector("large", connector, &config, &token)
                 .await
                 .run()
         );
@@ -241,7 +249,7 @@ fn main() {
         for last in [Last::Large, Last::Pieces, Last::Retry] {
             let held = held(last, pool);
             assert!(
-                held < short + 2 * 1_024,
+                held <= short + pool.over(),
                 "from run {SHORT} to the next, the sim holds {short} bytes after a \
                  short error, {held} after {last:?}, with the pool {pool:?}"
             );

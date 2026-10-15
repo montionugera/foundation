@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use connector_influx::line::{Float, Measurement, Value};
+use connector_influx::line::{Field, Float, Measurement, Value};
 use connector_influx::sim::Store;
 use divan::Bencher;
 use divan::counter::ItemsCount;
@@ -76,19 +76,34 @@ fn float(k: u32) -> Value {
 }
 
 impl Shape {
-    fn measurement(self) -> Measurement {
-        Measurement::new("m", &[("node", "edge"), ("unit", "V")], self.fields)
-            .expect("the names are valid")
+    /// The measurement, with the field of each of `fields`.
+    fn measurement(self) -> (Measurement, Vec<Field>) {
+        let measurement = Measurement::new("m", &[("node", "edge"), ("unit", "V")])
+            .expect("the names are valid");
+        let fields = self.fields.iter().map(|key| measurement.field(key));
+        let fields = fields
+            .collect::<Result<_, _>>()
+            .expect("the keys are valid");
+        (measurement, fields)
     }
 
-    /// Appends the `POINTS` lines of `measurement` to `body`.
-    fn body(self, measurement: &Measurement, mut body: Vec<u8>) -> Vec<u8> {
+    /// Appends the `POINTS` lines of `measurement` to `body`. The field count of each
+    /// line stays in the timed work.
+    fn body(
+        self,
+        (measurement, fields): &(Measurement, Vec<Field>),
+        mut body: Vec<u8>,
+    ) -> Vec<u8> {
         let mut values = vec![None; self.fields.len()];
+        let mut written = 0_usize;
         for k in 0..POINTS {
             (self.values)(k, &mut values);
-            let time = T0 + i64::from(k);
-            measurement.line(&mut body, &values, Stamp::from_nanos(time));
+            let time = Stamp::from_nanos(T0 + i64::from(k));
+            let values = fields.iter().zip(&values);
+            let values = values.filter_map(|(field, value)| Some((field, (*value)?)));
+            written = written.wrapping_add(measurement.line(&mut body, values, time));
         }
+        std::hint::black_box(written);
         body
     }
 }
