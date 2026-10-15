@@ -1220,24 +1220,13 @@ fn panics_with_the_read_whose_value_is_bad() {
     Values(&values).get(2);
 }
 
-/// Each of `scalars` with its variant of [`Value`](crate::value::Value).
-fn types(scalars: &[Scalar]) -> Vec<(Scalar, Discriminant<crate::value::Value>)> {
-    let variant = |&scalar| {
-        (
-            scalar,
-            crate::value::Value::variant(scalar).expect("a type"),
-        )
-    };
-    scalars.iter().map(variant).collect()
-}
-
 #[test]
 fn refuses_each_value_of_another_type_than_its_channel() {
     let [_, _, values] = extremes();
     for value in values {
         for sample in SCALARS {
             let values = [Ok(value)];
-            let refused = Values::new(&values, &types(&[sample])).map(|_| ());
+            let refused = Values::new(&values, &[sample]).map(|_| ());
             if value.scalar() == sample {
                 assert_eq!(refused, Ok(()));
             } else {
@@ -1260,18 +1249,17 @@ fn gives_the_first_value_that_is_bad_or_of_another_type_than_its_channel() {
         Ok(Value::F32(1.0)),
         Err(Status::BAD_NOT_FOUND),
     ];
-    let refused = Values::new(&values, &types(&scalars)).map(|_| ());
+    let refused = Values::new(&values, &scalars).map(|_| ());
     let mismatch = Bad::Type {
         value: Scalar::F32,
         sample: Scalar::F64,
     };
     assert_eq!(refused, Err((1, mismatch)));
-    let refused = Values::new(&values[2..], &types(&scalars[2..])).map(|_| ());
+    let refused = Values::new(&values[2..], &scalars[2..]).map(|_| ());
     assert_eq!(refused, Err((0, Bad::Status(Status::BAD_NOT_FOUND))));
     let good = [Ok(Value::F64(1.0)), Ok(Value::I32(-1))];
     let scalars = [Scalar::F64, Scalar::I32];
-    let types = types(&scalars);
-    let values = Values::new(&good, &types).expect("each value has its type");
+    let values = Values::new(&good, &scalars).expect("each value has its type");
     assert_eq!(
         (values.get(0), values.get(1)),
         (Value::F64(1.0), Value::I32(-1))
