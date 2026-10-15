@@ -81,11 +81,16 @@ where
         let mut fields = Fields::default();
         event.record(&mut fields);
         let metadata = event.metadata();
-        let (level, target) = (*metadata.level(), metadata.target());
+        let entry = Entry {
+            time,
+            level: *metadata.level(),
+            target: metadata.target(),
+            fields,
+        };
         if self.json {
-            json(&mut writer, time, level, target, fields)
+            entry.json(&mut writer)
         } else {
-            text(&mut writer, time, level, target, fields)
+            entry.text(&mut writer)
         }
     }
 }
@@ -157,33 +162,56 @@ impl Value {
     }
 }
 
-/// `<stamp> <LEVEL> <target>: <message> <key>=<value>... [mesh_time=<time>|none]`.
-/// The message has `\` and each control character escaped, and each string value is
-/// quoted as logfmt does ([`value`]), so the line stays one line.
-fn text(
-    w: &mut Writer<'_>,
+/// One event, stamped.
+struct Entry<'a> {
     time: Time,
     level: tracing::Level,
-    target: &str,
+    target: &'a str,
     fields: Fields,
-) -> fmt::Result {
-    write!(w, "{} {level} {target}:", micros(time.wall))?;
-    if let Some(message) = fields.message {
-        w.write_char(' ')?;
-        for c in message.chars() {
-            escape(w, c, c == '\\')?;
+}
+
+impl Entry<'_> {
+    /// `<stamp> <LEVEL> <target>: <message> <key>=<value>... [mesh_time=<time>|none]`.
+    /// The message has `\` and each control character escaped, and each string value
+    /// is quoted as logfmt does ([`value`]), so the line stays one line.
+    fn text(self, w: &mut Writer<'_>) -> fmt::Result {
+        let Self {
+            time,
+            level,
+            target,
+            fields,
+        } = self;
+        write!(w, "{} {level} {target}:", micros(time.wall))?;
+        if let Some(message) = fields.message {
+            w.write_char(' ')?;
+            for c in message.chars() {
+                escape(w, c, c == '\\')?;
+            }
         }
+        for (name, field) in fields.others {
+            write!(w, " {name}=")?;
+            field.write(w)?;
+        }
+        match time.mesh {
+            Mesh::Near => {}
+            Mesh::Apart(mesh) => write!(w, " mesh_time={}", micros(mesh))?,
+            Mesh::Unsynced => w.write_str(" mesh_time=none")?,
+        }
+        w.write_char('\n')
     }
-    for (name, field) in fields.others {
-        write!(w, " {name}=")?;
-        field.write(w)?;
+
+    /// One JSON object with the keys `timestamp`, `level`, `target`, `fields` (the
+    /// message first), and `mesh_time`, in that order.
+    #[expect(
+        clippy::unwrap_in_result,
+        reason = "only a defect of `Serialize` fails, and `fmt` drops the line with no word"
+    )]
+    fn json(&self, w: &mut Writer<'_>) -> fmt::Result {
+        let line = serde_json::to_string(self)
+            .expect("invariant: a map with string keys serializes to a String");
+        w.write_str(&line)?;
+        w.write_char('\n')
     }
-    match time.mesh {
-        Mesh::Near => {}
-        Mesh::Apart(mesh) => write!(w, " mesh_time={}", micros(mesh))?,
-        Mesh::Unsynced => w.write_str(" mesh_time=none")?,
-    }
-    w.write_char('\n')
 }
 
 /// `text` as logfmt writes a value: in double quotes when it is empty or holds a
@@ -211,34 +239,8 @@ fn escape(w: &mut Writer<'_>, c: char, escaped: bool) -> fmt::Result {
     }
 }
 
-/// One JSON object with the keys `timestamp`, `level`, `target`, `fields` (the
-/// message first), and `mesh_time`, in that order.
-fn json(
-    w: &mut Writer<'_>,
-    time: Time,
-    level: tracing::Level,
-    target: &str,
-    fields: Fields,
-) -> fmt::Result {
-    let line = Json {
-        time,
-        level,
-        target,
-        fields,
-    };
-    w.write_str(&serde_json::to_string(&line).map_err(|_never| fmt::Error)?)?;
-    w.write_char('\n')
-}
-
-/// A JSON line. A map keeps the order of its entries, where `json!` sorts its keys.
-struct Json<'a> {
-    time: Time,
-    level: tracing::Level,
-    target: &'a str,
-    fields: Fields,
-}
-
-impl Serialize for Json<'_> {
+/// A map keeps the order of its entries, where `json!` sorts its keys.
+impl Serialize for Entry<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         let mut map = s.serialize_map(None)?;
         map.serialize_entry("timestamp", &micros(self.time.wall))?;
