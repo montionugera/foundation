@@ -9,8 +9,8 @@
   gap (#2553, `laptop.architect`, 2026-10-15T18:12:25Z:
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922). Its
   close starts its hold. A hold that ended goes at the next named complete open of its
-  index, until #274 ends it at `Readers::deadline`. An open of the same key takes the old session
-  over, and `reader::Opened::replaced` names it. `home::reader` re-exports
+  index, until #274 ends it at `Readers::deadline`. An open of the same key takes the
+  old session over, and `reader::Opened::replaced` names it. `home::reader` re-exports
   `delivery::{Error, Position, named}`, so `hub` does not depend on `delivery`
   (`laptop.architect`, 2026-10-08T11:12:45Z:
   https://github.com/synnaxlabs/foundation/pull/1863#issuecomment-6058607367).

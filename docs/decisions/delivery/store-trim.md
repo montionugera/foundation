@@ -12,7 +12,8 @@
   trim freed, and those lost for no room, as the gap of its next frame,
   `hub::reader::Received::gap` (#2553, `laptop.architect`, 2026-10-15T18:12:25Z:
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922). Each
-  data record leaves three blocks free: for the restart record of the next open, the carry record of the commit after
+  data record leaves three blocks free: for the restart record of the next open, the
+  carry record of the commit after
   it, and the restart record of a later open. Each carry record leaves one block, for
   the restart record. A restart record leaves none, and an open writes over a restart
   record that no data or carry record follows. So an open of a full ring has its
