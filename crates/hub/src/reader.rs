@@ -975,7 +975,8 @@ impl Session {
                 Taken::Frame(frame) => break frame,
                 Taken::Disk(disk) => disk,
             };
-            let filled = match disk.read().await {
+            // Boxed, so that the future of each take stays small.
+            let filled = match Box::pin(disk.read()).await {
                 Ok(read) => {
                     let state = &mut *self.state.borrow_mut();
                     state
