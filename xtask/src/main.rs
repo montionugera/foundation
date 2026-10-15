@@ -770,7 +770,7 @@ mod tests {
         let problems = layers(&fixture().join("features")).unwrap_err();
         let rule = "A `sim` feature is test-only: only a dev-dependency, the fuzz \
                     crate, or another `sim` feature turns it on. A product feature \
-                    turns on `dep:sim` and `simulate` features. See rule 9 in \
+                    turns on `dep:sim` and `simulate` features. See rule 10 in \
                     docs/decisions/crate-map.md.";
         let mut found = vec![format!(
             "`own` turns on `sim` in its feature `default`. {rule}"

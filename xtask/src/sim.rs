@@ -1,5 +1,5 @@
 //! Keeps each `sim` feature test-only: only a dev-dependency, the fuzz crate, or
-//! another `sim` feature turns it on (rule 9 in `docs/decisions/crate-map.md`).
+//! another `sim` feature turns it on (rule 10 in `docs/decisions/crate-map.md`).
 
 use std::collections::BTreeMap;
 
@@ -9,7 +9,7 @@ use crate::field;
 
 const RULE: &str = "A `sim` feature is test-only: only a dev-dependency, the fuzz \
                     crate, or another `sim` feature turns it on. A product feature \
-                    turns on `dep:sim` and `simulate` features. See rule 9 in \
+                    turns on `dep:sim` and `simulate` features. See rule 10 in \
                     docs/decisions/crate-map.md.";
 
 /// The problems where a local crate of `graph`, the resolved `cargo metadata` of a
@@ -87,7 +87,7 @@ mod tests {
                     "`{name}` turns on `{value}` in its feature `{feature}`. A `sim` \
                      feature is test-only: only a dev-dependency, the fuzz crate, or \
                      another `sim` feature turns it on. A product feature turns on \
-                     `dep:sim` and `simulate` features. See rule 9 in \
+                     `dep:sim` and `simulate` features. See rule 10 in \
                      docs/decisions/crate-map.md."
                 )],
                 "`{name}`"
@@ -105,7 +105,7 @@ mod tests {
                      it to the dev-dependencies. A `sim` feature is test-only: only a \
                      dev-dependency, the fuzz crate, or another `sim` feature turns \
                      it on. A product feature turns on `dep:sim` and `simulate` \
-                     features. See rule 9 in docs/decisions/crate-map.md."
+                     features. See rule 10 in docs/decisions/crate-map.md."
                 )],
                 "`{name}`"
             );
