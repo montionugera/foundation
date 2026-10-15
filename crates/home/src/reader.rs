@@ -326,8 +326,8 @@ impl Set {
     }
 
     /// Makes `frame`, a live frame that found no room in the buffer, the newest frame
-    /// of the index at `place`, or no frame when the pool had no block for it. Only
-    /// latest readers get it.
+    /// of the index at `place`. When the pool had no block for it (`None`), the newest
+    /// frame stays. Only latest readers get it.
     ///
     /// # Panics
     ///

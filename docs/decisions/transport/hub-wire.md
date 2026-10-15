@@ -246,9 +246,10 @@
   (`laptop.architect`, 2026-10-15T20:18:28Z:
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6201432448).
   A latest session opens at the first seq of the newest frame of the index, or at the
-  live tail when there is none. The home reads that seq from the one range of the frame
-  that `delivery::Readers::newest` gives, and keeps no copy of it (`laptop.architect`,
-  2026-10-15T23:09:09Z:
+  live tail when there is none (`laptop.architect`, 2026-10-15T22:10:13Z:
+  https://github.com/synnaxlabs/foundation/pull/2765#issuecomment-6203316949). The home
+  reads that seq from the one range of the frame that `delivery::Readers::newest`
+  gives, and keeps no copy of it (`laptop.architect`, 2026-10-15T23:09:09Z:
   https://github.com/synnaxlabs/foundation/pull/2765#issuecomment-6204168857).
   `wire::hub::Reader` refuses a first head that starts before `live` with `Seq`, in each
   mode, as it refuses a head that starts before the end of the head before it. Lost: the
