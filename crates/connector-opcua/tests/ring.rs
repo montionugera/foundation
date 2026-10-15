@@ -16,10 +16,16 @@ use types::sample::Scalar;
 
 #[test]
 fn a_run_that_writes_past_the_ring_of_its_home_returns_ok() {
-    let (writes, status) = kind::writes(256, &[Scalar::F64], 8_000, 0, |work| {
-        work();
-        0
-    });
+    let (writes, status) = kind::writes(
+        256,
+        &[Scalar::F64],
+        8_000,
+        |_| 0,
+        |work| {
+            work();
+            0
+        },
+    );
     assert_eq!(writes.len(), 8_000, "each write of the run");
     // The full ring drops the status frames after this one, the end of the run too,
     // so the user sees the lost writes as they were then.

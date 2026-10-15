@@ -146,8 +146,8 @@ async fn read(
 }
 
 /// Writes `count` frames of the reads of `ctx` with no server, each value 1 in the
-/// sample type of its channel (`true` for `bool`) but the first `bad`, which are
-/// `BadNotFound` and left out, and each frame 1 ms of its clock
+/// sample type of its channel (`true` for `bool`) but the first `bad(i)` of write `i`
+/// (from 0), which are `BadNotFound` and left out, and each frame 1 ms of its clock
 /// after the last, and gives what `measure` gives for the check of the values and the
 /// write of each frame. `measure` calls the work that it gets once. For benchmarks.
 ///
@@ -163,22 +163,23 @@ async fn read(
 pub async fn writes(
     ctx: &Context<Config>,
     count: usize,
-    bad: usize,
+    bad: impl Fn(usize) -> usize,
     mut measure: impl FnMut(&mut dyn FnMut()) -> u64,
 ) -> Result<Vec<u64>, Error> {
     let mut frames = Frames::open(ctx).await?;
-    let types = frames.layout.types.iter().enumerate();
-    let values: Vec<_> = types
-        .map(|(at, &scalar)| {
-            if at < bad {
-                Err(Fault::Status(Status::BAD_NOT_FOUND))
-            } else {
-                Ok(Value::one(scalar))
-            }
-        })
-        .collect();
     let mut measures = Vec::with_capacity(count);
-    for _ in 0..count {
+    for write in 0..count {
+        let bad = bad(write);
+        let types = frames.layout.types.iter().enumerate();
+        let values: Vec<_> = types
+            .map(|(at, &scalar)| {
+                if at < bad {
+                    Err(Fault::Status(Status::BAD_NOT_FOUND))
+                } else {
+                    Ok(Value::one(scalar))
+                }
+            })
+            .collect();
         ctx.clock().sleep(Span::from_nanos(1_000_000)).await;
         let ((), stamp) = frames.request(future::ready(())).await;
         let mut written = Ok(());

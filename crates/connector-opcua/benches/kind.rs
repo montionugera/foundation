@@ -65,7 +65,7 @@ fn main() {
         let count = WARMUP + TICKS / WRITE_RUNS;
         let mut writes: Vec<_> = (0..WRITE_RUNS)
             .flat_map(|_| {
-                kind::writes(nodes, scalars, count, bad, time)
+                kind::writes(nodes, scalars, count, move |_| bad, time)
                     .0
                     .split_off(WARMUP)
             })

@@ -220,24 +220,33 @@ fn a_tick_of_the_kind_allocates_what_its_read_allocates() {
 }
 
 /// Writes 21 to 100 of a frame of the `opcua` kind allocate nothing, for channels of
-/// each width, and with one value or each value left out. The test home grows the `Vec`s of its groups in its first two commits,
-/// which the first 20 writes cover, as in the `kind` bench.
+/// each width, with one value or each value left out, and with values left out that
+/// start after write 20 and change in count. The test home grows the `Vec`s of its
+/// groups in its first two commits, which the first 20 writes cover, as in the `kind`
+/// bench.
 fn a_write_of_a_frame_of_any_type_allocates_nothing() {
-    let runs: [(&[Scalar], usize); 6] = [
-        (&[Scalar::Bool], 0),
-        (&[Scalar::I16], 0),
-        (&[Scalar::F32], 0),
-        (&[Scalar::F64], 0),
-        (&[Scalar::F64], 1),
-        (&[Scalar::F64], 64),
+    /// The count of Bad values of each write.
+    type Bad = fn(usize) -> usize;
+    let runs: [(&[Scalar], Bad, &str); 7] = [
+        (&[Scalar::Bool], |_| 0, "none"),
+        (&[Scalar::I16], |_| 0, "none"),
+        (&[Scalar::F32], |_| 0, "none"),
+        (&[Scalar::F64], |_| 0, "none"),
+        (&[Scalar::F64], |_| 1, "1"),
+        (&[Scalar::F64], |_| 64, "64"),
+        (
+            &[Scalar::F64],
+            |at| [0, 63, 1, 32][at.saturating_sub(16) / 8 % 4],
+            "late",
+        ),
     ];
-    for (scalars, bad) in runs {
+    for (scalars, bad, bads) in runs {
         let count = |work: &mut dyn FnMut()| ALLOCATOR.count(work).1;
         let writes = kind::writes(64, scalars, 100, bad, count).0;
         assert_eq!(
             writes[20..],
             [0; 80],
-            "writes 21 to 100 of {scalars:?}, {bad} Bad"
+            "writes 21 to 100 of {scalars:?}, Bad values: {bads}"
         );
     }
 }
