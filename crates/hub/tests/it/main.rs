@@ -37,7 +37,6 @@ mod net;
 
 #[path = "../common/agent.rs"]
 mod agent;
-mod client;
 mod definitions;
 mod link;
 mod named;

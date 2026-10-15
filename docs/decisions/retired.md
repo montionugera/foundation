@@ -66,6 +66,9 @@
 | HOME TYPE REFUSAL (#963): `open_writer` refuses a series of a type the home does not write | HOME EVERY TYPE |
 | FIRST SLICE order, for ONE NODE work only; the order "after FIRST SLICE" of 6050540089 | FIRST SLICE amendment (2026-10-08) |
 | STORE AND FORWARD "It runs beside FIRST SLICE", until the new sessions start | STORE AND FORWARD amendment (2026-10-13) |
+| STORE AND FORWARD amendment (2026-10-13), for items B1 to B4 and B7 of batch 2 of #1737: "no session starts new work on it before then", "the drafts #2565 and #2454 wait", and "Each issue that stays on this milestone waits, also protocol 4 of #1232" | STORE AND FORWARD amendment (2026-10-15) |
+| STORE AND FORWARD amendment (2026-10-13), for an issue that a batch of #1737 gives as STORE AND FORWARD work: "moves to the ONE NODE milestone" | STORE AND FORWARD amendment (2026-10-15) |
+| ONE NODE amendment (2026-10-13), for items B1 to B4 and B7 of batch 2 of #1737: "each session starts only ONE NODE work", "no session starts new STORE AND FORWARD work", and "the drafts #2565 and #2454 wait" | STORE AND FORWARD amendment (2026-10-15) |
 | HUB SESSIONS (#340, 6066821273): `reader::Error::Remote` gives a reader of an index at another node | HUB SESSIONS amendment (#340 PR 4d-b, 6069259471): the reader reads from that home over one hub stream |
 | `hub::Config::mesh` of 6067438821 | HUB SESSIONS amendment (#340 PR 4d-b, 6068108715): `hub::Config::region` |
 | `hub::Config::transport` of 6048960511 | HUB SESSIONS amendment (#340 PR 4d-b, 6068108715): `hub::Config::region` |
@@ -81,3 +84,6 @@
 | "InfluxDB 1 only" of ONE NODE section 4 (https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6135595217) | INFLUX KIND (the person, 2026-10-13T16:24:35Z, https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150321949; `laptop.architect-2`, https://github.com/synnaxlabs/foundation/pull/2610#issuecomment-6156082448) |
 | TEXT FIXES, for a Low finding in text: an item gives the exact new text (#2041, 6103180556), and an item that gives only facts and links or asks the author to find a fact is a finding | TEXT FIXES amendment (#2573, 6147048003) |
 | REVIEW ROUNDS (#2586, 6151416969): "When `laptop.director` wrote the PR, it is the person, through `laptop.monitor`" | REVIEW ROUNDS (#2600, 6155838835): `laptop.monitor` is the design approver in place of `laptop.director` |
+| Item 45 of #2041 (6111639867): "each round" of the old PR "counts for the new PR at its SHA, and the next round starts where the last round of the old PR ends" | REVIEW ROUNDS (#2586, 6150615724): the first round of a PR that replaces another reviews its whole diff |
+| REVIEW ROUNDS (#2586, 6151416969; #2600, 6154720280): the other architect is the design approver when the crate's architect, or `laptop.architect` for a contract between the two lists, "wrote the PR" | REVIEW ROUNDS amendment (#2455, 6197095582): when it wrote a commit of the PR |
+| C7 + D12 REJECTED, for the Python SDK: a data path hand-written in Python, and its guard (golden vectors in its CI and differential fuzzing) | SDK DATA PATH (the person, 2026-10-15T17:40Z, https://github.com/synnaxlabs/foundation/issues/2177#issuecomment-6198508264) |

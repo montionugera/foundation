@@ -1,7 +1,6 @@
 //! The `opcua` kind: reads OPC UA nodes at a fixed rate, and writes one frame per
 //! tick.
 
-use std::mem::{Discriminant, discriminant};
 use std::{fmt, future};
 
 use connector::kind::{self, Channels, Context, Error};
@@ -14,7 +13,7 @@ use hub::writer::Writer;
 use types::authority::Authority;
 use types::frame::{self, Draft, Form, Label, Path, key_set};
 use types::name::Name;
-use types::sample::{Scalar, Type};
+use types::sample::{self, Scalar, Type};
 #[cfg(feature = "sim")]
 use types::time::Span;
 use types::time::Stamp;
@@ -37,8 +36,8 @@ const LARGE_READ: Code = Code::new("opcua.large-read");
 /// the ticks that the timer skipped, and the samples that a frame lost.
 const COUNTS: [&str; 3] = ["in", "missed", "lost"];
 
-/// The `opcua` kind: reads the Value of OPC UA nodes at a fixed rate, one Read
-/// request of all of them per tick, and writes one frame per tick.
+/// The `opcua` kind: reads the Value of OPC UA nodes at a fixed rate, in Read requests
+/// that each fit one message of the server, and writes one frame per tick.
 #[derive(Debug, Default)]
 #[non_exhaustive]
 pub struct Kind;
@@ -77,15 +76,16 @@ impl kind::Kind for Kind {
 
     /// Connects to the server, and reads each node once per tick of the rate until
     /// the cancel. Each tick writes one frame, stamped at the midpoint of the read.
-    /// The connect is not raced with the cancel: it ends in the request timeout of the
-    /// client (5 s). Each end closes the session.
+    /// The connect is not raced with the cancel: with the close after a failed
+    /// connect, it ends within four request timeouts of the client (20 s). Each end
+    /// closes the session.
     ///
     /// # Errors
     ///
     /// The error of [`Context::writer`] and of each failed write. [`Error::Config`]
     /// with `opcua.sample-type` for each channel whose sample type is not `bool`, `i8`
-    /// to `u64`, `f32`, or `f64`, and with `opcua.large-read` when one Read of all
-    /// nodes is past one message of the server. [`Error::Device`] when the connect or a
+    /// to `u64`, `f32`, or `f64`, and with `opcua.large-read` when the Read of one node
+    /// alone is past one message of the server. [`Error::Device`] when the connect or a
     /// read fails, or a node gives a bad status or a value whose type is not the
     /// sample type of its channel: Boolean for `bool`, `SByte` to `UInt64` for `i8` to
     /// `u64`, Float for `f32`, and Double for `f64`.
@@ -126,7 +126,7 @@ async fn read(
     let nodes: Vec<Node> = reads.iter().map(|read| read.node.clone()).collect();
     let nodes = client
         .nodes(&nodes)
-        .map_err(|large| large_read(reads.len(), large))?;
+        .map_err(|large| large_read(reads, large))?;
     let missed = ctx.count("missed");
     let mut timer = pace::Timer::new(ctx.clock(), ctx.config().rate);
     while let Some(tick) = timer.tick(ctx.cancel()).await {
@@ -163,7 +163,7 @@ pub async fn writes(
 ) -> Result<Vec<u64>, Error> {
     let mut frames = Frames::open(ctx).await?;
     let types = frames.layout.types.iter();
-    let values: Vec<_> = types.map(|&(scalar, _)| Ok(Value::one(scalar))).collect();
+    let values: Vec<_> = types.map(|&scalar| Ok(Value::one(scalar))).collect();
     let mut measures = Vec::with_capacity(count);
     for _ in 0..count {
         ctx.clock().sleep(Span::from_nanos(1_000_000)).await;
@@ -193,9 +193,8 @@ struct Frames<'a> {
 
 /// The series of the frame of each tick, and what fills each.
 struct Layout {
-    /// The sample type of the channel of each read, in order, and its variant of
-    /// [`Value`].
-    types: Vec<(Scalar, Discriminant<Value>)>,
+    /// The sample type of the channel of each read, in order.
+    types: Vec<Scalar>,
     /// Each entry of the key set and the bytes of its series.
     series: Vec<(usize, usize)>,
     /// The sample of each entry of the key set.
@@ -229,13 +228,9 @@ impl<'a> Frames<'a> {
         let (mut types, mut wrong) = (Vec::with_capacity(reads.len()), Vec::new());
         for (read, &entry) in reads.iter().zip(writer.entries()) {
             let data_type = entries[entry].data_type;
-            let variant = match data_type {
-                Type::Scalar(scalar) => Value::variant(scalar).map(|v| (scalar, v)),
-                _ => None,
-            };
-            match variant {
-                Some(pair) => types.push(pair),
-                None => wrong.push(sample_type(read, data_type)),
+            match data_type {
+                Type::Scalar(scalar) if SCALARS.contains(&scalar) => types.push(scalar),
+                _ => wrong.push(sample_type(read, data_type)),
             }
         }
         if !wrong.is_empty() {
@@ -435,8 +430,8 @@ fn fill(
 ) {
     for (entry, bytes) in draft.iter_mut() {
         match fills[entry].read {
-            None => bytes.copy_from_slice(&stamp.nanos().to_le_bytes()),
-            Some(read) => values.get(read).put(bytes),
+            None => sample::Value::Stamp(stamp).write(bytes),
+            Some(read) => sample::Value::from(values.get(read)).write(bytes),
         }
     }
     for &group in groups {
@@ -461,16 +456,15 @@ enum Bad {
 
 impl<'a> Values<'a> {
     /// Gives `values`, or the position of the first bad one and why. `types` are the
-    /// sample types of the channels of the values, in order, each with its variant of
-    /// [`Value`].
+    /// sample types of the channels of the values, in order.
     fn new(
         values: &'a [Result<Value, Status>],
-        types: &[(Scalar, Discriminant<Value>)],
+        types: &[Scalar],
     ) -> Result<Self, (usize, Bad)> {
         let bad =
             (values.iter().zip(types).enumerate()).find_map(|(at, pair)| match pair {
-                (Ok(value), &(_, variant)) if discriminant(value) == variant => None,
-                (Ok(value), &(sample, _)) => Some((
+                (Ok(value), &sample) if value.scalar() == sample => None,
+                (Ok(value), &sample) => Some((
                     at,
                     Bad::Type {
                         value: value.scalar(),
@@ -520,16 +514,19 @@ fn sample_type(read: &Read, data_type: Type) -> Diagnostic {
     )
 }
 
-/// The error of a Read of `nodes` nodes past one message of the server.
-fn large_read(nodes: usize, Large { bytes, most }: Large) -> Error {
+/// The error of a read of `reads` whose node alone needs a Read past one message of the
+/// server.
+fn large_read(reads: &[Read], Large { node, bytes, most }: Large) -> Error {
+    let read = &reads[node];
     Error::Config(vec![Diagnostic::new(
         LARGE_READ,
         None,
         format!(
-            "a Read of {nodes} nodes needs {bytes} bytes, past the {most} bytes of one \
-             message of the server"
+            "a Read of the node `{}` of the channel `{}` needs {bytes} bytes, past the \
+             {most} bytes of one message of the server",
+            read.node, read.channel,
         ),
-        "Read fewer nodes in the connector, or split it into two connectors".into(),
+        "Raise the message size of the server".into(),
     )])
 }
 
