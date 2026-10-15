@@ -3830,35 +3830,24 @@ fn an_open_counts_the_entries_with_no_samples_that_a_trim_passed() {
             }
             let mut slots = Slots::new();
             let buffer = shard.open(ring, &mut slots).await.expect("opens");
+            let reader = buffer.reader();
             let a = slots.index(key(1));
             assert_eq!(buffer.durable(a, Path::Live), tail(3, Some(30)));
             let stored = || stored(3, 0, None, shard.block(0));
-            let read = buffer
-                .reader()
-                .read(a, Path::Live, mark(0, 0), usize::MAX)
-                .await;
+            let read = reader.read(a, Path::Live, mark(0, 0), usize::MAX).await;
             let expected = Read {
                 gap: Some(0..3),
                 entries: vec![stored(), stored()],
                 next: mark(3, 3),
             };
             assert_eq!(read, Ok(expected));
-            let read = buffer
-                .reader()
-                .read(a, Path::Live, mark(3, 2), usize::MAX)
-                .await;
+            let read = reader.read(a, Path::Live, mark(3, 2), usize::MAX).await;
             assert_eq!(read, Ok(whole(vec![stored()], mark(3, 3))));
-            let read = buffer
-                .reader()
-                .read(a, Path::Live, mark(3, 3), usize::MAX)
-                .await;
+            let read = reader.read(a, Path::Live, mark(3, 3), usize::MAX).await;
             assert_eq!(read, Ok(whole(vec![], mark(3, 3))));
             buffer.append([empty(3)]).expect("queues");
             buffer.committed().await.expect("commits");
-            let read = buffer
-                .reader()
-                .read(a, Path::Live, mark(3, 3), usize::MAX)
-                .await;
+            let read = reader.read(a, Path::Live, mark(3, 3), usize::MAX).await;
             assert_eq!(read, Ok(whole(vec![stored()], mark(3, 4))));
         });
     }
@@ -5897,6 +5886,7 @@ fn a_read_gives_the_entries_of_one_path_in_order() {
             .open(layout(AREA, BODY_MAX), &mut slots)
             .await
             .expect("opens");
+        let reader = buffer.reader();
         let a = slots.index(key(1));
         let b = slots.index(key(2));
         let live = |first, len, last, bytes| {
@@ -5927,8 +5917,7 @@ fn a_read_gives_the_entries_of_one_path_in_order() {
             buffer.append(batch).expect("queues");
             buffer.committed().await.expect("commits");
         }
-        let read = buffer
-            .reader()
+        let read = reader
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
@@ -5938,15 +5927,13 @@ fn a_read_gives_the_entries_of_one_path_in_order() {
             stored(4, 2, Some(60), shard.block(0)),
         ];
         assert_eq!(read, whole(expected, mark(6, 0)));
-        let read = buffer
-            .reader()
+        let read = reader
             .read(a, Path::Backfill, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
         let expected = vec![stored(0, 1, Some(1), shard.block(7))];
         assert_eq!(read, whole(expected, mark(1, 0)));
-        let read = buffer
-            .reader()
+        let read = reader
             .read(b, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
@@ -5955,8 +5942,7 @@ fn a_read_gives_the_entries_of_one_path_in_order() {
             stored(2, 2, Some(4), shard.block(21)),
         ];
         assert_eq!(read, whole(expected, mark(4, 0)));
-        let read = buffer
-            .reader()
+        let read = reader
             .read(b, Path::Backfill, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
