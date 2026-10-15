@@ -165,12 +165,13 @@ foundation status
 ```text
 CONNECTOR  KIND    STATE    ADDRESS                    COUNTS
 influx     influx  running  http://localhost:8086      confirmed=1517
-plc        opcua   running  opc.tcp://localhost:50000  in=1520 lost=0 missed=0
+plc        opcua   running  opc.tcp://localhost:50000  bad=0 in=1520 lost=0 missed=0 mistyped=0 uncertain=0
 ```
 
 `in` counts the samples that the connector read from the server and the node stored.
 `confirmed` counts the samples that InfluxDB confirmed. Run `status` again, and both
-grow.
+grow. `bad`, `uncertain`, and `mistyped` count the values that the connector left out:
+a value that is not Good, or one of another type than its channel.
 
 See the samples in InfluxDB:
 
