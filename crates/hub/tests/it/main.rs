@@ -2239,6 +2239,45 @@ fn ends_a_complete_reader_whose_read_from_disk_finds_no_block_with_the_pool_erro
     });
 }
 
+/// A read from disk that gets its entry but finds no block for the frame of the
+/// entry ends the complete reader with the pool's error, on each later call too.
+#[test]
+fn ends_a_complete_reader_whose_frame_from_disk_finds_no_block_with_the_pool_error() {
+    run(64, |test| async move {
+        // The bytes of one entry. The frame of the entry needs 8080 more.
+        const ENTRY: usize = 8088;
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value"]).await;
+        write_past_the_window(&test, &mut writer).await;
+        let flag = Arc::new(Flag::default());
+        let waker = Waker::from(Arc::clone(&flag));
+        let mut next = Box::pin(reader.next());
+        loop {
+            flag.0.store(false, Ordering::Relaxed);
+            match next.as_mut().poll(&mut Context::from_waker(&waker)) {
+                Poll::Ready(received) => {
+                    received.expect("a frame");
+                    drop(next);
+                    next = Box::pin(reader.next());
+                }
+                Poll::Pending if flag.0.load(Ordering::Relaxed) => {}
+                // No wake yet: the read from disk holds its table and waits on it.
+                Poll::Pending => break,
+            }
+        }
+        let room = test.pool.alloc(ENTRY).expect("a block");
+        let blocks = fill(&test.pool);
+        drop(room);
+        let exhausted = Ended::Pool(block::Error::Exhausted {
+            requested: 8080,
+            available: 0,
+        });
+        assert_eq!(next.await.err().as_ref(), Some(&exhausted));
+        drop(blocks);
+        assert_eq!(reader.next().await.err(), Some(exhausted));
+    });
+}
+
 impl Wake for Flag {
     fn wake(self: Arc<Self>) {
         self.0.store(true, Ordering::Relaxed);
