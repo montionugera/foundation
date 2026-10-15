@@ -896,9 +896,10 @@ fn a_start_with_a_name_file_and_no_node_key_on_a_stored_founding_stops() {
 }
 
 /// A start with a name on a data directory with only an empty directory `mesh` stops
-/// with each region before it writes a file.
+/// with each region after the claim of the data directory, before it writes another
+/// file.
 #[test]
-fn a_start_on_a_mesh_directory_with_no_node_key_writes_nothing() {
+fn a_start_on_a_mesh_directory_with_no_node_key_writes_only_the_claim() {
     for region in [Region::Stored, Region::Absent] {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = host(&mut sim, 2);
@@ -913,15 +914,30 @@ fn a_start_on_a_mesh_directory_with_no_node_key_writes_nothing() {
         .expect("the run ends");
         let found = start_as(&mut sim, &host, region.clone(), "edge");
         assert_eq!(found, Err(Error::NoCard), "{region:?}");
-        assert_eq!(kept(&mut sim, &host), None, "{region:?}");
-        assert_eq!(bytes(&mut sim, &host, identity::FILE), None, "{region:?}");
+        let mut files = listed(&mut sim, &host, "");
+        files.sort();
+        let claim = ["lock", "mesh", "shards-2"].map(PathBuf::from);
+        assert_eq!(files, claim, "{region:?}");
     }
+}
+
+/// A start with a file `name`, the directory `mesh`, and a file `node.key` that a node
+/// did not write gives [`Error::Key`], not [`Error::NoCard`]: the file is there.
+#[test]
+fn a_node_key_that_is_not_a_key_on_a_mesh_directory_gives_key() {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = keyed(&mut sim, 2);
+    assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
+    remove(&mut sim, &host, identity::FILE);
+    write(&mut sim, &host, identity::FILE, vec![0; identity::LEN]);
+    let found = start_as(&mut sim, &host, Region::Stored, "edge");
+    assert_eq!(found, Err(Error::Key));
 }
 
 /// A start with a file `name` and no file `node.key` or `budget`, on a data directory
 /// that stores a founding, stops with each region before it writes `budget`.
 #[test]
-fn a_start_with_no_node_key_and_no_budget_on_a_stored_founding_writes_nothing() {
+fn a_start_with_no_node_key_and_no_budget_on_a_stored_founding_writes_no_budget() {
     for region in [Region::Stored, Region::Absent] {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = keyed(&mut sim, 2);

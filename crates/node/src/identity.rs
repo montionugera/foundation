@@ -46,15 +46,18 @@ pub(crate) async fn key(files: &Files) -> Result<Option<types::node::Key>, Error
 
 /// [`Error::NoCard`] when the file is not there and the data directory has the
 /// directory of a mesh: a first start makes the file durable before the mesh makes
-/// that directory, so the key is lost. Call it under the lock of the data directory,
-/// before the start writes a file.
+/// that directory, so the key is lost. A file that a node did not write is there, and
+/// its readers give [`Error::Key`]. Call it under the lock of the data directory,
+/// before the start writes anything other than `lock` and `shards-<n>`.
 ///
 /// # Errors
 ///
-/// [`Error::NoCard`] as above, [`Error::Key`] for a file that [`load`] did not write,
-/// and [`Error::Directory`] for a file call that fails.
+/// [`Error::NoCard`] as above, and [`Error::Directory`] for a file call that fails.
 pub(crate) async fn claim(files: &Files) -> Result<(), Error> {
-    if read(files).await?.is_none() && directory::meshed(files).await? {
+    let held = sector::read::<LEN>(files, Path::new(FILE), TAG).await;
+    if matches!(held.map_err(Error::Directory)?, Held::Nothing)
+        && directory::meshed(files).await?
+    {
         return Err(Error::NoCard);
     }
     Ok(())

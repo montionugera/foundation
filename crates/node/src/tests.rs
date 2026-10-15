@@ -3286,10 +3286,10 @@ mod port {
         assert_eq!(fate(&probe), Fate::Ran);
     }
 
-    /// With a file `name`, a `node.key` that a node did not write stops the start in
-    /// the claim, before the bind: a held port gives [`Error::Key`].
+    /// With a file `name`, a held port gives [`Error::Port`] before the load reads a
+    /// `node.key` that a node did not write.
     #[test]
-    fn a_node_key_that_is_not_a_key_wins_over_a_port_that_does_not_bind() {
+    fn a_port_that_does_not_bind_wins_over_a_node_key_that_is_not_a_key() {
         let mut sim = sim::Sim::new(sim::Config::default());
         let host = host(&mut sim, 2);
         let listen = listen(&host);
@@ -3305,7 +3305,7 @@ mod port {
         write_key(&mut sim, &host, vec![0; identity::LEN]);
         let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
         assert_eq!(sim.run(), Ok(()));
-        assert_eq!(node.join(), Err(Error::Key));
+        assert!(matches!(node.join(), Err(Error::Port { .. })));
         drop(held);
     }
 
@@ -7277,9 +7277,10 @@ mod name {
     fn the_text_of_no_card_states_the_two_ways_out() {
         assert_eq!(
             Error::NoCard.to_string(),
-            "the data directory stores a region, and the file `node.key` is not there \
-             or holds a key that the founding of the region does not hold; restore \
-             `node.key` from a backup of this node, or give another data directory"
+            "the data directory has the directory of a mesh, and the file `node.key` \
+             is not there or holds a key that the founding of its region does not \
+             hold; restore `node.key` from a backup of this node, or give another \
+             data directory"
         );
     }
 

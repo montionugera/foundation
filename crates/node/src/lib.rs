@@ -431,13 +431,14 @@ impl Node {
     /// [`Error::Start`] for a shard that could not start or pin, or [`Error::Memory`]
     /// for a shard with no memory, else [`Error::Shards`] or [`Error::Directory`] for a
     /// data directory that shard 0 could not claim, else [`Error::NoCard`] for a data
-    /// directory with the directory of a mesh and no file `node.key`, else
-    /// [`Error::Name`], [`Error::Renamed`], [`Error::NoCard`], [`Error::Mesh`],
-    /// [`Error::Key`], or [`Error::Directory`] for a stored name that it could not read
-    /// or a name it could not keep, else [`Error::Port`] for a port that did not bind,
-    /// else [`Error::Buffer`] for the first shard by core whose buffer, or the home over
-    /// it, did not open, [`Error::Budget`] or [`Error::Directory`] for a file `budget`
-    /// that shard 0 could not read or write, [`Error::Key`], [`Error::Admin`], or
+    /// directory with the directory of a mesh and no file `node.key`, or
+    /// [`Error::Directory`] for a check of them that fails, else [`Error::Name`],
+    /// [`Error::Renamed`], [`Error::NoCard`], [`Error::Mesh`], [`Error::Key`], or
+    /// [`Error::Directory`] for a stored name that it could not read or a name it could
+    /// not keep, else [`Error::Port`] for a port that did not bind, else
+    /// [`Error::Buffer`] for the first shard by core whose buffer, or the home over it,
+    /// did not open, [`Error::Budget`] or [`Error::Directory`] for a file `budget` that
+    /// shard 0 could not read or write, [`Error::Key`], [`Error::Admin`], or
     /// [`Error::Directory`] for a key file that shard 0 could not read or write,
     /// [`Error::Transport`] for a value of [`Config::settings`] that the transport
     /// refuses, [`Error::Blob`] for a chunk store or [`Error::Mesh`] for a stored
@@ -1435,9 +1436,9 @@ pub enum Error {
     /// The data directory holds no node name and stores no founding, and the start gave
     /// no name.
     Unnamed,
-    /// The data directory stores a region, and the file `node.key` is not there, or,
-    /// with no file `name`, it holds a key with no card in the founding of the region.
-    /// A start that gives it wrote nothing: no file `name`, and no new `node.key`,
+    /// The data directory has the directory of a mesh, and the file `node.key` is not
+    /// there, or, with no file `name`, it holds a key with no card in the founding of
+    /// its region. A start that gives it wrote no file `name` and no new `node.key`,
     /// because a new key is a new node to its region.
     NoCard,
     /// The start gave `name`, which has a segment that starts with `@`. A region
@@ -1564,10 +1565,10 @@ impl fmt::Display for Error {
                 "the data directory holds no node name; give the node a name",
             ),
             Self::NoCard => f.write_str(
-                "the data directory stores a region, and the file `node.key` is not \
-                 there or holds a key that the founding of the region does not hold; \
-                 restore `node.key` from a backup of this node, or give another data \
-                 directory",
+                "the data directory has the directory of a mesh, and the file \
+                 `node.key` is not there or holds a key that the founding of its \
+                 region does not hold; restore `node.key` from a backup of this node, \
+                 or give another data directory",
             ),
             Self::Reserved { name } => write!(
                 f,
