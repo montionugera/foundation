@@ -14,7 +14,8 @@
   limit; a failed read of it fails the connect). It refuses only a node whose Read
   alone does not fit. A read sends each request, at most 16 (`READS`) in flight, and
   gives the values in node order. The first failed answer ends the read with its
-  status, and each later answer of that read is dropped by its request number. A lost
+  status. The next read clears the requests of the last, so each late answer of a read
+  that ended is dropped by its request number. A lost
   session ends the run, so a session is a run, and the check is the first step of each
   run. Its error is a config error (`kind::Error::Config`, #435 PR 4): the
   connector stops until the next change of its spec. A read of N nodes allocates a fixed
