@@ -61,7 +61,7 @@ impl Server {
     /// If the port is taken, or if open62541 refuses the server, a Double, a run of its
     /// loop, or a step of its close. A panic of its start, a run of its loop, or its
     /// close leaks the manager and the server that it made by then, and a panic of the
-    /// close replaces a panic of `body`.
+    /// close replaces a panic of a Double or of `body`.
     ///
     /// # Aborts
     ///
