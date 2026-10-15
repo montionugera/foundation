@@ -657,13 +657,14 @@ impl Shard {
         slot: Slot,
         limit_bytes: u64,
         charge: reader::complete::Charge,
-    ) -> reader::complete::Opened {
+    ) -> reader::Opened<reader::complete::Key> {
         let place = self.place(slot);
         let live = self.indexes[place].live_tail();
         let session = self.readers.open_complete(place, live, limit_bytes, charge);
-        reader::complete::Opened {
+        reader::Opened {
             key: reader::complete::Key { slot, session },
             live,
+            replaced: None,
         }
     }
 
@@ -690,7 +691,7 @@ impl Shard {
         hold: Span,
         limit_bytes: u64,
         charge: reader::complete::Charge,
-    ) -> Result<reader::Opened<reader::complete::Opened>, reader::Unsynced> {
+    ) -> Result<reader::Opened<reader::complete::Key>, reader::Unsynced> {
         let place = self.place(slot);
         let (_, now) = self.clocks().ok_or(reader::Unsynced)?;
         let live = self.indexes[place].live_tail();
@@ -704,13 +705,11 @@ impl Shard {
             now,
         );
         Ok(reader::Opened {
-            key: reader::complete::Opened {
-                key: reader::complete::Key {
-                    slot,
-                    session: opened.key,
-                },
-                live: opened.position.live,
+            key: reader::complete::Key {
+                slot,
+                session: opened.key,
             },
+            live: opened.position.live,
             replaced: opened.replaced.map(|session| reader::Key { slot, session }),
         })
     }
@@ -753,6 +752,7 @@ impl Shard {
                 slot,
                 session: opened.key.into(),
             },
+            live: self.indexes[place].live_tail(),
             replaced: opened.replaced.map(|session| reader::Key { slot, session }),
         })
     }
@@ -5175,10 +5175,6 @@ mod tests {
                         CREDIT,
                         Charge::Whole,
                     )
-                    .map(|opened| Opened {
-                        key: opened.key.key,
-                        replaced: opened.replaced,
-                    })
                     .expect("synced")
             }
 
@@ -5385,7 +5381,7 @@ mod tests {
                             CREDIT,
                             Charge::Whole,
                         );
-                        opened.expect("synced").key
+                        opened.expect("synced")
                     };
                     let held = open(&mut shard);
                     assert_eq!(held.live, 1);

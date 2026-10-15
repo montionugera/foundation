@@ -233,7 +233,7 @@ fn gives_a_held_named_reader_the_frame_after_a_run_lost_while_held_with_its_gap(
 #[test]
 fn gives_a_held_named_reader_the_gap_of_a_run_lost_while_another_is_open() {
     run(23, |test| async move {
-        let mut keep = test.reader(&["value"], Mode::Complete).await;
+        let keep = test.reader(&["value"], Mode::Complete).await;
         let open = named("a", "r", Mode::Complete, Span::SECOND);
         let first = test.hub.reader(open).await.expect("opens");
         let mut writer = test.writer("w", &["value"]).await;

@@ -3559,11 +3559,7 @@ pub(super) mod tests {
 
             fn queue(&mut self, n: u64, seq: Range<u64>) {
                 let held = !self.open.is_empty();
-                self.queued.push(Queued {
-                    n,
-                    seq,
-                    held,
-                });
+                self.queued.push(Queued { n, seq, held });
             }
 
             /// Whether memory holds a frame with samples that no release gave yet.
@@ -3610,8 +3606,7 @@ pub(super) mod tests {
                     .map(|(&key, _)| key)
                     .collect();
                 let releases = self.queued.iter().any(|queued| {
-                    queued.held && !queued.seq.is_empty()
-                        && queued.seq.end <= durable
+                    queued.held && !queued.seq.is_empty() && queued.seq.end <= durable
                 });
                 for got in self.open.values_mut() {
                     got.missed = releases && !got.owed.is_empty();

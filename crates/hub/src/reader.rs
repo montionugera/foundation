@@ -412,7 +412,7 @@ impl Local {
                 (session, Some((complete, live)))
             }
             (Mode::Complete, Some(named)) => {
-                let opened = {
+                let (key, live) = {
                     let mut state = state.borrow_mut();
                     let opened = state.home.open_named_complete(
                         channels.index,
@@ -421,11 +421,11 @@ impl Local {
                         WINDOW,
                         charge,
                     )?;
-                    state.take_over(opened)
+                    let live = opened.live;
+                    (state.take_over(opened), live)
                 };
-                let (session, complete) =
-                    Session::with_complete(state, opened.key, channels);
-                (session, Some((complete, opened.live)))
+                let (session, complete) = Session::with_complete(state, key, channels);
+                (session, Some((complete, live)))
             }
             (Mode::Latest, None) => (Session::latest(state, channels), None),
             (Mode::Latest, Some(named)) => {

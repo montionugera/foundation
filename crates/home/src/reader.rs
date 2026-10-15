@@ -45,6 +45,10 @@ impl std::error::Error for Unsynced {}
 pub struct Opened<K> {
     /// The new reader.
     pub key: K,
+    /// The first live seq of the index that the session can get: its open position.
+    /// A latest session opens at the live tail, and also gets the newest frame below
+    /// it.
+    pub live: u64,
     /// The reader's session that was open before, in either mode. It is closed: a
     /// take gives `Empty`.
     pub replaced: Option<Key>,
@@ -72,16 +76,6 @@ pub mod complete {
                 session: key.session.into(),
             }
         }
-    }
-
-    /// A complete reader that opened, and where it starts.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct Opened {
-        /// The new reader.
-        pub key: Key,
-        /// The seq of the first live sample that the reader can get: its held
-        /// position, or the live tail at the open.
-        pub live: u64,
     }
 }
 
