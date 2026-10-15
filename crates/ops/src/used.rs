@@ -22,6 +22,11 @@ pub(crate) async fn spec(mesh: &mesh::Mesh) -> Result<Spec, Error> {
 }
 
 impl Spec {
+    /// The definitions of the spec, by tree key, also when the node is behind.
+    pub(crate) fn definitions(&self) -> &BTreeMap<Name, Definition> {
+        &self.0.definitions
+    }
+
     /// The pointer and the definitions, by tree key, of the spec.
     ///
     /// # Errors

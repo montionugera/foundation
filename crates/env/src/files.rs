@@ -1,4 +1,4 @@
-//! Files under one data directory.
+//! Files under one data directory, and files on the host opened to read.
 
 use std::cell::Cell;
 use std::ffi::OsStr;
@@ -21,11 +21,16 @@ pub type Request<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + 'a>>;
 pub const SECTOR: usize = 512;
 
 /// The files under one data directory. Paths are relative to it: a call panics on an
-/// absolute path or a `..` segment. The handle cannot leave the thread that made it,
-/// so each shard has its own. Clones use the same directory and driver, and each rule
-/// on the calls of this `Files` holds for its clones too.
+/// absolute path or a `..` segment, other than [`Files::open_absolute`], which takes an
+/// [`Absolute`] path. The handle cannot leave the thread that made it, so each shard
+/// has its own. Clones use the same directory and driver, and each rule on the calls of
+/// this `Files` holds for its clones too.
 ///
-/// A call whose future drops can still run, and then it ends as it would have.
+/// A call whose future drops can still run, and then it ends as it would have. Where a
+/// call first waits for the calls that a dropped future or handle left to run, the wait
+/// is for a future or handle that dropped before the call started. A drop after that
+/// can add the wait or not. Await a call, or drop its future, before you start a call
+/// that must see its result.
 ///
 /// ```
 /// use std::path::Path;
@@ -114,6 +119,33 @@ impl Files {
             descriptor,
             path: path.to_path_buf(),
             mode,
+            poisoned: Cell::new(false),
+        })
+    }
+
+    /// Opens the file at `path`, outside the data directory, to read. A config names
+    /// such a file, such as a secret that the platform mounts.
+    ///
+    /// # Errors
+    ///
+    /// As [`Files::open`], and [`Error::Io`] with code 22 (`EINVAL`) for a file that is
+    /// neither a regular file nor a directory, such as a FIFO or a device. The open
+    /// does not wait for a writer of a FIFO.
+    ///
+    /// ```
+    /// use env::files::Absolute;
+    ///
+    /// async fn token(files: &env::files::Files) -> Option<env::files::File> {
+    ///     let path = Absolute::new("/run/secrets/token")?;
+    ///     files.open_absolute(&path).await.ok()
+    /// }
+    /// ```
+    pub async fn open_absolute(&self, path: &Absolute) -> Result<File, Error> {
+        let descriptor = self.0.open_absolute(path.as_path()).await?;
+        Ok(File {
+            descriptor,
+            path: path.0.clone(),
+            mode: Mode::Read,
             poisoned: Cell::new(false),
         })
     }
@@ -243,6 +275,24 @@ impl Files {
     /// ```
     pub async fn free(&self) -> Result<u64, Error> {
         self.0.free().await
+    }
+
+    /// The path that a person sees for `path`, for a text that tells a person where a
+    /// file is. On `os`, the absolute path under the data directory.
+    ///
+    /// # Panics
+    ///
+    /// When `path` is absolute or has a `..` segment.
+    ///
+    /// ```
+    /// fn tell(files: &env::files::Files) -> String {
+    ///     format!("write it to {}", files.shown("key".as_ref()).display())
+    /// }
+    /// ```
+    #[must_use]
+    pub fn shown(&self, path: &Path) -> PathBuf {
+        check(path);
+        self.0.shown(path)
     }
 }
 
@@ -619,7 +669,38 @@ fn check(path: &Path) {
     }
 }
 
-/// Why a file call failed. Paths are relative to the data directory.
+/// A path that starts with `/`, has no NUL, and has no `..` segment between `/` or
+/// `\`, by the same text rule on every host: the path that [`Files::open_absolute`]
+/// takes.
+///
+/// ```
+/// use env::files::Absolute;
+///
+/// assert!(Absolute::new("/run/secrets/token").is_some());
+/// assert!(Absolute::new("/run/../etc/shadow").is_none());
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Absolute(PathBuf);
+
+impl Absolute {
+    /// `text` as an absolute path, or `None` when it breaks the rule.
+    #[must_use]
+    pub fn new(text: &str) -> Option<Self> {
+        let allowed = text.starts_with('/')
+            && !text.contains('\0')
+            && !text.split(['/', '\\']).any(|segment| segment == "..");
+        allowed.then(|| Self(text.into()))
+    }
+
+    /// The path.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// Why a file call failed. Paths are relative to the data directory, other than those
+/// of [`Files::open_absolute`] and of the file it opens, which are absolute.
 ///
 /// ```
 /// use std::path::PathBuf;
@@ -770,14 +851,17 @@ impl fmt::Display for Operation {
 
 /// What `os` and `sim` implement to run [`Files`]. Only they implement it.
 ///
-/// Paths reach it checked and relative to the data directory. It opens, creates, and
-/// removes files with the rules of the [`Files`] calls; [`Files`] sorts and checks what
-/// it returns. A write open, a remove, and a rename to a path first wait for each call
-/// on the path that a dropped future or descriptor of the driver left to run, and for
-/// each remove of the path through a descriptor of the driver that has not ended. A
-/// list of a directory first waits for each call on a path directly in it that a
-/// dropped future or descriptor of the driver left to run. A `free` first waits for
-/// each call that a dropped future or descriptor of the driver left to run.
+/// Paths reach it checked: relative to the data directory, or absolute for
+/// `open_absolute`. It opens, creates, and removes files with the rules of the
+/// [`Files`] calls; [`Files`] sorts and checks what it returns. A write open, a remove,
+/// and a rename to a path first wait for each call on the path that a dropped future or
+/// descriptor of the driver left to run, and for each remove of the path through a
+/// descriptor of the driver that has not ended. A list of a directory first waits for
+/// each call on a path directly in it that a dropped future or descriptor of the driver
+/// left to run. A `free` first waits for each call that a dropped future or descriptor
+/// of the driver left to run. Each wait for the calls that a dropped future or
+/// descriptor left to run is for a future or descriptor that dropped before the call
+/// that waits started.
 ///
 /// ```
 /// fn wrap(driver: impl env::files::Driver + 'static) -> env::files::Files {
@@ -801,6 +885,12 @@ pub trait Driver {
         mode: Mode,
     ) -> Request<'a, Box<dyn Descriptor>>;
 
+    /// Opens the file at `path`, an absolute path outside the data directory, to read
+    /// only, with no wait for a writer of a FIFO. It makes no file, and gives
+    /// [`Error::Io`] with code 22 (`EINVAL`) for a file that is neither a regular file
+    /// nor a directory.
+    fn open_absolute<'a>(&'a self, path: &'a Path) -> Request<'a, Box<dyn Descriptor>>;
+
     /// The bare names of the files and directories directly in `dir`, in any order.
     fn list<'a>(&'a self, dir: &'a Path) -> Request<'a, Vec<PathBuf>>;
 
@@ -815,6 +905,10 @@ pub trait Driver {
 
     /// The bytes free on the disk of the data directory.
     fn free(&self) -> Request<'_, u64>;
+
+    /// The path that a person sees for `path`, such as the absolute path on the real
+    /// disk. It only joins paths and does not ask the disk.
+    fn shown(&self, path: &Path) -> PathBuf;
 }
 
 /// One open file as a driver holds it, run through a [`File`]. Only `os` and `sim`
@@ -929,6 +1023,13 @@ mod tests {
             Box::pin(async { Ok(descriptor) })
         }
 
+        fn open_absolute<'a>(
+            &'a self,
+            path: &'a Path,
+        ) -> Request<'a, Box<dyn Descriptor>> {
+            self.open(path, Mode::Read)
+        }
+
         fn list<'a>(&'a self, dir: &'a Path) -> Request<'a, Vec<PathBuf>> {
             self.record(format!("list {}", dir.display()));
             Box::pin(async { Ok(self.names.clone()) })
@@ -968,6 +1069,10 @@ mod tests {
 
         fn free(&self) -> Request<'_, u64> {
             Box::pin(async { Ok(7) })
+        }
+
+        fn shown(&self, path: &Path) -> PathBuf {
+            path.into()
         }
     }
 
@@ -1152,6 +1257,87 @@ mod tests {
         }
 
         #[test]
+        fn open_absolute_opens_to_read() {
+            let (files, calls) = Fixed::files(3);
+            let file = ready(files.open_absolute(&token()));
+            assert_eq!(file.map(|file| file.len()), Ok(3));
+            assert_eq!(*calls.borrow(), ["open /run/secrets/token Read"]);
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "write to /run/secrets/token, which was opened to read"
+        )]
+        fn open_absolute_gives_a_file_that_panics_on_a_write() {
+            let (files, _) = Fixed::files(3);
+            let file = ready(files.open_absolute(&token()));
+            drop(ready(file.unwrap().write_at(0, &[])));
+        }
+
+        #[test]
+        #[should_panic(
+            expected = "remove /run/secrets/token, which was opened to read"
+        )]
+        fn open_absolute_gives_a_file_that_panics_on_a_remove() {
+            let (files, _) = Fixed::files(3);
+            let file = ready(files.open_absolute(&token()));
+            drop(ready(file.unwrap().remove()));
+        }
+
+        fn token() -> Absolute {
+            Absolute::new("/run/secrets/token").unwrap()
+        }
+
+        #[test]
+        fn absolute_takes_a_path_from_the_root_with_no_parent_segment() {
+            for text in ["/run/secrets/x", "/a/..b", "/"] {
+                let path = Absolute::new(text).unwrap();
+                assert_eq!(path.as_path(), Path::new(text));
+            }
+        }
+
+        #[test]
+        fn absolute_refuses_a_relative_path_or_one_with_a_parent_segment_or_nul() {
+            for text in [
+                "",
+                "token",
+                "./token",
+                "secrets/token",
+                "/run/../etc/shadow",
+                "/a/..",
+                "C:\\x",
+                "x",
+                "/a\\..\\b",
+                "\\a\\b",
+                "/run/a\0b",
+            ] {
+                assert_eq!(Absolute::new(text), None, "{text:?}");
+            }
+        }
+
+        #[cfg(unix)]
+        proptest::proptest! {
+            // Miri has no file access for the failure files.
+            #![proptest_config(proptest::test_runner::Config {
+                cases: if cfg!(miri) { 16 } else { 256 },
+                failure_persistence: None,
+                ..proptest::test_runner::Config::default()
+            })]
+
+            #[test]
+            fn absolute_is_a_path_from_the_root_with_no_parent_segment(
+                text in "[/\\\\.a\0]{0,12}",
+            ) {
+                if let Some(path) = Absolute::new(&text) {
+                    let path = path.as_path();
+                    proptest::prop_assert!(path.is_absolute());
+                    let parent = path.components().any(|part| part == Component::ParentDir);
+                    proptest::prop_assert!(!parent);
+                }
+            }
+        }
+
+        #[test]
         #[should_panic(expected = "path /segments is absolute")]
         fn list_panics_on_an_absolute_path() {
             let (files, _) = Fixed::files(0);
@@ -1170,6 +1356,13 @@ mod tests {
         fn create_dir_panics_on_a_parent_segment() {
             let (files, _) = Fixed::files(0);
             drop(ready(files.create_dir(Path::new("segments/.."))));
+        }
+
+        #[test]
+        #[should_panic(expected = "path /etc/key is absolute")]
+        fn shown_panics_on_an_absolute_path() {
+            let (files, _) = Fixed::files(0);
+            drop(files.shown(Path::new("/etc/key")));
         }
 
         #[test]
@@ -1341,6 +1534,18 @@ mod tests {
         fn gives_the_bytes_that_the_driver_finds() {
             let (files, _) = Fixed::files(0);
             assert_eq!(ready(files.free()), Ok(7));
+        }
+    }
+
+    mod shown {
+        use super::*;
+
+        #[test]
+        fn gives_the_path_that_the_driver_shows() {
+            let (files, calls) = Fixed::files(0);
+            let shown = files.shown(Path::new("secrets/a.b"));
+            assert_eq!(shown, Path::new("secrets/a.b"));
+            assert!(calls.borrow().is_empty());
         }
     }
 

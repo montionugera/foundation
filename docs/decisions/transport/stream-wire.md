@@ -12,10 +12,36 @@
   a higher class has bytes to send, so a steady higher class starves the lower ones. It
   orders only the bytes that QUIC holds. All classes share one QUIC send window, so a
   message can wait for bytes of a lower class to be acknowledged (#797). The QUIC send
-  window, not the send budget, bounds what QUIC holds. A message that QUIC does not take
-  in full waits its turn, by class, then oldest first. Only the first sender in turn
-  writes, and only it wakes when QUIC has room. A write of a class ahead of every
-  waiter goes first; any other write waits, and a `try_send` gives the message back.
+  window, not the send budget, bounds what QUIC holds: each byte that it took, until
+  the peer acknowledges that byte and each byte before it on its stream. QUIC holds no
+  byte of a stream after its reset. While a gap in the acknowledgments keeps the window
+  full, QUIC takes no byte of the session, of a `Command` too, until the peer
+  acknowledges the gap (#797). Lost: to free each acknowledged run that is not at the
+  front of its stream, whose bound is the blocks with a byte that is not acknowledged,
+  about 54 MiB for a window of 1 MiB, and to count the held bytes under a second limit
+  beside the window, which is this rule with a larger window and one more limit
+  (`laptop.architect-2`, 2026-10-11T17:39:39Z,
+  https://github.com/synnaxlabs/foundation/issues/2361#issuecomment-6111809297). On a
+  path that reorders packets, a small window costs speed. Measured on box2 in sim time
+  (16 MiB as 256 messages of 64 KiB, 12.5 MB/s, 10 ms each way, 1 ms of jitter on both
+  links, the mean of 8 runs): a window of 256 KiB, 1 MiB, 1.5 MiB, and 2 MiB sends in
+  4340 ms, 2536 ms, 2308 ms, and 2151 ms, and holds at most 5, 17, 25, and 33 blocks of
+  64 KiB. The count before this rule sends in 2203 ms and 2094 ms at 256 KiB and 1 MiB,
+  and holds up to 29 and 136 blocks: it got its speed from bytes that it did not count.
+  With 100 µs of jitter the two differ by under 1% (`laptop.architect-2`,
+  2026-10-11T20:30:16Z,
+  https://github.com/synnaxlabs/foundation/issues/2361#issuecomment-6113419278). The
+  same value is the receive window, half of the stream credit, and the send budget that
+  the peer gets, so a larger window for such a path also raises what the node takes in.
+  Lost: a send window apart from the receive window. The size comes from the path, which
+  the two directions share, a lost packet holds the bytes after it at the receiver too,
+  and each caller gives one constant. Look again when the window is a setting of a node
+  (`laptop.architect-2`, 2026-10-11T21:18:40Z,
+  https://github.com/synnaxlabs/foundation/pull/2439#issuecomment-6113874516). A message
+  that QUIC does not take in full waits its turn, by class, then oldest first. Only the
+  first sender in turn writes, and only it wakes when QUIC has room. A write of a class
+  ahead of every waiter goes first; any other write waits, and a `try_send` gives the
+  message back.
   Stream credit is twice the connection window, so a stream never waits on its own
   credit while the connection has room. This relies on reader-granted credits (B3): a
   node takes every byte it granted credit for. A peer that gives less stalls only its
@@ -48,12 +74,15 @@
   https://github.com/synnaxlabs/foundation/pull/1998#issuecomment-6074392062. Room that
   a stream got and its caller has not taken counts for neither class, and a message that
   `try_send` gave back is not held. The caller of `send` writes the rest of its message;
-  the stream writes the rest of a message from `try_send` or of a finished stream. A
-  rest that the stream held for a waiting caller would take each freed byte before the
-  other class's caller wakes. The send budget gives room in the order of the turn. While
-  the owed class competes and a claim of the other class holds room, room that a message
-  of the owed class frees waits for that class's next message, and the budget starts no
-  new message of the other class, so neither class can take the share through the budget
+  the stream writes the rest of a message from `try_send` or of a finished stream. It
+  also writes the rest of a message whose `send` future leaked, from the next use of the
+  sender (CANCELLED SEND; `laptop.architect-2`, 2026-10-11T17:27:26Z:
+  https://github.com/synnaxlabs/foundation/pull/2399#issuecomment-6111698287). A rest
+  that the stream held for a waiting caller would take each freed byte before the other
+  class's caller wakes. The send budget gives room in the order of the turn. While the
+  owed class competes and a claim of the other class holds room, room that a message of
+  the owed class frees waits for that class's next message, and the budget starts no new
+  message of the other class, so neither class can take the share through the budget
   (#819). A change of this share changes the share bound of `transport/benches/send.rs`
   in the same PR. The share holds because each window is at least twice the message
   limit, so one message of each class fits: architect-2 (#1998, 2026-10-09 03:45 UTC):
@@ -240,7 +269,8 @@
   stretch that is only the last part, of at most 1452 bytes with no zeros, goes to noq
   from the block. Each other stretch of at most 1452 bytes goes to noq from the buffer,
   and noq copies it in the same `write` (design point 2 of 6044783047). A longer one is
-  copied into a new buffer of its length, which noq keeps until the ACK. A partial write
+  copied into a new buffer of its length, which noq keeps until the peer acknowledges
+  it and each byte before it on its stream, or the stream resets. A partial write
   of it keeps the rest and copies nothing again. Lost: writes of at most 1452 bytes,
   because noq-proto allocates about 3 times for each segment that they fill (1.87x
   copy-then-send and 13 allocations over `send` for 1000 ranges of 8 B); and writes of
@@ -255,11 +285,12 @@
   its length, because the second walk costs more than the second copy (2.31x
   copy-then-send for 1000 ranges of 8 B); a copy into a new `Vec` as the walk goes,
   because the `Vec` grows, or takes the rest of the message and noq holds the extra
-  capacity until the ACK; and a last long run that takes the block, because it gave no
-  time gain on box2 and adds a case. Lost: a copy of a longer stretch into a block of
-  the shard's pool, because noq still copies each shorter stretch to the heap, and a
-  write would wait for a block in the middle of a message, with no end when each block
-  is held by a write that waits (`laptop.architect-2`, #1879, 2026-10-08 16:29 UTC:
+  capacity until the peer acknowledges it and each byte before it on its stream, or the
+  stream resets; and a last long run that takes the block, because it gave no time gain
+  on box2 and adds a case. Lost: a copy of a longer stretch into a block of the shard's
+  pool, because noq still copies each shorter stretch to the heap, and a write would
+  wait for a block in the middle of a message, with no end when each block is held by a
+  write that waits (`laptop.architect-2`, #1879, 2026-10-08 16:29 UTC:
   https://github.com/synnaxlabs/foundation/pull/1879#issuecomment-6064411384). Decided
   by `laptop.architect-2` (#68, 2026-10-08 08:13 UTC, one walk:
   https://github.com/synnaxlabs/foundation/issues/68#issuecomment-6055676016; and 08:25

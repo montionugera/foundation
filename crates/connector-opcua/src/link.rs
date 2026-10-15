@@ -4,7 +4,7 @@
 
 use env::rng::Rng;
 
-use crate::event::Loop;
+use crate::event::{self, Loop};
 use crate::ffi::Bytes;
 use crate::ffi::Status;
 use crate::ffi::test as ffi;
@@ -87,7 +87,7 @@ fn call_refused() {
 fn call_member(name: &str) -> ! {
     let mut sim = sim::Sim::new(sim::Config::default());
     let clock = sim.node(sim::node::Config::default()).clock();
-    let events = Loop::new(clock, &mut Rng::from_seed(0));
+    let events = Loop::new(event::Time::monotonic(clock), &mut Rng::from_seed(0));
     let (members, raw, none) = (events.members(), events.raw(), std::ptr::null_mut());
     let status = match name {
         "UA_EventLoop.stop" => {
@@ -111,21 +111,11 @@ fn call_member(name: &str) -> ! {
 }
 
 #[test]
-#[cfg(unix)]
 fn each_refused_call_prints_its_name_and_aborts() {
-    use std::os::unix::process::ExitStatusExt;
-    const SIGABRT: i32 = 6;
     for name in REFUSED {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "link::call_refused"])
-            .env(CHILD, name)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.signal(), Some(SIGABRT), "{name}");
-        assert_eq!(
-            String::from_utf8(output.stderr).unwrap(),
-            format!("connector-opcua: open62541 called {name}, which is not built\n")
-        );
+        let line =
+            format!("connector-opcua: open62541 called {name}, which is not built\n");
+        crate::child::aborted_in_c("link::call_refused", &[(CHILD, name)], &line);
     }
 }
 
@@ -150,7 +140,8 @@ fn shim_compiler() -> cc::Tool {
 /// Gives each pragma of `file` of `src/` after the preprocessor, which joins split
 /// lines and expands `_Pragma`.
 fn shim_pragmas(file: &str) -> Vec<String> {
-    let path = src().join(file);
+    // Not `src()`, whose `\\?\` prefix on Windows GCC does not open.
+    let path = std::path::Path::new(ROOT).join("src").join(file);
     let output = shim_compiler()
         .to_command()
         .arg("-E")
@@ -158,12 +149,17 @@ fn shim_pragmas(file: &str) -> Vec<String> {
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8(output.stdout).unwrap();
+    let mut main = None;
     let mut in_shim = false;
     let mut pragmas = Vec::new();
-    for line in String::from_utf8(output.stdout).unwrap().lines() {
+    for line in text.lines() {
         // A line marker, `# <line> "<file>" <flags>`, names the file of the next lines.
+        // The first names `path`, with the escapes that each marker gives it.
         if let Some(marker) = line.strip_prefix("# ") {
-            in_shim = marker.contains(&format!("\"{}\"", path.display()));
+            let name =
+                &marker[marker.find('"').unwrap() + 1..marker.rfind('"').unwrap()];
+            in_shim = *main.get_or_insert(name) == name;
         } else if in_shim && line.trim_start().starts_with("#pragma") {
             pragmas.push(line.trim().to_owned());
         }
@@ -188,8 +184,9 @@ fn check_shim(after: &str, line: &str) -> String {
     let source = format!("{}\n{line}{}", &text[..at], &text[at..]);
     let mut child = tool
         .to_command()
-        .args(["-c", "-o", "/dev/null", "-x", "c", "-"])
+        .args(["-S", "-o", "-", "-x", "c", "-"])
         .stdin(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
@@ -203,6 +200,21 @@ fn check_shim(after: &str, line: &str) -> String {
     let errors = String::from_utf8(output.stderr).unwrap();
     assert_eq!(output.status.success(), errors.is_empty(), "{errors}");
     errors
+}
+
+#[test]
+fn the_pragma_check_reads_a_file_whose_path_is_not_ascii() {
+    // Clang writes each byte that is not ASCII in a line marker as an octal escape, and
+    // each compiler escapes a `"`, which Windows does not allow in a name.
+    let name = if cfg!(unix) { "José \"q\"" } else { "José" };
+    let dir = std::path::Path::new(env!("OUT_DIR")).join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("pragma.c");
+    std::fs::write(&file, "#pragma GCC diagnostic push\nint x;\n").unwrap();
+    assert_eq!(
+        shim_pragmas(file.to_str().unwrap()),
+        ["#pragma GCC diagnostic push"]
+    );
 }
 
 #[test]
@@ -245,6 +257,11 @@ fn the_shim_ignores_only_the_unused_parameters_of_the_headers() {
         "int in_the_body(int unused) { return 0; }",
     );
     assert!(body.contains("unused parameter 'unused'"), "{body}");
+    let own = check_shim(
+        "#include \"shim.h\"",
+        "int in_our_header(int unused) { return 0; }",
+    );
+    assert!(own.contains("unused parameter 'unused'"), "{own}");
 }
 
 #[test]
@@ -265,11 +282,41 @@ fn the_shim_check_ignores_the_environment_of_cc() {
 }
 
 #[test]
+#[cfg(unix)]
+fn the_shim_check_finds_a_cc_relative_to_the_crate() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    let cc = Path::new(env!("OUT_DIR")).join("relative-cc");
+    std::fs::write(&cc, "#!/bin/sh\nexec cc \"$@\"\n").unwrap();
+    std::fs::set_permissions(&cc, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (root, cc) = (root(), cc.canonicalize().unwrap());
+    let common = root.ancestors().find(|dir| cc.starts_with(dir)).unwrap();
+    let up = "../".repeat(root.strip_prefix(common).unwrap().components().count());
+    let relative = format!("{up}{}", cc.strip_prefix(common).unwrap().display());
+    let name = "link::the_shim_ignores_only_the_unused_parameters_of_the_headers";
+    crate::child::run(name, &[("CC", &relative)]);
+}
+
+#[test]
+#[cfg(unix)]
+fn the_shim_check_writes_no_file() {
+    // Tests that run at the same time would share the file, and GCC writes it in place.
+    use std::os::unix::fs::PermissionsExt;
+    let cc = std::path::Path::new(env!("OUT_DIR")).join("stdout-cc");
+    let script = "#!/bin/sh\nfor arg; do\n  [ \"$last\" = -o ] && [ \"$arg\" != - ] && \
+                  exit 1\n  last=$arg\ndone\nexec cc \"$@\"\n";
+    std::fs::write(&cc, script).unwrap();
+    std::fs::set_permissions(&cc, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let name = "link::the_shim_ignores_only_the_unused_parameters_of_the_headers";
+    crate::child::run(name, &[("CC", cc.to_str().unwrap())]);
+}
+
+#[test]
 fn the_shim_check_uses_the_compiler_of_cc() {
     let name = "link::the_shim_ignores_only_the_unused_parameters_of_the_headers";
     let output = crate::child::output(name, &[("CC", "/missing/gcc")]);
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("No such file or directory"), "{stdout}");
+    assert!(stdout.contains("kind: NotFound"), "{stdout}");
 }
 
 unsafe extern "C" {
@@ -716,7 +763,7 @@ fn the_scan_names_only_the_files_outside_tests() {
         named_in(&src().join("ffi.rs"), client),
     ]
     .concat();
-    assert_eq!(found.len(), 2, "{found:?}");
+    assert_eq!(found.len(), 3, "{found:?}");
     assert_eq!(named, found);
 }
 

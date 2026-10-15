@@ -76,12 +76,18 @@
   index of the input. No spec holds two channels of one name, and `spec::region::check`
   refuses the other two cases. Each panic is a defect of the caller. `mesh` runs
   `spec::region::check` on the founding and on each committed spec before it puts it in
-  use (#1741). `node` gives the hub only the specs of `Mesh::watch_spec` (#1957 PR 2)
-  and runs no check of its own. A spec with problems follows #1741: the mesh keeps the
-  spec it uses, which is empty for a founding with problems, and the hub gets none of
-  it. So no spec from disk or a peer makes an open panic. A founding with problems
-  defines no channel, and `Config::region` has no panic (#1957 PR 2). The check in the
-  mesh only, by `laptop.architect`, 2026-10-09T20:52:20Z
+  use (#1741). The hub of a node in a region takes its definitions only from that
+  region's mesh: the spec in use at its start, each later one through its own task, and
+  the one in use at each open, when its pointer moved (`laptop.architect`,
+  2026-10-10T23:49:57Z:
+  https://github.com/synnaxlabs/foundation/issues/2326#issuecomment-6103471301).
+  Supersedes "`node` gives the hub only the specs of `Mesh::watch_spec`" of
+  https://github.com/synnaxlabs/foundation/issues/2179#issuecomment-6089059684. `node`
+  runs no check of its own. A spec with problems follows #1741: the mesh keeps the spec
+  it uses, which is empty for a founding with problems, and the hub gets none of it. So
+  no spec from disk or a peer makes an open panic. A founding with problems defines no
+  channel, and `Config::region` has no panic (#1957 PR 2). The check in the mesh only,
+  by `laptop.architect`, 2026-10-09T20:52:20Z
   (https://github.com/synnaxlabs/foundation/issues/2179#issuecomment-6089059684).
   Supersedes the check in `node` of
   https://github.com/synnaxlabs/foundation/pull/1966#issuecomment-6068129791,

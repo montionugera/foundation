@@ -65,3 +65,12 @@
   (2026-10-10T23:38:36Z, https://github.com/synnaxlabs/foundation/issues/2323; the
   first commit at `Hub::new`: 2026-10-11T00:37:36Z,
   https://github.com/synnaxlabs/foundation/pull/2328#issuecomment-6103826820).
+  With a region, the spec task holds the state weakly, its watch and waiter live in the
+  state, and it ends at its first poll after the state drops, or at a stop of the
+  group, after it applies the spec in use then. Decided by `laptop.architect`
+  (2026-10-10T23:49:57Z:
+  https://github.com/synnaxlabs/foundation/issues/2326#issuecomment-6103471301; the
+  text, 2026-10-12T16:35:38Z:
+  https://github.com/synnaxlabs/foundation/issues/2326#issuecomment-6128454839; the
+  stop, 2026-10-12T19:41:06Z:
+  https://github.com/synnaxlabs/foundation/pull/2476#issuecomment-6131357049).
