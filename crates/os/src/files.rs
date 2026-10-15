@@ -2,11 +2,9 @@
 //! disk and its files, in the order they reach its queue.
 
 use std::cell::RefCell;
-use std::ffi::OsStr;
 use std::fmt;
 use std::io::IoSlice;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -18,6 +16,8 @@ use env::threads::Threads;
 use rustix::fs::{self, AtFlags, FileType, FlockOperation, OFlags, RenameFlags};
 use rustix::io::{self, Errno};
 use tokio::sync::{mpsc, oneshot};
+
+use crate::dir;
 
 /// The most parts that one `pwritev` takes: `IOV_MAX` on Linux and macOS.
 const PARTS: usize = 1_024;
@@ -461,15 +461,9 @@ fn make(at: impl AsFd, path: &Path) -> io::Result<OwnedFd> {
 /// The names in `dir`, without `.` and `..`.
 fn list(data: &OwnedFd, dir: &Path) -> io::Result<Vec<PathBuf>> {
     let fd = fs::openat(data, at(dir), READ_DIR, fs::Mode::empty())?;
-    let mut names = Vec::new();
-    for entry in fs::Dir::new(fd)? {
-        let entry = entry?;
-        let name = entry.file_name().to_bytes();
-        if name != b"." && name != b".." {
-            names.push(PathBuf::from(OsStr::from_bytes(name)));
-        }
-    }
-    Ok(names)
+    dir::names(fd)?
+        .map(|name| name.map(PathBuf::from))
+        .collect()
 }
 
 /// Makes the directory `dir`, or gives `Ok` when a directory is there.
