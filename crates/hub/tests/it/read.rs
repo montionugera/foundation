@@ -658,6 +658,24 @@ where
     (served, given)
 }
 
+/// A read that waits for the home of an index that never gets one stops with
+/// `UNKNOWN` at once when a spec in use removes its one channel, as a new read does.
+#[test]
+fn stops_a_read_whose_channel_is_removed_while_it_waits_for_a_home_as_unknown() {
+    let (served, ()) = homeless(
+        320,
+        async |test| test.set_spec(without(&["value"])).await,
+        |mut agent| async move {
+            agent.admit().await;
+            let mut stream = agent.read(Mode::Complete, &["value"]).await;
+            assert_eq!(stream.recv().await, reset_with(UNKNOWN));
+            finish(&mut agent).await;
+        },
+    );
+    let empty = serve::Error::Reader(Box::new(reader::Error::Empty));
+    assert_eq!(served, [Err(empty), Ok(Got::Ended)]);
+}
+
 /// A read that waits for the home of its index stops with `FAILED` when the mesh
 /// stops.
 #[test]
