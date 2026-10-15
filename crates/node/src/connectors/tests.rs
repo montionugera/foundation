@@ -1396,8 +1396,7 @@ async fn regional(
 /// Applies `first`, then `second` 1 s after `first` is in use, each with its channels,
 /// through the mesh of [`regional`], where the status index of each connector has its
 /// home at the node and `plant.data.time` has none. Gives each start of a run until
-/// 10 s after `second` is in use, with its time from that instant: the first apply
-/// waits for the election.
+/// 10 s after `second` is in use, with its time from that instant.
 fn in_region(
     seed: u64,
     first: (Vec<Placed>, Vec<(Name, Definition)>),

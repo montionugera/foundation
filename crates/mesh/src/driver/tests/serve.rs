@@ -740,7 +740,8 @@ fn serve_gives_no_answer_when_the_pool_has_no_block_for_it() {
             let (mesh, first) = leader(&node, &tasks, pool).await;
             let mut watch = mesh.watch(INDEX);
             assert_eq!(watch.next().await, Ok(Some(key(1))));
-            // The write of a proposal frees a block that the refused write reuses.
+            // The write of a proposal frees a block that the next log write reuses, so
+            // only the block of the answer is new.
             assert_eq!(mesh.propose(home_to(1)).await, Ok(after(first, 1)));
             switch.refuse();
             let served = mesh.serve(public(1), incoming).await;
