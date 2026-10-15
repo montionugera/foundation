@@ -382,13 +382,22 @@ fn remove(path: &Path) -> std::io::Result<()> {
 /// Gives `NotFound` only when `path` is gone.
 #[cfg(unix)]
 fn writable(path: &Path) -> std::io::Result<()> {
+    writable_before(path, &|_| {})
+}
+
+/// As [`writable`], and calls `before` with each directory in `path` after the listing
+/// that names it and before the walk into it.
+#[cfg(unix)]
+fn writable_before(path: &Path, before: &impl Fn(&Path)) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
     for entry in std::fs::read_dir(path)? {
         let entry = entry?;
         if entry.file_type()?.is_dir() {
-            match writable(&entry.path()) {
+            let sub = entry.path();
+            before(&sub);
+            match writable_before(&sub, before) {
                 // Another sweep removed it.
                 Err(error) if error.kind() == ErrorKind::NotFound => {}
                 walked => walked?,
@@ -1301,33 +1310,42 @@ fn a_sweep_removes_the_draft_of_a_run_that_died() {
     assert_eq!(left, Vec::<std::ffi::OsString>::new());
 }
 
-/// A sweep that makes a directory writable while another sweep removes it gives
-/// `NotFound` only once the directory is gone, so it never leaves the directory.
+/// A walk whose directory another sweep removes after the listing skips it and walks
+/// the rest, and a walk of a removed directory gives `NotFound`.
 #[test]
 #[cfg(unix)]
 fn a_walk_that_another_sweep_removes_ends_only_when_it_is_gone() {
-    for run in 0..20 {
-        let dir = create_tree(run, 300, 10);
-        let path = dir.clone();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "another sweep removes the directory during the walk"
-        )]
-        let removal = std::thread::spawn(move || std::fs::remove_dir_all(path));
-        let ended = loop {
-            let finished = removal.is_finished();
-            if let Err(error) = writable(&dir) {
-                break (error.kind(), dir.exists());
-            }
-            assert!(
-                !finished,
-                "a walk after the removal of {} gave no error",
-                dir.display()
-            );
-        };
-        removal.join().expect("join the removal").expect("remove");
-        assert_eq!(ended, (ErrorKind::NotFound, false), "run {run}");
+    use std::cell::Cell;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = create_tree(0, 2, 1);
+    let mode = |path: &Path, mode: u32| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+            .expect("set a mode");
+    };
+    for sub in ["d0", "d1"] {
+        mode(&dir.join(sub), 0o500);
     }
+    let removed = Cell::new(false);
+    let walked = writable_before(&dir, &|sub: &Path| {
+        let metadata = std::fs::metadata(sub).expect("read a mode");
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o500, "walked first");
+        if !removed.replace(true) {
+            mode(sub, 0o700);
+            std::fs::remove_dir_all(sub).expect("remove a directory");
+        }
+    });
+    assert_eq!(walked.map_err(|error| error.kind()), Ok(()));
+    let kept: Vec<_> = (std::fs::read_dir(&dir).expect("read the tree"))
+        .map(|entry| {
+            let metadata = entry.expect("read the tree").metadata();
+            metadata.expect("read a mode").permissions().mode() & 0o777
+        })
+        .collect();
+    assert_eq!(kept, [0o700]);
+    std::fs::remove_dir_all(&dir).expect("remove the tree");
+    let gone = writable(&dir).map_err(|error| error.kind());
+    assert_eq!(gone, Err(ErrorKind::NotFound));
 }
 
 /// Makes the draft `walked-<run>` of this run: `dirs` directories of `files` files
