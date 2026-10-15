@@ -71,16 +71,31 @@ that stays on this milestone waits, also protocol 4 of #1232. The ONE NODE amend
 beside FIRST SLICE" of this entry (the person's decision of 2026-10-06, which has no
 link).
 
-Amendment (2026-10-15): part B of batch 2 of #1737 starts now, before the new sessions,
-and its issues stay on this milestone: #1712, #1724, #1723 with #1726, #620, and the
-bench #977 (B1); #2283, then PR 5 of #336, then #1157 (B2); #2565 (PR 2a of #1229), then
-#1231 and #1232 (B3); the two acceptance tests of #1150 (B4); and the merge of #2454
-(B7). The person approved each item, and the comment gives the person's words for each:
-https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6197468644. #1441 (B5)
-and #1329 (B6) wait for a later batch. Each other issue of this milestone waits until
-the new sessions start. Supersedes, for these items only, "no session starts new work on
-it before then", "the drafts #2565 and #2454 wait", and "moves to the ONE NODE
-milestone" of the amendment of 2026-10-13.
+Amendment (2026-10-15): items B1 to B4 and B7 of part B of batch 2 of #1737 start now,
+before the new sessions: #1712, #1724, #1723 with #1726, #620, and the bench #977 (B1);
+#2283, then PR 5 of #336, then #1157 (B2); #2565 (PR 2a of #1229), then #1231 and #1232
+(B3); the two acceptance tests of #1150 (B4); and the merge of #2454 (B7). The person
+approved each item through `laptop.monitor` (factory messages of 2026-10-15), recorded
+with the person's words for each at 2026-10-15T16:51:23Z:
+https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6197468644. Their
+issues stay on this milestone, and #2283 joins it: the person started this milestone now
+("start STORE AND FORWARD now"), the ONE NODE exit tests do not need them, and the batch
+rule of `laptop.monitor` moves only the ONE NODE items of a batch (`laptop.monitor`,
+2026-10-15T17:20Z:
+https://github.com/synnaxlabs/foundation/pull/2710#issuecomment-6198034604). #1441 (B5)
+and #1329 (B6) wait for a later batch. Supersedes, for these items only, of the
+amendment of 2026-10-13 above: "no session starts new work on it before then"
+(https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6154908233), "the
+drafts #2565 and #2454 wait"
+(https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6155099588), and
+"moves to the ONE NODE milestone" and "Each issue that stays on this milestone waits,
+also protocol 4 of #1232"
+(https://github.com/synnaxlabs/foundation/pull/2604#issuecomment-6156005178); and of the
+ONE NODE amendment of 2026-10-13 below: "each session starts only ONE NODE work" and "no
+session starts new STORE AND FORWARD work"
+(https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6154908233), and "the
+drafts #2565 and #2454 wait"
+(https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6155099588).
 
 **ONE NODE (2026-10-08)** A milestone beside FIRST SLICE, which keeps priority: one real
 node moves OPC UA samples to InfluxDB. The `foundation` binary starts a node from a
