@@ -62,7 +62,11 @@ fn main() {
     for (nodes, scalars) in WRITES {
         let count = WARMUP + TICKS / WRITE_RUNS;
         let mut writes: Vec<_> = (0..WRITE_RUNS)
-            .flat_map(|_| kind::writes(nodes, scalars, count, time).split_off(WARMUP))
+            .flat_map(|_| {
+                kind::writes(nodes, scalars, count, time)
+                    .0
+                    .split_off(WARMUP)
+            })
             .collect();
         writes.sort_unstable();
         let at = |percent: usize| writes[writes.len() * percent / 100];

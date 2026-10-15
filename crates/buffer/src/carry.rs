@@ -86,6 +86,11 @@ impl Tail {
     }
 }
 
+/// The most tails whose body fits in `len` bytes, at most [`TAILS_MAX`].
+pub(crate) fn count(len: usize) -> usize {
+    (len.saturating_sub(4) / LEN).min(TAILS_MAX)
+}
+
 /// The size of the body that holds `count` tails.
 ///
 /// # Panics

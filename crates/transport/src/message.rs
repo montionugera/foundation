@@ -85,8 +85,6 @@ enum State {
     Sized { len: usize },
     /// A message of `len` bytes, over the limit.
     Over { len: u64 },
-    /// A message that the stream's end cut short.
-    Cut,
     /// A message of `len` bytes that has room, with `have` of its bytes in `buffer`
     /// and the reader's chunks. A chunk of the source can keep its whole receive
     /// buffer alive, so a chunk lives only inside the read that took it, and
@@ -146,11 +144,8 @@ impl Reader {
     /// when it has none now, or `None` when the stream has ended. The reader never
     /// asks for a byte past the current message, so later messages stay with the
     /// source. No chunk from `source` outlives the call, except those of the whole
-    /// message that [`Step::Block`] gives.
-    ///
-    /// After an error inside a message's body, the reader holds no bytes of the
-    /// message. After any other error, it holds at most the 8 bytes of a length
-    /// prefix. After the framing breaks, each later read gives its error again.
+    /// message that [`Step::Block`] gives. After an error, the reader keeps the bytes
+    /// of the message it holds until [`Reader::clear`].
     ///
     /// # Errors
     ///
@@ -192,30 +187,21 @@ impl Reader {
                     });
                 }
                 State::Body { len, have, buffer } if *have < *len => {
-                    let error = match next(&mut source, len.saturating_sub(*have)) {
-                        Ok(Poll::Pending) => {
+                    match next(&mut source, len.saturating_sub(*have))? {
+                        Poll::Pending => {
                             spill(buffer, &mut self.chunks, *len);
                             return Ok(Step::Pending);
                         }
-                        Ok(Poll::Ready(Some(chunk))) => {
+                        Poll::Ready(Some(chunk)) => {
                             *have = have.saturating_add(chunk.len());
                             if self.chunks.len() == CHUNKS_MAX {
                                 spill(buffer, &mut self.chunks, *len);
                             }
                             self.chunks.push(chunk);
-                            continue;
                         }
-                        Ok(Poll::Ready(None)) => {
-                            self.state = State::Cut;
-                            self.chunks.clear();
-                            return Err(ended());
-                        }
-                        Err(error) => error,
-                    };
-                    self.clear();
-                    return Err(error);
+                        Poll::Ready(None) => return Err(ended()),
+                    }
                 }
-                State::Cut => return Err(ended()),
                 State::Body { len, .. } => return Ok(Step::Block(*len)),
             }
         }
@@ -289,9 +275,7 @@ impl Reader {
         matches!(&self.state, State::Body { len, have, .. } if have == len)
     }
 
-    /// Drops the message in hand, so that the reader holds no bytes of it. For a
-    /// stream that ended outside [`Reader::read`], as by a reset that `source` did
-    /// not give.
+    /// Drops the message in hand. The caller calls it after each error of a read.
     pub(crate) fn clear(&mut self) {
         self.state = START;
         self.chunks.clear();
@@ -615,8 +599,8 @@ mod tests {
                                     limit
                                 );
                                 // Private: only a peer that misframes ends a stream
-                                // inside a message, and no heap count is exact in a
-                                // binary with a test harness.
+                                // inside a message, and no `Transport` call can make
+                                // one.
                                 prop_assert_eq!(reader.buffer().capacity(), 0);
                                 let slots = reader.chunks.capacity();
                                 prop_assert!(
@@ -650,8 +634,7 @@ mod tests {
                         "{len} bytes, then {cut:x?}, {split} per chunk, limit {limit}"
                     );
                     // Private: only a peer that misframes ends a stream inside a
-                    // message, and no heap count is exact in a binary with a test
-                    // harness.
+                    // message, and no `Transport` call can make one.
                     assert_eq!(reader.buffer().capacity(), 0);
                     let slots = reader.chunks.capacity();
                     assert!(slots <= CHUNKS_MAX, "a list of {slots} slots");
@@ -798,14 +781,15 @@ mod tests {
         }
 
         #[test]
-        fn when_source_fails_inside_a_message_it_gives_the_error_and_drops_its_bytes() {
+        fn when_source_fails_inside_a_message_it_gives_the_error_and_a_clear_drops_it()
+        {
             let pool = pool(1 << 16);
             let mut reader = Reader::new(1_000);
             let part = encode(&[vec![9; 100]]).into_iter().take(10).collect();
             let mut source = Source::new(part, 64);
             source.open = true;
             assert_eq!(read(&mut reader, &pool, &mut source), Ok(Poll::Pending));
-            // Private: no heap count is exact in a binary with a test harness.
+            // Private: no public call shows a part of a message.
             assert_eq!(*reader.buffer(), vec![9; 8]);
             let read = drive(
                 &mut reader,
@@ -824,6 +808,9 @@ mod tests {
                     code: crate::Code(16)
                 })
             );
+            // Only the caller clears a failed read.
+            assert_eq!(reader.held(), (Some((8, 100)), 0));
+            reader.clear();
             assert_eq!(reader.buffer().capacity(), 0);
             let mut next = Source::new(encode(&[vec![5; 20]]), 64);
             let next = super::read(&mut reader, &pool, &mut next);
@@ -831,7 +818,7 @@ mod tests {
         }
 
         #[test]
-        fn when_source_fails_after_chunks_in_one_read_it_keeps_no_chunk() {
+        fn when_source_fails_after_chunks_in_one_read_a_clear_keeps_no_chunk() {
             let pool = pool(1 << 16);
             let mut reader = Reader::new(1_000);
             let batch = Bytes::from(encode(&[vec![9; 100]]));
@@ -854,7 +841,8 @@ mod tests {
                     code: crate::Code(16)
                 })
             );
-            assert!(batch.is_unique(), "a chunk outlives the read");
+            reader.clear();
+            assert!(batch.is_unique(), "a chunk outlives the clear");
             let mut next = Source::new(encode(&[vec![5; 20]]), 64);
             let next = super::read(&mut reader, &pool, &mut next);
             assert_eq!(next, Ok(Poll::Ready(Some(vec![5; 20]))));
@@ -909,6 +897,40 @@ mod tests {
             );
         }
 
+        #[test]
+        fn a_wait_inside_a_prefix_or_for_room_keeps_the_list() {
+            const LONG: usize = 100_000;
+            let pool = pool(1 << 18);
+            let long = prefix(LONG);
+            let (first, rest) = long.split_first().expect("a prefix");
+            let bytes = [encode(&[vec![1; 100]]), vec![*first]].concat();
+            let mut source = Source::new(bytes, 1);
+            source.open = true;
+            let mut reader = Reader::new(1 << 20);
+            let read = super::read(&mut reader, &pool, &mut source);
+            assert_eq!(read, Ok(Poll::Ready(Some(vec![1; 100]))));
+            // Private: only a peer that breaks its window makes a read wait for room.
+            assert_eq!(reader.chunks.capacity(), CHUNKS_MAX);
+            let read = super::read(&mut reader, &pool, &mut source);
+            assert_eq!(read, Ok(Poll::Pending));
+            assert_eq!(reader.chunks.capacity(), CHUNKS_MAX);
+            source.bytes.extend(rest);
+            for _ in 0..2 {
+                let take = |_| panic!("a message with no room takes no block");
+                let read =
+                    drive(&mut reader, |_| false, take, |max| Ok(source.take(max)));
+                assert!(matches!(read, Ok(Poll::Pending)), "{read:?}");
+                assert_eq!(reader.chunks.capacity(), CHUNKS_MAX);
+            }
+            source.bytes.extend(iter::repeat_n(2, LONG));
+            source.open = false;
+            assert_eq!(
+                read_all(&mut reader, &pool, &mut source),
+                Ok(vec![vec![2; LONG]])
+            );
+            assert_eq!(reader.chunks.capacity(), CHUNKS_MAX);
+        }
+
         /// One read of `reader` that takes `batch[*at..end]` one byte per chunk,
         /// each a view into `batch`, then is pending.
         fn read_views(
@@ -939,7 +961,8 @@ mod tests {
             let read = read_views(&mut reader, &pool, &batch, &mut at, 2 + 10);
             assert_eq!(read, Ok(Poll::Pending));
             assert!(batch.is_unique());
-            // Private: no heap count is exact in a binary with a test harness.
+            // Private: no public call shows a part of a message. tests/alloc/polls.rs
+            // counts the allocations of one that comes over many polls.
             assert_eq!(*reader.buffer(), message[..10]);
             assert_eq!(reader.buffer().capacity(), 1_024);
             let buffer = reader.buffer().as_ptr();
@@ -964,7 +987,8 @@ mod tests {
             let read = read_views(&mut reader, &pool, &batch, &mut at, batch.len());
             assert_eq!(read, Ok(Poll::Pending));
             assert!(batch.is_unique());
-            // Private: no heap count is exact in a binary with a test harness.
+            // Private: no public call shows a part of a message. tests/alloc/polls.rs
+            // counts the allocations of one that waits for a block.
             assert_eq!(*reader.buffer(), message);
             drop(held);
             let read = read_views(&mut reader, &pool, &batch, &mut at, batch.len());
@@ -982,7 +1006,8 @@ mod tests {
             reader.admit();
             let read = reader.read(|max| Ok(source.take(max)));
             assert_eq!(read, Ok(Step::Block(100)));
-            // Private: no heap count is exact in a binary with a test harness.
+            // Private: no public call shows a part of a message. tests/alloc/polls.rs
+            // counts the allocations of one that waits for a block.
             assert_eq!(reader.held(), (None, 10));
             assert!(reader.fill(None).is_pending());
             assert_eq!(reader.held(), (Some((100, 100)), 0));
@@ -1125,7 +1150,7 @@ mod tests {
         }
 
         #[test]
-        fn when_stream_ends_inside_a_message_it_fails_and_keeps_no_byte() {
+        fn when_stream_ends_inside_a_message_it_fails_and_a_clear_keeps_no_byte() {
             let pool = pool(1 << 16);
             let batch = Bytes::from(encode(&[vec![3; 1_000]]));
             let end = 2 + 100;
@@ -1144,60 +1169,17 @@ mod tests {
                     reason: "the stream ended inside a message".to_owned()
                 })
             );
-            assert!(batch.is_unique(), "a chunk outlives the read");
+            assert!(
+                !batch.is_unique(),
+                "the reader keeps its chunks until the clear"
+            );
+            reader.clear();
+            assert!(batch.is_unique(), "a chunk outlives the clear");
             // Private: only a peer that misframes ends a stream inside a message, and
-            // no heap count is exact in a binary with a test harness.
+            // no `Transport` call can make one.
             assert_eq!(reader.buffer().capacity(), 0);
             let slots = reader.chunks.capacity();
             assert!(slots <= CHUNKS_MAX, "a list of {slots} slots");
-        }
-
-        #[test]
-        fn after_the_stream_ends_inside_a_message_each_read_fails() {
-            let mut source = Source::new(vec![0x05, 1, 2], 64);
-            let mut reader = Reader::new(16);
-            let ended = Err(Error::Broken {
-                reason: "the stream ended inside a message".to_owned(),
-            });
-            assert_eq!(reader.read(|max| Ok(source.take(max))), Ok(Step::Room(5)));
-            reader.admit();
-            assert_eq!(reader.read(|max| Ok(source.take(max))), ended);
-            assert_eq!(reader.read(|max| Ok(source.take(max))), ended);
-            // Private: no heap count is exact in a binary with a test harness.
-            assert_eq!(reader.held(), (None, 0));
-        }
-
-        #[test]
-        fn after_the_stream_ends_inside_a_prefix_each_read_fails() {
-            let mut source = Source::new(vec![0x40], 64);
-            let mut reader = Reader::new(16);
-            let ended = Err(Error::Broken {
-                reason: "the stream ended inside a message".to_owned(),
-            });
-            assert_eq!(reader.read(|max| Ok(source.take(max))), ended);
-            assert_eq!(reader.read(|max| Ok(source.take(max))), ended);
-        }
-
-        #[test]
-        fn after_the_stream_ends_inside_a_buffered_message_it_holds_no_bytes() {
-            let mut source = Source::new(vec![0x05, 1], 64);
-            source.open = true;
-            let mut reader = Reader::new(16);
-            let ended = Err(Error::Broken {
-                reason: "the stream ended inside a message".to_owned(),
-            });
-            assert_eq!(reader.read(|max| Ok(source.take(max))), Ok(Step::Room(5)));
-            reader.admit();
-            assert_eq!(reader.read(|max| Ok(source.take(max))), Ok(Step::Pending));
-            // Private: no heap count is exact in a binary with a test harness.
-            assert_eq!(reader.held(), (Some((1, 5)), 0));
-            source.open = false;
-            assert_eq!(reader.read(|max| Ok(source.take(max))), ended);
-            assert_eq!(reader.held(), (None, 0));
-            assert_eq!(
-                reader.read(|_| panic!("a cut message asks for no bytes")),
-                ended
-            );
         }
 
         #[test]

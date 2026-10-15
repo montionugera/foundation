@@ -17,14 +17,14 @@
   reads the two as the same text matches them once (`laptop.architect-2`, #1702,
   2026-10-08T06:05:28Z,
   https://github.com/synnaxlabs/foundation/issues/1702#issuecomment-6053513102).
-  `export` and `discover` write every name as a string (`"site_a.pt_1"`): they need no
+  `export` and `import` write every name as a string (`"site_a.pt_1"`): they need no
   HCL rule, and a generated file reads back as exactly the Document it came from. This
   replaces the #363 ruling that a file writes a reserved name only as a string. The
   advisor decided (names and architecture delegations, 2026-10-05), #536 and #701. Lost:
   a reserved call `name("40001.x")`, which reserves a function name and adds an error
   for names that a string already carries; it can be added later without breaking a
   file. Lost: bare names in generated files, which changes only how a file looks. Lost:
-  `export` and `discover` write only such a name as a string, which copies HCL's
+  `export` and `import` write only such a name as a string, which copies HCL's
   identifier rule into `config` and layer 3. Lost: `write` gives such a reference as a
   string, which reads back as a `String` and changes the spec hash. Lost: A3 segments
   that start with a letter or `_`, which shrinks the name model to fit one file format.

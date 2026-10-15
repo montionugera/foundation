@@ -1,7 +1,7 @@
-//! The heap bytes that the gets of one resolver hold at once, through its file store
-//! and absolute files, as SECRET STORES AS ADAPTERS states them. The count covers
-//! the future of each get, as a task that boxes it holds it, and every thread, so
-//! this binary has no test harness.
+//! The heap bytes that the gets of one resolver and its clones hold at once, through
+//! its file store and absolute files, as SECRET STORES AS ADAPTERS states them. The
+//! count covers the future of each get, as a task that boxes it holds it, and every
+//! thread, so this binary has no test harness.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -25,19 +25,21 @@ const WAIT: usize = 1024;
 
 fn main() {
     let cases = [
-        (1, 1, 2),
-        (4096, 1, 2),
-        (1 << 16, 1, 2),
-        (1 << 16, 2, 2),
-        (1 << 16, 256, 2),
-        (1 << 16, 1024, 2),
-        (1 << 16, 1024, 1),
+        (1, 1, 2, false),
+        (4096, 1, 2, false),
+        (1 << 16, 1, 2, false),
+        (1 << 16, 2, 2, false),
+        (1 << 16, 256, 2, false),
+        (1 << 16, 1024, 2, false),
+        (1 << 16, 1024, 1, false),
+        (1 << 16, 1024, 2, true),
     ];
-    let peaks =
-        cases.map(|(len, gets, kinds)| (len, gets, kinds, peak(len, gets, kinds)));
+    let peaks = cases.map(|(len, gets, kinds, cloned)| {
+        (len, gets, kinds, cloned, peak(len, gets, kinds, cloned))
+    });
     let over: Vec<_> = peaks
         .iter()
-        .filter(|&&(_, gets, _, peak)| peak > BOUND + (gets - 1) * WAIT)
+        .filter(|&&(_, gets, _, _, peak)| peak > BOUND + (gets - 1) * WAIT)
         .collect();
     assert!(
         over.is_empty(),
@@ -48,7 +50,8 @@ fn main() {
 /// The most heap bytes held at once during `gets` gets at once of a file of `len`
 /// bytes, more than before them: from the store when `kinds` is 1, else half from
 /// the store and half from an absolute file. Each get drops its value when it ends.
-fn peak(len: usize, gets: usize, kinds: usize) -> usize {
+/// When `cloned`, each get goes through a clone of its own of the one resolver.
+fn peak(len: usize, gets: usize, kinds: usize, cloned: bool) -> usize {
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let run = sim.run_on(&node, move |node, _| async move {
@@ -78,18 +81,20 @@ fn peak(len: usize, gets: usize, kinds: usize) -> usize {
                 Absolute::new("/run/secrets/plant.key").expect("an absolute path"),
             ),
         ];
-        let read = async |source| {
+        let copies = if cloned { gets } else { 0 };
+        let resolvers: Vec<Resolver> = (0..copies).map(|_| resolver.clone()).collect();
+        let read = async |get: usize| {
+            let resolver = resolvers.get(get).unwrap_or(&resolver);
             let value = resolver
-                .get(source)
+                .get(&sources[get % kinds])
                 .await
                 .expect("the file holds the value");
             assert_eq!(value.expose().len(), len, "the get reads the whole file");
         };
         let before = ALLOCATOR.held();
         ALLOCATOR.reset_peak();
-        let mut reads: Vec<Pin<Box<_>>> = (0..gets)
-            .map(|get| Box::pin(read(&sources[get % kinds])))
-            .collect();
+        let mut reads: Vec<Pin<Box<_>>> =
+            (0..gets).map(|get| Box::pin(read(get))).collect();
         poll_fn(|cx| {
             reads.retain_mut(|read| read.as_mut().poll(cx).is_pending());
             if reads.is_empty() {

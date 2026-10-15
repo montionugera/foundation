@@ -2,10 +2,10 @@
 //! of a shard's home.
 
 mod channel;
-pub mod client;
 mod commit;
 mod gate;
 mod link;
+mod pending;
 pub mod reader;
 pub mod serve;
 mod task;
@@ -115,11 +115,11 @@ struct State {
     remotes: reader::remote::Sessions,
     /// The waker of each reader that waits for a frame.
     wakers: hash::Map<::home::reader::Key, Waker>,
-    /// Each served open from its first key to its session, by a key from `opened`.
-    opens: Sessions<u64>,
+    /// The channels of each open that waits, by a key from `opened`.
+    opens: Sessions<pending::Key>,
     /// The waker of each open in `opens`.
-    waiting: hash::Map<u64, Waker>,
-    /// The count of served opens.
+    waiting: hash::Map<pending::Key, Waker>,
+    /// The count of opens ever registered in `opens`.
     opened: u64,
     /// The readers that [`::home::Shard::woken`] gave last.
     woken: Vec<::home::reader::Key>,
@@ -233,7 +233,8 @@ impl Hub {
 
     /// Opens a writer session on `config.channels` and the index of each. It waits
     /// for the node's first mesh time, and while the mesh names no home for an index,
-    /// for one.
+    /// for one. A later spec in use that removes or changes one of its channels ends
+    /// that wait, and it checks its names again.
     ///
     /// # Errors
     ///
@@ -249,16 +250,18 @@ impl Hub {
         Writer::open(&self.0, config).await
     }
 
-    /// Opens a reader session on the channels that `config.select` matches, which
-    /// share one index. While the mesh names no home for the index, it waits for one.
-    /// At the home of another node, each open reader holds one stream of the one
-    /// session to it, so it also waits while that home allows this node no more
-    /// streams, until another reader there drops. It gets each frame of the index, as
-    /// a view of only its channels and their index. An unnamed complete reader gets
-    /// each live frame written after the returned future resolves, until it misses one
-    /// ([`reader::Mode::Complete`]). A named reader takes over the open session of its
-    /// subject and name, which ends with [`reader::Ended::Replaced`], and a named
-    /// complete one resumes as [`reader::Config::name`] says.
+    /// Opens a reader session on the channels that `config.select` matches, which share
+    /// one index. While the mesh names no home for the index, it waits for one. A later
+    /// spec in use that removes or changes one of its channels ends that wait, and it
+    /// matches the selector again. At the home of another node, each open reader holds
+    /// one stream of the one session to it, so it also waits while that home allows
+    /// this node no more streams, until another reader there drops. It gets each frame
+    /// of the index, as a view of only its channels and their index. An unnamed
+    /// complete reader gets each live frame written after the returned future resolves,
+    /// until it misses one ([`reader::Mode::Complete`]). A named reader takes over the
+    /// open session of its subject and name, which ends with
+    /// [`reader::Ended::Replaced`], and a named complete one resumes as
+    /// [`reader::Config::name`] says.
     ///
     /// # Errors
     ///
@@ -383,32 +386,15 @@ impl<K> Default for Sessions<K> {
 
 impl<K: Copy + Ord + Hash> Sessions<K> {
     /// Opens the session `key` on `keys`, so that a removal of one of them ends it.
-    fn add(&mut self, key: K, keys: Box<[Key]>) -> Ending {
+    fn add(&mut self, key: K, keys: Vec<Key>) -> Ending {
         let ending = Ending::default();
         let open = Open {
-            keys: keys.into_vec(),
+            keys,
             ending: ending.clone(),
         };
         let added = self.0.insert(key, open);
         assert!(added.is_none(), "invariant: each key is added once");
         ending
-    }
-
-    /// The channels of the open session `key`, to add to.
-    fn keys_mut(&mut self, key: K) -> &mut Vec<Key> {
-        &mut self
-            .0
-            .get_mut(&key)
-            .expect("invariant: the session is open")
-            .keys
-    }
-
-    /// Makes the open session `key` not open, and gives its channels.
-    fn take(&mut self, key: K) -> Vec<Key> {
-        self.0
-            .remove(&key)
-            .expect("invariant: the session is open")
-            .keys
     }
 
     /// Returns whether the session `key` was open, and makes it not open.
@@ -430,6 +416,21 @@ impl<K: Copy + Ord + Hash> Sessions<K> {
             .collect();
         ended.sort_unstable();
         ended
+    }
+}
+
+impl Sessions<pending::Key> {
+    /// Adds `keys` to the channels of the open `key`.
+    ///
+    /// # Panics
+    ///
+    /// When `key` is not open.
+    fn extend(&mut self, key: pending::Key, keys: &[Key]) {
+        let open = self
+            .0
+            .get_mut(&key)
+            .expect("invariant: the open is registered");
+        open.keys.extend_from_slice(keys);
     }
 }
 

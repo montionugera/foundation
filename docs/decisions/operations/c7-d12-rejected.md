@@ -2,3 +2,4 @@
   layer. Each SDK's data path is hand-written as the fastest idiomatic code for its
   language. Guard: the Rust codec is the reference; golden vectors from it run in every
   SDK's CI; differential fuzzing runs both ways; the drift agent watches it.
+  For the Python SDK, SDK DATA PATH supersedes the data path rule and the guard.

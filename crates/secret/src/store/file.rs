@@ -14,6 +14,7 @@ use crate::{Error, Value};
 /// system that ignores case. It does not check the owner or mode of the file, so make
 /// the file readable only by the user that runs the node. Its gets take turns with
 /// each other read of its [`Reads`].
+#[derive(Clone)]
 pub(crate) struct File {
     reads: Reads,
     dir: PathBuf,

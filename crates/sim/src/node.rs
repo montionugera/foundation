@@ -4,10 +4,10 @@ use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::task::Waker;
 
 use types::time::{Monotonic, Span, Stamp};
 
+use crate::log::Waker;
 use crate::state::lock;
 use crate::{drivers, net, shard};
 

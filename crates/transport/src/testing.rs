@@ -51,8 +51,7 @@ pub(crate) struct Shard {
 
 impl Shard {
     /// What a shard of `node` with `tasks` gives, with a pool of 2 MiB. Each node
-    /// reserves about 110 MiB for it, so a test of 4 nodes on each of 8 threads stays
-    /// under the 4 GiB cap of a CI test process.
+    /// reserves about 110 MiB for it.
     pub(crate) fn new(node: &sim::node::Node, tasks: Tasks) -> Self {
         let config = block::Config::new(1 << 21).expect("the budget fits");
         let memory = Heap::new(config.reservation());
@@ -124,9 +123,7 @@ pub(crate) fn alloc(pool: &Pool, len: usize) -> Option<Unique> {
 
 /// A block from `pool` that holds `bytes`.
 pub(crate) fn block(pool: &Pool, bytes: &[u8]) -> Block {
-    let mut block = pool.alloc(bytes.len()).expect("room");
-    block.copy_from_slice(bytes);
-    block.freeze()
+    pool.copy(bytes).expect("room")
 }
 
 /// `n` times `span`.

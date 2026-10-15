@@ -51,6 +51,9 @@ pub(crate) struct Status {
     /// run. `None` when the running kind cleared the error last, when it shows none and
     /// the last run returned `Ok` or no run ended, or when `state` is `unknown`.
     pub(crate) error: Option<Failure>,
+    /// The note that the running kind shows, or `None` when it shows none or when
+    /// `state` is `unknown`.
+    pub(crate) note: Option<String>,
 }
 
 /// What the run of a connector does.
@@ -262,6 +265,7 @@ fn status(placed: &Placed<'_>, reading: Option<connector::status::Reading>) -> S
         restarts: None,
         counts: None,
         error: None,
+        note: None,
     };
     if let Some(reading) = reading {
         status.state = reading.state.into();
@@ -272,6 +276,7 @@ fn status(placed: &Placed<'_>, reading: Option<connector::status::Reading>) -> S
             class: class.into(),
             text,
         });
+        status.note = reading.note;
     }
     status
 }
@@ -298,34 +303,20 @@ impl From<connector::status::Class> for Class {
 }
 
 impl Output {
-    /// A table of the connectors, then a line `<name>: <class> error: <text>` for
-    /// each connector with an error, after a blank line. Each control character of a
+    /// A table of the connectors, then, after a blank line, for each connector a line
+    /// `<name>: note: <text>` when it has a note and a line `<name>: <class> error:
+    /// <text>` when it has an error. `COUNTS` holds each count as `<name>=<value>`,
+    /// in name order, or `-` when `state` is `unknown`. Each control character of a
     /// value is escaped, so a value stays on its line. With no connector, one line
     /// that does not tell whether the node places a connector.
     pub(crate) fn text(&self) -> String {
         if self.connectors.is_empty() {
             return "You can read no connector on this node.\n".to_owned();
         }
-        let count = |status: &Status, name: &str| {
-            let value = status.counts.as_ref().and_then(|counts| counts.get(name));
-            value.map_or_else(|| "-".to_owned(), ToString::to_string)
-        };
-        let head = ["CONNECTOR", "KIND", "STATE", "ADDRESS", "IN", "CONFIRMED"];
+        let head = ["CONNECTOR", "KIND", "STATE", "ADDRESS", "COUNTS"];
         let mut lines = vec![head.map(str::to_owned)];
-        lines.extend(self.connectors.iter().map(|status| {
-            [
-                escape_controls(&status.name),
-                escape_controls(&status.kind),
-                status.state.word().to_owned(),
-                status
-                    .address
-                    .as_deref()
-                    .map_or_else(|| "-".to_owned(), escape_controls),
-                count(status, "in"),
-                count(status, "confirmed"),
-            ]
-        }));
-        let mut widths = [0; 6];
+        lines.extend(self.connectors.iter().map(Status::cells));
+        let mut widths = [0; 5];
         for line in &lines {
             for (width, cell) in widths.iter_mut().zip(line) {
                 *width = (*width).max(cell.chars().count());
@@ -340,19 +331,49 @@ impl Output {
             text.push_str(cells.join("  ").trim_end());
             text.push('\n');
         }
-        let errors = self.connectors.iter().filter_map(|status| {
-            let error = status.error.as_ref()?;
-            let class = error.class.word();
-            let (name, text) =
-                (escape_controls(&status.name), escape_controls(&error.text));
-            Some(format!("{name}: {class} error: {text}\n"))
-        });
-        let errors: String = errors.collect();
-        if !errors.is_empty() {
+        let lines: String = self.connectors.iter().flat_map(Status::lines).collect();
+        if !lines.is_empty() {
             text.push('\n');
-            text.push_str(&errors);
+            text.push_str(&lines);
         }
         text
+    }
+}
+
+impl Status {
+    /// The cells of this connector in the table of [`Output::text`].
+    fn cells(&self) -> [String; 5] {
+        let counts = self.counts.as_ref().map_or_else(
+            || "-".to_owned(),
+            |counts| {
+                let counts =
+                    counts.iter().map(|(name, value)| format!("{name}={value}"));
+                escape_controls(&counts.collect::<Vec<_>>().join(" "))
+            },
+        );
+        [
+            escape_controls(&self.name),
+            escape_controls(&self.kind),
+            self.state.word().to_owned(),
+            self.address
+                .as_deref()
+                .map_or_else(|| "-".to_owned(), escape_controls),
+            counts,
+        ]
+    }
+
+    /// The note line, then the error line, of this connector in [`Output::text`].
+    fn lines(&self) -> impl Iterator<Item = String> {
+        let name = escape_controls(&self.name);
+        let note = self
+            .note
+            .as_ref()
+            .map(|note| format!("{name}: note: {}\n", escape_controls(note)));
+        let error = self.error.as_ref().map(|error| {
+            let (class, text) = (error.class.word(), escape_controls(&error.text));
+            format!("{name}: {class} error: {text}\n")
+        });
+        note.into_iter().chain(error)
     }
 }
 

@@ -138,6 +138,9 @@ _Static_assert(UA_TYPES_BYTESTRING == 14, "UA_TYPES_BYTESTRING moved");
 _Static_assert(UA_TYPES_VARIANT == 23, "UA_TYPES_VARIANT moved");
 _Static_assert(UA_NS0ID_SERVER_SERVERSTATUS_CURRENTTIME == 2258,
                "UA_NS0ID_SERVER_SERVERSTATUS_CURRENTTIME moved");
+_Static_assert(
+    UA_NS0ID_SERVER_SERVERCAPABILITIES_OPERATIONLIMITS_MAXNODESPERREAD == 11705,
+    "UA_NS0ID_SERVER_SERVERCAPABILITIES_OPERATIONLIMITS_MAXNODESPERREAD moved");
 _Static_assert(UA_SECURECHANNELSTATE_CLOSED == 0,
                "UA_SECURECHANNELSTATE_CLOSED moved");
 _Static_assert(sizeof(UA_SecureChannelState) == sizeof(int),
@@ -727,13 +730,28 @@ UA_StatusCode shim_response_result(const void *response) {
     return ((const UA_ResponseHeader *)response)->serviceResult;
 }
 
+/* Sets `request` to a Read request of no nodes with no timestamps. `shim_read_new` and
+ * `shim_read_ask` both build from it, so the size check sees each field. */
+static void read_request_init(UA_ReadRequest *request) {
+    UA_ReadRequest_init(request);
+    request->timestampsToReturn = UA_TIMESTAMPSTORETURN_NEITHER;
+}
+
+/* Sets `read` to the read of the Value of `node`, which it borrows the name of.
+ * `shim_read_new` and `shim_read_item` both build from it. */
+static void read_value_init(UA_ReadValueId *read, shim_node node) {
+    UA_ReadValueId_init(read);
+    read->attributeId = UA_ATTRIBUTEID_VALUE;
+    read->nodeId = shim_node_id(node);
+}
+
 /* Gives a Read request of the Value of each of the `count` nodes at `nodes`, with no
  * timestamps, which copies their names, or NULL when an allocation fails. */
 UA_ReadRequest *shim_read_new(const shim_node *nodes, size_t count) {
     UA_ReadRequest *request = UA_ReadRequest_new();
     if(!request)
         return NULL;
-    request->timestampsToReturn = UA_TIMESTAMPSTORETURN_NEITHER;
+    read_request_init(request);
     request->nodesToRead =
         (UA_ReadValueId *)UA_Array_new(count, &UA_TYPES[UA_TYPES_READVALUEID]);
     if(!request->nodesToRead) {
@@ -743,9 +761,11 @@ UA_ReadRequest *shim_read_new(const shim_node *nodes, size_t count) {
     request->nodesToReadSize = count;
     for(size_t i = 0; i < count; i++) {
         UA_ReadValueId *read = &request->nodesToRead[i];
-        read->attributeId = UA_ATTRIBUTEID_VALUE;
-        UA_NodeId id = shim_node_id(nodes[i]);
-        if(UA_NodeId_copy(&id, &read->nodeId) != UA_STATUSCODE_GOOD) {
+        read_value_init(read, nodes[i]);
+        /* The copy clears its target first, so a failed copy leaves no borrowed name
+         * for the delete. */
+        UA_NodeId name = read->nodeId;
+        if(UA_NodeId_copy(&name, &read->nodeId) != UA_STATUSCODE_GOOD) {
             UA_ReadRequest_delete(request);
             return NULL;
         }
@@ -774,24 +794,40 @@ UA_StatusCode shim_client_read(UA_Client *client, UA_ReadRequest *request,
     return status;
 }
 
-/* Gives the bytes of the body of the message of `request` sent with a session token of
- * `token` encoded bytes. */
-size_t shim_read_ask(const UA_ReadRequest *request, size_t token) {
+/* Gives the bytes of the body of the message of a Read request of no nodes sent with a
+ * session token of `token` encoded bytes. A request of nodes adds `shim_read_item` of
+ * each. */
+size_t shim_read_ask(size_t token) {
     const UA_DataType *type = &UA_TYPES[UA_TYPES_READREQUEST];
+    UA_ReadRequest request;
+    read_request_init(&request);
     return UA_calcSizeBinary(&type->binaryEncodingId, &UA_TYPES[UA_TYPES_NODEID], NULL) +
-           UA_calcSizeBinary(request, type, NULL) -
-           UA_calcSizeBinary(&request->requestHeader.authenticationToken,
+           UA_calcSizeBinary(&request, type, NULL) -
+           UA_calcSizeBinary(&request.requestHeader.authenticationToken,
                              &UA_TYPES[UA_TYPES_NODEID], NULL) +
            token;
 }
 
-/* Gives the most bytes of the body of the message of a good answer of a read of `count`
- * nodes that each hold a Double, the largest scalar of `shim_value_scalar`, with each
- * field of each value, or `SIZE_MAX` past it. */
-size_t shim_read_answer(size_t count) {
+/* Gives the bytes of the read of the Value of `node` in a Read request. */
+size_t shim_read_item(shim_node node) {
+    UA_ReadValueId read;
+    read_value_init(&read, node);
+    return UA_calcSizeBinary(&read, &UA_TYPES[UA_TYPES_READVALUEID], NULL);
+}
+
+/* Gives the bytes of the body of the message of a good answer of a read of no nodes. A
+ * good answer of nodes adds `shim_read_answer_item` of each. */
+size_t shim_read_answer(void) {
     const UA_DataType *type = &UA_TYPES[UA_TYPES_READRESPONSE];
     UA_ReadResponse response;
     UA_ReadResponse_init(&response);
+    return UA_calcSizeBinary(&type->binaryEncodingId, &UA_TYPES[UA_TYPES_NODEID], NULL) +
+           UA_calcSizeBinary(&response, type, NULL);
+}
+
+/* Gives the most bytes of the value of one node in a good answer: a Double, the largest
+ * scalar of `shim_value_scalar`, with each field of the value. */
+size_t shim_read_answer_item(void) {
     UA_Double value = 0;
     UA_DataValue result;
     UA_DataValue_init(&result);
@@ -802,13 +838,7 @@ size_t shim_read_answer(size_t count) {
     result.hasServerTimestamp = true;
     result.hasSourcePicoseconds = true;
     result.hasServerPicoseconds = true;
-    size_t fixed =
-        UA_calcSizeBinary(&type->binaryEncodingId, &UA_TYPES[UA_TYPES_NODEID], NULL) +
-        UA_calcSizeBinary(&response, type, NULL);
-    size_t each = UA_calcSizeBinary(&result, &UA_TYPES[UA_TYPES_DATAVALUE], NULL);
-    if(count > (SIZE_MAX - fixed) / each)
-        return SIZE_MAX;
-    return fixed + count * each;
+    return UA_calcSizeBinary(&result, &UA_TYPES[UA_TYPES_DATAVALUE], NULL);
 }
 
 /* Gives the count of results of `response`, a Read response. */

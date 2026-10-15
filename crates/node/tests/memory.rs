@@ -2,8 +2,8 @@
 //!
 //! - `node::name` on a data directory with no file `name` and no mesh directory makes
 //!   no pool for the read of a founding, whose reservation is over 2 MiB.
-//! - `node::client::reach` makes one pool for its transport and its hub client, which
-//!   reserves at most 128 MiB.
+//! - `node::client::reach` makes one pool for its transport and its
+//!   `program::Session`, which reserves at most 128 MiB.
 //!
 //! The count covers each thread, so this binary has no test harness.
 
@@ -84,6 +84,7 @@ fn reach() {
         region: node::Region::Stored,
         name: "edge".parse().expect("a name"),
         settings: node::Settings::default(),
+        vars: std::collections::BTreeMap::new(),
     });
     assert_eq!(sim.run_for(Span::SECOND), Ok(()), "the node runs");
     sim.crash(&host, sim::Crash::Process);

@@ -2,10 +2,17 @@
   input. The CLI sends `{"status": {}}` to the node, and `ops::serve` runs it and
   replies `{"output": <Output>}`. `ops::status::Output` derives `Serialize`,
   `Deserialize`, and `JsonSchema`, and gives its terminal text with `text()`: a table of
-  connector, kind, state, address, in, and confirmed, then a line `<name>: <class>
-  error: <text>` for each connector with an error. The column `in` gives the count `in`:
-  the samples that the connector read and the home applied (`laptop.architect-2`,
-  2026-10-13T04:35:20Z,
+  connector, kind, state, address, and counts, then for each connector a line `<name>:
+  note: <text>` when its running kind shows a note, and a line `<name>: <class> error:
+  <text>` when it has an error. The column `counts` gives each count of the connector as
+  `<name>=<value>` in name order, or `-` when the state is unknown. The JSON form gives
+  `note`, or `null` when the kind shows none (`laptop.architect-2`,
+  2026-10-13T23:48:35Z,
+  https://github.com/synnaxlabs/foundation/issues/2630#issuecomment-6157620934, which
+  supersedes the columns `IN` and `CONFIRMED` of
+  https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186). The
+  count `in` gives the samples that the connector read and the home applied
+  (`laptop.architect-2`, 2026-10-13T04:35:20Z,
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6138315099, which
   supersedes the `c.status.in` line of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6053869186). The CLI
@@ -38,13 +45,15 @@
   https://github.com/synnaxlabs/foundation/pull/2528#issuecomment-6137032724).
   `ops::Node` takes the hub, the clock for the bound, and the node's name at
   construction. `state` is `running`, `restarting`, `stopped`, `ending`, or `unknown`;
-  with `unknown`, `restarts`, `counts`, and `error` are null. A connector whose newest
-  frame holds no status or lacks a status channel of the spec is `unknown` too. So is a
-  connector whose status channels the hub does not hold as the spec defines them yet (no
-  channel, a key, a sample type, or an index of another spec), and one whose status
-  channels an apply removes during the read. A frame that holds each status channel, of
-  channels that `config` carries over with their keys and definitions, is the status
-  until the supervisor writes its first frame
+  with `unknown`, `restarts`, `counts`, `error`, and `note` are null (`note` by
+  `laptop.architect-2`, 2026-10-13T23:48:35Z,
+  https://github.com/synnaxlabs/foundation/issues/2630#issuecomment-6157620934). A
+  connector whose newest frame holds no status or lacks a status channel of the spec is
+  `unknown` too. So is a connector whose status channels the hub does not hold as the
+  spec defines them yet (no channel, a key, a sample type, or an index of another spec),
+  and one whose status channels an apply removes during the read. A frame that holds
+  each status channel, of channels that `config` carries over with their keys and
+  definitions, is the status until the supervisor writes its first frame
   (https://github.com/synnaxlabs/foundation/issues/2531). When the reader of a connector
   does not open or ends for another cause, `status` fails with `ops.channel-read`, which
   names the connector and gives the text of the hub. `status` needs `read` on each

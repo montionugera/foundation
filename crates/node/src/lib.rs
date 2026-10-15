@@ -34,6 +34,8 @@ mod task;
 #[cfg(not(loom))]
 mod tests;
 
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fmt;
 use std::future::poll_fn;
 use std::iter;
@@ -101,6 +103,9 @@ pub struct Config<M> {
     /// The limits of the node's port, its peers, and its chunk store. A value that the
     /// transport refuses stops the node with [`Error::Transport`].
     pub settings: Settings,
+    /// The environment of the node process, which `env()` in a config reads. Main
+    /// gives `std::env::vars_os()`.
+    pub vars: BTreeMap<OsString, OsString>,
 }
 
 impl<M> fmt::Debug for Config<M> {
@@ -305,6 +310,7 @@ impl Node {
             budget: config.budget,
             inbox,
             time: clock.clone(),
+            vars: Arc::new(config.vars),
         };
         let roles = Role::all(mesh, wall, first, bind, serve, config.name, cores);
         let mut started = Vec::new();
@@ -424,7 +430,9 @@ impl Node {
     /// of the pool budget that needs a reservation of more than `usize::MAX` bytes,
     /// [`Error::Start`] for a shard that could not start or pin, or [`Error::Memory`]
     /// for a shard with no memory, else [`Error::Shards`] or [`Error::Directory`] for a
-    /// data directory that shard 0 could not claim, else [`Error::Name`],
+    /// data directory that shard 0 could not claim, else [`Error::NoCard`] for a data
+    /// directory with the directory of a mesh and no file `node.key`, or
+    /// [`Error::Directory`] for a check of them that fails, else [`Error::Name`],
     /// [`Error::Renamed`], [`Error::NoCard`], [`Error::Mesh`], [`Error::Key`], or
     /// [`Error::Directory`] for a stored name that it could not read or a name it could
     /// not keep, else [`Error::Port`] for a port that did not bind, else
@@ -736,6 +744,7 @@ impl Open {
         }
         let claimed = async {
             let lock = directory::claim(files, cores).await?;
+            identity::claim(files).await?;
             name::keep(files, name).await?;
             Ok::<_, Error>((lock, bind.bind(name)?))
         };
@@ -813,6 +822,8 @@ struct Serve {
     budget: Budget,
     inbox: task::Inbox<task::Task>,
     time: clock::Reader,
+    /// The environment of the node process, which the node's connectors read.
+    vars: Arc<BTreeMap<OsString, OsString>>,
 }
 
 /// What shard 0 binds the node's port with, once it claimed the data directory.
@@ -1096,7 +1107,7 @@ impl Serve {
         let (key, entropy) = (identity.key, endpoint.entropy.clone());
         let (clock, net) = (endpoint.clock.clone(), endpoint.net.clone());
         let address = endpoint.address(&identity);
-        let settings = endpoint.settings;
+        let (settings, vars) = (endpoint.settings, self.vars);
         let opened =
             endpoint.open(identity, files.clone(), pool, &self.time, tasks.clone());
         let Ok((transport, mesh)) = opened.await.map_err(&fail) else {
@@ -1113,13 +1124,8 @@ impl Serve {
                 return None;
             };
             let ended = mesh.as_ref().map(mesh::Mesh::ended);
-            // No kind reads `env()` yet. The environment of the process comes
-            // with the first one (#2583).
-            let secrets = secret::Resolver::new(
-                Arc::default(),
-                files.clone(),
-                &directory::secrets(),
-            );
+            let secrets =
+                secret::Resolver::new(vars, files.clone(), &directory::secrets());
             let serve = pin!(async move {
                 let region = mesh.clone().map(|mesh| hub::Region {
                     mesh,
@@ -1141,15 +1147,16 @@ impl Serve {
                             member.expect("invariant: a mesh opens only on a member");
                         let name = member.card.card().name.clone();
                         let kinds = Arc::new(kinds());
-                        let ops = operations(
-                            mesh,
-                            name.clone(),
-                            hub.clone(),
-                            clock.clone(),
-                            &time,
-                            &entropy,
-                            Arc::clone(&kinds),
-                        );
+                        let ops = Rc::new(ops::Node::new(ops::Config {
+                            mesh: mesh.clone(),
+                            keys: channel_keys(&time, &entropy),
+                            front_ends: front_ends(),
+                            kinds: Arc::clone(&kinds),
+                            hub: hub.clone(),
+                            clock: clock.clone(),
+                            name: name.clone(),
+                            secrets: secrets.clone(),
+                        }));
                         let config = connector::supervisor::Config {
                             kinds,
                             clock: clock.clone(),
@@ -1223,28 +1230,23 @@ fn channel_key(
     types::channel::Key::v7(at, u128::from_le_bytes(random))
 }
 
-/// The operations on `mesh`, as the node named `name` with `hub` and `clock`, with the
-/// connector kinds `kinds`, whose keys [`channel_key`] makes.
-fn operations(
-    mesh: &mesh::Mesh,
-    name: types::name::Name,
-    hub: hub::Hub,
-    clock: env::clock::Clock,
-    time: &clock::Reader,
-    entropy: &env::entropy::Entropy,
-    kinds: Arc<connector::kind::Table>,
-) -> Rc<ops::Node> {
-    let (time, entropy) = (time.clone(), entropy.clone());
-    let channel = move || channel_key(&time, &entropy);
-    let front_ends = ops::FrontEnds::new(
+/// The front ends of the config files that the operations read.
+fn front_ends() -> ops::FrontEnds {
+    ops::FrontEnds::new(
         "hcl",
         ops::FrontEnd {
             read: config_hcl::read,
         },
-    );
-    let node =
-        ops::Node::new(mesh.clone(), channel, front_ends, kinds, hub, clock, name);
-    Rc::new(node)
+    )
+}
+
+/// Gives the key of each channel that the operations make ([`channel_key`]).
+fn channel_keys(
+    time: &clock::Reader,
+    entropy: &env::entropy::Entropy,
+) -> Box<dyn Fn() -> types::channel::Key> {
+    let (time, entropy) = (time.clone(), entropy.clone());
+    Box::new(move || channel_key(&time, &entropy))
 }
 
 /// Gives `hub` the access rules of the spec that `mesh` uses, and makes `runs` match
@@ -1434,10 +1436,10 @@ pub enum Error {
     /// The data directory holds no node name and stores no founding, and the start gave
     /// no name.
     Unnamed,
-    /// The data directory stores a founding and holds no file `name`, and the founding
-    /// holds no card of the node: the file `node.key` is not there, or it holds a key
-    /// with no card in the founding. A start that gives it wrote nothing: no file
-    /// `name`, and no new `node.key`, because a new key is a new node to its region.
+    /// The data directory has the directory of a mesh, and the file `node.key` is not
+    /// there, or, with no file `name`, it holds a key with no card in the founding of
+    /// its region. A start that gives it wrote no file `name` and no new `node.key`,
+    /// because a new key is a new node to its region.
     NoCard,
     /// The start gave `name`, which has a segment that starts with `@`. A region
     /// refuses it, so no shard started and the data directory keeps no name that its
@@ -1563,8 +1565,8 @@ impl fmt::Display for Error {
                 "the data directory holds no node name; give the node a name",
             ),
             Self::NoCard => f.write_str(
-                "the data directory stores a region and holds no file `name`, and the \
-                 file `node.key` is not there or holds a key that the founding of the \
+                "the data directory has the directory of a mesh, and the file \
+                 `node.key` is not there or holds a key that the founding of its \
                  region does not hold; restore `node.key` from a backup of this node, \
                  or give another data directory",
             ),

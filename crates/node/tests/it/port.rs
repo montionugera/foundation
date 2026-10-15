@@ -2,7 +2,6 @@
 //! directory.
 
 use std::cell::RefCell;
-use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -10,17 +9,14 @@ use std::time::Duration;
 
 use env::files::{Descriptor, Driver, Mode, Request};
 use transport::{Address, Class, Code};
-use types::byte::Size;
 use types::ed25519::PrivateKey;
 use types::time::Span;
 
+use crate::common::{PATIENCE, files, free, recv, start, start_node, wait};
 use crate::rig::Rig;
 
 /// The private key of the node.
 const KEY: PrivateKey = PrivateKey([2; 32]);
-
-/// How long the test waits for a step of another thread.
-const PATIENCE: Duration = Duration::from_secs(60);
 
 /// How long the node's open of its key takes. A dial waits 30 s, and the node takes
 /// no session until it has its key.
@@ -42,14 +38,16 @@ fn the_port_binds_at_once_when_the_lock_is_free() {
             .unwrap();
     });
     let listen = free();
-    let node = start_node(&rig, &shards, &threads, &io, listen);
+    let region = node::Region::Absent;
+    let node = start_node(&rig, &shards, &threads, &io, listen, region, Slow);
     // A task runs once the node takes sessions.
     let (serves, serving) = mpsc::channel();
     node.spawn(move |_| {
         serves.send(()).unwrap();
         async {}
     });
-    let load = Duration::from_nanos(LOAD.nanos().unsigned_abs());
+    // The claim, the read of the name, and the load each open `node.key`.
+    let load = Duration::from_nanos(LOAD.nanos().unsigned_abs()) * 3;
     if let Err(error) = recv(&serving, PATIENCE + load) {
         node.stop();
         panic!("the node does not serve ({error}): {:?}", node.join());
@@ -93,38 +91,6 @@ fn the_port_binds_at_once_when_the_lock_is_free() {
     for thread in io.take() {
         thread.join().unwrap();
     }
-}
-
-/// Starts a node on the real OS in `rig`, which listens on `listen`.
-fn start_node(
-    rig: &Rig,
-    shards: &env::shards::Shards,
-    threads: &env::threads::Threads,
-    io: &Rc<RefCell<Vec<env::thread::Handle>>>,
-    listen: SocketAddr,
-) -> node::Node {
-    let cores = u64::try_from(shards.cores().get()).unwrap();
-    let (dir, threads, io) = (rig.dir.clone(), threads.clone(), Rc::clone(io));
-    node::Node::start(node::Config {
-        shards: shards.clone(),
-        clock: os::clock(),
-        wall: os::wall().unwrap(),
-        budget: node::Budget {
-            pool: Size::from_bytes(cores * (512 << 10)),
-            disk: Size::from_bytes(cores * (8 << 20)),
-        },
-        memory: Box::new(|len| Ok(block::Heap::new(len))),
-        files: Box::new(move || {
-            let disk = Slow(files(&dir, &threads, &io));
-            Box::new(move || env::files::Files::new(disk))
-        }),
-        entropy: os::entropy(),
-        net: os::net(),
-        listen,
-        region: node::Region::Absent,
-        name: "edge".parse().expect("a name"),
-        settings: node::Settings::default(),
-    })
 }
 
 /// A disk whose open of `node.key` takes [`LOAD`] longer.
@@ -185,68 +151,6 @@ async fn lock(files: &env::files::Files) -> env::files::File {
             opened => return opened.expect("the lock opens"),
         }
     }
-}
-
-/// What a shard sends on `receiver`.
-///
-/// # Panics
-///
-/// When it sends nothing within 60 s.
-#[track_caller]
-fn wait<T>(receiver: &mpsc::Receiver<T>) -> T {
-    recv(receiver, PATIENCE).expect("the shard sends within 60 s")
-}
-
-/// What a shard sends on `receiver` within `timeout`.
-///
-/// # Errors
-///
-/// When it sends nothing within `timeout`, or the shard drops its sender.
-fn recv<T>(
-    receiver: &mpsc::Receiver<T>,
-    timeout: Duration,
-) -> Result<T, mpsc::RecvTimeoutError> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the test thread waits on a shard in real time"
-    )]
-    receiver.recv_timeout(timeout)
-}
-
-/// The disk of `dir` for one shard. `io` gets the handle of its I/O thread.
-fn files(
-    dir: &Path,
-    threads: &env::threads::Threads,
-    io: &RefCell<Vec<env::thread::Handle>>,
-) -> os::Disk {
-    let mut io = io.borrow_mut();
-    let name = format!("io-{}", io.len());
-    let (disk, thread) = os::files(dir, threads, &name).unwrap();
-    io.push(thread);
-    disk
-}
-
-/// A free UDP port of loopback.
-fn free() -> SocketAddr {
-    let at = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
-    let port = transport::Port::bind(&os::net(), at).unwrap();
-    let [Address::Udp(free)] = port.addresses()[..] else {
-        panic!("invariant: a port has one UDP socket");
-    };
-    free
-}
-
-/// Starts shard `name` on `main`.
-fn start<F: Future<Output = ()> + 'static>(
-    shards: &env::shards::Shards,
-    name: &str,
-    main: impl FnOnce(env::tasks::Tasks) -> F + Send + 'static,
-) -> env::thread::Handle {
-    let config = env::shards::Config {
-        name: name.into(),
-        core: None,
-    };
-    shards.start(config, main).unwrap()
 }
 
 /// Runs shard `name` on `main` until it ends.

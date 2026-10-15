@@ -223,10 +223,11 @@ pub enum Outcome {
         range: frame::Range,
     },
     /// A live group with samples found no room in the ring or the pool. Its seq is a
-    /// gap in the log. The gap is durable only when a later live entry of the index,
-    /// with samples or a handoff, is on disk: a restart before that gives the next
-    /// frame the same seq. After a [`Shard::shed`] and a [`Shard::carry`] of the index,
-    /// the next frame gets the same seq only when no later live entry was appended.
+    /// gap in the log, and each complete reader that it ends past misses it. The gap is
+    /// durable only when a later live entry of the index, with samples or a handoff, is
+    /// on disk: a restart before that gives the next frame the same seq. After a
+    /// [`Shard::shed`] and a [`Shard::carry`] of the index, the next frame gets the
+    /// same seq only when no later live entry was appended.
     Lost {
         /// The slot of the group's index.
         slot: Slot,
@@ -636,9 +637,11 @@ impl Shard {
     /// samples after the commit that holds it, while the bytes it has spent are below
     /// its credit: a frame spends what `charge` says. A frame that finds the credit
     /// spent waits for a [`grant`](Self::grant), and so does each later frame. A frame
-    /// that still waits when a later commit releases frames of the index is a miss:
-    /// the reader gets neither it nor a later frame, and [`take`](Self::take) gives
-    /// the frames before it, then [`Next::Behind`](reader::Next::Behind).
+    /// that still waits when a later commit releases frames of the index is a miss,
+    /// and so is a live frame that the write gives as [`Outcome::Lost`], with each
+    /// frame that waits for a grant then: the reader gets neither it nor a later
+    /// frame, and [`take`](Self::take) gives the frames before it, then
+    /// [`Next::Behind`](reader::Next::Behind).
     /// [`woken`](Self::woken) names the reader once for a miss with no frame to take,
     /// and not for a miss while frames wait to be taken. The home does not read a
     /// missed frame back from disk yet. Close the reader and open a new one. The new
@@ -971,11 +974,10 @@ fn spend<'a>(
                 Outcome::Applied { slot, range }
             }
             Ok(accepted) => {
-                let range = range(&accepted.seq());
+                let seq = accepted.seq();
+                let range = range(&seq);
                 index.spend(accepted);
-                if let Some(frame) = frozen {
-                    readers.lost(claim.place, frame);
-                }
+                readers.lost(claim.place, frozen, seq);
                 Outcome::Lost { slot, range }
             }
             Err(refusal) => Outcome::Refused { slot, refusal },
@@ -1964,6 +1966,32 @@ mod tests {
         });
     }
 
+    /// A live frame that finds no room is a frame that a complete reader misses.
+    #[test]
+    fn ends_a_complete_reader_behind_after_a_live_frame_lost_for_no_room() {
+        run(6, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(1 << 16).await;
+            let reader = complete(&mut shard, Slot::new(0));
+            let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
+            let mut applied = Vec::new();
+            for n in 0..u32::MAX {
+                let at = u64::from(n);
+                let stamp = 10 + i64::from(n);
+                let write = frame(&test.pool, &set, &[(0, &[stamp]), (1, &[1])]);
+                let written = shard.write(a, LIVE, write).expect("written");
+                if written == [lost(0, at, 1)] {
+                    break;
+                }
+                assert_eq!(written, [self::applied(0, at, 1)]);
+                applied.push(seq(at, 1));
+                shard.committed().await.expect("the commit ends");
+            }
+            woken(&mut shard);
+            assert_eq!(missed(&mut shard, reader, 0), applied);
+        });
+    }
+
     #[test]
     fn loses_a_live_frame_and_refuses_a_backfill_frame_when_the_pool_is_full() {
         run(7, |test| async move {
@@ -2028,6 +2056,39 @@ mod tests {
             drop((twin, blocks));
             shard.committed().await.expect("the commit ends");
             assert_eq!(stored(&shard, Slot::new(0), Path::Live), 0);
+        });
+    }
+
+    #[test]
+    fn ends_each_complete_reader_behind_at_a_frame_the_pool_could_not_freeze() {
+        run(16, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let zero = complete(&mut shard, Slot::new(0));
+            let two = complete(&mut shard, Slot::new(2));
+            let stamps: Vec<_> = (1..=100).collect();
+            let series: [(usize, &[i64]); 3] = [(0, &[10]), (1, &[1]), (2, &stamps)];
+            let live = frame(&test.pool, &set, &series);
+            let twin = frame(&test.pool, &set, &series);
+            let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
+            let room = [80, 56].map(|len| test.pool.alloc(len).expect("a block"));
+            let blocks = test.fill();
+            drop(room);
+            assert_eq!(
+                shard.write(a, LIVE, live),
+                Ok(&[lost(0, 0, 1), lost(2, 0, 100)][..])
+            );
+            drop((twin, blocks));
+            let next: [(usize, &[i64]); 3] = [(0, &[20]), (1, &[2]), (2, &[200])];
+            let next = frame(&test.pool, &set, &next);
+            assert_eq!(
+                shard.write(a, LIVE, next),
+                Ok(&[applied(0, 1, 1), applied(2, 100, 1)][..])
+            );
+            shard.committed().await.expect("the commit ends");
+            woken(&mut shard);
+            assert_eq!(missed(&mut shard, zero, 0), []);
+            assert_eq!(missed(&mut shard, two, 1), []);
         });
     }
 
@@ -2113,7 +2174,7 @@ mod tests {
             let over_block = over_block(&set, 1000, &[(2, &[stamp])]);
             assert_eq!(
                 shard.write(b, LIVE, over_block),
-                Ok(&[lost(0, 600, 240_000), lost(2, 16, 1)][..])
+                Ok(&[lost(0, 600, 240_000), lost(2, 13, 1)][..])
             );
         });
     }
@@ -3408,8 +3469,7 @@ mod tests {
         let ended = sim.run_on(&node, |node, tasks| async move {
             let test = Test::new(node, tasks);
             let buffer = test.create_buffer(AREA, BODY_MAX, 4).await;
-            let mut body = test.pool.alloc(2).expect("the pool has a block");
-            body.copy_from_slice(&[1, 0xff]);
+            let body = test.pool.copy(&[1, 0xff]).expect("the pool has a block");
             let record = Entry {
                 index: key(Slot::new(0)),
                 slot: Slot::new(0),
@@ -3419,7 +3479,7 @@ mod tests {
                 stored_at: Stamp::from_nanos(1),
                 last: None,
                 tag: 1,
-                parts: Some(body.freeze()).into(),
+                parts: Some(body).into(),
             };
             buffer.append([record]).expect("the ring has room");
             buffer.committed().await.expect("the commit ends");
@@ -4128,7 +4188,7 @@ mod tests {
         }
 
         #[test]
-        fn gives_a_complete_reader_a_lost_group_as_a_gap_in_seq() {
+        fn ends_a_complete_reader_behind_at_a_lost_group_after_the_frames_before_it() {
             run(35, |test| async move {
                 let set = two_indexes();
                 let mut shard = test.shard(AREA).await;
@@ -4142,7 +4202,7 @@ mod tests {
                 write(&test, &mut shard, a, &[40]);
                 shard.committed().await.expect("the commit ends");
                 assert_eq!(woken(&mut shard), [reader]);
-                assert_eq!(taken(&mut shard, reader, 0), [seq(0, 1), seq(3, 1)]);
+                assert_eq!(missed(&mut shard, reader, 0), [seq(0, 1)]);
             });
         }
 

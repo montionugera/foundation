@@ -2,10 +2,11 @@
   value: `env("NAME")`, `file("/absolute/path")`, or `secret("full.name")`. `secret()`
   also takes its name as a reference, `secret(full.name)`, as each name in a config does
   (HCL REFERENCES). `secret::Source::read` reads each attribute that takes a secret,
-  once a kind reads one (#2583). A bare string, another function, a count of arguments
-  other than 1, an argument that is not a string, an empty variable name or one with `=`
-  or NUL, a `file()` path that does not start with `/`, that has NUL, or that has a `..`
-  segment between `/` or `\`, and a bad `secret()` name are `secret.source`. Its text
+  such as `token` of the `influx` kind. A bare string, another function, a count of
+  arguments other than 1, an argument that is not a string, an empty variable name or
+  one with `=` or NUL, a `file()` path that does not start with `/`, that has NUL, or
+  that has a `..` segment between `/` or `\`, and a bad `secret()` name are
+  `secret.source`. Its text
   never quotes what the user wrote, because that can be a pasted token. `Source`
   displays its call with the argument as a string, such as `secret("full.name")`, so
   `plan` and `status` show the source and never the value. The person decided this on
@@ -31,9 +32,9 @@
 
   `secret::Resolver` gives the value of a source on one shard. `env()` reads the
   environment of the node process, which `node` main reads once at start
-  (`std::env::vars_os()`) and gives in `node::Config::vars` from the PR of the first
-  kind that reads a secret (a later step of #2583). Until then `node` gives an empty
-  map. `laptop.architect-2` moved this read to that step on 2026-10-14T03:52:12Z
+  (`std::env::vars_os()`) and gives in `node::Config::vars`, since the `token` of the
+  `influx` kind. `laptop.architect-2` moved this read to that PR on
+  2026-10-14T03:52:12Z
   (https://github.com/synnaxlabs/foundation/pull/2662#issuecomment-6160488141). No code
   below `node` reads the OS environment.
   To change the value, restart the node. A value that is not UTF-8 gives its bytes.
@@ -56,13 +57,39 @@
   of the node is not set. Start the node with it set to the value`, other than `BadName`
   of the store, which stays `Error::Config`. The mode check of #2596 is for the store of
   `secret()` only, because Docker and Kubernetes mount a secret file with mode 0444 or
-  0644. `plan` resolves each source of each connector that the planning node runs, with
-  the same read, as `secret.unresolved` (a later step of #2583). A connector on another
-  node is not checked at plan until #239. A person who can apply a spec can make the
-  node read any variable of its environment and any file that its user can read. The
-  trigger for a limit that the operator of the node sets at start, such as directories
-  and variable names: a spec applied by a subject that does not run the node. Decided by
-  `laptop.architect-2` on 2026-10-13T21:05:46Z
+  0644. A local `plan` reads each source of each connector of the planning node. A
+  remote `plan` reads them only for each connector that its subject may apply (`apply`
+  and `admin` on its name), through a clone of the resolver of the shard, as a run does,
+  and drops the value. Until #2694, a subject with `apply` and `admin` on the name of a
+  new connector but not on its status channels learns from a remote `plan` the error of
+  each source that gives no value: whether it is set or there, whether it is empty, its
+  size when over 64 KiB, the OS error of a failed file call, and, for `secret()`, the
+  absolute path of the data directory. A remote `plan` reads no source of another
+  connector, so a subject that may only plan learns nothing of the files and the
+  environment of the node. Each source that gives no value, `BadName` too, is a
+  `secret.unresolved` problem at its call, with the text `the secret <source>: <error>`.
+  These problems come after those of `config::plan::plan` in one list: the connectors in
+  name order, and the sources of each in the order of its config. A plan that
+  `config::check` refuses reads no source. A plan file that a subject who may not apply
+  a connector made has no read of its sources, also when a subject who may apply it
+  applies the file, until `apply` reads them (#2694). This is the plan of item 7
+  (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6161179051), with
+  the filter by subject that `laptop.architect-2` approved on 2026-10-14T19:52:43Z
+  (https://github.com/synnaxlabs/foundation/pull/2692#issuecomment-6177025658). For a
+  remote plan, it supersedes "each connector that the planning node runs" in item 7 of
+  https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6155189112. A
+  connector on another node is not checked at plan until #239. A person who can apply a
+  spec can make the node read any variable of its environment and any file that its user
+  can read. The trigger for a limit that the operator of the node sets at start, such as
+  directories and variable names: a spec applied by a subject that does not run the
+  node. Decided by `laptop.architect-2` on 2026-10-13T21:05:46Z
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6155189112), with
   the surface that it approved on 2026-10-13T21:26:42Z
   (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6155552036).
+
+  A kind names `Source` and `Value` through `connector::secret`, which re-exports them
+  from `secret`. So a `connector-<kind>` crate does not depend on `secret`, and does
+  not see `Resolver`, the stores, or the seal, which no kind may call. Lost: `secret`
+  in the `connector-<kind>` line of the crate map. Decided by `laptop.architect-2` on
+  2026-10-14T04:40:48Z
+  (https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6161042898).

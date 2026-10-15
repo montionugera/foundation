@@ -4,6 +4,8 @@
 // The simulated servers need `os::net()`, which a `--cfg loom` build lacks.
 #![cfg(not(loom))]
 
+mod common;
+mod name;
 mod one_node;
 mod port;
 mod quickstart;
@@ -150,6 +152,7 @@ fn status_gives_each_connector_as_json() {
                 )
                 .into(),
             }),
+            note: None,
         }
     );
 }

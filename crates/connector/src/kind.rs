@@ -267,6 +267,16 @@ impl<C> Context<C> {
         self.status.clear();
     }
 
+    /// Shows `note` in the status of the running connector until the run ends or the
+    /// next call: a short text of how the run works other than its spec asks, such as
+    /// a mode that the device forces. The status gives it within one second. A note of
+    /// more than 1024 bytes keeps its first and last 510 bytes or less at char
+    /// boundaries, joined by `…`. The end of the run clears it, and a call after the
+    /// run returned shows nothing.
+    pub fn note(&self, note: &dyn fmt::Display) {
+        self.status.note(note);
+    }
+
     /// Connects streams and datagrams.
     #[must_use]
     pub fn net(&self) -> &Net {

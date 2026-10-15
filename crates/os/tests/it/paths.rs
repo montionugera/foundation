@@ -4,10 +4,11 @@ use std::fs::{self, Permissions};
 use std::io::Read;
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt, chown, symlink};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 
 use env::paths::{Error, Found};
+use rustix::fs::{CWD, RenameFlags, renameat_with};
 use rustix::io::Errno;
 
 use crate::cases::{self, Host};
@@ -133,6 +134,88 @@ fn a_write_takes_the_access_control_entries_that_its_directory_gives_new_files()
     os::paths().write(&path, b"new").unwrap();
     assert_eq!(entries(), [" 0: group:everyone inherited allow read"]);
     assert_eq!(mode(&path), 0o600);
+}
+
+/// The `posix_acl_xattr` form of `entries`: a version, then a tag, the bits, and a user
+/// for each.
+#[cfg(target_os = "linux")]
+fn access_list(entries: &[(u16, u16, u32)]) -> Vec<u8> {
+    let mut bytes = 2u32.to_le_bytes().to_vec();
+    for (tag, bits, user) in entries {
+        bytes.extend(tag.to_le_bytes());
+        bytes.extend(bits.to_le_bytes());
+        bytes.extend(user.to_le_bytes());
+    }
+    bytes
+}
+
+/// `os` sets no access control list.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_write_takes_the_access_control_entries_that_its_directory_gives_new_files() {
+    use rustix::fs::{XattrFlags, getxattr, setxattr};
+    let (owner, named, group, mask, other) = (0x01, 0x02, 0x04, 0x10, 0x20);
+    let (none, read, read_write, all, unnamed) = (0, 4, 6, 7, u32::MAX);
+    let scratch = Scratch::new();
+    let path = scratch.0.join("plant.hcl");
+    fs::write(&path, b"old").unwrap();
+    let access = "system.posix_acl_access";
+    let old = access_list(&[
+        (owner, read_write, unnamed),
+        (named, read, 4343),
+        (group, none, unnamed),
+        (mask, read, unnamed),
+        (other, none, unnamed),
+    ]);
+    setxattr(&path, access, &old, XattrFlags::empty()).unwrap();
+    // A list of only the mode bits is stored as no list.
+    let bare = scratch.0.join("bare.hcl");
+    fs::write(&bare, b"old").unwrap();
+    let mode_only = access_list(&[
+        (owner, read_write, unnamed),
+        (group, none, unnamed),
+        (other, none, unnamed),
+    ]);
+    setxattr(&bare, access, &mode_only, XattrFlags::empty()).unwrap();
+    let mut taken = [0; 64];
+    assert_eq!(getxattr(&bare, access, &mut taken[..]), Err(Errno::NODATA));
+    let given = access_list(&[
+        (owner, all, unnamed),
+        (named, read_write, 4242),
+        (group, read, unnamed),
+        (mask, all, unnamed),
+        (other, none, unnamed),
+    ]);
+    let default = "system.posix_acl_default";
+    setxattr(&scratch.0, default, &given, XattrFlags::empty()).unwrap();
+    let expected = access_list(&[
+        (owner, read_write, unnamed),
+        (named, read_write, 4242),
+        (group, read, unnamed),
+        (mask, none, unnamed),
+        (other, none, unnamed),
+    ]);
+    for path in [path, bare, scratch.0.join("site.hcl")] {
+        os::paths().write(&path, b"new").unwrap();
+        let len = getxattr(&path, access, &mut taken[..]).unwrap();
+        assert_eq!(taken[..len], expected);
+        assert_eq!(mode(&path), 0o600);
+    }
+    let tool = scratch.0.join("tool.hcl");
+    let mut open = fs::OpenOptions::new();
+    open.write(true).create_new(true).mode(0o666);
+    #[expect(clippy::disallowed_methods, reason = "the test makes a file as a tool")]
+    open.open(&tool).unwrap();
+    let len = getxattr(&tool, access, &mut taken[..]).unwrap();
+    let expected = access_list(&[
+        (owner, read_write, unnamed),
+        (named, read_write, 4242),
+        (group, read, unnamed),
+        (mask, read_write, unnamed),
+        (other, none, unnamed),
+    ]);
+    assert_eq!(taken[..len], expected);
+    assert_eq!(mode(&tool), 0o660);
 }
 
 #[test]
@@ -370,4 +453,98 @@ fn two_writers_of_one_path_each_write_whole() {
     }
     let entries = Ok(Found::Directory(vec![path]));
     assert_eq!(os::paths().read(&scratch.0, 1 << 12), entries);
+}
+
+/// `link` names a directory or a file at each instant: another thread swaps it with one
+/// rename. A read gives one of the two, never an error.
+#[test]
+fn a_read_of_a_path_that_swaps_a_directory_for_a_file_gives_one_of_them() {
+    let scratch = Scratch::new();
+    let (dir, file) = (scratch.0.join("dir"), scratch.0.join("file"));
+    fs::create_dir(&dir).unwrap();
+    fs::write(&file, b"x").unwrap();
+    let (link, next) = (scratch.0.join("link"), scratch.0.join("next"));
+    symlink(&dir, &link).unwrap();
+    let swap = || {
+        for target in [&file, &dir] {
+            symlink(target, &next).unwrap();
+            fs::rename(&next, &link).unwrap();
+        }
+    };
+    let other = race(swap, 5_000, &link, |read| {
+        matches!(read, Ok(Found::File(_) | Found::Directory(_)))
+    });
+    assert_eq!(other, None);
+}
+
+/// `plant` and `file` swap a directory and a file in one step.
+#[test]
+fn a_read_of_a_directory_that_becomes_a_file_gives_no_error() {
+    let scratch = Scratch::new();
+    let (plant, file) = (scratch.0.join("plant"), scratch.0.join("file"));
+    fs::create_dir(&plant).unwrap();
+    fs::write(&file, b"x").unwrap();
+    let swap = || {
+        renameat_with(CWD, &plant, CWD, &file, RenameFlags::EXCHANGE).unwrap();
+    };
+    let other = race(swap, 100_000, &plant, |read| {
+        matches!(read, Ok(Found::File(_) | Found::Directory(_)))
+    });
+    assert_eq!(other, None);
+}
+
+/// A path through `/dev/fd` names a directory that is removed before the read opens it.
+#[test]
+fn a_read_of_a_removed_directory_lists_no_entries() {
+    use std::os::fd::AsRawFd;
+    let scratch = Scratch::new();
+    let plant = scratch.0.join("plant");
+    fs::create_dir(&plant).unwrap();
+    #[expect(clippy::disallowed_methods, reason = "the test holds the directory")]
+    let held = fs::File::open(&plant).unwrap();
+    fs::remove_dir(&plant).unwrap();
+    let path = PathBuf::from(format!("/dev/fd/{}", held.as_raw_fd()));
+    assert_eq!(
+        os::paths().read(&path, 1 << 12),
+        Ok(Found::Directory(Vec::new()))
+    );
+}
+
+/// Reads `path` until another thread has called `swap` `cycles` times or ended, and
+/// gives the first read that `expected` refuses. The bound is on the swaps, not the
+/// reads, so a slow or busy host still races each read against many swaps. On macOS
+/// it stops at 1 000 swaps: the race shows there in the first swaps, and each swap is
+/// slow.
+fn race(
+    swap: impl Fn() + Sync,
+    cycles: usize,
+    path: &Path,
+    expected: impl Fn(&Result<Found, Error>) -> bool,
+) -> Option<Result<Found, Error>> {
+    let cycles = if cfg!(target_os = "macos") {
+        cycles.min(1_000)
+    } else {
+        cycles
+    };
+    let (done, stopped) = (AtomicUsize::new(0), AtomicBool::new(false));
+    thread::scope(|scope| {
+        #[expect(clippy::disallowed_methods, reason = "the test races the read")]
+        let swapper = scope.spawn(|| {
+            while !stopped.load(Ordering::Relaxed) {
+                swap();
+                done.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        let paths = os::paths();
+        let mut other = None;
+        // A panic in `swap` ends the swapper, and the scope then fails the test.
+        while other.is_none()
+            && done.load(Ordering::Relaxed) < cycles
+            && !swapper.is_finished()
+        {
+            other = Some(paths.read(path, 1 << 12)).filter(|read| !expected(read));
+        }
+        stopped.store(true, Ordering::Relaxed);
+        other
+    })
 }
