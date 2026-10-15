@@ -16,7 +16,7 @@ use crate::connection::Manager;
 use crate::event;
 use crate::node::Node;
 use crate::server::Server;
-use crate::value::Value;
+use types::sample::Value;
 
 /// The sessions and secure channels of [`serve`].
 const SESSIONS: u16 = 4;

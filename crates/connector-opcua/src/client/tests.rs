@@ -23,7 +23,7 @@ use crate::ffi::{self, Status};
 use crate::node::{Key, Name, Node};
 use crate::server::{Limits, Server};
 use crate::unwind::caught;
-use crate::value::Value;
+use types::sample::Value;
 
 /// The port of the test server.
 const PORT: u16 = 4840;

@@ -1,7 +1,6 @@
 //! The `opcua` kind: reads OPC UA nodes at a fixed rate, and writes one frame per
 //! tick.
 
-use std::mem::{Discriminant, discriminant};
 use std::{fmt, future};
 
 use connector::kind::{self, Channels, Context, Error};
@@ -14,7 +13,7 @@ use hub::writer::Writer;
 use types::authority::Authority;
 use types::frame::{self, Draft, Form, Label, Path, key_set};
 use types::name::Name;
-use types::sample::{Scalar, Type};
+use types::sample::{Scalar, Type, Value};
 #[cfg(feature = "sim")]
 use types::time::Span;
 use types::time::Stamp;
@@ -24,7 +23,7 @@ use crate::config::{self, Config, Read};
 use crate::event;
 use crate::ffi::Status;
 use crate::node::Node;
-use crate::value::{SCALARS, Value};
+use crate::value::{self, SCALARS};
 
 #[cfg(test)]
 #[cfg(feature = "sim")]
@@ -163,7 +162,7 @@ pub async fn writes(
 ) -> Result<Vec<u64>, Error> {
     let mut frames = Frames::open(ctx).await?;
     let types = frames.layout.types.iter();
-    let values: Vec<_> = types.map(|&(scalar, _)| Ok(Value::one(scalar))).collect();
+    let values: Vec<_> = types.map(|&scalar| Ok(value::one(scalar))).collect();
     let mut measures = Vec::with_capacity(count);
     for _ in 0..count {
         ctx.clock().sleep(Span::from_nanos(1_000_000)).await;
@@ -193,9 +192,8 @@ struct Frames<'a> {
 
 /// The series of the frame of each tick, and what fills each.
 struct Layout {
-    /// The sample type of the channel of each read, in order, and its variant of
-    /// [`Value`].
-    types: Vec<(Scalar, Discriminant<Value>)>,
+    /// The sample type of the channel of each read, in order.
+    types: Vec<Scalar>,
     /// Each entry of the key set and the bytes of its series.
     series: Vec<(usize, usize)>,
     /// The sample of each entry of the key set.
@@ -229,13 +227,9 @@ impl<'a> Frames<'a> {
         let (mut types, mut wrong) = (Vec::with_capacity(reads.len()), Vec::new());
         for (read, &entry) in reads.iter().zip(writer.entries()) {
             let data_type = entries[entry].data_type;
-            let variant = match data_type {
-                Type::Scalar(scalar) => Value::variant(scalar).map(|v| (scalar, v)),
-                _ => None,
-            };
-            match variant {
-                Some(pair) => types.push(pair),
-                None => wrong.push(sample_type(read, data_type)),
+            match data_type {
+                Type::Scalar(scalar) if SCALARS.contains(&scalar) => types.push(scalar),
+                _ => wrong.push(sample_type(read, data_type)),
             }
         }
         if !wrong.is_empty() {
@@ -436,7 +430,7 @@ fn fill(
     for (entry, bytes) in draft.iter_mut() {
         match fills[entry].read {
             None => bytes.copy_from_slice(&stamp.nanos().to_le_bytes()),
-            Some(read) => values.get(read).put(bytes),
+            Some(read) => values.get(read).write(bytes),
         }
     }
     for &group in groups {
@@ -461,16 +455,15 @@ enum Bad {
 
 impl<'a> Values<'a> {
     /// Gives `values`, or the position of the first bad one and why. `types` are the
-    /// sample types of the channels of the values, in order, each with its variant of
-    /// [`Value`].
+    /// sample types of the channels of the values, in order.
     fn new(
         values: &'a [Result<Value, Status>],
-        types: &[(Scalar, Discriminant<Value>)],
+        types: &[Scalar],
     ) -> Result<Self, (usize, Bad)> {
         let bad =
             (values.iter().zip(types).enumerate()).find_map(|(at, pair)| match pair {
-                (Ok(value), &(_, variant)) if discriminant(value) == variant => None,
-                (Ok(value), &(sample, _)) => Some((
+                (Ok(value), &sample) if value.scalar() == sample => None,
+                (Ok(value), &sample) => Some((
                     at,
                     Bad::Type {
                         value: value.scalar(),

@@ -7,7 +7,7 @@ use crate::connection::Manager;
 use crate::event;
 use crate::node::Node;
 use crate::unwind::caught;
-use crate::value::Value;
+use types::sample::Value;
 
 #[test]
 fn an_add_of_a_node_of_the_number_0_panics_and_frees_the_port() {

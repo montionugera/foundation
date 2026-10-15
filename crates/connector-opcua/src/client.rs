@@ -12,6 +12,7 @@ use std::task::Poll;
 use env::clock::Clock;
 use env::net::Net;
 use env::rng::Rng;
+use types::sample::Value;
 use types::time::Span;
 
 use crate::alloc;
@@ -19,7 +20,6 @@ use crate::connection::{CHUNKS, Manager, SENDS};
 use crate::event::Time;
 use crate::ffi::{self, Status};
 use crate::node::Node;
-use crate::value::Value;
 
 #[cfg(test)]
 mod tests;
@@ -477,7 +477,7 @@ unsafe extern "C" fn answer(
             // SAFETY: the response lives and has more results than `index`.
             let value = unsafe { ffi::shim_read_result(response, index) };
             // SAFETY: the value lives with the response.
-            unsafe { Value::of(value) }
+            unsafe { crate::value::of(value) }
         }));
         reads.values.set(values);
     }

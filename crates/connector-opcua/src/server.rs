@@ -13,7 +13,7 @@ use std::task::Poll;
 use crate::connection::Manager;
 use crate::ffi::{self, Status};
 use crate::node::{Key, Node};
-use crate::value::Value;
+use types::sample::Value;
 
 /// A started test server of open62541 on the loop of a connection manager.
 /// [`Server::close`] deletes it, and a drop leaks it.
@@ -57,7 +57,7 @@ unsafe extern "C" fn read(
     } else {
         (Value::F64(0.0), types::quality::Quality::GOOD)
     };
-    let (scalar, scalar_kind) = answer.raw();
+    let (scalar, scalar_kind) = crate::value::raw(answer);
     // SAFETY: as the caller ensures.
     unsafe { value.write(scalar) };
     // SAFETY: as the caller ensures.
@@ -123,7 +123,7 @@ impl Server {
     ///
     /// If open62541 refuses the node, or the key of `node` is the number 0.
     pub(crate) fn add_scalar(&self, node: &Node, value: Value) {
-        let (scalar, kind) = value.raw();
+        let (scalar, kind) = crate::value::raw(value);
         // SAFETY: the server lives, and it copies the name of `node` and `scalar`.
         let status = Status(unsafe {
             ffi::test::shim_server_add_scalar(
