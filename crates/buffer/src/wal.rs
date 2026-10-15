@@ -1308,8 +1308,9 @@ mod tests {
             Ok(plan)
         }
 
-        /// [`append`](Self::append) that leaves no block free. No writer fills the
-        /// ring so, but a walk reads any ring.
+        /// [`append`](Self::append) that leaves no block free: it plans as a restart
+        /// record does, and seals the record as data. No writer fills the ring so,
+        /// but a walk reads any ring.
         fn fill(&mut self, body: &[u8]) -> Result<Plan, Full> {
             let plan = Plan {
                 kind: Kind::Data,

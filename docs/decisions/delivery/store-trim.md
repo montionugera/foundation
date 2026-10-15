@@ -76,7 +76,8 @@
   (SHARD DISK), not the minimum of `Layout::new`. Decided by the architect: the headroom
   (#1222, https://github.com/synnaxlabs/foundation/pull/1222#issuecomment-6033965557,
   with the three blocks of
-  https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6177122793),
+  https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6177122793,
+  2026-10-14T19:58:01Z),
   the area that the bound needs (#1222,
   https://github.com/synnaxlabs/foundation/pull/1222#issuecomment-6034545693,
   2026-10-07T08:57:53Z, and with the skip in the `4c` case
