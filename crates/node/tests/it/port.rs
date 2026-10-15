@@ -2,11 +2,13 @@
 //! directory.
 
 use std::cell::RefCell;
-use std::path::Path;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc;
+use std::time::Duration;
 
-use env::files::Mode;
+use env::files::{Descriptor, Driver, Mode, Request};
 use transport::{Address, Class, Code};
 use types::ed25519::PrivateKey;
 use types::time::Span;
@@ -16,6 +18,10 @@ use crate::rig::Rig;
 
 /// The private key of the node.
 const KEY: PrivateKey = PrivateKey([2; 32]);
+
+/// How long the node's load of its key takes once it holds its port. A dial waits
+/// 30 s, and the node takes no session until it has its key.
+const LOAD: Span = Span::from_nanos(31_000_000_000);
 
 /// A peer holds a session when the node stops. The probe takes the lock as soon as
 /// the node frees it, and binds the node's port at once, with no retry.
@@ -34,15 +40,16 @@ fn the_port_binds_at_once_when_the_lock_is_free() {
     });
     let listen = free();
     let region = node::Region::Absent;
-    let node = start_node(&rig, &shards, &threads, &io, listen, region, |disk| disk);
-    // A task runs once the node takes sessions. The peer dials only then: a dial waits
-    // 30 s, and a loaded host can take longer to serve.
+    let slow = move |disk| Slow { disk, listen };
+    let node = start_node(&rig, &shards, &threads, &io, listen, region, slow);
+    // A task runs once the node takes sessions.
     let (serves, serving) = mpsc::channel();
     node.spawn(move |_| {
         serves.send(()).unwrap();
         async {}
     });
-    if let Err(error) = recv(&serving, PATIENCE) {
+    let load = Duration::from_nanos(LOAD.nanos().unsigned_abs());
+    if let Err(error) = recv(&serving, PATIENCE + load) {
         node.stop();
         panic!("the node does not serve ({error}): {:?}", node.join());
     }
@@ -85,6 +92,64 @@ fn the_port_binds_at_once_when_the_lock_is_free() {
     for thread in io.take() {
         thread.join().unwrap();
     }
+}
+
+/// A disk whose open of `node.key` takes [`LOAD`] longer while a socket holds
+/// `listen`. The claim opens the key on the task that binds the port, before the bind,
+/// so only the load waits.
+struct Slow {
+    disk: os::Disk,
+    listen: SocketAddr,
+}
+
+impl Driver for Slow {
+    fn open<'a>(
+        &'a self,
+        path: &'a Path,
+        mode: Mode,
+    ) -> Request<'a, Box<dyn Descriptor>> {
+        Box::pin(async move {
+            if path == Path::new("node.key") && held(self.listen) {
+                os::clock().sleep(LOAD).await;
+            }
+            self.disk.open(path, mode).await
+        })
+    }
+
+    fn open_absolute<'a>(&'a self, path: &'a Path) -> Request<'a, Box<dyn Descriptor>> {
+        self.disk.open_absolute(path)
+    }
+
+    fn list<'a>(&'a self, dir: &'a Path) -> Request<'a, Vec<PathBuf>> {
+        self.disk.list(dir)
+    }
+
+    fn create_dir<'a>(&'a self, dir: &'a Path) -> Request<'a, ()> {
+        self.disk.create_dir(dir)
+    }
+
+    fn remove<'a>(&'a self, path: &'a Path) -> Request<'a, ()> {
+        self.disk.remove(path)
+    }
+
+    fn sync_dir<'a>(&'a self, dir: &'a Path) -> Request<'a, ()> {
+        self.disk.sync_dir(dir)
+    }
+
+    fn free(&self) -> Request<'_, u64> {
+        self.disk.free()
+    }
+
+    fn shown(&self, path: &Path) -> PathBuf {
+        self.disk.shown(path)
+    }
+}
+
+/// Whether a socket holds `listen`. A free address stays free: the probe frees it at
+/// once.
+fn held(listen: SocketAddr) -> bool {
+    let probe = transport::Port::bind(&os::net(), listen);
+    matches!(probe, Err(env::net::Error::AddressInUse { .. }))
 }
 
 /// Takes the lock of the data directory as soon as no node holds it.
