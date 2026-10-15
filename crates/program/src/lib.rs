@@ -1,4 +1,4 @@
-//! The client session of a program: it dials one node as a program, keeps its hello
+//! The session of a program: it dials one node as a program, keeps its hello
 //! admitted, and sends signed requests.
 
 mod turn;
@@ -25,7 +25,7 @@ use wire::hub::client::{
 
 use turn::{Taken, Turn};
 
-/// How long each hello of a [`Session`] lives. The client renews it at half its life.
+/// How long each hello of a [`Session`] lives. The session renews it at half its life.
 pub const LIFE: Span = Span::from_nanos(10 * Span::MINUTE.nanos());
 
 const HALF: Span = Span::from_nanos(LIFE.nanos() / 2);
@@ -46,24 +46,24 @@ pub struct Config {
     pub subject: Name,
     /// A private key that the spec lists for `subject`.
     pub key: PrivateKey,
-    /// The monotonic clock on which the client renews the hello.
+    /// The monotonic clock on which the session renews the hello.
     pub clock: env::clock::Clock,
     /// The source of the connection key.
     pub entropy: env::entropy::Entropy,
-    /// Where the client spawns the task that renews the hello.
+    /// Where the session spawns the task that renews the hello.
     pub tasks: env::tasks::Tasks,
-    /// The pool that the client sends from. It can be the pool of the program's
-    /// transport. Each message that the client sends takes a block from it, which the
+    /// The pool that the session sends from. It can be the pool of the program's
+    /// transport. Each message that the session sends takes a block from it, which the
     /// stream holds until the node acknowledges it. A message that finds the pool full
-    /// waits for a block, so a small pool makes the client slower, not fail. The wait
+    /// waits for a block, so a small pool makes the session slower, not fail. The wait
     /// ends when the session closes.
     pub pool: Rc<block::Pool>,
 }
 
 /// A program's session with one node, as one subject. It keeps the subject's hello
 /// admitted, and sends one request at a time. It stays on the thread that made it. A
-/// clone is the same session. When the last clone drops, the client closes the
-/// session with `Code(0)`.
+/// clone is the same session. When the last clone drops, it closes the session with
+/// `Code(0)`.
 #[derive(Clone, Debug)]
 pub struct Session(Rc<Handle>);
 
@@ -147,7 +147,7 @@ impl Session {
     }
 
     /// Sends `body` as a request signed with the subject's key, and gives the body of
-    /// the response. Requests of one client go one at a time, in the order they
+    /// the response. Requests of one session go one at a time, in the order they
     /// began. A request dropped before its response began keeps the turn until the
     /// response begins or the stream ends, because the node holds it open until then.
     ///
@@ -377,7 +377,7 @@ pub enum Error {
     /// The node finished a stream with no answer: a request with no response, or the
     /// hello stream with no challenge.
     Unanswered,
-    /// No block of the pool can hold a message that the client sends.
+    /// No block of the pool can hold a message that the session sends.
     Pool(block::Error),
 }
 
