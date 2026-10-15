@@ -3471,8 +3471,7 @@ mod tests {
         let ended = sim.run_on(&node, |node, tasks| async move {
             let test = Test::new(node, tasks);
             let buffer = test.create_buffer(AREA, BODY_MAX, 4).await;
-            let mut body = test.pool.alloc(2).expect("the pool has a block");
-            body.copy_from_slice(&[1, 0xff]);
+            let body = test.pool.copy(&[1, 0xff]).expect("the pool has a block");
             let record = Entry {
                 index: key(Slot::new(0)),
                 slot: Slot::new(0),
@@ -3482,7 +3481,7 @@ mod tests {
                 stored_at: Stamp::from_nanos(1),
                 last: None,
                 tag: 1,
-                parts: Some(body.freeze()).into(),
+                parts: Some(body).into(),
             };
             buffer.append([record]).expect("the ring has room");
             buffer.committed().await.expect("the commit ends");

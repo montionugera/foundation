@@ -181,18 +181,25 @@ fn client_reads(variable: client::Variable, count: usize) -> Vec<u64> {
 /// As through the manager, the ask allocates 3 and the answer allocates 1 for its
 /// results array and 1 for the value of each node. Each read is a new drive, whose
 /// sleep until the next timer of the loop allocates 1 more. The client swaps two
-/// buffers of values, and read 2 is the first to fill the second. The sim net
-/// allocates one more for each segment of 1460 bytes past the first: the ask of 64
-/// names takes 2.
+/// buffers of values. The connect fills one with 1 value, and read 2 is the first to
+/// fill it with more. The sim net allocates one more for each segment of 1460 bytes
+/// past the first: the ask of 64 names takes 2. A read of 300 or 600 nodes takes 2 or 3
+/// requests, of [`client::PER_READ`] nodes and the rest. Each request allocates 4 for
+/// its ask and its results array, each node 1, and the read sleeps once: 309 and 613.
+/// The rest, 2 and 7, is the segments of the asks, as measured: the sim net cuts the
+/// bytes that the client writes into segments as the window of the server lets them
+/// go, so the asks of one read share segments.
 fn a_read_of_a_client_allocates_a_fixed_count() {
     let cases = [
         (client::Variable::Number, 1, 6),
         (client::Variable::Name, 1, 6),
         (client::Variable::Number, 64, 69),
         (client::Variable::Name, 64, 70),
+        (client::Variable::Number, 300, 311),
+        (client::Variable::Number, 600, 620),
     ];
     for (variable, count, each) in cases {
-        let mut counts = vec![each + 1];
+        let mut counts = vec![each + u64::from(count > 1)];
         counts.extend([each; 98]);
         assert_eq!(
             client_reads(variable, count),

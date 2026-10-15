@@ -19,6 +19,7 @@ access = { path = "../access" }
 blob = { path = "../blob" }
 block = { path = "../block" }
 buffer = { path = "../buffer" }
+program = { path = "../program" }
 clock = { path = "../clock" }
 config-hcl = { path = "../config-hcl" }
 connector = { path = "../connector" }

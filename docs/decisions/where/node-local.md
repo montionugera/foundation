@@ -2,7 +2,7 @@
 
 | Concept | Defined or stored | Written by | Read by | Owner crate |
 | --- | --- | --- | --- | --- |
-| Kind | Binary: one literal table built in `node` | The build | `config` (check), `ops` (discover), supervisor (run) | `connector` (contract), `connector-<kind>` |
+| Kind | Binary: one literal table built in `node` | The build | `config` (check), `ops` (discover, browse, import), supervisor (run) | `connector` (contract), `connector-<kind>` |
 | Commandable parameter | The kind declares it; the connector config marks it commandable; value = a channel plus an ack under the connector's name; files give the starting value (index layout: X24) | Subjects with access and authority | The kind, through `ctx` | `connector` (library), the kind |
 | Run state | The `running` commandable parameter | As above | As above | `connector` |
 | Shared endpoint | Memory: an endpoint registry on the kind value (process lifetime) | The kind | Connectors of that kind on the node | `connector` (endpoint component) |

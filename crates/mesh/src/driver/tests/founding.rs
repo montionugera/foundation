@@ -48,7 +48,7 @@ fn founded(seed: u64) -> (Sim, sim::node::Node, region::Founding) {
 
 /// A first open with the founding of [`create_region`], and no record in the log.
 fn first_open() -> (Sim, sim::node::Node, region::Founding) {
-    let mut sim = Sim::new(sim::Config::default());
+    let mut sim = Sim::new(common::simulation(0));
     let node = sim.node(sim::node::Config::default());
     let region = sim
         .run_on(&node, |node, tasks| async move {
@@ -65,10 +65,7 @@ fn founded_with(
     definitions: BTreeMap<Name, Definition>,
     homes: BTreeMap<channel::Key, node::Key>,
 ) -> (Sim, sim::node::Node, region::Founding) {
-    let mut sim = Sim::new(sim::Config {
-        seed,
-        ..sim::Config::default()
-    });
+    let mut sim = Sim::new(common::simulation(seed));
     let node = sim.node(sim::node::Config::default());
     let region = sim
         .run_on(&node, |node, tasks| async move {
@@ -105,7 +102,7 @@ fn flip(sim: &mut Sim, node: &sim::node::Node, at: u64) -> u64 {
         let pool = create_pool();
         let byte = file.read_at(at, pool.alloc(1).unwrap()).await.unwrap();
         let flipped = byte.first().unwrap() ^ 1;
-        let block = crate::bytes::block(&pool, &[flipped]).unwrap();
+        let block = pool.copy(&[flipped]).unwrap();
         file.write_at(at, &[block]).await.unwrap();
         file.sync().await.unwrap();
         file.len()
@@ -371,7 +368,7 @@ fn a_failed_call_on_the_founding_file_gives_the_files_error() {
         };
         error
     };
-    let mut sim = Sim::new(sim::Config::default());
+    let mut sim = Sim::new(common::simulation(0));
     let node = sim.node(sim::node::Config::default());
     let region = sim
         .run_on(&node, |node, tasks| async move {
@@ -406,7 +403,7 @@ fn a_failed_call_on_the_founding_file_gives_the_files_error() {
 
 #[test]
 fn the_read_of_a_directory_with_no_founding_gives_none() {
-    let mut sim = Sim::new(sim::Config::default());
+    let mut sim = Sim::new(common::simulation(0));
     let node = sim.node(sim::node::Config::default());
     assert_eq!(read(&mut sim, &node, ""), None);
     assert_eq!(read(&mut sim, &node, "absent"), None, "not there");
@@ -416,7 +413,7 @@ fn the_read_of_a_directory_with_no_founding_gives_none() {
 /// record, and an open with it opens.
 #[test]
 fn the_read_gives_the_founding_that_the_first_open_kept() {
-    let mut sim = Sim::new(sim::Config::default());
+    let mut sim = Sim::new(common::simulation(0));
     let node = sim.node(sim::node::Config::default());
     let mut region = sim
         .run_on(&node, |node, tasks| async move {
@@ -482,7 +479,7 @@ fn a_reopen_with_the_same_founding_opens_whatever_the_order_of_its_members() {
 
 #[test]
 fn a_founding_with_definitions_opens_again() {
-    let mut sim = Sim::new(sim::Config::default());
+    let mut sim = Sim::new(common::simulation(0));
     let node = sim.node(sim::node::Config::default());
     let region = sim
         .run_on(&node, |node, tasks| async move {
@@ -569,7 +566,7 @@ fn a_founding_of_another_version_or_form_is_refused() {
             let len = u64::try_from(bytes.len()).unwrap();
             let file = node.files().open(path, Mode::Create { len }).await;
             let file = file.unwrap();
-            let block = crate::bytes::block(&pool, &bytes).unwrap();
+            let block = pool.copy(&bytes).unwrap();
             file.write_at(0, &[block]).await.unwrap();
             file.sync().await.unwrap();
         })
@@ -587,10 +584,7 @@ fn a_founding_of_another_version_or_form_is_refused() {
 fn a_power_cut_in_the_first_open_leaves_a_first_open() {
     let (mut cut_before, mut cut_after) = (0_usize, 0_usize);
     for step in 0..64 {
-        let mut sim = Sim::new(sim::Config {
-            seed: step,
-            ..sim::Config::default()
-        });
+        let mut sim = Sim::new(common::simulation(step));
         let node = sim.node(sim::node::Config::default());
         let region = sim
             .run_on(&node, |node, tasks| async move {
@@ -636,10 +630,7 @@ fn after_each_crash_before_the_founding_is_durable(
     for step in 0..960 {
         let span = Span::from_nanos(i64::try_from(step).unwrap().saturating_mul(5_000));
         let create = || {
-            let mut sim = Sim::new(sim::Config {
-                seed: step,
-                ..sim::Config::default()
-            });
+            let mut sim = Sim::new(common::simulation(step));
             let node = sim.node(sim::node::Config::default());
             let region = sim
                 .run_on(&node, |node, tasks| async move {
@@ -752,10 +743,7 @@ fn a_keep_after_a_dropped_keep_of_another_founding_keeps_its_founding() {
     let mut dropped = 0_usize;
     for run in 0..800_u64 {
         let (seed, step) = (run / 40, i64::try_from(run % 40).unwrap());
-        let mut sim = Sim::new(sim::Config {
-            seed,
-            ..sim::Config::default()
-        });
+        let mut sim = Sim::new(common::simulation(seed));
         let node = sim.node(sim::node::Config::default());
         let mut region = sim
             .run_on(&node, |node, tasks| async move {
@@ -860,10 +848,7 @@ fn memory_that_the_system_refuses_for_the_read_gives_the_pool_error() {
 #[test]
 fn the_founding_is_durable_when_it_is_kept() {
     for seed in 0..16 {
-        let mut sim = Sim::new(sim::Config {
-            seed,
-            ..sim::Config::default()
-        });
+        let mut sim = Sim::new(common::simulation(seed));
         let node = sim.node(sim::node::Config::default());
         let region = sim
             .run_on(&node, |node, tasks| async move {

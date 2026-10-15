@@ -15,8 +15,7 @@ use crate::{Error, Value};
 pub(crate) const LEN_MAX: u64 = 1 << 16;
 
 /// The reads of secret files on one shard: one read at a time, in the order they
-/// come, into a pool that writes zero over its bytes at the drop. Clones share the
-/// turn.
+/// come, into a pool from [`block::Pool::erased`]. Clones share the turn.
 #[derive(Clone)]
 pub(crate) struct Reads(Rc<Inner>);
 
@@ -82,8 +81,7 @@ impl Reads {
         }
         let len = usize::try_from(file.len()).expect("invariant: at most `LEN_MAX`");
         let config = pool(len);
-        let memory = block::Erased::new(config.reservation());
-        let pool = block::Pool::new(config, memory);
+        let pool = block::Pool::erased(config);
         let into = pool.alloc(len).expect("invariant: the pool holds the file");
         let read = file.read_at(0, into).await;
         file.close().await;

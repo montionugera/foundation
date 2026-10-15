@@ -241,6 +241,13 @@ struct Log {
     /// The seq at which the first synced entry starts. `None` before it, and after a
     /// carried tail: its count is exact, and no trim passed an entry after it.
     origin: Option<u64>,
+    /// The offset at which the lap of the path started: 0, the offset of the trim that
+    /// ended the lap before, or the tail of the hide that ended a lap that waited.
+    lap: u64,
+    /// The most runs that a trim of the lap met.
+    peak: u32,
+    /// The lap end of the path waits in [`Laps::due`] for a shrink.
+    due: bool,
 }
 
 impl Log {
@@ -253,6 +260,9 @@ impl Log {
             runs: VecDeque::new(),
             holder: None,
             origin: None,
+            lap: 0,
+            peak: 0,
+            due: false,
         }
     }
 
@@ -277,6 +287,50 @@ impl Log {
                     .expect("invariant: the carried count bounds it"),
             };
         }
+    }
+
+    /// Drops the oldest run when it is of the record at `offset`. Returns true when
+    /// the lap is due to end: the trim is the first at least `area` after the start
+    /// of the lap, and the lap does not wait for a shrink.
+    fn trim(&mut self, offset: u64, area: u64) -> bool {
+        let met = u32::try_from(self.runs.len()).unwrap_or(u32::MAX);
+        if self.runs.front().is_some_and(|run| run.offset == offset) {
+            self.runs.pop_front();
+        }
+        self.peak = self.peak.max(met);
+        !self.due && offset >= self.lap.saturating_add(area)
+    }
+
+    /// Whether the room is over four times the most runs that a trim of the lap
+    /// met, or over four with none.
+    fn oversized(&self) -> bool {
+        self.runs.capacity() > self.keep() << 2
+    }
+
+    fn keep(&self) -> usize {
+        usize::try_from(self.peak)
+            .expect("invariant: u32 fits usize")
+            .max(1)
+    }
+
+    /// Shrinks the room to twice the most runs that a trim of the lap met, or to two
+    /// with none.
+    #[cold]
+    fn shrink(&mut self) {
+        // No deque holds more than `isize::MAX` bytes, so no shift overflows.
+        self.runs.shrink_to(self.keep() << 1);
+    }
+
+    /// Keeps the lap open until a shrink is left for its end.
+    fn wait(&mut self) {
+        self.due = true;
+    }
+
+    /// Starts the next lap at `offset`.
+    fn start(&mut self, offset: u64) {
+        self.lap = offset;
+        self.peak = u32::try_from(self.runs.len()).unwrap_or(u32::MAX);
+        self.due = false;
     }
 
     /// Moves the durable tail past the entry, and makes the record at `offset` the
@@ -324,17 +378,132 @@ enum Synced {
     Marked { after: u64 },
 }
 
+/// The shrinks of the runs of a path that one [`Logs::hide`] does with no trim.
+const SHRINKS: usize = 256;
+
+/// The trims of a [`Logs::hide`] for each shrink that it adds to [`SHRINKS`].
+const TRIMS: usize = 4;
+
+/// The paths whose lap end waits for a shrink, and the shrinks of a [`Logs::hide`]
+/// with no trim.
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+struct Laps {
+    /// The shrinks of a hide with no trim.
+    most: usize,
+    /// The place of each path whose lap end waits, oldest first. [`Log::due`] marks
+    /// each, so a path is here at most once, and it holds at most the number of paths,
+    /// in room that [`Laps::add`] takes.
+    due: VecDeque<u32>,
+}
+
+impl Laps {
+    fn new() -> Self {
+        Self {
+            most: SHRINKS,
+            due: VecDeque::new(),
+        }
+    }
+
+    /// Makes room in `due` for each of `paths` paths, so that no hide allocates.
+    fn add(&mut self, paths: usize) {
+        let more = paths
+            .checked_sub(self.due.len())
+            .expect("invariant: a path waits at most once");
+        self.due.reserve(more);
+    }
+
+    /// The shrinks of a hide that starts now.
+    fn budget(&self) -> Budget {
+        Budget {
+            most: self.most,
+            trims: 0,
+            used: 0,
+        }
+    }
+
+    /// Ends the lap of `log`, at place `at`, at a trim at `offset`, and starts the
+    /// next there. When the room is over four times the most runs that a trim of the
+    /// lap met, or over four with none, the end shrinks it. So runs that swing inside
+    /// a lap take no allocation, and the room is at most four times the most runs of
+    /// two laps. When the end needs a shrink, and a path waits or `budget` has none
+    /// left, the lap stays open and the path waits at the back of `due`.
+    #[cold]
+    fn end(&mut self, budget: &mut Budget, log: &mut Log, at: u32, offset: u64) {
+        if log.oversized() {
+            if !self.due.is_empty() || !budget.take() {
+                log.wait();
+                self.due.push_back(at);
+                return;
+            }
+            log.shrink();
+        }
+        log.start(offset);
+    }
+
+    /// Ends the hide whose tail is `offset`: ends there the laps that wait, oldest
+    /// first, until the first that needs a shrink when `budget` has none left.
+    fn finish(&mut self, budget: &mut Budget, paths: &mut [Log], offset: u64) {
+        while let Some(&at) = self.due.front() {
+            let log = nth_mut(paths, at);
+            if log.oversized() {
+                if !budget.take() {
+                    return;
+                }
+                log.shrink();
+            }
+            log.start(offset);
+            self.due.pop_front();
+        }
+    }
+}
+
+/// The shrinks of one [`Logs::hide`]: [`Laps::most`], plus one for each [`TRIMS`]
+/// trims.
+#[derive(Debug)]
+struct Budget {
+    most: usize,
+    trims: usize,
+    used: usize,
+}
+
+impl Budget {
+    /// Counts `count` trims of the hide.
+    fn trimmed(&mut self, count: usize) {
+        self.trims = self
+            .trims
+            .checked_add(count)
+            .expect("invariant: the trims of a hide fit in memory");
+    }
+
+    /// Takes a shrink. Returns false when none is left.
+    fn take(&mut self) -> bool {
+        if self.used >= self.most.saturating_add(self.trims / TRIMS) {
+            return false;
+        }
+        self.used = self
+            .used
+            .checked_add(1)
+            .expect("invariant: a shrink is under the budget");
+        true
+    }
+}
+
 /// Every path the buffer holds, by the node's slot of the index and the path.
 /// `append` feeds it with each appended entry; the recovery walk and each sync
 /// feed it with each record's entries, in ring order. A trim hides the records
 /// before its tail.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct Logs {
+    /// The bytes of the ring: the least span of a lap of a path.
+    area: u64,
+    /// The lap end of each path.
+    laps: Laps,
     /// The place of the log of each path in `paths`.
     places: hash::Map<(Slot, Path), u32>,
     /// The log of each path, in the order that each first came. No log leaves, so a
-    /// place in `places` and `items` stays valid. A change that drops a log updates
-    /// both.
+    /// place in `places`, `items`, and `laps` stays valid. A change that drops a log
+    /// updates each.
     paths: Vec<Log>,
     /// The offset of the newest record that holds a durable entry with each nonzero
     /// tag, by the log and the tag. Tag 0 marks samples, which no caller looks up. A
@@ -360,6 +529,8 @@ pub(crate) struct Logs {
 impl PartialEq for Logs {
     fn eq(&self, other: &Self) -> bool {
         let Self {
+            area,
+            laps,
             places,
             paths,
             tags,
@@ -369,7 +540,9 @@ impl PartialEq for Logs {
             scanned: _,
             marked,
         } = self;
-        *places == other.places
+        *area == other.area
+            && *laps == other.laps
+            && *places == other.places
             && *paths == other.paths
             && *tags == other.tags
             && *hidden == other.hidden
@@ -382,6 +555,22 @@ impl PartialEq for Logs {
 impl Eq for Logs {}
 
 impl Logs {
+    /// The logs of a ring of `area` bytes, with no path.
+    pub(crate) fn new(area: u64) -> Self {
+        Self {
+            area,
+            laps: Laps::new(),
+            places: hash::Map::default(),
+            paths: Vec::new(),
+            tags: hash::Map::default(),
+            hidden: 0,
+            items: Items::default(),
+            stale: 0,
+            scanned: 0,
+            marked: Marked::default(),
+        }
+    }
+
     /// Where `path` of the index at `slot` stands with every appended entry:
     /// `Tail::default()` before its first entry.
     pub(crate) fn appended(&self, slot: Slot, path: Path) -> Tail {
@@ -449,7 +638,13 @@ impl Logs {
 
     /// Hides the records before the offset `tail` from each later
     /// [`find`](Self::find) and [`tagged`](Self::tagged), and drops their runs. It
-    /// visits each path once for each run that it drops.
+    /// visits each path once for each run and carried tail of the records that it
+    /// hides, and each path whose lap end waits, up to the first that needs a shrink
+    /// when none is left. It shrinks the room of the runs of at most [`SHRINKS`]
+    /// paths, plus one for each [`TRIMS`] of those runs and carried tails, at their
+    /// lap ends, first in, first out. The others wait for a later call: a path waits
+    /// less than [`TRIMS`] areas of trims, because a trim of each path falls in each
+    /// area.
     ///
     /// # Panics
     ///
@@ -460,16 +655,19 @@ impl Logs {
             "invariant: the hidden tail {tail} goes back from {}",
             self.hidden
         );
+        let mut budget = self.laps.budget();
         self.hidden = tail;
         self.marked.hide(tail);
         while let Some((offset, places)) = self.items.pop(tail) {
+            budget.trimmed(places.len());
             for at in places {
-                let runs = &mut nth_mut(&mut self.paths, at).runs;
-                if runs.front().is_some_and(|run| run.offset == offset) {
-                    runs.pop_front();
+                let log = nth_mut(&mut self.paths, at);
+                if log.trim(offset, self.area) {
+                    self.laps.end(&mut budget, log, at, offset);
                 }
             }
         }
+        self.laps.finish(&mut budget, &mut self.paths, tail);
     }
 
     /// The ranges in which no trim lands. A trim never lands after the previous
@@ -584,6 +782,7 @@ impl Logs {
         let at = u32::try_from(self.paths.len()).expect("invariant: paths fit in u32");
         self.paths.push(log);
         self.places.insert(key, at);
+        self.laps.add(self.paths.len());
         at
     }
 
@@ -901,6 +1100,9 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    /// The area of the logs of each test: 64 records of a block.
+    const AREA: u64 = 64 * 4096;
+
     fn slot(value: u32) -> Slot {
         Slot::new(value)
     }
@@ -1024,7 +1226,7 @@ mod tests {
         fn follows_a_model_per_path(
             records in prop::collection::vec(prop::collection::vec(next(), 1..5), 0..12),
         ) {
-            let mut logs = Logs::default();
+            let mut logs = Logs::new(AREA);
             let mut fed: Vec<(Slot, Header, u64)> = Vec::new();
             for (number, record) in records.iter().enumerate() {
                 let offset = 4096 * (u64::try_from(number).expect("small") + 1);
@@ -1076,7 +1278,7 @@ mod tests {
             ),
             trims in prop::collection::vec(prop::option::of(0..14u64), 12),
         ) {
-            let mut logs = Logs::default();
+            let mut logs = Logs::new(AREA);
             let mut fed: Vec<(Slot, Header, u64)> = Vec::new();
             let mut tail = 0;
             for ((record, trim), number) in records.iter().zip(&trims).zip(1..) {
@@ -1147,7 +1349,7 @@ mod tests {
                 1..12,
             ),
         ) {
-            let mut logs = Logs::default();
+            let mut logs = Logs::new(AREA);
             let mut model = Model::default();
             let numbered = records.iter().zip(1..);
             for ((record, reach, limit, trim, carries), number) in numbered {
@@ -1290,7 +1492,7 @@ mod tests {
 
     #[test]
     fn a_new_path_stands_at_seq_zero_with_no_stamp() {
-        let logs = Logs::default();
+        let logs = Logs::new(AREA);
         assert_eq!(logs.appended(slot(1), Path::Live), Tail::default());
         assert_eq!(logs.durable(slot(1), Path::Live), Tail::default());
         assert_eq!(logs.runs(slot(1), Path::Live).count(), 0);
@@ -1298,7 +1500,7 @@ mod tests {
 
     #[test]
     fn each_path_of_an_index_has_its_own_tail() {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         logs.append(slot(1), &header(1, Path::Live, 0, 3, Some(30)))
             .expect("appends");
         logs.append(slot(1), &header(1, Path::Backfill, 0, 1, Some(10)))
@@ -1328,7 +1530,7 @@ mod tests {
 
     #[test]
     fn a_skip_ahead_moves_the_seq_past_the_gap() {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         logs.append(slot(1), &header(1, Path::Live, 0, 2, Some(2)))
             .expect("appends");
         logs.append(slot(1), &header(1, Path::Live, 10, 1, Some(11)))
@@ -1342,7 +1544,7 @@ mod tests {
 
     #[test]
     fn an_entry_with_no_last_stamp_keeps_the_stamp() {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         logs.append(slot(1), &header(1, Path::Live, 0, 2, Some(2)))
             .expect("appends");
         logs.append(slot(1), &header(1, Path::Live, 2, 0, None))
@@ -1356,7 +1558,7 @@ mod tests {
 
     #[test]
     fn an_entry_below_the_tail_is_invalid_and_leaves_the_tail() {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         logs.append(slot(1), &header(1, Path::Live, 0, 3, None))
             .expect("appends");
         let invalid = Invalid::Below {
@@ -1385,7 +1587,7 @@ mod tests {
 
     #[test]
     fn an_entry_past_the_last_seq_is_invalid_and_leaves_the_tail() {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         let invalid = Invalid::Past {
             index: channel::Key::from_u128(1),
             path: Path::Live,
@@ -1401,12 +1603,12 @@ mod tests {
             "an entry of index 00000000-0000-0000-0000-000000000001 on path Live \
              starts at 18446744073709551615 with 1 samples, past the last seq"
         );
-        assert_eq!(logs, Logs::default());
+        assert_eq!(logs, Logs::new(AREA));
     }
 
     #[test]
     fn a_record_with_two_entries_of_a_path_makes_one_run() {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         logs.sync(slot(1), &header(1, Path::Live, 0, 2, None), 4096)
             .expect("syncs");
         logs.sync(slot(1), &header(1, Path::Live, 2, 2, None), 4096)
@@ -1427,7 +1629,7 @@ mod tests {
 
     #[test]
     fn an_invalid_sync_changes_nothing() {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         logs.sync(slot(1), &header(1, Path::Live, 0, 3, None), 4096)
             .expect("syncs");
         let before = logs.clone();
@@ -1446,7 +1648,7 @@ mod tests {
 
     #[test]
     fn an_invalid_sync_of_a_new_path_changes_nothing() {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         let invalid = Invalid::Past {
             index: channel::Key::from_u128(1),
             path: Path::Live,
@@ -1457,13 +1659,13 @@ mod tests {
             logs.sync(slot(1), &header(1, Path::Live, u64::MAX, 1, None), 4096),
             Err(invalid)
         );
-        assert_eq!(logs, Logs::default());
+        assert_eq!(logs, Logs::new(AREA));
     }
 
     #[test]
     #[should_panic(expected = "invariant: record 4096 comes after record 8192")]
     fn a_record_before_the_newest_run_is_a_broken_invariant() {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         logs.sync(slot(1), &header(1, Path::Live, 0, 3, None), 8192)
             .expect("syncs");
         logs.sync(slot(1), &header(1, Path::Live, 3, 1, None), 4096)
@@ -1475,7 +1677,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "invariant: record 8192 comes after record 12288")]
     fn a_record_before_a_run_newer_than_the_holder_is_a_broken_invariant() {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         logs.sync(slot(1), &header(1, Path::Live, 0, 3, Some(30)), 4096)
             .expect("syncs");
         logs.sync(slot(1), &header(1, Path::Live, 3, 0, None), 12288)
@@ -1489,7 +1691,7 @@ mod tests {
         00000000-0000-0000-0000-000000000001 and index \
         00000000-0000-0000-0000-000000000002")]
     fn a_slot_with_a_second_index_is_a_broken_invariant() {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         logs.append(slot(1), &header(1, Path::Live, 0, 3, None))
             .expect("appends");
         logs.append(slot(1), &header(2, Path::Live, 3, 2, None))
@@ -1521,7 +1723,7 @@ mod tests {
     /// 5. A read from 5 starts in record 1, for the entry with no samples.
     #[test]
     fn a_read_from_the_seq_an_empty_entry_stands_at_starts_in_its_record() {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         logs.sync(slot(1), &header(1, Path::Live, 2, 3, None), 4096)
             .expect("syncs");
         logs.sync(slot(1), &header(1, Path::Live, 5, 0, None), 4096)
@@ -1548,7 +1750,7 @@ mod tests {
     /// Records at 4096, 8192, and 12288 hold [0, 3), [3, 6), and [6, 9) of one
     /// path, and the record at 4096 also holds [0, 2) of a second path.
     fn three_records() -> Logs {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         logs.sync(slot(2), &header(2, Path::Live, 0, 2, None), 4096)
             .expect("syncs");
         for record in 0..3 {
@@ -1603,7 +1805,7 @@ mod tests {
     /// an entry synced later is found.
     #[test]
     fn a_read_past_hidden_entries_with_no_samples_finds_the_durable_end() {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         logs.sync(slot(1), &header(1, Path::Live, 0, 4, None), 4096)
             .expect("syncs");
         logs.sync(slot(1), &header(1, Path::Live, 4, 0, None), 8192)
@@ -1651,7 +1853,7 @@ mod tests {
 
     #[test]
     fn the_oldest_holder_of_a_tail_is_kept() {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         assert_eq!(logs.kept(), None, "no path has a synced entry");
         logs.append(slot(1), &header(1, Path::Live, 0, 3, None))
             .expect("appends");
@@ -1684,7 +1886,7 @@ mod tests {
     /// shows the entries, so the test reads them.
     #[test]
     fn the_items_of_a_record_share_its_entry() {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         for index in 1..=3 {
             logs.sync(slot(index), &header(index, Path::Live, 0, 1, None), 4096)
                 .expect("syncs");
@@ -1711,7 +1913,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "invariant: record 4096 comes after record 8192")]
     fn a_record_before_a_hidden_holder_is_a_broken_invariant() {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         logs.sync(slot(1), &header(1, Path::Live, 0, 3, None), 8192)
             .expect("syncs");
         logs.hide(12288);
@@ -1742,7 +1944,7 @@ mod tests {
     /// Logs that the walk fed one record at 4096 with the entry [0, 3) of index 1
     /// on the live path, with `last`, and an entry with no samples at 3.
     fn walked(last: Option<i64>) -> Logs {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         for header in [
             header(1, Path::Live, 0, 3, last),
             header(1, Path::Live, 3, 0, None),
@@ -1758,7 +1960,7 @@ mod tests {
 
         #[test]
         fn moves_a_new_path_to_the_carried_tail_with_no_run() {
-            let mut logs = Logs::default();
+            let mut logs = Logs::new(AREA);
             logs.carry(slot(1), &carried(7, 2, Some(70)), 8192)
                 .expect("a new path takes any tail");
             assert_eq!(logs.kept(), Some(8192), "the carry record holds the tail");
@@ -1812,7 +2014,7 @@ mod tests {
         /// walk met the other two.
         #[test]
         fn starts_each_run_past_the_entries_that_a_trim_passed() {
-            let mut logs = Logs::default();
+            let mut logs = Logs::new(AREA);
             for offset in [4096, 8192] {
                 let header = header(1, Path::Live, 3, 0, None);
                 logs.append(slot(1), &header).expect("appends");
@@ -1969,7 +2171,7 @@ mod tests {
         /// with more entries with no samples than the walk met is a wrong shape.
         #[test]
         fn refuses_more_entries_with_no_samples_after_a_carried_tail_came_first() {
-            let mut logs = Logs::default();
+            let mut logs = Logs::new(AREA);
             logs.carry(slot(1), &carried(3, 1, None), 4096)
                 .expect("a new path");
             let header = header(1, Path::Live, 3, 0, None);
@@ -1985,7 +2187,7 @@ mod tests {
             };
             assert_eq!(invalid, Err(carried_to));
             assert_eq!(logs, before);
-            let mut logs = Logs::default();
+            let mut logs = Logs::new(AREA);
             logs.carry(slot(1), &carried(3, 1, None), 4096)
                 .expect("a new path");
             let tail = carried(3, 2, None);
@@ -2002,7 +2204,7 @@ mod tests {
         /// entries with no samples than the walk met is a wrong shape.
         #[test]
         fn refuses_more_entries_with_no_samples_after_a_carried_tail_of_a_met_path() {
-            let mut logs = Logs::default();
+            let mut logs = Logs::new(AREA);
             let header = header(1, Path::Live, 3, 0, None);
             logs.append(slot(1), &header).expect("appends");
             logs.sync(slot(1), &header, 4096).expect("syncs");
@@ -2026,7 +2228,7 @@ mod tests {
         /// one.
         #[test]
         fn refuses_a_carry_record_that_lists_a_path_twice() {
-            let mut new = Logs::default();
+            let mut new = Logs::new(AREA);
             let tail = carried(5, 0, None);
             new.carry(slot(1), &tail, 8192).expect("a new path");
             let mut met = walked(None);
@@ -2052,7 +2254,7 @@ mod tests {
         /// The walk met an entry with no samples at seq 3, then one at seq 5.
         #[test]
         fn refuses_more_entries_with_no_samples_when_a_walked_one_is_at_a_lower_seq() {
-            let mut logs = Logs::default();
+            let mut logs = Logs::new(AREA);
             for (first, offset) in [(3, 4096), (5, 8192)] {
                 let header = header(1, Path::Live, first, 0, None);
                 logs.append(slot(1), &header).expect("appends");
@@ -2152,7 +2354,7 @@ mod tests {
 
     /// Feeds `records` to logs as the walk does, from the record at `from` on.
     fn walk_from(records: &[(u64, Header)], from: u64) -> Logs {
-        let mut walked = Logs::default();
+        let mut walked = Logs::new(AREA);
         for (offset, header) in records.iter().filter(|(offset, _)| *offset >= from) {
             walked.append(slot(1), header).expect("appends");
             walked.sync(slot(1), header, *offset).expect("syncs");
@@ -2232,7 +2434,7 @@ mod tests {
     /// path, and moves down again. A carry record ends a range.
     #[test]
     fn a_landing_moves_down_out_of_each_range_it_lands_in() {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         let empty = |index, seq| header(index, Path::Live, seq, 0, None);
         logs.sync(slot(2), &empty(2, 5), 4096).expect("syncs");
         logs.sync(slot(1), &empty(1, 0), 8192).expect("syncs");
@@ -2251,7 +2453,7 @@ mod tests {
     /// so a landing in any of them moves down to its start in one step.
     #[test]
     fn a_landing_in_a_merged_range_moves_to_its_start() {
-        let mut logs = Logs::default();
+        let mut logs = Logs::new(AREA);
         let empty = |index, seq| header(index, Path::Live, seq, 0, None);
         logs.sync(slot(2), &empty(2, 5), 0).expect("syncs");
         logs.sync(slot(1), &empty(1, 0), 4096).expect("syncs");
@@ -2343,23 +2545,9 @@ mod tests {
         assert_eq!(marked.land(16384), 12288);
     }
 
-    /// S4: "memory holds 28 bytes per record and path and 24 bytes per record, in
-    /// deques that double: at most 56/51 of the area, plus 48 bytes per record". 65
-    /// one-block data records each hold an entry with no samples at seq 0 for each of
-    /// 80 paths: 80 * 51 + 13 bytes fit in 4096.
-    #[test]
-    fn marked_runs_keep_memory_in_the_s4_bound() {
-        let records: u64 = 65;
-        let paths: u32 = 80;
-        let mut logs = Logs::default();
-        for record in 0..records {
-            let offset = 4096 * (record + 1);
-            for index in 1..=paths {
-                let entry = header(index, Path::Live, 0, 0, None);
-                logs.append(slot(index), &entry).expect("appends");
-                logs.sync(slot(index), &entry, offset).expect("syncs");
-            }
-        }
+    /// The bytes that the runs, the items, and the ranges of `logs` hold. No call of
+    /// `Logs` shows the room of its deques, so the tests of S4 read it.
+    fn held(logs: &Logs) -> (usize, usize, usize) {
         let runs: usize = logs
             .paths
             .iter()
@@ -2368,14 +2556,627 @@ mod tests {
         let items = logs.items.places.capacity() * size_of::<u32>()
             + logs.items.records.capacity() * size_of::<(u64, u64)>();
         let marked = logs.marked.0.capacity() * size_of::<(u64, u64)>();
+        (runs, items, marked)
+    }
+
+    /// The bound of S4 on the bytes that [`held`] counts in a ring of `records`
+    /// one-block records with `paths` paths: "at most 488/51 of the area, plus 48 bytes
+    /// per record", and the room of the runs of each path with no run, 96 bytes.
+    fn s4_bound(records: u64, paths: u64) -> u64 {
+        4096 * records * 488 / 51 + 48 * records + 96 * paths
+    }
+
+    /// 65 one-block data records each hold an entry with no samples at seq 0 for each
+    /// of 80 paths: 80 * 51 + 13 bytes fit in 4096.
+    #[test]
+    fn marked_runs_keep_memory_in_the_s4_bound() {
+        let records: u64 = 65;
+        let paths: u32 = 80;
+        let mut logs = Logs::new(4096 * records);
+        for record in 0..records {
+            let offset = 4096 * (record + 1);
+            for index in 1..=paths {
+                let entry = header(index, Path::Live, 0, 0, None);
+                logs.append(slot(index), &entry).expect("appends");
+                logs.sync(slot(index), &entry, offset).expect("syncs");
+            }
+        }
+        let (runs, items, marked) = held(&logs);
         let held = u64::try_from(runs + items + marked).expect("fits");
-        let area = 4096 * records;
-        let bound = area * 56 / 51 + 48 * records;
+        let bound = s4_bound(records, u64::from(paths));
         assert!(
             held <= bound,
             "runs {runs} + items {items} + marked {marked} = {held} bytes, over the \
-             bound of {bound} for an area of {area}"
+             bound of {bound} for {records} records"
         );
+    }
+
+    /// The tests of #2636, with the bound of S4.
+    mod breaker {
+        use super::*;
+
+        /// One one-block record with one entry of each of 80 paths.
+        #[test]
+        fn one_record_of_80_paths_stays_in_the_s4_bound() {
+            let paths: u32 = 80;
+            let mut logs = Logs::new(4096);
+            for index in 1..=paths {
+                let entry = header(index, Path::Live, 0, 1, Some(1));
+                logs.append(slot(index), &entry).expect("appends");
+                logs.sync(slot(index), &entry, 4096).expect("syncs");
+            }
+            let (runs, items, marked) = held(&logs);
+            let total = u64::try_from(runs + items + marked).expect("fits");
+            let bound = s4_bound(1, u64::from(paths));
+            assert!(
+                total <= bound,
+                "runs {runs} + items {items} + marked {marked} = {total} bytes, over \
+                 the bound of {bound} for one record"
+            );
+        }
+
+        /// A ring of 65 records. Group after group of 80 paths fills its 64 data
+        /// records; each group then goes idle, a carry record takes the tails of each
+        /// group, and a trim to that carry record frees the records before it. So a
+        /// path gets a trim each lap after its group, and at most three of them shrink
+        /// its room to two runs.
+        #[test]
+        fn trimmed_records_keep_memory_in_the_s4_bound() {
+            let paths: u32 = 80;
+            let per_group: u64 = 64;
+            let groups: u32 = 8;
+            let ring_records = per_group + 1;
+            let mut logs = Logs::new(4096 * ring_records);
+            let mut offset = 0u64;
+            for group in 0..groups {
+                for _ in 0..per_group {
+                    offset += 4096;
+                    for index in 1..=paths {
+                        let index = group * paths + index;
+                        let at = slot(index);
+                        let first = logs.appended(at, Path::Live).seq;
+                        let entry = header(index, Path::Live, first, 1, Some(1));
+                        logs.append(at, &entry).expect("appends");
+                        logs.sync(at, &entry, offset).expect("syncs");
+                    }
+                }
+                offset += 4096;
+                let mut tails = Carried::default();
+                logs.idle(offset, usize::MAX, &mut tails);
+                logs.carried(&tails, offset);
+                assert_eq!(logs.kept(), Some(offset));
+                logs.hide(offset);
+            }
+            let rooms: Vec<usize> = (0..groups)
+                .map(|group| {
+                    let at = slot(group * paths + 1);
+                    let log = logs.log(at, Path::Live).expect("the path has a log");
+                    log.runs.capacity()
+                })
+                .collect();
+            assert_eq!(rooms, [2, 2, 2, 2, 2, 64, 64, 64]);
+            let (runs, items, marked) = held(&logs);
+            let total = u64::try_from(runs + items + marked).expect("fits");
+            let bound = s4_bound(ring_records, u64::from(groups * paths));
+            assert!(
+                total <= bound,
+                "runs {runs} + items {items} + marked {marked} = {total} bytes, over \
+                 the bound of {bound} for a ring of {ring_records} records"
+            );
+        }
+    }
+
+    /// Logs of a ring of `area` bytes, with one path that has a run in each of the
+    /// records 1 to `count`, of a block each.
+    fn one_path_with_runs(area: u64, count: u64) -> Logs {
+        let mut logs = Logs::new(area);
+        for record in 1..=count {
+            let entry = header(1, Path::Live, record - 1, 1, Some(1));
+            logs.append(slot(1), &entry).expect("appends");
+            logs.sync(slot(1), &entry, 4096 * record).expect("syncs");
+        }
+        logs
+    }
+
+    /// The room and the count of the runs of the path of index 1, which no call of
+    /// `Logs` shows. The `memory` test checks the room through the bytes of the heap.
+    fn room(logs: &Logs) -> (usize, usize) {
+        let log = logs.log(slot(1), Path::Live).expect("the path has a log");
+        (log.runs.capacity(), log.runs.len())
+    }
+
+    /// A log with room for `room` runs and a run in each of the records 1 to `runs`,
+    /// of a block each, in a lap that starts at 0.
+    fn log_with(room: usize, runs: u64) -> Log {
+        let mut log = Log::new(channel::Key::from_u128(1), Path::Live);
+        log.runs = VecDeque::with_capacity(room);
+        log.runs
+            .extend((1..=runs).map(|record| run(record - 1, 0, 4096 * record)));
+        log
+    }
+
+    fn room_of(log: &Log) -> (usize, usize) {
+        (log.runs.capacity(), log.runs.len())
+    }
+
+    /// A budget of `most` shrinks, with no trim.
+    fn budget(most: usize) -> Budget {
+        Budget {
+            most,
+            trims: 0,
+            used: 0,
+        }
+    }
+
+    /// Trims `log`, at place 0, at `offset`, and ends its lap when the trim does.
+    fn trim(laps: &mut Laps, budget: &mut Budget, log: &mut Log, offset: u64) {
+        if log.trim(offset, AREA) {
+            laps.end(budget, log, 0, offset);
+        }
+    }
+
+    #[test]
+    fn a_trim_inside_a_lap_keeps_the_room() {
+        let mut log = log_with(16, 3);
+        trim(&mut Laps::new(), &mut budget(usize::MAX), &mut log, 4096);
+        assert_eq!(room_of(&log), (16, 2));
+        assert_eq!((log.lap, log.peak), (0, 3));
+    }
+
+    #[test]
+    fn the_trim_that_ends_a_lap_keeps_the_room_of_runs_that_fill_a_quarter_of_it() {
+        let mut log = log_with(16, 4);
+        trim(&mut Laps::new(), &mut budget(usize::MAX), &mut log, AREA);
+        assert_eq!(room_of(&log), (16, 4));
+        assert_eq!((log.lap, log.peak), (AREA, 4));
+    }
+
+    /// The lap met 5 runs, though 1 is left at its end.
+    #[test]
+    fn the_trim_that_ends_a_lap_shrinks_the_room_to_twice_the_most_runs_of_the_lap() {
+        let (mut laps, mut budget) = (Laps::new(), budget(usize::MAX));
+        let mut log = log_with(32, 5);
+        for record in 1..=4 {
+            trim(&mut laps, &mut budget, &mut log, 4096 * record);
+        }
+        assert_eq!(room_of(&log), (32, 1));
+        trim(&mut laps, &mut budget, &mut log, AREA);
+        assert_eq!(room_of(&log), (10, 1));
+        assert_eq!((log.lap, log.peak), (AREA, 1));
+    }
+
+    #[test]
+    fn the_trim_that_ends_a_lap_with_no_run_keeps_room_for_two() {
+        let (mut laps, mut budget) = (Laps::new(), budget(usize::MAX));
+        let mut log = log_with(8, 1);
+        trim(&mut laps, &mut budget, &mut log, 4096);
+        trim(&mut laps, &mut budget, &mut log, AREA);
+        assert_eq!(room_of(&log), (2, 0));
+    }
+
+    #[test]
+    fn a_lap_ends_at_the_first_trim_an_area_after_its_start() {
+        let (mut laps, mut budget) = (Laps::new(), budget(usize::MAX));
+        let mut log = log_with(16, 0);
+        log.lap = 4096;
+        trim(&mut laps, &mut budget, &mut log, AREA);
+        assert_eq!((room_of(&log), log.lap), ((16, 0), 4096));
+        trim(&mut laps, &mut budget, &mut log, AREA + 4096);
+        assert_eq!((room_of(&log), log.lap), ((2, 0), AREA + 4096));
+    }
+
+    /// The lap waits at 3 runs met, then meets 5. The end of a hide with no shrink
+    /// keeps it in the queue once, and the next ends it with a shrink to twice 5.
+    #[test]
+    fn a_lap_end_with_no_shrink_left_waits_and_counts_the_runs_of_the_whole_lap() {
+        let mut laps = Laps::new();
+        let mut log = log_with(32, 3);
+        trim(&mut laps, &mut budget(0), &mut log, AREA);
+        assert_eq!((room_of(&log), log.lap, log.due), ((32, 3), 0, true));
+        assert_eq!(laps.due, [0]);
+        log.runs
+            .extend([run(3, 0, AREA + 4096), run(4, 0, AREA + 8192)]);
+        assert!(!log.trim(AREA + 4096, AREA));
+        assert_eq!((room_of(&log), log.lap, log.peak), ((32, 5), 0, 5));
+        laps.finish(&mut budget(0), std::slice::from_mut(&mut log), 2 * AREA);
+        assert_eq!((room_of(&log), log.lap, log.due), ((32, 5), 0, true));
+        assert_eq!(laps.due, [0]);
+        let mut next = budget(1);
+        laps.finish(&mut next, std::slice::from_mut(&mut log), 2 * AREA);
+        assert_eq!((room_of(&log), next.used, laps.due.len()), ((10, 5), 1, 0));
+        assert_eq!((log.lap, log.peak, log.due), (2 * AREA, 5, false));
+    }
+
+    #[test]
+    fn a_lap_end_with_no_shrink_left_and_none_needed_does_not_wait() {
+        let mut laps = Laps::new();
+        let mut log = log_with(16, 4);
+        trim(&mut laps, &mut budget(0), &mut log, AREA);
+        assert_eq!((room_of(&log), log.lap, log.due), ((16, 4), AREA, false));
+        assert!(laps.due.is_empty());
+    }
+
+    /// A trim in the wait meets 8 runs, so the end needs no shrink. Only this test,
+    /// through `Laps::due`, kills a drain that takes a shrink for a path that needs
+    /// none. #2774 moves the kill to `tests/memory`.
+    #[test]
+    fn a_lap_that_waits_and_needs_no_shrink_at_its_close_ends_with_none_left() {
+        let (mut laps, mut budget) = (Laps::new(), budget(0));
+        let mut log = log_with(32, 3);
+        trim(&mut laps, &mut budget, &mut log, AREA);
+        log.runs.extend((3..8).map(|n| run(n, 0, AREA + 4096 * n)));
+        assert!(!log.trim(AREA + 4096, AREA));
+        laps.finish(&mut budget, std::slice::from_mut(&mut log), 2 * AREA);
+        assert_eq!(
+            (room_of(&log), log.lap, log.due),
+            ((32, 8), 2 * AREA, false)
+        );
+        assert!(laps.due.is_empty());
+    }
+
+    #[test]
+    fn a_shrink_at_a_lap_end_takes_one_from_the_count() {
+        let mut budget = budget(2);
+        let mut log = log_with(32, 3);
+        trim(&mut Laps::new(), &mut budget, &mut log, AREA);
+        assert_eq!((room_of(&log), budget.used), ((6, 3), 1));
+    }
+
+    /// Only this test, through `Laps::due`, kills a lap end that goes ahead of a path
+    /// that waits. #2774 moves the kill to `tests/memory`.
+    #[test]
+    fn a_lap_end_that_needs_a_shrink_waits_behind_a_path_that_waits() {
+        let (mut laps, mut budget) = (Laps::new(), budget(1));
+        laps.due.push_back(0);
+        let mut log = log_with(32, 3);
+        if log.trim(AREA, AREA) {
+            laps.end(&mut budget, &mut log, 1, AREA);
+        }
+        assert_eq!((room_of(&log), log.due, budget.used), ((32, 3), true, 0));
+        assert_eq!(laps.due, [0, 1]);
+    }
+
+    #[test]
+    fn each_four_trims_of_a_hide_add_a_shrink() {
+        let (mut laps, mut budget) = (Laps::new(), budget(0));
+        budget.trimmed(3);
+        let mut log = log_with(32, 3);
+        trim(&mut laps, &mut budget, &mut log, AREA);
+        assert_eq!((room_of(&log), log.due), ((32, 3), true));
+        laps.due.clear();
+        budget.trimmed(1);
+        let mut log = log_with(32, 3);
+        trim(&mut laps, &mut budget, &mut log, AREA);
+        assert_eq!((room_of(&log), log.due, budget.used), ((6, 3), false, 1));
+    }
+
+    /// Each of 100,000 paths has an entry in each record of a ring of 4 blocks. The
+    /// first 8 records stay, so each path has room for 16 runs. Then each commit
+    /// trims to its own record, and the lap that holds 2 runs needs a shrink of each
+    /// path at the trim of record 12. That `hide`, and each `hide` after it, trims
+    /// 100,000 runs, so it shrinks 256 + 25,000 paths, first in, first out, until
+    /// each has room for 4. A path that shrinks at its trim starts its next lap there,
+    /// and one that waits at the tail of the `hide` that ends its wait.
+    #[test]
+    fn a_hide_shrinks_256_paths_and_one_for_each_four_trims_and_the_rest_wait_in_turn()
+    {
+        let paths: u32 = 100_000;
+        let mut logs = Logs::new(4 * 4096);
+        let rooms = |logs: &Logs| -> Vec<usize> {
+            logs.paths.iter().map(|log| log.runs.capacity()).collect()
+        };
+        let mut shrunk = Vec::new();
+        for record in 1..=17 {
+            for index in 1..=paths {
+                let at = slot(index);
+                let first = logs.appended(at, Path::Live).seq;
+                let entry = header(index, Path::Live, first, 1, Some(1));
+                logs.append(at, &entry).expect("appends");
+                logs.sync(at, &entry, 4096 * record).expect("syncs");
+            }
+            if record > 8 {
+                let before = rooms(&logs);
+                logs.hide(4096 * record);
+                let after = rooms(&logs);
+                let places: Vec<usize> = (0..before.len())
+                    .filter(|&at| after[at] < before[at])
+                    .collect();
+                let range = places.first().zip(places.last()).map(|(&a, &b)| a..b + 1);
+                assert_eq!(places.len(), range.clone().map_or(0, |r| r.len()));
+                shrunk.push(range);
+            }
+            if record == 14 {
+                assert!(
+                    logs.laps.due.capacity() <= 2 * 100_000,
+                    "S4 counts 8 bytes a path"
+                );
+            }
+        }
+        let budget = 256 + 100_000 / 4;
+        let mut expected = vec![None; 4];
+        expected.extend([
+            Some(0..budget),
+            Some(budget..2 * budget),
+            Some(2 * budget..3 * budget),
+            Some(3 * budget..100_000),
+            None,
+        ]);
+        assert_eq!(shrunk, expected);
+        assert!(logs.laps.due.is_empty());
+        assert!(logs.paths.iter().all(|log| log.runs.capacity() == 4));
+        let laps = [0, budget - 1, budget].map(|at| logs.paths[at].lap);
+        assert_eq!(laps, [4096 * 16, 4096 * 16, 4096 * 14]);
+    }
+
+    /// 4096 paths each hold a run in records 1 to 9, and a carry record takes the
+    /// tail of each. A hide drops the runs, and the hide of the carry record ends the
+    /// lap of each with no run to drop: it counts the 4096 carried tails as trims, so
+    /// it shrinks 256 + 1024 paths. It reads private state: #2774 moves the kill to
+    /// `tests/memory`.
+    #[test]
+    fn a_hide_counts_each_carried_tail_as_a_trim() {
+        let paths: u32 = 4096;
+        let mut logs = Logs::new(4 * 4096);
+        for record in 1..=9 {
+            for index in 1..=paths {
+                let at = slot(index);
+                let first = logs.appended(at, Path::Live).seq;
+                let entry = header(index, Path::Live, first, 1, Some(1));
+                logs.append(at, &entry).expect("appends");
+                logs.sync(at, &entry, 4096 * record).expect("syncs");
+            }
+        }
+        carry_idle(&mut logs, 4096 * 12);
+        logs.hide(4096 * 12);
+        assert!(logs.paths.iter().all(|log| log.runs.is_empty()));
+        let rooms: Vec<usize> =
+            logs.paths.iter().map(|log| log.runs.capacity()).collect();
+        logs.hide(4096 * 13);
+        let shrunk = logs
+            .paths
+            .iter()
+            .zip(&rooms)
+            .filter(|&(log, &room)| log.runs.capacity() < room)
+            .count();
+        assert_eq!((shrunk, logs.laps.due.len()), (256 + 1024, 4096 - 1280));
+    }
+
+    /// Writes one record at `offset`, with an entry of 51 bytes of each of
+    /// `indexes`, and moves `offset` past it.
+    fn record_at(
+        logs: &mut Logs,
+        offset: &mut u64,
+        records: &mut Vec<u64>,
+        indexes: impl IntoIterator<Item = u32>,
+    ) {
+        let at = *offset;
+        let mut count = 0;
+        for index in indexes {
+            let s = slot(index);
+            let first = logs.appended(s, Path::Live).seq;
+            let entry = header(index, Path::Live, first, 1, Some(1));
+            logs.append(s, &entry).expect("appends");
+            logs.sync(s, &entry, at).expect("syncs");
+            count += 1;
+        }
+        *offset += 51 * count;
+        records.push(at);
+    }
+
+    /// 8192 paths, each with an entry in each sweep record, and `most` shrinks in a
+    /// hide with no trim. 9 sweeps stay, then each commit trims to the oldest holder,
+    /// so one hide needs a shrink of each path, and most wait. In each of the next
+    /// `bursts` commits, one path late in the queue gets 65,535 records of its own,
+    /// which fit in the ring. Returns the most bytes of room of the runs after a
+    /// hide, and the S4 bound of the runs, items, and ranges (1256/51 of the area
+    /// plus 48 bytes per record) plus 96 bytes per path.
+    fn bursts_in_a_wait(most: usize, bursts: u32) -> (usize, usize) {
+        let paths: u32 = 8192;
+        let area: u64 = 512 * u64::from(paths);
+        let mut logs = Logs::new(area);
+        logs.laps.most = most;
+        let mut offset = 0;
+        let mut records = Vec::new();
+        for _ in 0..9 {
+            record_at(&mut logs, &mut offset, &mut records, 1..=paths);
+        }
+        let mut queued = false;
+        let mut burst = 0;
+        let mut worst = (0, 0);
+        for _ in 0..400 {
+            record_at(&mut logs, &mut offset, &mut records, 1..=paths);
+            assert!(offset - logs.hidden <= area, "the ring holds the records");
+            let kept = logs.kept().expect("a holder");
+            logs.hide(kept);
+            records.retain(|&record| record >= logs.hidden);
+            queued |= logs.paths[0].runs.capacity() < 16;
+            if queued && burst < bursts {
+                let path = paths - burst;
+                for _ in 0..65_535 {
+                    record_at(&mut logs, &mut offset, &mut records, [path]);
+                }
+                burst += 1;
+                assert!(offset - logs.hidden <= area, "the ring holds the records");
+            }
+            let room = logs
+                .paths
+                .iter()
+                .map(|log| log.runs.capacity())
+                .sum::<usize>()
+                * size_of::<Run>();
+            let bound = usize::try_from(1256 * area / 51).expect("fits")
+                + 48 * records.len()
+                + 96 * usize::try_from(paths).expect("fits");
+            if room > worst.0 {
+                worst = (room, bound);
+            }
+            if burst == bursts && logs.laps.due.is_empty() {
+                break;
+            }
+        }
+        worst
+    }
+
+    /// With 16 shrinks in a hide and no shrink for its trims, a lap end waits 512
+    /// hides, and the room passes the bound.
+    #[test]
+    fn the_runs_of_paths_that_wait_keep_the_s4_bound() {
+        let (room, bound) = bursts_in_a_wait(16, 60);
+        assert!(room <= bound, "{room} bytes of room, over {bound}");
+    }
+
+    /// The lap and the peak fit in the padding of a log, and a bucket of the map of
+    /// places holds 12 bytes. S4 counts both.
+    #[test]
+    fn a_log_takes_160_bytes_and_its_place_12() {
+        assert_eq!(size_of::<Log>(), 160);
+        assert_eq!(size_of::<((Slot, Path), u32)>(), 12);
+    }
+
+    /// Gives the tail of each idle path a carry record at `offset`, as a commit does.
+    fn carry_idle(logs: &mut Logs, offset: u64) {
+        let mut tails = Carried::default();
+        logs.idle(offset, usize::MAX, &mut tails);
+        logs.carried(&tails, offset);
+    }
+
+    /// A path holds 8 runs in a ring of 8 blocks, then no run, and a carry record in
+    /// each next block takes its tail, as a commit does. The trim of the record of
+    /// the eighth run ends the lap that held 8 runs, and the trim 8 blocks later ends
+    /// the lap that held none: from then on, the room is two.
+    #[test]
+    fn the_room_of_a_path_with_no_run_shrinks_at_the_end_of_the_next_lap() {
+        let mut logs = one_path_with_runs(8 * 4096, 8);
+        let mut rooms = Vec::new();
+        for record in 9..=20 {
+            carry_idle(&mut logs, 4096 * record);
+            let kept = logs.kept().expect("the path has a holder");
+            logs.hide(kept);
+            rooms.push(room(&logs));
+        }
+        let mut expected = vec![(8, 0); 8];
+        expected.extend([(2, 0); 4]);
+        assert_eq!(rooms, expected);
+    }
+
+    /// In a ring of one block, each trim ends a lap.
+    #[test]
+    fn a_trim_keeps_room_for_two_runs_of_a_path_it_empties() {
+        let mut logs = one_path_with_runs(4096, 8);
+        carry_idle(&mut logs, 4096 * 9);
+        logs.hide(4096 * 9);
+        assert_eq!(room(&logs), (2, 0));
+        let entry = header(1, Path::Live, 8, 1, Some(1));
+        logs.append(slot(1), &entry).expect("appends");
+        logs.sync(slot(1), &entry, 4096 * 10).expect("syncs");
+        assert_eq!(room(&logs), (2, 1));
+        assert_eq!(
+            logs.runs(slot(1), Path::Live).collect::<Vec<_>>(),
+            [run(8, 0, 4096 * 10)]
+        );
+    }
+
+    /// The runs that each path held after each step, the step before the trim that
+    /// ended each of its laps, and the hides since its lap end began to wait.
+    #[derive(Default)]
+    struct Seen {
+        held: Vec<usize>,
+        ends: Vec<usize>,
+        lap: u64,
+        waits: usize,
+    }
+
+    proptest! {
+        /// Records of a block each hold an entry of some of 8 paths, or the carried
+        /// tails of the idle paths, and a trim may follow each, up to the oldest
+        /// holder, in a ring of 4 blocks, with 1 or 2 shrinks for each hide and one
+        /// for each 4 trims. Each lap spans at least the area. After each trim, each
+        /// path has room for at most four times the most runs that it held from the
+        /// step before the end of the lap before the current one, or four with no run.
+        /// No hide shrinks more than its budget, and no lap end waits more hides than 8
+        /// over the count, rounded up.
+        #[test]
+        fn a_trim_keeps_the_room_of_each_path_in_four_times_its_runs_of_two_laps(
+            records in prop::collection::vec(
+                (
+                    prop::collection::vec(1..=8u32, 0..6),
+                    any::<bool>(),
+                    prop::option::of(0..80u64),
+                ),
+                1..60,
+            ),
+            shrinks in 1..=2usize,
+        ) {
+            let area = 4 * 4096;
+            let mut logs = Logs::new(area);
+            logs.laps.most = shrinks;
+            let mut seen: Vec<Seen> = Vec::new();
+            for (record, (indexes, carried, trim)) in (1..).zip(&records) {
+                let offset = 4096 * record;
+                if *carried {
+                    carry_idle(&mut logs, offset);
+                } else {
+                    for &index in indexes {
+                        let at = slot(index);
+                        let first = logs.appended(at, Path::Live).seq;
+                        let entry = header(index, Path::Live, first, 1, Some(1));
+                        prop_assert_eq!(logs.append(at, &entry), Ok(()));
+                        prop_assert_eq!(logs.sync(at, &entry, offset), Ok(()));
+                    }
+                }
+                seen.resize_with(logs.paths.len(), Seen::default);
+                for (log, laps) in logs.paths.iter().zip(&mut seen) {
+                    laps.held.push(log.runs.len());
+                }
+                let Some(trim) = trim else { continue };
+                let Some(kept) = logs.kept() else { continue };
+                let rooms: Vec<usize> =
+                    logs.paths.iter().map(|log| log.runs.capacity()).collect();
+                let tail = logs.hidden.max((4096 * trim).min(kept));
+                let trims = logs
+                    .items
+                    .since(0)
+                    .filter(|&(_, offset, _)| offset < tail)
+                    .count();
+                logs.hide(tail);
+                let shrunk = logs
+                    .paths
+                    .iter()
+                    .zip(&rooms)
+                    .filter(|&(log, &room)| log.runs.capacity() < room)
+                    .count();
+                prop_assert!(
+                    shrunk <= shrinks + trims / 4,
+                    "{} shrinks in one hide of {} trims",
+                    shrunk,
+                    trims
+                );
+                for (log, laps) in logs.paths.iter().zip(&mut seen) {
+                    let ended = log.lap != laps.lap;
+                    if ended {
+                        prop_assert!(log.lap >= laps.lap + area);
+                        laps.ends.push(laps.held.len() - 1);
+                        laps.lap = log.lap;
+                    }
+                    laps.waits = match (log.due, ended) {
+                        (false, _) => 0,
+                        (true, true) => 1,
+                        (true, false) => laps.waits + 1,
+                    };
+                    prop_assert!(laps.waits <= 8_usize.div_ceil(shrinks));
+                    laps.held.push(log.runs.len());
+                    let from = laps.ends.len().checked_sub(2).map_or(0, |n| laps.ends[n]);
+                    let most = laps.held[from..].iter().copied().max().unwrap_or(0);
+                    let room = log.runs.capacity();
+                    prop_assert!(
+                        room <= 4 * most.max(1),
+                        "room {} for at most {} runs of two laps",
+                        room,
+                        most
+                    );
+                }
+            }
+        }
     }
 
     /// A record of a model ring, at its offset: the tails a commit carried, or the
@@ -2422,7 +3223,7 @@ mod tests {
                 1..16,
             ),
         ) {
-            let mut logs = Logs::default();
+            let mut logs = Logs::new(AREA);
             let mut ring = Vec::new();
             let mut hidden = 0;
             let numbered = records.iter().zip(1..);
@@ -2468,7 +3269,7 @@ mod tests {
 
     /// The logs that a walk of the records of `ring` at or after `hidden` builds.
     fn walk_ring(ring: &[Written], hidden: u64) -> Result<Logs, TestCaseError> {
-        let mut walked = Logs::default();
+        let mut walked = Logs::new(AREA);
         for record in ring {
             match record {
                 Written::Carry(offset, tails) if *offset >= hidden => {

@@ -430,7 +430,9 @@ impl Node {
     /// of the pool budget that needs a reservation of more than `usize::MAX` bytes,
     /// [`Error::Start`] for a shard that could not start or pin, or [`Error::Memory`]
     /// for a shard with no memory, else [`Error::Shards`] or [`Error::Directory`] for a
-    /// data directory that shard 0 could not claim, else [`Error::Name`],
+    /// data directory that shard 0 could not claim, else [`Error::NoCard`] for a data
+    /// directory with the directory of a mesh and no file `node.key`, or
+    /// [`Error::Directory`] for a check of them that fails, else [`Error::Name`],
     /// [`Error::Renamed`], [`Error::NoCard`], [`Error::Mesh`], [`Error::Key`], or
     /// [`Error::Directory`] for a stored name that it could not read or a name it could
     /// not keep, else [`Error::Port`] for a port that did not bind, else
@@ -742,6 +744,7 @@ impl Open {
         }
         let claimed = async {
             let lock = directory::claim(files, cores).await?;
+            identity::claim(files).await?;
             name::keep(files, name).await?;
             Ok::<_, Error>((lock, bind.bind(name)?))
         };
@@ -1434,10 +1437,10 @@ pub enum Error {
     /// The data directory holds no node name and stores no founding, and the start gave
     /// no name.
     Unnamed,
-    /// The data directory stores a founding and holds no file `name`, and the founding
-    /// holds no card of the node: the file `node.key` is not there, or it holds a key
-    /// with no card in the founding. A start that gives it wrote nothing: no file
-    /// `name`, and no new `node.key`, because a new key is a new node to its region.
+    /// The data directory has the directory of a mesh, and the file `node.key` is not
+    /// there, or, with no file `name`, it holds a key with no card in the founding of
+    /// its region. A start that gives it wrote no file `name` and no new `node.key`,
+    /// because a new key is a new node to its region.
     NoCard,
     /// The start gave `name`, which has a segment that starts with `@`. A region
     /// refuses it, so no shard started and the data directory keeps no name that its
@@ -1563,8 +1566,8 @@ impl fmt::Display for Error {
                 "the data directory holds no node name; give the node a name",
             ),
             Self::NoCard => f.write_str(
-                "the data directory stores a region and holds no file `name`, and the \
-                 file `node.key` is not there or holds a key that the founding of the \
+                "the data directory has the directory of a mesh, and the file \
+                 `node.key` is not there or holds a key that the founding of its \
                  region does not hold; restore `node.key` from a backup of this node, \
                  or give another data directory",
             ),

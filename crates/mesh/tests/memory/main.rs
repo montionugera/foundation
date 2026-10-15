@@ -78,7 +78,7 @@ fn slope(held: &[usize]) -> Slope {
 // Each call waits for the read of the new pointer, which runs only after the loop
 // yields, so no read wakes the calls in the loop.
 fn dropped_calls_of_the_spec_hold_no_heap() {
-    let mut sim = Sim::new(sim::Config::default());
+    let mut sim = Sim::new(common::simulation(0));
     let node = sim.node(sim::node::Config::default());
     let ran = sim.run_on(&node, move |node, tasks| async move {
         let mesh = Mesh::open(create_config(&node, &tasks).await)
@@ -128,7 +128,7 @@ enum Base {
 fn held(base: Base) -> Vec<usize> {
     let held = Arc::new(Mutex::new(Vec::with_capacity(MANY - FEW + 1)));
     let out = Arc::clone(&held);
-    let mut sim = Sim::new(sim::Config::default());
+    let mut sim = Sim::new(common::simulation(0));
     let node = sim.node(sim::node::Config::default());
     let ran = sim.run_on(&node, move |node, tasks| async move {
         let mesh = Mesh::open(create_config(&node, &tasks).await)

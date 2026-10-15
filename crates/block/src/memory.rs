@@ -140,7 +140,7 @@ impl Drop for Heap {
 /// Heap memory, as [`Heap`] gives it, for blocks that hold a secret. At the drop, it
 /// writes zero over the first [`ALIGN`] bytes and over each range that
 /// [`Memory::commit`] got, with writes that the compiler keeps, before it frees them.
-pub struct Erased {
+pub(crate) struct Erased {
     heap: Heap,
     /// The first [`ALIGN`] bytes and the ranges that `commit` got.
     committed: RefCell<Vec<Range<usize>>>,
@@ -153,7 +153,7 @@ impl Erased {
     ///
     /// If `len` is 0 or too large to allocate.
     #[must_use]
-    pub fn new(len: usize) -> Self {
+    pub(crate) fn new(len: usize) -> Self {
         Self {
             heap: Heap::new(len),
             committed: RefCell::new(iter::once(0..ALIGN.min(len)).collect()),
@@ -177,7 +177,8 @@ unsafe impl Memory for Erased {
         let end = end.expect("a commit lies in the memory");
         let mut committed = self.committed.borrow_mut();
         // A pool commits each class from the start of its span up, so a new range
-        // touches the one before it, and the record stays at one range per class.
+        // mostly touches one in the record. A join keeps the union, so no committed
+        // byte leaves the record.
         let touched = committed
             .iter_mut()
             .find(|range| range.start <= end && offset <= range.end);
@@ -189,12 +190,6 @@ unsafe impl Memory for Erased {
     }
 
     fn purge(&self, _offset: usize, _len: usize) {}
-}
-
-impl fmt::Debug for Erased {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Erased").field("len", &self.len()).finish()
-    }
 }
 
 impl Drop for Erased {
@@ -219,6 +214,10 @@ mod tests {
         memory.committed.borrow().clone()
     }
 
+    /// Reads `committed`, because the first `ALIGN` bytes hold only the header of the
+    /// region, which holds no byte of a block, so no caller can see their erase. A
+    /// commit next to a range that adds a range in place of a join erases the same
+    /// bytes, so a caller sees only a longer record.
     #[test]
     fn erased_records_the_first_bytes_and_merges_a_commit_that_touches_a_range() {
         let memory = Erased::new(4096);
@@ -238,11 +237,6 @@ mod tests {
     }
 
     #[test]
-    fn erased_prints_its_length() {
-        assert_eq!(format!("{:?}", Erased::new(64)), "Erased { len: 64 }");
-    }
-
-    #[test]
     #[should_panic(expected = "a commit lies in the memory")]
     fn erased_panics_on_a_commit_past_its_end() {
         let memory = Erased::new(4096);
@@ -255,8 +249,7 @@ mod tests {
         use crate::{Config, Pool};
 
         let config = Config::new(1 << 14).expect("the budget fits");
-        let memory = Erased::new(config.reservation());
-        let pool = Pool::new(config, memory);
+        let pool = Pool::erased(config);
         let mut block = pool.alloc(3000).expect("the budget has room");
         block.fill(0x5a);
         let block = block.freeze();

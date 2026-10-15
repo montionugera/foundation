@@ -7,8 +7,6 @@ use block::Pool;
 use env::files::{self, File};
 use types::digest::Digest;
 
-use crate::bytes::block;
-
 /// The bytes of a check.
 pub(crate) const CHECK: usize = 8;
 /// The most bytes in one block of a read or a write.
@@ -86,7 +84,7 @@ impl Blocks {
                 .expect("invariant: a block is one sector or more");
             let len = if over == 0 { self.chunk } else { over }.min(bytes.len());
             let (rest, part) = bytes.split_at(bytes.len().saturating_sub(len));
-            let block = block(&self.pool, part).map_err(Failed::Pool)?;
+            let block = self.pool.copy(part).map_err(Failed::Pool)?;
             let offset = at.saturating_add(wide(rest.len()));
             file.write_at(offset, &[block])
                 .await

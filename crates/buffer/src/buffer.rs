@@ -1066,9 +1066,7 @@ async fn create_header(
     layout: Layout,
 ) -> Result<Header, Error> {
     let header = Header::new(layout, random(entropy));
-    let mut block = pool.alloc(ALIGN)?;
-    block.copy_from_slice(&header.encode());
-    let block = block.freeze();
+    let block = pool.copy(&header.encode())?;
     file.write_at(0, &[block.clone(), block]).await?;
     file.sync().await?;
     Ok(header)
@@ -1087,7 +1085,7 @@ async fn walk(
     slots: &mut Slots,
 ) -> Result<(Cursor, Logs), Error> {
     let mut cursor = Cursor::new(header.layout, header.tail, pool.largest());
-    let mut logs = Logs::default();
+    let mut logs = Logs::new(header.layout.area());
     loop {
         let Window { place, len } = cursor.window();
         let bytes = file.read_at(AREA_START + place, pool.alloc(len)?).await?;

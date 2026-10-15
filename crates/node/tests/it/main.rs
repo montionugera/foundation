@@ -4,6 +4,8 @@
 // The simulated servers need `os::net()`, which a `--cfg loom` build lacks.
 #![cfg(not(loom))]
 
+mod common;
+mod name;
 mod one_node;
 mod port;
 mod quickstart;
