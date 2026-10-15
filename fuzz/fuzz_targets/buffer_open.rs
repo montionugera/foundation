@@ -12,7 +12,7 @@
 //! A batch makes a record of one to four blocks, with a table of up to four.
 //! Two edits seal a CRC: a header block and a record. One edit writes a tail and
 //! its chain value in the first header block: a block of the area, on one of the
-//! first 128 laps or the last 128.
+//! first 128 laps or the last 128 that hold the block.
 //!
 //! The target follows the offsets of the ring ([`Room`]) while no edit other than a
 //! move of the tail changed it. Each append, open, and reopen must then fit, or give
@@ -98,15 +98,18 @@ const CHECK_LAST: Stamp = Stamp::from_nanos(9);
 /// share a tag differ in `first`.
 const BUILD_TAG: u8 = 0x01;
 const CHECK_TAG: u8 = 0x81;
-/// The last lap whose every block a `u64` offset holds. The lap after it holds
-/// only its first blocks, since the area is no power of two.
-const LAP_LAST: u64 = (u64::MAX - (AREA - BLOCK as u64)) / AREA;
 /// The last offset of a ring.
 const OFFSET_LAST: u128 = u64::MAX as u128;
 
 /// The ring offset of `block` of the file on `lap`.
 fn offset(block: usize, lap: u64) -> u64 {
     lap * AREA + ((block - AREA_START) * BLOCK) as u64
+}
+
+/// The last lap whose `block` of the file a `u64` offset holds. Since the area is no
+/// power of two, the first blocks have one more lap than the last.
+fn lap_last(block: usize) -> u64 {
+    (u64::MAX - offset(block, 0)) / AREA
 }
 
 /// The block of the file and the lap of ring offset `offset`: the inverse of
@@ -545,14 +548,16 @@ impl<'a> Arbitrary<'a> for Input {
                 3 => Edit::SealRecord {
                     block: u.int_in_range(blocks.clone())?,
                 },
-                _ => Edit::MoveTail {
-                    block: u.int_in_range(blocks.clone())?,
-                    // The first 128 laps, or the last 128.
-                    lap: match u.arbitrary::<u8>()? {
-                        low @ ..128 => u64::from(low),
-                        high => LAP_LAST - u64::from(255 - high),
-                    },
-                },
+                _ => {
+                    let block = u.int_in_range(blocks.clone())?;
+                    Edit::MoveTail {
+                        block,
+                        lap: match u.arbitrary::<u8>()? {
+                            low @ ..128 => u64::from(low),
+                            high => lap_last(block) - u64::from(255 - high),
+                        },
+                    }
+                }
             });
         }
         // Last, so an input that ends before these has no small entry and the least
