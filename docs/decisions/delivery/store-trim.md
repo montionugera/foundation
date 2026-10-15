@@ -13,12 +13,15 @@
   it, and the restart record of a later open. Each carry record leaves one block, for
   the restart record. A restart record leaves none, and an open writes over a restart
   record that no data or carry record follows. So an open of a full ring has its
-  block, and the commit after it has a block for its carry record, after any count of
-  opens (#160,
+  block, and the commit after it has a block for its carry record, or needs none,
+  because a durable carry record before the open holds the tails. This holds after any
+  count of opens (#160,
   https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6177122793,
   2026-10-14T19:58:01Z, which supersedes the two blocks of
   https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6158992463,
-  2026-10-14T01:42:08Z).
+  2026-10-14T01:42:08Z; text of
+  https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6196998191,
+  2026-10-15T16:27:31Z).
   `set_floor` and `usage` wait for their first effect, the B1 warning (#1080). Lost: a
   `trim` call from the home (it needs the commit rate, a late trim gives a second gap,
   and the edge cases of the ring move up into `home`). Decided by the architect (#160,

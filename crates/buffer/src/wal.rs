@@ -40,8 +40,10 @@ const _: () = assert!(HEADER_LEN + RESTART_LEN <= ALIGN, "a restart record fits"
 
 /// The room that each data record leaves free: the restart record of the next open,
 /// the carry record of the commit after it, and the restart record of a later open.
-/// An open writes over a restart record that no data or carry record follows, so a
-/// second open before a commit takes no more room.
+/// An open writes over a restart record that no data or carry record follows. So an
+/// open of a full ring has its block, and the commit after it has a block for its
+/// carry record, or needs none, because a durable carry record before the open holds
+/// the tails. This holds after any count of opens.
 const SPARE: u64 = REOPEN + OWED + REOPEN;
 
 /// The room that a record of `kind` leaves free.
