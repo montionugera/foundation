@@ -127,9 +127,6 @@ pub(crate) struct DataType {
     members: *const c_void,
 }
 
-// SAFETY: open62541 never writes a type after it builds it, so threads can share it.
-unsafe impl Sync for DataType {}
-
 impl DataType {
     /// Gives the size of a value in memory, in bytes.
     pub(crate) fn size(&self) -> usize {

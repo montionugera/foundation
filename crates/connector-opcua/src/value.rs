@@ -134,7 +134,7 @@ impl Value {
         // The kind of a scalar of `Value` is its index in `UA_TYPES`: `shim.c` asserts
         // both.
         Type {
-            data_type: &ffi::types()[usize::from(self.raw().1)],
+            at: self.raw().1,
             array: false,
         }
     }
@@ -178,15 +178,19 @@ impl From<Value> for sample::Value {
 
 /// The fault of a Good answer of the open62541 kind `kind` and the type `data_type`,
 /// apart from the Ok path of [`Value::of`].
+///
+/// # Panics
+///
+/// When `data_type` is not of `UA_TYPES`. The client registers no type of its own.
 #[cold]
 #[inline(never)]
 fn mistyped(kind: u16, data_type: *const ffi::DataType) -> Fault {
-    // SAFETY: `shim_value_scalar` wrote the type of the value, which lives while the
-    // client that decoded the value lives. The client registers no type of its own, so
-    // the type is of `UA_TYPES`, which lives to the end of the process.
-    let data_type = unsafe { &*data_type };
+    let mut types = ffi::types().iter();
+    let at = types
+        .position(|of| std::ptr::eq(of, data_type))
+        .expect("invariant: each type of a decoded value is of `UA_TYPES`");
     Fault::Type(Type {
-        data_type,
+        at: u16::try_from(at).expect("invariant: `UA_TYPES` fits a u16"),
         array: kind & ffi::ARRAY != 0,
     })
 }
@@ -202,13 +206,20 @@ pub(crate) enum Fault {
     Type(Type),
 }
 
-/// The OPC UA type of a value: a type of open62541, or an array of one. Its text is
-/// the name, such as `String`, `Range`, or `array of Double`.
-#[derive(Clone, Copy)]
+/// The OPC UA type of a value: a type of `UA_TYPES`, or an array of one. Its text is
+/// the `typeName` of open62541, such as `String`, `Range`, or `array of Double`.
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) struct Type {
-    data_type: &'static ffi::DataType,
+    /// The index of the type in `UA_TYPES`.
+    at: u16,
     array: bool,
 }
+
+// An index, not a reference, keeps each read of a tick at 16 bytes.
+const _: () = assert!(
+    size_of::<Result<Value, Fault>>() == 16,
+    "a read of a tick grew"
+);
 
 impl Type {
     /// The type of the text `name`, such as `array of Double`, from `UA_TYPES`.
@@ -223,17 +234,12 @@ impl Type {
             None => (false, name),
         };
         let mut types = ffi::types().iter();
-        let data_type = types.find(|data_type| data_type.name() == scalar);
+        let at = types.position(|data_type| data_type.name() == scalar);
+        let at = at.unwrap_or_else(|| panic!("no type {name:?}"));
         Self {
-            data_type: data_type.unwrap_or_else(|| panic!("no type {name:?}")),
+            at: u16::try_from(at).expect("a u16"),
             array,
         }
-    }
-}
-
-impl PartialEq for Type {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self.data_type, other.data_type) && self.array == other.array
     }
 }
 
@@ -242,7 +248,7 @@ impl fmt::Display for Type {
         if self.array {
             f.write_str("array of ")?;
         }
-        f.write_str(self.data_type.name())
+        f.write_str(ffi::types()[usize::from(self.at)].name())
     }
 }
 
