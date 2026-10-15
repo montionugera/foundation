@@ -22,7 +22,7 @@ use types::time::Span;
 use super::{Class, Failure, Output, State, Status};
 use crate::common::{self, Fixture, SAM, founded, front_ends, name, solo};
 use crate::serve::serve;
-use crate::{Failure as Lost, Node, Run};
+use crate::{Config, Failure as Lost, Node, Run};
 
 /// A kind that names the counts `counts`, and whose run sets each to its value, then
 /// waits for its cancel, or ends at once, as `script` says.
@@ -271,15 +271,16 @@ fn create_node(fixture: &Fixture, mesh: mesh::Mesh) -> Node {
         made.set(made.get() + 1);
         Key::from_u128(made.get())
     };
-    Node::new(
+    Node::new(Config {
         mesh,
-        key,
-        front_ends(),
-        Arc::new(kinds()),
-        fixture.hub.clone(),
-        fixture.sim.clock(),
-        fixture.name.clone(),
-    )
+        keys: Box::new(key),
+        front_ends: front_ends(),
+        kinds: Arc::new(kinds()),
+        hub: fixture.hub.clone(),
+        clock: fixture.sim.clock(),
+        name: fixture.name.clone(),
+        secrets: connector::testing::create_secrets(fixture.sim.files()),
+    })
 }
 
 /// The text of a connector `name` of `kind` on the node `node`, and a placement that

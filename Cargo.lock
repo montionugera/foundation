@@ -1335,6 +1335,7 @@ dependencies = [
  "hub",
  "mesh",
  "schemars",
+ "secret",
  "serde",
  "serde_json",
  "sim",

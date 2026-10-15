@@ -28,7 +28,9 @@
   `POST /write?db=<database>&precision=ns`, and a `bucket` with
   `POST /api/v2/write?org=<org>&bucket=<bucket>&precision=ns`, which InfluxDB 2 and
   InfluxDB 3 Core take. InfluxDB 3 takes any `org`. Each name is percent-encoded in
-  the query. An optional `token` is a source of a secret (SECRET SOURCES). Each
+  the query. An optional `token` is a source of a secret (SECRET SOURCES), so `plan` on
+  the node of the connector, by a subject that may apply it, refuses a `token` with no
+  value (`secret.unresolved`). Each
   request sends it as `Authorization: Token <value>`, which InfluxDB 2 and 3 take,
   and a request with no `token` has no `Authorization`. `run` reads the token at its
   start, and again after a 401 or a 403 before the next attempt. This is option A of

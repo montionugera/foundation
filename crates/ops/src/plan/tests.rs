@@ -16,9 +16,9 @@ use types::channel::Key;
 use types::name::Name;
 use types::sample;
 
-use super::{Output, plan};
+use super::Output;
 use crate::common::{
-    ADMIN, SITE, create_kinds, files, front_ends, name, placed_site, plant, shown,
+    ADMIN, SITE, create_kinds, files, front_ends, name, placed_site, plan, plant, shown,
 };
 use crate::error::Error;
 use crate::front_end::{File, FrontEnd, FrontEnds};

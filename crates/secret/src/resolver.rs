@@ -12,8 +12,10 @@ use crate::reads::{LEN_MAX, Place, Reads};
 use crate::store::File;
 use crate::{Error, Source, Value};
 
-/// Gives the value of each source on one shard. Make one for each shard: a
-/// resolver reads one file at a time, which bounds its heap.
+/// Gives the value of each source on one shard. Make one for each shard, and clone it
+/// for each user on that shard: the clones read one file at a time, which bounds their
+/// heap.
+#[derive(Clone)]
 pub struct Resolver {
     vars: Arc<BTreeMap<OsString, OsString>>,
     reads: Reads,
