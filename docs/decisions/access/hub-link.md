@@ -154,9 +154,9 @@
   (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103306402), which
   gives the other codes (plan item 6): `UNKNOWN` for a removed channel, `BUSY` for the
   pool, `FAILED` for the buffer and the mesh, and the code of the home's refusal for a
-  refusal of the home. A complete read that misses a frame gets `Behind` and the finish
-  of the stream (plan item 3), as a HUB WIRE session does, so the arm of `Ended::Behind`
-  panics too (`laptop.architect`, 2026-10-11T15:17:29Z,
+  refusal of the home. A complete read that reaches a frame that the buffer lost gets
+  `Behind` and the finish of the stream (plan item 3), as a HUB WIRE session does, so
+  the arm of `Ended::Behind` panics too (`laptop.architect`, 2026-10-11T15:17:29Z,
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809, item
   1). Supersedes the `Remote` panic arm of
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103341608 item 6,
