@@ -80,8 +80,11 @@ fn built(graph: &Value) -> Result<BTreeSet<&str>, String> {
         let node = node
             .ok_or_else(|| format!("JSON field `resolve.nodes` has no node `{id}`"))?;
         for dep in node {
-            let mut kinds = field::list(dep, "dep_kinds")?.iter();
-            if kinds.any(|kind| kind["kind"] != "dev") {
+            let kinds = field::list(dep, "dep_kinds")?;
+            if kinds.is_empty() {
+                return Err("JSON field `dep_kinds` is empty".to_string());
+            }
+            if kinds.iter().any(|kind| kind["kind"] != "dev") {
                 next.push(field::text(dep, "pkg")?);
             }
         }
@@ -120,7 +123,17 @@ fn problems(package: &Value) -> Result<Vec<String>, String> {
         if dep["kind"] == "dev" {
             continue;
         }
-        if field::list(dep, "features")?.iter().any(|f| f == "sim") {
+        let mut sim = false;
+        for feature in field::list(dep, "features")? {
+            let feature = feature.as_str().ok_or_else(|| {
+                format!(
+                    "`{name}`: JSON field `features` of a dependency has an item that \
+                     is not a string"
+                )
+            })?;
+            sim |= feature == "sim";
+        }
+        if sim {
             let dep = field::text(dep, "name")?;
             problems.push(format!(
                 "`{name}` turns on the `sim` feature of its dependency `{dep}`. Move \
@@ -233,6 +246,15 @@ mod tests {
                 }),
                 "JSON has no string field `name`",
             ),
+            (
+                json!({
+                    "name": "a",
+                    "features": {},
+                    "dependencies": [{ "name": "own", "kind": null, "features": [1] }],
+                }),
+                "`a`: JSON field `features` of a dependency has an item that is not a \
+                 string",
+            ),
         ] {
             assert_eq!(problems(&package), Err(error.to_string()), "{package}");
         }
@@ -281,5 +303,29 @@ mod tests {
             check(&unresolved),
             ["JSON field `resolve.nodes` has no node `b`"]
         );
+        let kindless = json!({
+            "workspace_members": ["a"],
+            "resolve": { "nodes": [{
+                "id": "a",
+                "deps": [{ "pkg": "b", "dep_kinds": [] }],
+            }] },
+            "packages": [
+                {
+                    "id": "a",
+                    "name": "a",
+                    "source": null,
+                    "features": {},
+                    "dependencies": [],
+                },
+                {
+                    "id": "b",
+                    "name": "b",
+                    "source": null,
+                    "features": { "default": ["sim"] },
+                    "dependencies": [],
+                },
+            ],
+        });
+        assert_eq!(check(&kindless), ["JSON field `dep_kinds` is empty"]);
     }
 }
