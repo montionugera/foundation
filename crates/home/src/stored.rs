@@ -156,14 +156,17 @@ pub(crate) fn read(body: &[u8]) -> impl Iterator<Item = Series<'_>> {
 }
 
 /// Makes the frames of stored data entries again, of the key set that the caller
-/// gives. It keeps the map of the last key set and of the channels of the last entry,
-/// so a run of entries of one key set and one list of channels maps each series once.
+/// gives. It keeps the map of each key set it was given and of the channels of the
+/// last entry, so a run of entries of one key set and one list of channels maps each
+/// series once.
 #[derive(Debug, Default)]
 pub(crate) struct Decoder {
     /// The key set of the last frame.
     set: Option<Arc<KeySet>>,
-    /// The entry in `set` of each channel and type.
-    entry_of: hash::Map<(channel::Key, Type), usize>,
+    /// Each key set given so far, by its address, with the entry of each channel and
+    /// type in it. The interner keeps each key set for the life of the node, so this
+    /// grows no faster.
+    entry_of: hash::Map<usize, (Arc<KeySet>, EntryOf)>,
     /// The channel and type of each series of the last entry, in entry order.
     channels: Vec<(channel::Key, Type)>,
     /// The entry in `set` and the position in `channels` of each series that `set`
@@ -173,6 +176,9 @@ pub(crate) struct Decoder {
     spans: Vec<(usize, usize)>,
     lens: Vec<(usize, usize)>,
 }
+
+/// The entry in a key set of each channel and type.
+type EntryOf = hash::Map<(channel::Key, Type), usize>;
 
 impl Decoder {
     /// The live frame of key set `set` that `stored` holds, an entry of the index of
@@ -232,12 +238,16 @@ impl Decoder {
             return;
         }
         if !same {
-            self.entry_of.clear();
-            let entries = set.entries().iter().enumerate();
-            let of = entries.map(|(at, entry)| ((entry.key, entry.data_type), at));
-            self.entry_of.extend(of);
             self.set = Some(Arc::clone(set));
         }
+        let (_, entry_of) = self
+            .entry_of
+            .entry(Arc::as_ptr(set).addr())
+            .or_insert_with(|| {
+                let entries = set.entries().iter().enumerate();
+                let of = entries.map(|(at, entry)| ((entry.key, entry.data_type), at));
+                (Arc::clone(set), of.collect())
+            });
         self.channels.clear();
         self.channels.extend(channels());
         self.kept.clear();
@@ -246,7 +256,7 @@ impl Decoder {
             .iter()
             .enumerate()
             .filter_map(|(at, channel)| {
-                self.entry_of.get(channel).map(|&entry| (entry, at))
+                entry_of.get(channel).map(|&entry| (entry, at))
             });
         self.kept.extend(kept);
         self.kept.sort_unstable();
@@ -893,7 +903,7 @@ mod tests {
         }
 
         /// The decoder keeps its map of the last set and channels: each change of
-        /// either maps again.
+        /// either maps again, also back to a set it mapped before.
         #[test]
         fn maps_again_at_a_change_of_set_or_channels() {
             let (one, two) = (data(&[2]), data(&[2, 3]));
@@ -923,6 +933,8 @@ mod tests {
             assert_eq!(keys(&b, &third), at(&[1, 3]));
             assert_eq!(keys(&a, &third), at(&[1]));
             assert_eq!(keys(&a, &first), at(&[1, 2]));
+            assert_eq!(keys(&b, &second), at(&[1, 2, 3]));
+            assert_eq!(keys(&b, &third), at(&[1, 3]));
         }
     }
 

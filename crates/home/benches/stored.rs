@@ -34,6 +34,7 @@ const VARIABLE: usize = 16;
 struct Case {
     name: &'static str,
     series: usize,
+    types: &'static [Type],
     set: Arc<KeySet>,
 }
 
@@ -44,9 +45,14 @@ impl fmt::Display for Case {
 }
 
 impl Case {
-    fn new(name: &'static str, series: usize, types: &[Type]) -> Self {
+    fn new(name: &'static str, series: usize, types: &'static [Type]) -> Self {
         let set = common::set(series, types);
-        Self { name, series, set }
+        Self {
+            name,
+            series,
+            types,
+            set,
+        }
     }
 
     /// An encoded index frame with one sample of each series.
@@ -137,6 +143,26 @@ fn frame(bencher: Bencher<'_, '_>, case: &Case) {
         .counter(ItemsCount::new(case.series))
         .bench_local(|| {
             let made = decoder.frame(&pool, &case.set, divan::black_box(&stored));
+            drop(divan::black_box(made));
+        });
+}
+
+/// As `frame`, with each frame made of the other of two key sets, as when two
+/// sessions on one shard read from disk in turn.
+#[divan::bench(args = cases(), sample_count = 1000)]
+fn frame_alternating(bencher: Bencher<'_, '_>, case: &Case) {
+    let pool = block::Pool::heap(POOL);
+    let frame = case.frame(&pool);
+    let stored = home::bench::stored(&pool, &frame, &case.set).expect("room");
+    let other = common::set(case.series, case.types);
+    let sets = [&case.set, &other];
+    let mut decoder = home::bench::Decoder::default();
+    let mut turn = 0;
+    bencher
+        .counter(ItemsCount::new(case.series))
+        .bench_local(|| {
+            turn ^= 1;
+            let made = decoder.frame(&pool, sets[turn], divan::black_box(&stored));
             drop(divan::black_box(made));
         });
 }
