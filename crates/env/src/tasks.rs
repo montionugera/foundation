@@ -2,10 +2,10 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
-use std::fmt;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
+use std::{fmt, iter};
 
 /// A task as a driver receives it.
 ///
@@ -33,7 +33,11 @@ pub type Task = Pin<Box<dyn Future<Output = ()>>>;
 /// }
 /// ```
 #[derive(Clone)]
-pub struct Tasks(Rc<dyn Driver>);
+pub struct Tasks {
+    driver: Rc<dyn Driver>,
+    // The count of the innermost group that spawns through this handle.
+    count: Option<Rc<Count>>,
+}
 
 impl Tasks {
     /// Wraps `driver`.
@@ -44,7 +48,10 @@ impl Tasks {
     /// }
     /// ```
     pub fn new(driver: impl Driver + 'static) -> Self {
-        Self(Rc::new(driver))
+        Self {
+            driver: Rc::new(driver),
+            count: None,
+        }
     }
 
     /// Starts `task` on this shard. It has no handle: stop it through its own cancel
@@ -60,7 +67,13 @@ impl Tasks {
     /// }
     /// ```
     pub fn spawn(&self, task: impl Future<Output = ()> + 'static) {
-        self.0.spawn(Box::pin(task));
+        match &self.count {
+            None => self.driver.spawn(Box::pin(task)),
+            Some(count) => self.driver.spawn(Box::pin(Counted {
+                task: Box::pin(task),
+                _held: Held::new(count),
+            })),
+        }
     }
 }
 
@@ -71,8 +84,9 @@ impl fmt::Debug for Tasks {
 }
 
 /// What [`Tasks`] runs its tasks on. `os` and `sim` implement it for a shard. A driver
-/// that counts tasks passes each task to one of theirs. A driver of a test or a
-/// benchmark may keep each task for its caller to poll.
+/// of a test or a benchmark may keep each task for its caller to poll. A driver does
+/// not count tasks to wait for them to end: a part that waits for its tasks uses a
+/// [`Group`]. A driver of a test may count the tasks it passes on, to check them.
 ///
 /// ```
 /// fn wrap(driver: impl env::tasks::Driver + 'static) -> env::tasks::Tasks {
@@ -107,12 +121,15 @@ impl Group {
     /// A group with no task, which spawns on `tasks`.
     #[must_use]
     pub fn new(tasks: Tasks) -> Self {
-        let count = Rc::<Count>::default();
+        let count = Rc::new(Count {
+            parent: tasks.count,
+            ..Count::default()
+        });
         Self {
-            tasks: Tasks::new(Counting {
-                tasks,
-                count: Rc::clone(&count),
-            }),
+            tasks: Tasks {
+                driver: tasks.driver,
+                count: Some(Rc::clone(&count)),
+            },
             count,
         }
     }
@@ -146,30 +163,14 @@ impl fmt::Debug for Group {
     }
 }
 
-// Spawns each task on the shard's `Tasks` with the group's count.
-struct Counting {
-    tasks: Tasks,
-    count: Rc<Count>,
-}
-
-impl Driver for Counting {
-    fn spawn(&self, task: Task) {
-        self.count.live.set(self.count.live.get().strict_add(1));
-        self.tasks.spawn(Counted {
-            task,
-            _held: Held(Rc::clone(&self.count)),
-        });
-    }
-}
-
 // The fields drop in order, so the task's future drops before its count, also when
 // the shard drops it while it waits.
-struct Counted {
-    task: Task,
+struct Counted<F> {
+    task: Pin<Box<F>>,
     _held: Held,
 }
 
-impl Future for Counted {
+impl<F: Future<Output = ()>> Future for Counted<F> {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
@@ -177,25 +178,49 @@ impl Future for Counted {
     }
 }
 
+// Holds the task in its group and in each group that the group spawns through.
 struct Held(Rc<Count>);
+
+impl Held {
+    fn new(count: &Rc<Count>) -> Self {
+        for group in count.chain() {
+            group.live.set(group.live.get().strict_add(1));
+        }
+        Self(Rc::clone(count))
+    }
+}
 
 impl Drop for Held {
     fn drop(&mut self) {
-        let live = self.0.live.get().strict_sub(1);
-        self.0.live.set(live);
-        if live == 0 {
-            self.0.waiting.take().into_values().for_each(Waker::wake);
+        // Every count goes down before any wake, so a wake that panics leaves no count
+        // too high.
+        for group in self.0.chain() {
+            group.live.set(group.live.get().strict_sub(1));
+        }
+        for group in self.0.chain() {
+            if group.live.get() == 0 {
+                group.waiting.take().into_values().for_each(Waker::wake);
+            }
         }
     }
 }
 
 #[derive(Default)]
 struct Count {
+    // The count of the group whose `Tasks` made this group.
+    parent: Option<Rc<Count>>,
     live: Cell<usize>,
     // The waker of each `Ended` that waits, by its slot.
     waiting: RefCell<BTreeMap<u64, Waker>>,
     // The slot of the next `Ended`.
     slots: Cell<u64>,
+}
+
+impl Count {
+    // This count, then each parent.
+    fn chain(&self) -> impl Iterator<Item = &Self> {
+        iter::successors(Some(self), |count| count.parent.as_deref())
+    }
 }
 
 /// Ready once no task of a [`Group`] is left. [`Group::ended`] gives it. Its drop
@@ -336,6 +361,23 @@ mod tests {
         assert!(ran.get());
     }
 
+    #[test]
+    fn a_task_of_a_group_made_on_another_group_counts_in_both() {
+        let (kept, outer) = group();
+        let inner = Group::new(outer.tasks().clone());
+        let done = Rc::new(Cell::new(false));
+        let pending = probed(&inner, &done);
+        let (mut outer_ended, mut inner_ended) = (outer.ended(), inner.ended());
+        kept.poll(0);
+        assert_eq!(noop(&mut outer_ended), Poll::Pending);
+        assert_eq!(noop(&mut inner_ended), Poll::Pending);
+        done.set(true);
+        kept.poll(0);
+        assert_eq!(pending.get(), Some(true));
+        assert_eq!(noop(&mut outer_ended), Poll::Ready(()));
+        assert_eq!(noop(&mut inner_ended), Poll::Ready(()));
+    }
+
     /// Records, at its drop, whether a wait of its group was still pending.
     struct Probe {
         ended: Ended,
@@ -391,6 +433,44 @@ mod tests {
         kept.drop_task(0);
         assert_eq!(pending.get(), Some(true));
         assert_eq!(noop(&mut ended), Poll::Ready(()));
+    }
+
+    #[test]
+    fn the_last_task_of_a_group_made_on_another_group_wakes_each_wait() {
+        let (kept, outer) = group();
+        let inner = Group::new(outer.tasks().clone());
+        inner.tasks().spawn(std::future::pending());
+        let flags = [Arc::new(Flag::default()), Arc::new(Flag::default())];
+        let mut waits = [outer.ended(), inner.ended()];
+        for (ended, flag) in waits.iter_mut().zip(&flags) {
+            assert_eq!(poll(ended, &Waker::from(Arc::clone(flag))), Poll::Pending);
+        }
+        kept.drop_task(0);
+        assert!(flags.iter().all(|flag| flag.woken()));
+    }
+
+    #[test]
+    fn a_panic_in_a_wake_of_an_inner_group_leaves_the_outer_count_right() {
+        struct Panics;
+        impl Wake for Panics {
+            fn wake(self: Arc<Self>) {
+                panic!("wake");
+            }
+        }
+        let (kept, outer) = group();
+        let inner = Group::new(outer.tasks().clone());
+        inner.tasks().spawn(std::future::pending());
+        let mut inner_ended = inner.ended();
+        assert_eq!(
+            poll(&mut inner_ended, &Waker::from(Arc::new(Panics))),
+            Poll::Pending
+        );
+        let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            kept.drop_task(0);
+        }));
+        assert_eq!(dropped.unwrap_err().downcast_ref::<&str>(), Some(&"wake"));
+        assert_eq!(noop(&mut inner.ended()), Poll::Ready(()));
+        assert_eq!(noop(&mut outer.ended()), Poll::Ready(()));
     }
 
     #[test]

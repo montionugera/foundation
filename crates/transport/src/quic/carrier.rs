@@ -21,7 +21,6 @@ use types::ed25519::PublicKey;
 use types::hash::Map;
 use types::time::{Monotonic, Span};
 
-use super::end::{End, Ended, Live};
 use super::stream::{Incoming, Receiver, Sender};
 use super::wait::{self, RETRY};
 use super::{Endpoint, Event, Setup, connection};
@@ -55,13 +54,10 @@ impl Carrier {
         } = part;
         let endpoint = Endpoint::new(&setup, index, sender.batch_max());
         let Setup { clock, tasks, .. } = setup;
-        let end = Rc::default();
-        let task = Live::new(&end);
         let state = Rc::new(RefCell::new(State {
             endpoint,
             clock: clock.clone(),
             task: None,
-            end,
             sessions: BTreeMap::new(),
             accepted: Some(VecDeque::new()),
             accepting: Vec::new(),
@@ -69,7 +65,7 @@ impl Carrier {
             connects: 0,
             waits: wait::Queue::default(),
         }));
-        let task = Task::new(Rc::clone(&state), &clock, sender, receiver, task);
+        let task = Task::new(Rc::clone(&state), &clock, sender, receiver);
         tasks.spawn(task.run());
         Self(state)
     }
@@ -110,11 +106,6 @@ impl Carrier {
             budget_waits: state.endpoint.budget_waits(),
             ..state.waits.status(state.clock.now())
         }
-    }
-
-    /// Resolves once the task dropped, and the socket with it.
-    pub(crate) fn ended(&self) -> Ended {
-        Ended::new(&self.0.borrow().end)
     }
 
     /// A handle that dials and accepts on this carrier, and that does not keep it
@@ -236,8 +227,6 @@ struct State {
     clock: Clock,
     /// The waker of the task's last poll, or `None` once the task ended.
     task: Option<Waker>,
-    /// Whether the task dropped.
-    end: Rc<End>,
     /// Each connection that a [`Session`] holds or that no caller accepted yet.
     sessions: BTreeMap<connection::Key, Slot>,
     /// The connections peers dialed, in the order they connected, for
@@ -762,8 +751,6 @@ struct Task {
     /// When the task ends while a close still drains: [`DRAIN_MAX`] after a poll first
     /// saw the carrier dropped and each connection ended.
     cut: Option<Monotonic>,
-    /// Last, so that the socket has dropped when it wakes each [`Ended`].
-    _live: Live,
 }
 
 /// The timer that wakes the first read that waits for a block once each [`RETRY`].
@@ -779,7 +766,6 @@ impl Task {
         clock: &Clock,
         sender: udp::Sender,
         receiver: udp::Receiver,
-        live: Live,
     ) -> Self {
         Self {
             state,
@@ -790,7 +776,6 @@ impl Task {
                 armed: false,
             },
             cut: None,
-            _live: live,
         }
     }
 
