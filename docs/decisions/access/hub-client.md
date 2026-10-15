@@ -1,4 +1,4 @@
-- **HUB CLIENT (2026-10-08)** `hub::client::Client` is the session of a program with one
+- **HUB CLIENT (2026-10-08)** `client::Client` is the session of a program with one
   node. `Client::connect` dials on a `transport::Client`, sends the subject's hello, and
   gives the client once the node admits it, so a refused hello is an error of `connect`.
   A hello expires at the latest mesh time of its challenge, plus the time since the

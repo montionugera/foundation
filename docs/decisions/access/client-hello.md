@@ -127,7 +127,7 @@
   stream before its last place", which the caller of `client::Reader` gives;
   `hub::Error::Finished` stays the home's. No variant of `client::Error` holds a
   `hub::Error`: the program gets the errors of the replies from the `hub::Reader` that
-  `client::Reader` gives. `hub::client::Error::Message` holds a
+  `client::Reader` gives. `::client::Error::Message` holds a
   `wire::hub::client::Error`; `hub::serve::Error::Client` holds one, code `MALFORMED`,
   and `serve::Error::Message` keeps the errors from a reader's node. Lost: a variant
   `client::Error::Hub(hub::Error)`, which brings back two levels of error and puts

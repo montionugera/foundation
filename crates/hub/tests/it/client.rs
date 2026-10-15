@@ -1,4 +1,4 @@
-//! `hub::client::Client`, a program's session, against a simulated node that serves
+//! `client::Client`, a program's session, against a simulated node that serves
 //! it on one `hub::Link`.
 
 use std::cell::Cell;
@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
-use hub::client::{Client, Config, Error, LIFE};
+use client::{Client, Config, Error, LIFE};
 use hub::serve;
 use transport::stream::Incoming;
 use transport::{Address, Code};

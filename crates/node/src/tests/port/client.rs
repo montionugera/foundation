@@ -233,7 +233,7 @@ fn reach_whose_hub_stream_ends_with_no_challenge_gives_session() {
         reached(&mut sim, &host),
         Err(client::Error::Session {
             at,
-            error: ::hub::client::Error::Unanswered,
+            error: ::client::Error::Unanswered,
         })
     );
 }
@@ -382,7 +382,7 @@ const OPERATOR: PrivateKey = PrivateKey([5; 32]);
 fn operator(
     sim: &mut sim::Sim,
     host: &sim::node::Node,
-) -> Result<Vec<u8>, ::hub::client::Error> {
+) -> Result<Vec<u8>, ::client::Error> {
     let out = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&out);
     shard(host, move |host, tasks| async move {
@@ -390,7 +390,7 @@ fn operator(
         let address = crate::address::read(&files).await.expect("a read");
         let address = address.expect("a node runs");
         let (transport, pool) = program(&host, tasks.clone());
-        let config = ::hub::client::Config {
+        let config = ::client::Config {
             via: address.key,
             node: address.public_key,
             addresses: vec![Address::Udp(address.bound)],
@@ -401,7 +401,7 @@ fn operator(
             tasks,
             pool,
         };
-        let client = ::hub::client::Client::connect(&transport, config).await;
+        let client = ::client::Client::connect(&transport, config).await;
         let reply = match client {
             Ok(client) => client.request(PLAN).await,
             Err(error) => Err(error),
@@ -424,7 +424,7 @@ fn a_hello_of_a_subject_that_a_later_spec_adds_is_admitted() {
     assert_eq!(sim.run_for(Span::SECOND), Ok(()));
     assert_eq!(
         operator(&mut sim, &host),
-        Err(::hub::client::Error::Refused(Refusal::Refused))
+        Err(::client::Error::Refused(Refusal::Refused))
     );
     let applied = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&applied);

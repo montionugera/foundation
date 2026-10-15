@@ -8,11 +8,11 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::sync::mpsc;
 
+use ::client::Client;
 use document::diagnostic::Code;
 use env::shards::Shards;
 use env::tasks::Tasks;
 use env::threads::Threads;
-use hub::client::Client;
 use node::Budget;
 use ops::{Failure, Run, Start};
 use types::byte::Size;
@@ -262,7 +262,7 @@ fn unreadable(dir: &Path, error: impl std::fmt::Display) -> Failure {
 }
 
 /// The failure of a request that the node gave no reply to.
-fn no_reply(error: &hub::client::Error) -> Failure {
+fn no_reply(error: &::client::Error) -> Failure {
     Failure {
         code: NO_REPLY,
         message: format!("the node gave no reply: {error}"),
@@ -1470,7 +1470,7 @@ mod tests {
     fn a_session_that_fails_names_the_address() {
         let error = node::client::Error::Session {
             at: at(),
-            error: hub::client::Error::Unanswered,
+            error: ::client::Error::Unanswered,
         };
         assert_eq!(
             unreached(dir(), error),
@@ -1501,7 +1501,7 @@ mod tests {
     #[test]
     fn a_request_with_no_reply_says_to_plan_again() {
         assert_eq!(
-            no_reply(&hub::client::Error::Unanswered),
+            no_reply(&::client::Error::Unanswered),
             of_reach(
                 NO_REPLY,
                 "the node gave no reply: the node finished a stream with no answer",

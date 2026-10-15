@@ -38,7 +38,7 @@ pub struct Config {
 /// # Errors
 ///
 /// Each [`Error`], by its doc.
-pub async fn reach(config: Config) -> Result<hub::client::Client, Error> {
+pub async fn reach(config: Config) -> Result<::client::Client, Error> {
     let Config {
         files,
         net,
@@ -60,7 +60,7 @@ pub async fn reach(config: Config) -> Result<hub::client::Client, Error> {
     })
     .map_err(Error::Transport)?;
     let at = dialed(address.bound);
-    let config = hub::client::Config {
+    let config = ::client::Config {
         via: address.key,
         node: address.public_key,
         addresses: vec![transport::Address::Udp(at)],
@@ -71,14 +71,14 @@ pub async fn reach(config: Config) -> Result<hub::client::Client, Error> {
         tasks,
         pool,
     };
-    hub::client::Client::connect(&transport, config)
+    ::client::Client::connect(&transport, config)
         .await
         .map_err(|error| match error {
-            hub::client::Error::Refused(refusal) => Error::Refused(refusal),
-            hub::client::Error::Transport(error @ transport::Error::Network { .. }) => {
+            ::client::Error::Refused(refusal) => Error::Refused(refusal),
+            ::client::Error::Transport(error @ transport::Error::Network { .. }) => {
                 Error::Transport(error)
             }
-            hub::client::Error::Transport(
+            ::client::Error::Transport(
                 error @ transport::Error::Unreachable { .. },
             ) => Error::Unanswered { at, error },
             error => Error::Session { at, error },
@@ -110,7 +110,7 @@ pub enum Error {
         /// The address that the program dialed.
         at: SocketAddr,
         /// Why the hub client gave no client.
-        error: hub::client::Error,
+        error: ::client::Error,
     },
     /// The node refused the hello that the key in `admin.key` signs.
     Refused(Refusal),
