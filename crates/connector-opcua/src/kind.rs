@@ -80,10 +80,11 @@ impl kind::Kind for Kind {
     /// to `u64`, Float for `f32`, and Double for `f64`), stamped at the midpoint of the
     /// read. It leaves out each other value: an Uncertain one adds 1 to the count
     /// `uncertain`, another one that is not Good adds 1 to `bad`, and one of another
-    /// type adds 1 to `mistyped` and, for the first such node of the run, sets the
-    /// note. A tick that leaves out each value writes no frame. The connect is not
-    /// raced with the cancel: with the close after a failed connect, it ends within
-    /// four request timeouts of the client (20 s). Each end closes the session.
+    /// type adds 1 to `mistyped`. The note names the first node of another type of
+    /// the latest tick that has one, and a tick with none clears it. A tick that
+    /// leaves out each value writes no frame. The connect is not raced with the
+    /// cancel: with the close after a failed connect, it ends within four request
+    /// timeouts of the client (20 s). Each end closes the session.
     ///
     /// # Errors
     ///
@@ -244,8 +245,8 @@ struct Left {
     bad: status::Count,
     uncertain: status::Count,
     mistyped: status::Count,
-    /// Whether the note names a node of another type.
-    noted: bool,
+    /// The read and the type that the note names, or `None` when it shows none.
+    noted: Option<(usize, value::Type)>,
 }
 
 /// The series of the frame of the last tick that left out a value. Each `Vec` has the
@@ -335,7 +336,7 @@ impl<'a> Frames<'a> {
                 bad: ctx.count("bad"),
                 uncertain: ctx.count("uncertain"),
                 mistyped: ctx.count("mistyped"),
-                noted: false,
+                noted: None,
             },
             kept: Kept::new(&layout),
             layout,
@@ -419,7 +420,8 @@ impl Kept {
 
     /// Counts in `left` each value of `values` that a frame leaves out: one that is
     /// not Good, or one whose type is not the sample type of its channel in `layout`.
-    /// The first node of another type of the run sets the note of `ctx`. Gives the
+    /// The note of `ctx` names the first node of another type, and a tick with none
+    /// clears it. Gives the
     /// series of the frame that keeps the other values, with `values`, or `None` when
     /// it keeps no value.
     fn sort<'s, 'v>(
@@ -431,12 +433,16 @@ impl Kept {
     ) -> Option<(Shape<'s>, Values<'v>)> {
         let mut pairs = values.iter().zip(&layout.types);
         if pairs.all(|(value, &sample)| Why::of(value, sample).is_none()) {
+            if left.noted.is_some() {
+                left.note(ctx, None);
+            }
             self.reads.clear();
             return Some((layout.shape(), Values(values)));
         }
         mem::swap(&mut self.reads, &mut self.last);
         self.reads.clear();
         let (mut bad, mut uncertain, mut mistyped) = (0, 0, 0);
+        let mut first = None;
         for (at, (value, &sample)) in values.iter().zip(&layout.types).enumerate() {
             let why = Why::of(value, sample);
             match why {
@@ -445,14 +451,15 @@ impl Kept {
                 Some(Why::Uncertain) => uncertain += 1,
                 Some(Why::Mistyped(value)) => {
                     mistyped += 1;
-                    if !left.noted {
-                        left.note(ctx, &ctx.config().reads[at], value, sample);
-                    }
+                    first = first.or(Some((at, value, sample)));
                 }
             }
             self.reads.push(why.is_none());
         }
         left.add(bad, uncertain, mistyped);
+        if first.map(|(at, value, _)| (at, value)) != left.noted {
+            left.note(ctx, first);
+        }
         if self.reads != self.last {
             self.keep(layout);
         }
@@ -511,17 +518,20 @@ impl Left {
         }
     }
 
-    /// Sets the note of `ctx` for a value of the type `value` of `read`, whose
-    /// channel has samples of type `sample`.
+    /// Sets the note of `ctx` for `mistyped`: the read at a value of another type,
+    /// its type, and the sample type of its channel. `None` clears the note.
     #[cold]
     fn note(
         &mut self,
         ctx: &Context<Config>,
-        read: &Read,
-        value: value::Type,
-        sample: Scalar,
+        mistyped: Option<(usize, value::Type, Scalar)>,
     ) {
-        self.noted = true;
+        self.noted = mistyped.map(|(at, value, _)| (at, value));
+        let Some((at, value, sample)) = mistyped else {
+            ctx.note(&"");
+            return;
+        };
+        let read = &ctx.config().reads[at];
         ctx.note(&format_args!(
             "leaves out the values of the node `{}` of the channel `{}`: they are of \
              type {value}, and the channel has samples of type {}",

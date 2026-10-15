@@ -27,7 +27,8 @@
   https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6150343218). Status:
   a Good with a subcode counts as Good. A frame leaves out each value that is not Good
   and keeps the others: an Uncertain value adds 1 to the count `uncertain`, and each
-  other one, also no value (`BadNoData`), adds 1 to `bad`. A tick that leaves out each
+  other one, also no value (`BadNoData`) and a `BadTypeMismatch` of the server, adds 1
+  to `bad`. A tick that leaves out each
   value writes no frame. A quality channel comes with the quality model of the MVP
   (question:
   https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6150343529).
@@ -35,9 +36,12 @@
   https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6197131223). A
   Good value of another type than the sample type of its channel is also left out,
   and adds 1 to `mistyped`: the user fixes it in the spec or on the server, so it is
-  not in `bad`. The first such node of a run sets the note, which names the OPC UA
-  type of the value, such as String or array of Double (`laptop.architect-2`,
-  2026-10-14T02:31:51Z:
-  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6159574954, and
-  the type of an array or a String at 2026-10-15T19:32:35Z:
-  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6200602125).
+  not in `bad`. The note names the first such node of the latest tick that has one,
+  and the OPC UA type of its value, such as String, Range, or array of Double. A tick
+  with none clears it (`laptop.architect-2`, 2026-10-14T02:31:51Z:
+  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6159574954, the
+  type of an array or a String at 2026-10-15T19:32:35Z:
+  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6200602125, and
+  the `BadTypeMismatch` of the server, the note of the latest tick, and the name of
+  the type at 2026-10-15T22:16:48Z:
+  https://github.com/synnaxlabs/foundation/pull/2766#issuecomment-6203414079).

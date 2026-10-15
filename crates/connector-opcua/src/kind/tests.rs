@@ -139,6 +139,19 @@ fn notes(statuses: &[Frame]) -> Vec<String> {
     notes
 }
 
+/// Each text of `note` in `statuses`, also an empty one, once for each run of equal
+/// texts.
+fn texts(statuses: &[Frame]) -> Vec<String> {
+    let mut texts = Vec::new();
+    for frame in statuses {
+        if let Some(Samples::Texts(notes)) = frame.get(&NOTE) {
+            texts.extend(notes.iter().cloned());
+        }
+    }
+    texts.dedup();
+    texts
+}
+
 /// The keys of each of `frames`.
 fn keys(frames: &[Frame]) -> Vec<Vec<u128>> {
     frames
@@ -1077,8 +1090,8 @@ fn writes_each_type_of_a_value_into_a_channel_of_its_type() {
     assert_eq!(written, EXTREMES);
 }
 
-/// The note names the first node of another type of a run, and keeps it when
-/// another node is of another type later.
+/// The note names the first node of another type of a tick, and keeps it while that
+/// node stays of another type, also when another node is of another type later.
 #[test]
 fn leaves_out_a_value_of_another_type_and_notes_its_node() {
     let outcome = run(Setup::three(), |scene| async move {
@@ -1101,6 +1114,40 @@ fn leaves_out_a_value_of_another_type_and_notes_its_node() {
     assert_eq!(notes(&outcome.statuses), [note]);
     assert_eq!(last(&outcome.statuses, MISTYPED), 10 + 5);
     assert_eq!(last(&outcome.statuses, BAD), 0);
+}
+
+/// The note follows the latest tick: a node that the server fixes clears it, and a
+/// node of another type later names that node.
+#[test]
+fn the_note_names_the_first_node_of_another_type_of_the_latest_tick() {
+    let outcome = run(Setup::three(), |scene| async move {
+        scene.after(ms(1_050), |scene| async move {
+            scene.variables.set(B, crate::value::Value::I32(7));
+        });
+        scene.after(ms(3_050), |scene| async move {
+            scene.variables.set(B, crate::value::Value::F64(7.0));
+        });
+        scene.after(ms(5_050), |scene| async move {
+            scene.variables.set(C, crate::value::Value::F32(1.0));
+        });
+        scene.supervise(ms(7_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let note = |node: &str, channel: &str, type_: &str| {
+        format!(
+            "leaves out the values of the node `{node}` of the channel `{channel}`: \
+             they are of type {type_}, and the channel has samples of type f64"
+        )
+    };
+    let shown = [
+        String::new(),
+        note(B, "plant.b", "Int32"),
+        String::new(),
+        note(C, "plant.c", "Float"),
+        String::new(),
+    ];
+    assert_eq!(texts(&outcome.statuses), shown);
+    assert_eq!(last(&outcome.statuses, MISTYPED), 20 + 20);
 }
 
 #[test]

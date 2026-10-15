@@ -377,6 +377,12 @@ fn reads_the_note_that_the_running_kind_shows() {
 }
 
 #[test]
+fn reads_no_note_after_the_running_kind_shows_an_empty_note() {
+    let got = read(vec![Step::Start, Step::Note("polls"), Step::Note("")], ALL);
+    assert_eq!(got, Some(reading(State::Running, 0, None, 0)));
+}
+
+#[test]
 fn reads_no_note_for_an_empty_note() {
     let mut columns = columns([0, 0, 0, 0, 3], "");
     columns.push(("note", Column::Texts(vec![""])));
