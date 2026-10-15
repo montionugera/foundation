@@ -103,5 +103,7 @@ pinned nightly, may depend on any crate, and no crate depends on it (#252;
 `laptop.architect`, 2026-10-09T04:18Z,
 https://github.com/synnaxlabs/foundation/pull/2099#issuecomment-6074164278).
 
-Outside the binary: the Rust SDK reuses `block`, `types`, `codec`, and `wire`; other
+Outside the binary: the Rust SDK `sdk` builds on `hub::client` and `transport`, and the
+Python SDK wraps `sdk` with PyO3 (C6, the person, 2026-10-15,
+https://github.com/synnaxlabs/foundation/issues/2177#issuecomment-6198508264). Other
 SDKs hand-write their data path against golden vectors (D12).
