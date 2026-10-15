@@ -285,14 +285,14 @@ jobs:
       !cancelled() && needs.changes.outputs.rust != 'false' &&
       github.event_name == 'pull_request'
     # A mutant that hangs runs until its timeout, so the run needs parallel jobs. Each
-    # shard runs a fourth of the mutants, round robin, on its own hosted 4-core VM,
+    # shard runs an eighth of the mutants, round robin, on its own hosted 4-core VM,
     # which no other job shares (#2726). The rule that a missed mutant fails CI is in
     # `docs/claude/testing.md`.
     name: mutants shard ${{ matrix.shard }}
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -316,12 +316,17 @@ jobs:
           git diff origin/main...HEAD > "$RUNNER_TEMP/diff.patch"
           # A mutant can allocate in a loop. The cap leaves 3 GiB of the VM to the
           # runner agent, so the kernel kills the test, and the job reports the mutant.
+          # The default OOMPolicy=stop would also stop cargo-mutants at that kill. A
+          # hang waits 3 times the test time of the baseline, not the default 5: 4 jobs
+          # on 4 cores can run slower than the baseline, so not lower.
           cap=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) - 3145728 ))K
           status=0
           sudo -E systemd-run --quiet --scope -p MemoryMax="$cap" -p MemorySwapMax=0 \
-            --uid="$(id -u)" --gid="$(id -g)" -- env "PATH=$PATH" \
+            -p OOMPolicy=continue --uid="$(id -u)" --gid="$(id -g)" -- \
+            env "PATH=$PATH" \
             cargo mutants --in-diff "$RUNNER_TEMP/diff.patch" --jobs 4 \
-            --shard "$SHARD/4" --sharding round-robin || status=$?
+            --shard "$SHARD/8" --sharding round-robin --timeout-multiplier 3 ||
+            status=$?
           # A timeout is a mutant that made a test hang, so a test caught it. Exit 3
           # (timeout) wins over exit 2 (missed), so read the missed list too.
           if [ "$status" -eq 3 ] && [ ! -s mutants.out/missed.txt ]; then

@@ -109,9 +109,8 @@ fn reach_with_an_admin_key_that_no_node_wrote_gives_key() {
         let mode = env::files::Mode::Write;
         let file = files.open(Path::new(crate::admin::FILE), mode).await?;
         let pool = pool();
-        let mut block = pool.alloc(1).expect("a block");
-        block.copy_from_slice(b"x");
-        file.write_at(0, &[block.freeze()]).await
+        let block = pool.copy(b"x").expect("a block");
+        file.write_at(0, &[block]).await
     });
     assert_eq!(written, Ok(Ok(())));
     assert_eq!(reached(&mut sim, &host), Err(client::Error::Key));
