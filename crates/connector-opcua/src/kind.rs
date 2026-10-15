@@ -37,8 +37,8 @@ const LARGE_READ: Code = Code::new("opcua.large-read");
 /// that a frame leaves out as Bad, as Uncertain, and as of another type.
 const COUNTS: [&str; 6] = ["in", "missed", "lost", "bad", "uncertain", "mistyped"];
 
-/// The `opcua` kind: reads the Value of OPC UA nodes at a fixed rate, and writes at
-/// most one frame per tick.
+/// The `opcua` kind: reads the Value of OPC UA nodes at a fixed rate, in Read requests
+/// that each fit one message of the server, and writes at most one frame per tick.
 #[derive(Debug, Default)]
 #[non_exhaustive]
 pub struct Kind;
@@ -83,15 +83,15 @@ impl kind::Kind for Kind {
     /// `uncertain`, another one that is not Good adds 1 to `bad`, and one of another
     /// type adds 1 to `mistyped` and, for the first such node of the run, sets the
     /// note. A tick that leaves out each value writes no frame. The connect is not
-    /// raced with the cancel: it ends in the request timeout of the client (5 s). Each
-    /// end closes the session.
+    /// raced with the cancel: with the close after a failed connect, it ends within
+    /// four request timeouts of the client (20 s). Each end closes the session.
     ///
     /// # Errors
     ///
     /// The error of [`Context::writer`] and of each failed write. [`Error::Config`]
     /// with `opcua.sample-type` for each channel whose sample type is not `bool`, `i8`
-    /// to `u64`, `f32`, or `f64`, and with `opcua.large-read` when one Read of all
-    /// nodes is past one message of the server. [`Error::Device`] when the connect or a
+    /// to `u64`, `f32`, or `f64`, and with `opcua.large-read` when the Read of one node
+    /// alone is past one message of the server. [`Error::Device`] when the connect or a
     /// read fails.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         run(ctx)
@@ -130,7 +130,7 @@ async fn read(
     let nodes: Vec<Node> = reads.iter().map(|read| read.node.clone()).collect();
     let nodes = client
         .nodes(&nodes)
-        .map_err(|large| large_read(reads.len(), large))?;
+        .map_err(|large| large_read(reads, large))?;
     let missed = ctx.count("missed");
     let mut timer = pace::Timer::new(ctx.clock(), ctx.config().rate);
     while let Some(tick) = timer.tick(ctx.cancel()).await {
@@ -662,16 +662,19 @@ fn sample_type(read: &Read, data_type: Type) -> Diagnostic {
     )
 }
 
-/// The error of a Read of `nodes` nodes past one message of the server.
-fn large_read(nodes: usize, Large { bytes, most }: Large) -> Error {
+/// The error of a read of `reads` whose node alone needs a Read past one message of the
+/// server.
+fn large_read(reads: &[Read], Large { node, bytes, most }: Large) -> Error {
+    let read = &reads[node];
     Error::Config(vec![Diagnostic::new(
         LARGE_READ,
         None,
         format!(
-            "a Read of {nodes} nodes needs {bytes} bytes, past the {most} bytes of one \
-             message of the server"
+            "a Read of the node `{}` of the channel `{}` needs {bytes} bytes, past the \
+             {most} bytes of one message of the server",
+            read.node, read.channel,
         ),
-        "Read fewer nodes in the connector, or split it into two connectors".into(),
+        "Raise the message size of the server".into(),
     )])
 }
 

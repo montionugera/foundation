@@ -2,9 +2,10 @@
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_void};
 use std::mem;
+use std::num::NonZeroUsize;
 use std::ptr::{self, NonNull};
 use std::rc::Rc;
 use std::task::Poll;
@@ -18,13 +19,13 @@ use crate::alloc;
 use crate::connection::{CHUNKS, Manager, SENDS};
 use crate::event::Time;
 use crate::ffi::{self, Status};
-use crate::node::Node;
+use crate::node::{Key, Node};
 use crate::value::{Fault, Value};
 
 #[cfg(test)]
 mod tests;
 
-/// The most reads of a client in flight. A read past it waits until one ends.
+/// The most requests of a client in flight. A request past it waits until one ends.
 const READS: u16 = 16;
 
 /// The bytes of the headers of a chunk with the security mode None: the message header
@@ -36,6 +37,10 @@ const HEADER: usize = 24;
 /// so this is 1 less than the largest value of a fixed size in a Read today, a Double
 /// or a 64-bit integer (8 bytes). A GUID key (19 bytes) would need 18.
 const SPLIT: usize = 7;
+
+/// The value of a slot that no read has written yet. No read gives it: a read ends only
+/// when each of its requests has its answer, which writes each of its values.
+const UNREAD: Result<Value, Fault> = Err(Fault::Status(Status::BAD_UNEXPECTED_ERROR));
 
 const _: () = assert!(
     READS as usize * CHUNKS as usize <= SENDS / 2,
@@ -54,8 +59,7 @@ pub(crate) struct Client {
     /// read in flight.
     reads: Box<Reads>,
     /// The values of the last read, which [`Client::read`] gives. It swaps them with
-    /// [`Reads::values`]. An answer with more values than nodes fails before it is
-    /// copied, so neither grows past the most nodes of a read.
+    /// [`Reads::values`], so neither grows past the most nodes of a read.
     values: Vec<Result<Value, Fault>>,
     clock: Clock,
     /// The request timeout of the client.
@@ -66,6 +70,8 @@ pub(crate) struct Client {
     takes: usize,
     /// The encoded bytes of the session token.
     token: usize,
+    /// The `MaxNodesPerRead` of the server, the most nodes of one Read request.
+    per_read: Option<NonZeroUsize>,
     /// Tells the [`Nodes`] that this client checked from those of another.
     key: Rc<()>,
     /// Drops after `raw` is deleted, as it holds the loop of the client.
@@ -75,33 +81,49 @@ pub(crate) struct Client {
 /// The reads of a client in flight, shared with the callback.
 #[derive(Default)]
 struct Reads {
-    /// The request of the last read that open62541 took. The callback drops the answer
-    /// of another request, and `read` clears the late answer of a last read that timed
-    /// out or whose future dropped.
-    request: Cell<Option<u32>>,
-    /// The count of nodes of the last read.
-    count: Cell<usize>,
-    /// The status of the answer of the last read: `Good` when [`Reads::values`]
-    /// holds its values.
-    answer: Cell<Option<Status>>,
+    /// The requests of the last read that open62541 took and has not answered. The
+    /// callback drops the answer of another request, so a read clears them when it
+    /// starts, and the first failed answer clears them to drop each later answer.
+    requests: RefCell<Vec<Request>>,
+    /// The status of the first failed answer of the last read.
+    failed: Cell<Option<Status>>,
+    /// The values of the last read, in node order.
     values: Cell<Vec<Result<Value, Fault>>>,
-    /// The reads that open62541 took and has not called back, at most [`READS`].
+    /// The requests that open62541 took and has not called back, of each read, at most
+    /// [`READS`].
     pending: Cell<u16>,
+}
+
+/// A request of a read in flight.
+#[derive(Clone, Copy)]
+struct Request {
+    /// The number that open62541 gave it.
+    key: u32,
+    slots: Slots,
+}
+
+/// The nodes of one request of a read: the index of the first in the list, and their
+/// count.
+#[derive(Clone, Copy)]
+struct Slots {
+    first: usize,
+    count: usize,
 }
 
 impl Client {
     /// Makes a client on its own manager over `time`, `net`, and `rng`, connects it to
     /// the server at the endpoint `url` with the security mode `None` and an anonymous
-    /// session, and gives it once the session is active. On an error, it closes the
-    /// session that it made with [`Client::close`] first, which can take up to two
-    /// more request timeouts.
+    /// session, and gives it once the session is active and it has read the
+    /// `MaxNodesPerRead` of the server. On an error, it closes the session that it made
+    /// with [`Client::close`] first, which can take up to two more request timeouts.
     ///
     /// # Errors
     ///
     /// `BadTimeout` when the session is not active after the request timeout of the
     /// client (5 s), `BadConnectionClosed` when the server closes or resets an open
     /// stream before the session is active, with no new dial after that close, else the
-    /// status of open62541 when it refuses `url` or the connect fails.
+    /// status of open62541 when it refuses `url` or the connect fails, else the error
+    /// of [`Client::read`] when the read of `MaxNodesPerRead` fails.
     ///
     /// # Aborts
     ///
@@ -148,6 +170,7 @@ impl Client {
             sends: 0,
             takes: 0,
             token: 0,
+            per_read: None,
             key: Rc::default(),
             connections,
         };
@@ -170,7 +193,7 @@ impl Client {
             })
             .await
             .unwrap_or(Err(Status::BAD_TIMEOUT));
-        match connected {
+        let per_read = match connected {
             Ok(()) => {
                 let mut limits = [0; 5];
                 // SAFETY: the client lives.
@@ -182,6 +205,13 @@ impl Client {
                 (this.sends, this.takes) =
                     (most(send, message, chunks), most(receive, message, chunks));
                 this.token = token;
+                this.per_read().await
+            }
+            Err(status) => Err(status),
+        };
+        match per_read {
+            Ok(per_read) => {
+                this.per_read = per_read;
                 Ok(this)
             }
             Err(status) => {
@@ -191,51 +221,104 @@ impl Client {
         }
     }
 
-    /// Builds one Read request of the Value of each node of `nodes`, in order, for
-    /// this client alone.
+    /// Reads the `MaxNodesPerRead` of the server: a `UInt32` above 0, else none, also
+    /// for a status that is not Good, as a server can lack the node.
+    async fn per_read(&mut self) -> Result<Option<NonZeroUsize>, Status> {
+        let node = Node {
+            namespace: 0,
+            key: Key::Number(ffi::MAX_NODES_PER_READ),
+        };
+        let nodes = self
+            .nodes(&[node])
+            .expect("invariant: a read of one node by number fits one message");
+        Ok(match self.read(&nodes).await?[0] {
+            Ok(Value::U32(most)) => NonZeroUsize::new(
+                usize::try_from(most).expect("invariant: a usize holds a u32"),
+            ),
+            _ => None,
+        })
+    }
+
+    /// Builds the Read requests of the Value of each node of `nodes`, for this client
+    /// alone. Each request takes the next nodes in order while it has at most the
+    /// `MaxNodesPerRead` of the server, and while it and a good answer with each field
+    /// of a Double, the largest scalar, for each of its nodes fit one message of the
+    /// session: its chunk size times the smaller of [`CHUNKS`] and the
+    /// `MaxChunkCount` of the server, less 7 bytes at the end of each chunk but the
+    /// last, or the `MaxMessageSize` of the server when that is smaller.
     ///
     /// # Errors
     ///
-    /// [`Large`] when the request, or a good answer with each field of a Double, the
-    /// largest scalar, for each node, needs more bytes than one message of the
-    /// session: its chunk size times the smaller of [`CHUNKS`] and the
-    /// `MaxChunkCount` of the server, less 7 bytes at the end of each chunk but the
-    /// last, or the `MaxMessageSize` of the server when that is smaller. The request
-    /// comes first.
+    /// [`Large`] for the first node whose request alone, or its answer, does not fit
+    /// one message. The request comes first.
     ///
     /// # Aborts
     ///
-    /// If open62541 cannot allocate the request, as [`alloc::exhausted`] says.
+    /// If open62541 cannot allocate a request, as [`alloc::exhausted`] says.
     pub(crate) fn nodes(&self, nodes: &[Node]) -> Result<Nodes, Large> {
-        let request = Nodes::new(nodes, Rc::clone(&self.key));
-        // SAFETY: the request lives.
-        let ask = unsafe { ffi::shim_read_ask(request.raw(), self.token) };
         // SAFETY: it reads nothing.
-        let answer = unsafe { ffi::shim_read_answer(nodes.len()) };
-        for (bytes, most) in [(ask, self.sends), (answer, self.takes)] {
-            if bytes > most {
-                return Err(Large { bytes, most });
+        let empty = unsafe { ffi::shim_read_ask(self.token) };
+        // SAFETY: it reads nothing.
+        let answer = unsafe { ffi::shim_read_answer() };
+        // SAFETY: it reads nothing.
+        let result = unsafe { ffi::shim_read_answer_item() };
+        let past = |ask: usize, count: usize| {
+            let answer = result.saturating_mul(count).saturating_add(answer);
+            [(ask, self.sends), (answer, self.takes)]
+                .into_iter()
+                .find(|&(bytes, most)| bytes > most)
+        };
+        let zero = Node {
+            namespace: 0,
+            key: Key::Number(0),
+        };
+        // SAFETY: `zero` has no name.
+        let rest = unsafe { ffi::shim_read_item((&zero).into()) } - id_bytes(&zero);
+        let mut counts: Vec<usize> = Vec::new();
+        let mut ask = empty;
+        for (index, node) in nodes.iter().enumerate() {
+            let item = rest + id_bytes(node);
+            let count = counts.last().copied();
+            let next = count.is_none_or(|count| {
+                self.per_read.is_some_and(|most| count == most.get())
+                    || past(ask + item, count + 1).is_some()
+            });
+            if next {
+                if let Some((bytes, most)) = past(empty + item, 1) {
+                    return Err(Large {
+                        node: index,
+                        bytes,
+                        most,
+                    });
+                }
+                counts.push(0);
+                ask = empty;
             }
+            ask += item;
+            *counts
+                .last_mut()
+                .expect("invariant: a request takes the node") += 1;
         }
-        Ok(request)
+        Ok(Nodes::new(nodes, &counts, Rc::clone(&self.key)))
     }
 
-    /// Reads the Value of each node of `nodes` in one request, and gives the value of
-    /// each node in order: its scalar, the status of its value when that is not Good
-    /// (a Good with a subcode is Good), or the type of an array or of a scalar that
-    /// is not one of [`Value`]. A read of no nodes gives no values and sends
-    /// nothing. A read that times out or whose future dropped stays in flight
-    /// until the server answers it or the connection closes. While [`READS`] are in
-    /// flight, a read first waits until one ends.
+    /// Reads the Value of each node of `nodes`, and gives the value of each node in
+    /// order: its scalar, the status of its value when that is not Good (a Good with a
+    /// subcode is Good), or the type of an array or of a scalar that is not one of
+    /// [`Value`]. It sends the requests of `nodes` at once, but while [`READS`] are in
+    /// flight it sends the next only when one ends. A read of no nodes gives no values
+    /// and sends nothing. A request of a read that fails, times out, or whose future
+    /// dropped stays in flight until the server answers it or the connection closes.
     ///
     /// # Errors
     ///
-    /// `BadTooManyOperations` when no read ends in the request timeout of the client
-    /// (5 s), as the server holds the requests of [`READS`] reads: the client sends no
-    /// more reads until the server answers one. `BadTimeout` when it has no answer
-    /// after that timeout, its wait included, the status of open62541 when it refuses
-    /// the request, the status of the answer, or `BadUnexpectedError` when the answer
-    /// has a value for more or fewer nodes than `nodes`.
+    /// `BadTooManyOperations` when no request ends in the request timeout of the client
+    /// (5 s) before the first request goes, as the server holds [`READS`] requests:
+    /// the client sends no more until the server answers one.
+    /// `BadTimeout` when a request has no answer after that timeout, the waits
+    /// included. Else the first of: the status of open62541 when it refuses a request,
+    /// the status of an answer, or `BadUnexpectedError` when an answer has a value for
+    /// more or fewer nodes than its request.
     ///
     /// # Panics
     ///
@@ -252,54 +335,80 @@ impl Client {
             return Ok(&[]);
         }
         let deadline = self.clock.now() + self.timeout;
-        if self.reads.pending.get() == READS {
-            self.connections
-                .drive_until(Some(deadline), |_| {
-                    self.connections.events().run();
-                    if self.reads.pending.get() < READS {
-                        Poll::Ready(())
-                    } else {
-                        Poll::Pending
-                    }
-                })
-                .await
-                .ok_or(Status::BAD_TOO_MANY_OPERATIONS)?;
-        }
-        let mut request = 0;
-        // SAFETY: the client and `nodes` live, and `reads` outlives the client.
-        let status = Status(unsafe {
-            ffi::shim_client_read(
-                self.raw.as_ptr(),
-                nodes.raw.as_ptr(),
-                answer,
-                ptr::from_ref::<Reads>(&self.reads).cast_mut().cast(),
-                &raw mut request,
-            )
-        });
-        if status != Status::GOOD {
-            return Err(status);
-        }
-        self.reads.pending.set(self.reads.pending.get() + 1);
-        self.reads.request.set(Some(request));
-        self.reads.count.set(nodes.count);
-        // It can hold the late answer of the last read.
-        self.reads.answer.set(None);
-        let status = self
+        // They can hold the requests and the values of a read that did not end.
+        self.reads.requests.borrow_mut().clear();
+        self.reads.failed.set(None);
+        // Only a growth needs a fill: a good read writes each value.
+        let mut values = self.reads.values.take();
+        values.resize(nodes.count, UNREAD);
+        self.reads.values.set(values);
+        // The first requests go before the drive moves the connections on, so a
+        // connection that closed since the last read fails them in their answers.
+        let mut sent = 0;
+        self.send(nodes, &mut sent)?;
+        let read = self
             .connections
             .drive_until(Some(deadline), |_| {
-                self.connections.events().run();
-                self.reads.answer.take().map_or(Poll::Pending, Poll::Ready)
+                loop {
+                    if let Err(status) = self.send(nodes, &mut sent) {
+                        return Poll::Ready(Err(status));
+                    }
+                    self.connections.events().run();
+                    if let Some(status) = self.reads.failed.get() {
+                        return Poll::Ready(Err(status));
+                    }
+                    if sent == nodes.parts.len() {
+                        return if self.reads.requests.borrow().is_empty() {
+                            Poll::Ready(Ok(()))
+                        } else {
+                            Poll::Pending
+                        };
+                    }
+                    if self.reads.pending.get() == READS {
+                        return Poll::Pending;
+                    }
+                }
             })
-            .await
-            .unwrap_or(Status::BAD_TIMEOUT);
-        if status != Status::GOOD {
-            return Err(status);
+            .await;
+        match read {
+            Some(Ok(())) => {}
+            Some(Err(status)) => return Err(status),
+            None if sent == 0 => return Err(Status::BAD_TOO_MANY_OPERATIONS),
+            None => return Err(Status::BAD_TIMEOUT),
         }
         let values = self.reads.values.take();
         self.reads
             .values
             .set(mem::replace(&mut self.values, values));
         Ok(&self.values)
+    }
+
+    /// Sends the requests of `nodes` from the index `sent` while fewer than [`READS`]
+    /// are in flight and no answer of this read failed, and moves `sent` past each.
+    fn send(&self, nodes: &Nodes, sent: &mut usize) -> Result<(), Status> {
+        while let Some(&Part { raw, slots }) = nodes.parts.get(*sent)
+            && self.reads.pending.get() < READS
+            && self.reads.failed.get().is_none()
+        {
+            let mut key = 0;
+            // SAFETY: the client and `request` live, and `reads` outlives the client.
+            let status = Status(unsafe {
+                ffi::shim_client_read(
+                    self.raw.as_ptr(),
+                    raw.as_ptr(),
+                    answer,
+                    ptr::from_ref::<Reads>(&self.reads).cast_mut().cast(),
+                    &raw mut key,
+                )
+            });
+            if status != Status::GOOD {
+                return Err(status);
+            }
+            self.reads.pending.set(self.reads.pending.get() + 1);
+            (self.reads.requests.borrow_mut()).push(Request { key, slots });
+            *sent += 1;
+        }
+        Ok(())
     }
 
     /// Closes the session and the connection of the client, and waits until the
@@ -355,9 +464,11 @@ impl Client {
     }
 }
 
-/// A Read request past one message of a session.
+/// A node whose Read request alone, or its answer, is past one message of a session.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Large {
+    /// The index of the node in its list.
+    pub(crate) node: usize,
     /// The bytes of the body of its message.
     pub(crate) bytes: usize,
     /// The most bytes of the body of one message.
@@ -397,56 +508,111 @@ impl Drop for Client {
     }
 }
 
-/// The Read request of a list of nodes, built once.
+/// Gives the bytes of the `NodeId` of `node` in the shortest binary form, the form that
+/// open62541 encodes.
+fn id_bytes(node: &Node) -> usize {
+    match &node.key {
+        Key::Number(key) if node.namespace == 0 && *key <= 0xFF => 2,
+        Key::Number(key) if node.namespace <= 0xFF && *key <= 0xFFFF => 4,
+        Key::Number(_) => 7,
+        Key::Name(name) => 7 + name.as_str().len(),
+    }
+}
+
+/// The Read requests of a list of nodes, built once. It holds at most one request per
+/// node: the count of nodes, the `MaxNodesPerRead` of the server, and the message sizes
+/// of the session set its length.
 pub(crate) struct Nodes {
-    raw: NonNull<ffi::ReadRequest>,
+    /// Each request, in node order.
+    parts: Vec<Part>,
     count: usize,
     /// The [`Client::key`] of the client that checked it.
     client: Rc<()>,
 }
 
+/// A Read request of a [`Nodes`].
+#[derive(Clone, Copy)]
+struct Part {
+    raw: NonNull<ffi::ReadRequest>,
+    slots: Slots,
+}
+
 impl Nodes {
-    /// As [`Nodes::new`], for a bench: [`Client::read`] panics on it.
+    /// As [`Nodes::new`] with one request, for a bench: [`Client::read`] panics on it.
     #[cfg(feature = "sim")]
     pub(crate) fn unchecked(nodes: &[Node]) -> Self {
-        Self::new(nodes, Rc::default())
+        Self::new(nodes, &[nodes.len()], Rc::default())
     }
 
-    /// Builds one Read request of the Value of each node of `nodes`, in order, for the
-    /// client of `client`, with no check of its size: [`Client::nodes`] checks it.
+    /// Builds the Read requests of the Value of each node of `nodes`, in order, for the
+    /// client of `client`: one for each count of `counts`, which sum to the count of
+    /// `nodes`. It checks no size: [`Client::nodes`] does.
     ///
     /// # Aborts
     ///
-    /// If open62541 cannot allocate the request, as [`alloc::exhausted`] says.
-    fn new(nodes: &[Node], client: Rc<()>) -> Self {
+    /// If open62541 cannot allocate a request, as [`alloc::exhausted`] says.
+    fn new(nodes: &[Node], counts: &[usize], client: Rc<()>) -> Self {
         let raw: Vec<ffi::Node<'_>> = nodes.iter().map(Into::into).collect();
-        // SAFETY: `raw` holds `nodes.len()` nodes, and C copies each name.
-        let request = unsafe { ffi::shim_read_new(raw.as_ptr(), raw.len()) };
-        let Some(raw) = NonNull::new(request) else {
-            alloc::exhausted()
-        };
+        let mut first = 0;
+        let parts = counts
+            .iter()
+            .map(|&count| {
+                let part = &raw[first..first + count];
+                // SAFETY: `part` holds `count` nodes, and C copies each name.
+                let request = unsafe { ffi::shim_read_new(part.as_ptr(), count) };
+                let Some(request) = NonNull::new(request) else {
+                    alloc::exhausted()
+                };
+                let slots = Slots { first, count };
+                first += count;
+                Part {
+                    raw: request,
+                    slots,
+                }
+            })
+            .collect();
+        assert_eq!(first, nodes.len(), "invariant: the counts take each node");
         Self {
-            raw,
+            parts,
             count: nodes.len(),
             client,
         }
     }
 
-    /// Gives the request, which lives while `self` does.
+    /// Gives the count of nodes of each request, in order.
+    #[cfg(test)]
+    fn counts(&self) -> Vec<usize> {
+        self.parts.iter().map(|part| part.slots.count).collect()
+    }
+
+    /// Gives the one request of a [`Nodes::unchecked`], which lives while `self` does.
+    ///
+    /// # Panics
+    ///
+    /// Unless `self` has exactly one request.
+    #[cfg(feature = "sim")]
     pub(crate) fn raw(&self) -> *mut ffi::ReadRequest {
-        self.raw.as_ptr()
+        let [part] = self.parts[..] else {
+            panic!(
+                "invariant: a bench reads a list of one request, not {}",
+                self.parts.len()
+            );
+        };
+        part.raw.as_ptr()
     }
 }
 
 impl Drop for Nodes {
     fn drop(&mut self) {
-        // SAFETY: the request lives, and nothing else holds it.
-        unsafe { ffi::shim_read_free(self.raw.as_ptr()) };
+        for part in &self.parts {
+            // SAFETY: the request lives, and nothing else holds it.
+            unsafe { ffi::shim_read_free(part.raw.as_ptr()) };
+        }
     }
 }
 
-/// Ends one read of the [`Reads`] at `data`, and puts the answer of `request` there
-/// when it is the read that waits.
+/// Ends one request of the [`Reads`] at `data`. When it is a request of the last read,
+/// puts the values of the answer there, or ends that read with its failed status.
 ///
 /// # Safety
 ///
@@ -460,28 +626,30 @@ unsafe extern "C" fn answer(
     // SAFETY: the client that holds the reads lives.
     let reads = unsafe { &*data.cast_const().cast::<Reads>() };
     reads.pending.set(reads.pending.get() - 1);
-    if reads.request.get() != Some(request) {
+    let mut requests = reads.requests.borrow_mut();
+    let Some(index) = requests.iter().position(|sent| sent.key == request) else {
         return;
-    }
+    };
+    let Slots { first, count } = requests.swap_remove(index).slots;
     // SAFETY: open62541 gives a live response.
     let mut status = Status(unsafe { ffi::shim_response_result(response.cast()) });
     // SAFETY: open62541 gives a live response.
-    let count = unsafe { ffi::shim_read_count(response) };
-    if status == Status::GOOD && count != reads.count.get() {
+    if status == Status::GOOD && unsafe { ffi::shim_read_count(response) } != count {
         status = Status::BAD_UNEXPECTED_ERROR;
     }
-    if status == Status::GOOD {
-        let mut values = reads.values.take();
-        values.clear();
-        values.extend((0..count).map(|index| {
-            // SAFETY: the response lives and has more results than `index`.
-            let value = unsafe { ffi::shim_read_result(response, index) };
-            // SAFETY: the value lives with the response.
-            unsafe { Value::of(value) }
-        }));
-        reads.values.set(values);
+    if status != Status::GOOD {
+        requests.clear();
+        reads.failed.set(Some(status));
+        return;
     }
-    reads.answer.set(Some(status));
+    let mut values = reads.values.take();
+    for (index, value) in values[first..first + count].iter_mut().enumerate() {
+        // SAFETY: the response lives and has more results than `index`.
+        let result = unsafe { ffi::shim_read_result(response, index) };
+        // SAFETY: the value lives with the response.
+        *value = unsafe { Value::of(result) };
+    }
+    reads.values.set(values);
 }
 
 /// Whether open62541 reads `url` as an endpoint URL with a host.
