@@ -95,8 +95,7 @@ fn config<M>(
         vars: std::collections::BTreeMap::new(),
         log: crate::Log {
             writer: Box::new(std::io::sink()),
-            json: false,
-            level: tracing::Level::INFO,
+            format: ops::Log::default(),
         },
     }
 }
@@ -429,7 +428,7 @@ fn a_config_shows_its_budget_entropy_settings_and_log_but_not_its_memory_or_file
             "Config {{ shards: Shards {{ .. }}, clock: {clock:?}, wall: {wall:?}, \
              budget: Budget {{ pool: Size(4096), disk: {DISK:?} }}, entropy: {entropy:?}, \
              listen: {listen:?}, region: Absent, name: Name(\"edge\"), \
-             settings: {settings:?}, log: Log {{ json: false, level: Level(Info), .. }}, \
+             settings: {settings:?}, log: Log {{ format: Log {{ json: false, level: Level(Info) }}, .. }}, \
              .. }}",
             listen = config.listen,
             settings = config.settings,

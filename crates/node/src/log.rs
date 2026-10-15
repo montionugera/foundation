@@ -20,17 +20,15 @@ pub struct Log {
     /// Where each line goes, with one write for each line. `main` gives stderr. A
     /// failed write drops the line.
     pub writer: Box<dyn io::Write + Send>,
-    /// Each line is one JSON object, in place of text.
-    pub json: bool,
-    /// The least level of an event that the log holds.
-    pub level: tracing::Level,
+    /// The form of each line, text or JSON, and the least level of an event that the
+    /// log holds.
+    pub format: ops::Log,
 }
 
 impl fmt::Debug for Log {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Log")
-            .field("json", &self.json)
-            .field("level", &self.level)
+            .field("format", &self.format)
             .finish_non_exhaustive()
     }
 }
@@ -44,8 +42,7 @@ pub(crate) fn dispatch(
 ) -> Dispatch {
     let Log {
         writer,
-        json,
-        level,
+        format: ops::Log { json, level },
     } = log;
     let line = Line {
         json,

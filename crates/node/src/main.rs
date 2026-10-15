@@ -323,8 +323,7 @@ fn node(
         vars,
         log: node::Log {
             writer: Box::new(io::stderr()),
-            json: start.log.json,
-            level: start.log.level,
+            format: start.log,
         },
     });
     let stopper = node.stopper();

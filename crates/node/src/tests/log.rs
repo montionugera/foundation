@@ -51,8 +51,7 @@ impl io::Write for Broken {
 fn to(lines: &Lines, json: bool, level: tracing::Level) -> Log {
     Log {
         writer: Box::new(lines.clone()),
-        json,
-        level,
+        format: ops::Log { json, level },
     }
 }
 
@@ -218,8 +217,10 @@ fn a_log_whose_writes_fail_changes_nothing_of_the_node() {
     let (mut sim, host) = host(1);
     let log = Log {
         writer: Box::new(Broken),
-        json: false,
-        level: tracing::Level::TRACE,
+        format: ops::Log {
+            json: false,
+            level: tracing::Level::TRACE,
+        },
     };
     assert_eq!(run(&mut sim, &host, log), Ok(()));
 }

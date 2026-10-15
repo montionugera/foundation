@@ -662,12 +662,6 @@ mod start {
     use super::{Exit, call, cli, failed, offline};
     use crate::{Failure, Log, Run, Start};
 
-    /// The log of a `start` with no log flag.
-    const LOG: Log = Log {
-        json: false,
-        level: tracing::Level::INFO,
-    };
-
     fn start(args: &[&str]) -> Run {
         let args = ["foundation", "start"]
             .iter()
@@ -706,7 +700,7 @@ mod start {
                 json: false,
                 name: None,
                 listen: local(),
-                log: LOG,
+                log: Log::default(),
             })
         );
     }
@@ -737,6 +731,15 @@ mod start {
                 },
             })
         );
+    }
+
+    #[test]
+    fn the_default_log_is_text_at_info() {
+        let text = Log {
+            json: false,
+            level: tracing::Level::INFO,
+        };
+        assert_eq!(Log::default(), text);
     }
 
     /// The log of `start` with `args`.
@@ -879,7 +882,7 @@ mod start {
             json: false,
             name: None,
             listen: local(),
-            log: LOG,
+            log: Log::default(),
         };
         assert_eq!(
             start.line(&edge()),
@@ -899,7 +902,7 @@ mod start {
             json: false,
             name: None,
             listen: local(),
-            log: LOG,
+            log: Log::default(),
         };
         assert_eq!(
             start.line(&edge()),
@@ -916,7 +919,7 @@ mod start {
             json: false,
             name: None,
             listen: local(),
-            log: LOG,
+            log: Log::default(),
         };
         let shown = "it's \"b\\\\c\"\\ne\\u{301}";
         assert_eq!(
@@ -948,7 +951,7 @@ mod start {
             json: true,
             name: None,
             listen: local(),
-            log: LOG,
+            log: Log::default(),
         };
         assert_eq!(
             start.line(&edge()),

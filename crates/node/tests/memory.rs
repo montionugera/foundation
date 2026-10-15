@@ -87,8 +87,7 @@ fn reach() {
         vars: std::collections::BTreeMap::new(),
         log: node::Log {
             writer: Box::new(std::io::sink()),
-            json: false,
-            level: tracing::Level::INFO,
+            format: ops::Log::default(),
         },
     });
     assert_eq!(sim.run_for(Span::SECOND), Ok(()), "the node runs");

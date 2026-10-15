@@ -52,8 +52,7 @@ pub(crate) fn start_node<D: Driver + Send + 'static>(
         vars: std::collections::BTreeMap::new(),
         log: node::Log {
             writer: Box::new(std::io::sink()),
-            json: false,
-            level: tracing::Level::INFO,
+            format: ops::Log::default(),
         },
     })
 }

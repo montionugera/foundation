@@ -33,6 +33,16 @@ pub struct Log {
     pub level: tracing::Level,
 }
 
+impl Default for Log {
+    /// The log of a `start` with no log flag and no `--json`: text, at INFO.
+    fn default() -> Self {
+        Self {
+            json: false,
+            level: tracing::Level::INFO,
+        }
+    }
+}
+
 impl Start {
     /// The line that tells that the node `name` runs in [`Start::data`], as text or
     /// JSON, with its newline. Each gives the data directory lossily, as
