@@ -19,7 +19,8 @@ use types::time::Stamp;
 /// above, with the stamp, the level, the target, the message, and the fields.
 pub struct Log {
     /// Where each line goes, with one write for each line. `main` gives stderr. A
-    /// failed write drops the line.
+    /// write blocks the thread of its event until it returns. A failed write drops
+    /// the line.
     pub writer: Box<dyn io::Write + Send>,
     /// The form of each line, text or JSON, and the least level of an event that the
     /// log holds.
