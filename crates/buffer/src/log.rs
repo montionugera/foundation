@@ -391,7 +391,8 @@ struct Laps {
     /// The shrinks of a hide with no trim.
     most: usize,
     /// The place of each path whose lap end waits, oldest first. [`Log::due`] marks
-    /// each, so a path is here at most once.
+    /// each, so a path is here at most once, and it holds at most the number of paths,
+    /// in room that [`Laps::add`] takes.
     due: VecDeque<u32>,
 }
 
