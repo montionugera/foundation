@@ -461,7 +461,9 @@
   changes, 2026-10-15T16:38:55Z, 17:00:40Z, and 17:16:20Z:
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6197223487,
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6197654802, and
-  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6197956499). The
+  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6197956499, whose
+  name change it withdrew at 17:31:32Z:
+  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6198252050). The
   hub tests named above that checked `Behind` at a miss now check each frame from disk,
   under new names: `slow_reader_gets_every_frame_from_disk`,
   `gives_a_complete_reader_that_holds_a_frame_past_its_window_each_later_frame`,
