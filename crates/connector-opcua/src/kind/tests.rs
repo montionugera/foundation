@@ -781,7 +781,8 @@ fn writes_the_value_of_a_good_status_with_a_subcode() {
     assert_eq!(values(frames, 2), served(&outcome, A));
 }
 
-/// The error names the read of the first bad status, also past the first read.
+/// A node that the server does not have is left out of each frame and adds 1 to `bad`
+/// each tick.
 #[test]
 fn counts_a_node_that_the_server_does_not_have_as_bad() {
     let mut setup = Setup::three();
@@ -838,6 +839,26 @@ fn writes_the_index_of_each_group_with_a_value_left() {
     }
     assert_eq!(last(&outcome.statuses, BAD), 11 + 5);
     assert_eq!(last(&outcome.statuses, IN), 11 + 6);
+}
+
+/// A group that loses each read writes no stamp, also when it comes before a group
+/// that keeps one.
+#[test]
+fn writes_no_stamp_in_the_first_group_with_no_value_left() {
+    let mut setup = Setup::three();
+    setup.channels.extend([("plant.other", index(10))]);
+    setup.channels[3] = ("plant.c", data(4, 10, F64));
+    let outcome = run(setup, |scene| async move {
+        scene.variables.set_quality(A, Quality(0x8000_0000));
+        scene.variables.set_quality(B, Quality(0x8000_0000));
+        scene.supervise(ms(1_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(keys(&outcome.frames), Vec::<Vec<u128>>::new());
+    assert_eq!(keys(&outcome.indexes[&10]), vec![vec![4, 10]; 11]);
+    assert_eq!(last(&outcome.statuses, BAD), 22);
+    assert_eq!(last(&outcome.statuses, IN), 11);
+    assert_eq!(last(&outcome.statuses, LOST), 0);
 }
 
 #[test]
@@ -1328,12 +1349,12 @@ fn stamps_each_frame_within_its_read() {
     }
 }
 
-/// Builds `Values` with a value that `Left::sort` leaves out, which no call of the
-/// crate can do. This test is the only kill of a `get` that gives a value for a left
+/// Builds `Values` with a value that `Kept::sort` leaves out, which `Kept::sort` never
+/// gives. This test is the only kill of a `get` that gives a value for a left
 /// out read in place of the panic.
 #[test]
 #[should_panic(
-    expected = "invariant: read 2 is Err(Status(BadNotFound)), which `Left::sort` \
+    expected = "invariant: read 2 is Err(Status(BadNotFound)), which `Kept::sort` \
                 leaves out"
 )]
 fn panics_with_the_read_whose_value_is_left_out() {
@@ -1348,11 +1369,11 @@ fn leaves_out_each_value_of_another_type_than_its_channel() {
     let [_, _, values] = extremes();
     for value in values {
         for sample in SCALARS {
-            let left = Leave::of(&Ok(value), sample);
+            let left = Why::of(&Ok(value), sample);
             if value.scalar() == sample {
                 assert_eq!(left, None);
             } else {
-                let mistyped = Leave::Mistyped(value.built_in());
+                let mistyped = Why::Mistyped(value.built_in());
                 assert_eq!(left, Some(mistyped), "{value:?} into {sample:?}");
             }
         }
@@ -1362,40 +1383,47 @@ fn leaves_out_each_value_of_another_type_than_its_channel() {
 #[test]
 fn leaves_out_each_value_that_is_not_good() {
     use crate::value::Fault;
-    let leave =
-        |status: u32| Leave::of(&Err(Fault::Status(Status(status))), Scalar::F64);
-    assert_eq!(leave(0x4000_0000), Some(Leave::Uncertain));
-    assert_eq!(leave(0x7FFF_FFFF), Some(Leave::Uncertain));
-    assert_eq!(leave(Status::BAD_NOT_FOUND.0), Some(Leave::Bad));
-    assert_eq!(leave(0xC000_0000), Some(Leave::Bad));
-    assert_eq!(leave(0x8000_0000), Some(Leave::Bad));
+    let leave = |status: u32| Why::of(&Err(Fault::Status(Status(status))), Scalar::F64);
+    assert_eq!(leave(0x4000_0000), Some(Why::Uncertain));
+    assert_eq!(leave(0x7FFF_FFFF), Some(Why::Uncertain));
+    assert_eq!(leave(Status::BAD_NOT_FOUND.0), Some(Why::Bad));
+    assert_eq!(leave(0xC000_0000), Some(Why::Bad));
+    assert_eq!(leave(0x8000_0000), Some(Why::Bad));
     let string = crate::value::BuiltIn::new(11);
-    let left = Leave::of(&Err(Fault::Type(string)), Scalar::F64);
-    assert_eq!(left, Some(Leave::Mistyped(string)));
+    let left = Why::of(&Err(Fault::Type(string)), Scalar::F64);
+    assert_eq!(left, Some(Why::Mistyped(string)));
 }
 
-/// The frame of a tick drops the index of a group with no kept read.
+/// A later tick that keeps more values than each tick before it fills the `Vec`s that
+/// `Kept::new` made, with no new allocation. The `kind` bench gives the same values in
+/// each write, so only this test sees such a tick.
 #[test]
-fn keeps_no_index_of_a_group_with_no_kept_read() {
-    let fill = |group, read| Fill { group, read };
+fn a_tick_that_keeps_more_values_keeps_its_buffers() {
+    let reads = 64;
+    let mut fills = vec![Fill {
+        group: 0,
+        read: None,
+    }];
+    fills.extend((0..reads).map(|read| Fill {
+        group: 0,
+        read: Some(read),
+    }));
     let layout = Layout {
-        types: vec![Scalar::F64; 2],
-        series: vec![(0, 8), (1, 8), (2, 8), (3, 8)],
-        fills: vec![
-            fill(0, None),
-            fill(0, Some(0)),
-            fill(1, None),
-            fill(1, Some(1)),
-        ],
-        samples: vec![1, 1],
-        groups: vec![0, 1],
+        types: vec![Scalar::F64; reads],
+        fills,
+        series: (0..=reads).map(|entry| (entry, 8)).collect(),
+        samples: vec![64],
+        groups: vec![0],
     };
-    let mut tick = Tick {
-        kept: vec![true, false],
-        ..Tick::default()
-    };
-    tick.keep(&layout);
-    assert_eq!(tick.series, vec![(0, 8), (1, 8)]);
-    assert_eq!(tick.samples, vec![1, 0]);
-    assert_eq!(tick.groups, vec![0]);
+    let mut kept = Kept::new(&layout);
+    let buffers = |kept: &Kept| (kept.series.as_ptr(), kept.groups.as_ptr());
+    let made = buffers(&kept);
+    kept.reads = vec![false; reads];
+    kept.reads[0] = true;
+    kept.keep(&layout);
+    assert_eq!(kept.series.len(), 2);
+    kept.reads.fill(true);
+    kept.keep(&layout);
+    assert_eq!(kept.series.len(), 65);
+    assert_eq!(buffers(&kept), made);
 }

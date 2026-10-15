@@ -1,7 +1,7 @@
 //! The `opcua` kind: reads OPC UA nodes at a fixed rate, and writes at most one frame
 //! per tick.
 
-use std::{fmt, future};
+use std::{fmt, future, mem};
 
 use connector::kind::{self, Channels, Context, Error};
 use connector::stamp::Stamps;
@@ -199,25 +199,43 @@ struct Frames<'a> {
     out: Out,
     stamps: Stamps,
     left: Left,
-    tick: Tick,
+    kept: Kept,
     /// The series of the groups that a frame writes again.
     again: Vec<(usize, usize)>,
     /// The groups that the home refused as `Backwards`, in order.
     backwards: Vec<u32>,
 }
 
-/// The series of the frame of each tick, and what fills each.
+/// The series of the frame of a tick that keeps each value, and what fills each.
 struct Layout {
     /// The sample type of the channel of each read, in order.
     types: Vec<Scalar>,
-    /// Each entry of the key set and the bytes of its series.
-    series: Vec<(usize, usize)>,
     /// The sample of each entry of the key set.
     fills: Vec<Fill>,
-    /// The count of data samples of each group in one frame, by its number.
+    series: Vec<(usize, usize)>,
     samples: Vec<u64>,
-    /// The group of each index, in the order of the key set.
     groups: Vec<u32>,
+}
+
+impl Layout {
+    fn shape(&self) -> Shape<'_> {
+        Shape {
+            series: &self.series,
+            samples: &self.samples,
+            groups: &self.groups,
+        }
+    }
+}
+
+/// The series of one frame.
+#[derive(Clone, Copy)]
+struct Shape<'a> {
+    /// Each entry of the key set in the frame and the bytes of its series.
+    series: &'a [(usize, usize)],
+    /// The count of data samples of each group in the frame, by its number.
+    samples: &'a [u64],
+    /// The group of each index in the frame, in the order of the key set.
+    groups: &'a [u32],
 }
 
 /// The counts of the values that a frame leaves out.
@@ -229,16 +247,16 @@ struct Left {
     noted: bool,
 }
 
-/// The series of the frame of a tick that leaves out a value, kept across ticks.
-#[derive(Default)]
-struct Tick {
-    /// Whether the frame keeps the value of each read, in order.
-    kept: Vec<bool>,
-    /// Each entry of the key set in the frame and the bytes of its series.
+/// The series of the frame of the last tick that left out a value. Each `Vec` has the
+/// capacity of the layout from the start, so no tick allocates.
+struct Kept {
+    /// Whether the frame keeps the value of each read, in order. Empty after a tick
+    /// that keeps each value.
+    reads: Vec<bool>,
+    /// `reads` of the tick before.
+    last: Vec<bool>,
     series: Vec<(usize, usize)>,
-    /// The count of data samples of each group in the frame, by its number.
     samples: Vec<u64>,
-    /// The group of each index in the frame, in the order of the key set.
     groups: Vec<u32>,
 }
 
@@ -295,17 +313,17 @@ impl<'a> Frames<'a> {
                 .expect("invariant: an index or a read is a scalar")
         };
         let series: Vec<_> = entries.iter().map(width).enumerate().collect();
+        let layout = Layout {
+            types,
+            fills,
+            series,
+            samples,
+            groups,
+        };
         Ok(Self {
             ctx,
-            again: Vec::with_capacity(series.len()),
-            backwards: Vec::with_capacity(samples.len()),
-            layout: Layout {
-                types,
-                series,
-                fills,
-                samples,
-                groups,
-            },
+            again: Vec::with_capacity(layout.series.len()),
+            backwards: Vec::with_capacity(layout.samples.len()),
             out: Out {
                 applied: ctx.count("in"),
                 lost: ctx.count("lost"),
@@ -318,7 +336,8 @@ impl<'a> Frames<'a> {
                 mistyped: ctx.count("mistyped"),
                 noted: false,
             },
-            tick: Tick::default(),
+            kept: Kept::new(&layout),
+            layout,
         })
     }
 
@@ -351,25 +370,15 @@ impl<'a> Frames<'a> {
             out,
             stamps,
             left,
-            tick,
+            kept,
             again,
             backwards,
         } = self;
-        let reads = &ctx.config().reads;
-        let all = left.sort(ctx, reads, values, &layout.types, &mut tick.kept);
-        let (series, groups, samples) = if all {
-            (&layout.series, &layout.groups, &layout.samples)
-        } else {
-            tick.keep(layout);
-            if tick.groups.is_empty() {
-                return Ok(());
-            }
-            (&tick.series, &tick.groups, &tick.samples)
+        let Some((shape, values)) = kept.sort(left, ctx, layout, values) else {
+            return Ok(());
         };
-        let values = Values(values);
         let fills = &layout.fills;
-        let first =
-            out.send(fills, samples, series, groups, values, stamp, backwards)?;
+        let first = out.send(fills, shape, values, stamp, backwards)?;
         let Some(before) = first else {
             return Ok(());
         };
@@ -377,9 +386,13 @@ impl<'a> Frames<'a> {
         let refused =
             |&&(entry, _): &&(usize, usize)| backwards.contains(&fills[entry].group);
         again.clear();
-        again.extend(series.iter().filter(refused));
-        let none = &mut Vec::new();
-        let last = out.send(fills, samples, again, backwards, values, stamp, none)?;
+        again.extend(shape.series.iter().filter(refused));
+        let shape = Shape {
+            series: again,
+            groups: backwards,
+            ..shape
+        };
+        let last = out.send(fills, shape, values, stamp, &mut Vec::new())?;
         if let Some(again) = last {
             panic!(
                 "invariant: a frame stamped after {before}, the last stamp of its \
@@ -390,58 +403,123 @@ impl<'a> Frames<'a> {
     }
 }
 
-impl Left {
-    /// Counts each value of `values` that a frame leaves out: one that is not Good,
-    /// or one whose type is not the sample type of its channel in `types`. The first
-    /// node of another type of the run sets the note of `ctx`. Gives whether the
-    /// frame keeps each value, else puts in `kept` whether it keeps the value of each
-    /// read of `reads`.
-    fn sort(
-        &mut self,
-        ctx: &Context<Config>,
-        reads: &[Read],
-        values: &[Result<Value, Fault>],
-        types: &[Scalar],
-        kept: &mut Vec<bool>,
-    ) -> bool {
-        let mut pairs = values.iter().zip(types);
-        if pairs.all(|(value, &sample)| Leave::of(value, sample).is_none()) {
-            return true;
+impl Kept {
+    /// The selection of no tick yet, with the capacity of each frame of `layout`.
+    fn new(layout: &Layout) -> Self {
+        let reads = layout.types.len();
+        Self {
+            reads: Vec::with_capacity(reads),
+            last: Vec::with_capacity(reads),
+            series: Vec::with_capacity(layout.series.len()),
+            samples: Vec::with_capacity(layout.samples.len()),
+            groups: Vec::with_capacity(layout.groups.len()),
         }
-        let mut all = true;
-        for (at, (value, &sample)) in values.iter().zip(types).enumerate() {
-            match Leave::of(value, sample) {
-                None => continue,
-                Some(Leave::Bad) => self.bad.add(1),
-                Some(Leave::Uncertain) => self.uncertain.add(1),
-                Some(Leave::Mistyped(value)) => {
-                    self.mistyped(ctx, &reads[at], value, sample);
-                }
-            }
-            if all {
-                all = false;
-                kept.clear();
-                kept.resize(values.len(), true);
-            }
-            kept[at] = false;
-        }
-        all
     }
 
-    /// Counts a value of the type `value` of `read`, whose channel has samples of
-    /// type `sample`, and sets the note for the first of the run.
+    /// Counts in `left` each value of `values` that a frame leaves out: one that is
+    /// not Good, or one whose type is not the sample type of its channel in `layout`.
+    /// The first node of another type of the run sets the note of `ctx`. Gives the
+    /// series of the frame that keeps the other values, with `values`, or `None` when
+    /// it keeps no value.
+    fn sort<'s, 'v>(
+        &'s mut self,
+        left: &mut Left,
+        ctx: &Context<Config>,
+        layout: &'s Layout,
+        values: &'v [Result<Value, Fault>],
+    ) -> Option<(Shape<'s>, Values<'v>)> {
+        let mut pairs = values.iter().zip(&layout.types);
+        if pairs.all(|(value, &sample)| Why::of(value, sample).is_none()) {
+            self.reads.clear();
+            return Some((layout.shape(), Values(values)));
+        }
+        mem::swap(&mut self.reads, &mut self.last);
+        self.reads.clear();
+        let (mut bad, mut uncertain, mut mistyped) = (0, 0, 0);
+        for (at, (value, &sample)) in values.iter().zip(&layout.types).enumerate() {
+            let why = Why::of(value, sample);
+            match why {
+                None => {}
+                Some(Why::Bad) => bad += 1,
+                Some(Why::Uncertain) => uncertain += 1,
+                Some(Why::Mistyped(value)) => {
+                    mistyped += 1;
+                    if !left.noted {
+                        left.note(ctx, &ctx.config().reads[at], value, sample);
+                    }
+                }
+            }
+            self.reads.push(why.is_none());
+        }
+        left.add(bad, uncertain, mistyped);
+        if self.reads != self.last {
+            self.keep(layout);
+        }
+        if self.groups.is_empty() {
+            return None;
+        }
+        let shape = Shape {
+            series: &self.series,
+            samples: &self.samples,
+            groups: &self.groups,
+        };
+        Some((shape, Values(values)))
+    }
+
+    /// Puts in `self` the series of `layout` that the frame keeps: the series of each
+    /// read that `reads` keeps, and the index of each group that keeps one of them.
+    fn keep(&mut self, layout: &Layout) {
+        let Self {
+            reads,
+            series,
+            samples,
+            groups,
+            ..
+        } = self;
+        samples.clear();
+        samples.resize(layout.samples.len(), 0);
+        for fill in &layout.fills {
+            if fill.read.is_some_and(|read| reads[read]) {
+                samples[to_usize(fill.group)] += 1;
+            }
+        }
+        let held = |&&(entry, _): &&(usize, usize)| {
+            let Fill { group, read } = layout.fills[entry];
+            read.map_or(samples[to_usize(group)] > 0, |read| reads[read])
+        };
+        series.clear();
+        series.extend(layout.series.iter().filter(held));
+        groups.clear();
+        let present = |&&group: &&u32| samples[to_usize(group)] > 0;
+        groups.extend(layout.groups.iter().filter(present));
+    }
+}
+
+impl Left {
+    /// Adds the counts of the values that one frame leaves out. A count of 0 stages
+    /// no status.
+    fn add(&self, bad: u64, uncertain: u64, mistyped: u64) {
+        for (count, value) in [
+            (&self.bad, bad),
+            (&self.uncertain, uncertain),
+            (&self.mistyped, mistyped),
+        ] {
+            if value > 0 {
+                count.add(value);
+            }
+        }
+    }
+
+    /// Sets the note of `ctx` for a value of the type `value` of `read`, whose
+    /// channel has samples of type `sample`.
     #[cold]
-    fn mistyped(
+    fn note(
         &mut self,
         ctx: &Context<Config>,
         read: &Read,
         value: BuiltIn,
         sample: Scalar,
     ) {
-        self.mistyped.add(1);
-        if self.noted {
-            return;
-        }
         self.noted = true;
         ctx.note(&format_args!(
             "leaves out the values of the node `{}` of the channel `{}`: they are of \
@@ -455,14 +533,14 @@ impl Left {
 
 /// Why a frame leaves out a value.
 #[derive(Debug, PartialEq)]
-enum Leave {
+enum Why {
     Bad,
     Uncertain,
     /// The value is Good, of this type, which is not the type of its channel.
     Mistyped(BuiltIn),
 }
 
-impl Leave {
+impl Why {
     /// Why a frame leaves out `value`, whose channel has samples of type `sample`,
     /// or `None` when it keeps it.
     fn of(value: &Result<Value, Fault>, sample: Scalar) -> Option<Self> {
@@ -476,40 +554,10 @@ impl Leave {
     }
 }
 
-impl Tick {
-    /// Puts in the tick the series of `layout` that it keeps: the series of each read
-    /// that [`Tick::kept`] keeps, and the index of each group that keeps one of them.
-    fn keep(&mut self, layout: &Layout) {
-        let Self {
-            kept,
-            series,
-            samples,
-            groups,
-        } = self;
-        samples.clear();
-        samples.resize(layout.samples.len(), 0);
-        for fill in &layout.fills {
-            if fill.read.is_some_and(|read| kept[read]) {
-                samples[to_usize(fill.group)] += 1;
-            }
-        }
-        let held = |&&(entry, _): &&(usize, usize)| {
-            let Fill { group, read } = layout.fills[entry];
-            read.map_or(samples[to_usize(group)] > 0, |read| kept[read])
-        };
-        series.clear();
-        series.extend(layout.series.iter().filter(held));
-        groups.clear();
-        let present = |&&group: &&u32| samples[to_usize(group)] > 0;
-        groups.extend(layout.groups.iter().filter(present));
-    }
-}
-
 impl Out {
-    /// Writes one frame of `series` with `values` at `stamp`, each series filled as
-    /// `fills` gives, and counts its samples. `groups` are the groups of the indexes
-    /// of `series`, in order, and `samples` the count of data samples of each group in
-    /// the frame. A frame for which the pool has no block now loses its samples.
+    /// Writes one frame of `shape` with `values` at `stamp`, each series filled as
+    /// `fills` gives, and counts its samples. A frame for which the pool has no block
+    /// now loses its samples.
     ///
     /// Returns the latest stamp that the home gives for a group that it refuses as
     /// `Backwards`, and puts those groups in `backwards`.
@@ -523,20 +571,19 @@ impl Out {
     ///
     /// When the home refuses a group as `Expired` or `Codec`, which a writer with no
     /// lease and a raw frame never gets.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a tick that leaves out a value gives its own series and counts"
-    )]
     fn send(
         &mut self,
         fills: &[Fill],
-        samples: &[u64],
-        series: &[(usize, usize)],
-        groups: &[u32],
+        shape: Shape<'_>,
         values: Values<'_>,
         stamp: Stamp,
         backwards: &mut Vec<u32>,
     ) -> Result<Option<Stamp>, Error> {
+        let Shape {
+            series,
+            samples,
+            groups,
+        } = shape;
         let mut draft = match self.writer.draft(Form::Raw, series) {
             Ok(draft) => draft,
             Err(frame::Error::Pool(
@@ -632,7 +679,7 @@ impl Values<'_> {
 #[cold]
 #[inline(never)]
 fn broken(at: usize, value: Result<Value, Fault>) -> ! {
-    panic!("invariant: read {at} is {value:?}, which `Left::sort` leaves out")
+    panic!("invariant: read {at} is {value:?}, which `Kept::sort` leaves out")
 }
 
 /// The diagnostic of the channel of `read`, whose sample type `data_type` is not one
