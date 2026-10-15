@@ -175,6 +175,9 @@ pub(crate) const ARRAY: u16 = 0x8000;
 /// The index of `ByteString` in `UA_TYPES`.
 pub(crate) const BYTE_STRING: usize = 14;
 
+/// The index of `DataValue` in `UA_TYPES`.
+pub(crate) const DATA_VALUE: usize = 22;
+
 /// The index of `Variant` in `UA_TYPES`.
 #[cfg(test)]
 pub(crate) const VARIANT: usize = 23;
