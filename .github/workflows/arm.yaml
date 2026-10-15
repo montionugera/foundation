@@ -73,4 +73,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - name: Test
-        run: cargo test --workspace
+        run: |
+          nproc; free -m
+          ( m=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+            while sleep 1; do
+              a=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+              [ "$a" -lt "$m" ] && m=$a && echo "$m" > "$RUNNER_TEMP/low"
+            done ) &
+          s=$(date +%s); status=0
+          cargo test --workspace || status=$?
+          echo "exit $status in $(( $(date +%s) - s )) s"
+          echo "MemAvailable low $(cat "$RUNNER_TEMP/low") KiB"
+          sudo dmesg | grep -ci "out of memory" || true
+          exit "$status"
