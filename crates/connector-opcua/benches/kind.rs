@@ -1,7 +1,8 @@
 //! The ns of the `opcua` kind against the sim server over the sim net: the polls of
 //! its run for one tick (the read of 1 or of 256 nodes, its frame, and the write of
 //! the frame, with no time of the server), the check of the values of one read and
-//! the write of its frame alone, into channels of one type or of each type in turn,
+//! the write of its frame alone, into channels of one type or of each type in turn
+//! and with no Bad value or one,
 //! the polls of its run start, and its parse. Run with
 //! `cargo bench -p connector-opcua --bench kind`.
 
@@ -18,14 +19,15 @@ mod kind;
 
 /// The node counts of the reads of a tick.
 const COUNTS: [usize; 2] = [1, 256];
-/// The node counts and the sample types, in turn, of the channels of the writes of a
-/// frame.
-const WRITES: [(usize, &[Scalar]); 5] = [
-    (1, &[Scalar::F64]),
-    (256, &[Scalar::F64]),
-    (256, &[Scalar::I16]),
-    (256, &[Scalar::Bool]),
-    (256, SCALARS),
+/// The node counts, the sample types, in turn, of the channels, and the Bad values of
+/// the writes of a frame.
+const WRITES: [(usize, &[Scalar], usize); 6] = [
+    (1, &[Scalar::F64], 0),
+    (256, &[Scalar::F64], 0),
+    (256, &[Scalar::F64], 1),
+    (256, &[Scalar::I16], 0),
+    (256, &[Scalar::Bool], 0),
+    (256, SCALARS, 0),
 ];
 /// The ticks or writes before the timed ones. Tick 1 connects. The test home grows the
 /// `Vec`s of its groups in its first two commits, then reuses each group. 20 covers two
@@ -56,14 +58,14 @@ fn main() {
     }
     println!("ns per write of a frame over {TICKS} writes");
     println!(
-        "{:<10} {:<6} {:>7} {:>7} {:>7}",
-        "nodes", "type", "p10", "p50", "p90"
+        "{:<10} {:<6} {:>4} {:>7} {:>7} {:>7}",
+        "nodes", "type", "bad", "p10", "p50", "p90"
     );
-    for (nodes, scalars) in WRITES {
+    for (nodes, scalars, bad) in WRITES {
         let count = WARMUP + TICKS / WRITE_RUNS;
         let mut writes: Vec<_> = (0..WRITE_RUNS)
             .flat_map(|_| {
-                kind::writes(nodes, scalars, count, time)
+                kind::writes(nodes, scalars, count, bad, time)
                     .0
                     .split_off(WARMUP)
             })
@@ -75,7 +77,7 @@ fn main() {
             _ => "mixed".to_owned(),
         };
         println!(
-            "{nodes:<10} {name:<6} {:>7} {:>7} {:>7}",
+            "{nodes:<10} {name:<6} {bad:>4} {:>7} {:>7} {:>7}",
             at(10),
             at(50),
             at(90)

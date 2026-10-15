@@ -16,7 +16,7 @@ use types::sample::Scalar;
 
 #[test]
 fn a_run_that_writes_past_the_ring_of_its_home_returns_ok() {
-    let (writes, status) = kind::writes(256, &[Scalar::F64], 8_000, |work| {
+    let (writes, status) = kind::writes(256, &[Scalar::F64], 8_000, 0, |work| {
         work();
         0
     });

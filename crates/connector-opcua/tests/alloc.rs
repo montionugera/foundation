@@ -213,17 +213,24 @@ fn a_tick_of_the_kind_allocates_what_its_read_allocates() {
 }
 
 /// Writes 21 to 100 of a frame of the `opcua` kind allocate nothing, for channels of
-/// each width. The test home grows the `Vec`s of its groups in its first two commits,
+/// each width, and with one value or each value left out. The test home grows the `Vec`s of its groups in its first two commits,
 /// which the first 20 writes cover, as in the `kind` bench.
 fn a_write_of_a_frame_of_any_type_allocates_nothing() {
-    let widths: [&[Scalar]; 4] = [
-        &[Scalar::Bool],
-        &[Scalar::I16],
-        &[Scalar::F32],
-        &[Scalar::F64],
+    let runs: [(&[Scalar], usize); 6] = [
+        (&[Scalar::Bool], 0),
+        (&[Scalar::I16], 0),
+        (&[Scalar::F32], 0),
+        (&[Scalar::F64], 0),
+        (&[Scalar::F64], 1),
+        (&[Scalar::F64], 64),
     ];
-    for scalars in widths {
-        let writes = kind::writes(64, scalars, 100, |work| ALLOCATOR.count(work).1).0;
-        assert_eq!(writes[20..], [0; 80], "writes 21 to 100 of {scalars:?}");
+    for (scalars, bad) in runs {
+        let count = |work: &mut dyn FnMut()| ALLOCATOR.count(work).1;
+        let writes = kind::writes(64, scalars, 100, bad, count).0;
+        assert_eq!(
+            writes[20..],
+            [0; 80],
+            "writes 21 to 100 of {scalars:?}, {bad} Bad"
+        );
     }
 }

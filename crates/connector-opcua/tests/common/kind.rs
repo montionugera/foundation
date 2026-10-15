@@ -47,9 +47,11 @@ type Polls = Arc<Mutex<Vec<(Monotonic, u64)>>>;
 enum Of {
     /// Each poll of the run of the `opcua` kind.
     Polls(Polls),
-    /// Each of `count` writes of a frame of its reads, with no server.
+    /// Each of `count` writes of a frame of its reads, with no server, the first
+    /// `bad` of which are Bad.
     Writes {
         count: usize,
+        bad: usize,
         measures: Arc<Mutex<Vec<u64>>>,
     },
 }
@@ -95,9 +97,13 @@ impl<M: Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static> kind::Kind
                 })
                 .await
             }
-            Of::Writes { count, measures } => {
+            Of::Writes {
+                count,
+                bad,
+                measures,
+            } => {
                 let writes = connector_opcua::bench::kind::writes;
-                let written = writes(&ctx, *count, &self.measure).await?;
+                let written = writes(&ctx, *count, *bad, &self.measure).await?;
                 *measures.lock().expect("no panic under the lock") = written;
                 Ok(())
             }
@@ -178,8 +184,8 @@ pub(crate) fn run(
 /// Writes `count` frames of a connector that reads `nodes` variables, with no server,
 /// and gives what `measure` gives for the check of the values and the write of each
 /// frame, and each status of the connector that the home applied, in order. Read `i`
-/// goes into a channel of the type `scalars[i % scalars.len()]`. `measure` calls the
-/// work that it gets once.
+/// goes into a channel of the type `scalars[i % scalars.len()]`, and the first `bad`
+/// reads are Bad. `measure` calls the work that it gets once.
 ///
 /// # Panics
 ///
@@ -188,6 +194,7 @@ pub(crate) fn writes(
     nodes: usize,
     scalars: &'static [Scalar],
     count: usize,
+    bad: usize,
     measure: impl Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static,
 ) -> (Vec<u64>, Vec<Reading>) {
     let measures = Arc::<Mutex<Vec<u64>>>::default();
@@ -195,6 +202,7 @@ pub(crate) fn writes(
         measure,
         of: Of::Writes {
             count,
+            bad,
             measures: Arc::clone(&measures),
         },
     };

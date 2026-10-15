@@ -42,6 +42,7 @@ struct Variable {
     /// The status of each later read of this variable, in place of the status of all.
     quality: Option<Quality>,
     /// The value that a server holds in place of `value`, set before it starts.
+    #[cfg(test)]
     fixed: Option<Fixed>,
     served: Vec<Served>,
 }
@@ -56,11 +57,6 @@ pub(crate) enum Fixed {
     /// An array of two Doubles.
     Doubles,
 }
-
-/// No value of a variable is fixed outside the tests of this crate.
-#[cfg(not(test))]
-#[derive(Clone, Copy, Debug)]
-enum Fixed {}
 
 impl Variables {
     /// The variables at the node ids `nodes`, each with the value 0 and the status
@@ -84,6 +80,7 @@ impl Variables {
                 node,
                 value: Value::F64(0.0),
                 quality: None,
+                #[cfg(test)]
                 fixed: None,
                 served: Vec::new(),
             });
@@ -226,35 +223,33 @@ pub async fn serve(
         wall: Box::new(wall),
     };
     let manager = Manager::accepting(time, net, listener, rng);
-    let nodes: Vec<(Node, Option<Fixed>)> = (variables.state().variables.iter())
-        .map(|variable| (variable.node.clone(), variable.fixed))
+    let nodes: Vec<Node> = (variables.state().variables.iter())
+        .map(|variable| variable.node.clone())
+        .collect();
+    #[cfg(test)]
+    let fixed: Vec<Option<Fixed>> = (variables.state().variables.iter())
+        .map(|variable| variable.fixed)
         .collect();
     let add = |server: &mut Server| {
-        let top = nodes
-            .iter()
-            .map(|(node, _)| node.namespace)
-            .max()
-            .unwrap_or(0);
+        let top = nodes.iter().map(|node| node.namespace).max().unwrap_or(0);
         for namespace in 2..=top {
             let uri = CString::new(format!("urn:foundation:sim:{namespace}"))
                 .expect("invariant: a URI with no NUL");
             let added = server.add_namespace(&uri);
             assert_eq!(added, namespace, "open62541 refused a namespace");
         }
-        for (index, (node, fixed)) in nodes.iter().enumerate() {
-            match fixed {
-                #[cfg(test)]
-                Some(Fixed::String) => server.add_string(node),
-                #[cfg(test)]
-                Some(Fixed::Doubles) => server.add_doubles(node),
-                #[cfg(not(test))]
-                Some(never) => match *never {},
-                None => {
-                    let (variables, clock) =
-                        (Variables::clone(variables), Clock::clone(&clock));
-                    server.add_source(node, move || variables.read(index, clock.now()));
+        for (index, node) in nodes.iter().enumerate() {
+            #[cfg(test)]
+            if let Some(fixed) = fixed[index] {
+                match fixed {
+                    Fixed::String => server.add_string(node),
+                    Fixed::Doubles => server.add_doubles(node),
                 }
+                continue;
             }
+            let (variables, clock) =
+                (Variables::clone(variables), Clock::clone(&clock));
+            server.add_source(node, move || variables.read(index, clock.now()));
         }
     };
     Server::serve(manager, SESSIONS, add, until).await;

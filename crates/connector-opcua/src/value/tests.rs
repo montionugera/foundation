@@ -99,7 +99,7 @@ fn each_value_gives_the_opc_ua_name_of_its_type() {
 #[test]
 #[should_panic(expected = "invariant: no open62541 kind is 31")]
 fn a_kind_past_the_built_in_types_panics() {
-    let _ = BuiltIn::new(31);
+    let _: BuiltIn = BuiltIn::new(31);
 }
 
 /// A value of any type.
