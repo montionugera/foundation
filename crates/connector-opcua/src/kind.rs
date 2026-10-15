@@ -410,6 +410,13 @@ impl Left {
         types: &[(Scalar, Discriminant<Value>)],
         kept: &mut Vec<bool>,
     ) -> bool {
+        let pairs = values.iter().zip(types);
+        if pairs
+            .clone()
+            .all(|(value, &(_, variant))| Leave::of(value, variant).is_none())
+        {
+            return true;
+        }
         let mut all = true;
         for (at, (value, &(sample, variant))) in values.iter().zip(types).enumerate() {
             match Leave::of(value, variant) {
