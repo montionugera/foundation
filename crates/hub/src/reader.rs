@@ -122,8 +122,9 @@ impl<'a> Received<'a> {
     }
 
     /// The seqs of the index just before this frame that the reader did not get, as
-    /// they were lost for no room. `None` for most frames, and never an empty range.
-    /// Its end is the seq of the frame's first sample.
+    /// they were lost for no room. `None` for each frame of a latest reader and for
+    /// most frames of a complete one, and never an empty range. Its end is the seq of
+    /// the frame's first sample.
     #[must_use]
     pub fn gap(&self) -> Option<Range<u64>> {
         let start = self.lent.seqs.start;
