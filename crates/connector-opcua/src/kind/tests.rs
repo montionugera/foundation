@@ -221,7 +221,7 @@ fn index_of(definition: &Definition) -> u128 {
 /// What a scene serves, defines, and reads.
 struct Setup {
     /// The variables of the server.
-    nodes: &'static [&'static str],
+    nodes: Vec<String>,
     /// The channels other than the status channels, each with its definition.
     channels: Vec<(&'static str, Definition)>,
     /// The channel and the node of each `read` block.
@@ -229,11 +229,17 @@ struct Setup {
 }
 
 impl Setup {
+    /// The variables of [`Setup::nodes`].
+    fn variables(&self) -> Variables {
+        let nodes: Vec<_> = self.nodes.iter().map(String::as_str).collect();
+        Variables::new(&nodes)
+    }
+
     /// `plant.a`, `plant.b`, and `plant.c` (keys 2 to 4) on `plant.time` (key 1),
     /// which read [`A`], [`B`], and [`C`].
     fn three() -> Self {
         Self {
-            nodes: &[A, B, C],
+            nodes: [A, B, C].map(String::from).into(),
             channels: vec![
                 ("plant.time", index(1)),
                 ("plant.a", data(2, 1, F64)),
@@ -434,7 +440,7 @@ where
         let address = format!("opc.tcp://{}:4840", node.addresses()[0]);
         let scene = Rc::new(Scene {
             config: config(&address, &setup.reads),
-            variables: Variables::new(setup.nodes),
+            variables: setup.variables(),
             supervisor: Supervisor::new(inputs),
             server: RefCell::new(None),
             node: node.clone(),
@@ -848,7 +854,7 @@ fn typed() -> Setup {
         reads.push((channel, TYPED_NODES[at].to_owned()));
     }
     Setup {
-        nodes: TYPED_NODES,
+        nodes: TYPED_NODES.iter().map(|&node| node.to_owned()).collect(),
         channels,
         reads,
     }
@@ -1006,23 +1012,49 @@ fn ends_the_run_with_a_device_error_on_a_value_of_another_type_of_the_same_width
     assert_eq!(errors(&outcome.statuses), [(DEVICE, bad.to_owned())]);
 }
 
+/// Three nodes whose names together are past one message of the server (524047
+/// bytes) go in two requests, and each tick reads each node.
 #[test]
-fn refuses_a_read_past_one_message_of_the_server() {
+fn reads_each_node_on_each_tick_when_the_nodes_need_two_requests() {
+    let long = |letter: &str| format!("ns=3;s={letter}{}", "x".repeat(200_000));
+    let nodes = [long("a"), long("b"), long("c")];
     let mut setup = Setup::three();
-    setup.reads[0].1 = format!("ns=3;s={}", "x".repeat(600_000));
+    setup.nodes = nodes.to_vec();
+    for (read, node) in setup.reads.iter_mut().zip(&nodes) {
+        read.1.clone_from(node);
+    }
     let outcome = run(
         setup,
         |scene| async move { scene.supervise(ms(1_050)).await },
     );
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let frames = &outcome.frames;
+    assert_eq!(frames.len(), 11);
+    for (key, node) in [2, 3, 4].into_iter().zip(&nodes) {
+        assert_eq!(values(frames, key), served(&outcome, node), "{key}");
+    }
+    assert_eq!(last(&outcome.statuses, IN), 33);
+}
+
+#[test]
+fn refuses_a_node_whose_read_alone_is_past_one_message_of_the_server() {
+    let mut setup = Setup::three();
+    setup.reads[1].1 = format!("ns=3;s={}", "x".repeat(600_000));
+    let outcome = run(
+        setup,
+        |scene| async move { scene.supervise(ms(1_050)).await },
+    );
+    let node = format!("ns=3;s={}", "x".repeat(600_000));
     assert_eq!(
         diagnostics(outcome.result),
         [Diagnostic::new(
             LARGE_READ,
             None,
-            "a Read of 3 nodes needs 600129 bytes, past the 524047 bytes of one \
-             message of the server"
-                .into(),
-            "Read fewer nodes in the connector, or split it into two connectors".into(),
+            format!(
+                "a Read of the node `{node}` of the channel `plant.b` needs 600087 bytes, \
+                 past the 524047 bytes of one message of the server"
+            ),
+            "Raise the message size of the server".into(),
         )]
     );
     assert_eq!(outcome.frames, []);

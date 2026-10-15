@@ -179,9 +179,7 @@ fn a_get_whose_read_fails_gives_one_failure_of_the_chunk_store() {
         let collector = Collector::new(reader, Rc::clone(&store));
         let zero = Some(Value::U64(0));
         assert_eq!(counts(&collector), [zero, zero]);
-        let mut chunk = pool.alloc(5).expect("a block");
-        chunk.copy_from_slice(b"chunk");
-        let chunk = chunk.freeze();
+        let chunk = pool.copy(b"chunk").expect("a block");
         let digest = Digest::of(&chunk);
         store.put(digest, &chunk).await.expect("the put stores");
         let path = crate::directory::blob().join(digest.to_string());

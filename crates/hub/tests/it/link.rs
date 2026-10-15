@@ -324,6 +324,39 @@ fn refuses_a_hello_that_does_not_echo_the_nonce() {
     );
 }
 
+/// The node gives each challenge a fresh nonce, so a hello sent again is stale.
+#[test]
+fn refuses_a_hello_sent_again_as_the_renewal() {
+    let home = session(109, true, |mut agent| async move {
+        let challenge = agent.hello.challenge().await;
+        let hello = Agent::hello(challenge);
+        agent.send_hello(hello.clone(), &AGENT).await;
+        agent.hello.challenge().await;
+        agent.send_hello(hello, &AGENT).await;
+        assert_eq!(agent.closed().await, closed_with(STALE));
+    });
+    assert_eq!(home.served, [Err(serve::Error::Stale)]);
+}
+
+/// Each session gets its own nonce, so a hello of one session is stale on another.
+#[test]
+fn refuses_a_hello_of_another_session() {
+    let served = sessions(
+        114,
+        [SUBJECT, SUBJECT],
+        |[mut first, mut second]| async move {
+            let challenge = first.hello.challenge().await;
+            let hello = Agent::hello(challenge);
+            first.send_hello(hello.clone(), &AGENT).await;
+            first.hello.challenge().await;
+            second.hello.challenge().await;
+            second.send_hello(hello, &AGENT).await;
+            assert_eq!(second.closed().await, closed_with(STALE));
+        },
+    );
+    assert_eq!(served, closed_after(vec![Err(serve::Error::Stale)], 1, 0));
+}
+
 #[test]
 fn refuses_each_hello_before_the_first_rules() {
     let home = session_with(106, true, POOL, None, |mut agent| async move {

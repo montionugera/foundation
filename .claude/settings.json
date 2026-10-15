@@ -13,5 +13,9 @@
     "allow": [
       "Bash(gh pr merge:*)"
     ]
+  },
+  "attribution": {
+    "commit": "",
+    "pr": ""
   }
 }

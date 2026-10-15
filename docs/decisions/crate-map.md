@@ -54,6 +54,18 @@ Rules:
    #2606: https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155332793;
    rule meaning (`laptop.director`, 2026-10-13T21:12:40Z):
    https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155299486).
+10. A crate's `sim` feature is test-only: only a dev-dependency, the fuzz crate, or
+    another `sim` feature turns it on. The BQ19 feature is `simulate`; it turns on
+    `dep:sim` and other `simulate` features, never a `sim` feature. `cargo xtask`
+    checks this (#1570) (`laptop.architect`, 2026-10-08T02:11:30Z:
+    https://github.com/synnaxlabs/foundation/issues/1570#issuecomment-6050751380).
+    The check resolves with all features on, walks from each member along each edge
+    that is not only a dev-dependency, and checks each local crate that it reaches: a
+    member, a benchmark, `xtask`, or a path crate outside the workspace. A build
+    dependency counts, as it runs in each product build, and so does a benchmark or
+    `xtask`, as `cargo build --workspace` unifies its features with the binary's
+    (`laptop.architect`, 2026-10-09T20:33:17Z:
+    https://github.com/synnaxlabs/foundation/pull/2140#issuecomment-6088787290).
 
 Order: layer 1 (`block`, `ring`, `counting`, `waker`) -> `types` -> (`env`, `document`,
 `raft`, `estimate`, `control`, `delivery`) -> `codec` -> `wire` -> `spec` -> `access`;
@@ -65,7 +77,7 @@ layer 4 (`config-hcl`, `config`) -> `ops` -> `node`.
 | --- | --- | --- | --- |
 | 1 | `block` | Owns pools of preallocated, aligned buffers (`Pool`, `Unique`, `Block`, one refcount per frame, offsets only) and their unsafe memory code. | none |
 | 1 | `ring` | Carries handles between shards through bounded single-producer, single-consumer rings, owns the wake protocol (loom-checked) and the `latest` cell that one shard writes and every shard reads, and holds its own unsafe slot code (memory delegation, 2026-10-04). A consumer parks at once: the shard idle loop owns the spin window through `try_pop` (#46). | none |
-| 1 | `counting` | Counts heap allocations so tests and benchmarks can assert that code does not allocate, counts the heap bytes held so tests can bound the memory of a structure, finds freed blocks that hold given bytes so tests can assert that code erases a secret, and holds the `unsafe impl GlobalAlloc` of every crate, except the allocation test of `block` (`crates/block/tests/alloc`), which keeps its own. A dev-dependency only. | none |
+| 1 | `counting` | Counts heap allocations so tests and benchmarks can assert that code does not allocate, counts the heap bytes held and given out so tests can bound the memory of a structure and what code allocates, finds freed blocks that hold given bytes so tests can assert that code erases a secret, and holds the `unsafe impl GlobalAlloc` of every crate, except the allocation test of `block` (`crates/block/tests/alloc`), which keeps its own. A dev-dependency only. | none |
 | 1 | `waker` | Makes wakers for tests that own a value that is not `Send`, so a test can give a future a waker whose drop runs its code. Holds the `unsafe` of those wakers. A waker used on another thread aborts the process. A dev-dependency only (`laptop.architect`, 2026-10-10 06:25 UTC, #2254, https://github.com/synnaxlabs/foundation/issues/2254#issuecomment-6094631943, 06:28 UTC, https://github.com/synnaxlabs/foundation/issues/2254#issuecomment-6094654313; the abort, 2026-10-10 09:11 UTC, #2265, https://github.com/synnaxlabs/foundation/pull/2265#issuecomment-6095996730, items 3 and 4 withdrawn 09:19 UTC, https://github.com/synnaxlabs/foundation/pull/2265#issuecomment-6096058772). | none |
 | 1 | `types` | Defines byte-level values: time, byte sizes, sample types, series, frames, key sets, masks, views, keys, slots, quality, names, node keys, Ed25519 public and private keys, with the derive, the sign, and the verify, subject hellos, connection keys, control authority, content digests, the one selector matcher, and the one quote form for text in diagnostics. It also holds the wakers of the futures that wait for one event (`wait::Set`) (`laptop.architect`, 2026-10-10 05:33 UTC, #1701, https://github.com/synnaxlabs/foundation/issues/1701#issuecomment-6094250342). | `block` |
 | 1 | `env` | Defines the injected seams for monotonic time, the OS wall clock (read only by `clock`), files, the network, serial ports, randomness, shards, dedicated threads, and task spawning. Its tests hold one `unsafe` module, `tasks::tests::hooked`: a waker whose clone and drop run a closure of the test, and the tests that use it. Each test of `env` runs under Miri (laptop.architect-2, 2026-10-10 03:57 UTC, #2218, https://github.com/synnaxlabs/foundation/pull/2218#issuecomment-6093523974). | `types`, `block` |
