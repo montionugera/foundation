@@ -241,3 +241,15 @@
   home's receive half resets with code 0, not the refusal code, until #2031
   (`laptop.architect`, 2026-10-08T23:49:49Z:
   https://github.com/synnaxlabs/foundation/pull/2003#issuecomment-6071319399).
+  `wire::hub::Frames` builds the frames of a reader session from the messages after
+  `Opened`, for the reader's node and for a program, so the reader end of HUB WIRE is
+  in one place (`laptop.architect`, 2026-10-15T23:19:38Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204306531; lost:
+  a copy of the loop in `program`, which can drift from the one in `hub` with no test
+  that sees it). It takes no pool, so `wire` gets no edge to `block`: at the last run
+  of ends it gives `Step::Draft`, the caller makes the draft of `Frames::layout` from
+  its own pool and gives it back, and gets the body slice for `recv_into` and then the
+  frame. A full pool is the caller's case: `hub` gives `Ended::Pool`, and `program`
+  waits. A layout error stays a `types::frame::Error` from `layout`, so
+  `wire::hub::Error` stays `Copy` (`laptop.architect`, 2026-10-15T23:41:49Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204591536).
