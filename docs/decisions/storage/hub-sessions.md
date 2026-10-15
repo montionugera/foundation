@@ -58,12 +58,11 @@
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159349684). The hub
   `sim` test
   `ends_a_complete_reader_that_sleeps_past_its_window_as_behind_but_not_past_its_ring`
-  checks the frame past the window, and, after #2553, that a frame lost for no room
-  ends nothing. A seq lost for no room stays a miss under the
-  catch-up of #274 B1: a reader that reaches it ends with `Behind`, never a gap, and
-  the B1 plan states how it knows that seq. Superseded by #2553 (READER RULES): a seq
-  lost for no room is no miss, and the next frame gives it as its gap
-  (`laptop.architect`, 2026-10-15T18:12:25Z:
+  checks the frame past the window, and, after #2553, that a frame lost for no room ends
+  nothing. A seq lost for no room stays a miss under the catch-up of #274 B1: a reader
+  that reaches it ends with `Behind`, never a gap, and the B1 plan states how it knows
+  that seq. Superseded by #2553 (READER RULES): a seq lost for no room is no miss, and
+  the next frame gives it as its gap (`laptop.architect`, 2026-10-15T18:12:25Z:
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922).
   Supersedes item 4 of
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159325971
