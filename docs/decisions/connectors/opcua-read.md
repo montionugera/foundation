@@ -80,4 +80,6 @@
   The read gives each value, or its status, or the OPC UA type of a value that is not
   a scalar of a sample type; the kind leaves out each value that is not Good or not of
   the type of its channel (OPCUA KIND; `laptop.architect-2`, 2026-10-14T02:31:51Z:
-  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6159574954).
+  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6159574954, and the
+  OPC UA type of an array or a String at 2026-10-15T19:32:35Z:
+  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6200602125).
