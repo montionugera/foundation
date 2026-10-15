@@ -1,7 +1,8 @@
 //! The client sessions that `Link::serve` serves, over a real transport from a program
 //! to a simulated node: the hello stream, and the request streams.
 
-use std::cell::Cell;
+use std::future::poll_fn;
+use std::pin::pin;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -9,7 +10,7 @@ use access::proof::{Error as Refusal, Field};
 use hub::serve;
 use transport::{Address, Code, Session};
 use types::connection;
-use types::ed25519::{Pair, PrivateKey};
+use types::ed25519::Pair;
 use types::node;
 use types::time::Span;
 use wire::Protocol;
@@ -25,22 +26,9 @@ use crate::agent::{
 };
 use crate::net::{HOME, header, own_pool, public_key, transport};
 use crate::sessions::{
-    self, Got, HOLD, accept_on, answer, closed_after, closed_with, recorded, rules,
-    run_program, run_program_on, serve_each,
+    self, Got, HOLD, Home, OTHER, QUIET, accept_on, answer, closed_after, closed_with,
+    rules, run_program, serve_each, shrink_wall_error,
 };
-
-/// A key that the spec does not list.
-pub(super) const OTHER: PrivateKey = PrivateKey([4; 32]);
-/// How long the program waits for what must not come.
-pub(super) const QUIET: Span = Span::from_nanos(200_000_000);
-
-/// What the home saw: what `serve` gave for each stream, in the order they ended, and
-/// how the session ended.
-#[derive(Debug)]
-pub(super) struct Home {
-    pub(super) served: Vec<Result<Got, serve::Error>>,
-    pub(super) closed: transport::Error,
-}
 
 /// Runs one client session: the home's node makes a [`Test`] hub, with mesh time when
 /// `synced`, and serves each hub stream of the session on one `hub::Link`, once it
@@ -77,7 +65,7 @@ where
 
 /// As [`session_with`], where `program` runs on the program's node with the home's
 /// address, and dials it itself.
-pub(super) fn serve_session<G, P>(
+fn serve_session<G, P>(
     seed: u64,
     synced: bool,
     pool: usize,
@@ -115,35 +103,11 @@ where
     G: FnOnce(sim::node::Node, env::tasks::Tasks, Address) -> P + Send + 'static,
     P: Future<Output = ()> + 'static,
 {
-    let served = Arc::new(Mutex::new(Vec::new()));
-    let closed = Arc::new(Mutex::new(None));
-    let (kept, ended) = (Arc::clone(&served), Arc::clone(&closed));
-    let home = move |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
-        let (test, session, link) = accept(&node, &tasks, pool, synced, rules).await;
-        ready(&test).await;
-        let accepted = Rc::new(Cell::new(0));
-        serve_each(&session, &link, &tasks, &node.clock(), &kept, &accepted).await;
-        *ended.lock().expect("not poisoned") = Some(session.closed().await);
-        recorded(&node, &kept, accepted.get()).await;
-        drop((link, test));
+    let open = async move |node: &sim::node::Node, tasks: &env::tasks::Tasks| {
+        let test = home(node, tasks, pool, synced).await;
+        (test.hub.clone(), test)
     };
-    run_program_on(seed, wire, home, program);
-    let served = std::mem::take(&mut *served.lock().expect("not poisoned"));
-    let closed = closed.lock().expect("not poisoned").take();
-    Home {
-        served,
-        closed: closed.expect("the session closed"),
-    }
-}
-
-/// Makes the error of the wall clock of `node` unknown, and 10 ms one minute later.
-pub(super) fn shrink_wall_error(node: &sim::node::Node, tasks: &env::tasks::Tasks) {
-    node.set_wall_error(None);
-    let shrink = node.clone();
-    tasks.spawn(async move {
-        shrink.clock().sleep(Span::MINUTE).await;
-        shrink.set_wall_error(Some(Span::from_nanos(10_000_000)));
-    });
+    sessions::serve_session(seed, wire, rules, open, ready, program)
 }
 
 /// Runs [`sessions::sessions`] on a synced [`Test`] hub.
@@ -164,7 +128,7 @@ where
 
 /// A [`Test`] hub as [`home`] gives it, with `rules` set unless `None`, and the
 /// session of the first program that dials it, with its link.
-pub(super) async fn accept(
+async fn accept(
     node: &sim::node::Node,
     tasks: &env::tasks::Tasks,
     pool: usize,
@@ -177,7 +141,7 @@ pub(super) async fn accept(
 }
 
 /// A [`Test`] hub with a home pool of `pool` bytes, with mesh time when `synced`.
-pub(super) async fn home(
+async fn home(
     node: &sim::node::Node,
     tasks: &env::tasks::Tasks,
     pool: usize,
@@ -1319,4 +1283,113 @@ fn serves_a_request_whose_header_came_before_the_admission() {
     });
     let got = got.lock().expect("not poisoned").take();
     assert_eq!(got, Some(Ok(Got::Request(name(SUBJECT), b"ping".to_vec()))));
+}
+
+/// Polls `hello` beside `other` until `other` resolves.
+async fn beside<T>(
+    hello: &mut std::pin::Pin<
+        Box<impl Future<Output = Result<hub::Served, serve::Error>>>,
+    >,
+    other: impl Future<Output = T>,
+) -> T {
+    let mut other = pin!(other);
+    poll_fn(|cx| {
+        drop(hello.as_mut().poll(cx));
+        other.as_mut().poll(cx)
+    })
+    .await
+}
+
+/// The reply of a request that `Link::serve` gave holds the region after the hub, the
+/// link, and each future of serve drop, and the hub lets go once the reply drops.
+#[test]
+fn holds_the_transport_until_the_reply_of_a_request_drops() {
+    let (held, with_reply, without_reply) = reply_holds(End::Drop);
+    assert_eq!(with_reply, held, "the reply holds the hub");
+    assert_eq!(without_reply, 1, "no task holds the transport");
+}
+
+/// The hub lets go of the region once a reply, sent after the hub, the link, and each
+/// future of serve drop, ends its send.
+#[test]
+fn lets_go_of_the_transport_once_the_send_of_a_reply_ends() {
+    let (held, with_reply, without_reply) = reply_holds(End::Send);
+    assert_eq!(with_reply, held, "the reply holds the hub");
+    assert_eq!(without_reply, 1, "no task holds the transport");
+}
+
+/// How the test ends the reply of a served request.
+enum End {
+    Drop,
+    Send,
+}
+
+/// The count of the transport of a home with one served request: before the hub, its
+/// link, and the future of serve drop, after, and once the reply ends as `end` says and
+/// the region drops.
+fn reply_holds(end: End) -> (usize, usize, usize) {
+    let outcome = Arc::new(Mutex::new(None));
+    let kept = Arc::clone(&outcome);
+    let home = move |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
+        let transport = Rc::new(transport(&node, &tasks, &own_pool(), HOME, 1 << 16));
+        let region = super::region::open(
+            &node,
+            &tasks,
+            Rc::clone(&transport),
+            Vec::new(),
+            super::channels(),
+        )
+        .await;
+        let layout = buffer::Layout::new(super::AREA, super::BODY_MAX).expect("a ring");
+        let mut test =
+            super::Test::new(node.clone(), tasks.clone(), layout, POOL, Some(region))
+                .await;
+        test.sync().await;
+        test.hub.set_rules(rules());
+        let session = transport.accept().await.expect("a session");
+        let link = test.hub.link(session.clone());
+        let mut hello = session.accept().await.expect("a stream");
+        header(&mut hello).await;
+        let mut hello = Box::pin(link.serve(hello));
+        let mut incoming = beside(&mut hello, session.accept())
+            .await
+            .expect("a stream");
+        beside(&mut hello, header(&mut incoming)).await;
+        let served = beside(&mut hello, link.serve(incoming)).await;
+        let Ok(hub::Served::Request(request)) = served else {
+            panic!("a request: {served:?}");
+        };
+        let held = Rc::strong_count(&transport);
+        let super::Test {
+            clock, hub, region, ..
+        } = test;
+        drop((hub, link, hello));
+        clock.sleep(Span::SECOND).await;
+        let with_reply = Rc::strong_count(&transport);
+        match end {
+            End::Drop => drop(request),
+            End::Send => request
+                .reply
+                .send(b"cd")
+                .await
+                .expect("the response is sent"),
+        }
+        drop((region, session));
+        clock.sleep(Span::SECOND).await;
+        let without_reply = Rc::strong_count(&transport);
+        *kept.lock().expect("not poisoned") = Some((held, with_reply, without_reply));
+    };
+    run(139, home, |mut agent| async move {
+        agent.admit().await;
+        let request = agent.request(2, b"ab").await;
+        agent
+            .sleep(Span::from_nanos(3 * Span::SECOND.nanos()))
+            .await;
+        drop(request);
+    });
+    outcome
+        .lock()
+        .expect("not poisoned")
+        .take()
+        .expect("the home ran")
 }
