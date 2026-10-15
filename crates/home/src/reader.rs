@@ -217,9 +217,13 @@ impl Set {
     /// The first seq of the newest live frame of the index at `place`, which a latest
     /// session gets at its open, or `None` before the first.
     pub(crate) fn newest(&self, place: usize) -> Option<u64> {
-        let frame = self.entries[place].readers.newest()?;
-        let (_, range) = frame.ranges().next()?;
-        Some(range.seq)
+        self.entries[place].readers.newest().map(|frame| {
+            let (_, range) = frame
+                .ranges()
+                .next()
+                .expect("invariant: an index frame holds its one group");
+            range.seq
+        })
     }
 
     /// Forgets the session `replaced` of the index at `place`, which a takeover
