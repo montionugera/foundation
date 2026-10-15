@@ -45,8 +45,9 @@ decision, or the owner of state. The design approver of an item is the crate's
 architect, `laptop.architect` for a contract between the two lists (`docs/factory.md`),
 or `laptop.director` for any other item. When the crate's architect, or
 `laptop.architect` for a contract between the two lists, wrote a commit of the PR, it is
-the other architect (Round 1). When `laptop.director` wrote the PR, `laptop.monitor` is
-the design approver in place of `laptop.director`.
+the other architect (Round 1). When both architects wrote a commit of the PR, it is
+`laptop.director`. When `laptop.director` wrote the PR, `laptop.monitor` is the design
+approver in place of `laptop.director`.
 
 A PR that replaces another before round 3 continues its count: its first round reviews
 its whole diff with each reviewer of the table (Round 1). After round 3, no PR replaces
@@ -141,7 +142,8 @@ or another rule that `laptop.director` owns (`/direct`, "The bar"), and
 `laptop.director` is not its author, also send it to `laptop.director`, and link its
 approval on the `Public surface:` line. When the crate's architect, or
 `laptop.architect` for a contract between the two lists, wrote a commit of the PR, the
-other architect gives each approval, OK, and ruling that this skill asks of it.
+other architect gives each approval, OK, and ruling that this skill asks of it. When
+both architects wrote a commit of the PR, `laptop.director` gives them.
 
 When the PR makes a key choice (`CLAUDE.md`, "The person decides the design"), tell
 `reviewer` to list each one. The author sends `laptop.monitor` each one that it has not

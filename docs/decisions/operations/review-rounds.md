@@ -87,10 +87,16 @@
   `laptop.architect` for a contract between the two lists, wrote a commit of the PR, the
   other architect is the design approver, as item 42 rules for Round 1
   (`laptop.director`, 2026-10-11T16:02:05Z:
-  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6110904042).
-  Supersedes "the next round starts where the last round of the old PR ends" of item 45
+  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6110904042). When
+  both architects wrote a commit of the PR, it is `laptop.director`. Supersedes "the
+  next round starts where the last round of the old PR ends" of item 45
   (`laptop.director`, 2026-10-11T17:20:58Z:
-  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6111639867). The
-  answers and approvals of the old PR still count at their SHA. Decided by
-  `laptop.director`, 2026-10-15T16:32:24Z:
-  https://github.com/synnaxlabs/foundation/pull/2455#issuecomment-6197095582.
+  https://github.com/synnaxlabs/foundation/issues/2041#issuecomment-6111639867), as
+  round 1 of #2586 decided (`laptop.director`, 2026-10-13T16:49:41Z:
+  https://github.com/synnaxlabs/foundation/pull/2586#issuecomment-6150615724). When the
+  head of the old PR is an ancestor of the head of the new one, the answers and
+  approvals of the old PR still count at their SHA. Decided by `laptop.director`,
+  2026-10-15T16:32:24Z:
+  https://github.com/synnaxlabs/foundation/pull/2455#issuecomment-6197095582, and
+  2026-10-15T16:38:12Z:
+  https://github.com/synnaxlabs/foundation/pull/2455#issuecomment-6197209707.
