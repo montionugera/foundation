@@ -17,7 +17,6 @@ wire = { path = "../wire" }
 aws-lc-rs.workspace = true
 block = { path = "../block", features = ["sim"] }
 codec = { path = "../codec" }
-home = { path = "../home" }
 hub = { path = "../hub", features = ["sim"] }
 sim = { path = "../sim" }
 spec = { path = "../spec" }
