@@ -2,49 +2,28 @@
 //! series of its body, for frames of 16, 1000, and 100,000 series of one sample: each
 //! an `f32`, or a mix of scalars, an array, a matrix, a list, a string, and bytes.
 
+mod common;
+
 use std::fmt;
 use std::sync::Arc;
 
+use common::MIXED;
 use divan::Bencher;
 use divan::counter::ItemsCount;
-use types::channel;
-use types::frame::key_set::{Group, Interner, KeySet};
+use types::frame::key_set::KeySet;
 use types::frame::{Draft, Form, Frame, Path};
-use types::sample::{Scalar, Sides, Type};
+use types::sample::{Scalar, Type};
 use types::time::Stamp;
 
 fn main() {
     divan::main();
 }
 
-/// The data types that a mixed frame cycles through.
-const MIXED: [Type; 10] = [
-    Type::Scalar(Scalar::F32),
-    Type::Scalar(Scalar::F64),
-    Type::Scalar(Scalar::I16),
-    Type::Scalar(Scalar::U8),
-    Type::Scalar(Scalar::Stamp),
-    Type::Array {
-        element: Scalar::F32,
-        len: 3,
-    },
-    Type::Matrix {
-        element: Scalar::F32,
-        sides: Sides {
-            rows: 2,
-            columns: 3,
-        },
-    },
-    Type::List {
-        element: Scalar::U8,
-        max: 16,
-    },
-    Type::String,
-    Type::Bytes,
-];
-
 /// The pool of each bench.
-const POOL: block::Config = block::Config { budget: 1 << 24 };
+const POOL: block::Config = match block::Config::new(1 << 24) {
+    Ok(config) => config,
+    Err(_) => panic!("the budget fits"),
+};
 
 /// Bytes of one sample of a type that has no width.
 const VARIABLE: usize = 16;
@@ -65,14 +44,7 @@ impl fmt::Display for Case {
 
 impl Case {
     fn new(name: &'static str, series: usize, types: &[Type]) -> Self {
-        let key = |n: usize| channel::Key::from_u128(u128::try_from(n).expect("few"));
-        let data: Vec<_> = (1..series)
-            .map(|n| (key(n), types[(n - 1) % types.len()]))
-            .collect();
-        let set = Interner::new().intern(&[Group {
-            index: key(0),
-            data: &data,
-        }]);
+        let set = common::set(series, types);
         Self { name, series, set }
     }
 

@@ -1,4 +1,4 @@
-//! The hello stream and the request streams of a client session.
+//! The hello stream, and the request and read streams, of a client session.
 
 use std::cell::{Cell, RefCell};
 use std::future::poll_fn;
@@ -9,11 +9,18 @@ use std::task::Poll;
 use access::proof::{self, Admitted};
 use transport::Code;
 use transport::stream::{Incoming, Receiver, Sender};
-use wire::hub::client::{Challenge, Refusal, Response, Signed};
+use types::hash;
+use types::name::Name;
+
+use wire::hub::client::{
+    BODY_BYTES_MAX, Body, Challenge, First, Refusal, Response, Signed,
+};
 
 use super::{BODIES_BYTES_MAX, Error, alloc, halves, stop};
 use crate::State;
 use crate::link::{Served, Session};
+
+pub(super) mod read;
 
 /// A request of a client, which `access` verified.
 #[derive(Debug)]
@@ -65,8 +72,8 @@ impl Reply {
     }
 }
 
-/// Which streams a client session may give next: the hello stream first, then a
-/// request once a hello is admitted, one at a time.
+/// Which streams a client session may give next: the hello stream first, then, once a
+/// hello is admitted, requests one at a time and reads.
 #[derive(Debug, Default)]
 pub(crate) struct Gate {
     hello_taken: Cell<bool>,
@@ -83,35 +90,87 @@ impl Gate {
     }
 }
 
+/// The body bytes that the open requests and reads of a hub reserved: in all, at most
+/// [`BODIES_BYTES_MAX`], and for each subject, at most [`BODY_BYTES_MAX`]. Shared
+/// borrows only, so the drop of a reply needs no mutable borrow of the hub's state.
+#[derive(Debug, Default)]
+pub(crate) struct Bodies {
+    held: Cell<u64>,
+    /// Only the subjects that hold bytes, so the map has at most one entry for each
+    /// open request or read.
+    subjects: RefCell<hash::Map<Name, u64>>,
+}
+
+impl Bodies {
+    /// Reserves `bytes` for a body of `subject`. Checks the share of `subject` first.
+    /// An empty body holds nothing, so it makes no entry for `subject`.
+    fn reserve(&self, subject: &Name, bytes: u64) -> Result<(), Error> {
+        if bytes == 0 {
+            return Ok(());
+        }
+        let mut subjects = self.subjects.borrow_mut();
+        let share = subjects.get(subject).copied().unwrap_or(0);
+        if share + bytes > BODY_BYTES_MAX {
+            return Err(Error::Share {
+                subject: subject.clone(),
+                length: bytes,
+                held: share,
+            });
+        }
+        let held = self.held.get();
+        if held + bytes > BODIES_BYTES_MAX {
+            return Err(Error::Bodies {
+                length: bytes,
+                held,
+            });
+        }
+        self.held.set(held + bytes);
+        match subjects.get_mut(subject) {
+            Some(share) => *share += bytes,
+            None => {
+                subjects.insert(subject.clone(), bytes);
+            }
+        }
+        Ok(())
+    }
+
+    /// Gives back `bytes` that [`Bodies::reserve`] reserved for `subject`.
+    fn free(&self, subject: &Name, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        self.held.set(self.held.get() - bytes);
+        let mut subjects = self.subjects.borrow_mut();
+        let share = subjects
+            .get_mut(subject)
+            .expect("invariant: a reservation keeps its subject's entry");
+        *share -= bytes;
+        if *share == 0 {
+            subjects.remove(subject);
+        }
+    }
+}
+
 /// Holds the one open request of a link and the bytes its body reserved, until it
 /// drops.
 #[derive(Debug)]
 struct Open {
     session: Rc<Session>,
-    bytes: u64,
+    _body: Reserved,
 }
 
 impl Open {
-    /// Opens the request of `session` and reserves `bytes` for its body.
-    fn new(session: &Rc<Session>, bytes: u64) -> Result<Self, Error> {
+    /// Opens the request of `session`, whose hello admitted `subject`, and reserves
+    /// `bytes` for its body.
+    fn new(session: &Rc<Session>, subject: Name, bytes: u64) -> Result<Self, Error> {
         if session.client.open.get() {
             return Err(Error::Pending);
         }
-        {
-            let state = session.state.borrow();
-            let held = state.bodies.get();
-            if held + bytes > BODIES_BYTES_MAX {
-                return Err(Error::Bodies {
-                    length: bytes,
-                    held,
-                });
-            }
-            state.bodies.set(held + bytes);
-        }
+        let body = Reserved::new(&session.state, subject, bytes)?;
         session.client.open.set(true);
         Ok(Self {
             session: Rc::clone(session),
-            bytes,
+            _body: body,
         })
     }
 }
@@ -119,8 +178,37 @@ impl Open {
 impl Drop for Open {
     fn drop(&mut self) {
         self.session.client.open.set(false);
-        let state = self.session.state.borrow();
-        state.bodies.set(state.bodies.get() - self.bytes);
+    }
+}
+
+/// Bytes of a body that the hub's [`Bodies`] reserved, until it drops.
+#[derive(Debug)]
+struct Reserved {
+    state: Rc<RefCell<State>>,
+    subject: Name,
+    bytes: u64,
+}
+
+impl Reserved {
+    /// Reserves `bytes` for a body of `subject`.
+    fn new(
+        state: &Rc<RefCell<State>>,
+        subject: Name,
+        bytes: u64,
+    ) -> Result<Self, Error> {
+        state.borrow().bodies.reserve(&subject, bytes)?;
+        Ok(Self {
+            state: Rc::clone(state),
+            subject,
+            bytes,
+        })
+    }
+}
+
+impl Drop for Reserved {
+    fn drop(&mut self) {
+        let state = self.state.borrow();
+        state.bodies.free(&self.subject, self.bytes);
     }
 }
 
@@ -134,7 +222,6 @@ pub(crate) fn refusal(error: &proof::Error) -> Refusal {
         proof::Error::Unsynced => Refusal::Unsynced,
         proof::Error::Via { .. } => Refusal::Via,
         proof::Error::Expired { .. } => Refusal::Expired,
-        proof::Error::Capped { .. } => Refusal::Capped,
         proof::Error::Changed { .. } => Refusal::Changed,
     }
 }
@@ -156,7 +243,7 @@ pub(crate) async fn hello(
 }
 
 /// Admits the first hello, then each renewal, until the program finishes the stream
-/// or the hello expires.
+/// or the hello ends.
 async fn renew(
     session: &Session,
     receiver: &mut Receiver,
@@ -166,7 +253,7 @@ async fn renew(
         return Ok(Served::Ended);
     }
     loop {
-        // A fresh wait for each renewal, since a renewal can move the expiry earlier.
+        // A fresh wait for each renewal, since a renewal can move the end earlier.
         let mut renewal = pin!(take(session, receiver, sender));
         let mut expiry = pin!(expiry(session));
         let renewed = poll_fn(|cx| match renewal.as_mut().poll(cx) {
@@ -226,7 +313,7 @@ async fn challenge(session: &Session, sender: &mut Sender) -> Result<[u8; 16], E
     Ok(nonce)
 }
 
-/// Waits until the hello that the link holds expires, and gives the refusal.
+/// Waits until the hello that the link holds ends, and gives the refusal.
 async fn expiry(session: &Session) -> Error {
     loop {
         let wait = {
@@ -235,69 +322,104 @@ async fn expiry(session: &Session) -> Error {
             let (admitted, _) = admitted
                 .as_ref()
                 .expect("invariant: the hello stream admitted a hello first");
-            let expires = admitted.hello().expires;
+            let ends = admitted.ends();
             let now = state
                 .time
                 .now()
                 .mesh
                 .expect("invariant: mesh time stays once the clock has synced");
-            if now.latest >= expires {
+            if now.latest >= ends {
                 return Error::Access(proof::Error::Expired {
-                    expires,
+                    expires: ends,
                     now: now.latest,
                 });
             }
-            state.time.reach(expires)
+            state.time.reach(ends)
         };
         wait.await;
     }
 }
 
-/// Serves a request stream of `session`: reads and verifies the request.
-pub(crate) async fn request(
+/// Serves a later stream of `session`, a request or a read, by the kind of its first
+/// message.
+pub(crate) async fn later(
     session: &Rc<Session>,
     incoming: Incoming,
 ) -> Result<Served, Error> {
+    let class = incoming.class;
     let (mut receiver, mut sender) = halves(incoming)?;
-    match read(session, &mut receiver).await {
-        Ok(Some((admitted, body, signature, open))) => {
-            Ok(Served::Request(Box::new(Request {
-                admitted,
-                body,
-                signature,
-                reply: Reply {
-                    sender,
-                    receiver,
-                    open,
-                },
-            })))
-        }
+    let served = match first(session, &mut receiver).await {
         Ok(None) => {
             sender.finish()?;
-            Ok(Served::Ended)
+            return Ok(Served::Ended);
         }
-        Err(error) => {
-            stop(receiver, sender, &error);
-            Err(error)
+        Ok(Some((subject, First::Request(request)))) => {
+            match self::request(session, subject, request, &mut receiver).await {
+                Ok((admitted, body, open)) => {
+                    return Ok(Served::Request(Box::new(Request {
+                        admitted,
+                        body,
+                        signature: request.signature,
+                        reply: Reply {
+                            sender,
+                            receiver,
+                            open,
+                        },
+                    })));
+                }
+                Err(error) => Err(error),
+            }
         }
+        Ok(Some((subject, First::Read(open)))) => {
+            read::serve(session, class, subject, open, &mut receiver, &mut sender)
+                .await
+                .map(|()| Served::Ended)
+        }
+        Err(error) => Err(error),
+    };
+    if let Err(error) = &served {
+        stop(receiver, sender, error);
     }
+    served
 }
 
-/// Reads the request and its body, and verifies it. Gives `None` when the program
-/// finished the stream before the request.
-async fn read(
-    session: &Rc<Session>,
+/// The subject of the admitted hello, and the first message of the stream. Gives
+/// `None` when the program finished the stream before it.
+async fn first(
+    session: &Session,
     receiver: &mut Receiver,
-) -> Result<Option<(Signed, Vec<u8>, [u8; 64], Open)>, Error> {
-    if session.client.admitted.borrow().is_none() {
+) -> Result<Option<(Name, First)>, Error> {
+    // A renewal never changes the subject, so the one of the first hello holds.
+    let Some(subject) = session
+        .client
+        .admitted
+        .borrow()
+        .as_ref()
+        .map(|(admitted, _)| admitted.hello().subject.clone())
+    else {
         return Err(Error::Unadmitted);
-    }
+    };
     let Some(message) = receiver.recv().await? else {
         return Ok(None);
     };
-    let request = wire::hub::client::Request::decode(&message)?;
-    let open = Open::new(session, request.length)?;
-    let mut rest = request.body();
+    Ok(Some((subject, First::decode(&message)?)))
+}
+
+/// Reads the body of `request` and verifies it.
+async fn request(
+    session: &Rc<Session>,
+    subject: Name,
+    request: wire::hub::client::Request,
+    receiver: &mut Receiver,
+) -> Result<(Signed, Vec<u8>, Open), Error> {
+    let open = Open::new(session, subject, request.length)?;
+    let body = body(receiver, request.body()).await?;
+    let admitted = verify(session, proof::Kind::Request, &body, &request.signature)?;
+    Ok((admitted, body, open))
+}
+
+/// Reads the body that `rest` waits for.
+async fn body(receiver: &mut Receiver, mut rest: Body) -> Result<Vec<u8>, Error> {
     let mut body = Vec::with_capacity(rest.remain());
     while rest.remain() > 0 {
         let Some(message) = receiver.recv().await? else {
@@ -306,6 +428,17 @@ async fn read(
         body.extend_from_slice(rest.take(&message)?);
     }
     rest.end()?;
+    Ok(body)
+}
+
+/// Verifies `signature`, of `kind`, over `bytes` with the hello that the link
+/// admitted, and gives that hello and its signature.
+fn verify(
+    session: &Session,
+    kind: proof::Kind,
+    bytes: &[u8],
+    signature: &[u8; 64],
+) -> Result<Signed, Error> {
     let (admitted, hello) = session
         .client
         .admitted
@@ -315,13 +448,12 @@ async fn read(
     let state = session.state.borrow();
     state
         .rules
-        .verify(&admitted, state.time.now().mesh, &body, &request.signature)
+        .verify(&admitted, state.time.now().mesh, kind, bytes, signature)
         .map_err(Error::Access)?;
-    let admitted = Signed {
+    Ok(Signed {
         hello: admitted.hello().clone(),
         signature: hello,
-    };
-    Ok(Some((admitted, body, request.signature, open)))
+    })
 }
 
 /// Sends the response and its body, then finishes the stream.
@@ -347,9 +479,78 @@ async fn respond(
 #[cfg(test)]
 mod tests {
     use types::time::Stamp;
-    use wire::hub::client::{CAPPED, CHANGED, EXPIRED, REFUSED, UNSYNCED, VIA};
+    use wire::hub::client::{CHANGED, EXPIRED, REFUSED, UNSYNCED, VIA};
 
     use super::*;
+
+    fn name(name: &str) -> Name {
+        name.parse().expect("a valid name")
+    }
+
+    /// The share of a subject fits exactly at `BODY_BYTES_MAX` and refuses one byte
+    /// more, before the cap of the hub. Each subject has its own share.
+    #[test]
+    fn checks_the_share_of_a_subject_before_the_cap_of_the_hub() {
+        let bodies = Bodies::default();
+        let (a, b, c) = (name("ops.a"), name("ops.b"), name("ops.c"));
+        assert_eq!(bodies.reserve(&a, BODY_BYTES_MAX - 1), Ok(()));
+        assert_eq!(bodies.reserve(&a, 1), Ok(()));
+        assert_eq!(bodies.reserve(&b, BODY_BYTES_MAX), Ok(()));
+        assert_eq!(
+            bodies.reserve(&a, 1),
+            Err(Error::Share {
+                subject: a.clone(),
+                length: 1,
+                held: BODY_BYTES_MAX,
+            })
+        );
+        assert_eq!(
+            bodies.reserve(&c, 1),
+            Err(Error::Bodies {
+                length: 1,
+                held: BODIES_BYTES_MAX,
+            })
+        );
+        bodies.free(&a, 1);
+        assert_eq!(bodies.reserve(&c, 1), Ok(()));
+        assert_eq!(
+            bodies.reserve(&c, BODY_BYTES_MAX),
+            Err(Error::Share {
+                subject: c,
+                length: BODY_BYTES_MAX,
+                held: 1,
+            })
+        );
+    }
+
+    /// Each freed reservation leaves no entry for its subject, and the whole room
+    /// again. Reads the private map: no public call shows the bound on its entries.
+    #[test]
+    fn keeps_no_subject_once_each_reservation_is_freed() {
+        let bodies = Bodies::default();
+        let (a, b) = (name("ops.a"), name("ops.b"));
+        for (subject, bytes) in [(&a, 3), (&a, 5), (&b, BODY_BYTES_MAX)] {
+            bodies.reserve(subject, bytes).expect("fits");
+        }
+        bodies.free(&a, 3);
+        assert_eq!(bodies.subjects.borrow().get(&a), Some(&5));
+        bodies.free(&a, 5);
+        bodies.free(&b, BODY_BYTES_MAX);
+        assert!(bodies.subjects.borrow().is_empty());
+        for _ in 0..2 {
+            bodies.reserve(&a, 0).expect("fits");
+        }
+        assert!(bodies.subjects.borrow().is_empty());
+        bodies.free(&a, 0);
+        bodies.free(&a, 0);
+        bodies.reserve(&a, 5).expect("fits");
+        bodies.reserve(&a, 0).expect("fits");
+        bodies.free(&a, 5);
+        bodies.free(&a, 0);
+        assert!(bodies.subjects.borrow().is_empty());
+        assert_eq!(bodies.reserve(&a, BODY_BYTES_MAX), Ok(()));
+        assert_eq!(bodies.reserve(&b, BODY_BYTES_MAX), Ok(()));
+    }
 
     #[test]
     fn each_refusal_has_its_code() {
@@ -380,13 +581,6 @@ mod tests {
                     now: stamp,
                 },
                 EXPIRED,
-            ),
-            (
-                proof::Error::Capped {
-                    expires: stamp,
-                    cap: stamp,
-                },
-                CAPPED,
             ),
             (
                 proof::Error::Changed {

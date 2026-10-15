@@ -6,7 +6,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-# Exposes `Scope` to the `scope` bench and `fuzz` to the fuzz targets. Off by default.
+# Exposes `Scope` to the `scope` bench, `fuzz` to the fuzz targets, and `create_key` and
+# `Region::Given` to the tests. Off by default.
 sim = []
 
 [[bin]]
@@ -14,12 +15,15 @@ name = "foundation"
 path = "src/main.rs"
 
 [dependencies]
+access = { path = "../access" }
 blob = { path = "../blob" }
 block = { path = "../block" }
 buffer = { path = "../buffer" }
 clock = { path = "../clock" }
 config-hcl = { path = "../config-hcl" }
 connector = { path = "../connector" }
+connector-influx = { path = "../connector-influx" }
+connector-opcua = { path = "../connector-opcua", features = ["open62541"] }
 crc32c = { workspace = true }
 document = { path = "../document" }
 env = { path = "../env" }
@@ -29,22 +33,37 @@ hub = { path = "../hub" }
 mesh = { path = "../mesh" }
 ops = { path = "../ops" }
 os = { path = "../os" }
+secret = { path = "../secret" }
 spec = { path = "../spec" }
 transport = { path = "../transport" }
 types = { path = "../types" }
 wire = { path = "../wire" }
 
 [dev-dependencies]
+block = { path = "../block", features = ["sim"] }
 bytes = { workspace = true }
 codec = { path = "../codec" }
+connector = { path = "../connector", features = ["sim"] }
 connector-influx = { path = "../connector-influx", features = ["sim"] }
+connector-opcua = { path = "../connector-opcua", features = ["sim"] }
 counting = { path = "../counting" }
 divan = { workspace = true }
 http = { workspace = true }
+hub = { path = "../hub", features = ["sim"] }
 # Turns on `sim` for the bench, since the bench host runs no features.
 node = { path = ".", features = ["sim"] }
 proptest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 sim = { path = "../sim" }
+
+[[test]]
+name = "erase"
+harness = false
+
+[[test]]
+name = "memory"
+harness = false
 
 [[bench]]
 name = "scope"
@@ -55,8 +74,8 @@ test = true
 loom = { workspace = true }
 
 # Under `--cfg loom`, tokio has no `net`.
-[target.'cfg(not(loom))'.dev-dependencies]
-# The simulated servers of the process tests serve over `os::net()`.
+[target.'cfg(not(loom))'.dependencies]
+# `foundation start` serves over `os::net()`.
 os = { path = "../os", features = ["net"] }
 
 [lints]

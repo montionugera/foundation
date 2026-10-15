@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use env::files::Mode;
 use env::rng::Rng;
 
-use crate::Crash;
+use crate::{Crash, DIRECTORY, NOT_DIRECTORY};
 
 /// The key of the data directory.
 pub(crate) const ROOT: u64 = 0;
@@ -20,10 +20,6 @@ const SECTOR: u64 = env::files::SECTOR as u64;
 const DIR_BYTES: u64 = 4_096;
 /// The Linux code for a path that is there (`EEXIST`).
 const EXISTS: i32 = 17;
-/// The Linux code for a path through a file (`ENOTDIR`).
-const NOT_DIRECTORY: i32 = 20;
-/// The Linux code for a file call on a directory (`EISDIR`).
-const DIRECTORY: i32 = 21;
 
 /// Why a call failed, before its path and operation are known.
 pub(crate) enum Cause {
@@ -57,7 +53,7 @@ pub(crate) struct Disk {
     /// ended.
     log: Vec<Change>,
     /// The path of each open descriptor as its open or rename gave it, by the key of
-    /// its handle.
+    /// its open. A descriptor of a host file has its absolute path.
     descriptors: BTreeMap<u64, PathBuf>,
     /// The normal path of each descriptor closed, in order.
     closes: Vec<PathBuf>,
@@ -106,6 +102,8 @@ pub(crate) struct File {
     durable: bool,
     /// The edits in the log that name the file.
     logged: u64,
+    /// Each normal path that an open made it at or a rename gave it.
+    names: BTreeSet<PathBuf>,
 }
 
 /// The durable bytes of a sector, its clean bytes in the cache, and its writes.
@@ -164,6 +162,28 @@ impl Disk {
         }
     }
 
+    /// Each normal path that has named file `inode`, which a hold keeps.
+    pub(crate) fn names(&self, inode: u64) -> impl Iterator<Item = &Path> {
+        match self.inodes.get(&inode) {
+            Some(Inode::File(file)) => file.names.iter().map(PathBuf::as_path),
+            _ => unreachable!("invariant: held file {inode} is there"),
+        }
+    }
+
+    /// The directory of `path`, its last name, and the inode of that entry, if any.
+    /// `None` for an empty path.
+    fn lookup<'a>(&self, path: &'a Path) -> Result<Option<Entry<'a>>, Cause> {
+        let segments = segments(path);
+        let Some((name, parent)) = segments.split_last() else {
+            return Ok(None);
+        };
+        let dir = self.dir(parent)?;
+        let Inode::Dir(Dir { entries, .. }) = &self.inodes[&dir] else {
+            unreachable!("invariant: inode {dir} is a directory");
+        };
+        Ok(Some((dir, name, entries.get(*name).copied())))
+    }
+
     /// Directory `key`.
     fn dir_mut(&mut self, key: u64) -> &mut Dir {
         match self.inodes.get_mut(&key) {
@@ -217,6 +237,7 @@ impl Disk {
                     linked: true,
                     durable: false,
                     logged: 0,
+                    names: BTreeSet::from([normal(path)]),
                 };
                 self.inodes.insert(key, Inode::File(file));
                 self.edit(dir, vec![(name.into(), Some(key))]);
@@ -278,17 +299,11 @@ impl Disk {
     /// Unlinks the file at `path`. It stays while a hold, a durable entry, or a change
     /// in the log keeps it.
     pub(crate) fn remove(&mut self, path: &Path) -> Result<(), Cause> {
-        let (segments, slashed) = (segments(path), slashed(path));
-        let Some((name, parent)) = segments.split_last() else {
+        let Some((dir, name, found)) = self.lookup(path)? else {
             return Err(Cause::Code(DIRECTORY));
         };
-        let dir = self.dir(parent)?;
-        let inode = *self
-            .dir_mut(dir)
-            .entries
-            .get(*name)
-            .ok_or(Cause::NotFound)?;
-        self.named(inode, slashed)?.linked = false;
+        let inode = found.ok_or(Cause::NotFound)?;
+        self.named(inode, slashed(path))?.linked = false;
         self.edit(dir, vec![(name.into(), None)]);
         Ok(())
     }
@@ -319,6 +334,7 @@ impl Disk {
             return Err(Cause::Exists(to.to_path_buf()));
         }
         self.edit(dir, vec![(old.into(), None), (new.to_owned(), Some(inode))]);
+        self.file(inode).names.insert(normal(to));
         if let Some(path) = self.descriptors.get_mut(&handle.key) {
             *path = to.to_path_buf();
         }
@@ -328,22 +344,18 @@ impl Disk {
     /// The directory and the name of the entry at `path`, a path of a handle of file
     /// `inode`. `NotFound` when the entry no longer names it.
     fn entry<'a>(&self, inode: u64, path: &'a Path) -> Result<(u64, &'a OsStr), Cause> {
-        let segments = segments(path);
-        let (name, parent) = segments
-            .split_last()
-            .expect("invariant: a handle names a file");
-        let dir = self.dir(parent)?;
-        match &self.inodes[&dir] {
-            Inode::Dir(entries) if entries.entries.get(*name) == Some(&inode) => {
-                Ok((dir, name))
-            }
+        match self
+            .lookup(path)?
+            .expect("invariant: a handle names a file")
+        {
+            (dir, name, Some(found)) if found == inode => Ok((dir, name)),
             _ => Err(Cause::NotFound),
         }
     }
 
-    /// Makes `handle`, which an open of `path` gave, a descriptor.
-    pub(crate) fn opened(&mut self, handle: Handle, path: &Path) {
-        self.descriptors.insert(handle.key, path.to_path_buf());
+    /// Makes the file that open `key` of `path` gave a descriptor.
+    pub(crate) fn opened(&mut self, key: u64, path: &Path) {
+        self.descriptors.insert(key, path.to_path_buf());
     }
 
     /// The path of descriptor `handle` now, as its open or rename gave it.
@@ -360,9 +372,15 @@ impl Disk {
     /// Closes descriptor `handle`: drops its hold and logs its path.
     pub(crate) fn close(&mut self, handle: Handle) {
         self.release(handle);
-        let path = normal(self.path(handle));
-        self.descriptors.remove(&handle.key);
-        self.closes.push(path);
+        self.closed(handle.key);
+    }
+
+    /// Logs the path of descriptor `key`, which no longer is open.
+    pub(crate) fn closed(&mut self, key: u64) {
+        let Some(path) = self.descriptors.remove(&key) else {
+            unreachable!("invariant: descriptor {key} has a path")
+        };
+        self.closes.push(normal(&path));
     }
 
     /// The path of each descriptor closed, in order.
@@ -471,14 +489,16 @@ impl Disk {
         self.log.push(change);
     }
 
-    /// Whether a [`Mode::Create`] open of `path` makes its file when the disk has
-    /// room: the open succeeds, and finds no entry or a file with no bytes.
-    pub(crate) fn makes(&self, path: &Path) -> bool {
-        match self.target(path, Mode::Create { len: 0 }) {
+    /// Whether a [`Mode::Create`] open of `path` with `len` bytes makes its file when
+    /// the disk has room: the open succeeds, and finds no entry, or a file with no
+    /// bytes that it gives bytes.
+    pub(crate) fn makes(&self, path: &Path, len: u64) -> bool {
+        match self.target(path, Mode::Create { len }) {
             Ok(Target::New { .. }) => true,
-            Ok(Target::File(inode)) => {
-                matches!(&self.inodes[&inode], Inode::File(file) if file.len == 0)
-            }
+            Ok(Target::File(inode)) => match &self.inodes[&inode] {
+                Inode::File(file) => len != 0 && file.len == 0,
+                Inode::Dir(_) => unreachable!("invariant: target {inode} is a file"),
+            },
             Err(_) => false,
         }
     }
@@ -486,17 +506,13 @@ impl Disk {
     /// What an open of `path` by `mode` finds, with each fault it gives before it
     /// takes space.
     fn target<'a>(&self, path: &'a Path, mode: Mode) -> Result<Target<'a>, Cause> {
-        let (segments, slashed) = (segments(path), slashed(path));
-        let Some((name, parent)) = segments.split_last() else {
+        let slashed = slashed(path);
+        let Some((dir, name, found)) = self.lookup(path)? else {
             return Err(Cause::Code(DIRECTORY));
         };
-        let dir = self.dir(parent)?;
-        let Inode::Dir(Dir { entries, .. }) = &self.inodes[&dir] else {
-            unreachable!("invariant: inode {dir} is a directory");
-        };
-        let inode = match (entries.get(*name), mode) {
+        let inode = match (found, mode) {
             (_, Mode::Create { .. }) if slashed => return Err(Cause::Code(DIRECTORY)),
-            (Some(&inode), _) => inode,
+            (Some(inode), _) => inode,
             (None, Mode::Create { len }) => return Ok(Target::New { dir, name, len }),
             (None, Mode::Read | Mode::Write) => return Err(Cause::NotFound),
         };
@@ -814,6 +830,9 @@ fn within(start: u64, part: &Range<u64>) -> Range<usize> {
     index(part.start - start)..index(part.end - start)
 }
 
+/// A directory, a name in it, and the inode that the name gives, if any.
+type Entry<'a> = (u64, &'a OsStr, Option<u64>);
+
 /// The segments of a checked path: only its names, since `.` adds nothing.
 fn segments(path: &Path) -> Vec<&OsStr> {
     (path.components())
@@ -831,9 +850,14 @@ fn slashed(path: &Path) -> bool {
     bytes.ends_with(b"/") || bytes.ends_with(b"/.")
 }
 
-/// The path of the same file as `path`, with only its names.
+/// The path of the same file as `path`, with only its root, if any, and its names. A
+/// file of the host has a root, and a file of the data directory has none.
 pub(crate) fn normal(path: &Path) -> PathBuf {
-    segments(path).into_iter().collect()
+    (path.components())
+        .filter(|component| {
+            matches!(component, Component::RootDir | Component::Normal(_))
+        })
+        .collect()
 }
 
 fn index(at: u64) -> usize {
@@ -858,6 +882,7 @@ mod tests {
             linked: true,
             durable: false,
             logged: 0,
+            names: BTreeSet::new(),
         }
     }
 
@@ -880,7 +905,12 @@ mod tests {
             .map(|seed| {
                 let mut unsynced = Disk::new(1 << 20);
                 assert!(unsynced.create_dir(1, Path::new("d")).is_ok());
-                unsynced.crash(Crash::Power, &mut Rng::from_seed(seed))
+                let mut rng = Rng::from_seed(seed);
+                let kept = unsynced.crash(Crash::Power, &mut rng);
+                let mut once = Rng::from_seed(seed);
+                assert_eq!(kept, once.below(2));
+                assert_eq!(rng.next_u64(), once.next_u64());
+                kept
             })
             .collect();
         assert_eq!(kept, BTreeSet::from([0, 1]));

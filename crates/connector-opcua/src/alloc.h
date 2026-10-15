@@ -1,6 +1,7 @@
-/* The allocator of the copy and `shim.c`: the functions of `src/alloc.rs`, on the
-   global allocator of the binary. `config.h` of the copy includes this file as its
-   `UA_ARCH_HEADER`, before it defines the libc calls as the defaults. */
+/* The allocator of the copy, `shim.c`, and `server.c`: the functions of
+   `src/alloc.rs`, on the global allocator of the binary. `config.h` of the copy
+   includes this file as its `UA_ARCH_HEADER`, before it defines the libc calls as
+   the defaults. */
 #ifndef CONNECTOR_OPCUA_ALLOC_H
 #define CONNECTOR_OPCUA_ALLOC_H
 

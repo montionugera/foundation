@@ -6,7 +6,8 @@ use document::{Document, Source};
 use types::name::Name;
 
 const CONNECTOR: &str = "connector \"plc\" {\n  kind = \"influx\"\n  node = \"edge\"\n  \
-                         address = \"http://influx:8086\"\n  select = \"edge.*\"\n}\n";
+                         address = \"http://influx:8086\"\n  database = \"edge\"\n  \
+                         measurement = \"telemetry\"\n  select = \"edge.*\"\n}\n";
 const SUBJECT: &str = "subject \"plc\" {\n  keys = \"ssh-ed25519 \
                        AAAAC3NzaC1lZDI1NTE5AAAAIGVVuOR8JKYpAcWLMUveadmJ1wUAmYGgIDtqlhFe7Yhg \
                        alice@laptop\"\n}\n";
@@ -43,10 +44,22 @@ fn refused(subject: &Document, connector: &Document, message: &str) -> Vec<Diagn
 
 #[test]
 fn checks_the_connector_and_the_subject_alone() {
-    for (text, key) in [(CONNECTOR, "plc"), (SUBJECT, "plc.@subject")] {
+    let connector = [
+        "plc",
+        "plc.status.backoff",
+        "plc.status.class",
+        "plc.status.confirmed",
+        "plc.status.error",
+        "plc.status.note",
+        "plc.status.restarts",
+        "plc.status.state",
+        "plc.status.time",
+    ];
+    for (text, expected) in [(CONNECTOR, &connector[..]), (SUBJECT, &["plc.@subject"])]
+    {
         let entries = config::check(&[read(0, text)], &kinds()).expect("no problems");
         let keys: Vec<_> = entries.keys().map(Name::as_str).collect();
-        assert_eq!(keys, [key]);
+        assert_eq!(keys, expected);
     }
 }
 

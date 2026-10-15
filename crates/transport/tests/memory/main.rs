@@ -18,6 +18,7 @@ use types::time::Span;
 #[path = "../common/mod.rs"]
 mod common;
 mod dials;
+mod ended;
 mod failed;
 mod held;
 mod kept;
@@ -40,6 +41,7 @@ fn main() {
     stretch::main();
     peers::main();
     dials::main();
+    ended::main();
 }
 
 /// Polls one `receiver.recv()` each millisecond until it is ready, and calls

@@ -7,6 +7,7 @@
 use connector_opcua::bench::Client;
 use divan::Bencher;
 use divan::counter::ItemsCount;
+use env::rng::Rng;
 use sim::Sim;
 use types::time::Span;
 
@@ -14,10 +15,10 @@ fn main() {
     divan::main();
 }
 
-fn sim() -> (Sim, env::clock::Clock) {
+fn sim() -> (Sim, env::clock::Clock, Rng) {
     let mut sim = Sim::new(sim::Config::default());
-    let clock = sim.node(sim::node::Config::default()).clock();
-    (sim, clock)
+    let node = sim.node(sim::node::Config::default());
+    (sim, node.clock(), node.entropy().rng())
 }
 
 /// The clients of a sample. A run with one due timer is near the timer precision of
@@ -32,9 +33,9 @@ const CLIENTS: usize = 16;
     sample_count = 1000
 )]
 fn run(bencher: Bencher<'_, '_>, timers: usize) {
-    let (mut sim, clock) = sim();
+    let (mut sim, clock, mut rng) = sim();
     let mut clients: Vec<_> = (0..CLIENTS)
-        .map(|_| Client::new(env::clock::Clock::clone(&clock), timers))
+        .map(|_| Client::new(env::clock::Clock::clone(&clock), &mut rng, timers))
         .collect();
     bencher
         .counter(ItemsCount::new(CLIENTS))
@@ -45,6 +46,8 @@ fn run(bencher: Bencher<'_, '_>, timers: usize) {
 /// 1000 samples: with 100, the median moves over 10% against itself.
 #[divan::bench(sample_count = 1000)]
 fn new(bencher: Bencher<'_, '_>) {
-    let (_sim, clock) = sim();
-    bencher.bench_local(|| drop(Client::new(env::clock::Clock::clone(&clock), 100)));
+    let (_sim, clock, mut rng) = sim();
+    bencher.bench_local(|| {
+        drop(Client::new(env::clock::Clock::clone(&clock), &mut rng, 100));
+    });
 }

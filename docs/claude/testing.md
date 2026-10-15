@@ -16,7 +16,7 @@ repository. Each call of such a test that the list bans carries
 
 A simulated run never reads OS randomness, OS time, or a random hash order (r16
 43-46). Use `types::hash::Map` and `Set`. Never let hash iteration order decide
-behavior. Never print a pointer. No `thread_local!` state. Four exceptions: TLS draws
+behavior. Never print a pointer. No `thread_local!` state. Five exceptions: TLS draws
 its own randomness from aws-lc (TLS RANDOMNESS in
 `docs/decisions/transport/tls-randomness.md`). `sim::Sim::new` reads `Instant::now` once
 as the epoch of the run, and only differences from it are read. The `hyper` server of
@@ -25,7 +25,18 @@ header, which is off. It gets no `timer`, so no read changes what it does (the p
 https://github.com/synnaxlabs/foundation/issues/1151#issuecomment-6042756353,
 2026-10-07T17:04:29Z). The random state `UA_rng` of the open62541 copy is one per
 thread, so `connector-opcua` sets its start value on each thread that calls open62541
-(OPEN62541 SOURCE in `docs/decisions/connectors/open62541-source.md`).
+(OPEN62541 SOURCE in `docs/decisions/connectors/open62541-source.md`). The default
+dispatch of `tracing` is one per thread. `os` sets the log of a shard or a dedicated
+thread for the life of its OS thread and around its spawn, and `sim` enters the log of
+a thread around each call that runs its code: each poll, each drop of a task or a
+start, and each drop of a panic payload that it catches. A panic that a start passes
+to its caller is the caller's. Each waker of a net, serial, or file event wakes and
+drops with the log of the thread whose poll gave it, and so does the memory of its
+event. A waker given outside a poll keeps the default log where it is given: that of the
+thread in a drop of its code, else that of the caller. So an event goes only to the log
+of its node, or to no sink. No crate sets a default for the whole process (a lint), and
+the time of a line comes only from `clock` (`laptop.director`, 2026-10-13T21:12:40Z,
+https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155299486).
 
 ## Layers
 
@@ -34,8 +45,8 @@ thread, so `connector-opcua` sets its start value on each thread that calls open
 | 1 | Unit and property tests (`proptest`) | Every commit |
 | 2 | Coverage-guided fuzzing (`cargo-fuzz`) of every decoder of outside input: wire, config, codecs, protocol parsers | Short run per merge, continuous nightly |
 | 3 | Deterministic simulation of a whole mesh: drops, partitions, crashes mid-write, clock jumps. A recorded random value replays a run | Thousands of runs per merge, millions nightly |
-| 4 | Unit benchmarks, per function | Every merge, 5% check (P1) |
-| 5 | Component benchmarks | Every merge, 5% check (P1) |
+| 4 | Unit benchmarks, per function | Every merge, cost check (P1) |
+| 5 | Component benchmarks | Every merge, cost check (P1) |
 | 6 | End-to-end performance against P1 on shared machines | Nightly and release |
 | 7 | Protocol simulators per connector | Every merge |
 | 8 | Hardware in the loop with real devices | Nightly and release |
@@ -58,14 +69,17 @@ https://github.com/synnaxlabs/foundation/issues/803#issuecomment-6009258555,
 2026-10-06T04:20:13Z). CI keeps it until each runner host has the cgroup cap (#899). An
 assertion through a private field or call, or a compare of the `Debug` string of the
 type under test, other than in the test of a hand-written `Debug` impl itself, is never
-the only kill. `.cargo/mutants.toml` lists the few functions it skips. Each entry is as
+the only kill. Private means private to the type under test: a test of a `pub(crate)`
+type through its own calls kills through public calls, and its mutant gets no entry.
+`.cargo/mutants.toml` lists the few functions it skips. Each entry is as
 narrow as one function. Its comment says why no caller or peer can see the mutant, or
 names the test that kills it in a job that the mutants run does not see (Miri, loom,
 another OS). A mutant made by hand that `cargo mutants` never makes, and that only
 such an assertion kills, gets no entry, since one matches nothing. The doc of that test
 says why no caller or peer can see the mutant, and the round comment links that doc. A
-mutant that a test could kill but none does links its open issue. Miri and cargo-fuzz
-run on one pinned nightly, named in `rust-toolchain-nightly`, that only those gates use.
+mutant that a test could kill but none does links its open issue. Miri, cargo-fuzz, and
+the sanitizer gate (`cargo xtask sanitizers`) run on one pinned nightly, named in
+`rust-toolchain-nightly`, that only those gates use.
 
 ## Process tests
 
@@ -96,7 +110,7 @@ logic that a simulated test can reach.
   adds or changes an arm that a target reaches adds an input that reaches it, and never
   defers it: a fuzz input needs no approval.
 - Each PR runs every target for 60 seconds. A nightly schedule runs them longer on
-  the ARM runner, which is idle at night.
+  the ARM runner.
 - `cargo xtask fuzz [seconds]` runs every target on the pinned nightly, with its
   inputs in `oracles/fuzz/`.
 
@@ -118,7 +132,10 @@ again once to prove that the failure replays (r16 59).
   regression test.
 - **Test what the change is for.** When a change exists to remove work (a clock read, a
   copy, an allocation, a round trip), a test counts that work and fails when the change
-  is reverted.
+  is reverted. Work that no test can count through the product code, such as a lock or
+  an atomic operation, is tested by a committed bench line that runs the path. The PR
+  gives the numbers of both forms from alternate runs on one named machine, and each
+  pair favors the change. For such work, add no counter for tests to the product code.
 - **Pin the exact error.** Assert the variant and its fields or message
   (`assert!(matches!(err, Error::Backwards { .. }))`, `assert_eq!(err.to_string(),
   "...")`), never only `is_err()`. Clippy denies `assertions_on_result_states`
@@ -160,6 +177,8 @@ again once to prove that the failure replays (r16 59).
   `#[ignore]` when no issue is left. A test that needs a tool of one OS, and that CI
   runs on that OS, is `#[cfg_attr(not(target_os = "<os>"), ignore = "needs <tool>")]`,
   never `#[cfg(target_os = ...)]`, which hides it on another OS with no reason. A test
+  binary with no harness (`harness = false`) has no `ignore`, so there such a check is
+  `#[cfg(target_os = "<os>")]` with the comment `// needs <tool>` on its gate. A test
   of a behavior that differs by OS checks it on each OS that the crate builds for: with
   `#[cfg(target_os = ...)]` on its expected value, as `UNLINK_DIRECTORY` in
   `crates/os/tests/it/files.rs` does, or with one test for each OS. A behavior has no
@@ -179,12 +198,13 @@ again once to prove that the failure replays (r16 59).
   `Display`) and **coverage marks** that prove a test reached a branch. Both need a
   dependency approval in `docs/dependencies.md` first (r16 51, 52).
 - **Wake protocols and lock-free code** get loom for small models and shuttle (PCT)
-  for larger ones. Only `ring` gates std types behind `cfg(loom)`. Code with `unsafe`
-  runs under Miri (r16 61). `cargo xtask loom` builds the tests in release mode with
-  `--cfg loom`. Then it runs, with `LOOM_MAX_PREEMPTIONS=3`, each test target that
-  compiles a file that names `loom` in a `cfg`, oracles included. `cargo xtask
-  shuttle` does the same with `--cfg shuttle`. `cargo xtask miri` runs Miri on each
-  crate whose source names `unsafe_code`, and fails when such a crate runs no tests.
+  for larger ones. A crate gates std types behind `cfg(loom)` only in code that a loom
+  model runs, and the gate swaps them for the `loom` types of the same name. Code with
+  `unsafe` runs under Miri (r16 61). `cargo xtask loom` builds the tests in release mode
+  with `--cfg loom`. Then it runs, with `LOOM_MAX_PREEMPTIONS=3`, each test target that
+  compiles a file that names `loom` in a `cfg`, oracles included. `cargo xtask shuttle`
+  does the same with `--cfg shuttle`. `cargo xtask miri` runs Miri on each crate whose
+  source names `unsafe_code`, and fails when such a crate runs no tests.
 - **Hot paths** of product code (`docs/claude/performance.md`) run under a counting
   allocator that fails on any allocation.
 - **Unit tests are co-located** in a `#[cfg(test)] mod tests` block. Group by subject

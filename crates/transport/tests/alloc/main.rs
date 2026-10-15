@@ -9,6 +9,8 @@ mod chunks;
 mod common;
 mod parts;
 mod polls;
+mod sends;
+mod session;
 
 #[global_allocator]
 static ALLOCATOR: counting::Allocator = counting::Allocator::new();
@@ -17,4 +19,5 @@ fn main() {
     polls::main();
     chunks::main();
     parts::main();
+    sends::main();
 }

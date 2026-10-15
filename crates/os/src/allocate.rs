@@ -1,7 +1,7 @@
 //! The allocation of a new file on macOS, where `rustix::fs::fallocate` can allocate
 //! only a part of it.
 
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, BorrowedFd};
 
 use rustix::fs;
 use rustix::io::{self, Errno};
@@ -13,7 +13,7 @@ use rustix::io::{self, Errno};
 ///
 /// `NOSPC` when the disk cannot hold all `len` bytes, and the errors of
 /// `fcntl(F_PREALLOCATE)` and `ftruncate`.
-pub(crate) fn all(fd: &OwnedFd, len: u64) -> io::Result<()> {
+pub(crate) fn all(fd: BorrowedFd<'_>, len: u64) -> io::Result<()> {
     let mut store = libc::fstore_t {
         fst_flags: libc::F_ALLOCATEALL,
         fst_posmode: libc::F_PEOFPOSMODE,
@@ -35,6 +35,8 @@ pub(crate) fn all(fd: &OwnedFd, len: u64) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::fd::{AsFd, OwnedFd};
+
     use rustix::fs::OFlags;
 
     use super::*;
@@ -48,11 +50,11 @@ mod tests {
     #[test]
     fn a_file_open_to_read_gives_the_error_of_the_allocation() {
         // `ftruncate` gives `INVAL` here, so this fails when the error is not checked.
-        assert_eq!(all(&read_only(), 4096), Err(Errno::BADF));
+        assert_eq!(all(read_only().as_fd(), 4096), Err(Errno::BADF));
     }
 
     #[test]
     fn a_length_past_the_largest_offset_gives_fbig() {
-        assert_eq!(all(&read_only(), u64::MAX), Err(Errno::FBIG));
+        assert_eq!(all(read_only().as_fd(), u64::MAX), Err(Errno::FBIG));
     }
 }

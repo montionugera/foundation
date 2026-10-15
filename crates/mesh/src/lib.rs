@@ -20,6 +20,7 @@ mod common;
 mod driver;
 mod entry;
 mod error;
+mod file;
 pub mod log;
 mod member;
 mod message;
@@ -30,6 +31,6 @@ pub mod testing;
 pub mod ticket;
 pub mod used;
 
-pub use driver::{Config, Ended, Mesh, Watch};
+pub use driver::{Config, Mesh, Watch, founding};
 pub use error::{Error, Stopped};
 pub use member::Member;

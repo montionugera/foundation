@@ -2,7 +2,8 @@
 //! and none after a later open. For complete sessions, a queue, a release, and a take
 //! make none once each session got a frame, also for sessions charged by their places.
 //! A release in which sessions start to wait for credit makes none, nor one in which
-//! they miss. An ack makes none, and no call on a closed key of either mode makes one.
+//! they miss, nor any count of lost samples behind a queued frame and their release. An
+//! ack makes none, and no call on a closed key of either mode makes one.
 //! This binary has no test harness: the count covers each thread, and a harness
 //! allocates on its own thread at any time.
 
@@ -33,7 +34,7 @@ fn main() {
         index: channel::Key::from_u128(1),
         data: &[],
     }]);
-    let config = block::Config { budget: 1 << 16 };
+    let config = block::Config::new(1 << 16).expect("the budget fits");
     let pool = block::Pool::new(config.clone(), block::Heap::new(config.reservation()));
     let frame = || {
         Draft::new(&pool, &set, Form::Raw, &[(0, 8)])
@@ -45,6 +46,7 @@ fn main() {
     places(&frame, &set);
     alternating();
     missed(&frame, &set);
+    lost(&frame, &set);
 }
 
 fn latest(frame: &impl Fn() -> Frame) {
@@ -248,6 +250,47 @@ fn missed(frame: &impl Fn() -> Frame, set: &Arc<KeySet>) {
     );
 }
 
+/// A thousand losses behind a queued frame, then its release, allocate nothing: a run
+/// of losses keeps one entry.
+fn lost(frame: &impl Fn() -> Frame, set: &Arc<KeySet>) {
+    let mut readers = Readers::new(0);
+    let keys: Vec<_> = (0..SESSIONS)
+        .map(|_| open(&mut readers, 0, u64::MAX))
+        .collect();
+    let mut seq = 0;
+    flow(&mut readers, &keys, frame, set, &mut seq);
+    let queued = frame();
+    let (woken, allocations) = ALLOCATOR.count(|| {
+        readers.queue(&queued, set, seq..seq + 1);
+        seq += 1;
+        let mut woken = 0;
+        for _ in 0..1_000 {
+            woken += readers.lose(seq..seq + 1).len();
+            seq += 1;
+        }
+        woken + readers.release(seq).len()
+    });
+    assert_eq!(
+        allocations, 0,
+        "lost samples behind a queued frame, or their release, allocated"
+    );
+    assert_eq!(woken, 0, "each session has frames to take, so none wakes");
+    let behind = |readers: &mut Readers, key: complete::Key| {
+        let mut frames = 0;
+        loop {
+            match readers.take(key.into()) {
+                Next::Frame(_) => frames += 1,
+                Next::Behind => break frames,
+                Next::Empty => panic!("the session missed no samples"),
+            }
+        }
+    };
+    assert!(
+        keys.iter().all(|&key| behind(&mut readers, key) == 3),
+        "each session takes the three frames before the lost samples, then is behind"
+    );
+}
+
 /// Takes each session's frames, then queues and releases two frames from `seq`.
 /// Returns the frames taken plus the sessions woken.
 fn flow(
@@ -311,7 +354,7 @@ fn alternating() {
         index,
         data: &[(channel::Key::from_u128(3), F64)],
     }]);
-    let config = block::Config { budget: 1 << 16 };
+    let config = block::Config::new(1 << 16).expect("the budget fits");
     let pool = block::Pool::new(config.clone(), block::Heap::new(config.reservation()));
     let frame = |set: &KeySet| {
         Draft::new(&pool, set, Form::Raw, &[(0, 8), (1, 8)])

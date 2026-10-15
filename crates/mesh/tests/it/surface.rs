@@ -97,7 +97,7 @@ fn create_member(id: u8, addresses: Vec<Address>) -> Member {
 }
 
 fn create_pool() -> Rc<block::Pool> {
-    let budget = block::Config { budget: 1 << 20 };
+    let budget = block::Config::new(1 << 20).expect("the budget fits");
     let memory = block::Heap::new(budget.reservation());
     Rc::new(block::Pool::new(budget, memory))
 }
@@ -156,6 +156,7 @@ async fn create_config_on(
         files: node.files(),
         dir: "blob".into(),
         pool: Rc::clone(&pool),
+        floor_bytes: 0,
     })
     .await
     .unwrap();
@@ -233,6 +234,7 @@ fn a_node_opens_its_region_and_reads_its_member_a_home_the_pointer_and_the_spec(
             definitions: Rc::default(),
             behind: None,
         };
+        assert_eq!(mesh.used(), spec);
         assert_eq!(mesh.spec().await, Ok(spec));
         assert_eq!(mesh.member(KEY), Some(create_member(1, Vec::new())));
         assert_eq!(mesh.member(OTHER), None);
@@ -444,6 +446,7 @@ fn serve_refuses_a_message_that_is_not_valid_and_stops_its_stream() {
 #[test]
 fn each_call_of_a_mesh_has_the_signature_that_a_caller_holds() {
     let _: fn(&Mesh) -> Pointer = Mesh::pointer;
+    let _: fn(&Mesh) -> used::Spec = Mesh::used;
     let _: fn(&Mesh, channel::Key) -> Watch = Mesh::watch;
     let _: fn(&Mesh, node::Key) -> Option<Member> = Mesh::member;
     assert_gives_a_home(Watch::next);
@@ -481,7 +484,9 @@ fn error_has_one_case_for_each_cause_that_a_public_call_gives() {
         | Error::Stray { .. }
         | Error::NotIndex(_)
         | Error::UnknownNode(_)
-        | Error::Homes { .. } => {}
+        | Error::Homes { .. }
+        | Error::Founding { .. }
+        | Error::Unfounded { .. } => {}
     };
     let _: fn(&Error) = cases;
 }

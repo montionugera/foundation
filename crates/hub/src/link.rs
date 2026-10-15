@@ -10,15 +10,16 @@ use crate::serve::{self, Request, client};
 
 /// The hub's part of one transport session. For a client session, it holds the
 /// admitted hello, so the hello is checked once for the connection, and it closes the
-/// session when the hello expires. A clone is the same link.
+/// session when the hello ends ([`access::proof::Admitted::ends`]). A clone is the
+/// same link.
 #[derive(Clone, Debug)]
 pub struct Link(Peer);
 
 /// What [`Link::serve`] ended with.
 #[derive(Debug)]
 pub enum Served {
-    /// The stream ended with no request: a reader session, the hello stream, or a
-    /// request stream that the program finished before its request.
+    /// The stream ended with no request: a reader session, the hello stream, a read
+    /// stream, or a stream that the program finished before its first message.
     Ended,
     /// A verified request, which waits for its reply.
     Request(Box<Request>),
@@ -43,7 +44,8 @@ pub(crate) struct Session {
 enum Role {
     Reader(Rc<RefCell<State>>),
     Hello(Rc<Session>),
-    Request(Rc<Session>),
+    /// A client stream after the hello stream: a request or a read.
+    Later(Rc<Session>),
 }
 
 impl Link {
@@ -67,9 +69,11 @@ impl Link {
     /// reader session. From a client, the first stream given to `serve` is its hello
     /// stream, which lives as long as the session and closes it when it ends. Each
     /// later stream is a request stream, which gives [`Served::Request`] once its body
-    /// is read and verified. A program sends the header of a request stream only after
-    /// the challenge after its hello, so the hello stream comes first in any order of
-    /// the headers.
+    /// is read and verified, or a read stream, which sends the frames of its reader
+    /// until the program finishes it. A complete read that misses a frame sends
+    /// `Behind` and finishes the stream. A program sends the header of a later stream
+    /// only after the challenge after its hello, so the hello stream comes first in any
+    /// order of the headers.
     ///
     /// # Errors
     ///
@@ -85,7 +89,7 @@ impl Link {
             Peer::Client(session) if session.client.first() => {
                 Role::Hello(Rc::clone(session))
             }
-            Peer::Client(session) => Role::Request(Rc::clone(session)),
+            Peer::Client(session) => Role::Later(Rc::clone(session)),
         };
         async move {
             match role {
@@ -93,7 +97,7 @@ impl Link {
                     serve::run(&state, incoming).await.map(|()| Served::Ended)
                 }
                 Role::Hello(session) => client::hello(&session, incoming).await,
-                Role::Request(session) => client::request(&session, incoming).await,
+                Role::Later(session) => client::later(&session, incoming).await,
             }
         }
     }
