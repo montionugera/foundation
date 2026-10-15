@@ -29,6 +29,8 @@ const NAME: &str = "SpikeData";
 const DOUBLE: f64 = 1.5;
 /// The sessions of a [`Server`].
 const SESSIONS: u16 = 4;
+/// The `MaxNodesPerRead` of a [`Server`]: a read of more nodes takes more requests.
+pub const PER_READ: u32 = 256;
 
 /// A variable of a [`Server`].
 #[derive(Clone, Copy, Debug)]
@@ -40,7 +42,8 @@ pub enum Variable {
 }
 
 /// A test server of open62541 on its own connection manager over `env::net`, with a
-/// Double variable of each [`Variable`], for the clients of [`Server::connect`].
+/// Double variable of each [`Variable`] and a `MaxNodesPerRead` of [`PER_READ`], for
+/// the clients of [`Server::connect`].
 pub struct Server {
     clock: Clock,
     net: Net,
@@ -104,6 +107,7 @@ impl Server {
         let add = |server: &mut crate::server::Server| {
             server.add_scalar(&VALUE, Value::F64(double));
             server.add_scalar(&named(), Value::F64(double));
+            server.set_per_read(PER_READ);
         };
         let body = caught(async { body(&this).await });
         let value = crate::server::Server::serve(manager, SESSIONS, add, body).await;
@@ -111,12 +115,12 @@ impl Server {
     }
 
     /// Connects a client to the server, on its own connection manager, whose reads
-    /// each read `count` copies of a [`Variable`] in one request.
+    /// each read `count` copies of a [`Variable`], in one request while they number at
+    /// most [`PER_READ`] and fit one message of the session.
     ///
     /// # Panics
     ///
-    /// If the connect fails, with its status, or if the request or its answer of
-    /// `count` copies needs more than one message of the session.
+    /// If the connect fails, with its status.
     ///
     /// # Aborts
     ///
@@ -134,7 +138,7 @@ impl Server {
         };
         let nodes = |node: Node| {
             let nodes: Vec<Node> = std::iter::repeat_n(node, count).collect();
-            session.nodes(&nodes).expect("the nodes fit in one message")
+            session.nodes(&nodes).expect("one copy fits one message")
         };
         let (number, name) = (nodes(VALUE), nodes(named()));
         Client {
@@ -169,7 +173,7 @@ pub struct Client {
 }
 
 impl Client {
-    /// Reads the Double of each copy of `variable` in one request.
+    /// Reads the Double of each copy of `variable`.
     ///
     /// # Panics
     ///
