@@ -122,8 +122,7 @@ fn main() {
     marked_trims_take_no_allocation();
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
-    let clock = node.clock();
-    let entropy = node.entropy();
+    let (clock, entropy) = (node.clock(), node.entropy());
     let config = env::shards::Config {
         name: "shard-0".into(),
         core: None,

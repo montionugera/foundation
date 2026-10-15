@@ -283,10 +283,24 @@ struct Shared {
     pool: Rc<Pool>,
     block_max: usize,
     layout: Layout,
+    /// [`Config::trimmed`].
+    trimmed: bool,
     state: RefCell<State>,
 }
 
 impl Shared {
+    /// Takes the groups of a commit into `taken`, and gives its trim and carry record
+    /// in the same borrow, or nothing when [`Config::trimmed`] is false.
+    fn take(&self, taken: &mut Vec<Closed>) -> Trim {
+        let mut state = self.state.borrow_mut();
+        state.take(taken);
+        if self.trimmed {
+            state.trim(&self.pool)
+        } else {
+            Trim::default()
+        }
+    }
+
     /// Ends the task's idle span. The caller holds no borrow of `state`.
     fn unpark(&self) {
         let parked = self.state.borrow_mut().parked.0.take();
@@ -299,8 +313,6 @@ impl Shared {
 #[derive(Debug)]
 struct State {
     writer: Writer,
-    /// [`Config::trimmed`].
-    trimmed: bool,
     /// The group that takes the next batch.
     open: Group,
     /// Cleared groups with their capacity, for the next open group.
@@ -430,9 +442,8 @@ impl State {
         }
     }
 
-    /// Takes the groups of a commit into `taken`, and gives its trim and carry
-    /// record.
-    fn take(&mut self, taken: &mut Vec<Closed>, pool: &Pool) -> Trim {
+    /// Takes the groups of a commit into `taken`.
+    fn take(&mut self, taken: &mut Vec<Closed>) {
         self.starved = false;
         if !self.open.is_empty() {
             self.close_open();
@@ -441,18 +452,13 @@ impl State {
         if !taken.is_empty() {
             self.taken += 1;
         }
-        self.trim(pool)
     }
 
     /// The trim and the carry record of the commit whose groups the caller just
-    /// took, in the same borrow. The trim needs a pool block for its checkpoint, and
+    /// took. The trim needs a pool block for its checkpoint, and
     /// the carry record needs blocks for its body and a wrap. Without them, the
-    /// commit does not trim, or carries at a later deadline. Gives nothing when
-    /// [`Config::trimmed`] is false.
+    /// commit does not trim, or carries at a later deadline.
     fn trim(&mut self, pool: &Pool) -> Trim {
-        if !self.trimmed {
-            return Trim::default();
-        }
         let kept = self.kept();
         let logs = &self.logs;
         let tail = self
@@ -636,9 +642,9 @@ impl Buffer {
             pool,
             block_max,
             layout: header.layout,
+            trimmed,
             state: RefCell::new(State {
                 writer,
-                trimmed,
                 open: Group::default(),
                 spares: Vec::new(),
                 queue: Vec::new(),
@@ -876,7 +882,7 @@ impl Buffer {
                     .push(pool, block_max, &state.writer, batch)
                     .map_err(rejected)?
             }
-            Err(full @ group::Rejected::Ring(_)) if state.trimmed => {
+            Err(full @ group::Rejected::Ring(_)) if shared.trimmed => {
                 state.starved = true;
                 drop(guard);
                 shared.unpark();
@@ -1221,7 +1227,7 @@ async fn run(shared: Rc<Shared>, clock: Clock, commit: Span, chain: u32) {
         }
         (&mut sleep).await;
         sleep.reset(clock.now() + commit);
-        let trim = shared.state.borrow_mut().take(&mut taken, &shared.pool);
+        let trim = shared.take(&mut taken);
         if taken.is_empty() && trim.checkpoint.is_none() && trim.carry.is_none() {
             continue;
         }
