@@ -105,7 +105,7 @@
   card of the node. With no stored founding, it writes the given name. With no file
   `name`, a stored founding with no card of the node, because the file `node.key` is not
   there or its key has no card, stops the start in the claim with `Error::NoCard`, also
-  with `Region::Absent`. That start writes nothing: no file `name`, and no new
+  with `Region::Absent`. That start writes no file `name` and no new
   `node.key`, because the claim stops before the node loads its key. `node::name` with
   no given name gives the same error. Both read the founding before `node.key`, and read
   `node.key` also with no founding. A first start makes `node.key` durable before the
@@ -124,10 +124,17 @@
   claim checks it after the claim of the data directory, which writes those two, and
   before the start writes anything else. A `node.key` that a node did not write is
   there, so the claim gives no `Error::Key`: the readers of its bytes give it,
-  `name::source` before the bind and `identity::load` after it (`laptop.architect-2`,
-  2026-10-12T23:51:07Z,
-  https://github.com/synnaxlabs/foundation/pull/2502#issuecomment-6134839475). Lost: the
-  claim reads and checks the key. Then the later reads keep a check that cannot fail.
+  `name::source` before the bind and `identity::load` after it. Lost: a claim that gives
+  `Error::Key` for such a file, which would move `Error::Key` before the bind in the doc
+  of `Node::join`, and leave the later reads a check that cannot fail. Lost: the claim
+  passes its one read on to `name::keep` and `identity::load`. It threads a value
+  through two layers of the start to save two reads of a 100-byte file once per start
+  (`laptop.architect-2`, 2026-10-12T23:51:07Z,
+  https://github.com/synnaxlabs/foundation/pull/2502#issuecomment-6134839475).
+  Supersedes "writes nothing" of
+  https://github.com/synnaxlabs/foundation/issues/2484#issuecomment-6131685955 and "The
+  claim checks it after the lock and before the start writes a file." of
+  https://github.com/synnaxlabs/foundation/pull/2502#issuecomment-6134515196.
   Lost: the claim reads the founding on each start and
   gives `Error::NoCard` for each founding with no card of the node. It changes rule 7
   for a key with no card, which writes nothing, and reads a founding on each start to

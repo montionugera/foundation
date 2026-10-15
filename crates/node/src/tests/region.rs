@@ -823,9 +823,10 @@ fn another_key(own: &[u8]) -> Vec<u8> {
 }
 
 /// A start with no file `name` and no file `node.key`, on a data directory that stores
-/// a founding, stops and writes nothing. With the key back, the card name runs.
+/// a founding, stops and writes no file `name` and no new `node.key`. With the key
+/// back, the card name runs.
 #[test]
-fn a_start_with_no_name_file_and_no_node_key_stops_and_writes_nothing() {
+fn a_start_with_no_name_file_and_no_node_key_stops_and_writes_no_name_or_key() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = keyed(&mut sim, 2);
     assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
@@ -847,9 +848,10 @@ fn a_start_with_no_name_file_and_no_node_key_stops_and_writes_nothing() {
 }
 
 /// A start with no file `name` and the key of another node in `node.key`, on a data
-/// directory that stores a founding, stops and writes nothing.
+/// directory that stores a founding, stops and writes no file `name` and no new
+/// `node.key`.
 #[test]
-fn a_start_with_no_name_file_and_a_key_with_no_card_stops_and_writes_nothing() {
+fn a_start_with_no_name_file_and_a_key_with_no_card_stops_and_writes_no_name_or_key() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = keyed(&mut sim, 2);
     assert_eq!(start_and_stop(&mut sim, &host), Ok(()));
@@ -865,7 +867,8 @@ fn a_start_with_no_name_file_and_a_key_with_no_card_stops_and_writes_nothing() {
 }
 
 /// A start with [`Region::Absent`] and no file `name` and no file `node.key`, on a
-/// data directory that stores a founding, stops and writes nothing.
+/// data directory that stores a founding, stops and writes no file `name` and no new
+/// `node.key`.
 #[test]
 fn a_start_with_no_region_and_no_node_key_on_a_stored_founding_stops() {
     let mut sim = sim::Sim::new(sim::Config::default());
