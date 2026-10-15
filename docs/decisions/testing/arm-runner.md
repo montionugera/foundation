@@ -20,3 +20,14 @@
   spot price cap of 0.60 USD/h, a hard stop with the factory host on 2026-10-07 at
   07:03 UTC, and a cap of 18 USD (#15). Until that stop, the daily cap is 115 USD; then
   it is 100 USD again. The person said: "Yes thats fine".
+
+  On 2026-10-15 the ARM jobs (`test` in `arm.yaml` and `fuzz` in `fuzz.yaml`) moved to
+  the GitHub-hosted runner `ubuntu-24.04-arm`: a dedicated 4 vCPU and 16 GiB, and a
+  fresh VM per job, free for a public repo (#2727). On the self-hosted hosts each runner
+  had about 2.7 vCPU and 10.7 GiB, the builds of runners at once ran a host out of
+  memory (#2719), and a damaged work clone failed each checkout on its runner (#2721).
+  The person asked for "the sustainable, correct setup to get CI working efficiently"
+  and said "Do whatever you need to get that" (through `laptop.monitor`). ARM stays for
+  the memory ordering coverage; only the host changes. `Swatinem/rust-cache` keeps the
+  build between runs. The mutants shards of `ci.yaml` moved to `ubuntu-latest` in the
+  same PR. `laptop.monitor` retires the hosts after #2727 merges.
