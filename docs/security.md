@@ -419,10 +419,11 @@ state on `main`.
   ONE NODE, that person is the node's admin. A remote `plan` reads the sources only
   of the connectors that its subject may apply, and a local `plan` reads each
   connector of the node (SECRET SOURCES). Until #2694, a subject with `apply` and
-  `admin` on the name of a new connector alone learns from a remote `plan` whether
-  each source gives a value. Trigger for a limit that the node's
-  operator sets, such as directories and variable names given at start: a spec applied
-  by a subject that does not run the node.
+  `admin` on the name of a new connector alone learns from a remote `plan` the error of
+  each source that gives no value: whether it is set or there, whether it is empty, its
+  size when over 64 KiB, and the OS error of a failed file call. Trigger for a limit
+  that the node's operator sets, such as directories and variable names given at start:
+  a spec applied by a subject that does not run the node.
 - Each `HeaderValue` made from the token of the `influx` kind, one at each read of the
   token and one for each request, and the write buffer of hyper keep a copy of it, and
   their memory is freed without zeros
