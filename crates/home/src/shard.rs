@@ -5790,16 +5790,16 @@ mod tests {
                             Charge::Whole,
                         )
                         .expect("synced");
+                    // Each read takes one entry, so it stops within a seq.
+                    shard.readers.budget = Some(1);
                     let set = disk_set(Slot::new(0));
                     let (mut frames, mut reads) = (Vec::new(), 0);
                     let end = loop {
                         let (taken, end) = drain(&mut shard, second.key);
                         frames.extend(taken);
-                        let reader::Next::Disk(mut disk) = end else {
+                        let reader::Next::Disk(disk) = end else {
                             break end;
                         };
-                        // Each read takes one entry, so it stops within a seq.
-                        disk.budget = 1;
                         reads += 1;
                         let read = disk.read().await.expect("the read ends");
                         shard.fill(read, &set).expect("the pool has a block");

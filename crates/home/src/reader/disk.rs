@@ -13,7 +13,7 @@ use super::complete;
 pub struct Read {
     pub(super) key: complete::Key,
     pub(super) from: Mark,
-    pub(crate) budget: usize,
+    pub(super) budget: usize,
     pub(super) reader: buffer::Reader,
 }
 
