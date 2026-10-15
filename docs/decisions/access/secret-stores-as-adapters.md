@@ -27,16 +27,20 @@
   the store's text, which says where to put a missing value, as the full path of the
   file (`laptop.architect-2`, 2026-10-13T16:59:28Z:
   https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6150793141), so a
-  value added heals the run at its next restart. Each get reads into a pool on
-  `block::Erased`, which writes zero at the drop over each range that the pool
-  committed, also after a failed or dropped read (`laptop.architect`:
+  value added heals the run at its next restart. Each get reads into a pool from
+  `block::Pool::erased`, which, once the pool and its blocks have dropped, writes zero
+  over the first `ALIGN` bytes and each range that the pool committed, also after a
+  failed or dropped read
+  (`laptop.architect`:
   https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6151055798,
-  https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6151395377, and
-  https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6153570364). The erase
-  is at most 64 KiB and 128 bytes, for a file of 64 KiB: the first 64 bytes and the
-  footprint of class 35 (65,600 bytes). The allocation is the reservation of the pool,
-  5.2 MiB for that file. The store runs one get at a time, and the next get waits its
-  turn in the order it came (`laptop.architect-2`, 2026-10-13T19:49:00Z:
+  https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6151395377,
+  https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6153570364, and, for
+  `Pool::erased` in place of a public `block::Erased`, 2026-10-14T02:00:07Z:
+  https://github.com/synnaxlabs/foundation/issues/2650#issuecomment-6159203859). The
+  erase is at most 64 KiB and 128 bytes, for a file of 64 KiB: the first 64 bytes and
+  the footprint of class 35 (65,600 bytes). The allocation is the reservation of the
+  pool, 5.2 MiB for that file. The store runs one get at a time, and the next get waits
+  its turn in the order it came (`laptop.architect-2`, 2026-10-13T19:49:00Z:
   https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6153847139), also
   behind a read of `file()` (SECRET SOURCES). When a policy chooses a store,
   `Resolver::new` takes the policy's choice and still makes each store that reads files

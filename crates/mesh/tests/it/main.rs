@@ -3,4 +3,6 @@
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]
 
+#[path = "../common/steps.rs"]
+mod steps;
 mod surface;

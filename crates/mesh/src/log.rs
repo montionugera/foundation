@@ -833,6 +833,7 @@ fn follows(last: u64, entries: &[Entry]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::future::{pending, poll_fn};
     use std::pin::pin;
     use std::sync::Arc;
@@ -861,10 +862,7 @@ mod tests {
     }
 
     fn create_node(seed: u64) -> (Sim, sim::node::Node) {
-        let mut sim = Sim::new(sim::Config {
-            seed,
-            ..sim::Config::default()
-        });
+        let mut sim = Sim::new(crate::common::simulation(seed));
         let node = sim.node(sim::node::Config::default());
         (sim, node)
     }
@@ -2078,6 +2076,59 @@ mod tests {
         assert_eq!(record[HEADER..], expected);
     }
 
+    // The log holds only the proofs that this node wrote, so its decode bounds no
+    // grants: it opens a proof of 255 grants, one more than a message takes.
+    #[test]
+    fn the_log_opens_a_proof_of_more_grants_than_a_message_takes() {
+        let keys: BTreeSet<node::Key> = (1..=255).map(node::Key::from_u128).collect();
+        let config = raft::Config {
+            key: key(1),
+            election_ticks: 10,
+            heartbeat_ticks: 1,
+            fits: crate::message::fits,
+        };
+        let start = raft::Start {
+            voters: Voters {
+                incoming: keys.clone(),
+                outgoing: BTreeSet::new(),
+            },
+            ..raft::Start::default()
+        };
+        let mut raft = raft::Raft::new(config, start).unwrap();
+        raft.campaign();
+        drop(raft.ready());
+        for (&from, byte) in keys.iter().skip(1).zip(2..=u8::MAX) {
+            let body = raft::Body::PreVoteReply {
+                answer: raft::Answer::Granted(Some(Signature([byte; 64]))),
+            };
+            raft.step(raft::Message {
+                from,
+                to: key(1),
+                term: Term(1),
+                body,
+                proof: None,
+                chain: Vec::new(),
+            })
+            .unwrap();
+        }
+        let mut ready = raft.ready();
+        ready.sign(|_| Signature([1; 64]));
+        let hard = ready.hard.clone().unwrap();
+        assert_eq!(hard.proof.as_ref().unwrap().voters.len(), 255);
+        let (mut sim, node) = create_node(0);
+        let written = hard.clone();
+        sim.run_on(&node, |node, _| async move {
+            let (mut log, _) = open(&node).await.unwrap();
+            log.write(Some(written), &[]).await.unwrap();
+        })
+        .unwrap();
+        let expected = Stored {
+            hard,
+            entries: Vec::new(),
+        };
+        assert_eq!(stored(&mut sim, &node), Ok(expected));
+    }
+
     #[test]
     #[should_panic(expected = "invariant: a claim is signed before it is encoded")]
     fn encode_panics_on_an_unsigned_proof_entry() {
@@ -3192,7 +3243,7 @@ mod tests {
 
     /// A node whose disk holds `disk_bytes`.
     fn create_small_node(disk_bytes: u64) -> (Sim, sim::node::Node) {
-        let mut sim = Sim::new(sim::Config::default());
+        let mut sim = Sim::new(crate::common::simulation(0));
         let node = sim.node(sim::node::Config {
             disk_bytes,
             ..sim::node::Config::default()
@@ -3582,6 +3633,8 @@ mod tests {
     // can be lost when the record after them is not.
     #[test]
     fn a_power_cut_keeps_no_bytes_of_a_stopped_write_after_a_record() {
+        // 10 times the most turns of 1 µs before the write starts in a correct run.
+        const TURNS: u32 = 7_280;
         let mut kept = [0, 0];
         for run in 0..128 {
             let (mut sim, node) = create_node(run);
@@ -3597,8 +3650,14 @@ mod tests {
                 pending::<()>().await;
             });
             drop(handle.unwrap());
+            let mut turns = 0_u32;
             while phase.load(Ordering::Relaxed) == 0 {
+                assert!(
+                    turns < TURNS,
+                    "run {run}: the write did not start in {TURNS} turns"
+                );
                 sim.run_for(Span::from_nanos(1_000)).unwrap();
+                turns += 1;
             }
             sim.run_for(Span::from_nanos(2_000 * i64::try_from(run).unwrap()))
                 .unwrap();

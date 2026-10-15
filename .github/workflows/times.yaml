@@ -1,0 +1,99 @@
+name: Test times
+
+# Prints the time of each test of one crate on the runner of `check`, slowest first.
+# It runs only by hand, on the branch that it is dispatched on:
+# `gh workflow run times.yaml --ref <branch> -f crate=node`.
+on:
+  workflow_dispatch:
+    inputs:
+      crate:
+        description: The crate whose tests it times
+        default: node
+      threads:
+        description: The threads of each test binary
+        default: '4'
+
+jobs:
+  times:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CRATE: ${{ inputs.crate }}
+      THREADS: ${{ inputs.threads }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: |
+          cargo test -p "$CRATE" --all-features --tests --no-run --message-format json \
+            > artifacts
+      # Each binary runs in its crate, as `cargo test` runs it: a libtest binary with
+      # the flags of the time, a binary with `harness = false` with no argument.
+      # `--report-time` is unstable, so only the libtest runs get RUSTC_BOOTSTRAP. Each
+      # line prints when it comes, so a test that hangs still shows its name, and a
+      # failed test shows its output.
+      - name: Times
+        timeout-minutes: 50
+        shell: python3 -u {0}
+        run: |
+          import json, os, subprocess, sys, time, tomllib
+
+          flags = ["--test-threads", os.environ["THREADS"], "-Z", "unstable-options",
+                   "--report-time", "--format", "json"]
+          tables = {"bin": "bin", "test": "test", "bench": "bench", "example": "example"}
+
+          def harness(manifest, target):
+              with open(manifest, "rb") as file:
+                  toml = tomllib.load(file)
+              for kind in target["kind"]:
+                  if kind in tables:
+                      for entry in toml.get(tables[kind], []):
+                          if entry.get("name") == target["name"]:
+                              return entry.get("harness", True)
+                  else:
+                      return toml.get("lib", {}).get("harness", True)
+              return True
+
+          tests, failed = [], False
+          for line in open("artifacts"):
+              artifact = json.loads(line)
+              if not artifact.get("executable") or not artifact["profile"]["test"]:
+                  continue
+              target = artifact["target"]
+              name = f"{'/'.join(target['kind'])} {target['name']}"
+              manifest = artifact["manifest_path"]
+              libtest = harness(manifest, target)
+              env = dict(os.environ, CARGO_MANIFEST_DIR=os.path.dirname(manifest))
+              if libtest:
+                  env["RUSTC_BOOTSTRAP"] = "1"
+              args = [artifact["executable"]] + (flags if libtest else [])
+              start = time.monotonic()
+              run = subprocess.Popen(args, cwd=os.path.dirname(manifest), env=env,
+                                     stdout=subprocess.PIPE, text=True)
+              for out in run.stdout:
+                  try:
+                      event = json.loads(out)
+                  except ValueError:
+                      event = None
+                  if not libtest or not isinstance(event, dict):
+                      print(f"{name}: {out}", end="")
+                  elif event.get("type") != "test":
+                      continue
+                  elif event["event"] == "started":
+                      print(f"started\t{name}\t{event['name']}")
+                  else:
+                      shown = f"{event.get('exec_time', '-')}\t{event['event']}\t{name}"
+                      tests.append(f"{shown}\t{event['name']}")
+                      print(tests[-1])
+                      if event["event"] == "failed":
+                          print(event.get("stdout", ""), end="")
+                          if "message" in event:
+                              print(event["message"])
+              code = run.wait()
+              failed |= code != 0
+              print(f"binary {name}: exit {code}, {time.monotonic() - start:.2f} s")
+          print("Slowest first:")
+          timed = [test for test in tests if not test.startswith("-")]
+          for test in sorted(timed, key=lambda test: -float(test.split("\t")[0])):
+              print(test)
+          sys.exit(1 if failed else 0)

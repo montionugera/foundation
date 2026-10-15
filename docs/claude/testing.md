@@ -70,17 +70,18 @@ https://github.com/synnaxlabs/foundation/issues/803#issuecomment-6009258555,
 assertion through a private field or call, or a compare of the `Debug` string of the
 type under test, other than in the test of a hand-written `Debug` impl itself, is never
 the only kill. Private means private to the type under test: a test of a `pub(crate)`
-type through its own calls kills through public calls, and its mutant gets no entry.
-`.cargo/mutants.toml` lists the few functions it skips. Each entry is as
-narrow as one function. Its comment says why no caller or peer can see the mutant, or
-names the test that kills it in a job that the mutants run does not see (Miri, loom,
-another OS). A mutant made by hand that `cargo mutants` never makes, and that only
-such an assertion kills, gets no entry, since one matches nothing. The doc of that test
-says why no caller or peer can see the mutant, and the round comment links that doc. A
-mutant that a test could kill but none does is a finding of its round, and `/review`,
-"Findings" step 3, decides where its test goes. Miri, cargo-fuzz, and the sanitizer gate
-(`cargo xtask sanitizers`) run on one pinned nightly, named in `rust-toolchain-nightly`,
-that only those gates use.
+type through its own calls kills through public calls, and its mutant gets no entry. For
+a free function, private means private to the module under test: a call of a function of
+that module that is not `pub(crate)` or wider is a private call. `.cargo/mutants.toml`
+lists the few functions it skips. Each entry is as narrow as one function. Its comment
+says why no caller or peer can see the mutant, or names the test that kills it in a job
+that the mutants run does not see (Miri, loom, another OS). A mutant made by hand that
+`cargo mutants` never makes, and that only such an assertion kills, gets no entry, since
+one matches nothing. The doc of that test says why no caller or peer can see the mutant,
+and the round comment links that doc. A mutant that a test could kill but none does is a
+finding of its round, and `/review`, "Findings" step 3, decides where its test goes.
+Miri, cargo-fuzz, and the sanitizer gate (`cargo xtask sanitizers`) run on one pinned
+nightly, named in `rust-toolchain-nightly`, that only those gates use.
 
 ## Process tests
 
@@ -150,9 +151,10 @@ again once to prove that the failure replays (r16 59).
 - **A test may check what another test checks.** "No defense in depth" in `CLAUDE.md`
   is about guards in production code. It is no reason to refuse an assertion in a test
   or a benchmark because another test catches the same change.
-- **Assert through the public calls of the type.** A read of a private field, or a
-  compare of the `Debug` string of the type under test, checks private state: a new
-  field breaks the test while the behavior stays. Use one only with a written reason.
+- **Assert through the public calls of the type or module.** A read of a private field,
+  a private call (above), or a compare of the `Debug` string of the type under test,
+  checks private state: a new field or a split function breaks the test while the
+  behavior stays. Use one only with a written reason.
   The output of a hand-written `Debug` impl is the behavior of that impl, and `fmt` is
   its public call: a compare of that output, as the test of that impl, needs no reason,
   and may be the only kill of its mutants.
