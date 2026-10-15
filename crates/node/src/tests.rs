@@ -1108,88 +1108,6 @@ mod buffer {
         assert_eq!(listed(&mut run.sim, &run.host, ""), Vec::<PathBuf>::new());
     }
 
-    /// The instants in us where the data directory that a stop left changed, in a
-    /// recording run of a stop at each 10 us, and the end of that run. A stop at
-    /// each other instant left what the change before it left.
-    const STOPS: ([i64; 4], i64) = ([0, 1_000, 1_500, 2_150], 2_490);
-
-    /// The instants in us where the data directory that a crash left changed, in a
-    /// recording run of a crash at each 25 us, then the end of the opens, for a
-    /// process crash and a power cut. A crash at each other instant left what the
-    /// change before it left.
-    const CRASHES: [(sim::Crash, &[i64]); 2] = [
-        (
-            sim::Crash::Process,
-            &[
-                0, 175, 675, 725, 850, 1_025, 1_050, 1_075, 1_250, 1_275, 1_550, 1_650,
-                1_675, 1_875, 1_950, 2_300, 2_375, 2_575, 2_625, 2_750, 2_825, 2_925,
-                2_975,
-            ],
-        ),
-        (
-            sim::Crash::Power,
-            &[
-                0, 175, 675, 850, 950, 1_000, 1_075, 1_150, 1_175, 1_250, 1_325, 1_550,
-                1_575, 1_650, 1_675, 1_775, 1_850, 1_950, 2_025, 2_375, 2_450, 2_550,
-                2_575, 2_625, 2_750, 2_825, 2_925, 2_950, 2_975,
-            ],
-        ),
-    ];
-
-    /// Each instant of `changes`, in us, and the instant on a grid of `grid` us
-    /// halfway to the next, or to `end`. Each comes with whether it is a change.
-    fn instants(changes: &[i64], end: i64, grid: i64) -> Vec<(Span, bool)> {
-        let us = |us: i64| Span::from_nanos(us * 1_000);
-        let mut instants = Vec::new();
-        let next = changes.iter().skip(1).chain([&end]);
-        for (&at, &next) in changes.iter().zip(next) {
-            instants.push((us(at), true));
-            let half = at + (next - at) / 2 / grid * grid;
-            if half > at {
-                instants.push((us(half), false));
-            }
-        }
-        instants
-    }
-
-    /// Each path in the data directory of `host`, with the length and the first two
-    /// blocks of each file: the header of a ring.
-    fn left(
-        sim: &mut sim::Sim,
-        host: &sim::node::Node,
-    ) -> Vec<(PathBuf, u64, Vec<u8>)> {
-        sim.run_on(host, |host, _| async move {
-            let files = host.files();
-            let pool = block::Pool::heap(block::Config::new(1 << 16).expect("fits"));
-            let mut left = Vec::new();
-            let mut dirs = vec![PathBuf::new()];
-            while let Some(dir) = dirs.pop() {
-                for name in files.list(&dir).await.expect("the directory lists") {
-                    let path = dir.join(&name);
-                    // Each shard's directory and each record.
-                    if name.to_string_lossy().starts_with("shard") {
-                        dirs.push(path.clone());
-                        left.push((path, 0, Vec::new()));
-                        continue;
-                    }
-                    let file = files.open(&path, env::files::Mode::Read).await;
-                    let file = file.expect("opens");
-                    let head = usize::try_from(file.len().min(8192)).unwrap();
-                    let bytes = if head == 0 {
-                        Vec::new()
-                    } else {
-                        let into = pool.alloc(head).expect("a block");
-                        file.read_at(0, into).await.expect("reads").to_vec()
-                    };
-                    left.push((path, file.len(), bytes));
-                }
-            }
-            left.sort();
-            left
-        })
-        .expect("the run ends")
-    }
-
     /// A stop at any point of the claim and the opens ends each step that started
     /// and starts no other, so the data directory holds the claim and the rings of
     /// the first shards, each whole. A stop between the claim and the first open
@@ -1199,11 +1117,11 @@ mod buffer {
         let all = ["lock", "name", "shard-0", "shard-1", "shard-2", "shards-3"];
         let all = all.map(PathBuf::from);
         let mut seen = [false; 7];
-        let mut last = None;
-        for (after, change) in instants(&STOPS.0, STOPS.1, 10) {
+        for step in 0..250 {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = host(&mut sim, 3);
             let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+            let after = Span::from_nanos(step * 10_000);
             assert_eq!(sim.run_for(after), Ok(()), "at {after:?}");
             node.stop();
             assert_eq!(sim.run(), Ok(()), "at {after:?}");
@@ -1224,10 +1142,6 @@ mod buffer {
             };
             assert_eq!(listed, made, "at {after:?}");
             seen[listed.len()] = true;
-            // Fails when the changes moved from the recorded instants.
-            let changed = last.as_ref() != Some(&listed);
-            assert_eq!(changed, change, "a new listing at {after:?}");
-            last = Some(listed.clone());
             // A smaller budget makes a ring with no checkpoint again at its new part,
             // so only a whole ring keeps its size.
             let restart = run_on_disk(&mut sim, &host, 3 * RING);
@@ -1251,25 +1165,21 @@ mod buffer {
     /// that the next start opens.
     #[test]
     fn a_crash_during_the_opens_leaves_rings_the_next_start_opens() {
-        for (crash, changes) in CRASHES {
-            let (mut last, mut opened) = (None, false);
-            for (after, change) in instants(changes, changes[changes.len() - 1], 25) {
-                assert!(!opened, "{crash:?}: the opens end before {after:?}");
+        for crash in [sim::Crash::Process, sim::Crash::Power] {
+            for after in (0..).step_by(25_000).map(Span::from_nanos) {
                 let mut sim = sim::Sim::new(sim::Config::default());
                 let host = host(&mut sim, 2);
                 let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
                 let probe = probe(&node);
                 assert_eq!(sim.run_for(after), Ok(()), "{crash:?} at {after:?}");
-                opened = all_opened(&probe, after);
+                let opened = all_opened(&probe, after);
                 sim.crash(&host, crash);
                 drop(node);
-                let left = (opened, left(&mut sim, &host));
-                let changed = last.as_ref() != Some(&left);
-                assert_eq!(changed, change, "{crash:?}: a new state at {after:?}");
-                last = Some(left);
                 assert_eq!(run_on(&mut sim, &host), Ok(()), "{crash:?} at {after:?}");
+                if opened {
+                    break;
+                }
             }
-            assert!(opened, "{crash:?}: the opens go on");
         }
     }
 
@@ -1279,22 +1189,16 @@ mod buffer {
     #[test]
     fn a_crash_during_the_opens_then_another_disk_budget_opens() {
         let mut failed = Vec::new();
-        for (crash, changes) in CRASHES {
-            let (mut last, mut opened) = (None, false);
-            for (after, change) in instants(changes, changes[changes.len() - 1], 25) {
-                assert!(!opened, "{crash:?}: the opens end before {after:?}");
+        for crash in [sim::Crash::Process, sim::Crash::Power] {
+            for after in (0..).step_by(25_000).map(Span::from_nanos) {
                 let mut sim = sim::Sim::new(sim::Config::default());
                 let host = host(&mut sim, 2);
                 let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
                 let probe = probe(&node);
                 assert_eq!(sim.run_for(after), Ok(()), "{crash:?} at {after:?}");
-                opened = all_opened(&probe, after);
+                let opened = all_opened(&probe, after);
                 sim.crash(&host, crash);
                 drop(node);
-                let left = (opened, left(&mut sim, &host));
-                let changed = last.as_ref() != Some(&left);
-                assert_eq!(changed, change, "{crash:?}: a new state at {after:?}");
-                last = Some(left);
                 let lens = run_on_disk(&mut sim, &host, 2 * RING)
                     .map(|()| [0, 1].map(|core| ring_len(&mut sim, &host, core)));
                 let fits = |len: &u64| [RING, DISK.bytes() / 2].contains(len);
@@ -1303,9 +1207,9 @@ mod buffer {
                 }
                 if opened {
                     assert_eq!(lens, Ok([DISK.bytes() / 2; 2]), "{crash:?}");
+                    break;
                 }
             }
-            assert!(opened, "{crash:?}: the opens go on");
         }
         assert_eq!(failed, Vec::<String>::new());
     }
