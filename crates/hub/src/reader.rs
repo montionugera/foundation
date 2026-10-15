@@ -9,9 +9,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 
-use ::home::reader::{Disk, Failure, Next};
+use ::home::reader::{Next, disk};
 use types::channel;
-use types::frame::key_set::KeySet;
+use types::frame::key_set::{Group, KeySet};
 use types::frame::{Frame, Mask, View};
 use types::name::{Name, Selector};
 use types::time::Span;
@@ -348,8 +348,8 @@ struct Lent {
 /// Where a reader's frames come from.
 #[derive(Debug)]
 enum Source {
-    /// A session at this node's home.
-    Local(Local),
+    /// A session at this node's home. A box keeps the reader small.
+    Local(Box<Local>),
     /// A session at the home of another node.
     Remote(Box<Remote>),
 }
@@ -500,7 +500,7 @@ impl Reader {
         let slot = channels.index;
         let local = Local::open(state, channels, mode, named, hold)?;
         Ok(Self {
-            source: Source::Local(local),
+            source: Source::Local(Box::new(local)),
             index: slot,
             lent: Lent::default(),
             frame: None,
@@ -578,12 +578,10 @@ impl Reader {
             position.live,
             given
         );
-        match &self.source {
-            Source::Local(Local {
-                complete: Some((complete, _)),
-                ..
-            }) => complete.ack(position.live),
-            Source::Local(_) | Source::Remote(_) => {}
+        if let Source::Local(local) = &self.source
+            && let Some((complete, _)) = &local.complete
+        {
+            complete.ack(position.live);
         }
     }
 }
@@ -603,11 +601,11 @@ pub(crate) enum Stop {
     Replaced,
 }
 
-impl From<Failure> for Stop {
-    fn from(failure: Failure) -> Self {
-        match failure {
-            Failure::Files(error) => Self::Buffer(error),
-            Failure::Pool(error) => Self::Pool(error),
+impl From<disk::Error> for Stop {
+    fn from(error: disk::Error) -> Self {
+        match error {
+            disk::Error::Files(error) => Self::Buffer(error),
+            disk::Error::Pool(error) => Self::Pool(error),
         }
     }
 }
@@ -867,8 +865,10 @@ pub(crate) struct Session {
     ending: Ending,
     /// The slots of the reader's channels.
     slots: Box<[channel::Slot]>,
-    /// The slot of their index.
-    index: channel::Slot,
+    /// The key and slot of their index.
+    index: (channel::Key, channel::Slot),
+    /// The key set of the frames that a read from disk makes, once one ran.
+    disk: Option<Arc<KeySet>>,
     /// The lens of the key set of the last frame.
     lens: Option<Lens>,
     streak: Streak,
@@ -927,13 +927,19 @@ impl Session {
         key: ::home::reader::Key,
         channels: Channels,
     ) -> Self {
+        let at = channels
+            .slots
+            .iter()
+            .position(|&slot| slot == channels.index);
+        let index = channels.keys[at.expect("invariant: the channels hold the index")];
         let ending = state.borrow_mut().readers.add(key, channels.keys);
         Self {
             state: Rc::clone(state),
             key,
             ending,
             slots: channels.slots,
-            index: channels.index,
+            index: (index, channels.index),
+            disk: None,
             lens: None,
             streak: Streak::default(),
             failed: None,
@@ -975,14 +981,13 @@ impl Session {
             };
             // Boxed, so that the future of each take stays small.
             let filled = match Box::pin(disk.read()).await {
-                Ok(read) => {
+                Ok(entries) => {
                     let state = &mut *self.state.borrow_mut();
-                    state
-                        .home
-                        .fill(read, &mut state.interner)
-                        .map_err(Stop::Pool)
+                    let set =
+                        self.disk.get_or_insert_with(|| group(state, self.index.0));
+                    state.home.fill(entries, set).map_err(Stop::Pool)
                 }
-                Err(failure) => Err(failure.into()),
+                Err(error) => Err(error.into()),
             };
             if let Err(stop) = filled {
                 return Err(Stop::clone(self.failed.insert(Box::new(stop))));
@@ -996,7 +1001,7 @@ impl Session {
                 let set = snapshot
                     .get(key)
                     .expect("invariant: a frame's key set is known");
-                let lens = Lens::new(set, self.slots.iter().copied(), self.index);
+                let lens = Lens::new(set, self.slots.iter().copied(), self.index.1);
                 self.lens.insert(lens)
             }
         };
@@ -1004,11 +1009,24 @@ impl Session {
     }
 }
 
+/// The key set of one group: `index` and each data channel defined on it. A read
+/// from disk of a session on `index` makes its frames of it.
+fn group(state: &mut State, index: channel::Key) -> Arc<KeySet> {
+    let data: Vec<_> = state
+        .channels
+        .iter()
+        .map(|(_, channel)| channel)
+        .filter(|channel| channel.index() == index && channel.key() != index)
+        .map(|channel| (channel.key(), channel.sample()))
+        .collect();
+    state.interner.intern(&[Group { index, data: &data }])
+}
+
 /// What one take of a session gives.
 enum Taken {
     Frame(Frame),
     /// The read that the session needs before its next frame.
-    Disk(Disk),
+    Disk(disk::Read),
 }
 
 /// The next frame of the session `key` or the read it needs, or the waker of `cx`

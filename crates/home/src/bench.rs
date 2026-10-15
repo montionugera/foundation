@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use types::channel;
-use types::frame::key_set::{Interner, KeySet};
+use types::frame::key_set::KeySet;
 use types::frame::{Draft, Frame};
 use types::sample::Type;
 use types::time::Stamp;
@@ -55,24 +55,30 @@ pub fn stored(
     })
 }
 
-/// Wraps `stored::Decoder`.
+/// Makes the frames of stored data entries again, as a read from disk of a shard does.
 #[derive(Debug, Default)]
 pub struct Decoder(stored::Decoder);
 
 impl Decoder {
-    /// Calls `stored::Decoder::frame`.
+    /// The live frame of key set `set` that `stored` holds, an entry of the index of
+    /// the one group of `set`. It drops each series whose channel and type `set` does
+    /// not hold. `None` when `stored` is not a data entry with samples.
     ///
     /// # Errors
     ///
     /// [`block::Error`] when `pool` has no block for the frame.
+    ///
+    /// # Panics
+    ///
+    /// If `stored` is not a body that [`stored`] made, or `set` does not hold its
+    /// index series.
     pub fn frame(
         &mut self,
         pool: &block::Pool,
-        interner: &mut Interner,
-        index: channel::Key,
+        set: &Arc<KeySet>,
         stored: &buffer::Stored,
-    ) -> Result<Option<(Frame, Arc<KeySet>)>, block::Error> {
-        self.0.frame(pool, interner, index, stored)
+    ) -> Result<Option<Frame>, block::Error> {
+        self.0.frame(pool, set, stored)
     }
 }
 

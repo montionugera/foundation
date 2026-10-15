@@ -7,13 +7,15 @@ use std::task::Poll;
 
 use env::files::Operation;
 use hub::reader::{self, Ended, Mode};
+use spec::data_type::DataType;
 use types::channel::Key;
 use types::name::Selector;
 use types::time::Span;
 
+use super::definitions::{I32, write_i32};
 use super::{
-    RING, SETTLE, name, poll_flagged, run, samples, unnamed, unsynced, without, write,
-    write_series,
+    RING, SETTLE, channels, definition, keys, name, poll_flagged, run, samples,
+    unnamed, unsynced, without, write, write_series,
 };
 
 /// A reader of `subject` named `reader` on `value`, with a hold of `hold`.
@@ -324,6 +326,36 @@ fn resumes_a_named_complete_reader_from_disk_at_an_ack_before_a_frame() {
             let received = reader.next().await.expect("a frame");
             assert_eq!(samples(&received, 2), [n]);
         }
+    });
+}
+
+/// A named complete reader that resumes after a change of type of its channel reads
+/// the frames it missed from disk with no series of the old type, as a live frame.
+#[test]
+fn resumes_a_named_complete_reader_from_disk_with_no_series_of_a_changed_type() {
+    run(24, |test| async move {
+        let open = named("a", "r", Mode::Complete, Span::SECOND);
+        let mut first = test.hub.reader(open).await.expect("opens");
+        let mut writer = test.writer("w", &["value"]).await;
+        let now = test.now();
+        write(&mut writer, &[now], &[7]);
+        let received = first.next().await.expect("a frame");
+        assert_eq!(samples(&received, 2), [7]);
+        drop(first);
+        drop(writer);
+        let mut changed = channels();
+        changed.insert(name("value"), definition(2, DataType::Sample(I32), 1));
+        test.hub.set_definitions(&changed);
+        let mut writer = test.writer("w", &["value"]).await;
+        write_i32(&mut writer, now + 1, 8);
+        let open = named("a", "r", Mode::Complete, Span::SECOND);
+        let mut reader = test.hub.reader(open).await.expect("opens");
+        let received = reader.next().await.expect("the missed frame");
+        assert_eq!(keys(&received), [1]);
+        assert_eq!(samples(&received, 1), [now]);
+        let received = reader.next().await.expect("the frame of the new type");
+        assert_eq!(keys(&received), [1, 2]);
+        assert_eq!(samples(&received, 1), [now + 1]);
     });
 }
 

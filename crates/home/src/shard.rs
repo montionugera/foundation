@@ -13,7 +13,7 @@ use control::Gate;
 use control::lease::Lease;
 use delivery::Reader;
 use types::channel::{self, Slot};
-use types::frame::key_set::{Interner, KeySet};
+use types::frame::key_set::KeySet;
 use types::frame::{self, Draft, Frame, Label, Path};
 use types::hash;
 use types::time::{Interval, Monotonic, Span, Stamp};
@@ -804,30 +804,34 @@ impl Shard {
             .take(self.place(key.slot), key.session, &self.buffer)
     }
 
-    /// Gives the frames of `read` to its reader. It makes a frame of each data entry
-    /// with samples, with the key set that `interner` gives its channels: give the
-    /// same interner each time. It drops `read` when the reader closed after the read
-    /// started, also by a takeover or a shed of its index.
+    /// Gives the frames of `entries` to its reader: a frame of key set `set` of each
+    /// data entry with samples. `set` is of one group, of the reader's index; each
+    /// series whose channel and type `set` does not hold drops. It drops `entries` when
+    /// the reader closed after the read started, also by a takeover or a shed of its
+    /// index.
     ///
     /// # Errors
     ///
-    /// [`block::Error`] when the pool has no block for the first frame of `read`,
+    /// [`block::Error`] when the pool has no block for the first frame of `entries`,
     /// which then gives nothing. A pool error after a frame stops the fill there, and
     /// the reader reads again.
+    ///
+    /// # Panics
+    ///
+    /// If `set` does not hold the reader's index.
     pub fn fill(
         &mut self,
-        read: reader::Read,
-        interner: &mut Interner,
+        entries: reader::disk::Entries,
+        set: &Arc<KeySet>,
     ) -> Result<(), block::Error> {
-        let slot = read.key.slot;
+        let slot = entries.key.slot;
         let Some(&place) = self.places.get(&slot) else {
             return Ok(());
         };
-        let index = self.indexes[place].key;
         let durable = self.buffer.durable(slot, Path::Live).seq;
         let (pool, decoder) = (self.buffer.pool(), &mut self.decoder);
-        self.readers.fill(place, read, durable, |stored| {
-            decoder.frame(pool, interner, index, stored)
+        self.readers.fill(place, entries, durable, set, |stored| {
+            decoder.frame(pool, set, stored)
         })
     }
 
@@ -850,11 +854,11 @@ impl Shard {
     /// Complete readers first get the live frames now on disk. A key is a hint: take
     /// from each until [`take`](Self::take) gives [`Next::Empty`](reader::Next::Empty)
     /// or [`Next::Behind`](reader::Next::Behind), and read each
-    /// [`Next::Disk`](reader::Next::Disk) that it gives. When a commit ended since the last
-    /// call, it reads each index with live frames queued for complete readers; else it
-    /// reads none. Called so, with the same `keys` each time, a call allocates only
-    /// when it gives more keys than each call before, or when more frames wait for one
-    /// complete reader than have waited for that reader before.
+    /// [`Next::Disk`](reader::Next::Disk) that it gives. When a commit ended since the
+    /// last call, it reads each index with live frames queued for complete readers;
+    /// else it reads none. Called so, with the same `keys` each time, a call allocates
+    /// only when it gives more keys than each call before, or when more frames wait for
+    /// one complete reader than have waited for that reader before.
     pub fn woken(&mut self, keys: &mut Vec<reader::Key>) {
         self.readers.woken(&self.buffer, keys);
     }
@@ -1625,6 +1629,19 @@ mod tests {
     /// Reads past which no test reads.
     const READS: usize = 1000;
 
+    /// The key set that the hub gives a read from disk of the index at `slot`: one
+    /// group, with a data channel of type `I64` at each other slot below 64.
+    fn disk_set(slot: Slot) -> Arc<KeySet> {
+        let data: Vec<_> = (0..64)
+            .filter(|&n| n != slot.get())
+            .map(|n| (key(Slot::new(n)), Type::Scalar(Scalar::I64)))
+            .collect();
+        intern(&[Group {
+            index: key(slot),
+            data: &data,
+        }])
+    }
+
     /// Each frame that `reader` takes, with each read from disk that
     /// [`reader::Next::Disk`] asks for, then the [`reader::Next`] after them and the
     /// count of reads.
@@ -1637,7 +1654,7 @@ mod tests {
         reader: impl Into<reader::Key>,
     ) -> (Vec<Frame>, reader::Next, usize) {
         let reader = reader.into();
-        let mut interner = create_interner(&[0, 2], &[]);
+        let set = disk_set(reader.slot);
         let mut frames = Vec::new();
         for reads in 0..READS {
             let (taken, end) = drain(shard, reader);
@@ -1646,9 +1663,7 @@ mod tests {
                 return (frames, end, reads);
             };
             let read = disk.read().await.expect("the read ends");
-            shard
-                .fill(read, &mut interner)
-                .expect("the pool has a block");
+            shard.fill(read, &set).expect("the pool has a block");
         }
         panic!("{READS} reads");
     }
@@ -4117,6 +4132,44 @@ mod tests {
             );
         }
 
+        /// The mark of the last read is at seq 4. The session takes seq 4 live, spends
+        /// its credit, and misses seqs 5 and 6: it reads them from seq 5, not from the
+        /// old mark.
+        #[test]
+        fn reads_from_the_seq_after_its_last_frame_and_not_from_an_old_mark() {
+            run(140, |test| async move {
+                let mut shard = test.shard(AREA).await;
+                let set = two_indexes();
+                let a = shard.open_writer(writer("w", 1, &set)).expect("synced");
+                let session = shard.open_complete(Slot::new(0), 1, Charge::Whole);
+                let commit = async |shard: &mut Shard, stamps: &[i64]| {
+                    for &stamp in stamps {
+                        write(&test, shard, a, &[stamp]);
+                    }
+                    shard.committed().await.expect("the commit ends");
+                    woken(shard);
+                };
+                commit(&mut shard, &[1, 2]).await;
+                commit(&mut shard, &[3, 4]).await;
+                // Each frame charges 192 bytes: seq 4 spends the last of the credit.
+                shard.grant(session, 800);
+                let (frames, _, reads) = read(&mut shard, session).await;
+                let caught_up: Vec<_> = (0..4).map(|n| seq(n, 1)).collect();
+                assert_eq!((ranges(&frames, 0), reads), (caught_up, 1));
+                commit(&mut shard, &[5]).await;
+                assert_eq!(taken(&mut shard, session.into(), 0), [seq(4, 1)]);
+                commit(&mut shard, &[6]).await;
+                commit(&mut shard, &[7]).await;
+                shard.grant(session, 1600);
+                let (frames, end, reads) = read(&mut shard, session).await;
+                assert_eq!(
+                    (ranges(&frames, 0), reads),
+                    (vec![seq(5, 1), seq(6, 1)], 1)
+                );
+                assert!(matches!(end, reader::Next::Empty), "{end:?}");
+            });
+        }
+
         #[test]
         fn opens_and_closes_a_reader_of_each_mode_with_no_mesh_time() {
             run(97, |test| async move {
@@ -5705,8 +5758,8 @@ mod tests {
                     let third = named(&mut shard, "a", "r");
                     assert_eq!(third.replaced, Some(second.key.into()));
                     let read = disk.read().await.expect("the read ends");
-                    let mut interner = create_interner(&[0, 2], &[]);
-                    assert_eq!(shard.fill(read, &mut interner), Ok(()));
+                    let set = disk_set(Slot::new(0));
+                    assert_eq!(shard.fill(read, &set), Ok(()));
                     assert_eq!(taken(&mut shard, second.key.into(), 0), []);
                     let frames = caught_up(&mut shard, third.key, 0).await;
                     assert_eq!(frames, [seq(1, 1), seq(2, 1)]);
@@ -5737,7 +5790,20 @@ mod tests {
                             Charge::Whole,
                         )
                         .expect("synced");
-                    let (frames, end, reads) = read(&mut shard, second.key).await;
+                    let set = disk_set(Slot::new(0));
+                    let (mut frames, mut reads) = (Vec::new(), 0);
+                    let end = loop {
+                        let (taken, end) = drain(&mut shard, second.key);
+                        frames.extend(taken);
+                        let reader::Next::Disk(mut disk) = end else {
+                            break end;
+                        };
+                        // Each read takes one entry, so it stops within a seq.
+                        disk.budget = 1;
+                        reads += 1;
+                        let read = disk.read().await.expect("the read ends");
+                        shard.fill(read, &set).expect("the pool has a block");
+                    };
                     assert_eq!((ranges(&frames, 0), reads), (vec![seq(1, 1)], 9));
                     assert!(matches!(end, reader::Next::Empty), "{end:?}");
                 });

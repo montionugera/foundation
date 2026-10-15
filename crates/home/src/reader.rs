@@ -14,8 +14,10 @@ use types::frame::{Frame, Path};
 use types::hash;
 use types::time::Stamp;
 
+pub mod disk;
+
 /// Pool bytes that the entries of one read from disk take at most.
-const BUDGET: u64 = 256 * 1024;
+const BUDGET: usize = 256 * 1024;
 
 /// What a reader gets from [`Shard::take`](crate::Shard::take).
 #[derive(Debug)]
@@ -25,73 +27,13 @@ pub enum Next {
     /// No frame waits, the next frame waits for a grant or a commit, or the reader is
     /// closed.
     Empty,
-    /// The reader's next frames are on disk. Run [`Disk::read`] with no borrow of the
-    /// shard, give the result to [`Shard::fill`](crate::Shard::fill), then take
-    /// again.
-    Disk(Disk),
+    /// The reader's next frames are on disk. Run [`disk::Read::read`] with no borrow
+    /// of the shard, give the result to [`Shard::fill`](crate::Shard::fill), then
+    /// take again.
+    Disk(disk::Read),
     /// The complete reader reached live samples lost for no room: it gets no later
     /// frame. It comes after the frames before them, on this and each later call.
     Behind,
-}
-
-/// A read from disk that a complete reader needs before its next frame.
-#[derive(Debug)]
-pub struct Disk {
-    key: complete::Key,
-    from: Mark,
-    budget: usize,
-    reader: buffer::Reader,
-}
-
-impl Disk {
-    /// Reads the reader's next durable entries of its index, up to its credit.
-    ///
-    /// # Errors
-    ///
-    /// [`Failure`] when the buffer's read fails.
-    pub async fn read(self) -> Result<Read, Failure> {
-        let Self {
-            key,
-            from,
-            budget,
-            reader,
-        } = self;
-        match reader.read(key.slot, Path::Live, from, budget).await {
-            Ok(read) => Ok(Read { key, read }),
-            Err(buffer::Error::Files(error)) => Err(Failure::Files(error)),
-            Err(buffer::Error::Pool(error)) => Err(Failure::Pool(error)),
-            Err(error) => {
-                unreachable!("a buffer read gives only Files and Pool: {error}")
-            }
-        }
-    }
-}
-
-/// Why a [`Disk::read`] failed. The reader can give no more frames; the shard goes on.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Failure {
-    /// A ring read failed, or a commit failed before the read ended.
-    Files(env::files::Error),
-    /// The pool had no block for the first entry of the read or its table.
-    Pool(block::Error),
-}
-
-impl fmt::Display for Failure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Files(error) => write!(f, "a read from disk failed: {error}"),
-            Self::Pool(error) => write!(f, "the pool has no block for a read: {error}"),
-        }
-    }
-}
-
-impl std::error::Error for Failure {}
-
-/// What a [`Disk`] read got, for [`Shard::fill`](crate::Shard::fill).
-#[derive(Debug)]
-pub struct Read {
-    pub(crate) key: complete::Key,
-    read: buffer::Read,
 }
 
 /// An open reader on its shard, in either mode.
@@ -351,11 +293,11 @@ impl Set {
         buffer: &Buffer,
     ) -> Next {
         let entry = &mut self.entries[place];
-        let (from, credit_bytes) = match entry.readers.take(session) {
+        let from = match entry.readers.take(session) {
             delivery::Next::Frame(frame) => return Next::Frame(frame),
             delivery::Next::Empty => return Next::Empty,
             delivery::Next::Behind => return Next::Behind,
-            delivery::Next::Disk { from, credit_bytes } => (from, credit_bytes),
+            delivery::Next::Disk { from } => from,
         };
         let delivery::Key::Complete(session) = session else {
             unreachable!("invariant: a latest session never reads from disk");
@@ -368,35 +310,32 @@ impl Set {
         if mark.seq != from {
             *mark = Mark::at(from);
         }
-        let budget = credit_bytes.min(BUDGET);
-        Next::Disk(Disk {
+        Next::Disk(disk::Read {
             key,
             from: *mark,
-            budget: usize::try_from(budget)
-                .expect("invariant: the budget fits a usize"),
+            budget: BUDGET,
             reader: buffer.reader(),
         })
     }
 
-    /// Gives the frames of `read` to its session on the index at `place`, whose live
-    /// frames on disk end at seq `durable`: the frame that `decode` makes of each
-    /// entry, or of none. Drops `read` when its session closed after it started.
+    /// Gives the frames of `entries` to its session on the index at `place`, whose
+    /// live frames on disk end at seq `durable`: the frame of key set `set` that
+    /// `decode` makes of each entry, or of none. Drops `entries` when its session
+    /// closed after the read started.
     ///
     /// # Errors
     ///
-    /// The error of `decode` for the first frame of `read`, which then gives nothing.
-    /// An error after a frame stops the fill there.
+    /// The error of `decode` for the first frame of `entries`, which then gives
+    /// nothing. An error after a frame stops the fill there.
     pub(crate) fn fill(
         &mut self,
         place: usize,
-        read: Read,
+        entries: disk::Entries,
         durable: u64,
-        mut decode: impl FnMut(
-            &Stored,
-        )
-            -> Result<Option<(Frame, Arc<KeySet>)>, block::Error>,
+        set: &Arc<KeySet>,
+        mut decode: impl FnMut(&Stored) -> Result<Option<Frame>, block::Error>,
     ) -> Result<(), block::Error> {
-        let Read { key, read } = read;
+        let disk::Entries { key, read } = entries;
         let Some(mark) = self.marks.get_mut(&key) else {
             return Ok(());
         };
@@ -404,24 +343,21 @@ impl Set {
         let entry = &mut self.entries[place];
         let mut given = false;
         for stored in &read.entries {
-            let (frame, set) = match decode(stored) {
-                Ok(Some(decoded)) => decoded,
+            let frame = match decode(stored) {
+                Ok(Some(frame)) => frame,
                 Ok(None) => continue,
                 Err(error) if !given => return Err(error),
                 Err(_) => return Ok(()),
             };
             given = true;
             let seq = stored.first..stored.first + u64::from(stored.len);
-            if !entry.readers.fill(key.session, &frame, &set, seq) {
+            if !entry.readers.fill(key.session, frame, set, seq) {
                 return Ok(());
             }
         }
-        // A read that stopped at its budget below `durable` reads again.
-        if read.next.seq >= durable {
-            entry.readers.reached(key.session, read.next.seq);
-            if entry.readers.pending() && !mem::replace(&mut entry.listed, true) {
-                self.listed.push(place);
-            }
+        entry.readers.reached(key.session, read.next.seq, durable);
+        if entry.readers.pending() && !mem::replace(&mut entry.listed, true) {
+            self.listed.push(place);
         }
         Ok(())
     }
@@ -810,11 +746,12 @@ mod tests {
 
     mod disk {
         use super::*;
+        use crate::reader::disk::{self as read, Entries};
 
         /// A set whose complete reader at slot 0 reads from disk from seq 0, after the
         /// live frames `0..durable` were released with no reader open, and the read
         /// of its next entries, `0..durable`, one sample each.
-        fn reading(durable: u64) -> (Set, Frames, Read) {
+        fn reading(durable: u64) -> (Set, Frames, Entries) {
             let (mut set, frames) = (carried(1), Frames::new());
             for seq in 0..durable {
                 set.applied(
@@ -852,26 +789,24 @@ mod tests {
                 entries,
                 next: Mark::at(durable),
             };
-            (set, frames, Read { key, read })
+            (set, frames, Entries { key, read })
         }
 
-        /// Fills `read` into `set`, with a decode that fails at the entry at `failed`.
+        /// Fills `entries` into `set`, with a decode that fails at the entry at
+        /// `failed`.
         fn fill(
             set: &mut Set,
             frames: &Frames,
-            read: Read,
+            entries: Entries,
             durable: u64,
             failed: Option<u64>,
         ) -> Result<(), block::Error> {
-            set.fill(0, read, durable, |stored| {
+            set.fill(0, entries, durable, &frames.set, |stored| {
                 if Some(stored.first) == failed {
                     return Err(block::Error::Refused { requested: 8 });
                 }
                 let seq = stored.first..stored.first + 1;
-                Ok(Some((
-                    frames.frame(Path::Live, seq),
-                    Arc::clone(&frames.set),
-                )))
+                Ok(Some(frames.frame(Path::Live, seq)))
             })
         }
 
@@ -919,6 +854,7 @@ mod tests {
             );
         }
 
+        /// No caller sees a kept mark: it shows only as memory.
         #[test]
         fn drops_the_mark_at_a_close_and_a_takeover() {
             let (mut set, _, read) = reading(1);
@@ -935,11 +871,11 @@ mod tests {
                 path: "ring".into(),
             };
             assert_eq!(
-                Failure::Files(files).to_string(),
+                read::Error::Files(files).to_string(),
                 "a read from disk failed: no room on the disk for ring"
             );
             assert_eq!(
-                Failure::Pool(block::Error::Refused { requested: 8 }).to_string(),
+                read::Error::Pool(block::Error::Refused { requested: 8 }).to_string(),
                 "the pool has no block for a read: the system refused memory for a \
                  block of 8 bytes"
             );

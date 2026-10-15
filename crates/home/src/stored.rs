@@ -6,8 +6,9 @@ use std::sync::Arc;
 use block::Block;
 use buffer::{Entry, Stored};
 use types::channel;
-use types::frame::key_set::{Group, Interner, KeySet};
+use types::frame::key_set::KeySet;
 use types::frame::{self, Form, Frame, Layout, Path};
+use types::hash;
 use types::sample::{Scalar, Sides, Type};
 use types::time::Stamp;
 
@@ -154,22 +155,29 @@ pub(crate) fn read(body: &[u8]) -> impl Iterator<Item = Series<'_>> {
     })
 }
 
-/// Makes the frames of stored data entries again. It keeps the key set of the last
-/// entry, so a run of entries of one key set interns once.
+/// Makes the frames of stored data entries again, of the key set that the caller
+/// gives. It keeps the map of the last key set and of the channels of the last entry,
+/// so a run of entries of one key set and one list of channels maps each series once.
 #[derive(Debug, Default)]
 pub(crate) struct Decoder {
+    /// The key set of the last frame.
+    set: Option<Arc<KeySet>>,
+    /// The entry in `set` of each channel and type.
+    entry_of: hash::Map<(channel::Key, Type), usize>,
     /// The channel and type of each series of the last entry, in entry order.
     channels: Vec<(channel::Key, Type)>,
-    /// The key set of `channels`.
-    set: Option<Arc<KeySet>>,
+    /// The entry in `set` and the position in `channels` of each series that `set`
+    /// holds, in increasing entry order.
+    kept: Vec<(usize, usize)>,
+    /// The start and length of each series in the body of the entry.
+    spans: Vec<(usize, usize)>,
     lens: Vec<(usize, usize)>,
 }
 
 impl Decoder {
-    /// The live frame that `stored` holds, an entry of the index channel `index`,
-    /// with its key set from `interner`: one group, of each channel of the entry.
-    /// `None` when `stored` is not a data entry with samples. Give the same interner
-    /// each time.
+    /// The live frame of key set `set` that `stored` holds, an entry of the index of
+    /// the one group of `set`. It drops each series whose channel and type `set` does
+    /// not hold. `None` when `stored` is not a data entry with samples.
     ///
     /// # Errors
     ///
@@ -177,56 +185,71 @@ impl Decoder {
     ///
     /// # Panics
     ///
-    /// As [`read`] does.
+    /// As [`read`] does, and if `set` does not hold the index series of `stored`.
     pub(crate) fn frame(
         &mut self,
         pool: &block::Pool,
-        interner: &mut Interner,
-        index: channel::Key,
+        set: &Arc<KeySet>,
         stored: &Stored,
-    ) -> Result<Option<(Frame, Arc<KeySet>)>, block::Error> {
+    ) -> Result<Option<Frame>, block::Error> {
         if stored.tag != TAG || stored.len == 0 {
             return Ok(None);
         }
-        let set = self.set(interner, index, &stored.bytes);
+        let body = &stored.bytes;
+        self.map(set, body);
+        self.spans.clear();
+        let start = body.as_ptr().addr();
+        let spans = read(body)
+            .map(|series| (series.bytes.as_ptr().addr() - start, series.bytes.len()));
+        self.spans.extend(spans);
         self.lens.clear();
-        let lens = read(&stored.bytes).map(|series| series.bytes.len());
-        self.lens.extend(lens.enumerate());
-        let Ok(layout) = Layout::new(&set, &self.lens) else {
-            unreachable!("invariant: a stored body has the layout of a frame");
-        };
+        let lens = self
+            .kept
+            .iter()
+            .map(|&(entry, at)| (entry, self.spans[at].1));
+        self.lens.extend(lens);
+        let layout = Layout::new(set, &self.lens).unwrap_or_else(|error| {
+            panic!(
+                "the entry has no frame of key set {}: {error}",
+                set.key().get()
+            )
+        });
         let mut draft = layout.draft(pool, Form::Encoded)?;
-        for ((_, to), series) in draft.iter_mut().zip(read(&stored.bytes)) {
-            to.copy_from_slice(series.bytes);
+        for ((_, to), &(_, at)) in draft.iter_mut().zip(&self.kept) {
+            let (from, len) = self.spans[at];
+            to.copy_from_slice(&body[from..from + len]);
         }
         draft.set_count(0, stored.len);
         draft.set_seq(0, stored.first);
-        Ok(Some((draft.freeze(Path::Live), set)))
+        Ok(Some(draft.freeze(Path::Live)))
     }
 
-    /// The key set of the channels of `body`, the body of an entry of `index`.
-    fn set(
-        &mut self,
-        interner: &mut Interner,
-        index: channel::Key,
-        body: &[u8],
-    ) -> Arc<KeySet> {
+    /// Maps the series of `body`, the body of an entry, to the entries of `set`.
+    fn map(&mut self, set: &Arc<KeySet>, body: &[u8]) {
         let channels = || read(body).map(|series| (series.channel, series.data_type));
-        if let Some(set) = &self.set
-            && channels().eq(self.channels.iter().copied())
-        {
-            return Arc::clone(set);
+        let same = self.set.as_ref().is_some_and(|last| Arc::ptr_eq(last, set));
+        if same && channels().eq(self.channels.iter().copied()) {
+            return;
+        }
+        if !same {
+            self.entry_of.clear();
+            let entries = set.entries().iter().enumerate();
+            let of = entries.map(|(at, entry)| ((entry.key, entry.data_type), at));
+            self.entry_of.extend(of);
+            self.set = Some(Arc::clone(set));
         }
         self.channels.clear();
         self.channels.extend(channels());
-        let data: Vec<_> = self
+        self.kept.clear();
+        let kept = self
             .channels
             .iter()
-            .copied()
-            .filter(|&(channel, _)| channel != index)
-            .collect();
-        let set = interner.intern(&[Group { index, data: &data }]);
-        Arc::clone(self.set.insert(set))
+            .enumerate()
+            .filter_map(|(at, channel)| {
+                self.entry_of.get(channel).map(|&entry| (entry, at))
+            });
+        self.kept.extend(kept);
+        self.kept.sort_unstable();
     }
 }
 
@@ -736,6 +759,15 @@ mod tests {
             (frame, stored)
         }
 
+        /// The key and bytes of each present entry of `frame`, of key set `set`.
+        fn series(frame: &Frame, set: &KeySet) -> Vec<(channel::Key, Vec<u8>)> {
+            let entries = set.entries();
+            frame
+                .iter()
+                .map(|(e, bytes)| (entries[e].key, bytes.to_vec()))
+                .collect()
+        }
+
         #[test]
         fn makes_the_frame_of_a_data_entry_again() {
             let data = data(&[2, 3]);
@@ -748,15 +780,9 @@ mod tests {
             let pool = create_pool(1 << 16);
             let (frame, stored) = stored(&pool, &set, 5);
 
-            let decoded = Decoder::default().frame(
-                &pool,
-                &mut interner,
-                key(Slot::new(1)),
-                &stored,
-            );
+            let decoded = Decoder::default().frame(&pool, &set, &stored);
 
-            let (decoded, decoded_set) = decoded.expect("room").expect("a data entry");
-            assert!(Arc::ptr_eq(&decoded_set, &set), "the interned key set");
+            let decoded = decoded.expect("room").expect("a data entry");
             assert_eq!(decoded.key_set(), frame.key_set());
             assert_eq!(decoded.path(), Path::Live);
             assert_eq!(decoded.form(), Form::Encoded);
@@ -777,7 +803,6 @@ mod tests {
             let set = interner.intern(&groups);
             let pool = create_pool(1 << 16);
             let (_, stored) = stored(&pool, &set, 5);
-            let index = key(Slot::new(1));
             let mut decoder = Decoder::default();
             for stored in [
                 Stored {
@@ -789,37 +814,115 @@ mod tests {
                     ..stored.clone()
                 },
             ] {
-                let made = decoder.frame(&pool, &mut interner, index, &stored);
+                let made = decoder.frame(&pool, &set, &stored);
                 assert!(made.expect("no block taken").is_none(), "{stored:?}");
             }
         }
 
-        /// The decoder keeps the key set of the last entry: a fresh interner on the
-        /// next entry of the same channels shows that it interns nothing again.
+        /// A channel defined again with a new type has a new slot, so the live path
+        /// gives a reader of the new type no series of the old one. Neither does this.
         #[test]
-        fn interns_once_for_a_run_of_one_key_set_and_again_at_a_change() {
-            let (one, two) = (data(&[2]), data(&[2, 3]));
-            let group = |data| Group {
+        fn drops_each_series_of_a_channel_or_type_the_set_does_not_hold() {
+            let stored_data = data(&[2, 3, 4]);
+            let index = key(Slot::new(1));
+            let groups = [Group {
+                index,
+                data: &stored_data,
+            }];
+            let mut interner = create_interner(&[1], &groups);
+            let written = interner.intern(&groups);
+            let f64 = Type::Scalar(Scalar::F64);
+            let now = [(key(Slot::new(2)), f64), (key(Slot::new(4)), I64)];
+            let set = interner.intern(&[Group { index, data: &now }]);
+            let pool = create_pool(1 << 16);
+            let (frame, stored) = stored(&pool, &written, 5);
+
+            let decoded = Decoder::default().frame(&pool, &set, &stored);
+
+            let decoded = decoded.expect("room").expect("a data entry");
+            assert_eq!(decoded.key_set(), set.key());
+            let kept: Vec<_> = series(&frame, &written)
+                .into_iter()
+                .filter(|(channel, _)| [index, key(Slot::new(4))].contains(channel))
+                .collect();
+            assert_eq!(series(&decoded, &set), kept);
+            assert_eq!(decoded.range(0), Some(Range { seq: 5, count: 1 }));
+        }
+
+        /// After a restart, the slot table can give the channels of an entry stored
+        /// before it slots in another order.
+        #[test]
+        fn maps_each_series_to_its_channel_in_a_set_of_another_slot_order() {
+            let data = data(&[2, 3]);
+            let index = key(Slot::new(1));
+            let groups = [Group { index, data: &data }];
+            let written = create_interner(&[1], &groups).intern(&groups);
+            let mut interner = Interner::new();
+            interner.slots().index(index);
+            interner.slots().data(key(Slot::new(3)), I64);
+            let set = interner.intern(&groups);
+            let pool = create_pool(1 << 16);
+            let (frame, stored) = stored(&pool, &written, 5);
+
+            let decoded = Decoder::default().frame(&pool, &set, &stored);
+
+            let decoded = decoded.expect("room").expect("a data entry");
+            let mut want = series(&frame, &written);
+            want.swap(1, 2);
+            assert_eq!(series(&decoded, &set), want);
+        }
+
+        #[test]
+        #[should_panic(expected = "the entry has no frame of key set")]
+        fn panics_when_the_set_holds_no_index_of_the_entry() {
+            let data = data(&[2]);
+            let groups = [Group {
                 index: key(Slot::new(1)),
-                data,
-            };
+                data: &data,
+            }];
+            let mut interner = create_interner(&[1, 5], &groups);
+            let written = interner.intern(&groups);
+            let other = interner.intern(&[Group {
+                index: key(Slot::new(5)),
+                data: &data,
+            }]);
+            let pool = create_pool(1 << 16);
+            let (_, stored) = stored(&pool, &written, 5);
+
+            drop(Decoder::default().frame(&pool, &other, &stored));
+        }
+
+        /// The decoder keeps its map of the last set and channels: each change of
+        /// either maps again.
+        #[test]
+        fn maps_again_at_a_change_of_set_or_channels() {
+            let (one, two) = (data(&[2]), data(&[2, 3]));
+            let index = key(Slot::new(1));
+            let group = |data| Group { index, data };
             let mut interner = create_interner(&[1], &[group(&one), group(&two)]);
             let first = interner.intern(&[group(&one)]);
             let second = interner.intern(&[group(&two)]);
+            let third = interner.intern(&[group(&data(&[3]))]);
             let pool = create_pool(1 << 16);
-            let index = key(Slot::new(1));
-            let mut decoder = Decoder::default();
-            let mut set_of = |stored: &Stored, interner: &mut Interner| {
-                let made = decoder.frame(&pool, interner, index, stored);
-                made.expect("room").expect("a data entry").1
-            };
-
             let (_, a) = stored(&pool, &first, 1);
             let (_, b) = stored(&pool, &second, 2);
-            assert!(Arc::ptr_eq(&set_of(&a, &mut interner), &first));
-            assert!(Arc::ptr_eq(&set_of(&a, &mut Interner::new()), &first));
-            assert!(Arc::ptr_eq(&set_of(&b, &mut interner), &second));
-            assert!(Arc::ptr_eq(&set_of(&a, &mut interner), &first));
+            let mut decoder = Decoder::default();
+            let mut keys = |stored: &Stored, set: &Arc<KeySet>| {
+                let made = decoder.frame(&pool, set, stored);
+                let made = made.expect("room").expect("a data entry");
+                series(&made, set)
+                    .into_iter()
+                    .map(|(key, _)| key)
+                    .collect::<Vec<_>>()
+            };
+            let at = |slots: &[u32]| -> Vec<_> {
+                slots.iter().map(|&n| key(Slot::new(n))).collect()
+            };
+            assert_eq!(keys(&a, &second), at(&[1, 2]));
+            assert_eq!(keys(&b, &second), at(&[1, 2, 3]));
+            assert_eq!(keys(&b, &third), at(&[1, 3]));
+            assert_eq!(keys(&a, &third), at(&[1]));
+            assert_eq!(keys(&a, &first), at(&[1, 2]));
         }
     }
 

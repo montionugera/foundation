@@ -11,7 +11,7 @@ use std::sync::Arc;
 use common::MIXED;
 use divan::Bencher;
 use divan::counter::ItemsCount;
-use types::frame::key_set::{Interner, KeySet};
+use types::frame::key_set::KeySet;
 use types::frame::{Draft, Form, Frame, Path};
 use types::sample::{Scalar, Type};
 use types::time::Stamp;
@@ -123,11 +123,9 @@ fn frame(bencher: Bencher<'_, '_>, case: &Case) {
     let pool = block::Pool::heap(POOL);
     let frame = case.frame(&pool);
     let stored = home::bench::stored(&pool, &frame, &case.set).expect("room");
-    let index = case.set.entries()[case.set.groups()[0]].key;
-    let mut interner = Interner::new();
     let mut decoder = home::bench::Decoder::default();
-    let (made, _) = decoder
-        .frame(&pool, &mut interner, index, &stored)
+    let made = decoder
+        .frame(&pool, &case.set, &stored)
         .expect("room")
         .expect("a data entry");
     assert_eq!(
@@ -138,8 +136,7 @@ fn frame(bencher: Bencher<'_, '_>, case: &Case) {
     bencher
         .counter(ItemsCount::new(case.series))
         .bench_local(|| {
-            let made =
-                decoder.frame(&pool, &mut interner, index, divan::black_box(&stored));
+            let made = decoder.frame(&pool, &case.set, divan::black_box(&stored));
             drop(divan::black_box(made));
         });
 }
