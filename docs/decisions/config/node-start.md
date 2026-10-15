@@ -180,10 +180,10 @@
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6108190079;
   2026-10-11T10:50:50Z, this text,
   https://github.com/synnaxlabs/foundation/pull/2391#issuecomment-6108247629).
-  `node::client::reach` gives a program on the host of a node a hub client of the node
-  that runs on a data directory, as `@admin` (`spec::founding::admin`). It reads
-  `address`, then `admin.key`, through `env::files` with the readers of `node`, so a
-  simulation gives the simulated disk; it makes and locks nothing, and `os::stored`
+  `node::client::reach` gives a program on the host of a node a `program::Session` of
+  the node that runs on a data directory, as `@admin` (`spec::founding::admin`). It
+  reads `address`, then `admin.key`, through `env::files` with the readers of `node`, so
+  a simulation gives the simulated disk; it makes and locks nothing, and `os::stored`
   opens `dir/data` of a directory that is there and makes nothing. A file `address`
   with no address of a node is `Error::NotRunning`, which also covers a node that
   still writes it; an `admin.key` that no node wrote is `Error::Key`. In place of an

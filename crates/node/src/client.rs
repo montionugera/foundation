@@ -8,7 +8,7 @@ use wire::hub::client::Refusal;
 
 use crate::{address, admin};
 
-/// The pool of the transport and of the hub client. Its largest block holds a
+/// The pool of the transport and of the `program::Session`. Its largest block holds a
 /// datagram, and the client sends a body in chunks of its largest block.
 const POOL: block::Config = match block::Config::new(1 << 21) {
     Ok(config) => config,
@@ -16,7 +16,7 @@ const POOL: block::Config = match block::Config::new(1 << 21) {
 };
 
 /// What [`reach`] dials with: the files of the data directory, and the seams of the
-/// program's transport and of its hub client.
+/// program's transport and of its `program::Session`.
 #[derive(Debug)]
 pub struct Config {
     /// The files of the data directory, which `reach` only reads.
@@ -27,7 +27,7 @@ pub struct Config {
     pub clock: env::clock::Clock,
     /// The source of the random values of the transport and of the connection key.
     pub entropy: env::entropy::Entropy,
-    /// Where the transport and the hub client spawn their tasks.
+    /// Where the transport and the `program::Session` spawn their tasks.
     pub tasks: env::tasks::Tasks,
 }
 
@@ -109,7 +109,7 @@ pub enum Error {
     Session {
         /// The address that the program dialed.
         at: SocketAddr,
-        /// Why the hub client gave no client.
+        /// Why `program::Session::connect` gave no session.
         error: program::Error,
     },
     /// The node refused the hello that the key in `admin.key` signs.
