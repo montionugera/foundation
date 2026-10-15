@@ -808,6 +808,144 @@ mod tests {
         }
     }
 
+    mod disk {
+        use super::*;
+
+        /// A set whose complete reader at slot 0 reads from disk from seq 0, after the
+        /// live frames `0..durable` were released with no reader open, and the read
+        /// of its next entries, `0..durable`, one sample each.
+        fn reading(durable: u64) -> (Set, Frames, Read) {
+            let (mut set, frames) = (carried(1), Frames::new());
+            for seq in 0..durable {
+                set.applied(
+                    0,
+                    frames.frame(Path::Live, seq..seq + 1),
+                    &frames.set,
+                    seq..seq + 1,
+                );
+            }
+            released(&mut set, 0, durable);
+            let session = set.open_complete(0, 0, u64::MAX, complete::Charge::Whole);
+            let key = crate::reader::complete::Key {
+                slot: Slot::new(0),
+                session,
+            };
+            let delivery::Next::Disk { from, .. } =
+                set.entries[0].readers.take(session.into())
+            else {
+                panic!("the reader reads from disk");
+            };
+            set.marks.insert(key, Mark::at(from));
+            let bytes = frames.pool.alloc(8).expect("room").freeze();
+            let entries = (0..durable)
+                .map(|first| Stored {
+                    first,
+                    len: 1,
+                    stored_at: Stamp::from_nanos(0),
+                    last: None,
+                    tag: 0,
+                    bytes: bytes.clone(),
+                })
+                .collect();
+            let read = buffer::Read {
+                gap: None,
+                entries,
+                next: Mark::at(durable),
+            };
+            (set, frames, Read { key, read })
+        }
+
+        /// Fills `read` into `set`, with a decode that fails at the entry at `failed`.
+        fn fill(
+            set: &mut Set,
+            frames: &Frames,
+            read: Read,
+            durable: u64,
+            failed: Option<u64>,
+        ) -> Result<(), block::Error> {
+            set.fill(0, read, durable, |stored| {
+                if Some(stored.first) == failed {
+                    return Err(block::Error::Refused { requested: 8 });
+                }
+                let seq = stored.first..stored.first + 1;
+                Ok(Some((
+                    frames.frame(Path::Live, seq),
+                    Arc::clone(&frames.set),
+                )))
+            })
+        }
+
+        #[test]
+        fn gives_each_frame_and_goes_live_at_the_durable_end() {
+            let (mut set, frames, read) = reading(3);
+            let session = read.key.session;
+            assert_eq!(fill(&mut set, &frames, read, 3, None), Ok(()));
+            assert_eq!(
+                taken(&mut set, 0, session),
+                [range(0, 1), range(1, 1), range(2, 1)]
+            );
+            assert_eq!(set.listed(), [], "no live frame waits");
+        }
+
+        #[test]
+        fn gives_the_error_of_the_first_frame_and_nothing() {
+            let (mut set, frames, read) = reading(3);
+            let session = read.key.session;
+            assert_eq!(
+                fill(&mut set, &frames, read, 3, Some(0)),
+                Err(block::Error::Refused { requested: 8 })
+            );
+            assert!(
+                matches!(
+                    set.entries[0].readers.take(session.into()),
+                    delivery::Next::Disk { from: 0, .. }
+                ),
+                "the reader reads again"
+            );
+        }
+
+        #[test]
+        fn stops_at_an_error_after_a_frame() {
+            let (mut set, frames, read) = reading(3);
+            let session = read.key.session;
+            assert_eq!(fill(&mut set, &frames, read, 3, Some(1)), Ok(()));
+            let readers = &mut set.entries[0].readers;
+            let first = readers.take(session.into());
+            assert!(matches!(first, delivery::Next::Frame(_)), "{first:?}");
+            let next = readers.take(session.into());
+            assert!(
+                matches!(next, delivery::Next::Disk { from: 1, .. }),
+                "{next:?}"
+            );
+        }
+
+        #[test]
+        fn drops_the_mark_at_a_close_and_a_takeover() {
+            let (mut set, _, read) = reading(1);
+            set.close(0, read.key.session.into(), None);
+            assert_eq!(set.marks.len(), 0, "the close drops the mark");
+            let (mut set, _, read) = reading(1);
+            set.replaced(0, Some(read.key.session.into()));
+            assert_eq!(set.marks.len(), 0, "the takeover drops the mark");
+        }
+
+        #[test]
+        fn says_why_a_read_failed() {
+            let files = env::files::Error::Full {
+                path: "ring".into(),
+            };
+            assert_eq!(
+                Failure::Files(files).to_string(),
+                "a read from disk failed: no room on the disk for ring"
+            );
+            assert_eq!(
+                Failure::Pool(block::Error::Refused { requested: 8 }).to_string(),
+                "the pool has no block for a read: the system refused memory for a \
+                 block of 8 bytes"
+            );
+        }
+    }
+
     mod named {
         use types::time::Span;
 
