@@ -157,8 +157,8 @@
   wrote, which is false for a whole key and for no file. Trigger: the join by ticket
   (#1157). A node that joined has no card in the founding, so the change of the trigger
   above, which takes the stored name from the node's member in the region, also states
-  when a node then gets `Error::NoCard`.
-  Decided by `laptop.architect-2`, #2433 (2026-10-11T20:13:04Z,
+  when a node then gets `Error::NoCard`. Decided by `laptop.architect-2`, #2433
+  (2026-10-11T20:13:04Z,
   https://github.com/synnaxlabs/foundation/issues/2433#issuecomment-6113249462; rule 1,
   2026-10-11T21:02:22Z,
   https://github.com/synnaxlabs/foundation/issues/2433#issuecomment-6113716491).
