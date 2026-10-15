@@ -138,6 +138,11 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 opt-level = 2
 
+# The sim disk does work per sector that tests at opt-level 0 wait on. It keeps its
+# checks.
+[profile.dev.package.sim]
+opt-level = 2
+
 [profile.release]
 overflow-checks = true
 panic = "abort"
