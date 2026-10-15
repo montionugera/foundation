@@ -38,3 +38,13 @@
   limit with the transport, a second value for each caller. Decided by
   `laptop.architect-2` (#2472, 2026-10-12T18:40:46Z):
   https://github.com/synnaxlabs/foundation/issues/2472#issuecomment-6130395959.
+  Amended (2026-10-12, #2214): `Transport::ended` returns `env::tasks::Ended`, and
+  `transport` exports no `Ended` of its own. The carrier's task spawns through one
+  `env::tasks::Group`. Decided by `laptop.architect-2` (item 5, 2026-10-09T21:02:50Z):
+  https://github.com/synnaxlabs/foundation/issues/2064#issuecomment-6089208454.
+  The `Transport` holds that group, and a `Client` counts no task. Decided by
+  `laptop.architect-2` (2026-10-12T21:18:22Z):
+  https://github.com/synnaxlabs/foundation/pull/2496#issuecomment-6132781202.
+  Supersedes the `pub struct Ended` of
+  https://github.com/synnaxlabs/foundation/issues/2017#issuecomment-6072912165
+  (`laptop.architect`, 2026-10-09T02:19:10Z).

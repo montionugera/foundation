@@ -23,6 +23,13 @@
   https://github.com/synnaxlabs/foundation/pull/2218#issuecomment-6093108453.
   Supersedes "no change to `env`" in
   https://github.com/synnaxlabs/foundation/pull/1944#issuecomment-6067043337.
+  Amended (2026-10-12, #2214): a driver of `tasks` does not count tasks to wait for
+  them to end, and a part that waits for its tasks uses `Group`. A driver of a test may
+  count the tasks it passes on, to check them. Supersedes "a driver of `tasks` that
+  counts tasks passes each task to one of theirs" of the #2063 amendment
+  (https://github.com/synnaxlabs/foundation/pull/2056#issuecomment-6073808019).
+  `laptop.architect-2` (2026-10-12T23:44:03Z):
+  https://github.com/synnaxlabs/foundation/pull/2496#issuecomment-6134761989.
   `clock::Clock`: monotonic time as `types::time::Monotonic`, and a `Sleep` future that
   resets without an allocation.
   `wall::Wall`: the OS wall clock, which only `clock` reads (a lint).
@@ -624,7 +631,13 @@
   and sets no access control list. A file that a write makes takes the entries that its
   directory gives to its new files, as each file that a tool makes there does. On macOS
   such an entry is then on the file, also when the file that it replaces had none, and
-  it can open the bytes to another user (measured on macOS 27.0.1, round 6 of #2424).
+  it can open the bytes to another user (measured on macOS 27.0.1, round 6 of #2424). On
+  Linux such an entry is on the file too, but the mode `0o600` of the open sets the mask
+  of the list to no access, so the entry gives its user nothing until the operator
+  widens the mask. A file that a tool makes there with a wider mode gets a wider mask
+  (measured on Linux 7.0.0-1013-aws, ext4, #2504; `laptop.architect-2`,
+  2026-10-12T20:42:03Z:
+  https://github.com/synnaxlabs/foundation/pull/2424#issuecomment-6132261488).
   The entry is the operator's (`docs/security.md`, "Other local user"). Lost: an empty
   list on the hidden file on macOS. `rustix` and `libc` give no call for it. A clear
   after the open leaves a time in which a user that the entry names opens the file, and
