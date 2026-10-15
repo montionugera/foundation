@@ -584,7 +584,7 @@ fn a_founding_of_another_version_or_form_is_refused() {
 fn a_power_cut_in_the_first_open_leaves_a_first_open() {
     let (mut cut_before, mut cut_after) = (0_usize, 0_usize);
     for step in 0..64 {
-        let mut sim = Sim::new(crate::common::simulation(step));
+        let mut sim = Sim::new(common::simulation(step));
         let node = sim.node(sim::node::Config::default());
         let region = sim
             .run_on(&node, |node, tasks| async move {
@@ -630,7 +630,7 @@ fn after_each_crash_before_the_founding_is_durable(
     for step in 0..960 {
         let span = Span::from_nanos(i64::try_from(step).unwrap().saturating_mul(5_000));
         let create = || {
-            let mut sim = Sim::new(crate::common::simulation(step));
+            let mut sim = Sim::new(common::simulation(step));
             let node = sim.node(sim::node::Config::default());
             let region = sim
                 .run_on(&node, |node, tasks| async move {
