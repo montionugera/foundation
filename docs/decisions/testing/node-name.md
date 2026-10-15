@@ -119,9 +119,16 @@
   opens no region, so it gives no error for that key. A start makes a new `node.key`
   only when the data directory has no directory of a mesh. A first start makes
   `node.key` durable before the mesh makes that directory, so a mesh directory with no
-  `node.key` is a lost key: the start gives `Error::NoCard` and writes nothing, also
-  with a file `name` and with `Region::Absent`. The claim checks it after the lock and
-  before the start writes a file. Lost: the claim reads the founding on each start and
+  `node.key` is a lost key: the start gives `Error::NoCard` and writes nothing other
+  than `lock` and `shards-<n>`, also with a file `name` and with `Region::Absent`. The
+  claim checks it after the claim of the data directory, which writes those two, and
+  before the start writes anything else. A `node.key` that a node did not write is
+  there, so the claim gives no `Error::Key`: the readers of its bytes give it,
+  `name::source` before the bind and `identity::load` after it (`laptop.architect-2`,
+  2026-10-12T23:51:07Z,
+  https://github.com/synnaxlabs/foundation/pull/2502#issuecomment-6134839475). Lost: the
+  claim reads and checks the key. Then the later reads keep a check that cannot fail.
+  Lost: the claim reads the founding on each start and
   gives `Error::NoCard` for each founding with no card of the node. It changes rule 7
   for a key with no card, which writes nothing, and reads a founding on each start to
   stop a write that only `load` makes. Lost: a new variant for a missing key. The state
