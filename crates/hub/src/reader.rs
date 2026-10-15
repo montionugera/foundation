@@ -114,7 +114,10 @@ impl<'a> Received<'a> {
     /// frame is safe at its target.
     #[must_use]
     pub fn position(&self) -> Position {
-        let position = self.lens.after(self.view.frame());
+        let position = Position {
+            index: self.lens.index,
+            live: self.lent.seqs.end,
+        };
         self.lent.given.set(Some(position.live));
         position
     }
@@ -126,7 +129,7 @@ impl<'a> Received<'a> {
     /// the same frame.
     #[must_use]
     pub fn gap(&self) -> Option<Range<u64>> {
-        let start = self.lens.seqs(self.view.frame()).start;
+        let start = self.lent.seqs.start;
         let from = self.lent.from;
         (from < start).then_some(from..start)
     }
@@ -173,16 +176,8 @@ impl Lens {
         }
     }
 
-    /// The position of the reader after `frame`, a frame of this lens's key set. The
+    /// The seqs of the index's samples in `frame`, a frame of this lens's key set. The
     /// mask holds the index, so the frame's range of its group is the view's.
-    fn after(&self, frame: &Frame) -> Position {
-        Position {
-            index: self.index,
-            live: self.seqs(frame).end,
-        }
-    }
-
-    /// The seqs of the index's samples in `frame`, a frame of this lens's key set.
     fn seqs(&self, frame: &Frame) -> Range<u64> {
         let range = frame
             .range(self.group)
@@ -369,8 +364,10 @@ struct Lent {
     /// The `live` of the last position that [`Received::position`] gave, or `None`
     /// before it gave one. The positions of a reader rise, so it is the highest.
     given: Cell<Option<u64>>,
-    /// The first live seq that the reader had not got before the frame that the last
-    /// [`Received`] lends: the start of its gap.
+    /// The seqs of the index in the frame that the last [`Received`] lends.
+    seqs: Range<u64>,
+    /// The first live seq that the reader had not got before that frame: the start of
+    /// its gap.
     from: u64,
 }
 
@@ -589,6 +586,7 @@ impl Reader {
                 Some(next) => mem::replace(next, seqs.end),
                 None => seqs.start,
             };
+            self.lent.seqs = seqs;
             let frame = self.frame.insert(frame);
             Ok(Received {
                 view: View::new(frame, &lens.mask),
