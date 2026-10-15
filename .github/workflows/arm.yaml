@@ -79,7 +79,7 @@ jobs:
             while sleep 1; do
               a=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
               [ "$a" -lt "$m" ] && m=$a && echo "$m" > "$RUNNER_TEMP/low"
-            done ) &
+            done ) > /dev/null 2>&1 &
           s=$(date +%s); status=0
           cargo test --workspace || status=$?
           echo "exit $status in $(( $(date +%s) - s )) s"
