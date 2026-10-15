@@ -1767,10 +1767,7 @@ mod tests {
 
     impl Cluster {
         fn new(seed: u64) -> Self {
-            let mut sim = Sim::new(sim::Config {
-                seed,
-                ..sim::Config::default()
-            });
+            let mut sim = Sim::new(crate::common::simulation(seed));
             let node = |_| sim.node(sim::node::Config::default());
             Self {
                 nodes: IDS.map(node).into(),
@@ -2289,10 +2286,7 @@ mod tests {
         seed: u64,
         body: impl FnOnce(sim::node::Node, Tasks) -> F + Send + 'static,
     ) {
-        let mut sim = Sim::new(sim::Config {
-            seed,
-            ..sim::Config::default()
-        });
+        let mut sim = Sim::new(crate::common::simulation(seed));
         let node = sim.node(sim::node::Config::default());
         sim.run_on(&node, body).unwrap();
     }
@@ -2669,7 +2663,7 @@ mod tests {
     fn solo_stored<F: Future<Output = ()> + 'static>(
         body: impl FnOnce(sim::node::Node, Tasks) -> F + Send + 'static,
     ) -> Vec<Entry> {
-        let mut sim = Sim::new(sim::Config::default());
+        let mut sim = Sim::new(crate::common::simulation(0));
         let node = sim.node(sim::node::Config::default());
         sim.run_on(&node, body).unwrap();
         sim.crash(&node, Crash::Power);
@@ -2874,10 +2868,7 @@ mod tests {
         fn a_position_in_an_answer_names_no_other_change_after_a_power_cut() {
             let mut reused = Vec::new();
             for seed in 0..16 {
-                let mut sim = Sim::new(sim::Config {
-                    seed,
-                    ..sim::Config::default()
-                });
+                let mut sim = Sim::new(crate::common::simulation(seed));
                 let node = sim.node(sim::node::Config::default());
                 let answered = sim
                     .run_on(&node, |node, tasks| async move {
@@ -4825,10 +4816,7 @@ mod tests {
         let mut lost = Vec::new();
         let mut gave = 0_usize;
         for run in 0..64 {
-            let mut sim = Sim::new(sim::Config {
-                seed: run,
-                ..sim::Config::default()
-            });
+            let mut sim = Sim::new(crate::common::simulation(run));
             let node = sim.node(sim::node::Config::default());
             sim.run_on(&node, |node, tasks| async move {
                 let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
@@ -5620,10 +5608,7 @@ mod tests {
         }
 
         fn create_sim(run: u64) -> (Sim, sim::node::Node) {
-            let mut sim = Sim::new(sim::Config {
-                seed: run,
-                ..sim::Config::default()
-            });
+            let mut sim = Sim::new(crate::common::simulation(run));
             let node = sim.node(sim::node::Config::default());
             (sim, node)
         }
@@ -5875,10 +5860,7 @@ mod tests {
         fn keeps_the_founding_and_the_log_through_a_power_cut_right_after() {
             let names = |names: &[&str]| Ok(names.iter().map(PathBuf::from).collect());
             for seed in 0..32 {
-                let mut sim = Sim::new(sim::Config {
-                    seed,
-                    ..sim::Config::default()
-                });
+                let mut sim = Sim::new(crate::common::simulation(seed));
                 let node = sim.node(sim::node::Config::default());
                 sim.run_on(&node, |node, tasks| async move {
                     let config = Config {
@@ -5909,10 +5891,7 @@ mod tests {
         #[test]
         fn keeps_a_directory_of_two_parts_in_its_parent_through_a_power_cut() {
             for seed in 0..32 {
-                let mut sim = Sim::new(sim::Config {
-                    seed,
-                    ..sim::Config::default()
-                });
+                let mut sim = Sim::new(crate::common::simulation(seed));
                 let node = sim.node(sim::node::Config::default());
                 sim.run_on(&node, |node, tasks| async move {
                     let files = node.files();
@@ -6415,7 +6394,7 @@ mod tests {
 
         impl Run {
             fn new() -> Self {
-                let mut sim = Sim::new(sim::Config::default());
+                let mut sim = Sim::new(crate::common::simulation(0));
                 let node = |_| sim.node(sim::node::Config::default());
                 Self {
                     nodes: MEMBERS.map(node).into(),
@@ -7147,7 +7126,7 @@ mod tests {
         // proposal, node 1 holds the whole log of node 2 after the next heartbeat.
         #[test]
         fn a_follower_that_cut_a_run_holds_the_whole_log_after_the_next_heartbeat() {
-            let mut sim = Sim::new(sim::Config::default());
+            let mut sim = Sim::new(crate::common::simulation(0));
             let nodes = [1, 2].map(|_| sim.node(sim::node::Config::default()));
             let bodies = Arc::new(Mutex::new(Vec::new()));
             for (node, id) in nodes.iter().zip([1, 2]) {

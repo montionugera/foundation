@@ -89,10 +89,7 @@ where
     M: Future<Output: Send + 'static> + 'static,
     P: Future<Output: Send + 'static> + 'static,
 {
-    let mut sim = Sim::new(sim::Config {
-        seed,
-        ..sim::Config::default()
-    });
+    let mut sim = Sim::new(common::simulation(seed));
     let nodes = [1, 2].map(|_| sim.node(sim::node::Config::default()));
     let at = SocketAddr::new(nodes[0].addresses()[0], PORT);
     let served = Arc::new(Mutex::new(None));

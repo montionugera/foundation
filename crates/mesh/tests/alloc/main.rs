@@ -48,7 +48,7 @@ fn main() {
 /// The allocations of a run that applies `count` definitions and reads the spec.
 fn applied(count: usize) -> u64 {
     let ((), allocations) = ALLOCATOR.count(|| {
-        let mut sim = Sim::new(sim::Config::default());
+        let mut sim = Sim::new(common::simulation(0));
         let node = sim.node(sim::node::Config::default());
         let ran = sim.run_on(&node, move |node, tasks| async move {
             let mesh = Mesh::open(create_config(&node, &tasks).await)

@@ -861,10 +861,7 @@ mod tests {
     }
 
     fn create_node(seed: u64) -> (Sim, sim::node::Node) {
-        let mut sim = Sim::new(sim::Config {
-            seed,
-            ..sim::Config::default()
-        });
+        let mut sim = Sim::new(crate::common::simulation(seed));
         let node = sim.node(sim::node::Config::default());
         (sim, node)
     }
@@ -3192,7 +3189,7 @@ mod tests {
 
     /// A node whose disk holds `disk_bytes`.
     fn create_small_node(disk_bytes: u64) -> (Sim, sim::node::Node) {
-        let mut sim = Sim::new(sim::Config::default());
+        let mut sim = Sim::new(crate::common::simulation(0));
         let node = sim.node(sim::node::Config {
             disk_bytes,
             ..sim::node::Config::default()
@@ -3582,6 +3579,8 @@ mod tests {
     // can be lost when the record after them is not.
     #[test]
     fn a_power_cut_keeps_no_bytes_of_a_stopped_write_after_a_record() {
+        // 10 times the most turns of 1 µs before the write starts in a correct run.
+        const TURNS: u32 = 7_280;
         let mut kept = [0, 0];
         for run in 0..128 {
             let (mut sim, node) = create_node(run);
@@ -3597,8 +3596,14 @@ mod tests {
                 pending::<()>().await;
             });
             drop(handle.unwrap());
+            let mut turns = 0_u32;
             while phase.load(Ordering::Relaxed) == 0 {
+                assert!(
+                    turns < TURNS,
+                    "run {run}: the write starts in {TURNS} turns"
+                );
                 sim.run_for(Span::from_nanos(1_000)).unwrap();
+                turns += 1;
             }
             sim.run_for(Span::from_nanos(2_000 * i64::try_from(run).unwrap()))
                 .unwrap();

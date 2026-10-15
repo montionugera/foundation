@@ -26,6 +26,11 @@ use crate::member::Member;
 use crate::status::Status;
 use crate::ticket::{Options, Ticket, Voter};
 
+#[path = "../tests/common/steps.rs"]
+mod steps;
+
+pub(crate) use steps::simulation;
+
 /// The term of each message.
 pub(crate) const TERM: Term = Term(5);
 
