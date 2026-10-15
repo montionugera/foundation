@@ -149,7 +149,7 @@ _Static_assert(UA_DATATYPEKINDS == 31 && UA_DATATYPEKIND_STRING == 11 &&
                    UA_DATATYPEKIND_STRUCTURE == 27 && UA_DATATYPEKIND_OPTSTRUCT == 28 &&
                    UA_DATATYPEKIND_UNION == 29 &&
                    UA_DATATYPEKIND_BITFIELDCLUSTER == 30,
-               "UA_DataTypeKind changed");
+               "UA_DataTypeKind changed: change ffi::KINDS and value::NAMES too");
 _Static_assert(UA_TYPES_BYTESTRING == 14, "UA_TYPES_BYTESTRING moved");
 _Static_assert(UA_TYPES_VARIANT == 23, "UA_TYPES_VARIANT moved");
 _Static_assert(UA_NS0ID_SERVER_SERVERSTATUS_CURRENTTIME == 2258,
