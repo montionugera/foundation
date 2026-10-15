@@ -151,9 +151,10 @@ again once to prove that the failure replays (r16 59).
 - **A test may check what another test checks.** "No defense in depth" in `CLAUDE.md`
   is about guards in production code. It is no reason to refuse an assertion in a test
   or a benchmark because another test catches the same change.
-- **Assert through the public calls of the type.** A read of a private field, or a
-  compare of the `Debug` string of the type under test, checks private state: a new
-  field breaks the test while the behavior stays. Use one only with a written reason.
+- **Assert through the public calls of the type or module.** A read of a private field,
+  a private call (above), or a compare of the `Debug` string of the type under test,
+  checks private state: a new field or a split function breaks the test while the
+  behavior stays. Use one only with a written reason.
   The output of a hand-written `Debug` impl is the behavior of that impl, and `fmt` is
   its public call: a compare of that output, as the test of that impl, needs no reason,
   and may be the only kill of its mutants.

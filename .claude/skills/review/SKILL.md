@@ -125,6 +125,9 @@ Launch in parallel every reviewer the PR needs:
 | A flagged oracle weakening | add one `reviewer` per weakening, told to argue for fixing the code instead |
 | A change to a file under `patches/` | give `reviewer` and `breaker` LOCAL PATCHES in `docs/decisions/releases/local-patches.md` and "Local patches" in `docs/dependencies.md` |
 
+When the `reviewer` report of a round 1 with no `architecture` agent names an item on
+its `Build or use:` line, also run `architecture` on the PR.
+
 When the PR changes a public surface or a crate's dependencies, also send its link to
 the crate's architect (`docs/factory.md`), which reviews it before the person. A public
 surface change includes a change to what a public item accepts, returns, or states in
@@ -267,6 +270,8 @@ Findings: <count, or none>
 <the findings, most severe first; in round 3, each with its mark: `defect`,
 `design flaw`, or no mark>
 
+Revert: <the `Revert:` line of the `reviewer` report>
+
 Text fixes:
 <each item and its exact new text, or a Low item's place and problem; leave out this
 line and its items when none>
@@ -319,9 +324,10 @@ nothing checked again. So when round 1 led to fix commits:
    changed no code, and checks it (`.claude/agents/reviewer.md`). The round comment puts
    each deferral that its report names on its `Deferred:` line. Its report gives the
    `Public surface:`, `Hot path:`, and `Build or use:` lines for the range. The round
-   comment adds each item of the first to its own `Public surface:` line, and copies the
-   second. When the `Hot path:` line names a function, run `performance` again on the
-   range, and update the Performance section with its numbers.
+   comment adds each item of the first to its own `Public surface:` line, copies the
+   second, and copies the third after its findings. When the `Hot path:` line names a
+   function, run `performance` again on the range, and update the Performance section
+   with its numbers.
 2. Handle their findings as above. A round that has a finding gets another round, up to
    round 3 (Round cap). A finding in text only (a `.md` file, a `.rs` comment line that,
    trimmed, starts with `//` and is not a doctest line, the PR title or body, an end
