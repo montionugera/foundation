@@ -9,7 +9,7 @@ use env::entropy::Driver as _;
 use env::paths::{Error, Found, names_directory};
 use rustix::io::Errno;
 
-use crate::entropy;
+use crate::{dir, entropy};
 
 #[derive(Debug)]
 pub(crate) struct Driver;
@@ -29,8 +29,8 @@ fn read(path: &Path, most: usize) -> io::Result<Found> {
     let file = File::open(path)?;
     if file.metadata()?.is_dir() {
         let (mut entries, mut size) = (Vec::new(), 0_usize);
-        for entry in fs::read_dir(path)? {
-            let entry = path.join(entry?.file_name());
+        for name in dir::names(file)? {
+            let entry = path.join(name?);
             size = size.saturating_add(entry.as_os_str().len());
             if size > most {
                 return Ok(Found::Large);

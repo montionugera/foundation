@@ -687,3 +687,22 @@
   https://github.com/synnaxlabs/foundation/issues/1930#issuecomment-6128674782;
   2026-10-12T18:18:49Z:
   https://github.com/synnaxlabs/foundation/issues/1930#issuecomment-6130043360).
+  Amended (2026-10-12T19:51:51Z, #2481): a read goes through one open of its path. `os`
+  lists a directory through the handle of that open (`rustix::fs::Dir::new`), so a later
+  rename or replace at the path does not change what it reads. A directory that is
+  removed after the open lists no entries. Lost: `Dir::read_from`, which makes a second
+  open through the handle; a check of the device and inode after a second open by name,
+  with a retry (`laptop.architect-2`, 2026-10-12T19:51:51Z:
+  https://github.com/synnaxlabs/foundation/issues/2481#issuecomment-6131521237). The doc
+  promises the one open, not what the open gives: on Linux 7.0 ext4, the kernel's open
+  of a symbolic link that a rename swaps can give the directory that holds the link
+  (#2490). `a_read_of_a_path_that_swaps_a_directory_for_a_file_gives_one_of_them`
+  matches only the variant of the read, so #2490 does not make it flake. A later change
+  must not make it assert which directory it read. Lost: a path walk of our own, which
+  copies the kernel's rules as a second guard for a defect that is not ours; a check of
+  the handle's device and inode against a `stat` of the path after the open, with a
+  retry, which cannot tell a swap from the defect (`laptop.architect-2`,
+  2026-10-12T20:23:51Z:
+  https://github.com/synnaxlabs/foundation/pull/2486#issuecomment-6131997012).
+  Supersedes "It reads what `path` names at its open" of item 2 of
+  https://github.com/synnaxlabs/foundation/issues/2481#issuecomment-6131521237.
