@@ -61,9 +61,10 @@ fn first_shrink() -> u32 {
 /// S4: each path keeps at most 454 bytes, and room for four paths when there are fewer,
 /// of which 8 bytes are the room of its place in the queue of laps that wait, taken
 /// when the path is added. [`wait`] checks the bound in a wait. A carry record takes
-/// the tail of each of `paths` paths, and a trim to it leaves each with no run. The holder items of the two records, 4 bytes each in a
-/// deque that doubles, are a term of S4 per record and path. At 3585 paths the map of
-/// places is at its least load, and at 4097 the vector of logs.
+/// the tail of each of `paths` paths, and a trim to it leaves each with no run. The
+/// holder items of the two records, 4 bytes each in a deque that doubles, are a term of
+/// S4 per record and path. At 3585 paths the map of places is at its least load, and at
+/// 4097 the vector of logs.
 fn per_path(paths: u32) {
     let before = ALLOCATOR.held();
     let mut logs = buffer::bench::Logs::new(paths);
@@ -81,11 +82,11 @@ fn per_path(paths: u32) {
     drop(logs);
 }
 
-/// A read that holds 16 records keeps 17 runs of each of 100,000 paths, in room for
-/// 32. Then no read holds a record. Each commit trims 100,000 runs, so the commit at
-/// the end of the next lap shrinks the room of 25,256 paths to 4, and the others wait
-/// in the queue, in room that it took when each path was added. Gives the bytes that
-/// each of that commit and the next 3 takes, and checks the S4 bound of each path in the
+/// A read that holds 16 records keeps 17 runs of each of 100,000 paths, in room for 32.
+/// Then no read holds a record. Each commit trims 100,000 runs, so the commit at the
+/// end of the next lap shrinks the room of 25,256 paths to 4, and the others wait in
+/// the queue, in room that it took when each path was added. Gives the bytes that each
+/// of that commit and the next 3 takes, and checks the S4 bound of each path in the
 /// wait: the bytes held but the room of the runs. Then a read holds the next 16
 /// records, and checks that a path that waited shrinks at a later lap end.
 fn wait() -> Vec<isize> {
