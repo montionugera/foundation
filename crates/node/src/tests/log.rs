@@ -122,7 +122,8 @@ fn a_node_that_fails_at_its_start_logs_the_error_with_no_mesh_time() {
     let error = "the name @edge has a segment that starts with `@`, which is reserved \
                  for Foundation; give another name";
     let text = format!(
-        "2026-01-01T00:00:00.000000Z ERROR node: stopped error=\"{error}\" mesh_time=none"
+        "2026-01-01T00:00:00.000000Z ERROR node: stopped error=\"{error}\" \
+         mesh_time=none"
     );
     let json = format!(
         concat!(
@@ -147,8 +148,8 @@ fn a_node_that_fails_at_its_start_logs_the_error_with_no_mesh_time() {
 #[test]
 fn a_wall_step_shows_mesh_time_beside_the_stamp() {
     let text = [
-        "2026-01-01T00:00:00.004198Z INFO node: started name=edge address=10.0.0.1:7000 \
-         shards=4",
+        "2026-01-01T00:00:00.004198Z INFO node: started name=edge \
+         address=10.0.0.1:7000 shards=4",
         "2026-01-01T00:00:03.000004Z INFO node: stopped \
          mesh_time=2026-01-01T00:00:01.000004Z",
     ];
@@ -253,7 +254,14 @@ fn written(json: bool, events: impl FnOnce()) -> String {
 /// The line of an event with `field` and other fields.
 fn line(json: bool, field: &str) -> String {
     written(json, || {
-        tracing::info!(target: "test", field, count = 3_u64, delta = -2_i64, ok = true, "a\nb");
+        tracing::info!(
+            target: "test",
+            field,
+            count = 3_u64,
+            delta = -2_i64,
+            ok = true,
+            "a\nb"
+        );
     })
 }
 
@@ -262,8 +270,9 @@ fn a_newline_and_a_backslash_in_a_field_stay_on_one_line() {
     assert_eq!(
         line(false, "x\ny\\z\"q"),
         concat!(
-            r#"2026-01-01T00:00:00.000000Z INFO test: a\nb field="x\ny\\z\"q" count=3 "#,
-            "delta=-2 ok=true mesh_time=none\n",
+            r#"2026-01-01T00:00:00.000000Z INFO test: a\nb "#,
+            r#"field="x\ny\\z\"q" count=3 delta=-2 ok=true mesh_time=none"#,
+            "\n",
         )
     );
     assert_eq!(
