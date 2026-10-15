@@ -1896,24 +1896,30 @@ fn an_open_of_a_fit_layout_makes_a_file_of_at_most_its_length() {
     }
 }
 
-/// An entry of the pool's largest block: `newest` lets go of the table first.
+/// An entry of the pool's largest block, written under a larger pool: `newest` lets
+/// go of the table first.
 #[test]
 fn newest_gives_an_entry_of_the_largest_block() {
     run(188, |mut shard| async move {
         let largest = 1 << 17;
         let fits = shard.block(largest);
+        let ring = least(600_000);
+        let mut slots = Slots::new();
+        let buffer = shard.open(ring, &mut slots).await.expect("opens");
+        assert!(buffer.block_max() >= largest);
+        let a = slots.index(key(1));
+        buffer
+            .append([tagged(1, a, Path::Live, 0, 1, fits)])
+            .expect("queues");
+        buffer.committed().await.expect("commits");
+        drop(buffer);
         let budget = u64::try_from(block::footprint(largest)).expect("fits in u64");
         let config = block::Config::new(budget).expect("the budget fits");
         shard.pool =
             Rc::new(Pool::new(config.clone(), Heap::new(config.reservation())));
         assert_eq!(shard.pool.largest(), largest);
         let mut slots = Slots::new();
-        let buffer = shard.open(least(600_000), &mut slots).await.expect("opens");
-        let a = slots.index(key(1));
-        buffer
-            .append([tagged(1, a, Path::Live, 0, 1, fits)])
-            .expect("queues");
-        buffer.committed().await.expect("commits");
+        let buffer = shard.open(ring, &mut slots).await.expect("reopens");
         let found = buffer.newest(Path::Live, NonZeroU8::MIN).await;
         let lens =
             found.map(|f| f.iter().map(|(_, s)| s.bytes.len()).collect::<Vec<_>>());
