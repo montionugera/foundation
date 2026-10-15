@@ -137,6 +137,9 @@ A connector implies the status channels under its name, such as `plc.status.stat
 and a channel for each count of its kind, such as `plc.status.in`. The note names the
 definitions that the first start made, which no file holds.
 
+The node does not enforce the rules for each channel yet. A program that the node
+admits reads and writes each channel.
+
 Apply exactly that plan:
 
 ```sh
