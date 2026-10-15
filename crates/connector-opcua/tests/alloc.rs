@@ -230,7 +230,7 @@ fn a_write_of_a_frame_of_any_type_allocates_nothing() {
         &[Scalar::F64],
     ];
     for scalars in widths {
-        let writes = kind::writes(64, scalars, 100, |work| ALLOCATOR.count(work).1);
+        let writes = kind::writes(64, scalars, 100, |work| ALLOCATOR.count(work).1).0;
         assert_eq!(writes[20..], [0; 80], "writes 21 to 100 of {scalars:?}");
     }
 }

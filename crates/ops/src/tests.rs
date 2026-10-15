@@ -9,10 +9,10 @@ use std::task::{Context, Poll, Waker};
 use document::Source;
 use serde_json::{Map, Value, json};
 
-use crate::error::{Action, Error, On, Unread};
-use crate::front_end;
+use crate::error::{Action, Among, Error, On, Unread};
 use crate::operation::{self, Response, TABLE};
 use crate::{FrontEnd, FrontEnds};
+use crate::{front_end, plan};
 
 /// The fix of `ops.argument`.
 const HELP: &str =
@@ -193,16 +193,78 @@ fn json_output_parses_back_to_the_typed_output() {
     }
 }
 
+/// The commit of `HEAD` that `git` reads here, or `None` when it fails.
+fn head() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8(output.stdout).expect("UTF-8");
+    output.status.success().then(|| text.trim().to_owned())
+}
+
 #[test]
-fn version_prints_the_crate_version() {
-    let version = env!("CARGO_PKG_VERSION");
-    let text = cli(&["version"]);
-    assert_eq!(
-        (text.status, text.stdout.as_str()),
-        (0, format!("{version}\n").as_str())
-    );
+fn version_prints_the_crate_version_and_the_commit() {
+    let commit = head();
     let json = cli(&["version", "--json"]);
-    assert_eq!(json.stdout, format!("{{\"version\":\"{version}\"}}\n"));
+    let output: Value = serde_json::from_str(&json.stdout).expect("json");
+    assert_eq!(
+        output,
+        json!({ "version": env!("CARGO_PKG_VERSION"), "commit": commit })
+    );
+    let commit = commit.as_deref().map_or("unknown", |commit| &commit[..12]);
+    let line = format!("{} ({commit})\n", env!("CARGO_PKG_VERSION"));
+    assert_eq!((cli(&["version"]).stdout, json.status), (line, 0));
+}
+
+#[test]
+fn version_gives_no_commit_when_the_build_reads_none() {
+    let built = "0123456789abcdef0123456789abcdef01234567";
+    assert_eq!(
+        (
+            crate::operation::commit(""),
+            crate::operation::commit(built)
+        ),
+        (None, Some(built.to_owned()))
+    );
+}
+
+#[test]
+fn the_version_flag_runs_the_operation_version() {
+    for (flag, operation) in [
+        (&["--version"][..], &["version"][..]),
+        (&["--version", "--json"], &["version", "--json"]),
+        (&["-V"], &["version"]),
+    ] {
+        assert_eq!(cli(flag), cli(operation), "{flag:?}");
+    }
+}
+
+#[test]
+fn version_writes_twelve_digits_of_the_commit_or_unknown() {
+    let commit = "8e29d7d536cd11b8243439baa91128f6ed9ee497";
+    let output = |commit: Option<&str>| {
+        Response::Version(operation::Version {
+            version: "0.0.0".to_owned(),
+            commit: commit.map(str::to_owned),
+        })
+    };
+    let built = output(Some(commit));
+    assert_eq!(
+        (built.text(), built.json()),
+        (
+            "0.0.0 (8e29d7d536cd)\n".to_owned(),
+            json!({ "version": "0.0.0", "commit": commit })
+        )
+    );
+    let unknown = output(None);
+    assert_eq!(
+        (unknown.text(), unknown.json()),
+        (
+            "0.0.0 (unknown)\n".to_owned(),
+            json!({ "version": "0.0.0", "commit": null })
+        )
+    );
 }
 
 #[test]
@@ -303,7 +365,7 @@ fn a_text_error_writes_control_characters_as_escapes() {
             cli(&[name]).stderr,
             format!(
                 "error[ops.unknown-operation]: no operation is named `{escaped}`\n\
-                 fix: Use a name from `foundation docs`\n"
+                 fix: Use a name from `foundation --help`\n"
             )
         );
     }
@@ -318,7 +380,7 @@ fn a_json_error_keeps_the_callers_text() {
         json!({ "errors": [{
             "code": "ops.unknown-operation",
             "message": "no operation is named `\u{1b}x`",
-            "fix": "Use a name from `foundation docs`",
+            "fix": "Use a name from `foundation --help`",
             "notes": [],
         }] })
     );
@@ -357,7 +419,7 @@ fn help_for_a_command_matches_its_help_flag() {
 }
 
 #[test]
-fn help_for_a_name_that_is_not_a_command_is_unknown() {
+fn help_for_a_name_that_is_not_a_command_is_unknown_and_help_of_help_is_help() {
     assert_eq!(
         cli(&["help", "versoin"]),
         failed(
@@ -366,12 +428,15 @@ fn help_for_a_name_that_is_not_a_command_is_unknown() {
         )
     );
     assert_eq!(
-        cli(&["help", "help"]),
+        cli(&["help", "zzz"]),
         failed(
-            "error[ops.unknown-operation]: no operation is named `help`\n\
-             fix: Use a name from `foundation docs`\n"
+            "error[ops.unknown-operation]: no operation is named `zzz`\n\
+             fix: Use a name from `foundation --help`\n"
         )
     );
+    let help = cli(&["help", "help"]);
+    assert_eq!(help.status, 0);
+    assert_eq!(help, cli(&["help", "--help"]));
 }
 
 #[test]
@@ -431,19 +496,23 @@ fn an_unknown_operation_suggests_the_closest_name() {
 }
 
 #[test]
-fn an_unknown_operation_far_from_every_name_points_to_the_docs() {
-    let expected = json!({ "errors": [{ "code": "ops.unknown-operation",
-        "message": "no operation is named `zzz`",
-        "fix": "Use a name from `foundation docs`", "notes": [] }] });
+fn an_unknown_operation_far_from_every_name_points_to_the_list_of_its_carrier() {
+    let expected = |fix| {
+        json!({ "errors": [{ "code": "ops.unknown-operation",
+            "message": "no operation is named `zzz`", "fix": fix, "notes": [] }] })
+    };
     assert_eq!(
         call(&json!({ "name": "zzz" })),
-        failed_call("no operation is named `zzz`", &expected)
+        failed_call(
+            "no operation is named `zzz`",
+            &expected("Use a name from `tools/list`")
+        )
     );
     let exit = cli(&["zzz", "--json"]);
     assert_eq!((exit.status, exit.stdout.as_str()), (2, ""));
     assert_eq!(
         serde_json::from_str::<Value>(&exit.stderr).expect("json"),
-        expected
+        expected("Use a name from `foundation --help`")
     );
 }
 
@@ -482,6 +551,7 @@ fn every() -> Vec<Error> {
         Error::Unknown {
             name: String::new(),
             closest: None,
+            among: Among::Commands,
         },
         Error::Input {
             message: String::new(),
@@ -533,7 +603,7 @@ fn error_codes_and_fixes_match_the_golden_file() {
     let every = every();
     for error in &every {
         // A new variant fails this match, so it joins `every` and the golden file.
-        // `Config` holds the codes of the front ends, of `config`, and the one below.
+        // `Config` holds the codes of the front ends, of `config`, and the ones below.
         // `Node` holds the codes of `node`, and `Remote` the codes of a reply.
         match error {
             Error::Argument { .. }
@@ -571,7 +641,8 @@ fn error_codes_and_fixes_match_the_golden_file() {
     );
     let unknown = front_end::unknown(Source(0), &front_ends);
     let not_utf8 = front_end::not_utf8(Path::new("plant.yaml"));
-    for diagnostic in [unknown, not_utf8] {
+    let unresolved = plan::unresolved(None, String::new());
+    for diagnostic in [unknown, not_utf8, unresolved] {
         lines.push(format!("{}\t{}\n", diagnostic.code, diagnostic.fix));
     }
     let codes: BTreeSet<_> = lines.iter().map(|line| line.split('\t').next()).collect();
@@ -1102,7 +1173,7 @@ mod mcp {
             assert_eq!(
                 ask(&request(json!(1), "tools/call", json!({ "name": name })))["error"]
                     ["data"]["errors"][0]["fix"],
-                "Use a name from `foundation docs`",
+                "Use a name from `tools/list`",
                 "{name}"
             );
         }

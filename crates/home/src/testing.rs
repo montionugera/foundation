@@ -30,8 +30,8 @@ pub struct Env {
 /// It makes a ring of 4 MiB when `shard-0` holds none, and opens the one there
 /// otherwise. A write waits at most 10 ms for its commit to start, and longer while an
 /// earlier commit runs. A commit takes whole 4 KiB blocks, and nothing frees the ring
-/// until #160, so a new ring fills at 1023 commits of one frame of a stamp and an `i64`
-/// sample.
+/// until #160, so a new ring fills after about a thousand commits of one frame of a
+/// stamp and an `i64` sample.
 ///
 /// # Panics
 ///
@@ -234,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn fills_a_new_ring_at_1023_one_frame_commits() {
+    fn fills_a_new_ring_at_1020_one_frame_commits() {
         let commits = run(
             sim::node::Config::default(),
             |_, mut shard, mut interner, now| async move {
@@ -249,7 +249,7 @@ mod tests {
             },
         );
 
-        assert_eq!(commits, 1023);
+        assert_eq!(commits, 1020);
     }
 
     #[test]
@@ -282,7 +282,7 @@ mod tests {
             .expect("the run ends");
 
         // The 10 commits before the open keep their blocks.
-        assert!(commits <= 1023 - 10, "{commits}");
+        assert!(commits <= 1020 - 10, "{commits}");
     }
 
     #[test]

@@ -375,6 +375,136 @@ fn a_writer_opens_on_the_new_index_when_the_old_one_moves_away_during_its_home_w
     });
 }
 
+/// A writer whose channel a spec in use moves while it waits for the home of an index
+/// that never gets one opens on the new index once that index has its home.
+#[test]
+fn a_writer_opens_on_the_new_index_when_the_old_one_never_gets_a_home() {
+    run(40, |test| async move {
+        let mut opening = pin!(test.hub.writer(config("a", &["value"])));
+        assert!(poll_once(opening.as_mut()).is_pending());
+        let mut moved = channels();
+        moved.insert(name("value"), definition(2, DataType::Sample(I64), 3));
+        test.set_spec(moved).await;
+        test.set_home(TIME_B, NODE).await;
+        test.clock.sleep(Span::SECOND).await;
+        let Poll::Ready(opened) = poll_once(opening.as_mut()) else {
+            panic!("the open still waits for time, an index it no longer writes");
+        };
+        let mut writer = opened.expect("opens");
+        let names = ["value"];
+        let mut reader = test
+            .hub
+            .reader(unnamed(&names, reader::Mode::Latest))
+            .await
+            .expect("opens");
+        let now = test.now();
+        write_series(&mut writer, &[(3, &[now]), (2, &[7])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(keys(&received), [3, 2]);
+    });
+}
+
+/// As above, for a reader.
+#[test]
+fn a_reader_opens_on_the_new_index_when_the_old_one_never_gets_a_home() {
+    run(41, |test| async move {
+        let names = ["value"];
+        let mut reading = pin!(test.hub.reader(unnamed(&names, reader::Mode::Latest)));
+        assert!(poll_once(reading.as_mut()).is_pending());
+        let mut moved = channels();
+        moved.insert(name("value"), definition(2, DataType::Sample(I64), 3));
+        test.set_spec(moved).await;
+        test.set_home(TIME_B, NODE).await;
+        test.clock.sleep(Span::SECOND).await;
+        let Poll::Ready(opened) = poll_once(reading.as_mut()) else {
+            panic!("the open still waits for time, an index it no longer reads");
+        };
+        let mut reader = opened.expect("opens");
+        let mut writer = test.writer("a", &["value"]).await;
+        let now = test.now();
+        write_series(&mut writer, &[(3, &[now]), (2, &[7])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(keys(&received), [3, 2]);
+    });
+}
+
+/// A writer that waits for the home of an index that never gets one fails at once
+/// with `Unknown` when a spec in use removes its channel.
+#[test]
+fn a_writer_fails_when_its_channel_is_removed_while_it_waits_for_a_home() {
+    run(42, |test| async move {
+        let mut opening = pin!(test.hub.writer(config("a", &["value"])));
+        assert!(poll_once(opening.as_mut()).is_pending());
+        test.set_spec(without(&["value"])).await;
+        let Poll::Ready(opened) = poll_once(opening.as_mut()) else {
+            panic!("the open still waits for the home of time");
+        };
+        let error = opened.expect_err("value was removed");
+        assert_eq!(error, writer::Error::Unknown(name("value")));
+    });
+}
+
+/// A reader that waits for the home of an index that never gets one fails at once
+/// with `Empty` when a spec in use removes its one channel.
+#[test]
+fn a_reader_fails_when_its_one_channel_is_removed_while_it_waits_for_a_home() {
+    run(43, |test| async move {
+        let names = ["value"];
+        let mut reading = pin!(test.hub.reader(unnamed(&names, reader::Mode::Latest)));
+        assert!(poll_once(reading.as_mut()).is_pending());
+        test.set_spec(without(&["value"])).await;
+        let Poll::Ready(opened) = poll_once(reading.as_mut()) else {
+            panic!("the open still waits for the home of time");
+        };
+        let error = opened.expect_err("value was removed");
+        assert_eq!(error, reader::Error::Empty);
+    });
+}
+
+/// A reader whose names match a channel that a spec in use adds on its index while it
+/// waits for the home opens on that channel too.
+#[test]
+fn a_reader_opens_on_a_channel_added_while_it_waits_for_a_home() {
+    run(45, |test| async move {
+        let names = ["value", "value-x"];
+        let mut reading = pin!(test.hub.reader(unnamed(&names, reader::Mode::Latest)));
+        assert!(poll_once(reading.as_mut()).is_pending());
+        let mut added = channels();
+        added.insert(name("value-x"), definition(9, DataType::Sample(I64), 1));
+        test.set_spec(added).await;
+        assert!(poll_once(reading.as_mut()).is_pending());
+        test.set_home(TIME, NODE).await;
+        let mut reader = reading.await.expect("opens on value and value-x");
+        let mut writer = test.writer("a", &names).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (2, &[7]), (9, &[8])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(keys(&received), [1, 2, 9]);
+        assert_eq!(samples(&received, 9), [8]);
+    });
+}
+
+/// A reader of two channels on one index, one of which a spec in use removes while it
+/// waits for the home, opens on the other.
+#[test]
+fn a_reader_opens_on_the_channel_left_when_one_is_removed_while_it_waits_for_a_home() {
+    run(44, |test| async move {
+        let names = ["value", "value-c"];
+        let mut reading = pin!(test.hub.reader(unnamed(&names, reader::Mode::Latest)));
+        assert!(poll_once(reading.as_mut()).is_pending());
+        test.set_spec(without(&["value"])).await;
+        assert!(poll_once(reading.as_mut()).is_pending());
+        test.set_home(TIME, NODE).await;
+        let mut reader = reading.await.expect("opens on value-c");
+        let mut writer = test.writer("a", &["value-c"]).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (5, &[7])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(keys(&received), [1, 5]);
+        assert_eq!(samples(&received, 5), [7]);
+    });
+}
+
 /// A session that waits for the home of its index opens on the sample type that a
 /// call gave its channel meanwhile, on the slot of the new definition: a session that
 /// opens after the wait sees its frames.
@@ -846,4 +976,122 @@ fn stops_an_open_on_a_stopped_mesh_with_failed() {
         serve::Error::Mesh(stopped.clone()).to_string(),
         format!("the mesh stopped: {stopped}")
     );
+}
+
+#[test]
+fn a_waiting_writer_fails_on_a_spec_in_use_that_came_before_its_home() {
+    run(46, |test| async move {
+        let mut opening = pin!(test.hub.writer(config("a", &["value"])));
+        assert!(poll_once(opening.as_mut()).is_pending());
+        test.pause.pause();
+        test.set_spec(without(&["value"])).await;
+        test.set_home(TIME, NODE).await;
+        let Poll::Ready(opened) = poll_once(opening.as_mut()) else {
+            panic!("the open still waits");
+        };
+        let fresh = poll_once(test.hub.writer(config("b", &["value"])));
+        let Poll::Ready(Err(fresh)) = fresh else {
+            panic!("an open at that instant does not fail");
+        };
+        assert_eq!(fresh, writer::Error::Unknown(name("value")));
+        match opened {
+            Ok(_) => {
+                panic!("the waiting writer opened on value, which the spec removed")
+            }
+            Err(error) => assert_eq!(error, writer::Error::Unknown(name("value"))),
+        }
+    });
+}
+
+#[test]
+fn a_waiting_reader_matches_a_channel_of_a_spec_in_use_before_its_home() {
+    run(47, |test| async move {
+        let names = ["value", "value-x"];
+        let mut reading = pin!(test.hub.reader(unnamed(&names, reader::Mode::Latest)));
+        assert!(poll_once(reading.as_mut()).is_pending());
+        test.pause.pause();
+        let mut added = channels();
+        added.insert(name("value-x"), definition(9, DataType::Sample(I64), 1));
+        test.set_spec(added).await;
+        test.set_home(TIME, NODE).await;
+        let Poll::Ready(opened) = poll_once(reading.as_mut()) else {
+            panic!("the open still waits");
+        };
+        let mut reader = opened.expect("opens");
+        test.pause.resume();
+        let mut writer = test.writer("a", &names).await;
+        let now = test.now();
+        write_series(&mut writer, &[(1, &[now]), (2, &[7]), (9, &[8])]);
+        let received = reader.next().await.expect("a frame");
+        assert_eq!(keys(&received), [1, 2, 9]);
+    });
+}
+
+#[test]
+fn a_writer_woken_by_a_removal_opens_on_a_spec_in_use_that_adds_its_channel_back() {
+    run(48, |test| async move {
+        let mut opening = pin!(test.hub.writer(config("a", &["value"])));
+        assert!(poll_once(opening.as_mut()).is_pending());
+        test.pause.pause();
+        test.set_spec(without(&["value"])).await;
+        let removed = poll_once(test.hub.writer(config("b", &["value"])));
+        let Poll::Ready(Err(removed)) = removed else {
+            panic!("an open on a removed channel does not fail");
+        };
+        assert_eq!(removed, writer::Error::Unknown(name("value")));
+        test.set_spec(channels()).await;
+        test.set_home(TIME, NODE).await;
+        let Poll::Ready(opened) = poll_once(opening.as_mut()) else {
+            panic!("the open still waits");
+        };
+        opened.expect("opens on value, which the spec in use defines");
+        let fresh = poll_once(test.hub.writer(config("c", &["value"])));
+        assert!(matches!(fresh, Poll::Ready(Ok(_))), "a fresh open opens");
+    });
+}
+
+#[test]
+fn a_reader_woken_by_a_removal_opens_on_a_spec_in_use_that_adds_its_channel_back() {
+    run(49, |test| async move {
+        let latest = || unnamed(&["value"], reader::Mode::Latest);
+        let mut reading = pin!(test.hub.reader(latest()));
+        assert!(poll_once(reading.as_mut()).is_pending());
+        test.pause.pause();
+        test.set_spec(without(&["value"])).await;
+        let removed = poll_once(test.hub.reader(latest()));
+        let Poll::Ready(Err(removed)) = removed else {
+            panic!("an open on a removed channel does not fail");
+        };
+        assert_eq!(removed, reader::Error::Empty);
+        test.set_spec(channels()).await;
+        test.set_home(TIME, NODE).await;
+        let Poll::Ready(opened) = poll_once(reading.as_mut()) else {
+            panic!("the open still waits");
+        };
+        opened.expect("opens on value, which the spec in use defines");
+        let fresh = poll_once(test.hub.reader(latest()));
+        assert!(matches!(fresh, Poll::Ready(Ok(_))), "a fresh open opens");
+    });
+}
+
+#[test]
+fn a_writer_waiting_for_mesh_time_opens_on_a_spec_in_use_that_moves_its_channel() {
+    unsynced(50, |mut test| async move {
+        test.set_home(TIME_B, NODE).await;
+        let hub = test.hub.clone();
+        let mut opening = pin!(hub.writer(config("a", &["value"])));
+        assert!(poll_once(opening.as_mut()).is_pending());
+        test.pause.pause();
+        let mut moved = channels();
+        moved.insert(name("value"), definition(2, DataType::Sample(I64), 3));
+        test.set_spec(moved).await;
+        test.sync().await;
+        test.clock.sleep(Span::SECOND).await;
+        let Poll::Ready(opened) = poll_once(opening.as_mut()) else {
+            panic!("the open still waits for the home of the old index");
+        };
+        opened.expect("opens on time-b, which the spec in use names");
+        let fresh = poll_once(test.hub.writer(config("b", &["value"])));
+        assert!(matches!(fresh, Poll::Ready(Ok(_))), "a fresh open opens");
+    });
 }

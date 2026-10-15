@@ -91,6 +91,7 @@ fn config<M>(
         region: Region::Absent,
         name: "edge".parse().expect("a name"),
         settings: crate::Settings::default(),
+        vars: std::collections::BTreeMap::new(),
     }
 }
 
@@ -899,8 +900,8 @@ mod buffer {
     #[test]
     fn a_disk_budget_that_holds_no_ring_on_each_shard_starts_no_shard() {
         let smallest = ::buffer::Layout::fit(0, crate::BODY_MAX).unwrap_err().min;
-        let min = Size::from_bytes(8_437_760);
-        let cases = [(smallest, "4120KiB"), (2 * smallest - 1, "8437759B")];
+        let min = Size::from_bytes(8_462_336);
+        let cases = [(smallest, "4132KiB"), (2 * smallest - 1, "8462335B")];
         for (bytes, shown) in cases {
             let mut sim = sim::Sim::new(sim::Config::default());
             let host = host(&mut sim, 2);
@@ -929,7 +930,7 @@ mod buffer {
                 e.to_string(),
                 format!(
                     "the disk budget {shown} holds no ring on each of 2 shards; it \
-                     needs at least 8240KiB"
+                     needs at least 8264KiB"
                 )
             );
         }
@@ -2855,7 +2856,7 @@ mod pool {
     }
 }
 
-mod port {
+pub(crate) mod port {
     use std::num::NonZeroU32;
     use std::rc::Rc;
 
@@ -3209,7 +3210,7 @@ mod port {
             ..config(&host, Size::MEBIBYTE, Box::new(heap))
         });
         assert_eq!(sim.run(), Ok(()));
-        let min = Size::from_bytes(8_437_760);
+        let min = Size::from_bytes(8_462_336);
         assert_eq!(
             node.join(),
             Err(Error::Disk {
@@ -4356,7 +4357,7 @@ mod port {
         }
     }
 
-    mod mesh {
+    pub(crate) mod mesh {
         use std::cell::{Cell, RefCell};
         use std::collections::BTreeMap;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -4411,7 +4412,7 @@ mod port {
         }
 
         /// The member `key` with `private_key`, whose node listens on `host`.
-        fn member(
+        pub(crate) fn member(
             key: types::node::Key,
             private_key: &PrivateKey,
             host: &sim::node::Node,
@@ -4432,13 +4433,73 @@ mod port {
         }
 
         /// The region `plant`, where each of `members` is a voter.
-        fn region(members: &[Member]) -> Founding {
+        pub(crate) fn region(members: &[Member]) -> Founding {
             Founding {
                 prefix: "plant".parse().unwrap(),
                 members: members.to_vec(),
                 voters: members.iter().map(|member| member.card.key()).collect(),
                 definitions: BTreeMap::new(),
                 homes: BTreeMap::new(),
+            }
+        }
+
+        /// What [`open`] opens.
+        pub(crate) struct Opened {
+            pub(crate) hub: ::hub::Hub,
+            pub(crate) mesh: ::mesh::Mesh,
+            pub(crate) transport: Rc<transport::Transport>,
+            pub(crate) time: clock::Reader,
+            pub(crate) entropy: env::entropy::Entropy,
+        }
+
+        /// Opens the endpoint of `identity` at [`listen`] on `host` in the region
+        /// `founding`, and a hub on a new buffer of `host` with its mesh.
+        pub(crate) async fn open(
+            host: &sim::node::Node,
+            tasks: &env::tasks::Tasks,
+            identity: Identity,
+            founding: Founding,
+        ) -> Opened {
+            let bound =
+                transport::Port::bind(&host.net(), listen(host)).expect("a port");
+            let (opening, clock) = (Opening::Given(founding), host.clock());
+            let (entropy, settings) = (host.entropy(), crate::Settings::default());
+            let endpoint =
+                Endpoint::new(bound, opening, clock, entropy, host.net(), settings);
+            let stop = crate::stop::Stop::default();
+            let (open, buffer, given, time) =
+                super::super::home::create_open(host, tasks, 0, stop);
+            let opened = open.run(host.files(), Rc::new(buffer), tasks.clone()).await;
+            let home = opened.expect("the buffer opens");
+            let interner = given.await.expect("the open gives the interner");
+            let (key, entropy) = (identity.key, endpoint.entropy.clone());
+            let opened = endpoint.open(
+                identity,
+                host.files(),
+                super::pool(),
+                &time,
+                tasks.clone(),
+            );
+            let (transport, mesh) = opened.await.expect("the transport opens");
+            let mesh = mesh.expect("the mesh opens").expect("a region");
+            let hub = ::hub::Hub::new(::hub::Config {
+                home,
+                interner,
+                tasks: tasks.clone(),
+                node: key,
+                time: time.clone(),
+                entropy: entropy.clone(),
+                region: Some(::hub::Region {
+                    mesh: mesh.clone(),
+                    transport: Rc::clone(&transport),
+                }),
+            });
+            Opened {
+                hub,
+                mesh,
+                transport,
+                time,
+                entropy,
             }
         }
 
@@ -4609,7 +4670,8 @@ mod port {
             start(host, region(&[member(OWN, &KEY, host)]))
         }
 
-        /// The operations of the member `key` of `mesh` on `hub`, as a node makes them.
+        /// The operations of the member `key` of `mesh` on `hub`, as a node makes them,
+        /// with the secrets on `files`.
         fn operations(
             mesh: &::mesh::Mesh,
             key: types::node::Key,
@@ -4617,11 +4679,20 @@ mod port {
             clock: env::clock::Clock,
             time: &clock::Reader,
             entropy: &env::entropy::Entropy,
+            files: env::files::Files,
         ) -> Rc<ops::Node> {
             let member = mesh.member(key).expect("the peer is a member");
             let name = member.card.card().name.clone();
-            let kinds = Arc::new(crate::kinds());
-            crate::operations(mesh, name, hub.clone(), clock, time, entropy, kinds)
+            Rc::new(ops::Node::new(ops::Config {
+                mesh: mesh.clone(),
+                keys: crate::channel_keys(time, entropy),
+                front_ends: crate::front_ends(),
+                kinds: Arc::new(crate::kinds()),
+                hub: hub.clone(),
+                clock,
+                name,
+                secrets: connector::testing::create_secrets(files),
+            }))
         }
 
         /// As [`peer_hub`], with the region of `members`, and `act` gets only the mesh.
@@ -6212,45 +6283,24 @@ mod port {
             };
             let own = host.clone();
             let started = host.shards().start(shard, move |tasks| async move {
-                let bound =
-                    transport::Port::bind(&own.net(), listen(&own)).expect("a port");
                 let identity = Identity {
                     key: OTHER.0,
                     private_key: OTHER.1,
                     opener: Opener::from_bytes(SEAL),
                 };
-                let (opening, clock) = (Opening::Given(founding), own.clock());
-                let (entropy, settings) = (own.entropy(), crate::Settings::default());
-                let endpoint =
-                    Endpoint::new(bound, opening, clock, entropy, own.net(), settings);
-                let pool = super::pool();
-                let stop = crate::stop::Stop::default();
-                let (open, buffer, next, time) =
-                    super::super::home::create_open(&own, &tasks, 0, stop);
-                let opened =
-                    open.run(own.files(), Rc::new(buffer), tasks.clone()).await;
-                let home = opened.expect("the buffer opens");
-                let interner = next.await.expect("the open gives the interner");
-                let (key, entropy) = (identity.key, endpoint.entropy.clone());
-                let opened =
-                    endpoint.open(identity, own.files(), pool, &time, tasks.clone());
-                let (transport, mesh) = opened.await.expect("the transport opens");
-                let mesh = mesh.expect("the mesh opens");
-                let mesh = mesh.expect("the peer has a region");
-                let hub = ::hub::Hub::new(::hub::Config {
-                    home,
-                    interner,
-                    tasks: tasks.clone(),
-                    node: key,
-                    time: time.clone(),
-                    entropy: entropy.clone(),
-                    region: Some(::hub::Region {
-                        mesh: mesh.clone(),
-                        transport: Rc::clone(&transport),
-                    }),
-                });
+                let key = identity.key;
+                let Opened {
+                    hub,
+                    mesh,
+                    transport,
+                    time,
+                    entropy,
+                } = open(&own, &tasks, identity, founding).await;
+                let settings = crate::Settings::default();
                 let clock = own.clock();
-                let ops = operations(&mesh, key, &hub, clock.clone(), &time, &entropy);
+                let files = own.files();
+                let ops =
+                    operations(&mesh, key, &hub, clock.clone(), &time, &entropy, files);
                 let port = route::accept(
                     transport,
                     crate::task::Handles {
@@ -6914,7 +6964,7 @@ mod port {
             });
             node.operate(|_| async {});
             assert_eq!(sim.run(), Ok(()));
-            let min = Size::from_bytes(8_437_760);
+            let min = Size::from_bytes(8_462_336);
             assert_eq!(
                 node.join(),
                 Err(Error::Disk {
@@ -7012,7 +7062,7 @@ mod port {
                 r#""state":"stopped","address":"http://influx:8086","restarts":0,"#,
                 r#""counts":{"confirmed":0},"error":{"class":"config","text":"#,
                 r#""the selector matches no channel. Select a channel that the spec "#,
-                r#"defines"}}]}}"#,
+                r#"defines"},"note":null}]}}"#,
                 "\n",
             );
             assert_eq!(reply, connectors);
@@ -7863,7 +7913,7 @@ mod budget {
         let disk = Error::Disk {
             disk: Size::from_bytes(1),
             cores: 2,
-            min: Size::from_bytes(8_437_760),
+            min: Size::from_bytes(8_462_336),
         };
         let small = [
             (budget(512 << 10, DISK.bytes()), 16, buffer),

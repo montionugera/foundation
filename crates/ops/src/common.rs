@@ -1,7 +1,7 @@
 //! Fixtures that the tests of `plan`, `apply`, `status`, and `Node` share.
 
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -19,8 +19,9 @@ use spec::definition::Definition;
 use types::channel::Key;
 use types::name::Name;
 
+use crate::error::{Error, Sources};
 use crate::front_end::{File, FrontEnd, FrontEnds};
-use crate::{Failure, Node, Run};
+use crate::{Config, Failure, Node, Run, plan};
 
 #[path = "../tests/common/founding.rs"]
 mod founding;
@@ -140,20 +141,58 @@ pub(crate) fn create_node_reading(
     mesh: Mesh,
     front_ends: FrontEnds,
 ) -> Node {
+    let secrets = connector::testing::create_secrets(fixture.sim.files());
+    create_node_with(fixture, mesh, front_ends, secrets)
+}
+
+/// The node of `mesh` on `fixture` that reads with `front_ends` and reads secrets
+/// through `secrets`, whose channel keys count from 1.
+pub(crate) fn create_node_with(
+    fixture: &Fixture,
+    mesh: Mesh,
+    front_ends: FrontEnds,
+    secrets: secret::Resolver,
+) -> Node {
+    Node::new(create_config(fixture, mesh, front_ends, secrets))
+}
+
+/// The config of a node of `mesh` on `fixture`, as [`create_node_with`] makes it.
+pub(crate) fn create_config(
+    fixture: &Fixture,
+    mesh: Mesh,
+    front_ends: FrontEnds,
+    secrets: secret::Resolver,
+) -> Config {
     let made = Cell::new(0);
     let key = move || {
         made.set(made.get() + 1);
         Key::from_u128(made.get())
     };
-    Node::new(
+    Config {
         mesh,
-        key,
+        keys: Box::new(key),
         front_ends,
-        Arc::new(create_kinds()),
-        fixture.hub.clone(),
-        fixture.sim.clock(),
-        fixture.name.clone(),
-    )
+        kinds: Arc::new(create_kinds()),
+        hub: fixture.hub.clone(),
+        clock: fixture.sim.clock(),
+        name: fixture.name.clone(),
+        secrets,
+    }
+}
+
+/// The plan of `files` on `applied` at `base`, as `Node::plan` makes it with no read
+/// of a secret.
+pub(crate) fn plan(
+    files: &[File],
+    base: spec::Pointer,
+    applied: &BTreeMap<Name, Definition>,
+    members: &BTreeSet<Name>,
+    front_ends: &FrontEnds,
+    kinds: &Table,
+) -> Result<(plan::Output, config::plan::Plan), Error> {
+    plan::Documents::read(files, front_ends)?
+        .changes(base, applied, members, kinds)
+        .map_err(|diagnostics| Error::config(diagnostics, &Sources::of(files)))
 }
 
 pub(crate) fn name(text: &str) -> Name {

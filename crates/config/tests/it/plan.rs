@@ -514,6 +514,7 @@ fn removes_a_definition_that_no_file_holds() {
         "influx.status.class",
         "influx.status.confirmed",
         "influx.status.error",
+        "influx.status.note",
         "influx.status.restarts",
         "influx.status.state",
         "influx.status.time",
@@ -1277,6 +1278,7 @@ fn check_refuses_an_index_at_a_status_data_name() {
         "c.status.restarts",
         "c.status.backoff",
         "c.status.error",
+        "c.status.note",
         "c.status.confirmed",
     ];
     assert_eq!(
@@ -3217,6 +3219,7 @@ fn implies_the_status_channels_of_each_connector_at_its_label() {
         ("c.status.class", status(Type::Scalar(Scalar::U8))),
         ("c.status.confirmed", status(Type::Scalar(Scalar::U64))),
         ("c.status.error", status(Type::String)),
+        ("c.status.note", status(Type::String)),
         ("c.status.restarts", status(Type::Scalar(Scalar::U64))),
         ("c.status.state", status(Type::Scalar(Scalar::U8))),
         ("c.status.time", index),

@@ -22,7 +22,7 @@ use types::time::Span;
 use super::{Class, Failure, Output, State, Status};
 use crate::common::{self, Fixture, SAM, founded, front_ends, name, solo};
 use crate::serve::serve;
-use crate::{Failure as Lost, Node, Run};
+use crate::{Config, Failure as Lost, Node, Run};
 
 /// A kind that names the counts `counts`, and whose run sets each to its value, then
 /// waits for its cancel, or ends at once, as `script` says.
@@ -38,7 +38,7 @@ enum Script {
     Steady,
     /// Each run ends at once with a device error.
     Fails(&'static str),
-    /// Each run shows the error.
+    /// Each run shows the error and the note `polls`.
     Shows(&'static str),
     /// The first run ends at once with a device error, and each later run clears it.
     Clears(&'static str),
@@ -80,7 +80,10 @@ impl kind::Kind for Scripted {
         match self.script {
             Script::Steady => {}
             Script::Fails(error) => return Err(kind::Error::Device(error.into())),
-            Script::Shows(error) => context.error(&error),
+            Script::Shows(error) => {
+                context.error(&error);
+                context.note(&"polls");
+            }
             Script::Clears(error) => {
                 if !self.failed.swap(true, Ordering::Relaxed) {
                     return Err(kind::Error::Device(error.into()));
@@ -98,9 +101,9 @@ impl kind::Kind for Scripted {
 
 /// `steady` sets `in` to 12 and `confirmed` to 10, `failing` ends with a device error,
 /// `forging` with one whose text, from the device, holds a newline, `showing` shows an
-/// error, `clearing` clears the error of its failed first run, `wide` also names
-/// `extra`, `shifted` names `in` and `other`, and `opcua` and `influx` set the counts
-/// of the status block of the quickstart page.
+/// error and a note, `clearing` clears the error of its failed first run, `wide` also
+/// names `extra`, `shifted` names `in` and `other`, and `opcua` and `influx` set the
+/// counts of the status block of the quickstart page.
 fn kinds() -> Table {
     let counts = &[("in", 12), ("confirmed", 10)];
     let failing = "no route to the device";
@@ -169,6 +172,7 @@ fn gives_unknown_until_the_run_of_a_spec_with_more_counts_writes_its_start_frame
             "restarts": 0,
             "counts": { "confirmed": 0, "extra": 0, "in": 0 },
             "error": null,
+            "note": null,
         }]}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
@@ -202,6 +206,7 @@ fn gives_unknown_until_the_run_of_a_spec_with_another_count_writes_its_start_fra
             "restarts": 0,
             "counts": { "in": 0, "other": 0 },
             "error": null,
+            "note": null,
         }]}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
@@ -225,6 +230,7 @@ fn gives_the_old_state_until_the_run_with_fewer_counts_writes_its_start_frame() 
                 "restarts": 0,
                 "counts": counts,
                 "error": null,
+                "note": null,
             }]}})
         };
         let (head, rest) = status(&node, "@admin").await;
@@ -265,15 +271,16 @@ fn create_node(fixture: &Fixture, mesh: mesh::Mesh) -> Node {
         made.set(made.get() + 1);
         Key::from_u128(made.get())
     };
-    Node::new(
+    Node::new(Config {
         mesh,
-        key,
-        front_ends(),
-        Arc::new(kinds()),
-        fixture.hub.clone(),
-        fixture.sim.clock(),
-        fixture.name.clone(),
-    )
+        keys: Box::new(key),
+        front_ends: front_ends(),
+        kinds: Arc::new(kinds()),
+        hub: fixture.hub.clone(),
+        clock: fixture.sim.clock(),
+        name: fixture.name.clone(),
+        secrets: connector::testing::create_secrets(fixture.sim.files()),
+    })
 }
 
 /// The text of a connector `name` of `kind` on the node `node`, and a placement that
@@ -316,6 +323,7 @@ async fn supervise(fixture: &Fixture, node: &Node, names: &[&str]) -> cancel::To
         net: fixture.sim.net(),
         tasks: fixture.tasks.clone(),
         hub: fixture.hub.clone(),
+        secrets: connector::testing::create_secrets(fixture.sim.files()),
     });
     let spec = node.mesh().spec().await.expect("a spec");
     let cancel = cancel::Token::new();
@@ -417,6 +425,7 @@ fn unknown(name: &str, kind: &str) -> Value {
         "restarts": null,
         "counts": null,
         "error": null,
+        "note": null,
     })
 }
 
@@ -441,6 +450,7 @@ fn gives_the_state_counts_and_error_of_each_connector_on_the_node() {
                 "restarts": 0,
                 "counts": { "confirmed": 10, "in": 12 },
                 "error": null,
+                "note": null,
             },
             {
                 "name": "site.b",
@@ -450,6 +460,7 @@ fn gives_the_state_counts_and_error_of_each_connector_on_the_node() {
                 "restarts": 3,
                 "counts": { "confirmed": 0, "in": 0 },
                 "error": { "class": "device", "text": "no route to the device" },
+                "note": null,
             },
             unknown("site.c", "steady"),
         ]}});
@@ -481,9 +492,9 @@ fn the_command_line_writes_the_status_of_the_node_as_text_or_json() {
         supervise(&fixture, &node, &["site.a", "site.b"]).await;
         let paths = fixture.sim.paths();
         let table = "\
-CONNECTOR  KIND     STATE       ADDRESS                IN  CONFIRMED
-site.a     steady   running     opc.tcp://site.a:4840  12  10
-site.b     failing  restarting  opc.tcp://site.b:4840  0   0
+CONNECTOR  KIND     STATE       ADDRESS                COUNTS
+site.a     steady   running     opc.tcp://site.a:4840  confirmed=10 in=12
+site.b     failing  restarting  opc.tcp://site.b:4840  confirmed=0 in=0
 
 site.b: device error: no route to the device
 ";
@@ -499,10 +510,28 @@ site.b: device error: no route to the device
 }
 
 #[test]
-fn the_command_line_writes_the_refusal_of_status() {
+fn the_command_line_writes_the_status_of_a_node_with_no_connector() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         applied(&fixture, &node, "").await;
+        let paths = fixture.sim.paths();
+        let shown = cli(&node, &paths, &["status"]).await;
+        let line = "You can read no connector on this node.\n";
+        assert_eq!(shown, (Run::Exit(0), line.to_owned(), String::new()));
+        let shown = cli(&node, &paths, &["status", "--json"]).await;
+        let json = "{\"connectors\":[]}\n";
+        assert_eq!(shown, (Run::Exit(0), json.to_owned(), String::new()));
+    });
+}
+
+#[test]
+fn the_command_line_writes_the_refusal_of_status() {
+    let mut founding = spec::founding::create(crate::common::ADMIN.public());
+    let policy = founding[&name("@admin.@access")].clone();
+    // An access policy at a key that is no tree key of its kind: a problem.
+    founding.insert(name("x"), policy);
+    founded(&["edge"], founding, |fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
         let (run, output, errors) = cli(&node, &fixture.sim.paths(), &["status"]).await;
         let refused = "error[ops.denied]: no access policy gives `@admin` the action \
                        `read` on a request that names no definition\n\
@@ -516,7 +545,7 @@ fn the_command_line_writes_the_refusal_of_status() {
 }
 
 #[test]
-fn gives_the_error_that_a_running_kind_shows() {
+fn gives_the_error_and_the_note_that_a_running_kind_shows() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         applied(&fixture, &node, &connector("site.a", "showing", "edge")).await;
@@ -530,6 +559,7 @@ fn gives_the_error_that_a_running_kind_shows() {
             "restarts": 0,
             "counts": { "confirmed": 10, "in": 12 },
             "error": { "class": "retry", "text": "busy" },
+            "note": "polls",
         }]}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
@@ -551,6 +581,7 @@ fn gives_no_error_once_the_running_kind_clears_the_error_of_a_failed_run() {
             "restarts": 1,
             "counts": { "confirmed": 10, "in": 12 },
             "error": null,
+            "note": null,
         }]}});
         assert_eq!(head, expected);
         assert_eq!(rest, b"");
@@ -652,13 +683,96 @@ fn refused(subject: &str) -> Value {
 }
 
 #[test]
-fn refuses_an_admin_on_a_node_that_places_no_connector() {
+fn gives_no_connector_to_an_admin_on_a_node_that_places_none() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         applied(&fixture, &node, "").await;
-        let (head, rest) = status(&node, "@admin").await;
-        assert_eq!((head, rest), (refused("@admin"), Vec::new()));
+        let (head, rest, waited) = timed_status(&fixture, &node, "@admin").await;
+        let expected = json!({ "output": { "connectors": [] } });
+        assert_eq!((head, rest, waited), (expected, Vec::new(), Span::ZERO));
     });
+}
+
+#[test]
+fn refuses_a_subject_that_may_not_read_the_node_when_it_places_no_connector() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        applied(&fixture, &node, &reader("site.a.**")).await;
+        let (head, rest) = status(&node, "sam").await;
+        assert_eq!((head, rest), (refused("sam"), Vec::new()));
+    });
+}
+
+#[test]
+fn gives_no_connector_to_a_subject_that_may_read_the_node() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let text = reader("edge");
+        applied(&fixture, &node, &text).await;
+        let (head, _) = status(&node, "sam").await;
+        assert_eq!(head, json!({ "output": { "connectors": [] } }));
+    });
+}
+
+#[test]
+fn gives_no_connector_to_a_subject_that_may_read_the_node_and_no_status_channel() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let text = [reader("edge"), connector("site.a", "steady", "edge")];
+        applied(&fixture, &node, &text.concat()).await;
+        let (head, rest) = status(&node, "sam").await;
+        let expected = json!({ "output": { "connectors": [] } });
+        assert_eq!((&head, rest), (&expected, Vec::new()));
+        let output: Output =
+            serde_json::from_value(head["output"].clone()).expect("output");
+        assert_eq!(output.text(), "You can read no connector on this node.\n");
+    });
+}
+
+#[test]
+fn gives_no_connector_to_a_subject_whose_grant_on_the_node_is_a_connector_of_its_name()
+{
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let text = [reader("edge"), connector("edge", "steady", "edge")];
+        applied(&fixture, &node, &text.concat()).await;
+        let (head, rest) = status(&node, "sam").await;
+        let expected = json!({ "output": { "connectors": [] } });
+        assert_eq!((head, rest), (expected, Vec::new()));
+    });
+}
+
+#[test]
+fn gives_no_connector_to_a_subject_whose_grant_on_the_node_is_a_channel_of_its_name() {
+    solo(|fixture, mesh| async move {
+        let node = create_node(&fixture, mesh);
+        let text = [
+            reader("edge"),
+            "channel \"edge\" { kind = \"index\" }\nplacement \"p\" {\n  select = \
+             \"edge\"\n  home = \"edge\"\n}\n"
+                .to_owned(),
+        ];
+        applied(&fixture, &node, &text.concat()).await;
+        let (head, rest) = status(&node, "sam").await;
+        let expected = json!({ "output": { "connectors": [] } });
+        assert_eq!((head, rest), (expected, Vec::new()));
+    });
+}
+
+#[test]
+fn gives_no_connector_to_a_subject_whose_pattern_holds_the_name_of_the_node() {
+    founded(
+        &["site.edge"],
+        spec::founding::create(crate::common::ADMIN.public()),
+        |fixture, mesh| async move {
+            let node = create_node(&fixture, mesh);
+            let text = reader("site.**");
+            applied(&fixture, &node, &text).await;
+            let (head, rest) = status(&node, "sam").await;
+            let expected = json!({ "output": { "connectors": [] } });
+            assert_eq!((head, rest), (expected, Vec::new()));
+        },
+    );
 }
 
 #[test]
@@ -676,11 +790,11 @@ fn refuses_an_admin_on_a_node_that_uses_no_spec() {
     });
 }
 
-/// `sam` may read the names under `site.a`.
-fn reader() -> String {
+/// `sam` may read the names that `select` holds.
+fn reader(select: &str) -> String {
     format!(
         "subject \"sam\" {{ keys = [\"{SAM}\"] }}\naccess \"watch\" {{\n  subjects = \
-         \"sam\"\n  select = \"site.a.**\"\n  allow = [read]\n}}\n"
+         \"sam\"\n  select = \"{select}\"\n  allow = [read]\n}}\n"
     )
 }
 
@@ -689,7 +803,7 @@ fn leaves_out_each_connector_whose_status_the_subject_may_not_read() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         let text = [
-            reader(),
+            reader("site.a.**"),
             connector("site.a", "steady", "edge"),
             connector("site.b", "steady", "edge"),
         ];
@@ -705,7 +819,7 @@ fn leaves_out_each_connector_whose_status_the_subject_may_not_read() {
 fn refuses_a_subject_that_may_read_no_connector_on_the_node() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
-        let text = [reader(), connector("site.b", "steady", "edge")];
+        let text = [reader("site.a.**"), connector("site.b", "steady", "edge")];
         applied(&fixture, &node, &text.concat()).await;
         let (head, rest) = status(&node, "sam").await;
         assert_eq!(head, refused("sam"));
@@ -718,11 +832,7 @@ fn refuses_a_subject_that_may_read_only_some_status_channels() {
     solo(|fixture, mesh| async move {
         let node = create_node(&fixture, mesh);
         let text = [
-            format!(
-                "subject \"sam\" {{ keys = [\"{SAM}\"] }}\naccess \"watch\" {{\n  \
-                 subjects = \"sam\"\n  select = \"site.a.status.state\"\n  allow = \
-                 [read]\n}}\n"
-            ),
+            reader("site.a.status.state"),
             connector("site.a", "steady", "edge"),
         ];
         applied(&fixture, &node, &text.concat()).await;
@@ -986,6 +1096,7 @@ fn line(
             BTreeMap::from([("in".to_owned(), n), ("confirmed".to_owned(), confirmed)])
         }),
         error,
+        note: None,
     }
 }
 
@@ -1000,31 +1111,39 @@ fn escapes_a_newline_in_each_value_of_the_table() {
             name: "a\nb".to_owned(),
             kind: "k\nk".to_owned(),
             address: Some("x\ny".to_owned()),
+            note: Some("n\nn".to_owned()),
             ..line("plant.plc", State::Running, None, Some(error))
         }],
     };
-    let text = "CONNECTOR  KIND  STATE    ADDRESS  IN  CONFIRMED\n\
-                a\\nb       k\\nk  running  x\\ny     -   -\n\
+    let text = "CONNECTOR  KIND  STATE    ADDRESS  COUNTS\n\
+                a\\nb       k\\nk  running  x\\ny     -\n\
                 \n\
+                a\\nb: note: n\\nn\n\
                 a\\nb: device error: t\n";
     assert_eq!(output.text(), text);
 }
 
 #[test]
-fn writes_a_table_then_the_line_of_each_error() {
+fn writes_a_table_of_each_count_then_the_note_and_the_error_of_each_connector() {
     let failure = Failure {
         class: Class::Device,
         text: "no route to the device".to_owned(),
     };
+    let opcua = ["missed", "in", "lost"];
+    let opcua = opcua.map(|count| (count.to_owned(), u64::from(count == "in") * 1200));
     let output = Output {
         connectors: vec![
-            line("plant.plc", State::Running, Some((1200, 1150)), None),
-            line(
-                "plant.press",
-                State::Restarting,
-                Some((0, 0)),
-                Some(failure),
-            ),
+            Status {
+                kind: "influx".to_owned(),
+                address: Some("http://lake".to_owned()),
+                counts: Some(BTreeMap::from([("confirmed".to_owned(), 1200)])),
+                ..line("lake", State::Running, None, None)
+            },
+            Status {
+                counts: Some(BTreeMap::from(opcua)),
+                note: Some("polls: the server has no subscriptions".to_owned()),
+                ..line("plant.press", State::Running, None, Some(failure))
+            },
             Status {
                 address: None,
                 ..line("yard.meter", State::Unknown, None, None)
@@ -1032,11 +1151,12 @@ fn writes_a_table_then_the_line_of_each_error() {
         ],
     };
     let expected = "\
-CONNECTOR    KIND   STATE       ADDRESS                     IN    CONFIRMED
-plant.plc    opcua  running     opc.tcp://plant.plc:4840    1200  1150
-plant.press  opcua  restarting  opc.tcp://plant.press:4840  0     0
-yard.meter   opcua  unknown     -                           -     -
+CONNECTOR    KIND    STATE    ADDRESS                     COUNTS
+lake         influx  running  http://lake                 confirmed=1200
+plant.press  opcua   running  opc.tcp://plant.press:4840  in=1200 lost=0 missed=0
+yard.meter   opcua   unknown  -                           -
 
+plant.press: note: polls: the server has no subscriptions
 plant.press: device error: no route to the device
 ";
     assert_eq!(output.text(), expected);
@@ -1080,9 +1200,9 @@ fn the_command_line_writes_the_status_block_of_the_quickstart_page() {
 }
 
 #[test]
-fn writes_no_table_with_no_connector() {
+fn writes_a_line_in_place_of_the_table_with_no_connector() {
     let output = Output {
         connectors: Vec::new(),
     };
-    assert_eq!(output.text(), "");
+    assert_eq!(output.text(), "You can read no connector on this node.\n");
 }

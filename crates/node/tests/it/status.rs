@@ -34,6 +34,10 @@ pub(crate) struct Connector {
     /// `unknown`.
     #[serde(deserialize_with = "Option::deserialize")]
     pub(crate) error: Option<Error>,
+    /// The note that the running kind shows. `None` when it shows none, or while the
+    /// state is `unknown`.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub(crate) note: Option<String>,
 }
 
 /// The last error of a connector in `foundation status --json`.
@@ -55,10 +59,10 @@ pub(crate) fn connectors(json: &[u8]) -> BTreeMap<String, Connector> {
 }
 
 /// `ops` writes each key of a connector, so a connector that lacks one of `address`,
-/// `restarts`, `counts`, or `error` has another shape.
+/// `restarts`, `counts`, `error`, or `note` has another shape.
 #[test]
 fn a_connector_that_lacks_a_nullable_key_is_refused() {
-    let keys = ["address", "restarts", "counts", "error"];
+    let keys = ["address", "restarts", "counts", "error", "note"];
     for missing in keys {
         let present = keys.iter().filter(|key| **key != missing);
         let fields: Vec<_> = present.map(|key| format!(r#""{key}":null"#)).collect();
@@ -83,7 +87,7 @@ fn an_error_with_next_is_refused() {
     let json = concat!(
         r#"{"connectors":[{"name":"a","kind":"influx","state":"stopped","#,
         r#""address":null,"restarts":0,"counts":{},"#,
-        r#""error":{"class":"config","text":"t","next":null}}]}"#,
+        r#""error":{"class":"config","text":"t","next":null},"note":null}]}"#,
     );
     let error = serde_json::from_str::<Output>(json)
         .err()
@@ -103,13 +107,13 @@ fn an_error_with_next_is_refused() {
 fn an_unknown_key_is_refused() {
     let connector = concat!(
         r#"{"name":"a","kind":"influx","state":"unknown","address":null,"#,
-        r#""restarts":null,"counts":null,"error":null"#,
+        r#""restarts":null,"counts":null,"error":null,"note":null"#,
     );
     let cases = [
         (
             format!(r#"{{"connectors":[{connector},"extra":0}}]}}"#),
             "expected one of `name`, `kind`, `state`, `address`, `restarts`, \
-             `counts`, `error`",
+             `counts`, `error`, `note`",
         ),
         (
             format!(r#"{{"connectors":[{connector}}}],"extra":0}}"#),

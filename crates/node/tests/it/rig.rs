@@ -37,6 +37,8 @@ pub(crate) struct Rig {
     pub(crate) dir: PathBuf,
     /// The disk budget that [`Rig::new`] keeps: 8 MiB for each core.
     pub(crate) disk: u64,
+    /// The environment variables that [`Rig::var`] sets.
+    vars: Vec<(String, String)>,
     clock: Clock,
     node: Option<Running>,
 }
@@ -76,6 +78,7 @@ impl Rig {
             dir,
             disk: u64::try_from(cores).expect("invariant: a core count fits u64")
                 * (8 << 20),
+            vars: Vec::new(),
             clock: os::clock(),
             node: None,
         };
@@ -91,6 +94,12 @@ impl Rig {
     /// Writes the file [`Rig::budget`] that keeps `pool` and `disk`.
     pub(crate) fn keep(&self, pool: u64, disk: u64) {
         keep(&self.budget(), pool, disk);
+    }
+
+    /// Sets the environment variable `name` to `value` in each later start of a node,
+    /// and in each later `foundation` of [`Rig::run`] and [`Rig::talk`].
+    pub(crate) fn var(&mut self, name: &str, value: &str) {
+        self.vars.push((name.into(), value.into()));
     }
 
     /// Writes `hcl` to `plant.hcl`.
@@ -182,7 +191,10 @@ impl Rig {
     /// `foundation` with `args` in [`Rig::dir`].
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_foundation"));
-        command.args(args).current_dir(&self.dir);
+        command
+            .args(args)
+            .envs(self.vars.iter().map(|(name, value)| (name, value)));
+        command.current_dir(&self.dir);
         command
     }
 

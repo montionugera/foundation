@@ -59,7 +59,10 @@ impl Sealed {
 impl Store for Sealed {
     /// Opens the value of `name`. [`Error::Missing`] when the store has none.
     fn get<'a>(&'a self, name: &'a Name) -> Request<'a> {
-        let value = self.values.get(name).ok_or(Error::Missing).map(|entry| {
+        let missing = || Error::Missing {
+            detail: "the region holds no sealed value of this name".into(),
+        };
+        let value = self.values.get(name).ok_or_else(missing).map(|entry| {
             self.opener
                 .open(name, entry.version, &entry.sealed)
                 .expect("invariant: put opened these bytes with this key")
@@ -165,11 +168,14 @@ mod tests {
 
     #[test]
     fn has_no_value_after_a_delete_or_for_a_name_never_put() {
+        let missing = Err(Error::Missing {
+            detail: "the region holds no sealed value of this name".into(),
+        });
         let (mut store, key) = store();
-        assert_eq!(get(&store, &token()), Err(Error::Missing));
+        assert_eq!(get(&store, &token()), missing);
         store.put(token(), 1, sealed(&key, 1, b"t")).unwrap();
         store.delete(&token());
-        assert_eq!(get(&store, &token()), Err(Error::Missing));
+        assert_eq!(get(&store, &token()), missing);
     }
 
     #[test]

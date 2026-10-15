@@ -120,9 +120,10 @@ impl Client {
     /// # Errors
     ///
     /// `BadTimeout` when the session is not active after the request timeout of the
-    /// client (5 s), else the status of open62541 when it refuses `url` or the connect
-    /// fails, else the error of [`Client::read`] when the read of `MaxNodesPerRead`
-    /// fails.
+    /// client (5 s), `BadConnectionClosed` when the server closes or resets an open
+    /// stream before the session is active, with no new dial after that close, else the
+    /// status of open62541 when it refuses `url` or the connect fails, else the error
+    /// of [`Client::read`] when the read of `MaxNodesPerRead` fails.
     ///
     /// # Aborts
     ///

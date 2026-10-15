@@ -238,7 +238,7 @@ fn a_server_has_room_for_4_sessions() {
         )
         .await;
         assert_eq!(reads, [Ok(Value::F64(0.0)); 4]);
-        assert_eq!(fifth, Some(Status::BAD_TIMEOUT));
+        assert_eq!(fifth, Some(Status::BAD_CONNECTION_CLOSED));
         assert_eq!(variables.served()[SPIKE].len(), 4);
     })
     .expect("the run ends");

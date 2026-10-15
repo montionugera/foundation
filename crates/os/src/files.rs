@@ -37,12 +37,21 @@ const READ_DIR: OFlags = OFlags::RDONLY
     .union(OFlags::DIRECTORY)
     .union(OFlags::CLOEXEC);
 
+/// The flags that open a file of the host to read, with no wait for a writer of a FIFO.
+/// `NOCTTY` keeps a terminal from becoming that of a node that leads its session.
+const READ_HOST: OFlags = OFlags::RDONLY
+    .union(OFlags::CLOEXEC)
+    .union(OFlags::NONBLOCK)
+    .union(OFlags::NOCTTY);
+
 /// The real disk under one data directory: the [`env::files::Driver`] that
 /// [`files`](crate::files) gives. It is `Send`, so one thread can make it and another
 /// wrap it with [`env::files::Files::new`].
 pub struct Disk {
     /// The data directory.
     data: Arc<OwnedFd>,
+    /// The absolute path of `data`, which `shown` joins to.
+    path: PathBuf,
     queue: Queue,
 }
 
@@ -53,7 +62,7 @@ impl Disk {
         threads: &Threads,
         name: &str,
     ) -> Result<(Self, Handle), crate::Error> {
-        Self::start(data(dir), threads, name)
+        Self::start(dir, data(dir), threads, name)
     }
 
     /// Opens `dir/data`, which must be there, and starts I/O thread `name`.
@@ -63,20 +72,23 @@ impl Disk {
         name: &str,
     ) -> Result<(Self, Handle), crate::Error> {
         let data = fs::open(dir.join("data"), READ_DIR, fs::Mode::empty());
-        Self::start(data, threads, name)
+        Self::start(dir, data, threads, name)
     }
 
-    /// Starts I/O thread `name` on the data directory `data`.
+    /// Starts I/O thread `name` on the data directory `data` of `dir`.
     fn start(
+        dir: &Path,
         data: io::Result<OwnedFd>,
         threads: &Threads,
         name: &str,
     ) -> Result<(Self, Handle), crate::Error> {
         let data = data.map_err(|errno| crate::Error::Dir(errno.into()))?;
+        let path = std::path::absolute(dir.join("data")).map_err(crate::Error::Dir)?;
         let (queue, thread) =
             Queue::start(threads, name).map_err(crate::Error::Thread)?;
         let disk = Self {
             data: Arc::new(data),
+            path,
             queue,
         };
         Ok((disk, thread))
@@ -104,14 +116,13 @@ impl fmt::Debug for Disk {
     }
 }
 
-impl env::files::Driver for Disk {
-    fn open<'a>(
-        &'a self,
+impl Disk {
+    /// The file at `path` that `opened` opens.
+    fn file<'a>(
+        &self,
         path: &'a Path,
-        mode: Mode,
+        opened: impl Future<Output = Result<(Opened, u64), Error>> + 'a,
     ) -> Request<'a, Box<dyn Descriptor>> {
-        let (data, owned) = (Arc::clone(&self.data), path.to_path_buf());
-        let opened = self.queue.run(move || open(&data, &owned, mode));
         let (data, queue) = (Arc::clone(&self.data), self.queue.clone());
         Box::pin(async move {
             let (fd, len) = opened.await?;
@@ -124,6 +135,22 @@ impl env::files::Driver for Disk {
             });
             Ok(file)
         })
+    }
+}
+
+impl env::files::Driver for Disk {
+    fn open<'a>(
+        &'a self,
+        path: &'a Path,
+        mode: Mode,
+    ) -> Request<'a, Box<dyn Descriptor>> {
+        let (data, owned) = (Arc::clone(&self.data), path.to_path_buf());
+        self.file(path, self.queue.run(move || open(&data, &owned, mode)))
+    }
+
+    fn open_absolute<'a>(&'a self, path: &'a Path) -> Request<'a, Box<dyn Descriptor>> {
+        let owned = path.to_path_buf();
+        self.file(path, self.queue.run(move || open_absolute(&owned)))
     }
 
     fn list<'a>(&'a self, dir: &'a Path) -> Request<'a, Vec<PathBuf>> {
@@ -151,6 +178,10 @@ impl env::files::Driver for Disk {
         self.call(Path::new(""), Operation::Free, |data, _| {
             fs::fstatvfs(data).map(|stat| stat.f_bavail * stat.f_frsize)
         })
+    }
+
+    fn shown(&self, path: &Path) -> PathBuf {
+        self.path.join(path)
     }
 }
 
@@ -375,6 +406,31 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(Opened, u64), Error>
             Ok((fd, len))
         }
         _ => Ok((fd, found)),
+    }
+}
+
+/// Opens the file at absolute `path` to read, and gives it and its length. The open
+/// does not wait for a writer of a FIFO, and gives 21 (`EISDIR`) for a directory and
+/// 22 (`EINVAL`) for any other file that is not a regular file.
+fn open_absolute(path: &Path) -> Result<(Opened, u64), Error> {
+    let failed = fail(path, Operation::Open);
+    // The check before the open keeps the open of a socket from giving `ENXIO`, and
+    // that of a device from running its driver. The check after it covers a swap.
+    regular(&fs::stat(path).map_err(&failed)?).map_err(&failed)?;
+    let fd = Opened {
+        fd: fs::open(path, READ_HOST, fs::Mode::empty()).map_err(&failed)?,
+        locked: false,
+    };
+    let len = regular(&fs::fstat(&fd).map_err(&failed)?).map_err(&failed)?;
+    Ok((fd, len))
+}
+
+/// The length of the regular file of `stat`, or the error of another kind of file.
+fn regular(stat: &fs::Stat) -> Result<u64, Errno> {
+    match FileType::from_raw_mode(stat.st_mode) {
+        FileType::RegularFile => Ok(stat.st_size.cast_unsigned()),
+        FileType::Directory => Err(Errno::ISDIR),
+        _ => Err(Errno::INVAL),
     }
 }
 

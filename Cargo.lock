@@ -164,9 +164,11 @@ dependencies = [
 name = "block"
 version = "0.0.0"
 dependencies = [
+ "counting",
  "divan",
  "loom",
  "proptest",
+ "zeroize",
 ]
 
 [[package]]
@@ -416,6 +418,7 @@ dependencies = [
  "hyper",
  "loom",
  "proptest",
+ "secret",
  "sim",
  "spec",
  "types",
@@ -694,6 +697,7 @@ version = "0.0.0"
 dependencies = [
  "block",
  "proptest",
+ "tracing",
  "types",
 ]
 
@@ -1332,6 +1336,7 @@ dependencies = [
  "hub",
  "mesh",
  "schemars",
+ "secret",
  "serde",
  "serde_json",
  "sim",
@@ -1357,6 +1362,7 @@ dependencies = [
  "proptest",
  "rustix",
  "tokio",
+ "tracing",
  "types",
 ]
 
@@ -1667,9 +1673,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
@@ -1743,7 +1749,9 @@ name = "secret"
 version = "0.0.0"
 dependencies = [
  "aws-lc-rs",
+ "block",
  "counting",
+ "document",
  "env",
  "proptest",
  "sim",
@@ -1850,6 +1858,7 @@ dependencies = [
  "block",
  "env",
  "proptest",
+ "tracing",
  "types",
 ]
 

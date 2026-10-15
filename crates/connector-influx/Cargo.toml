@@ -47,6 +47,11 @@ harness = false
 test = true
 
 [[bench]]
+name = "request"
+harness = false
+test = true
+
+[[bench]]
 name = "sim"
 harness = false
 test = true

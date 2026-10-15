@@ -34,6 +34,8 @@ mod task;
 #[cfg(not(loom))]
 mod tests;
 
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fmt;
 use std::future::poll_fn;
 use std::iter;
@@ -101,6 +103,9 @@ pub struct Config<M> {
     /// The limits of the node's port, its peers, and its chunk store. A value that the
     /// transport refuses stops the node with [`Error::Transport`].
     pub settings: Settings,
+    /// The environment of the node process, which `env()` in a config reads. Main
+    /// gives `std::env::vars_os()`.
+    pub vars: BTreeMap<OsString, OsString>,
 }
 
 impl<M> fmt::Debug for Config<M> {
@@ -305,6 +310,7 @@ impl Node {
             budget: config.budget,
             inbox,
             time: clock.clone(),
+            vars: Arc::new(config.vars),
         };
         let roles = Role::all(mesh, wall, first, bind, serve, config.name, cores);
         let mut started = Vec::new();
@@ -813,6 +819,8 @@ struct Serve {
     budget: Budget,
     inbox: task::Inbox<task::Task>,
     time: clock::Reader,
+    /// The environment of the node process, which the node's connectors read.
+    vars: Arc<BTreeMap<OsString, OsString>>,
 }
 
 /// What shard 0 binds the node's port with, once it claimed the data directory.
@@ -1096,7 +1104,7 @@ impl Serve {
         let (key, entropy) = (identity.key, endpoint.entropy.clone());
         let (clock, net) = (endpoint.clock.clone(), endpoint.net.clone());
         let address = endpoint.address(&identity);
-        let settings = endpoint.settings;
+        let (settings, vars) = (endpoint.settings, self.vars);
         let opened =
             endpoint.open(identity, files.clone(), pool, &self.time, tasks.clone());
         let Ok((transport, mesh)) = opened.await.map_err(&fail) else {
@@ -1113,6 +1121,8 @@ impl Serve {
                 return None;
             };
             let ended = mesh.as_ref().map(mesh::Mesh::ended);
+            let secrets =
+                secret::Resolver::new(vars, files.clone(), &directory::secrets());
             let serve = pin!(async move {
                 let region = mesh.clone().map(|mesh| hub::Region {
                     mesh,
@@ -1134,15 +1144,16 @@ impl Serve {
                             member.expect("invariant: a mesh opens only on a member");
                         let name = member.card.card().name.clone();
                         let kinds = Arc::new(kinds());
-                        let ops = operations(
-                            mesh,
-                            name.clone(),
-                            hub.clone(),
-                            clock.clone(),
-                            &time,
-                            &entropy,
-                            Arc::clone(&kinds),
-                        );
+                        let ops = Rc::new(ops::Node::new(ops::Config {
+                            mesh: mesh.clone(),
+                            keys: channel_keys(&time, &entropy),
+                            front_ends: front_ends(),
+                            kinds: Arc::clone(&kinds),
+                            hub: hub.clone(),
+                            clock: clock.clone(),
+                            name: name.clone(),
+                            secrets: secrets.clone(),
+                        }));
                         let config = connector::supervisor::Config {
                             kinds,
                             clock: clock.clone(),
@@ -1150,6 +1161,7 @@ impl Serve {
                             net,
                             tasks: tasks.clone(),
                             hub: hub.clone(),
+                            secrets,
                         };
                         let runs = connectors::Runs::new(config, name);
                         (Some(ops), Some(follow(mesh, hub.clone(), runs).await))
@@ -1215,28 +1227,23 @@ fn channel_key(
     types::channel::Key::v7(at, u128::from_le_bytes(random))
 }
 
-/// The operations on `mesh`, as the node named `name` with `hub` and `clock`, with the
-/// connector kinds `kinds`, whose keys [`channel_key`] makes.
-fn operations(
-    mesh: &mesh::Mesh,
-    name: types::name::Name,
-    hub: hub::Hub,
-    clock: env::clock::Clock,
-    time: &clock::Reader,
-    entropy: &env::entropy::Entropy,
-    kinds: Arc<connector::kind::Table>,
-) -> Rc<ops::Node> {
-    let (time, entropy) = (time.clone(), entropy.clone());
-    let channel = move || channel_key(&time, &entropy);
-    let front_ends = ops::FrontEnds::new(
+/// The front ends of the config files that the operations read.
+fn front_ends() -> ops::FrontEnds {
+    ops::FrontEnds::new(
         "hcl",
         ops::FrontEnd {
             read: config_hcl::read,
         },
-    );
-    let node =
-        ops::Node::new(mesh.clone(), channel, front_ends, kinds, hub, clock, name);
-    Rc::new(node)
+    )
+}
+
+/// Gives the key of each channel that the operations make ([`channel_key`]).
+fn channel_keys(
+    time: &clock::Reader,
+    entropy: &env::entropy::Entropy,
+) -> Box<dyn Fn() -> types::channel::Key> {
+    let (time, entropy) = (time.clone(), entropy.clone());
+    Box::new(move || channel_key(&time, &entropy))
 }
 
 /// Gives `hub` the access rules of the spec that `mesh` uses, and makes `runs` match

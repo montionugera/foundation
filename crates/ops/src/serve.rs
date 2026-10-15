@@ -37,11 +37,11 @@ mod tests;
 /// adds or changes, and `admin` on the key of each definition other than a channel that
 /// the plan adds, changes, or removes. It gives a home only to an index on which
 /// `subject` has `apply`, and drops each other home with no error. `status` shows only
-/// each connector on whose status channels `subject` has `read`, and gives
-/// `ops.denied` when it shows none, also when the node places no connector. It waits at
-/// most 1 s from the request. A connector is `unknown` when no status as the spec
-/// defines it comes in that time, and `status` gives `ops.channel-read` when the reader
-/// of a connector fails for another cause.
+/// each connector on whose status channels `subject` has `read`. When it shows none,
+/// also when the node places none, it needs `read` on the name of the node, and gives
+/// `ops.denied` with no grant. It waits at most 1 s from the request. A connector is
+/// `unknown` when no status as the spec defines it comes in that time, and `status`
+/// gives `ops.channel-read` when the reader of a connector fails for another cause.
 ///
 /// [`cli`]: crate::cli
 pub async fn serve(node: &Node, subject: &Name, body: &[u8]) -> Vec<u8> {
@@ -434,7 +434,12 @@ async fn plan(node: &Node, subject: &Name, files: &[File]) -> Result<Body, Error
         return Err(check.denied(Action::Plan, On::Spec));
     }
     let (base, applied) = spec.newest()?;
-    let (output, plan) = files.plan(base, &applied, &node.mesh.names(), &node.kinds)?;
+    // A subject that may not apply a connector learns nothing of its sources, and
+    // `apply` of a connector needs `admin` too.
+    let readable = |name: &Name| {
+        check.allows(Action::Apply, name) && check.allows(Action::Admin, name)
+    };
+    let (output, plan) = files.plan(node, base, &applied, readable).await?;
     let mut reply = Body::line(&Answer::Done { output: &output })?;
     reply.add(&plan.encode())?;
     Ok(reply)
@@ -479,12 +484,13 @@ async fn apply(node: &Node, subject: &Name, bytes: &[u8]) -> Result<Body, Error>
     if plan.changes.is_empty() && plan.homes.is_empty() {
         return Err(check.denied(Action::Apply, On::Nothing));
     }
-    let effect = apply::apply(plan, spec, &node.mesh, &node.kinds, &node.key).await?;
+    let effect = apply::apply(plan, spec, &node.mesh, &node.kinds, &node.keys).await?;
     Ok(Body::line(&Answer::Done { output: &effect })?)
 }
 
 /// The reply of `status`: its output. It leaves out each connector on whose status
-/// channels `subject` has no `read`.
+/// channels `subject` has no `read`. When it leaves out each connector, or the node
+/// places none, it needs `read` on the name of the node.
 async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
     let asked = node.clock.now();
     let spec = used::spec(&node.mesh).await?;
@@ -495,9 +501,15 @@ async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
             .channels()
             .all(|name| check.allows(Action::Read, name))
     });
-    if placed.is_empty() {
-        return Err(check.denied(Action::Read, On::Nothing));
-    }
-    let output = status::read(node, subject, &placed, asked).await?;
+    let output = if placed.is_empty() {
+        if !check.allows(Action::Read, &node.name) {
+            return Err(check.denied(Action::Read, On::Nothing));
+        }
+        status::Output {
+            connectors: Vec::new(),
+        }
+    } else {
+        status::read(node, subject, &placed, asked).await?
+    };
     Ok(Body::line(&Answer::Done { output: &output })?)
 }
