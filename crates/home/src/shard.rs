@@ -648,6 +648,9 @@ impl Shard {
     /// one starts at the live tail of its open, so the frames from the miss to there
     /// reach neither reader.
     ///
+    /// Returns its key and its open position. `replaced` is `None`: an unnamed reader
+    /// takes over no session.
+    ///
     /// # Panics
     ///
     /// If the shard does not carry `slot`.
@@ -717,6 +720,9 @@ impl Shard {
     /// Opens an unnamed latest reader on the index at `slot`. It gets the index's
     /// newest live frame, before its commit. Take from it at once:
     /// [`woken`](Self::woken) does not name it for a frame it can take at open.
+    ///
+    /// Returns its key and its open position. `replaced` is `None`: an unnamed reader
+    /// takes over no session.
     ///
     /// # Panics
     ///
