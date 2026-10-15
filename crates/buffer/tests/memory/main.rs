@@ -11,6 +11,8 @@ static ALLOCATOR: counting::Bytes = counting::Bytes::new();
 const RUN: usize = 24;
 /// The records of a lap of `buffer::bench::Logs`, one per commit.
 const LAP: u32 = 256;
+/// The commit of [`wait`] whose trims end the lap that starts at 256.
+const LAP_END: u32 = 512;
 
 /// A read that holds 16 records keeps 17 runs of one path, in room for 32. Then the
 /// read holds `held` records. Gives the bytes that the trims of the next two laps
@@ -57,9 +59,9 @@ fn first_shrink() -> u32 {
 }
 
 /// S4: each path keeps at most 454 bytes, and room for four paths when there are fewer,
-/// of which 8 bytes are its place in the queue of laps that wait. No lap waits here, so
-/// 446 bytes. A carry record takes the tail of each of `paths` paths, and a trim to it
-/// leaves each with no run. The holder items of the two records, 4 bytes each in a
+/// of which 8 bytes are the room of its place in the queue of laps that wait, taken
+/// when the path is added. [`wait`] checks the bound in a wait. A carry record takes
+/// the tail of each of `paths` paths, and a trim to it leaves each with no run. The holder items of the two records, 4 bytes each in a
 /// deque that doubles, are a term of S4 per record and path. At 3585 paths the map of
 /// places is at its least load, and at 4097 the vector of logs.
 fn per_path(paths: u32) {
@@ -71,12 +73,61 @@ fn per_path(paths: u32) {
     logs.commit(0);
     let held = ALLOCATOR.held() - before - base;
     let paths = usize::try_from(paths).expect("fits");
-    let bound = 446 * paths.max(4) + 16 * paths;
+    let bound = 454 * paths.max(4) + 16 * paths;
     assert!(
         held <= bound,
         "{held} bytes for {paths} paths, over {bound}"
     );
     drop(logs);
+}
+
+/// A read that holds 16 records keeps 17 runs of each of 100,000 paths, in room for
+/// 32. Then no read holds a record. Each commit trims 100,000 runs, so the commit at
+/// the end of the next lap shrinks the room of 25,256 paths to 4, and the others wait
+/// in the queue, in room that it took when each path was added. Gives the bytes that
+/// each of that commit and the next 3 takes, and checks the S4 bound of each path in the
+/// wait: the bytes held but the room of the runs. Then a read holds the next 16
+/// records, and checks that a path that waited shrinks at a later lap end.
+fn wait() -> Vec<isize> {
+    let paths = 100_000;
+    let start = ALLOCATOR.held();
+    let mut logs = buffer::bench::Logs::new(paths);
+    for _ in 0..40 {
+        logs.trim(1, 16);
+    }
+    for _ in 40..LAP_END {
+        logs.trim(1, 0);
+    }
+    let mut taken = Vec::new();
+    for commit in 0..4 {
+        let before = ALLOCATOR.held();
+        logs.trim(1, 0);
+        taken.push(ALLOCATOR.held().cast_signed() - before.cast_signed());
+        if commit == 0 {
+            let runs = (25_256 * 4 + (100_000 - 25_256) * 32) * RUN;
+            let held = ALLOCATOR.held() - start - runs;
+            let paths = usize::try_from(paths).expect("fits");
+            let bound = 454 * paths + 16 * paths;
+            assert!(held <= bound, "{held} bytes in the wait, over {bound}");
+        }
+    }
+    let drained = ALLOCATOR.held();
+    for held in 1..=16 {
+        logs.trim(1, held);
+    }
+    for _ in 0..2 * LAP {
+        logs.trim(1, 0);
+        if ALLOCATOR.held() == drained {
+            break;
+        }
+    }
+    assert_eq!(
+        ALLOCATOR.held(),
+        drained,
+        "each path that waited shrinks at a later lap end"
+    );
+    drop(logs);
+    taken
 }
 
 fn main() {
@@ -100,6 +151,18 @@ fn main() {
         first_shrink(),
         769,
         "the lap that starts at 512 ends at 768"
+    );
+    let shrunk = |paths: isize| -> isize { -paths * (32 - 4) * RUN.cast_signed() };
+    assert_eq!(
+        wait(),
+        [
+            shrunk(25_256),
+            shrunk(25_256),
+            shrunk(25_256),
+            shrunk(100_000 - 3 * 25_256),
+        ],
+        "each commit shrinks 256 paths and one for each 4 trims, and allocates no \
+         room for the queue"
     );
     for paths in [1, 2, 3, 4, 5, 3585, 4097] {
         per_path(paths);

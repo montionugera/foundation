@@ -241,8 +241,8 @@ struct Log {
     /// The seq at which the first synced entry starts. `None` before it, and after a
     /// carried tail: its count is exact, and no trim passed an entry after it.
     origin: Option<u64>,
-    /// The offset at which the lap of the path started: 0, or the offset of the trim
-    /// that ended the lap before.
+    /// The offset at which the lap of the path started: 0, the offset of the trim that
+    /// ended the lap before, or the tail of the hide that ended a lap that waited.
     lap: u64,
     /// The most runs that a trim of the lap met.
     peak: u32,
@@ -373,19 +373,23 @@ enum Synced {
     Marked { after: u64 },
 }
 
-/// The most shrinks of the runs of a path that one [`Logs::hide`] does: at about
-/// 130 ns each, 33 us.
+/// The shrinks of the runs of a path that one [`Logs::hide`] does with no trim.
 const SHRINKS: usize = 256;
 
-/// The lap ends of the paths, with at most [`SHRINKS`] shrinks in one
-/// [`Logs::hide`], and the paths whose lap end waits for one.
+/// The trims of a [`Logs::hide`] for each shrink that it adds to [`SHRINKS`].
+const TRIMS: usize = 4;
+
+/// The lap ends of the paths, with at most [`SHRINKS`] shrinks and one for each
+/// [`TRIMS`] trims in one [`Logs::hide`], and the paths whose lap end waits for one.
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 struct Laps {
-    /// The most shrinks in one hide.
+    /// The shrinks of a hide with no trim.
     most: usize,
-    /// The shrinks left to the current hide.
-    left: usize,
+    /// The trims of the current hide.
+    trims: usize,
+    /// The shrinks of the current hide.
+    used: usize,
     /// The place of each path whose lap end waits, oldest first. [`Log::due`] marks
     /// each, so a path is here at most once.
     due: VecDeque<u32>,
@@ -395,41 +399,69 @@ impl Laps {
     fn new() -> Self {
         Self {
             most: SHRINKS,
-            left: 0,
+            trims: 0,
+            used: 0,
             due: VecDeque::new(),
         }
     }
 
-    /// Starts a hide whose trims are after `offset`: it ends at `offset` the laps that
-    /// wait, oldest first, until the first that needs a shrink when none is left.
-    fn begin(&mut self, paths: &mut [Log], offset: u64) {
-        self.left = self.most;
-        while let Some(&at) = self.due.front()
-            && self.end(nth_mut(paths, at), at, offset)
-        {
+    /// Makes room in `due` for each of `paths` paths, so that no hide allocates.
+    fn add(&mut self, paths: usize) {
+        self.due.reserve(paths.saturating_sub(self.due.len()));
+    }
+
+    /// Starts a hide.
+    fn begin(&mut self) {
+        self.trims = 0;
+        self.used = 0;
+    }
+
+    /// Counts `count` trims of the current hide.
+    fn trimmed(&mut self, count: usize) {
+        self.trims = self.trims.saturating_add(count);
+    }
+
+    /// Ends the lap of `log`, at place `at`, at a trim at `offset`, and starts the
+    /// next there. When the room is over four times the most runs that a trim of the
+    /// lap met, or over four with none, the end shrinks it. So runs that swing inside
+    /// a lap take no allocation, and the room is at most four times the most runs of
+    /// two laps. When the end needs a shrink, and a path waits or no shrink is left,
+    /// the lap stays open and the path waits at the back of `due`.
+    #[cold]
+    fn end(&mut self, log: &mut Log, at: u32, offset: u64) {
+        if log.oversized() {
+            if !self.due.is_empty() || !self.take() {
+                log.due = true;
+                self.due.push_back(at);
+                return;
+            }
+            log.shrink();
+        }
+        log.start(offset);
+    }
+
+    /// Ends the hide whose tail is `offset`: ends there the laps that wait, oldest
+    /// first, until the first that needs a shrink when none is left.
+    fn finish(&mut self, paths: &mut [Log], offset: u64) {
+        while let Some(&at) = self.due.front() {
+            let log = nth_mut(paths, at);
+            if log.oversized() {
+                if !self.take() {
+                    return;
+                }
+                log.shrink();
+            }
+            log.start(offset);
             self.due.pop_front();
         }
     }
 
-    /// Ends the lap of `log`, at place `at`, and starts the next at `offset`. When the
-    /// room is over four times the most runs that a trim of the lap met, or over four
-    /// with none, the end shrinks it and takes a shrink. So runs that swing inside a
-    /// lap take no allocation, and the room is at most four times the most runs of two
-    /// laps. Returns false, with the lap open, when it needs a shrink and none is left:
-    /// the path then waits at the back of `due`, unless it waits already.
-    fn end(&mut self, log: &mut Log, at: u32, offset: u64) -> bool {
-        if log.oversized() {
-            let Some(left) = self.left.checked_sub(1) else {
-                if !log.due {
-                    log.due = true;
-                    self.due.push_back(at);
-                }
-                return false;
-            };
-            self.left = left;
-            log.shrink();
+    /// Takes a shrink of the current hide. Returns false when none is left.
+    fn take(&mut self) -> bool {
+        if self.used >= self.most.saturating_add(self.trims / TRIMS) {
+            return false;
         }
-        log.start(offset);
+        self.used = self.used.saturating_add(1);
         true
     }
 }
@@ -555,8 +587,10 @@ impl Logs {
     /// [`find`](Self::find) and [`tagged`](Self::tagged), and drops their runs. It
     /// visits each path once for each run that it drops, and each path whose lap end
     /// waits, up to the first that needs a shrink when none is left. It shrinks the
-    /// room of the runs of at most [`SHRINKS`] paths: first those that wait, oldest
-    /// first, then those whose lap its trims end. The others wait for a later call.
+    /// room of the runs of at most [`SHRINKS`] paths, plus one for each [`TRIMS`]
+    /// runs that it drops, at their lap ends, first in, first out. The others wait
+    /// for a later call: a path waits less than [`TRIMS`] areas of trims, because a
+    /// trim of each path falls in each area.
     ///
     /// # Panics
     ///
@@ -571,10 +605,11 @@ impl Logs {
             "invariant: the hidden tail {tail} goes back from {}",
             self.hidden
         );
-        self.laps.begin(&mut self.paths, self.hidden);
+        self.laps.begin();
         self.hidden = tail;
         self.marked.hide(tail);
         while let Some((offset, places)) = self.items.pop(tail) {
+            self.laps.trimmed(places.len());
             for at in places {
                 let log = nth_mut(&mut self.paths, at);
                 if log.trim(offset, self.area) {
@@ -582,6 +617,7 @@ impl Logs {
                 }
             }
         }
+        self.laps.finish(&mut self.paths, tail);
     }
 
     /// The ranges in which no trim lands. A trim never lands after the previous
@@ -663,6 +699,7 @@ impl Logs {
         let at = u32::try_from(self.paths.len()).expect("invariant: paths fit in u32");
         self.paths.push(log);
         self.places.insert(key, at);
+        self.laps.add(self.paths.len());
         at
     }
 
@@ -2464,8 +2501,7 @@ mod tests {
     fn laps(most: usize) -> Laps {
         Laps {
             most,
-            left: most,
-            due: VecDeque::new(),
+            ..Laps::new()
         }
     }
 
@@ -2526,8 +2562,8 @@ mod tests {
         assert_eq!((room_of(&log), log.lap), ((2, 0), AREA + 4096));
     }
 
-    /// The lap waits at 3 runs met, then meets 5. A hide with no shrink keeps it in
-    /// the queue once, and the next ends it with a shrink to twice 5.
+    /// The lap waits at 3 runs met, then meets 5. The end of a hide with no shrink
+    /// keeps it in the queue once, and the next ends it with a shrink to twice 5.
     #[test]
     fn a_lap_end_with_no_shrink_left_waits_and_counts_the_runs_of_the_whole_lap() {
         let mut laps = laps(0);
@@ -2539,12 +2575,13 @@ mod tests {
             .extend([run(3, 0, AREA + 4096), run(4, 0, AREA + 8192)]);
         assert!(!log.trim(AREA + 4096, AREA));
         assert_eq!((room_of(&log), log.lap, log.peak), ((32, 5), 0, 5));
-        laps.begin(std::slice::from_mut(&mut log), 2 * AREA);
+        laps.finish(std::slice::from_mut(&mut log), 2 * AREA);
         assert_eq!((room_of(&log), log.lap, log.due), ((32, 5), 0, true));
         assert_eq!(laps.due, [0]);
         laps.most = 1;
-        laps.begin(std::slice::from_mut(&mut log), 2 * AREA);
-        assert_eq!((room_of(&log), laps.left, laps.due.len()), ((10, 5), 0, 0));
+        laps.begin();
+        laps.finish(std::slice::from_mut(&mut log), 2 * AREA);
+        assert_eq!((room_of(&log), laps.used, laps.due.len()), ((10, 5), 1, 0));
         assert_eq!((log.lap, log.peak, log.due), (2 * AREA, 5, false));
     }
 
@@ -2565,7 +2602,7 @@ mod tests {
         trim(&mut laps, &mut log, AREA);
         log.runs.extend((3..8).map(|n| run(n, 0, AREA + 4096 * n)));
         assert!(!log.trim(AREA + 4096, AREA));
-        laps.begin(std::slice::from_mut(&mut log), 2 * AREA);
+        laps.finish(std::slice::from_mut(&mut log), 2 * AREA);
         assert_eq!(
             (room_of(&log), log.lap, log.due),
             ((32, 8), 2 * AREA, false)
@@ -2578,23 +2615,54 @@ mod tests {
         let mut laps = laps(2);
         let mut log = log_with(32, 3);
         trim(&mut laps, &mut log, AREA);
-        assert_eq!((room_of(&log), laps.left), ((6, 3), 1));
+        assert_eq!((room_of(&log), laps.used), ((6, 3), 1));
+    }
+
+    #[test]
+    fn a_lap_end_that_needs_a_shrink_waits_behind_a_path_that_waits() {
+        let mut laps = laps(1);
+        laps.due.push_back(0);
+        let mut log = log_with(32, 3);
+        if log.trim(AREA, AREA) {
+            laps.end(&mut log, 1, AREA);
+        }
+        assert_eq!((room_of(&log), log.due, laps.used), ((32, 3), true, 0));
+        assert_eq!(laps.due, [0, 1]);
+    }
+
+    #[test]
+    fn each_four_trims_of_a_hide_add_a_shrink() {
+        let mut laps = laps(0);
+        laps.trimmed(3);
+        let mut log = log_with(32, 3);
+        trim(&mut laps, &mut log, AREA);
+        assert_eq!((room_of(&log), log.due), ((32, 3), true));
+        laps.due.clear();
+        laps.trimmed(1);
+        let mut log = log_with(32, 3);
+        trim(&mut laps, &mut log, AREA);
+        assert_eq!((room_of(&log), log.due, laps.used), ((6, 3), false, 1));
+        laps.begin();
+        assert_eq!((laps.trims, laps.used), (0, 0));
     }
 
     /// Each of 100,000 paths has an entry in each record of a ring of 4 blocks. The
     /// first 8 records stay, so each path has room for 16 runs. Then each commit
     /// trims to its own record, and the lap that holds 2 runs needs a shrink of each
-    /// path at the trim of record 12. That `hide`, and each `hide` after it, shrinks
-    /// 256 paths, oldest first, until each has room for 4.
+    /// path at the trim of record 12. That `hide`, and each `hide` after it, trims
+    /// 100,000 runs, so it shrinks 256 + 25,000 paths, first in, first out, until
+    /// each has room for 4. A path that waits starts its next lap at the tail of the
+    /// `hide` that ends its wait.
     #[test]
-    fn a_hide_shrinks_at_most_256_paths_and_the_rest_wait_in_turn() {
+    fn a_hide_shrinks_256_paths_and_one_for_each_four_trims_and_the_rest_wait_in_turn()
+    {
         let paths: u32 = 100_000;
         let mut logs = Logs::new(4 * 4096);
         let rooms = |logs: &Logs| -> Vec<usize> {
             logs.paths.iter().map(|log| log.runs.capacity()).collect()
         };
         let mut shrunk = Vec::new();
-        for record in 1..=14 {
+        for record in 1..=17 {
             for index in 1..=paths {
                 let at = slot(index);
                 let first = logs.appended(at, Path::Live).seq;
@@ -2606,25 +2674,120 @@ mod tests {
                 let before = rooms(&logs);
                 logs.hide(4096 * record);
                 let after = rooms(&logs);
-                shrunk.push(before.iter().zip(&after).filter(|(b, a)| a < b).count());
+                let places: Vec<usize> = (0..before.len())
+                    .filter(|&at| after[at] < before[at])
+                    .collect();
+                let range = places.first().zip(places.last()).map(|(&a, &b)| a..b + 1);
+                assert_eq!(places.len(), range.clone().map_or(0, |r| r.len()));
+                shrunk.push(range);
+            }
+            if record == 14 {
+                assert!(
+                    logs.laps.due.capacity() <= 2 * 100_000,
+                    "S4 counts 8 bytes a path"
+                );
             }
         }
-        assert_eq!(shrunk, [0, 0, 0, 0, 256, 256]);
-        assert!(
-            logs.laps.due.capacity() <= 2 * 100_000,
-            "S4 counts 8 bytes a path"
-        );
-        let mut waits = Vec::new();
-        while !logs.laps.due.is_empty() {
-            let before = rooms(&logs);
-            logs.hide(4096 * 14);
-            let after = rooms(&logs);
-            waits.push(before.iter().zip(&after).filter(|(b, a)| a < b).count());
-        }
-        let mut expected = vec![256; 388];
-        expected.push(100_000 - 390 * 256);
-        assert_eq!(waits, expected);
+        let budget = 256 + 100_000 / 4;
+        let mut expected = vec![None; 4];
+        expected.extend([
+            Some(0..budget),
+            Some(budget..2 * budget),
+            Some(2 * budget..3 * budget),
+            Some(3 * budget..100_000),
+            None,
+        ]);
+        assert_eq!(shrunk, expected);
+        assert!(logs.laps.due.is_empty());
         assert!(logs.paths.iter().all(|log| log.runs.capacity() == 4));
+        assert_eq!(
+            (logs.paths[0].lap, logs.paths[budget].lap),
+            (4096 * 16, 4096 * 14)
+        );
+    }
+
+    /// Writes one record at `offset`, with an entry of 51 bytes of each of
+    /// `indexes`, and moves `offset` past it.
+    fn record_at(
+        logs: &mut Logs,
+        offset: &mut u64,
+        records: &mut Vec<u64>,
+        indexes: impl IntoIterator<Item = u32>,
+    ) {
+        let at = *offset;
+        let mut count = 0;
+        for index in indexes {
+            let s = slot(index);
+            let first = logs.appended(s, Path::Live).seq;
+            let entry = header(index, Path::Live, first, 1, Some(1));
+            logs.append(s, &entry).expect("appends");
+            logs.sync(s, &entry, at).expect("syncs");
+            count += 1;
+        }
+        *offset += 51 * count;
+        records.push(at);
+    }
+
+    /// 8192 paths, each with an entry in each sweep record, and `most` shrinks in a
+    /// hide with no trim. 9 sweeps stay, then each commit trims to the oldest holder,
+    /// so one hide needs a shrink of each path, and most wait. In each of the next
+    /// `bursts` commits, one path late in the queue gets 65,535 records of its own,
+    /// which fit in the ring. Returns the most bytes of room of the runs after a
+    /// hide, and the S4 bound of the runs, items, and ranges (1256/51 of the area
+    /// plus 48 bytes per record) plus 96 bytes per path.
+    fn bursts_in_a_wait(most: usize, bursts: u32) -> (usize, usize) {
+        let paths: u32 = 8192;
+        let area: u64 = 512 * u64::from(paths);
+        let mut logs = Logs::new(area);
+        logs.laps.most = most;
+        let mut offset = 0;
+        let mut records = Vec::new();
+        for _ in 0..9 {
+            record_at(&mut logs, &mut offset, &mut records, 1..=paths);
+        }
+        let mut queued = false;
+        let mut burst = 0;
+        let mut worst = (0, 0);
+        for _ in 0..400 {
+            record_at(&mut logs, &mut offset, &mut records, 1..=paths);
+            assert!(offset - logs.hidden <= area, "the ring holds the records");
+            let kept = logs.kept().expect("a holder");
+            logs.hide(kept);
+            records.retain(|&record| record >= logs.hidden);
+            queued |= logs.paths[0].runs.capacity() < 16;
+            if queued && burst < bursts {
+                let path = paths - burst;
+                for _ in 0..65_535 {
+                    record_at(&mut logs, &mut offset, &mut records, [path]);
+                }
+                burst += 1;
+                assert!(offset - logs.hidden <= area, "the ring holds the records");
+            }
+            let room = logs
+                .paths
+                .iter()
+                .map(|log| log.runs.capacity())
+                .sum::<usize>()
+                * size_of::<Run>();
+            let bound = usize::try_from(1256 * area / 51).expect("fits")
+                + 48 * records.len()
+                + 96 * usize::try_from(paths).expect("fits");
+            if room > worst.0 {
+                worst = (room, bound);
+            }
+            if burst == bursts && logs.laps.due.is_empty() {
+                break;
+            }
+        }
+        worst
+    }
+
+    /// With 16 shrinks in a hide and no shrink for its trims, a lap end waits 512
+    /// hides, and the room passes the bound.
+    #[test]
+    fn the_runs_of_paths_that_wait_keep_the_s4_bound() {
+        let (room, bound) = bursts_in_a_wait(16, 60);
+        assert!(room <= bound, "{room} bytes of room, over {bound}");
     }
 
     /// The lap and the peak fit in the padding of a log, and a bucket of the map of
@@ -2696,12 +2859,12 @@ mod tests {
     proptest! {
         /// Records of a block each hold an entry of some of 8 paths, or the carried
         /// tails of the idle paths, and a trim may follow each, up to the oldest
-        /// holder, in a ring of 4 blocks, with 1 or 2 shrinks for each hide. Each lap
-        /// spans at least the area. After each trim, each path has room for at most
-        /// four times the most runs that it held from the step before the end of the
-        /// lap before the current one, or four with no run. No hide shrinks more than
-        /// its count, and no lap end waits more hides than 8 over the count, rounded
-        /// up.
+        /// holder, in a ring of 4 blocks, with 1 or 2 shrinks for each hide and one
+        /// for each 4 trims. Each lap spans at least the area. After each trim, each
+        /// path has room for at most four times the most runs that it held from the
+        /// step before the end of the lap before the current one, or four with no run.
+        /// No hide shrinks more than its budget, and no lap end waits more hides than 8
+        /// over the count, rounded up.
         #[test]
         fn a_trim_keeps_the_room_of_each_path_in_four_times_its_runs_of_two_laps(
             records in prop::collection::vec(
@@ -2740,13 +2903,19 @@ mod tests {
                 let rooms: Vec<usize> =
                     logs.paths.iter().map(|log| log.runs.capacity()).collect();
                 logs.hide(logs.hidden.max((4096 * trim).min(kept)));
+                let trims = logs.laps.trims;
                 let shrunk = logs
                     .paths
                     .iter()
                     .zip(&rooms)
                     .filter(|&(log, &room)| log.runs.capacity() < room)
                     .count();
-                prop_assert!(shrunk <= shrinks, "{} shrinks in one hide", shrunk);
+                prop_assert!(
+                    shrunk <= shrinks + trims / 4,
+                    "{} shrinks in one hide of {} trims",
+                    shrunk,
+                    trims
+                );
                 for (log, laps) in logs.paths.iter().zip(&mut seen) {
                     let ended = log.lap != laps.lap;
                     if ended {
