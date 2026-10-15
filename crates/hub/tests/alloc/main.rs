@@ -354,7 +354,7 @@ fn woken_of_a_reader_whose_frame_waits_for_credit() {
     sim.run_on(&node, |node, tasks| async move {
         let mut woken = Woken::new(&node, tasks, 1).await;
         let slot = woken.set.entries()[woken.set.groups()[0]].slot;
-        let limited = woken.shard.open_complete(slot, 1, Charge::Whole);
+        let limited = woken.shard.open_complete(slot, 1, Charge::Whole).key;
         let mut calls = Vec::new();
         let mut spent = 0;
         for n in 0..6 {

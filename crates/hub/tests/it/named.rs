@@ -1,5 +1,6 @@
 //! Named reader sessions: one session for each subject and name.
 
+use std::ops::Range;
 use std::path::Path as FilePath;
 use std::pin::pin;
 use std::sync::atomic::Ordering;
@@ -189,7 +190,7 @@ fn ends_a_named_complete_reader_behind_on_a_frame_dropped_before_it_resumes() {
 }
 
 #[test]
-fn ends_a_named_complete_reader_behind_past_a_frame_lost_while_held() {
+fn gives_a_held_named_reader_the_frame_after_a_run_lost_while_held_with_its_gap() {
     run(22, |test| async move {
         let open = named("a", "r", Mode::Complete, Span::SECOND);
         let first = test.hub.reader(open).await.expect("opens");
@@ -200,30 +201,37 @@ fn ends_a_named_complete_reader_behind_past_a_frame_lost_while_held() {
         // Frees one block at a time until a write freezes the frame and still loses
         // it, which the latest reader shows.
         let mut blocks = super::fill(&test.pool);
+        let mut lost_seqs = None;
         let lost = loop {
             drop(blocks.pop().expect("a write that freezes its frame"));
             let draft = super::draft(&writer, &[(1, &[test.now()]), (2, &[7])]);
             let outcomes = writer.write(super::LIVE, draft).expect("taken").to_vec();
-            assert!(
-                matches!(outcomes[..], [hub::home::Outcome::Lost { .. }]),
-                "{outcomes:?}"
+            let [hub::home::Outcome::Lost { range, .. }] = outcomes[..] else {
+                panic!("{outcomes:?}");
+            };
+            let end = range.end().expect("an end");
+            lost_seqs = Some(
+                lost_seqs.map_or(range.seq..end, |lost: Range<u64>| lost.start..end),
             );
             if let Poll::Ready(received) = super::poll_once(latest.next()) {
                 break received.expect("a frame");
             }
         };
         assert_eq!(samples(&lost, 2), [7]);
+        assert_eq!(lost.gap(), None, "a latest reader skips by design");
         drop(blocks);
         test.clock.sleep(SETTLE).await;
         let open = named("a", "r", Mode::Complete, Span::SECOND);
         let mut reader = test.hub.reader(open).await.expect("opens");
         write(&mut writer, &[test.now()], &[8]);
-        assert_eq!(reader.next().await.expect_err("behind"), Ended::Behind);
+        let received = reader.next().await.expect("the frame after the run");
+        assert_eq!(samples(&received, 2), [8]);
+        assert_eq!(received.gap(), lost_seqs);
     });
 }
 
 #[test]
-fn ends_a_held_named_reader_behind_past_a_frame_lost_while_another_is_open() {
+fn gives_a_held_named_reader_the_gap_of_a_run_lost_while_another_is_open() {
     run(23, |test| async move {
         let mut keep = test.reader(&["value"], Mode::Complete).await;
         let open = named("a", "r", Mode::Complete, Span::SECOND);
@@ -235,17 +243,22 @@ fn ends_a_held_named_reader_behind_past_a_frame_lost_while_another_is_open() {
         drop(blocks.pop());
         let draft = super::draft(&writer, &[(1, &[test.now()]), (2, &[7])]);
         let outcomes = writer.write(super::LIVE, draft).expect("taken").to_vec();
-        assert!(
-            matches!(outcomes[..], [hub::home::Outcome::Lost { .. }]),
-            "{outcomes:?}"
-        );
+        let [hub::home::Outcome::Lost { range, .. }] = outcomes[..] else {
+            panic!("{outcomes:?}");
+        };
+        let lost = range.seq..range.end().expect("an end");
         drop(blocks);
-        assert_eq!(keep.next().await.expect_err("behind"), Ended::Behind);
         test.clock.sleep(SETTLE).await;
         let open = named("a", "r", Mode::Complete, Span::SECOND);
-        let mut reader = test.hub.reader(open).await.expect("opens");
+        let before = test.hub.reader(open.clone()).await.expect("opens");
         write(&mut writer, &[test.now()], &[8]);
-        assert_eq!(reader.next().await.expect_err("behind"), Ended::Behind);
+        drop(before);
+        let open = test.hub.reader(open).await.expect("opens");
+        for mut reader in [keep, open] {
+            let received = reader.next().await.expect("the frame after the run");
+            assert_eq!(samples(&received, 2), [8]);
+            assert_eq!(received.gap(), Some(lost.clone()));
+        }
     });
 }
 

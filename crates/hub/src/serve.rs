@@ -429,7 +429,7 @@ async fn open(
     let (session, complete) = match open.mode {
         Mode::Complete { limit_bytes } => {
             let charge = ::home::reader::complete::Charge::Places(slots.clone());
-            let (session, complete) =
+            let (session, complete, _) =
                 Session::complete(state, channels, limit_bytes, charge);
             (session, Some(complete))
         }

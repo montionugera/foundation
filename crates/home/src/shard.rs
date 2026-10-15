@@ -96,7 +96,7 @@ const GRACE: Span = Span::from_nanos(10_000_000_000);
 /// .await?;
 /// assert!(shard.carry(index, stamps));
 /// let charge = home::reader::complete::Charge::Whole;
-/// let reader = shard.open_complete(index, 1 << 20, charge);
+/// let reader = shard.open_complete(index, 1 << 20, charge).key;
 ///
 /// let mut frame = Draft::new(shard.pool(), &set, Form::Raw, &[(0, 8), (1, 8)])?;
 /// for (entry, sample) in [(0, 10_i64), (1, 7)] {
@@ -223,7 +223,7 @@ pub enum Outcome {
         range: frame::Range,
     },
     /// A live group with samples found no room in the ring or the pool. Its seq is a
-    /// gap in the log, and each complete reader that it ends past misses it. The gap is
+    /// gap in the log: a complete reader gets the next frame, past it. The gap is
     /// durable only when a later live entry of the index, with samples or a handoff, is
     /// on disk: a restart before that gives the next frame the same seq. After a
     /// [`Shard::shed`] and a [`Shard::carry`] of the index, the next frame gets the
@@ -637,11 +637,11 @@ impl Shard {
     /// samples after the commit that holds it, while the bytes it has spent are below
     /// its credit: a frame spends what `charge` says. A frame that finds the credit
     /// spent waits for a [`grant`](Self::grant), and so does each later frame. A frame
-    /// that still waits when a later commit releases frames of the index is a miss,
-    /// and so is a live frame that the write gives as [`Outcome::Lost`], with each
-    /// frame that waits for a grant then: the reader gets neither it nor a later
-    /// frame, and [`take`](Self::take) gives the frames before it, then
-    /// [`Next::Behind`](reader::Next::Behind).
+    /// that still waits when a later commit releases frames of the index is a miss:
+    /// the reader gets neither it nor a later frame, and [`take`](Self::take) gives
+    /// the frames before it, then [`Next::Behind`](reader::Next::Behind). A live
+    /// frame that the write gives as [`Outcome::Lost`] is no miss: the reader gets the
+    /// next frame, which starts past it.
     /// [`woken`](Self::woken) names the reader once for a miss with no frame to take,
     /// and not for a miss while frames wait to be taken. The home does not read a
     /// missed frame back from disk yet. Close the reader and open a new one. The new
@@ -657,11 +657,14 @@ impl Shard {
         slot: Slot,
         limit_bytes: u64,
         charge: reader::complete::Charge,
-    ) -> reader::complete::Key {
+    ) -> reader::complete::Opened {
         let place = self.place(slot);
         let live = self.indexes[place].live_tail();
         let session = self.readers.open_complete(place, live, limit_bytes, charge);
-        reader::complete::Key { slot, session }
+        reader::complete::Opened {
+            key: reader::complete::Key { slot, session },
+            live,
+        }
     }
 
     /// Opens a complete session for the named reader `reader` on the index at `slot`,
@@ -687,7 +690,7 @@ impl Shard {
         hold: Span,
         limit_bytes: u64,
         charge: reader::complete::Charge,
-    ) -> Result<reader::Opened<reader::complete::Key>, reader::Unsynced> {
+    ) -> Result<reader::Opened<reader::complete::Opened>, reader::Unsynced> {
         let place = self.place(slot);
         let (_, now) = self.clocks().ok_or(reader::Unsynced)?;
         let live = self.indexes[place].live_tail();
@@ -701,9 +704,12 @@ impl Shard {
             now,
         );
         Ok(reader::Opened {
-            key: reader::complete::Key {
-                slot,
-                session: opened.key,
+            key: reader::complete::Opened {
+                key: reader::complete::Key {
+                    slot,
+                    session: opened.key,
+                },
+                live: opened.position.live,
             },
             replaced: opened.replaced.map(|session| reader::Key { slot, session }),
         })
@@ -974,10 +980,9 @@ fn spend<'a>(
                 Outcome::Applied { slot, range }
             }
             Ok(accepted) => {
-                let seq = accepted.seq();
-                let range = range(&seq);
+                let range = range(&accepted.seq());
                 index.spend(accepted);
-                readers.lost(claim.place, frozen, seq);
+                readers.lost(claim.place, frozen);
                 Outcome::Lost { slot, range }
             }
             Err(refusal) => Outcome::Refused { slot, refusal },
@@ -1529,7 +1534,7 @@ mod tests {
 
     /// Opens a complete reader on the index at `slot`, with a credit of `CREDIT`.
     fn complete(shard: &mut Shard, slot: Slot) -> reader::Key {
-        shard.open_complete(slot, CREDIT, Charge::Whole).into()
+        shard.open_complete(slot, CREDIT, Charge::Whole).key.into()
     }
 
     /// Each frame that `reader` takes now, then the [`reader::Next`] after them.
@@ -1966,9 +1971,8 @@ mod tests {
         });
     }
 
-    /// A live frame that finds no room is a frame that a complete reader misses.
     #[test]
-    fn ends_a_complete_reader_behind_after_a_live_frame_lost_for_no_room() {
+    fn gives_a_complete_reader_each_frame_before_a_live_frame_lost_for_no_room() {
         run(6, |test| async move {
             let set = two_indexes();
             let mut shard = test.shard(1 << 16).await;
@@ -1988,7 +1992,7 @@ mod tests {
                 shard.committed().await.expect("the commit ends");
             }
             woken(&mut shard);
-            assert_eq!(missed(&mut shard, reader, 0), applied);
+            assert_eq!(taken(&mut shard, reader, 0), applied);
         });
     }
 
@@ -2060,7 +2064,7 @@ mod tests {
     }
 
     #[test]
-    fn ends_each_complete_reader_behind_at_a_frame_the_pool_could_not_freeze() {
+    fn gives_each_complete_reader_the_frame_after_one_the_pool_could_not_freeze() {
         run(16, |test| async move {
             let set = two_indexes();
             let mut shard = test.shard(AREA).await;
@@ -2087,8 +2091,8 @@ mod tests {
             );
             shard.committed().await.expect("the commit ends");
             woken(&mut shard);
-            assert_eq!(missed(&mut shard, zero, 0), []);
-            assert_eq!(missed(&mut shard, two, 1), []);
+            assert_eq!(taken(&mut shard, zero, 0), [seq(1, 1)]);
+            assert_eq!(taken(&mut shard, two, 1), [seq(100, 1)]);
         });
     }
 
@@ -4015,7 +4019,7 @@ mod tests {
             run(97, |test| async move {
                 let mut shard = test.unsynced().await;
                 assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
-                let session = shard.open_complete(Slot::new(0), 1, Charge::Whole);
+                let session = shard.open_complete(Slot::new(0), 1, Charge::Whole).key;
                 let readers = [session.into(), shard.open_latest(Slot::new(0))];
                 assert_ne!(readers[0], readers[1]);
                 shard.grant(session, CREDIT);
@@ -4188,7 +4192,7 @@ mod tests {
         }
 
         #[test]
-        fn ends_a_complete_reader_behind_at_a_lost_group_after_the_frames_before_it() {
+        fn gives_a_complete_reader_the_frames_on_each_side_of_a_lost_group() {
             run(35, |test| async move {
                 let set = two_indexes();
                 let mut shard = test.shard(AREA).await;
@@ -4202,7 +4206,7 @@ mod tests {
                 write(&test, &mut shard, a, &[40]);
                 shard.committed().await.expect("the commit ends");
                 assert_eq!(woken(&mut shard), [reader]);
-                assert_eq!(missed(&mut shard, reader, 0), [seq(0, 1)]);
+                assert_eq!(taken(&mut shard, reader, 0), [seq(0, 1), seq(3, 1)]);
             });
         }
 
@@ -4233,7 +4237,7 @@ mod tests {
             run(37, |test| async move {
                 let set = two_indexes();
                 let mut shard = test.shard(AREA).await;
-                let session = shard.open_complete(Slot::new(0), 1, Charge::Whole);
+                let session = shard.open_complete(Slot::new(0), 1, Charge::Whole).key;
                 let reader = reader::Key::from(session);
                 let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
                 write(&test, &mut shard, a, &[10]);
@@ -4252,7 +4256,7 @@ mod tests {
             run(37, |test| async move {
                 let set = two_indexes();
                 let mut shard = test.shard(AREA).await;
-                let session = shard.open_complete(Slot::new(0), 1, Charge::Whole);
+                let session = shard.open_complete(Slot::new(0), 1, Charge::Whole).key;
                 let reader = reader::Key::from(session);
                 let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
                 write(&test, &mut shard, a, &[10]);
@@ -4278,7 +4282,7 @@ mod tests {
             run(39, |test| async move {
                 let set = two_indexes();
                 let mut shard = test.shard(AREA).await;
-                let session = shard.open_complete(Slot::new(0), 1, Charge::Whole);
+                let session = shard.open_complete(Slot::new(0), 1, Charge::Whole).key;
                 let reader = reader::Key::from(session);
                 let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
                 for stamp in [10, 20, 30] {
@@ -4316,10 +4320,10 @@ mod tests {
                 let index = types::frame::charge(1, index);
                 assert!(probed.charge() > index + 1);
                 let places = Charge::Places([Slot::new(0)].into());
-                let session = shard.open_complete(Slot::new(0), index + 1, places);
+                let session = shard.open_complete(Slot::new(0), index + 1, places).key;
                 let reader = reader::Key::from(session);
                 let places = Charge::Places([Slot::new(1), Slot::new(0)].into());
-                let data = shard.open_complete(Slot::new(0), 2 * index + 1, places);
+                let data = shard.open_complete(Slot::new(0), 2 * index + 1, places).key;
                 for n in 1..4 {
                     write(&test, &mut shard, a, &stamps(n));
                 }
@@ -4345,7 +4349,10 @@ mod tests {
             run(110, |test| async move {
                 let set = two_indexes();
                 let mut shard = test.shard(AREA).await;
-                let reader = shard.open_complete(Slot::new(0), 1, Charge::Whole).into();
+                let reader = shard
+                    .open_complete(Slot::new(0), 1, Charge::Whole)
+                    .key
+                    .into();
                 let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
                 write(&test, &mut shard, a, &[10]);
                 shard.committed().await.expect("the commit ends");
@@ -4371,7 +4378,10 @@ mod tests {
             run(111, |test| async move {
                 let set = two_indexes();
                 let mut shard = test.shard(AREA).await;
-                let reader = shard.open_complete(Slot::new(0), 1, Charge::Whole).into();
+                let reader = shard
+                    .open_complete(Slot::new(0), 1, Charge::Whole)
+                    .key
+                    .into();
                 let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
                 write(&test, &mut shard, a, &[10]);
                 shard.committed().await.expect("the commit ends");
@@ -4391,7 +4401,7 @@ mod tests {
             run(104, |test| async move {
                 let set = two_indexes();
                 let mut shard = test.shard(AREA).await;
-                let session = shard.open_complete(Slot::new(2), 1, Charge::Whole);
+                let session = shard.open_complete(Slot::new(2), 1, Charge::Whole).key;
                 let reader = reader::Key::from(session);
                 let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
                 let first = frame(&test.pool, &set, &[(2, &[10])]);
@@ -4452,7 +4462,7 @@ mod tests {
             run(25, |test| async move {
                 let set = two_indexes();
                 let mut shard = test.shard(AREA).await;
-                let session = shard.open_complete(Slot::new(0), 1, Charge::Whole);
+                let session = shard.open_complete(Slot::new(0), 1, Charge::Whole).key;
                 let reader = reader::Key::from(session);
                 let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
                 write(&test, &mut shard, a, &[10]);
@@ -4472,11 +4482,23 @@ mod tests {
         fn ignores_a_grant_to_a_closed_complete_reader() {
             run(46, |test| async move {
                 let mut shard = test.shard(AREA).await;
-                let session = shard.open_complete(Slot::new(0), 1, Charge::Whole);
+                let session = shard.open_complete(Slot::new(0), 1, Charge::Whole).key;
                 close(&mut shard, session.into());
                 shard.grant(session, CREDIT);
-                let after = shard.open_complete(Slot::new(0), 1, Charge::Whole);
+                let after = shard.open_complete(Slot::new(0), 1, Charge::Whole).key;
                 assert_ne!(after, session);
+            });
+        }
+
+        #[test]
+        fn gives_the_live_tail_as_the_start_of_a_complete_reader() {
+            run(247, |test| async move {
+                let set = two_indexes();
+                let mut shard = test.shard(AREA).await;
+                let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
+                write(&test, &mut shard, a, &[10, 20]);
+                let opened = shard.open_complete(Slot::new(0), 1, Charge::Whole);
+                assert_eq!(opened.live, 2);
             });
         }
 
@@ -4751,7 +4773,7 @@ mod tests {
         #[test]
         fn panics_at_the_open_of_a_complete_reader_of_an_index_it_does_not_carry() {
             check_not_carried(99, |shard| {
-                let _key = shard.open_complete(Slot::new(3), CREDIT, Charge::Whole);
+                let _key = shard.open_complete(Slot::new(3), CREDIT, Charge::Whole).key;
             });
         }
 
@@ -4782,7 +4804,8 @@ mod tests {
         #[test]
         fn panics_at_the_grant_to_a_reader_of_an_index_it_does_not_carry() {
             check_not_carried(86, |shard| {
-                let reader = shard.open_complete(Slot::new(2), CREDIT, Charge::Whole);
+                let reader =
+                    shard.open_complete(Slot::new(2), CREDIT, Charge::Whole).key;
                 let other = reader::complete::Key {
                     slot: Slot::new(3),
                     ..reader
@@ -4827,14 +4850,14 @@ mod tests {
             run(132, |test| async move {
                 let set = two_indexes();
                 let mut shard = test.shard(AREA).await;
-                let old = shard.open_complete(Slot::new(0), 1, Charge::Whole);
+                let old = shard.open_complete(Slot::new(0), 1, Charge::Whole).key;
                 let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
                 write(&test, &mut shard, a, &[10, 20]);
                 shard.close_writer(a);
                 shard.close_reader(old.into());
                 shard.shed(Slot::new(0));
                 assert!(shard.carry(Slot::new(0), key(Slot::new(0))));
-                let new = shard.open_complete(Slot::new(0), 1, Charge::Whole);
+                let new = shard.open_complete(Slot::new(0), 1, Charge::Whole).key;
                 assert_ne!(reader::Key::from(new), reader::Key::from(old));
                 shard.grant(old, CREDIT);
                 let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
@@ -5152,6 +5175,10 @@ mod tests {
                         CREDIT,
                         Charge::Whole,
                     )
+                    .map(|opened| Opened {
+                        key: opened.key.key,
+                        replaced: opened.replaced,
+                    })
                     .expect("synced")
             }
 
@@ -5337,6 +5364,34 @@ mod tests {
                     let second = named(&mut shard, "a", "r");
                     committed(&test, &mut shard, a, &[30]).await;
                     assert_eq!(taken(&mut shard, second.key.into(), 0), [seq(2, 1)]);
+                });
+            }
+
+            #[test]
+            fn gives_its_held_position_as_its_start_then_the_live_tail_after_the_hold()
+            {
+                run(248, |test| async move {
+                    let set = two_indexes();
+                    let mut shard = test.shard(AREA).await;
+                    let a = shard.open_writer(writer("w", 1, &set)).expect("synced");
+                    let first = named(&mut shard, "a", "r");
+                    committed(&test, &mut shard, a, &[10, 20, 30]).await;
+                    shard.ack(first.key, live(1)).expect("forward");
+                    let open = |shard: &mut Shard| {
+                        let opened = shard.open_named_complete(
+                            Slot::new(0),
+                            key("a", "r"),
+                            HOLD,
+                            CREDIT,
+                            Charge::Whole,
+                        );
+                        opened.expect("synced").key
+                    };
+                    let held = open(&mut shard);
+                    assert_eq!(held.live, 1);
+                    close(&mut shard, held.key.into());
+                    test.clock.sleep(HOLD).await;
+                    assert_eq!(open(&mut shard).live, 3);
                 });
             }
 

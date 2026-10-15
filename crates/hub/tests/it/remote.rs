@@ -1528,6 +1528,31 @@ fn a_reader_gets_the_seq_and_path_of_each_frame_from_the_home() {
 }
 
 #[test]
+fn a_complete_reader_gets_the_seqs_that_the_home_skipped_as_the_gap_of_the_next_frame()
+{
+    remote(
+        147,
+        sim::link::Config::default(),
+        |node, _, transport, steps| async move {
+            let (_, mut sender, _receiver) = fake_open(&transport).await;
+            let mut seq = 0;
+            for skipped in [0, 3, 0] {
+                seq += skipped;
+                send_frame(&mut sender, &mut seq, 32).await.expect("sends");
+            }
+            until(&node.clock(), &steps.done).await;
+        },
+        |test, _| async move {
+            let mut reader = test.reader(&["value"], Mode::Complete).await;
+            for gap in [None, Some(2..5), None] {
+                let received = reader.next().await.expect("a frame");
+                assert_eq!(received.gap(), gap);
+            }
+        },
+    );
+}
+
+#[test]
 fn a_complete_reader_that_the_home_ends_with_behind_gets_behind_at_each_next() {
     remote(
         17,

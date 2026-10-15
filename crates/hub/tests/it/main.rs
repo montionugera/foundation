@@ -2068,12 +2068,14 @@ fn ends_a_complete_reader_after_its_waiting_frames_when_it_misses_a_frame() {
     });
 }
 
-/// A reader that sleeps while a writer writes one frame each second gets the frames
-/// before its miss, then `Behind`: frames of 128 samples pass the window before they
-/// fill the ring, and frames of 1 sample fill the ring first, so the reader gets each
-/// frame that the hub applied.
+/// A reader that sleeps while a writer writes one frame each second: frames of 128
+/// samples pass the window before they fill the ring, so the reader gets the frames
+/// before its miss, then `Behind`. Frames of 1 sample fill the ring first, so the
+/// reader gets each frame that the hub applied, and the frames lost for no room end
+/// nothing.
 #[test]
-fn ends_a_complete_reader_that_sleeps_past_its_window_or_its_ring_as_behind() {
+fn ends_a_complete_reader_that_sleeps_past_its_window_as_behind_but_not_past_its_ring()
+{
     for samples in [128, 1] {
         run(21, move |test| async move {
             let mut reader = test.reader(&["value"], Mode::Complete).await;
@@ -2095,21 +2097,54 @@ fn ends_a_complete_reader_that_sleeps_past_its_window_or_its_ring_as_behind() {
                         taken += 1;
                         spent += charge(&received.view());
                     }
-                    Some(Err(ended)) => break ended,
-                    None => panic!(
-                        "{samples} samples a frame: no end after {taken} frames of \
-                         {spent} bytes, of {applied} applied"
-                    ),
+                    Some(Err(ended)) => break Some(ended),
+                    None => break None,
                 }
             };
-            assert_behind(&ended);
-            assert!(taken < 1_100, "{taken} frames");
-            // The ring fills before the window, so each applied frame comes first.
             if samples == 1 {
+                assert_eq!(ended, None);
                 assert_eq!(taken, applied);
+                assert!(applied < 1_100, "{applied} applied");
+            } else {
+                let ended = ended.unwrap_or_else(|| {
+                    panic!(
+                        "{samples} samples a frame: no end after {taken} frames of \
+                         {spent} bytes, of {applied} applied"
+                    )
+                });
+                assert_behind(&ended);
+                assert!(taken < 1_100, "{taken} frames");
             }
         });
     }
+}
+
+#[test]
+fn gives_a_complete_reader_the_samples_lost_for_no_room_as_the_gap_of_the_next_frame() {
+    run(110, |test| async move {
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value"]).await;
+        write(&mut writer, &[test.now()], &[7]);
+        test.clock.sleep(SETTLE).await;
+        let mut blocks = fill(&test.pool);
+        drop(blocks.pop());
+        let draft = draft(&writer, &[(1, &[test.now(), test.now() + 1]), (2, &[0, 0])]);
+        let outcomes = writer.write(LIVE, draft).expect("taken").to_vec();
+        let [Outcome::Lost { range, .. }] = outcomes[..] else {
+            panic!("{outcomes:?}");
+        };
+        let lost = range.seq..range.end().expect("an end");
+        drop(blocks);
+        test.clock.sleep(SETTLE).await;
+        write(&mut writer, &[test.now()], &[8]);
+        write(&mut writer, &[test.now() + 1], &[9]);
+        test.clock.sleep(SETTLE).await;
+        for (values, gap) in [(7, None), (8, Some(lost)), (9, None)] {
+            let received = reader.next().await.expect("a frame");
+            assert_eq!(samples(&received, 2), [values]);
+            assert_eq!(received.gap(), gap, "the gap before {values}");
+        }
+    });
 }
 
 /// What `future` gives within `span` of `clock`, or `None`.
