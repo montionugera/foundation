@@ -53,9 +53,9 @@ use types::time::{Span, Stamp};
 const BLOCK: usize = 4096;
 /// The largest record, in blocks.
 const RECORD_BLOCKS: usize = 4;
-/// Blocks in the area: four of the largest record and the two blocks that each record
-/// leaves free, the least area of a ring.
-const BLOCKS: usize = 4 * RECORD_BLOCKS + 2;
+/// Blocks in the area: four of the largest record and the three blocks that each
+/// record leaves free, the least area of a ring.
+const BLOCKS: usize = 4 * RECORD_BLOCKS + 3;
 const AREA: u64 = (BLOCKS * BLOCK) as u64;
 /// The first block of the area: the two header blocks come before it.
 const AREA_START: usize = 2;
@@ -366,13 +366,13 @@ impl Room {
     }
 
     /// An append of a record of `blocks` blocks after the last record. It leaves
-    /// two blocks free: one for the carry record of the next commit and one for
-    /// the restart record of the next open.
+    /// three blocks free: for the restart record of the next open, the carry record
+    /// of the commit after it, and the restart record of a later open.
     fn take(&mut self, blocks: usize) -> Fit {
         let Some(offsets) = &mut self.0 else {
             return Fit::Unknown;
         };
-        match offsets.cost(offsets.end, (blocks * BLOCK) as u128, 2 * BLOCK as u128) {
+        match offsets.cost(offsets.end, (blocks * BLOCK) as u128, 3 * BLOCK as u128) {
             Ok(needed) => {
                 offsets.end += needed;
                 offsets.data = offsets.end;

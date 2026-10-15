@@ -1103,7 +1103,7 @@ fn a_full_ring_queues_nothing() {
     run(5, |shard| async move {
         let mut slots = Slots::new();
         let buffer = shard
-            .open(layout(6 * BLOCK, BODY_MAX), &mut slots)
+            .open(layout(7 * BLOCK, BODY_MAX), &mut slots)
             .await
             .expect("opens");
         let a = slots.index(key(1));
@@ -1132,7 +1132,7 @@ fn a_batch_is_queued_whole_or_not_at_all() {
     run(6, |shard| async move {
         let mut slots = Slots::new();
         let buffer = shard
-            .open(layout(10 * BLOCK, 8183), &mut slots)
+            .open(layout(11 * BLOCK, 8183), &mut slots)
             .await
             .expect("opens");
         let a = slots.index(key(1));
@@ -1160,7 +1160,7 @@ fn a_batch_is_queued_whole_or_not_at_all() {
         drop(buffer);
         let mut slots = Slots::new();
         let buffer = shard
-            .open(layout(10 * BLOCK, 8183), &mut slots)
+            .open(layout(11 * BLOCK, 8183), &mut slots)
             .await
             .expect("reopens");
         assert_eq!(buffer.tail(slots.index(key(1)), Path::Live), tail(3, None));
@@ -3979,7 +3979,7 @@ fn opens_with_no_data_leave_room_for_the_largest_record() {
 fn opens_with_no_data_after_an_entry_leave_room_for_the_next() {
     for torn in [false, true] {
         run(25, move |shard| async move {
-            let ring = layout(6 * BLOCK, BODY_MAX);
+            let ring = layout(7 * BLOCK, BODY_MAX);
             let mut slots = Slots::new();
             let buffer = shard.open(ring, &mut slots).await.expect("opens");
             let a = slots.index(key(1));
@@ -4024,7 +4024,7 @@ fn opens_with_no_data_after_an_entry_leave_room_for_the_next() {
 #[test]
 fn a_full_ring_reopens_into_the_block_that_its_records_leave_free() {
     run(21, |shard| async move {
-        let ring = layout(6 * BLOCK, BODY_MAX);
+        let ring = layout(7 * BLOCK, BODY_MAX);
         let mut slots = Slots::new();
         let buffer = shard.open(ring, &mut slots).await.expect("opens");
         let a = slots.index(key(1));

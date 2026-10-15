@@ -6,7 +6,12 @@
   trimmed tail, so a time holds the writer's cost for each commit. The bench runs
   commits of 1 and 8 records, in rings of 64 and 4096 blocks: 1 record gives the cost
   for each commit (`trimmed`, `release`), 8 the cost for each record (`append`,
-  `synced`). Lost: a copy of `wal.rs` in the bench through `#[path]`, which needs
+  `synced`). Each ring has 4 blocks more than its bench ID (68 and 4100 blocks): with
+  the three blocks that each record keeps free (#160), only those sizes trim at each
+  commit of 1 record, as 64 and 4096 did before. The IDs stay, so the baseline
+  compares the same work. Decided by `laptop.architect` (#2683,
+  2026-10-14T19:58:01Z):
+  https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6177122793. Lost: a copy of `wal.rs` in the bench through `#[path]`, which needs
   `entry`, `record`, and `crc32c` copied too and the workspace lints off; a time of
   `Buffer::append` and `committed` on a simulated file system, whose file writes hide
   the cost of the writer; and a control bench of code that a PR does not change, since
