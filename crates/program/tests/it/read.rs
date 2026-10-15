@@ -1,15 +1,21 @@
 //! Each behavior of a [`Reader`]: the open, the frames, and each error.
 
+use std::collections::BTreeMap;
+
 use env::clock::Clock;
 use env::tasks::Tasks;
+use hub::home::Outcome;
 use hub::writer::{self, Writer};
 use hub::{Hub, serve};
 use program::{Error, Reader, Session};
+use spec::channel::{Channel, Data, Kind};
+use spec::data_type::DataType;
+use spec::definition::Definition;
 use transport::Code;
 use transport::stream::{Incoming, Sender};
 use types::authority::Authority;
 use types::channel;
-use types::frame::{Form, Frame, Path, Range};
+use types::frame::{Form, Frame, Label, Path, Range};
 use types::name::Selector;
 use types::sample::{Scalar, Type};
 use types::time::Span;
@@ -20,8 +26,8 @@ use wire::hub::client::{
 use wire::hub::{Head, Reply, ends};
 
 use crate::agent::{AGENT, SUBJECT, name};
-use crate::common::{self, write};
 use crate::net::{header, own_pool};
+use crate::node::env;
 use crate::session::{admit, by_hand, connect, raw};
 use crate::sessions::{self, Got, Home, QUIET, closed_with, rules};
 
@@ -79,6 +85,26 @@ fn samples(reader: &Reader, frame: &Frame) -> Vec<(usize, Vec<i64>)> {
         .collect()
 }
 
+/// `time` with key 1, and `value` with key 2, an `i64` channel on `time`.
+fn definitions() -> BTreeMap<types::name::Name, Definition> {
+    let time = Channel {
+        key: key(1),
+        kind: Kind::Index {
+            error: None,
+            control: None,
+        },
+    };
+    let data = Data::new(time.key, None, DataType::Sample(I64), None).expect("no unit");
+    let value = Channel {
+        key: key(2),
+        kind: Kind::Data(data),
+    };
+    BTreeMap::from([
+        (name("time"), Definition::Channel(time)),
+        (name("value"), Definition::Channel(value)),
+    ])
+}
+
 /// What the node gives for a read that the program dropped.
 fn dropped() -> Result<Got, serve::Error> {
     Err(serve::Error::Stream(transport::Error::Reset {
@@ -104,7 +130,9 @@ where
     P: Future<Output = ()> + 'static,
 {
     let open = async |node: &sim::node::Node, tasks: &Tasks| {
-        let (hub, now) = common::hub(node, tasks.clone()).await;
+        let (hub, now) = hub::testing::open(env(node, tasks.clone())).await;
+        hub.set_definitions(&definitions());
+        let now = now.nanos();
         (hub.clone(), (hub, now, node.clock(), tasks.clone()))
     };
     let ready = async move |(hub, now, clock, tasks): &(Hub, i64, Clock, Tasks)| {
@@ -120,7 +148,13 @@ where
             clock.sleep(START).await;
             for (stamp, &value) in (now..).zip(values) {
                 let draft = frame(&writer, stamp, value);
-                write(&mut writer, draft);
+                let outcomes = writer
+                    .write(Label::Path(Path::Live), draft)
+                    .expect("the home takes it");
+                assert!(
+                    matches!(outcomes, [Outcome::Applied { .. }]),
+                    "{outcomes:?}"
+                );
                 clock.sleep(APART).await;
             }
         });
