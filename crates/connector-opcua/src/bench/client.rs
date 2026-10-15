@@ -14,7 +14,7 @@ use crate::client::Nodes;
 use crate::connection;
 use crate::event;
 use crate::node::{Key, Name, Node};
-use types::sample::Value;
+use crate::value::Value;
 
 /// The Double variable of a [`Server`].
 const VALUE: Node = Node {

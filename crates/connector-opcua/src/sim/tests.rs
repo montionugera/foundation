@@ -11,7 +11,7 @@ use crate::client::Client;
 use crate::event;
 use crate::ffi::Status;
 use crate::node::Node;
-use types::sample::Value;
+use crate::value::Value;
 
 const SPIKE: &str = "ns=3;s=SpikeData";
 const DIP: &str = "ns=3;i=7";

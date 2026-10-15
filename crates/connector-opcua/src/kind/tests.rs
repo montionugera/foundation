@@ -482,7 +482,7 @@ fn values(frames: &[Frame], key: u128) -> Vec<f64> {
 fn writes_the_value_that_the_server_served_for_each_node_in_one_frame_per_tick() {
     let outcome = run(Setup::three(), |scene| async move {
         for (node, value) in [(A, 10.0), (B, 20.0), (C, 30.0)] {
-            scene.variables.set(node, types::sample::Value::F64(value));
+            scene.variables.set(node, crate::value::Value::F64(value));
         }
         for at in [430, 1_230] {
             scene.after(ms(at), |scene| async move {
@@ -856,8 +856,8 @@ fn typed() -> Setup {
 
 /// The values of each type: the least, the largest, then one more: for a float, the
 /// one NaN that open62541 sends, the quiet NaN with the sign bit set.
-fn extremes() -> [[types::sample::Value; 11]; 3] {
-    use types::sample::Value as V;
+fn extremes() -> [[crate::value::Value; 11]; 3] {
+    use crate::value::Value as V;
     [
         [
             V::Bool(false),
@@ -947,7 +947,7 @@ const EXTREMES: [[u64; 11]; 3] = [
 #[test]
 fn writes_each_type_of_a_value_into_a_channel_of_its_type() {
     let outcome = run(typed(), |scene| async move {
-        let set = |scene: &Scene, values: [types::sample::Value; 11]| {
+        let set = |scene: &Scene, values: [crate::value::Value; 11]| {
             for (node, value) in TYPED_NODES.iter().zip(values) {
                 scene.variables.set(node, value);
             }
@@ -975,7 +975,7 @@ fn writes_each_type_of_a_value_into_a_channel_of_its_type() {
 fn ends_the_run_with_a_device_error_on_a_value_of_another_type_than_its_channel() {
     let outcome = run(Setup::three(), |scene| async move {
         scene.after(ms(1_050), |scene| async move {
-            scene.variables.set(B, types::sample::Value::I32(7));
+            scene.variables.set(B, crate::value::Value::I32(7));
         });
         scene.supervise(ms(1_550)).await
     });
@@ -996,7 +996,7 @@ fn ends_the_run_with_a_device_error_on_a_value_of_another_type_of_the_same_width
         scene.after(ms(1_050), |scene| async move {
             scene
                 .variables
-                .set(TYPED_NODES[9], types::sample::Value::I32(1));
+                .set(TYPED_NODES[9], crate::value::Value::I32(1));
         });
         scene.supervise(ms(1_550)).await
     });
@@ -1182,7 +1182,7 @@ fn stamps_each_frame_within_its_read() {
     expected = "invariant: read 2 is Err(BadNotFound), which `Values::new` refuses"
 )]
 fn panics_with_the_read_whose_value_is_bad() {
-    use types::sample::Value;
+    use crate::value::Value;
     let bad = Err(Status::BAD_NOT_FOUND);
     let values = [Ok(Value::F64(1.0)), bad, bad];
     Values(&values).get(2);
@@ -1210,7 +1210,7 @@ fn refuses_each_value_of_another_type_than_its_channel() {
 
 #[test]
 fn gives_the_first_value_that_is_bad_or_of_another_type_than_its_channel() {
-    use types::sample::Value;
+    use crate::value::Value;
     let scalars = [Scalar::F64, Scalar::F64, Scalar::I32];
     let values = [
         Ok(Value::F64(1.0)),
@@ -1227,8 +1227,7 @@ fn gives_the_first_value_that_is_bad_or_of_another_type_than_its_channel() {
     assert_eq!(refused, Err((0, Bad::Status(Status::BAD_NOT_FOUND))));
     let good = [Ok(Value::F64(1.0)), Ok(Value::I32(-1))];
     let scalars = [Scalar::F64, Scalar::I32];
-    let types = scalars;
-    let values = Values::new(&good, &types).expect("each value has its type");
+    let values = Values::new(&good, &scalars).expect("each value has its type");
     assert_eq!(
         (values.get(0), values.get(1)),
         (Value::F64(1.0), Value::I32(-1))

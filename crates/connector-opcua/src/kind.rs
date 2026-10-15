@@ -13,7 +13,7 @@ use hub::writer::Writer;
 use types::authority::Authority;
 use types::frame::{self, Draft, Form, Label, Path, key_set};
 use types::name::Name;
-use types::sample::{Scalar, Type, Value};
+use types::sample::{self, Scalar, Type};
 #[cfg(feature = "sim")]
 use types::time::Span;
 use types::time::Stamp;
@@ -23,7 +23,7 @@ use crate::config::{self, Config, Read};
 use crate::event;
 use crate::ffi::Status;
 use crate::node::Node;
-use crate::value::{self, SCALARS};
+use crate::value::{SCALARS, Value};
 
 #[cfg(test)]
 #[cfg(feature = "sim")]
@@ -162,7 +162,7 @@ pub async fn writes(
 ) -> Result<Vec<u64>, Error> {
     let mut frames = Frames::open(ctx).await?;
     let types = frames.layout.types.iter();
-    let values: Vec<_> = types.map(|&scalar| Ok(value::one(scalar))).collect();
+    let values: Vec<_> = types.map(|&scalar| Ok(Value::one(scalar))).collect();
     let mut measures = Vec::with_capacity(count);
     for _ in 0..count {
         ctx.clock().sleep(Span::from_nanos(1_000_000)).await;
@@ -430,7 +430,7 @@ fn fill(
     for (entry, bytes) in draft.iter_mut() {
         match fills[entry].read {
             None => bytes.copy_from_slice(&stamp.nanos().to_le_bytes()),
-            Some(read) => values.get(read).write(bytes),
+            Some(read) => sample::Value::from(values.get(read)).write(bytes),
         }
     }
     for &group in groups {
