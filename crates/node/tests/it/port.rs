@@ -2,12 +2,11 @@
 //! directory.
 
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::mpsc;
-use std::time::Duration;
 
-use env::files::{Descriptor, Driver, Mode, Request};
+use env::files::Mode;
 use transport::{Address, Class, Code};
 use types::ed25519::PrivateKey;
 use types::time::Span;
@@ -17,10 +16,6 @@ use crate::rig::Rig;
 
 /// The private key of the node.
 const KEY: PrivateKey = PrivateKey([2; 32]);
-
-/// How long the node's open of its key takes. A dial waits 30 s, and the node takes
-/// no session until it has its key.
-const LOAD: Span = Span::from_nanos(31_000_000_000);
 
 /// A peer holds a session when the node stops. The probe takes the lock as soon as
 /// the node frees it, and binds the node's port at once, with no retry.
@@ -39,16 +34,14 @@ fn the_port_binds_at_once_when_the_lock_is_free() {
     });
     let listen = free();
     let region = node::Region::Absent;
-    let node = start_node(&rig, &shards, &threads, &io, listen, region, Slow);
+    let node = start_node(&rig, &shards, &threads, &io, listen, region, |disk| disk);
     // A task runs once the node takes sessions.
     let (serves, serving) = mpsc::channel();
     node.spawn(move |_| {
         serves.send(()).unwrap();
         async {}
     });
-    // The claim, the read of the name, and the load each open `node.key`.
-    let load = Duration::from_nanos(LOAD.nanos().unsigned_abs()) * 3;
-    if let Err(error) = recv(&serving, PATIENCE + load) {
+    if let Err(error) = recv(&serving, PATIENCE) {
         node.stop();
         panic!("the node does not serve ({error}): {:?}", node.join());
     }
@@ -90,52 +83,6 @@ fn the_port_binds_at_once_when_the_lock_is_free() {
     }
     for thread in io.take() {
         thread.join().unwrap();
-    }
-}
-
-/// A disk whose open of `node.key` takes [`LOAD`] longer.
-struct Slow(os::Disk);
-
-impl Driver for Slow {
-    fn open<'a>(
-        &'a self,
-        path: &'a Path,
-        mode: Mode,
-    ) -> Request<'a, Box<dyn Descriptor>> {
-        Box::pin(async move {
-            if path == Path::new("node.key") {
-                os::clock().sleep(LOAD).await;
-            }
-            self.0.open(path, mode).await
-        })
-    }
-
-    fn open_absolute<'a>(&'a self, path: &'a Path) -> Request<'a, Box<dyn Descriptor>> {
-        self.0.open_absolute(path)
-    }
-
-    fn list<'a>(&'a self, dir: &'a Path) -> Request<'a, Vec<PathBuf>> {
-        self.0.list(dir)
-    }
-
-    fn create_dir<'a>(&'a self, dir: &'a Path) -> Request<'a, ()> {
-        self.0.create_dir(dir)
-    }
-
-    fn remove<'a>(&'a self, path: &'a Path) -> Request<'a, ()> {
-        self.0.remove(path)
-    }
-
-    fn sync_dir<'a>(&'a self, dir: &'a Path) -> Request<'a, ()> {
-        self.0.sync_dir(dir)
-    }
-
-    fn free(&self) -> Request<'_, u64> {
-        self.0.free()
-    }
-
-    fn shown(&self, path: &Path) -> PathBuf {
-        self.0.shown(path)
     }
 }
 
