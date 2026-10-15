@@ -222,18 +222,38 @@ mod tests {
     use super::*;
 
     /// The restart record and records of 1, 1, 2, 1, 3, 1, and 1 blocks fill 11 of
-    /// 14 blocks, and leave a block for the carry record and one for the restart
-    /// record.
+    /// 15 blocks, and leave the three blocks that stay free.
     #[test]
-    fn a_ring_of_14_blocks_takes_a_commit_of_7_records() {
-        Ring::new(14).commit(7);
+    fn a_ring_of_15_blocks_takes_a_commit_of_7_records() {
+        Ring::new(15).commit(7);
     }
 
-    /// The 8th record, of 2 blocks, does not fit with those two blocks.
+    /// The 8th record, of 2 blocks, does not fit with those three blocks.
     #[test]
     #[should_panic(expected = "the ring has room")]
-    fn a_ring_of_14_blocks_refuses_a_commit_of_8_records() {
-        Ring::new(14).commit(8);
+    fn a_ring_of_15_blocks_refuses_a_commit_of_8_records() {
+        Ring::new(15).commit(8);
+    }
+
+    /// After the warm-up of the `wal` bench, each commit of 1 record trims on the
+    /// rings of the bench, so each time holds a trim. It reads the private writer:
+    /// `commit` gives nothing back.
+    #[test]
+    fn each_commit_of_1_record_trims_on_the_rings_of_the_bench() {
+        for id in [64, 4096] {
+            let mut ring = Ring::new(id + 4);
+            for _ in 0..2 * id {
+                ring.commit(1);
+            }
+            for commit in 0..2000 {
+                let tail = ring.writer.tail();
+                ring.commit(1);
+                assert!(
+                    ring.writer.tail() > tail,
+                    "commit {commit} on the ring of ID {id} trims"
+                );
+            }
+        }
     }
 
     /// The ring has room for each commit only if each commit releases the space of

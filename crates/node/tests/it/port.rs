@@ -124,6 +124,7 @@ fn start_node(
         region: node::Region::Absent,
         name: "edge".parse().expect("a name"),
         settings: node::Settings::default(),
+        vars: std::collections::BTreeMap::new(),
     })
 }
 
@@ -142,6 +143,10 @@ impl Driver for Slow {
             }
             self.0.open(path, mode).await
         })
+    }
+
+    fn open_absolute<'a>(&'a self, path: &'a Path) -> Request<'a, Box<dyn Descriptor>> {
+        self.0.open_absolute(path)
     }
 
     fn list<'a>(&'a self, dir: &'a Path) -> Request<'a, Vec<PathBuf>> {

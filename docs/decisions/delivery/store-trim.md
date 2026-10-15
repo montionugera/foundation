@@ -8,10 +8,17 @@
   `Rejected::Full` only when the records queued since the last commit do not fit after
   the trim: the full disk queue of B5, which is the commit queue. A read reports the
   trimmed seqs of a path as `Read::gap`, also when the path holds no entry, and the
-  gap's length is the count of samples lost (B2). Each data and carry record leaves one
-  block free for the restart record of the next open, so an open of a full ring has its
-  block (#160,
-  https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6158992463).
+  gap's length is the count of samples lost (B2). Each data record leaves three blocks
+  free: for the restart record of the next open, the carry record of the commit after
+  it, and the restart record of a later open. Each carry record leaves one block, for
+  the restart record. A restart record leaves none, and an open writes over a restart
+  record that no data or carry record follows. So an open of a full ring has its
+  block, and the commit after it has a block for its carry record, after any count of
+  opens (#160,
+  https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6177122793,
+  2026-10-14T19:58:01Z, which supersedes the two blocks of
+  https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6158992463,
+  2026-10-14T01:42:08Z).
   `set_floor` and `usage` wait for their first effect, the B1 warning (#1080). Lost: a
   `trim` call from the home (it needs the commit rate, a late trim gives a second gap,
   and the edge cases of the ring move up into `home`). Decided by the architect (#160,
@@ -26,9 +33,8 @@
   records its form on disk here. Decided by the architect (#160,
   https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6032697113).
   As built (#1222): the headroom is three times the larger of the largest record and the
-  records of the commit that trims, which are the records not yet synced, and the two
-  blocks that each record leaves free (#160): one for the carry record of the next
-  commit, and one for the restart record of the next open. The space of a trim is free
+  records of the commit that trims, which are the records not yet synced, and the three
+  blocks that each data record leaves free (#160). The space of a trim is free
   only at its release, after its sync. From one trim to the release of the
   next, the ring takes the records of two commits and the blocks that one wrap skips,
   which are less than one largest record. So after commits of `c` bytes, the next commit
@@ -50,24 +56,28 @@
   not refused and one of 341 is, at its third commit. A commit of twice the commits
   before it is not refused after commits of 255 records of one block, and is refused
   after commits of 256. Each of these two figures is one record less than before #160,
-  because of the two blocks that stay free. On a ring of 1028 blocks, after commits of
+  because of the blocks that stay free. On a ring of 1028 blocks, after commits of
   64 records of four blocks, which are a quarter of the area less one block, a commit
   of 128 and the commit of 64 after it are not refused when no record from the commit
   two before the 128 to the commit after it must skip a block at a wrap. When a record
   must skip 3 blocks at a wrap in one of those four, the 128 or the commit after it is
   refused. With one record in each commit, three records, the blocks of one wrap skip,
-  and the two blocks that stay free must fit in the area. Four of the largest record and
-  one block always hold them, and a smaller ring can refuse a live write under a steady
-  load: with a largest record of four blocks, commits of 4 blocks get `Full` on a ring
-  of 16 blocks. So `Layout::new` refuses an area under four of the largest record
-  (#1276) and two blocks (#160), and a ring file with a smaller area does not open. That
-  minimum is for one record in each commit: on a ring of 18 blocks, a steady load of one
+  and the three blocks that stay free must fit in the area. Four of the largest record
+  and two blocks always hold them, and a smaller ring can refuse a live write under a
+  steady load: with a largest record of four blocks, commits of 4 blocks after one of 1
+  block get `Full` on a ring of 17 blocks. So `Layout::new` refuses an area under four
+  of the largest record (#1276) and three blocks (#160), and a ring file with a smaller
+  area does not open. That minimum is for one record in each commit: on a ring of 19
+  blocks, a steady load of one
   record of four blocks and one of two in each commit is refused at its third commit. A
   trim moves the tail to the boundary after a record of any kind: a wrap record and a
   restart record also end where a tail can go. Steady pressure in the ruling means a
   load whose commits fit the area. The ring size for a real load is the sizing of `node`
   (SHARD DISK), not the minimum of `Layout::new`. Decided by the architect: the headroom
-  (#1222, https://github.com/synnaxlabs/foundation/pull/1222#issuecomment-6033965557),
+  (#1222, https://github.com/synnaxlabs/foundation/pull/1222#issuecomment-6033965557,
+  with the three blocks of
+  https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6177122793,
+  2026-10-14T19:58:01Z),
   the area that the bound needs (#1222,
   https://github.com/synnaxlabs/foundation/pull/1222#issuecomment-6034545693,
   2026-10-07T08:57:53Z, and with the skip in the `4c` case
@@ -82,8 +92,10 @@
   2026-10-07T11:26:39Z). The carried tail is a carry record, kind 4 at ring version 1,
   in the form of the carry body in S4. Decided by the architect (#160,
   https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6051990962,
-  2026-10-08T04:07:38Z). The two blocks that stay free and the area of four of the
-  largest record and two blocks, which move the figures above by those blocks, are
-  decided by the architect (#160,
+  2026-10-08T04:07:38Z). The blocks that stay free and the least area, which move the
+  figures above by those blocks, are decided by the architect: two blocks (#160,
   https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6158992463,
-  2026-10-14T01:42:08Z).
+  2026-10-14T01:42:08Z), then three, which supersedes two, so that a commit after an
+  open of a full ring has a block for its carry record (#2683,
+  https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6177122793,
+  2026-10-14T19:58:01Z).

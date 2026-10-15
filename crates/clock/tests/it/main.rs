@@ -5,6 +5,7 @@
 
 mod common;
 mod first;
+mod log;
 mod mesh;
 mod order;
 mod reach;

@@ -1,10 +1,10 @@
 //! Where a secret's value comes from, as a config writes it.
 
 use std::fmt;
-use std::path::PathBuf;
 
 use document::diagnostic::{Code, Diagnostic};
 use document::value::{Kind, Value};
+use env::files::Absolute;
 use types::name::Name;
 
 /// A config that writes a source of a secret wrongly.
@@ -18,9 +18,8 @@ pub enum Source {
     /// `env("NAME")`: the variable `NAME` of the environment of the node process, as
     /// it was when the node started.
     Env(String),
-    /// `file("/path")`: the file at a path that starts with `/`, has no NUL, and has
-    /// no `..` segment between `/` or `\`, on every host.
-    File(PathBuf),
+    /// `file("/path")`: the file at an [`Absolute`] path.
+    File(Absolute),
     /// `secret("full.name")`: the value of the secret of that full name in the
     /// node's store.
     Secret(Name),
@@ -81,13 +80,11 @@ impl Source {
                 "Write a name with no `=` and no NUL, such as `env(\"INFLUX_TOKEN\")`",
             )),
             "env" => Ok(Self::Env(text.to_string())),
-            "file" if !allowed(text) => Err(refuse(
-                "the argument of `file` is not an absolute path with no `..` and no NUL"
-                    .into(),
-                "Write the whole path from the root, such as \
-                 `file(\"/run/secrets/influx_token\")`",
-            )),
-            "file" => Ok(Self::File(PathBuf::from(&**text))),
+            "file" => Absolute::new(text).map(Self::File).ok_or_else(|| {
+                let message = "the argument of `file` is not an absolute path with no \
+                               `..` and no NUL";
+                refuse(message.into(), FILE_FIX)
+            }),
             _ => text
                 .parse()
                 .map(Self::Secret)
@@ -108,23 +105,21 @@ impl Source {
     }
 }
 
+/// How to write the path of `file`.
+const FILE_FIX: &str =
+    "Write the whole path from the root, such as `file(\"/run/secrets/influx_token\")`";
+
 /// How to write a source.
 const FIX: &str =
     "Write `env(\"NAME\")`, `file(\"/absolute/path\")`, or `secret(\"name\")`";
-
-/// Whether `text` starts with `/`, has no NUL, and has no `..` segment, split on `/`
-/// and `\`. The same text rule holds on every host.
-fn allowed(text: &str) -> bool {
-    text.starts_with('/')
-        && !text.contains('\0')
-        && !text.split(['/', '\\']).any(|segment| segment == "..")
-}
 
 impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Env(name) => write!(f, "env({name:?})"),
-            Self::File(path) => write!(f, "file({:?})", path.to_string_lossy()),
+            Self::File(path) => {
+                write!(f, "file({:?})", path.as_path().to_string_lossy())
+            }
             Self::Secret(name) => write!(f, "secret(\"{name}\")"),
         }
     }

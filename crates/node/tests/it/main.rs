@@ -150,6 +150,7 @@ fn status_gives_each_connector_as_json() {
                 )
                 .into(),
             }),
+            note: None,
         }
     );
 }

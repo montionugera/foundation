@@ -1,14 +1,20 @@
-//! Resolves a named secret on the node that runs a connector, through store adapters
-//! chosen by policy; `node` hands it the sealed ciphertexts it pulls from `mesh`.
+//! Resolves the source of a secret on the node that runs a connector: a variable of the
+//! node's environment, a file, or a name in a store adapter chosen by policy; `node`
+//! hands it the sealed ciphertexts it pulls from `mesh`.
 
 use std::fmt;
 
 use zeroize::Zeroizing;
 
+mod error;
+mod reads;
+mod resolver;
 pub mod seal;
 mod source;
 pub mod store;
 
+pub use error::Error;
+pub use resolver::Resolver;
 pub use source::Source;
 
 /// A secret value. `Debug` prints `<secret>`, never the bytes. Its buffer is

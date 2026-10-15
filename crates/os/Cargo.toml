@@ -17,6 +17,7 @@ env = { path = "../env" }
 getrandom = { workspace = true }
 rustix = { workspace = true, features = ["fs", "net"] }
 tokio = { workspace = true, features = ["net", "rt", "sync", "time"] }
+tracing = { workspace = true }
 types = { path = "../types" }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]

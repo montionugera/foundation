@@ -267,35 +267,50 @@ impl<C> Context<C> {
         self.status.clear();
     }
 
+    /// Shows `note` in the status of the running connector until the run ends or the
+    /// next call: a short text of how the run works other than its spec asks, such as
+    /// a mode that the device forces. The status gives it within one second. A note of
+    /// more than 1024 bytes keeps its first and last 510 bytes or less at char
+    /// boundaries, joined by `…`. The end of the run clears it, and a call after the
+    /// run returned shows nothing.
+    pub fn note(&self, note: &dyn fmt::Display) {
+        self.status.note(note);
+    }
+
     /// Connects streams and datagrams.
     #[must_use]
     pub fn net(&self) -> &Net {
         &self.inputs.net
     }
 
-    /// Reads the secret `name` from the node's secret store. Each call asks the
-    /// store, so a kind that reads it at the start of each run sees a value changed
-    /// in the store at its next run. Send its bytes only to the system they unlock,
-    /// and never into a status or a log.
+    /// Reads the value of `source`. Each call reads the file or the store again, so
+    /// a kind that reads it at the start of each run sees a value changed there at
+    /// its next run. An `env()` gives the value of the node's start. Send its bytes
+    /// only to the system they unlock, and never into a status or a log.
     ///
     /// # Errors
     ///
     /// [`Error::Config`] with code `connector.bad-secret-name` when the store cannot
-    /// hold `name`, with the store's text as the fix. [`Error::Retry`] for each other
-    /// error of the store, with a text that names the secret and holds the store's
-    /// text, such as where to put the value. The supervisor restarts the run with
-    /// backoff, so a value added to the store heals it.
-    pub async fn secret(&self, name: &Name) -> Result<secret::Value, Error> {
-        let get = self.inputs.secrets.get(name).await;
+    /// hold the name of a `secret()`, with the store's text as the fix.
+    /// [`Error::Retry`] for each other error, with a text that names the source and
+    /// holds the fix, such as where to put the value. The supervisor restarts the
+    /// run with backoff, so a value put in its place heals it. For `env()`, restart
+    /// the node with the variable set.
+    pub async fn secret(
+        &self,
+        source: &secret::Source,
+    ) -> Result<secret::Value, Error> {
+        let get = self.inputs.secrets.get(source).await;
         get.map_err(|error| match error {
-            secret::store::Error::BadName { detail } => {
-                let error =
-                    format!("the secret {name} has a name that the store cannot hold");
+            secret::Error::BadName { detail } => {
+                let error = format!(
+                    "the secret {source} has a name that the store cannot hold"
+                );
                 config_error(BAD_SECRET_NAME, &error, &detail)
             }
             error => {
-                let name = name.clone();
-                Error::Retry(Box::new(Unread { name, error }))
+                let source = source.clone();
+                Error::Retry(Box::new(Unread { source, error }))
             }
         })
     }
@@ -431,16 +446,16 @@ const BAD_SECRET_NAME: Code = Code::new("connector.bad-secret-name");
 /// The fix of [`LARGE_FRAME`].
 const FEWER_CHANNELS: &str = "Give the connector fewer channels";
 
-/// A secret that the store did not give.
+/// A secret whose source gave no value.
 #[derive(Debug)]
 struct Unread {
-    name: Name,
-    error: secret::store::Error,
+    source: secret::Source,
+    error: secret::Error,
 }
 
 impl fmt::Display for Unread {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "the secret {}: {}", self.name, self.error)
+        write!(f, "the secret {}: {}", self.source, self.error)
     }
 }
 
@@ -1038,8 +1053,9 @@ mod tests {
             let ctx =
                 Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             let token = name("plant.influx_token");
+            let source = secret::Source::Secret(token.clone());
             let get = async || {
-                let value = ctx.secret(&token).await;
+                let value = ctx.secret(&source).await;
                 value.map(|value| value.expose().to_vec())
             };
             let missing = get().await;
@@ -1053,19 +1069,40 @@ mod tests {
         };
         assert_eq!(
             error.to_string(),
-            "the secret plant.influx_token: the store has no value: write it to the \
-             file /data/secrets/plant.influx_token"
+            "the secret secret(\"plant.influx_token\"): the file \
+             /data/secrets/plant.influx_token is not there. Write the value to it"
         );
         let source = error.source().map(ToString::to_string);
         assert_eq!(
             source.as_deref(),
             Some(
-                "the store has no value: write it to the file \
-                 /data/secrets/plant.influx_token"
+                "the file /data/secrets/plant.influx_token is not there. Write the \
+                 value to it"
             )
         );
         assert_eq!(read.expect("the store has the value"), b"t0");
         assert_eq!(changed.expect("the store has the new value"), b"t1");
+    }
+
+    #[test]
+    fn retries_a_variable_that_is_not_set_and_names_its_source() {
+        let missing = run_on(|node, tasks| async move {
+            let inputs =
+                Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
+            let status = status::Status::new(Vec::new());
+            let ctx =
+                Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
+            let source = secret::Source::Env("INFLUX_TOKEN".into());
+            ctx.secret(&source).await.map(drop)
+        });
+        let Err(Error::Retry(error)) = missing else {
+            panic!("a missing variable is retried: {missing:?}");
+        };
+        assert_eq!(
+            error.to_string(),
+            "the secret env(\"INFLUX_TOKEN\"): the environment variable INFLUX_TOKEN \
+             of the node is not set. Start the node with it set to the value"
+        );
     }
 
     #[test]
@@ -1076,14 +1113,16 @@ mod tests {
             let status = status::Status::new(Vec::new());
             let ctx =
                 Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
-            ctx.secret(&name("plant.Token")).await.map(drop)
+            let source = secret::Source::Secret(name("plant.Token"));
+            ctx.secret(&source).await.map(drop)
         });
         let Err(Error::Config(diagnostics)) = bad else {
             panic!("a bad name is a config error: {bad:?}");
         };
         let fix = "Rename the secret in lowercase letters, since the file store holds \
                    no name with a capital letter";
-        let message = "the secret plant.Token has a name that the store cannot hold";
+        let message =
+            "the secret secret(\"plant.Token\") has a name that the store cannot hold";
         let expected =
             Diagnostic::new(BAD_SECRET_NAME, None, message.into(), fix.into());
         assert_eq!(diagnostics, [expected]);

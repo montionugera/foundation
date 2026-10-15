@@ -32,7 +32,7 @@ use crate::group::{self, Closed, Group, Sealed};
 use crate::header::{self, Header};
 use crate::log::{self, Carried, Found, Logs, Mark, Tail};
 use crate::read::{self, Read, Reading, Stored};
-use crate::record::{self, ALIGN, AREA_START, Body, HEADER_LEN, Kind};
+use crate::record::{self, ALIGN, AREA_START, Body, HEADER_LEN};
 use crate::wal::{
     self, Cursor, Ends, Layout, Limit, Plan, Position, Step, Unfit, Window, Writer,
 };
@@ -183,17 +183,17 @@ pub enum Rejected {
     /// The batch alone is over a [`Limit`], so this buffer never takes it. The
     /// limit is the first one it is over, in the order of [`Limit`].
     Large(Limit),
-    /// The ring has no room for the batch: one block stays free for the carry record
-    /// of the next commit, and one for the restart record of the next open. Room
-    /// returns only when records leave the ring at its tail, and never when the
-    /// offsets left before their end are under `needed`. Nothing moves records out
-    /// of the ring yet.
+    /// The ring has no room for the batch: three blocks stay free, for the restart
+    /// record of the next open, the carry record of the commit after it, and the
+    /// restart record of a later open. Room returns only when records leave the ring
+    /// at its tail, and never when the offsets left before their end are under
+    /// `needed`. Nothing moves records out of the ring yet.
     Full {
         /// Bytes of the area that the batch's record needs, with the rest of the
         /// area it must skip.
         needed: u64,
         /// Bytes the record may take: the area not in use, or the offsets left
-        /// before their end, whichever is less, less the two blocks that stay free.
+        /// before their end, whichever is less, less the three blocks that stay free.
         free: u64,
     },
     /// The pool has no block for the record header.
@@ -539,7 +539,7 @@ impl Carry {
             wrap,
         } = self;
         let (header, body) = block.split_at_mut(HEADER_LEN);
-        let (sealed, ends) = plan.seal(chain, Kind::Carry, [&*body]);
+        let (sealed, ends) = plan.seal(chain, [&*body]);
         header.copy_from_slice(&sealed.record.header);
         let wrap = sealed
             .wrap
@@ -1596,10 +1596,10 @@ mod tests {
             },
         );
         // The restart record and 60 records of one block are synced. The headroom
-        // is three records of two blocks and the two blocks that each record keeps
+        // is three records of two blocks and the three blocks that each record keeps
         // free.
         let tail = tail.lock().expect("no panic held the lock");
-        assert_eq!(tail.map(crate::wal::Position::offset), Some(5 * 4096));
+        assert_eq!(tail.map(crate::wal::Position::offset), Some(6 * 4096));
     }
 
     /// Three commits put [0, 3), [3, 6), and [6, 9) of one path in the records at
@@ -1799,7 +1799,7 @@ mod tests {
 
     /// A read from (0, 1) holds the record at 8192, whose entry with no samples at
     /// seq 0 comes after the one at 4096. A walk from 8192 would count it from
-    /// (0, 0), so the trim lands at 4096, though 59 more records want more room.
+    /// (0, 0), so the trim lands at 4096, though 58 more records want more room.
     /// Once the read drops, the trim goes on to the room they want. The test asks
     /// the writer for its trim, or the checkpoint for the tail when the commits
     /// trimmed.
@@ -1840,7 +1840,7 @@ mod tests {
                     let mut read = pin!(buffer.read(one, Path::Live, from, usize::MAX));
                     let first = poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
                     assert!(first.is_pending(), "the read waits on a file read");
-                    for commit in 0..59 {
+                    for commit in 0..58 {
                         let batch = [entry(1, one, Path::Live, 3 * commit, &part)];
                         buffer.append(batch).expect("the ring has room");
                         buffer.committed().await.expect("commits");
@@ -1853,7 +1853,7 @@ mod tests {
             },
         );
         let tails = tails.lock().expect("no panic held the lock");
-        assert_eq!(*tails, [(Some(8192), 4096), (Some(61 * 4096), 6 * 4096)]);
+        assert_eq!(*tails, [(Some(8192), 4096), (Some(60 * 4096), 6 * 4096)]);
     }
 
     /// The durable end counts the entries with no samples at its seq. A read that
@@ -1942,7 +1942,7 @@ mod tests {
             }
         }
 
-        /// A read waits on the file read of the record at 4096 while 57 commits of
+        /// A read waits on the file read of the record at 4096 while 56 commits of
         /// another path want the room of the ring of 64 blocks. The trims stop before
         /// that record, and the read gives its entries. Once the read drops, the trims
         /// go on, so 100 more commits fit.
@@ -1965,10 +1965,10 @@ mod tests {
                         let first =
                             poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
                         assert!(first.is_pending(), "the read waits on a file read");
-                        commit_each(&buffer, (2, two), &part, 0..57).await;
+                        commit_each(&buffer, (2, two), &part, 0..56).await;
                         read.await
                     };
-                    commit_each(&buffer, (2, two), &part, 57..157).await;
+                    commit_each(&buffer, (2, two), &part, 56..156).await;
                     *given.lock().expect("no panic held the lock") = Some(read);
                     buffer
                 },
@@ -2012,7 +2012,7 @@ mod tests {
             assert_eq!(*found, Some(((Some(0..3), vec![], Mark::at(3)), tail)));
         }
 
-        /// One record holds an entry of each of indexes 1 to 100, after 6 records of
+        /// One record holds an entry of each of indexes 1 to 100, after 7 records of
         /// index 101. The commits of index 101 turn the ring of 64 blocks, and the
         /// carry record of the 100 tails takes 2 blocks where the area has one left,
         /// so it wraps, and later trims pass the record of the 100 entries. After a
@@ -2031,7 +2031,7 @@ mod tests {
                     let byte = pool.alloc(1).expect("a block").freeze();
                     let part = pool.alloc(100).expect("a block").freeze();
                     let filler = slots.index(channel::Key::from_u128(101));
-                    commit_each(&buffer, (101, filler), &part, 0..6).await;
+                    commit_each(&buffer, (101, filler), &part, 0..7).await;
                     let batch: Vec<Entry> = (1..=100)
                         .map(|index| {
                             let slot =
@@ -2041,7 +2041,7 @@ mod tests {
                         .collect();
                     buffer.append(batch).expect("the ring has room");
                     buffer.committed().await.expect("commits");
-                    commit_each(&buffer, (101, filler), &part, 6..70).await;
+                    commit_each(&buffer, (101, filler), &part, 7..71).await;
                     let skip = buffer.shared.state.borrow().writer.skip();
                     *given.lock().expect("no panic held the lock") = Some(skip);
                     buffer
@@ -2068,7 +2068,7 @@ mod tests {
                 },
             );
             let mut seqs = vec![3; 100];
-            seqs.push(210);
+            seqs.push(213);
             assert_eq!(*found.lock().expect("no panic held the lock"), seqs);
         }
 
@@ -2119,7 +2119,7 @@ mod tests {
         }
 
         /// Records 1 and 2 hold an entry with no samples at seq 0, and record 3 holds
-        /// [0, 3). 54 more records want the room of record 1, but a walk from record 2
+        /// [0, 3). 53 more records want the room of record 1, but a walk from record 2
         /// would count its entry from (0, 0), so the trim lands at record 1. After a
         /// cut of the power, the open walks from there, and a read from (0, 1) gives
         /// both later entries.
@@ -2145,7 +2145,7 @@ mod tests {
                         buffer.append([empty.clone()]).expect("the ring has room");
                         buffer.committed().await.expect("commits");
                     }
-                    commit_each(&buffer, (1, one), &part, 0..55).await;
+                    commit_each(&buffer, (1, one), &part, 0..54).await;
                     let mut state = buffer.shared.state.borrow_mut();
                     let kept = state.kept();
                     let want = state.writer.trimmed(kept, |offset| offset);

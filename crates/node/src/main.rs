@@ -1,6 +1,7 @@
 //! The `foundation` binary. It runs the command line, and `foundation start` runs a
 //! node until a SIGINT or SIGTERM that reaches it.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::Path;
@@ -47,8 +48,14 @@ const NO_REPLY: Code = Code::new("node.no-reply");
 /// `foundation start`. A failure to start the shard, or a failure of the node, goes to
 /// standard error through [`ops::fail`].
 fn main() -> ExitCode {
+    #[expect(clippy::disallowed_methods, reason = "node reads its arguments")]
     let args: Vec<OsString> = std::env::args_os().collect();
-    let status = match run(&args) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "env() reads the node's environment"
+    )]
+    let vars = std::env::vars_os().collect();
+    let status = match run(&args, vars) {
         Ok(status) => status,
         Err(failure) => ops::fail(&args, &failure, io::stderr().lock()),
     };
@@ -56,13 +63,13 @@ fn main() -> ExitCode {
 }
 
 /// The exit status of the command line `args`, and of the node that it starts.
-fn run(args: &[OsString]) -> Result<u8, Failure> {
+fn run(args: &[OsString], vars: BTreeMap<OsString, OsString>) -> Result<u8, Failure> {
     // No thread runs when `node` calls `os::interrupt`: `shards` starts none, and
     // `command_line` joins each thread that it starts.
     let shards = os::shards().map_err(failed)?;
     match command_line(&shards, args.to_vec())? {
         Run::Exit(status) => Ok(status),
-        Run::Start(start) => node(&start, shards).map(|()| 0),
+        Run::Start(start) => node(&start, shards, vars).map(|()| 0),
     }
 }
 
@@ -267,7 +274,11 @@ fn no_reply(error: &hub::client::Error) -> Failure {
 
 /// Runs a node on the data directory of `start` until a SIGINT or SIGTERM that reaches
 /// the process stops it.
-fn node(start: &Start, shards: Shards) -> Result<(), Failure> {
+fn node(
+    start: &Start,
+    shards: Shards,
+    vars: BTreeMap<OsString, OsString>,
+) -> Result<(), Failure> {
     // Before any thread starts, else that thread takes the signals.
     let interrupt = os::interrupt().map_err(failed)?;
     let threads = os::threads().map_err(failed)?;
@@ -308,6 +319,7 @@ fn node(start: &Start, shards: Shards) -> Result<(), Failure> {
         region: node::Region::Stored,
         name: known.name.clone(),
         settings: node::Settings::default(),
+        vars,
     });
     let stopper = node.stopper();
     let stop = threads.start("stop", move || async move {
@@ -716,13 +728,13 @@ mod tests {
     }
 
     /// The failure of a disk budget `disk`, which comes `from` there, that holds no
-    /// ring on each of `cores` shards, which each need 4120KiB.
+    /// ring on each of `cores` shards, which each need 4132KiB.
     fn disk(disk: Size, cores: usize, from: Origin) -> Failure {
         let count = u64::try_from(cores).expect("a core count fits a u64");
         let error = node::Error::Disk {
             disk,
             cores,
-            min: Size::from_bytes(4_218_880 * count),
+            min: Size::from_bytes(4_231_168 * count),
         };
         let budget = Budget {
             pool: Size::GIBIBYTE,
@@ -806,7 +818,7 @@ mod tests {
                 code: DISK,
                 message: "the disk budget 1MiB, which foundation-data keeps from its \
                           first start, holds no ring on each of 16 shards; it needs at \
-                          least 65920KiB"
+                          least 66112KiB"
                     .to_owned(),
                 fix: "Remove the file `budget` in foundation-data, and the next start \
                       computes the budgets again from the free memory and disk"
@@ -823,7 +835,7 @@ mod tests {
                 code: DISK,
                 message: "the disk budget 8GiB, the most that a first start gives, \
                           holds no ring on each of 2048 shards; it needs at least \
-                          8240MiB"
+                          8264MiB"
                     .to_owned(),
                 fix: FEWER.to_owned(),
             }
@@ -838,7 +850,7 @@ mod tests {
                 code: DISK,
                 message: "the disk budget 1MiB, a quarter of the free disk of \
                           foundation-data, holds no ring on each of 16 shards; it \
-                          needs at least 65920KiB"
+                          needs at least 66112KiB"
                     .to_owned(),
                 fix: "Free space on that disk, or give a data directory on another \
                       disk with `--data`"
