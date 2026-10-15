@@ -338,8 +338,8 @@ impl Client {
         // They can hold the requests and the values of a read that did not end.
         self.reads.requests.borrow_mut().clear();
         self.reads.failed.set(None);
-        // Only a growth needs a fill: a good read writes each value.
         let mut values = self.reads.values.take();
+        values.clear();
         values.resize(nodes.count, UNREAD);
         self.reads.values.set(values);
         // The first requests go before the drive moves the connections on, so a
