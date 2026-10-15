@@ -16,8 +16,8 @@
   "Yeah I agree. System clock first" (2026-10-13T21:17:06Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155377794). The
   field by `laptop.architect-2`
-  (https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155519701,
-  amended by https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6160981810).
+  (https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155519701, amended
+  by https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6160981810).
   (3) Text: `<stamp> <LEVEL> <target>: <message> <key>=<value>... [mesh_time=...]`,
   with `mesh_time` last. The message has `\` and each control character escaped as
   `char::escape_debug` gives them. A string value that is empty, or holds a space, `=`,

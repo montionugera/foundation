@@ -259,12 +259,13 @@
   `node.unreadable` for it, "a directory that does not open" of decision 3 of
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6106546913. The fix
   of `node.unanswered` is ``Start the node again with `foundation start --data={dir}`
-  ``, which supersedes its fix of that decision 3. The fix of `node.session` is `Read the log
-  of the node on its standard error, then run the command again`, which supersedes the
-  fix of `node.session` of item 1 of
+  ``, which supersedes its fix of that decision 3. The fix of `node.session` is `Read
+  the log of the node on its standard error, then run the command again`, which
+  supersedes the fix of `node.session` of item 1 of
   https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136254936, by the
-  trigger of https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155695712
-  once the node writes its log (LOG OUTPUT). The fix of `ops.unknown-operation`
+  trigger of
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155695712 once the
+  node writes its log (LOG OUTPUT). The fix of `ops.unknown-operation`
   with no close name names the list of its carrier: ``Use a name from `foundation
   --help` `` on the command line, and ``Use a name from `tools/list` `` in MCP, because
   `foundation docs` lists only the operations of `TABLE`. By `laptop.architect-2`
