@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use document::diagnostic::{Code, Diagnostic};
 use document::{Document, Position, Source, Span};
+use serde::{Deserialize, Serialize};
 
 const UNKNOWN_EXTENSION: Code = Code::new("ops.unknown-extension");
 const PATH_NOT_UTF8: Code = Code::new("ops.path-not-utf8");
@@ -62,6 +63,8 @@ impl fmt::Debug for FrontEnds {
 }
 
 /// One config file: its path, as the user or a directory listing gave it, and its text.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct File {
     pub(crate) path: PathBuf,
     pub(crate) text: String,

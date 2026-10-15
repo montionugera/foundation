@@ -22,7 +22,7 @@ use std::ptr::NonNull;
 use std::slice;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
-pub use memory::{Heap, Memory, Refused};
+pub use memory::{Erased, Heap, Memory, Refused};
 use sync::{AtomicUsize, Track};
 
 /// Byte alignment of every block.
@@ -307,6 +307,12 @@ impl Pool {
         Self::new(config, heap)
     }
 
+    /// The most bytes the pool commits at once: the budget of its [`Config`].
+    #[must_use]
+    pub fn budget(&self) -> usize {
+        self.budget
+    }
+
     /// The most bytes one block can hold.
     #[must_use]
     pub fn largest(&self) -> usize {
@@ -402,9 +408,8 @@ impl Pool {
     }
 
     /// Takes back the blocks that holders dropped, so that `alloc` can use them
-    /// again. `alloc` calls it when it has no free block; the owner shard may call it
-    /// from its loop to spread the cost.
-    pub fn reclaim(&self) {
+    /// again.
+    fn reclaim(&self) {
         let returned = &self.shared().returned;
         if returned.load(Relaxed) != NONE {
             self.take(returned.swap(NONE, Acquire));
@@ -416,8 +421,8 @@ impl Pool {
     /// A size is idle when no block of it is in use now and no block of it returned
     /// since the previous `purge` call. The shard calls it on its own timer: a size
     /// keeps its pages for one to two timer intervals after its last block returned,
-    /// and `alloc` carves it again on demand. It takes back returned blocks first, as
-    /// `reclaim` does. Returns the bytes of the budget given back.
+    /// and `alloc` carves it again on demand. It takes back returned blocks first.
+    /// Returns the bytes of the budget given back.
     pub fn purge(&self) -> usize {
         self.reclaim();
         let purges = self.purges.get();
@@ -1212,6 +1217,15 @@ mod tests {
                 Config::new(128).expect("the budget fits"),
                 memory,
             ));
+        }
+
+        #[test]
+        fn gives_the_budget_of_its_config() {
+            for budget in [0, 1000] {
+                let config = Config::new(budget).expect("the budget fits");
+                let pool = Pool::heap(config);
+                assert_eq!(u64::try_from(pool.budget()), Ok(budget));
+            }
         }
     }
 

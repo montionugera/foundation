@@ -9,7 +9,7 @@ use types::digest::Digest;
 use types::sample::{Scalar, Type};
 use types::time::Span;
 
-use super::{Collector, TABLE, Value};
+use super::{Collector, TABLE, Value, names};
 
 fn host() -> (sim::Sim, Node) {
     let mut sim = sim::Sim::new(sim::Config::default());
@@ -85,6 +85,18 @@ fn lists_the_channels() {
         "blob.failures",
     ];
     assert_eq!(names, expected);
+}
+
+/// One name for each channel, so no name of the table is there twice, and no name is
+/// reserved.
+#[test]
+fn names_each_channel_once() {
+    let table: Vec<&str> = TABLE.iter().map(|c| c.name).collect();
+    let parsed = names();
+    assert!(parsed.iter().all(|name| !name.reserved()), "{parsed:?}");
+    let names: Vec<String> = parsed.iter().map(ToString::to_string).collect();
+    assert_eq!(names.len(), TABLE.len());
+    assert!(table.iter().all(|name| names.iter().any(|n| n == name)));
 }
 
 #[test]

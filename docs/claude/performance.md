@@ -31,7 +31,8 @@ only for tests and benchmarks, such as a counting `GlobalAlloc`, needs only rule
    free 1.1 ns, against 4.2 ns for mimalloc and 9.2 ns for macOS malloc). A counting
    allocator in tests fails any hot-path allocation. One exception: the heap copies of
    `send_parts` that STREAM WIRE (`docs/decisions/transport/stream-wire.md`) states.
-   Each stretch of short runs and zeros is copied, and noq keeps the copy until the ACK.
+   Each stretch of short runs and zeros is copied, and noq keeps the copy until the peer
+   acknowledges it and each byte before it on its stream, or the stream resets.
 2. **One reference count per frame, never per series.** Fan-out is 18-26x cheaper. One
    shared `Arc` under 8 threads costs about 430 ns: no shared reference-count hot
    spots.

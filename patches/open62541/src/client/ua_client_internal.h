@@ -139,6 +139,7 @@ struct UA_Client {
     UA_Boolean endpointsHandshake;     /* Ongoing GetEndpoints */
     UA_Boolean namespacesHandshake;    /* Ongoing Namespaces read */
     UA_Boolean haveNamespaces;         /* Do we have the namespaces? */
+    UA_Boolean reconnecting;           /* Closed the channel to dial again */
 
     /* The discoveryUrl can be different from the EndpointUrl in the client
      * configuration. The EndpointUrl is used to connect initially, then the

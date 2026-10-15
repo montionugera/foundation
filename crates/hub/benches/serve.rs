@@ -2,10 +2,11 @@
 //! sim transport. Run with `cargo bench -p hub --bench serve`.
 //!
 //! The home serves the sessions of two peer nodes, whose transports take messages of at
-//! most 1472 bytes and 64 KiB. The bench holds the future of `Link::serve` and polls it
-//! by hand, so a timed poll is the home's work for the frames it sends. After each
-//! round of `FRAMES` frames, the bench waits until the peer has read each of them, so
-//! no timed poll waits on the transport. Each line gives ns per frame:
+//! most 1472 bytes and 64 KiB, and then the reads of a program. The bench holds the
+//! future of `Link::serve` and polls it by hand, so a timed poll is the home's work for
+//! the frames it sends. After each round of `FRAMES` frames, the bench waits until the
+//! peer has read each of them, so no timed poll waits on the transport. Each line gives
+//! ns per frame:
 //!
 //! - `timer`: an empty closure, the floor of each timed poll.
 //! - `narrow 1472`, `narrow 64k`: a latest session of 64 channels on one index, whose
@@ -23,6 +24,9 @@
 //! - `two sets 1472`: the `narrow` session, while two writers of half of its data
 //!   channels each write in turn, so each frame has another key set than the one
 //!   before. Each writer closes before the other opens, outside the timed poll.
+//! - `client`, `client complete`: a client read of the `narrow` channels by name, in
+//!   latest and complete, timed as `narrow 1472` and `complete 1472`. A program dials
+//!   with the default transport of `transport::Client`, once the HUB WIRE peers end.
 //!
 //! As for the `reader` bench, judge a change by `net`, and compare two builds on one
 //! pinned core whose SMT sibling is idle.
@@ -30,41 +34,50 @@
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
 #[expect(dead_code, reason = "the bench uses only some of the helpers")]
+#[path = "../tests/common/agent.rs"]
+mod agent;
+#[expect(dead_code, reason = "the bench uses only some of the helpers")]
 #[path = "../tests/common/mod.rs"]
 mod common;
 #[path = "../tests/common/net.rs"]
 mod net;
 #[path = "../tests/common/node.rs"]
 mod node;
+#[path = "../tests/common/peer.rs"]
+mod peer;
+#[path = "../tests/common/serving.rs"]
+mod serving;
+#[expect(dead_code, reason = "the bench uses only some of the helpers")]
+#[path = "../tests/common/sessions.rs"]
+mod sessions;
 mod table;
 
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
-use std::pin::{Pin, pin};
+use std::pin::pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::task::{Context, Poll, Waker};
 
+use agent::Agent;
 use block::{Heap, Pool};
 use common::name;
 use env::tasks::Tasks;
 use hub::writer::{self, Writer};
-use hub::{Hub, Served, serve};
+use hub::{Hub, Link, Served};
 use spec::channel::{Channel, Data, Kind};
 use spec::data_type::DataType;
 use spec::definition::Definition;
 use table::Line;
-use transport::stream::{Receiver, Sender};
-use transport::{Address, Class, Transport};
+use transport::stream::Receiver;
+use transport::{Address, Transport};
 use types::authority::Authority;
 use types::channel;
 use types::frame::key_set::Interner;
 use types::frame::{Draft, Form};
 use types::sample::{Scalar, Type};
 use types::time::{Span, Stamp};
-use wire::Protocol;
-use wire::hub::{FromHome, Mode, Open, Reader, keys};
+use wire::hub::{Mode, client};
 
 #[global_allocator]
 static ALLOCATOR: counting::Allocator = counting::Allocator::new();
@@ -183,10 +196,19 @@ const COMPLETE: Mode = Mode::Complete {
     limit_bytes: 1 << 40,
 };
 
-/// The lines of each peer, by the message limit of its transport.
-const PEERS: [(usize, &[Case]); 2] = [
+/// How a peer reaches the home.
+#[derive(Clone, Copy)]
+enum End {
+    /// A HUB WIRE peer, whose transport takes messages of at most this many bytes.
+    Wire(usize),
+    /// A program.
+    Client,
+}
+
+/// The lines of each peer, in the order in which they dial.
+const PEERS: [(End, &[Case]); 3] = [
     (
-        1472,
+        End::Wire(1472),
         &[
             Case {
                 name: "narrow 1472",
@@ -227,7 +249,7 @@ const PEERS: [(usize, &[Case]); 2] = [
         ],
     ),
     (
-        1 << 16,
+        End::Wire(1 << 16),
         &[
             Case {
                 name: "narrow 64k",
@@ -239,6 +261,23 @@ const PEERS: [(usize, &[Case]); 2] = [
                 name: "wide 64k",
                 mode: LATEST,
                 shape: Shape::Wide,
+                messages: 3,
+            },
+        ],
+    ),
+    (
+        End::Client,
+        &[
+            Case {
+                name: "client",
+                mode: LATEST,
+                shape: Shape::Narrow,
+                messages: 3,
+            },
+            Case {
+                name: "client complete",
+                mode: COMPLETE,
+                shape: Shape::Narrow,
                 messages: 3,
             },
         ],
@@ -261,7 +300,7 @@ fn main() {
     let home = sim.node(sim::node::Config::default());
     let progress = Arc::new(Progress::default());
     let at = Address::Udp(std::net::SocketAddr::new(home.addresses()[0], net::PORT));
-    for (turn, (message, _)) in PEERS.into_iter().enumerate() {
+    for (turn, (end, _)) in PEERS.into_iter().enumerate() {
         let node = sim.node(sim::node::Config::default());
         let progress = Arc::clone(&progress);
         let config = env::shards::Config {
@@ -270,7 +309,16 @@ fn main() {
         };
         let own = node.clone();
         let main = move |tasks: Tasks| async move {
-            peer(&own, &tasks, message, at, turn, &progress).await;
+            while progress.turn.load(Ordering::Relaxed) != turn {
+                own.clock().sleep(STEP).await;
+            }
+            match end {
+                End::Wire(message) => {
+                    peer(&own, &tasks, message, at, turn, &progress).await;
+                }
+                End::Client => program(&own, tasks, at, turn, &progress).await,
+            }
+            progress.turn.fetch_add(1, Ordering::Relaxed);
         };
         drop(node.shards().start(config, main).expect("starts"));
     }
@@ -289,25 +337,20 @@ async fn bench(
     progress: Arc<Progress>,
 ) -> (Line, Vec<Line>) {
     let transport = net::transport(&node, &tasks, &net::own_pool(), net::HOME, 1 << 16);
-    let (hub, mut stamp) = create_hub(&node, tasks).await;
+    let (hub, mut stamp) = create_hub(&node, tasks.clone()).await;
+    hub.set_rules(sessions::rules());
     let mut timer = Line::new("timer", FRAMES);
     let mut lines = Vec::new();
-    for (turn, (_, cases)) in PEERS.into_iter().enumerate() {
-        let (session, incoming) = net::accept(&transport).await;
-        let mut first = Some(incoming);
-        let remote = hub.link(session.clone());
+    for (turn, (end, cases)) in PEERS.into_iter().enumerate() {
+        let (session, remote) = accept(&transport, &hub, &tasks, end).await;
         for (at, case) in cases.iter().enumerate() {
-            let incoming = match first.take() {
-                Some(incoming) => incoming,
-                None => net::stream(&session).await,
-            };
-            let mut serving = pin!(remote.serve(incoming));
+            let mut serving = pin!(remote.serve(net::stream(&session).await));
             let mut line = Line::new(case.name, FRAMES);
             let configs = configs(base(turn, at), case.shape);
             let mut writer = hub.writer(configs[0].clone()).await.expect("opens");
             let opened = progress.opened.load(Ordering::Relaxed);
             while progress.opened.load(Ordering::Relaxed) == opened {
-                poll(serving.as_mut());
+                serving::poll(serving.as_mut());
                 node.clock().sleep(STEP).await;
             }
             for round in 0..WARMUP + ROUNDS {
@@ -325,7 +368,10 @@ async fn bench(
                             common::write(&mut writer, frame);
                             timer.add(table::timed(&ALLOCATOR, || ()).1);
                             line.add(
-                                table::timed(&ALLOCATOR, || poll(serving.as_mut())).1,
+                                table::timed(&ALLOCATOR, || {
+                                    serving::poll(serving.as_mut());
+                                })
+                                .1,
                             );
                         }
                     }
@@ -337,7 +383,12 @@ async fn bench(
                             timer.add(table::timed(&ALLOCATOR, || ()).1);
                         }
                         node.clock().sleep(common::SETTLE).await;
-                        line.add(table::timed(&ALLOCATOR, || poll(serving.as_mut())).1);
+                        line.add(
+                            table::timed(&ALLOCATOR, || {
+                                serving::poll(serving.as_mut());
+                            })
+                            .1,
+                        );
                     }
                 }
                 read(&node, &progress, frames).await;
@@ -351,6 +402,23 @@ async fn bench(
         drop(session.closed().await);
     }
     (timer, lines)
+}
+
+/// Accepts the session of the peer of `end`, and gives it and its link.
+async fn accept(
+    transport: &Transport,
+    hub: &Hub,
+    tasks: &Tasks,
+    end: End,
+) -> (transport::Session, Link) {
+    match end {
+        End::Wire(_) => {
+            let session = transport.accept().await.expect("a session");
+            let link = hub.link(session.clone());
+            (session, link)
+        }
+        End::Client => serving::program(transport, hub, tasks).await,
+    }
 }
 
 /// Waits until the peers have read `frames` frames in full.
@@ -369,8 +437,8 @@ async fn read(node: &sim::node::Node, progress: &Progress, frames: usize) {
     );
 }
 
-/// The peer of `turn`: dials the home at `at` on its turn, reads each of its sessions
-/// in turn until it has read `RUN` frames, then finishes it, and passes the turn on.
+/// The HUB WIRE peer of `turn`: dials the home at `at`, and reads each of its
+/// sessions in turn as [`take`] does.
 async fn peer(
     node: &sim::node::Node,
     tasks: &Tasks,
@@ -379,9 +447,6 @@ async fn peer(
     turn: usize,
     progress: &Progress,
 ) {
-    while progress.turn.load(Ordering::Relaxed) != turn {
-        node.clock().sleep(STEP).await;
-    }
     let pool = net::own_pool();
     let transport: Transport = net::transport(node, tasks, &pool, net::PEER, message);
     let session = transport
@@ -389,35 +454,11 @@ async fn peer(
         .await
         .expect("dials");
     for (line, case) in PEERS[turn].1.iter().enumerate() {
-        let class = match case.mode {
-            Mode::Latest => Class::Latest,
-            Mode::Complete { .. } => Class::Complete,
-        };
-        let (mut sender, mut receiver) = session.open(class).await.expect("opens");
-        send(&pool, &mut sender, &wire::header::encode(Protocol::Hub)).await;
         let keys = case.shape.read(base(turn, line));
-        let mut reader =
-            open(&pool, &mut sender, &mut receiver, case.mode, &keys).await;
+        let (mut sender, mut receiver, reader) =
+            peer::open(&pool, &session, case.mode, &keys).await;
         progress.opened.fetch_add(1, Ordering::Relaxed);
-        let (mut frames, mut messages) = (0, 0);
-        while frames < RUN {
-            let message = receiver.recv().await.expect("receives").expect("a message");
-            let decoded = reader.decode(&message).expect("a valid message");
-            messages += 1;
-            let ended = matches!(
-                decoded,
-                FromHome::Body { .. } | FromHome::Ends { last: true, .. }
-            );
-            if ended && reader.body().is_none() {
-                assert_eq!(
-                    messages, case.messages,
-                    "the messages of a frame of {}",
-                    case.name
-                );
-                (frames, messages) = (frames + 1, 0);
-                progress.frames.fetch_add(1, Ordering::Relaxed);
-            }
-        }
+        take(&mut receiver, reader, case, progress).await;
         sender.finish().expect("finishes");
         let finished = receiver.recv().await;
         assert!(
@@ -427,52 +468,66 @@ async fn peer(
     }
     session.close(transport::Code(0));
     node.clock().sleep(STEP).await;
-    progress.turn.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Sends the open of a session of `mode` on `keys`, and reads the reply.
-async fn open(
-    pool: &Pool,
-    sender: &mut Sender,
-    receiver: &mut Receiver,
-    mode: Mode,
-    keys: &[u128],
-) -> Reader {
-    let keys: Vec<_> = keys.iter().copied().map(channel::Key::from_u128).collect();
-    let open = Open {
-        mode,
-        channels: u32::try_from(keys.len()).expect("the keys fit a u32"),
-    };
-    let mut out = vec![0; open.encoded_len()];
-    open.encode(&mut out);
-    send(pool, sender, &out).await;
-    let mut out = vec![0; keys.len() * keys::LEN];
-    keys::encode(&keys, &mut out);
-    send(pool, sender, &out).await;
-    let mut reader = Reader::new(&open);
-    let opened = receiver.recv().await.expect("receives").expect("a reply");
-    assert!(
-        matches!(reader.decode(&opened), Ok(FromHome::Opened)),
-        "the home opens the session"
-    );
-    reader
+/// The program of `turn`: dials the home at `at`, admits a hello, and reads each of
+/// its reads in turn as [`take`] does.
+async fn program(
+    node: &sim::node::Node,
+    tasks: Tasks,
+    at: Address,
+    turn: usize,
+    progress: &Progress,
+) {
+    let mut agent = Agent::dial(node, tasks, at, name(agent::SUBJECT)).await;
+    agent.admit().await;
+    for (line, case) in PEERS[turn].1.iter().enumerate() {
+        let mode = match case.mode {
+            Mode::Latest => client::Mode::Latest,
+            Mode::Complete { .. } => client::Mode::Complete,
+        };
+        let names: Vec<_> = case
+            .shape
+            .read(base(turn, line))
+            .into_iter()
+            .map(|key| channel_name(key).to_string())
+            .collect();
+        let select: Vec<_> = names.iter().map(String::as_str).collect();
+        let mut stream = agent.read(mode, &select).await;
+        let (_, _, reader) = stream.opened().await;
+        progress.opened.fetch_add(1, Ordering::Relaxed);
+        take(&mut stream.receiver, reader, case, progress).await;
+        stream.sender.finish().expect("finishes");
+        let finished = stream.recv().await;
+        assert!(
+            matches!(finished, Ok(None)),
+            "the home finishes: {finished:?}"
+        );
+    }
+    agent.session.close(transport::Code(0));
+    node.clock().sleep(STEP).await;
 }
 
-async fn send(pool: &Pool, sender: &mut Sender, bytes: &[u8]) {
-    let mut block = pool.alloc(bytes.len()).expect("the pool has room");
-    block.copy_from_slice(bytes);
-    sender.send(block.freeze()).await.expect("sends");
-}
-
-/// One poll of `serving` with a waker that does nothing.
+/// Reads `RUN` frames of `case` from `receiver` with `reader`, and counts each in
+/// `progress`.
 ///
 /// # Panics
 ///
-/// When the session ends.
-fn poll(serving: Pin<&mut impl Future<Output = Result<Served, serve::Error>>>) {
-    let mut cx = Context::from_waker(Waker::noop());
-    if let Poll::Ready(served) = serving.poll(&mut cx) {
-        panic!("the session ended: {served:?}");
+/// When a frame does not take the messages of `case`.
+async fn take(
+    receiver: &mut Receiver,
+    mut reader: wire::hub::Reader,
+    case: &Case,
+    progress: &Progress,
+) {
+    for _ in 0..RUN {
+        let messages = peer::frame(receiver, &mut reader).await;
+        assert_eq!(
+            messages, case.messages,
+            "the messages of a frame of {}",
+            case.name
+        );
+        progress.frames.fetch_add(1, Ordering::Relaxed);
     }
 }
 

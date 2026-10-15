@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io::IoSliceMut;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroUsize;
-use std::task::{Poll, Waker};
+use std::task::{self, Poll};
 
 use env::net::udp::{Config, Meta, Transmit};
 use env::net::{Ecn, Error};
@@ -13,6 +13,7 @@ use types::time::Monotonic;
 use super::wire::Wire;
 use super::{Fate, NOT_AVAILABLE, addresses, ip_header, receives};
 use crate::EIO;
+use crate::log::Waker;
 
 /// The bytes of the UDP header of a datagram.
 const HEADER: usize = 8;
@@ -213,7 +214,7 @@ impl<'a> Udp<'a> {
         let binding = (self.sockets.bindings.values_mut())
             .find(|binding| binding.node == node && binding.local == local)?;
         binding.failed = true;
-        Some((binding.waker.take()).unwrap_or_else(|| Waker::noop().clone()))
+        Some((binding.waker.take()).unwrap_or_else(Waker::noop))
     }
 
     /// Sends the datagrams of `transmit` from socket `key` at true time `now`, or keeps
@@ -224,7 +225,7 @@ impl<'a> Udp<'a> {
         &mut self,
         now: Monotonic,
         key: u64,
-        waker: &Waker,
+        waker: &task::Waker,
         transmit: &Transmit<'_>,
     ) -> Poll<Result<(), Error>> {
         let Sockets {
@@ -240,7 +241,7 @@ impl<'a> Udp<'a> {
         };
         if binding.unsent >= binding.send_capacity {
             if !binding.senders.iter().any(|sender| sender.will_wake(waker)) {
-                binding.senders.push(waker.clone());
+                binding.senders.push(Waker::new(waker.clone()));
             }
             return Poll::Pending;
         }

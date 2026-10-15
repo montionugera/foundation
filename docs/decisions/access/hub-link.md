@@ -43,11 +43,16 @@
   Supersedes item 6 (`Link` needs no `Clone`) of
   https://github.com/synnaxlabs/foundation/issues/1748#issuecomment-6058789738.
   `Hub::set_rules` sets the `access::Rules` that each later hello and request is checked
-  against, and `node` calls it with the rules of each spec (#1951). Until then, a hub
-  has `access::Rules::default()`, which knows no subject, so it refuses each hello
-  with `Unknown`. Lost: `hub::Config::rules`, a second way to set one state, because the
-  rules change at run time through `Mesh::apply`. Decided by `laptop.architect`
-  (2026-10-08T18:05:25Z,
+  against, and `node` calls it with the rules of each spec (#1951). Amended (2026-10-12,
+  #1744): `node` calls it on shard 0's hub with the rules of the root region of each
+  spec in use, the first before it takes a session. The rules of each followed region,
+  and the hub of each other shard, wait on #1951. Approved by `laptop.architect`
+  (2026-10-13T05:14:56Z,
+  https://github.com/synnaxlabs/foundation/pull/2545#issuecomment-6138768682). Until
+  then, a hub has `access::Rules::default()`, which knows no subject, so it refuses each
+  hello with `Unknown`. Lost: `hub::Config::rules`, a second way to set one state,
+  because the rules change at run time through `Mesh::apply`. Decided by
+  `laptop.architect` (2026-10-08T18:05:25Z,
   https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6066050140).
   The name `set_rules`: `laptop.architect`, 2026-10-08T18:56:15Z
   (https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6066908418).
@@ -80,9 +85,10 @@
   Supersedes the rule by the send of the first request of
   https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6066239520.
   `node` gives `hub::Config::node` from the key in `node.key` (NODE PORT), as it does
-  for the transport and the mesh, and never a zero key. The test waits on #1744, whose
-  client hello is the first that a `node` test can admit through `Hub::link`, with
-  `via` set to the node's key. Decided by `laptop.architect` (2026-10-08T18:36:19Z,
+  for the transport and the mesh, and never a zero key. The test is
+  `reach_on_a_running_node_dials_its_bound_address` (#1744): a client hello that `node`
+  admits through `Hub::link`, with `via` set to the node's key. Decided by
+  `laptop.architect` (2026-10-08T18:36:19Z,
   https://github.com/synnaxlabs/foundation/pull/1946#issuecomment-6066571400).
   Amended by #1660, where the key moves from `node::Config` to `node.key`
   (https://github.com/synnaxlabs/foundation/issues/1660#issuecomment-6067866831); the

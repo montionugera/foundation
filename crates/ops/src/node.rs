@@ -4,11 +4,14 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use env::clock::Clock;
 use serde_json::Value;
 use types::channel;
+use types::name::Name;
 
 use crate::front_end::{File, FrontEnds};
-use crate::{apply, plan, used};
+use crate::plan::Documents;
+use crate::{apply, used};
 
 #[cfg(test)]
 mod tests;
@@ -16,28 +19,62 @@ mod tests;
 /// The handles that the operations on one node use. `node` builds one on shard 0,
 /// where the mesh of the node runs. It is not `Send`.
 pub struct Node {
-    mesh: mesh::Mesh,
-    key: Box<dyn Fn() -> channel::Key>,
-    front_ends: FrontEnds,
-    kinds: Arc<connector::kind::Table>,
+    pub(crate) mesh: mesh::Mesh,
+    pub(crate) keys: Box<dyn Fn() -> channel::Key>,
+    pub(crate) front_ends: FrontEnds,
+    pub(crate) kinds: Arc<connector::kind::Table>,
+    pub(crate) hub: hub::Hub,
+    pub(crate) clock: Clock,
+    pub(crate) name: Name,
+    pub(crate) secrets: secret::Resolver,
+}
+
+/// The dependencies of a [`Node`].
+pub struct Config {
+    /// The mesh that the operations read and change.
+    pub mesh: mesh::Mesh,
+    /// Gives the key of each new channel: each call gives a key that no channel holds
+    /// and no earlier call gave.
+    pub keys: Box<dyn Fn() -> channel::Key>,
+    /// The syntax of each file extension.
+    pub front_ends: FrontEnds,
+    /// Each connector kind of the node.
+    pub kinds: Arc<connector::kind::Table>,
+    /// The hub of the node, through which `status` reads the status channels.
+    pub hub: hub::Hub,
+    /// The clock of the node, on which `status` waits for the status channels.
+    pub clock: Clock,
+    /// The name of the node.
+    pub name: Name,
+    /// The resolver through which `plan` reads each secret of each connector of the
+    /// node, as a run does. A remote `plan` reads only those of each connector that its
+    /// subject may apply.
+    pub secrets: secret::Resolver,
 }
 
 impl Node {
-    /// `key` gives the key of each new channel: each call gives a key that no channel
-    /// holds and no earlier call gave. `front_ends` gives the syntax of each file
-    /// extension, and `kinds` holds each connector kind of the node.
+    /// The node with the dependencies of `config`.
     #[must_use]
-    pub fn new(
-        mesh: mesh::Mesh,
-        key: impl Fn() -> channel::Key + 'static,
-        front_ends: FrontEnds,
-        kinds: Arc<connector::kind::Table>,
-    ) -> Self {
-        Self {
+    pub fn new(config: Config) -> Self {
+        let Config {
             mesh,
-            key: Box::new(key),
+            keys,
             front_ends,
             kinds,
+            hub,
+            clock,
+            name,
+            secrets,
+        } = config;
+        Self {
+            mesh,
+            keys,
+            front_ends,
+            kinds,
+            hub,
+            clock,
+            name,
+            secrets,
         }
     }
 
@@ -47,8 +84,9 @@ impl Node {
         &self.mesh
     }
 
-    /// Plans the change from `files`, each a path and its text, to the spec in use.
-    /// Gives the plan file and the JSON output that `plan --json` writes.
+    /// Plans the change from `files`, each a path and its text, to the spec in use,
+    /// and reads each secret of each connector of this node. Gives the plan file and
+    /// the JSON output that `plan --json` writes.
     ///
     /// # Errors
     ///
@@ -61,17 +99,14 @@ impl Node {
             .into_iter()
             .map(|(path, text)| File { path, text })
             .collect();
-        let (base, applied) = used::spec(&self.mesh).await.map_err(|e| e.json())?;
-        let (output, plan) = plan::plan(
-            &files,
-            base,
-            &applied,
-            &self.mesh.names(),
-            &self.front_ends,
-            &self.kinds,
-        )
-        .map_err(|e| e.json())?;
-        Ok((plan.encode(), output.json()))
+        let used = used::spec(&self.mesh).await.and_then(used::Spec::newest);
+        let (base, applied) = used.map_err(|e| e.json())?;
+        let planned = async {
+            let documents = Documents::read(&files, &self.front_ends)?;
+            documents.plan(self, base, &applied, |_| true).await
+        };
+        let (output, plan) = planned.await.map_err(|e| e.json())?;
+        Ok((plan.encode(), crate::value(&output)))
     }
 
     /// Applies the plan file `bytes`, read from `path`, and gives the JSON output that
@@ -81,9 +116,9 @@ impl Node {
     ///
     /// The JSON error that `apply --json` writes.
     pub async fn apply(&self, path: &Path, bytes: &[u8]) -> Result<Value, Value> {
-        apply::apply(path, bytes, &self.mesh, &self.kinds, &self.key)
+        apply::file(path, bytes, &self.mesh, &self.kinds, &self.keys)
             .await
-            .map(|applied| applied.json())
+            .map(|applied| crate::value(&applied))
             .map_err(|e| e.json())
     }
 }
@@ -92,6 +127,15 @@ impl fmt::Debug for Node {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Node")
             .field("front_ends", &self.front_ends)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("front_ends", &self.front_ends)
+            .field("name", &self.name)
             .finish_non_exhaustive()
     }
 }

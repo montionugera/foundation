@@ -131,6 +131,10 @@ fn to_usize(offset: u64) -> usize {
 }
 
 impl Driver for Memory {
+    fn open_absolute<'a>(&'a self, _: &'a Path) -> Request<'a, Box<dyn Descriptor>> {
+        unreachable!("the buffer opens no file outside its data directory")
+    }
+
     fn open<'a>(
         &'a self,
         path: &'a Path,
@@ -211,6 +215,10 @@ impl Driver for Memory {
 
     fn free(&self) -> Request<'_, u64> {
         Box::pin(async { Ok(u64::MAX) })
+    }
+
+    fn shown(&self, path: &Path) -> PathBuf {
+        path.into()
     }
 }
 
