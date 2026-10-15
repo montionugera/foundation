@@ -317,6 +317,15 @@ fn unescape(text: &str) -> Option<String> {
     Some(out)
 }
 
+#[test]
+fn a_json_line_gives_a_128_bit_integer_as_a_number() {
+    let line = written(true, || {
+        tracing::info!(target: "test", big = 5_u128, small = -5_i128);
+    });
+    let line: Value = serde_json::from_str(&line).expect("JSON");
+    assert_eq!(line["fields"], json!({ "big": 5, "small": -5 }));
+}
+
 proptest! {
     #[test]
     fn a_text_message_is_one_line_that_reads_back(message in any::<String>()) {

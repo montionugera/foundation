@@ -5,7 +5,6 @@ use std::io;
 use std::sync::Mutex;
 
 use clock::log::{Mesh, Time};
-use serde_json::Value;
 use tracing::field::{Field, Visit};
 use tracing::{Dispatch, Event, Subscriber};
 use tracing_subscriber::filter::LevelFilter;
@@ -102,7 +101,7 @@ struct Fields {
 impl Fields {
     fn add(&mut self, field: &Field, value: Value) {
         match (field.name(), value) {
-            ("message", Value::String(message)) => self.message = Some(message),
+            ("message", Value::Text(message)) => self.message = Some(message),
             (name, value) => self.others.push((name, value)),
         }
     }
@@ -110,23 +109,56 @@ impl Fields {
 
 impl Visit for Fields {
     fn record_i64(&mut self, field: &Field, value: i64) {
-        self.add(field, value.into());
+        self.add(field, Value::Signed(value.into()));
     }
 
     fn record_u64(&mut self, field: &Field, value: u64) {
-        self.add(field, value.into());
+        self.add(field, Value::Unsigned(value.into()));
+    }
+
+    fn record_i128(&mut self, field: &Field, value: i128) {
+        self.add(field, Value::Signed(value));
+    }
+
+    fn record_u128(&mut self, field: &Field, value: u128) {
+        self.add(field, Value::Unsigned(value));
     }
 
     fn record_bool(&mut self, field: &Field, value: bool) {
-        self.add(field, value.into());
+        self.add(field, Value::Bool(value));
     }
 
     fn record_str(&mut self, field: &Field, value: &str) {
-        self.add(field, value.into());
+        self.add(field, Value::Text(value.to_owned()));
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-        self.add(field, format!("{value:?}").into());
+        self.add(field, Value::Text(format!("{value:?}")));
+    }
+}
+
+/// The value of one field. Integers and booleans keep their type, so JSON writes them
+/// as numbers and booleans; each other value is text.
+enum Value {
+    Signed(i128),
+    Unsigned(u128),
+    Bool(bool),
+    Text(String),
+}
+
+impl Value {
+    /// Writes the value in the form of the log, with `text` for a `Text` value.
+    fn write(
+        &self,
+        w: &mut Writer<'_>,
+        text: fn(&mut Writer<'_>, &str) -> fmt::Result,
+    ) -> fmt::Result {
+        match self {
+            Self::Signed(n) => write!(w, "{n}"),
+            Self::Unsigned(n) => write!(w, "{n}"),
+            Self::Bool(b) => write!(w, "{b}"),
+            Self::Text(t) => text(w, t),
+        }
     }
 }
 
@@ -149,10 +181,7 @@ fn text(
     }
     for (name, field) in fields.others {
         write!(w, " {name}=")?;
-        match field {
-            Value::String(text) => value(w, &text)?,
-            field => write!(w, "{field}")?,
-        }
+        field.write(w, value)?;
     }
     match time.mesh {
         Mesh::Near => {}
@@ -197,16 +226,21 @@ fn json(
     target: &str,
     fields: Fields,
 ) -> fmt::Result {
-    let (wall, target) = (micros(time.wall), Value::from(target));
+    let wall = micros(time.wall);
     write!(
         w,
-        "{{\"timestamp\":\"{wall}\",\"level\":\"{level}\",\"target\":{target}"
+        "{{\"timestamp\":\"{wall}\",\"level\":\"{level}\",\"target\":"
     )?;
+    string(w, target)?;
     w.write_str(",\"fields\":{")?;
-    let message = fields.message.map(|m| ("message", Value::String(m)));
+    let message = fields.message.map(|m| ("message", Value::Text(m)));
     for (i, (name, field)) in message.into_iter().chain(fields.others).enumerate() {
-        let comma = if i == 0 { "" } else { "," };
-        write!(w, "{comma}{}:{field}", Value::from(name))?;
+        if i > 0 {
+            w.write_char(',')?;
+        }
+        string(w, name)?;
+        w.write_char(':')?;
+        field.write(w, string)?;
     }
     w.write_char('}')?;
     match time.mesh {
@@ -215,6 +249,11 @@ fn json(
         Mesh::Unsynced => w.write_str(",\"mesh_time\":null")?,
     }
     w.write_str("}\n")
+}
+
+/// `text` as a JSON string.
+fn string(w: &mut Writer<'_>, text: &str) -> fmt::Result {
+    w.write_str(&serde_json::to_string(text).map_err(|_never| fmt::Error)?)
 }
 
 /// `stamp` in RFC 3339 UTC with six fraction digits, floored.
