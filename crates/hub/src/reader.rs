@@ -348,8 +348,8 @@ struct Lent {
 /// Where a reader's frames come from.
 #[derive(Debug)]
 enum Source {
-    /// A session at this node's home. A box keeps the reader small.
-    Local(Box<Local>),
+    /// A session at this node's home.
+    Local(Local),
     /// A session at the home of another node.
     Remote(Box<Remote>),
 }
@@ -402,7 +402,7 @@ impl Local {
                     let opened = state.home.open_named_latest(channels.index, named)?;
                     state.take_over(opened)
                 };
-                (Session::new(state, key, channels), None)
+                (Session::new(state, key, channels, None), None)
             }
         };
         Ok(Self {
@@ -500,7 +500,7 @@ impl Reader {
         let slot = channels.index;
         let local = Local::open(state, channels, mode, named, hold)?;
         Ok(Self {
-            source: Source::Local(Box::new(local)),
+            source: Source::Local(local),
             index: slot,
             lent: Lent::default(),
             frame: None,
@@ -865,15 +865,25 @@ pub(crate) struct Session {
     ending: Ending,
     /// The slots of the reader's channels.
     slots: Box<[channel::Slot]>,
-    /// The key and slot of their index.
-    index: (channel::Key, channel::Slot),
-    /// The key set of the frames that a read from disk makes, once one ran.
-    disk: Option<Arc<KeySet>>,
+    /// The slot of their index.
+    index: channel::Slot,
+    /// `None` for a latest session, which never reads from disk. Boxed, as only a read
+    /// from disk uses it.
+    disk: Option<Box<Disk>>,
     /// The lens of the key set of the last frame.
     lens: Option<Lens>,
     streak: Streak,
     /// Why a read from disk of the session failed.
     failed: Option<Box<Stop>>,
+}
+
+/// The group that a read from disk of a [`Session`] makes its frames of.
+#[derive(Debug)]
+struct Disk {
+    /// The key of the index.
+    index: channel::Key,
+    /// The key set of the group, once a read ran.
+    set: Option<Arc<KeySet>>,
 }
 
 /// The channels of a [`Session`]: the key and slot of each, and the slot of their
@@ -905,7 +915,7 @@ impl Session {
     /// Opens a latest session on `channels`.
     pub(crate) fn latest(state: &Rc<RefCell<State>>, channels: Channels) -> Self {
         let key = state.borrow_mut().home.open_latest(channels.index);
-        Self::new(state, key, channels)
+        Self::new(state, key, channels, None)
     }
 
     fn with_complete(
@@ -913,7 +923,13 @@ impl Session {
         key: ::home::reader::complete::Key,
         channels: Channels,
     ) -> (Self, Complete) {
-        let session = Self::new(state, key.into(), channels);
+        let at = channels
+            .slots
+            .iter()
+            .position(|&slot| slot == channels.index);
+        let index = channels.keys[at.expect("invariant: the channels hold the index")];
+        let disk = Box::new(Disk { index, set: None });
+        let session = Self::new(state, key.into(), channels, Some(disk));
         let complete = Complete {
             state: Rc::clone(state),
             key,
@@ -926,20 +942,16 @@ impl Session {
         state: &Rc<RefCell<State>>,
         key: ::home::reader::Key,
         channels: Channels,
+        disk: Option<Box<Disk>>,
     ) -> Self {
-        let at = channels
-            .slots
-            .iter()
-            .position(|&slot| slot == channels.index);
-        let index = channels.keys[at.expect("invariant: the channels hold the index")];
         let ending = state.borrow_mut().readers.add(key, channels.keys);
         Self {
             state: Rc::clone(state),
             key,
             ending,
             slots: channels.slots,
-            index: (index, channels.index),
-            disk: None,
+            index: channels.index,
+            disk,
             lens: None,
             streak: Streak::default(),
             failed: None,
@@ -983,8 +995,9 @@ impl Session {
             let filled = match Box::pin(disk.read()).await {
                 Ok(entries) => {
                     let state = &mut *self.state.borrow_mut();
-                    let set =
-                        self.disk.get_or_insert_with(|| group(state, self.index.0));
+                    let disk =
+                        self.disk.as_mut().expect("invariant: complete reads disk");
+                    let set = disk.set.get_or_insert_with(|| group(state, disk.index));
                     state.home.fill(entries, set).map_err(Stop::Pool)
                 }
                 Err(error) => Err(error.into()),
@@ -1001,7 +1014,7 @@ impl Session {
                 let set = snapshot
                     .get(key)
                     .expect("invariant: a frame's key set is known");
-                let lens = Lens::new(set, self.slots.iter().copied(), self.index.1);
+                let lens = Lens::new(set, self.slots.iter().copied(), self.index);
                 self.lens.insert(lens)
             }
         };
