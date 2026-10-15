@@ -79,11 +79,11 @@
   the start of its series is not valid; `types` refuses it, as `frame::check` does. The
   padding may hold any bytes (FRAME LAYOUT). Each direction has its own messages: the
   reader sends `Open`, then `Credit`; the home sends a `Reply`, `Opened`, `Head`, or
-  `Behind`. The home sends `Behind` after the last frame before a miss of the session,
-  then finishes its stream. The reader's `next` gives each frame before it, then
-  `Ended::Behind`. `hub` builds both in #340 PR 4. A message after `Behind` is not
-  valid (lost: a stop code, which can cut off the frames sent before it; the architect,
-  2026-10-07T21:07:50Z,
+  `Behind`. The home sends `Behind` after the last frame before the first frame of the
+  session that the buffer lost, then finishes its stream. The reader's `next` gives each
+  frame before it, then `Ended::Behind`. `hub` builds both in #340 PR 4. A message after
+  `Behind` is not valid (lost: a stop code, which can cut off the frames sent before it;
+  the architect, 2026-10-07T21:07:50Z,
   https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6046877541).
   `Behind` and `Credit` in a latest session are not valid (lost: accept them in either
   mode, which lets a remote latest reader give `Ended::Behind`; the architect,

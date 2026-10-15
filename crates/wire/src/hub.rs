@@ -247,7 +247,7 @@ pub enum Reply {
     /// The head of one frame. The run of its [`ends`] follows, then its body.
     Head(Head),
     /// The session reached a frame that the buffer lost, so the home ends it. It
-    /// follows each frame before the miss, and no message follows it: the home then
+    /// follows each frame before that frame, and no message follows it: the home then
     /// finishes its stream.
     Behind,
 }
