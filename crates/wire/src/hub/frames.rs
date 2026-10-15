@@ -32,7 +32,8 @@ pub enum Step {
     Draft,
     /// A whole frame.
     Frame(Frame),
-    /// The session missed a frame, so the home ended it. No message follows.
+    /// The session reached a frame that the buffer lost, so the home ended it. No
+    /// message follows.
     Behind,
 }
 
