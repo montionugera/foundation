@@ -1,34 +1,32 @@
 //! A read keeps its list of chunks and the buffer of its message across polls, so no
 //! allocation repeats on each poll. A message that comes over at least 64 polls makes
-//! at most twice the allocations of a read of the whole message in one poll. A whole
+//! at most one allocation more than a read of the whole message in one poll. A
+//! message whose prefix a packet splits after a full list makes at most one. A whole
 //! message that waits for a block makes no allocation after its first poll, and the
 //! read of a short message after it makes none: the reader keeps its list.
 
 use std::net::SocketAddr;
 use std::pin::{Pin, pin};
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Waker};
 
+use env::clock::Clock;
 use sim::Sim;
 use sim::node::Node;
-use transport::{Address, Class, Transport};
+use transport::Transport;
 use types::time::Span;
 
-use crate::ALLOCATOR;
-use crate::common::{CLIENT, PORT, SERVER, config, fill, filled, part};
+use crate::common::{PORT, SERVER, config, fill, filled, part};
+use crate::{READ, SHORT, once, send};
 
-/// The bytes of the message after the long one on the stream.
-const SHORT: usize = 1000;
-/// The time between two polls of a read while its message comes, shorter than the
-/// time between two packets.
+/// The time between two polls of a read while its message comes.
 const EVERY: Span = Span::from_nanos(20_000);
-/// When the server reads after it accepts the stream, once the messages are in.
-const READ: Span = Span::from_nanos(1_000_000_000);
-/// How long the client lives after its sends: past the server's reads.
-const LIVE: Span = Span::from_nanos(2_000_000_000);
 /// The polls of a whole message that waits for a block.
 const WAITS: usize = 8;
+/// A message after which, in this sim, a packet splits the prefix of the next one
+/// once the read's list is full.
+const SPLIT: usize = 81_468;
+/// The message after [`SPLIT`].
+const NEXT: usize = 100_000;
 
 /// Whether each poll of the server's reads was ready, and the allocations it made.
 type Out = Vec<(bool, u64)>;
@@ -42,24 +40,27 @@ enum Mode {
     Coming,
     /// Once it is in, [`WAITS`] polls with no block in the pool, then one with blocks.
     Waiting,
+    /// As [`Mode::Coming`], then the next message the same way. Only the polls of the
+    /// next message count.
+    Next,
 }
 
 pub(crate) fn main() {
     for len in [100_000, 240_000] {
-        let whole = run(len, Mode::Whole);
+        let whole = run([len, SHORT], Mode::Whole);
         let [(true, whole)] = whole[..] else {
             panic!("{len} bytes: the whole message in one poll gave {whole:?}");
         };
-        let coming = run(len, Mode::Coming);
+        let coming = run([len, SHORT], Mode::Coming);
         let polls = coming.len();
         let allocated: u64 = coming.iter().map(|&(_, allocated)| allocated).sum();
         assert!(polls >= 64, "{len} bytes: {polls} polls");
         assert!(
-            allocated <= 2 * whole,
+            allocated <= whole + 1,
             "{len} bytes: {allocated} allocations over {polls} polls, against {whole} \
              in one poll"
         );
-        let waiting = run(len, Mode::Waiting);
+        let waiting = run([len, SHORT], Mode::Waiting);
         let [(false, _), ref waits @ .., (true, block), (true, short)] = waiting[..]
         else {
             panic!("{len} bytes: the waiting reads gave {waiting:?}");
@@ -75,39 +76,33 @@ pub(crate) fn main() {
             "{len} bytes: the read with a block, and of the short message after it"
         );
     }
+    let next = run([SPLIT, NEXT], Mode::Next);
+    let allocated: u64 = next.iter().map(|&(_, allocated)| allocated).sum();
+    assert!(
+        allocated <= 1,
+        "{allocated} allocations over {} polls of a message whose prefix a packet \
+         splits after a full list",
+        next.len()
+    );
 }
 
-/// The [`Out`] of the server's reads in `mode` of a message of `len` bytes, and in
-/// [`Mode::Waiting`] of the short message after it, on one stream.
-fn run(len: usize, mode: Mode) -> Out {
+/// The [`Out`] of the server's reads in `mode` of the messages of `lens` bytes on one
+/// stream.
+fn run(lens: [usize; 2], mode: Mode) -> Out {
     let mut sim = Sim::new(sim::Config::default());
     let client = sim.node(sim::node::Config::default());
     let server = sim.node(sim::node::Config::default());
     let address = SocketAddr::new(server.addresses()[0], PORT);
     let out = Arc::new(Mutex::new(Vec::new()));
-    serve(&server, len, mode, Arc::clone(&out));
-    sim.run_on(&client, move |node, tasks| async move {
-        let config = config(&node, tasks, CLIENT);
-        let pool = Rc::clone(&config.pool);
-        let transport = Transport::new(config, part(&node, 0)).expect("a transport");
-        let session = transport
-            .dial(SERVER.public(), &[Address::Udp(address)])
-            .await
-            .expect("a session");
-        let mut sender = session
-            .open_sender(Class::Complete)
-            .await
-            .expect("a stream");
-        sender.send(filled(&pool, len)).await.expect("sent");
-        sender.send(filled(&pool, SHORT)).await.expect("sent");
-        node.clock().sleep(LIVE).await;
-    })
-    .expect("the run ends");
+    serve(&server, lens[0], mode, Arc::clone(&out));
+    send(&mut sim, &client, address, move |pool| {
+        lens.map(|len| filled(pool, len)).into()
+    });
     out.lock().expect("not poisoned").clone()
 }
 
-/// Starts the server on `node`. It reads a message of `len` bytes in `mode`, and puts
-/// the [`Out`] of its polls in `out`.
+/// Starts the server on `node`. It reads the first message, of `len` bytes, in `mode`,
+/// and puts the [`Out`] of its polls in `out`.
 fn serve(node: &Node, len: usize, mode: Mode, out: Arc<Mutex<Out>>) {
     let own = node.clone();
     let shard = env::shards::Config {
@@ -127,36 +122,45 @@ fn serve(node: &Node, len: usize, mode: Mode, out: Arc<Mutex<Out>>) {
             match mode {
                 Mode::Whole => {
                     clock.sleep(READ).await;
-                    polls.push(once(recv.as_mut()));
+                    polls.push(ready(recv.as_mut()));
                 }
-                Mode::Coming => loop {
-                    let poll = once(recv.as_mut());
-                    polls.push(poll);
-                    if poll.0 {
-                        break;
-                    }
-                    clock.sleep(EVERY).await;
-                },
+                Mode::Coming => polls = coming(recv.as_mut(), &clock).await,
+                Mode::Next => drop(coming(recv.as_mut(), &clock).await),
                 Mode::Waiting => {
                     clock.sleep(READ).await;
                     for _ in 0..WAITS {
-                        polls.push(once(recv.as_mut()));
+                        polls.push(ready(recv.as_mut()));
                     }
                     drop(full);
-                    polls.push(once(recv.as_mut()));
+                    polls.push(ready(recv.as_mut()));
                 }
             }
         }
-        if matches!(mode, Mode::Waiting) {
-            polls.push(once(pin!(receiver.recv())));
+        match mode {
+            Mode::Waiting => polls.push(ready(pin!(receiver.recv()))),
+            Mode::Next => polls = coming(pin!(receiver.recv()), &clock).await,
+            Mode::Whole | Mode::Coming => {}
         }
         *out.lock().expect("not poisoned") = polls;
     });
     drop(started.expect("a shard"));
 }
 
+/// Polls `read` each [`EVERY`] until it is ready, and gives the [`Out`] of its polls.
+async fn coming<T>(mut read: Pin<&mut impl Future<Output = T>>, clock: &Clock) -> Out {
+    let mut polls = Vec::new();
+    loop {
+        let poll = ready(read.as_mut());
+        polls.push(poll);
+        if poll.0 {
+            return polls;
+        }
+        clock.sleep(EVERY).await;
+    }
+}
+
 /// Whether one poll of `read` is ready, and the allocations it makes.
-fn once<T>(read: Pin<&mut impl Future<Output = T>>) -> (bool, u64) {
-    let mut cx = Context::from_waker(Waker::noop());
-    ALLOCATOR.count(|| read.poll(&mut cx).is_ready())
+fn ready<T>(read: Pin<&mut impl Future<Output = T>>) -> (bool, u64) {
+    let (poll, allocated) = once(read);
+    (poll.is_ready(), allocated)
 }

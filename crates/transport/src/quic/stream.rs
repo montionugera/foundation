@@ -2701,7 +2701,7 @@ mod tests {
                     assert!(matches!(read, Ok(Poll::Pending)), "{read:?}");
                     let len = usize::from(LEN);
                     let held = (Some((usize::from(have), len)), 0);
-                    // Private: the copy outside the pool shows in no public count.
+                    // Private: no public call shows a part of a message.
                     assert_eq!(receiver.reader.held(), held);
                 }
                 assert!(kept.iter().all(Bytes::is_unique));
@@ -2745,7 +2745,8 @@ mod tests {
                 kept.iter().all(Bytes::is_unique),
                 "a chunk of the message keeps a receive buffer alive past the read"
             );
-            // Private: the copy outside the pool shows in no public count.
+            // Private: no public call shows how the reader holds the message that a
+            // `TooLarge` keeps.
             assert_eq!(receiver.reader.held(), (Some((100, 100)), 0));
         });
     }
@@ -2769,7 +2770,7 @@ mod tests {
             for receiver in &mut receivers {
                 let read = pair.server.endpoint.read(now, receiver, |_, _| None);
                 assert!(matches!(read, Ok(Poll::Pending)), "{read:?}");
-                // Private: the copy outside the pool shows in no public count.
+                // Private: no public call shows a message that waits for a block.
                 // tests/memory/held.rs counts the heap that a read frees.
                 assert_eq!(receiver.reader.held(), (Some((1_000, 1_000)), 0));
             }

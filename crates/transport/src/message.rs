@@ -144,10 +144,8 @@ impl Reader {
     /// when it has none now, or `None` when the stream has ended. The reader never
     /// asks for a byte past the current message, so later messages stay with the
     /// source. No chunk from `source` outlives the call, except those of the whole
-    /// message that [`Step::Block`] gives, and those that an error leaves.
-    ///
-    /// After an error, the reader can hold bytes of the message; the caller clears it
-    /// with [`Reader::clear`].
+    /// message that [`Step::Block`] gives. After an error, the reader keeps the bytes
+    /// of the message it holds until [`Reader::clear`].
     ///
     /// # Errors
     ///
@@ -911,8 +909,7 @@ mod tests {
             let mut reader = Reader::new(1 << 20);
             let read = super::read(&mut reader, &pool, &mut source);
             assert_eq!(read, Ok(Poll::Ready(Some(vec![1; 100]))));
-            // Private: only a peer that breaks its window makes a read wait for room,
-            // and no public test chooses where a packet splits a prefix.
+            // Private: only a peer that breaks its window makes a read wait for room.
             assert_eq!(reader.chunks.capacity(), CHUNKS_MAX);
             let read = super::read(&mut reader, &pool, &mut source);
             assert_eq!(read, Ok(Poll::Pending));
@@ -1171,6 +1168,10 @@ mod tests {
                 Err(Error::Broken {
                     reason: "the stream ended inside a message".to_owned()
                 })
+            );
+            assert!(
+                !batch.is_unique(),
+                "the reader keeps its chunks until the clear"
             );
             reader.clear();
             assert!(batch.is_unique(), "a chunk outlives the clear");

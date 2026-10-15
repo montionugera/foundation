@@ -16,8 +16,8 @@ use sim::node::Node;
 use transport::{Address, Class, Code, Error, Transport};
 use types::time::Span;
 
+use crate::ALLOCATOR;
 use crate::common::{CLIENT, PORT, SERVER, config, fill, filled, part};
-use crate::{ALLOCATOR, CLOSED};
 
 /// A message that the read takes over many polls.
 const LEN: usize = 60_000;
@@ -49,7 +49,8 @@ enum End {
     Close,
 }
 
-pub(crate) fn main() {
+/// `closed` is the heap that [`crate::closed`] measures.
+pub(crate) fn main(closed: usize) {
     let reset = Error::Reset { code: Code(0) };
     for (end, len, first, error) in [
         (End::Reset, LEN, Span::ZERO, reset.clone()),
@@ -75,7 +76,7 @@ pub(crate) fn main() {
         );
         let kept_max = match end {
             End::Reset => LIST,
-            End::Close => LIST + CLOSED,
+            End::Close => LIST + closed,
         };
         assert!(
             kept <= kept_max,

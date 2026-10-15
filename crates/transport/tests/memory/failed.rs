@@ -12,7 +12,7 @@ use transport::{Address, Class, Code, Error, Transport};
 use types::time::Span;
 
 use crate::common::{CLIENT, PORT, SERVER, config, filled, part};
-use crate::{ALLOCATOR, CLOSED, next};
+use crate::{ALLOCATOR, next};
 
 /// The most heap that the drop of the receiver gives back: a list of 64 chunks, since
 /// each slot is 32 bytes.
@@ -35,13 +35,14 @@ enum End {
     Close,
 }
 
-pub(crate) fn main() {
+/// `closed` is the heap that [`crate::closed`] measures.
+pub(crate) fn main(closed: usize) {
     for end in [End::Reset, End::Close] {
         for len in [100_000, 240_000, 1 << 18] {
             let (read, _, kept) = run(end, len);
             let (error, kept_max) = match end {
                 End::Reset => (Error::Reset { code: Code(0) }, KEPT_MAX),
-                End::Close => (Error::PeerClosed { code: Code(7) }, KEPT_MAX + CLOSED),
+                End::Close => (Error::PeerClosed { code: Code(7) }, KEPT_MAX + closed),
             };
             assert_eq!(read, Some(Err(error)), "{end:?}, {len} bytes: the read");
             assert!(
