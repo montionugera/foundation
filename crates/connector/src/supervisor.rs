@@ -4326,11 +4326,8 @@ mod tests {
     #[test]
     fn holds_the_reader_of_a_kind_for_the_hold_of_its_settings() {
         for (hold, want) in [
-            (Span::SECOND, Err(hub::reader::Ended::Behind)),
-            (
-                Span::from_nanos(ms(100).nanos() + 1),
-                Err(hub::reader::Ended::Behind),
-            ),
+            (Span::SECOND, Ok(vec![7])),
+            (Span::from_nanos(ms(100).nanos() + 1), Ok(vec![7])),
             (ms(100), Ok(vec![8])),
             (ms(99), Ok(vec![8])),
             (Span::ZERO, Ok(vec![8])),
@@ -4340,8 +4337,7 @@ mod tests {
     }
 
     /// The reader of each restart keeps the hold of its settings: a run within the hold
-    /// opens at the held position and gets `Behind`, while the home keeps no frame
-    /// there. #274 makes each run after the first read from the held position.
+    /// opens at the held position, which no run acked, and reads its frame from disk.
     #[test]
     fn opens_the_reader_of_a_restart_with_the_hold_of_its_settings() {
         let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);
@@ -4366,8 +4362,7 @@ mod tests {
             },
         );
         read.end.expect("ok");
-        let behind = Err(hub::reader::Ended::Behind);
-        assert_eq!(read.got, [Ok(vec![1]), behind.clone(), behind]);
+        assert_eq!(read.got, [Ok(vec![1]), Ok(vec![1]), Ok(vec![1])]);
     }
 
     /// The reader of a restart opens before the start status, as the first reader
