@@ -233,12 +233,13 @@ impl Decoder {
     /// Maps the series of `body`, the body of an entry, to the entries of `set`.
     fn map(&mut self, set: &Arc<KeySet>, body: &[u8]) {
         let channels = || read(body).map(|series| (series.channel, series.data_type));
-        let same = self.set.as_ref().is_some_and(|last| Arc::ptr_eq(last, set));
-        if same && channels().eq(self.channels.iter().copied()) {
-            return;
-        }
-        if !same {
-            self.set = Some(Arc::clone(set));
+        match &self.set {
+            Some(last) if Arc::ptr_eq(last, set) => {
+                if channels().eq(self.channels.iter().copied()) {
+                    return;
+                }
+            }
+            _ => self.set = Some(Arc::clone(set)),
         }
         let (_, entry_of) = self
             .entry_of
