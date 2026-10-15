@@ -1,7 +1,8 @@
 //! The time to sync the durable logs of a shard at each commit, for each entry: one
 //! record with data entries of each index, after a trim that hides each older record.
 //! Also the time to append an entry, to carry a tail, the time of a commit that
-//! trims to the oldest holder, and the time of a commit that marks a range.
+//! trims to the oldest holder, the time of a commit that marks a range, and the time
+//! of the commits that end a lap of each index.
 
 use buffer::bench::Logs;
 use divan::Bencher;
@@ -87,6 +88,32 @@ fn mark(bencher: Bencher<'_, '_>, indexes: u32) {
         logs.mark();
     }
     bencher.counter(count(indexes)).bench_local(|| logs.mark());
+}
+
+/// A read holds 16 records for 40 commits, so the room of the runs of each index
+/// grows to 32, then no read holds a record. The commit at the end of the next lap
+/// shrinks the room of as many indexes as its budget allows, and the next three end
+/// the wait of the rest. The time of those four commits.
+#[divan::bench(args = [10_000])]
+fn lap_end(bencher: Bencher<'_, '_>, indexes: u32) {
+    bencher
+        .counter(count(4 * indexes))
+        .with_inputs(|| {
+            let mut logs = Logs::new(indexes);
+            for _ in 0..40 {
+                logs.trim(1, 16);
+            }
+            for _ in 40..512 {
+                logs.trim(1, 0);
+            }
+            logs
+        })
+        .bench_local_values(|mut logs| {
+            for _ in 0..4 {
+                logs.trim(1, 0);
+            }
+            logs
+        });
 }
 
 fn trimmed(indexes: u32, held: u64) -> Logs {
