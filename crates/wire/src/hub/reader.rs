@@ -12,8 +12,7 @@ pub struct Reader {
     places: u32,
     latest: bool,
     next: Next,
-    /// The seq plus the count of the last head, or the open position of a complete
-    /// session. A latest session also gets the newest frame below its open position.
+    /// The seq plus the count of the last head, or the open position of the session.
     end: u64,
 }
 
@@ -32,8 +31,9 @@ enum Next {
 pub enum FromHome<'m> {
     /// The session is open at the home.
     Opened {
-        /// The open position of the session: the first live seq of the index that it
-        /// can get. No head of a complete session starts below it.
+        /// The first live seq of the index that the session can get: its open
+        /// position. A latest session opens at the first seq of the newest frame of
+        /// the index, or at the live tail when there is none.
         live: u64,
     },
     /// The head of one frame. The run of its ends follows.
@@ -169,9 +169,7 @@ impl Reader {
         }
         match (Reply::decode(message)?, self.next) {
             (Reply::Opened { live }, Next::Opened) => {
-                if !self.latest {
-                    self.end = live;
-                }
+                self.end = live;
                 Ok((FromHome::Opened { live }, Next::Head))
             }
             (Reply::Head(_), Next::Opened) => Err(Error::Unopened { kind: HEAD }),
@@ -229,7 +227,7 @@ mod tests {
     use super::*;
     use crate::hub::tests::{cut, encode_ends, encode_reply};
     #[test]
-    fn takes_a_first_head_of_a_latest_session_below_the_open_position() {
+    fn refuses_a_first_head_of_a_latest_session_below_the_open_position() {
         let mut reader = Reader::new(&Open {
             mode: Mode::Latest,
             channels: 1,
@@ -237,7 +235,7 @@ mod tests {
         assert_eq!(event(&mut reader, &opened_at(5)), Ok(Event::Opened(5)));
         assert_eq!(
             event(&mut reader, &head_at(Path::Live, 4, 1, 1)),
-            Ok(Event::Head(1))
+            Err(Error::Seq { seq: 4, end: 5 })
         );
     }
 

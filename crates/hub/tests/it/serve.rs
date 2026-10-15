@@ -1018,9 +1018,9 @@ fn closes_the_session_when_the_future_drops() {
 }
 
 /// `Opened` gives the open position of a latest session that opens after three
-/// frames: the live tail, not 0.
+/// frames: the first seq of the newest frame, not 0 or the live tail.
 #[test]
-fn sends_the_live_tail_in_the_opened_of_a_latest_session() {
+fn sends_the_newest_frame_in_the_opened_of_a_latest_session() {
     let home = |test: Test, link: Link, incoming| async move {
         let test = Rc::new(test);
         let writing = Rc::clone(&test);
@@ -1043,10 +1043,10 @@ fn sends_the_live_tail_in_the_opened_of_a_latest_session() {
             channels: 2,
         });
         let opened = peer.recv().await.expect("receives").expect("a message");
-        assert_eq!(opened, self::opened(3));
+        assert_eq!(opened, self::opened(2));
         assert!(matches!(
             reader.decode(&opened),
-            Ok(FromHome::Opened { live: 3 })
+            Ok(FromHome::Opened { live: 2 })
         ));
         let got = got(peer.receiver(), &mut reader).await.expect("a frame");
         assert_eq!(got.head.range.seq, 2);

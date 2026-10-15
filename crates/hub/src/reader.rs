@@ -950,7 +950,7 @@ impl Session {
     }
 
     /// Opens a latest session on `channels`. Returns the session and its open
-    /// position, the live tail of the index.
+    /// position: the first seq of the newest frame of the index, or its live tail.
     pub(crate) fn latest(
         state: &Rc<RefCell<State>>,
         channels: Channels,

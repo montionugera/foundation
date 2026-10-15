@@ -733,7 +733,7 @@ impl Shard {
         let session = self.readers.open_latest(place).into();
         reader::Opened {
             key: reader::Key { slot, session },
-            live: self.indexes[place].live_tail(),
+            live: self.latest_live(place),
             replaced: None,
         }
     }
@@ -763,7 +763,7 @@ impl Shard {
                 slot,
                 session: opened.key.into(),
             },
-            live: self.indexes[place].live_tail(),
+            live: self.latest_live(place),
             replaced: opened.replaced.map(|session| reader::Key { slot, session }),
         })
     }
@@ -865,6 +865,14 @@ impl Shard {
 
     /// The place in `indexes` of the index at `slot`.
     ///
+    /// The open position of a latest session on the index at `place`: the first seq
+    /// of its newest live frame, or its live tail when it has none.
+    fn latest_live(&self, place: usize) -> u64 {
+        self.readers
+            .newest(place)
+            .unwrap_or_else(|| self.indexes[place].live_tail())
+    }
+
     /// # Panics
     ///
     /// If the shard does not carry `slot`.
@@ -991,9 +999,10 @@ fn spend<'a>(
                 Outcome::Applied { slot, range }
             }
             Ok(accepted) => {
-                let range = range(&accepted.seq());
+                let seq = accepted.seq();
+                let range = range(&seq);
                 index.spend(accepted);
-                readers.lost(claim.place, frozen);
+                readers.lost(claim.place, frozen, seq.start);
                 Outcome::Lost { slot, range }
             }
             Err(refusal) => Outcome::Refused { slot, refusal },
@@ -1687,7 +1696,7 @@ mod tests {
             let first = frame(&test.pool, &set, &[(0, &[10]), (1, &[1])]);
             assert_eq!(shard.write(a, LIVE, first), Ok(&[applied(0, 0, 1)][..]));
             let latest = shard.open_latest(Slot::new(0));
-            assert_eq!((latest.live, latest.replaced), (1, None));
+            assert_eq!((latest.live, latest.replaced), (0, None));
             let latest = latest.key;
             assert!(!shard.carry(Slot::new(0), key(Slot::new(0))));
             let next = frame(&test.pool, &set, &[(0, &[20]), (1, &[2])]);
@@ -2028,6 +2037,24 @@ mod tests {
             );
             let live = frame(&test.pool, &set, &[(0, &[30]), (1, &[3])]);
             assert_eq!(shard.write(a, LIVE, live), Ok(&[applied(0, 2, 1)][..]));
+        });
+    }
+
+    #[test]
+    fn opens_a_latest_session_at_the_first_seq_of_a_lost_newest_frame() {
+        run(16, |test| async move {
+            let set = two_indexes();
+            let mut shard = test.shard(AREA).await;
+            let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
+            let first = frame(&test.pool, &set, &[(0, &[10]), (1, &[1])]);
+            assert_eq!(shard.write(a, LIVE, first), Ok(&[applied(0, 0, 1)][..]));
+            let live = frame(&test.pool, &set, &[(0, &[20, 30]), (1, &[2, 3])]);
+            let blocks = test.fill();
+            assert_eq!(shard.write(a, LIVE, live), Ok(&[lost(0, 1, 2)][..]));
+            let latest = shard.open_latest(Slot::new(0));
+            assert_eq!(latest.live, 1);
+            assert_eq!(taken(&mut shard, latest.key, 0), [seq(1, 2)]);
+            drop(blocks);
         });
     }
 
@@ -5440,7 +5467,7 @@ mod tests {
                     assert_eq!(first.live, 0);
                     write(&test, &mut shard, a, &[10]);
                     let second = latest(&mut shard, "a", "r");
-                    assert_eq!((second.live, second.replaced), (1, Some(first.key)));
+                    assert_eq!((second.live, second.replaced), (0, Some(first.key)));
                     assert_eq!(woken(&mut shard), []);
                     assert_eq!(taken(&mut shard, second.key, 0), [seq(0, 1)]);
                 });

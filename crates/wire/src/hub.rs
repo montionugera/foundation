@@ -244,8 +244,9 @@ impl Credit {
 pub enum Reply {
     /// The session is open at the home.
     Opened {
-        /// The open position of the session: the first live seq of the index that it
-        /// can get. No head of a complete session starts below it.
+        /// The first live seq of the index that the session can get: its open
+        /// position. A latest session opens at the first seq of the newest frame of
+        /// the index, or at the live tail when there is none.
         live: u64,
     },
     /// The head of one frame. The run of its [`ends`] follows, then its body.
