@@ -10,6 +10,7 @@ mod claim;
 mod config;
 mod disk;
 mod election;
+mod fits;
 mod hostile;
 mod network;
 mod replication;

@@ -1248,7 +1248,7 @@ const DIES: &str = "RIG_DIES";
 /// binary gives 0 or 101 in each other case.
 const DIED: i32 = 3;
 
-/// Exits with [`DIED`] after it made the tree of [`create_tree`] and while
+/// Exits with [`DIED`] after it made a tree of [`create_tree`] and while
 /// [`create_left`] fills its draft, as a killed run does: `exit` runs no destructor.
 /// Does nothing when [`DIES`] is not set. It does not abort, because on macOS each
 /// abort writes a crash report that no sweep removes.
@@ -1260,7 +1260,7 @@ fn a_run_dies_while_it_leaves_a_directory() {
         reason = "the parent test sets it for the child"
     )]
     if std::env::var_os(DIES).is_some() {
-        create_tree(0);
+        create_tree(0, 1, 1);
         #[expect(
             clippy::disallowed_methods,
             clippy::exit,
@@ -1307,7 +1307,7 @@ fn a_sweep_removes_the_draft_of_a_run_that_died() {
 #[cfg(unix)]
 fn a_walk_that_another_sweep_removes_ends_only_when_it_is_gone() {
     for run in 0..20 {
-        let dir = create_tree(run);
+        let dir = create_tree(run, 300, 10);
         let path = dir.clone();
         #[expect(
             clippy::disallowed_methods,
@@ -1330,15 +1330,15 @@ fn a_walk_that_another_sweep_removes_ends_only_when_it_is_gone() {
     }
 }
 
-/// Makes the tree that [`a_walk_that_another_sweep_removes_ends_only_when_it_is_gone`]
-/// walks in its `run`: 300 directories of 10 files each.
+/// Makes the draft `walked-<run>` of this run: `dirs` directories of `files` files
+/// each.
 #[cfg(unix)]
-fn create_tree(run: u32) -> PathBuf {
+fn create_tree(run: u32, dirs: u32, files: u32) -> PathBuf {
     let dir = draft(&format!("walked-{run}"));
-    for sub in 0..300 {
+    for sub in 0..dirs {
         let sub = dir.join(format!("d{sub}"));
         std::fs::create_dir_all(&sub).expect("make a directory");
-        for file in 0..10 {
+        for file in 0..files {
             std::fs::write(sub.join(format!("f{file}")), "").expect("make a file");
         }
     }

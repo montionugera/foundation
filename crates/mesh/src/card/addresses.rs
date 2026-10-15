@@ -16,7 +16,7 @@ const V6: u8 = 6;
 
 // Every member keeps every card, so one node's card must not set the size of each
 // member's state.
-const MAX: u8 = 32;
+pub(crate) const MAX: u8 = 32;
 
 /// Where to dial a node: at most 32 addresses, and no IPv6 address with flow info or
 /// a scope, since each means something only on the node that sets it.
