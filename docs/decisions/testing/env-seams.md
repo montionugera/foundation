@@ -883,8 +883,7 @@
   https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221156481; the folder
   of the link and the evidence, 2026-10-16T17:48:30Z,
   https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221386763).
-  Amended (2026-10-16T17:13:18Z, 19:43:31Z, 20:05:43Z, 20:19:38Z, 20:27:04Z, and
-  20:41:21Z, #2898): `Paths::within` compares files, not names. It keeps the resolved
+  Amended (2026-10-16T17:13:18Z, 19:43:31Z, 20:05:43Z, 20:19:38Z, 20:27:04Z, 20:41:21Z, and 21:03:02Z, #2898): `Paths::within` compares files, not names. It keeps the resolved
   path of each folder of `folders` and `hidden`, and each call takes the `paths::Key` of
   each folder again, from the new `paths::Driver::key`: (`st_dev`, `st_ino`) of a stat
   on `os`, and on `sim` an inode that each entry gets when it is made, and a new one
@@ -914,8 +913,7 @@
   does not resolve. A folder of `folders` that is not there gives `NotFound` at
   `within`. A folder of `folders` keeps the key of what was there at `within`, and holds
   a path only while the file at its resolved path has that key, so a folder that a
-  program removes, renames away, replaces with a link, or makes again holds nothing
-  until a new `within`. A folder of `hidden` that is not there gives no error, also when
+  program removes, renames away, replaces with a link, or makes again holds nothing until a new `within`. A write replaces a file, so a folder that is a file holds nothing after a write to it, also through this handle. A folder of `hidden` that is not there gives no error, also when
   the limits of the handle refuse it, and one that is there gives its key, also when the
   limits refuse it. That key comes from the path that the caller gave, at `within` and
   at each call, as for the path of a call, so a later folder under it stays hidden. A
@@ -937,8 +935,7 @@
   each file system, and misses a bind mount; the name on disk by a read of each
   directory on the way, which is slow and misses a bind mount; and an open beneath the
   folder (`openat2` with `RESOLVE_BENEATH`), which macOS does not have. Trigger for the
-  last: a need to close the race between the check and the call. A hard link to a hidden
-  file gives `Hidden` when the link is made before the call. A hard link to a file of a
+  last: a need to close the race between the check and the call. A hard link to a hidden file gives `Hidden` while the file keeps the key of the call and its folder can be searched. A hard link to a file of a
   hidden folder, from a folder outside it, still passes: making it needs write access to
   both, which already gives the power to read the file (`docs/security.md`, "Other local
   user"). `/dev/fd/<n>` on macOS still reaches a hidden file that the node holds open
@@ -956,6 +953,4 @@
   name beside a missing hidden folder, the key of a folder of `folders` at `within`, a
   key that a call cannot take, and the compare of a hidden key only with the directories
   on the way, 2026-10-16T20:27:04Z,
-  https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224070884; the key of
-  a hidden folder at `within` from the given path, 2026-10-16T20:41:21Z,
-  https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224298302).
+  https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224070884; the key of a hidden folder at `within` from the given path, 2026-10-16T20:41:21Z, https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224298302; the hard link text and a folder that is a file, 2026-10-16T21:03:02Z, https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224644233).

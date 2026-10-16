@@ -52,8 +52,9 @@ impl Paths {
     /// case, and a bind mount, reach the same folder. A folder of `folders` holds a
     /// path only while the file at its resolved path is the file that was there at this
     /// call, so one that a program renames away, replaces, or makes again holds nothing
-    /// until a new call of `within`. Each call takes the file at each resolved hidden
-    /// folder again, so a hidden file that a write replaces, and a hidden folder made
+    /// until a new call of `within`. A write replaces a file, so a folder that is a file
+    /// holds nothing after a write to it, also through this handle. Each call takes the
+    /// file at each hidden folder again, from the path that the caller gave, so a hidden file that a write replaces, and a hidden folder made
     /// after this call, are hidden. A path also fails with [`Error::Hidden`] when a
     /// directory on its way is the folder that was at a hidden path at this call, so a
     /// hidden folder that a program renames away stays hidden, but not its own listing,
