@@ -332,10 +332,20 @@ fn fails_the_handshake_with_a_server_that_resets_the_stream() {
         }
     });
     let remote = SocketAddr::new(network.server.addresses()[0], 8087);
+    let error = network
+        .send(sim::ca(), "https://influx:8087/ping")
+        .expect_err("the server resets the stream");
     assert_eq!(
-        failed(network.send(sim::ca(), "https://influx:8087/ping")),
+        error.to_string(),
         format!("TLS with influx:8087 failed: {remote} reset the stream")
     );
+    let mut source = std::error::Error::source(&error);
+    let mut stream = None;
+    while let Some(cause) = source {
+        stream = stream.or(cause.downcast_ref::<env::net::Error>());
+        source = cause.source();
+    }
+    assert!(stream.is_some(), "no source of {error:?} is the `env` error");
 }
 
 #[test]

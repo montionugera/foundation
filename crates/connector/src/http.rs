@@ -556,7 +556,11 @@ impl std::error::Error for Failure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.0 {
             Cause::Hyper(error) => error.source(),
-            Cause::Io(error) => error.source(),
+            // The payload, as `io::Error::source` skips it.
+            Cause::Io(error) => {
+                let payload = error.get_ref()?;
+                Some(payload)
+            }
         }
     }
 }
