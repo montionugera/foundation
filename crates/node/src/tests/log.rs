@@ -1,5 +1,8 @@
 use std::io;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::panic;
+use std::process::Command;
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::time::Duration;
 
 use proptest::prelude::*;
 use serde_json::{Value, json};
@@ -7,7 +10,10 @@ use types::byte::Size;
 use types::time::Span;
 
 use super::{config, heap};
-use crate::{Config, Error, Log, Node, log};
+use crate::{Config, Error, Flush, Log, Node, log};
+
+/// The variable that marks a child process of a test.
+const CHILD: &str = "NODE_LOG_CHILD";
 
 /// The lines a log writes, which each clone shares.
 #[derive(Clone, Default)]
@@ -40,6 +46,46 @@ struct Broken;
 impl io::Write for Broken {
     fn write(&mut self, _: &[u8]) -> io::Result<usize> {
         Err(io::Error::other("the pipe broke"))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A writer that panics on each line that holds `boom`.
+struct Panics(Lines);
+
+impl io::Write for Panics {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        assert!(
+            !bytes.windows(4).any(|word| word == b"boom"),
+            "the writer panics"
+        );
+        self.0.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A writer whose first write blocks until `free` gets a message or drops, as a
+/// reader of stderr that stops. It sends on `entered` when it blocks.
+struct Stuck {
+    lines: Lines,
+    entered: Option<mpsc::Sender<()>>,
+    free: mpsc::Receiver<()>,
+}
+
+impl io::Write for Stuck {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let Some(entered) = self.entered.take() {
+            entered.send(()).unwrap_or_default();
+            #[expect(clippy::disallowed_methods, reason = "a writer that blocks")]
+            self.free.recv().unwrap_or_default();
+        }
+        self.lines.write(bytes)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -243,19 +289,259 @@ fn a_log_whose_writes_fail_changes_nothing_of_the_node() {
     assert_eq!(run(&mut sim, &host, log), Ok(()));
 }
 
+/// The log of `json` lines at INFO to `writer` on `host`, whose mesh clock has not
+/// synced, with no thread `log` yet.
+fn opened(
+    host: &sim::node::Node,
+    json: bool,
+    writer: Box<dyn io::Write + Send>,
+) -> Flush {
+    let (_, mesh) = clock::Clock::new(host.clock());
+    let format = ops::Log {
+        json,
+        level: tracing::Level::INFO,
+    };
+    log::open(Log { writer, format }, &host.threads(), host.wall(), mesh)
+}
+
+/// Puts the lines of `events` in the queue of `log`, then writes them in `sim`.
+fn write(sim: &mut sim::Sim, log: &Flush, events: impl FnOnce()) {
+    tracing::dispatcher::with_default(&log.log, events);
+    log.resume().expect("the thread log starts");
+    assert_eq!(sim.run(), Ok(()));
+}
+
 /// What a log of `json` lines writes for the events of `events`, on a host whose
 /// mesh clock has not synced.
 fn written(json: bool, events: impl FnOnce()) -> String {
     let (mut sim, host) = host(1);
-    let (_, mesh) = clock::Clock::new(host.clock());
     let lines = Lines::default();
-    let log = to(&lines, json, tracing::Level::INFO);
-    let log = log::open(log, &host.threads(), host.wall(), mesh);
-    tracing::dispatcher::with_default(&log.log, events);
-    log.resume().expect("the thread log starts");
-    assert_eq!(sim.run(), Ok(()));
+    let log = opened(&host, json, Box::new(lines.clone()));
+    write(&mut sim, &log, events);
     let bytes = lines.0.lock().unwrap_or_else(PoisonError::into_inner);
     String::from_utf8(bytes.clone()).expect("a log writes UTF-8")
+}
+
+/// The events `test` with the field `n` for each of `from..to`.
+fn numbered(from: u64, to: u64) -> impl FnOnce() {
+    move || {
+        for n in from..to {
+            tracing::info!(target: "test", n);
+        }
+    }
+}
+
+/// The line of the event `n` of [`numbered`] at the start of the sim.
+fn number(n: u64) -> String {
+    format!("2026-01-01T00:00:00.000000Z INFO test: n={n} mesh_time=none")
+}
+
+#[test]
+fn a_full_queue_drops_each_new_line_and_counts_them_after_the_lines_before() {
+    let (mut sim, host) = host(1);
+    let lines = Lines::default();
+    let log = opened(&host, false, Box::new(lines.clone()));
+    write(&mut sim, &log, numbered(0, 1027));
+    write(&mut sim, &log, numbered(1027, 1028));
+    let mut written: Vec<String> = (0..1024).map(number).collect();
+    written.push(
+        "2026-01-01T00:00:00.000000Z WARN node::log: dropped lines=3 mesh_time=none"
+            .to_owned(),
+    );
+    written.push(number(1027));
+    assert_eq!(lines.read(), written);
+}
+
+#[test]
+fn a_write_that_panics_loses_only_its_line() {
+    let (mut sim, host) = host(1);
+    let lines = Lines::default();
+    let log = opened(&host, false, Box::new(Panics(lines.clone())));
+    write(&mut sim, &log, || {
+        tracing::info!(target: "test", "a");
+        tracing::info!(target: "test", "boom");
+        tracing::info!(target: "test", "c");
+    });
+    assert_eq!(
+        lines.read(),
+        [
+            "2026-01-01T00:00:00.000000Z INFO test: a mesh_time=none",
+            "2026-01-01T00:00:00.000000Z INFO test: c mesh_time=none",
+        ]
+    );
+}
+
+#[test]
+fn a_line_after_the_shards_end_comes_before_stopped() {
+    let (mut sim, host) = host(1);
+    let lines = Lines::default();
+    let node = Node::start(Config {
+        log: to(&lines, false, tracing::Level::INFO),
+        ..config(&host, Size::MEBIBYTE, Box::new(heap))
+    });
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    node.stop();
+    assert_eq!(sim.run(), Ok(()));
+    let late = || tracing::info!(target: "test", "late");
+    tracing::dispatcher::with_default(&node.flush().log, late);
+    assert_eq!(sim.run(), Ok(()));
+    assert_eq!(lines.read().len(), 1, "the line waits for the join");
+    assert_eq!(node.join(), Ok(()));
+    assert_eq!(sim.run(), Ok(()));
+    assert_eq!(
+        lines.read(),
+        [
+            "2026-01-01T00:00:00.004198Z INFO node: started name=edge \
+             address=10.0.0.1:7000 shards=4",
+            "2026-01-01T00:00:01.000004Z INFO test: late",
+            "2026-01-01T00:00:01.000004Z INFO node: stopped",
+        ]
+    );
+}
+
+/// The lines of `lines` with no stamp.
+fn unstamped<'a>(lines: &'a [String]) -> Vec<&'a str> {
+    let unstamp = |line: &'a String| line.split_once(' ').expect("a stamp").1;
+    lines.iter().map(unstamp).collect()
+}
+
+/// The log of a writer that blocks at its first line, on OS threads, with its thread
+/// `log` running. Gives the log, its hold, what the writer wrote, the receiver of
+/// the block of the writer, and the sender that frees it.
+fn stuck() -> (
+    Flush,
+    log::Hold,
+    Lines,
+    mpsc::Receiver<()>,
+    mpsc::Sender<()>,
+) {
+    let lines = Lines::default();
+    let (entered, blocked) = mpsc::channel();
+    let (free, freed) = mpsc::channel();
+    let writer = Stuck {
+        lines: lines.clone(),
+        entered: Some(entered),
+        free: freed,
+    };
+    let format = ops::Log {
+        json: false,
+        level: tracing::Level::INFO,
+    };
+    let (_, mesh) = clock::Clock::new(os::clock());
+    let threads = os::threads().expect("threads");
+    let wall = os::wall().expect("a wall clock");
+    let log = Log {
+        writer: Box::new(writer),
+        format,
+    };
+    let log = log::open(log, &threads, wall, mesh);
+    let hold = log.hold().expect("the thread log starts");
+    (log, hold, lines, blocked, free)
+}
+
+#[test]
+fn an_event_never_waits_on_a_stuck_writer() {
+    let (log, hold, lines, blocked, free) = stuck();
+    tracing::dispatcher::with_default(&log.log, numbered(0, 1));
+    #[expect(clippy::disallowed_methods, reason = "the test waits for an OS thread")]
+    blocked.recv().expect("the writer blocks");
+    tracing::dispatcher::with_default(&log.log, numbered(1, 1030));
+    assert!(!log.wait(Duration::from_millis(10)));
+    free.send(()).expect("the writer waits");
+    drop(hold);
+    assert!(log.wait(Duration::from_secs(60)));
+    let mut written: Vec<String> = (0..1025)
+        .map(|n| format!("INFO test: n={n} mesh_time=none"))
+        .collect();
+    written.push("WARN node::log: dropped lines=5 mesh_time=none".to_owned());
+    assert_eq!(unstamped(&lines.read()), written);
+}
+
+/// Runs the test `name` again in a child process with `CHILD` set to `case`, and
+/// gives its stderr.
+fn child(name: &str, case: &str) -> String {
+    let output = Command::new(std::env::current_exe().expect("the test binary"))
+        .args(["--exact", name, "--nocapture"])
+        .env(CHILD, case)
+        .output()
+        .expect("the child runs");
+    assert!(!output.status.success(), "the child panics");
+    String::from_utf8(output.stderr).expect("UTF-8")
+}
+
+/// In a child process: a log with each line of `numbered(0, 3)` in its queue and no
+/// thread `log`, and the panic hook of `main`, then a panic. A `stuck` writer blocks.
+fn panics(stuck: bool) -> ! {
+    let (_, mesh) = clock::Clock::new(os::clock());
+    let (_free, freed) = mpsc::channel();
+    let (entered, _blocked) = mpsc::channel();
+    let writer: Box<dyn io::Write + Send> = if stuck {
+        let lines = Lines::default();
+        let entered = Some(entered);
+        Box::new(Stuck {
+            lines,
+            entered,
+            free: freed,
+        })
+    } else {
+        Box::new(io::stderr())
+    };
+    let format = ops::Log {
+        json: false,
+        level: tracing::Level::INFO,
+    };
+    let threads = os::threads().expect("threads");
+    let wall = os::wall().expect("a wall clock");
+    let log = log::open(Log { writer, format }, &threads, wall, mesh);
+    tracing::dispatcher::with_default(&log.log, numbered(0, 3));
+    let previous = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        if log.panicked(info) {
+            previous(info);
+        }
+    }));
+    panic!("the test panics");
+}
+
+#[test]
+fn a_panic_writes_the_queued_lines_then_the_panic() {
+    #[expect(clippy::disallowed_methods, reason = "the parent test marks its child")]
+    match std::env::var(CHILD).as_deref() {
+        Ok("free") => panics(false),
+        Ok("stuck") => panics(true),
+        _ => {}
+    }
+    let name = "tests::log::a_panic_writes_the_queued_lines_then_the_panic";
+    let stderr = child(name, "free");
+    let (logged, hook) = stderr
+        .split_once("\nthread '")
+        .expect("the hook of the test harness writes after the log");
+    let lines: Vec<String> = logged.lines().map(str::to_owned).collect();
+    let lines = unstamped(&lines);
+    assert_eq!(
+        lines[..3],
+        [
+            "INFO test: n=0 mesh_time=none",
+            "INFO test: n=1 mesh_time=none",
+            "INFO test: n=2 mesh_time=none",
+        ],
+        "{stderr}"
+    );
+    let at = r#"ERROR node: panicked panic="panicked at crates/node/src/tests/log.rs:"#;
+    let panicked = lines[3].strip_prefix(at).expect("the panic line");
+    assert!(
+        panicked.ends_with(r#":\nthe test panics" mesh_time=none"#),
+        "{stderr}"
+    );
+    assert_eq!(lines.len(), 4, "{stderr}");
+    assert!(hook.contains("panicked at"), "{stderr}");
+}
+
+#[test]
+fn a_panic_with_a_stuck_writer_ends_after_the_bound_with_no_line() {
+    let name = "tests::log::a_panic_writes_the_queued_lines_then_the_panic";
+    let stderr = child(name, "stuck");
+    assert!(!stderr.contains("the test panics"), "{stderr}");
 }
 
 /// The line of an event with `field` and other fields.
