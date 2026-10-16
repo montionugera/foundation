@@ -6,7 +6,7 @@
   failure would not be reproducible, and those jobs already end before `check`. A bump
   of the stable pin fixes each warning that the new release gives, in the bump PR. The
   Clippy step of `fuzz` keeps `-D warnings` for the `fuzz/` workspace, which `check`
-  does not see. Decided by
-  `laptop.monitor` under the CI delegation of the person, with the person's agreement
-  at 2026-10-16T02:17Z ("Ok, that's fine"):
-  https://github.com/synnaxlabs/foundation/issues/2798.
+  does not see. Decided by `laptop.monitor` under the CI delegation of the person
+  (2026-10-15T18:20:23Z), with the person's agreement at 2026-10-16T02:17:03Z ("Ok,
+  that's fine"):
+  https://github.com/synnaxlabs/foundation/issues/2798#issuecomment-6207535014.
