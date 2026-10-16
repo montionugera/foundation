@@ -6,16 +6,15 @@ mod lines;
 use std::io::{self, Write};
 use std::panic::PanicHookInfo;
 use std::pin::Pin;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll};
-use std::thread::{self, ThreadId};
 use std::time::Duration;
 
 use env::thread::{Error, Handle};
 use tracing::Dispatch;
 use tracing_subscriber::fmt::MakeWriter;
 
-use self::lines::{Batch, Lines, Taken};
+use self::lines::{Batch, Lines, Taken, Writer};
 use super::Line;
 
 /// The lines that the queue holds. A line that finds it full drops.
@@ -47,15 +46,8 @@ impl Flush {
         threads: &env::threads::Threads,
     ) -> Self {
         let queue = Arc::new(Queue {
-            lines: Lines::new(LINES, BYTES),
-            state: Mutex::new(State {
-                writer: Some(Writer(writer)),
-                running: false,
-                thread: None,
-                written: 0,
-                handle: None,
-            }),
-            written: Condvar::new(),
+            lines: Lines::new(LINES, BYTES, Writer(writer)),
+            handle: Mutex::new(None),
             threads: threads.logged(Dispatch::none()),
             line: line.clone(),
         });
@@ -130,34 +122,19 @@ impl Flush {
     fn panicked(&self, info: &PanicHookInfo<'_>, bound: Duration) -> bool {
         let queue = &self.queue;
         let sent = queue.lines.panic(queue.line.panicked(info).into_bytes());
-        let state = lock(&queue.state);
-        if !state.running || state.thread == Some(thread::current().id()) {
-            return true;
-        }
-        drop(state);
-        self.written(sent, bound)
+        !queue.lines.runs_elsewhere() || self.written(sent, bound)
     }
 
     /// The wait of [`Flush::wait`] for the first `sent` lines, with no start.
     fn written(&self, sent: u64, bound: Duration) -> bool {
-        let queue = &self.queue;
-        let busy = |state: &mut State| {
-            let live = state.running || state.writer.is_some();
-            live && (state.written < sent || (queue.lines.closed() && state.running))
-        };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "a stop and a panic hook cannot await"
-        )]
-        let (mut state, waited) = queue
-            .written
-            .wait_timeout_while(lock(&queue.state), bound, busy)
-            .expect("invariant: nothing panics while it holds the log lock");
-        if waited.timed_out() || state.written < sent {
+        if !self.queue.lines.wait(sent, bound) {
             return false;
         }
-        let ended = (!state.running).then(|| state.ended()).flatten();
-        drop(state);
+        let mut handle = lock(&self.queue.handle);
+        // The thread `log` that ran last, other than after the writer panicked: that
+        // panic has reached the panic hook.
+        let ended = self.queue.lines.idle().then(|| handle.take()).flatten();
+        drop(handle);
         if let Some(ended) = ended {
             join(ended);
         }
@@ -180,45 +157,15 @@ impl Drop for Hold {
 /// What each event, each [`Flush`], and the thread `log` share.
 #[derive(Debug)]
 pub(super) struct Queue {
-    /// Closed while no [`Hold`] is left, so the thread `log` ends when no line waits.
+    /// The lines and the run of the thread `log`. Closed while no [`Hold`] is left,
+    /// so the thread `log` ends when no line waits.
     lines: Lines,
-    /// Taken before the lock of `lines` when a thread takes both.
-    state: Mutex<State>,
-    /// Signals each change of `State::written` and `State::running`.
-    written: Condvar,
+    /// The thread `log` that runs or ran last. Held over each start and each join, so
+    /// they go in order. Taken before the lock of `lines`; the thread `log` never
+    /// takes it.
+    handle: Mutex<Option<Handle>>,
     threads: env::threads::Threads,
     line: Line,
-}
-
-#[derive(Debug)]
-struct State {
-    /// The writer while no thread `log` holds it.
-    writer: Option<Writer>,
-    /// A thread `log` runs or starts. When false, `writer` is there, other than after
-    /// the writer panicked: then no thread starts again.
-    running: bool,
-    /// The thread `log` that holds `writer`.
-    thread: Option<ThreadId>,
-    /// The lines of the queue that the thread `log` has written or counted as dropped.
-    written: u64,
-    /// The thread `log` that runs or ran last.
-    handle: Option<Handle>,
-}
-
-impl State {
-    /// Ends the run of the thread `log`, which gives back `writer`, or `None` after the
-    /// writer panicked.
-    fn end(&mut self, writer: Option<Writer>) {
-        self.writer = writer;
-        self.running = false;
-        self.thread = None;
-    }
-
-    /// The thread `log` that ran last, to join once the lock drops, other than after
-    /// the writer panicked: that panic has reached the panic hook.
-    fn ended(&mut self) -> Option<Handle> {
-        self.writer.as_ref().and(self.handle.take())
-    }
 }
 
 /// Joins `handle`, a thread `log` that has ended its run.
@@ -232,43 +179,30 @@ fn join(handle: Handle) {
         .expect("invariant: the thread log ends with no panic");
 }
 
-struct Writer(Box<dyn Write + Send>);
-
-impl std::fmt::Debug for Writer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Writer")
-    }
-}
-
 impl Queue {
     /// Starts a thread `log` when none runs, the writer has not panicked, and a
-    /// [`Hold`] is left or a line waits. The thread takes the writer from the slot, so
+    /// [`Hold`] is left or a line waits. The thread takes the writer from `lines`, so
     /// a start that fails keeps it.
     fn resume(self: &Arc<Self>) -> Result<(), Error> {
-        let mut state = lock(&self.state);
-        let waiting = self.lines.sent() > state.written;
-        if state.running || state.writer.is_none() || (self.lines.closed() && !waiting)
-        {
+        let mut handle = lock(&self.handle);
+        if !self.lines.start() {
             return Ok(());
         }
-        let ended = state.ended();
         let queue = Arc::clone(self);
-        let drain = move || {
-            let mut state = lock(&queue.state);
-            let (writer, written) = (state.writer.take(), state.written);
-            let batch = queue.lines.batch();
-            state.thread = Some(thread::current().id());
-            drop(state);
-            Drain {
-                queue,
-                writer,
-                written,
-                batch,
+        let drain = move || Drain {
+            writer: queue.lines.begin(),
+            batch: queue.lines.batch(),
+            queue,
+        };
+        let started = match self.threads.start("log", drain) {
+            Ok(started) => started,
+            Err(error) => {
+                self.lines.failed();
+                return Err(error);
             }
         };
-        state.handle = Some(self.threads.start("log", drain)?);
-        state.running = true;
-        drop(state);
+        let ended = handle.replace(started);
+        drop(handle);
         if let Some(ended) = ended {
             join(ended);
         }
@@ -305,8 +239,6 @@ impl Write for &Pipe {
 struct Drain {
     queue: Arc<Queue>,
     writer: Option<Writer>,
-    /// [`State::written`], which this thread alone changes.
-    written: u64,
     batch: Batch,
 }
 
@@ -329,9 +261,7 @@ impl Drain {
         for line in batch.panics.drain(..) {
             drop(writer.write_all(&line));
         }
-        self.written += sent;
-        lock(&self.queue.state).written = self.written;
-        self.queue.written.notify_all();
+        self.queue.lines.wrote(sent);
     }
 }
 
@@ -340,8 +270,7 @@ impl Drop for Drain {
     /// not wait for a thread that writes no more lines.
     fn drop(&mut self) {
         if self.writer.take().is_some() {
-            lock(&self.queue.state).end(None);
-            self.queue.written.notify_all();
+            self.queue.lines.end();
         }
     }
 }
@@ -352,27 +281,11 @@ impl Future for Drain {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         let drain = self.get_mut();
         loop {
-            match drain.queue.lines.take(&mut drain.batch, cx.waker()) {
+            let batch = &mut drain.batch;
+            match drain.queue.lines.take(batch, cx.waker(), &mut drain.writer) {
                 Taken::Lines => drain.write(),
                 Taken::Empty => return Poll::Pending,
-                Taken::Closed => {
-                    let queue = Arc::clone(&drain.queue);
-                    let mut state = lock(&queue.state);
-                    // Under the lock, so a start sees this thread run or end.
-                    match queue.lines.take(&mut drain.batch, cx.waker()) {
-                        Taken::Lines => {
-                            drop(state);
-                            drain.write();
-                        }
-                        Taken::Empty => return Poll::Pending,
-                        Taken::Closed => {
-                            state.end(drain.writer.take());
-                            drop(state);
-                            queue.written.notify_all();
-                            return Poll::Ready(());
-                        }
-                    }
-                }
+                Taken::Closed => return Poll::Ready(()),
             }
         }
     }

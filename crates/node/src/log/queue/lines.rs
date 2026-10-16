@@ -1,20 +1,27 @@
-//! The lines between a node's events and the thread `log`, and the wake of that thread.
+//! The lines between a node's events and the thread `log`, the run of that thread,
+//! and its wake.
 
 use std::collections::VecDeque;
+use std::io::Write;
 use std::mem;
 use std::task::Waker;
+use std::thread::{self, ThreadId};
+use std::time::Duration;
 
 #[cfg(loom)]
-use loom::sync::{Mutex, MutexGuard};
+use loom::sync::{Condvar, Mutex, MutexGuard};
 #[cfg(not(loom))]
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Condvar, Mutex, MutexGuard};
 
-/// The lines that wait for the thread `log`, in the order they came. Each change and
-/// each take happen under one lock, so a line or a close always wakes a take that
-/// waits.
+/// The lines that wait for the thread `log`, in the order they came, and the run of
+/// that thread. Each change, each take, and each start and end of a run happen under
+/// one lock, so a line or a close always wakes a take that waits, and a start always
+/// sees a run that has ended.
 #[derive(Debug)]
 pub(super) struct Lines {
     inner: Mutex<Inner>,
+    /// Signals each change of `Inner::written` and `Inner::running`.
+    written: Condvar,
     /// The lines that can wait. A line that finds this many drops.
     bound: usize,
     /// The bytes that the lines that wait can hold. A line that does not fit drops.
@@ -35,6 +42,34 @@ struct Inner {
     closed: bool,
     /// The waker of the take that waits.
     waker: Option<Waker>,
+    /// The writer while no thread `log` holds it.
+    writer: Option<Writer>,
+    /// A thread `log` runs or starts. When false, `writer` is there, other than after
+    /// the writer panicked: then no thread starts again.
+    running: bool,
+    /// The thread `log` that holds `writer`.
+    thread: Option<ThreadId>,
+    /// The lines that the thread `log` has written or counted as dropped.
+    written: u64,
+}
+
+impl Inner {
+    /// Ends the run of the thread `log`, which gives back `writer`, or `None` after the
+    /// writer panicked.
+    fn end(&mut self, writer: Option<Writer>) {
+        self.writer = writer;
+        self.running = false;
+        self.thread = None;
+    }
+}
+
+/// The writer of a node's log.
+pub(super) struct Writer(pub(super) Box<dyn Write + Send>);
+
+impl std::fmt::Debug for Writer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Writer")
+    }
 }
 
 /// The lines of one take, in the order to write them: `lines`, then the count line
@@ -63,14 +98,14 @@ pub(super) enum Taken {
     /// of the take.
     Empty,
     /// No line waits, none dropped, and [`Lines::close`] came after the last
-    /// [`Lines::open`].
+    /// [`Lines::open`]. The run of the thread `log` has ended.
     Closed,
 }
 
 impl Lines {
     /// Lines with no line, which hold up to `bound` lines and `bytes` bytes of lines,
-    /// and closed.
-    pub(super) fn new(bound: usize, bytes: usize) -> Self {
+    /// closed, and with `writer` for the first thread `log`.
+    pub(super) fn new(bound: usize, bytes: usize, writer: Writer) -> Self {
         let inner = Inner {
             lines: VecDeque::with_capacity(bound),
             bytes: 0,
@@ -79,16 +114,21 @@ impl Lines {
             sent: 0,
             closed: true,
             waker: None,
+            writer: Some(writer),
+            running: false,
+            thread: None,
+            written: 0,
         };
         Self {
             inner: Mutex::new(inner),
+            written: Condvar::new(),
             bound,
             bytes,
         }
     }
 
-    /// An empty batch for [`Lines::take`], with room for `bound` lines, so neither queue
-    /// of lines grows after it.
+    /// An empty batch for [`Lines::take`], with room for `bound` lines, so neither
+    /// queue of lines grows after it.
     pub(super) fn batch(&self) -> Batch {
         Batch {
             lines: VecDeque::with_capacity(self.bound),
@@ -137,22 +177,54 @@ impl Lines {
         wake(inner);
     }
 
-    pub(super) fn closed(&self) -> bool {
-        self.lock().closed
-    }
-
     /// The lines that came, dropped ones too.
     pub(super) fn sent(&self) -> u64 {
         self.lock().sent
     }
 
+    /// Starts a run of the thread `log` when none runs, the writer has not panicked,
+    /// and the lines are open or a line waits. Gives `false` when it starts none.
+    /// After `true`, the new thread calls [`Lines::begin`], or [`Lines::failed`]
+    /// follows.
+    pub(super) fn start(&self) -> bool {
+        let mut inner = self.lock();
+        let waiting = inner.sent > inner.written;
+        if inner.running || inner.writer.is_none() || (inner.closed && !waiting) {
+            return false;
+        }
+        inner.running = true;
+        true
+    }
+
+    /// Ends the run of a [`Lines::start`] whose thread did not start. The writer stays.
+    pub(super) fn failed(&self) {
+        self.lock().running = false;
+        self.written.notify_all();
+    }
+
+    /// Gives the writer to the calling thread, the thread `log` of the run.
+    pub(super) fn begin(&self) -> Option<Writer> {
+        let mut inner = self.lock();
+        inner.thread = Some(thread::current().id());
+        inner.writer.take()
+    }
+
     /// Moves each line that waits and the count of the lines that dropped into
     /// `batch`, whose lines must be empty. When neither is there and the lines are not
-    /// closed, keeps `waker` to wake at the next line, drop, or close.
-    pub(super) fn take(&self, batch: &mut Batch, waker: &Waker) -> Taken {
+    /// closed, keeps `waker` to wake at the next line, drop, or close. When the lines
+    /// are closed, ends the run in the same step, which gives back `writer`.
+    pub(super) fn take(
+        &self,
+        batch: &mut Batch,
+        waker: &Waker,
+        writer: &mut Option<Writer>,
+    ) -> Taken {
         let mut inner = self.lock();
         if inner.lines.is_empty() && inner.panics.is_empty() && inner.dropped == 0 {
             if inner.closed {
+                inner.end(writer.take());
+                drop(inner);
+                self.written.notify_all();
                 return Taken::Closed;
             }
             inner.waker = Some(waker.clone());
@@ -165,11 +237,82 @@ impl Lines {
         Taken::Lines
     }
 
+    /// Counts `sent` more lines as written or dropped, and wakes each wait.
+    pub(super) fn wrote(&self, sent: u64) {
+        self.lock().written += sent;
+        self.written.notify_all();
+    }
+
+    /// Ends the run with no writer, after the writer panicked: no thread starts again,
+    /// and no wait waits for one.
+    pub(super) fn end(&self) {
+        self.lock().end(None);
+        self.written.notify_all();
+    }
+
+    /// Whether a thread `log` other than the calling thread runs or starts.
+    pub(super) fn runs_elsewhere(&self) -> bool {
+        let inner = self.lock();
+        inner.running && inner.thread != Some(thread::current().id())
+    }
+
+    /// Whether no thread `log` runs and the writer has not panicked.
+    pub(super) fn idle(&self) -> bool {
+        let inner = self.lock();
+        !inner.running && inner.writer.is_some()
+    }
+
+    /// Blocks until the first `sent` lines are written and, while the lines are
+    /// closed, the run has ended, or until `bound` passes or the writer panicked.
+    /// Gives whether both happened first. Blocks on real time.
+    pub(super) fn wait(&self, sent: u64, bound: Duration) -> bool {
+        let busy = |inner: &mut Inner| {
+            let live = inner.running || inner.writer.is_some();
+            live && (inner.written < sent || (inner.closed && inner.running))
+        };
+        let (inner, late) = wait_while(&self.written, self.lock(), bound, busy);
+        !late && inner.written >= sent
+    }
+
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner
             .lock()
             .expect("invariant: nothing panics while it holds the lines lock")
     }
+}
+
+/// Waits on `written` while `busy`, up to `bound`. Gives whether `bound` passed.
+#[cfg(not(loom))]
+fn wait_while<'a>(
+    written: &Condvar,
+    inner: MutexGuard<'a, Inner>,
+    bound: Duration,
+    busy: impl FnMut(&mut Inner) -> bool,
+) -> (MutexGuard<'a, Inner>, bool) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a stop and a panic hook cannot await"
+    )]
+    let (inner, waited) = written
+        .wait_timeout_while(inner, bound, busy)
+        .expect("invariant: nothing panics while it holds the lines lock");
+    (inner, waited.timed_out())
+}
+
+/// As `Condvar::wait_timeout_while` of `std`, with no bound: loom has no time.
+#[cfg(loom)]
+fn wait_while<'a>(
+    written: &Condvar,
+    mut inner: MutexGuard<'a, Inner>,
+    _bound: Duration,
+    mut busy: impl FnMut(&mut Inner) -> bool,
+) -> (MutexGuard<'a, Inner>, bool) {
+    while busy(&mut inner) {
+        inner = written
+            .wait(inner)
+            .expect("invariant: nothing panics while it holds the lines lock");
+    }
+    (inner, false)
 }
 
 /// Wakes the take that waits, after the lock of `inner` drops.
@@ -181,35 +324,50 @@ fn wake(mut inner: MutexGuard<'_, Inner>) {
     }
 }
 
+/// A writer that drops each line.
+#[cfg(test)]
+fn sink() -> Writer {
+    Writer(Box::new(std::io::sink()))
+}
+
 #[cfg(test)]
 #[cfg(not(loom))]
 mod tests {
     use std::task::Waker;
 
-    use super::{Batch, Lines, Taken};
+    use super::{Batch, Lines, Taken, sink};
 
     #[test]
     fn a_panic_line_counts_among_the_lines_sent() {
-        let lines = Lines::new(1, 1);
+        let lines = Lines::new(1, 1, sink());
         lines.push(b"a".to_vec());
         lines.push(b"b".to_vec());
         assert_eq!((lines.panic(b"p".to_vec()), lines.sent()), (3, 3));
         let mut batch = Batch::default();
-        assert_eq!(lines.take(&mut batch, Waker::noop()), Taken::Lines);
+        assert_eq!(
+            lines.take(&mut batch, Waker::noop(), &mut None),
+            Taken::Lines
+        );
         assert_eq!((batch.sent(), batch.dropped), (3, 1));
     }
 
     #[test]
     fn a_line_too_large_for_the_bytes_drops_with_each_line_until_the_take() {
-        let lines = Lines::new(4, 2);
+        let lines = Lines::new(4, 2, sink());
         lines.push(b"aaa".to_vec());
         lines.push(b"b".to_vec());
         let mut batch = Batch::default();
-        assert_eq!(lines.take(&mut batch, Waker::noop()), Taken::Lines);
+        assert_eq!(
+            lines.take(&mut batch, Waker::noop(), &mut None),
+            Taken::Lines
+        );
         assert_eq!((batch.sent(), batch.dropped), (2, 2));
         for line in [b"cc", b"dd"] {
             lines.push(line.to_vec());
-            assert_eq!(lines.take(&mut batch, Waker::noop()), Taken::Lines);
+            assert_eq!(
+                lines.take(&mut batch, Waker::noop(), &mut None),
+                Taken::Lines
+            );
             assert_eq!(batch.lines.drain(..).collect::<Vec<_>>(), [line.to_vec()]);
             assert_eq!(batch.dropped, 0);
         }
@@ -226,7 +384,7 @@ mod model {
     use loom::sync::Arc;
     use loom::thread;
 
-    use super::{Batch, Lines, Taken};
+    use super::{Batch, Lines, Taken, sink};
 
     /// Takes until the lines close, and gives each line and the count of each line
     /// that dropped.
@@ -235,7 +393,7 @@ mod model {
         let (mut written, mut dropped) = (Vec::new(), 0);
         block_on(poll_fn(|cx| {
             loop {
-                match lines.take(&mut batch, cx.waker()) {
+                match lines.take(&mut batch, cx.waker(), &mut None) {
                     Taken::Lines => {
                         written.extend(batch.lines.drain(..));
                         dropped += batch.dropped;
@@ -254,7 +412,7 @@ mod model {
     #[test]
     fn each_line_before_the_close_reaches_a_take_that_waits() {
         loom::model(|| {
-            let lines = Arc::new(Lines::new(4, 4));
+            let lines = Arc::new(Lines::new(4, 4, sink()));
             lines.open();
             let push = |line: &'static [u8]| {
                 let lines = Arc::clone(&lines);
@@ -280,7 +438,7 @@ mod model {
     #[test]
     fn a_full_queue_drops_a_line_but_never_a_panic_line() {
         loom::model(|| {
-            let lines = Arc::new(Lines::new(1, 1));
+            let lines = Arc::new(Lines::new(1, 1, sink()));
             lines.open();
             let taker = {
                 let lines = Arc::clone(&lines);

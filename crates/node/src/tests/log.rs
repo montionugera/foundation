@@ -508,7 +508,7 @@ fn a_wait_after_the_hold_drops_waits_for_the_thread_log_to_end_then_joins_it() {
     let debug = format!("{log:?}");
     assert!(debug.contains("running: false, thread: None"), "{debug}");
     assert!(
-        debug.contains("handle: None"),
+        debug.contains("handle: Mutex { data: None"),
         "the wait joins the thread: {debug}"
     );
 }
