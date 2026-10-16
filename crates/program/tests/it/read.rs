@@ -31,7 +31,7 @@ use crate::agent::{AGENT, SUBJECT, name};
 use crate::connect::{ample, connect, connect_with};
 use crate::hand::{accept_read, by_hand, opened, reply, send, send_frame, start};
 use crate::node::env;
-use crate::session::{admit, raw};
+use crate::session::{admit, raw, within};
 use crate::sessions::{self, Got, Home, QUIET, closed_with, rules};
 
 const STAMP: Type = Type::Scalar(Scalar::Stamp);
@@ -448,6 +448,77 @@ fn gives_a_frame_whose_draft_waited_at_a_call_that_dropped() {
             assert_eq!(second.range(0), Some(Range { seq: 1, count: 1 }));
             assert_eq!(second.iter().collect::<Vec<_>>(), [(1, &body[..])]);
             node.clock().sleep(QUIET).await;
+        },
+    );
+}
+
+/// A program that held frames until the pool of frames was full, then dropped all but
+/// one, holds 1 frame of 64 kB of a 2 MiB pool. The next frame, of 200 kB, comes: the
+/// free blocks of the small size give their pages back.
+#[test]
+fn gives_a_large_frame_while_the_program_holds_one_small_frame() {
+    const SMALL: usize = 64_000;
+    const LARGE: usize = 200_000;
+    const BATCH: u64 = 40;
+    let body: Vec<u8> = (0..=250).cycle().take(LARGE).collect();
+    raw(
+        901,
+        move |session, mut hello, node| async move {
+            admit(&mut hello, &node.clock()).await;
+            let mut read = opened(&session, &around(), 1).await;
+            let end = u32::try_from(SMALL).expect("fits");
+            for seq in 0..BATCH {
+                let range = Range { seq, count: 1 };
+                send_frame(&mut read, range, &[(1, end)], &body[..SMALL], &[16_000; 4])
+                    .await;
+            }
+            let range = Range {
+                seq: BATCH,
+                count: 1,
+            };
+            let end = u32::try_from(LARGE).expect("fits");
+            send_frame(&mut read, range, &[(1, end)], &body, &[50_000; 4]).await;
+            node.clock()
+                .sleep(Span::from_nanos(60 * Span::SECOND.nanos()))
+                .await;
+            drop(session);
+        },
+        |node, tasks, at| async move {
+            let frames = block::Config::new(1 << 21).expect("the budget fits");
+            let frames = Rc::new(block::Pool::heap(frames));
+            let session = connect_with(&node, tasks, at, AGENT, ample(), frames)
+                .await
+                .expect("connects");
+            let mut reader = session
+                .reader(select(&["a", "b"]), Mode::Complete)
+                .await
+                .expect("opens");
+            let clock = node.clock();
+            let mut held = Vec::new();
+            while let Some(got) = within(&clock, Span::SECOND, reader.next()).await {
+                held.push(got.expect("a frame"));
+            }
+            let count = u64::try_from(held.len()).expect("fits");
+            assert!(count < BATCH, "the pool of frames filled: {count}");
+            let last = held.pop().expect("a frame");
+            drop(held);
+            for seq in count..BATCH {
+                let frame = reader.next().await.expect("a frame");
+                assert_eq!(frame.range(0), Some(Range { seq, count: 1 }));
+            }
+            let quiet = Span::from_nanos(10 * Span::SECOND.nanos());
+            let large = within(&clock, quiet, reader.next()).await;
+            let large = large.map(|got| got.map(|frame| frame.range(0)));
+            let range = Range {
+                seq: BATCH,
+                count: 1,
+            };
+            assert_eq!(
+                large,
+                Some(Ok(Some(range))),
+                "the program holds one frame of {SMALL} bytes"
+            );
+            drop(last);
         },
     );
 }
