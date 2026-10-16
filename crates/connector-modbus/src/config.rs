@@ -135,9 +135,6 @@ fn endpoint(value: &Value) -> Result<(Host, u16), Diagnostic> {
 /// The host and port of the address `text`, or the message of its problem.
 fn address(text: &str) -> Result<(Host, u16), String> {
     let (host, port) = split(text)?;
-    if text.starts_with('[') && !host.contains(':') {
-        return Err(format!("the address {text:?} has {}", host::Error::Ipv6));
-    }
     let host = host.parse().map_err(|problem: host::Error| {
         format!("the address {text:?} has {problem}")
     })?;
@@ -175,6 +172,9 @@ fn split(text: &str) -> Result<(&str, Option<&str>), String> {
     let Some((host, port)) = rest.split_once(']') else {
         return Err(format!("the address {text:?} has no `]`"));
     };
+    if !host.contains(':') {
+        return Err(format!("the address {text:?} has {}", host::Error::Ipv6));
+    }
     if port.is_empty() {
         return Ok((host, None));
     }
