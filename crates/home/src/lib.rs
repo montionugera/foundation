@@ -17,6 +17,7 @@ pub mod order;
 pub mod reader;
 mod shard;
 mod split;
+mod state;
 mod stored;
 #[cfg(feature = "sim")]
 pub mod testing;

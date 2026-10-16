@@ -13,6 +13,8 @@ use types::frame::Path;
 use types::name::Name;
 use types::time::{Span, Stamp};
 
+use crate::state;
+
 /// The buffer tag of a named entry.
 const TAG: NonZeroU8 = NonZeroU8::new(2).expect("2 is not 0");
 
@@ -61,17 +63,8 @@ pub(crate) fn entry(
     first: u64,
     stored_at: Stamp,
 ) -> Result<Entry, block::Error> {
-    Ok(Entry {
-        index,
-        slot,
-        path: Path::Live,
-        first,
-        len: 0,
-        stored_at,
-        last: None,
-        tag: TAG.get(),
-        parts: Some(body(pool, records)?).into(),
-    })
+    let body = Some(body(pool, records)?);
+    Ok(state::entry(TAG, body, index, slot, first, stored_at))
 }
 
 /// The body that holds `records`, a block from `pool`.
@@ -144,6 +137,12 @@ fn read(body: &[u8]) -> Vec<Record> {
         "the named entry has version {version}; this build reads version {VERSION}"
     );
     let count = u32::from_le_bytes(take(&mut rest));
+    let count = usize::try_from(count).expect("invariant: a usize holds a u32");
+    // A count from disk sizes the vector only when the bytes can hold it.
+    assert!(
+        count <= rest.len() / FIXED,
+        "the named entry ends inside a record"
+    );
     let records = (0..count)
         .map(|_| {
             let subject = name(&mut rest);
@@ -358,7 +357,15 @@ mod tests {
             #[test]
             #[should_panic(expected = "the named entry ends inside a record")]
             fn panics_on_a_name_past_the_end() {
-                read(&[1, 1, 0, 0, 0, 4, b'o']);
+                let mut bytes = vec![1, 1, 0, 0, 0, 100];
+                bytes.extend([b'o'; 40]);
+                read(&bytes);
+            }
+
+            #[test]
+            #[should_panic(expected = "the named entry ends inside a record")]
+            fn panics_on_a_count_past_the_end_with_no_allocation() {
+                read(&[1, 0xff, 0xff, 0xff, 0xff]);
             }
 
             #[test]
@@ -381,14 +388,18 @@ mod tests {
                                        sequence of 1 bytes from index 0"
             )]
             fn panics_on_a_name_that_is_not_utf8() {
-                read(&[1, 1, 0, 0, 0, 1, 0xff]);
+                let mut bytes = vec![1, 1, 0, 0, 0, 1, 0xff];
+                bytes.extend([0; 40]);
+                read(&bytes);
             }
 
             #[test]
             #[should_panic(expected = "a named entry name is not a name: a name or \
                                        pattern is empty")]
             fn panics_on_an_empty_name() {
-                read(&[1, 1, 0, 0, 0, 0]);
+                let mut bytes = vec![1, 1, 0, 0, 0, 0];
+                bytes.extend([0; 40]);
+                read(&bytes);
             }
         }
     }

@@ -13,6 +13,8 @@ use types::frame::Path;
 use types::name::Name;
 use types::time::Stamp;
 
+use crate::state;
+
 /// The buffer tag of a handoff entry.
 const TAG: NonZeroU8 = NonZeroU8::MIN;
 
@@ -38,17 +40,8 @@ pub(crate) fn entry(
     first: u64,
     stored_at: Stamp,
 ) -> Result<Entry, block::Error> {
-    Ok(Entry {
-        index,
-        slot,
-        path: Path::Live,
-        first,
-        len: 0,
-        stored_at,
-        last: None,
-        tag: TAG.get(),
-        parts: body(pool, handoff)?.into(),
-    })
+    let body = body(pool, handoff)?;
+    Ok(state::entry(TAG, body, index, slot, first, stored_at))
 }
 
 /// The body of the entry that records `handoff`: a block from `pool`, or `None` when
