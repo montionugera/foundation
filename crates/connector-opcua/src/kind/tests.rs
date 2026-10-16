@@ -1075,6 +1075,57 @@ const TYPED_CHANNELS: [&str; 11] = [
     "plant.f64",
 ];
 
+/// The `opcua` kind, whose run writes one frame with no value.
+struct Short;
+
+impl kind::Kind for Short {
+    type Config = Config;
+
+    fn parse(&self, config: &Document) -> Result<Config, Vec<Diagnostic>> {
+        Kind::default().parse(config)
+    }
+
+    fn check(&self, config: &Config) -> Result<Channels, Vec<Diagnostic>> {
+        Kind::default().check(config)
+    }
+
+    fn discover(&self, _: &Token) -> impl Future<Output = Result<Vec<Document>, Error>> {
+        future::ready(Ok(Vec::new()))
+    }
+
+    async fn run(&self, ctx: Context<Config>) -> Result<(), Error> {
+        let mut frames = Frames::open(&ctx).await?;
+        let ((), stamp) = frames.writer.request(future::ready(())).await;
+        frames.write(&[], stamp)
+    }
+}
+
+/// Each frame keeps the values of the frame before it, so only the check of the
+/// length stops a short frame from writing them again.
+#[test]
+#[should_panic(expected = "invariant: a frame has one value for each read")]
+fn panics_at_a_frame_with_no_value_for_each_read() {
+    let mut sim = Sim::new(::sim::Config::default());
+    let node = sim.node(node::Config::default());
+    let run = sim.run_on(&node, |node, tasks| async move {
+        let env = hub::testing::Env {
+            files: node.files(),
+            clock: node.clock(),
+            wall: node.wall(),
+            entropy: node.entropy(),
+            tasks: tasks.clone(),
+        };
+        let kinds = Table::new().with("opcua", Short);
+        let mut rig = testing::Rig::open(env, node.net(), kinds).await;
+        let setup = Setup::three();
+        let channels = setup.channels.iter();
+        rig.define(channels.map(|(text, def)| (name(text), def.clone())).collect());
+        let config = config("opc.tcp://plc:4840", "10Hz", &setup.reads);
+        rig.supervise("opcua", name(PLC), config).await.stop().await
+    });
+    let _ = run.expect("the run ends");
+}
+
 /// One channel of each type of a value (keys 2 to 12) on `plant.time` (key 1), each
 /// reading its node of [`TYPED_NODES`].
 fn typed() -> Setup {

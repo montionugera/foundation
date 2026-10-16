@@ -271,11 +271,17 @@ impl<'a> Frames<'a> {
     /// # Errors
     ///
     /// As [`poll::Writer::write`].
+    ///
+    /// # Panics
+    ///
+    /// When `values` does not have one value for each read.
     fn write(
         &mut self,
         values: &[Result<Value, Fault>],
         stamp: Stamp,
     ) -> Result<(), Error> {
+        let reads = self.kept.len();
+        assert_eq!(values.len(), reads, "invariant: a frame has one value for each read");
         let (mut bad, mut uncertain, mut mistyped) = (0, 0, 0);
         let mut first = None;
         let reads = values.iter().zip(&self.types).zip(&mut self.kept);
