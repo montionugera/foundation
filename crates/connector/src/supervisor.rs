@@ -4401,8 +4401,8 @@ mod tests {
     }
 
     /// The first run acks the frame at 100 ms. The frame at 1 s finds no room, so the
-    /// held position of the next run is at a lost seq: it reads the frame at 1.5 s, with
-    /// the lost seq as its gap.
+    /// held position of the next run is at a lost seq: it reads the frame at 1.5 s,
+    /// with the lost seq as its gap.
     #[test]
     fn opens_a_held_reader_at_a_lost_frame_at_the_frame_after_it() {
         let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);

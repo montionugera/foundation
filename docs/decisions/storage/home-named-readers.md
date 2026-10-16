@@ -4,9 +4,10 @@
   open gives `reader::Unsynced`, because a hold ends at a mesh time stamp. A named
   complete reader opens at its last ack within its hold, else at the live tail, and
   ends `Behind` when its position is below the frames that memory keeps. Until #274
-  reads from disk, it stays `Behind` at each open within its hold. Seqs lost for no
-  room after its position are no reason for `Behind`: its next frame gives them as its
-  gap (#2553, `laptop.architect`, 2026-10-15T18:12:25Z:
+  reads from disk, it stays `Behind` at each open within its hold. Superseded by the
+  amendment of #2725 below. Seqs lost for no room after its position are no reason for
+  `Behind`: its next frame gives them as its gap (#2553, `laptop.architect`,
+  2026-10-15T18:12:25Z:
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922). Its
   close starts its hold. A hold that ended goes at the next named complete open of its
   index, until #274 ends it at `Readers::deadline`. An open of the same key takes the
