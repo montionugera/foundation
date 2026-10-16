@@ -11,7 +11,6 @@ use connector::http::Client;
 use connector::kind::{Context, Error};
 use connector::retry::{self, Backoff};
 use connector::secret;
-use document::diagnostic::{Code, Diagnostic};
 use http::header::{AUTHORIZATION, HeaderValue};
 use http::{Method, Request, StatusCode, Uri};
 use hub::reader::{Ended, Received};
@@ -36,8 +35,6 @@ const RETRY: retry::Config = retry::Config {
     first: Span::SECOND,
     cap: Span::MINUTE,
 };
-const REFUSED: Code = Code::new("influx.refused");
-const UNKNOWN_TARGET: Code = Code::new("influx.unknown-target");
 
 enum Event<'a> {
     Cancelled,
@@ -120,14 +117,13 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
 }
 
 /// Sends `body` until InfluxDB answers 204. Shows each other answer as the run's
-/// error and waits a backoff before the next attempt. After a 401 or a 403, it reads
-/// the token again before that attempt. Never ends after the cancel of the run, which
-/// the caller sees first.
+/// error, with the fix for a 400, a 404, or a 422, and waits a backoff before the
+/// next attempt. After a 401 or a 403, it reads the token again before that attempt.
+/// Never ends after the cancel of the run, which the caller sees first.
 ///
 /// # Errors
 ///
-/// [`Error::Config`] at once at a 400, 422, or 404, which a resend of `body` gets
-/// again, and the error of [`Token::read`] when a read of the token fails.
+/// The error of [`Token::read`] when a read of the token fails.
 async fn send(
     client: &Client,
     ctx: &Context<Config>,
@@ -144,29 +140,11 @@ async fn send(
                 return Ok(());
             }
             Ok(answer) => {
-                let status = answer.status();
                 let text = String::from_utf8_lossy(answer.body());
-                if let Some(error) = config_error(status, text.trim()) {
-                    return Err(error);
-                }
-                let refused =
-                    matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
-                let source = ctx.config().token.as_ref().filter(|_| refused);
-                match source {
-                    Some(source) => {
-                        ctx.error(&format_args!(
-                            "InfluxDB answered {status}. Check the token {source}: {}",
-                            text.trim()
-                        ));
-                    }
-                    None => {
-                        ctx.error(&format_args!(
-                            "InfluxDB answered {status}: {}",
-                            text.trim()
-                        ));
-                    }
-                }
-                source.is_some()
+                answered(ctx, answer.status(), text.trim())
+            }
+            Err(error @ connector::http::Error::TooLarge { status, .. }) => {
+                answered(ctx, status, &error.to_string())
             }
             Err(error) => {
                 ctx.error(&format_args!("the write to InfluxDB failed: {error}"));
@@ -185,30 +163,31 @@ async fn send(
     }
 }
 
-/// The config error of an answer of `status` with `text`, or `None` when a resend
-/// can succeed.
-fn config_error(status: StatusCode, text: &str) -> Option<Error> {
-    let (code, fix) = match status {
-        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => (
-            REFUSED,
-            "InfluxDB refuses the lines of a batch. For a field type conflict, write \
-             to another `measurement`, or delete the old field in InfluxDB. The \
-             connector starts again at the next spec change.",
-        ),
-        StatusCode::NOT_FOUND => (
-            UNKNOWN_TARGET,
-            "Create the database or the bucket in InfluxDB, or name one that exists. \
-             The connector starts again at the next spec change.",
-        ),
-        _ => return None,
+/// Shows the answer of `status` with `text`, which is not a 204, as the run's error.
+/// Returns whether InfluxDB refused the token of the run.
+fn answered(ctx: &Context<Config>, status: StatusCode, text: &str) -> bool {
+    let fix = match status {
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
+            ". For a field type conflict, write to another `measurement` or delete the \
+             old field in InfluxDB. For points older than the retention period, raise \
+             it or write to another bucket"
+        }
+        StatusCode::NOT_FOUND => {
+            ". Create the database, the bucket, or the org in InfluxDB, or name one \
+             that exists"
+        }
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+            if let Some(source) = &ctx.config().token =>
+        {
+            ctx.error(&format_args!(
+                "InfluxDB answered {status}. Check the token {source}: {text}"
+            ));
+            return true;
+        }
+        _ => "",
     };
-    let message = format!("InfluxDB answered {status}: {text}");
-    Some(Error::Config(vec![Diagnostic::new(
-        code,
-        None,
-        message,
-        fix.into(),
-    )]))
+    ctx.error(&format_args!("InfluxDB answered {status}: {text}{fix}"));
+    false
 }
 
 /// The request of one attempt to write `body` to `uri`, with the header of `token`.
