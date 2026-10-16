@@ -401,8 +401,8 @@ pub(crate) struct ReadRequest([u8; 0]);
 #[repr(C)]
 pub(crate) struct ReadResponse([u8; 0]);
 
-/// `shim_scalar`: a scalar of a type from [`BOOLEAN`] to [`DOUBLE`]. Its kind tells
-/// which field holds it.
+/// `shim_scalar`: a scalar of a type from [`BOOLEAN`] to [`DOUBLE`], or the type of
+/// another value. Its kind tells which field holds it.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) union Scalar {
@@ -417,6 +417,7 @@ pub(crate) union Scalar {
     pub(crate) uint64: u64,
     pub(crate) float: f32,
     pub(crate) double: f64,
+    pub(crate) data_type: *const DataType,
 }
 
 /// `UA_DataValue`, which Rust holds only by pointer.
@@ -547,7 +548,6 @@ unsafe extern "C" {
         value: *const DataValue,
         out: *mut Scalar,
         kind: *mut u16,
-        data_type: *mut *const DataType,
     ) -> u32;
 
     pub(crate) fn shim_cm_new(

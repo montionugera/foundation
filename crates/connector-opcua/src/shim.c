@@ -674,6 +674,8 @@ UA_Client *shim_client_new(UA_EventLoop *el, UA_UInt32 chunks) {
     /* open62541 checks the chunks of a message that it sends and of one that it takes
      * against this count, not against the count of the peer. */
     config.localConnectionConfig.localMaxChunkCount = chunks;
+    /* No custom types: `value::mistyped` finds the type of each decoded value in
+     * `UA_TYPES`. */
     return UA_Client_newWithConfig(&config);
 }
 
@@ -864,11 +866,9 @@ UA_StatusCode shim_value_status(const void *value) {
 }
 
 /* Writes the kind of `value`, a Good answer of a read, to `kind`, plus `SHIM_ARRAY` for
- * an array, and its scalar to `out` when `shim_scalar` holds that kind, else its type
- * to `type`. Else gives the status of `shim_value_status`, or `BadNoData` for an empty
- * Variant. */
-UA_StatusCode shim_value_scalar(const void *value, shim_scalar *out, UA_UInt16 *kind,
-                                const UA_DataType **type) {
+ * an array, and to `out` its scalar when `shim_scalar` holds that kind, else its type.
+ * Else gives the status of `shim_value_status`, or `BadNoData` for an empty Variant. */
+UA_StatusCode shim_value_scalar(const void *value, shim_scalar *out, UA_UInt16 *kind) {
     UA_StatusCode status = shim_value_status(value);
     if(status != UA_STATUSCODE_GOOD)
         return status;
@@ -877,7 +877,7 @@ UA_StatusCode shim_value_scalar(const void *value, shim_scalar *out, UA_UInt16 *
         if(variant->type == NULL)
             return UA_STATUSCODE_BADNODATA;
         *kind = (UA_UInt16)(variant->type->typeKind | SHIM_ARRAY);
-        *type = variant->type;
+        out->type = variant->type;
         return UA_STATUSCODE_GOOD;
     }
     *kind = (UA_UInt16)variant->type->typeKind;
@@ -895,7 +895,7 @@ UA_StatusCode shim_value_scalar(const void *value, shim_scalar *out, UA_UInt16 *
     case UA_DATATYPEKIND_UINT64: out->uint64 = *(const UA_UInt64 *)data; break;
     case UA_DATATYPEKIND_FLOAT: out->float_ = *(const UA_Float *)data; break;
     case UA_DATATYPEKIND_DOUBLE: out->double_ = *(const UA_Double *)data; break;
-    default: *type = variant->type; break;
+    default: out->type = variant->type; break;
     }
     return UA_STATUSCODE_GOOD;
 }

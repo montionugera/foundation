@@ -64,16 +64,10 @@ impl Value {
     pub(crate) unsafe fn of(value: *const ffi::DataValue) -> Result<Self, Fault> {
         let mut scalar = ffi::Scalar { uint64: 0 };
         let mut kind = 0;
-        let mut data_type = std::ptr::null();
         // SAFETY: `value` is live, as the caller ensures, and the outputs are places
         // to write.
         let status = Status(unsafe {
-            ffi::shim_value_scalar(
-                value,
-                &raw mut scalar,
-                &raw mut kind,
-                &raw mut data_type,
-            )
+            ffi::shim_value_scalar(value, &raw mut scalar, &raw mut kind)
         });
         if status != Status::GOOD {
             return Err(Fault::Status(status));
@@ -101,7 +95,8 @@ impl Value {
             ffi::FLOAT => Self::F32(unsafe { scalar.float }),
             // SAFETY: `shim_value_scalar` wrote the field of `kind`.
             ffi::DOUBLE => Self::F64(unsafe { scalar.double }),
-            kind => return Err(mistyped(kind, data_type)),
+            // SAFETY: `shim_value_scalar` wrote the type for each other kind.
+            kind => return Err(mistyped(kind, unsafe { scalar.data_type })),
         })
     }
 
@@ -185,10 +180,13 @@ impl From<Value> for sample::Value {
 #[cold]
 #[inline(never)]
 fn mistyped(kind: u16, data_type: *const ffi::DataType) -> Fault {
-    let mut types = ffi::types().iter();
-    let at = types
-        .position(|of| std::ptr::eq(of, data_type))
-        .expect("invariant: each type of a decoded value is of `UA_TYPES`");
+    let types = ffi::types();
+    let offset = data_type.addr().wrapping_sub(types.as_ptr().addr());
+    let at = offset / size_of::<ffi::DataType>();
+    assert!(
+        types.get(at).is_some_and(|of| std::ptr::eq(of, data_type)),
+        "invariant: each type of a decoded value is of `UA_TYPES`"
+    );
     Fault::Type(Type {
         at: u16::try_from(at).expect("invariant: `UA_TYPES` fits a u16"),
         array: kind & ffi::ARRAY != 0,
