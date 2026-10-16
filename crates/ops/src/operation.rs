@@ -2,7 +2,6 @@ use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use schemars::JsonSchema;
@@ -93,7 +92,9 @@ enum Command {
     /// the data directory.
     Mcp(McpArgs),
     /// Print this help, or the help of one command.
-    Help { command: Option<String> },
+    Help {
+        command: Option<String>,
+    },
 }
 
 #[derive(clap::Args)]
@@ -316,7 +317,9 @@ pub(crate) fn parse(args: &[OsString], json: bool) -> Result<Parsed, Error> {
             },
         })),
         Command::Plan(PlanArgs { input, node }) => Ok(on(Request::Plan(input), node)),
-        Command::Apply(ApplyArgs { input, node }) => Ok(on(Request::Apply(input), node)),
+        Command::Apply(ApplyArgs { input, node }) => {
+            Ok(on(Request::Apply(input), node))
+        }
         Command::Status(node) => Ok(on(Request::Status(Empty {}), node)),
         Command::Mcp(McpArgs {
             files,

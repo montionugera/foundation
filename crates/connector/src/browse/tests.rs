@@ -37,7 +37,7 @@ impl Node {
 #[derive(Debug, Default)]
 struct Tree {
     /// The entries of each folder, by the text of its path.
-    folders: BTreeMap<String, Vec<Entry>>,
+    folders: BTreeMap<String, Vec<Child>>,
     values: BTreeMap<String, Value>,
     size: usize,
     /// Each folder that `level` was asked for, in order, and each `values` call.
@@ -68,7 +68,11 @@ impl Tree {
                 Node::Unreadable(_) => Shape::Unreadable("an array".into()),
             };
             let tag = path.to_string();
-            entries.push(Entry { path, tag, shape });
+            entries.push(Child {
+                name: node.name().into(),
+                tag,
+                shape,
+            });
         }
         self.folders.insert(at.to_string(), entries);
     }
@@ -737,8 +741,8 @@ mod walk {
             _: Option<&Cursor>,
         ) -> impl Future<Output = Result<Option<Page>, Error>> {
             let at = folder.map_or_else(Path::root, |folder| folder.path.clone());
-            let entry = |name: &str, tag: &str, shape| Entry {
-                path: at.child(name),
+            let entry = |name: &str, tag: &str, shape| Child {
+                name: name.into(),
                 tag: tag.into(),
                 shape,
             };
@@ -775,9 +779,8 @@ mod walk {
             folder: Option<&Entry>,
             _: Option<&Cursor>,
         ) -> impl Future<Output = Result<Option<Page>, Error>> {
-            let at = folder.map_or_else(Path::root, |folder| folder.path.clone());
-            let entry = |name: &str, shape| Entry {
-                path: at.child(name),
+            let entry = |name: &str, shape| Child {
+                name: name.into(),
                 tag: name.into(),
                 shape,
             };
@@ -826,8 +829,8 @@ mod walk {
             _: Option<&Cursor>,
         ) -> impl Future<Output = Result<Option<Page>, Error>> {
             let at = folder.map_or_else(Path::root, |folder| folder.path.clone());
-            let entry = |name: &str, shape| Entry {
-                path: at.child(name),
+            let entry = |name: &str, shape| Child {
+                name: name.into(),
                 tag: at.child(name).to_string(),
                 shape,
             };
@@ -865,7 +868,7 @@ mod walk {
     fn refuses_an_entry_whose_name_is_empty() {
         let mut tree = Tree::new(&plant(), 10);
         let entries = tree.folders.get_mut("Line1").expect("Line1");
-        entries[1].path = path("Line1").child("");
+        entries[1].name = String::new();
         let found = now(walk(&mut tree, &query("", Scope::Match(pattern("**")))));
         assert_eq!(
             diagnostic(found),
@@ -900,44 +903,14 @@ mod walk {
     }
 
     #[test]
-    fn refuses_a_broken_entry_of_the_root() {
+    fn refuses_an_entry_of_the_root_whose_name_is_empty() {
         for scope in [Scope::Level(None), Scope::Match(pattern("**"))] {
-            for (at, rule) in [
-                (
-                    "",
-                    r#"an entry is in the folder of its page, and "" is not in """#,
-                ),
-                (
-                    "a/b",
-                    r#"an entry is in the folder of its page, and "a/b" is not in """#,
-                ),
-            ] {
-                let mut tree = Tree::new(&plant(), 10);
-                let entries = tree.folders.get_mut("").expect("the root");
-                entries[2].path = path(at);
-                let found = now(walk(&mut tree, &query("", scope.clone())));
-                assert_eq!(diagnostic(found), broken(rule), "{at} {scope:?}");
-            }
             let mut tree = Tree::new(&plant(), 10);
             let entries = tree.folders.get_mut("").expect("the root");
-            entries[2].path = Path::root().child("");
+            entries[2].name = String::new();
             let found = now(walk(&mut tree, &query("", scope.clone())));
             let rule = r#"an entry has a name, and an entry of "" has an empty name"#;
             assert_eq!(diagnostic(found), broken(rule), "{scope:?}");
-        }
-    }
-
-    #[test]
-    fn refuses_an_entry_that_is_not_in_its_folder() {
-        for at in ["Line9/Temp1", "Temp1", "Line1/a/Temp1", ""] {
-            let mut tree = Tree::new(&plant(), 10);
-            let entries = tree.folders.get_mut("Line1").expect("Line1");
-            entries[0].path = path(at);
-            let found = now(walk(&mut tree, &query("", Scope::Match(pattern("**")))));
-            let rule = format!(
-                r#"an entry is in the folder of its page, and "{at}" is not in "Line1""#
-            );
-            assert_eq!(diagnostic(found), broken(&rule), "{at}");
         }
     }
 

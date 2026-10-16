@@ -7,7 +7,7 @@ use wire::hub::client::BODY_BYTES_MAX;
 
 use crate::Failure;
 use crate::apply::Applied;
-use crate::error::{self, Error, Unread};
+use crate::error::{self, Error, Unread, Unwritten};
 use crate::front_end::{self, File};
 use crate::plan::Output;
 use crate::{serve, status};
@@ -50,18 +50,22 @@ impl Scope {
     /// - [`Error::Folder`] for the first folder that does not resolve.
     /// - [`Error::WideFolder`] with no `files`, when the working directory is `/` or
     ///   the home folder.
-    pub(crate) fn mcp(paths: &Paths, files: &[PathBuf], data: &Path) -> Result<Self, Error> {
+    pub(crate) fn mcp(
+        paths: &Paths,
+        files: &[PathBuf],
+        data: &Path,
+    ) -> Result<Self, Error> {
         let unmade = |error| Error::Data {
             path: data.to_owned(),
             error,
         };
         paths.make_dir(data).map_err(unmade)?;
-        let resolve = |path: &Path| {
-            paths.resolve(path).map_err(|error| Error::Folder {
-                path: path.to_owned(),
-                error,
-            })
+        let folder = |path: &Path, error| Error::Folder {
+            path: path.to_owned(),
+            error,
         };
+        let resolve =
+            |path: &Path| paths.resolve(path).map_err(|e| folder(path, Some(e)));
         let working = resolve(Path::new("."))?;
         let folders = if files.is_empty() {
             if working.parent().is_none() || paths.home().as_ref() == Some(&working) {
@@ -69,7 +73,25 @@ impl Scope {
             }
             vec![working.clone()]
         } else {
-            files.iter().map(|file| resolve(file)).collect::<Result<_, _>>()?
+            let mut folders = Vec::with_capacity(files.len());
+            for file in files {
+                let resolved = resolve(file)?;
+                // A directory with entries is `Large` too, and only it reads with an
+                // end in `/`.
+                match paths.read(&resolved, 0) {
+                    Ok(paths::Found::Directory(_)) => folders.push(resolved),
+                    Ok(paths::Found::Large)
+                        if paths.read(&resolved.join(""), 0).is_ok() =>
+                    {
+                        folders.push(resolved);
+                    }
+                    Ok(paths::Found::File(_) | paths::Found::Large) => {
+                        return Err(folder(file, None));
+                    }
+                    Err(error) => return Err(folder(file, Some(error))),
+                }
+            }
+            folders
         };
         let data = paths.resolve(data).map_err(unmade)?;
         let within = paths
@@ -85,22 +107,34 @@ impl Scope {
         })
     }
 
-    /// The error of a call at `path` that its limits refused.
-    fn outside(&self, path: &Path) -> Error {
-        Error::Outside {
-            path: path.to_owned(),
-            limits: self.limits.clone(),
+    /// The error of a call at `path` that its limits refused with `error`, `Outside`
+    /// or `Hidden`.
+    fn refused(&self, path: &Path, error: paths::Error) -> Error {
+        let path = path.to_owned();
+        match (error, &self.limits) {
+            (paths::Error::Hidden, Some(limits)) => Error::Hidden {
+                path,
+                data: limits.data.clone(),
+            },
+            _ => Error::Outside {
+                path,
+                limits: self.limits.clone(),
+            },
         }
     }
 
     /// The error of a resolve or a write of the plan file `out` that failed.
     fn unwritten(&self, out: &Path, error: paths::Error) -> Error {
-        match error {
-            paths::Error::Outside => self.outside(out),
-            error => Error::Write {
-                path: out.to_owned(),
-                error,
-            },
+        let cause = match error {
+            paths::Error::Outside | paths::Error::Hidden => {
+                return self.refused(out, error);
+            }
+            paths::Error::NotFound => Unwritten::NotFound,
+            paths::Error::Io { code } => Unwritten::Io { code },
+        };
+        Error::Write {
+            path: out.to_owned(),
+            cause,
         }
     }
 }
@@ -276,7 +310,9 @@ fn file(scope: &Scope, path: &Path) -> Result<Vec<u8>, Error> {
         Ok(Found::Directory(_)) => Err(unread(Unread::Directory)),
         Err(paths::Error::NotFound) => Err(unread(Unread::NotFound)),
         Err(paths::Error::Io { code }) => Err(unread(Unread::Io { code })),
-        Err(paths::Error::Outside) => Err(scope.outside(path)),
+        Err(error @ (paths::Error::Outside | paths::Error::Hidden)) => {
+            Err(scope.refused(path, error))
+        }
     }
 }
 

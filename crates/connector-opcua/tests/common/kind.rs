@@ -72,13 +72,6 @@ impl<M: Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static> kind::Kind
         connector_opcua::Kind::default().check(config)
     }
 
-    fn discover(
-        &self,
-        _: &Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     async fn run(&self, ctx: Context<Config>) -> Result<(), Error> {
         match &self.of {
             Of::Polls(polls) => {

@@ -1,12 +1,12 @@
 //! The files of each node's host by path, apart from its disk.
 
-use std::collections::btree_map::Entry::Occupied;
+use std::collections::btree_map::Entry::{Occupied, Vacant};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 
 use env::paths::{Error, Found, names_directory};
 
-use crate::{DIRECTORY, LOOP, NOT_DIRECTORY};
+use crate::{DIRECTORY, EXISTS, LOOP, NOT_DIRECTORY};
 
 /// The most symbolic links that one path goes through, as on Linux.
 const LINKS: usize = 40;
@@ -80,6 +80,35 @@ impl Paths {
         }
         self.entries.insert((node, at), Entry::File(bytes.to_vec()));
         Ok(())
+    }
+
+    /// Makes a directory at `path` as `os` makes one: only in a directory that is
+    /// there, `Ok` when a directory is there, else `EEXIST` when anything is there.
+    pub(crate) fn create_dir(&mut self, node: usize, path: &Path) -> Result<(), Error> {
+        let at = match self.check(node, path) {
+            Err(Error::NotFound) if self.linked(node, path) => {
+                return Err(Error::Io { code: EXISTS });
+            }
+            at => at?,
+        };
+        if self.directory(node, &at) {
+            return Ok(());
+        }
+        // `os` makes no directory at a path that ends in `.` or `..`.
+        let mut names = path
+            .as_os_str()
+            .as_encoded_bytes()
+            .rsplit(|&byte| byte == b'/');
+        if matches!(names.next(), Some(b"." | b"..")) {
+            return Err(Error::NotFound);
+        }
+        match self.entries.entry((node, at)) {
+            Vacant(entry) => {
+                entry.insert(Entry::Directory);
+                Ok(())
+            }
+            Occupied(_) => Err(Error::Io { code: EXISTS }),
+        }
     }
 
     /// `path` from the working directory, with each `.`, `..`, and symbolic link
@@ -212,6 +241,22 @@ impl Paths {
             .entry((node, at.clone()))
             .or_insert(Entry::Directory);
         at.join(name)
+    }
+
+    /// Whether a symbolic link is at the last name of `path`.
+    fn linked(&self, node: usize, path: &Path) -> bool {
+        let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+            return false;
+        };
+        let dir = if dir.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            dir
+        };
+        self.resolve(node, dir).is_ok_and(|dir| {
+            let entry = self.entries.get(&(node, dir.join(name)));
+            matches!(entry, Some(Entry::Link(_)))
+        })
     }
 
     /// The resolved path of a call, after the fault that waits on its path.

@@ -86,16 +86,14 @@ fn run(places: u8, mode: Mode, bytes: &[u8], in_place: bool) -> Vec<Seen> {
     };
     let mut messages = fuzz::messages(bytes);
     let mut seen = Vec::new();
-    let Some(first) = messages.next() else {
-        return seen;
-    };
-    let mut frames = match Frames::open(Reader::new(&open), set(places), first) {
-        Ok((frames, _)) => frames,
-        Err(error) => {
-            seen.push(Seen::Message(error));
-            return seen;
-        }
-    };
+    let mut frames =
+        match Frames::open(Reader::new(&open), set(places), messages.next()) {
+            Ok((frames, _)) => frames,
+            Err(error) => {
+                seen.push(Seen::Message(error));
+                return seen;
+            }
+        };
     loop {
         let step = match frames.due() {
             Err(error) => {

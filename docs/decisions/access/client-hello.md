@@ -57,9 +57,17 @@
   Amended: a third kind of stream, a read stream, carries one reader session. The
   program sends a `Read` (kind 6: the open's length and the signature) and then the
   `client::Open` as a body of at most `OPEN_BYTES_MAX` (64 KiB): the mode (latest 1,
-  complete 2), then each pattern of the selector as written, each a `u16` length and
-  its text. The selector matches channels of one index; else `MALFORMED`. The node
-  sends `Places` (kind 6: the count of places and the place of the index), a run of
+  complete 2), then each pattern of the selector as written, each a `u16` length and its
+  text. The selector matches channels of one index, and at most `PLACES_MAX` (65,536)
+  places with their index; else `MALFORMED`, before the reader opens. A named reader
+  keeps no cap, and the program refuses a `Places` over the cap with `Error::Places`
+  (`laptop.architect`, 2026-10-16T06:47:02Z,
+  https://github.com/synnaxlabs/foundation/issues/2808#issuecomment-6209795527). The
+  node gives `serve::Error::Places` for a match over the cap. A `Start` at the cap with
+  names of 255 bytes takes at most 26 MB at the program (counting allocator, box1)
+  (`laptop.architect`, 2026-10-16T08:11:58Z,
+  https://github.com/synnaxlabs/foundation/pull/2847#issuecomment-6211097743). The
+  node sends `Places` (kind 6: the count of places and the place of the index), a run of
   `Place` (key, sample type as the text that `types::sample::Type` writes and reads,
   name) (`laptop.architect`, 2026-10-10T23:52:16Z,
   https://github.com/synnaxlabs/foundation/pull/2327#issuecomment-6103487682), then
@@ -77,16 +85,25 @@
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103306402, approved
   by `laptop.architect` at 2026-10-10T23:31:47Z in the ruling below). At the program,
   `client::Reader` decodes the start of a read stream: `Places`, then the run. With the
-  last place it gives the `hub::Reader` of their count and the read's mode, and the
-  program decodes each reply with it. Only `wire` builds that reader, so the program
-  side builds no `Open` with a grant that it never sends. `client::Reader` refuses an
+  last place it gives the `Start`: the places, their key set, and the `hub::Reader` of
+  their count and the read's mode, with which the program decodes each reply. Only
+  `wire` builds that reader, so the program side builds no `Open` with a grant that it
+  never sends. `client::Reader` refuses an
   index place whose sample type is not `Stamp` with `Error::Unstamped`
   (`laptop.architect`, 2026-10-11T00:45:04Z,
-  https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6103881921). The
-  caller gives `Error::Finished` for a stream that the node finishes before the last
-  place, and a call of `client::Reader` after that place panics. Lost: one decoder for
-  the whole stream. Its copy of each reply cost the program 6.9 ns for each message
-  (644.7 against 188.6 ns for a frame of 66 messages). `#[inline]` on
+  https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6103881921). It
+  gives `Error::Finished` for a stream that the node finishes before the last place
+  (`laptop.architect`, 2026-10-16T07:20:38Z,
+  https://github.com/synnaxlabs/foundation/pull/2839#issuecomment-6210285214), and a
+  call of `client::Reader` after that place panics (`laptop.architect`,
+  2026-10-11T07:53:39Z,
+  https://github.com/synnaxlabs/foundation/pull/2368#issuecomment-6106869729, and
+  2026-10-16T06:47:02Z,
+  https://github.com/synnaxlabs/foundation/issues/2808#issuecomment-6209795527).
+  Supersedes the caller's `Error::Finished` of
+  https://github.com/synnaxlabs/foundation/pull/2368#issuecomment-6106869729. Lost:
+  one decoder for the whole stream. Its copy of each reply cost the program 6.9 ns for
+  each message (644.7 against 188.6 ns for a frame of 66 messages). `#[inline]` on
   `hub::Reader::decode` removed that cost, and cost the node 0.31 ns for each message
   (188.6 to 209.0 ns) and 5.1 ns for a head (8.7 to 13.8 ns), on box1 under load
   (https://github.com/synnaxlabs/foundation/pull/2368#issuecomment-6106494175;
@@ -94,9 +111,13 @@
   https://github.com/synnaxlabs/foundation/pull/2368#issuecomment-6106869729).
   Supersedes `FromNode::Home`, `body`, `end`, and item 1 of
   https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6103881921.
-  `client::Reader` is the one public path that decodes `Places` and the run
-  (`laptop.architect`, 2026-10-11T01:56:00Z,
-  https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6104390669). The
+  `client::Places::decode` and `client::place::decode` are public, beside the public
+  encode of each, so that the fuzz target `wire_hub_client` checks that each message
+  encodes to its bytes. `client::Reader` alone checks the run and builds the key set
+  (`laptop.architect`, 2026-10-16T06:57:29Z,
+  https://github.com/synnaxlabs/foundation/issues/2808#issuecomment-6209940652).
+  Supersedes
+  https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6104390669. The
   program sends no credit: the stream's flow control bounds the frames in flight. The
   program knows the kind of each stream that it opens; the node knows the kind of the
   hello stream only, and decodes the first message of each later stream with
@@ -124,8 +145,8 @@
   decoders of both wires give (`Empty`, `Kind`, `Length`, `Body`, `Unfinished`) is in
   each type, with the same fields and message. `Run` keeps one message, and the doc of
   each names its own items. `wire::hub::client::Error::Finished` is "the node finished
-  the read stream before its last place", which the caller of
-  `wire::hub::client::Reader` gives; `hub::Error::Finished` stays the home's. No variant
+  the read stream before its last place", which `wire::hub::client::Reader::decode`
+  gives at the end of the stream; `hub::Error::Finished` stays the home's. No variant
   of `wire::hub::client::Error` holds a `hub::Error`: the program gets the errors of the
   replies from the `hub::Reader` that `wire::hub::client::Reader` gives.
   `program::Error::Message` (the name, `laptop.architect`, 2026-10-15T18:23:47Z,

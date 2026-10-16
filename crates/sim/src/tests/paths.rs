@@ -255,6 +255,22 @@ fn a_directory_that_a_node_makes_is_there_with_no_entry() {
 }
 
 #[test]
+fn a_relative_directory_is_made_under_the_working_directory() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/w"));
+    node.set_working_dir(Path::new("/w"));
+    node.link_path(Path::new("/w/to-none"), Path::new("none"));
+    let exists = Err(Error::Io {
+        code: cases::EXISTS,
+    });
+    assert_eq!(paths.make_dir(Path::new("to-none")), exists);
+    assert_eq!(paths.make_dir(Path::new("new")), Ok(()));
+    let empty = Ok(Found::Directory(vec![]));
+    assert_eq!(paths.read(Path::new("/w/new"), 0), empty);
+}
+
+#[test]
 #[should_panic(expected = "/plant.hcl/a gave Io { code: 20 }")]
 fn a_link_through_a_file_panics() {
     let node = Sim::new(Config::default()).node(node::Config::default());

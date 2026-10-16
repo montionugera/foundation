@@ -9,7 +9,7 @@ use std::task::{Context, Poll, Waker};
 use document::Source;
 use serde_json::{Map, Value, json};
 
-use crate::error::{Action, Among, Error, On, Unread};
+use crate::error::{Action, Among, Error, On, Unread, Unwritten};
 use crate::operation::{self, Response, TABLE};
 use crate::{FrontEnd, FrontEnds};
 use crate::{front_end, plan};
@@ -97,7 +97,8 @@ fn respond(message: &str) -> Option<String> {
     });
     let scope = crate::remote::Scope::free(&paths);
     let respond = crate::mcp::respond(message, &scope, &mut link);
-    let Poll::Ready(reply) = pin!(respond).poll(&mut Context::from_waker(Waker::noop()))
+    let Poll::Ready(reply) =
+        pin!(respond).poll(&mut Context::from_waker(Waker::noop()))
     else {
         panic!("a message waited");
     };
@@ -609,7 +610,7 @@ fn every() -> Vec<Error> {
         },
         Error::Write {
             path: PathBuf::new(),
-            error: env::paths::Error::NotFound,
+            cause: Unwritten::NotFound,
         },
         Error::LargeRequest,
         Error::Reply {
@@ -618,6 +619,10 @@ fn every() -> Vec<Error> {
         Error::Outside {
             path: PathBuf::new(),
             limits: None,
+        },
+        Error::Hidden {
+            path: PathBuf::new(),
+            data: PathBuf::from("/work/foundation-data"),
         },
         Error::PlanName {
             path: PathBuf::new(),
@@ -628,10 +633,10 @@ fn every() -> Vec<Error> {
         },
         Error::Folder {
             path: PathBuf::new(),
-            error: env::paths::Error::NotFound,
+            error: None,
         },
         Error::Data {
-            path: PathBuf::new(),
+            path: PathBuf::from("/work/foundation-data"),
             error: env::paths::Error::NotFound,
         },
     ]
@@ -663,6 +668,7 @@ fn error_codes_and_fixes_match_the_golden_file() {
             | Error::LargeRequest
             | Error::Reply { .. }
             | Error::Outside { .. }
+            | Error::Hidden { .. }
             | Error::PlanName { .. }
             | Error::WideFolder { .. }
             | Error::Folder { .. }
@@ -1185,11 +1191,7 @@ mod mcp {
             json!({ "jsonrpc": "2.0", "id": 1, "result": {} }),
             json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": 1, "message": "x" } }),
         ] {
-            assert_eq!(
-                respond(&response.to_string()),
-                None,
-                "{response}"
-            );
+            assert_eq!(respond(&response.to_string()), None, "{response}");
         }
     }
 
@@ -1230,8 +1232,7 @@ mod mcp {
     #[test]
     fn bad_json_is_a_parse_error() {
         let reply: Value =
-            serde_json::from_str(&respond("{").expect("a reply"))
-                .expect("json");
+            serde_json::from_str(&respond("{").expect("a reply")).expect("json");
         assert_eq!(reply, failure(Value::Null, -32700, "Parse error"));
     }
 

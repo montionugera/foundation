@@ -7,11 +7,11 @@ use document::diagnostic::Code;
 use env::paths::{self, Found, Paths};
 use serde_json::{Value, json};
 
-use super::{Link, Scope, apply, most, plan, status};
 use super::Limits;
+use super::{Link, Scope, apply, most, plan, status};
 use crate::apply::Applied;
 use crate::common::{self, create_node, name, placed_site, solo};
-use crate::error::{Error, Problem, Unread};
+use crate::error::{Error, Problem, Unread, Unwritten};
 use crate::front_end::File;
 use crate::operation::{DATA, Response};
 use crate::plan::Output;
@@ -136,7 +136,12 @@ impl Remote {
 
     /// The run of `foundation mcp <args>` on the lines of `messages`, and the JSON of
     /// each line of its output.
-    async fn mcp(&self, paths: &Paths, args: &[&str], messages: &[Value]) -> (Run, Vec<Value>) {
+    async fn mcp(
+        &self,
+        paths: &Paths,
+        args: &[&str],
+        messages: &[Value],
+    ) -> (Run, Vec<Value>) {
         let reach = async |data: &Path| {
             self.data.borrow_mut().push(data.to_owned());
             self.reached()?;
@@ -145,8 +150,15 @@ impl Remote {
         let input: String = messages.iter().map(|m| format!("{m}\n")).collect();
         let args = ["foundation", "mcp"].iter().chain(args).map(Into::into);
         let (mut output, mut errors) = (Vec::new(), Vec::new());
-        let run =
-            crate::cli(args, input.as_bytes(), &mut output, &mut errors, paths, reach).await;
+        let run = crate::cli(
+            args,
+            input.as_bytes(),
+            &mut output,
+            &mut errors,
+            paths,
+            reach,
+        )
+        .await;
         assert_eq!(String::from_utf8(errors).expect("UTF-8"), "");
         let lines = String::from_utf8(output).expect("UTF-8");
         let replies = lines
@@ -188,7 +200,7 @@ fn plans_writes_the_plan_file_and_applies_it() {
         let (expected, output) = remote.node.plan(files).await.expect("a plan");
 
         let out = Path::new("plans/site.plan");
-        fixture.sim.make_dir(Path::new("/plans"));
+        fixture.sim.make_dir(Path::new("/work/plans"));
         let files = [PathBuf::from("site.hcl")];
         let planned = remote.plan(&paths, &files, Some(out)).await;
         let planned = planned.expect("a plan");
@@ -221,7 +233,7 @@ fn plan_with_no_out_writes_no_file() {
 fn plan_gives_each_failed_read_by_its_cause_and_reaches_no_node() {
     solo(|fixture, mesh| async move {
         let paths = with_site(&fixture.sim);
-        fixture.sim.make_dir(Path::new("/config"));
+        fixture.sim.make_dir(Path::new("/work/config"));
         paths
             .write(Path::new("config/a.hcl"), b"")
             .expect("a write");
@@ -397,7 +409,7 @@ fn plan_whose_write_of_out_fails_gives_write_and_leaves_no_file() {
         };
         let expected = Error::Write {
             path: out.to_owned(),
-            error: paths::Error::Io { code: 13 },
+            cause: Unwritten::Io { code: 13 },
         };
         assert_eq!(error, expected);
         let message = "the write of the plan file site.plan failed with OS error 13";
@@ -410,7 +422,7 @@ fn plan_whose_write_of_out_fails_gives_write_and_leaves_no_file() {
 fn write_of_a_plan_file_whose_directory_is_not_there_names_the_directory() {
     let error = Error::Write {
         path: PathBuf::from("plans/site.plan"),
-        error: paths::Error::NotFound,
+        cause: Unwritten::NotFound,
     };
     let message = "the directory of the plan file plans/site.plan is not there";
     assert_eq!(shown(&error), read("ops.write", message, 1));
@@ -555,7 +567,7 @@ fn apply_of_a_plan_file_that_does_not_fit_a_request_reaches_no_node() {
 #[test]
 fn an_error_of_the_node_keeps_its_problems_and_status() {
     solo(|fixture, mesh| async move {
-        let paths = fixture.sim.paths();
+        let paths = with_site(&fixture.sim);
         paths.write(Path::new("bad.hcl"), b"{").expect("a write");
         let remote = Remote::new(create_node(&fixture, mesh));
         let files = [PathBuf::from("bad.hcl")];
@@ -728,7 +740,11 @@ fn mcp_plans_applies_and_shows_status_on_one_reach_of_the_node_of_data() {
         let remote = Remote::new(create_node(&fixture, mesh.clone()));
         let messages = [
             call(1, "version", json!({})),
-            call(2, "plan", json!({ "files": ["site.hcl"], "out": "site.plan" })),
+            call(
+                2,
+                "plan",
+                json!({ "files": ["site.hcl"], "out": "site.plan" }),
+            ),
             call(3, "apply", json!({ "plan": "site.plan" })),
             call(4, "status", json!({})),
         ];
@@ -747,7 +763,10 @@ fn mcp_plans_applies_and_shows_status_on_one_reach_of_the_node_of_data() {
             );
         }
         assert_eq!(replies[1]["result"]["structuredContent"]["added"], 3);
-        assert_eq!(replies[2]["result"]["structuredContent"]["file"], "site.plan");
+        assert_eq!(
+            replies[2]["result"]["structuredContent"]["file"],
+            "site.plan"
+        );
         assert_eq!(mesh.pointer().version, 1);
         assert_eq!(remote.calls(), (1, 3));
         assert_eq!(*remote.data.borrow(), [PathBuf::from("other")]);
@@ -811,7 +830,7 @@ fn mcp_of_a_file_that_does_not_read_reaches_no_node() {
 #[test]
 fn mcp_keeps_the_session_after_a_reply_with_problems() {
     solo(|fixture, mesh| async move {
-        let paths = fixture.sim.paths();
+        let paths = with_site(&fixture.sim);
         paths.write(Path::new("bad.hcl"), b"{").expect("a write");
         let remote = Remote::new(create_node(&fixture, mesh));
         let plan = |id| call(id, "plan", json!({ "files": ["bad.hcl"] }));
@@ -842,7 +861,9 @@ fn mcp_refuses_each_path_outside_its_folders() {
         let paths = with_site(&fixture.sim);
         fixture.sim.make_dir(Path::new("/out"));
         paths.write(Path::new("/out/x.hcl"), b"").expect("a write");
-        fixture.sim.link_path(Path::new("/work/link"), Path::new("/out"));
+        fixture
+            .sim
+            .link_path(Path::new("/work/link"), Path::new("/out"));
         let remote = Remote::new(create_node(&fixture, mesh));
         let messages = [
             call(1, "plan", json!({ "files": ["../out/x.hcl"] })),
@@ -856,17 +877,31 @@ fn mcp_refuses_each_path_outside_its_folders() {
             path: PathBuf::from(path),
             limits: Some(work()),
         };
-        let paths = ["../out/x.hcl", "/out/x.hcl", "link/x.hcl", "foundation-data/admin.key"];
+        let hidden = Error::Hidden {
+            path: PathBuf::from("foundation-data/admin.key"),
+            data: PathBuf::from("/work/foundation-data"),
+        };
         let results: Vec<_> = replies.iter().map(|r| r["result"].clone()).collect();
-        let errors: Vec<_> = paths.iter().map(|path| failed(&outside(path))).collect();
+        let mut errors: Vec<_> = ["../out/x.hcl", "/out/x.hcl", "link/x.hcl"]
+            .map(|path| failed(&outside(path)))
+            .into();
+        errors.push(failed(&hidden));
         assert_eq!(results, errors);
+        assert_eq!(
+            shown(&hidden),
+            (
+                "ops.hidden".to_owned(),
+                "`foundation-data/admin.key` is in the data directory \
+                 /work/foundation-data of this MCP server, which no tool reads or writes"
+                    .to_owned(),
+                2
+            )
+        );
         assert_eq!(
             shown(&outside("/out/x.hcl")),
             (
                 "ops.outside".to_owned(),
-                "`/out/x.hcl` is not under a folder of this MCP server (/work), or is in \
-                 its data directory /work/foundation-data. A relative path starts at the \
-                 working directory /work"
+                "`/out/x.hcl` is not under a folder of this MCP server (/work)"
                     .to_owned(),
                 2
             )
@@ -883,18 +918,28 @@ fn mcp_writes_a_plan_file_only_under_its_folders_and_with_its_end() {
         let paths = with_site(&fixture.sim);
         fixture.sim.make_dir(Path::new("/out"));
         paths.write(Path::new("/out/key"), b"key").expect("a write");
-        paths.write(Path::new("/out/x.plan"), b"plan").expect("a write");
-        fixture.sim.link_path(Path::new("/work/key.plan"), Path::new("/out/key"));
-        fixture.sim.link_path(Path::new("/work/x.plan"), Path::new("/out/x.plan"));
+        paths
+            .write(Path::new("/out/x.plan"), b"plan")
+            .expect("a write");
+        fixture
+            .sim
+            .link_path(Path::new("/work/key.plan"), Path::new("/out/key"));
+        fixture
+            .sim
+            .link_path(Path::new("/work/x.plan"), Path::new("/out/x.plan"));
         let remote = Remote::new(create_node(&fixture, mesh));
-        let plan = |id, out| call(id, "plan", json!({ "files": ["gone.hcl"], "out": out }));
+        let plan =
+            |id, out| call(id, "plan", json!({ "files": ["gone.hcl"], "out": out }));
         let messages = [plan(1, "site.txt"), plan(2, "key.plan")];
         let (_, replies) = remote.mcp(&paths, &[], &messages).await;
         let name = |path: &str, resolved: &str| Error::PlanName {
             path: PathBuf::from(path),
             resolved: PathBuf::from(resolved),
         };
-        assert_eq!(replies[0]["result"], failed(&name("site.txt", "/work/site.txt")));
+        assert_eq!(
+            replies[0]["result"],
+            failed(&name("site.txt", "/work/site.txt"))
+        );
         assert_eq!(replies[1]["result"], failed(&name("key.plan", "/out/key")));
         assert_eq!(
             shown(&name("key.plan", "/out/key")),
@@ -920,12 +965,17 @@ fn mcp_writes_a_plan_file_only_under_its_folders_and_with_its_end() {
 }
 
 /// The run of `foundation mcp <args>` that ends at its start, on a host whose working
-/// directory is `working`, with the home `home`: its status and standard error. With
-/// one ping on its input, a start that serves gives its pong.
+/// directory is `working`, with the home `home`, and a file `/work/f`: its status and
+/// standard error. With one ping on its input, a start that serves gives its pong.
 fn start(working: &str, home: &str, args: &[&str]) -> (Run, String, String) {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = sim.node(sim::node::Config::default());
-    host.make_dir(Path::new(working));
+    for folder in [working, home] {
+        if folder != "/" && folder != "/work" {
+            host.make_dir(Path::new(folder));
+        }
+    }
+    host.make_dir(Path::new("/work"));
     host.set_working_dir(Path::new(working));
     host.set_home(Path::new(home));
     let request = async |_: &[u8]| -> Result<Vec<u8>, Failure> {
@@ -935,8 +985,18 @@ fn start(working: &str, home: &str, args: &[&str]) -> (Run, String, String) {
     let args = ["foundation", "mcp"].iter().chain(args).map(Into::into);
     let ping = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n";
     let (mut output, mut errors) = (Vec::new(), Vec::new());
-    let cli = crate::cli(args, ping.as_bytes(), &mut output, &mut errors, &host.paths(), reach);
-    let Poll::Ready(run) = pin!(cli).poll(&mut Context::from_waker(Waker::noop())) else {
+    let paths = host.paths();
+    paths.write(Path::new("/work/f"), b"f").expect("a write");
+    let cli = crate::cli(
+        args,
+        ping.as_bytes(),
+        &mut output,
+        &mut errors,
+        &paths,
+        reach,
+    );
+    let Poll::Ready(run) = pin!(cli).poll(&mut Context::from_waker(Waker::noop()))
+    else {
         panic!("a start waited");
     };
     let text = |bytes| String::from_utf8(bytes).expect("UTF-8");
@@ -950,7 +1010,10 @@ fn mcp_starts_only_on_a_folder_that_is_not_too_wide() {
     let wide = |working: &str| Error::WideFolder {
         working: PathBuf::from(working),
     };
-    assert_eq!(start("/", "/home", &[]), (Run::Exit(2), String::new(), wide("/").text()));
+    assert_eq!(
+        start("/", "/home", &[]),
+        (Run::Exit(2), String::new(), wide("/").text())
+    );
     let home = start("/home", "/home", &["--data", "/home/d"]);
     assert_eq!(home, (Run::Exit(2), String::new(), wide("/home").text()));
     assert_eq!(
@@ -968,19 +1031,35 @@ fn mcp_starts_only_on_a_folder_that_is_not_too_wide() {
     assert_eq!(served.0, Run::Exit(2));
     let folder = Error::Folder {
         path: PathBuf::from("/home/plant"),
-        error: env::paths::Error::NotFound,
+        error: Some(env::paths::Error::NotFound),
     };
     assert_eq!(served.2, folder.text());
     assert_eq!(
         shown(&folder),
         (
             "ops.folder".to_owned(),
-            "the folder `/home/plant` is not there".to_owned(),
+            "the folder `/home/plant` of `--files` is not there".to_owned(),
             2
         )
     );
     let served = start("/home", "/home", &["--files", "."]);
+    assert_eq!(served, (Run::Exit(0), pong.clone(), String::new()));
+    let served = start("/home", "/home", &["--files", "/work"]);
     assert_eq!(served, (Run::Exit(0), pong, String::new()));
+    let file = Error::Folder {
+        path: PathBuf::from("/work/f"),
+        error: None,
+    };
+    let refused = start("/home", "/home", &["--files", "/work/f"]);
+    assert_eq!(refused, (Run::Exit(2), String::new(), file.text()));
+    assert_eq!(
+        shown(&file),
+        (
+            "ops.folder".to_owned(),
+            "the folder `/work/f` of `--files` is a file".to_owned(),
+            2
+        )
+    );
 }
 
 /// `foundation mcp` makes its data directory, and refuses one whose directory above
@@ -997,7 +1076,8 @@ fn mcp_makes_its_data_directory() {
         shown(&unmade),
         (
             "ops.data".to_owned(),
-            "the directory above the data directory `gone/data` is not there".to_owned(),
+            "the directory gone above the data directory `gone/data` is not there"
+                .to_owned(),
             1
         )
     );
