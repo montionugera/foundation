@@ -29,8 +29,11 @@
      the host and port type of `connector` (#1218) takes it; its own host rules go
      (`box1.builder-2`, 2026-10-16T03:24:43Z:
      https://github.com/synnaxlabs/foundation/issues/1218#issuecomment-6207374015;
-     approved by `laptop.architect-2`:
-     https://github.com/synnaxlabs/foundation/pull/2852#issuecomment-6211699251).
+     approved by `laptop.architect-2`, 2026-10-16T08:46:11Z:
+     https://github.com/synnaxlabs/foundation/pull/2852#issuecomment-6211699251; the
+     bare parse in brackets and the import of `env::net::host`,
+     `laptop.architect-2`, 2026-10-16T08:55:35Z:
+     https://github.com/synnaxlabs/foundation/pull/2852#issuecomment-6211871391).
      Supersedes the host rules of
      https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205359213
      (`laptop.architect-2`, 2026-10-16T00:41:10Z) and
