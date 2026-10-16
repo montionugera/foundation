@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::{fmt, future};
 
 use connector::kind::{self, Channels, Context, Error};
-use connector::{cancel, pace, poll as polls};
+use connector::{cancel, pace, poll};
 use document::Document;
 use document::diagnostic::{Code, Diagnostic};
 use env::net::{self, tcp};
@@ -80,7 +80,7 @@ impl kind::Kind for Kind {
     async fn run(&self, ctx: Context<Config>) -> Result<(), Error> {
         let config = ctx.config();
         let channels = config.reads.iter().map(|read| read.channel.clone());
-        let mut writer = polls::Writer::open(&ctx, channels.collect()).await?;
+        let mut writer = poll::Writer::open(&ctx, channels.collect()).await?;
         let groups = groups(config, writer.types())?;
         let Some(client) = ctx.cancel().race(connect(&ctx)).await else {
             return Ok(());
