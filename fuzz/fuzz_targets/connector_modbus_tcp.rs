@@ -84,8 +84,8 @@ fuzz_target!(|bytes: &[u8]| {
     };
     let (reads, slots) = tile(table, start, count, scalar);
     let groups = read::groups(&reads, order);
-    let requests: Vec<&Request> = groups.iter().map(Group::request).collect();
-    assert_eq!(requests, [&request], "the reads of one request");
+    let requests: Vec<Request> = groups.iter().map(Group::request).collect();
+    assert_eq!(requests, [request], "the reads of one request");
     let Ok(reply) = reply else {
         return;
     };
