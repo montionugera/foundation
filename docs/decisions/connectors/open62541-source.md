@@ -728,7 +728,11 @@
   after each run of the loop, and ends at once when the channel is not open or the
   session is not active. Lost: the check of open62541, which drops each status
   but `BadTimeout`; a check on each housekeeping run at each rate, which reads at 10 Hz
-  for nothing; and no check, which loses an idle session at its timeout.
+  for nothing; and no check, which loses an idle session at its timeout. Decided by
+  `laptop.architect-2` (2026-10-16T03:46:32Z,
+  https://github.com/synnaxlabs/foundation/pull/2809#issuecomment-6207619278), and the
+  end at once on a lost channel or session (2026-10-16T04:04:38Z,
+  https://github.com/synnaxlabs/foundation/pull/2809#issuecomment-6207818990).
   Its `close` has a grace of 1 s on the `env` clock, a private const. It first waits
   for the answer to a CreateSession in flight. The server refuses a CloseSession sent
   before that answer, since it has no session token, and when the answer then comes,
