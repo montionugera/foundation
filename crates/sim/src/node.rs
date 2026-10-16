@@ -260,15 +260,29 @@ impl Node {
             .fail(self.0.node, path, operation);
     }
 
-    /// Sets whether users other than the owner and the members of the group can read
-    /// the file at `path`, relative to the data directory, at once, as a `chmod` from
-    /// outside the node does. A file that an open makes is not exposed, as on `os`. A
-    /// descriptor keeps what its open found, and a crash keeps the setting.
+    /// Makes every user of the machine able to read the file at `path`, relative to
+    /// the data directory, at once, as a `chmod o+r` from outside the node does. A
+    /// file that an open makes is not exposed, as on `os`. A descriptor keeps what its
+    /// open found, and a crash keeps the setting.
     ///
     /// # Panics
     ///
     /// When `path` is absolute, has a `..` segment, or no file is at `path`.
-    pub fn set_file_exposed(&self, path: &Path, exposed: bool) {
+    pub fn expose_file(&self, path: &Path) {
+        self.set_file_exposed(path, true);
+    }
+
+    /// Makes the file at `path`, relative to the data directory, unreadable by other
+    /// users at once, as a `chmod o-r` from outside the node does.
+    ///
+    /// # Panics
+    ///
+    /// When `path` is absolute, has a `..` segment, or no file is at `path`.
+    pub fn hide_file(&self, path: &Path) {
+        self.set_file_exposed(path, false);
+    }
+
+    fn set_file_exposed(&self, path: &Path, exposed: bool) {
         assert!(path.is_relative(), "{} is absolute", path.display());
         let parent = path.components().any(|part| part == Component::ParentDir);
         assert!(!parent, "{} has a `..` segment", path.display());

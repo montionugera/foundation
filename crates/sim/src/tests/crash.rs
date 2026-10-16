@@ -389,7 +389,7 @@ fn a_power_cut_keeps_whether_a_file_is_exposed() {
     sim.run_on(&node, |node, _| async move {
         create(&node, "a", KIB).await.close().await;
         node.files().sync_dir(Path::new("")).await.unwrap();
-        node.set_file_exposed(Path::new("a"), true);
+        node.expose_file(Path::new("a"));
     })
     .unwrap();
     sim.crash(&node, Crash::Power);

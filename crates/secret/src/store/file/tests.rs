@@ -225,13 +225,13 @@ fn refuses_a_file_that_other_users_can_read_until_its_mode_is_fixed() {
         let store = store(files.clone());
         let path = Path::new("secrets/plant.token");
         put(&files, "secrets/plant.token", b"t").await;
-        node.set_file_exposed(path, true);
+        node.expose_file(path);
         node.fail_file(path, Operation::ReadAt);
         assert_eq!(
             get(&store, "plant.token").await,
             exposed("secrets/plant.token")
         );
-        node.set_file_exposed(path, false);
+        node.hide_file(path);
         let unread = Err(Error::Unavailable {
             detail: "the read_at of the file /data/secrets/plant.token failed with OS \
                      error 5. Check the path and the file"
@@ -251,7 +251,7 @@ fn refuses_an_exposed_file_before_it_checks_the_length() {
     on_sim(|node, files| async move {
         let store = store(files.clone());
         put(&files, "secrets/plant.token", &vec![b't'; (1 << 16) + 1]).await;
-        node.set_file_exposed(Path::new("secrets/plant.token"), true);
+        node.expose_file(Path::new("secrets/plant.token"));
         assert_eq!(
             get(&store, "plant.token").await,
             exposed("secrets/plant.token")

@@ -105,7 +105,7 @@ fn refused() -> (Result<(), Error>, u64) {
         let block = pool.copy(&PLAIN).expect("holds it");
         file.write_at(0, &[block]).await.expect("writes it");
         file.close().await;
-        node.set_file_exposed(path, true);
+        node.expose_file(path);
     });
     put.expect("the run ends");
     ALLOCATOR.freed_holding(&PLAIN, || {
