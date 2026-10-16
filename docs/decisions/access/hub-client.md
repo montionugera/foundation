@@ -84,7 +84,7 @@
   `Reader`, whose `next` gives each frame that the node sends, in order. A read takes no
   turn: it runs beside the requests. A reader holds a clone of its session. It keeps
   the error that ended it and gives it again at each `next`, and the error that ended
-  the renewal replaces it, as for `request`. The key set of a reader is its own:
+  the renewal replaces it, as for `request`. The key set of a reader is of no node:
   `wire::hub::client::Reader` builds it with `KeySet::ordered` at the last place, so
   entry `n` is place `n`, its slots are not the node's, and places that name a channel
   twice give `client::Error::Repeated` (`laptop.architect`, 2026-10-16T03:12:49Z, item
