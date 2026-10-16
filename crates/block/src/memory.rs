@@ -19,9 +19,10 @@ const PAGE: usize = 4096;
 ///
 /// The first [`ALIGN`] bytes are usable from the start. The pool calls
 /// [`commit`](Self::commit) before it uses any other range, first or after a purge,
-/// and [`purge`](Self::purge) when a range is idle. Offsets are from
-/// [`base`](Self::base). A range need not be page-aligned: `commit` rounds it out, and
-/// `purge` rounds it in.
+/// [`purge`](Self::purge) when a range is idle, and [`discard`](Self::discard) for
+/// the payload of a free block that it keeps. Offsets are from [`base`](Self::base). A
+/// range need not be page-aligned: `commit` rounds it out, and `purge` and `discard`
+/// round it in.
 ///
 /// # Safety
 ///
@@ -31,7 +32,8 @@ const PAGE: usize = 4096;
 ///   first call.
 /// - When `commit` returns `Ok`, each byte in its range is readable, writable, and
 ///   initialized. It stays so until a `purge` of that byte or the drop.
-/// - A `purge` may change the bytes in its range. It changes no other byte.
+/// - A `purge` or a `discard` may change the bytes in its range. It changes no other
+///   byte.
 #[expect(
     clippy::len_without_is_empty,
     reason = "a reserved range is never empty"
@@ -55,10 +57,15 @@ pub unsafe trait Memory: Send {
     /// Those pages then stop counting against the memory the system can commit.
     fn purge(&self, offset: usize, len: usize);
 
+    /// Gives back the memory of the pages that lie fully in `len` bytes at `offset`,
+    /// and keeps them committed: they stay readable and writable, with contents that
+    /// are not known. It changes no protection, so it splits no mapping. The system
+    /// can keep their commit charge.
+    fn discard(&self, offset: usize, len: usize);
+
     /// The bytes of one page: a power of two of at least [`ALIGN`]. Pages start at
-    /// multiples of it from [`base`](Self::base). [`purge`](Self::purge) gives back
-    /// at least the whole pages in its range, and the pool credits its budget by
-    /// them.
+    /// multiples of it from [`base`](Self::base). The pool counts the whole pages in
+    /// a range it discards as given back, and credits its budget by them.
     fn page(&self) -> usize;
 }
 
@@ -117,7 +124,7 @@ impl Heap {
 unsafe impl Send for Heap {}
 
 // SAFETY: the allocation is zeroed, so each byte is initialized from the start. It
-// stays at one address until the drop, and `purge` changes nothing.
+// stays at one address until the drop, and `purge` and `discard` change nothing.
 unsafe impl Memory for Heap {
     fn base(&self) -> NonNull<u8> {
         self.base
@@ -132,6 +139,8 @@ unsafe impl Memory for Heap {
     }
 
     fn purge(&self, _offset: usize, _len: usize) {}
+
+    fn discard(&self, _offset: usize, _len: usize) {}
 
     fn page(&self) -> usize {
         PAGE
@@ -176,7 +185,7 @@ impl Erased {
 }
 
 // SAFETY: `base` and `len` are those of `heap`, whose bytes are usable from the start,
-// and `commit` and `purge` change no byte.
+// and `commit`, `purge`, and `discard` change no byte.
 unsafe impl Memory for Erased {
     fn base(&self) -> NonNull<u8> {
         self.heap.base()
@@ -204,6 +213,8 @@ unsafe impl Memory for Erased {
     }
 
     fn purge(&self, _offset: usize, _len: usize) {}
+
+    fn discard(&self, _offset: usize, _len: usize) {}
 
     fn page(&self) -> usize {
         self.heap.page()

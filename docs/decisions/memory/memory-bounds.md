@@ -17,12 +17,19 @@
   free blocks of the other sizes, and credits the budget by the whole pages of each
   payload. It gives back no page unless all of these together cover the allocation.
   Each such block keeps its header and the partial pages at the ends of its payload,
-  with their budget, and an allocation of its size commits its payload again before
-  it carves a new block. A free block whose payload holds no whole page keeps its
-  budget, so a waiter of another size can wait until the last block of that size
-  frees. Decided
-  by `laptop.architect` (2026-10-16T17:05:20Z):
-  https://github.com/synnaxlabs/foundation/issues/2810#issuecomment-6220640348. The
+  with their budget. It gives back its pages with a discard, which keeps their
+  protection and their commit charge, so it splits no mapping. An allocation of its
+  size takes back its budget before it carves a new block, and makes no commit, so that
+  step cannot fail. Under strict overcommit (`vm.overcommit_memory=2`), the charge of
+  such a block stays until its size goes idle, and a carve past the limit of the system
+  then gets `Error::Refused`. With the default overcommit, its pages leave the resident
+  set at once. A free block whose payload holds no whole page keeps its budget, so a
+  waiter of another size can wait until the last block of that size frees. Decided by
+  `laptop.architect` (2026-10-16T17:05:20Z):
+  https://github.com/synnaxlabs/foundation/issues/2810#issuecomment-6220640348; the
+  discard by `laptop.architect` (2026-10-16T19:37:29Z), after the objection of
+  `laptop.monitor` to a cap on such blocks:
+  https://github.com/synnaxlabs/foundation/pull/2907#issuecomment-6223259062. The
   rest of design P, the headers in a table and the pages of blocks with no whole page,
   waits on #291, before the exit of ONE NODE. When the system refuses to
   commit pages, the pool gives back one idle size at a time, in the order a purge for

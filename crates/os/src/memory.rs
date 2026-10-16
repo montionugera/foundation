@@ -19,7 +19,8 @@ const RESERVED: ProtFlags = ProtFlags::empty();
 
 /// Address space from the OS for one block pool. A reserved page takes no memory and
 /// no commit charge. A commit makes pages readable and writable, and the OS charges
-/// them. A purge gives pages and their charge back at once.
+/// them. A purge gives pages and their charge back at once. A discard gives back the
+/// memory of pages and keeps them readable, writable, and charged.
 pub struct Memory {
     base: NonNull<u8>,
     len: usize,
@@ -120,7 +121,7 @@ impl fmt::Debug for Memory {
 // SAFETY: the mapping stays at `base` for `len` bytes until the drop. `new` commits
 // the first page. A commit makes each page it touches readable and writable, and a
 // page reads zero until its first write. Only a purge, of whole pages inside its
-// range, makes pages unusable again.
+// range, makes pages unusable again. A discard keeps the protection of its pages.
 unsafe impl block::Memory for Memory {
     fn base(&self) -> NonNull<u8> {
         self.base
@@ -172,6 +173,29 @@ unsafe impl block::Memory for Memory {
         }
         #[cfg(target_os = "linux")]
         no_huge_pages(at, len);
+    }
+
+    /// # Panics
+    ///
+    /// If the range ends past the reserve, or the OS fails the advice.
+    fn discard(&self, offset: usize, len: usize) {
+        let end = self.end("discard", offset, len);
+        let pages = offset.div_ceil(self.page)..end / self.page;
+        if pages.is_empty() {
+            return;
+        }
+        let len = pages.len() * self.page;
+        // On Linux the pages read zero after it. Huge pages stay off: a change of that
+        // advice on part of the reserve splits its mapping.
+        #[cfg(target_os = "linux")]
+        let advice = mm::Advice::LinuxDontNeed;
+        #[cfg(not(target_os = "linux"))]
+        let advice = mm::Advice::DontNeed;
+        // SAFETY: the pages are in this mapping, and the `block::Memory` contract lets
+        // a discard change the bytes in its range.
+        if let Err(errno) = unsafe { mm::madvise(self.at(pages.start), len, advice) } {
+            panic!("discard of {len} bytes failed: {errno}");
+        }
     }
 
     fn page(&self) -> usize {
@@ -313,6 +337,28 @@ mod tests {
         panic!("no mapping holds the address");
     }
 
+    /// The addresses of `memory`.
+    fn reserve(memory: &Memory) -> Range<usize> {
+        let start = memory.base().as_ptr().addr();
+        start..start + memory.len()
+    }
+
+    /// How many mappings of `/proc/self/maps` hold a byte of `reserve`.
+    #[cfg(target_os = "linux")]
+    fn mappings(reserve: &Range<usize>) -> usize {
+        let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+        maps.lines()
+            .filter_map(|line| {
+                let (range, _) = line.split_once(' ')?;
+                let (from, to) = range.split_once('-')?;
+                let from = usize::from_str_radix(from, 16).ok()?;
+                let to = usize::from_str_radix(to, 16).ok()?;
+                Some(from..to)
+            })
+            .filter(|range| range.start < reserve.end && reserve.start < range.end)
+            .count()
+    }
+
     /// The bytes of `range` of `memory`.
     ///
     /// # Safety
@@ -419,6 +465,74 @@ mod tests {
     }
 
     #[test]
+    fn a_discard_gives_back_each_page_fully_inside_its_range_and_keeps_it_usable() {
+        let page = page_size();
+        let mut memory = Memory::new(4 * page).unwrap();
+        memory.commit(0, 4 * page).unwrap();
+        // SAFETY: the range is committed.
+        unsafe { bytes(&mut memory, 0..4 * page) }.fill(1);
+        memory.discard(page / 2, 3 * page);
+        assert_eq!(resident(memory.base(), 0..4), [true, false, false, true]);
+        assert_eq!(readable(&memory, 0..4), [true; 4]);
+        for kept in [0..page, 3 * page..4 * page] {
+            // SAFETY: a discard keeps its pages usable.
+            let kept = unsafe { bytes(&mut memory, kept) };
+            assert!(kept.iter().all(|&byte| byte == 1));
+        }
+        // SAFETY: as above.
+        let discarded = unsafe { bytes(&mut memory, page..3 * page) };
+        #[cfg(target_os = "linux")]
+        assert!(discarded.iter().all(|&byte| byte == 0));
+        discarded.fill(2);
+        assert!(discarded.iter().all(|&byte| byte == 2));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_discard_between_committed_pages_splits_no_mapping() {
+        let page = page_size();
+        let memory = Memory::new(8 * page).unwrap();
+        memory.commit(0, 8 * page).unwrap();
+        let reserve = reserve(&memory);
+        assert_eq!(mappings(&reserve), 1);
+        memory.discard(page, page);
+        memory.discard(3 * page, 2 * page);
+        assert_eq!(mappings(&reserve), 1);
+        memory.purge(6 * page, page);
+        assert_eq!(mappings(&reserve), 3, "a purge splits the mapping");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_pool_that_gives_the_pages_of_free_blocks_to_another_size_splits_no_mapping() {
+        const SMALL: usize = 8192;
+        const LARGE: usize = 1 << 20;
+        let count = 4 * LARGE / SMALL;
+        let budget = (count + 1) * block::footprint(SMALL) + block::footprint(LARGE);
+        let config = Config::new(u64::try_from(budget).unwrap()).unwrap();
+        let memory = Memory::new(config.reservation()).unwrap();
+        let reserve = reserve(&memory);
+        let pool = Pool::new(config, memory);
+        let mut small: Vec<_> =
+            (0..=count).map(|_| pool.alloc(SMALL).unwrap()).collect();
+        let held = small.pop();
+        drop(small);
+        let first = pool.alloc(LARGE).unwrap();
+        let before = mappings(&reserve);
+        let mut large = vec![first];
+        let error = loop {
+            match pool.alloc(LARGE) {
+                Ok(block) => large.push(block),
+                Err(error) => break error,
+            }
+        };
+        assert!(matches!(error, block::Error::Exhausted { .. }), "{error}");
+        assert_eq!(large.len(), 3, "two take the pages of free blocks");
+        assert_eq!(mappings(&reserve), before);
+        drop((held, large));
+    }
+
+    #[test]
     fn a_pool_purge_gives_back_the_pages_of_an_idle_block() {
         let page = page_size();
         let config = Config::new(1 << 20).expect("the budget fits");
@@ -434,6 +548,12 @@ mod tests {
         pool.purge();
         assert_eq!(pool.purge(), block::footprint(1 << 19));
         assert_eq!(resident(base, pages.clone()), vec![false; pages.len()]);
+    }
+
+    #[test]
+    #[should_panic(expected = "discard of 1 bytes at 100 ends past 100 bytes")]
+    fn a_discard_past_the_end_panics() {
+        Memory::new(100).unwrap().discard(100, 1);
     }
 
     #[test]

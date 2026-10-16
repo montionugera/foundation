@@ -11,7 +11,9 @@
   bytes of a `Memory` are usable from the start: they hold the pool's header, so
   `Pool::new` makes no commit that can fail. A purged page stops counting against the
   memory the system can commit. On Linux with strict overcommit, `madvise` and
-  `mprotect` keep that charge, so `os` purges with a `MAP_FIXED` remap (#475).
+  `mprotect` keep that charge, so `os` purges with a `MAP_FIXED` remap (#475). A
+  discard gives back the memory of pages and keeps their protection and their commit
+  charge, so a free block between blocks in use splits no mapping (#2907).
   `os::memory::Memory` reserves `PROT_NONE` pages, which take no charge, and commits
   with `mprotect`; `ENOMEM` gives `Refused`, and a refused commit can leave part of its
   range committed and charged until a purge or the drop. A failed purge remap panics,

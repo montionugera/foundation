@@ -37,8 +37,8 @@ impl Scarce {
 }
 
 // SAFETY: each method is the one of `Heap`, or a `commit` that refuses and changes
-// no byte. A purge gives back each unit of `ALIGN` bytes in its range, so it gives
-// back each whole page.
+// no byte. A purge or a discard gives back each unit of `ALIGN` bytes in its range,
+// so it gives back each whole page. A discard keeps the charge of its range.
 unsafe impl Memory for Scarce {
     fn base(&self) -> NonNull<u8> {
         self.heap.base()
@@ -58,6 +58,10 @@ unsafe impl Memory for Scarce {
     fn purge(&self, offset: usize, len: usize) {
         self.system.discharge(offset, len);
         self.heap.purge(offset, len);
+    }
+
+    fn discard(&self, offset: usize, len: usize) {
+        self.heap.discard(offset, len);
     }
 
     fn page(&self) -> usize {
