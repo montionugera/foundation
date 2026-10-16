@@ -5,6 +5,8 @@
 //! - `stopped`: the event `stopped`, with no field.
 //! - `filtered`: a `debug` event under the level `info`, as noq-proto writes for each
 //!   packet.
+//! - `undispatched`: the control, the same event with no dispatch, as before a node
+//!   had a log.
 //! - `span`: a `trace` span entered and dropped under the level `trace`.
 //! - `build`: the build of the dispatch, once for each node.
 //!
@@ -101,4 +103,9 @@ fn build(bencher: Bencher<'_, '_>) {
         .bench_local_values(|(wall, reader)| {
             node::bench::log(log(false, Level::INFO), wall, reader)
         });
+}
+
+#[divan::bench]
+fn undispatched(bencher: Bencher<'_, '_>) {
+    bencher.bench_local(filtered);
 }
