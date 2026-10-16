@@ -32,7 +32,7 @@ pub use error::Failure;
 pub use front_end::{FrontEnd, FrontEnds};
 pub use node::{Config, Node};
 use operation::Parsed;
-use remote::Link;
+use remote::{Link, Scope};
 pub use serve::serve;
 pub use start::{Log, Start};
 
@@ -66,13 +66,13 @@ pub enum Run {
 /// `reach` again at the next call after what it gave fails with a [`Failure`]. `start`
 /// and the other operations call neither.
 ///
+/// `foundation mcp` first makes its data directory when it is not there, and its
+/// tools then read and write only under each `--files` folder, else under the working
+/// directory, and never in the data directory. With no `--files` and a working
+/// directory of `/` or the home folder, it serves nothing and gives status 2.
+///
 /// Blocks its thread at each read or write of a path, each read of `input`, and each
 /// write of `output` or `errors`, and makes none while a request to the node waits.
-///
-/// # Panics
-///
-/// When `paths` has a limit from [`env::paths::Paths::within`] and a path is outside
-/// it.
 pub async fn cli<C>(
     args: impl IntoIterator<Item = OsString>,
     input: impl BufRead,
@@ -91,7 +91,7 @@ where
         Ok(Parsed::Start(start)) => return Run::Start(start),
         Ok(Parsed::Run { request, data }) => {
             let mut link = Link::new(async || reach(&data).await);
-            match request.run(paths, &mut link).await {
+            match request.run(&Scope::free(paths), &mut link).await {
                 Ok(response) => write(
                     &mut output,
                     &render(json, &response.json(), || response.text()),
@@ -103,10 +103,13 @@ where
             &mut output,
             &render(json, &json!({ "help": text }), || text.clone()),
         ),
-        Ok(Parsed::Mcp { data }) => {
-            let mut link = Link::new(async || reach(&data).await);
-            mcp::serve(input, &mut output, paths, &mut link).await
-        }
+        Ok(Parsed::Mcp { data, files }) => match Scope::mcp(paths, &files, &data) {
+            Ok(scope) => {
+                let mut link = Link::new(async || reach(&data).await);
+                mcp::serve(input, &mut output, &scope, &mut link).await
+            }
+            Err(error) => Err(Stop::Failed(error)),
+        },
         Err(error) => Err(Stop::Failed(error)),
     };
     match done {

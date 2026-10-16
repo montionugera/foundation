@@ -2,7 +2,6 @@ use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use env::paths::Paths;
 
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
@@ -14,7 +13,7 @@ use types::name::Name;
 
 use crate::apply::Applied;
 use crate::error::{Among, Error};
-use crate::remote::{self, Link};
+use crate::remote::{self, Link, Scope};
 use crate::{Failure, Log, Start, plan, status};
 
 /// The data directory of a command that names none.
@@ -90,8 +89,9 @@ enum Command {
     Status(NodeArgs),
     /// Answer MCP messages on standard input, one JSON-RPC message per line, until it
     /// closes. Each tool call of `plan`, `apply`, and `status` runs on the node of
-    /// `--data`.
-    Mcp(NodeArgs),
+    /// `--data`, and reads and writes only under the folders of `--files`, never in
+    /// the data directory.
+    Mcp(McpArgs),
     /// Print this help, or the help of one command.
     Help { command: Option<String> },
 }
@@ -161,6 +161,17 @@ struct PlanArgs {
 struct ApplyArgs {
     #[command(flatten)]
     input: Apply,
+    #[command(flatten)]
+    node: NodeArgs,
+}
+
+#[derive(clap::Args)]
+struct McpArgs {
+    /// A folder that the tools may read and write, with each folder under it. Give it
+    /// once for each folder. The default is the working directory, unless it is `/`
+    /// or the home folder.
+    #[arg(long, value_name = "DIR")]
+    files: Vec<PathBuf>,
     #[command(flatten)]
     node: NodeArgs,
 }
@@ -255,9 +266,11 @@ pub(crate) enum Parsed {
     },
     Start(Start),
     Help(String),
-    /// Serve MCP, with each tool call on the node of `data`.
+    /// Serve MCP, with each tool call on the node of `data`, and its files under the
+    /// folders `files`, else the working directory.
     Mcp {
         data: PathBuf,
+        files: Vec<PathBuf>,
     },
 }
 
@@ -305,7 +318,10 @@ pub(crate) fn parse(args: &[OsString], json: bool) -> Result<Parsed, Error> {
         Command::Plan(PlanArgs { input, node }) => Ok(on(Request::Plan(input), node)),
         Command::Apply(ApplyArgs { input, node }) => Ok(on(Request::Apply(input), node)),
         Command::Status(node) => Ok(on(Request::Status(Empty {}), node)),
-        Command::Mcp(NodeArgs { data }) => Ok(Parsed::Mcp { data }),
+        Command::Mcp(McpArgs {
+            files,
+            node: NodeArgs { data },
+        }) => Ok(Parsed::Mcp { data, files }),
         Command::Help { command } => help(command.as_deref()),
     }
 }
@@ -463,7 +479,7 @@ impl Request {
     /// Each error of [`remote::plan`], [`remote::apply`], and [`remote::status`].
     pub(crate) async fn run<R, C>(
         self,
-        paths: &Paths,
+        scope: &Scope,
         link: &mut Link<R, C>,
     ) -> Result<Response, Error>
     where
@@ -477,10 +493,10 @@ impl Request {
             }),
             Self::Docs(Empty {}) => Response::Docs(Reference { markdown: docs() }),
             Self::Plan(Plan { files, out }) => {
-                Response::Plan(remote::plan(&files, out.as_deref(), paths, link).await?)
+                Response::Plan(remote::plan(&files, out.as_deref(), scope, link).await?)
             }
             Self::Apply(Apply { plan }) => {
-                Response::Apply(remote::apply(&plan, paths, link).await?)
+                Response::Apply(remote::apply(&plan, scope, link).await?)
             }
             Self::Status(Empty {}) => Response::Status(remote::status(link).await?),
         })

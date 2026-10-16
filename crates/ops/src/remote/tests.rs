@@ -1,11 +1,14 @@
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
+use std::pin::pin;
+use std::task::{Context, Poll, Waker};
 
 use document::diagnostic::Code;
 use env::paths::{self, Found, Paths};
 use serde_json::{Value, json};
 
-use super::{Link, apply, most, plan, status};
+use super::{Link, Scope, apply, most, plan, status};
+use super::Limits;
 use crate::apply::Applied;
 use crate::common::{self, create_node, name, placed_site, solo};
 use crate::error::{Error, Problem, Unread};
@@ -25,12 +28,17 @@ fn lost() -> Failure {
 
 /// The paths of a host with `site.hcl`, which [`placed_site`] gives.
 fn with_site(host: &sim::node::Node) -> Paths {
+    host.make_dir(Path::new(WORK));
+    host.set_working_dir(Path::new(WORK));
     let paths = host.paths();
     paths
         .write(Path::new("site.hcl"), placed_site().as_bytes())
         .expect("a write");
     paths
 }
+
+/// The working directory of the host of [`with_site`].
+const WORK: &str = "/work";
 
 /// What a `reach` of [`Remote`] does.
 enum Mode {
@@ -97,7 +105,7 @@ impl Remote {
             self.reached()?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
-        plan(files, out, paths, &mut Link::new(reach)).await
+        plan(files, out, &Scope::free(paths), &mut Link::new(reach)).await
     }
 
     async fn apply(&self, paths: &Paths, file: &Path) -> Result<Applied, Error> {
@@ -105,7 +113,7 @@ impl Remote {
             self.reached()?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
-        apply(file, paths, &mut Link::new(reach)).await
+        apply(file, &Scope::free(paths), &mut Link::new(reach)).await
     }
 
     async fn status(&self) -> Result<crate::status::Output, Error> {
@@ -815,4 +823,182 @@ fn mcp_keeps_the_session_after_a_reply_with_problems() {
         assert_eq!(replies[0]["result"], replies[1]["result"]);
         assert_eq!(remote.calls(), (1, 2));
     });
+}
+
+/// The limits of `foundation mcp` with no `--files` on the host of [`with_site`].
+fn work() -> Limits {
+    Limits {
+        folders: vec![PathBuf::from(WORK)],
+        data: PathBuf::from("/work/foundation-data"),
+        working: PathBuf::from(WORK),
+    }
+}
+
+/// A tool of `foundation mcp` reaches no file outside its folders or in its data
+/// directory, also through a link, and the first such call reaches no node.
+#[test]
+fn mcp_refuses_each_path_outside_its_folders() {
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        fixture.sim.make_dir(Path::new("/out"));
+        paths.write(Path::new("/out/x.hcl"), b"").expect("a write");
+        fixture.sim.link_path(Path::new("/work/link"), Path::new("/out"));
+        let remote = Remote::new(create_node(&fixture, mesh));
+        let messages = [
+            call(1, "plan", json!({ "files": ["../out/x.hcl"] })),
+            call(2, "plan", json!({ "files": ["/out/x.hcl"] })),
+            call(3, "plan", json!({ "files": ["link/x.hcl"] })),
+            call(4, "apply", json!({ "plan": "foundation-data/admin.key" })),
+        ];
+        let (run, replies) = remote.mcp(&paths, &[], &messages).await;
+        assert_eq!(run, Run::Exit(0));
+        let outside = |path: &str| Error::Outside {
+            path: PathBuf::from(path),
+            limits: Some(work()),
+        };
+        let paths = ["../out/x.hcl", "/out/x.hcl", "link/x.hcl", "foundation-data/admin.key"];
+        let results: Vec<_> = replies.iter().map(|r| r["result"].clone()).collect();
+        let errors: Vec<_> = paths.iter().map(|path| failed(&outside(path))).collect();
+        assert_eq!(results, errors);
+        assert_eq!(
+            shown(&outside("/out/x.hcl")),
+            (
+                "ops.outside".to_owned(),
+                "`/out/x.hcl` is not under a folder of this MCP server (/work), or is in \
+                 its data directory /work/foundation-data. A relative path starts at the \
+                 working directory /work"
+                    .to_owned(),
+                2
+            )
+        );
+        assert_eq!(remote.calls(), (0, 0));
+    });
+}
+
+/// An `out` of `foundation mcp` that does not resolve to a name that ends in `.plan`
+/// is refused before a read, and one that leads out is not written.
+#[test]
+fn mcp_writes_a_plan_file_only_under_its_folders_and_with_its_end() {
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        fixture.sim.make_dir(Path::new("/out"));
+        paths.write(Path::new("/out/key"), b"key").expect("a write");
+        paths.write(Path::new("/out/x.plan"), b"plan").expect("a write");
+        fixture.sim.link_path(Path::new("/work/key.plan"), Path::new("/out/key"));
+        fixture.sim.link_path(Path::new("/work/x.plan"), Path::new("/out/x.plan"));
+        let remote = Remote::new(create_node(&fixture, mesh));
+        let plan = |id, out| call(id, "plan", json!({ "files": ["gone.hcl"], "out": out }));
+        let messages = [plan(1, "site.txt"), plan(2, "key.plan")];
+        let (_, replies) = remote.mcp(&paths, &[], &messages).await;
+        let name = |path: &str, resolved: &str| Error::PlanName {
+            path: PathBuf::from(path),
+            resolved: PathBuf::from(resolved),
+        };
+        assert_eq!(replies[0]["result"], failed(&name("site.txt", "/work/site.txt")));
+        assert_eq!(replies[1]["result"], failed(&name("key.plan", "/out/key")));
+        assert_eq!(
+            shown(&name("key.plan", "/out/key")),
+            (
+                "ops.plan-name".to_owned(),
+                "the plan file `key.plan` resolves to /out/key, which does not end in \
+                 `.plan`"
+                    .to_owned(),
+                2
+            )
+        );
+        assert_eq!(remote.calls(), (0, 0));
+        let out = call(3, "plan", json!({ "files": ["site.hcl"], "out": "x.plan" }));
+        let (_, replies) = remote.mcp(&paths, &[], &[out]).await;
+        let outside = Error::Outside {
+            path: PathBuf::from("x.plan"),
+            limits: Some(work()),
+        };
+        assert_eq!(replies[0]["result"], failed(&outside));
+        let read = paths.read(Path::new("/out/x.plan"), 16).expect("a read");
+        assert_eq!(read, Found::File(b"plan".to_vec()));
+    });
+}
+
+/// The run of `foundation mcp <args>` that ends at its start, on a host whose working
+/// directory is `working`, with the home `home`: its status and standard error. With
+/// one ping on its input, a start that serves gives its pong.
+fn start(working: &str, home: &str, args: &[&str]) -> (Run, String, String) {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = sim.node(sim::node::Config::default());
+    host.make_dir(Path::new(working));
+    host.set_working_dir(Path::new(working));
+    host.set_home(Path::new(home));
+    let request = async |_: &[u8]| -> Result<Vec<u8>, Failure> {
+        panic!("a start sent a request")
+    };
+    let reach = async |_: &Path| Ok(request);
+    let args = ["foundation", "mcp"].iter().chain(args).map(Into::into);
+    let ping = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n";
+    let (mut output, mut errors) = (Vec::new(), Vec::new());
+    let cli = crate::cli(args, ping.as_bytes(), &mut output, &mut errors, &host.paths(), reach);
+    let Poll::Ready(run) = pin!(cli).poll(&mut Context::from_waker(Waker::noop())) else {
+        panic!("a start waited");
+    };
+    let text = |bytes| String::from_utf8(bytes).expect("UTF-8");
+    (run, text(output), text(errors))
+}
+
+/// `foundation mcp` with no `--files` refuses a working directory of `/` or the home
+/// folder, serves there with `--files`, and refuses a folder that is not there.
+#[test]
+fn mcp_starts_only_on_a_folder_that_is_not_too_wide() {
+    let wide = |working: &str| Error::WideFolder {
+        working: PathBuf::from(working),
+    };
+    assert_eq!(start("/", "/home", &[]), (Run::Exit(2), String::new(), wide("/").text()));
+    let home = start("/home", "/home", &["--data", "/home/d"]);
+    assert_eq!(home, (Run::Exit(2), String::new(), wide("/home").text()));
+    assert_eq!(
+        shown(&wide("/home")),
+        (
+            "ops.wide-folder".to_owned(),
+            "the working directory /home is the root or the home folder, which is too \
+             wide for the tools of an MCP server"
+                .to_owned(),
+            2
+        )
+    );
+    let pong = "{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{}}\n".to_owned();
+    let served = start("/home", "/home", &["--files", "/home/plant"]);
+    assert_eq!(served.0, Run::Exit(2));
+    let folder = Error::Folder {
+        path: PathBuf::from("/home/plant"),
+        error: env::paths::Error::NotFound,
+    };
+    assert_eq!(served.2, folder.text());
+    assert_eq!(
+        shown(&folder),
+        (
+            "ops.folder".to_owned(),
+            "the folder `/home/plant` is not there".to_owned(),
+            2
+        )
+    );
+    let served = start("/home", "/home", &["--files", "."]);
+    assert_eq!(served, (Run::Exit(0), pong, String::new()));
+}
+
+/// `foundation mcp` makes its data directory, and refuses one whose directory above
+/// is not there.
+#[test]
+fn mcp_makes_its_data_directory() {
+    let unmade = Error::Data {
+        path: PathBuf::from("gone/data"),
+        error: env::paths::Error::NotFound,
+    };
+    let (run, _, errors) = start("/work", "/home", &["--data", "gone/data"]);
+    assert_eq!((run, errors), (Run::Exit(1), unmade.text()));
+    assert_eq!(
+        shown(&unmade),
+        (
+            "ops.data".to_owned(),
+            "the directory above the data directory `gone/data` is not there".to_owned(),
+            1
+        )
+    );
 }

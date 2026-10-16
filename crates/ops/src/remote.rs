@@ -15,6 +15,96 @@ use crate::{serve, status};
 #[cfg(test)]
 mod tests;
 
+/// The files that a run reaches: each one for a command line, and for `foundation mcp`
+/// only those under its folders, with its data directory hidden.
+pub(crate) struct Scope {
+    paths: Paths,
+    limits: Option<Limits>,
+}
+
+/// The resolved folders of `foundation mcp`, its resolved data directory, and the
+/// resolved working directory, where a relative path starts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Limits {
+    pub(crate) folders: Vec<PathBuf>,
+    pub(crate) data: PathBuf,
+    pub(crate) working: PathBuf,
+}
+
+impl Scope {
+    /// Each file of `paths`, for a command line.
+    pub(crate) fn free(paths: &Paths) -> Self {
+        Self {
+            paths: paths.clone(),
+            limits: None,
+        }
+    }
+
+    /// The files of `foundation mcp` in `paths`: those under the folders `files`, else
+    /// under the working directory, and none under the data directory `data`, which it
+    /// makes when it is not there.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Data`] when `data` is not made, or does not resolve.
+    /// - [`Error::Folder`] for the first folder that does not resolve.
+    /// - [`Error::WideFolder`] with no `files`, when the working directory is `/` or
+    ///   the home folder.
+    pub(crate) fn mcp(paths: &Paths, files: &[PathBuf], data: &Path) -> Result<Self, Error> {
+        let unmade = |error| Error::Data {
+            path: data.to_owned(),
+            error,
+        };
+        paths.make_dir(data).map_err(unmade)?;
+        let resolve = |path: &Path| {
+            paths.resolve(path).map_err(|error| Error::Folder {
+                path: path.to_owned(),
+                error,
+            })
+        };
+        let working = resolve(Path::new("."))?;
+        let folders = if files.is_empty() {
+            if working.parent().is_none() || paths.home().as_ref() == Some(&working) {
+                return Err(Error::WideFolder { working });
+            }
+            vec![working.clone()]
+        } else {
+            files.iter().map(|file| resolve(file)).collect::<Result<_, _>>()?
+        };
+        let data = paths.resolve(data).map_err(unmade)?;
+        let within = paths
+            .within(&folders, std::slice::from_ref(&data))
+            .map_err(unmade)?;
+        Ok(Self {
+            paths: within,
+            limits: Some(Limits {
+                folders,
+                data,
+                working,
+            }),
+        })
+    }
+
+    /// The error of a call at `path` that its limits refused.
+    fn outside(&self, path: &Path) -> Error {
+        Error::Outside {
+            path: path.to_owned(),
+            limits: self.limits.clone(),
+        }
+    }
+
+    /// The error of a resolve or a write of the plan file `out` that failed.
+    fn unwritten(&self, out: &Path, error: paths::Error) -> Error {
+        match error {
+            paths::Error::Outside => self.outside(out),
+            error => Error::Write {
+                path: out.to_owned(),
+                error,
+            },
+        }
+    }
+}
+
 /// The link to one node: what reaches it, and the session that the last reach gave.
 pub(crate) struct Link<R, C> {
     reach: R,
@@ -50,7 +140,7 @@ where
 }
 
 /// Plans on the node of `link` the change from the config files at `files`, read
-/// through `paths`, and writes the plan file to `out` when it is given.
+/// through `scope`, and writes the plan file to `out` when it is given.
 ///
 /// # Errors
 ///
@@ -60,10 +150,13 @@ where
 /// - [`Error::Node`] with the failure of the reach or of the request.
 /// - Each error of [`serve::plan_reply`].
 /// - [`Error::Write`] when the write of `out` fails.
+/// - [`Error::Outside`] for the first path past the limits of `scope`.
+/// - [`Error::PlanName`] when `scope` has limits and `out` does not resolve to a name
+///   that ends in `.plan`, before it reads a file.
 pub(crate) async fn plan<R, C>(
     files: &[PathBuf],
     out: Option<&Path>,
-    paths: &Paths,
+    scope: &Scope,
     link: &mut Link<R, C>,
 ) -> Result<Output, Error>
 where
@@ -78,10 +171,22 @@ where
     if !not_utf8.is_empty() {
         return Err(Error::config(not_utf8, &error::Sources::default()));
     }
+    if let (Some(out), Some(_)) = (out, &scope.limits) {
+        let resolved = scope
+            .paths
+            .resolve(out)
+            .map_err(|error| scope.unwritten(out, error))?;
+        if resolved.extension() != Some("plan".as_ref()) {
+            return Err(Error::PlanName {
+                path: out.to_owned(),
+                resolved,
+            });
+        }
+    }
     let mut total = 0;
     let mut read = Vec::with_capacity(files.len());
     for path in files {
-        let bytes = file(paths, path)?;
+        let bytes = file(scope, path)?;
         total += bytes.len();
         if total > most() {
             return Err(Error::LargeRequest);
@@ -98,26 +203,27 @@ where
     let reply = request(&serve::plan_request(&read)?, link).await?;
     let (output, plan) = serve::plan_reply(&reply)?;
     if let Some(out) = out {
-        paths.write(out, plan).map_err(|error| Error::Write {
-            path: out.to_owned(),
-            error,
-        })?;
+        scope
+            .paths
+            .write(out, plan)
+            .map_err(|error| scope.unwritten(out, error))?;
     }
     Ok(output)
 }
 
-/// Applies on the node of `link` the plan file at `plan`, read through `paths`.
+/// Applies on the node of `link` the plan file at `plan`, read through `scope`.
 ///
 /// # Errors
 ///
 /// - [`Error::Config`] with `ops.path-not-utf8` when `plan` is not UTF-8.
 /// - [`Error::Read`] when the plan file does not read.
+/// - [`Error::Outside`] when `plan` is past the limits of `scope`.
 /// - [`Error::LargeRequest`] when the plan file does not fit one request.
 /// - [`Error::Node`] with the failure of the reach or of the request.
 /// - Each error of [`serve::reply`].
 pub(crate) async fn apply<R, C>(
     plan: &Path,
-    paths: &Paths,
+    scope: &Scope,
     link: &mut Link<R, C>,
 ) -> Result<Applied, Error>
 where
@@ -128,7 +234,7 @@ where
         let not_utf8 = vec![front_end::not_utf8(plan)];
         return Err(Error::config(not_utf8, &error::Sources::default()));
     };
-    let bytes = file(paths, plan)?;
+    let bytes = file(scope, plan)?;
     let reply = request(&serve::apply_request(&bytes)?, link).await?;
     let effect = serve::reply(&reply, "apply")?;
     Ok(Applied {
@@ -159,20 +265,18 @@ fn most() -> usize {
 }
 
 /// The bytes of the file at `path`, of at most the bytes of one request.
-fn file(paths: &Paths, path: &Path) -> Result<Vec<u8>, Error> {
+fn file(scope: &Scope, path: &Path) -> Result<Vec<u8>, Error> {
     let unread = |cause| Error::Read {
         path: path.to_owned(),
         cause,
     };
-    match paths.read(path, most()) {
+    match scope.paths.read(path, most()) {
         Ok(Found::File(bytes)) => Ok(bytes),
         Ok(Found::Large) => Err(Error::LargeRequest),
         Ok(Found::Directory(_)) => Err(unread(Unread::Directory)),
         Err(paths::Error::NotFound) => Err(unread(Unread::NotFound)),
         Err(paths::Error::Io { code }) => Err(unread(Unread::Io { code })),
-        Err(paths::Error::Outside) => {
-            unreachable!("invariant: the command line reads with no limit")
-        }
+        Err(paths::Error::Outside) => Err(scope.outside(path)),
     }
 }
 

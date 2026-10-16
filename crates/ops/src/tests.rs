@@ -34,7 +34,10 @@ fn offline(
     errors: impl io::Write,
 ) -> crate::Run {
     let mut sim = sim::Sim::new(sim::Config::default());
-    let paths = sim.node(sim::node::Config::default()).paths();
+    let host = sim.node(sim::node::Config::default());
+    host.make_dir(Path::new("/work"));
+    host.set_working_dir(Path::new("/work"));
+    let paths = host.paths();
     let request = async |_: &[u8]| -> Result<Vec<u8>, crate::Failure> {
         panic!("a command sent a request")
     };
@@ -92,7 +95,8 @@ fn respond(message: &str) -> Option<String> {
         reached.set(reached.get() + 1);
         Ok(request)
     });
-    let respond = crate::mcp::respond(message, &paths, &mut link);
+    let scope = crate::remote::Scope::free(&paths);
+    let respond = crate::mcp::respond(message, &scope, &mut link);
     let Poll::Ready(reply) = pin!(respond).poll(&mut Context::from_waker(Waker::noop()))
     else {
         panic!("a message waited");
@@ -611,6 +615,25 @@ fn every() -> Vec<Error> {
         Error::Reply {
             message: String::new(),
         },
+        Error::Outside {
+            path: PathBuf::new(),
+            limits: None,
+        },
+        Error::PlanName {
+            path: PathBuf::new(),
+            resolved: PathBuf::new(),
+        },
+        Error::WideFolder {
+            working: PathBuf::new(),
+        },
+        Error::Folder {
+            path: PathBuf::new(),
+            error: env::paths::Error::NotFound,
+        },
+        Error::Data {
+            path: PathBuf::new(),
+            error: env::paths::Error::NotFound,
+        },
     ]
 }
 
@@ -639,6 +662,11 @@ fn error_codes_and_fixes_match_the_golden_file() {
             | Error::Write { .. }
             | Error::LargeRequest
             | Error::Reply { .. }
+            | Error::Outside { .. }
+            | Error::PlanName { .. }
+            | Error::WideFolder { .. }
+            | Error::Folder { .. }
+            | Error::Data { .. }
             | Error::Config(_)
             | Error::Node(_)
             | Error::Remote { .. } => {}
