@@ -527,8 +527,9 @@ each connector's protocol parser, the `node_id`
 text of the `opcua` kind
 (`connector_opcua::node`, #2523), its `address`, which `UA_parseEndpointUrl` of
 open62541 reads (`connector_opcua::Kind::parse`, #2523), the readers of the answers of
-a browse and a describe, which no kind calls yet (`node_of`, `unit_of`, and
-`Answer::browsed` in `connector_opcua::client`, #2914), the `address` of the
+a browse and a describe, which no kind calls yet (`node_of`, `unit_of`,
+`Answer::browsed`, and `Answer::target` in `connector_opcua::client`, #2914), the
+`address` of the
 `modbus` kind (`connector_modbus::Kind::parse`, #2789), the text of a browse path and
 pattern, which no front end reads yet (`connector::browse`, #2827), the file `name` of
 the data directory (`node::name::decode`, #2174), the file `budget` of the data

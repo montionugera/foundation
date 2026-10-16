@@ -851,6 +851,170 @@ fn describe_of_an_abstract_type_gives_no_base_and_browses_nothing() {
     );
 }
 
+/// A variable of each data type of namespace 0 from 1 to 29: each built-in type is
+/// its own base, `Enumeration` is Int32, and `Structure`, `BaseDataType`, and the
+/// abstract numbers have none, with no Browse.
+#[test]
+fn describe_gives_the_base_of_each_type_of_namespace_0() {
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let server = peer.server;
+            server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
+            // open62541 gives an abstract number a default value of a subtype.
+            let parent = |id| match id {
+                2 | 4 | 6 | 8 => 27,
+                3 | 5 | 7 | 9 => 28,
+                10 | 11 | 27 | 28 => 26,
+                _ => 24,
+            };
+            for id in [26, 27, 28].into_iter().chain(1..=25).chain([29]) {
+                if id != 24 {
+                    server.add_data_type(&ns0(id), &ns0(parent(id)), c"Type");
+                }
+            }
+            let mut nodes = Vec::new();
+            for id in 1..=29 {
+                let node = ns1(7200 + id);
+                server.add_variable(&node, &ROOT, HAS_COMPONENT, c"v", &ns0(id), -1, 3);
+                nodes.push(node);
+            }
+            let browses = server.count_browses();
+            let mut client = peer.connected().await;
+            let described = client.describe(&nodes).await;
+            let bases = described.map(|all| all.into_iter().map(|d| d.base).collect());
+            (bases, browses.get())
+        })
+        .await
+    });
+    let bases: Vec<Option<u32>> = (1..=29)
+        .map(|id| match id {
+            22 | 24 | 26..=28 => None,
+            29 => Some(6),
+            id => Some(id),
+        })
+        .collect();
+    assert_eq!(out, (Ok(bases), 0));
+}
+
+/// On a server with a `MaxMessageSize` of 8192 bytes, a walk whose Browse of a type
+/// alone does not fit one message gives no base for its variable, and sends nothing.
+#[test]
+fn a_walk_of_a_type_too_large_for_one_message_gives_no_base() {
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let server = peer.server;
+            server.set_limits(Limits {
+                message: 8192,
+                ..Limits::default()
+            });
+            server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
+            server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
+            let data_type = named(&"t".repeat(8100));
+            server.add_data_type(&data_type, &DOUBLE, c"Large");
+            let node = ns1(7200);
+            server.add_variable(&node, &ROOT, HAS_COMPONENT, c"v", &data_type, -1, 3);
+            let browses = server.count_browses();
+            let mut client = peer.connected().await;
+            let described = client.describe(&[node]).await;
+            client.close().await;
+            (described, browses.get())
+        })
+        .await
+    });
+    assert_eq!(out, (Ok(vec![described(None, -1, 3)]), 0));
+}
+
+/// On a server with a `MaxMessageSize` of 8192 bytes, describe splits the Read of
+/// the facts by the size of each data type in its answer, and the Translate of the
+/// units by the size of each target: 150 variables of a data type of a name of 200
+/// bytes, and 150 units of names of 200 bytes, each get their facts and units.
+#[test]
+fn the_facts_and_units_of_large_names_fit_one_message() {
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let server = peer.server;
+            server.set_limits(Limits {
+                message: 8192,
+                ..Limits::default()
+            });
+            server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
+            server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
+            let data_type = named(&"t".repeat(200));
+            server.add_data_type(&data_type, &DOUBLE, c"Long");
+            let mut nodes = Vec::new();
+            for index in 0..150 {
+                let node = ns1(7200 + index);
+                server.add_variable(
+                    &node,
+                    &ROOT,
+                    HAS_COMPONENT,
+                    c"v",
+                    &data_type,
+                    -1,
+                    3,
+                );
+                let unit = named(&format!("{index:0>200}"));
+                server.add_unit(&unit, &node, CEFACT, c"m", 0x004D_5452);
+                nodes.push(node);
+            }
+            let mut client = peer.connected().await;
+            let described = client.describe(&nodes).await;
+            client.close().await;
+            described.map(|all| {
+                all.iter()
+                    .filter(|d| d.base == Some(11) && d.unit.is_some())
+                    .count()
+            })
+        })
+        .await
+    });
+    assert_eq!(out, Ok(150));
+}
+
+/// A walk releases the continuation point of each type with more than one
+/// supertype, so two describes of 31 types of 3 supertypes each leave the point of a
+/// page that the caller holds valid, of the 32 points of a session of open62541.
+#[test]
+fn a_walk_releases_its_points() {
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let server = peer.server;
+            folders(server, 5);
+            server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
+            server.add_data_type(&ns1(9001), &BASE_DATA_TYPE, c"Other");
+            server.add_data_type(&ns1(9002), &BASE_DATA_TYPE, c"Third");
+            let mut nodes = Vec::new();
+            for index in 0..31 {
+                let (data_type, node) = (ns1(11_000 + index), ns1(12_000 + index));
+                server.add_data_type(&data_type, &DOUBLE, c"Child");
+                server.add_reference(&ns1(9001), HAS_SUBTYPE, &data_type);
+                server.add_reference(&ns1(9002), HAS_SUBTYPE, &data_type);
+                server.add_variable(
+                    &node,
+                    &ROOT,
+                    HAS_COMPONENT,
+                    c"v",
+                    &data_type,
+                    -1,
+                    3,
+                );
+                nodes.push(node);
+            }
+            let mut client = peer.connected().await;
+            let page = client.browse(&ROOT, per(1)).await;
+            let point = page.ok().flatten().and_then(|page| page.next);
+            let first = client.describe(&nodes).await.map(|_| ());
+            client.supertypes.clear();
+            let second = client.describe(&nodes).await.map(|_| ());
+            let next = client.browse_next(point.expect("a point")).await;
+            client.close().await;
+            (first, second, next.map(|page| page.references.len()))
+        })
+        .await
+    });
+    assert_eq!(out, (Ok(()), Ok(()), Ok(1)));
+}
+
 /// The client keeps at most 1024 supertypes past a call: the 1024 types of 512
 /// variables stay, so their next describe sends no Browse, and the 1026 types of 513
 /// go at the end of the call, so their next describe sends each Browse again.
