@@ -863,18 +863,23 @@ mod reader {
         );
     }
 
-    /// Each other input `reader_*` of the fuzz target, and `places_over`, gives the step
-    /// of each of its messages, the last a refusal.
+    /// The input `places_over` of the fuzz target gives `Error::Places`.
+    #[test]
+    fn refuses_the_places_over_input_of_the_fuzz_target() {
+        assert_eq!(
+            steps(corpus!("places_over")),
+            [refused(Error::Places {
+                count: PLACES_MAX + 1,
+                cap: PLACES_MAX,
+            })]
+        );
+    }
+
+    /// Each other input `reader_*` of the fuzz target gives the step of each of its
+    /// messages, the last a refusal.
     #[test]
     fn refuses_each_other_run_input_of_the_fuzz_target() {
-        let cases: [(&[u8], Vec<Step>); 10] = [
-            (
-                corpus!("places_over"),
-                vec![refused(Error::Places {
-                    count: PLACES_MAX + 1,
-                    cap: PLACES_MAX,
-                })],
-            ),
+        let cases: [(&[u8], Vec<Step>); 9] = [
             (
                 corpus!("reader_place_cut"),
                 vec![more(), refused(Error::Length { len: 21 })],
