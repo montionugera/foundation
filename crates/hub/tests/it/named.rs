@@ -235,6 +235,34 @@ fn gives_a_held_named_reader_the_frame_after_a_run_lost_while_held_with_its_gap(
 }
 
 #[test]
+fn gives_an_open_named_complete_reader_the_seqs_lost_for_no_room_as_the_next_gap() {
+    run(32, |test| async move {
+        let open = named("a", "r", Mode::Complete, Span::SECOND);
+        let mut reader = test.hub.reader(open).await.expect("opens");
+        let mut writer = test.writer("w", &["value"]).await;
+        write(&mut writer, &[test.now()], &[7]);
+        test.clock.sleep(SETTLE).await;
+        let mut blocks = super::fill(&test.pool);
+        drop(blocks.pop());
+        let draft = super::draft(&writer, &[(1, &[test.now()]), (2, &[0])]);
+        let outcomes = writer.write(super::LIVE, draft).expect("taken").to_vec();
+        let [hub::home::Outcome::Lost { range, .. }] = outcomes[..] else {
+            panic!("{outcomes:?}");
+        };
+        let lost = range.seq..range.end().expect("an end");
+        drop(blocks);
+        test.clock.sleep(SETTLE).await;
+        write(&mut writer, &[test.now()], &[8]);
+        write(&mut writer, &[test.now() + 1], &[9]);
+        for (values, gap) in [(7, None), (8, Some(lost)), (9, None)] {
+            let received = reader.next().await.expect("a frame");
+            assert_eq!(samples(&received, 2), [values]);
+            assert_eq!(received.gap(), gap, "the gap before {values}");
+        }
+    });
+}
+
+#[test]
 fn gives_a_held_named_reader_the_gap_of_a_run_lost_while_another_is_open() {
     run(23, |test| async move {
         let keep = test.reader(&["value"], Mode::Complete).await;
