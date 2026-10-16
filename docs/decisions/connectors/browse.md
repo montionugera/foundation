@@ -14,13 +14,19 @@
   splits names, `**` alone matches any number of names, `*` any text in one name, and
   `\` takes the next character as it is). Values are read only when the `Query` asks,
   in one call for the points that it gives. A new filter is a new field of `Query`.
-  The walk of a pattern lives once in `connector` (`browse::walk`): depth first in
-  device order, it browses no folder that no match can be under, gives at most
-  `LIMIT` (500) points and ends `Limit` when one more matches, and takes at most
-  `VISITS` (10 000) entries from the device, then ends `Budget`. A kind implements
-  `browse::Device` (one level, and values) on its open session, so one walk connects
-  once and can use a continuation point. `import --match` uses the same walk, so the
-  points that `browse --match` shows are the points that `import --match` takes.
+  The walk lives once in `connector` (`browse::walk`). It finds the start from the
+  root, one name at a time; a name that is not there or not a folder gives
+  `connector.no-folder`. A pattern walks depth first in device order, browses no folder
+  that no match can be under, gives at most `LIMIT` (500) points and ends `Limit` when
+  one more matches, and takes at most `VISITS` (10 000) entries from the device, also
+  the entries that find the start, then ends `Budget`. With `Limit`, `import` says
+  "More than `<limit>` points match, the most for one import; narrow the pattern, or
+  import in parts", not a count. A kind implements `browse::Device` on its open
+  session, so one walk is one session and can use a continuation point. `level` takes
+  a folder as the `Entry` that the device gave, never a path, and gives at most `LIMIT`
+  entries a page; `values` gives `types::sample::Value`, so there is one value model.
+  `import --match` uses the same walk, so the points that `browse --match` shows are
+  the points that `import --match` takes.
   The person's words, through `laptop.monitor`: decision 1, 2026-10-15 17:17 UTC, "Ok,
   this is fine. I approve"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6197989240);
@@ -33,8 +39,11 @@
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198173531). The
   shape `Unreadable`, the limit, and the PR list: `laptop.architect-2`, 2026-10-15
   17:32 UTC (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198270136).
-  `browse::Device` in place of a hook on `Kind` for each level: proposed by
-  `box1.builder-3` in the plan of PR 1
-  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6207706853).
+  `browse::Device`, `level` by entry, the page bound, `sample::Value`, the name
+  `Malformed`, and "more than `<limit>`" in place of the count of decision 6:
+  `laptop.architect-2`, 2026-10-16 04:00 UTC, on the plan of `box1.builder-3`
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6207771367). One
+  session for the whole browse: the person approved it, on the condition that it is
+  industry practice, which OPC UA Part 4 makes a rule.
   `VISITS`: the walk's own time over a tree of 10 000 entries is 1.8 ms (median of
   100, box1, release); PR 5 of the PR list measures the cost of the OPC UA sim server.

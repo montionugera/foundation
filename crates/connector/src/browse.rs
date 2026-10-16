@@ -2,9 +2,11 @@
 //! path matches a pattern.
 
 use std::fmt;
+use std::ops::ControlFlow;
 use std::str::FromStr;
 
 use document::diagnostic::Code;
+use types::sample::Value;
 
 use crate::kind::{Error, config_error};
 
@@ -17,17 +19,18 @@ pub const VISITS: usize = 10_000;
 /// A device open for one browse. A kind implements it on its session, so one walk
 /// connects once.
 pub trait Device {
-    /// Gives one page of the entries of the folder at `at`, in device order, from
-    /// `cursor`, or from the first entry when `None`. Each entry's path is a child of
-    /// `at`, and no two entries of one folder have the same name. `None` when no
-    /// folder is at `at`.
+    /// Gives one page of the entries of `folder`, or of the root when `None`, in
+    /// device order, from `cursor`, or from the first entry when `None`. A page holds
+    /// at most [`LIMIT`] entries. The path of each entry is the path of `folder` and
+    /// its name. No two entries of one folder have the same name. `None` when the
+    /// device no longer has `folder` as a folder.
     ///
     /// # Errors
     ///
     /// [`Error::Device`] when the device fails.
     fn level(
         &mut self,
-        at: &Path,
+        folder: Option<&Entry>,
         cursor: Option<&Cursor>,
     ) -> impl Future<Output = Result<Option<Page>, Error>>;
 
@@ -51,41 +54,49 @@ pub trait Device {
     }
 }
 
-/// Runs `query` over `device`. A pattern walks depth first, in device order, and
-/// browses no folder that no match can be under.
+/// Runs `query` over `device`. It finds the start from the root, one name at a time.
+/// A pattern walks depth first, in device order, and browses no folder that no match
+/// can be under.
 ///
 /// # Errors
 ///
-/// [`Error::Config`] with `connector.no-folder` when no folder is at the start, or at
-/// a folder that the device gave and then did not have. The errors of `device`.
+/// [`Error::Config`] with `connector.no-folder` when no folder is at a name of the
+/// start, or at a folder that the device gave and then did not have. The errors of
+/// `device`.
 ///
 /// # Panics
 ///
-/// When `device` gives an entry with no name, or a count of values that is not the
-/// count of tags.
+/// When `device` gives a page of more than [`LIMIT`] entries, an entry with no name,
+/// or a count of values that is not the count of tags.
 pub async fn walk(device: &mut impl Device, query: &Query) -> Result<Found, Error> {
     walk_within(device, query, LIMIT, VISITS).await
 }
 
 /// [`walk`] with `limit` points and `visits` entries.
-async fn walk_within(
-    device: &mut impl Device,
+async fn walk_within<D: Device>(
+    device: &mut D,
     query: &Query,
     limit: usize,
     visits: usize,
 ) -> Result<Found, Error> {
-    let (entries, end) = match &query.scope {
-        Scope::Level(cursor) => {
-            let page = level(device, &query.start, cursor.as_ref()).await?;
-            (page.entries, page.next.map_or(End::Done, End::Next))
-        }
-        Scope::Match(pattern) => {
-            search(device, &query.start, pattern, limit, visits).await?
-        }
+    let mut walker = Walker {
+        device,
+        seen: 0,
+        visits,
+    };
+    let (entries, end) = match walker.find(&query.start).await? {
+        ControlFlow::Break(end) => (Vec::new(), end),
+        ControlFlow::Continue(folder) => match &query.scope {
+            Scope::Level(cursor) => {
+                let page = walker.page(folder.as_ref(), cursor.as_ref()).await?;
+                (page.entries, page.next.map_or(End::Done, End::Next))
+            }
+            Scope::Match(pattern) => walker.search(folder, pattern, limit).await?,
+        },
     };
     let values = match query.values {
         Values::Skipped => Vec::new(),
-        Values::Read => read(device, &entries).await?,
+        Values::Read => read(walker.device, &entries).await?,
     };
     Ok(Found {
         entries,
@@ -94,23 +105,139 @@ async fn walk_within(
     })
 }
 
+/// A device and the count of the entries taken from it.
+struct Walker<'a, D> {
+    device: &'a mut D,
+    seen: usize,
+    visits: usize,
+}
+
 /// One folder of a walk whose entries are not all seen.
 struct Frame {
-    path: Path,
+    folder: Option<Entry>,
     state: State,
     entries: std::vec::IntoIter<Entry>,
     next: Option<Cursor>,
 }
 
-impl Frame {
+impl<D: Device> Walker<'_, D> {
+    /// The page of `folder`.
+    async fn page(
+        &mut self,
+        folder: Option<&Entry>,
+        cursor: Option<&Cursor>,
+    ) -> Result<Page, Error> {
+        let root = Path::root();
+        let path = folder.map_or(&root, |folder| &folder.path);
+        let page = self
+            .device
+            .level(folder, cursor)
+            .await?
+            .ok_or_else(|| no_folder(path))?;
+        assert!(
+            page.entries.len() <= LIMIT,
+            "invariant: the device gave a page of {} entries at {path:?}, more than {LIMIT}",
+            page.entries.len(),
+        );
+        Ok(page)
+    }
+
+    /// Counts one entry taken from the device: `false` past the budget.
+    fn visit(&mut self) -> bool {
+        self.seen += 1;
+        self.seen <= self.visits
+    }
+
+    /// The folder at `start`, `None` for the root.
+    async fn find(
+        &mut self,
+        start: &Path,
+    ) -> Result<ControlFlow<End, Option<Entry>>, Error> {
+        let mut folder = None;
+        for (i, name) in start.names.iter().enumerate() {
+            let mut cursor = None;
+            let child = 'pages: loop {
+                let page = self.page(folder.as_ref(), cursor.as_ref()).await?;
+                for entry in page.entries {
+                    if !self.visit() {
+                        return Ok(ControlFlow::Break(End::Budget));
+                    }
+                    if entry.path.names.last() == Some(name) {
+                        break 'pages Some(entry);
+                    }
+                }
+                cursor = page.next;
+                if cursor.is_none() {
+                    break None;
+                }
+            };
+            match child {
+                Some(entry) if entry.shape == Shape::Folder => folder = Some(entry),
+                _ => {
+                    let names = start.names[..=i].to_vec();
+                    return Err(no_folder(&Path { names }));
+                }
+            }
+        }
+        Ok(ControlFlow::Continue(folder))
+    }
+
+    /// Each entry under `folder` that is not a folder and whose path from it matches.
+    async fn search(
+        &mut self,
+        folder: Option<Entry>,
+        pattern: &Pattern,
+        limit: usize,
+    ) -> Result<(Vec<Entry>, End), Error> {
+        let mut found = Vec::new();
+        let mut stack = vec![self.open(folder, pattern.start()).await?];
+        while let Some(frame) = stack.last_mut() {
+            let Some(entry) = frame.entries.next() else {
+                match frame.next.take() {
+                    Some(cursor) => {
+                        let page =
+                            self.page(frame.folder.as_ref(), Some(&cursor)).await?;
+                        frame.entries = page.entries.into_iter();
+                        frame.next = page.next;
+                    }
+                    None => {
+                        stack.pop();
+                    }
+                }
+                continue;
+            };
+            if !self.visit() {
+                return Ok((found, End::Budget));
+            }
+            let name = entry
+                .path
+                .names
+                .last()
+                .expect("invariant: an entry has a name");
+            let state = pattern.step(&frame.state, name);
+            if entry.shape == Shape::Folder {
+                if pattern.open(&state) {
+                    stack.push(self.open(Some(entry), state).await?);
+                }
+            } else if pattern.matched(&state) {
+                if found.len() == limit {
+                    return Ok((found, End::Limit));
+                }
+                found.push(entry);
+            }
+        }
+        Ok((found, End::Done))
+    }
+
+    /// The frame of the first page of `folder`.
     async fn open(
-        device: &mut impl Device,
-        path: Path,
+        &mut self,
+        folder: Option<Entry>,
         state: State,
-    ) -> Result<Self, Error> {
-        let page = level(device, &path, None).await?;
-        Ok(Self {
-            path,
+    ) -> Result<Frame, Error> {
+        let page = self.page(folder.as_ref(), None).await?;
+        Ok(Frame {
+            folder,
             state,
             entries: page.entries.into_iter(),
             next: page.next,
@@ -118,68 +245,13 @@ impl Frame {
     }
 }
 
-/// Each entry under `start` that is not a folder and whose path from it matches.
-async fn search(
-    device: &mut impl Device,
-    start: &Path,
-    pattern: &Pattern,
-    limit: usize,
-    visits: usize,
-) -> Result<(Vec<Entry>, End), Error> {
-    let mut found = Vec::new();
-    let mut seen = 0;
-    let mut stack = vec![Frame::open(device, start.clone(), pattern.start()).await?];
-    while let Some(frame) = stack.last_mut() {
-        let Some(entry) = frame.entries.next() else {
-            match frame.next.take() {
-                Some(cursor) => {
-                    let page = level(device, &frame.path, Some(&cursor)).await?;
-                    frame.entries = page.entries.into_iter();
-                    frame.next = page.next;
-                }
-                None => {
-                    stack.pop();
-                }
-            }
-            continue;
-        };
-        seen += 1;
-        if seen > visits {
-            return Ok((found, End::Budget));
-        }
-        let name = entry
-            .path
-            .names
-            .last()
-            .expect("invariant: an entry has a name");
-        let state = pattern.step(&frame.state, name);
-        if entry.shape == Shape::Folder {
-            if pattern.open(&state) {
-                stack.push(Frame::open(device, entry.path, state).await?);
-            }
-        } else if pattern.matched(&state) {
-            if found.len() == limit {
-                return Ok((found, End::Limit));
-            }
-            found.push(entry);
-        }
-    }
-    Ok((found, End::Done))
-}
-
-/// The page of the folder at `at`.
-async fn level(
-    device: &mut impl Device,
-    at: &Path,
-    cursor: Option<&Cursor>,
-) -> Result<Page, Error> {
-    device.level(at, cursor).await?.ok_or_else(|| {
-        config_error(
-            NO_FOLDER,
-            &format_args!("the device has no folder at \"{at}\""),
-            "Browse the folder above it to see the names in it",
-        )
-    })
+/// The error of no folder at `path`.
+fn no_folder(path: &Path) -> Error {
+    config_error(
+        NO_FOLDER,
+        &format_args!("the device has no folder at \"{path}\""),
+        "Browse the folder above it to see the names in it",
+    )
 }
 
 /// The value of each of `entries`, read in one call.
@@ -545,19 +617,6 @@ pub enum Access {
     Write,
     /// A connector can read it and write it.
     ReadWrite,
-}
-
-/// The value of a point when it was read.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Value {
-    /// A bool.
-    Bool(bool),
-    /// A whole number.
-    Integer(i128),
-    /// A float.
-    Float(f64),
-    /// Text, also the text of a value of another type, such as a time.
-    Text(String),
 }
 
 /// One page of the entries of a folder.

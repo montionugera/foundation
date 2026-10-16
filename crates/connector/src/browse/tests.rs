@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::ops::ControlFlow;
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
@@ -75,9 +74,14 @@ impl Tree {
 }
 
 impl Tree {
-    fn page(&mut self, at: &Path, cursor: Option<&Cursor>) -> Option<Page> {
-        self.browsed.push(at.clone());
-        let entries = self.folders.get(at)?;
+    fn page(
+        &mut self,
+        folder: Option<&Entry>,
+        cursor: Option<&Cursor>,
+    ) -> Option<Page> {
+        let at = folder.map_or_else(Path::root, |folder| folder.path.clone());
+        let entries = self.folders.get(&at)?;
+        self.browsed.push(at);
         let from = cursor.map_or(0, |cursor| cursor.as_str().parse().expect("offset"));
         let to = (from + self.size).min(entries.len());
         let next = (to < entries.len()).then(|| Cursor::new(to.to_string()));
@@ -91,7 +95,7 @@ impl Tree {
         self.reads
             .push(tags.iter().map(ToString::to_string).collect());
         tags.iter()
-            .map(|tag| self.values.get(*tag).cloned())
+            .map(|tag| self.values.get(*tag).copied())
             .collect()
     }
 }
@@ -99,10 +103,10 @@ impl Tree {
 impl Device for Tree {
     fn level(
         &mut self,
-        at: &Path,
+        folder: Option<&Entry>,
         cursor: Option<&Cursor>,
     ) -> impl Future<Output = Result<Option<Page>, Error>> {
-        std::future::ready(Ok(self.page(at, cursor)))
+        std::future::ready(Ok(self.page(folder, cursor)))
     }
 
     fn values(
@@ -119,10 +123,10 @@ struct Blind(Tree);
 impl Device for Blind {
     fn level(
         &mut self,
-        at: &Path,
+        folder: Option<&Entry>,
         cursor: Option<&Cursor>,
     ) -> impl Future<Output = Result<Option<Page>, Error>> {
-        self.0.level(at, cursor)
+        self.0.level(folder, cursor)
     }
 }
 
@@ -515,7 +519,7 @@ mod walk {
     /// A tree of one folder that holds `n` points.
     fn wide(n: usize) -> Tree {
         let points: Vec<Node> = (0..n).map(|i| point(&format!("p{i}"))).collect();
-        Tree::new(&points, 1_000)
+        Tree::new(&points, LIMIT)
     }
 
     #[test]
@@ -552,6 +556,7 @@ mod walk {
             ("Line9", r#""Line9""#),
             ("Clock", r#""Clock""#),
             (r"Line\/1", r#""Line\/1""#),
+            ("Line9/Oven", r#""Line9""#),
         ] {
             let query = query(start, Scope::Match(pattern("**")));
             let found = now(walk(&mut Tree::new(&plant(), 2), &query));
@@ -577,6 +582,73 @@ mod walk {
             diagnostic(found).message,
             r#"the device has no folder at "Line2/Oven""#,
         );
+    }
+
+    #[test]
+    fn finds_a_start_under_a_paged_parent() {
+        let mut tree = Tree::new(&plant(), 1);
+        let query = query("Line2/Oven", Scope::Match(pattern("*")));
+        let found = now(walk(&mut tree, &query)).expect("found");
+        assert_eq!(paths(&found), ["Line2/Oven/Temp", "Line2/Oven/Map"]);
+        assert_eq!(found.end, End::Done);
+    }
+
+    #[test]
+    fn counts_the_entries_before_its_start_toward_the_budget() {
+        // Line1 and Line2 of the root, and Oven of Line2, find the start.
+        for (visits, found, end) in [
+            (2, &[][..], End::Budget),
+            (3, &[], End::Budget),
+            (4, &["Line2/Oven/Temp"], End::Budget),
+            (5, &["Line2/Oven/Temp", "Line2/Oven/Map"], End::Done),
+        ] {
+            let mut tree = Tree::new(&plant(), 10);
+            let query = query("Line2/Oven", Scope::Match(pattern("*")));
+            let walked = now(walk_within(&mut tree, &query, LIMIT, visits));
+            let walked = walked.expect("found");
+            assert_eq!(paths(&walked), found, "{visits}");
+            assert_eq!(walked.end, end, "{visits}");
+        }
+        let mut tree = Tree::new(&plant(), 10);
+        let query = query("Line2/Oven", Scope::Level(None));
+        let walked = now(walk_within(&mut tree, &query, LIMIT, 2)).expect("found");
+        assert_eq!(walked.entries, []);
+        assert_eq!(walked.end, End::Budget);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = r#"invariant: the device gave a page of 501 entries at "", more than 500"#
+    )]
+    fn panics_on_a_page_of_more_than_the_limit() {
+        let points: Vec<Node> = (0..=LIMIT).map(|i| point(&format!("p{i}"))).collect();
+        let mut tree = Tree::new(&points, LIMIT + 1);
+        drop(now(walk(&mut tree, &query("", Scope::Level(None)))));
+    }
+
+    /// The path of each point of `nodes` under `at`.
+    fn points(at: &Path, nodes: &[Node], out: &mut Vec<Path>) {
+        for node in nodes {
+            let path = at.child(node.name());
+            match node {
+                Node::Folder(_, children) => points(&path, children, out),
+                Node::Point(_) | Node::Unreadable(_) => out.push(path),
+            }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn matches_the_text_of_a_path_to_that_path_alone(nodes in nodes()) {
+            let mut all = Vec::new();
+            points(&Path::root(), &nodes, &mut all);
+            for point in all {
+                let mut tree = Tree::new(&nodes, 2);
+                let query = query("", Scope::Match(pattern(&point.to_string())));
+                let found = now(walk(&mut tree, &query)).expect("found");
+                prop_assert_eq!(paths(&found), [point.to_string()]);
+            }
+        }
     }
 }
 
@@ -634,21 +706,21 @@ mod values {
     #[test]
     fn reads_the_points_in_one_call_with_none_for_the_others() {
         let mut tree = Tree::new(&plant(), 2);
-        tree.values.insert("Line2/Speed".into(), Value::Float(1.5));
+        tree.values.insert("Line2/Speed".into(), Value::F64(1.5));
         let found = now(walk(&mut tree, &read("Line2", Scope::Level(None))));
         let found = found.expect("found");
         assert_eq!(paths(&found), ["Line2/Oven", "Line2/Speed"]);
-        assert_eq!(found.values, [None, Some(Value::Float(1.5))]);
+        assert_eq!(found.values, [None, Some(Value::F64(1.5))]);
         assert_eq!(tree.reads, [vec!["Line2/Speed".to_owned()]]);
     }
 
     #[test]
     fn gives_none_for_a_value_that_the_device_did_not_give() {
         let mut tree = Tree::new(&plant(), 10);
-        tree.values.insert("Line1/Temp2".into(), Value::Integer(7));
+        tree.values.insert("Line1/Temp2".into(), Value::I64(7));
         let query = read("", Scope::Match(pattern("Line1/*")));
         let found = now(walk(&mut tree, &query)).expect("found");
-        assert_eq!(found.values, [None, Some(Value::Integer(7)), None]);
+        assert_eq!(found.values, [None, Some(Value::I64(7)), None]);
         assert_eq!(tree.reads.len(), 1);
     }
 
@@ -682,10 +754,10 @@ mod values {
     impl Device for Short {
         fn level(
             &mut self,
-            at: &Path,
+            folder: Option<&Entry>,
             cursor: Option<&Cursor>,
         ) -> impl Future<Output = Result<Option<Page>, Error>> {
-            self.0.level(at, cursor)
+            self.0.level(folder, cursor)
         }
 
         fn values(
