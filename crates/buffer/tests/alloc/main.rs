@@ -1,9 +1,9 @@
 //! `append` makes no heap allocation once the buffer has taken a batch of each
 //! shape: its slots, its entry count, and whether it closes the open record. Nor
-//! does a `Commit` that waits and drops, a commit of the logs that marks a range
-//! and trims, or the entry of a path that a trim emptied. This binary has no test
-//! harness: the count covers each thread, and a harness allocates on its own thread
-//! at any time.
+//! does a `Commit` that waits and drops, a commit of the logs that syncs entries
+//! with no samples and trims, or the entry of a path that a trim emptied. This
+//! binary has no test harness: the count covers each thread, and a harness
+//! allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 

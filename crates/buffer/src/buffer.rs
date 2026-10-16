@@ -810,8 +810,8 @@ impl Buffer {
     ///
     /// When a `first` is below the tail of its path, with the index, the path,
     /// `first`, and the tail, when `first + len` passes `u64::MAX`, when an entry
-    /// with no samples has a stamp, or when an entry's slot held another index on
-    /// its path before.
+    /// with `len` 0 has a `last`: an entry with no samples has no stamp, or when an
+    /// entry's slot held another index on its path before.
     pub fn append(
         &self,
         entries: impl IntoIterator<Item = Entry>,

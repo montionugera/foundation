@@ -1,8 +1,8 @@
 //! The time to sync the durable logs of a shard at each commit, for each entry: one
 //! record with data entries of each index, after a trim that hides each older record.
 //! Also the time to append an entry, to carry a tail, the time of a commit that
-//! trims to the oldest holder, the time of a commit that marks a range, and the time
-//! of the commits that end a lap of each index.
+//! trims to the oldest holder, the time of a commit that syncs entries with no
+//! samples, and the time of the commits that end a lap of each index.
 
 use buffer::bench::Logs;
 use divan::Bencher;

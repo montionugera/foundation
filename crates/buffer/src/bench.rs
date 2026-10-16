@@ -265,10 +265,9 @@ impl Logs {
         self.offset += BLOCK;
     }
 
-    /// One commit of an entry with no samples for each index, as a commit that
-    /// trims and keeps up. It hides the records before the oldest holder, syncs one
-    /// entry with no samples of each index at the seq of its durable tail, then
-    /// carries the durable end of each index in the next record.
+    /// One commit that syncs one entry with no samples of each index at the seq of
+    /// its durable tail, as a commit that trims and keeps up, then carries the
+    /// durable end of each index in the next record.
     pub fn mark(&mut self) {
         self.keep_up();
         for (slot, header) in &self.headers {
