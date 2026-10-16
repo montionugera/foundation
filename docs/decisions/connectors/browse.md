@@ -85,7 +85,13 @@
   shape of the error: `laptop.architect-2`, 2026-10-16 04:56 UTC
   (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208402982); the
   private `Broken` and a `Path::child` that cannot fail: `laptop.architect-2`, 04:57 UTC
-  (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208408668).
+  (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208408668). The loop
+  check by tag and pattern state, `DEPTH` as the count of open folders (it replaces the
+  meaning of 04:42 UTC), the bound of a deep start, and the four rules that `walk`
+  checks: `laptop.architect-2`, 05:23 UTC
+  (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208716424). The
+  `types::name` sentence: `laptop.architect`, 05:20 UTC
+  (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208688678).
   `VISITS`: the walk's own time, median of 100 on box1 in release, is 1.4 ms over a flat
   tree of 9 999 points and 4.7 ms over a chain of 63 folders of 150 points each; PR 5 of
   the PR list measures the cost of the OPC UA sim server. The two triggers come from the
