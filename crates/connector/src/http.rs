@@ -17,7 +17,7 @@ use bytes::Bytes;
 use document::diagnostic::{Code, Diagnostic};
 use document::value::{self, Value};
 use env::clock::Clock;
-use env::net::host::Host;
+use env::net::host::{self, Host};
 use env::net::{self, Net, Tcp, tcp};
 use env::tasks::Tasks;
 use http::uri::Scheme;
@@ -333,7 +333,19 @@ fn origin(uri: &Uri) -> Result<Origin, Error> {
         Some(colon) => (&text[..after + colon], &text[after + colon + 1..]),
         None => (text, ""),
     };
-    let host = host.parse().map_err(|_refused| Error::Host)?;
+    // RFC 6874: a zone in a URI follows `%25`, the escape of `%`.
+    let decoded;
+    let host = match host.split_once('%') {
+        Some((ip, zone)) => {
+            let zone = zone
+                .strip_prefix("25")
+                .ok_or(Error::Host(host::Error::Zone))?;
+            decoded = format!("{ip}%{zone}");
+            &decoded
+        }
+        None => host,
+    };
+    let host = host.parse().map_err(Error::Host)?;
     // `u16::from_str` takes a leading `+`.
     let port = match port {
         "" => 80,
@@ -384,8 +396,9 @@ pub enum Error {
     Scheme,
     /// The URI holds user info. The error keeps none of it.
     UserInfo,
-    /// The URI has no host, or one that [`Host`] refuses.
-    Host,
+    /// The URI has no host, or one that [`Host`] refuses, with the reason. A zone
+    /// follows `%25`, as in `http://[fe80::1%252]/`.
+    Host(host::Error),
     /// The port of the URI is not a number from 1 to 65535.
     Port,
     /// The name lookup failed, or no address of the host took the connection. It
@@ -421,7 +434,7 @@ impl fmt::Display for Error {
                 f,
                 "the URI holds user info; give a credential through a secret"
             ),
-            Self::Host => write!(f, "the URI has no valid host"),
+            Self::Host(error) => write!(f, "the URI has {error}"),
             Self::Port => {
                 write!(f, "the port of the URI is not a number from 1 to 65535")
             }
@@ -438,11 +451,11 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Host(error) => Some(error),
             Self::Connect(error) => Some(error),
             Self::Protocol(failure) => Some(failure),
             Self::Scheme
             | Self::UserInfo
-            | Self::Host
             | Self::Port
             | Self::TimedOut
             | Self::TooLarge { .. } => None,

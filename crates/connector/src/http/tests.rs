@@ -10,7 +10,7 @@ use document::diagnostic::{Code, Diagnostic};
 use document::value::{self, Value};
 use document::{Position, Source};
 use env::clock::Clock;
-use env::net::{self, Tcp, tcp};
+use env::net::{self, Tcp, host, tcp};
 use env::thread::Handle;
 use http::{Request, Response, StatusCode};
 use sim::{Sim, node};
@@ -640,24 +640,44 @@ fn assert_holds_no_credential(error: &Error) {
 
 #[test]
 fn refuses_a_host_that_is_not_valid() {
-    for uri in [
-        "http://:8086/",
-        "http://[]/",
-        "http://[influx]/",
-        "http://[influx]:99999/",
-        "http://[fd00::2]x/",
-        "http://[fd00::2]8086/",
-        "http://[fd00::2]x:80/",
-        "http://a[::1]/",
-        "http://a[::1]:80/",
-        "http://a:8[0]/",
-        "http://127.1/",
-        "http://influx..local/",
-        "http://influx-/",
+    const IPV6: host::Error = host::Error::Ipv6;
+    for (uri, error) in [
+        ("http://:8086/", host::Error::Empty),
+        ("http://[]/", IPV6),
+        ("http://[influx]/", IPV6),
+        ("http://[influx]:99999/", IPV6),
+        ("http://[fd00::2]x/", IPV6),
+        ("http://[fd00::2]8086/", IPV6),
+        ("http://[fd00::2]x:80/", IPV6),
+        ("http://a[::1]/", IPV6),
+        ("http://a[::1]:80/", IPV6),
+        ("http://a:8[0]/", IPV6),
+        ("http://127.1/", host::Error::Number),
+        ("http://influx..local/", host::Error::Part),
+        ("http://influx-/", host::Error::Part),
+        ("http://[fe80::1%25eth0]/", host::Error::Zone),
+        ("http://[fe80::1%2]/", host::Error::Zone),
+        ("http://[fe80::1%]/", host::Error::Zone),
     ] {
-        let error = refused(uri);
-        assert!(matches!(error, Error::Host), "{uri}: {error:?}");
-        assert_eq!(error.to_string(), "the URI has no valid host");
+        let refused = refused(uri);
+        assert!(
+            matches!(refused, Error::Host(e) if e == error),
+            "{uri}: {refused:?}"
+        );
+        assert_eq!(refused.to_string(), format!("the URI has {error}"));
+    }
+}
+
+// The sim network has no scopes, so this test reads the private `origin`.
+#[test]
+fn reads_the_zone_of_a_uri_after_its_escaped_percent() {
+    for (uri, host) in [
+        ("http://[fe80::1%252]:8086/", "fe80::1%2"),
+        ("http://[fe80::1%2500]/", "fe80::1"),
+    ] {
+        let uri = uri.parse().expect("a URI");
+        let origin = super::origin(&uri).expect("an origin");
+        assert_eq!(origin.host.to_string(), host);
     }
 }
 

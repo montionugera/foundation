@@ -184,7 +184,10 @@ fn refuses_an_address_that_uri_refuses() {
             string("http://admin:hunter2@influx:8086"),
             "the URI holds user info; give a credential through a secret",
         ),
-        (string("http://[influx]:8086"), "the URI has no valid host"),
+        (
+            string("http://[influx]:8086"),
+            "the URI has a host with `:` or brackets that is not an IPv6 address",
+        ),
         (
             string("http://influx:0"),
             "the port of the URI is not a number from 1 to 65535",

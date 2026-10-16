@@ -275,10 +275,12 @@
   #1927. Decided by `laptop.architect-2` (2026-10-08 17:08 UTC, #1919,
   https://github.com/synnaxlabs/foundation/pull/1919#issuecomment-6065081738).
   Amended (2026-10-16, #1927): `env` owns the whole grammar of a host.
-  `Net::resolve` takes an `env::net::host::Host`, which a caller parses once, at plan
-  for a config. An IPv4 address has four decimal parts with no leading zeros. An IPv6
-  address is bare or in brackets, with an optional zone of a decimal interface number
-  that fits in `u32`, which `resolve` gives as the scope with no lookup. A name has
+  `Net::resolve` takes an `env::net::host::Host`, which a caller parses at plan for a
+  config. `connector::http` also parses it again on each request, until #2806. An IPv4
+  address has four decimal parts with no leading zeros. An IPv6 address is bare or in
+  brackets, with an optional zone of a decimal interface number that fits in `u32`,
+  which `resolve` gives as the scope with no lookup. Zone 0 is no zone. In an `http`
+  URI, the zone follows `%25` (RFC 6874), and another `%` is refused. A name has
   parts of ASCII letters, digits, `-`, and `_`, each 1 to 63 bytes, none that starts
   or ends with `-`. It is at most 253 bytes without one optional final dot, its last
   part is not a number, and its letters go to lowercase. Only a name reaches the
