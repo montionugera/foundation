@@ -15,7 +15,7 @@ impl Values {
     /// # Panics
     ///
     /// When an id of `ids` is not that of a type from Boolean (1) to Double (11), or
-    /// `ids` is empty.
+    /// `ids` is empty and `count` is not 0.
     #[must_use]
     pub fn new(ids: &[u8], count: usize) -> Self {
         let data_value = &ffi::types()[ffi::DATA_VALUE];

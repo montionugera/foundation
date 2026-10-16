@@ -93,7 +93,9 @@ impl kind::Kind for Kind {
         run(ctx)
     }
 
-    /// Gives `read "<channel>" { node_id = "<tag>" }`, which `parse` reads.
+    /// Gives `read "<channel>" { node_id = "<tag>" }`, which `parse` reads. It reads
+    /// no fact: the browse of the kind gives no `Write`, so each point gets a read
+    /// block.
     ///
     /// # Errors
     ///

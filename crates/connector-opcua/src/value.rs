@@ -27,38 +27,22 @@ pub(crate) enum Value {
     F64(f64),
 }
 
-/// Each built-in type of OPC UA that a read decodes, as its value 1, at its index in
-/// `UA_TYPES`. Its id in namespace 0 is that index plus 1. `shim.c` asserts the index
-/// and the id of each `ffi` kind, and [`SCALARS`] ties each entry to its kind.
-const BUILT_IN: [Value; 11] = [
-    Value::Bool(true),
-    Value::I8(1),
-    Value::U8(1),
-    Value::I16(1),
-    Value::U16(1),
-    Value::I32(1),
-    Value::U32(1),
-    Value::I64(1),
-    Value::U64(1),
-    Value::F32(1.0),
-    Value::F64(1.0),
-];
-
-/// The sample types of a [`Value`], in the order of their OPC UA types. It also fails
-/// the build when an entry of `BUILT_IN` is not at its kind, or its decode changes it.
+/// The sample types of a [`Value`], at the index of each OPC UA type in `UA_TYPES`,
+/// which is its kind. Each comes from the decode of its kind, so a decode that gives
+/// another kind fails the build.
 pub(crate) const SCALARS: [Scalar; 11] = {
     let mut scalars = [Scalar::Bool; 11];
     let mut at = 0;
     let mut kind = 0;
-    while at < BUILT_IN.len() {
-        let (scalar, raw) = BUILT_IN[at].raw();
-        assert!(raw == kind, "each entry of `BUILT_IN` is at its kind");
-        // SAFETY: `raw` gives the field of its kind.
-        match unsafe { Value::from_raw(&scalar, kind) } {
-            Some(value) => assert!(value.raw().1 == kind, "a decode keeps the kind"),
-            None => panic!("a decode reads each kind of `BUILT_IN`"),
+    while at < scalars.len() {
+        // SAFETY: each field of a zero scalar is zero, a value of its type.
+        match unsafe { Value::from_raw(&ffi::Scalar { uint64: 0 }, kind) } {
+            Some(value) => {
+                assert!(value.raw().1 == kind, "a decode keeps the kind");
+                scalars[at] = value.sample().scalar();
+            }
+            None => panic!("a decode reads each kind from Boolean to Double"),
         }
-        scalars[at] = BUILT_IN[at].sample().scalar();
         at += 1;
         kind += 1;
     }
@@ -101,7 +85,7 @@ impl Value {
     /// When `kind` is one of [`Value`], `scalar` holds its field.
     #[expect(
         clippy::trivially_copy_pass_by_ref,
-        reason = "by value, the decode in `client::answer` rebuilds the fields with shifts"
+        reason = "by value, `client::answer` rebuilds the fields with shifts"
     )]
     #[inline]
     const unsafe fn from_raw(scalar: &ffi::Scalar, kind: u16) -> Option<Self> {
@@ -173,10 +157,22 @@ impl Value {
     /// If `scalar` is not one of [`SCALARS`].
     #[cfg(feature = "sim")]
     pub(crate) fn one(scalar: Scalar) -> Self {
-        BUILT_IN
-            .into_iter()
-            .find(|one| one.scalar() == scalar)
-            .unwrap_or_else(|| panic!("invariant: {scalar:?} is not one of `SCALARS`"))
+        match scalar {
+            Scalar::Bool => Self::Bool(true),
+            Scalar::I8 => Self::I8(1),
+            Scalar::I16 => Self::I16(1),
+            Scalar::I32 => Self::I32(1),
+            Scalar::I64 => Self::I64(1),
+            Scalar::U8 => Self::U8(1),
+            Scalar::U16 => Self::U16(1),
+            Scalar::U32 => Self::U32(1),
+            Scalar::U64 => Self::U64(1),
+            Scalar::F32 => Self::F32(1.0),
+            Scalar::F64 => Self::F64(1.0),
+            Scalar::Stamp | Scalar::Span | Scalar::Uuid => {
+                panic!("invariant: {scalar:?} is not one of `SCALARS`")
+            }
+        }
     }
 
     /// Gives the C scalar of the value and its kind.
