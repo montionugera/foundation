@@ -328,6 +328,7 @@ fn node(
         name: known.name.clone(),
         settings: node::Settings::default(),
         vars,
+        roots: os::roots(),
         log: node::Log {
             writer: Box::new(io::stderr()),
             format: start.log,
