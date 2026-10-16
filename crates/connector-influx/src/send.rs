@@ -11,6 +11,7 @@ use connector::http::Client;
 use connector::kind::{Context, Error};
 use connector::retry::{self, Backoff};
 use connector::secret;
+use document::diagnostic::{Code, Diagnostic};
 use http::header::{AUTHORIZATION, HeaderValue};
 use http::{Method, Request, StatusCode, Uri};
 use hub::reader::{Ended, Received};
@@ -35,6 +36,8 @@ const RETRY: retry::Config = retry::Config {
     first: Span::SECOND,
     cap: Span::MINUTE,
 };
+const REFUSED: Code = Code::new("influx.refused");
+const UNKNOWN_TARGET: Code = Code::new("influx.unknown-target");
 
 enum Event<'a> {
     Cancelled,
@@ -123,7 +126,8 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
 ///
 /// # Errors
 ///
-/// The error of [`Token::read`] when a read of the token fails.
+/// [`Error::Config`] at once at a 400, 422, or 404, which a resend of `body` gets
+/// again, and the error of [`Token::read`] when a read of the token fails.
 async fn send(
     client: &Client,
     ctx: &Context<Config>,
@@ -142,6 +146,9 @@ async fn send(
             Ok(answer) => {
                 let status = answer.status();
                 let text = String::from_utf8_lossy(answer.body());
+                if let Some(error) = config_error(status, text.trim()) {
+                    return Err(error);
+                }
                 let refused =
                     matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
                 let source = ctx.config().token.as_ref().filter(|_| refused);
@@ -176,6 +183,32 @@ async fn send(
             *token.borrow_mut() = Box::pin(Token::read(ctx)).await?;
         }
     }
+}
+
+/// The config error of an answer of `status` with `text`, or `None` when a resend
+/// can succeed.
+fn config_error(status: StatusCode, text: &str) -> Option<Error> {
+    let (code, fix) = match status {
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => (
+            REFUSED,
+            "InfluxDB refuses the lines of a batch. For a field type conflict, write \
+             to another `measurement`, or delete the old field in InfluxDB. The \
+             connector starts again at the next spec change.",
+        ),
+        StatusCode::NOT_FOUND => (
+            UNKNOWN_TARGET,
+            "Create the database or the bucket in InfluxDB, or name one that exists. \
+             The connector starts again at the next spec change.",
+        ),
+        _ => return None,
+    };
+    let message = format!("InfluxDB answered {status}: {text}");
+    Some(Error::Config(vec![Diagnostic::new(
+        code,
+        None,
+        message,
+        fix.into(),
+    )]))
 }
 
 /// The request of one attempt to write `body` to `uri`, with the header of `token`.

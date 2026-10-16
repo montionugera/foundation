@@ -82,9 +82,16 @@
   set is a workload whose frames alternate key sets, as `laptop.architect-2` decided on
   2026-10-13T07:36:47Z
   (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6140691273). It acks
-  a batch only after a 204. Each other answer, and each failed request, keeps the batch,
-  shows its text with `Context::error`, and sends the batch again after a
-  `retry::Backoff` of 1 s to 1 min. A 204 clears the error, and adds the fields of the
+  a batch only after a 204. A 400 or a 422 ends the run with `Error::Config` and
+  `influx.refused`, and a 404 with `influx.unknown-target`, at once and with no ack,
+  since a resend of the batch gets the same answer. The diagnostic has no span, its
+  message is `InfluxDB answered {status}: {body}`, and its fix says that the
+  connector starts again at the next spec change. Decided by `laptop.architect-2` on
+  2026-10-14T01:32:02Z
+  (https://github.com/synnaxlabs/foundation/issues/2607#issuecomment-6158874569).
+  Each other answer, and each failed request, keeps the batch, shows its text with
+  `Context::error`, and sends the batch again after a `retry::Backoff` of 1 s to
+  1 min. A 204 clears the error, and adds the fields of the
   batch to the count `confirmed` with `Count::add`, and the `count` of each gap line of
   the batch to the count `lost`: the seqs that the gap lines of this connector count,
   which InfluxDB took with a 204. A batch sent again counts once. A gap that the reader

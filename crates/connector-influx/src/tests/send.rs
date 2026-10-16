@@ -33,6 +33,8 @@ const OPTIONS: tcp::Options = tcp::Options {
 const STATUS: u128 = 100;
 /// The file of the token of `file(TOKEN_FILE)`.
 const TOKEN_FILE: &str = "/run/secrets/influx";
+/// The value of `connector::status::Class::Config` on the `class` channel.
+const CONFIG: u8 = 1;
 /// The value of `connector::status::Class::Retry` on the `class` channel.
 const RETRY: u8 = 3;
 
@@ -516,7 +518,8 @@ fn sends_a_batch_again_after_each_other_answer_and_shows_the_error_until_a_204()
         let plant = Plant::new(node, tasks).await;
         plant.answers.borrow_mut().extend([
             (StatusCode::INTERNAL_SERVER_ERROR, " the disk is full \n"),
-            (StatusCode::NOT_FOUND, "database not found: \"plant\""),
+            (StatusCode::SERVICE_UNAVAILABLE, "starting"),
+            (StatusCode::UNAUTHORIZED, "unauthorized access"),
             (StatusCode::OK, "ok"),
         ]);
         let run = plant.start(plant.config());
@@ -531,17 +534,86 @@ fn sends_a_batch_again_after_each_other_answer_and_shows_the_error_until_a_204()
             .collect::<Vec<_>>();
         (got, plant.errors.borrow().clone())
     });
-    assert_eq!(got, vec![(WRITE.to_owned(), true); 4]);
+    assert_eq!(got, vec![(WRITE.to_owned(), true); 5]);
     assert_eq!(
         errors,
         [
             "",
             "InfluxDB answered 500 Internal Server Error: the disk is full",
-            "InfluxDB answered 404 Not Found: database not found: \"plant\"",
+            "InfluxDB answered 503 Service Unavailable: starting",
+            "InfluxDB answered 401 Unauthorized: unauthorized access",
             "InfluxDB answered 200 OK: ok",
             "",
         ]
     );
+}
+
+#[test]
+fn ends_the_run_with_a_config_error_at_a_400_422_or_404_and_keeps_the_batch() {
+    let refused = "InfluxDB refuses the lines of a batch. For a field type conflict, \
+                   write to another `measurement`, or delete the old field in \
+                   InfluxDB. The connector starts again at the next spec change.";
+    let unknown = "Create the database or the bucket in InfluxDB, or name one that \
+                   exists. The connector starts again at the next spec change.";
+    for (status, body, code, message, fix) in [
+        (
+            StatusCode::BAD_REQUEST,
+            " field type conflict \n",
+            "influx.refused",
+            "InfluxDB answered 400 Bad Request: field type conflict",
+            refused,
+        ),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "points beyond retention policy",
+            "influx.refused",
+            "InfluxDB answered 422 Unprocessable Entity: points beyond retention \
+             policy",
+            refused,
+        ),
+        (
+            StatusCode::NOT_FOUND,
+            "database not found: \"plant\"",
+            "influx.unknown-target",
+            "InfluxDB answered 404 Not Found: database not found: \"plant\"",
+            unknown,
+        ),
+    ] {
+        let (end, sent, got, errors, classes, points) =
+            run(move |node, tasks| async move {
+                let plant = Plant::new(node, tasks).await;
+                plant.answers.borrow_mut().push_back((status, body));
+                let run = plant.start(plant.config());
+                let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+                plant.clock.sleep(Span::SECOND).await;
+                let first = writer.now().nanos();
+                write(&mut writer, first, &[(1.0, 2.0)]);
+                plant.clock.sleep(Span::from_nanos(20_000_000_000)).await;
+                let end = run.1.borrow_mut().take();
+                let errors = plant.errors.borrow().clone();
+                let classes = plant.classes.borrow().clone();
+                let sent = plant.got().len();
+                let again = plant.start(plant.config());
+                plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+                plant.stop(again).await.expect("ok after a cancel");
+                let got = (plant.got().into_iter())
+                    .map(|(uri, body)| (uri, body == line("1e0", "2e0", first)))
+                    .collect::<Vec<_>>();
+                let points = plant.store.borrow().points("telemetry", &[]).count();
+                (end, sent, got, errors, classes, points)
+            });
+        let diagnostic =
+            Diagnostic::new(Code::new(code), None, message.into(), fix.into());
+        let Some(Err(Error::Config(diagnostics))) = end else {
+            panic!("{status}: a config error, not {end:?}");
+        };
+        assert_eq!(errors, [String::new(), diagnostic.to_string()], "{status}");
+        assert_eq!(diagnostics, [diagnostic], "{status}");
+        assert_eq!(classes, [0, CONFIG], "{status}");
+        assert_eq!(sent, 1, "{status}");
+        assert_eq!(got, vec![(WRITE.to_owned(), true); 2], "{status}");
+        assert_eq!(points, 1, "{status}");
+    }
 }
 
 /// The config of `plant` with `token` set to a call of `function` with `argument`.
