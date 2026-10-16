@@ -130,6 +130,39 @@ fn sends_the_places_and_each_frame_of_a_complete_read() {
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
+/// A complete read that opens after two frames gets its open position in `Opened`,
+/// and its first frame starts there.
+#[test]
+fn sends_the_open_position_of_a_complete_read_in_opened() {
+    let ready = async |test: &Test| {
+        let mut writer = test.writer("a", &["value"]).await;
+        let now = test.now();
+        for (stamp, value) in (now..).zip([10, 20]) {
+            write(&mut writer, &[stamp], &[value]);
+        }
+        let clock = test.clock.clone();
+        test.tasks.spawn(async move {
+            clock.sleep(START).await;
+            write(&mut writer, &[now + 2], &[30]);
+        });
+    };
+    let home = read_session(321, ready, |mut agent| async move {
+        agent.admit().await;
+        let mut stream = agent.read(Mode::Complete, &["value"]).await;
+        let (_, _, mut reader) = stream.opened().await;
+        assert_eq!(stream.live, Some(2));
+        let got = got(&mut stream.receiver, &mut reader)
+            .await
+            .expect("a frame");
+        assert_eq!(got.head.range.seq, 2);
+        assert_eq!(decoded(&got, &[I64, STAMP])[0], [30]);
+        stream.sender.finish().expect("finishes");
+        assert_eq!(stream.recv().await, Ok(None));
+        finish(&mut agent).await;
+    });
+    assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
 #[test]
 fn sends_a_latest_read_the_index_once_when_its_selector_matches_it() {
     let ready = async |test: &Test| writes(test, &[10]).await;

@@ -85,8 +85,9 @@ impl Sessions {
 /// The frames that the task took and the caller has not, and why the session ended.
 #[derive(Debug, Default)]
 struct Queue {
-    /// The result of the open, until [`Remote::open`] takes it.
-    opened: Option<Result<(), Error>>,
+    /// The result of the open, the open position on success, until [`Remote::open`]
+    /// takes it.
+    opened: Option<Result<u64, Error>>,
     frames: VecDeque<Frame>,
     /// Why the session ended. The caller gets it after each frame in `frames`.
     ended: Option<Ended>,
@@ -116,14 +117,15 @@ impl Remote {
     /// type, at `home`, another node, the home of their index. Spawns the task of the
     /// session, which dials the home, opens the session, and then takes its frames,
     /// and waits until the home opened it. A removal of a channel during the open ends
-    /// the session at its first take. Returns the session and the slot of each channel
-    /// of `matched`, in its order.
+    /// the session at its first take. Returns the session, the slot of each channel of
+    /// `matched` in its order, and the open position that the home gave, or `None`
+    /// when the session ended before the home opened it.
     pub(super) async fn open(
         state: &Rc<RefCell<State>>,
         home: types::node::Key,
         matched: Matched<(channel::Key, Type)>,
         mode: Mode,
-    ) -> Result<(Self, Box<[channel::Slot]>), Error> {
+    ) -> Result<(Self, Box<[channel::Slot]>, Option<u64>), Error> {
         let (index, _) = matched.items[matched.index];
         let data: Vec<_> = matched
             .items
@@ -165,8 +167,8 @@ impl Remote {
             lens,
             streak: Streak::default(),
         };
-        poll_fn(|cx| remote.queue.borrow_mut().poll_open(cx)).await?;
-        Ok((remote, slots))
+        let live = poll_fn(|cx| remote.queue.borrow_mut().poll_open(cx)).await?;
+        Ok((remote, slots, live))
     }
 
     /// Adds the charge of `frame`, which the reader gave back, to the credit.
@@ -225,21 +227,21 @@ impl Drop for Remote {
 }
 
 impl Queue {
-    /// The result of the open once the task has it, else `Ok` once the session
+    /// The result of the open once the task has it, else `Ok(None)` once the session
     /// ended, else `Pending` with the waker kept.
-    fn poll_open(&mut self, cx: &Context<'_>) -> Poll<Result<(), Error>> {
+    fn poll_open(&mut self, cx: &Context<'_>) -> Poll<Result<Option<u64>, Error>> {
         if let Some(opened) = self.opened.take() {
-            return Poll::Ready(opened);
+            return Poll::Ready(opened.map(Some));
         }
         if self.ended.is_some() {
-            return Poll::Ready(Ok(()));
+            return Poll::Ready(Ok(None));
         }
         keep(&mut self.taker, cx);
         Poll::Pending
     }
 
     /// Keeps `opened`, the result of the open, and wakes the caller.
-    fn open(&mut self, opened: Result<(), Error>) {
+    fn open(&mut self, opened: Result<u64, Error>) {
         self.opened = Some(opened);
         if let Some(taker) = self.taker.take() {
             taker.wake();
@@ -326,9 +328,9 @@ async fn session(
         return;
     };
     let (sender, receiver, frames) = match opened {
-        Ok(streams) => {
-            waiting.borrow_mut().open(Ok(()));
-            streams
+        Ok((sender, receiver, frames, live)) => {
+            waiting.borrow_mut().open(Ok(live));
+            (sender, receiver, frames)
         }
         Err(error) => {
             waiting.borrow_mut().open(Err(error));
@@ -602,7 +604,7 @@ async fn connect(
     class: Class,
     set: &Arc<KeySet>,
     open: &Open,
-) -> Result<(Sender, Receiver, Frames), Error> {
+) -> Result<(Sender, Receiver, Frames, u64), Error> {
     let mut tries = 1;
     loop {
         match attempt(state, home, class, set, open).await {
@@ -622,7 +624,7 @@ async fn attempt(
     class: Class,
     set: &Arc<KeySet>,
     open: &Open,
-) -> Result<(Sender, Receiver, Frames), Error> {
+) -> Result<(Sender, Receiver, Frames, u64), Error> {
     let (mut sender, mut receiver) = dial(state, home)
         .await?
         .open(class)
@@ -630,7 +632,7 @@ async fn attempt(
         .map_err(Error::Transport)?;
     let opened = handshake(state, (&mut sender, &mut receiver), set, open).await;
     match opened {
-        Ok(frames) => Ok((sender, receiver, frames)),
+        Ok((frames, live)) => Ok((sender, receiver, frames, live)),
         Err(error) => {
             let refusal = match error {
                 Error::Message(_) => Some(Refusal::Malformed),
@@ -647,13 +649,13 @@ async fn attempt(
 }
 
 /// Sends the header, `open`, and the keys of `set` on `sender`, and gives the frames
-/// that the home's `Opened` opens.
+/// that the home's `Opened` opens and its open position.
 async fn handshake(
     state: &RefCell<State>,
     (sender, receiver): (&mut Sender, &mut Receiver),
     set: &Arc<KeySet>,
     open: &Open,
-) -> Result<Frames, Error> {
+) -> Result<(Frames, u64), Error> {
     let header = wire::header::encode(Protocol::Hub);
     send(state, sender, header.len(), |out| {
         out.copy_from_slice(&header);
@@ -671,12 +673,16 @@ async fn handshake(
         })
         .await?;
     }
+    let reader = wire::hub::Reader::new(open);
     match receiver.recv().await {
         Ok(Some(message)) => {
-            Frames::open(wire::hub::Reader::new(open), Arc::clone(set), &message)
-                .map_err(Error::Message)
+            Frames::open(reader, Arc::clone(set), &message).map_err(Error::Message)
         }
-        Ok(None) => Err(Error::Message(wire::hub::Error::Finished)),
+        Ok(None) => Err(Error::Message(
+            reader
+                .end()
+                .expect_err("a reader before opened may not end"),
+        )),
         Err(error) => Err(refused(error).map_or_else(Error::Transport, Error::Refused)),
     }
 }

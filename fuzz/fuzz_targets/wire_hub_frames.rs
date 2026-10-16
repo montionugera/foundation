@@ -90,7 +90,7 @@ fn run(places: u8, mode: Mode, bytes: &[u8], in_place: bool) -> Vec<Seen> {
         return seen;
     };
     let mut frames = match Frames::open(Reader::new(&open), set(places), first) {
-        Ok(frames) => frames,
+        Ok((frames, _)) => frames,
         Err(error) => {
             seen.push(Seen::Message(error));
             return seen;

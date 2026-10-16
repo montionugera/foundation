@@ -72,6 +72,7 @@ pub async fn unsynced_shard(env: Env, delay: Span) -> (Shard, Interner, clock::R
         entropy: env.entropy,
         layout: buffer::Layout::new(1 << 22, 1 << 16).expect("a ring"),
         commit: Span::from_nanos(10_000_000),
+        trimmed: false,
     };
     let buffer = buffer::Buffer::open(config, interner.slots())
         .await

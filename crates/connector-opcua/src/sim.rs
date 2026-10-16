@@ -10,6 +10,8 @@ use env::clock::Clock;
 use env::net::{Listener, Net};
 use env::rng::Rng;
 use types::quality::Quality;
+#[cfg(test)]
+use types::time::Span;
 use types::time::{Monotonic, Stamp};
 
 use crate::connection::Manager;
@@ -34,6 +36,15 @@ struct State {
     /// The most nodes of a Read that a server answers, set before it starts.
     #[cfg(test)]
     most: Option<u32>,
+    /// The most session timeout of a server, set before it starts.
+    #[cfg(test)]
+    session: Option<Span>,
+    /// The reads of the state of the server (`ns=0;i=2259`) that a server answered.
+    #[cfg(test)]
+    states: u32,
+    /// The status of each answer of the state of the server, at first Good.
+    #[cfg(test)]
+    answer: Quality,
 }
 
 #[derive(Debug)]
@@ -99,6 +110,12 @@ impl Variables {
             quality: Quality::GOOD,
             #[cfg(test)]
             most: None,
+            #[cfg(test)]
+            session: None,
+            #[cfg(test)]
+            states: 0,
+            #[cfg(test)]
+            answer: Quality::GOOD,
         })))
     }
 
@@ -158,13 +175,32 @@ impl Variables {
         self.state().most = Some(most);
     }
 
-    /// The most nodes of a Read of [`Variables::refuse_reads_past`], and the value of
-    /// [`Variables::fix`] of each variable.
+    /// Makes a server give each session a timeout of at most `most`.
     #[cfg(test)]
-    fn hooks(&self) -> (Option<u32>, Vec<Option<Fixed>>) {
+    pub(crate) fn time_out_sessions(&self, most: Span) {
+        self.state().session = Some(most);
+    }
+
+    /// Gives each later answer of the state of the server the status `quality`.
+    #[cfg(test)]
+    pub(crate) fn answer_states(&self, quality: Quality) {
+        self.state().answer = quality;
+    }
+
+    /// The reads of the state of the server (`ns=0;i=2259`) that a server answered.
+    #[cfg(test)]
+    pub(crate) fn states(&self) -> u32 {
+        self.state().states
+    }
+
+    /// The most nodes of a Read of [`Variables::refuse_reads_past`], the timeout of
+    /// [`Variables::time_out_sessions`], and the value of [`Variables::fix`] of each
+    /// variable.
+    #[cfg(test)]
+    fn hooks(&self) -> (Option<u32>, Option<Span>, Vec<Option<Fixed>>) {
         let state = self.state();
         let fixed = state.variables.iter().map(|v| v.hooks.fixed).collect();
-        (state.most, fixed)
+        (state.most, state.session, fixed)
     }
 
     /// Calls `change` on the variable of `text`.
@@ -255,11 +291,24 @@ pub async fn serve(
         .map(|variable| variable.node.clone())
         .collect();
     #[cfg(test)]
-    let (most, fixed) = variables.hooks();
+    let (most, session, fixed) = variables.hooks();
     let add = |server: &mut Server| {
         #[cfg(test)]
         if let Some(most) = most {
             server.refuse_reads_past(most);
+        }
+        #[cfg(test)]
+        if let Some(most) = session {
+            server.set_session_timeout(most);
+        }
+        #[cfg(test)]
+        {
+            let variables = Variables::clone(variables);
+            server.set_source(&state_node(), move || {
+                let mut state = variables.state();
+                state.states += 1;
+                (Value::I32(0), state.answer)
+            });
         }
         let top = nodes.iter().map(|node| node.namespace).max().unwrap_or(0);
         for namespace in 2..=top {
@@ -283,6 +332,16 @@ pub async fn serve(
         }
     };
     Server::serve(manager, SESSIONS, add, until).await;
+}
+
+/// The state of a server, whose reads a test server answers with `Running`, with the
+/// status of [`Variables::answer_states`], and counts.
+#[cfg(test)]
+fn state_node() -> Node {
+    Node {
+        namespace: 0,
+        key: crate::node::Key::Number(crate::ffi::SERVER_STATE),
+    }
 }
 
 #[cfg(test)]

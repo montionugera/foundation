@@ -740,6 +740,7 @@ mod buffer {
                 layout: ::buffer::Layout::new(64 << 20, crate::BODY_MAX)
                     .expect("the test sizes make a ring"),
                 commit: crate::COMMIT,
+                trimmed: false,
             };
             let mut slots = Slots::new();
             let buffer = Buffer::open(config, &mut slots).await.expect("opens");
@@ -7269,7 +7270,7 @@ pub(crate) mod port {
             let connectors = concat!(
                 r#"{"output":{"connectors":[{"name":"plant.influx","kind":"influx","#,
                 r#""state":"stopped","address":"http://influx:8086","restarts":0,"#,
-                r#""counts":{"confirmed":0},"error":{"class":"config","text":"#,
+                r#""counts":{"confirmed":0,"lost":0},"error":{"class":"config","text":"#,
                 r#""the selector matches no channel. Select a channel that the spec "#,
                 r#"defines"},"note":null}]}}"#,
                 "\n",

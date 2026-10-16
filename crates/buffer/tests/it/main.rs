@@ -3,6 +3,7 @@
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]
 
+mod carry;
 mod memory;
 
 use std::collections::BTreeSet;
@@ -87,6 +88,7 @@ impl Shard {
             entropy: self.entropy.clone(),
             layout,
             commit: COMMIT,
+            trimmed: false,
         };
         Buffer::open(config, slots).await
     }
@@ -2112,6 +2114,7 @@ fn node_config(node: &sim::node::Node, tasks: Tasks, dir: &str) -> Config {
         entropy: node.entropy(),
         layout: layout(AREA, BODY_MAX),
         commit: COMMIT,
+        trimmed: false,
     }
 }
 
@@ -7188,4 +7191,88 @@ fn newest_gives_no_entry_that_is_not_durable() {
         buffer.committed().await.expect("commits");
         assert_eq!(newest(&buffer, Path::Live, 1).await, Ok(second));
     });
+}
+
+/// Writes an entry with no samples of index 1 at seq 0, `between` records of index
+/// 2, and a second entry with no samples of index 1 at seq 0, each its own commit:
+/// no trim lands in the records after the first entry up to the second. With
+/// `held`, the record of the second entry also holds the only entry of index 3.
+/// Then 200 records of index 2 fill a ring of 32 blocks, with trims. Gives the first
+/// of them that the ring still refuses after 100 commit spans, with its error.
+fn refused_past_a_range_where_no_trim_lands(
+    between: u64,
+    held: bool,
+) -> Option<(u64, Rejected)> {
+    let (mut sim, node) = create_node(0);
+    let own = node.clone();
+    let found = Arc::new(Mutex::new(None));
+    let given = Arc::clone(&found);
+    drop(on_node(&node, "stall", move |tasks| async move {
+        let config = Config {
+            layout: layout(32 * BLOCK, BODY_MAX),
+            trimmed: true,
+            ..node_config(&own, tasks, DIR)
+        };
+        let pool = Rc::clone(&config.pool);
+        let clock = own.clock();
+        let mut slots = Slots::new();
+        let buffer = Buffer::open(config, &mut slots).await.expect("opens");
+        let one = slots.index(key(1));
+        let two = slots.index(key(2));
+        let empty = || entry(1, one, Path::Live, 0, 0, None, Parts::default());
+        let data = |seq: u64| {
+            let parts = Parts::from(pool.alloc(100).expect("a block").freeze());
+            let last = i64::try_from(seq).expect("a small seq") + 1;
+            entry(2, two, Path::Live, seq, 1, Some(last), parts)
+        };
+        let three = slots.index(key(3));
+        let mut last = vec![empty()];
+        if held {
+            let parts = Parts::from(pool.alloc(100).expect("a block").freeze());
+            last.push(entry(3, three, Path::Live, 0, 1, Some(1), parts));
+        }
+        let mut batches = vec![vec![empty()]];
+        batches.extend((0..between).map(|seq| vec![data(seq)]));
+        batches.push(last);
+        for batch in batches {
+            buffer.append(batch).expect("the ring has room");
+            buffer.committed().await.expect("commits");
+        }
+        for (n, seq) in (between..between + 200).enumerate() {
+            let mut spans = 0;
+            loop {
+                match buffer.append([data(seq)]) {
+                    Ok(()) => break,
+                    Err(Rejected::Full { .. }) if spans < 100 => {
+                        spans += 1;
+                        clock.sleep(COMMIT).await;
+                    }
+                    Err(error) => {
+                        let n = u64::try_from(n).expect("a small count");
+                        *given.lock().expect("no panic held the lock") =
+                            Some((n, error));
+                        return;
+                    }
+                }
+            }
+            buffer.committed().await.expect("commits");
+        }
+    }));
+    sim.run_for(Span::from_nanos(60_000_000_000))
+        .expect("the run goes on");
+    found.lock().expect("no panic held the lock").take()
+}
+
+/// A trim that would land in the records between two entries with no samples at
+/// one seq passes them, so the ring frees room for each later record. When the
+/// record of the second entry holds another path, a carry first moves that path
+/// out, also when the record is past the room that the trim wants.
+#[test]
+fn a_trim_passes_a_range_where_no_trim_lands_so_the_ring_frees_room() {
+    for held in [false, true] {
+        for between in 0..8 {
+            let refused = refused_past_a_range_where_no_trim_lands(between, held);
+            assert_eq!(refused, None, "with {between} records between, held {held}");
+        }
+    }
 }

@@ -36,13 +36,13 @@ pub(super) async fn serve(
         }
     });
     let state = &session.state;
-    let Some((reader, places, layout)) =
+    let Some((reader, live, places, layout)) =
         here(state, open, mode, program.as_mut()).await?
     else {
         sender.finish()?;
         return Ok(());
     };
-    start(state, sender, places).await?;
+    start(state, sender, places, live).await?;
     relay(state, reader, layout, program, sender).await
 }
 
@@ -89,14 +89,15 @@ async fn open(
 }
 
 /// Opens the reader of `open` at this node, the home of its index, and gives it with
-/// its places and their layout, or `None` when `program` finishes first. Holds the
-/// reservation of `open` until the open decodes after the wait for the home.
+/// its open position, its places, and their layout, or `None` when `program` finishes
+/// first. Holds the reservation of `open` until the open decodes after the wait for the
+/// home.
 async fn here<F>(
     state: &Rc<RefCell<State>>,
     open: Held,
     mode: reader::Mode,
     program: Pin<&mut F>,
-) -> Result<Option<(Reader, Matched<Place>, Layout)>, Error>
+) -> Result<Option<(Reader, u64, Matched<Place>, Layout)>, Error>
 where
     F: Future<Output = Result<(), Error>>,
 {
@@ -118,15 +119,17 @@ where
         Home::Away(home) => return Err(refused(reader::Error::Remote { home })),
     };
     let layout = Layout::new(channels.slots.clone(), channels.index);
-    let reader = Reader::here(state, channels, mode);
-    Ok(Some((reader, places, layout)))
+    let (reader, live) = Reader::here(state, channels, mode);
+    Ok(Some((reader, live, places, layout)))
 }
 
-/// Sends `places`, their run, and `Opened`, and drops the places.
+/// Sends `places`, their run, and `Opened` with `live`, the open position, and drops
+/// the places.
 async fn start(
     state: &RefCell<State>,
     sender: &mut Sender,
     places: Matched<Place>,
+    live: u64,
 ) -> Result<(), Error> {
     let mut block = alloc(state, Places::LEN)?;
     Places {
@@ -143,12 +146,14 @@ async fn start(
         message.encode(&mut block);
         sender.send(block.freeze()).await?;
     }
-    sender.send(reply(state, wire::hub::Reply::Opened)?).await?;
+    sender
+        .send(reply(state, wire::hub::Reply::Opened { live })?)
+        .await?;
     Ok(())
 }
 
 /// Sends each frame of `reader` until `program` finishes, or `Behind` and the finish
-/// when the reader reached a frame that the buffer lost.
+/// when the reader ends [`reader::Ended::Behind`], which no case gives.
 async fn relay<F>(
     state: &RefCell<State>,
     mut reader: Reader,

@@ -47,6 +47,11 @@ name = "browse"
 harness = false
 
 [[bench]]
+name = "origin"
+harness = false
+test = true
+
+[[bench]]
 name = "run"
 harness = false
 test = true
