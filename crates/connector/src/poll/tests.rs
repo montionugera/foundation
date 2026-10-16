@@ -14,8 +14,9 @@ use spec::data_type::DataType;
 use spec::definition::Definition;
 use types::authority::Authority;
 use types::channel;
-use types::frame::{Draft, Form, Label, Path};
+use types::frame::{Draft, Form, Label, Path, key_set};
 use types::name::{Name, Selector};
+use types::sample::Value::{F64, U16};
 use types::sample::{Scalar, Type, Value};
 use types::time::Span;
 
@@ -324,25 +325,7 @@ fn writes_a_group_refused_as_backwards_again_after_the_stamp_of_the_refusal() {
     let ahead = Arc::new(Mutex::new(0));
     let into = Arc::clone(&ahead);
     let record = run(writes.clone(), (6, 0), |hub, _, _| async move {
-        let mut rival = rival(&hub, Authority::ABSOLUTE, &["plant.a"]).await;
-        let set = Arc::clone(rival.set());
-        let mut draft = rival.draft(Form::Raw, &[(0, 8), (1, 8)]).expect("a frame");
-        let time = rival.now() + Span::SECOND;
-        for (entry, bytes) in draft.iter_mut() {
-            match set.entries()[entry].key.as_u128() {
-                1 => Value::Stamp(time).write(bytes),
-                _ => Value::F64(0.0).write(bytes),
-            }
-        }
-        draft.set_count(set.entries()[0].group, 1);
-        let outcomes = rival
-            .write(Label::Path(Path::Live), draft)
-            .expect("a write");
-        assert!(
-            matches!(outcomes, [Outcome::Applied { .. }]),
-            "{outcomes:?}"
-        );
-        *into.lock().expect("no panic") = time.nanos();
+        *into.lock().expect("no panic") = write_ahead(&hub, "plant.a", F64(0.0)).await;
     });
     assert_eq!(record.result.as_ref().map_err(ToString::to_string), Ok(&()));
     let ahead = *ahead.lock().expect("no panic");
@@ -363,6 +346,65 @@ fn writes_a_group_refused_as_backwards_again_after_the_stamp_of_the_refusal() {
         .collect();
     assert_eq!(record.clock, want);
     assert_eq!(record.counts, (6, 0));
+}
+
+/// `plant.clock` is the second group of the frame, so a write again of each series
+/// sends `plant.time` with no sample, which the home refuses.
+#[test]
+fn writes_again_only_the_series_of_the_group_refused_as_backwards() {
+    let all = [true; 3];
+    let writes = vec![values(1.5, 7, -3, all), values(2.5, 8, -4, all)];
+    let ahead = Arc::new(Mutex::new(0));
+    let into = Arc::clone(&ahead);
+    let record = run(writes.clone(), (6, 0), |hub, _, _| async move {
+        *into.lock().expect("no panic") = write_ahead(&hub, "plant.c", U16(0)).await;
+    });
+    assert_eq!(record.result.as_ref().map_err(ToString::to_string), Ok(&()));
+    let ahead = *ahead.lock().expect("no panic");
+    let first = stamp(&record.time[0], 1);
+    assert!(first < ahead, "{first} < {ahead}");
+    let want: Vec<_> = [(writes[0], first), (writes[1], ahead + 2)]
+        .into_iter()
+        .filter_map(|(values, stamp)| frames(values, stamp).0)
+        .collect();
+    assert_eq!(record.time, want);
+    let mut want = vec![Frame::from([(4, ahead.cast_unsigned()), (5, 0)])];
+    want.extend(
+        [(writes[0], ahead + 1), (writes[1], ahead + 2)]
+            .into_iter()
+            .filter_map(|(values, stamp)| frames(values, stamp).1),
+    );
+    assert_eq!(record.clock, want);
+    assert_eq!(record.counts, (6, 0));
+}
+
+/// Writes `value` to `channel` as `plant.rival`, 1 s after the mesh time, and gives
+/// that stamp.
+async fn write_ahead(hub: &Hub, channel: &str, value: Value) -> i64 {
+    let mut rival = rival(hub, Authority::ABSOLUTE, &[channel]).await;
+    let set = Arc::clone(rival.set());
+    let data = rival.entries()[0];
+    let width =
+        |entry: &key_set::Entry| entry.data_type.width().expect("a fixed width");
+    let series: Vec<_> = set.entries().iter().map(width).enumerate().collect();
+    let mut draft = rival.draft(Form::Raw, &series).expect("a frame");
+    let time = rival.now() + Span::SECOND;
+    for (entry, bytes) in draft.iter_mut() {
+        if entry == data {
+            value.write(bytes);
+        } else {
+            Value::Stamp(time).write(bytes);
+        }
+    }
+    draft.set_count(set.entries()[data].group, 1);
+    let outcomes = rival
+        .write(Label::Path(Path::Live), draft)
+        .expect("a write");
+    assert!(
+        matches!(outcomes, [Outcome::Applied { .. }]),
+        "{outcomes:?}"
+    );
+    time.nanos()
 }
 
 /// Opens a writer of `channels` at `authority` as `plant.rival`.

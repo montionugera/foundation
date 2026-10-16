@@ -286,9 +286,7 @@ impl<'a> Frames<'a> {
             };
             self.kept.push(kept);
         }
-        if bad + uncertain + mistyped > 0 {
-            self.left.add(bad, uncertain, mistyped);
-        }
+        self.left.add(bad, uncertain, mistyped);
         self.left.note(self.ctx, first);
         self.writer.write(&self.kept, stamp)
     }
