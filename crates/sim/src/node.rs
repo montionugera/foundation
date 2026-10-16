@@ -298,8 +298,8 @@ impl Node {
     /// relative path is under the working directory, `/` until
     /// [`Node::set_working_dir`] sets it. A call follows each symbolic link of
     /// [`Node::link_path`], and a `..` after a link goes above what the link names. A
-    /// call through a directory that is not there, or of a link to nothing, fails with
-    /// `NotFound`. The home directory is the one of [`Node::set_home`], else `None`. A
+    /// call through a directory that is not there, or a read or a write of a link to
+    /// nothing, fails with `NotFound`. The home directory is the one of [`Node::set_home`], else `None`. A
     /// call takes no time, may come from any thread, and acts at once. A crash of the
     /// node keeps the tree, the working directory, and the home. A failure gives the
     /// code that Linux gives: 17 (`EEXIST`) for a directory made on a file, 20
@@ -343,7 +343,7 @@ impl Node {
         assert!(path.is_absolute(), "{} is relative", path.display());
         let parent = path.components().any(|part| part == Component::ParentDir);
         assert!(!parent, "{} has a `..` segment", path.display());
-        lock(&self.0.shared).paths().make_dir(self.0.node, path);
+        lock(&self.0.shared).paths().place_dir(self.0.node, path);
     }
 
     /// Sets the working directory of the node's host, from which each relative path

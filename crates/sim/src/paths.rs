@@ -1,7 +1,8 @@
 //! The files of each node's host by path, apart from its disk.
 
-use std::collections::btree_map::Entry::{Occupied, Vacant};
+use std::collections::btree_map::Entry::Occupied;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
 use env::paths::{Error, Found, names_directory};
@@ -83,31 +84,43 @@ impl Paths {
     }
 
     /// Makes a directory at `path` as `os` makes one: only in a directory that is
-    /// there, `Ok` when a directory is there, else `EEXIST` when anything is there.
-    pub(crate) fn create_dir(&mut self, node: usize, path: &Path) -> Result<(), Error> {
-        let at = match self.check(node, path) {
-            Err(Error::NotFound) if self.linked(node, path) => {
-                return Err(Error::Io { code: EXISTS });
-            }
-            at => at?,
+    /// there, and none through a link at the last name. `Ok` when a directory is
+    /// there, also through a link, else `EEXIST` when anything is there. A path that
+    /// ends in `.` or `..` makes nothing.
+    pub(crate) fn make_dir(&mut self, node: usize, path: &Path) -> Result<(), Error> {
+        self.fault(node, path)?;
+        let Some((dir, name)) = last(path) else {
+            let at = self.resolve(node, path)?;
+            return if self.directory(node, &at) {
+                Ok(())
+            } else {
+                Err(Error::NotFound)
+            };
         };
-        if self.directory(node, &at) {
-            return Ok(());
+        let dir = self.resolve(node, dir)?;
+        if self.file(node, &dir) {
+            return Err(Error::Io {
+                code: NOT_DIRECTORY,
+            });
         }
-        // `os` makes no directory at a path that ends in `.` or `..`.
-        let mut names = path
-            .as_os_str()
-            .as_encoded_bytes()
-            .rsplit(|&byte| byte == b'/');
-        if matches!(names.next(), Some(b"." | b"..")) {
+        if !self.directory(node, &dir) {
             return Err(Error::NotFound);
         }
-        match self.entries.entry((node, at)) {
-            Vacant(entry) => {
-                entry.insert(Entry::Directory);
+        let at = dir.join(name);
+        match self.entries.get(&(node, at.clone())) {
+            None => {
+                self.entries.insert((node, at), Entry::Directory);
                 Ok(())
             }
-            Occupied(_) => Err(Error::Io { code: EXISTS }),
+            Some(Entry::Directory) => Ok(()),
+            Some(Entry::Link(_))
+                if self
+                    .resolve(node, path)
+                    .is_ok_and(|to| self.directory(node, &to)) =>
+            {
+                Ok(())
+            }
+            Some(_) => Err(Error::Io { code: EXISTS }),
         }
     }
 
@@ -193,7 +206,7 @@ impl Paths {
 
     /// Makes a directory at `path`, which is absolute with no `..`, and so each
     /// directory above it.
-    pub(crate) fn make_dir(&mut self, node: usize, path: &Path) {
+    pub(crate) fn place_dir(&mut self, node: usize, path: &Path) {
         let at = self.place(node, path);
         let entry = self.entries.entry((node, at));
         let there =
@@ -243,32 +256,22 @@ impl Paths {
         at.join(name)
     }
 
-    /// Whether a symbolic link is at the last name of `path`.
-    fn linked(&self, node: usize, path: &Path) -> bool {
-        let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
-            return false;
-        };
-        let dir = if dir.as_os_str().is_empty() {
-            Path::new(".")
-        } else {
-            dir
-        };
-        self.resolve(node, dir).is_ok_and(|dir| {
-            let entry = self.entries.get(&(node, dir.join(name)));
-            matches!(entry, Some(Entry::Link(_)))
-        })
-    }
-
     /// The resolved path of a call, after the fault that waits on its path.
     fn check(&mut self, node: usize, path: &Path) -> Result<PathBuf, Error> {
+        self.fault(node, path)?;
+        self.resolve(node, path)
+    }
+
+    /// The fault that waits on the path of a call, or `NotFound` for an empty path.
+    fn fault(&mut self, node: usize, path: &Path) -> Result<(), Error> {
         if path.as_os_str().is_empty() {
             return Err(Error::NotFound);
         }
         let fault = self.faults.get_mut(&(node, self.absolute(node, path)));
-        if let Some(code) = fault.and_then(VecDeque::pop_front) {
-            return Err(Error::Io { code });
+        match fault.and_then(VecDeque::pop_front) {
+            Some(code) => Err(Error::Io { code }),
+            None => Ok(()),
         }
-        self.resolve(node, path)
     }
 
     fn working(&self, node: usize) -> PathBuf {
@@ -315,4 +318,22 @@ impl Paths {
         }
         at
     }
+}
+
+/// The directory and the last name of `path`, or `None` when that name, with no end
+/// in `/`, is `.` or `..`, which `Path` drops or gives no name for.
+fn last(path: &Path) -> Option<(&Path, &OsStr)> {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    let end = bytes.iter().rposition(|&byte| byte != b'/')?;
+    let name = bytes[..=end].rsplit(|&byte| byte == b'/').next();
+    if matches!(name, Some(b"." | b"..")) {
+        return None;
+    }
+    let dir = path.parent()?;
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    Some((dir, path.file_name()?))
 }
