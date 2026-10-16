@@ -298,14 +298,15 @@
   Amended in the review of #2804: zone 0 is no zone, so one address has one `Host`.
   `host::uri` reads the host of a URI: an IPv6 address is in brackets, and its zone
   follows `%25` (RFC 6874), so `[fe80::1%252]` is zone 2 and another `%` is
-  `Error::Escape`, whose message shows the `%25` form. Each caller that reads a URI uses it (R7 STARTING POINTS for
-  `connector::http`; `connector-opcua` in #2803). `connector::http` parses the host
-  again on each request, until #1218. Approved by `laptop.architect-2` (2026-10-16
-  04:05 UTC,
-  https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6207830826; the
-  move to `host::uri`, 04:34 UTC,
+  `Error::Escape`, whose message shows the `%25` form. Each caller that reads a URI uses
+  it (R7 STARTING POINTS for `connector::http`; `connector-opcua` in #2803).
+  `connector::http` parses the host again on each request, until #1218. Approved by
+  `laptop.architect-2` (2026-10-16 04:05 UTC,
+  https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6207830826; the move
+  to `host::uri`, 04:34 UTC,
   https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6208160301;
-  `Error::Escape`, approval owed).
+  `Error::Escape`, 2026-10-16 04:58 UTC,
+  https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6208423911).
   From the review of #1018: the bracketed IPv6 literal, and what `NotFound` and `Io`
   mean to a caller. Amended (2026-10-07, #1117): `Mode::Create` makes a missing file
   with `len` zeroed bytes. It treats an empty file that is there as missing and
