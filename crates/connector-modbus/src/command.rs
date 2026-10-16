@@ -37,10 +37,21 @@ impl Write {
             return Err(poll::Error::ReadOnly { table });
         }
         let read = Read::new(table, address, sample)?;
+        let request = match (table, read.count()) {
+            (Table::Coils, _) => Request::WriteCoil {
+                address,
+                value: false,
+            },
+            (_, 1) => Request::WriteRegister { address, value: 0 },
+            (_, count) => Request::WriteRegisters {
+                start: address,
+                values: vec![0; usize::from(count)],
+            },
+        };
         Ok(Self {
             read,
             order,
-            request: read.write(),
+            request,
         })
     }
 
@@ -51,8 +62,27 @@ impl Write {
     ///
     /// When `value` is not of the type of the write.
     pub fn request(&mut self, value: Value) -> &Request {
-        self.read.put(value, self.order, &mut self.request);
-        &self.request
+        let Self {
+            read,
+            order,
+            request,
+        } = self;
+        match request {
+            Request::WriteCoil { value: bit, .. } => {
+                let Value::Bool(value) = value else {
+                    panic!("{value:?} is not a value of the write of {read:?}");
+                };
+                *bit = value;
+            }
+            Request::WriteRegister { value: word, .. } => {
+                read.words(value, *order, std::slice::from_mut(word));
+            }
+            Request::WriteRegisters { values, .. } => read.words(value, *order, values),
+            Request::Read { .. } | Request::WriteCoils { .. } => {
+                unreachable!("invariant: `Write::new` builds function 5, 6, or 16")
+            }
+        }
+        request
     }
 }
 

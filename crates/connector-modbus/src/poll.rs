@@ -55,45 +55,25 @@ impl Read {
         u32::from(self.address).saturating_add(u32::from(self.count))
     }
 
-    /// The request that writes a value at the place of the read, with each value
-    /// zero: function 5 for a bit, 6 for one register, and 16 for more.
-    pub(crate) fn write(self) -> Request {
-        let Self { address, count, .. } = self;
-        match (self.table.bits(), count) {
-            (true, _) => Request::WriteCoil {
-                address,
-                value: false,
-            },
-            (false, 1) => Request::WriteRegister { address, value: 0 },
-            (false, _) => Request::WriteRegisters {
-                start: address,
-                values: vec![0; usize::from(count)],
-            },
-        }
+    /// The number of items of the read.
+    pub(crate) fn count(self) -> u16 {
+        self.count
     }
 
-    /// Puts `value` into `request`, a request of [`Read::write`], with registers in
-    /// `order`.
+    /// Puts the registers of `value` in `order` into `out`, in address order: the
+    /// inverse of the decode of [`Group::values`].
     ///
     /// # Panics
     ///
-    /// When `value` is not of the type of the read, or `request` is not its write.
-    pub(crate) fn put(self, value: Value, order: Order, request: &mut Request) {
+    /// When `value` is not of the type of the read, or `out` does not hold its
+    /// registers.
+    pub(crate) fn words(self, value: Value, order: Order, out: &mut [u16]) {
         assert_eq!(
             value.scalar(),
             self.scalar,
             "{value:?} is not a value of the write of {self:?}"
         );
-        match (request, value) {
-            (Request::WriteCoil { value: bit, .. }, Value::Bool(value)) => *bit = value,
-            (Request::WriteRegister { value: word, .. }, value) => {
-                words(value, order, std::slice::from_mut(word));
-            }
-            (Request::WriteRegisters { values, .. }, value) => {
-                words(value, order, values);
-            }
-            (request, _) => panic!("{request:?} is not the write of {self:?}"),
-        }
+        words(value, order, out);
     }
 }
 
