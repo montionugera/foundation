@@ -17,6 +17,9 @@ pub use reader::{Reader, Start};
 /// The most bytes of the open of a read: 64 KiB.
 pub const OPEN_BYTES_MAX: u64 = 1 << 16;
 
+/// The most places of a read: 65,536.
+pub const PLACES_MAX: u32 = 1 << 16;
+
 /// The first message of a read stream. The open follows as a body of `length` bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Read {
@@ -177,7 +180,7 @@ fn parts(pattern: Written<'_>) -> (&'static str, &str) {
 /// replies of a reader session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Places {
-    /// The places of the read, its index too. At least 1.
+    /// The places of the read, its index too. At least 1, and at most [`PLACES_MAX`].
     pub count: u32,
     /// The place of the index, below `count`.
     pub index: u32,
@@ -191,8 +194,14 @@ impl Places {
     ///
     /// # Panics
     ///
-    /// When `index` is not below `count`, or `out` is not [`Places::LEN`] bytes.
+    /// When `count` is over [`PLACES_MAX`], `index` is not below `count`, or `out` is
+    /// not [`Places::LEN`] bytes.
     pub fn encode(&self, out: &mut [u8]) {
+        assert!(
+            self.count <= PLACES_MAX,
+            "{} places are over the cap of {PLACES_MAX}",
+            self.count
+        );
         assert!(
             self.index < self.count,
             "the index is at place {} of {}",
@@ -210,12 +219,19 @@ impl Places {
     /// # Errors
     ///
     /// [`Error::Empty`], [`Error::Kind`] for a message that is not kind 6,
-    /// [`Error::Length`], and [`Error::Index`] when `index` is not below `count`.
+    /// [`Error::Length`], [`Error::Places`] when `count` is over [`PLACES_MAX`], and
+    /// [`Error::Index`] when `index` is not below `count`.
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = fields(message, READ)?;
         let count = u32::from_le_bytes(*fields.take()?);
         let index = u32::from_le_bytes(*fields.take()?);
         fields.end()?;
+        if count > PLACES_MAX {
+            return Err(Error::Places {
+                count,
+                cap: PLACES_MAX,
+            });
+        }
         if index >= count {
             return Err(Error::Index { index, count });
         }

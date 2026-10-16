@@ -306,6 +306,38 @@ mod places {
     }
 
     #[test]
+    fn decodes_places_at_the_cap() {
+        let places = Places {
+            count: PLACES_MAX,
+            index: PLACES_MAX - 1,
+        };
+        assert_eq!(Places::decode(&encode_places(places)), Ok(places));
+    }
+
+    #[test]
+    fn refuses_places_over_the_cap_before_the_index() {
+        let mut bytes = encode_places(Places { count: 1, index: 0 });
+        bytes[1..5].copy_from_slice(&(PLACES_MAX + 1).to_le_bytes());
+        bytes[5..9].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(
+            Places::decode(&bytes),
+            Err(Error::Places {
+                count: PLACES_MAX + 1,
+                cap: PLACES_MAX,
+            })
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "65537 places are over the cap of 65536")]
+    fn panics_on_an_encode_over_the_cap() {
+        encode_places(Places {
+            count: PLACES_MAX + 1,
+            index: 0,
+        });
+    }
+
+    #[test]
     fn refuses_an_index_that_is_not_below_the_count() {
         let mut bytes = encode_places(Places { count: 3, index: 0 });
         bytes[5] = 3;
@@ -1257,11 +1289,22 @@ proptest! {
 
     #[test]
     fn round_trips_places(
-        (count, index) in (1..=u32::MAX)
+        (count, index) in (1..=PLACES_MAX)
             .prop_flat_map(|count| (Just(count), 0..count)),
     ) {
         let places = Places { count, index };
         prop_assert_eq!(Places::decode(&encode_places(places)), Ok(places));
+    }
+
+    #[test]
+    fn refuses_each_count_over_the_cap(count in PLACES_MAX + 1..=u32::MAX, index: u32) {
+        let mut bytes = vec![6];
+        bytes.extend(count.to_le_bytes());
+        bytes.extend(index.to_le_bytes());
+        prop_assert_eq!(
+            Places::decode(&bytes),
+            Err(Error::Places { count, cap: PLACES_MAX })
+        );
     }
 
     /// The reader gives with the last place, and at no message before it, the start:

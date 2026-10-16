@@ -14,7 +14,9 @@ use types::channel;
 use types::sample::Type;
 use types::time::Span;
 use wire::header::MALFORMED;
-use wire::hub::client::{self, BODY_BYTES_MAX, Mode, Open, Place, Places, REFUSED};
+use wire::hub::client::{
+    self, BODY_BYTES_MAX, Mode, Open, PLACES_MAX, Place, Places, REFUSED,
+};
 use wire::hub::{BUSY, FAILED, FromHome, NOT_HOME, UNKNOWN};
 
 use super::link::{as_agent, serve_session_on};
@@ -420,6 +422,51 @@ fn opens_a_read_whose_places_pass_the_share() {
         finish(&mut agent).await;
     });
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
+}
+
+/// The node caps the places of a read at `PLACES_MAX`: the `MANY` channels of `w` and
+/// their index are at the cap, and `value` takes them over it.
+#[test]
+fn stops_a_read_whose_places_are_over_the_cap_as_malformed() {
+    const MANY: u32 = PLACES_MAX - 1;
+    let ready = async |test: &Test| {
+        let names: Vec<String> = (0..MANY).map(|n| format!("w.{n}")).collect();
+        test.define(names.iter().enumerate().map(|(n, channel)| {
+            let key = 100 + u128::try_from(n).expect("fits");
+            (key, channel.as_str(), DataType::Sample(I64), 1)
+        }))
+        .await;
+    };
+    let home = read_session(322, ready, |mut agent| async move {
+        agent.admit().await;
+        let mut over = agent.read(Mode::Complete, &["w.**", "value"]).await;
+        assert_eq!(over.recv().await, reset_with(MALFORMED));
+        let mut stream = agent.read(Mode::Complete, &["w.**"]).await;
+        let (places, _, _) = stream.opened().await;
+        assert_eq!(
+            places,
+            Places {
+                count: PLACES_MAX,
+                index: MANY
+            }
+        );
+        stream.sender.finish().expect("finishes");
+        assert_eq!(stream.recv().await, Ok(None));
+        finish(&mut agent).await;
+    });
+    let over = serve::Error::Client(client::Error::Places {
+        count: PLACES_MAX + 1,
+        cap: PLACES_MAX,
+    });
+    assert_eq!(
+        home.served,
+        [Err(over.clone()), Ok(Got::Ended), Ok(Got::Ended)]
+    );
+    assert_eq!(
+        over.to_string(),
+        "a client message is not valid: the read has 65537 places, over the cap of \
+         65536"
+    );
 }
 
 #[test]

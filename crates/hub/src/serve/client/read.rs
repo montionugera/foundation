@@ -8,7 +8,9 @@ use access::proof;
 use transport::Class;
 use transport::stream::{Receiver, Sender};
 use types::name::{Name, Selector};
-use wire::hub::client::{Mode, Open, Place, Places, Read, Refusal, place};
+use wire::hub::client::{
+    self, Mode, Open, PLACES_MAX, Place, Places, Read, Refusal, place,
+};
 
 use super::{Reserved, body, verify};
 use crate::State;
@@ -32,7 +34,7 @@ pub(super) async fn serve(
     let mut program = pin!(async {
         match receiver.recv().await? {
             None => Ok(()),
-            Some(_) => Err(Error::Client(wire::hub::client::Error::Trailing)),
+            Some(_) => Err(Error::Client(client::Error::Trailing)),
         }
     });
     let state = &session.state;
@@ -91,7 +93,8 @@ async fn open(
 /// Opens the reader of `open` at this node, the home of its index, and gives it with
 /// its open position, its places, and their layout, or `None` when `program` finishes
 /// first. Holds the reservation of `open` until the open decodes after the wait for the
-/// home.
+/// home. Places over [`PLACES_MAX`] give [`client::Error::Places`], before the reader
+/// opens.
 async fn here<F>(
     state: &Rc<RefCell<State>>,
     open: Held,
@@ -114,6 +117,14 @@ where
         return Ok(None);
     };
     let (places, home) = found.map_err(refused)?;
+    let count = u32::try_from(places.items.len())
+        .expect("invariant: each place has its own slot, a u32");
+    if count > PLACES_MAX {
+        return Err(Error::Client(client::Error::Places {
+            count,
+            cap: PLACES_MAX,
+        }));
+    }
     let channels = match home {
         Home::Here(channels) => channels,
         Home::Away(home) => return Err(refused(reader::Error::Remote { home })),

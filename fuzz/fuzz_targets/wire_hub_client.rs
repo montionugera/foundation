@@ -29,7 +29,8 @@ use types::sample::{Scalar, Type};
 use types::time::{Interval, Stamp};
 use wire::hub;
 use wire::hub::client::{
-    BODY_BYTES_MAX, Body, Challenge, Error, First, Mode, OPEN_BYTES_MAX, Open, Place,
+    BODY_BYTES_MAX, Body, Challenge, Error, First, Mode, OPEN_BYTES_MAX, Open, PLACES_MAX,
+    Place,
     Places, Read, Reader, Request, Response, Signed, place,
 };
 
@@ -61,6 +62,7 @@ fn decode<T>(
                         | Error::Subject(_)
                         | Error::SmallOrder
                         | Error::Oversize { .. }
+                        | Error::Places { .. }
                         | Error::Index { .. }
                 ),
                 "{error:?} is not a refusal of the bytes of {message:?}"
@@ -374,7 +376,7 @@ fn write_read(input: &mut Unstructured) -> arbitrary::Result<()> {
         "the read changed"
     );
 
-    let count = input.int_in_range(1..=u32::MAX)?;
+    let count = input.int_in_range(1..=PLACES_MAX)?;
     let index = input.int_in_range(0..=count - 1)?;
     let reply = Places { count, index };
     let mut out = [0; Places::LEN];

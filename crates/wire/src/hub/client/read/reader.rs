@@ -60,7 +60,7 @@ impl Reader {
     ///
     /// [`Error::Finished`] when `message` is `None`. The first message decodes as
     /// [`Places`] and gives its errors: [`Error::Empty`], [`Error::Kind`] for another
-    /// kind, [`Error::Length`], or [`Error::Index`]. A message of the run gives, in
+    /// kind, [`Error::Length`], [`Error::Places`], or [`Error::Index`]. A message of the run gives, in
     /// order, the error of its bytes ([`Error::Empty`], [`Error::Length`],
     /// [`Error::Sample`], or [`Error::Name`]), [`Error::Run`] when it holds more
     /// places than remain, and [`Error::Unstamped`] when it holds the index place and

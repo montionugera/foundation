@@ -44,8 +44,10 @@ pub const BODIES_BYTES_MAX: u64 = 2 * BODY_BYTES_MAX;
 pub enum Error {
     /// A message from a reader's node that `wire::hub` refuses. Code `MALFORMED`.
     Message(wire::hub::Error),
-    /// A message from a program that `wire::hub::client` refuses, or a body that ended
-    /// early ([`wire::hub::client::Error::Unfinished`]). Code `MALFORMED`.
+    /// A message from a program that `wire::hub::client` refuses, a body that ended
+    /// early ([`wire::hub::client::Error::Unfinished`]), or a read that matches over
+    /// [`wire::hub::client::PLACES_MAX`] places ([`wire::hub::client::Error::Places`]).
+    /// Code `MALFORMED`.
     Client(wire::hub::client::Error),
     /// The peer opened the stream one way. Code `MALFORMED`.
     OneWay,
