@@ -150,7 +150,7 @@ fn refuses_a_token_that_is_not_a_source() {
 }
 
 #[test]
-fn checks_to_its_reader_and_the_count_confirmed_and_no_device_channel() {
+fn checks_to_its_reader_and_the_counts_confirmed_and_lost_and_no_device_channel() {
     let config = config(string("http://influx:8086"));
     let reader = reader::read(&config, &KEYS, &[]);
     let table = Table::new().with("influx", Kind);
@@ -159,7 +159,10 @@ fn checks_to_its_reader_and_the_count_confirmed_and_no_device_channel() {
         Ok(Channels {
             reader: Some(reader.expect("the reader settings")),
             writes: Vec::new(),
-            counts: vec!["confirmed".parse().expect("a name")],
+            counts: vec![
+                "confirmed".parse().expect("a name"),
+                "lost".parse().expect("a name"),
+            ],
         })
     );
 }

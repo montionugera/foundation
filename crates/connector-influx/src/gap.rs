@@ -1,5 +1,5 @@
-//! Gap lines: one line for each run of samples that the buffer trimmed before the
-//! reader got them.
+//! Gap lines: one line for each run of samples that the reader did not get, as the
+//! buffer trimmed them or had no room for them.
 
 use std::ops::Range;
 

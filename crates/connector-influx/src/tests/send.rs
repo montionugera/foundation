@@ -68,6 +68,7 @@ struct Plant {
     /// Each value of `influx.status.class`, as [`read_status`] gives them.
     classes: Rc<RefCell<Vec<u8>>>,
     confirmed: Rc<RefCell<Vec<u64>>>,
+    lost: Rc<RefCell<Vec<u64>>>,
 }
 
 impl Plant {
@@ -97,6 +98,7 @@ impl Plant {
         let classes =
             read_status(&inputs.hub, &tasks, "class", |sample| sample[0]).await;
         let confirmed = read_confirmed(&inputs.hub, &tasks).await;
+        let lost = read_count(&inputs.hub, &tasks, "lost").await;
         Self {
             hub: inputs.hub.clone(),
             supervisor: Supervisor::new(inputs),
@@ -113,6 +115,7 @@ impl Plant {
             errors,
             classes,
             confirmed,
+            lost,
         }
     }
 
@@ -223,7 +226,7 @@ fn define(inputs: &supervisor::Config) {
     };
     let mut definitions = testing::create_status(
         &name("influx"),
-        &[name(CONFIRMED)],
+        &[name(CONFIRMED), name(LOST)],
         channel::Key::from_u128(STATUS),
     );
     definitions.extend([
@@ -303,7 +306,16 @@ async fn read_errors(hub: &hub::Hub, tasks: &Tasks) -> Rc<RefCell<Vec<String>>> 
 
 /// Reads each value of `influx.status.confirmed`, as [`read_status`] does.
 async fn read_confirmed(hub: &hub::Hub, tasks: &Tasks) -> Rc<RefCell<Vec<u64>>> {
-    read_status(hub, tasks, "confirmed", |sample| {
+    read_count(hub, tasks, "confirmed").await
+}
+
+/// Reads each value of the count `influx.status.<count>`, as [`read_status`] does.
+async fn read_count(
+    hub: &hub::Hub,
+    tasks: &Tasks,
+    count: &str,
+) -> Rc<RefCell<Vec<u64>>> {
+    read_status(hub, tasks, count, |sample| {
         u64::from_le_bytes(sample.try_into().expect("8 bytes"))
     })
     .await
@@ -324,6 +336,19 @@ fn write_columns(
     first: i64,
     columns: &[(u128, &[f64])],
 ) {
+    let outcomes = write_draft(writer, first, columns);
+    let applied = outcomes
+        .iter()
+        .all(|outcome| matches!(outcome, hub::home::Outcome::Applied { .. }));
+    assert!(applied, "the frame applies: {outcomes:?}");
+}
+
+/// Writes one frame as [`write_columns`] does, and gives the outcome of each group.
+fn write_draft(
+    writer: &mut hub::writer::Writer,
+    first: i64,
+    columns: &[(u128, &[f64])],
+) -> Vec<hub::home::Outcome> {
     let entries = writer.set().entries();
     let at = |key| {
         let key = channel::Key::from_u128(key);
@@ -349,11 +374,30 @@ fn write_columns(
     }
     draft.set_count(group, u32::try_from(count).expect("fits"));
     let outcomes = writer.write(Label::Path(Path::Live), draft);
-    let applied = outcomes.is_ok_and(|outcomes| {
-        (outcomes.iter())
-            .all(|outcome| matches!(outcome, hub::home::Outcome::Applied { .. }))
-    });
-    assert!(applied, "the frame applies");
+    outcomes.expect("the hub takes the frame").to_vec()
+}
+
+/// Writes one frame of `edge.a` and `edge.b` at `first` and the 2 nanoseconds after,
+/// which is lost for no room, and gives the seqs it lost. Takes drafts from the pool
+/// until it has no room, frees the last, writes, and frees the rest.
+fn write_lost(writer: &mut hub::writer::Writer, first: i64) -> std::ops::Range<u64> {
+    let index = (writer.set().entries().iter())
+        .position(|entry| entry.key == channel::Key::from_u128(1))
+        .expect("written");
+    let mut drafts = Vec::new();
+    let mut len: usize = 1 << 23;
+    while len > 0 {
+        while let Ok(draft) = writer.draft(Form::Raw, &[(index, len)]) {
+            drafts.push(draft);
+        }
+        len -= len.div_ceil(16);
+    }
+    drop(drafts.pop());
+    let outcomes = write_draft(writer, first, &[(2, &[1.0; 3]), (3, &[2.0; 3])]);
+    let [hub::home::Outcome::Lost { range, .. }] = outcomes[..] else {
+        panic!("the frame is lost for no room: {outcomes:?}");
+    };
+    range.seq..range.end().expect("an end")
 }
 
 fn fill(series: &mut [u8], bytes: impl Iterator<Item = u8>) {
@@ -802,6 +846,42 @@ fn keeps_the_confirmed_count_across_a_restart_of_the_run() {
         plant.confirmed.borrow().clone()
     });
     assert_eq!(confirmed, [0, 2, 4]);
+}
+
+#[test]
+fn writes_the_gap_line_of_a_run_lost_for_no_room_and_counts_its_seqs_after_a_204() {
+    let (lost, stamp, bodies, counts) = run(|node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let run = plant.start(plant.config());
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write(&mut writer, first, &[(1.0, 2.0)]);
+        plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+        let sent = plant.got().len();
+        let failed = (StatusCode::INTERNAL_SERVER_ERROR, "");
+        plant.answers.borrow_mut().push_back(failed);
+        let lost = write_lost(&mut writer, first + 1);
+        write(&mut writer, first + 4, &[(3.0, 4.0)]);
+        plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
+        plant.stop(run).await.expect("ok after a cancel");
+        let bodies: Vec<_> = (plant.got().into_iter().skip(sent))
+            .map(|(_, body)| body)
+            .collect();
+        let counts = (
+            plant.lost.borrow().clone(),
+            plant.confirmed.borrow().clone(),
+        );
+        (lost, first + 4, bodies, counts)
+    });
+    assert_eq!(lost.end - lost.start, 3);
+    let body = format!(
+        "foundation_gaps,connector=influx,index=edge.time,path=live count=3i \
+         {stamp}\n{}",
+        line("3e0", "4e0", stamp),
+    );
+    assert_eq!(bodies, [body.clone(), body]);
+    assert_eq!(counts, (vec![0, 3], vec![0, 2, 4]));
 }
 
 #[test]

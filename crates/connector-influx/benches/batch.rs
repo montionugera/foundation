@@ -132,7 +132,7 @@ async fn first(
     let received = reader.next().await.expect("a frame");
     let (mut nanos, mut allocations) = (Vec::new(), 0);
     for _ in 0..ROUNDS {
-        let mut batch = Batch::new("telemetry");
+        let mut batch = Batch::new("telemetry", &"influx".parse().expect("a name"));
         let (added, (ns, allocs)) = timed(|| batch.add(&received));
         added.expect("each channel holds f64");
         nanos.push(ns);
@@ -151,7 +151,7 @@ async fn bench(
     present: usize,
 ) -> (u64, Vec<u64>, u64, usize) {
     let (_hub, mut writer, mut reader) = open(&node, tasks, channels).await;
-    let mut batch = Batch::new("telemetry");
+    let mut batch = Batch::new("telemetry", &"influx".parse().expect("a name"));
     let (mut nanos, mut allocations, mut body) = (Vec::new(), 0, 0);
     let groups = channels / present;
     let warmup = groups.div_ceil(FRAMES) + 1;
