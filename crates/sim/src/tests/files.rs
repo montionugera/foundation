@@ -113,6 +113,77 @@ fn a_read_after_a_write_ends_sees_it_and_a_new_file_reads_zeros() {
 }
 
 #[test]
+fn an_open_gives_whether_the_file_was_exposed_when_it_ended() {
+    let found = run(0, MIB, |node, _| async move {
+        let open = async |path| {
+            let file = node.files().open(Path::new(path), Mode::Read).await;
+            file.unwrap()
+        };
+        let made = create(&node, "a", KIB).await;
+        node.expose_file(Path::new("./a"));
+        let exposed = open("a").await;
+        node.hide_file(Path::new("a"));
+        let private = open("a").await;
+        let host = Path::new("/run/secrets/token");
+        node.paths().write(host, b"abc").unwrap();
+        let outside = node.files().open_absolute(&absolute(host)).await.unwrap();
+        [made, exposed, private, outside].map(|file| file.exposed())
+    });
+    assert_eq!(found, [false, true, false, false]);
+}
+
+#[test]
+fn a_write_open_gives_whether_the_file_is_exposed() {
+    let found = run(0, MIB, |node, _| async move {
+        create(&node, "a", KIB).await.close().await;
+        let path = Path::new("a");
+        let open = async || {
+            let file = node.files().open(path, Mode::Write).await.unwrap();
+            let exposed = file.exposed();
+            file.close().await;
+            exposed
+        };
+        node.expose_file(path);
+        let exposed = open().await;
+        node.hide_file(path);
+        [exposed, open().await]
+    });
+    assert_eq!(found, [true, false]);
+}
+
+#[test]
+#[should_panic(expected = "x/../a has a `..` segment")]
+fn expose_file_panics_on_a_parent_segment() {
+    let mut sim = sim(0);
+    let node = sim.node(node::Config::default());
+    node.expose_file(Path::new("x/../a"));
+}
+
+#[test]
+#[should_panic(expected = "no file is at b")]
+fn expose_file_panics_with_no_file_at_the_path() {
+    let mut sim = sim(0);
+    let node = sim.node(node::Config::default());
+    node.expose_file(Path::new("b"));
+}
+
+#[test]
+#[should_panic(expected = "no file is at b")]
+fn hide_file_panics_with_no_file_at_the_path() {
+    let mut sim = sim(0);
+    let node = sim.node(node::Config::default());
+    node.hide_file(Path::new("b"));
+}
+
+#[test]
+#[should_panic(expected = "/a is absolute")]
+fn expose_file_panics_on_an_absolute_path() {
+    let mut sim = sim(0);
+    let node = sim.node(node::Config::default());
+    node.expose_file(Path::new("/a"));
+}
+
+#[test]
 fn open_absolute_reads_the_host_file_at_once_and_keeps_its_bytes() {
     let (bytes, span, later) = run(0, MIB, |node, _| async move {
         let (paths, path) = (node.paths(), Path::new("/run/secrets/token"));
