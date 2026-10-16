@@ -1121,8 +1121,10 @@ impl kind::Kind for Short {
     }
 }
 
-/// Each frame keeps the values of the frame before it, so only the check of the
-/// length stops a short frame from writing them again.
+/// `Client::read` gives one value for each node of its request, or an error, so no
+/// run of [`Kind`] writes a short frame: only a kind that calls `Frames::write`
+/// itself reaches the check. `Frames::kept` keeps the values of the frame before, so
+/// with no check of the length a short frame writes them again.
 #[test]
 #[should_panic(expected = "invariant: a frame has one value for each read")]
 fn panics_at_a_frame_with_no_value_for_each_read() {
