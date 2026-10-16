@@ -225,7 +225,7 @@ pub(crate) fn yield_now() -> impl Future<Output = ()> {
 
 impl env::threads::Driver for Node {
     fn start(&self, name: &str, body: Body, log: Dispatch) -> Result<Handle, Error> {
-        if lock(&self.shared).take_thread_fault(self.node, name) {
+        if lock(&self.shared).threads(self.node).take(name) {
             tracing::dispatcher::with_default(&log, || drop(body));
             let reason = "injected".into();
             return Err(Error::Start {

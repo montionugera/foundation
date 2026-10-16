@@ -86,7 +86,7 @@ impl Node {
     /// [`Node::threads`], give `thread::Error::Start` with reason `injected`. The start
     /// drops its body. Faults on one name fire in turn, one per start.
     pub fn fail_thread(&self, name: &str) {
-        lock(&self.0.shared).fail_thread(self.0.node, name);
+        lock(&self.0.shared).threads(self.0.node).fail(name);
     }
 
     /// The node's network, on its [`Node::addresses`].

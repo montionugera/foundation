@@ -27,6 +27,7 @@ mod serial;
 mod state;
 #[cfg(test)]
 mod tests;
+mod thread;
 
 use std::any::Any;
 use std::cell::RefCell;
