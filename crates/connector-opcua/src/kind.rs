@@ -297,6 +297,7 @@ impl<'a> Frames<'a> {
                 }
             }
         });
+        // `write` takes each value before it returns, so the counts are whole after it.
         let written = self.writer.write(kept, stamp);
         self.left.add(bad, uncertain, mistyped);
         self.left.note(self.ctx, first);
