@@ -182,7 +182,10 @@ fn check(seen: &[Seen], latest: bool) {
                     assert_eq!(lost.start, *covered, "the gap left a hole or overlap");
                     *covered = lost.end;
                 }
-                assert_eq!(*covered, head.range.seq, "the gap does not reach the frame");
+                assert_eq!(
+                    *covered, head.range.seq,
+                    "the gap does not reach the frame"
+                );
                 *covered = head.range.end().expect("the reader refused it");
             }
             _ => {}
