@@ -125,7 +125,7 @@ fn main() {
     assert_eq!(found.end, End::Done, "the walk finds each point");
     drop(found);
     // The names of the chain, once, and a link for each point: 0.2 MB on box1. A copy
-    // of the chain's text in each point is 37 MB.
+    // of the chain's text in each point is 36 MB.
     let bound = 1 << 20;
     assert!(
         peak <= bound,
