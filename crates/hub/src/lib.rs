@@ -258,7 +258,7 @@ impl Hub {
     /// this node no more streams, until another reader there drops. It gets each frame
     /// of the index, as a view of only its channels and their index. An unnamed
     /// complete reader gets each live frame written after the returned future resolves,
-    /// with the samples lost for no room as the gap of the next frame
+    /// with the samples trimmed or lost for no room as the gap of the next frame
     /// ([`reader::Mode::Complete`]). A named
     /// reader takes over the open session of its subject and name, which ends with
     /// [`reader::Ended::Replaced`], and a named complete one resumes as

@@ -1595,10 +1595,7 @@ fn a_complete_reader_that_the_home_ends_with_behind_gets_behind_at_each_next() {
             let mut reader = test.reader(&["value"], Mode::Complete).await;
             let ended = reader.next().await.expect_err("the home ended the session");
             assert_eq!(ended, Ended::Behind);
-            assert_eq!(
-                ended.to_string(),
-                "the reader reached a frame that the buffer lost: open a new reader"
-            );
+            assert_eq!(ended.to_string(), "the home ended the session");
             assert_eq!(reader.next().await.expect_err("ended"), Ended::Behind);
         },
     );

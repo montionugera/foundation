@@ -13,8 +13,8 @@ use crate::line::{Field, Measurement, Value};
 pub const MEASUREMENT: &str = "foundation_gaps";
 
 /// The gap of one path of one index of one connector. It holds the seqs from the first
-/// trimmed seq up to the next sample, then writes them as one line at that sample's
-/// stamp.
+/// seq that the buffer trimmed or had no room for up to the next sample, then writes
+/// them as one line at that sample's stamp.
 #[derive(Debug)]
 pub struct Gap {
     measurement: Measurement,
@@ -51,7 +51,8 @@ impl Gap {
         }
     }
 
-    /// Adds the trimmed samples with the seqs in `seqs`. The gap then holds each seq
+    /// Adds the samples that the buffer trimmed or had no room for, with the seqs in
+    /// `seqs`. The gap then holds each seq
     /// from the least start it got, also the seqs between two ranges that do not touch.
     /// A seq that the gap already holds is held once, so a gap that the reader reports
     /// again counts once. A range with `start == end` adds nothing.

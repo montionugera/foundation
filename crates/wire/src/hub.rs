@@ -22,8 +22,9 @@
 //! - [`Open`]: kind 1 (latest) or 2 (complete), then for complete `limit_bytes`
 //!   (`u64`), then the channel count (`u32`).
 //! - [`Credit`]: kind 3, then `limit_bytes` (`u64`).
-//! - [`Reply`]: kind 1 (opened). Kind 2 (head): path (`u8`, live 0, backfill 1), seq
-//!   (`u64`), count (`u32`), and the series count (`u32`). Kind 3 (behind).
+//! - [`Reply`]: kind 1 (opened), then `live` (`u64`). Kind 2 (head): path (`u8`, live
+//!   0, backfill 1), seq (`u64`), count (`u32`), and the series count (`u32`). Kind 3
+//!   (behind).
 //! - [`keys`]: each channel key (`u128`).
 //! - [`ends`]: place and end (each `u32`) for each series.
 

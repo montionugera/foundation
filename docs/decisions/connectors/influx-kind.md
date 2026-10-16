@@ -83,9 +83,12 @@
   count, which InfluxDB took with a 204. A batch sent again counts once. A gap that the
   reader reports again after a restart counts again, so `lost` is an upper bound, as
   the sum of `count` in `foundation_gaps` is. Each later out kind names the same count
-  `lost`. Both counts hold across the runs of one call (SUPERVISOR). The person
-  approved a count of lost seqs on 2026-10-15 ("Best devx possible. You choose the
-  path", through `laptop.monitor`), and `laptop.architect-2` ruled its shape on
+  `lost`. Both counts hold across the runs of one call (SUPERVISOR). The person gave
+  the choice of the path to the architects on 2026-10-15 ("Best devx possible. You
+  choose the path", through `laptop.monitor`:
+  https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922).
+  `laptop.architect` gave the count of lost seqs, and `laptop.architect-2` ruled its
+  shape on
   2026-10-15T18:13:22Z
   (https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199058253) and
   the gap lines of the run on 2026-10-15T18:20:15Z

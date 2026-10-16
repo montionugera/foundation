@@ -35,8 +35,9 @@ pub enum Mode {
     /// reader has not given back (the one it holds and those it has not taken) reach
     /// a window, a later frame waits until the reader gives frames back. A frame that
     /// still waits when the hub releases the next commit with frames of the index
-    /// comes later from disk, in order. Samples that found no room in the buffer never
-    /// reach it: the next frame gives them as its [`Received::gap`].
+    /// comes later from disk, in order. Samples that the buffer trimmed before the
+    /// reader got them, or that found no room in the buffer, never reach it: the next
+    /// frame gives them as its [`Received::gap`].
     Complete,
     /// The newest live frame, before its commit.
     Latest,
@@ -118,9 +119,9 @@ impl<'a> Received<'a> {
     }
 
     /// The seqs of the index just before this frame that the reader did not get, as
-    /// they were lost for no room. `None` for each frame of a latest reader and for
-    /// most frames of a complete one, and never an empty range. Its end is the seq of
-    /// the frame's first sample.
+    /// the buffer trimmed them or had no room for them. `None` for each frame of a
+    /// latest reader and for most frames of a complete one, and never an empty range.
+    /// Its end is the seq of the frame's first sample.
     #[must_use]
     pub fn gap(&self) -> Option<Range<u64>> {
         let start = self.lent.seqs.start;
@@ -220,9 +221,7 @@ impl fmt::Display for Ended {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Buffer(error) => write!(f, "the buffer of the shard failed: {error}"),
-            Self::Behind => f.write_str(
-                "the reader reached a frame that the buffer lost: open a new reader",
-            ),
+            Self::Behind => f.write_str("the home ended the session"),
             Self::Removed(key) => {
                 write!(f, "channel {key} was removed: open a new reader")
             }
