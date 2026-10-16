@@ -35,8 +35,9 @@ pub trait Device {
     ) -> impl Future<Output = Result<Option<Page>, Error>>;
 
     /// Reads the value of the point of each tag, in the order of `tags`: `None` for a
-    /// value that the device did not give. The default gives [`Error::Config`] with
-    /// `connector.no-values`: the kind cannot read values.
+    /// value that the device did not give, or that is not one fixed-width scalar, such
+    /// as the value of a `String` or `Bytes` point. The default gives [`Error::Config`]
+    /// with `connector.no-values`: the kind cannot read values.
     ///
     /// # Errors
     ///
