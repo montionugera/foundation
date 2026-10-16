@@ -558,7 +558,7 @@ mod values {
     }
 
     #[test]
-    #[should_panic(expected = "each read has a value since the last take")]
+    #[should_panic(expected = "no reply put a value of read 0 since the last take")]
     fn take_leaves_no_value_for_the_next_take() {
         let reads = [read(Table::Coils, 0, Scalar::Bool)];
         let [group] = groups(&reads, Order::Big).try_into().expect("one group");
@@ -571,7 +571,7 @@ mod values {
     }
 
     #[test]
-    #[should_panic(expected = "each read has a value since the last take")]
+    #[should_panic(expected = "no reply put a value of read 1 since the last take")]
     fn a_take_dropped_before_its_end_leaves_no_value_for_the_next_take() {
         let reads = [
             read(Table::Coils, 0, Scalar::Bool),
@@ -585,6 +585,17 @@ mod values {
         assert_eq!(values.take().next(), Some(Value::Bool(true)));
         put(&mut device, &groups[0], &mut values).expect("no exception");
         values.take().for_each(drop);
+    }
+
+    #[test]
+    #[should_panic(expected = "the group has read 1, past the 1 reads of `new`")]
+    fn put_panics_on_a_group_with_more_reads_than_new() {
+        let reads = [
+            read(Table::HoldingRegisters, 0, Scalar::U16),
+            read(Table::HoldingRegisters, 1, Scalar::U16),
+        ];
+        let [group] = groups(&reads, Order::Big).try_into().expect("one group");
+        let _ = put(&mut device(), &group, &mut Values::new(1));
     }
 }
 

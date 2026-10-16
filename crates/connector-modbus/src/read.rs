@@ -2,7 +2,7 @@
 //! read in their replies. A write of `command` takes its checks and its codec from
 //! [`Read`].
 
-use std::{fmt, slice};
+use std::{fmt, iter, slice};
 
 use types::sample::{Scalar, Type, Value};
 
@@ -283,9 +283,12 @@ impl Values {
     /// As [`Group::values`], and when `group` reads past the reads of
     /// [`Values::new`].
     pub fn put(&mut self, group: &Group, reply: Reply<'_>) -> Result<(), Exception> {
+        let reads = self.slots.len();
         for (at, value) in group.values(reply)? {
-            let slot = self.slots.get_mut(at);
-            *slot.expect("a group of the reads of `new`") = Some(value);
+            let Some(slot) = self.slots.get_mut(at) else {
+                panic!("the group has read {at}, past the {reads} reads of `new`");
+            };
+            *slot = Some(value);
         }
         Ok(())
     }
@@ -297,29 +300,29 @@ impl Values {
     ///
     /// When the iterator reaches a read that no reply put since the last take.
     pub fn take(&mut self) -> impl Iterator<Item = Value> {
-        Take(self.slots.iter_mut())
+        Take(self.slots.iter_mut().enumerate())
     }
 }
 
 /// The iterator of [`Values::take`], which empties the slots that it did not reach
 /// when it drops.
-struct Take<'a>(slice::IterMut<'a, Option<Value>>);
+struct Take<'a>(iter::Enumerate<slice::IterMut<'a, Option<Value>>>);
 
 impl Iterator for Take<'_> {
     type Item = Value;
 
     fn next(&mut self) -> Option<Value> {
-        let slot = self.0.next()?;
-        Some(
-            slot.take()
-                .expect("each read has a value since the last take"),
-        )
+        let (at, slot) = self.0.next()?;
+        let Some(value) = slot.take() else {
+            panic!("no reply put a value of read {at} since the last take");
+        };
+        Some(value)
     }
 }
 
 impl Drop for Take<'_> {
     fn drop(&mut self) {
-        self.0.by_ref().for_each(|slot| *slot = None);
+        self.0.by_ref().for_each(|(_, slot)| *slot = None);
     }
 }
 
