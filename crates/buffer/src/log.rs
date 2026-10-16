@@ -15,6 +15,7 @@ use types::time::Stamp;
 
 use crate::carry;
 use crate::entry::Header;
+use crate::wal::Fence;
 
 /// Where one path of an index stands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -673,8 +674,8 @@ impl Logs {
     /// The ranges in which no trim lands. A trim never lands after the previous
     /// record of a path up to and with a record whose first entry of the path has no
     /// samples and comes after other entries with no samples at its seq: the walk
-    /// would count them from 0. [`Marked::land`] gives the newest offset at or before
-    /// an offset that is in no such range.
+    /// would count them from 0. [`Marked::holding`] gives the range that holds an
+    /// offset, and the trim picks the side of it to land on.
     pub(crate) fn marked(&self) -> &Marked {
         &self.marked
     }
@@ -893,7 +894,7 @@ impl Logs {
     /// gives the durable position, stamp included. A new run whose first entry has
     /// no samples and comes after other entries with no samples at its seq marks the
     /// range from after the previous record of the path up to and with `offset`, in
-    /// which [`Marked::land`] lands no trim. A nonzero tag makes `offset` the
+    /// which no trim lands (see [`Logs::marked`]). A nonzero tag makes `offset` the
     /// newest record of its tag on the path.
     ///
     /// # Errors
@@ -1023,17 +1024,19 @@ impl Marked {
         self.0.push_back((first, record));
     }
 
-    /// The range that holds `offset`, as `(after, record)`: `offset` is after the
-    /// record `after`, and at or before the record `record`. One binary search.
-    pub(crate) fn holding(&self, offset: u64) -> Option<(u64, u64)> {
+    /// The range that holds `offset`: `offset` is after its record `after`, and at
+    /// or before its record `record`. One binary search.
+    pub(crate) fn holding(&self, offset: u64) -> Option<Fence> {
         let at = self.0.partition_point(|&(_, record)| record < offset);
-        self.0.get(at).copied().filter(|&(after, _)| after < offset)
+        let (after, record) = *self.0.get(at)?;
+        (after < offset).then_some(Fence { after, record })
     }
 
-    /// The start of the range that holds `offset`, else `offset`.
+    /// The start of the range that holds `offset`, else `offset`: the landing of a
+    /// trim that may not pass the range, as at `kept`.
     #[cfg(any(test, feature = "sim"))]
     pub(crate) fn land(&self, offset: u64) -> u64 {
-        self.holding(offset).map_or(offset, |(after, _)| after)
+        self.holding(offset).map_or(offset, |fence| fence.after)
     }
 
     /// Drops each range whose newest record is before `tail`.
@@ -2459,7 +2462,11 @@ mod tests {
         logs.sync(slot(1), &empty(1, 0), 16384).expect("syncs");
         assert_eq!(logs.marked.land(16384), 4096);
         assert_eq!(logs.marked.holding(4096), None);
-        assert_eq!(logs.marked.holding(16384), Some((4096, 16384)));
+        let fence = Fence {
+            after: 4096,
+            record: 16384,
+        };
+        assert_eq!(logs.marked.holding(16384), Some(fence));
         assert_eq!(logs.marked.land(20480), 20480);
         logs.recover(slot(1), &carried(0, 2, None), 20480)
             .expect("the walk met the end");
@@ -3277,7 +3284,13 @@ mod tests {
                 }
                 if let Some(trim) = trim {
                     let bound = logs.kept().unwrap_or(synced_at + 4096);
-                    hidden = hidden.max(logs.marked.land((8192 * trim).min(bound)));
+                    let target = (8192 * trim).min(bound);
+                    let landing = match logs.marked.holding(target) {
+                        Some(fence) if fence.record + 4096 <= bound => fence.record + 4096,
+                        Some(fence) => fence.after,
+                        None => target,
+                    };
+                    hidden = hidden.max(landing);
                     logs.hide(hidden);
                 }
             }

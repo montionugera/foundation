@@ -330,7 +330,7 @@ struct State {
     /// The last checkpoint written.
     header: Header,
     /// Empty, with the capacity of the tails of the last carry record, for the next.
-    tails: Carried,
+    carried: Carried,
     /// Whether an append got [`Rejected::Full`] since the last deadline, with
     /// [`Config::trimmed`]. The task then commits also with no entry, so that its
     /// trim and carry can free room.
@@ -404,6 +404,17 @@ impl State {
         self.logs.kept().into_iter().chain(held).min()
     }
 
+    /// The tail of the trim due now, as [`Writer::trimmed`] gives it for [`kept`]
+    /// and the marked ranges of the logs.
+    ///
+    /// [`kept`]: Self::kept
+    fn trimmed(&mut self) -> Option<Position> {
+        let kept = self.kept();
+        let logs = &self.logs;
+        self.writer
+            .trimmed(kept, |offset| logs.marked().holding(offset))
+    }
+
     /// The key of the next [`Commit`] or [`End`].
     fn key(&mut self) -> u64 {
         let key = self.next_key;
@@ -440,12 +451,14 @@ impl State {
             self.spares.push(record.clear());
         }
         if let Some(Carrying {
-            mut tails, offset, ..
+            mut carried,
+            offset,
+            ..
         }) = carrying
         {
-            self.logs.hold(&tails, offset);
-            tails.clear();
-            self.tails = tails;
+            self.logs.hold(&carried, offset);
+            carried.clear();
+            self.carried = carried;
         }
         if counted {
             self.commits += 1;
@@ -468,11 +481,7 @@ impl State {
     /// a block of `pool`. `None` when the commit does not trim, or the pool has no
     /// block: the next deadline then tries again.
     fn checkpoint(&mut self, pool: &Pool) -> Option<Checkpoint> {
-        let kept = self.kept();
-        let logs = &self.logs;
-        let tail = self
-            .writer
-            .trimmed(kept, |offset| logs.marked().holding(offset))?;
+        let tail = self.trimmed()?;
         let mut block = pool.alloc(ALIGN).ok()?;
         self.logs.hide(tail.offset());
         self.header = self.header.next(tail);
@@ -492,28 +501,31 @@ impl State {
     /// path needs one, or `pool` has no blocks for it: the next deadline then scans
     /// the same paths.
     fn carry(&mut self, pool: &Pool, most: usize) -> Option<Carry> {
-        let mut tails = mem::take(&mut self.tails);
+        let mut carried = mem::take(&mut self.carried);
         let limit = self.writer.tails().min(most);
-        self.logs.idle(self.writer.reach(), limit, &mut tails);
-        let count = tails.tails().len();
+        let reach = self
+            .writer
+            .reach(|offset| self.logs.marked().holding(offset));
+        self.logs.idle(reach, limit, &mut carried);
+        let count = carried.tails().len();
         let len = HEADER_LEN + carry::body_len(count);
         let blocks = (count > 0).then(|| (pool.alloc(len), pool.alloc(ALIGN)));
         let Some((Ok(mut block), Ok(wrap))) = blocks else {
-            self.logs.dropped(&mut tails);
-            self.tails = tails;
+            self.logs.dropped(&mut carried);
+            self.carried = carried;
             return None;
         };
         let plan = self
             .writer
             .carry(count)
-            .expect("invariant: `tails` gave the room of the record");
+            .expect("invariant: `carried` gave the room of the record");
         let (_, body) = block.split_at_mut(HEADER_LEN);
-        carry::write(tails.tails(), body);
+        carry::write(carried.tails(), body);
         Some(Carry {
             plan,
             block,
             wrap,
-            tails,
+            carried,
         })
     }
 }
@@ -536,7 +548,7 @@ struct Carry {
     /// The block for the wrap header, when the record wraps.
     wrap: Unique,
     /// The tails in the body.
-    tails: Carried,
+    carried: Carried,
 }
 
 impl Carry {
@@ -546,7 +558,7 @@ impl Carry {
             plan,
             mut block,
             wrap,
-            tails,
+            carried,
         } = self;
         let (header, body) = block.split_at_mut(HEADER_LEN);
         let (sealed, ends) = plan.seal(chain, [&*body]);
@@ -560,7 +572,7 @@ impl Carry {
             block: block.freeze(),
             offset: plan.offset,
             ends,
-            tails,
+            carried,
         }
     }
 }
@@ -575,7 +587,7 @@ struct Carrying {
     offset: u64,
     ends: Ends,
     /// The tails in the body, which the record holds once it is synced.
-    tails: Carried,
+    carried: Carried,
 }
 
 impl Carrying {
@@ -658,7 +670,7 @@ impl Buffer {
                 queue: Vec::new(),
                 logs,
                 header,
-                tails: Carried::default(),
+                carried: Carried::default(),
                 starved: false,
                 held: Vec::with_capacity(HOLDS),
                 taken: 0,
@@ -1585,6 +1597,66 @@ mod tests {
         assert_eq!(walked, written);
     }
 
+    /// With no [`Config::trimmed`], a refused append does not wake the task: an
+    /// append half a commit span after the refusal commits at least one span after
+    /// it, not one span after the refusal.
+    #[test]
+    fn a_refused_append_with_no_trim_leaves_the_commit_deadline() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config::default());
+        let waited = Arc::new(Mutex::new(None));
+        let found = Arc::clone(&waited);
+        let own = node.clone();
+        with_buffer(
+            &mut sim,
+            &node,
+            "refused",
+            move |buffer, mut slots, pool| async move {
+                let one = slots.index(channel::Key::from_u128(1));
+                let part = pool.alloc(100).expect("a block").freeze();
+                let wide = pool.alloc(5000).expect("a block").freeze();
+                buffer
+                    .append([entry(1, one, Path::Live, 0, &part)])
+                    .expect("room");
+                buffer.committed().await.expect("commits");
+                let mut first = 1;
+                while buffer
+                    .append([entry(1, one, Path::Live, 3 * first, &wide)])
+                    .is_ok()
+                {
+                    buffer.committed().await.expect("commits");
+                    first += 1;
+                }
+                own.clock()
+                    .sleep(Span::from_nanos(2 * COMMIT.nanos()))
+                    .await;
+                let refused =
+                    buffer.append([entry(1, one, Path::Live, 3 * first, &wide)]);
+                own.clock()
+                    .sleep(Span::from_nanos(COMMIT.nanos() / 2))
+                    .await;
+                let appended = own.clock().now();
+                let batch = [entry(1, one, Path::Live, 3 * first, &part)];
+                buffer.append(batch).expect("the ring has room");
+                buffer.committed().await.expect("commits");
+                let span = own.clock().now() - appended;
+                *found.lock().expect("no panic held the lock") = Some((refused, span));
+                buffer
+            },
+        );
+        let found = waited.lock().expect("no panic held the lock").take();
+        let (refused, span) = found.expect("the shard gave the result");
+        assert_eq!(
+            refused,
+            Err(Rejected::Full {
+                needed: 8192,
+                free: 4096
+            })
+        );
+        // The write and sync of the commit add their own time.
+        assert!(span >= COMMIT, "the commit came {span:?} after the append");
+    }
+
     /// A commit gives the writer the boundaries of its records. No public call
     /// shows them, so the test asks the writer for its trim, or the checkpoint for
     /// the tail when the commits trimmed.
@@ -1846,12 +1918,8 @@ mod tests {
                 }
                 let trimmed = || {
                     let mut state = buffer.shared.state.borrow_mut();
-                    let kept = state.kept();
-                    let tail = state
-                        .writer
-                        .trimmed(kept, |offset| state.logs.marked().holding(offset))
-                        .unwrap_or(state.header.tail);
-                    (kept, tail.offset())
+                    let tail = state.trimmed().unwrap_or(state.header.tail);
+                    (state.kept(), tail.offset())
                 };
                 let mut tails = Vec::new();
                 {
@@ -2641,6 +2709,44 @@ mod tests {
                 (190, 9 * 4096, 64 * 4096, Some(62 * 4096)),
                 "the trim passes the old holder of path 1"
             );
+        }
+
+        /// A commit with no pool block for its checkpoint hides no record: a read of
+        /// path 1 from seq 0 then gives each entry of the three records.
+        #[test]
+        fn a_checkpoint_with_no_pool_block_hides_no_record() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let first = fill(&mut sim, &node);
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            let own = node.clone();
+            with_trims(
+                &mut sim,
+                &node,
+                "starved",
+                move |buffer, mut slots, pool| async move {
+                    let one = slots.index(channel::Key::from_u128(1));
+                    let two = slots.index(channel::Key::from_u128(2));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    let mut held = Vec::new();
+                    while let Ok(block) = pool.alloc(1) {
+                        held.push(block);
+                    }
+                    let starved =
+                        buffer.append([entry(2, two, Path::Live, 3 * first, &part)]);
+                    own.clock().sleep(Span::from_nanos(3_000_000)).await;
+                    held.clear();
+                    let read = read_from(&buffer, one, 0).await;
+                    *given.lock().expect("no panic held the lock") =
+                        Some((starved, read));
+                    buffer
+                },
+            );
+            let found = found.lock().expect("no panic held the lock").take();
+            let (starved, (gap, firsts, _)) = found.expect("the shard gave the result");
+            assert_eq!(starved, Err(FULL));
+            assert_eq!((gap, firsts), (None, vec![0, 3, 6]));
         }
 
         /// Runs a trims session in which the pool has one block of 4096 bytes when an

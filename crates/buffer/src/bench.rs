@@ -161,7 +161,7 @@ pub struct Logs {
     headers: Vec<(Slot, Header)>,
     offset: u64,
     commits: u32,
-    tails: Carried,
+    carried: Carried,
 }
 
 impl Logs {
@@ -188,7 +188,7 @@ impl Logs {
             headers,
             offset: BLOCK,
             commits: 0,
-            tails: Carried::with_capacity(usize::try_from(indexes).expect("fits")),
+            carried: Carried::with_capacity(usize::try_from(indexes).expect("fits")),
         }
     }
 
@@ -222,10 +222,10 @@ impl Logs {
             header.first += 1;
         }
         self.offset += BLOCK;
-        self.tails.clear();
+        self.carried.clear();
         self.inner
-            .idle(self.offset, self.headers.len(), &mut self.tails);
-        self.inner.hold(&self.tails, self.offset);
+            .idle(self.offset, self.headers.len(), &mut self.carried);
+        self.inner.hold(&self.carried, self.offset);
         self.offset += BLOCK;
     }
 
@@ -254,9 +254,9 @@ impl Logs {
                 .expect("entries in order");
             header.first += 1;
         }
-        self.tails.clear();
+        self.carried.clear();
         self.inner
-            .idle(self.offset, self.headers.len(), &mut self.tails);
+            .idle(self.offset, self.headers.len(), &mut self.carried);
         let kept = self.inner.kept().expect("a path has a synced entry");
         let read = self.offset.saturating_sub(held * BLOCK).max(BLOCK);
         self.inner.hide(kept.min(read));
@@ -281,15 +281,15 @@ impl Logs {
                 .expect("entries in order");
         }
         self.offset += BLOCK;
-        self.tails.clear();
+        self.carried.clear();
         self.inner
-            .idle(self.offset, self.headers.len(), &mut self.tails);
-        let tails = self.tails.tails();
+            .idle(self.offset, self.headers.len(), &mut self.carried);
+        let tails = self.carried.tails();
         assert_eq!(tails.len(), self.headers.len(), "a tail of each index");
         for (tail, (_, header)) in tails.iter().zip(&self.headers) {
             assert_eq!(tail.index, header.index, "a tail of each index, in order");
         }
-        self.inner.hold(&self.tails, self.offset);
+        self.inner.hold(&self.carried, self.offset);
         self.offset += BLOCK;
     }
 
@@ -331,7 +331,7 @@ mod tests {
             for _ in 0..2 * id {
                 ring.commit(1);
             }
-            for commit in 0..10 * id {
+            for commit in 0..11 * id {
                 let tail = ring.writer.tail();
                 ring.commit(1);
                 assert!(
@@ -425,7 +425,7 @@ mod tests {
         let mut idle = Vec::new();
         for _ in 0..7 {
             logs.trim(3, 0);
-            idle.push(logs.tails.tails().len());
+            idle.push(logs.carried.tails().len());
         }
         assert_eq!(idle, [0, 1, 0, 0, 1, 0, 0]);
         let first: Vec<_> = logs.inner.runs(Slot::new(1), Path::Live).collect();
