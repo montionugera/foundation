@@ -538,8 +538,9 @@ mod tests {
         for call in 0..32 {
             logs.fill(8, 2);
             if !logs.carried.tails().is_empty() {
-                let keys = logs.carried.tails().iter().map(|tail| tail.index);
-                carried.push((call, keys.map(|key| key.as_u128()).collect::<Vec<_>>()));
+                let tails = logs.carried.tails().iter();
+                let keys: Vec<u128> = tails.map(|tail| tail.index.as_u128()).collect();
+                carried.push((call, keys));
             }
         }
         let tails = vec![4, 1, 2, 3];
