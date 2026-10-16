@@ -59,17 +59,21 @@ fn faults_on_one_name_fire_in_turn() {
 }
 
 #[test]
-fn a_start_takes_the_fault_of_its_name_past_faults_of_other_names() {
+fn a_start_takes_the_fault_of_its_name_from_the_middle_of_the_faults() {
     let mut sim = sim(0);
     let node = sim.node(node::Config::default());
     node.fail_thread("a");
     node.fail_thread("b");
+    node.fail_thread("c");
     let threads = node.threads();
     assert_eq!(threads.start("b", || async {}).unwrap_err(), injected("b"));
     assert_eq!(threads.start("a", || async {}).unwrap_err(), injected("a"));
-    let again = threads.start("a", || async {});
+    assert_eq!(threads.start("c", || async {}).unwrap_err(), injected("c"));
+    let again = ["a", "b", "c"].map(|name| threads.start(name, || async {}));
     sim.run().unwrap();
-    again.unwrap().join().unwrap();
+    for started in again {
+        started.unwrap().join().unwrap();
+    }
 }
 
 #[test]
