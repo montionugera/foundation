@@ -359,7 +359,7 @@ fn node(
 }
 
 /// Sets the panic hook of the process: it logs the panic to the log of `flush` as its
-/// last line, then calls the hook before it once the log has written each line.
+/// last line, then calls the hook before it when [`node::Flush::panicked`] allows.
 fn hook(flush: node::Flush) {
     let previous = panic::take_hook();
     // A log that does not take the panic within its bound has a stuck writer, which

@@ -4,6 +4,7 @@ mod queue;
 
 use std::fmt;
 use std::io;
+use std::panic::PanicHookInfo;
 
 use clock::log::{Mesh, Time};
 use serde::ser::{Serialize, SerializeMap, Serializer};
@@ -108,15 +109,33 @@ where
 impl Line {
     /// The count line: WARN `dropped` with the field `lines`, the count `lines`.
     fn dropped(&self, lines: u64) -> String {
+        let field = ("lines", Value::Unsigned(lines.into()));
+        self.line(tracing::Level::WARN, "node::log", "dropped", field)
+    }
+
+    /// The panic line: ERROR `panicked` with the field `panic`, the text of `info`.
+    fn panicked(&self, info: &PanicHookInfo<'_>) -> String {
+        let field = ("panic", Value::Text(info.to_string()));
+        self.line(tracing::Level::ERROR, "node", "panicked", field)
+    }
+
+    /// The line of an event with `message` and one `field`, stamped now.
+    fn line(
+        &self,
+        level: tracing::Level,
+        target: &str,
+        message: &str,
+        field: (&'static str, Value),
+    ) -> String {
         #[expect(clippy::disallowed_methods, reason = "only the log stamps lines")]
         let time = self.time.now();
         let entry = Entry {
             time,
-            level: tracing::Level::WARN,
-            target: "node::log",
+            level,
+            target,
             fields: Fields {
-                message: Some("dropped".to_owned()),
-                others: vec![("lines", Value::Unsigned(lines.into()))],
+                message: Some(message.to_owned()),
+                others: vec![field],
             },
         };
         let mut text = String::new();

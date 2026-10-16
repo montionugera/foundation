@@ -465,13 +465,27 @@ fn child(name: &str, case: &str) -> String {
         .env(CHILD, case)
         .output()
         .expect("the child runs");
-    assert!(!output.status.success(), "the child panics");
+    assert_eq!(
+        output.status.code(),
+        Some(101),
+        "the child panics with no abort"
+    );
     String::from_utf8(output.stderr).expect("UTF-8")
 }
 
-/// In a child process: a log with each line of `numbered(0, 3)` in its queue and no
-/// thread `log`, and the panic hook of `main`, then a panic. A `stuck` writer blocks.
-fn panics(stuck: bool) -> ! {
+/// A value whose `Display` panics.
+struct Boom;
+
+impl std::fmt::Display for Boom {
+    fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        panic!("the field panics");
+    }
+}
+
+/// In a child process: a log with its thread `log` held and each line of
+/// `numbered(0, 3)` in its queue, and the panic hook of `main`, then a panic. A
+/// `stuck` writer blocks. A `late` log drops its hold, then panics in an event.
+fn panics(stuck: bool, late: bool) -> ! {
     let (_, mesh) = clock::Clock::new(os::clock());
     let (_free, freed) = mpsc::channel();
     let (entered, _blocked) = mpsc::channel();
@@ -493,13 +507,21 @@ fn panics(stuck: bool) -> ! {
     let threads = os::threads().expect("threads");
     let wall = os::wall().expect("a wall clock");
     let log = log::open(Log { writer, format }, &threads, wall, mesh);
+    let hold = log.hold().expect("the thread log starts");
     tracing::dispatcher::with_default(&log.log, numbered(0, 3));
+    let dispatch = log.log.clone();
     let previous = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
         if log.panicked(info) {
             previous(info);
         }
     }));
+    if late {
+        drop(hold);
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!(target: "test", field = %Boom);
+        });
+    }
     panic!("the test panics");
 }
 
@@ -507,8 +529,9 @@ fn panics(stuck: bool) -> ! {
 fn a_panic_writes_the_queued_lines_then_the_panic() {
     #[expect(clippy::disallowed_methods, reason = "the parent test marks its child")]
     match std::env::var(CHILD).as_deref() {
-        Ok("free") => panics(false),
-        Ok("stuck") => panics(true),
+        Ok("free") => panics(false, false),
+        Ok("stuck") => panics(true, false),
+        Ok("late") => panics(false, true),
         _ => {}
     }
     let name = "tests::log::a_panic_writes_the_queued_lines_then_the_panic";
@@ -542,6 +565,13 @@ fn a_panic_with_a_stuck_writer_ends_after_the_bound_with_no_line() {
     let name = "tests::log::a_panic_writes_the_queued_lines_then_the_panic";
     let stderr = child(name, "stuck");
     assert!(!stderr.contains("the test panics"), "{stderr}");
+}
+
+#[test]
+fn a_panic_in_an_event_after_the_shards_end_reaches_stderr_with_no_abort() {
+    let name = "tests::log::a_panic_writes_the_queued_lines_then_the_panic";
+    let stderr = child(name, "late");
+    assert!(stderr.contains("the field panics"), "{stderr}");
 }
 
 /// The line of an event with `field` and other fields.

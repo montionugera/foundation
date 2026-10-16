@@ -104,6 +104,26 @@ impl Flush {
         if self.queue.resume().is_err() {
             return false;
         }
+        self.written(sent, bound)
+    }
+
+    /// Logs ERROR `panicked` with the field `panic`, the text of `info`. For a panic
+    /// hook: it can run inside an event, so it sets no dispatch and starts no
+    /// thread. While a [`Hold`] lives, waits as [`Flush::wait`] does with a bound of
+    /// 1 s, and returns `false` when the bound passed first: the writer may then
+    /// block a write of the hook too. After each [`Hold`] dropped, returns `true` at
+    /// once, and the line waits for the next [`Flush::wait`].
+    #[must_use]
+    pub fn panicked(&self, info: &PanicHookInfo<'_>) -> bool {
+        self.queue.push(self.queue.line.panicked(info).into_bytes());
+        if self.queue.closed.load(Ordering::Acquire) {
+            return true;
+        }
+        self.written(self.queue.sent.load(Ordering::Acquire), PANIC)
+    }
+
+    /// The wait of [`Flush::wait`] for the first `sent` lines, with no start.
+    fn written(&self, sent: u64, bound: Duration) -> bool {
         let queue = &self.queue;
         let busy = |state: &mut State| {
             state.written < sent
@@ -128,17 +148,6 @@ impl Flush {
             }
         }
         true
-    }
-
-    /// Logs ERROR `panicked` with the field `panic`, the text of `info`, then waits as
-    /// [`Flush::wait`] does with a bound of 1 s. For a panic hook. Returns `false`
-    /// when the bound passed first: the writer may then block a write of the hook too.
-    #[must_use]
-    pub fn panicked(&self, info: &PanicHookInfo<'_>) -> bool {
-        tracing::dispatcher::with_default(&self.log, || {
-            tracing::error!(target: "node", panic = %info, "panicked");
-        });
-        self.wait(PANIC)
     }
 }
 
