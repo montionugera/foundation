@@ -1,5 +1,5 @@
-//! `wal::Writer`, `log::Logs`, and a header table, for the bench targets and the
-//! `alloc` test only. Not a stable surface.
+//! `wal::Writer`, `log::Logs`, the commit task, and a header table, for the bench
+//! targets and the `alloc` and `memory` tests only. Not a stable surface.
 
 use std::num::{NonZeroU32, NonZeroU64};
 use std::{hint, iter, mem};
@@ -14,6 +14,8 @@ use crate::group;
 use crate::log::Carried;
 use crate::record::{ALIGN, BLOCK};
 use crate::wal::{Ends, Layout, Position, Writer};
+
+pub use crate::buffer::bench::Deadline;
 
 /// The blocks that each ring of the `wal` bench adds to its ID, so that its times
 /// compare with those of earlier commits.
@@ -429,6 +431,27 @@ impl Table {
     }
 }
 
+/// Runs `count` commits, each of which gives the tail after it, and gives the most
+/// commits from one trim to the next. Checks that a sample of the `wal` bench holds
+/// at least 10 trims.
+#[cfg(test)]
+pub(crate) fn most_between_trims(count: u64, mut commit: impl FnMut() -> u64) -> u64 {
+    let (mut tail, mut since, mut most) = (commit(), 0, 0);
+    for _ in 0..count {
+        let next = commit();
+        since += 1;
+        if next != tail {
+            (tail, most, since) = (next, most.max(since), 0);
+        }
+    }
+    let most = most.max(since);
+    assert!(
+        10 * most <= u64::from(SAMPLE_SIZE),
+        "{most} commits between trims"
+    );
+    most
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -445,26 +468,6 @@ mod tests {
     #[should_panic(expected = "the ring has room")]
     fn a_ring_of_15_blocks_refuses_a_commit_of_8_records() {
         Ring::new(15).commit(8);
-    }
-
-    /// Runs `count` commits, each of which gives the tail after it, and gives the
-    /// most commits from one trim to the next. Checks that a sample of the `wal`
-    /// bench holds at least 10 trims.
-    fn most_between_trims(count: u64, mut commit: impl FnMut() -> u64) -> u64 {
-        let (mut tail, mut since, mut most) = (commit(), 0, 0);
-        for _ in 0..count {
-            let next = commit();
-            since += 1;
-            if next != tail {
-                (tail, most, since) = (next, most.max(since), 0);
-            }
-        }
-        let most = most.max(since);
-        assert!(
-            10 * most <= u64::from(SAMPLE_SIZE),
-            "{most} commits between trims"
-        );
-        most
     }
 
     /// After the warm-up of the `wal` bench, the commits of 1 and of 8 records trim

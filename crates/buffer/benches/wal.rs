@@ -9,9 +9,12 @@
 //! commit of 1 or 32 entries on the ring of ID 64: the fit, which checks that the
 //! record fits, the take, the close, the seal with the CRC of the body, and the same
 //! trim and sync. `queue_group` adds the append of each entry to the logs, as the
-//! buffer queues a batch.
+//! buffer queues a batch. `deadline` times a deadline of the commit task that trims,
+//! with an entry of each of 1 or 32 indexes: the work of `queue_group` with the
+//! checkpoint of the trim and the sync of the logs. `deadline_carry` times one that
+//! also writes a carry record of 32 tails.
 
-use buffer::bench::{Group, PHASE, Ring, SAMPLE_SIZE};
+use buffer::bench::{Deadline, Group, PHASE, Ring, SAMPLE_SIZE};
 use divan::Bencher;
 use divan::counter::ItemsCount;
 
@@ -62,6 +65,36 @@ fn queue_group(bencher: Bencher<'_, '_>, entries: usize) {
     bencher
         .counter(ItemsCount::new(entries))
         .bench_local(|| group.queue(divan::black_box(entries)));
+}
+
+#[divan::bench(args = [1, 32], sample_size = SAMPLE_SIZE)]
+fn deadline(bencher: Bencher<'_, '_>, indexes: u32) {
+    let mut deadline = Deadline::new(indexes, 64 + PHASE);
+    for _ in 0..2 * 64 {
+        deadline.commit(1);
+    }
+    bencher
+        .counter(ItemsCount::new(usize::try_from(indexes).expect("fits")))
+        .bench_local(|| deadline.commit(divan::black_box(1)));
+}
+
+/// The last of 32 indexes appends one entry each 4096 deadlines, so the deadline
+/// after 13 carries its tail and fills the record with the tails of the other 31.
+#[divan::bench]
+fn deadline_carry(bencher: Bencher<'_, '_>) {
+    bencher
+        .counter(ItemsCount::new(31_usize))
+        .with_inputs(|| {
+            let mut deadline = Deadline::new(32, 64 + PHASE);
+            for _ in 0..13 {
+                deadline.commit(4096);
+            }
+            deadline
+        })
+        .bench_local_values(|mut deadline| {
+            assert_eq!(deadline.commit(4096), 32, "the deadline carries 32 tails");
+            deadline
+        });
 }
 
 /// The group ring of 64 blocks after the warm-up of `commit`, out of line as
