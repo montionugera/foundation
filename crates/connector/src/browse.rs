@@ -1,0 +1,649 @@
+//! Browses a device as a tree of folders and points: one level, or each point whose
+//! path matches a pattern.
+
+use std::fmt;
+use std::str::FromStr;
+
+use document::diagnostic::Code;
+
+use crate::kind::{Error, config_error};
+
+/// The most points that one browse of a pattern gives.
+pub const LIMIT: usize = 500;
+
+/// The most entries that one browse of a pattern takes from the device.
+pub const VISITS: usize = 10_000;
+
+/// A device open for one browse. A kind implements it on its session, so one walk
+/// connects once.
+pub trait Device {
+    /// Gives one page of the entries of the folder at `at`, in device order, from
+    /// `cursor`, or from the first entry when `None`. Each entry's path is a child of
+    /// `at`, and no two entries of one folder have the same name. `None` when no
+    /// folder is at `at`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Device`] when the device fails.
+    fn level(
+        &mut self,
+        at: &Path,
+        cursor: Option<&Cursor>,
+    ) -> impl Future<Output = Result<Option<Page>, Error>>;
+
+    /// Reads the value of the point of each tag, in the order of `tags`: `None` for a
+    /// value that the device did not give. The default gives [`Error::Config`] with
+    /// `connector.no-values`: the kind cannot read values.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Device`] when the device fails.
+    fn values(
+        &mut self,
+        tags: &[&str],
+    ) -> impl Future<Output = Result<Vec<Option<Value>>, Error>> {
+        let _: &[&str] = tags;
+        std::future::ready(Err(config_error(
+            NO_VALUES,
+            &"this connector kind cannot read the values of its points",
+            "Browse without values",
+        )))
+    }
+}
+
+/// Runs `query` over `device`. A pattern walks depth first, in device order, and
+/// browses no folder that no match can be under.
+///
+/// # Errors
+///
+/// [`Error::Config`] with `connector.no-folder` when no folder is at the start, or at
+/// a folder that the device gave and then did not have. The errors of `device`.
+///
+/// # Panics
+///
+/// When `device` gives an entry with no name, or a count of values that is not the
+/// count of tags.
+pub async fn walk(device: &mut impl Device, query: &Query) -> Result<Found, Error> {
+    walk_within(device, query, LIMIT, VISITS).await
+}
+
+/// [`walk`] with `limit` points and `visits` entries.
+async fn walk_within(
+    device: &mut impl Device,
+    query: &Query,
+    limit: usize,
+    visits: usize,
+) -> Result<Found, Error> {
+    let (entries, end) = match &query.scope {
+        Scope::Level(cursor) => {
+            let page = level(device, &query.start, cursor.as_ref()).await?;
+            (page.entries, page.next.map_or(End::Done, End::Next))
+        }
+        Scope::Match(pattern) => {
+            search(device, &query.start, pattern, limit, visits).await?
+        }
+    };
+    let values = match query.values {
+        Values::Skipped => Vec::new(),
+        Values::Read => read(device, &entries).await?,
+    };
+    Ok(Found {
+        entries,
+        values,
+        end,
+    })
+}
+
+/// One folder of a walk whose entries are not all seen.
+struct Frame {
+    path: Path,
+    state: State,
+    entries: std::vec::IntoIter<Entry>,
+    next: Option<Cursor>,
+}
+
+impl Frame {
+    async fn open(
+        device: &mut impl Device,
+        path: Path,
+        state: State,
+    ) -> Result<Self, Error> {
+        let page = level(device, &path, None).await?;
+        Ok(Self {
+            path,
+            state,
+            entries: page.entries.into_iter(),
+            next: page.next,
+        })
+    }
+}
+
+/// Each entry under `start` that is not a folder and whose path from it matches.
+async fn search(
+    device: &mut impl Device,
+    start: &Path,
+    pattern: &Pattern,
+    limit: usize,
+    visits: usize,
+) -> Result<(Vec<Entry>, End), Error> {
+    let mut found = Vec::new();
+    let mut seen = 0;
+    let mut stack = vec![Frame::open(device, start.clone(), pattern.start()).await?];
+    while let Some(frame) = stack.last_mut() {
+        let Some(entry) = frame.entries.next() else {
+            match frame.next.take() {
+                Some(cursor) => {
+                    let page = level(device, &frame.path, Some(&cursor)).await?;
+                    frame.entries = page.entries.into_iter();
+                    frame.next = page.next;
+                }
+                None => {
+                    stack.pop();
+                }
+            }
+            continue;
+        };
+        seen += 1;
+        if seen > visits {
+            return Ok((found, End::Budget));
+        }
+        let name = entry
+            .path
+            .names
+            .last()
+            .expect("invariant: an entry has a name");
+        let state = pattern.step(&frame.state, name);
+        if entry.shape == Shape::Folder {
+            if pattern.open(&state) {
+                stack.push(Frame::open(device, entry.path, state).await?);
+            }
+        } else if pattern.matched(&state) {
+            if found.len() == limit {
+                return Ok((found, End::Limit));
+            }
+            found.push(entry);
+        }
+    }
+    Ok((found, End::Done))
+}
+
+/// The page of the folder at `at`.
+async fn level(
+    device: &mut impl Device,
+    at: &Path,
+    cursor: Option<&Cursor>,
+) -> Result<Page, Error> {
+    device.level(at, cursor).await?.ok_or_else(|| {
+        config_error(
+            NO_FOLDER,
+            &format_args!("the device has no folder at {at:?}"),
+            "Browse the folder above it to see the names in it",
+        )
+    })
+}
+
+/// The value of each of `entries`, read in one call.
+async fn read(
+    device: &mut impl Device,
+    entries: &[Entry],
+) -> Result<Vec<Option<Value>>, Error> {
+    let points: Vec<_> = entries
+        .iter()
+        .filter(|entry| matches!(entry.shape, Shape::Point(_)))
+        .map(|entry| entry.tag.as_str())
+        .collect();
+    if points.is_empty() {
+        return Ok(vec![None; entries.len()]);
+    }
+    let read = device.values(&points).await?;
+    assert_eq!(
+        read.len(),
+        points.len(),
+        "invariant: the device gave {} values for {} tags",
+        read.len(),
+        points.len(),
+    );
+    let mut read = read.into_iter();
+    Ok(entries
+        .iter()
+        .map(|entry| match entry.shape {
+            Shape::Point(_) => read.next().expect("invariant: one value per point"),
+            Shape::Folder | Shape::Unreadable(_) => None,
+        })
+        .collect())
+}
+
+const NO_VALUES: Code = Code::new("connector.no-values");
+const NO_FOLDER: Code = Code::new("connector.no-folder");
+
+/// The path of an entry from the root of a device's tree: the name of each entry on
+/// the way, its own last. Its text joins the names with `/`, with `\` before each `/`,
+/// `*`, and `\` in a name. The root is the empty text.
+#[derive(Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Path {
+    names: Vec<String>,
+}
+
+impl Path {
+    /// The root, with no name.
+    #[must_use]
+    pub fn root() -> Self {
+        Self::default()
+    }
+
+    /// The path of the entry `name` in this folder.
+    #[must_use]
+    pub fn child(&self, name: impl Into<String>) -> Self {
+        let mut names = self.names.clone();
+        names.push(name.into());
+        Self { names }
+    }
+
+    /// The name of each entry from the root, in order.
+    #[must_use]
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+}
+
+impl FromStr for Path {
+    type Err = Malformed;
+
+    /// Reads the text of a path. A `*` is a name's own character.
+    fn from_str(text: &str) -> Result<Self, Malformed> {
+        if text.is_empty() {
+            return Ok(Self::root());
+        }
+        let names = split(text)?
+            .into_iter()
+            .map(|name| name.into_iter().map(Char::char).collect())
+            .collect();
+        Ok(Self { names })
+    }
+}
+
+impl fmt::Display for Path {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut separator = "";
+        for name in &self.names {
+            f.write_str(separator)?;
+            name.chars().try_for_each(|c| escape(f, c))?;
+            separator = "/";
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for Path {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.to_string())
+    }
+}
+
+/// A pattern of paths: `/` splits names, `**` alone between two `/` matches any
+/// number of names (none too), `*` matches any text in one name, and `\` takes the
+/// next character as it is.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Pattern {
+    segments: Vec<Segment>,
+}
+
+/// What one segment of a [`Pattern`] matches.
+#[derive(Clone, PartialEq, Eq)]
+enum Segment {
+    /// Any number of names.
+    Any,
+    /// One name, with each `None` as any text. No two `None` are next to each other.
+    Name(Vec<Option<char>>),
+}
+
+/// The positions in a pattern's segments that a prefix of a path reaches, in order,
+/// with no repeat.
+#[derive(Clone, Debug)]
+struct State(Vec<usize>);
+
+impl Pattern {
+    /// The state of the empty path.
+    fn start(&self) -> State {
+        self.close(vec![0])
+    }
+
+    /// The state after `name` from `state`.
+    fn step(&self, state: &State, name: &str) -> State {
+        let mut next = Vec::new();
+        for &at in &state.0 {
+            match self.segments.get(at) {
+                Some(Segment::Any) => next.push(at),
+                Some(Segment::Name(glob)) if glob_matches(glob, name) => {
+                    next.push(at + 1);
+                }
+                Some(Segment::Name(_)) | None => {}
+            }
+        }
+        next.sort_unstable();
+        next.dedup();
+        self.close(next)
+    }
+
+    /// Whether the path of `state` matches.
+    fn matched(&self, state: &State) -> bool {
+        state.0.last() == Some(&self.segments.len())
+    }
+
+    /// Whether a longer path than that of `state` can match.
+    fn open(&self, state: &State) -> bool {
+        state.0.first().is_some_and(|&at| at < self.segments.len())
+    }
+
+    /// `positions` and each one after an `Any` in it, since `Any` matches no name too.
+    fn close(&self, mut positions: Vec<usize>) -> State {
+        let mut i = 0;
+        while let Some(&at) = positions.get(i) {
+            let after = at + 1;
+            if self.segments.get(at) == Some(&Segment::Any)
+                && !positions.contains(&after)
+            {
+                positions.push(after);
+            }
+            i += 1;
+        }
+        positions.sort_unstable();
+        State(positions)
+    }
+}
+
+/// Whether `name` matches `glob`, in which `None` is any text.
+fn glob_matches(glob: &[Option<char>], name: &str) -> bool {
+    let name: Vec<char> = name.chars().collect();
+    let (mut g, mut n) = (0, 0);
+    // Where the last `None` was, and where in `name` its text ends now.
+    let mut star = None;
+    while n < name.len() {
+        match glob.get(g) {
+            Some(None) => {
+                star = Some((g, n));
+                g += 1;
+            }
+            Some(Some(c)) if *c == name[n] => {
+                g += 1;
+                n += 1;
+            }
+            _ => match star {
+                Some((at, end)) => {
+                    g = at + 1;
+                    n = end + 1;
+                    star = Some((at, end + 1));
+                }
+                None => return false,
+            },
+        }
+    }
+    glob[g..].iter().all(Option::is_none)
+}
+
+impl FromStr for Pattern {
+    type Err = Malformed;
+
+    fn from_str(text: &str) -> Result<Self, Malformed> {
+        let segments = split(text)?.into_iter().map(segment).collect();
+        Ok(Self { segments })
+    }
+}
+
+impl fmt::Display for Pattern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut separator = "";
+        for segment in &self.segments {
+            f.write_str(separator)?;
+            match segment {
+                Segment::Any => f.write_str("**")?,
+                Segment::Name(glob) => {
+                    for c in glob {
+                        match c {
+                            None => f.write_str("*")?,
+                            Some(c) => escape(f, *c)?,
+                        }
+                    }
+                }
+            }
+            separator = "/";
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for Pattern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.to_string())
+    }
+}
+
+/// One character of the text of a path or a pattern.
+#[derive(Clone, Copy)]
+enum Char {
+    Plain(char),
+    Escaped(char),
+    Star,
+}
+
+impl Char {
+    /// The character of a path's name, in which a `*` is its own.
+    fn char(self) -> char {
+        match self {
+            Self::Plain(c) | Self::Escaped(c) => c,
+            Self::Star => '*',
+        }
+    }
+}
+
+/// The segment of the text of one name of a pattern.
+fn segment(name: Vec<Char>) -> Segment {
+    if let [Char::Star, Char::Star] = name.as_slice() {
+        return Segment::Any;
+    }
+    let mut glob: Vec<Option<char>> = Vec::new();
+    for c in name {
+        let c = match c {
+            Char::Star if glob.last() == Some(&None) => continue,
+            Char::Star => None,
+            Char::Plain(c) | Char::Escaped(c) => Some(c),
+        };
+        glob.push(c);
+    }
+    Segment::Name(glob)
+}
+
+/// The names of `text`, split on each `/` that no `\` takes.
+fn split(text: &str) -> Result<Vec<Vec<Char>>, Malformed> {
+    let mut names = vec![Vec::new()];
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        let name = names.last_mut().expect("invariant: one name at the least");
+        match c {
+            '\\' => name.push(Char::Escaped(chars.next().ok_or(Malformed::Escape)?)),
+            '*' => name.push(Char::Star),
+            '/' => names.push(Vec::new()),
+            c => name.push(Char::Plain(c)),
+        }
+    }
+    if names.iter().any(Vec::is_empty) {
+        return Err(Malformed::Empty);
+    }
+    Ok(names)
+}
+
+/// Writes `c` as the text of a name.
+fn escape(f: &mut fmt::Formatter<'_>, c: char) -> fmt::Result {
+    if matches!(c, '/' | '*' | '\\') {
+        f.write_str("\\")?;
+    }
+    write!(f, "{c}")
+}
+
+/// Text that is not a path or a pattern.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Malformed {
+    /// A name is empty, as in `a//b` or with a `/` at an end. A pattern needs one
+    /// name at the least.
+    Empty,
+    /// The text ends in a `\` that takes no character.
+    Escape,
+}
+
+impl fmt::Display for Malformed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => f.write_str("a name in it is empty"),
+            Self::Escape => f.write_str("it ends in a `\\` that takes no character"),
+        }
+    }
+}
+
+impl std::error::Error for Malformed {}
+
+/// One entry of a device's tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
+    /// Where it is.
+    pub path: Path,
+    /// Its address in the device, in the form of the kind: an OPC UA node ID, a
+    /// register.
+    pub tag: String,
+    /// What it is.
+    pub shape: Shape,
+}
+
+/// What an entry is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Shape {
+    /// It holds other entries.
+    Folder,
+    /// A point that a connector of the kind can read or write.
+    Point(Facts),
+    /// A point that a connector of the kind cannot read or write, with the reason,
+    /// such as "an array".
+    Unreadable(String),
+}
+
+/// What the device knows of a point. `None` is a fact that the device cannot know.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Facts {
+    /// The sample type.
+    pub data_type: Option<types::sample::Type>,
+    /// The unit, as the device gives it.
+    pub unit: Option<String>,
+    /// Whether a connector can read it, write it, or both.
+    pub access: Option<Access>,
+}
+
+/// Whether a connector can read a point, write it, or both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Access {
+    /// A connector can read it.
+    Read,
+    /// A connector can write it.
+    Write,
+    /// A connector can read it and write it.
+    ReadWrite,
+}
+
+/// The value of a point when it was read.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Value {
+    /// A bool.
+    Bool(bool),
+    /// A whole number.
+    Integer(i128),
+    /// A float.
+    Float(f64),
+    /// Text, also the text of a value of another type, such as a time.
+    Text(String),
+}
+
+/// One page of the entries of a folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Page {
+    /// The entries, in device order.
+    pub entries: Vec<Entry>,
+    /// Where the next page starts, or `None` after the last.
+    pub next: Option<Cursor>,
+}
+
+/// Where the next page of a folder starts, in the form of the kind. It holds no
+/// session state, so a later browse takes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cursor(String);
+
+impl Cursor {
+    /// Wraps the text of a kind's cursor.
+    #[must_use]
+    pub fn new(text: String) -> Self {
+        Self(text)
+    }
+
+    /// Its text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// What a browse looks for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Query {
+    /// The folder where it starts.
+    pub start: Path,
+    /// One level of `start`, or the points under it that match a pattern.
+    pub scope: Scope,
+    /// Whether it reads the value of each point that it gives.
+    pub values: Values,
+}
+
+/// What a browse gives of its start.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// The page of its entries from the cursor, or the first page when `None`.
+    Level(Option<Cursor>),
+    /// Each entry under it that is not a folder and whose path from it matches.
+    Match(Pattern),
+}
+
+/// Whether a browse reads values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Values {
+    /// It reads none.
+    Skipped,
+    /// It reads the value of each point that it gives, in one call.
+    Read,
+}
+
+/// What a browse found.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Found {
+    /// The entries, in device order: at most [`LIMIT`] for [`Scope::Match`].
+    pub entries: Vec<Entry>,
+    /// With [`Values::Read`], the value of each entry, in the order of `entries`:
+    /// `None` for a folder, an unreadable point, or a value that the device did not
+    /// give. Empty with [`Values::Skipped`].
+    pub values: Vec<Option<Value>>,
+    /// Why it stopped.
+    pub end: End,
+}
+
+/// Why a browse stopped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum End {
+    /// It gave each entry that it looks for.
+    Done,
+    /// The next page of the level starts at the cursor.
+    Next(Cursor),
+    /// More than [`LIMIT`] points match.
+    Limit,
+    /// It took [`VISITS`] entries from the device before it saw each one, so more
+    /// may match.
+    Budget,
+}
+
+#[cfg(test)]
+#[cfg(not(loom))]
+mod tests;

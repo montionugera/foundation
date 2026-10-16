@@ -599,7 +599,7 @@ impl From<types::frame::Error> for Error {
 }
 
 /// [`Error::Config`] with one diagnostic and no span, whose message is `error`.
-fn config_error(code: Code, error: &dyn fmt::Display, fix: &str) -> Error {
+pub(crate) fn config_error(code: Code, error: &dyn fmt::Display, fix: &str) -> Error {
     Error::Config(vec![Diagnostic::new(
         code,
         None,
