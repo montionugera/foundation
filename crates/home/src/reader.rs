@@ -7,12 +7,12 @@ use std::sync::Arc;
 
 use buffer::{Buffer, Mark, Stored};
 pub use delivery::{Error, Position, named};
-use delivery::{Reader, Readers, Start};
+use delivery::{Reader, Readers, Record, Start};
 use types::channel::Slot;
 use types::frame::key_set::KeySet;
 use types::frame::{Frame, Path};
 use types::hash;
-use types::time::Stamp;
+use types::time::{Span, Stamp};
 
 pub mod disk;
 
@@ -60,6 +60,46 @@ impl fmt::Display for Unsynced {
 }
 
 impl std::error::Error for Unsynced {}
+
+/// Why a named complete reader did not open. The open opened nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unopened {
+    /// As [`Unsynced`].
+    Unsynced,
+    /// The open adds a record, and the records of the named readers of the index
+    /// would pass `limit` bytes, the most that one entry of the buffer holds. Close a
+    /// named reader of the index whose hold is zero, wait for a hold to end, or open
+    /// the reader unnamed. An open of a reader that holds a record opens over the
+    /// limit, records nothing, and writes a warning event: a restart after its old
+    /// hold ends resumes it at the live tail, until #2833.
+    Full {
+        /// The most bytes of one entry.
+        limit: usize,
+    },
+    /// The open adds a record, opens a held one, or takes over an open session with a
+    /// new hold, and the buffer had no block or no room for the entry that holds the
+    /// records, so a restart would not resume the reader. Open it again later.
+    Unrecorded,
+}
+
+impl fmt::Display for Unopened {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unsynced => Unsynced.fmt(f),
+            Self::Full { limit } => write!(
+                f,
+                "the records of the named readers of the index would pass {limit} bytes"
+            ),
+            Self::Unrecorded => write!(
+                f,
+                "the home had no room to record the position of the named reader: \
+                 open it again later"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for Unopened {}
 
 /// A reader that opened, and the session of its name that it took over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,6 +149,12 @@ pub(crate) struct Set {
     /// The place of each index whose readers may be
     /// [pending](delivery::Readers::pending), each once.
     listed: Vec<usize>,
+    /// The place of each index with named state ([`Entry::named`]), each once: the
+    /// indexes that a tick visits.
+    ticked: Vec<usize>,
+    /// The records that the open of the shard restored for each index, until its carry
+    /// with mesh time, or its first [`advance`](Set::advance) after the carry.
+    waiting: hash::Map<Slot, Vec<Record>>,
     /// Each reader to wake: one with a frame to take, or a complete reader that missed
     /// a frame with none waiting. A key can repeat.
     keys: Vec<Key>,
@@ -122,6 +168,33 @@ pub(crate) struct Set {
     /// goes on. A read from `Mark::at(seq)` gives each entry with no samples at `seq`
     /// again, so more of them than one read takes would stop the reader for ever.
     marks: hash::Map<complete::Key, Mark>,
+    /// Each complete reader whose named open appended its record, or took over a
+    /// session that waits, until the commit that holds the entry. It takes no frame
+    /// until then: a restart before the commit would lose the frames that it got and
+    /// did not ack.
+    recording: hash::Map<complete::Key, Recording>,
+}
+
+/// What a named complete open does to the records of its index.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Opening {
+    /// Its session is open with its hold, and the records stay.
+    Kept,
+    /// The records with its new record: a first open, a reopen in its hold, or a
+    /// takeover with a new hold.
+    Records(Vec<Record>),
+    /// It holds a record, and the records with its new one pass the limit by `bytes`,
+    /// as on a smaller pool after a restart. It opens and appends nothing.
+    Over { bytes: usize },
+}
+
+/// The commit that a named complete reader waits for before it takes a frame.
+#[derive(Clone, Copy, Debug)]
+struct Recording {
+    /// The count of [`Buffer::commits`] at which its record is durable.
+    until: u64,
+    /// Whether a take found it waiting, so that the commit wakes it.
+    waited: bool,
 }
 
 /// The readers of one carried index.
@@ -129,42 +202,154 @@ pub(crate) struct Set {
 struct Entry {
     slot: Slot,
     readers: Readers,
-    /// Whether the set lists the index.
+    /// Whether `Set::listed` holds the index.
     listed: bool,
+    /// Whether `Set::ticked` holds the index.
+    ticked: bool,
+    /// Whether the newest named entry of the index in the buffer holds a record.
+    stored: bool,
+}
+
+impl Entry {
+    /// Whether the index has named state: its records changed, wait for mesh time in
+    /// `waiting`, or are in the buffer, where the end of a hold changes them.
+    fn named(&self, waiting: &hash::Map<Slot, Vec<Record>>) -> bool {
+        self.stored || self.readers.changed() || waiting.contains_key(&self.slot)
+    }
 }
 
 impl Set {
+    /// A set that carries no index, with the records of the newest named entry of
+    /// each index in the buffer, by slot, which the first carry of each index
+    /// restores.
+    pub(crate) fn new(mut records: hash::Map<Slot, Vec<Record>>) -> Self {
+        records.retain(|_, records| !records.is_empty());
+        Self {
+            waiting: records,
+            ..Self::default()
+        }
+    }
+
     /// Adds the readers of the index at `slot` at `place`, with `live` as the seq of
-    /// its next live frame.
+    /// its next live frame, and the holds of the records that [`new`](Self::new) got
+    /// for it, at mesh time `now`. With no mesh time, the records wait for the first
+    /// [`advance`](Self::advance).
     ///
     /// # Panics
     ///
     /// If `place` is not the next place.
-    pub(crate) fn carry(&mut self, place: usize, slot: Slot, live: u64) {
+    pub(crate) fn carry(
+        &mut self,
+        place: usize,
+        slot: Slot,
+        live: u64,
+        now: Option<Stamp>,
+    ) {
         assert_eq!(place, self.entries.len(), "{place} is not the next place");
         self.entries.push(Entry {
             slot,
             readers: Readers::after(live, self.first.remove(&slot).unwrap_or(0)),
             listed: false,
+            ticked: false,
+            stored: self.waiting.contains_key(&slot),
         });
+        if let Some(now) = now {
+            self.restore(place, now);
+        }
+        self.note(place);
         // Room for every index, so that `applied` never grows the list.
         self.listed.reserve(self.entries.len());
     }
 
     /// Drops the readers of the index at `place`, and moves the readers of the last
-    /// place there, as `Vec::swap_remove` moves an item.
+    /// place there, as `Vec::swap_remove` moves an item. Returns whether the newest
+    /// named entry of the index holds a record.
     ///
     /// # Panics
     ///
     /// If a reader of the index is open.
-    pub(crate) fn shed(&mut self, place: usize) {
+    #[must_use]
+    pub(crate) fn shed(&mut self, place: usize) -> bool {
         let last = self.entries.len() - 1;
         let entry = self.entries.swap_remove(place);
         self.first.insert(entry.slot, entry.readers.end());
-        self.listed.retain(|&listed| listed != place);
-        if let Some(listed) = self.listed.iter_mut().find(|listed| **listed == last) {
-            *listed = place;
+        self.waiting.remove(&entry.slot);
+        for places in [&mut self.listed, &mut self.ticked] {
+            places.retain(|&listed| listed != place);
+            if let Some(listed) = places.iter_mut().find(|listed| **listed == last) {
+                *listed = place;
+            }
         }
+        entry.stored
+    }
+
+    /// Adds the holds of the records that wait for mesh time on the index at `place`,
+    /// as at mesh time `now`.
+    fn restore(&mut self, place: usize, now: Stamp) {
+        let entry = &mut self.entries[place];
+        if let Some(records) = self.waiting.remove(&entry.slot) {
+            entry.readers.restore(records, now);
+        }
+    }
+
+    /// Adds the index at `place` to [`ticked`](Self::ticked) when it has named state.
+    fn note(&mut self, place: usize) {
+        let entry = &mut self.entries[place];
+        if entry.named(&self.waiting) && !mem::replace(&mut entry.ticked, true) {
+            self.ticked.push(place);
+        }
+    }
+
+    /// The place of each index with named state: its records changed, wait for mesh
+    /// time, or are in the buffer, where the end of a hold changes them. Each index
+    /// that a tick visits.
+    pub(crate) fn ticked(&self) -> &[usize] {
+        &self.ticked
+    }
+
+    /// Drops each index with no named state from [`ticked`](Self::ticked).
+    pub(crate) fn prune(&mut self) {
+        let (entries, waiting) = (&mut self.entries, &self.waiting);
+        self.ticked.retain(|&place| {
+            let entry = &mut entries[place];
+            entry.ticked = entry.named(waiting);
+            entry.ticked
+        });
+    }
+
+    /// Whether the records of the index at `place` changed or wait for mesh time, or
+    /// a named complete reader of it is open, whose acks move its record: the index
+    /// needs a tick soon. Takes time linear in the complete readers of the index.
+    pub(crate) fn busy(&self, place: usize) -> bool {
+        let entry = &self.entries[place];
+        entry.readers.changed()
+            || self.waiting.contains_key(&entry.slot)
+            || entry.readers.moving()
+    }
+
+    /// The mesh time at which the next hold of the index at `place` ends, or `None`
+    /// when no named reader of it holds. Takes time linear in its held readers.
+    pub(crate) fn deadline(&self, place: usize) -> Option<Stamp> {
+        self.entries[place].readers.deadline()
+    }
+
+    /// Whether the records of the index at `place` changed since the last
+    /// [`recorded`](Self::recorded).
+    pub(crate) fn changed(&self, place: usize) -> bool {
+        self.entries[place].readers.changed()
+    }
+
+    /// The record of each named reader of the index at `place`.
+    pub(crate) fn records(&self, place: usize) -> Vec<Record> {
+        self.entries[place].readers.records().collect()
+    }
+
+    /// Marks the records of the index at `place` as in the buffer: an entry that holds
+    /// a record when `stored`.
+    pub(crate) fn recorded(&mut self, place: usize, stored: bool) {
+        let entry = &mut self.entries[place];
+        entry.readers.recorded();
+        entry.stored = stored;
     }
 
     /// Opens an unnamed complete reader on the index at `place` at seq `live`, with a
@@ -186,9 +371,67 @@ impl Set {
             .key
     }
 
+    /// Restores the records that wait on the index at `place`, and ends each hold that
+    /// ended at or before mesh time `now`. Call it before each named open.
+    pub(crate) fn advance(&mut self, place: usize, now: Stamp) {
+        self.restore(place, now);
+        self.entries[place].readers.advance(now);
+        self.note(place);
+    }
+
+    /// What a named complete open of `reader` with `hold` does to the records of the
+    /// index at `place`, at its held position, else at seq `live`.
+    ///
+    /// # Errors
+    ///
+    /// [`Unopened::Full`] when the reader holds no record and the records with its
+    /// record pass `limit` bytes, the most of one named entry.
+    pub(crate) fn opening(
+        &self,
+        place: usize,
+        reader: &named::Key,
+        hold: Span,
+        live: u64,
+        limit: usize,
+    ) -> Result<Opening, Unopened> {
+        let mut records = self.records(place);
+        let open = |live| Record {
+            reader: reader.clone(),
+            position: Position {
+                live,
+                backfill: None,
+            },
+            hold,
+            closed: None,
+        };
+        let added = match records.iter_mut().find(|record| record.reader == *reader) {
+            Some(record) if record.closed.is_none() && record.hold == hold => {
+                return Ok(Opening::Kept);
+            }
+            Some(record) => {
+                *record = open(record.position.live);
+                false
+            }
+            None => {
+                records.push(open(live));
+                true
+            }
+        };
+        let len = crate::named::len(&records);
+        if len <= limit {
+            Ok(Opening::Records(records))
+        } else if added {
+            Err(Unopened::Full { limit })
+        } else {
+            Ok(Opening::Over { bytes: len - limit })
+        }
+    }
+
     /// Opens `reader`, which is named, on the index at `place` at its held position,
-    /// else at seq `live`, as [`open_complete`](Self::open_complete) does. Each hold
-    /// that ended at or before mesh time `now` ends first.
+    /// else at seq `live`, as [`open_complete`](Self::open_complete) does. With
+    /// `recorded_at`, the count of [`Buffer::commits`] at which the entry that records
+    /// it is durable, it takes no frame until then. A takeover of a session that waits
+    /// so waits too.
     ///
     /// # Panics
     ///
@@ -200,7 +443,7 @@ impl Set {
         live: u64,
         limit_bytes: u64,
         charge: complete::Charge,
-        now: Stamp,
+        recorded_at: Option<u64>,
     ) -> delivery::complete::Opened {
         let start = Start::Resume {
             presented: None,
@@ -209,11 +452,28 @@ impl Set {
                 backfill: None,
             },
         };
-        let readers = &mut self.entries[place].readers;
-        readers.advance(now);
-        let opened = readers.open(reader, start, limit_bytes, charge);
+        let slot = self.entries[place].slot;
+        let opened =
+            self.entries[place]
+                .readers
+                .open(reader, start, limit_bytes, charge);
+        let inherited = match opened.replaced {
+            Some(delivery::Key::Complete(session)) => self
+                .recording
+                .get(&complete::Key { slot, session })
+                .map(|recording| recording.until),
+            _ => None,
+        };
         self.replaced(place, opened.replaced);
-        self.drop_records(place);
+        self.note(place);
+        if let Some(until) = recorded_at.max(inherited) {
+            let key = complete::Key {
+                slot,
+                session: opened.key,
+            };
+            let waited = false;
+            self.recording.insert(key, Recording { until, waited });
+        }
         opened
     }
 
@@ -235,7 +495,6 @@ impl Set {
         let readers = &mut self.entries[place].readers;
         let opened = readers.open_named_latest(reader, now);
         self.replaced(place, opened.replaced);
-        self.drop_records(place);
         opened
     }
 
@@ -263,14 +522,12 @@ impl Set {
 
     /// Drops the mark of the closed complete reader `session` of the index at `place`.
     fn unmark(&mut self, place: usize, session: delivery::complete::Key) {
-        let slot = self.entries[place].slot;
-        self.marks.remove(&complete::Key { slot, session });
-    }
-
-    /// Drops the position records of the index at `place`, until #274 appends them to
-    /// the index log.
-    fn drop_records(&mut self, place: usize) {
-        self.entries[place].readers.records().for_each(drop);
+        let key = complete::Key {
+            slot: self.entries[place].slot,
+            session,
+        };
+        self.marks.remove(&key);
+        self.recording.remove(&key);
     }
 
     /// Records that the complete reader `session` on the index at `place` has each
@@ -308,6 +565,21 @@ impl Set {
         buffer: &Buffer,
     ) -> Next {
         let entry = &mut self.entries[place];
+        if !self.recording.is_empty()
+            && let delivery::Key::Complete(session) = session
+        {
+            let key = complete::Key {
+                slot: entry.slot,
+                session,
+            };
+            if let Some(recording) = self.recording.get_mut(&key) {
+                if buffer.commits() < recording.until {
+                    recording.waited = true;
+                    return Next::Empty;
+                }
+                self.recording.remove(&key);
+            }
+        }
         let from = match entry.readers.take(session) {
             delivery::Next::Frame(frame) => return Next::Frame(frame),
             delivery::Next::Empty => return Next::Empty,
@@ -392,7 +664,6 @@ impl Set {
         now: Option<Stamp>,
     ) {
         self.entries[place].readers.close(session, now);
-        self.drop_records(place);
         match session {
             delivery::Key::Latest(latest) => self.forget(place, latest),
             delivery::Key::Complete(session) => self.unmark(place, session),
@@ -465,6 +736,14 @@ impl Set {
                 wake(woken, entry.slot, entry.readers.release(durable));
                 entry.listed = entry.readers.pending();
                 entry.listed
+            });
+            let woken = &mut self.keys;
+            self.recording.retain(|&key, recording| {
+                let recorded = recording.until <= commits;
+                if recorded && recording.waited {
+                    woken.push(key.into());
+                }
+                !recorded
             });
         }
         keys.clear();
@@ -541,7 +820,7 @@ mod tests {
     fn carried(indexes: u32) -> Set {
         let mut set = Set::default();
         for (place, n) in (0..indexes).enumerate() {
-            set.carry(place, Slot::new(n), 0);
+            set.carry(place, Slot::new(n), 0, None);
         }
         set
     }
@@ -686,7 +965,7 @@ mod tests {
         #[should_panic(expected = "2 is not the next place")]
         fn panics_when_the_place_is_not_the_next() {
             let mut set = carried(1);
-            set.carry(2, Slot::new(1), 0);
+            set.carry(2, Slot::new(1), 0, None);
         }
 
         /// The set keeps the number of a shed index only until it carries it again.
@@ -695,9 +974,9 @@ mod tests {
         #[test]
         fn drops_the_number_of_a_shed_index_that_it_carries_again() {
             let mut set = carried(2);
-            set.shed(0);
+            assert!(!set.shed(0));
             assert_eq!(set.first.len(), 1);
-            set.carry(1, Slot::new(0), 0);
+            set.carry(1, Slot::new(0), 0, None);
             assert!(set.first.is_empty());
         }
     }
@@ -875,52 +1154,285 @@ mod tests {
     }
 
     mod named {
-        use types::time::Span;
-
         use super::*;
 
-        fn key() -> delivery::named::Key {
+        fn named(name: &str) -> delivery::named::Key {
             delivery::named::Key {
                 subject: "s".parse().expect("a valid name"),
-                name: "r".parse().expect("a valid name"),
+                name: name.parse().expect("a valid name"),
             }
         }
 
-        fn open(set: &mut Set) -> complete::Key {
+        fn open(set: &mut Set, name: &str) -> complete::Key {
             let reader = Reader::Named {
-                reader: key(),
+                reader: named(name),
                 hold: Span::from_nanos(10),
             };
-            let now = Stamp::from_nanos(0);
-            set.open_named_complete(
-                0,
-                reader,
-                0,
-                u64::MAX,
-                complete::Charge::Whole,
-                now,
-            )
-            .key
+            let charge = complete::Charge::Whole;
+            set.open_named_complete(0, reader, 0, u64::MAX, charge, None)
+                .key
         }
 
-        /// The position records that wait on the index at slot 0. No call shows them,
-        /// and each would stay for the life of the shard.
-        fn records(set: &mut Set) -> usize {
-            set.entries[0].readers.records().count()
+        fn record(name: &str, closed: Option<i64>) -> Record {
+            Record {
+                reader: named(name),
+                position: Position {
+                    live: 3,
+                    backfill: None,
+                },
+                hold: Span::from_nanos(10),
+                closed: closed.map(Stamp::from_nanos),
+            }
+        }
+
+        /// The bytes of one named entry that holds a record of each of `names`.
+        fn bytes(names: &[&str]) -> usize {
+            let records: Vec<_> = names.iter().map(|name| record(name, None)).collect();
+            crate::named::len(&records)
+        }
+
+        /// A set that restores `records` at the first carry of the index at each slot,
+        /// and carries `indexes` indexes, at slots from 0, with no mesh time.
+        fn restoring(records: &[(u32, Vec<Record>)], indexes: u32) -> Set {
+            let records = records.iter().map(|(n, r)| (Slot::new(*n), r.clone()));
+            let mut set = Set::new(records.collect());
+            for (place, n) in (0..indexes).enumerate() {
+                set.carry(place, Slot::new(n), 0, None);
+            }
+            set
+        }
+
+        fn opened(name: &str, live: u64) -> Record {
+            Record {
+                position: Position {
+                    live,
+                    backfill: None,
+                },
+                ..record(name, None)
+            }
         }
 
         #[test]
-        fn drops_the_position_records_at_each_open_takeover_and_close() {
+        fn change_until_recorded() {
             let mut set = carried(1);
-            let _first = open(&mut set);
-            assert_eq!(records(&mut set), 0);
-            let second = open(&mut set);
-            assert_eq!(records(&mut set), 0);
-            set.close(0, second.into(), Some(Stamp::from_nanos(1)));
-            assert_eq!(records(&mut set), 0);
-            let _third = open(&mut set);
-            let _latest = set.open_named_latest(0, key(), Stamp::from_nanos(2));
-            assert_eq!(records(&mut set), 0);
+            assert!(!set.changed(0));
+            assert!(set.ticked().is_empty());
+            let a = open(&mut set, "a");
+            assert!(set.changed(0));
+            assert_eq!(set.records(0).len(), 1);
+            assert_eq!(set.ticked(), [0]);
+            set.prune();
+            assert_eq!(set.ticked(), [0], "the records changed");
+            set.recorded(0, true);
+            assert!(!set.changed(0));
+            set.prune();
+            assert_eq!(set.ticked(), [0], "the buffer holds a record");
+            set.close(0, a.into(), Some(Stamp::from_nanos(1)));
+            assert!(set.changed(0), "the close changed them");
+            assert_eq!(set.records(0)[0].closed, Some(Stamp::from_nanos(1)));
+        }
+
+        #[test]
+        fn leave_the_tick_once_an_empty_entry_is_recorded() {
+            let mut set = carried(1);
+            let a = open(&mut set, "a");
+            set.recorded(0, true);
+            set.close(0, a.into(), Some(Stamp::from_nanos(1)));
+            set.recorded(0, true);
+            set.advance(0, Stamp::from_nanos(11));
+            assert!(set.changed(0));
+            assert_eq!(set.records(0), []);
+            set.recorded(0, false);
+            set.prune();
+            assert!(set.ticked().is_empty());
+        }
+
+        #[test]
+        fn list_only_the_indexes_with_named_state() {
+            let mut set = restoring(&[(3, vec![record("a", None)])], 3);
+            let _b = open(&mut set, "b");
+            set.recorded(0, true);
+            let latest = set.open_latest(1);
+            set.close(1, latest.into(), None);
+            let _c = open(&mut set, "c");
+            let mut ticked = set.ticked().to_vec();
+            ticked.sort_unstable();
+            assert_eq!(ticked, [0]);
+            set.carry(3, Slot::new(3), 0, None);
+            assert_eq!(set.ticked(), [0, 3]);
+        }
+
+        #[test]
+        fn keep_the_place_of_each_listed_index_at_a_shed() {
+            let records = [
+                (3, vec![record("a", Some(1))]),
+                (4, vec![record("b", Some(1))]),
+            ];
+            let set = &mut restoring(&records, 5);
+            assert_eq!(set.ticked(), [3, 4]);
+            assert!(set.shed(3), "the record is in the buffer");
+            assert_eq!(set.ticked(), [3], "the index at 4 moved to 3");
+            set.advance(3, Stamp::from_nanos(2));
+            assert_eq!(set.records(3), [record("b", Some(1))]);
+        }
+
+        #[test]
+        fn are_busy_while_records_change_wait_or_move_with_acks() {
+            let mut set = restoring(&[(1, vec![record("b", Some(1))])], 1);
+            assert!(!set.busy(0));
+            let a = open(&mut set, "a");
+            assert!(set.busy(0), "the records changed");
+            set.recorded(0, true);
+            assert!(set.busy(0), "an ack can move the record");
+            set.close(0, a.into(), Some(Stamp::from_nanos(1)));
+            set.recorded(0, true);
+            assert!(!set.busy(0), "only a hold");
+            set.carry(1, Slot::new(1), 0, None);
+            assert!(set.busy(1), "the records wait");
+            assert!(!set.busy(0), "each index is busy alone");
+        }
+
+        #[test]
+        fn end_at_the_earliest_hold_of_the_index() {
+            let mut set = carried(2);
+            assert_eq!(set.deadline(0), None);
+            let a = open(&mut set, "a");
+            let b = open(&mut set, "b");
+            set.close(0, a.into(), Some(Stamp::from_nanos(5)));
+            set.close(0, b.into(), Some(Stamp::from_nanos(3)));
+            assert_eq!(set.deadline(0), Some(Stamp::from_nanos(13)));
+            assert_eq!(set.deadline(1), None, "each index ends alone");
+            set.advance(0, Stamp::from_nanos(13));
+            assert_eq!(set.deadline(0), Some(Stamp::from_nanos(15)));
+        }
+
+        #[test]
+        fn wait_for_mesh_time_at_a_carry_with_none() {
+            let mut set = restoring(&[(0, vec![record("a", None)])], 1);
+            assert_eq!(set.ticked(), [0], "the records wait");
+            assert!(!set.changed(0));
+            set.advance(0, Stamp::from_nanos(4));
+            assert!(set.changed(0), "the open session closed at 4");
+            assert_eq!(set.records(0), [record("a", Some(4))]);
+            set.recorded(0, true);
+            set.advance(0, Stamp::from_nanos(5));
+            assert!(!set.changed(0), "a second advance restores nothing");
+        }
+
+        #[test]
+        fn restore_at_a_carry_with_mesh_time() {
+            let records = vec![record("a", None), record("b", Some(1))];
+            let mut set = Set::new([(Slot::new(0), records)].into_iter().collect());
+            set.carry(0, Slot::new(0), 0, Some(Stamp::from_nanos(4)));
+            assert!(set.changed(0), "the open session closed at 4");
+            let mut restored = set.records(0);
+            restored.sort_by(|a, b| a.reader.name.cmp(&b.reader.name));
+            assert_eq!(restored, [record("a", Some(4)), record("b", Some(1))]);
+        }
+
+        #[test]
+        fn restore_no_empty_entry() {
+            let set = restoring(&[(0, Vec::new())], 1);
+            assert!(set.ticked().is_empty(), "the buffer holds no record");
+        }
+
+        #[test]
+        fn shed_says_whether_the_buffer_holds_a_record() {
+            let mut set = restoring(&[(2, vec![record("a", Some(1))])], 3);
+            assert!(!set.shed(0));
+            assert!(set.shed(0), "the restored records are in the buffer");
+        }
+
+        #[test]
+        fn add_the_record_of_a_first_open_up_to_the_limit() {
+            let mut set = carried(1);
+            let _a = open(&mut set, "a");
+            let _b = open(&mut set, "b");
+            let limit = bytes(&["a", "b", "c"]);
+            let hold = Span::from_nanos(10);
+            let Ok(Opening::Records(mut added)) =
+                set.opening(0, &named("c"), hold, 3, limit)
+            else {
+                panic!("it adds a record that fits");
+            };
+            added.sort_by(|a, b| a.reader.name.cmp(&b.reader.name));
+            assert_eq!(added, [opened("a", 0), opened("b", 0), record("c", None)]);
+            assert_eq!(
+                set.opening(0, &named("cd"), hold, 3, limit),
+                Err(Unopened::Full { limit })
+            );
+        }
+
+        #[test]
+        fn add_nothing_at_a_takeover_of_an_open_session_with_its_hold() {
+            let mut set = carried(1);
+            let _a = open(&mut set, "a");
+            let hold = Span::from_nanos(10);
+            let kept = set.opening(0, &named("a"), hold, 3, usize::MAX);
+            assert_eq!(kept, Ok(Opening::Kept));
+        }
+
+        #[test]
+        fn change_the_hold_at_a_takeover_of_an_open_session() {
+            let mut set = carried(1);
+            let _a = open(&mut set, "a");
+            let hold = Span::from_nanos(20);
+            let records = set.opening(0, &named("a"), hold, 3, usize::MAX);
+            let taken = Record {
+                hold,
+                ..opened("a", 0)
+            };
+            assert_eq!(records, Ok(Opening::Records(vec![taken])));
+        }
+
+        #[test]
+        fn open_a_held_record_at_its_position_with_the_new_hold() {
+            let mut set = carried(1);
+            let a = open(&mut set, "a");
+            set.ack(
+                0,
+                a,
+                Position {
+                    live: 2,
+                    backfill: None,
+                },
+            )
+            .expect("forward");
+            set.close(0, a.into(), Some(Stamp::from_nanos(1)));
+            let hold = Span::from_nanos(20);
+            let records = set.opening(0, &named("a"), hold, 3, usize::MAX);
+            let reopened = Record {
+                hold,
+                ..opened("a", 2)
+            };
+            assert_eq!(records, Ok(Opening::Records(vec![reopened])));
+        }
+
+        #[test]
+        fn open_a_held_record_past_the_limit_with_no_append() {
+            let mut set = carried(1);
+            let a = open(&mut set, "a");
+            set.close(0, a.into(), Some(Stamp::from_nanos(1)));
+            let hold = Span::from_nanos(10);
+            let bytes = crate::named::len(&[Record {
+                hold,
+                ..opened("a", 0)
+            }]);
+            let over = set.opening(0, &named("a"), hold, 3, 1);
+            assert_eq!(over, Ok(Opening::Over { bytes: bytes - 1 }));
+        }
+
+        #[test]
+        fn take_over_with_a_new_hold_past_the_limit_with_no_append() {
+            let mut set = carried(1);
+            open(&mut set, "a");
+            let hold = Span::from_nanos(20);
+            let bytes = crate::named::len(&[Record {
+                hold,
+                ..opened("a", 0)
+            }]);
+            let over = set.opening(0, &named("a"), hold, 3, 1);
+            assert_eq!(over, Ok(Opening::Over { bytes: bytes - 1 }));
         }
 
         #[test]
@@ -928,6 +1440,14 @@ mod tests {
             assert_eq!(
                 Unsynced.to_string(),
                 "the node has no mesh time yet: open the named reader again later"
+            );
+            assert_eq!(
+                Unopened::Unsynced.to_string(),
+                "the node has no mesh time yet: open the named reader again later"
+            );
+            assert_eq!(
+                Unopened::Full { limit: 4032 }.to_string(),
+                "the records of the named readers of the index would pass 4032 bytes"
             );
         }
     }
