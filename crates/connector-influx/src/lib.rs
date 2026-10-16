@@ -42,13 +42,14 @@ const BAD_ORG: Code = Code::new("influx.bad-org");
 const ORG_WITH_DATABASE: Code = Code::new("influx.org-with-database");
 const TWO_TARGETS: Code = Code::new("influx.two-targets");
 /// The keys of the config, other than the reader settings.
-const KEYS: [&str; 6] = [
+const KEYS: [&str; 7] = [
     "address",
     "database",
     "bucket",
     "org",
     "measurement",
     "token",
+    "ca",
 ];
 /// The count of the samples that InfluxDB confirmed with a 204, across the runs of
 /// one supervisor call.
@@ -67,7 +68,7 @@ pub struct Kind;
 #[non_exhaustive]
 pub struct Config {
     /// The InfluxDB endpoint: a URI that [`connector::http::uri`] takes, with the
-    /// scheme `http`, a path of `/` or none, and no query.
+    /// scheme `http` or `https`, a path of `/` or none, and no query.
     pub address: Uri,
     /// Where it writes.
     pub target: Target,
@@ -75,9 +76,14 @@ pub struct Config {
     /// other than [`gap::MEASUREMENT`].
     pub measurement: String,
     /// Where the InfluxDB token comes from, sent as `Authorization: Token <value>`
-    /// on each request. `None` sends no `Authorization` header. `http` sends it in
-    /// clear until TLS.
+    /// on each request. `None` sends no `Authorization` header. An `http` address
+    /// sends it in clear, and an `https` one keeps it from the network.
     pub token: Option<secret::Source>,
+    /// Where the PEM certificates come from that an `https` connect trusts in
+    /// addition to the roots of the node, such as a private CA or a self-signed
+    /// server. `None` trusts only the roots of the node. An `http` address does not
+    /// read it.
+    pub ca: Option<secret::Source>,
     /// The reader whose samples it writes.
     pub reader: reader::Settings,
 }
@@ -102,8 +108,8 @@ impl kind::Kind for Kind {
     type Config = Config;
 
     /// Reads `address`, `database` or `bucket` and `org`, `measurement`, an optional
-    /// `token` that [`secret::Source::read`] takes, the settings of
-    /// [`reader::read`], and no other key.
+    /// `token` and an optional `ca` that [`secret::Source::read`] takes, the settings
+    /// of [`reader::read`], and no other key.
     fn parse(&self, config: &Document) -> Result<Config, Vec<Diagnostic>> {
         let reader = reader::read(config, &KEYS, &[]);
         let address = read::required(
@@ -127,26 +133,36 @@ impl kind::Kind for Kind {
              \"telemetry\""
                 .into(),
         );
-        let token = config.attributes.get("token");
-        let token = token
-            .map(|token| secret::Source::read(&token.value))
-            .transpose();
-        match (reader, address, target, measurement, token) {
-            (Ok(reader), Ok(address), Ok(target), Ok(measurement), Ok(token)) => {
-                Ok(Config {
-                    address,
-                    target,
-                    measurement,
-                    token,
-                    reader,
-                })
-            }
-            (reader, address, target, measurement, token) => {
+        let source = |key| {
+            let attribute = config.attributes.get(key);
+            attribute
+                .map(|attribute| secret::Source::read(&attribute.value))
+                .transpose()
+        };
+        let (token, ca) = (source("token"), source("ca"));
+        match (reader, address, target, measurement, token, ca) {
+            (
+                Ok(reader),
+                Ok(address),
+                Ok(target),
+                Ok(measurement),
+                Ok(token),
+                Ok(ca),
+            ) => Ok(Config {
+                address,
+                target,
+                measurement,
+                token,
+                ca,
+                reader,
+            }),
+            (reader, address, target, measurement, token, ca) => {
                 let mut diagnostics = reader.err().unwrap_or_default();
                 diagnostics.extend(address.err());
                 diagnostics.extend(target.err().into_iter().flatten());
                 diagnostics.extend(measurement.err());
                 diagnostics.extend(token.err());
+                diagnostics.extend(ca.err());
                 Err(diagnostics)
             }
         }
@@ -180,7 +196,8 @@ impl kind::Kind for Kind {
     /// InfluxDB answers 204, when it adds the batch's fields to the count `confirmed`
     /// and the seqs of its gap lines to `lost`. It shows each other answer as its error
     /// and sends the batch again after a backoff. It reads the token at its start, and
-    /// again after a 401 or a 403 before the next attempt.
+    /// again after a 401 or a 403 before the next attempt. With an `https` address, it
+    /// reads the `ca` at its start.
     ///
     /// # Errors
     ///
@@ -189,25 +206,17 @@ impl kind::Kind for Kind {
     /// valid field key. The error of [`hub::reader::Ended`] when the reader ends.
     /// [`Error::Retry`] or [`Error::Config`] from [`Context::secret`] when a read
     /// fails, and [`Error::Retry`] when the token holds a byte that an HTTP header
-    /// cannot hold.
+    /// cannot hold, or when the `ca` holds no PEM certificate or one that does not
+    /// parse.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         send::run(ctx)
     }
 }
 
-/// Reads an address: a URI that [`connector::http::uri`] takes, with the scheme
-/// `http`, a path of `/` or none, and no query.
+/// Reads an address: a URI that [`connector::http::uri`] takes, with a path of `/`
+/// or none, and no query.
 fn address(value: &Value) -> Result<Uri, Diagnostic> {
     let uri = connector::http::uri(value)?;
-    // `https` ships dark until the kind takes a CA (#2702).
-    if uri.scheme() == Some(&http::uri::Scheme::HTTPS) {
-        return Err(Diagnostic::new(
-            BAD_ADDRESS,
-            value.span,
-            "the scheme of the URI is not http".into(),
-            "Write an `http` URI such as \"http://10.0.0.2:8086\"".into(),
-        ));
-    }
     let part = match (uri.path(), uri.query()) {
         (_, Some(_)) => "a query",
         ("/", None) => return Ok(uri),

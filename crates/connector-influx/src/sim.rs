@@ -9,7 +9,7 @@ use std::str::Utf8Error;
 use influxdb_line_protocol::{FieldValue, ParsedLine};
 use types::time::Stamp;
 
-pub use server::serve;
+pub use server::{serve, serve_tls};
 
 mod server;
 

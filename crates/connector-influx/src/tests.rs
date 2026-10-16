@@ -98,6 +98,7 @@ fn reads_the_address_and_the_reader() {
         target: Target::Database("plant".into()),
         measurement: "telemetry".into(),
         token: None,
+        ca: None,
         reader: reader::read(&config, &KEYS, &[]).expect("the reader settings"),
     };
     assert_eq!(Kind.parse(&config), Ok(expected));
@@ -116,7 +117,7 @@ fn call(function: &str, argument: &str) -> Value {
 }
 
 #[test]
-fn reads_the_source_of_a_token() {
+fn reads_the_source_of_a_token_and_a_ca() {
     for (value, source) in [
         (
             call("env", "INFLUX_TOKEN"),
@@ -127,26 +128,35 @@ fn reads_the_source_of_a_token() {
             secret::Source::Secret("plant.influx_token".parse().expect("a name")),
         ),
     ] {
-        let config = plus(influx(), &[(60, "token", value)]);
-        assert_eq!(
-            Kind.parse(&config).map(|config| config.token),
-            Ok(Some(source))
-        );
+        for key in ["token", "ca"] {
+            let config = plus(influx(), &[(60, key, value.clone())]);
+            let parsed = Kind.parse(&config).expect("parses");
+            let read = if key == "token" {
+                parsed.token
+            } else {
+                parsed.ca
+            };
+            assert_eq!(read, Some(source.clone()), "{key}");
+        }
     }
 }
 
 #[test]
-fn refuses_a_token_that_is_not_a_source() {
-    let config = plus(influx(), &[(60, "token", string("my-t0ken"))]);
-    assert_eq!(
-        Kind.parse(&config),
-        Err(vec![refused(
-            "secret.source",
-            61,
-            "a secret takes where its value comes from, never the value",
-            "Write `env(\"NAME\")`, `file(\"/absolute/path\")`, or `secret(\"name\")`",
-        )])
-    );
+fn refuses_a_token_or_a_ca_that_is_not_a_source() {
+    for key in ["token", "ca"] {
+        let config = plus(influx(), &[(60, key, string("my-t0ken"))]);
+        assert_eq!(
+            Kind.parse(&config),
+            Err(vec![refused(
+                "secret.source",
+                61,
+                "a secret takes where its value comes from, never the value",
+                "Write `env(\"NAME\")`, `file(\"/absolute/path\")`, or \
+                 `secret(\"name\")`",
+            )]),
+            "{key}"
+        );
+    }
 }
 
 #[test]
@@ -177,15 +187,11 @@ fn reads_an_address_with_a_path_of_slash() {
 }
 
 #[test]
-fn refuses_an_https_address() {
+fn reads_an_https_address() {
+    let config = config(string("https://influx:8086"));
     assert_eq!(
-        Kind.parse(&config(string("https://influx:8086"))),
-        Err(vec![refused(
-            "influx.bad-address",
-            1,
-            "the scheme of the URI is not http",
-            "Write an `http` URI such as \"http://10.0.0.2:8086\"",
-        )])
+        Kind.parse(&config).map(|config| config.address),
+        Ok("https://influx:8086".parse().expect("a URI"))
     );
 }
 
@@ -527,7 +533,7 @@ fn refuses_each_key_it_does_not_take() {
                 60,
                 "`user` is not an attribute of the connector",
                 "Use `select`, `address`, `database`, `bucket`, `org`, `measurement`, \
-                 or `token`, or remove it",
+                 `token`, or `ca`, or remove it",
             ),
             refused(
                 "document.unknown-block",
