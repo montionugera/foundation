@@ -1,6 +1,6 @@
 use types::frame::{Path, Range};
 
-use super::{BEHIND, Error, HEAD, Head, Mode, OPENED, Open, Reply, ends};
+use super::{Error, HEAD, Head, Mode, OPENED, Open, Reply, ends};
 use crate::common::{body, rest_of_run};
 
 /// The decoder of the replies of a reader session, at the reader's node and at the
@@ -21,7 +21,6 @@ pub struct Reader {
 enum Next {
     Opened,
     Head,
-    Ended,
     Ends { remain: u32 },
     Body(body::Count),
 }
@@ -53,9 +52,6 @@ pub enum FromHome<'m> {
         /// The body ends with this message.
         last: bool,
     },
-    /// The home ended the session, and no message follows. No case gives it; #2790
-    /// removes it.
-    Behind,
 }
 
 impl Reader {
@@ -94,27 +90,26 @@ impl Reader {
     ///
     /// # Errors
     ///
-    /// After `Behind`, each message gives [`Error::Ended`]. Else three checks, in
-    /// order; the error is that of the first check that fails.
+    /// Three checks, in order; the error is that of the first check that fails.
     ///
     /// 1. The bytes: the [`Error`] of a message that does not decode as a reply
-    ///    (`Opened`, a head, or `Behind`) or, where a run continues, as a message of
-    ///    that run. A message of a run has no kind, so a reply byte there is run bytes.
+    ///    (`Opened` or a head) or, where a run continues, as a message of that run. A
+    ///    message of a run has no kind, so a reply byte there is run bytes.
     /// 2. The order of the session, whatever the content of a reply:
-    ///    [`Error::Unopened`] for a head or a behind before `Opened` and
-    ///    [`Error::Reopen`] for a second `Opened`.
-    /// 3. The content against the session: [`Error::Latest`] for a behind in a latest
-    ///    session; for a head, [`Error::Places`] when it has more series than places,
-    ///    [`Error::Backfill`] when it is on the backfill path, and [`Error::Seq`]
-    ///    when it starts before the end of the head before it, or the first head
-    ///    before the open position; [`Error::Run`] for a message with more ends than
-    ///    remain; and [`Error::Body`] for a message longer than the rest of the body.
+    ///    [`Error::Unopened`] for a head before `Opened` and [`Error::Reopen`] for a
+    ///    second `Opened`.
+    /// 3. The content against the session: for a head, [`Error::Places`] when it has
+    ///    more series than places, [`Error::Backfill`] when it is on the backfill
+    ///    path, and [`Error::Seq`] when it starts before the end of the head before
+    ///    it, or the first head before the open position; [`Error::Run`] for a
+    ///    message with more ends than remain; and [`Error::Body`] for a message
+    ///    longer than the rest of the body.
     ///
     /// The session is then not valid ([`MALFORMED`](crate::header::MALFORMED)), and
     /// the caller stops it.
     pub fn decode<'m>(&mut self, message: &'m [u8]) -> Result<FromHome<'m>, Error> {
         let (event, next) = match self.next {
-            Next::Opened | Next::Head | Next::Ended => self.reply(message)?,
+            Next::Opened | Next::Head => self.reply(message)?,
             Next::Ends { remain } => {
                 let ends = ends::decode(message)?;
                 let remain = rest_of_run(remain, ends.len())?;
@@ -175,39 +170,29 @@ impl Reader {
     pub fn body(&self) -> Option<usize> {
         match self.next {
             Next::Body(body) => Some(body.at()),
-            Next::Opened | Next::Head | Next::Ends { .. } | Next::Ended => None,
+            Next::Opened | Next::Head | Next::Ends { .. } => None,
         }
     }
 
-    /// Checks that the stream may end here, where the home finished it.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Unfinished`] inside a body, and [`Error::Finished`] at each other
-    /// point before `Behind`.
-    pub fn end(&self) -> Result<(), Error> {
+    /// The error of a stream that the home finished here: [`Error::Unfinished`] inside
+    /// a body, else [`Error::Finished`]. The home never finishes a reader session.
+    #[must_use]
+    pub fn finished(&self) -> Error {
         match self.next {
-            Next::Ended => Ok(()),
-            Next::Body(body) => Err(Error::Unfinished {
+            Next::Body(body) => Error::Unfinished {
                 remain: body.remain(),
-            }),
-            Next::Opened | Next::Head | Next::Ends { .. } => Err(Error::Finished),
+            },
+            Next::Opened | Next::Head | Next::Ends { .. } => Error::Finished,
         }
     }
 
     fn reply<'m>(&mut self, message: &[u8]) -> Result<(FromHome<'m>, Next), Error> {
-        if let Next::Ended = self.next {
-            return Err(Error::Ended);
-        }
         match (Reply::decode(message)?, self.next) {
             (Reply::Opened { live }, Next::Opened) => {
                 self.end = live;
                 Ok((FromHome::Opened { live }, Next::Head))
             }
             (Reply::Head(_), Next::Opened) => Err(Error::Unopened { kind: HEAD }),
-            (Reply::Behind, Next::Opened) => Err(Error::Unopened { kind: BEHIND }),
-            (Reply::Behind, _) if self.latest => Err(Error::Latest { kind: BEHIND }),
-            (Reply::Behind, _) => Ok((FromHome::Behind, Next::Ended)),
             (Reply::Opened { .. }, _) => Err(Error::Reopen { kind: OPENED }),
             (Reply::Head(head), _) if head.series > self.places => Err(Error::Places {
                 series: head.series,
@@ -311,7 +296,6 @@ mod tests {
             FromHome::Head(head) => Event::Head(head.series),
             FromHome::Ends { ends, last } => Event::Ends(ends.collect(), last),
             FromHome::Body { bytes, last } => Event::Body(bytes.to_vec(), last),
-            FromHome::Behind => Event::Behind,
         })
     }
 
@@ -321,7 +305,6 @@ mod tests {
         Head(u32),
         Ends(Vec<(u32, u32)>, bool),
         Body(Vec<u8>, bool),
-        Behind,
     }
 
     #[test]
@@ -473,91 +456,48 @@ mod tests {
     }
 
     #[test]
-    fn refuses_a_behind_before_opened() {
-        let mut reader = Reader::new(&open(1));
-        assert_eq!(
-            reader.decode(&[BEHIND]).err(),
-            Some(Error::Unopened { kind: 3 })
-        );
-        assert_eq!(event(&mut reader, &opened_at(0)), Ok(Event::Opened(0)));
-    }
-
-    #[test]
-    fn refuses_a_behind_in_a_latest_session() {
+    fn refuses_the_retired_kind_of_behind() {
         let latest = Open {
             mode: Mode::Latest,
             channels: 1,
         };
-        assert_eq!(
-            Reader::new(&latest).decode(&[BEHIND]).err(),
-            Some(Error::Unopened { kind: 3 })
-        );
-        let mut reader = Reader::new(&latest);
-        assert_eq!(event(&mut reader, &opened_at(0)), Ok(Event::Opened(0)));
-        assert_eq!(
-            reader.decode(&[BEHIND]).err(),
-            Some(Error::Latest { kind: 3 })
-        );
-        assert_eq!(event(&mut reader, &head(1)), Ok(Event::Head(1)));
-    }
-
-    #[test]
-    fn ends_the_session_at_behind() {
-        let mut reader = opened(1);
-        assert_eq!(event(&mut reader, &head(1)), Ok(Event::Head(1)));
-        let ends = encode_ends(&[(0, 2)]);
-        assert_eq!(
-            event(&mut reader, &ends),
-            Ok(Event::Ends(vec![(0, 2)], true))
-        );
-        assert_eq!(
-            event(&mut reader, &[4, 5]),
-            Ok(Event::Body(vec![4, 5], true))
-        );
-        assert_eq!(event(&mut reader, &[BEHIND]), Ok(Event::Behind));
-        assert_eq!(reader.body(), None);
-        for message in [opened_at(0), vec![BEHIND], head(1), ends, vec![4], vec![]] {
-            assert_eq!(reader.decode(&message).err(), Some(Error::Ended));
+        for mut reader in [Reader::new(&open(1)), Reader::new(&latest)] {
+            assert_eq!(reader.decode(&[3]).err(), Some(Error::Kind { kind: 3 }));
+            assert_eq!(event(&mut reader, &opened_at(0)), Ok(Event::Opened(0)));
+            assert_eq!(reader.decode(&[3]).err(), Some(Error::Kind { kind: 3 }));
+            assert_eq!(event(&mut reader, &head(1)), Ok(Event::Head(1)));
         }
     }
 
     #[test]
-    fn lets_the_stream_end_only_after_behind() {
+    fn gives_the_error_of_each_finish() {
         let mut reader = Reader::new(&open(2));
-        assert_eq!(reader.end(), Err(Error::Finished));
+        assert_eq!(reader.finished(), Error::Finished);
         reader.decode(&opened_at(0)).expect("the session opens");
-        assert_eq!(reader.end(), Err(Error::Finished));
+        assert_eq!(reader.finished(), Error::Finished);
         reader.decode(&head(2)).expect("the head decodes");
-        assert_eq!(reader.end(), Err(Error::Finished));
+        assert_eq!(reader.finished(), Error::Finished);
         let ends = encode_ends(&[(0, 3), (1, 10)]);
         let (first, second) = ends.split_at(ends::LEN);
         reader.decode(first).expect("the ends decode");
-        assert_eq!(reader.end(), Err(Error::Finished));
+        assert_eq!(reader.finished(), Error::Finished);
         reader.decode(second).expect("the ends decode");
-        assert_eq!(reader.end(), Err(Error::Unfinished { remain: 10 }));
+        assert_eq!(reader.finished(), Error::Unfinished { remain: 10 });
         reader.decode(&[7; 4]).expect("the body decodes");
-        assert_eq!(reader.end(), Err(Error::Unfinished { remain: 6 }));
+        assert_eq!(reader.finished(), Error::Unfinished { remain: 6 });
         reader.decode(&[7; 6]).expect("the body decodes");
-        assert_eq!(reader.end(), Err(Error::Finished));
-        reader.decode(&[BEHIND]).expect("the behind decodes");
-        assert_eq!(reader.end(), Ok(()));
+        assert_eq!(reader.finished(), Error::Finished);
     }
 
     #[test]
-    fn reads_a_behind_in_a_run_as_run_bytes() {
+    fn reads_the_retired_kind_in_a_run_as_run_bytes() {
         let mut reader = opened(1);
         reader.decode(&head(1)).expect("the head decodes");
-        assert_eq!(
-            reader.decode(&[BEHIND]).err(),
-            Some(Error::Length { len: 1 })
-        );
+        assert_eq!(reader.decode(&[3]).err(), Some(Error::Length { len: 1 }));
         reader
             .decode(&encode_ends(&[(0, 1)]))
             .expect("the end decodes");
-        assert_eq!(
-            event(&mut reader, &[BEHIND]),
-            Ok(Event::Body(vec![3], true))
-        );
+        assert_eq!(event(&mut reader, &[3]), Ok(Event::Body(vec![3], true)));
     }
 
     #[test]
@@ -758,7 +698,6 @@ mod tests {
                 (Just(places), proptest::collection::vec(frame(places), 0..4))
             }),
             sizes in proptest::collection::vec(1..=24_usize, 1..8),
-            behind in any::<bool>(),
         ) {
             let mut sizes = sizes.into_iter().cycle();
             let mut reader = Reader::new(&open(places));
@@ -788,9 +727,6 @@ mod tests {
                     at = at.checked_add(message.len()).expect("the body fits a usize");
                 }
                 prop_assert_eq!(reader.body(), None);
-            }
-            if behind {
-                prop_assert_eq!(event(&mut reader, &[BEHIND]), Ok(Event::Behind));
             }
         }
     }

@@ -53,8 +53,6 @@ pub enum Next {
         /// The session's next seq.
         from: u64,
     },
-    /// No case gives it; #2790 removes it.
-    Behind,
 }
 
 /// The readers of one index at its home, in both modes. For complete readers: their
@@ -1081,7 +1079,7 @@ pub(super) mod tests {
         loop {
             match readers.take(key) {
                 Next::Frame(frame) => frames.push(frame),
-                end @ (Next::Empty | Next::Disk { .. } | Next::Behind) => {
+                end @ (Next::Empty | Next::Disk { .. }) => {
                     return (frames, end);
                 }
             }
@@ -3271,7 +3269,6 @@ pub(super) mod tests {
                         granted += CHARGE;
                         readers.grant(key, granted);
                     }
-                    Next::Behind => panic!("no samples were lost"),
                 }
             }
             assert!(reads <= FRAMES / 5 + 1, "{reads} reads");
@@ -3305,7 +3302,6 @@ pub(super) mod tests {
                         readers.grant(key, granted);
                     }
                     Next::Empty => panic!("each frame gives its credit back"),
-                    Next::Behind => panic!("no samples were lost"),
                 }
             }
             assert!(reads <= FRAMES / 5 + 1, "{reads} reads");
@@ -4653,7 +4649,6 @@ pub(super) mod tests {
             );
             match end {
                 Next::Disk { from } => Some(log.read(from, cut)),
-                Next::Behind => panic!("{key:?} ends behind"),
                 Next::Frame(_) | Next::Empty => None,
             }
         }
@@ -4733,7 +4728,6 @@ pub(super) mod tests {
             Frame(u64),
             Empty,
             Disk { from: u64 },
-            Behind,
         }
 
         fn told(next: Next) -> Told {
@@ -4741,7 +4735,6 @@ pub(super) mod tests {
                 Next::Frame(frame) => Told::Frame(number(&frame)),
                 Next::Empty => Told::Empty,
                 Next::Disk { from } => Told::Disk { from },
-                Next::Behind => Told::Behind,
             }
         }
 

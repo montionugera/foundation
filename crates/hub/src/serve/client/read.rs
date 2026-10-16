@@ -159,8 +159,7 @@ async fn start(
     Ok(())
 }
 
-/// Sends each frame of `reader` until `program` finishes, or `Behind` and the finish
-/// when the reader ends [`reader::Ended::Behind`], which no case gives.
+/// Sends each frame of `reader` until `program` finishes.
 async fn relay<F>(
     state: &RefCell<State>,
     mut reader: Reader,
@@ -181,11 +180,6 @@ where
                 layout
                     .send(state, sender, taken.view().frame(), taken.set())
                     .await?;
-            }
-            Err(reader::Ended::Behind) => {
-                sender.send(reply(state, wire::hub::Reply::Behind)?).await?;
-                sender.finish()?;
-                return Ok(());
             }
             Err(ended) => return Err(Error::Ended(Box::new(ended))),
         }
@@ -219,8 +213,7 @@ pub(in crate::serve) fn refused(error: &reader::Error) -> Refusal {
 ///
 /// # Panics
 ///
-/// For `Behind`, which a read sends as a reply, and `Replaced`, which only a named
-/// reader gives.
+/// For `Replaced`, which only a named reader gives.
 pub(in crate::serve) fn ended(ended: &reader::Ended) -> Refusal {
     match ended {
         reader::Ended::Removed(_) => Refusal::Unknown,
@@ -231,7 +224,7 @@ pub(in crate::serve) fn ended(ended: &reader::Ended) -> Refusal {
         | reader::Ended::Message(_)
         | reader::Ended::Frame(_)
         | reader::Ended::Credit { .. } => Refusal::Failed,
-        reader::Ended::Behind | reader::Ended::Replaced => {
+        reader::Ended::Replaced => {
             panic!("invariant: a read does not end as {ended:?}")
         }
     }

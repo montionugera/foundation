@@ -1722,24 +1722,34 @@ fn a_complete_reader_gets_the_gap_of_each_frame_that_frames_gives_as_lost() {
 }
 
 #[test]
-fn a_complete_reader_that_the_home_ends_with_behind_gets_behind_at_each_next() {
+fn a_reader_that_gets_the_retired_kind_of_behind_stops_the_stream_as_malformed() {
     remote(
         17,
         sim::link::Config::default(),
         |node, _, transport, steps| async move {
-            let (_, mut sender, _receiver) = fake_open(&transport).await;
-            send(&mut sender, Reply::Behind.encoded_len(), |out| {
-                Reply::Behind.encode(out);
-            })
-            .await;
+            let (_, mut sender, mut receiver) = fake_open(&transport).await;
+            send(&mut sender, 1, |out| out[0] = 3).await;
+            let error = loop {
+                if let Err(error) = receiver.recv().await {
+                    break error;
+                }
+            };
+            assert_eq!(
+                error,
+                transport::Error::Reset {
+                    code: Code(MALFORMED)
+                }
+            );
+            steps.stopped.store(true, Ordering::Relaxed);
             until(&node.clock(), &steps.done).await;
         },
-        |test, _| async move {
+        |test, steps| async move {
             let mut reader = test.reader(&["value"], Mode::Complete).await;
-            let ended = reader.next().await.expect_err("the home ended the session");
-            assert_eq!(ended, Ended::Behind);
-            assert_eq!(ended.to_string(), "the home ended the session");
-            assert_eq!(reader.next().await.expect_err("ended"), Ended::Behind);
+            let ended = reader.next().await.expect_err("the kind is retired");
+            let retired = Ended::Message(wire::hub::Error::Kind { kind: 3 });
+            assert_eq!(ended, retired);
+            assert_eq!(reader.next().await.expect_err("ended"), retired);
+            until(&test.clock, &steps.stopped).await;
         },
     );
 }
@@ -1825,7 +1835,7 @@ fn a_reader_whose_home_finishes_the_stream_between_frames_stops_it_as_malformed(
             assert_eq!(
                 ended.to_string(),
                 "a message from the home broke the hub protocol: the home finished the \
-                 stream before it ended the session"
+                 stream outside a body"
             );
             until(&test.clock, &steps.stopped).await;
         },
@@ -2242,7 +2252,7 @@ fn a_reader_whose_home_finishes_the_stream_before_opened_stops_it_as_malformed()
             assert_eq!(
                 error.to_string(),
                 "the reply of the home broke the hub protocol: the home finished the \
-                 stream before it ended the session"
+                 stream outside a body"
             );
             until(&test.clock, &steps.stopped).await;
         },
@@ -2313,7 +2323,7 @@ fn a_complete_reader_whose_waiting_credit_fails_to_send_sends_no_later_credit() 
                     .await
                     .expect("sends");
             }
-            send(&mut sender, 1, |out| Reply::Behind.encode(out)).await;
+            send(&mut sender, 1, |out| out[0] = 3).await;
             until(&node.clock(), &steps.done).await;
         },
         |test, _| async move {
@@ -2328,9 +2338,9 @@ fn a_complete_reader_whose_waiting_credit_fails_to_send_sends_no_later_credit() 
             }
             let next = reader.next();
             let blocks = fill(&test.pool);
-            let ended = next.await.expect_err("behind");
+            let ended = next.await.expect_err("the kind is retired");
             drop(blocks);
-            assert_eq!(ended, Ended::Behind);
+            assert_eq!(ended, Ended::Message(wire::hub::Error::Kind { kind: 3 }));
         },
     );
 }
@@ -2589,7 +2599,7 @@ fn a_complete_reader_whose_credit_the_stream_refuses_sends_no_later_credit() {
                     .await
                     .expect("sends");
             }
-            send(&mut sender, 1, |out| Reply::Behind.encode(out)).await;
+            send(&mut sender, 1, |out| out[0] = 3).await;
             until(&node.clock(), &steps.done).await;
         },
         |test, _| async move {
@@ -2599,9 +2609,9 @@ fn a_complete_reader_whose_credit_the_stream_refuses_sends_no_later_credit() {
             }
             let next = reader.next();
             let blocks = fill(&test.pool);
-            let ended = next.await.expect_err("behind");
+            let ended = next.await.expect_err("the kind is retired");
             drop(blocks);
-            assert_eq!(ended, Ended::Behind);
+            assert_eq!(ended, Ended::Message(wire::hub::Error::Kind { kind: 3 }));
         },
     );
 }

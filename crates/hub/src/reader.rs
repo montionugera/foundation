@@ -198,8 +198,6 @@ impl Lens {
 pub enum Ended {
     /// The shard's buffer failed, or a read from disk of the reader failed.
     Buffer(env::files::Error),
-    /// No case gives it; #2790 removes it.
-    Behind,
     /// A channel of the reader was removed from the definitions.
     Removed(channel::Key),
     /// A later open of the same subject and name took over the session.
@@ -230,7 +228,6 @@ impl fmt::Display for Ended {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Buffer(error) => write!(f, "the buffer of the shard failed: {error}"),
-            Self::Behind => f.write_str("the home ended the session"),
             Self::Removed(key) => {
                 write!(f, "channel {key} was removed: open a new reader")
             }
@@ -684,8 +681,6 @@ impl Reader {
 pub(crate) enum Stop {
     /// The shard's buffer failed, or a read from disk of the session failed.
     Buffer(env::files::Error),
-    /// No case gives it; #2790 removes it.
-    Behind,
     /// The shard's pool had no block for a read from disk or its frames.
     Pool(block::Error),
     /// A channel of the session was removed from the definitions.
@@ -716,7 +711,6 @@ impl From<Stop> for Ended {
     fn from(stop: Stop) -> Self {
         match stop {
             Stop::Buffer(error) => Self::Buffer(error),
-            Stop::Behind => Self::Behind,
             Stop::Pool(error) => Self::Pool(error),
             Stop::Removed(key) => Self::Removed(key),
             Stop::Replaced => Self::Replaced,
@@ -1179,7 +1173,6 @@ fn poll_take(
             return Poll::Ready(Err(failed.clone()));
         }
         (Next::Disk(disk), None) => return Poll::Ready(Ok(Taken::Disk(disk))),
-        (Next::Behind, _) => return Poll::Ready(Err(Stop::Behind)),
         (Next::Empty, None) => {}
     }
     if let Some(error) = &state.failed {

@@ -45,9 +45,6 @@ pub enum Step {
     More,
     /// A whole frame.
     Frame(Frame),
-    /// The home ended the session, and no message follows. No case gives it; #2790
-    /// removes it.
-    Behind,
 }
 
 impl Frames {
@@ -73,9 +70,7 @@ impl Frames {
     ) -> Result<(Self, u64), Error> {
         assert_eq!(set.groups().len(), 1, "a session is on one index");
         let Some(message) = message else {
-            return Err(reader
-                .end()
-                .expect_err("invariant: a reader before opened may not end"));
+            return Err(reader.finished());
         };
         match reader.decode(message)? {
             FromHome::Opened { live } => {
@@ -161,7 +156,6 @@ impl Frames {
                 self.drafting = last;
                 Ok(Step::More)
             }
-            FromHome::Behind => Ok(Step::Behind),
             FromHome::Opened { .. } | FromHome::Body { .. } => {
                 unreachable!("invariant: an open decoder gives no opened or body here")
             }
@@ -203,16 +197,11 @@ impl Frames {
         }
     }
 
-    /// The error of a stream that the home finished here.
-    ///
-    /// # Panics
-    ///
-    /// After [`Step::Behind`], where the stream may end.
+    /// The error of a stream that the home finished at this point. The home never
+    /// finishes a reader session.
     #[must_use]
     pub fn finished(&self) -> Error {
-        self.reader
-            .end()
-            .expect_err("a stream may end after Behind")
+        self.reader.finished()
     }
 
     /// The step of the body message that arrived, a frame when it is the `last`.
@@ -278,7 +267,7 @@ mod tests {
 
     use super::*;
     use crate::hub::tests::{encode_ends, encode_reply, key};
-    use crate::hub::{BEHIND, HEAD, Mode, OPENED, Open, Reply};
+    use crate::hub::{HEAD, Mode, OPENED, Open, Reply};
 
     /// Index key 1 (entry 0), then an `I64` of key 2 (entry 1).
     fn create_set() -> Arc<KeySet> {
@@ -379,8 +368,7 @@ mod tests {
         };
         let head = head(4, 2, 2);
         assert_eq!(open(Some(&head)), Err(Error::Unopened { kind: HEAD }));
-        let behind = encode_reply(Reply::Behind);
-        assert_eq!(open(Some(&behind)), Err(Error::Unopened { kind: BEHIND }));
+        assert_eq!(open(Some(&[3])), Err(Error::Kind { kind: 3 }));
         assert_eq!(open(Some(&[])), Err(Error::Empty));
         assert_eq!(open(None), Err(Error::Finished));
     }
@@ -533,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn gives_behind_and_the_error_of_each_finish() {
+    fn gives_the_error_of_each_finish() {
         let (pool, mut frames) = (create_pool(), opened(false));
         assert_eq!(frames.finished(), Error::Finished);
         ends(&mut frames);
@@ -541,14 +529,11 @@ mod tests {
         frames.decode(&[0; 30]).expect("body");
         assert_eq!(frames.finished(), Error::Unfinished { remain: 2 });
         frames.decode(&[0; 2]).expect("body");
-        let behind = encode_reply(Reply::Behind);
-        assert!(matches!(frames.decode(&behind), Ok(Step::Behind)));
-        assert_eq!(frames.decode(&behind).map(drop), Err(Error::Ended));
-        let mut frames = opened(true);
-        assert_eq!(
-            frames.decode(&behind).map(drop),
-            Err(Error::Latest { kind: 3 })
-        );
+        assert_eq!(frames.finished(), Error::Finished);
+        for latest in [false, true] {
+            let mut frames = opened(latest);
+            assert_eq!(frames.decode(&[3]).map(drop), Err(Error::Kind { kind: 3 }));
+        }
     }
 
     #[test]
@@ -593,14 +578,6 @@ mod tests {
         ends(&mut frames);
         draft(&mut frames, &pool);
         let _step = frames.received(33);
-    }
-
-    #[test]
-    #[should_panic(expected = "a stream may end after Behind")]
-    fn panics_at_a_finish_after_behind() {
-        let mut frames = opened(false);
-        frames.decode(&encode_reply(Reply::Behind)).expect("behind");
-        let _error = frames.finished();
     }
 
     mod lost {

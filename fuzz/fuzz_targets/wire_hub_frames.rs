@@ -1,7 +1,8 @@
 //! `wire::hub::Frames`, opened by the first message and driven as a caller drives it by
 //! `Frames::due`, never panics. Each frame has the path and range of its head, and a
 //! run that receives each body message in place gives the same steps as a run that
-//! gives it whole to `decode`. The lost seqs of each frame of a complete session and
+//! gives it whole to `decode`. A reply of the retired kind 3 gives `Error::Kind`. The
+//! lost seqs of each frame of a complete session and
 //! the ranges of its frames with a sample tile the seqs from the open position on, and
 //! a latest session loses none.
 //!
@@ -34,7 +35,6 @@ enum Seen {
         series: Vec<Option<Vec<u8>>>,
         lost: ops::Range<u64>,
     },
-    Behind,
     /// The error of `Frames::open`, `decode`, or `received`, which stops the stream.
     Message(Error),
     /// The error of a draft's layout, which stops the stream.
@@ -78,7 +78,6 @@ impl Seen {
                     .collect(),
                 lost: frames.lost(),
             },
-            Step::Behind => Self::Behind,
         }
     }
 }
@@ -93,8 +92,16 @@ fn run(places: u8, mode: Mode, bytes: &[u8], in_place: bool) -> Vec<Seen> {
     };
     let mut messages = fuzz::messages(bytes);
     let mut seen = Vec::new();
+    let first = messages.next();
+    let opened = Frames::open(Reader::new(&open), set(places), first);
+    if first.and_then(<[u8]>::first) == Some(&3) {
+        let refused = matches!(opened, Err(Error::Kind { kind: 3 }));
+        assert!(refused, "the retired kind 3 gave {opened:?}");
+    }
+    // A head is due after the open and after each frame.
+    let mut reply = true;
     let mut frames =
-        match Frames::open(Reader::new(&open), set(places), messages.next()) {
+        match opened {
             Ok((frames, live)) => {
                 seen.push(Seen::Opened(live));
                 frames
@@ -138,14 +145,16 @@ fn run(places: u8, mode: Mode, bytes: &[u8], in_place: bool) -> Vec<Seen> {
                 let Some(message) = messages.next() else {
                     break;
                 };
-                frames.decode(message)
+                let step = frames.decode(message);
+                if reply && message.first() == Some(&3) {
+                    let refused = matches!(step, Err(Error::Kind { kind: 3 }));
+                    assert!(refused, "the retired kind 3 gave {step:?}");
+                }
+                step
             }
         };
+        reply = matches!(step, Ok(Step::Frame(_)));
         match step {
-            Ok(Step::Behind) => {
-                seen.push(Seen::Behind);
-                return seen;
-            }
             Ok(step) => seen.push(Seen::of(step, places, &frames)),
             Err(error) => {
                 seen.push(Seen::Message(error));

@@ -479,7 +479,6 @@ mod reader {
     use types::frame::{Path, Range};
 
     const OPENED: u8 = 1;
-    const BEHIND: u8 = 3;
 
     fn opened_at(live: u64) -> Vec<u8> {
         encode_reply(Reply::Opened { live })
@@ -557,14 +556,12 @@ mod reader {
     enum Home {
         Opened(u64),
         Head(u32),
-        Behind,
     }
 
     fn reply(home: &mut hub::Reader, message: &[u8]) -> Result<Home, hub::Error> {
         home.decode(message).map(|event| match event {
             FromHome::Opened { live } => Home::Opened(live),
             FromHome::Head(head) => Home::Head(head.series),
-            FromHome::Behind => Home::Behind,
             other => panic!("no test sends {other:?}"),
         })
     }
@@ -790,7 +787,7 @@ mod reader {
                     more(),
                     Step::Event(Ok(Event::Start(vec![stamp(1), pt(2, "f64", "b")]))),
                     Step::Reply(Err(hub::Error::Length { len: 1 })),
-                    Step::Reply(Err(hub::Error::Unopened { kind: BEHIND })),
+                    Step::Reply(Err(hub::Error::Kind { kind: 3 })),
                 ],
             ),
             (
@@ -822,7 +819,7 @@ mod reader {
                     more(),
                     Step::Event(Ok(Event::Start(vec![stamp(1), pt(2, "f64", "b")]))),
                     Step::Reply(Ok(Home::Opened(0))),
-                    Step::Reply(Ok(Home::Behind)),
+                    Step::Reply(Err(hub::Error::Kind { kind: 3 })),
                 ],
             ),
             (
@@ -1112,16 +1109,8 @@ mod reader {
     #[test]
     fn opens_a_latest_session_for_a_latest_read() {
         let places = Places { count: 1, index: 0 };
-        let mut latest = after_run(Mode::Latest, places, &[stamp(1)]);
-        latest.decode(&opened_at(0)).expect("the session opens");
-        assert_eq!(
-            latest.decode(&[BEHIND]).err(),
-            Some(hub::Error::Latest { kind: BEHIND })
-        );
-        let mut complete = after_run(Mode::Complete, places, &[stamp(1)]);
-        complete.decode(&opened_at(0)).expect("the session opens");
-        assert_eq!(reply(&mut complete, &[BEHIND]), Ok(Home::Behind));
-        assert_eq!(complete.end(), Ok(()));
+        assert!(after_run(Mode::Latest, places, &[stamp(1)]).latest());
+        assert!(!after_run(Mode::Complete, places, &[stamp(1)]).latest());
     }
 }
 

@@ -1752,9 +1752,7 @@ mod tests {
         loop {
             match shard.take(reader) {
                 reader::Next::Frame(frame) => frames.push(frame),
-                end @ (reader::Next::Empty
-                | reader::Next::Disk(_)
-                | reader::Next::Behind) => {
+                end @ (reader::Next::Empty | reader::Next::Disk(_)) => {
                     return (frames, end);
                 }
             }
@@ -1766,14 +1764,14 @@ mod tests {
     ///
     /// # Panics
     ///
-    /// If `reader` gets [`reader::Next::Behind`].
+    /// If `reader` reads from disk.
     #[track_caller]
     fn taken(shard: &mut Shard, reader: reader::Key, group: u32) -> Vec<Range> {
         let (frames, end) = drain(shard, reader);
         let ranges = ranges(&frames, group);
         assert!(
             matches!(end, reader::Next::Empty),
-            "behind after {ranges:?}"
+            "{end:?} after {ranges:?}"
         );
         ranges
     }
