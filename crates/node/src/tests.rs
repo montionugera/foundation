@@ -4873,6 +4873,27 @@ pub(crate) mod port {
             );
         }
 
+        /// A node with no region opens no mesh, so it starts at that limit.
+        #[test]
+        fn a_node_with_no_region_of_the_least_message_limit_starts() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2)];
+            let least = crate::Settings {
+                message_bytes_max: NonZeroUsize::new(1472).unwrap(),
+                window_bytes: 2 * 1472,
+                ..crate::Settings::default()
+            };
+            let node = Node::start(Config {
+                region: Region::Absent,
+                settings: least,
+                ..config(&hosts[0], Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run_for(TEN), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+        }
+
         /// A task's reader of a channel whose home is the peer holds a session to the
         /// peer when the node stops. The stop drops the hub and the reader, and each
         /// task of the hub then lets go of the transport (`hub::Hub::new`), so the
