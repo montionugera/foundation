@@ -1,5 +1,6 @@
 //! The Modbus PDU: requests, and the replies to them read in place.
 
+use std::fmt;
 use std::ops::Range;
 
 use crate::Error;
@@ -534,6 +535,25 @@ impl Exception {
             Self::GatewayTarget => 11,
             Self::Other(code) => code,
         }
+    }
+}
+
+impl fmt::Display for Exception {
+    /// The code and the name of the specification, such as `2 (illegal data
+    /// address)`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::IllegalFunction => "illegal function",
+            Self::IllegalAddress => "illegal data address",
+            Self::IllegalValue => "illegal data value",
+            Self::DeviceFailure => "server device failure",
+            Self::Acknowledge => "acknowledge",
+            Self::Busy => "server device busy",
+            Self::GatewayPath => "gateway path unavailable",
+            Self::GatewayTarget => "gateway target device failed to respond",
+            Self::Other(_) => return write!(f, "{}", self.code()),
+        };
+        write!(f, "{} ({name})", self.code())
     }
 }
 
