@@ -63,3 +63,9 @@
   against +0.61 ns with half with no samples). Decided by `laptop.architect` (#2816,
   2026-10-16T06:47:29Z):
   https://github.com/synnaxlabs/foundation/pull/2816#issuecomment-6209801736.
+  `bench::Logs` also has `fill(period, behind)`, as `trim(period, 0)` with the reach
+  of the carry `behind` records back, for the case `fill` of `benches/logs.rs`: 1000
+  indexes, one of them synced each 128 commits, a reach 64 records back, and the time
+  of the one commit in 128 whose carry takes the tail of that index and fills from the
+  stale items of the 64 records after its reach. Lost: the mean of each commit, in
+  which the hides of the commits that sync that index hide the fill (#2796).
