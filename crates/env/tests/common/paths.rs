@@ -18,7 +18,8 @@ pub(crate) struct Host<'a> {
     pub(crate) make_link: &'a dyn Fn(&Path, &Path),
 }
 
-/// `ENOTDIR` and `EISDIR` on Linux and macOS.
+/// `EEXIST`, `ENOTDIR`, and `EISDIR` on Linux and macOS.
+pub(crate) const EXISTS: i32 = 17;
 pub(crate) const NOT_DIRECTORY: i32 = 20;
 pub(crate) const DIRECTORY: i32 = 21;
 
@@ -53,6 +54,12 @@ macro_rules! tests {
             a_last_link_to_nothing_through_a_link_is_not_found,
             a_link_to_a_file_with_a_slash_fails,
             a_resolve_of_a_link_to_nothing_with_a_slash_is_not_found,
+            within_gives_not_found_for_a_hidden_folder_that_is_not_there,
+            a_directory_made_takes_files,
+            a_directory_made_again_or_through_a_link_is_ok,
+            a_directory_under_one_that_is_not_there_is_not_found,
+            a_directory_on_a_file_or_a_link_to_nothing_fails,
+            a_directory_outside_is_not_made,
         );
     };
     (@each $run:ident, $($case:ident),* $(,)?) => {
@@ -330,24 +337,19 @@ pub(crate) fn within_reaches_only_its_folders(host: &Host<'_>) {
     let entries = ["a.hcl", "data", "new.plan"].map(|name| dir.join("work").join(name));
     let listed = Ok(Found::Directory(entries.to_vec()));
     assert_eq!(within.read(&dir.join("work"), ALL), listed);
-    for path in [
-        "b.hcl",
-        "work/../b.hcl",
-        "workshop/a.hcl",
-        "work/data",
-        "work/data/admin.key",
-        "work/data/../data/admin.key",
-        "none.plan",
+    for (path, error) in [
+        ("b.hcl", Error::Outside),
+        ("work/../b.hcl", Error::Outside),
+        ("workshop/a.hcl", Error::Outside),
+        ("work/data", Error::Hidden),
+        ("work/data/admin.key", Error::Hidden),
+        ("work/data/../data/admin.key", Error::Hidden),
+        ("none.plan", Error::Outside),
     ] {
         let path = dir.join(path);
-        assert_eq!(
-            within.read(&path, 1),
-            Err(Error::Outside),
-            "{}",
-            path.display()
-        );
+        assert_eq!(within.read(&path, 1), Err(error), "{}", path.display());
         let written = within.write(&path, b"y");
-        assert_eq!(written, Err(Error::Outside), "{}", path.display());
+        assert_eq!(written, Err(error), "{}", path.display());
     }
     assert_eq!(host.paths.read(&dir.join("b.hcl"), 1), file);
     assert_eq!(
@@ -363,21 +365,16 @@ pub(crate) fn within_follows_a_link_out(host: &Host<'_>) {
     (host.make_link)(&dir.join("work/out"), &dir.join("workshop"));
     (host.make_link)(&dir.join("work/b.hcl"), Path::new("../b.hcl"));
     (host.make_link)(&dir.join("work/key"), Path::new("data/admin.key"));
-    for path in [
-        "work/out/a.hcl",
-        "work/out/new.plan",
-        "work/b.hcl",
-        "work/key",
+    for (path, error) in [
+        ("work/out/a.hcl", Error::Outside),
+        ("work/out/new.plan", Error::Outside),
+        ("work/b.hcl", Error::Outside),
+        ("work/key", Error::Hidden),
     ] {
         let path = dir.join(path);
-        assert_eq!(
-            within.read(&path, 1),
-            Err(Error::Outside),
-            "{}",
-            path.display()
-        );
+        assert_eq!(within.read(&path, 1), Err(error), "{}", path.display());
         let written = within.write(&path, b"y");
-        assert_eq!(written, Err(Error::Outside), "{}", path.display());
+        assert_eq!(written, Err(error), "{}", path.display());
     }
     let file = Ok(Found::File(b"x".to_vec()));
     assert_eq!(host.paths.read(&dir.join("b.hcl"), 1), file);
@@ -400,9 +397,9 @@ pub(crate) fn within_resolves_its_folders(host: &Host<'_>) {
     for hidden in [relative.join("work/data"), dir.join("alias/data")] {
         let within = paths.within(&work, slice::from_ref(&hidden)).unwrap();
         let read = within.read(&key, 1);
-        assert_eq!(read, Err(Error::Outside), "{}", hidden.display());
+        assert_eq!(read, Err(Error::Hidden), "{}", hidden.display());
         let written = within.write(&key, b"y");
-        assert_eq!(written, Err(Error::Outside), "{}", hidden.display());
+        assert_eq!(written, Err(Error::Hidden), "{}", hidden.display());
     }
     let none = [dir.join("none/work")];
     assert_eq!(paths.within(&none, &[]).err(), Some(Error::NotFound));
@@ -459,4 +456,70 @@ pub(crate) fn a_resolve_of_a_link_to_nothing_with_a_slash_is_not_found(
         let within = paths.within(slice::from_ref(&dir.to_path_buf()), &hidden);
         assert_eq!(within.err(), Some(Error::NotFound), "{name}");
     }
+}
+
+pub(crate) fn within_gives_not_found_for_a_hidden_folder_that_is_not_there(
+    host: &Host<'_>,
+) {
+    let (paths, dir) = (host.paths, host.dir);
+    (host.make_dir)(&dir.join("work"));
+    let base = paths.resolve(dir).unwrap();
+    let hidden = [base.join("work/data")];
+    let within = paths.within(&[base.join("work")], &hidden);
+    assert_eq!(within.err(), Some(Error::NotFound));
+}
+
+pub(crate) fn a_directory_made_takes_files(host: &Host<'_>) {
+    let (paths, dir) = (host.paths, host.dir);
+    let data = dir.join("data");
+    assert_eq!(paths.make_dir(&data), Ok(()));
+    assert_eq!(paths.read(&data, ALL), Ok(Found::Directory(Vec::new())));
+    paths.write(&data.join("a.plan"), b"x").unwrap();
+    let entries = Ok(Found::Directory(vec![data.join("a.plan")]));
+    assert_eq!(paths.read(&data, ALL), entries);
+}
+
+pub(crate) fn a_directory_made_again_or_through_a_link_is_ok(host: &Host<'_>) {
+    let (paths, dir) = (host.paths, host.dir);
+    let data = dir.join("data");
+    paths.make_dir(&data).unwrap();
+    paths.write(&data.join("a.plan"), b"x").unwrap();
+    assert_eq!(paths.make_dir(&data), Ok(()));
+    (host.make_link)(&dir.join("alias"), &data);
+    assert_eq!(paths.make_dir(&dir.join("alias")), Ok(()));
+    let entries = Ok(Found::Directory(vec![data.join("a.plan")]));
+    assert_eq!(paths.read(&data, ALL), entries);
+}
+
+pub(crate) fn a_directory_under_one_that_is_not_there_is_not_found(host: &Host<'_>) {
+    let (paths, dir) = (host.paths, host.dir);
+    let made = paths.make_dir(&dir.join("none/data"));
+    assert_eq!(made, Err(Error::NotFound));
+    assert_eq!(paths.read(&dir.join("none"), ALL), Err(Error::NotFound));
+}
+
+pub(crate) fn a_directory_on_a_file_or_a_link_to_nothing_fails(host: &Host<'_>) {
+    let (paths, dir) = (host.paths, host.dir);
+    let file = dir.join("data");
+    paths.write(&file, b"x").unwrap();
+    (host.make_link)(&dir.join("to-file"), &file);
+    (host.make_link)(&dir.join("to-none"), &dir.join("none"));
+    (host.make_link)(&dir.join("to-far"), &dir.join("none/far"));
+    for name in ["data", "to-file", "to-none", "to-far"] {
+        let made = paths.make_dir(&dir.join(name));
+        assert_eq!(made, Err(Error::Io { code: EXISTS }), "{name}");
+    }
+    assert_eq!(paths.read(&file, 1), Ok(Found::File(b"x".to_vec())));
+    assert_eq!(paths.read(&dir.join("none"), 1), Err(Error::NotFound));
+}
+
+pub(crate) fn a_directory_outside_is_not_made(host: &Host<'_>) {
+    let dir = host.dir;
+    let (within, _) = within_work(host);
+    for (name, error) in [("data", Error::Outside), ("work/data/new", Error::Hidden)] {
+        let path = dir.join(name);
+        assert_eq!(within.make_dir(&path), Err(error), "{name}");
+        assert_eq!(host.paths.read(&path, 1), Err(Error::NotFound), "{name}");
+    }
+    assert_eq!(within.make_dir(&dir.join("work/new")), Ok(()));
 }

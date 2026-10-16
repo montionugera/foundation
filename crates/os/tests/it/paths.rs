@@ -68,6 +68,14 @@ fn a_new_file_gives_other_users_no_access() {
 }
 
 #[test]
+fn a_new_directory_gives_other_users_no_access() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("data");
+    os::paths().make_dir(&path).unwrap();
+    assert_eq!(mode(&path), 0o700);
+}
+
+#[test]
 fn a_write_of_a_name_of_the_longest_length_succeeds() {
     let scratch = Scratch::new();
     let path = scratch.0.join("a".repeat(255));
