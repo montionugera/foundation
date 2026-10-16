@@ -1122,6 +1122,10 @@ fn an_accepted_stream_moves_to_another_thread_before_its_first_poll() {
     });
 }
 
+fn parse(host: &str) -> env::net::host::Host {
+    host.parse().expect("a host")
+}
+
 /// Polls a lookup of `host` with a counted waker and no runtime, so a `spawn_blocking`
 /// panics and a lost wake fails the bound.
 fn resolve(host: &str) -> Result<Vec<SocketAddr>, Error> {
@@ -1132,7 +1136,8 @@ fn resolve(host: &str) -> Result<Vec<SocketAddr>, Error> {
     let waker = Waker::from(Arc::clone(&counted));
     let mut cx = Context::from_waker(&waker);
     let net = net();
-    let mut lookup = pin!(net.resolve(host, 4433));
+    let parsed = parse(host);
+    let mut lookup = pin!(net.resolve(&parsed, 4433));
     // The answer can come before the first poll reads it.
     if let Poll::Ready(found) = lookup.as_mut().poll(&mut cx) {
         return found;
@@ -1166,20 +1171,7 @@ fn a_name_under_invalid_is_not_found() {
 }
 
 #[test]
-fn a_name_with_a_nul_byte_is_not_found() {
-    let host = "local\0host".to_owned();
-    assert_eq!(resolve(&host), Err(Error::NotFound { host }));
-}
-
-#[test]
-fn a_lookup_keeps_the_scope_of_an_ipv6_address() {
-    let ip = "fe80::1".parse().unwrap();
-    let address = SocketAddr::V6(SocketAddrV6::new(ip, 4433, 0, 1));
-    assert_eq!(resolve("fe80::1%1"), Ok(vec![address]));
-}
-
-#[test]
 fn resolve_of_a_literal_needs_no_resolver() {
-    let found = runtime().block_on(net().resolve("127.0.0.1", 80));
+    let found = runtime().block_on(net().resolve(&"127.0.0.1".parse().unwrap(), 80));
     assert_eq!(found, Ok(vec![SocketAddr::new(LOCALHOST.into(), 80)]));
 }

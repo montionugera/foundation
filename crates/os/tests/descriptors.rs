@@ -9,13 +9,14 @@
 mod descriptors;
 
 use env::net::Error;
+use env::net::host::Host;
 use rustix::io::Errno;
 use tokio::runtime::Runtime;
 
-/// Looks up `localhost` while each descriptor of the process is taken.
-fn starved(runtime: &Runtime) -> Result<Vec<std::net::SocketAddr>, Error> {
+/// Looks up `host` while each descriptor of the process is taken.
+fn starved(runtime: &Runtime, host: &Host) -> Result<Vec<std::net::SocketAddr>, Error> {
     let _held = descriptors::take_each();
-    runtime.block_on(os::net().resolve("localhost", 4433))
+    runtime.block_on(os::net().resolve(host, 4433))
 }
 
 #[test]
@@ -27,8 +28,9 @@ fn a_lookup_with_no_free_descriptor_is_io() {
     let io = Err(Error::Io {
         code: Errno::MFILE.raw_os_error(),
     });
-    assert_eq!(starved(&runtime), io, "at the first lookup");
-    let found = runtime.block_on(os::net().resolve("localhost", 4433));
+    let localhost = "localhost".parse().unwrap();
+    assert_eq!(starved(&runtime, &localhost), io, "at the first lookup");
+    let found = runtime.block_on(os::net().resolve(&localhost, 4433));
     assert!(found.is_ok_and(|found| !found.is_empty()));
-    assert_eq!(starved(&runtime), io, "with the modules loaded");
+    assert_eq!(starved(&runtime, &localhost), io, "with the modules loaded");
 }

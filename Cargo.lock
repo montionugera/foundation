@@ -703,6 +703,8 @@ name = "env"
 version = "0.0.0"
 dependencies = [
  "block",
+ "counting",
+ "divan",
  "proptest",
  "tracing",
  "types",
@@ -1480,6 +1482,8 @@ dependencies = [
  "access",
  "aws-lc-rs",
  "block",
+ "codec",
+ "counting",
  "env",
  "hub",
  "sim",

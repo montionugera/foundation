@@ -779,6 +779,42 @@ fn a_connect_with_no_listener_gives_closing_a_warning_and_no_established() {
     );
 }
 
+/// Connects to a host that `env` refuses, when `child::running()`.
+#[test]
+fn not_a_host() {
+    if !child::running() {
+        return;
+    }
+    let mut network = Network::new();
+    let calls = network
+        .sim
+        .run_on(&network.local.clone(), move |node, _| async move {
+            let side = Side::new(&node);
+            let open = side.open(&[
+                ("address", Value::String("127.1")),
+                ("port", Value::UInt16(4840)),
+            ]);
+            assert_eq!(open, Status::GOOD);
+            side.drive(Span::SECOND).await;
+            assert_eq!(side.close(1), Status::BAD_NOT_FOUND);
+            side.calls()
+        })
+        .expect("the run ends");
+    assert_eq!(
+        calls,
+        [(1, ffi::OPENING, vec![]), (1, ffi::CLOSING, vec![])]
+    );
+}
+
+#[test]
+fn a_connect_to_a_host_that_env_refuses_has_no_address() {
+    assert_eq!(
+        stderr("not_a_host"),
+        "connector-opcua: open62541 warning: connection 1: the connect failed: name \
+         127.1 has no address\n"
+    );
+}
+
 #[test]
 fn a_close_of_the_peer_gives_its_bytes_then_closing_once() {
     let mut network = Network::new();

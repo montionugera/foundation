@@ -1,0 +1,10 @@
+connector "influx" {
+  kind = "influx"
+  node = "cloud"
+  address = "http://127.1:8086"
+  select = "edge.*"
+  reader {
+    mode = "complete"
+    hold = "2h"
+  }
+}

@@ -53,6 +53,9 @@ const KEYS: [&str; 6] = [
 /// The count of the samples that InfluxDB confirmed with a 204, across the runs of
 /// one supervisor call.
 const CONFIRMED: &str = "confirmed";
+/// The count of the seqs that the gap lines count, which InfluxDB took with a 204,
+/// across the runs of one supervisor call.
+const LOST: &str = "lost";
 
 /// The `influx` kind: writes a reader's samples to InfluxDB.
 #[derive(Debug, Default)]
@@ -149,13 +152,14 @@ impl kind::Kind for Kind {
         }
     }
 
-    /// Reads the channels of its reader settings, writes none, and names the count
-    /// `confirmed`: the samples that InfluxDB took with a 204.
-    #[expect(clippy::unwrap_in_result, reason = "`CONFIRMED` is a valid name")]
+    /// Reads the channels of its reader settings, writes none, and names two counts:
+    /// `confirmed`, the samples that InfluxDB took with a 204, and `lost`, the seqs
+    /// that the gap lines of this connector count, which InfluxDB took with a 204.
     fn check(&self, config: &Config) -> Result<Channels, Vec<Diagnostic>> {
+        let count = |text: &str| text.parse().expect("invariant: a count is a name");
         Ok(Channels {
             reader: Some(config.reader.clone()),
-            counts: vec![CONFIRMED.parse().expect("invariant: `CONFIRMED` is a name")],
+            counts: vec![count(CONFIRMED), count(LOST)],
             ..Channels::default()
         })
     }
@@ -168,12 +172,15 @@ impl kind::Kind for Kind {
         future::ready(Ok(Vec::new()))
     }
 
-    /// Writes the samples of its reader to InfluxDB, one line for each sample time
-    /// with a field for each channel, keyed by the channel's name. It keeps one
-    /// request in flight, and acks a batch only after InfluxDB answers 204, when it
-    /// adds the batch's fields to the count `confirmed`. It shows each other answer as
-    /// its error and sends the batch again after a backoff. It reads the token at its
-    /// start, and again after a 401 or a 403 before the next attempt.
+    /// Writes the samples of its reader to InfluxDB, one line for each sample time with
+    /// a field for each channel, keyed by the channel's name. Before the lines of a
+    /// frame after seqs that the reader did not get, it writes their `live` gap line
+    /// ([`gap::MEASUREMENT`]) at the frame's first sample, also when it leaves that
+    /// sample's line out. It keeps one request in flight, and acks a batch only after
+    /// InfluxDB answers 204, when it adds the batch's fields to the count `confirmed`
+    /// and the seqs of its gap lines to `lost`. It shows each other answer as its error
+    /// and sends the batch again after a backoff. It reads the token at its start, and
+    /// again after a 401 or a 403 before the next attempt.
     ///
     /// # Errors
     ///
