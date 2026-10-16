@@ -5,7 +5,7 @@ use types::frame::{Draft, Frame, Layout};
 
 use super::{Error, FromHome, Head, Reader};
 
-/// The frames of a reader session, built from its replies after `Opened`, at the
+/// The frames of a reader session, built from its replies from `Opened` on, at the
 /// reader's node and at the program. The caller receives each message and makes each
 /// draft from its own pool. The entries of each frame index the key set.
 #[derive(Debug)]
@@ -20,16 +20,28 @@ pub struct Frames {
     draft: Option<Draft>,
 }
 
-/// What one message gave.
+/// What [`Frames`] waits for next.
+#[derive(Debug)]
+pub enum Due<'f> {
+    /// A whole message, for [`Frames::decode`].
+    Message,
+    /// Body bytes. Receive into the slice, the rest of the draft's body, and give the
+    /// length to [`Frames::received`]. A message over the slice goes to
+    /// [`Frames::decode`] whole, which gives its error.
+    Body(&'f mut [u8]),
+    /// A draft of this layout from the caller's pool, for [`Frames::draft`].
+    Draft(Layout<'f>),
+}
+
+/// What one input gave.
 #[derive(Debug)]
 pub enum Step {
+    /// The home opened the session.
+    Opened,
     /// The head of a frame. The run of its ends follows.
     Head(Head),
-    /// Part of a run of ends, or of a body.
+    /// Part of a run of ends or of a body, or a draft that the body fills.
     More,
-    /// The run of ends is whole. Make a draft of [`Frames::layout`], and give it to
-    /// [`Frames::draft`].
-    Draft,
     /// A whole frame.
     Frame(Frame),
     /// The session reached a frame that the buffer lost, so the home ended it. No
@@ -38,7 +50,7 @@ pub enum Step {
 }
 
 impl Frames {
-    /// The frames of the session that `reader` decodes, after its `Opened`. The
+    /// The frames of the session that `reader` decodes, before its `Opened`. The
     /// places of the session are the entries of `set`, in order.
     #[must_use]
     pub fn new(reader: Reader, set: Arc<KeySet>) -> Self {
@@ -58,13 +70,22 @@ impl Frames {
         &self.set
     }
 
-    /// Where the next message goes when it is body bytes: the rest of the body in the
-    /// draft. `None` when the next message is a reply or ends, or before the draft.
-    /// Receive into it, then give the length to [`Frames::received`].
-    pub fn body(&mut self) -> Option<&mut [u8]> {
-        let start = self.reader.body()?;
-        let draft = self.draft.as_mut()?;
-        Some(rest(draft, start))
+    /// What the frames wait for. Ask it before each input: a call that dropped
+    /// between two inputs resumes from it.
+    ///
+    /// # Errors
+    ///
+    /// When a draft is due, each [`types::frame::Error`] of [`Layout::from_ends`]. The
+    /// caller then stops the stream as `MALFORMED`.
+    pub fn due(&mut self) -> Result<Due<'_>, types::frame::Error> {
+        if self.drafting {
+            return Layout::from_ends(&self.set, &self.ends).map(Due::Draft);
+        }
+        Ok(match (self.reader.body(), self.draft.as_mut()) {
+            (Some(start), Some(draft)) => Due::Body(rest(draft, start)),
+            (None, _) => Due::Message,
+            (Some(_), None) => unreachable!("invariant: a body has a draft"),
+        })
     }
 
     /// Takes the next message, whole. A body message is copied into the draft.
@@ -76,16 +97,17 @@ impl Frames {
     ///
     /// # Panics
     ///
-    /// After [`Step::Draft`], until [`Frames::draft`].
+    /// When [`Frames::due`] gives [`Due::Draft`].
     pub fn decode(&mut self, message: &[u8]) -> Result<Step, Error> {
         assert!(!self.drafting, "a draft is due before the next message");
         if let Some(start) = self.reader.body() {
             let last = last(self.reader.decode(message))?;
             let draft = self.draft.as_mut().expect("invariant: a body has a draft");
             prefix(rest(draft, start), message.len()).copy_from_slice(message);
-            return Ok(self.received_body(last).map_or(Step::More, Step::Frame));
+            return Ok(self.received_body(last));
         }
         match self.reader.decode(message)? {
+            FromHome::Opened => Ok(Step::Opened),
             FromHome::Head(head) => {
                 self.head = Some(head);
                 self.ends.clear();
@@ -95,17 +117,17 @@ impl Frames {
                 self.ends
                     .extend(ends.map(|(place, end)| (to_usize(place), to_usize(end))));
                 self.drafting = last;
-                Ok(if last { Step::Draft } else { Step::More })
+                Ok(Step::More)
             }
             FromHome::Behind => Ok(Step::Behind),
-            FromHome::Opened | FromHome::Body { .. } => {
-                unreachable!("invariant: the decoder gives no opened or body here")
+            FromHome::Body { .. } => {
+                unreachable!("invariant: the decoder gives no body here")
             }
         }
     }
 
-    /// Takes a body message of `len` bytes that the caller wrote at the start of
-    /// [`Frames::body`]. Gives the frame when the body is whole.
+    /// Takes a body message of `len` bytes that the caller wrote at the start of the
+    /// slice of [`Due::Body`].
     ///
     /// # Errors
     ///
@@ -113,37 +135,28 @@ impl Frames {
     ///
     /// # Panics
     ///
-    /// When no body is due, or `len` is over the length of [`Frames::body`].
-    pub fn received(&mut self, len: usize) -> Result<Option<Frame>, Error> {
+    /// When [`Frames::due`] does not give [`Due::Body`], or `len` is over its slice.
+    pub fn received(&mut self, len: usize) -> Result<Step, Error> {
+        assert!(!self.drafting, "a body is due");
         let start = self.reader.body().expect("a body is due");
-        let draft = self.draft.as_mut().expect("a body is due");
+        let draft = self.draft.as_mut().expect("invariant: a body has a draft");
         let last = last(self.reader.decode(prefix(rest(draft, start), len)))?;
         Ok(self.received_body(last))
     }
 
-    /// The layout of the frame whose ends are whole, after [`Step::Draft`]. It can be
-    /// asked again, as by a call that dropped while its draft waited for the pool.
-    ///
-    /// # Errors
-    ///
-    /// Each [`types::frame::Error`] of [`Layout::from_ends`]. The caller then stops
-    /// the stream as `MALFORMED`.
-    pub fn layout(&self) -> Result<Layout<'_>, types::frame::Error> {
-        Layout::from_ends(&self.set, &self.ends)
-    }
-
-    /// Takes the draft of [`Frames::layout`]. Gives the frame when it has no body.
+    /// Takes the draft, which is of the layout of [`Due::Draft`]. Gives the frame when
+    /// it has no body, else [`Step::More`].
     ///
     /// # Panics
     ///
-    /// When no draft is due.
-    pub fn draft(&mut self, draft: Draft) -> Option<Frame> {
+    /// When [`Frames::due`] does not give [`Due::Draft`].
+    pub fn draft(&mut self, draft: Draft) -> Step {
         assert!(self.drafting, "no draft is due");
         self.drafting = false;
         self.draft = Some(draft);
         match self.reader.body() {
-            Some(_) => None,
-            None => Some(self.freeze()),
+            Some(_) => Step::More,
+            None => Step::Frame(self.freeze()),
         }
     }
 
@@ -156,12 +169,16 @@ impl Frames {
     pub fn finished(&self) -> Error {
         self.reader
             .end()
-            .expect_err("invariant: a session reads no message after Behind")
+            .expect_err("a stream may end after Behind")
     }
 
-    /// The frame when the body message that arrived is the `last`.
-    fn received_body(&mut self, last: bool) -> Option<Frame> {
-        last.then(|| self.freeze())
+    /// The step of the body message that arrived, a frame when it is the `last`.
+    fn received_body(&mut self, last: bool) -> Step {
+        if last {
+            Step::Frame(self.freeze())
+        } else {
+            Step::More
+        }
     }
 
     /// The frame of the head and the draft that arrived.
@@ -176,16 +193,23 @@ impl Frames {
 
 /// The body of `draft` from `start` on.
 fn rest(draft: &mut Draft, start: usize) -> &mut [u8] {
-    draft
-        .body_mut()
-        .get_mut(start..)
-        .expect("invariant: a body starts inside its draft")
+    let body = draft.body_mut();
+    let len = body.len();
+    body.get_mut(start..).unwrap_or_else(|| {
+        panic!(
+            "invariant: a body that starts at {start} is inside its {len} byte draft"
+        )
+    })
 }
 
 /// The first `len` bytes of `rest`.
 fn prefix(rest: &mut [u8], len: usize) -> &mut [u8] {
-    rest.get_mut(..len)
-        .expect("a body message fits the rest of its body")
+    let room = rest.len();
+    rest.get_mut(..len).unwrap_or_else(|| {
+        panic!(
+            "a body message of {len} bytes is over the {room} bytes left of its body"
+        )
+    })
 }
 
 /// Whether the body message that `decoded` gave is the last of its body.
@@ -211,63 +235,64 @@ mod tests {
     use crate::hub::{Mode, OPENED, Open, Reply};
 
     /// Index key 1 (entry 0), then an `I64` of key 2 (entry 1).
-    fn set() -> Arc<KeySet> {
+    fn create_set() -> Arc<KeySet> {
         Interner::new().intern(&[Group {
             index: key(1),
             data: &[(key(2), Type::Scalar(Scalar::I64))],
         }])
     }
 
-    fn pool() -> block::Pool {
+    fn create_pool() -> block::Pool {
         let config = block::Config::new(1 << 16).expect("the budget fits");
         let memory = block::Heap::new(config.reservation());
         block::Pool::new(config, memory)
     }
 
-    /// The frames of an opened session of 2 places, latest when `latest`.
-    fn opened(latest: bool) -> Frames {
+    /// The frames of a session of 2 places, latest when `latest`, before `Opened`.
+    fn create_frames(latest: bool) -> Frames {
         let mode = if latest {
             Mode::Latest
         } else {
             Mode::Complete { limit_bytes: 0 }
         };
-        let mut reader = Reader::new(&Open { mode, channels: 2 });
-        reader.decode(&[OPENED]).expect("the session opens");
-        Frames::new(reader, set())
+        Frames::new(Reader::new(&Open { mode, channels: 2 }), create_set())
     }
 
-    /// A live head of 2 samples from seq 4 with `series` series.
-    fn head(series: u32) -> Vec<u8> {
+    /// The frames of an opened session of 2 places, latest when `latest`.
+    fn opened(latest: bool) -> Frames {
+        let mut frames = create_frames(latest);
+        assert!(matches!(frames.decode(&[OPENED]), Ok(Step::Opened)));
+        frames
+    }
+
+    /// A live head of `count` samples from `seq` with `series` series.
+    fn head(seq: u64, count: u32, series: u32) -> Vec<u8> {
         encode_reply(Reply::Head(Head {
             path: Path::Live,
-            range: Range { seq: 4, count: 2 },
+            range: Range { seq, count },
             series,
         }))
     }
 
-    /// Gives `frames` a draft of its layout.
-    fn draft(frames: &mut Frames, pool: &block::Pool) -> Option<Frame> {
-        let draft = frames
-            .layout()
-            .expect("a layout")
-            .draft(pool, Form::Encoded)
-            .expect("a block");
+    /// Gives `frames` the draft that is due.
+    fn draft(frames: &mut Frames, pool: &block::Pool) -> Step {
+        let Ok(Due::Draft(layout)) = frames.due() else {
+            panic!("a draft is due");
+        };
+        let draft = layout.draft(pool, Form::Encoded).expect("a block");
         frames.draft(draft)
     }
 
     /// Takes a head and the ends of 2 series of 16 bytes each.
     fn ends(frames: &mut Frames) {
-        assert!(matches!(frames.decode(&head(2)), Ok(Step::Head(h)) if h.series == 2));
-        assert!(matches!(
-            frames.decode(&encode_ends(&[(0, 16)])),
-            Ok(Step::More)
-        ));
-        assert!(frames.body().is_none());
-        assert!(matches!(
-            frames.decode(&encode_ends(&[(1, 32)])),
-            Ok(Step::Draft)
-        ));
-        assert!(frames.body().is_none());
+        let step = frames.decode(&head(4, 2, 2));
+        assert!(matches!(step, Ok(Step::Head(h)) if h.series == 2));
+        let step = frames.decode(&encode_ends(&[(0, 16)]));
+        assert!(matches!(step, Ok(Step::More)));
+        assert!(matches!(frames.due(), Ok(Due::Message)));
+        let step = frames.decode(&encode_ends(&[(1, 32)]));
+        assert!(matches!(step, Ok(Step::More)));
+        assert!(matches!(frames.due(), Ok(Due::Draft(_))));
     }
 
     fn check(frame: &Frame, body: &[u8]) {
@@ -278,74 +303,113 @@ mod tests {
     }
 
     #[test]
+    fn opens_the_session_once() {
+        let mut frames = create_frames(false);
+        assert!(matches!(frames.due(), Ok(Due::Message)));
+        assert_eq!(frames.finished(), Error::Finished);
+        assert!(matches!(frames.decode(&[OPENED]), Ok(Step::Opened)));
+        assert!(matches!(frames.due(), Ok(Due::Message)));
+        assert_eq!(
+            frames.decode(&[OPENED]).map(drop),
+            Err(Error::Reopen { kind: OPENED })
+        );
+    }
+
+    #[test]
     fn builds_a_frame_from_whole_messages() {
-        let (pool, mut frames) = (pool(), opened(false));
+        let (pool, mut frames) = (create_pool(), opened(false));
         let body: Vec<u8> = (0..32).collect();
         ends(&mut frames);
-        assert!(draft(&mut frames, &pool).is_none());
+        assert!(matches!(draft(&mut frames, &pool), Step::More));
         assert!(matches!(frames.decode(&body[..10]), Ok(Step::More)));
         let Ok(Step::Frame(frame)) = frames.decode(&body[10..]) else {
             panic!("a frame");
         };
         check(&frame, &body);
-        assert!(frames.body().is_none());
+        assert!(matches!(frames.due(), Ok(Due::Message)));
     }
 
     #[test]
     fn builds_a_frame_from_bytes_received_in_place() {
-        let (pool, mut frames) = (pool(), opened(false));
+        let (pool, mut frames) = (create_pool(), opened(false));
         let body: Vec<u8> = (100..132).collect();
         ends(&mut frames);
-        assert!(draft(&mut frames, &pool).is_none());
-        let rest = frames.body().expect("a body is due");
+        draft(&mut frames, &pool);
+        let Ok(Due::Body(rest)) = frames.due() else {
+            panic!("a body is due");
+        };
         assert_eq!(rest.len(), 32);
         rest[..20].copy_from_slice(&body[..20]);
-        assert!(matches!(frames.received(20), Ok(None)));
-        let rest = frames.body().expect("a body is due");
+        assert!(matches!(frames.received(20), Ok(Step::More)));
+        let Ok(Due::Body(rest)) = frames.due() else {
+            panic!("a body is due");
+        };
         assert_eq!(rest.len(), 12);
         rest.copy_from_slice(&body[20..]);
-        let frame = frames.received(12).expect("decodes").expect("a frame");
+        let Ok(Step::Frame(frame)) = frames.received(12) else {
+            panic!("a frame");
+        };
         check(&frame, &body);
     }
 
     #[test]
     fn gives_a_frame_with_no_body_at_its_draft() {
-        let (pool, mut frames) = (pool(), opened(false));
-        frames.decode(&head(2)).expect("a head");
+        let (pool, mut frames) = (create_pool(), opened(false));
+        frames.decode(&head(4, 2, 2)).expect("a head");
         let step = frames.decode(&encode_ends(&[(0, 0), (1, 0)]));
-        assert!(matches!(step, Ok(Step::Draft)));
-        let frame = draft(&mut frames, &pool).expect("a frame");
+        assert!(matches!(step, Ok(Step::More)));
+        let Step::Frame(frame) = draft(&mut frames, &pool) else {
+            panic!("a frame");
+        };
         assert_eq!(frame.series(0), Some(&[][..]));
         assert_eq!(frame.range(0), Some(Range { seq: 4, count: 2 }));
-        assert!(frames.body().is_none());
+        assert!(matches!(frames.due(), Ok(Due::Message)));
         assert_eq!(frames.finished(), Error::Finished);
     }
 
-    /// A wait for the pool that drops asks for the layout again.
+    /// A call that drops at its wait for the pool finds the draft due again.
     #[test]
-    fn gives_the_layout_again() {
-        let (pool, mut frames) = (pool(), opened(false));
+    fn gives_a_due_draft_again() {
+        let (pool, mut frames) = (create_pool(), opened(false));
         ends(&mut frames);
-        let _first = frames.layout().expect("a layout");
-        assert!(draft(&mut frames, &pool).is_none());
+        assert!(matches!(frames.due(), Ok(Due::Draft(_))));
+        assert!(matches!(draft(&mut frames, &pool), Step::More));
+    }
+
+    #[test]
+    fn builds_each_frame_from_its_own_ends() {
+        let (pool, mut frames) = (create_pool(), opened(false));
+        ends(&mut frames);
+        draft(&mut frames, &pool);
+        let first: Vec<u8> = (0..32).collect();
+        assert!(matches!(frames.decode(&first), Ok(Step::Frame(_))));
+        frames.decode(&head(6, 1, 1)).expect("a head");
+        frames.decode(&encode_ends(&[(0, 8)])).expect("ends");
+        draft(&mut frames, &pool);
+        let Ok(Step::Frame(frame)) = frames.decode(&[7; 8]) else {
+            panic!("a frame");
+        };
+        assert_eq!(frame.range(0), Some(Range { seq: 6, count: 1 }));
+        assert_eq!(frame.series(0), Some(&[7; 8][..]));
+        assert_eq!(frame.series(1), None);
     }
 
     #[test]
     fn refuses_ends_that_break_the_layout() {
         let mut frames = opened(false);
-        frames.decode(&head(1)).expect("a head");
+        frames.decode(&head(4, 2, 1)).expect("a head");
         frames.decode(&encode_ends(&[(1, 8)])).expect("ends");
         assert_eq!(
-            frames.layout().map(drop),
+            frames.due().map(drop),
             Err(types::frame::Error::IndexAbsent { entry: 1, index: 0 })
         );
         let mut frames = opened(false);
-        frames.decode(&head(2)).expect("a head");
+        frames.decode(&head(4, 2, 2)).expect("a head");
         frames
             .decode(&encode_ends(&[(0, 16), (1, 8)]))
             .expect("ends");
         assert_eq!(
-            frames.layout().map(drop),
+            frames.due().map(drop),
             Err(types::frame::Error::End(BadEnd::Before {
                 end: 8,
                 start: 16
@@ -355,7 +419,7 @@ mod tests {
 
     #[test]
     fn refuses_a_body_message_past_the_body() {
-        let (pool, mut frames) = (pool(), opened(false));
+        let (pool, mut frames) = (create_pool(), opened(false));
         ends(&mut frames);
         draft(&mut frames, &pool);
         frames.decode(&[0; 30]).expect("body");
@@ -367,7 +431,7 @@ mod tests {
 
     #[test]
     fn gives_behind_and_the_error_of_each_finish() {
-        let (pool, mut frames) = (pool(), opened(false));
+        let (pool, mut frames) = (create_pool(), opened(false));
         assert_eq!(frames.finished(), Error::Finished);
         ends(&mut frames);
         draft(&mut frames, &pool);
@@ -395,15 +459,44 @@ mod tests {
     #[test]
     #[should_panic(expected = "no draft is due")]
     fn panics_at_a_draft_that_is_not_due() {
-        let (pool, mut frames) = (pool(), opened(false));
+        let (pool, mut frames) = (create_pool(), opened(false));
         ends(&mut frames);
+        let Ok(Due::Draft(layout)) = frames.due() else {
+            panic!("a draft is due");
+        };
+        let twice = layout.draft(&pool, Form::Encoded).expect("a block");
         draft(&mut frames, &pool);
-        draft(&mut frames, &pool);
+        frames.draft(twice);
     }
 
     #[test]
     #[should_panic(expected = "a body is due")]
     fn panics_at_bytes_received_with_no_body_due() {
-        let _frame = opened(false).received(1);
+        let _step = opened(false).received(1);
+    }
+
+    #[test]
+    #[should_panic(expected = "a body is due")]
+    fn panics_at_bytes_received_before_a_due_draft() {
+        let mut frames = opened(false);
+        ends(&mut frames);
+        let _step = frames.received(1);
+    }
+
+    #[test]
+    #[should_panic(expected = "a body message of 33 bytes is over the 32 bytes left")]
+    fn panics_at_bytes_received_past_the_body() {
+        let (pool, mut frames) = (create_pool(), opened(false));
+        ends(&mut frames);
+        draft(&mut frames, &pool);
+        let _step = frames.received(33);
+    }
+
+    #[test]
+    #[should_panic(expected = "a stream may end after Behind")]
+    fn panics_at_a_finish_after_behind() {
+        let mut frames = opened(false);
+        frames.decode(&encode_reply(Reply::Behind)).expect("behind");
+        let _error = frames.finished();
     }
 }

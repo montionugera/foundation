@@ -34,7 +34,7 @@ mod reader;
 
 use std::fmt;
 
-pub use frames::{Frames, Step};
+pub use frames::{Due, Frames, Step};
 pub use home::{FromReader, Home};
 pub use reader::{FromHome, Reader};
 use types::frame::{Path, Range};

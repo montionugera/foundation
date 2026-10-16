@@ -17,7 +17,7 @@ use types::frame::{Form, Frame};
 use types::hash;
 use types::sample::Type;
 use wire::Protocol;
-use wire::hub::{Credit, Frames, FromHome, Open, Refusal, Step, keys};
+use wire::hub::{Credit, Due, Frames, Open, Refusal, Step, keys};
 
 use super::{Ended, Error, Lens, Matched, Mode, Streak, WINDOW};
 use crate::State;
@@ -314,9 +314,9 @@ async fn session(
         channels: u32::try_from(set.entries().len())
             .expect("invariant: a key set holds at most 2^32 entries"),
     };
-    let mut decoder = wire::hub::Reader::new(&open);
+    let mut frames = Frames::new(wire::hub::Reader::new(&open), set);
     let opened = {
-        let mut opening = pin!(connect(&state, home, class, &mut decoder, &open, &set));
+        let mut opening = pin!(connect(&state, home, class, &mut frames, &open));
         poll_fn(|cx| match poll_end(&queue, cx) {
             Poll::Ready(_) => Poll::Ready(None),
             Poll::Pending => opening.as_mut().poll(cx).map(Some),
@@ -339,7 +339,7 @@ async fn session(
     drop(waiting);
     let limit = Rc::new(Cell::new(WINDOW));
     let checked = (mode == Mode::Complete).then(|| Rc::clone(&limit));
-    let inbound = Inbound::new(&state, receiver, decoder, &set, checked);
+    let inbound = Inbound::new(&state, receiver, frames, checked);
     let receiving = pin!(receive(Weak::clone(&queue), inbound, mode == Mode::Latest));
     run(receiving, pin!(grant(queue, state, sender, limit))).await;
 }
@@ -428,14 +428,13 @@ impl Inbound {
     fn new(
         state: &Rc<RefCell<State>>,
         receiver: Receiver,
-        decoder: wire::hub::Reader,
-        set: &Arc<KeySet>,
+        frames: Frames,
         limit: Option<Rc<Cell<u64>>>,
     ) -> Self {
         Self {
             state: Rc::clone(state),
             receiver: Some(receiver),
-            frames: Frames::new(decoder, Arc::clone(set)),
+            frames,
             limit,
             arrived: 0,
         }
@@ -447,25 +446,28 @@ impl Inbound {
             .as_mut()
             .expect("invariant: a session holds its stream until it ends");
         loop {
-            let step = if let Some(body) = self.frames.body() {
-                match receiver.recv_into(body).await {
-                    Ok(Some(len)) => match self.frames.received(len) {
-                        Ok(Some(frame)) => Step::Frame(frame),
-                        Ok(None) => Step::More,
-                        Err(error) => return Err(Ended::Message(error)),
-                    },
+            let step = match self.frames.due().map_err(Ended::Frame)? {
+                Due::Message => {
+                    let message = recv(receiver, &self.frames).await?;
+                    self.frames.decode(&message)
+                }
+                Due::Body(body) => match receiver.recv_into(body).await {
+                    Ok(Some(len)) => self.frames.received(len),
                     Ok(None) => return Err(Ended::Message(self.frames.finished())),
                     Err(transport::Error::TooLarge { .. }) => {
                         let message = recv(receiver, &self.frames).await?;
-                        self.frames.decode(&message).map_err(Ended::Message)?
+                        self.frames.decode(&message)
                     }
                     Err(error) => return Err(ended(error)),
+                },
+                Due::Draft(layout) => {
+                    let draft = layout
+                        .draft(self.state.borrow().home.pool(), Form::Encoded)
+                        .map_err(Ended::Pool)?;
+                    Ok(self.frames.draft(draft))
                 }
-            } else {
-                let message = recv(receiver, &self.frames).await?;
-                self.frames.decode(&message).map_err(Ended::Message)?
             };
-            match step {
+            match step.map_err(Ended::Message)? {
                 Step::Head(_) => {
                     if let Some(limit) = &self.limit
                         && self.arrived >= limit.get()
@@ -476,17 +478,11 @@ impl Inbound {
                     }
                 }
                 Step::More => {}
-                Step::Draft => {
-                    let layout = self.frames.layout().map_err(Ended::Frame)?;
-                    let draft = layout
-                        .draft(self.state.borrow().home.pool(), Form::Encoded)
-                        .map_err(Ended::Pool)?;
-                    if let Some(frame) = self.frames.draft(draft) {
-                        return Ok(self.arrived(frame));
-                    }
-                }
                 Step::Frame(frame) => return Ok(self.arrived(frame)),
                 Step::Behind => return Err(Ended::Behind),
+                Step::Opened => {
+                    unreachable!("invariant: the decoder gives opened once")
+                }
             }
         }
     }
@@ -599,8 +595,8 @@ async fn dial(
         .map_err(Error::Transport)
 }
 
-/// Opens a stream of `class` to `home`, and opens the session of `open` on `set` with
-/// `decoder`. A reply that breaks HUB WIRE, or a pool with no block for a message,
+/// Opens a stream of `class` to `home`, and opens the session of `open` on the key set
+/// of `frames`. A reply that breaks HUB WIRE, or a pool with no block for a message,
 /// stops the stream with its refusal. A session that closes with `Code(0)` before
 /// `Opened`, as one that loses the tie-break of ONE SESSION PER PEER does, gets
 /// another open on the session that the next dial gives, at most `TRIES` in all.
@@ -608,13 +604,12 @@ async fn connect(
     state: &Rc<RefCell<State>>,
     home: types::node::Key,
     class: Class,
-    decoder: &mut wire::hub::Reader,
+    frames: &mut Frames,
     open: &Open,
-    set: &KeySet,
 ) -> Result<(Sender, Receiver), Error> {
     let mut tries = 1;
     loop {
-        match attempt(state, home, class, decoder, open, set).await {
+        match attempt(state, home, class, frames, open).await {
             Err(Error::Transport(
                 transport::Error::Closed { code: Code(0) }
                 | transport::Error::PeerClosed { code: Code(0) },
@@ -629,17 +624,15 @@ async fn attempt(
     state: &Rc<RefCell<State>>,
     home: types::node::Key,
     class: Class,
-    decoder: &mut wire::hub::Reader,
+    frames: &mut Frames,
     open: &Open,
-    set: &KeySet,
 ) -> Result<(Sender, Receiver), Error> {
     let (mut sender, mut receiver) = dial(state, home)
         .await?
         .open(class)
         .await
         .map_err(Error::Transport)?;
-    let opened =
-        handshake(state, (&mut sender, &mut receiver), decoder, open, set).await;
+    let opened = handshake(state, (&mut sender, &mut receiver), frames, open).await;
     if let Err(error) = opened {
         let refusal = match error {
             Error::Message(_) => Some(Refusal::Malformed),
@@ -655,14 +648,13 @@ async fn attempt(
     Ok((sender, receiver))
 }
 
-/// Sends the header, `open`, and the keys of `set` on `sender`, and waits for the
-/// home's `Opened`.
+/// Sends the header, `open`, and the keys of the key set of `frames` on `sender`, and
+/// waits for the home's `Opened`.
 async fn handshake(
     state: &RefCell<State>,
     (sender, receiver): (&mut Sender, &mut Receiver),
-    decoder: &mut wire::hub::Reader,
+    frames: &mut Frames,
     open: &Open,
-    set: &KeySet,
 ) -> Result<(), Error> {
     let header = wire::header::encode(Protocol::Hub);
     send(state, sender, header.len(), |out| {
@@ -673,7 +665,12 @@ async fn handshake(
         open.encode(out);
     })
     .await?;
-    let keys: Vec<_> = set.entries().iter().map(|entry| entry.key).collect();
+    let keys: Vec<_> = frames
+        .set()
+        .entries()
+        .iter()
+        .map(|entry| entry.key)
+        .collect();
     let most = sender.bytes_max().min(state.borrow().home.pool().largest());
     for run in keys.chunks(most / keys::LEN) {
         send(state, sender, run.len() * keys::LEN, |out| {
@@ -682,16 +679,12 @@ async fn handshake(
         .await?;
     }
     match receiver.recv().await {
-        Ok(Some(message)) => match decoder.decode(&message) {
-            Ok(FromHome::Opened) => Ok(()),
+        Ok(Some(message)) => match frames.decode(&message) {
+            Ok(Step::Opened) => Ok(()),
             Ok(_) => unreachable!("invariant: the decoder gives opened first"),
             Err(error) => Err(Error::Message(error)),
         },
-        Ok(None) => {
-            Err(Error::Message(decoder.end().expect_err(
-                "invariant: a stream before opened may not end",
-            )))
-        }
+        Ok(None) => Err(Error::Message(frames.finished())),
         Err(error) => Err(refused(error).map_or_else(Error::Transport, Error::Refused)),
     }
 }
