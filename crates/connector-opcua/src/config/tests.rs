@@ -1,7 +1,7 @@
 #![expect(clippy::arithmetic_side_effects, reason = "a test may panic")]
 
 use document::value::Kind as Value;
-use document::{Attribute, Label, Map, Position, Source, Span};
+use document::{Position, Source, Span};
 use proptest::prelude::*;
 
 use super::*;
@@ -411,6 +411,59 @@ fn refuses_each_key_and_block_it_does_not_take() {
     );
 }
 
+/// The block that the kind gives for `tag` with `access`, as `plant.spike`.
+fn point(tag: &str, access: Option<Access>) -> Result<Vec<Block>, Vec<Diagnostic>> {
+    let facts = Facts {
+        access,
+        ..Facts::default()
+    };
+    connector::kind::Kind::block(&crate::Kind, tag, &facts, &spike())
+}
+
+fn spike() -> Name {
+    "plant.spike".parse().expect("a name")
+}
+
+#[test]
+fn gives_a_read_block_for_each_point_that_a_connector_can_read() {
+    for access in [None, Some(Access::Read), Some(Access::ReadWrite)] {
+        assert_eq!(
+            point("ns=3;i=1001", access),
+            Ok(vec![read(0, "plant.spike", "ns=3;i=1001")]),
+            "{access:?}"
+        );
+    }
+}
+
+#[test]
+fn refuses_the_block_of_a_point_that_a_connector_can_only_write() {
+    assert_eq!(
+        point("ns=3;i=1001", Some(Access::Write)),
+        Err(vec![Diagnostic::new(
+            Code::new("opcua.no-write"),
+            None,
+            "the point \"ns=3;i=1001\" can only be written, and the kind cannot write"
+                .into(),
+            "Import only points that the connector can read".into(),
+        )])
+    );
+}
+
+#[test]
+fn refuses_the_block_of_a_tag_that_is_not_a_node_id() {
+    assert_eq!(
+        point("ns=3;g=09087e75-8e5e-499b-954f-f2a9603db28a", None),
+        Err(vec![Diagnostic::new(
+            Code::new("opcua.bad-node-id"),
+            None,
+            "a GUID (g=) or opaque (b=) key is not supported: give a number (i=) or a \
+             name (s=)"
+                .into(),
+            "Write a node ID such as \"ns=3;s=SpikeData\" or \"ns=3;i=1001\"".into(),
+        )])
+    );
+}
+
 proptest! {
     /// Each text of a node that `Node` reads parses as the `node_id` of a read.
     #[test]
@@ -425,6 +478,20 @@ proptest! {
         let node: Node = text.parse().expect("a node");
         let config = config(string(ADDRESS), vec![read(20, "plant.spike", &text)]);
         let reads = parse(&config).map(|config| config.reads);
+        prop_assert_eq!(
+            reads,
+            Ok(vec![Read { channel: "plant.spike".parse().expect("a name"), node }])
+        );
+    }
+
+    /// The block of each node that `Node` reads is a read of that node, which
+    /// `parse` reads back.
+    #[test]
+    fn parses_the_block_of_each_node(node in crate::node::tests::node()) {
+        let text = node.to_string();
+        let blocks = point(&text, None).expect("a block");
+        prop_assert_eq!(&blocks, &vec![read(0, "plant.spike", &text)]);
+        let reads = parse(&config(string(ADDRESS), blocks)).map(|config| config.reads);
         prop_assert_eq!(
             reads,
             Ok(vec![Read { channel: "plant.spike".parse().expect("a name"), node }])

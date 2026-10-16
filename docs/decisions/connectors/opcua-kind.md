@@ -79,3 +79,10 @@
   at once on a lost channel or session: decided by `laptop.architect-2`
   (2026-10-16T04:04:38Z,
   https://github.com/synnaxlabs/foundation/pull/2809#issuecomment-6207818990).
+  Import: the block of a point is `read "<channel>" { node_id = "<tag>" }`, which
+  `parse` reads. A tag that is not a node ID that `parse` reads gives
+  `opcua.bad-node-id`, and a point that a connector can only write gives
+  `opcua.no-write`, since the kind does not write. One table of the built-in types
+  that a read decodes, Boolean (1) to Double (11), gives the decode of a read, so the
+  type of a browse reads the same table (plan of C1 PR 5, approval owed:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6224806107).

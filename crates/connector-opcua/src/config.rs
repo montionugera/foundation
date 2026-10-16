@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::ffi::CString;
 
+use connector::browse::{Access, Facts};
 use connector::kind;
 use document::diagnostic::{Code, Diagnostic, Note};
 use document::value::Value;
-use document::{Block, Document, read};
+use document::{Attribute, Block, Document, Label, Map, read};
 use types::name::Name;
 use types::time::Rate;
 
@@ -20,6 +21,7 @@ mod tests;
 const BAD_ADDRESS: Code = Code::new("opcua.bad-address");
 const BAD_NODE_ID: Code = Code::new("opcua.bad-node-id");
 const NO_READ: Code = Code::new("opcua.no-read");
+const NO_WRITE: Code = Code::new("opcua.no-write");
 const REPEATED_CHANNEL: Code = Code::new("opcua.repeated-channel");
 
 /// The scheme of each address.
@@ -168,6 +170,52 @@ fn reads(config: &Document, diagnostics: &mut Vec<Diagnostic>) -> Vec<Read> {
         }
     }
     reads
+}
+
+/// The `read` block of the node `tag` as the channel `channel`, as
+/// [`Kind::block`](connector::kind::Kind::block) asks: `read "<channel>" { node_id =
+/// "<tag>" }`.
+pub(crate) fn block(
+    tag: &str,
+    facts: &Facts,
+    channel: &Name,
+) -> Result<Vec<Block>, Vec<Diagnostic>> {
+    if facts.access == Some(Access::Write) {
+        return Err(vec![Diagnostic::new(
+            NO_WRITE,
+            None,
+            format!("the point {tag:?} can only be written, and the kind cannot write"),
+            "Import only points that the connector can read".into(),
+        )]);
+    }
+    let value = Value {
+        kind: document::value::Kind::String(tag.into()),
+        span: None,
+    };
+    node(&value).map_err(|error| vec![error])?;
+    Ok(vec![read_block(channel, value)])
+}
+
+/// `read "<channel>" { node_id = <node_id> }`.
+fn read_block(channel: &Name, node_id: Value) -> Block {
+    let node_id = Attribute {
+        key: "node_id".into(),
+        key_span: None,
+        value: node_id,
+    };
+    Block {
+        keyword: "read".into(),
+        keyword_span: None,
+        labels: vec![Label {
+            text: channel.as_str().into(),
+            span: None,
+        }],
+        body: Document {
+            attributes: Map::new(vec![node_id]).expect("invariant: one key"),
+            blocks: Vec::new(),
+        },
+        span: None,
+    }
 }
 
 /// Reads a node ID, such as `"ns=3;s=SpikeData"`.
