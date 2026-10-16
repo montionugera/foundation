@@ -84,6 +84,9 @@
   roots, which `node` reads from the OS, and mesh time. A kind adds a CA with
   `Roots::with_pem`. A `ca` takes a CA, or a self-signed certificate with `CA:FALSE`;
   a server certificate with `CA:TRUE` gives `Tls` with a text that names both fixes.
+  This narrows design item 4 of #2702, "A self-signed server goes in `ca`"
+  (2026-10-16T07:51:33Z:
+  https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210764044).
   With no `Tls` or no root, a send gives `NoRoots` before the lookup, so a plain
   `http` client needs no hub. Each connect reads mesh time once, and rustls checks the
   certificate at that instant; the request timeout bounds its age. Each
