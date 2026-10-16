@@ -23,11 +23,14 @@
   The writer owns one value slot for each channel, and `write` takes the values of a
   frame as an iterator, which fills each slot again: no kind keeps slots, and no value
   of a frame before can stay. `write` panics when the iterator gives fewer or more
-  values than the channels. A kind maps its reads by position, so a read past its
-  channels panics in the kind and is never lost with no count
-  (`laptop.architect-2`, 2026-10-16T05:23:34Z:
-  https://github.com/synnaxlabs/foundation/pull/2817#issuecomment-6208721580;
-  2026-10-16T06:44:07Z:
+  values than the channels. `connector-opcua` maps its reads by position, with no `zip`
+  over its channels, so a read past its channels panics in the kind and is never lost
+  with no count, and the Modbus kind of PR B2 of #432 maps its reads the same way (the
+  plan, 2026-10-16T06:42:57Z:
+  https://github.com/synnaxlabs/foundation/issues/2830#issuecomment-6209736752;
+  `laptop.architect-2`, 2026-10-16T05:23:34Z:
+  https://github.com/synnaxlabs/foundation/pull/2817#issuecomment-6208721580, and
+  2026-10-16T06:44:07Z, condition 1:
   https://github.com/synnaxlabs/foundation/issues/2830#issuecomment-6209753061).
   `status::Writer` keeps its own write again: it writes string series, stages its values
   again when the pool has no block, and closes on `Removed`, where `poll::Writer` writes
@@ -40,5 +43,6 @@
   of the kept channels beside the values, which each caller keeps in step; an error
   at the open for a channel named again, which the parse refuses first; and slots that
   the kind fills through `Writer::values`, which live across frames, so a short fill
-  writes the values of the frame before, and a clear of each slot after the send loses
-  them with no count.
+  writes the values of the frame before, and a clear of each slot after the send leaves
+  out each channel that a short fill did not fill, with no count (the plan and
+  `laptop.architect-2`, 2026-10-16T06:42:57Z and 06:44:07Z, above).
