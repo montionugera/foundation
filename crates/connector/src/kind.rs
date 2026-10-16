@@ -48,8 +48,7 @@ pub trait Kind: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// [`Error::Config`] with `connector.no-discover` by default. A kind that finds
-    /// devices gives [`Error::Device`] when the network or a device fails.
+    /// The default gives [`Error::Config`] with `connector.no-discover`.
     fn discover(
         &self,
         cancel: &cancel::Token,
@@ -109,7 +108,7 @@ pub struct Channels {
 /// Why a run or a discovery stopped. One handler for each variant.
 #[derive(Debug)]
 pub enum Error {
-    /// Only a change of the spec fixes it. A run stops until the next spec change.
+    /// A retry gives the same error. A run stops until the next spec change.
     Config(Vec<Diagnostic>),
     /// The device or endpoint is in a bad state. Restarted with backoff.
     Device(Box<dyn std::error::Error + Send + Sync>),
@@ -421,7 +420,7 @@ impl Table {
         Ok(channels)
     }
 
-    /// Finds connectors of `kind` that this node can run.
+    /// Finds the devices of `kind` that this node can reach, as connector blocks.
     ///
     /// # Errors
     ///
