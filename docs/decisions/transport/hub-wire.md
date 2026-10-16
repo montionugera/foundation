@@ -259,9 +259,11 @@
   complete remote reader gives the seqs from `live` to its first frame with a sample as
   the gap of that frame (`hub::reader::Received::gap`). A complete client read gets
   `live`, from which the client finds the seqs before the seq of its first head.
-  `wire::hub::Gaps` holds that rule, and the remote reader of `hub`, its local
-  sessions, and `wire::hub::Frames` each call it. `Frames::lost` gives the gap of each
-  frame, and `program::Reader::lost` reads it (#2829; `laptop.architect`,
+  `wire::hub::Gaps` holds the rule of the gap of each frame: from `live`, or the end of
+  the last frame with a sample, to the first seq of the frame. The remote reader of
+  `hub`, its local sessions, and `wire::hub::Frames` each call it. `Frames::lost` gives
+  the gap of each frame, and `program::Reader` builds the lost seqs of each entry from
+  it (HUB CLIENT) (#2829; `laptop.architect`,
   2026-10-16T09:44:59Z:
   https://github.com/synnaxlabs/foundation/pull/2856#issuecomment-6212746993). This
   replaces the ruling under which `program::Reader` dropped `live`
