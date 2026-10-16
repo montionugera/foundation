@@ -15,7 +15,7 @@ use types::hash;
 use types::time::Stamp;
 
 use crate::buffer::Error;
-use crate::entry::{self, Header};
+use crate::entry::{self, Header, Samples};
 use crate::log::{Mark, Run};
 use crate::record::{self, ALIGN, AREA_START, HEADER_LEN};
 use crate::wal::Layout;
@@ -25,12 +25,10 @@ use crate::wal::Layout;
 pub struct Stored {
     /// The first seq.
     pub first: u64,
-    /// How many samples. A caller record has `len` 0.
-    pub len: u32,
+    /// The samples, `None` for a caller record.
+    pub samples: Option<Samples>,
     /// Mesh time at which the home stored it.
     pub stored_at: Stamp,
-    /// The newest stamp of the entry's samples; none for a caller record.
-    pub last: Option<Stamp>,
     /// The tag the caller gave.
     pub tag: u8,
     /// The bytes of the entry: its parts, joined.
@@ -40,9 +38,8 @@ pub struct Stored {
 impl PartialEq for Stored {
     fn eq(&self, other: &Self) -> bool {
         self.first == other.first
-            && self.len == other.len
+            && self.samples == other.samples
             && self.stored_at == other.stored_at
-            && self.last == other.last
             && self.tag == other.tag
             && *self.bytes == *other.bytes
     }
@@ -196,7 +193,7 @@ impl<'a> Reading<'a> {
             if (header.index, header.path) != (index, self.path) {
                 continue;
             }
-            at = at.after(header.first, header.len);
+            at = at.after(header.first, header.len());
             if at > self.read.next {
                 wanted.push((header, offset, at));
             }
@@ -248,9 +245,8 @@ pub(crate) async fn newest(
 fn stored(header: Header, bytes: Block) -> Stored {
     Stored {
         first: header.first,
-        len: header.len,
+        samples: header.place().samples,
         stored_at: header.stored_at,
-        last: header.stamp(),
         tag: header.tag,
         bytes,
     }
@@ -310,7 +306,9 @@ mod tests {
     use block::{Block, Config, Heap, Pool};
     use types::time::Stamp;
 
-    use super::Stored;
+    use std::num::NonZeroU32;
+
+    use super::{Samples, Stored};
 
     fn block(pool: &Pool, bytes: &[u8]) -> Block {
         pool.copy(bytes).expect("the pool has room")
@@ -322,9 +320,11 @@ mod tests {
         let pool = Pool::new(config.clone(), Heap::new(config.reservation()));
         let base = Stored {
             first: 1,
-            len: 2,
+            samples: Some(Samples {
+                len: NonZeroU32::new(2).expect("not 0"),
+                last: Some(Stamp::from_nanos(4)),
+            }),
             stored_at: Stamp::from_nanos(3),
-            last: Some(Stamp::from_nanos(4)),
             tag: 5,
             bytes: block(&pool, &[6, 7]),
         };
@@ -339,15 +339,11 @@ mod tests {
                 ..base.clone()
             },
             Stored {
-                len: 0,
+                samples: None,
                 ..base.clone()
             },
             Stored {
                 stored_at: Stamp::from_nanos(0),
-                ..base.clone()
-            },
-            Stored {
-                last: None,
                 ..base.clone()
             },
             Stored {

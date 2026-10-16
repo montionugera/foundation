@@ -808,9 +808,8 @@ impl Buffer {
     ///
     /// When a `first` is below the tail of its path, with the index, the path,
     /// `first`, and the tail, when `first + len` passes `u64::MAX`, when an entry
-    /// with `len` 0 has a `last`: an entry with no samples has no stamp, when an
-    /// entry with no samples follows `u64::MAX` of them at its seq on its path, or
-    /// when an entry's slot held another index on its path before.
+    /// with no samples follows `u64::MAX` of them at its seq on its path, or when an
+    /// entry's slot held another index on its path before.
     pub fn append(
         &self,
         entries: impl IntoIterator<Item = Entry>,
@@ -833,14 +832,14 @@ impl Buffer {
             return Err(Rejected::Files(error.clone()));
         }
         let (pool, block_max) = (&*shared.pool, shared.block_max);
-        let taken = match state.open.push(pool, block_max, &state.writer, batch) {
-            Ok(taken) => taken,
+        match state.open.fit(pool, block_max, &state.writer, batch) {
+            Ok(()) => {}
             Err(group::Rejected::Record) => {
                 state.close_open();
                 state
                     .open
-                    .push(pool, block_max, &state.writer, batch)
-                    .map_err(rejected)?
+                    .fit(pool, block_max, &state.writer, batch)
+                    .map_err(rejected)?;
             }
             Err(full @ group::Rejected::Ring(_)) => {
                 if shared.trimmed {
@@ -851,13 +850,14 @@ impl Buffer {
                 return Err(rejected(full));
             }
             Err(other) => return Err(rejected(other)),
-        };
+        }
         let state = &mut *state;
-        for (slot, header) in state.open.entries(taken) {
-            state
+        for entry in batch.drain(..) {
+            let header = state
                 .logs
-                .append(slot, header)
+                .append(entry.slot, &entry)
                 .unwrap_or_else(|invalid| panic!("invariant: {invalid}"));
+            state.open.take(entry.slot, header, entry.parts);
         }
         let idle = state.idle();
         drop(guard);
@@ -1472,6 +1472,7 @@ impl Drop for Waiter {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU32;
     use std::ops::Range;
     use std::pin::pin;
     use std::sync::{Arc, Mutex};
@@ -1480,6 +1481,7 @@ mod tests {
     use types::time::Stamp;
 
     use super::*;
+    use crate::entry::Samples;
     use crate::log::Run;
 
     const COMMIT: Span = Span::from_nanos(1_000_000);
@@ -1490,9 +1492,11 @@ mod tests {
             slot,
             path,
             first,
-            len: 3,
+            samples: Some(Samples {
+                len: NonZeroU32::new(3).expect("not 0"),
+                last: Some(Stamp::from_nanos(9)),
+            }),
             stored_at: Stamp::from_nanos(7),
-            last: Some(Stamp::from_nanos(9)),
             tag: 0,
             parts: part.clone().into(),
         }
@@ -1610,6 +1614,62 @@ mod tests {
                 |buffer, _, _| async move { buffer },
             );
         assert_eq!(walked, written);
+    }
+
+    /// A batch that the group refuses, after an entry that fits, changes neither
+    /// the open group nor the logs: the record holds only the entries around it.
+    #[test]
+    fn a_refused_batch_changes_neither_the_group_nor_the_logs() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config::default());
+        let read = Arc::new(Mutex::new(None));
+        let given = Arc::clone(&read);
+        let written = with_buffer(
+            &mut sim,
+            &node,
+            "write",
+            |buffer, mut slots, pool| async move {
+                let one = slots.index(channel::Key::from_u128(1));
+                let part = pool.alloc(100).expect("a block").freeze();
+                let big = pool.alloc(8000).expect("a block").freeze();
+                buffer
+                    .append([entry(1, one, Path::Live, 0, &part)])
+                    .expect("the ring has room");
+                let logs = buffer.shared.state.borrow().logs.clone();
+                let refused = [
+                    entry(1, one, Path::Live, 3, &part),
+                    entry(1, one, Path::Live, 6, &big),
+                ];
+                let body = Limit::Body {
+                    len: 8206,
+                    max: 8000,
+                };
+                assert_eq!(buffer.append(refused), Err(Rejected::Large(body)));
+                assert_eq!(buffer.shared.state.borrow().logs, logs);
+                buffer
+                    .append([entry(1, one, Path::Live, 3, &part)])
+                    .expect("the ring has room");
+                buffer.committed().await.expect("commits");
+                let read = buffer
+                    .reader()
+                    .read(one, Path::Live, Mark::at(0), usize::MAX)
+                    .await
+                    .expect("reads");
+                let firsts: Vec<u64> =
+                    read.entries.iter().map(|stored| stored.first).collect();
+                *given.lock().expect("no panic held the lock") = Some(firsts);
+                buffer
+            },
+        );
+        let firsts = read.lock().expect("no panic held the lock").take();
+        assert_eq!(firsts, Some(vec![0, 3]));
+        let runs: Vec<Run> = written.runs(Slot::new(0), Path::Live).collect();
+        let run = Run {
+            start: Mark::at(0),
+            offset: 4096,
+        };
+        assert_eq!(runs, [run]);
+        assert_eq!(written.durable(Slot::new(0), Path::Live).seq, 6);
     }
 
     /// With no [`Config::trimmed`], a refused append does not wake the task: an
@@ -1796,8 +1856,7 @@ mod tests {
                 let one = slots.index(channel::Key::from_u128(1));
                 let part = pool.alloc(100).expect("a block").freeze();
                 let tagged = Entry {
-                    len: 0,
-                    last: None,
+                    samples: None,
                     tag: 1,
                     ..entry(1, one, Path::Live, 0, &part)
                 };
@@ -1850,8 +1909,7 @@ mod tests {
                 let one = slots.index(channel::Key::from_u128(1));
                 let part = pool.alloc(100).expect("a block").freeze();
                 let tagged = Entry {
-                    len: 0,
-                    last: None,
+                    samples: None,
                     tag: 1,
                     ..entry(1, one, Path::Live, 0, &part)
                 };
@@ -1925,8 +1983,7 @@ mod tests {
                 let one = slots.index(channel::Key::from_u128(1));
                 let part = pool.alloc(100).expect("a block").freeze();
                 let empty = Entry {
-                    len: 0,
-                    last: None,
+                    samples: None,
                     ..entry(1, one, Path::Live, 0, &part)
                 };
                 for _ in 0..2 {
@@ -1978,8 +2035,7 @@ mod tests {
                 let one = slots.index(channel::Key::from_u128(1));
                 let part = pool.alloc(100).expect("a block").freeze();
                 let empty = || Entry {
-                    len: 0,
-                    last: None,
+                    samples: None,
                     ..entry(1, one, Path::Live, 3, &part)
                 };
                 let batch = [entry(1, one, Path::Live, 0, &part), empty(), empty()];
@@ -2265,8 +2321,7 @@ mod tests {
                     let one = slots.index(channel::Key::from_u128(1));
                     let part = pool.alloc(100).expect("a block").freeze();
                     let empty = Entry {
-                        len: 0,
-                        last: None,
+                        samples: None,
                         ..entry(1, one, Path::Live, 0, &part)
                     };
                     for _ in 0..2 {
@@ -2304,7 +2359,12 @@ mod tests {
                         .entries
                         .iter()
                         .take(2)
-                        .map(|entry| (entry.first, entry.len))
+                        .map(|entry| {
+                            (
+                                entry.first,
+                                entry.samples.map_or(0, |samples| samples.len.get()),
+                            )
+                        })
                         .collect();
                     *given.lock().expect("no panic held the lock") =
                         Some((read.gap, lens));

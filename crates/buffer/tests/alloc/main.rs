@@ -11,13 +11,14 @@
 #[expect(dead_code, reason = "this binary uses only the driver")]
 mod memory;
 
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::pin::pin;
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
 use block::{Heap, Pool};
-use buffer::{Buffer, Config, Entry, Layout, Mark, Parts, Read};
+use buffer::{Buffer, Config, Entry, Layout, Mark, Parts, Read, Samples};
 use types::channel::{self, Slots};
 use types::frame::Path;
 use types::time::{Span, Stamp};
@@ -45,9 +46,11 @@ fn entry(index: u32, first: u64, parts: Parts) -> Entry {
         slot: channel::Slot::new(index),
         path: Path::Live,
         first,
-        len: 1,
+        samples: Some(Samples {
+            len: NonZeroU32::MIN,
+            last: Some(Stamp::from_nanos(7)),
+        }),
         stored_at: Stamp::from_nanos(7),
-        last: Some(Stamp::from_nanos(7)),
         tag: 0,
         parts,
     }

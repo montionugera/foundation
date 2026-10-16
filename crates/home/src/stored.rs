@@ -1,10 +1,11 @@
 //! The data entry of an index frame. Its body is a header that describes each series by
 //! its channel and type, then the frame's series bytes.
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use block::Block;
-use buffer::{Entry, Stored};
+use buffer::{Entry, Samples, Stored};
 use types::channel;
 use types::frame::key_set::{self, KeySet};
 use types::frame::{self, Form, Frame, Layout, Path};
@@ -53,15 +54,20 @@ pub(crate) fn entry(
     let Some(range) = frame.range(index.group) else {
         unreachable!("invariant: a frame holds the index of each series");
     };
+    let Some(len) = NonZeroU32::new(range.count) else {
+        unreachable!("invariant: an index frame holds a sample");
+    };
     let parts = body(pool, frame, set)?;
     Ok(Entry {
         index: index.key,
         slot: index.slot,
         path: frame.path(),
         first: range.seq,
-        len: range.count,
+        samples: Some(Samples {
+            len,
+            last: Some(last),
+        }),
         stored_at,
-        last: Some(last),
         tag: TAG,
         parts: parts.into(),
     })
@@ -199,9 +205,9 @@ impl Decoder {
         set: &Arc<KeySet>,
         stored: &Stored,
     ) -> Result<Option<Frame>, block::Error> {
-        if stored.tag != TAG || stored.len == 0 {
+        let Some(samples) = stored.samples.filter(|_| stored.tag == TAG) else {
             return Ok(None);
-        }
+        };
         let body = &stored.bytes;
         self.map(set, body);
         self.spans.clear();
@@ -226,7 +232,7 @@ impl Decoder {
             let (from, len) = self.spans[at];
             to.copy_from_slice(&body[from..from + len]);
         }
-        draft.set_count(0, stored.len);
+        draft.set_count(0, samples.len.get());
         draft.set_seq(0, stored.first);
         Ok(Some(draft.freeze(Path::Live)))
     }
@@ -454,14 +460,15 @@ mod tests {
 
             let entry = entry(&pool, &frame, &set, last, stored_at).expect("room");
 
-            let place = (entry.index, entry.slot, entry.path, entry.first, entry.len);
+            let place = (entry.index, entry.slot, entry.path, entry.first);
+            assert_eq!(place, (key(Slot::new(3)), Slot::new(3), Path::Backfill, 40));
+            let samples = Samples {
+                len: NonZeroU32::new(2).expect("not 0"),
+                last: Some(last),
+            };
             assert_eq!(
-                place,
-                (key(Slot::new(3)), Slot::new(3), Path::Backfill, 40, 2)
-            );
-            assert_eq!(
-                (entry.stored_at, entry.last, entry.tag),
-                (stored_at, Some(last), 0)
+                (entry.samples, entry.stored_at, entry.tag),
+                (Some(samples), stored_at, 0)
             );
             let parts: Vec<_> = entry.parts.into_iter().collect();
             let body = body(&pool, &frame, &set).expect("room");
@@ -765,9 +772,11 @@ mod tests {
             block.copy_from_slice(&bytes);
             let stored = Stored {
                 first: seq,
-                len: 1,
+                samples: Some(Samples {
+                    len: NonZeroU32::MIN,
+                    last: Some(Stamp::from_nanos(9)),
+                }),
                 stored_at: Stamp::from_nanos(9),
-                last: Some(Stamp::from_nanos(9)),
                 tag: TAG,
                 bytes: block.freeze(),
             };
@@ -821,7 +830,7 @@ mod tests {
             let mut decoder = Decoder::default();
             for stored in [
                 Stored {
-                    len: 0,
+                    samples: None,
                     ..stored.clone()
                 },
                 Stored {

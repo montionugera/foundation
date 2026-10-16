@@ -350,7 +350,8 @@ impl Set {
                 Err(_) => return Ok(()),
             };
             given = true;
-            let seq = stored.first..stored.first + u64::from(stored.len);
+            let len = stored.samples.map_or(0, |samples| samples.len.get());
+            let seq = stored.first..stored.first + u64::from(len);
             if !entry.readers.fill(key.session, frame, set, seq) {
                 return Ok(());
             }
@@ -485,6 +486,8 @@ fn wake<K: Copy + Into<delivery::Key>>(
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU32;
+
     use delivery::complete;
     use types::frame::key_set::{Group, Interner};
     use types::frame::{self, Draft, Form};
@@ -777,9 +780,11 @@ mod tests {
             let entries = (0..durable)
                 .map(|first| Stored {
                     first,
-                    len: 1,
+                    samples: Some(buffer::Samples {
+                        len: NonZeroU32::MIN,
+                        last: None,
+                    }),
                     stored_at: Stamp::from_nanos(0),
-                    last: None,
                     tag: 0,
                     bytes: bytes.clone(),
                 })
