@@ -597,7 +597,7 @@ fn panics_at_a_value_of_another_type() {
 /// `plant.s` is a `string`, so the `u16` value of its place panics.
 #[test]
 #[should_panic(
-    expected = "invariant: the value of channel 1 is u16, and its samples are string"
+    expected = "invariant: the value of channel 1 is u16, and its samples are not scalars"
 )]
 fn panics_at_a_value_of_a_channel_of_no_fixed_width() {
     let channels = ["plant.a", "plant.s", "plant.b"];
@@ -613,7 +613,7 @@ fn panics_at_a_value_of_a_channel_of_no_fixed_width() {
     expected = "invariant: a frame keeps no value of channel 1, which is `None`"
 )]
 fn panics_with_the_channel_whose_value_is_left_out() {
-    super::value(&[Some(Value::F64(1.0)), None], 1, Type::Scalar(Scalar::F64));
+    super::value(&[Some(Value::F64(1.0)), None], 1, Some(Scalar::F64));
 }
 
 /// One value more than the channels.
