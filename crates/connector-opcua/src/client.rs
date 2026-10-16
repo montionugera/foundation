@@ -463,7 +463,10 @@ impl Client {
     /// # Errors
     ///
     /// The status of the first failed check: the error of [`Client::read`], or the
-    /// status of the value when it is not Good. The value itself is not checked.
+    /// status of the value when it is not Good. The value itself is not checked. When
+    /// the client has no open channel or no active session between checks, it gives
+    /// the status of the connect if it is not Good, else `BadConnectionClosed` or
+    /// `BadSessionClosed`, at once.
     pub(crate) async fn idle<T>(
         &mut self,
         until: impl Future<Output = T>,
@@ -473,10 +476,13 @@ impl Client {
             let deadline = self.asked + CHECK;
             let waited = self
                 .connections
-                .drive_until(Some(deadline), |cx| until.as_mut().poll(cx))
+                .drive_until(Some(deadline), |cx| match until.as_mut().poll(cx) {
+                    Poll::Ready(value) => Poll::Ready(Ok(value)),
+                    Poll::Pending => self.lost().map(Err),
+                })
                 .await;
-            if let Some(value) = waited {
-                return Ok(value);
+            if let Some(waited) = waited {
+                return waited;
             }
             let nodes = self
                 .nodes(&[STATE])
@@ -498,6 +504,21 @@ impl Client {
             if let Some(value) = checked? {
                 return Ok(value);
             }
+        }
+    }
+
+    /// Ready with the cause when the client has no open channel or no active session.
+    fn lost(&self) -> Poll<Status> {
+        let state = self.state();
+        let channel = state.channel == ffi::Channel::OPEN;
+        if channel && state.session == ffi::Session::ACTIVATED {
+            Poll::Pending
+        } else if state.status != Status::GOOD {
+            Poll::Ready(state.status)
+        } else if channel {
+            Poll::Ready(Status::BAD_SESSION_CLOSED)
+        } else {
+            Poll::Ready(Status::BAD_CONNECTION_CLOSED)
         }
     }
 

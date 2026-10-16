@@ -65,7 +65,6 @@ impl Status {
     pub(crate) const BAD_TYPE_MISMATCH: Self = Self(0x8074_0000);
     #[cfg(test)]
     pub(crate) const BAD_NO_DATA: Self = Self(0x809B_0000);
-    #[cfg(test)]
     pub(crate) const BAD_SESSION_CLOSED: Self = Self(0x8026_0000);
     #[cfg(test)]
     pub(crate) const BAD_SECURE_CHANNEL_CLOSED: Self = Self(0x8086_0000);
@@ -436,6 +435,8 @@ pub(crate) struct Channel(pub(crate) c_int);
 impl Channel {
     /// `UA_SECURECHANNELSTATE_CLOSED`.
     pub(crate) const CLOSED: Self = Self(0);
+    /// `UA_SECURECHANNELSTATE_OPEN`.
+    pub(crate) const OPEN: Self = Self(11);
 }
 
 /// `UA_SessionState` of a client.

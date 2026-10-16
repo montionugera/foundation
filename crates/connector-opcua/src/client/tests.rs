@@ -1094,6 +1094,21 @@ fn a_client_idle_for_twenty_one_minutes_reads() {
     assert_eq!((first, second, states), (Ok(value), Ok(value), 21 * 6));
 }
 
+/// A server that closes while the client waits in [`Client::idle`] ends the wait when
+/// the close reaches the client, one hop (250 us) later.
+#[test]
+fn a_server_that_closes_ends_idle_at_once() {
+    let (idle, _) = run(0, async |node| {
+        let clock = node.clock();
+        let mut client = serve(&node, 4, async |mut peer| peer.connected().await).await;
+        let start = clock.now();
+        let idle = client.idle(clock.sleep(Span::MINUTE)).await;
+        (idle, clock.now() - start)
+    });
+    let closed = Err(Status::BAD_CONNECTION_CLOSED);
+    assert_eq!(idle, (closed, Span::from_nanos(250_000)));
+}
+
 /// A connect whose wait has already ended gives no client.
 #[test]
 fn a_connect_whose_wait_has_ended_gives_none() {

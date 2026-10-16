@@ -701,6 +701,9 @@ fn counts_the_ticks_that_a_pause_of_the_node_skipped() {
     assert_eq!(last(&outcome.statuses, LOST), 0);
 }
 
+/// The error of a run whose server closes while the run waits for its next tick.
+const CLOSED: &str = "the connectivity check failed with BadConnectionClosed";
+
 #[test]
 fn ends_the_run_with_a_device_error_when_the_server_stops_and_reads_again_after() {
     let outcome = run(Setup::three(), |scene| async move {
@@ -714,19 +717,13 @@ fn ends_the_run_with_a_device_error_when_the_server_stops_and_reads_again_after(
         "the connect to opc.tcp://10.0.0.1:4840 failed with BadConnectionRejected";
     assert_eq!(
         errors,
-        [
-            (
-                DEVICE,
-                "the read failed with BadServerNotConnected".to_owned()
-            ),
-            (DEVICE, connect.to_owned()),
-        ]
+        [(DEVICE, CLOSED.to_owned()), (DEVICE, connect.to_owned()),]
     );
     let start = stamp(&outcome.frames[0], 1);
     let stamps = outcome.frames.iter().map(|frame| stamp(frame, 1) - start);
     let (before, after): (Vec<_>, Vec<_>) =
         stamps.partition(|&at| at <= ms(1_000).nanos());
-    assert_eq!((before.len(), after.len()), (11, 46));
+    assert_eq!((before.len(), after.len()), (11, 47));
     assert!(after[0] > ms(3_050).nanos(), "{after:?}");
     assert_eq!(last(&outcome.statuses, RESTARTS), 2);
 }
@@ -786,6 +783,28 @@ fn sends_no_check_when_it_reads_more_often_than_each_ten_seconds() {
     });
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
     assert_eq!((outcome.frames.len(), outcome.states), (601, 0));
+}
+
+/// A server that stops while a run at 0.01 Hz waits for its next tick ends the run at
+/// once, and the supervisor connects again and reads before that tick.
+#[test]
+fn ends_the_run_at_once_when_the_server_stops_between_ticks() {
+    let outcome = run_at("0.01Hz", Setup::three(), |scene| async move {
+        scene.after(ms(1_050), |scene| async move { scene.stop().await });
+        scene.after(ms(3_050), |scene| async move { scene.serve() });
+        scene.supervise(ms(8_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let connect =
+        "the connect to opc.tcp://10.0.0.1:4840 failed with BadConnectionRejected";
+    assert_eq!(
+        errors(&outcome.statuses),
+        [(DEVICE, CLOSED.to_owned()), (DEVICE, connect.to_owned())]
+    );
+    let start = stamp(&outcome.frames[0], 1);
+    let stamps: Vec<_> = outcome.frames.iter().map(|f| stamp(f, 1) - start).collect();
+    assert_eq!(stamps.len(), 2);
+    assert!(stamps[1] > ms(3_050).nanos(), "{stamps:?}");
 }
 
 /// The counts hold across the runs of one supervisor call, as `status::Count` does.
