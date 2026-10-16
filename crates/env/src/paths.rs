@@ -52,11 +52,13 @@ impl Paths {
     /// case, and a bind mount, reach the same folder. A folder of `folders` holds a
     /// path only while the file at its resolved path is the file that was there at
     /// this call, so one that a program renames away, replaces, or makes again holds
-    /// nothing. Each call takes the file at each resolved hidden folder again, so a
+    /// nothing until a new call of `within`. Each call takes the file at each resolved hidden folder again, so a
     /// hidden file that a write replaces, and a hidden folder made after this call,
     /// are hidden. A path also fails with [`Error::Hidden`] when a directory on its way
     /// is the folder that was at a hidden path at this call, so a hidden folder that a
-    /// program renames away stays hidden, but not its own listing. While nothing is at
+    /// program renames away stays hidden, but not its own listing, and a directory
+    /// that the host gives the key of a hidden folder that it removed hides what it
+    /// holds. While nothing is at
     /// a hidden path, a call that makes a new name in the deepest directory on its way
     /// that is there fails with [`Error::Hidden`], also for a name that does not make
     /// that path. A folder whose file a call cannot take holds nothing at that call.
@@ -94,10 +96,11 @@ impl Paths {
             let key = self.driver.key(&dir)?;
             limit.folders.push((dir, key));
         }
-        for dir in hidden {
-            let dir = self.driver.resolve(dir)?;
-            let key = self.key(&dir)?;
-            limit.hidden.push((dir, key));
+        for given in hidden {
+            // From `given`, as the call reaches it: the resolved path of a new name can
+            // be longer than the host takes.
+            let key = self.key(given)?;
+            limit.hidden.push((self.driver.resolve(given)?, key));
         }
         Ok(Self {
             driver: Rc::clone(&self.driver),
@@ -440,7 +443,7 @@ mod tests {
     /// last name that starts with `new` resolves but has no key yet. The key of a last
     /// name that starts with `swap` in any case takes the bytes of the file after the path, so a
     /// write gives it a new key: after a write of `x`, `/work/swap` has the key that
-    /// `/work/swapx` had before it.
+    /// `/work/swapx` had before it. A last name `io` gives `Io` 5 for its key.
     #[derive(Debug, Default)]
     struct One(RefCell<Vec<u8>>);
 
@@ -492,6 +495,9 @@ mod tests {
             }
             let at = self.resolve(path)?;
             // FNV-1a.
+            if name == b"io" {
+                return Err(Error::Io { code: 5 });
+            }
             let mut folded = at.as_os_str().as_encoded_bytes().to_ascii_lowercase();
             if name.to_ascii_lowercase().starts_with(b"swap") {
                 folded.extend_from_slice(&self.0.borrow());
@@ -618,6 +624,13 @@ mod tests {
             .within(&["/none".into()], &["/work/data".into()])
             .unwrap();
         assert_eq!(paths.read(Path::new("/none/a"), 1), Err(Error::NotFound));
+    }
+
+    #[test]
+    fn within_gives_the_error_of_a_hidden_key_other_than_not_found() {
+        let free = Paths::new(One::default());
+        let within = free.within(&["/work".into()], &["/work/io".into()]);
+        assert_eq!(within.err(), Some(Error::Io { code: 5 }));
     }
 
     #[test]
