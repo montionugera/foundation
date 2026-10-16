@@ -159,6 +159,42 @@ impl Device for Roll {
     }
 }
 
+/// A kind whose browse reads the secret of its name and gives what the read gives.
+struct Vault(&'static str);
+
+impl Kind for Vault {
+    type Config = ();
+
+    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+        Ok(Channels::default())
+    }
+
+    fn discover(
+        &self,
+        _: &cancel::Token,
+    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+        std::future::ready(Ok(Vec::new()))
+    }
+
+    fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
+        std::future::ready(Ok(()))
+    }
+
+    async fn browse(
+        &self,
+        ctx: &browse::Context<'_>,
+        _: &Query,
+    ) -> Result<browse::Found, Error> {
+        let source = Source::Secret(self.0.parse().expect("a secret name"));
+        ctx.secret(&source).await?;
+        Err(Error::Device("the secret was read".into()))
+    }
+}
+
 /// A kind with no browse.
 struct Blind;
 
@@ -238,6 +274,8 @@ fn browse_each(
         };
         let table = (Table::new().with("plant", Plant))
             .with("dice", Dice)
+            .with("missing", Vault("plant.missing"))
+            .with("upper", Vault("plant.Token"))
             .with("blind", Blind);
         let config = create_config(env, node.net(), table).await;
         create_secret(&node.files(), &"plant.token".parse().unwrap(), &token).await;
@@ -305,6 +343,38 @@ fn gives_the_error_of_the_kind() {
 }
 
 #[test]
+fn gives_a_secret_that_is_not_there_as_a_retry() {
+    let result =
+        browse("missing", &query(Scope::Level(None)), b"t1").expect("the run ends");
+    let Err(Error::Retry(error)) = result else {
+        panic!("not a retry: {result:?}");
+    };
+    let expected = concat!(
+        r#"the secret secret("plant.missing"): the file "#,
+        "/data/secrets/plant.missing is not there. Write the value to it, unreadable ",
+        "by other users: chmod o-r ",
+        "/data/secrets/plant.missing",
+    );
+    assert_eq!(error.to_string(), expected);
+}
+
+#[test]
+fn refuses_a_secret_name_that_the_store_cannot_hold() {
+    let result =
+        browse("upper", &query(Scope::Level(None)), b"t1").expect("the run ends");
+    let expected = Diagnostic::new(
+        Code::new("connector.bad-secret-name"),
+        None,
+        r#"the secret secret("plant.Token") has a name that the store cannot hold"#
+            .into(),
+        "Rename the secret in lowercase letters, since the file store holds no name \
+         with a capital letter"
+            .into(),
+    );
+    assert_eq!(diagnostic(result), expected);
+}
+
+#[test]
 fn refuses_a_kind_that_cannot_browse() {
     let result =
         browse("blind", &query(Scope::Level(None)), b"t1").expect("the run ends");
@@ -325,7 +395,7 @@ fn refuses_a_kind_that_the_build_does_not_have() {
         Code::new("connector.unknown-kind"),
         None,
         r#"this build has no connector kind "modbus""#.into(),
-        r#"Use one of ["blind", "dice", "plant"]"#.into(),
+        r#"Use one of ["blind", "dice", "missing", "plant", "upper"]"#.into(),
     );
     assert_eq!(diagnostic(result), expected);
 }
