@@ -256,13 +256,14 @@ impl Queue {
         let drain = move || {
             let mut state = lock(&queue.state);
             let (writer, written) = (state.writer.take(), state.written);
+            let batch = queue.lines.batch();
             state.thread = Some(thread::current().id());
             drop(state);
             Drain {
                 queue,
                 writer,
                 written,
-                batch: Batch::default(),
+                batch,
             }
         };
         state.handle = Some(self.threads.start("log", drain)?);

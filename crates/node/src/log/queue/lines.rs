@@ -87,6 +87,15 @@ impl Lines {
         }
     }
 
+    /// An empty batch for [`Lines::take`], with room for `bound` lines, so neither queue
+    /// of lines grows after it.
+    pub(super) fn batch(&self) -> Batch {
+        Batch {
+            lines: VecDeque::with_capacity(self.bound),
+            ..Batch::default()
+        }
+    }
+
     /// Puts `line` after the lines that wait, or counts it as dropped when `bound`
     /// lines wait or it does not fit in `bytes`. After a drop, each line drops until
     /// the next take, so the count line of the take marks one gap.
