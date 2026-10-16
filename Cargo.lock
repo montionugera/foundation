@@ -1477,6 +1477,8 @@ dependencies = [
  "access",
  "aws-lc-rs",
  "block",
+ "codec",
+ "counting",
  "env",
  "hub",
  "sim",
