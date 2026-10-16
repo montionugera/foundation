@@ -79,50 +79,47 @@
   (9) The thread `log` writes each line, so no event waits on the writer. An event puts
   its line in a queue of 1024 lines and 1 MiB, and wakes the thread. The lines, the
   count of dropped lines, the panic lines, the waker, and the run of the thread are
-  under one lock, so each line, each drop, and each close wakes the thread, and a
-  line that comes as the thread ends gets a thread that writes it; loom models check
-  both. The thread takes the lines out under the lock and writes them with the lock
-  free, and each line is formatted before its push, so a writer that never returns
-  holds no lock. Nothing that can panic runs under the lock: the panic hook takes the
-  same lock. A line drops when 1024 lines wait or when it does not fit in 1 MiB with
-  them, and each line after it drops until the thread takes the queue. The thread writes WARN `dropped`
+  under one lock, so each line, each drop, and each close wakes the thread, and a line
+  that comes as the thread ends gets a thread that writes it; loom models check both.
+  The thread takes the lines out under the lock and writes them with the lock free, and
+  each line is formatted before its push, so a writer that never returns holds no lock.
+  Nothing that can panic runs under the lock: the panic hook takes the same lock. A line
+  drops when 1024 lines wait or when it does not fit in 1 MiB with them, and each line
+  after it drops until the thread takes the queue. The thread writes WARN `dropped`
   (target `node::log`) with the field `lines`, their count, after the last line that
   came before the first of them. At λ lines a second, 1024 lines hold a stall of the
   writer of 1024/λ s: 10 ms at 100,000 lines a second, a rate only `debug` and `trace`
-  reach (item 8). The thread writes at most one batch beside the lines that wait, so
-  the log holds at most 2048 lines and 2 MiB. The count line reports each loss. The
-  depth of the queue gets a
-  gauge when the node has metrics. A write that fails drops its line. A write that
-  panics ends the thread `log`, and no later line reaches the writer; a release
-  build, with `panic = "abort"`, ends there. The thread
-  starts with the node, which fails with `Error::Start` when it cannot. It ends once
-  each shard has ended and the queue is empty, so a sim run ends. A line after that
-  waits in the queue for `Node::join` (after `stopped`) or `Flush::wait`. Each starts
-  the thread again through one private resume, which starts it only when none runs and
-  a line or the count of a drop waits, so at most one thread `log` runs and the lines
-  keep their order. Inside
-  a `tracing` event, no OS thread can start and no dispatch can be set. A line from
+  reach (item 8). The thread writes at most one batch beside the lines that wait, so the
+  log holds at most 2048 lines and 2 MiB. The count line reports each loss. The depth of
+  the queue gets a gauge when the node has metrics. A write that fails drops its line. A
+  write that panics ends the thread `log`, and no later line reaches the writer; a
+  release build, with `panic = "abort"`, ends there. The thread starts with the node,
+  which fails with `Error::Start` when it cannot. It ends once each shard has ended and
+  the queue is empty, so a sim run ends. A line after that waits in the queue for
+  `Node::join` (after `stopped`) or `Flush::wait`. Each starts the thread again through
+  one private resume, which starts it only when none runs and a line or the count of a
+  drop waits, so at most one thread `log` runs and the lines keep their order. Inside a
+  `tracing` event, no OS thread can start and no dispatch can be set. A line from
   another thread after the last `Flush::wait` of `main` is lost. `main` waits up to 1 s
   for the log at its end. `main` alone sets the panic hook, to `Flush::hook` over the
   hook before it. The hook puts ERROR `panicked` with the field `panic` in the queue
-  after each line there, also when the queue is full: this line never drops. It sets
-  no dispatch and starts no thread, since a panic can come from inside an event.
-  While a thread `log` runs, the hook waits up to 1 s and calls the hook before it
-  only when the log wrote each line within that bound. When no thread `log` runs, as
-  after each shard has ended and the thread wrote each line, it calls the hook before
-  it at once, and the line waits for the next `Flush::wait` (laptop.architect-2,
-  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209084526).
-  A panic of the writer, on the thread `log`, also calls it at once, since only that
-  thread writes the line. Decision by
-  `laptop.monitor` (2026-10-15T21:39:25Z,
+  after each line there, also when the queue is full: this line never drops. It sets no
+  dispatch and starts no thread, since a panic can come from inside an event. While a
+  thread `log` runs, the hook waits up to 1 s and calls the hook before it only when the
+  log wrote each line within that bound. When no thread `log` runs, as after each shard
+  has ended and the thread wrote each line, it calls the hook before it at once, and the
+  line waits for the next `Flush::wait` (laptop.architect-2,
+  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209084526). A panic
+  of the writer, on the thread `log`, also calls it at once, since only that thread
+  writes the line. Decision by `laptop.monitor` (2026-10-15T21:39:25Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202838819). The
   plan by `laptop.architect-2` (2026-10-15T21:43:54Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202910326), and its
   change (2026-10-16T03:22:23Z,
-  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207344849), and
-  the panic hook with no thread start (2026-10-16T03:48:16Z,
-  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207638284), and
-  no wait on the thread `log` (2026-10-16T04:04:09Z,
+  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207344849), and the
+  panic hook with no thread start (2026-10-16T03:48:16Z,
+  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207638284), and no
+  wait on the thread `log` (2026-10-16T04:04:09Z,
   https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207813688), and
   `Flush::hook` (2026-10-16T04:37:28Z,
   https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6208190479). The
@@ -130,26 +127,25 @@
   https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6202830785), and a
   child test whose hook before it aborts in place of a test of the release binary
   (2026-10-16T05:53:41Z,
-  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209079754). The
-  1 MiB cap, the gauge when the node has metrics, the count under the one lock, the
-  thread that ends and starts again, and the name `Flush`, by `laptop.architect-2`
+  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209079754). The 1 MiB
+  cap, the gauge when the node has metrics, the count under the one lock, the thread
+  that ends and starts again, and the name `Flush`, by `laptop.architect-2`
   (2026-10-16T05:54:05Z,
-  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209084526). Each
-  line after a drop drops until the thread takes the queue, and the count of a drop
-  starts the thread, by `laptop.architect-2` (2026-10-16T06:52:19Z,
-  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209868324). The
-  bound of 2048 lines and 2 MiB with the batch, the loom model of the handoff, and one
-  end of a run (2026-10-16T07:05:11Z,
-  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6210050516). The
-  lock queue as the mechanism of the queue, with its two rules, by `laptop.architect-2`
+  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209084526). Each line
+  after a drop drops until the thread takes the queue, and the count of a drop starts
+  the thread, by `laptop.architect-2` (2026-10-16T06:52:19Z,
+  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209868324). The bound
+  of 2048 lines and 2 MiB with the batch, the loom model of the handoff, and one end of
+  a run (2026-10-16T07:05:11Z,
+  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6210050516). The lock
+  queue as the mechanism of the queue, with its two rules, by `laptop.architect-2`
   (2026-10-16T17:46:37Z,
-  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6221353661). Lost:
-  one thread for the life of the log, which makes each sim run end as `Stuck`; a write
-  on the thread of `join`, which loses the bound of `main` on a stuck writer;
-  `tracing-appender::non_blocking`, which starts its own OS thread, so no sim run
-  drives it, and counts a dropped line with no line in the log; an atomic count, a
-  second sync point beside the lock that each push takes; a bounded `sync_channel`
-  with an atomic count of drops: the byte cap, the panic line past the bound, the drop
-  until the take, and the end of a run in the take each need one step over the queue
-  and the counts, which a second lock beside the channel would give, at the cost of
-  two locks to order.
+  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6221353661). Lost: one
+  thread for the life of the log, which makes each sim run end as `Stuck`; a write on
+  the thread of `join`, which loses the bound of `main` on a stuck writer;
+  `tracing-appender::non_blocking`, which starts its own OS thread, so no sim run drives
+  it, and counts a dropped line with no line in the log; an atomic count, a second sync
+  point beside the lock that each push takes; a bounded `sync_channel` with an atomic
+  count of drops: the byte cap, the panic line past the bound, the drop until the take,
+  and the end of a run in the take each need one step over the queue and the counts,
+  which a second lock beside the channel would give, at the cost of two locks to order.
