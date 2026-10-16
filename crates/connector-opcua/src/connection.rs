@@ -143,6 +143,7 @@ impl Manager {
             waker: RefCell::new(None),
             driving: Cell::new(false),
             held: Cell::new(false),
+            sleep: Cell::new(None),
             ahead: Cell::new(usize::MAX),
             again: RefCell::new(Vec::new()),
             accepted: Cell::new(None),
@@ -229,8 +230,8 @@ impl Manager {
             "one drive of a manager at a time"
         );
         let _held = Held(&state.held);
-        let mut sleep: Option<Sleep> = None;
-        poll_fn(|cx| {
+        let mut sleep = state.sleep.take();
+        let out = poll_fn(|cx| {
             state.driving.set(true);
             let _driving = Held(&state.driving);
             self.pass(cx);
@@ -267,7 +268,9 @@ impl Manager {
                 }
             }
         })
-        .await
+        .await;
+        state.sleep.set(sleep);
+        out
     }
 
     /// Connects, reads, and writes each connection until each waits, and has the task
@@ -338,6 +341,8 @@ struct State {
     driving: Cell<bool>,
     /// Whether a drive exists, from its first poll until its drop.
     held: Cell<bool>,
+    /// The sleep of the drives, kept between them so a drive allocates none.
+    sleep: Cell<Option<Sleep>>,
     /// The first key that the running pass has not reached, or `usize::MAX` outside a
     /// pass.
     ahead: Cell<usize>,
