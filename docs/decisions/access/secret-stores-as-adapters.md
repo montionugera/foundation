@@ -59,13 +59,25 @@
   resolver, held 81,070, 312,988, and 5,474,548 bytes, with no future counted. A dropped
   get gives the turn on at its drop, and its pool stays until its read ends. The value
   is at most 64 KiB while a kind holds it. Both are outside the pool budget of the node.
-  The store does not check the owner or mode of the file. Make the file readable only by
-  the user that runs the node. The mode check is #2596 (`laptop.architect-2`,
-  2026-10-13T19:53:57Z:
-  https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6153933564, under the
-  person's rule of 2026-10-13T19:52:40Z that each choice goes ahead unless the person
-  objects:
-  https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6153919476). The
+  The store refuses a file that the group or other users can read, and reads no byte of
+  it. `env::files::File::exposed` gives the fact from the `fstat` of the open, on the
+  descriptor that the store reads, so no swap of the file between the check and the
+  read passes it. On Unix, a file is exposed when its mode gives read to its group or
+  to other users (`0o044`). The get gives `Unavailable`, so `ctx.secret` gives
+  `Error::Retry` and a fixed mode heals the run at its next restart, with the text
+  `the group or other users can read the file <path>. Make it readable only by the user
+  that runs the node: chmod 600 <path>`. The check covers only the store: a `file()`
+  source is never checked (#2583). It does not see an ACL entry on macOS that grants
+  read, as `ssh` does not. On Linux the ACL mask is in the group bits, so a named entry
+  that grants read shows as exposed. It does not check group or other write bits. Add
+  that check when a secret whose change by another user is a threat comes, such as a
+  key that signs. `os::files` builds only on Linux and macOS. A Windows driver of files
+  gives `exposed` from the DACL of the file: true when an entry grants read to a SID
+  other than the owner, SYSTEM, and Administrators. The `sim` disk makes each file not
+  exposed, as `os` makes a file with mode 0600, and `sim::Node::set_file_exposed` sets
+  it, as a `chmod` from outside the node does (`laptop.architect-2`,
+  2026-10-15T23:58:31Z:
+  https://github.com/synnaxlabs/foundation/issues/2596#issuecomment-6204800336). The
   refusal of capitals and what a file holds are architect calls (`laptop.architect-2`,
   2026-10-13T16:54:37Z:
   https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150705009).
