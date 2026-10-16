@@ -27,11 +27,11 @@
   when the session closes, with the error of the close. Only `Exhausted` and `Refused`
   wait: `TooLarge` never succeeds, so it gives `Error::Pool` at once, which means that
   no block of `pool` can hold a message that the session sends, or no block of `frames`
-  can hold a frame of a read. Lost: a bound of two
-  windows from the stream credit, which ack loss can exceed; a `Bytes` body with no
-  copy; a wait in `block::Pool` that wakes at each free. Two callers poll the pool now:
-  the transport's reads and this session. Trigger: a third caller that waits for a
-  block, or a measured request latency from the poll, adds the wait to `block`.
+  can hold a frame of a read. Lost: a bound of two windows from the stream credit, which
+  ack loss can exceed; a `Bytes` body with no copy; a wait in `block::Pool` that wakes
+  at each free. Two callers poll the pool now: the transport's reads and this session.
+  Trigger: a third caller that waits for a block, or a measured request latency from the
+  poll, adds the wait to `block`.
   `Session` is `Clone`, and a clone is the same session. When the last clone and the
   last `Reader` drop, it closes the session with `Code(0)`. A node's stop and close with
   a code are one error: `Error::Refused(wire::hub::client::Refusal)`, a closed set in
