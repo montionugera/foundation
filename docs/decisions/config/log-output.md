@@ -84,8 +84,8 @@
   both. The thread takes the lines out under the lock and writes them with the lock
   free, and each line is formatted before its push, so a writer that never returns
   holds no lock. Nothing that can panic runs under the lock: the panic hook takes the
-  same lock. A line drops when 1024 lines wait or when it does not fit in 1 MiB with them, and each line
-  after it drops until the thread takes the queue. The thread writes WARN `dropped`
+  same lock. A line drops when 1024 lines wait or when it does not fit in 1 MiB with
+  them, and each line after it drops until the thread takes the queue. The thread writes WARN `dropped`
   (target `node::log`) with the field `lines`, their count, after the last line that
   came before the first of them. At λ lines a second, 1024 lines hold a stall of the
   writer of 1024/λ s: 10 ms at 100,000 lines a second, a rate only `debug` and `trace`
