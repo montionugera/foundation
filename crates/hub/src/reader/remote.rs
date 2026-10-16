@@ -592,9 +592,9 @@ async fn dial(
 }
 
 /// Opens a stream of `class` to `home`, and opens the session of `open` on `set`, whose
-/// frames it gives. A reply that breaks HUB WIRE, or a pool with no block for a message,
-/// stops the stream with its refusal. A session that closes with `Code(0)` before
-/// `Opened`, as one that loses the tie-break of ONE SESSION PER PEER does, gets
+/// frames it gives. A reply that breaks HUB WIRE, or a pool with no block for a
+/// message, stops the stream with its refusal. A session that closes with `Code(0)`
+/// before `Opened`, as one that loses the tie-break of ONE SESSION PER PEER does, gets
 /// another open on the session that the next dial gives, at most `TRIES` in all.
 async fn connect(
     state: &Rc<RefCell<State>>,
@@ -671,12 +671,16 @@ async fn handshake(
         })
         .await?;
     }
+    let reader = wire::hub::Reader::new(open);
     match receiver.recv().await {
         Ok(Some(message)) => {
-            Frames::open(wire::hub::Reader::new(open), Arc::clone(set), &message)
-                .map_err(Error::Message)
+            Frames::open(reader, Arc::clone(set), &message).map_err(Error::Message)
         }
-        Ok(None) => Err(Error::Message(wire::hub::Error::Finished)),
+        Ok(None) => Err(Error::Message(
+            reader
+                .end()
+                .expect_err("a reader before opened may not end"),
+        )),
         Err(error) => Err(refused(error).map_or_else(Error::Transport, Error::Refused)),
     }
 }
