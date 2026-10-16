@@ -11,10 +11,16 @@ tracing.workspace = true
 types = { path = "../types" }
 
 [dev-dependencies]
+counting = { path = "../counting" }
+divan.workspace = true
 proptest.workspace = true
 
 [[bench]]
 name = "group"
+harness = false
+
+[[bench]]
+name = "host"
 harness = false
 
 [lints]

@@ -49,13 +49,6 @@ impl Kind for Ticks {
         })
     }
 
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
         let (clock, cancel) = (ctx.clock().clone(), ctx.cancel().clone());
         let lingered = Arc::clone(&self.lingered);
@@ -89,13 +82,6 @@ impl Kind for Refuses {
 
     fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
         Err(vec![refused()])
-    }
-
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
     }
 
     fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
@@ -409,20 +395,34 @@ fn a_refused_config_opens_a_connector_that_ends_with_its_diagnostics() {
     );
 }
 
+/// A run whose status reader sleeps until the buffer has no room reads its status up to
+/// the frames lost for no room, with no end. No write frees the ring, so no frame comes
+/// after them.
 #[test]
-#[should_panic(
-    expected = "the status ends: the reader reached a frame that the buffer lost"
-)]
-fn a_run_reads_its_status_after_a_long_sleep_until_behind() {
+fn a_run_reads_its_status_up_to_the_frames_lost_for_no_room_after_a_long_sleep() {
     on_rig(
         || Table::new().with("ticks", Ticks::default()),
         |mut rig, clock| async move {
             let config = Document::default();
             let mut run = rig.supervise("ticks", name("plant.ticks"), config).await;
             clock.sleep(Span::from_nanos(1_100_000_000_000)).await;
+            let reader = run.reader.as_mut().expect("a status reader");
+            let mut taken = 0;
             loop {
-                run.next().await;
+                let (mut next, mut quiet) =
+                    (pin!(reader.next()), pin!(clock.sleep(Span::SECOND)));
+                let received = poll_fn(|cx| {
+                    if let Poll::Ready(received) = next.as_mut().poll(cx) {
+                        return Poll::Ready(Some(received));
+                    }
+                    quiet.as_mut().poll(cx).map(|()| None)
+                })
+                .await;
+                let Some(received) = received else { break };
+                received.expect("a status frame");
+                taken += 1;
             }
+            assert_eq!(taken, 1_020);
         },
     );
 }

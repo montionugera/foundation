@@ -1,5 +1,6 @@
 #![expect(clippy::arithmetic_side_effects, reason = "a test may panic")]
 
+use connector::cancel;
 use connector::kind::{Kind as _, Table};
 use connector::supervisor::Supervisor;
 use connector::testing;
@@ -150,7 +151,7 @@ fn refuses_a_token_that_is_not_a_source() {
 }
 
 #[test]
-fn checks_to_its_reader_and_the_count_confirmed_and_no_device_channel() {
+fn checks_to_its_reader_and_the_counts_confirmed_and_lost_and_no_device_channel() {
     let config = config(string("http://influx:8086"));
     let reader = reader::read(&config, &KEYS, &[]);
     let table = Table::new().with("influx", Kind);
@@ -159,7 +160,10 @@ fn checks_to_its_reader_and_the_count_confirmed_and_no_device_channel() {
         Ok(Channels {
             reader: Some(reader.expect("the reader settings")),
             writes: Vec::new(),
-            counts: vec!["confirmed".parse().expect("a name")],
+            counts: vec![
+                "confirmed".parse().expect("a name"),
+                "lost".parse().expect("a name"),
+            ],
         })
     );
 }
@@ -184,7 +188,10 @@ fn refuses_an_address_that_uri_refuses() {
             string("http://admin:hunter2@influx:8086"),
             "the URI holds user info; give a credential through a secret",
         ),
-        (string("http://[influx]:8086"), "the URI has no valid host"),
+        (
+            string("http://[influx]:8086"),
+            "the URI has a host with `:` or brackets that is not an IPv6 address",
+        ),
         (
             string("http://influx:0"),
             "the port of the URI is not a number from 1 to 65535",
@@ -518,14 +525,23 @@ fn refuses_each_key_it_does_not_take() {
 }
 
 #[test]
-fn discovers_nothing() {
+fn refuses_to_discover() {
     let found = run(|_, _| async {
         Table::new()
             .with("influx", Kind)
             .discover("influx", &cancel::Token::new())
             .await
     });
-    assert!(matches!(found.as_deref(), Ok([])), "{found:?}");
+    let Err(Error::Config(diagnostics)) = found else {
+        panic!("a config error: {found:?}");
+    };
+    let expected = Diagnostic::new(
+        Code::new("connector.no-discover"),
+        None,
+        "this connector kind cannot find its devices".into(),
+        "Write the connector block by hand".into(),
+    );
+    assert_eq!(diagnostics, [expected]);
 }
 
 /// Runs `main` on a shard of one simulated node, with a host directory

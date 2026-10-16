@@ -5,7 +5,7 @@ use std::{fmt, future, mem};
 
 use connector::kind::{self, Channels, Context, Error};
 use connector::stamp::Stamps;
-use connector::{cancel, pace, status};
+use connector::{pace, status};
 use document::Document;
 use document::diagnostic::{Code, Diagnostic};
 use hub::home::{Outcome, Refusal, order};
@@ -66,14 +66,6 @@ impl kind::Kind for Kind {
         })
     }
 
-    /// Finds nothing: the kind does not browse a server.
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        future::ready(Ok(Vec::new()))
-    }
-
     /// Connects to the server, and reads each node once per tick of the rate until
     /// the cancel. Each tick writes a frame of the values that are Good and of the
     /// sample type of their channel (Boolean for `bool`, `SByte` to `UInt64` for `i8`
@@ -82,17 +74,21 @@ impl kind::Kind for Kind {
     /// `uncertain`, another one that is not Good adds 1 to `bad`, and one of another
     /// type adds 1 to `mistyped`. The note names the first node of another type of
     /// the latest tick that has one, and a tick with none clears it. A tick that
-    /// leaves out each value writes no frame. The connect is not raced with the
-    /// cancel: with the close after a failed connect, it ends within four request
-    /// timeouts of the client (20 s). Each end closes the session.
+    /// leaves out each value writes no frame. When 10 s pass with no read, the run
+    /// reads the state of the server to check the connection. After a cancel or an
+    /// error, the run closes its session: it sends `CloseSession`, waits at most 1 s
+    /// for the answer, then closes the connection. So a run ends within 1 s of a
+    /// cancel.
     ///
     /// # Errors
     ///
     /// The error of [`Context::writer`] and of each failed write. [`Error::Config`]
     /// with `opcua.sample-type` for each channel whose sample type is not `bool`, `i8`
     /// to `u64`, `f32`, or `f64`, and with `opcua.large-read` when the Read of one node
-    /// alone is past one message of the server. [`Error::Device`] when the connect or a
-    /// read fails.
+    /// alone is past one message of the server. [`Error::Device`] when the connect, a
+    /// read, or one check fails: a check fails on a bad service result or on no answer
+    /// in 5 s. Also [`Error::Device`], at once, when the client loses its channel or
+    /// its session between two ticks.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         run(ctx)
     }
@@ -108,16 +104,19 @@ async fn run(ctx: Context<Config>) -> Result<(), Error> {
     };
     let rng = &mut ctx.rng();
     let net = ctx.net().clone();
-    let connect = Client::connect(time, net, rng, &config.address).await;
-    let mut client = connect.map_err(|status| {
-        device(Failure::Connect {
+    let cancelled = ctx.cancel().wait();
+    match Client::connect(time, net, rng, &config.address, cancelled).await {
+        Ok(None) => Ok(()),
+        Err(status) => Err(device(Failure::Connect {
             address: config.address.to_string_lossy().into_owned(),
             status,
-        })
-    })?;
-    let result = read(&ctx, &mut client, &mut frames).await;
-    client.close().await;
-    result
+        })),
+        Ok(Some(mut client)) => {
+            let result = read(&ctx, &mut client, &mut frames).await;
+            client.close().await;
+            result
+        }
+    }
 }
 
 /// Reads each node once per tick until the cancel, and writes the frame of each tick.
@@ -133,7 +132,11 @@ async fn read(
         .map_err(|large| large_read(reads, large))?;
     let missed = ctx.count("missed");
     let mut timer = pace::Timer::new(ctx.clock(), ctx.config().rate);
-    while let Some(tick) = timer.tick(ctx.cancel()).await {
+    loop {
+        let idle = client.idle(timer.tick(ctx.cancel())).await;
+        let Some(tick) = idle.map_err(|status| device(Failure::Check(status)))? else {
+            break;
+        };
         missed.add(tick.missed);
         let Some((read, stamp)) =
             ctx.cancel().race(frames.request(client.read(&nodes))).await
@@ -734,6 +737,7 @@ fn large_read(reads: &[Read], Large { node, bytes, most }: Large) -> Error {
 enum Failure {
     Connect { address: String, status: Status },
     Read(Status),
+    Check(Status),
 }
 
 impl fmt::Display for Failure {
@@ -743,6 +747,9 @@ impl fmt::Display for Failure {
                 write!(f, "the connect to {address} failed with {}", status.name())
             }
             Self::Read(status) => write!(f, "the read failed with {}", status.name()),
+            Self::Check(status) => {
+                write!(f, "the connectivity check failed with {}", status.name())
+            }
         }
     }
 }

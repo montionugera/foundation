@@ -84,9 +84,21 @@
   `Reader`, whose `next` gives each frame that the node sends, in order. A read takes no
   turn: it runs beside the requests. A reader holds a clone of its session. It keeps
   the error that ended it and gives it again at each `next`, and the error that ended
-  the renewal replaces it, as for `request`. The key set of a reader is its own: each
-  place is the entry at its position, and its key and slots are not the node's (#2808
-  states one checked key set for the places). The plan
+  the renewal replaces it, as for `request`. The key set of a reader is of no node:
+  `wire::hub::client::Reader` builds it with `KeySet::ordered` at the last place, so
+  entry `n` is place `n`, its slots are not the node's, and places that name a channel
+  twice give `client::Error::Repeated` (`laptop.architect`, 2026-10-16T03:12:49Z, item
+  1 of https://github.com/synnaxlabs/foundation/pull/2802#issuecomment-6207214002;
+  #2808). Its key is `u32::MAX`, and `Interner::intern` panics before it gives that
+  key, so a lens that `hub` matches by `set.key()` never takes it for a node's set
+  (`laptop.architect`, 2026-10-16T06:47:02Z,
+  https://github.com/synnaxlabs/foundation/issues/2808#issuecomment-6209795527).
+  `Frames::open` takes the end of the stream as `None` (`laptop.architect`,
+  2026-10-16T06:47:02Z,
+  https://github.com/synnaxlabs/foundation/issues/2808#issuecomment-6209795527). So
+  does the decoder, and a message that the decoder refuses leaves it as it was
+  (`laptop.architect`, 2026-10-16T07:19:58Z,
+  https://github.com/synnaxlabs/foundation/pull/2839#issuecomment-6210275086). The plan
   (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204280445) was
   approved by `laptop.architect` at 2026-10-15T23:19:38Z
   (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204306531).

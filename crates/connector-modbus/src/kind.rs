@@ -1,9 +1,6 @@
 //! The `modbus` kind: reads the tables of a Modbus TCP device at a fixed rate, and
 //! writes one frame per tick.
 
-use std::future;
-
-use connector::cancel;
 use connector::kind::{self, Channels, Context, Error};
 use document::Document;
 use document::diagnostic::Diagnostic;
@@ -46,14 +43,6 @@ impl kind::Kind for Kind {
                 .collect(),
             counts: counts.into(),
         })
-    }
-
-    /// Finds nothing: the kind does not scan a network.
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        future::ready(Ok(Vec::new()))
     }
 
     #[expect(clippy::todo, reason = "a stub until PR B2 of #432")]
