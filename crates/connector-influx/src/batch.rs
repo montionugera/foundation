@@ -2,6 +2,7 @@
 
 use connector::kind::Error;
 use document::diagnostic::{Code, Diagnostic};
+use std::iter;
 use std::ops::Range;
 
 use hub::reader::{Position, Received};
@@ -222,9 +223,8 @@ impl Body {
         let series = || view.iter().filter(|&(entry, _)| entry != index);
         self.entries.clear();
         self.entries.extend(series().map(|(at, _)| at));
-        if self.raw.len() < self.entries.len() {
-            self.raw.resize_with(self.entries.len(), Vec::new);
-        }
+        let more = self.entries.len().saturating_sub(self.raw.len());
+        self.raw.extend(iter::repeat_with(Vec::new).take(more));
         for ((at, bytes), raw) in series().zip(&mut self.raw) {
             codec::decode(entry(set, at).data_type, count, bytes, raw)
                 .expect("invariant: the hub gives valid series");
