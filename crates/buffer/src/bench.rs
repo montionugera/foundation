@@ -222,7 +222,6 @@ impl Logs {
             header.first += 1;
         }
         self.offset += BLOCK;
-        self.carried.clear();
         self.inner
             .carry(self.offset, self.headers.len(), &mut self.carried);
         self.inner.hold(&self.carried, self.offset);
@@ -269,7 +268,6 @@ impl Logs {
                 .expect("entries in order");
             header.first += 1;
         }
-        self.carried.clear();
         let reach = self.offset.saturating_sub(behind * BLOCK);
         self.inner
             .carry(reach, self.headers.len(), &mut self.carried);
@@ -298,7 +296,6 @@ impl Logs {
                 .expect("entries in order");
         }
         self.offset += BLOCK;
-        self.carried.clear();
         self.inner
             .carry(self.offset, self.headers.len(), &mut self.carried);
         let tails = self.carried.tails();
@@ -530,7 +527,8 @@ mod tests {
 
     /// The last index syncs each 8 commits, and the carry reaches 2 records back, so
     /// one call in 8 takes its tail, and its fill takes a tail of each other index
-    /// from the newest record.
+    /// from the newest record. No call of `Logs` gives its tails, so the test reads
+    /// `carried`.
     #[test]
     fn a_fill_takes_the_slow_tail_once_in_each_period() {
         let mut logs = Logs::new(4);

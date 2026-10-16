@@ -687,16 +687,16 @@ impl Logs {
         holding.map(|(_, offset, _)| offset)
     }
 
-    /// Puts in `carried` the appended tail of each path whose holder is before
-    /// `reach`, at most `limit`, oldest holder first. When it puts in one, it fills
-    /// `carried` up to `limit` with the oldest holders in the next [`FILL`] `* limit`
-    /// items after `reach`, so that small carry records merge. The next call goes on
-    /// at the first item that this call did not walk. Call it in the borrow that
-    /// takes the records of a commit: each appended entry is then in a taken record,
-    /// so the tail is the end after those records, and the carry record goes right
-    /// after them.
+    /// Clears `carried`, then puts in it the appended tail of each path whose holder
+    /// is before `reach`, at most `limit`, oldest holder first. When it puts in one,
+    /// it fills `carried` up to `limit` with the oldest holders in the next [`FILL`]
+    /// `* limit` items after `reach`, so that small carry records merge. The next
+    /// call goes on at the first item that this call did not walk. Call it in the
+    /// borrow that takes the records of a commit: each appended entry is then in a
+    /// taken record, so the tail is the end after those records, and the carry record
+    /// goes right after them.
     pub(crate) fn carry(&mut self, reach: u64, limit: usize, carried: &mut Carried) {
-        carried.reserve(limit.min(self.paths.len()));
+        carried.clear();
         let mut room = limit;
         let mut walk = limit.saturating_mul(FILL);
         for (number, offset, at) in self.items.since(self.scanned) {
@@ -1025,18 +1025,6 @@ impl Carried {
             places: Vec::with_capacity(tails),
             first: 0,
         }
-    }
-
-    /// The tails that a carry may give with no allocation.
-    #[cfg(test)]
-    pub(crate) fn capacity(&self) -> usize {
-        self.tails.capacity().min(self.places.capacity())
-    }
-
-    /// Makes room for at least `tails` tails in all.
-    fn reserve(&mut self, tails: usize) {
-        self.tails.reserve(tails.saturating_sub(self.tails.len()));
-        self.places.reserve(tails.saturating_sub(self.places.len()));
     }
 
     /// The tails, in the order of the record body.
@@ -3078,40 +3066,35 @@ mod tests {
         logs.sync(slot(index), &entry, offset).expect("syncs");
     }
 
-    /// Index 1 holds the record before the reach. Indexes 2 and 3 sync in each of
-    /// the 10 records after it, so 18 items there hold no path. A call that takes the
-    /// tail of index 1 fills from at most 8 items after the reach, then stops.
+    /// Index 1 holds the record before the reach, index 2 syncs in each of the 12
+    /// records after it, and index 3 holds the record after those. A call of limit 3
+    /// takes the tail of index 1, then fills from the 12 items after the reach, so it
+    /// takes index 2 and not index 3. The next call goes on at index 3.
     #[test]
     fn a_fill_walks_four_items_for_each_tail_after_the_reach() {
         let mut logs = Logs::new(AREA);
         synced(&mut logs, 1, 4096);
-        for record in 2..=11 {
+        for record in 2..=13 {
             synced(&mut logs, 2, 4096 * record);
-            synced(&mut logs, 3, 4096 * record);
         }
+        synced(&mut logs, 3, 4096 * 14);
+        let indexes = |tails: &Carried| -> Vec<u128> {
+            tails
+                .tails()
+                .iter()
+                .map(|tail| tail.index.as_u128())
+                .collect()
+        };
         let mut tails = Carried::default();
-        logs.carry(8192, 2, &mut tails);
-        assert_eq!(tails.tails().len(), 1);
-        assert_eq!(tails.tails()[0].index, channel::Key::from_u128(1));
-        assert_eq!(logs.scanned, 9);
+        logs.carry(8192, 3, &mut tails);
+        assert_eq!(indexes(&tails), [1, 2]);
+        logs.carry(4096 * 15, 3, &mut tails);
+        assert_eq!(indexes(&tails), [3]);
     }
 
-    /// A call takes room for the tails of the paths in one step, so 10 tails take a
-    /// capacity of 10, not the 16 of a `Vec` that grows as it is filled.
-    #[test]
-    fn a_carry_takes_room_for_each_path_at_once() {
-        let mut logs = Logs::new(AREA);
-        for index in 1..=10 {
-            synced(&mut logs, index, 4096);
-        }
-        let mut tails = Carried::default();
-        logs.carry(8192, 1023, &mut tails);
-        assert_eq!(tails.tails().len(), 10);
-        assert_eq!(tails.capacity(), 10);
-    }
-
-    /// A call that takes no tail before the reach stops there, also when `carried`
-    /// still holds the tails of a call before it.
+    /// A call clears `carried` first, so a call that takes no tail before the reach
+    /// gives none and stops there, also when `carried` holds the tails of a call
+    /// before it.
     #[test]
     fn a_carry_with_no_tail_before_the_reach_stops_at_it() {
         let mut logs = Logs::new(AREA);
@@ -3119,10 +3102,12 @@ mod tests {
         let mut tails = Carried::default();
         logs.carry(8192, 2, &mut tails);
         synced(&mut logs, 2, 12288);
+        assert_eq!(tails.tails().len(), 1);
         logs.carry(8192, 2, &mut tails);
+        assert_eq!(tails.tails(), []);
+        logs.carry(16384, 2, &mut tails);
         let indexes: Vec<_> = tails.tails().iter().map(|tail| tail.index).collect();
-        assert_eq!(indexes, [channel::Key::from_u128(1)]);
-        assert_eq!(logs.scanned, 1);
+        assert_eq!(indexes, [channel::Key::from_u128(2)]);
     }
 
     /// Gives the tail of each idle path a carry record at `offset`, as a commit does.

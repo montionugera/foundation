@@ -67,8 +67,7 @@ pub struct Config {
     /// queued during a commit longer than `commit` waits until that commit ends.
     pub commit: Span,
     /// Each commit frees the oldest records that no path needs, when the ring needs
-    /// their room. False until the open trims too. No caller sets it until #2796
-    /// merges.
+    /// their room. False until the open trims too.
     pub trimmed: bool,
 }
 
@@ -330,7 +329,7 @@ struct State {
     logs: Logs,
     /// The last checkpoint written.
     header: Header,
-    /// Empty, with the capacity of the tails of the last carry record, for the next.
+    /// The tails of the last carry record, whose room the next carry reuses.
     carried: Carried,
     /// Whether an append got [`Rejected::Full`] since the last deadline, with
     /// [`Config::trimmed`]. The task then commits also with no entry, so that its
@@ -449,13 +448,10 @@ impl State {
             self.spares.push(record.clear());
         }
         if let Some(Carrying {
-            mut carried,
-            offset,
-            ..
+            carried, offset, ..
         }) = carrying
         {
             self.logs.hold(&carried, offset);
-            carried.clear();
             self.carried = carried;
         }
         if counted {
@@ -495,9 +491,10 @@ impl State {
     }
 
     /// Plans the carry record of the paths whose holder is before the reach of the
-    /// next trim, filled with the oldest holders after it, as many as one record
-    /// holds, and at most `most`. `None` when no path needs one, or `pool` has no
-    /// blocks for it: the next deadline then scans the same paths.
+    /// next trim, filled with the oldest holders that [`Logs::carry`] finds after
+    /// it, at most as many as one record holds and at most `most`. `None` when no
+    /// path needs one, or `pool` has no blocks for it: the next deadline then scans
+    /// the same paths.
     fn carry(&mut self, pool: &Pool, most: usize) -> Option<Carry> {
         let mut carried = mem::take(&mut self.carried);
         let limit = self.writer.tails().min(most);
@@ -2140,65 +2137,6 @@ mod tests {
                 stamp: Some(Stamp::from_nanos(9)),
             };
             assert_eq!(*found, Some(((Some(0..3), vec![], Mark::at(3)), tail)));
-        }
-
-        /// The carry of a buffer has no room at open. Records of one entry of each of
-        /// more paths than the largest carry record holds come first, then the commits
-        /// of index 0 turn the ring of 64 blocks, so full carry records take their
-        /// tails, and the carry has room for them.
-        #[test]
-        fn a_carry_has_no_room_until_it_carries() {
-            let mut sim = sim::Sim::new(sim::Config::default());
-            let node = sim.node(sim::node::Config::default());
-            let found = Arc::new(Mutex::new(None));
-            let given = Arc::clone(&found);
-            let logs = with_trims(
-                &mut sim,
-                &node,
-                "write",
-                |buffer, mut slots, pool| async move {
-                    let room = |buffer: &Buffer| {
-                        let state = buffer.shared.state.borrow();
-                        (state.carried.capacity(), state.carried.tails().len())
-                    };
-                    let mut rooms = vec![room(&buffer)];
-                    let byte = pool.alloc(1).expect("a block").freeze();
-                    let part = pool.alloc(100).expect("a block").freeze();
-                    let paths = u32::try_from(carry::count(8000)).expect("fits") + 10;
-                    for first in (1..=paths).step_by(50) {
-                        let batch: Vec<Entry> = (first..(first + 50).min(paths + 1))
-                            .map(|index| {
-                                let key = channel::Key::from_u128(index.into());
-                                entry(index, slots.index(key), Path::Live, 0, &byte)
-                            })
-                            .collect();
-                        buffer.append(batch).expect("the ring has room");
-                        buffer.committed().await.expect("commits");
-                    }
-                    let filler = slots.index(channel::Key::from_u128(0));
-                    commit_each(&buffer, (0, filler), &part, 0..80).await;
-                    rooms.push(room(&buffer));
-                    let last = slots.index(channel::Key::from_u128(paths.into()));
-                    let seq = buffer.durable(last, Path::Live).seq;
-                    *given.lock().expect("no panic held the lock") =
-                        Some((rooms, seq, last));
-                    buffer
-                },
-            );
-            let tails = carry::count(8000);
-            let (rooms, seq, last) = found
-                .lock()
-                .expect("no panic held the lock")
-                .take()
-                .expect("the write ran");
-            assert_eq!(rooms[0], (0, 0), "no room at open");
-            assert!(
-                rooms[1].0 >= tails,
-                "room for a full record: {:?}",
-                rooms[1]
-            );
-            assert_eq!(seq, 3, "a carry record keeps the tail of the last path");
-            assert_eq!(logs.runs(last, Path::Live).count(), 0, "the trims pass it");
         }
 
         /// One record holds an entry of each of indexes 1 to 100, after 7 records of
