@@ -1,4 +1,5 @@
-//! Key sets: the channels that a writer session sends, interned once per session.
+//! Key sets: the channels of the frames of a session, with their types and index
+//! groups.
 
 use std::fmt;
 use std::sync::Arc;
@@ -8,8 +9,8 @@ use crate::hash;
 use crate::sample::{Scalar, Type};
 
 /// A key set's number in its node's [`Interner`]: dense from 0 and node-local, never
-/// sent on the wire or stored on disk. A set from [`KeySet::ordered`] has a key that no
-/// `Interner` gives.
+/// sent on the wire or stored on disk. Each set from [`KeySet::ordered`] has the same
+/// key, one that no `Interner` gives, so the key does not tell two such sets apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Key(u32);
 
@@ -28,9 +29,10 @@ impl Key {
     }
 }
 
-/// The channels that a writer session sends, sorted by slot, with each entry's type and
+/// The channels of the frames of a session, sorted by slot, with each entry's type and
 /// index group. Every frame of the session points at it. An [`Interner`] makes the
-/// key sets of a node, and [`KeySet::ordered`] makes one of no node.
+/// key sets of a node's writers, and [`KeySet::ordered`] makes the set of a reader
+/// that is of no node.
 #[derive(Debug)]
 pub struct KeySet {
     key: Key,
@@ -40,9 +42,9 @@ pub struct KeySet {
 
 impl KeySet {
     /// The key set of one group whose entries are `channels`, in order: entry `n` has
-    /// slot `n`, and the entry at `index` is the group's index. Its key is one that no
-    /// [`Interner`] gives. Its slots are its own, not a node's: never look up one in a
-    /// [`Slots`].
+    /// slot `n`, and the entry at `index` is the group's index. Every such set has the
+    /// same key, one that no [`Interner`] gives, so the key does not tell two of them
+    /// apart. Its slots are its own, not a node's: never look up one in a [`Slots`].
     ///
     /// # Errors
     ///
@@ -87,7 +89,8 @@ impl KeySet {
         })
     }
 
-    /// The key set's number in its interner.
+    /// The key set's number in its interner, or the one key of each set from
+    /// [`KeySet::ordered`].
     #[must_use]
     pub const fn key(&self) -> Key {
         self.key
@@ -129,7 +132,8 @@ impl KeySet {
 /// One channel of a key set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Entry {
-    /// The channel's node-local slot.
+    /// The channel's node-local slot, or its position in a set from
+    /// [`KeySet::ordered`].
     pub slot: Slot,
     /// The channel.
     pub key: channel::Key,
