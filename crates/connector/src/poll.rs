@@ -187,9 +187,9 @@ impl Writer {
 
     /// Writes one frame at `stamp` with the value of each channel that `values` gives,
     /// in order, and leaves out each `None`. It takes each value once, before the
-    /// write. Writes no frame when it keeps none. A group that the home
-    /// refuses as `Backwards` is written again once, after the stamp that the refusal
-    /// gives. A frame for which the pool has no block now loses its samples.
+    /// write. Writes no frame when it keeps none. A group that the home refuses as
+    /// `Backwards` is written again once, after the stamp that the refusal gives. A
+    /// frame for which the pool has no block now loses its samples.
     ///
     /// # Errors
     ///
@@ -208,12 +208,12 @@ impl Writer {
     ) -> Result<(), Error> {
         let channels = self.slots.len();
         let mut slots = self.slots.iter_mut();
-        let put = |value| *slots.next().unwrap_or_else(|| more(channels)) = value;
+        let put = |value| *slots.next().unwrap_or_else(|| long(channels)) = value;
         // Not a loop of `next`: rustc keeps the `next` of a kind's `map` out of line,
         // a call per value (6 ns per sample on box1).
         values.into_iter().for_each(put);
         if slots.len() != 0 {
-            fewer(channels - slots.len(), channels);
+            short(channels - slots.len(), channels);
         }
         self.send(stamp)
     }
@@ -462,17 +462,18 @@ fn left_out(at: usize) -> ! {
     panic!("invariant: a frame keeps no value of channel {at}, which is `None`")
 }
 
-/// As [`left_out`].
+/// Cold and apart from [`Writer::write`], so its fill stores nothing per value for the
+/// message.
 #[cold]
 #[inline(never)]
-fn more(channels: usize) -> ! {
+fn long(channels: usize) -> ! {
     panic!("invariant: a kind gives more values than its {channels} channels")
 }
 
-/// As [`left_out`].
+/// As [`long`].
 #[cold]
 #[inline(never)]
-fn fewer(given: usize, channels: usize) -> ! {
+fn short(given: usize, channels: usize) -> ! {
     panic!("invariant: a kind gives {given} values for {channels} channels")
 }
 
