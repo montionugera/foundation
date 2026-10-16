@@ -281,6 +281,40 @@ fn gives_the_close_of_a_node_after_admission() {
     }
 }
 
+/// A request that the node's close ends and `ended` give one error, whichever of the
+/// request and the renewal runs first after the close.
+#[test]
+fn ended_gives_the_close_that_a_request_gave_at_each_seed() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    for seed in 0..64 {
+        let seen = Arc::clone(&seen);
+        by_hand(
+            seed,
+            move |session, node| async move {
+                let _request = read_request(&session).await;
+                session.close(Code(99));
+                node.clock().sleep(QUIET).await;
+            },
+            move |session, _| {
+                Box::pin(async move {
+                    let error = session.request(b"ab").await.unwrap_err();
+                    seen.lock().unwrap().push((seed, error, session.ended()));
+                })
+            },
+        );
+    }
+    let closed = Error::Transport(transport::Error::PeerClosed { code: Code(99) });
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 64);
+    for (seed, error, ended) in seen.iter() {
+        assert_eq!(
+            (error, ended.as_ref()),
+            (&closed, Some(&closed)),
+            "seed {seed}"
+        );
+    }
+}
+
 #[test]
 fn refuses_a_request_stream_finished_with_no_response() {
     by_hand(

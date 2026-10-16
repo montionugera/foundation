@@ -121,7 +121,7 @@ impl Reader {
         if let Some(stream) = self.stream.take() {
             end(stream, &error);
         }
-        let ended = self.session.0.ended.borrow().clone().unwrap_or(error);
+        let ended = self.session.0.ended().unwrap_or(error);
         self.ended = Some(ended.clone());
         Err(ended)
     }

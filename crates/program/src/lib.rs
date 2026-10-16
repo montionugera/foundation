@@ -9,7 +9,7 @@ use std::fmt;
 use std::future::poll_fn;
 use std::pin::pin;
 use std::rc::Rc;
-use std::task::Poll;
+use std::task::{Context, Poll, Waker};
 
 use transport::stream::{Receiver, Sender};
 use transport::{Address, Class, Code};
@@ -161,7 +161,7 @@ impl Session {
     /// it. A call after the end gives this error.
     #[must_use]
     pub fn ended(&self) -> Option<Error> {
-        self.0.0.ended.borrow().clone()
+        self.0.0.ended()
     }
 
     /// Sends `body` as a request signed with the subject's key, and gives the body of
@@ -186,7 +186,7 @@ impl Session {
         shared
             .exchange(body, length)
             .await
-            .map_err(|error| shared.ended.borrow().clone().unwrap_or(error))
+            .map_err(|error| shared.ended().unwrap_or(error))
     }
 
     /// Opens a reader of `mode` on the channels that `select` matches, as the
@@ -213,11 +213,25 @@ impl Session {
         }
         Reader::open(Rc::clone(&self.0), &open)
             .await
-            .map_err(|error| shared.ended.borrow().clone().unwrap_or(error))
+            .map_err(|error| shared.ended().unwrap_or(error))
     }
 }
 
 impl Shared {
+    /// The error that ended the renewal, else why the transport ended the session.
+    /// The renewal can run after a call that saw the end of the transport.
+    fn ended(&self) -> Option<Error> {
+        if let Some(error) = &*self.ended.borrow() {
+            return Some(error.clone());
+        }
+        // A poll of `closed` after the end is ready, so one poll reads the end.
+        let closed = pin!(self.session.closed());
+        match closed.poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(error) => Some(Error::from(error)),
+            Poll::Pending => None,
+        }
+    }
+
     /// Takes the turn, sends the request of `body`, whose length is `length`, and
     /// gives the body of the response. Gives each error of [`Session::request`] but
     /// [`Error::Body`], with the error of the close in place of the error that ended
