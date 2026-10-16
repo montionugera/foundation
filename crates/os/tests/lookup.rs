@@ -17,10 +17,10 @@ fn no_child_holds_a_socket_of_a_lookup() {
         .build()
         .expect("a current-thread runtime builds");
     // Ends before the first child, for a socket that the C library keeps open.
-    let found = runtime.block_on(os::net().resolve("localhost", 80));
+    let found = runtime.block_on(os::net().resolve(&"localhost".parse().unwrap(), 80));
     found.expect("localhost has an address");
     let held = children::held_while(&baseline, 1, async |net| {
-        let found = net.resolve("localhost", 80).await;
+        let found = net.resolve(&"localhost".parse().unwrap(), 80).await;
         found.expect("localhost has an address");
     });
     assert_eq!(held, Vec::<String>::new());
