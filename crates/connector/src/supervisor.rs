@@ -4377,7 +4377,9 @@ mod tests {
     }
 
     /// A run whose held reader reads from disk while the pool has no block gets
-    /// `Retry` from the end of its reader, and the next run reads the frame.
+    /// `Retry` from the end of its reader, and the next run reads the frame. The
+    /// read waits for the commit of the records of the open, which frees a block, so
+    /// the run fills the pool again after it.
     #[test]
     fn retries_a_read_from_disk_while_the_pool_is_full() {
         let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);
@@ -4390,7 +4392,10 @@ mod tests {
                     let channels = status_names("plant.write", &[]);
                     let writer = ctx.writer(channels, Authority(1), None).await;
                     let writer = writer.expect("the writer opens");
-                    Some((fill(&writer), writer))
+                    let mut drafts = fill(&writer);
+                    ctx.clock().sleep(Span::SECOND).await;
+                    drafts.extend(fill(&writer));
+                    Some((drafts, writer))
                 } else {
                     None
                 };

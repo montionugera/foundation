@@ -166,6 +166,19 @@ pub(crate) struct Set {
     /// goes on. A read from `Mark::at(seq)` gives each entry with no samples at `seq`
     /// again, so more of them than one read takes would stop the reader for ever.
     marks: hash::Map<complete::Key, Mark>,
+    /// Each complete reader whose named open appended its record, until the commit
+    /// that holds the entry. It reads from disk only after: a restart before the
+    /// commit would lose the frames that it got and did not ack.
+    recording: hash::Map<complete::Key, Recording>,
+}
+
+/// The commit that a named complete reader waits for before it reads from disk.
+#[derive(Clone, Copy, Debug)]
+struct Recording {
+    /// The count of [`Buffer::commits`] at which its record is durable.
+    until: u64,
+    /// Whether a take found it waiting, so that the commit wakes it.
+    waited: bool,
 }
 
 /// The readers of one carried index.
@@ -352,9 +365,10 @@ impl Set {
 
     /// The records of the index at `place` as a named complete open of `reader` with
     /// `hold` makes them, at its held position, else at seq `live`, when the open
-    /// changes the record of a closed session: a first open, or a reopen in its hold.
-    /// `None` when its session is open, or when it holds a record and the records
-    /// pass `limit` bytes, as on a smaller pool after a restart.
+    /// changes its record: a first open, a reopen in its hold, or a takeover with a
+    /// new hold. `None` when its session is open with `hold`, or when it holds a
+    /// record and the records pass `limit` bytes, as on a smaller pool after a
+    /// restart.
     ///
     /// # Errors
     ///
@@ -379,7 +393,9 @@ impl Set {
             closed: None,
         };
         let added = match records.iter_mut().find(|record| record.reader == *reader) {
-            Some(record) if record.closed.is_none() => return Ok(None),
+            Some(record) if record.closed.is_none() && record.hold == hold => {
+                return Ok(None);
+            }
             Some(record) => {
                 *record = open(record.position.live);
                 false
@@ -399,7 +415,9 @@ impl Set {
     }
 
     /// Opens `reader`, which is named, on the index at `place` at its held position,
-    /// else at seq `live`, as [`open_complete`](Self::open_complete) does.
+    /// else at seq `live`, as [`open_complete`](Self::open_complete) does. With
+    /// `recorded_at`, the count of [`Buffer::commits`] at which the entry that records
+    /// it is durable, it reads from disk only from then on.
     ///
     /// # Panics
     ///
@@ -411,6 +429,7 @@ impl Set {
         live: u64,
         limit_bytes: u64,
         charge: complete::Charge,
+        recorded_at: Option<u64>,
     ) -> delivery::complete::Opened {
         let start = Start::Resume {
             presented: None,
@@ -423,6 +442,14 @@ impl Set {
         let opened = readers.open(reader, start, limit_bytes, charge);
         self.replaced(place, opened.replaced);
         self.note(place);
+        if let Some(until) = recorded_at {
+            let key = complete::Key {
+                slot: self.entries[place].slot,
+                session: opened.key,
+            };
+            let waited = false;
+            self.recording.insert(key, Recording { until, waited });
+        }
         opened
     }
 
@@ -471,8 +498,12 @@ impl Set {
 
     /// Drops the mark of the closed complete reader `session` of the index at `place`.
     fn unmark(&mut self, place: usize, session: delivery::complete::Key) {
-        let slot = self.entries[place].slot;
-        self.marks.remove(&complete::Key { slot, session });
+        let key = complete::Key {
+            slot: self.entries[place].slot,
+            session,
+        };
+        self.marks.remove(&key);
+        self.recording.remove(&key);
     }
 
     /// Records that the complete reader `session` on the index at `place` has each
@@ -523,6 +554,13 @@ impl Set {
             slot: entry.slot,
             session,
         };
+        if let Some(recording) = self.recording.get_mut(&key) {
+            if buffer.commits() < recording.until {
+                recording.waited = true;
+                return Next::Empty;
+            }
+            self.recording.remove(&key);
+        }
         let mark = self.marks.entry(key).or_insert(Mark::at(from));
         if mark.seq != from {
             *mark = Mark::at(from);
@@ -666,6 +704,14 @@ impl Set {
                 wake(woken, entry.slot, entry.readers.release(durable));
                 entry.listed = entry.readers.pending();
                 entry.listed
+            });
+            let woken = &mut self.keys;
+            self.recording.retain(|&key, recording| {
+                let recorded = recording.until <= commits;
+                if recorded && recording.waited {
+                    woken.push(key.into());
+                }
+                !recorded
             });
         }
         keys.clear();
@@ -1086,7 +1132,8 @@ mod tests {
                 reader: named(name),
                 hold: Span::from_nanos(10),
             };
-            set.open_named_complete(0, reader, 0, u64::MAX, complete::Charge::Whole)
+            let charge = complete::Charge::Whole;
+            set.open_named_complete(0, reader, 0, u64::MAX, charge, None)
                 .key
         }
 
@@ -1278,11 +1325,24 @@ mod tests {
         }
 
         #[test]
-        fn add_nothing_at_a_takeover_of_an_open_session() {
+        fn add_nothing_at_a_takeover_of_an_open_session_with_its_hold() {
+            let mut set = carried(1);
+            let _a = open(&mut set, "a");
+            let hold = Span::from_nanos(10);
+            assert_eq!(set.opening(0, &named("a"), hold, 3, usize::MAX), Ok(None));
+        }
+
+        #[test]
+        fn change_the_hold_at_a_takeover_of_an_open_session() {
             let mut set = carried(1);
             let _a = open(&mut set, "a");
             let hold = Span::from_nanos(20);
-            assert_eq!(set.opening(0, &named("a"), hold, 3, usize::MAX), Ok(None));
+            let records = set.opening(0, &named("a"), hold, 3, usize::MAX);
+            let taken = Record {
+                hold,
+                ..opened("a", 0)
+            };
+            assert_eq!(records, Ok(Some(vec![taken])));
         }
 
         #[test]

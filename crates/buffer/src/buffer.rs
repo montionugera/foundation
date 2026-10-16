@@ -799,6 +799,13 @@ impl Buffer {
         self.shared.state.borrow().commits
     }
 
+    /// The count of [`commits`](Self::commits) at which every entry appended before
+    /// the call is durable: the count now when none waits.
+    #[must_use]
+    pub fn durable_at(&self) -> u64 {
+        self.shared.state.borrow().durable_at()
+    }
+
     /// Queues every entry of `entries` for the next group commit, or none, and
     /// returns at once with no I/O. The entries are durable when a later
     /// [`committed`](Self::committed) resolves. They go in one record, in order. A
@@ -1675,6 +1682,40 @@ mod tests {
         );
         // The write and sync of the commit add their own time.
         assert!(span >= COMMIT, "the commit came {span:?} after the append");
+    }
+
+    /// `durable_at` is the count of commits now while nothing waits, and the count
+    /// that the commit of an appended entry reaches.
+    #[test]
+    fn gives_the_count_of_commits_at_which_appended_entries_are_durable() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config::default());
+        let counts = Arc::new(Mutex::new(None));
+        let found = Arc::clone(&counts);
+        with_buffer(
+            &mut sim,
+            &node,
+            "durable",
+            move |buffer, mut slots, pool| async move {
+                let one = slots.index(channel::Key::from_u128(1));
+                let part = pool.alloc(100).expect("a block").freeze();
+                let idle = (buffer.commits(), buffer.durable_at());
+                buffer
+                    .append([entry(1, one, Path::Live, 0, &part)])
+                    .expect("room");
+                let at = buffer.durable_at();
+                buffer.committed().await.expect("commits");
+                let after = (buffer.commits(), buffer.durable_at());
+                *found.lock().expect("no panic held the lock") =
+                    Some((idle, at, after));
+                buffer
+            },
+        );
+        let found = counts.lock().expect("no panic held the lock").take();
+        let ((commits, idle), at, after) = found.expect("the shard gave the result");
+        assert_eq!(idle, commits, "nothing waits");
+        assert_eq!(at, commits + 1, "the next commit holds the entry");
+        assert_eq!(after, (at, at), "the commit reached the count");
     }
 
     /// A commit gives the writer the boundaries of its records. No public call

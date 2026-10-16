@@ -44,12 +44,12 @@
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6208736533, and
   2026-10-16T06:45:15Z:
   https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6209768377).
-  `Device` is for the device or the endpoint, never the hub. An error that
-  the open never gives panics with `invariant:`: writer `Home` `Unsynced`, because
-  `Hub::writer` waits for mesh time; reader `Unsynced`, because the supervisor opens a
-  reader only after the status channels, which wait for mesh time, and mesh time stays
-  once known; and reader `Transport`, `Refused`, `Message`, and `Pool`, because a named
-  reader opens only at its home (`laptop.architect-2`, 2026-10-10T22:38:41Z:
+  `Device` is for the device or the endpoint, never the hub. An error that the open
+  never gives panics with `invariant:`: writer `Home` `Unsynced`, because `Hub::writer`
+  waits for mesh time; reader `Unsynced`, because the supervisor opens a reader only
+  after the status channels, which wait for mesh time, and mesh time stays once known;
+  and reader `Transport`, `Refused`, `Message`, and `Pool`, because a named reader opens
+  only at its home (`laptop.architect-2`, 2026-10-10T22:38:41Z:
   https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6102937379). The
   writer `Home` list and the codes: proposed in the plan on #1734
   (https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6104945733),
