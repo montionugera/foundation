@@ -352,7 +352,7 @@ struct Origin {
     port: u16,
 }
 
-/// Shows the host and the port as a URI writes them, with an IPv6 address in brackets.
+/// Shows the host and the port, with an IPv6 address in brackets, as `[fe80::1%2]:443`.
 impl fmt::Display for Origin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let host = &self.host;
