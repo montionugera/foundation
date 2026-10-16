@@ -355,11 +355,12 @@ impl Variable {
     /// iterator panics at the first end that is not valid for `raw`.
     pub fn samples(self, count: usize, raw: &[u8]) -> impl Iterator<Item = &[u8]> {
         let (ends, elements) = self.split(count, raw);
+        let width = self.element.width();
         let mut start = 0_usize;
         ends.iter().enumerate().map(move |(index, end)| {
             let end = usize::try_from(u32::from_le_bytes(*end))
                 .expect("invariant: a usize holds a u32");
-            let sample = self.elements_in(elements, index, start, end);
+            let sample = elements_in(elements, width, index, start, end);
             start = end;
             sample
         })
@@ -386,7 +387,7 @@ impl Variable {
                 .expect("invariant: a usize holds a u32")
         };
         let start = index.checked_sub(1).map_or(0, end);
-        self.elements_in(elements, index, start, end(index))
+        elements_in(elements, self.element.width(), index, start, end(index))
     }
 
     /// The `count` ends of `raw` and its elements.
@@ -408,32 +409,6 @@ impl Variable {
         };
         let (head, elements) = raw.split_at(front.start);
         (head.split_at(front.ends).0.as_chunks::<4>().0, elements)
-    }
-
-    /// The bytes of the elements `start..end` of `elements`, sample `index`.
-    ///
-    /// # Panics
-    ///
-    /// When `elements` does not hold them.
-    fn elements_in(
-        self,
-        elements: &[u8],
-        index: usize,
-        start: usize,
-        end: usize,
-    ) -> &[u8] {
-        let width = self.element.width();
-        let sample = end
-            .checked_mul(width)
-            .and_then(|stop| elements.get(start.checked_mul(width)?..stop));
-        let Some(sample) = sample else {
-            panic!(
-                "sample {index} ends at {end}, not in {start}..={} of {width}-byte \
-                 elements",
-                elements.len().strict_div(width)
-            );
-        };
-        sample
     }
 
     /// The elements of `sample`.
@@ -589,6 +564,31 @@ enum Shape {
         max: u32,
         utf8: bool,
     },
+}
+
+/// The bytes of the elements `start..end` of `elements`, sample `index`, each element
+/// `width` bytes.
+///
+/// # Panics
+///
+/// When `elements` does not hold them.
+fn elements_in(
+    elements: &[u8],
+    width: usize,
+    index: usize,
+    start: usize,
+    end: usize,
+) -> &[u8] {
+    let sample = end
+        .checked_mul(width)
+        .and_then(|stop| elements.get(start.checked_mul(width)?..stop));
+    let Some(sample) = sample else {
+        panic!(
+            "sample {index} ends at {end}, not in {start}..={} of {width}-byte elements",
+            elements.len().strict_div(width)
+        );
+    };
+    sample
 }
 
 impl Shape {
