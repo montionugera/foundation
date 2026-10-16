@@ -14,7 +14,7 @@ use types::hash;
 use types::time::Stamp;
 
 use crate::carry;
-use crate::entry::{Header, Kind, Place, Samples};
+use crate::entry::{Header, Kind, Samples};
 
 /// Where one path of an index stands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -169,37 +169,6 @@ impl fmt::Display for Invalid {
     }
 }
 
-impl Tail {
-    /// Moves the tail past the entry at `first`: `seq` to `first` plus the `len` of
-    /// `samples`, and `stamp` to their `last` when they have one. A `first` past the
-    /// tail is a skip ahead.
-    ///
-    /// # Errors
-    ///
-    /// [`Fault::Below`] when `first` is below the tail, and [`Fault::Past`] when
-    /// `first` plus `samples.len` does not fit in a `u64`. The tail does not move.
-    fn advance(&mut self, first: u64, samples: Option<Samples>) -> Result<(), Fault> {
-        if first < self.seq {
-            return Err(Fault::Below {
-                first,
-                tail: self.seq,
-            });
-        }
-        let Some(samples) = samples else {
-            self.seq = first;
-            return Ok(());
-        };
-        let len = samples.len.get();
-        self.seq = first
-            .checked_add(u64::from(len))
-            .ok_or(Fault::Past { first, len })?;
-        if let Some(last) = samples.last {
-            self.stamp = Some(last);
-        }
-        Ok(())
-    }
-}
-
 /// Where a read of a path stands: before the entries that end past `seq`, and
 /// past the first `given` entries with no samples at `seq`. Marks order as reads
 /// do.
@@ -285,27 +254,43 @@ impl Position {
         }
     }
 
-    /// Moves past the entry, as [`Tail::advance`], and returns the mark before it
-    /// and the kind of the entry's header: its samples, or its count.
+    /// Moves past the entry of `samples` at `first`, and returns the mark before it
+    /// and the kind of the entry's header: its samples, or its count. The tail's
+    /// `seq` goes to `first` plus the `len` of `samples`, and its `stamp` to their
+    /// `last` when they have one. A `first` past the tail is a skip ahead.
     ///
     /// # Errors
     ///
-    /// As [`Tail::advance`], and [`Fault::Crowded`]. Nothing changes.
+    /// [`Fault::Below`] when `first` is below the tail, [`Fault::Past`] when `first`
+    /// plus `samples.len` does not fit in a `u64`, and [`Fault::Crowded`]. Nothing
+    /// changes.
     fn advance(
         &mut self,
         first: u64,
         samples: Option<Samples>,
     ) -> Result<(Mark, Kind), Fault> {
         let start = self.mark();
-        let (kind, given) = if let Some(samples) = samples {
-            (Kind::Samples(samples), 0)
-        } else {
+        if first < start.seq {
+            return Err(Fault::Below {
+                first,
+                tail: start.seq,
+            });
+        }
+        let Some(samples) = samples else {
             let given = start.count(first).ok_or(Fault::Crowded { seq: first })?;
-            (Kind::Record(given), given.get())
+            self.tail.seq = first;
+            self.given = given.get();
+            return Ok((start, Kind::Record(given)));
         };
-        self.tail.advance(first, samples)?;
-        self.given = given;
-        Ok((start, kind))
+        let len = samples.len.get();
+        self.tail.seq = first
+            .checked_add(u64::from(len))
+            .ok_or(Fault::Past { first, len })?;
+        if let Some(last) = samples.last {
+            self.tail.stamp = Some(last);
+        }
+        self.given = 0;
+        Ok((start, Kind::Samples(samples)))
     }
 }
 
@@ -903,34 +888,37 @@ impl Logs {
         Ok(())
     }
 
-    /// Moves the appended tail of the entry's path past the entry at `place`, as
-    /// [`Tail::advance`], and gives the kind of its header. The kind of an entry
-    /// with no samples counts the entries with no samples at its seq on the path, it
-    /// included.
+    /// Moves the appended tail of `path` of `index` past the entry of `samples` at
+    /// seq `first`, as [`Position::advance`], and gives the kind of its header. The
+    /// kind of an entry with no samples counts the entries with no samples at its
+    /// seq on the path, it included.
     ///
     /// # Errors
     ///
-    /// [`Invalid`] as [`Tail::advance`], and [`Invalid::Crowded`]. Nothing changes.
+    /// [`Invalid`] as [`Position::advance`]. Nothing changes.
     pub(crate) fn append(
         &mut self,
         slot: Slot,
-        place: &Place,
+        index: channel::Key,
+        path: Path,
+        first: u64,
+        samples: Option<Samples>,
     ) -> Result<Kind, Invalid> {
-        let ((_, kind), _) = self.change(slot, place.index, place.path, |log| {
-            log.appended.advance(place.first, place.samples)
+        let (kind, _) = self.change(slot, index, path, |log| {
+            Ok(log.appended.advance(first, samples)?.1)
         })?;
         Ok(kind)
     }
 
     /// Moves the durable tail of the header's path past the entry, as
-    /// [`Tail::advance`], and adds the record at `offset` to the path's runs when it
+    /// [`Position::advance`], and adds the record at `offset` to the path's runs when it
     /// is not the newest. The record becomes the path's holder when the entry gives
     /// the durable stamp. A nonzero tag makes `offset` the newest record of its tag
     /// on the path.
     ///
     /// # Errors
     ///
-    /// [`Invalid`] as [`Tail::advance`]. Nothing changes.
+    /// [`Invalid`] as [`Position::advance`]. Nothing changes.
     ///
     /// # Panics
     ///
@@ -1203,13 +1191,13 @@ mod tests {
     /// Appends the entry of `header` on `slot`, as the buffer does, and gives
     /// `header` the kind that the logs give.
     fn append(logs: &mut Logs, slot: Slot, header: &mut Header) -> Result<(), Invalid> {
-        let place = Place {
-            index: header.index,
-            path: header.path,
-            first: header.first,
-            samples: header.samples(),
-        };
-        header.kind = logs.append(slot, &place)?;
+        header.kind = logs.append(
+            slot,
+            header.index,
+            header.path,
+            header.first,
+            header.samples(),
+        )?;
         Ok(())
     }
 

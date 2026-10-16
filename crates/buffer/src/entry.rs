@@ -127,19 +127,8 @@ pub struct Samples {
 }
 
 impl Entry {
-    /// Where the entry goes on its path.
-    pub(crate) const fn place(&self) -> Place {
-        Place {
-            index: self.index,
-            path: self.path,
-            first: self.first,
-            samples: self.samples,
-        }
-    }
-
     /// The header of this entry, of `kind`, with the size of its parts. `kind` is
-    /// the one that [`Logs::append`](crate::log::Logs::append) gives for the
-    /// entry's place.
+    /// the one that [`Logs::append`](crate::log::Logs::append) gives for the entry.
     ///
     /// # Panics
     ///
@@ -160,17 +149,6 @@ impl Entry {
             bytes,
         }
     }
-}
-
-/// What a log needs of an entry: its index and path, its first seq, and its samples.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Place {
-    pub(crate) index: channel::Key,
-    pub(crate) path: Path,
-    /// The first seq.
-    pub(crate) first: u64,
-    /// The samples, `None` for an entry with no samples.
-    pub(crate) samples: Option<Samples>,
 }
 
 /// What one `append` stored, without its bytes.

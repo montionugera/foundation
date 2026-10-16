@@ -905,7 +905,13 @@ impl Buffer {
 pub(crate) fn take(open: &mut Group, logs: &mut Logs, batch: &mut Vec<Entry>) {
     for entry in batch.drain(..) {
         let kind = logs
-            .append(entry.slot, &entry.place())
+            .append(
+                entry.slot,
+                entry.index,
+                entry.path,
+                entry.first,
+                entry.samples,
+            )
             .unwrap_or_else(|invalid| panic!("invariant: {invalid}"));
         open.take(entry, kind);
     }

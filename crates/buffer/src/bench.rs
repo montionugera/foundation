@@ -9,7 +9,7 @@ use types::channel::{self, Slot};
 use types::frame::Path;
 use types::time::Stamp;
 
-use crate::entry::{self, Entry, Header, Kind, Place, Samples};
+use crate::entry::{self, Entry, Header, Kind, Samples};
 use crate::group;
 use crate::log::Carried;
 use crate::record::{ALIGN, BLOCK};
@@ -266,7 +266,7 @@ impl Logs {
     pub fn carry(&mut self) {
         self.keep_up();
         for (slot, header) in &mut self.headers {
-            header.kind = self.inner.append(*slot, &place(header)).expect("in order");
+            header.kind = append(&mut self.inner, *slot, header);
             self.inner
                 .sync(*slot, header, self.offset)
                 .expect("entries in order");
@@ -282,9 +282,7 @@ impl Logs {
     /// Moves the appended tail of each index past one data entry, with no sync.
     pub fn append(&mut self) {
         for (slot, header) in &mut self.headers {
-            self.inner
-                .append(*slot, &place(header))
-                .expect("entries in order");
+            append(&mut self.inner, *slot, header);
             header.first += 1;
         }
     }
@@ -315,7 +313,7 @@ impl Logs {
         self.commits = self.commits.wrapping_add(1);
         let synced = self.headers.len() - usize::from(!slow);
         for (slot, header) in self.headers.iter_mut().take(synced) {
-            header.kind = self.inner.append(*slot, &place(header)).expect("in order");
+            header.kind = append(&mut self.inner, *slot, header);
             self.inner
                 .sync(*slot, header, self.offset)
                 .expect("entries in order");
@@ -336,11 +334,10 @@ impl Logs {
     pub fn mark(&mut self) {
         self.keep_up();
         for (slot, header) in &self.headers {
-            let empty = Place {
-                samples: None,
-                ..place(header)
-            };
-            let kind = self.inner.append(*slot, &empty).expect("in order");
+            let kind = self
+                .inner
+                .append(*slot, header.index, header.path, header.first, None)
+                .expect("in order");
             let empty = Header { kind, ..*header };
             self.inner
                 .sync(*slot, &empty, self.offset)
@@ -366,14 +363,11 @@ impl Logs {
     }
 }
 
-/// Where the entry of `header` goes on its path.
-const fn place(header: &Header) -> Place {
-    Place {
-        index: header.index,
-        path: header.path,
-        first: header.first,
-        samples: header.samples(),
-    }
+/// Appends the entry of `header` on `slot` to `logs`, and gives its kind.
+fn append(logs: &mut crate::log::Logs, slot: Slot, header: &Header) -> Kind {
+    let samples = header.samples();
+    logs.append(slot, header.index, header.path, header.first, samples)
+        .expect("entries in order")
 }
 
 /// The header table of one record, as a read or an open finds it.
