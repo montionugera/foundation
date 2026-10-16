@@ -5,7 +5,9 @@
 mod sim;
 
 use std::collections::BTreeMap;
+use std::fs::Permissions;
 use std::net::SocketAddr;
+use std::os::unix::fs::PermissionsExt;
 
 use types::quality::Quality;
 use types::time::{Span, Stamp};
@@ -617,6 +619,8 @@ fn a_token_file_shows_its_fix_until_it_holds_the_token() {
         let dir = path.parent().expect("a directory");
         std::fs::create_dir_all(dir).expect("makes the directory");
         std::fs::write(&path, b"t0ken\n").expect("writes the token");
+        std::fs::set_permissions(&path, Permissions::from_mode(0o600))
+            .expect("makes the token private");
         let output = plant
             .rig
             .run(&["plan", "plant.hcl", "--out", "plant.plan"], b"");
@@ -633,6 +637,8 @@ fn a_token_file_shows_its_fix_until_it_holds_the_token() {
             }
         );
         std::fs::write(&path, b"t0ken\n").expect("writes the token");
+        std::fs::set_permissions(&path, Permissions::from_mode(0o600))
+            .expect("makes the token private");
         first_stored(&plant, &VARIABLES);
     }
 }
