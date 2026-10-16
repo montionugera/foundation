@@ -4,7 +4,7 @@
 use types::sample::{Type, Value};
 
 use crate::pdu::{Request, Table};
-use crate::poll::{self, Order, Read};
+use crate::read::{self, Order, Read};
 
 /// Where the values of a command channel go in a device: a coil or the holding
 /// registers from an address, and the type of the values. Two writes are equal when
@@ -23,18 +23,18 @@ impl Write {
     ///
     /// # Errors
     ///
-    /// - [`poll::Error::ReadOnly`] for discrete inputs and input registers, which
+    /// - [`read::Error::ReadOnly`] for discrete inputs and input registers, which
     ///   the protocol does not write.
-    /// - [`poll::Error::Type`] and [`poll::Error::Range`], as [`poll::Read::new`]
+    /// - [`read::Error::Type`] and [`read::Error::Range`], as [`read::Read::new`]
     ///   gives them.
     pub fn new(
         table: Table,
         address: u16,
         sample: Type,
         order: Order,
-    ) -> Result<Self, poll::Error> {
+    ) -> Result<Self, read::Error> {
         if table.read_only() {
-            return Err(poll::Error::ReadOnly { table });
+            return Err(read::Error::ReadOnly { table });
         }
         let read = Read::new(table, address, sample)?;
         let request = match (table, read.count()) {

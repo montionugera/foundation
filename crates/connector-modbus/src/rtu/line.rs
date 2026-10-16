@@ -1,6 +1,6 @@
 //! One end of an RTU line: its port, and when the line was last busy.
 
-use env::clock::Clock;
+use env::clock::{Clock, Sleep};
 use env::serial::{Error, Port, Settings};
 use types::time::{Monotonic, Rate, Span};
 
@@ -13,6 +13,8 @@ const FAST: Span = Span::from_nanos(1_750_000);
 pub(crate) struct Line {
     port: Port,
     clock: Clock,
+    /// The sleep of each wait, made once.
+    sleep: Sleep,
     rate: Rate,
     /// The span of quiet that ends a frame.
     quiet: Span,
@@ -31,6 +33,7 @@ impl Line {
         let busy = clock.now();
         Self {
             port,
+            sleep: clock.sleep_until(busy),
             clock,
             rate,
             quiet,
@@ -57,7 +60,7 @@ impl Line {
         deadline: Option<Monotonic>,
     ) -> Result<bool, Error> {
         let mut buffer = [0; 256];
-        let read = within(&self.clock, deadline, |cx| {
+        let read = within(&mut self.sleep, deadline, |cx| {
             self.port.poll_read(cx, &mut buffer)
         });
         let Some(n) = read.await.transpose()? else {
@@ -77,8 +80,9 @@ impl Line {
     ) -> Result<bool, Error> {
         let mut rest = bytes;
         while !rest.is_empty() {
-            let write =
-                within(&self.clock, deadline, |cx| self.port.poll_write(cx, rest));
+            let write = within(&mut self.sleep, deadline, |cx| {
+                self.port.poll_write(cx, rest)
+            });
             let Some(n) = write.await.transpose()? else {
                 return Ok(false);
             };

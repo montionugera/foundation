@@ -64,8 +64,8 @@ pub struct Kind;
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Config {
-    /// The InfluxDB endpoint: a URI that [`connector::http::uri`] takes, with a path
-    /// of `/` or none, and no query.
+    /// The InfluxDB endpoint: a URI that [`connector::http::uri`] takes, with the
+    /// scheme `http`, a path of `/` or none, and no query.
     pub address: Uri,
     /// Where it writes.
     pub target: Target,
@@ -198,10 +198,19 @@ impl kind::Kind for Kind {
     }
 }
 
-/// Reads an address: a URI that [`connector::http::uri`] takes, with a path of `/`
-/// or none, and no query.
+/// Reads an address: a URI that [`connector::http::uri`] takes, with the scheme
+/// `http`, a path of `/` or none, and no query.
 fn address(value: &Value) -> Result<Uri, Diagnostic> {
     let uri = connector::http::uri(value)?;
+    // `https` ships dark until the kind takes a CA (#2702).
+    if uri.scheme() == Some(&http::uri::Scheme::HTTPS) {
+        return Err(Diagnostic::new(
+            BAD_ADDRESS,
+            value.span,
+            "the scheme of the URI is not http".into(),
+            "Write an `http` URI such as \"http://10.0.0.2:8086\"".into(),
+        ));
+    }
     let part = match (uri.path(), uri.query()) {
         (_, Some(_)) => "a query",
         ("/", None) => return Ok(uri),

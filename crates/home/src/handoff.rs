@@ -43,9 +43,8 @@ pub(crate) fn entry(
         slot,
         path: Path::Live,
         first,
-        len: 0,
+        samples: None,
         stored_at,
-        last: None,
         tag: TAG.get(),
         parts: body(pool, handoff)?.into(),
     })
@@ -144,11 +143,11 @@ mod tests {
             )
             .expect("room");
 
-            let place = (entry.index, entry.slot, entry.path, entry.first, entry.len);
-            assert_eq!(place, (key(Slot::new(4)), Slot::new(4), Path::Live, 12, 0));
+            let place = (entry.index, entry.slot, entry.path, entry.first);
+            assert_eq!(place, (key(Slot::new(4)), Slot::new(4), Path::Live, 12));
             assert_eq!(
-                (entry.stored_at, entry.last, entry.tag),
-                (stored_at, None, 1)
+                (entry.samples, entry.stored_at, entry.tag),
+                (None, stored_at, 1)
             );
             let parts: Vec<_> =
                 entry.parts.into_iter().map(|part| part.to_vec()).collect();

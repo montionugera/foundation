@@ -21,7 +21,6 @@ use types::sample::{Scalar, Type, Value};
 use types::time::{Span, Stamp};
 
 use super::Writer;
-use crate::cancel;
 use crate::common::{env, run_on};
 use crate::kind::{Channels, Context, Error, Kind, Table};
 use crate::testing::Rig;
@@ -87,13 +86,6 @@ impl Kind for Polls {
             counts: vec![name("in"), name("lost")],
             ..Channels::default()
         })
-    }
-
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
     }
 
     async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
