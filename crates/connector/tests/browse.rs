@@ -19,8 +19,8 @@ static ALLOCATOR: counting::Bytes = counting::Bytes::new();
 /// The bytes of each name of the chain.
 const NAME: usize = 1 << 10;
 
-/// The folders of the chain, so its last folder is as deep as a pattern opens.
-const FOLDERS: usize = DEPTH;
+/// The folders of the chain, so a walk from the root holds [`DEPTH`] folders open.
+const FOLDERS: usize = DEPTH - 1;
 
 /// A device whose root holds a chain of [`FOLDERS`] folders, each with a name of
 /// [`NAME`] bytes, and whose last folder holds [`LIMIT`] points.

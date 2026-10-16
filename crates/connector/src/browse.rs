@@ -19,7 +19,7 @@ pub const LIMIT: usize = 500;
 /// one.
 pub const VISITS: usize = 10_000;
 
-/// The most names in the path of a folder that a pattern opens.
+/// The most folders that a pattern holds open at one time, its start with them.
 pub const DEPTH: usize = 64;
 
 /// A device open for one browse. A kind implements it on its session, so one walk
@@ -65,8 +65,9 @@ pub trait Device {
 
 /// Runs `query` over `device`. It finds the start from the root, one name at a time.
 /// A pattern walks depth first, in device order. It browses no folder that no match
-/// can be under, and no folder whose tag is the tag of a folder above it, so a loop
-/// in the device's graph ends. It ends at a folder deeper than [`DEPTH`].
+/// can be under, and no folder whose tag and pattern state are those of a folder above
+/// it, so a loop in the device's graph ends. It ends when it holds [`DEPTH`] folders
+/// open and a match can be under one more.
 ///
 /// # Errors
 ///
@@ -270,12 +271,12 @@ impl<D: Device> Walker<'_, D> {
                 .expect("invariant: an entry has a name");
             let state = pattern.step(&frame.state, name);
             if entry.shape == Shape::Folder {
-                let looped = stack
-                    .iter()
-                    .filter_map(|frame| frame.folder.as_ref())
-                    .any(|folder| folder.tag == entry.tag);
+                let looped = stack.iter().any(|frame| {
+                    frame.state == state
+                        && frame.folder.as_ref().is_some_and(|f| f.tag == entry.tag)
+                });
                 if pattern.open(&state) && !looped {
-                    if entry.path.names.len() > DEPTH {
+                    if stack.len() == DEPTH {
                         return Ok((found, End::Budget));
                     }
                     match self.open(Some(entry), state).await? {
@@ -381,11 +382,9 @@ impl Path {
         Self { names }
     }
 
-    /// The name of each entry from the root, in order. A child shares the names of
-    /// its folder's path, so a path copies no text.
-    #[must_use]
-    pub fn names(&self) -> &[Arc<str>] {
-        &self.names
+    /// The name of each entry from the root, in order.
+    pub fn names(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.names.iter().map(AsRef::as_ref)
     }
 }
 
@@ -442,7 +441,7 @@ enum Segment {
 
 /// The positions in a pattern's segments that a prefix of a path reaches, in order,
 /// with no repeat.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct State(Vec<usize>);
 
 impl Pattern {
@@ -821,7 +820,7 @@ pub enum End {
     /// More than [`LIMIT`] points match.
     Limit,
     /// It looked at [`VISITS`] entries before it found its start or saw each entry
-    /// under it, or met a folder deeper than [`DEPTH`] that a match can be
+    /// under it, or held [`DEPTH`] folders open and met one more that a match can be
     /// under, so more may match.
     Budget,
 }

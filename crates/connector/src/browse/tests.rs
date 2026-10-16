@@ -211,7 +211,7 @@ mod text {
     fn reads_the_names_of_a_path() {
         let read = path(r"Line\/3/Temp*/a\\b");
         let names = ["Line/3", "Temp*", r"a\b"];
-        assert_eq!(read.names(), names.map(Arc::<str>::from));
+        assert_eq!(read.names().collect::<Vec<_>>(), names);
         assert_eq!(
             read,
             Path::root().child(names[0]).child(names[1]).child(names[2])
@@ -510,7 +510,7 @@ mod walk {
             prop_assert!(found.values.is_empty());
             for browsed in tree.browsed.iter().skip(1) {
                 let names: Vec<&str> =
-                    browsed.names().iter().map(AsRef::as_ref).collect();
+                    browsed.names().collect();
                 prop_assert!(extends(&segments, &names), "browsed {browsed:?}");
             }
         }
@@ -727,10 +727,18 @@ mod walk {
     }
 
     #[test]
-    fn browses_no_folder_with_the_tag_of_a_folder_above_it() {
+    fn browses_no_folder_with_the_tag_and_state_of_a_folder_above_it() {
         let query = query("", Scope::Match(pattern("**/p")));
         let found = now(walk(&mut Loop, &query)).expect("found");
         assert_eq!(paths(&found), ["a/p", "p"]);
+        assert_eq!(found.end, End::Done);
+    }
+
+    #[test]
+    fn finds_a_path_that_a_pattern_names_through_a_loop() {
+        let query = query("", Scope::Match(pattern("a/a/p")));
+        let found = now(walk(&mut Loop, &query)).expect("found");
+        assert_eq!(paths(&found), ["a/a/p"]);
         assert_eq!(found.end, End::Done);
     }
 
@@ -762,13 +770,22 @@ mod walk {
     }
 
     #[test]
-    fn ends_at_a_folder_deeper_than_the_depth() {
+    fn ends_when_it_holds_the_depth_of_folders_open() {
         let found = now(walk(&mut Chain, &query("", Scope::Match(pattern("**/p")))));
         let found = found.expect("found");
         let deepest = found.entries.last().expect("a point").path.names().len();
-        assert_eq!(found.entries.len(), DEPTH + 1);
-        assert_eq!(deepest, DEPTH + 1);
+        assert_eq!(found.entries.len(), DEPTH);
+        assert_eq!(deepest, DEPTH);
         assert_eq!(found.end, End::Budget);
+    }
+
+    #[test]
+    fn walks_a_pattern_from_a_start_deeper_than_the_depth() {
+        let start = vec!["f"; DEPTH + 1].join("/");
+        let query = query(&start, Scope::Match(pattern("*/p")));
+        let found = now(walk(&mut Chain, &query)).expect("found");
+        assert_eq!(paths(&found), [format!("{start}/f/p")]);
+        assert_eq!(found.end, End::Done);
     }
 
     #[test]
