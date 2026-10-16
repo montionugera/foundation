@@ -1302,6 +1302,42 @@ fn counts_no_line_toward_a_full_batch_for_a_sample_time_of_only_nan() {
     );
 }
 
+/// A batch takes no frame once its lines hold 4 MiB, so it stays under the body limit
+/// of InfluxDB 3.
+#[test]
+fn reads_no_frame_into_a_batch_of_4_mib_or_more() {
+    let lines = run(|node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let failed = (StatusCode::INTERNAL_SERVER_ERROR, "");
+        plant.answers.borrow_mut().push_back(failed);
+        let run = plant.start(with(plant.config(), "select", &string("edge.*")));
+        let mut writer = plant.writer(&["edge.time", "edge.text"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let text = "x".repeat(60_000);
+        let column = variable(Type::String, &[text.as_bytes()]);
+        let first = writer.now().nanos();
+        for n in 0..=100 {
+            let outcomes =
+                write_raw(&mut writer, first + n * 10_000, 1, &[(23, &column)]);
+            let applied = (outcomes.iter())
+                .all(|outcome| matches!(outcome, hub::home::Outcome::Applied { .. }));
+            assert!(applied, "the frame applies: {outcomes:?}");
+            if n == 0 {
+                plant.clock.sleep(Span::from_nanos(100_000_000)).await;
+                let sent = plant.got.borrow().len();
+                assert_eq!(sent, 1, "the first request is in flight");
+            }
+        }
+        plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
+        plant.stop(run).await.expect("ok after a cancel");
+        let got = plant.got();
+        (got.iter())
+            .map(|(_, body)| body.lines().count())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(lines, [1, 1, 70, 30]);
+}
+
 /// What one frame gave: the end of the run once it returned, each request, the stamp
 /// of the frame's first sample, and the fields of each point of the store.
 struct Frame {

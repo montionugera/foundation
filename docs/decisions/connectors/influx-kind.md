@@ -59,48 +59,50 @@
   approval of the bound of 4,096 bytes on 2026-10-13T21:36:41Z
   (https://github.com/synnaxlabs/foundation/pull/2610#issuecomment-6155716038). The kind
   also reads `measurement`, a name that `line::Measurement::new` takes other than
-  `foundation_gaps` (`influx.bad-measurement`). `parse` builds the
-  `line::Measurement` once, and the run takes it. `Config` is opaque, as in `opcua`
-  and `modbus`: only `parse` makes one, so each `Config` holds checked names
-  (`laptop.architect-2`, 2026-10-16T17:27:53Z:
+  `foundation_gaps` (`influx.bad-measurement`). `parse` builds the `line::Measurement`
+  once, and the run takes it. `Config` is opaque, as in `opcua` and `modbus`: only
+  `parse` makes one, so each `Config` holds checked names (`laptop.architect-2`,
+  2026-10-16T17:27:53Z:
   https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6221027616). Its
   condition: whichever of this change and #2888 merges second makes `Config::ca`
-  `pub(crate)` too. `check` gives the reader of its settings
-  and no written channel. `run` writes each frame of the reader to the write path of its
-  target: one line for each sample time, with a field for each channel of the frame,
-  keyed by the channel name. A NaN or infinite value is left out, and so is a line with
-  no other value. A `bool` channel is a boolean field. An `i8` to `i64`, `u8` to `u32`,
-  `timestamp` (ns since the Unix epoch), or `duration` (ns) channel is an `i` integer.
-  So is a quality channel (`DataType::Quality`), a choice that the person has (LINE
-  TEXT). An `f32` or `f64` channel is a float, where an `f32` is the `f64` of the same
-  value (0.1 as 1.0000000149011612e-1), so a reader that narrows it gets back the same
-  bits. A `u64` channel is a `u` integer to a `bucket`, and to a `database` it ends the
-  run with `Error::Config` and `influx.unsigned` (LINE TEXT). A `string` channel is a
-  string field, with `\` before each `"` and `\`, and each other char kept, a newline
-  too. The docs of InfluxDB 1, 2, and 3 say that a field value cannot hold a newline,
-  but the parsers keep it in a quoted string field, and read only these two escapes in
-  it: `scanLine` of `models/points.go` in InfluxDB 1.8.10 (line 1144) and 2.7.12 (line
-  1170) ends a line only at a newline outside quotes, and so does `split_lines` of
+  `pub(crate)` too. `check` gives the reader of its settings and no written channel.
+  `run` writes each frame of the reader to the write path of its target: one line for
+  each sample time, with a field for each channel of the frame, keyed by the channel
+  name. A NaN or infinite value is left out, and so is a line with no other value. A
+  `bool` channel is a boolean field. An `i8` to `i64`, `u8` to `u32`, `timestamp` (ns
+  since the Unix epoch), or `duration` (ns) channel is an `i` integer. So is a quality
+  channel (`DataType::Quality`), a choice that the person has (LINE TEXT). An `f32` or
+  `f64` channel is a float, where an `f32` is the `f64` of the same value (0.1 as
+  1.0000000149011612e-1), so a reader that narrows it gets back the same bits. A `u64`
+  channel is a `u` integer to a `bucket`, and to a `database` it ends the run with
+  `Error::Config` and `influx.unsigned` (LINE TEXT). A `string` channel is a string
+  field, with `\` before each `"` and `\`, and each other char kept, a newline too. The
+  docs of InfluxDB 1, 2, and 3 say that a field value cannot hold a newline, but the
+  parsers keep it in a quoted string field, and read only these two escapes in it:
+  `scanLine` of `models/points.go` in InfluxDB 1.8.10 (line 1144) and 2.7.12 (line 1170)
+  ends a line only at a newline outside quotes, and so does `split_lines` of
   `influxdb-line-protocol` 2.0.0 (`src/lib.rs`, line 614), whose `field_string_value`
-  (line 800) reads the string. The send test of a string with a newline pins this, so
-  a parser change fails a test. `laptop.monitor` let the key choices of this paragraph
-  go on 2026-10-16, on the condition of this text and of the count `oversized`. A
-  `uuid` channel is a string field of 36 lowercase chars, its 16 bytes in RFC 9562
-  order, so byte 0 gives the first two hex chars (S5). A `bytes` channel is a string
-  field of its base64, the standard alphabet with padding. A string
-  field whose text between its quotes, after the escapes, is over 65,536 bytes (a
-  `bytes` sample over 49,152) is left out, and the run goes on. InfluxDB 3 refuses a
-  string field over 65,536 bytes, and the docs of InfluxDB 1 and 2 give 64 KB. The
-  count is of the text as written, so each version takes each line that the run sends.
-  The count `oversized` gives each sample left out, after the 204 of its batch, or at
-  once when its batch holds no line and so sends no request. Lost: cut the string (a
-  changed value with no sign), or end the run (one long sample stops a stream). Decided by `laptop.architect-2` on
+  (line 800) reads the string. The send test of a string with a newline pins the parser
+  of InfluxDB 3 (`influxdb-line-protocol` 2.0.0). For InfluxDB 1 and 2 this rests on the
+  source cited; no test runs them. `laptop.monitor` let the key choices of this
+  paragraph go on 2026-10-16T17:42:40Z, on the condition of this text and of the count
+  `oversized`
+  (https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223099472). A `uuid`
+  channel is a string field of 36 lowercase chars, its 16 bytes in RFC 9562 order, so
+  byte 0 gives the first two hex chars (S5). A `bytes` channel is a string field of its
+  base64, the standard alphabet with padding. A string field whose text between its
+  quotes, after the escapes, is over 65,536 bytes (a `bytes` sample over 49,152) is left
+  out, and the run goes on. InfluxDB 3 refuses a string field over 65,536 bytes, and the
+  docs of InfluxDB 1 and 2 give 64 KB. The count is of the text as written, so each
+  version takes each line that the run sends. The count `oversized` gives each sample
+  left out, after the 204 of its batch, or at once when its batch holds no line and so
+  sends no request. Lost: cut the string (a changed value with no sign), or end the run
+  (one long sample stops a stream). Decided by `laptop.architect-2` on
   2026-10-16T17:35:01Z
-  (https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6221149361), on
-  the plan of
-  https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6221118220. The run
-  reads a sample of a raw `string` or `bytes` series with `codec::Variable::sample`
-  (`laptop.architect`, 2026-10-16T17:33:48Z:
+  (https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6221149361), on the
+  plan of https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6221118220.
+  The run reads a sample of a raw `string` or `bytes` series with
+  `codec::Variable::sample` (`laptop.architect`, 2026-10-16T17:33:48Z:
   https://github.com/synnaxlabs/foundation/issues/2901#issuecomment-6221128456). Each
   other type (`array`, `list`, `matrix`) ends the run with `Error::Config` and
   `influx.sample-type`, and a channel name that is not a field key with
@@ -126,11 +128,13 @@
   supersedes ruling 2 of
   https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206327837, a gap that
   waits for a line with a value. One request is in flight at a time. While it is, the
-  run reads the next batch, up to 5,000 lines, and a frame goes in whole. The run keeps
-  the field of each channel that it saw in the frames of one key set. A frame of another
-  key set builds them again, as the `hub` reader builds its lens, so frames that
-  alternate key sets build them at each change. The trigger to keep them for each key
-  set is a workload whose frames alternate key sets, as `laptop.architect-2` decided on
+  run reads the next batch, up to 5,000 lines or 4 MiB of them, and a frame goes in
+  whole. The 4 MiB keeps a batch under the body limit of InfluxDB 3 Core (10 MiB) and of
+  InfluxDB 1 (25 MB), with 6 MiB for the last frame. The run keeps the field of each
+  channel that it saw in the frames of one key set. A frame of another key set builds
+  them again, as the `hub` reader builds its lens, so frames that alternate key sets
+  build them at each change. The trigger to keep them for each key set is a workload
+  whose frames alternate key sets, as `laptop.architect-2` decided on
   2026-10-13T07:36:47Z
   (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6140691273). It acks
   a batch only after a 204. Each other answer, and each failed request, keeps the batch,
@@ -154,19 +158,20 @@
   (https://github.com/synnaxlabs/foundation/issues/2607#issuecomment-6158874569).
   QUARANTINE, which lets the connector go on past refused points, is a later step
   (#2841). A 401 and a 403 keep the backoff, since the run reads the token again before
-  the next try (#2687). A 413 keeps the backoff too. Trigger for a split of the batch: a
-  server whose body limit is below one batch. A 204 clears the error, and adds the
-  fields of the batch to the count `confirmed` with `Count::add`, and the `count` of
-  each gap line of the batch to the count `lost`: the seqs that the gap lines of this
-  connector count, which InfluxDB took with a 204. A batch sent again counts once. A gap
-  that the reader reports again after a restart counts again, so `lost` is an upper
-  bound, as the sum of `count` in `foundation_gaps` is. Each later out kind names the
-  same count `lost`. It counts sample times of the reader's index. The `lost` of `opcua`
-  counts data samples (OPCUA KIND). The ruling did not take a count of all out kinds in
-  `connector`, as the supervisor does not see the frames of a kind's reader. The trigger
-  to make it is a second out kind (6199058253). Both counts hold across the runs of one
-  call (SUPERVISOR). The person gave the choice of the path to the architects on
-  2026-10-15 ("Best devx possible. You choose the path", through `laptop.monitor`:
+  the next try (#2687). A 413 keeps the backoff too. Trigger for a split of a frame
+  across requests: a frame whose lines pass the body limit of its server. A 204 clears
+  the error, and adds the fields of the batch to the count `confirmed` with
+  `Count::add`, and the `count` of each gap line of the batch to the count `lost`: the
+  seqs that the gap lines of this connector count, which InfluxDB took with a 204. A
+  batch sent again counts once. A gap that the reader reports again after a restart
+  counts again, so `lost` is an upper bound, as the sum of `count` in `foundation_gaps`
+  is. Each later out kind names the same count `lost`. It counts sample times of the
+  reader's index. The `lost` of `opcua` counts data samples (OPCUA KIND). The ruling did
+  not take a count of all out kinds in `connector`, as the supervisor does not see the
+  frames of a kind's reader. The trigger to make it is a second out kind (6199058253).
+  Both counts hold across the runs of one call (SUPERVISOR). The person gave the choice
+  of the path to the architects on 2026-10-15 ("Best devx possible. You choose the
+  path", through `laptop.monitor`:
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922).
   `laptop.architect` gave the count of lost seqs, and `laptop.architect-2` ruled its
   shape on 2026-10-15T18:13:22Z

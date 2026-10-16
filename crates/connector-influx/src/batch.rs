@@ -22,6 +22,9 @@ const UNSIGNED: Code = Code::new("influx.unsigned");
 
 /// The most lines that a batch takes before [`Batch::full`].
 const LINES_MAX: usize = 5_000;
+/// The most bytes of lines that a batch takes before [`Batch::full`]. A frame goes in
+/// whole, so this leaves 6 MiB for the last frame under the 10 MiB limit of InfluxDB 3.
+const BYTES_MAX: usize = 1 << 22;
 
 /// The lines of the frames added since the last [`Batch::take`], and the reader's
 /// position to ack after them.
@@ -151,11 +154,11 @@ impl Batch {
         Ok(())
     }
 
-    /// Whether the batch holds at least 5,000 lines, so the caller sends it before it
-    /// adds more.
+    /// Whether the batch holds at least 5,000 lines or 4 MiB of them, so the caller
+    /// sends it before it adds more.
     #[must_use]
     pub const fn full(&self) -> bool {
-        self.body.lines >= LINES_MAX
+        self.body.lines >= LINES_MAX || self.body.bytes.len() >= BYTES_MAX
     }
 
     /// The lines of the frames added, or `None` when no frame was added. Empties the
