@@ -260,10 +260,10 @@ impl Node {
             .fail(self.0.node, path, operation);
     }
 
-    /// Makes every user of the machine able to read the file at `path`, relative to
-    /// the data directory, at once, as a `chmod o+r` from outside the node does. A
-    /// file that an open makes is not exposed, as on `os`. A descriptor keeps what its
-    /// open found, and a crash keeps the setting.
+    /// Makes the mode of the file at `path`, relative to the data directory, give read
+    /// to other users at once, as a `chmod o+r` from outside the node does. A file
+    /// that an open makes is not exposed, as on `os`. A descriptor keeps what its open
+    /// found, and a crash keeps the setting.
     ///
     /// # Panics
     ///

@@ -371,9 +371,9 @@ impl File {
         self.descriptor.len()
     }
 
-    /// Whether every user of the machine can read the file: on Unix, its mode gives
-    /// read to other users. It does not see an ACL entry that grants read. The driver
-    /// reads it at the open, so a later change of the mode does not change it.
+    /// Whether the mode of the file gives read to other users. It does not see an ACL
+    /// entry or the modes of the directories above the file. The driver reads it at
+    /// the open, so a later change of the mode does not change it.
     ///
     /// ```
     /// fn private(file: &env::files::File) -> bool {
@@ -948,7 +948,7 @@ pub trait Descriptor {
     /// The length of the file in bytes. It does not change.
     fn len(&self) -> u64;
 
-    /// Whether every user of the machine could read the file at the open, as
+    /// Whether the mode of the file gave read to other users at the open, as
     /// [`File::exposed`] states it.
     fn exposed(&self) -> bool;
 
