@@ -146,10 +146,12 @@
   (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6140691273). It acks
   a batch only after a 204. Each other answer, and each failed request, keeps the batch,
   shows its text with `Context::error`, and sends the batch again after a
-  `retry::Backoff` of 1 s to 1 min. No answer ends the run, other than a 401 or a 403
-  after which the read of the token fails: an action in InfluxDB fixes a 400, a 404, or
-  a 422, and the next try after it lands the batch. The reader stays open meanwhile, as
-  in an outage of InfluxDB. The text is `InfluxDB answered {status}: {body}`, and for
+  `retry::Backoff` of 1 s to 1 min. No answer or failed request ends the run, other than
+  a 401 or a 403 after which the read of the token fails, and a TLS failure of a run
+  with a `ca` after which the read of the `ca` fails (#2899): an action in InfluxDB
+  fixes a 400, a 404, or a 422, and the next try after it lands the batch. The reader
+  stays open meanwhile, as in an outage of InfluxDB. The text is
+  `InfluxDB answered {status}: {body}`, and for
   these three statuses it adds a fix. A 400 and a 422 (InfluxDB 1 gives 400, and
   InfluxDB 2 gives 422, for a field type conflict and for points past retention): "For a
   field type conflict, write to another `measurement` or delete the old field in
