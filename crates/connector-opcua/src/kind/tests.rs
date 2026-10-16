@@ -778,6 +778,24 @@ fn ends_the_run_when_a_check_finds_no_session() {
     assert_eq!(outcome.frames.len(), 2);
 }
 
+/// A check of the connection passes on each status of the state of the server, as
+/// the answer came over the channel and the session: a run at 0.01 Hz whose server
+/// answers each check with `BadUserAccessDenied` or `BadNodeIdUnknown` checks 4 times
+/// in 41 s and goes on.
+#[test]
+fn keeps_the_run_when_a_check_answers_with_a_bad_state() {
+    for status in [Status::BAD_USER_ACCESS_DENIED, Status::BAD_NODE_ID_UNKNOWN] {
+        let outcome = run_at("0.01Hz", Setup::three(), move |scene| async move {
+            scene.variables.answer_states(Quality(status.0));
+            scene.supervise(ms(41_050)).await
+        });
+        assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+        assert_eq!(errors(&outcome.statuses), [], "{}", status.name());
+        assert_eq!(last(&outcome.statuses, RESTARTS), 0);
+        assert_eq!((outcome.frames.len(), outcome.states), (1, 4));
+    }
+}
+
 /// A run at 10 Hz reads more often than each 10 s, so it sends no check of the
 /// connection.
 #[test]

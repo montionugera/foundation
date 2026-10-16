@@ -94,9 +94,8 @@ impl kind::Kind for Kind {
     /// sample type is not `bool`, `i8` to `u64`, `f32`, or `f64`, and with
     /// `opcua.large-read` when the Read of one node alone is past one message of the
     /// server. [`Error::Device`] when the connect, a read, or one check fails: a check
-    /// fails on a Bad status other than `BadNoData` or on no answer in 5 s. Also
-    /// [`Error::Device`], at once, when the client loses its channel or its session
-    /// between two ticks.
+    /// fails on a bad service result or on no answer in 5 s. Also [`Error::Device`],
+    /// at once, when the client loses its channel or its session between two ticks.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         run(ctx)
     }
