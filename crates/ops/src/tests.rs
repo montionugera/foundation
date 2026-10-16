@@ -79,8 +79,30 @@ fn failed(stderr: &str) -> Exit {
     }
 }
 
+/// The reply of [`crate::mcp::respond`] to `message`, with the paths of a host that
+/// holds no file and a link that reaches no node. It must not wait.
+fn respond(message: &str) -> Option<String> {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let paths = sim.node(sim::node::Config::default()).paths();
+    let request = async |_: &[u8]| -> Result<Vec<u8>, crate::Failure> {
+        panic!("a message sent a request")
+    };
+    let reached = Cell::new(0);
+    let mut link = crate::remote::Link::new(async || {
+        reached.set(reached.get() + 1);
+        Ok(request)
+    });
+    let respond = crate::mcp::respond(message, &paths, &mut link);
+    let Poll::Ready(reply) = pin!(respond).poll(&mut Context::from_waker(Waker::noop()))
+    else {
+        panic!("a message waited");
+    };
+    assert_eq!(reached.get(), 0, "a message reached a node");
+    reply
+}
+
 fn ask(message: &Value) -> Value {
-    let reply = crate::mcp::respond(&message.to_string()).expect("a reply");
+    let reply = respond(&message.to_string()).expect("a reply");
     assert!(!reply.contains('\n'), "one line: {reply}");
     serde_json::from_str(&reply).expect("json")
 }
@@ -119,9 +141,8 @@ fn each_operation_appears_once_in_the_cli_the_tools_and_the_docs() {
     let tools = tools();
     let tools = tools["tools"].as_array().expect("tools is a list");
     let docs = operation::docs();
-    // Six more for `start`, `plan`, `apply`, `status`, `mcp`, and `help`, which are
-    // not operations.
-    assert_eq!(command.get_subcommands().count(), TABLE.len() + 6);
+    // Three more for `start`, `mcp`, and `help`, which are not operations.
+    assert_eq!(command.get_subcommands().count(), TABLE.len() + 3);
     assert_eq!(tools.len(), TABLE.len());
     let inputs = operation::inputs();
     let outputs = operation::outputs();
@@ -167,22 +188,17 @@ fn each_schema_is_a_closed_object() {
     }
 }
 
+/// `remote::tests` holds the case of each operation that runs on a node.
 #[test]
 fn json_output_parses_back_to_the_typed_output() {
-    for spec in TABLE {
-        let exit = cli(&[spec.name, "--json"]);
-        assert_eq!(
-            (exit.status, exit.stderr.as_str()),
-            (0, ""),
-            "{}",
-            spec.name
-        );
+    for name in ["version", "docs"] {
+        let exit = cli(&[name, "--json"]);
+        assert_eq!((exit.status, exit.stderr.as_str()), (0, ""), "{name}");
         let output: Value = serde_json::from_str(&exit.stdout).expect("json");
         let response: Response =
-            serde_json::from_value(json!({ spec.name: output.clone() }))
-                .expect(spec.name);
+            serde_json::from_value(json!({ name: output.clone() })).expect(name);
         assert_eq!(response.json(), output);
-        let call = call(&json!({ "name": spec.name, "arguments": {} }));
+        let call = call(&json!({ "name": name, "arguments": {} }));
         assert_eq!(
             call["result"],
             json!({
@@ -1063,7 +1079,7 @@ mod start {
 mod mcp {
     use serde_json::{Value, json};
 
-    use super::ask;
+    use super::{ask, respond};
 
     fn request(id: Value, method: &str, params: Value) -> Value {
         let mut request = json!({ "jsonrpc": "2.0", "method": method });
@@ -1142,7 +1158,7 @@ mod mcp {
             json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": 1, "message": "x" } }),
         ] {
             assert_eq!(
-                crate::mcp::respond(&response.to_string()),
+                respond(&response.to_string()),
                 None,
                 "{response}"
             );
@@ -1154,7 +1170,7 @@ mod mcp {
         for id in ["18446744073709551616", "-0", "1.0", "1.5", "null"] {
             let message = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"ping"}}"#);
             let reply: Value =
-                serde_json::from_str(&crate::mcp::respond(&message).expect("a reply"))
+                serde_json::from_str(&respond(&message).expect("a reply"))
                     .expect("json");
             assert_eq!(
                 reply,
@@ -1170,9 +1186,9 @@ mod mcp {
     #[test]
     fn a_notification_gets_no_reply() {
         let note = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
-        assert_eq!(crate::mcp::respond(&note.to_string()), None);
+        assert_eq!(respond(&note.to_string()), None);
         let unknown = json!({ "jsonrpc": "2.0", "method": "nope", "params": 5 });
-        assert_eq!(crate::mcp::respond(&unknown.to_string()), None);
+        assert_eq!(respond(&unknown.to_string()), None);
     }
 
     #[test]
@@ -1186,7 +1202,7 @@ mod mcp {
     #[test]
     fn bad_json_is_a_parse_error() {
         let reply: Value =
-            serde_json::from_str(&crate::mcp::respond("{").expect("a reply"))
+            serde_json::from_str(&respond("{").expect("a reply"))
                 .expect("json");
         assert_eq!(reply, failure(Value::Null, -32700, "Parse error"));
     }

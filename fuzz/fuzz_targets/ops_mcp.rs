@@ -8,6 +8,7 @@ use std::path::Path;
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
+use document::diagnostic::Code;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|input: &[u8]| {
@@ -15,8 +16,13 @@ fuzz_target!(|input: &[u8]| {
     let mut errors = Vec::new();
     let mut sim = sim::Sim::new(sim::Config::default());
     let paths = sim.node(sim::node::Config::default()).paths();
+    // Each request fails at once, as when no node runs.
     let request = async |_: &[u8]| -> Result<Vec<u8>, ops::Failure> {
-        panic!("`mcp` sent a request")
+        Err(ops::Failure {
+            code: Code::new("node.not-running"),
+            message: "no node runs in foundation-data".to_owned(),
+            fix: "Start one".to_owned(),
+        })
     };
     let reach = async |_: &Path| Ok(request);
     let cli = ops::cli(
@@ -27,7 +33,7 @@ fuzz_target!(|input: &[u8]| {
         &paths,
         reach,
     );
-    // `mcp` reaches no node, so one poll ends it.
+    // No request waits, so one poll ends it.
     let Poll::Ready(status) = pin!(cli).poll(&mut Context::from_waker(Waker::noop()))
     else {
         panic!("`mcp` waited");

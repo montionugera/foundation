@@ -1,10 +1,12 @@
 use std::io::{self, BufRead, Read, Write};
 
+use env::paths::Paths;
 use serde_json::{Map, Value, json};
 
-use crate::Stop;
 use crate::error::Error;
 use crate::operation::{self, TABLE};
+use crate::remote::Link;
+use crate::{Failure, Stop};
 
 /// The one protocol version this server speaks. A client that asks for another gets
 /// this one, and may then disconnect.
@@ -19,11 +21,18 @@ const PARAMS: (i64, &str) = (-32602, "Invalid params");
 pub(crate) const LIMIT: usize = 1 << 20;
 
 /// Answers each line of `input` with at most one line on `output`, until `input` ends
-/// or the reader closes `output`.
-pub(crate) fn serve(
+/// or the reader closes `output`. A tool call reads and writes its files through
+/// `paths`, and sends its request to the node through `link`.
+pub(crate) async fn serve<R, C>(
     mut input: impl BufRead,
     output: &mut impl Write,
-) -> Result<(), Stop> {
+    paths: &Paths,
+    link: &mut Link<R, C>,
+) -> Result<(), Stop>
+where
+    R: AsyncFnMut() -> Result<C, Failure>,
+    C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
+{
     let failed = |e: io::Error| Error::Input {
         message: e.to_string(),
     };
@@ -41,7 +50,7 @@ pub(crate) fn serve(
             Some(reply(&Value::Null, Err(fault(REQUEST))).to_string())
         } else {
             // A line that is not UTF-8 is not JSON either, so "" gets the parse error.
-            respond(std::str::from_utf8(&line).unwrap_or(""))
+            respond(std::str::from_utf8(&line).unwrap_or(""), paths, link).await
         };
         if let Some(reply) = reply {
             crate::write(output, &format!("{reply}\n"))?;
@@ -53,19 +62,36 @@ pub(crate) fn serve(
 /// as one line of JSON, or `None` for a notification or a response.
 ///
 /// A request id must be a string or a 64-bit integer, so the reply carries it
-/// unchanged. A failed operation is a JSON-RPC error whose `data` is
+/// unchanged. An unknown tool and a bad argument give a JSON-RPC error whose `data` is
 /// `{"errors": [...]}`, each item a problem with `code`, `message`, `fix`, `place` when
-/// the problem is in a file, and `notes`.
-pub(crate) fn respond(message: &str) -> Option<String> {
+/// the problem is in a file, and `notes`. A failed operation gives a result with
+/// `isError` true and that JSON as its one text.
+pub(crate) async fn respond<R, C>(
+    message: &str,
+    paths: &Paths,
+    link: &mut Link<R, C>,
+) -> Option<String>
+where
+    R: AsyncFnMut() -> Result<C, Failure>,
+    C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
+{
     let reply = match serde_json::from_str::<Value>(message) {
-        Ok(Value::Object(message)) => answer(message)?,
+        Ok(Value::Object(message)) => answer(message, paths, link).await?,
         Ok(_) => reply(&Value::Null, Err(fault(REQUEST))),
         Err(_) => reply(&Value::Null, Err(fault(PARSE))),
     };
     Some(reply.to_string())
 }
 
-fn answer(mut message: Map<String, Value>) -> Option<Value> {
+async fn answer<R, C>(
+    mut message: Map<String, Value>,
+    paths: &Paths,
+    link: &mut Link<R, C>,
+) -> Option<Value>
+where
+    R: AsyncFnMut() -> Result<C, Failure>,
+    C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
+{
     if !message.contains_key("method")
         && (message.contains_key("result") || message.contains_key("error"))
     {
@@ -86,19 +112,41 @@ fn answer(mut message: Map<String, Value>) -> Option<Value> {
     };
     // Checked after the request itself, so an invalid notification gets a reply.
     let id = id?;
-    let handle: fn(Map<String, Value>) -> Result<Value, Value> = match method.as_str() {
-        "initialize" => |_| Ok(initialize()),
-        "ping" => |_| Ok(json!({})),
-        "tools/list" => |_| Ok(tools()),
-        "tools/call" => call,
-        _ => return Some(reply(&id, Err(fault(METHOD)))),
+    let Some(method) = Method::of(&method) else {
+        return Some(reply(&id, Err(fault(METHOD))));
     };
-    let result = match message.remove("params") {
-        None => handle(Map::new()),
-        Some(Value::Object(params)) => handle(params),
-        Some(_) => Err(fault(PARAMS)),
+    let params = match message.remove("params") {
+        None => Map::new(),
+        Some(Value::Object(params)) => params,
+        Some(_) => return Some(reply(&id, Err(fault(PARAMS)))),
+    };
+    let result = match method {
+        Method::Initialize => Ok(initialize()),
+        Method::Ping => Ok(json!({})),
+        Method::List => Ok(tools()),
+        Method::Call => call(params, paths, link).await,
     };
     Some(reply(&id, result))
+}
+
+/// The methods that the server answers.
+enum Method {
+    Initialize,
+    Ping,
+    List,
+    Call,
+}
+
+impl Method {
+    fn of(name: &str) -> Option<Self> {
+        match name {
+            "initialize" => Some(Self::Initialize),
+            "ping" => Some(Self::Ping),
+            "tools/list" => Some(Self::List),
+            "tools/call" => Some(Self::Call),
+            _ => None,
+        }
+    }
 }
 
 fn initialize() -> Value {
@@ -130,7 +178,15 @@ fn tools() -> Value {
     json!({ "tools": tools })
 }
 
-fn call(mut params: Map<String, Value>) -> Result<Value, Value> {
+async fn call<R, C>(
+    mut params: Map<String, Value>,
+    paths: &Paths,
+    link: &mut Link<R, C>,
+) -> Result<Value, Value>
+where
+    R: AsyncFnMut() -> Result<C, Failure>,
+    C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
+{
     let Some(Value::String(name)) = params.remove("name") else {
         return Err(fault(PARAMS));
     };
@@ -140,13 +196,19 @@ fn call(mut params: Map<String, Value>) -> Result<Value, Value> {
         Some(_) => return Err(fault(PARAMS)),
     };
     match operation::read(&name, arguments) {
-        Ok(request) => {
-            let content = request.run().json();
-            Ok(json!({
-                "content": [{ "type": "text", "text": content.to_string() }],
-                "structuredContent": content,
-            }))
-        }
+        Ok(request) => Ok(match request.run(paths, link).await {
+            Ok(response) => {
+                let content = response.json();
+                json!({
+                    "content": [{ "type": "text", "text": content.to_string() }],
+                    "structuredContent": content,
+                })
+            }
+            Err(error) => json!({
+                "content": [{ "type": "text", "text": error.json().to_string() }],
+                "isError": true,
+            }),
+        }),
         Err(error) => Err(json!({
             "code": PARAMS.0,
             "message": error.to_string(),

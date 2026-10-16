@@ -15,25 +15,59 @@ use crate::{serve, status};
 #[cfg(test)]
 mod tests;
 
-/// Plans on the node that `reach` reaches the change from the config files at `files`,
-/// read through `paths`, and writes the plan file to `out` when it is given. `reach`
-/// gives what sends the request.
+/// The link to one node: what reaches it, and the session that the last reach gave.
+pub(crate) struct Link<R, C> {
+    reach: R,
+    session: Option<C>,
+}
+
+impl<R, C> Link<R, C>
+where
+    R: AsyncFnMut() -> Result<C, Failure>,
+    C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
+{
+    /// A link that calls `reach` at its first send, and gives what it gives each request.
+    pub(crate) fn new(reach: R) -> Self {
+        Self {
+            reach,
+            session: None,
+        }
+    }
+
+    /// The reply of the node to `body`. It calls `reach` when it has no session, and
+    /// keeps the session until a send through it fails.
+    async fn send(&mut self, body: &[u8]) -> Result<Vec<u8>, Failure> {
+        let send = match &self.session {
+            Some(send) => send,
+            None => self.session.insert((self.reach)().await?),
+        };
+        let reply = send(body).await;
+        if reply.is_err() {
+            self.session = None;
+        }
+        reply
+    }
+}
+
+/// Plans on the node of `link` the change from the config files at `files`, read
+/// through `paths`, and writes the plan file to `out` when it is given.
 ///
 /// # Errors
 ///
 /// - [`Error::Config`] with `ops.path-not-utf8` for each path that is not UTF-8.
 /// - [`Error::Read`] for the first file that does not read as UTF-8 text.
 /// - [`Error::LargeRequest`] when the files do not fit one request.
-/// - [`Error::Node`] with the failure of `reach` or of the request.
+/// - [`Error::Node`] with the failure of the reach or of the request.
 /// - Each error of [`serve::plan_reply`].
 /// - [`Error::Write`] when the write of `out` fails.
-pub(crate) async fn plan<C>(
+pub(crate) async fn plan<R, C>(
     files: &[PathBuf],
     out: Option<&Path>,
     paths: &Paths,
-    reach: impl AsyncFnOnce() -> Result<C, Failure>,
+    link: &mut Link<R, C>,
 ) -> Result<Output, Error>
 where
+    R: AsyncFnMut() -> Result<C, Failure>,
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
 {
     let not_utf8: Vec<_> = files
@@ -61,7 +95,7 @@ where
             text,
         });
     }
-    let reply = request(&serve::plan_request(&read)?, reach).await?;
+    let reply = request(&serve::plan_request(&read)?, link).await?;
     let (output, plan) = serve::plan_reply(&reply)?;
     if let Some(out) = out {
         paths.write(out, plan).map_err(|error| Error::Write {
@@ -72,22 +106,22 @@ where
     Ok(output)
 }
 
-/// Applies on the node that `reach` reaches the plan file at `plan`, read through
-/// `paths`. `reach` gives what sends the request.
+/// Applies on the node of `link` the plan file at `plan`, read through `paths`.
 ///
 /// # Errors
 ///
 /// - [`Error::Config`] with `ops.path-not-utf8` when `plan` is not UTF-8.
 /// - [`Error::Read`] when the plan file does not read.
 /// - [`Error::LargeRequest`] when the plan file does not fit one request.
-/// - [`Error::Node`] with the failure of `reach` or of the request.
+/// - [`Error::Node`] with the failure of the reach or of the request.
 /// - Each error of [`serve::reply`].
-pub(crate) async fn apply<C>(
+pub(crate) async fn apply<R, C>(
     plan: &Path,
     paths: &Paths,
-    reach: impl AsyncFnOnce() -> Result<C, Failure>,
+    link: &mut Link<R, C>,
 ) -> Result<Applied, Error>
 where
+    R: AsyncFnMut() -> Result<C, Failure>,
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
 {
     let Some(name) = plan.to_str() else {
@@ -95,7 +129,7 @@ where
         return Err(Error::config(not_utf8, &error::Sources::default()));
     };
     let bytes = file(paths, plan)?;
-    let reply = request(&serve::apply_request(&bytes)?, reach).await?;
+    let reply = request(&serve::apply_request(&bytes)?, link).await?;
     let effect = serve::reply(&reply, "apply")?;
     Ok(Applied {
         file: name.to_owned(),
@@ -103,20 +137,18 @@ where
     })
 }
 
-/// The status of each connector on the node that `reach` reaches. `reach` gives what
-/// sends the request.
+/// The status of each connector on the node of `link`.
 ///
 /// # Errors
 ///
-/// - [`Error::Node`] with the failure of `reach` or of the request.
+/// - [`Error::Node`] with the failure of the reach or of the request.
 /// - Each error of [`serve::reply`].
-pub(crate) async fn status<C>(
-    reach: impl AsyncFnOnce() -> Result<C, Failure>,
-) -> Result<status::Output, Error>
+pub(crate) async fn status<R, C>(link: &mut Link<R, C>) -> Result<status::Output, Error>
 where
+    R: AsyncFnMut() -> Result<C, Failure>,
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
 {
-    let reply = request(serve::STATUS_REQUEST, reach).await?;
+    let reply = request(serve::STATUS_REQUEST, link).await?;
     serve::reply(&reply, "status")
 }
 
@@ -141,14 +173,11 @@ fn file(paths: &Paths, path: &Path) -> Result<Vec<u8>, Error> {
     }
 }
 
-/// The reply of the node that `reach` reaches to `body`.
-async fn request<C>(
-    body: &[u8],
-    reach: impl AsyncFnOnce() -> Result<C, Failure>,
-) -> Result<Vec<u8>, Error>
+/// The reply of the node of `link` to `body`.
+async fn request<R, C>(body: &[u8], link: &mut Link<R, C>) -> Result<Vec<u8>, Error>
 where
+    R: AsyncFnMut() -> Result<C, Failure>,
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
 {
-    let send = reach().await.map_err(Error::Node)?;
-    send(body).await.map_err(Error::Node)
+    link.send(body).await.map_err(Error::Node)
 }

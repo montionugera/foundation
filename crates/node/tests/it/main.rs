@@ -421,6 +421,62 @@ fn mcp_answers_a_line_that_is_not_utf8_and_goes_on() {
     );
 }
 
+/// The line of the reply of `foundation mcp` to a `status` call with `id`, which
+/// gives `output`, else fails with `error`.
+fn status_reply(id: u64, result: Result<serde_json::Value, String>) -> String {
+    let result = match result {
+        Ok(output) => serde_json::json!({
+            "content": [{ "type": "text", "text": output.to_string() }],
+            "structuredContent": output,
+        }),
+        Err(message) => {
+            let fix = "Run `foundation start --data=plant`, with `--name <name>` on its \
+                       first start, or give `--data` the data directory of a node that runs";
+            let errors = serde_json::json!({ "errors": [{ "code": "node.not-running",
+                "message": message, "fix": fix, "notes": [] }] });
+            serde_json::json!({
+                "content": [{ "type": "text", "text": errors.to_string() }],
+                "isError": true,
+            })
+        }
+    };
+    let reply = serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result });
+    format!("{reply}\n")
+}
+
+/// One `foundation mcp` runs `status` on the node of its `--data`, and reaches it
+/// again after the node stops and starts.
+#[test]
+fn mcp_shows_status_of_the_node_of_data_across_a_restart() {
+    let mut rig = Rig::new();
+    rig.start_with(&["--name", "edge", "--data", "plant"]);
+    let mut mcp = rig.talk(&["mcp", "--data", "plant"]);
+    let status = |id| {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\
+             \"params\":{{\"name\":\"status\"}}}}\n"
+        )
+    };
+    let empty = serde_json::json!({ "connectors": [] });
+    let mut replies = status_reply(1, Ok(empty.clone()));
+    mcp.ask(&status(1), &replies);
+    rig.stop();
+    replies.push_str(&status_reply(2, Err("no node runs in plant".to_owned())));
+    mcp.ask(&status(2), &replies);
+    rig.start_with(&["--data", "plant"]);
+    replies.push_str(&status_reply(3, Ok(empty)));
+    mcp.ask(&status(3), &replies);
+    let output = mcp.close();
+    assert_eq!(
+        (
+            output.status.code(),
+            text(&output.stdout),
+            text(&output.stderr)
+        ),
+        (Some(0), replies.as_str(), "")
+    );
+}
+
 #[test]
 fn help_lists_mcp() {
     let output = Rig::new().run(&["--help"], b"");

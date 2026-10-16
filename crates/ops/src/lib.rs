@@ -32,6 +32,7 @@ pub use error::Failure;
 pub use front_end::{FrontEnd, FrontEnds};
 pub use node::{Config, Node};
 use operation::Parsed;
+use remote::Link;
 pub use serve::serve;
 pub use start::{Log, Start};
 
@@ -59,8 +60,11 @@ pub enum Run {
 /// `plan`, `apply`, and `status` run on the node of `--data`, else of
 /// `foundation-data`. Each reads the files it names through `paths`, calls `reach` with
 /// that data directory once, and calls what it gives with the body of one request. A
-/// [`Failure`] of either is the error of the command, with status 1. `start` and the
-/// other operations call neither.
+/// [`Failure`] of either is the error of the command, with status 1. `foundation mcp`
+/// runs each tool call of `plan`, `apply`, and `status` on the node of its own
+/// `--data`. It calls `reach` at the first such call, keeps what it gives, and calls
+/// `reach` again at the next call after what it gave fails with a [`Failure`]. `start`
+/// and the other operations call neither.
 ///
 /// Blocks its thread at each read or write of a path, each read of `input`, and each
 /// write of `output` or `errors`, and makes none while a request to the node waits.
@@ -70,7 +74,7 @@ pub async fn cli<C>(
     mut output: impl Write,
     errors: impl Write,
     paths: &Paths,
-    reach: impl AsyncFnOnce(&Path) -> Result<C, Failure>,
+    mut reach: impl AsyncFnMut(&Path) -> Result<C, Failure>,
 ) -> Run
 where
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
@@ -80,44 +84,24 @@ where
     let json = json(&args);
     let done = match operation::parse(&args, json) {
         Ok(Parsed::Start(start)) => return Run::Start(start),
-        Ok(Parsed::Run(request)) => {
-            let response = request.run();
-            write(
-                &mut output,
-                &render(json, &response.json(), || response.text()),
-            )
+        Ok(Parsed::Run { request, data }) => {
+            let mut link = Link::new(async || reach(&data).await);
+            match request.run(paths, &mut link).await {
+                Ok(response) => write(
+                    &mut output,
+                    &render(json, &response.json(), || response.text()),
+                ),
+                Err(error) => Err(Stop::Failed(error)),
+            }
         }
         Ok(Parsed::Help(text)) => write(
             &mut output,
             &render(json, &json!({ "help": text }), || text.clone()),
         ),
-        Ok(Parsed::Plan { files, out, data }) => {
-            match remote::plan(&files, out.as_deref(), paths, async || {
-                reach(&data).await
-            })
-            .await
-            {
-                Ok(planned) => {
-                    write(&mut output, &render(json, &planned, || planned.text()))
-                }
-                Err(error) => Err(Stop::Failed(error)),
-            }
+        Ok(Parsed::Mcp { data }) => {
+            let mut link = Link::new(async || reach(&data).await);
+            mcp::serve(input, &mut output, paths, &mut link).await
         }
-        Ok(Parsed::Apply { plan, data }) => {
-            match remote::apply(&plan, paths, async || reach(&data).await).await {
-                Ok(applied) => {
-                    write(&mut output, &render(json, &applied, || applied.text()))
-                }
-                Err(error) => Err(Stop::Failed(error)),
-            }
-        }
-        Ok(Parsed::Status { data }) => {
-            match remote::status(async || reach(&data).await).await {
-                Ok(shown) => write(&mut output, &render(json, &shown, || shown.text())),
-                Err(error) => Err(Stop::Failed(error)),
-            }
-        }
-        Ok(Parsed::Mcp) => mcp::serve(input, &mut output),
         Err(error) => Err(Stop::Failed(error)),
     };
     match done {

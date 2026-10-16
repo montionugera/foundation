@@ -72,8 +72,8 @@ fn run(args: &[OsString], vars: BTreeMap<OsString, OsString>) -> Result<u8, Fail
     }
 }
 
-/// Runs the command line `args` on a shard of its own. The shard and each I/O thread
-/// of a reach end before this returns, so a node that `foundation start` runs gets
+/// Runs the command line `args` on a shard of its own. The shard and the I/O thread
+/// of its reaches end before this returns, so a node that `foundation start` runs gets
 /// every shard, and its first thread takes the signals.
 ///
 /// # Panics
@@ -91,13 +91,16 @@ fn command_line(shards: &Shards, args: Vec<OsString>) -> Result<Run, Failure> {
         core: None,
     };
     let shard = shards.start(config, move |tasks| async move {
+        let mut files = None;
         let run = ops::cli(
             args,
             io::stdin().lock(),
             io::stdout().lock(),
             io::stderr().lock(),
             &os::paths(),
-            async |dir: &Path| reach(dir, &tasks, &started).await.map(send),
+            async |dir: &Path| {
+                reach(dir, &mut files, &tasks, &started).await.map(send)
+            },
         )
         .await;
         ran.send(run).expect("invariant: `main` keeps the receiver");
@@ -115,21 +118,30 @@ fn command_line(shards: &Shards, args: Vec<OsString>) -> Result<Run, Failure> {
         .expect("invariant: the shard sends its run before it ends"))
 }
 
-/// The client of the node that runs on the data directory `dir`. It sends the handle
-/// of the I/O thread that reads `dir` to `started`, for the main thread to join.
+/// The client of the node that runs on the data directory `dir`. The first reach that
+/// opens `dir` keeps its files in `files`, and sends the handle of the I/O thread
+/// that reads it to `started`, for the main thread to join. Each later reach uses
+/// them, so a command line reaches one data directory.
 async fn reach(
     dir: &Path,
+    files: &mut Option<env::files::Files>,
     tasks: &Tasks,
     started: &mpsc::Sender<env::thread::Handle>,
 ) -> Result<program::Session, Failure> {
-    let threads = os::threads().map_err(failed)?;
-    let (disk, handle) =
-        os::stored(dir, &threads, "files-reach").map_err(|error| stored(dir, error))?;
-    started
-        .send(handle)
-        .expect("invariant: `main` keeps the receiver");
+    let files = match files {
+        Some(files) => files,
+        None => {
+            let threads = os::threads().map_err(failed)?;
+            let (disk, handle) = os::stored(dir, &threads, "files-reach")
+                .map_err(|error| stored(dir, error))?;
+            started
+                .send(handle)
+                .expect("invariant: `main` keeps the receiver");
+            files.insert(env::files::Files::new(disk))
+        }
+    };
     let reached = node::client::reach(node::client::Config {
-        files: env::files::Files::new(disk),
+        files: files.clone(),
         net: net(),
         clock: os::clock(),
         entropy: os::entropy(),

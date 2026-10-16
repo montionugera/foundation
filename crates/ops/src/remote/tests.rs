@@ -3,14 +3,14 @@ use std::path::{Path, PathBuf};
 
 use document::diagnostic::Code;
 use env::paths::{self, Found, Paths};
-use serde_json::json;
+use serde_json::{Value, json};
 
-use super::{apply, most, plan, status};
+use super::{Link, apply, most, plan, status};
 use crate::apply::Applied;
 use crate::common::{self, create_node, name, placed_site, solo};
 use crate::error::{Error, Problem, Unread};
 use crate::front_end::File;
-use crate::operation::DATA;
+use crate::operation::{DATA, Response};
 use crate::plan::Output;
 use crate::{Failure, Node, Run, serve};
 
@@ -97,7 +97,7 @@ impl Remote {
             self.reached()?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
-        plan(files, out, paths, reach).await
+        plan(files, out, paths, &mut Link::new(reach)).await
     }
 
     async fn apply(&self, paths: &Paths, file: &Path) -> Result<Applied, Error> {
@@ -105,7 +105,7 @@ impl Remote {
             self.reached()?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
-        apply(file, paths, reach).await
+        apply(file, paths, &mut Link::new(reach)).await
     }
 
     async fn status(&self) -> Result<crate::status::Output, Error> {
@@ -113,7 +113,7 @@ impl Remote {
             self.reached()?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
-        status(reach).await
+        status(&mut Link::new(reach)).await
     }
 
     /// The run, output, and errors of `foundation <args>`.
@@ -124,6 +124,28 @@ impl Remote {
             Ok(async |body: &[u8]| self.send(body).await)
         };
         common::cli(paths, args, reach).await
+    }
+
+    /// The run of `foundation mcp <args>` on the lines of `messages`, and the JSON of
+    /// each line of its output.
+    async fn mcp(&self, paths: &Paths, args: &[&str], messages: &[Value]) -> (Run, Vec<Value>) {
+        let reach = async |data: &Path| {
+            self.data.borrow_mut().push(data.to_owned());
+            self.reached()?;
+            Ok(async |body: &[u8]| self.send(body).await)
+        };
+        let input: String = messages.iter().map(|m| format!("{m}\n")).collect();
+        let args = ["foundation", "mcp"].iter().chain(args).map(Into::into);
+        let (mut output, mut errors) = (Vec::new(), Vec::new());
+        let run =
+            crate::cli(args, input.as_bytes(), &mut output, &mut errors, paths, reach).await;
+        assert_eq!(String::from_utf8(errors).expect("UTF-8"), "");
+        let lines = String::from_utf8(output).expect("UTF-8");
+        let replies = lines
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("json"))
+            .collect();
+        (run, replies)
     }
 
     /// The count of calls of `reach`, and of requests.
@@ -665,5 +687,129 @@ fn the_command_line_reaches_the_node_of_data() {
             assert_eq!((status, errors.as_str()), (Run::Exit(0), ""), "{args:?}");
         }
         assert_eq!(*remote.data.borrow(), [other, data]);
+    });
+}
+
+/// A `tools/call` message of `name` with `arguments`.
+fn call(id: u64, name: &str, arguments: Value) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/call",
+        "params": { "name": name, "arguments": arguments },
+    })
+}
+
+/// The result of a tool call that failed with `error`.
+fn failed(error: &Error) -> Value {
+    json!({
+        "content": [{ "type": "text", "text": error.json().to_string() }],
+        "isError": true,
+    })
+}
+
+/// `foundation mcp` reaches the node of its `--data` once, at the first call that
+/// needs it, and each output parses back to the typed output.
+#[test]
+fn mcp_plans_applies_and_shows_status_on_one_reach_of_the_node_of_data() {
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        let remote = Remote::new(create_node(&fixture, mesh.clone()));
+        let messages = [
+            call(1, "version", json!({})),
+            call(2, "plan", json!({ "files": ["site.hcl"], "out": "site.plan" })),
+            call(3, "apply", json!({ "plan": "site.plan" })),
+            call(4, "status", json!({})),
+        ];
+        let (run, replies) = remote.mcp(&paths, &["--data", "other"], &messages).await;
+        assert_eq!(run, Run::Exit(0));
+        let names = ["version", "plan", "apply", "status"];
+        assert_eq!(replies.len(), names.len());
+        for (reply, name) in replies.iter().zip(names) {
+            let content = &reply["result"]["structuredContent"];
+            let response: Response = serde_json::from_value(json!({ name: content }))
+                .unwrap_or_else(|e| panic!("{name}: {e}: {reply}"));
+            assert_eq!(response.json(), *content);
+            assert_eq!(
+                reply["result"]["content"],
+                json!([{ "type": "text", "text": content.to_string() }])
+            );
+        }
+        assert_eq!(replies[1]["result"]["structuredContent"]["added"], 3);
+        assert_eq!(replies[2]["result"]["structuredContent"]["file"], "site.plan");
+        assert_eq!(mesh.pointer().version, 1);
+        assert_eq!(remote.calls(), (1, 3));
+        assert_eq!(*remote.data.borrow(), [PathBuf::from("other")]);
+    });
+}
+
+/// A failed reach or request is the error result of its call, and the next call
+/// reaches the node again.
+#[test]
+fn mcp_reaches_again_after_a_failure() {
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        for (mode, calls) in [(Mode::Unreached, (2, 0)), (Mode::Unsent, (2, 2))] {
+            let remote = Remote::with(create_node(&fixture, mesh.clone()), mode);
+            let messages = [call(1, "status", json!({})), call(2, "status", json!({}))];
+            let (run, replies) = remote.mcp(&paths, &[], &messages).await;
+            assert_eq!(run, Run::Exit(0));
+            let result = failed(&Error::Node(lost()));
+            let results: Vec<_> = replies.iter().map(|r| &r["result"]).collect();
+            assert_eq!(results, [&result, &result]);
+            assert_eq!(remote.calls(), calls);
+            assert_eq!(*remote.data.borrow(), vec![PathBuf::from(DATA); 2]);
+        }
+    });
+}
+
+/// A call that fails before its request is an error result, and reaches no node. A
+/// plan of no file is a bad argument.
+#[test]
+fn mcp_of_a_file_that_does_not_read_reaches_no_node() {
+    solo(|fixture, mesh| async move {
+        let paths = with_site(&fixture.sim);
+        let remote = Remote::new(create_node(&fixture, mesh));
+        let messages = [
+            call(1, "plan", json!({ "files": ["gone.hcl"] })),
+            call(2, "apply", json!({ "plan": "gone.plan" })),
+            call(3, "plan", json!({ "files": [] })),
+        ];
+        let (run, replies) = remote.mcp(&paths, &[], &messages).await;
+        assert_eq!(run, Run::Exit(0));
+        let gone = |path: &str| Error::Read {
+            path: PathBuf::from(path),
+            cause: Unread::NotFound,
+        };
+        assert_eq!(replies[0]["result"], failed(&gone("gone.hcl")));
+        assert_eq!(replies[1]["result"], failed(&gone("gone.plan")));
+        let message = "invalid length 0, expected at least one path";
+        assert_eq!(
+            replies[2]["error"],
+            json!({ "code": -32602, "message": message, "data": { "errors": [{
+                "code": "ops.argument", "message": message,
+                "fix": "Match the arguments to `foundation --help` or \
+                    `foundation <operation> --help`",
+                "notes": [] }] } })
+        );
+        assert_eq!(remote.calls(), (0, 0));
+    });
+}
+
+/// A reply that holds problems is a reply: the next call sends on the same session.
+#[test]
+fn mcp_keeps_the_session_after_a_reply_with_problems() {
+    solo(|fixture, mesh| async move {
+        let paths = fixture.sim.paths();
+        paths.write(Path::new("bad.hcl"), b"{").expect("a write");
+        let remote = Remote::new(create_node(&fixture, mesh));
+        let plan = |id| call(id, "plan", json!({ "files": ["bad.hcl"] }));
+        let (run, replies) = remote.mcp(&paths, &[], &[plan(1), plan(2)]).await;
+        assert_eq!(run, Run::Exit(0));
+        for reply in &replies {
+            assert_eq!(reply["result"]["isError"], true, "{reply}");
+        }
+        assert_eq!(replies[0]["result"], replies[1]["result"]);
+        assert_eq!(remote.calls(), (1, 2));
     });
 }
