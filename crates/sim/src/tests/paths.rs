@@ -176,8 +176,7 @@ fn a_path_through_more_than_40_links_fails_with_a_loop() {
 }
 
 #[test]
-fn two_dots_fail_after_a_file_and_take_off_a_missing_name_in_a_write()
- {
+fn two_dots_fail_after_a_file_and_take_off_a_missing_name_in_a_write() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     let paths = node.paths();
     paths.write(Path::new("/plant.hcl"), b"x").unwrap();
