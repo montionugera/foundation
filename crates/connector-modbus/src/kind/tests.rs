@@ -503,18 +503,16 @@ async fn answer(
             continue;
         };
         clock.sleep(delay).await;
-        let mut pdu = Vec::new();
+        let mut reply = Vec::new();
+        let start = crate::tcp::open(frame.header, &mut reply);
         match code {
-            Some(code) => pdu.extend([frame.pdu[0] | 0x80, code]),
-            None => device.lock().expect("no panic").answer(frame.pdu, &mut pdu),
+            Some(code) => Exception::from(code).write_to(frame.pdu[0], &mut reply),
+            None => device
+                .lock()
+                .expect("no panic")
+                .answer(frame.pdu, &mut reply),
         }
-        let header = frame.header;
-        let mut reply = header.transaction.to_be_bytes().to_vec();
-        let len = u16::try_from(pdu.len() + 1).expect("a short reply");
-        reply.extend([0, 0]);
-        reply.extend(len.to_be_bytes());
-        reply.push(header.unit);
-        reply.extend(pdu);
+        crate::tcp::seal(&mut reply, start);
         received.drain(..frame.len);
         let parts = [std::io::IoSlice::new(&reply)];
         if poll_fn(|cx| stream.poll_write(cx, &parts)).await != Ok(reply.len()) {
