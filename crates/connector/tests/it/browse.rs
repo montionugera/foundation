@@ -100,6 +100,65 @@ impl Device for Session {
     }
 }
 
+/// A kind whose device holds one point, named by a number from the browse's random
+/// source.
+struct Dice;
+
+impl Kind for Dice {
+    type Config = ();
+
+    fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+        Ok(Channels::default())
+    }
+
+    fn discover(
+        &self,
+        _: &cancel::Token,
+    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+        std::future::ready(Ok(Vec::new()))
+    }
+
+    fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
+        std::future::ready(Ok(()))
+    }
+
+    async fn browse(
+        &self,
+        ctx: &browse::Context<'_>,
+        query: &Query,
+    ) -> Result<browse::Found, Error> {
+        let name = ctx.rng().next_u64().to_string();
+        browse::walk(&mut Roll { name }, query).await
+    }
+}
+
+/// The open session of a [`Dice`] device.
+struct Roll {
+    name: String,
+}
+
+impl Device for Roll {
+    fn level(
+        &mut self,
+        _: Option<&Entry>,
+        _: Option<&Cursor>,
+    ) -> impl Future<Output = Result<Option<Page>, Error>> {
+        let child = Child {
+            name: self.name.clone(),
+            tag: self.name.clone(),
+            shape: Shape::Point(Facts::default()),
+        };
+        std::future::ready(Ok(Some(Page {
+            entries: vec![child],
+            next: None,
+        })))
+    }
+}
+
 /// A kind with no browse.
 struct Blind;
 
@@ -154,9 +213,21 @@ fn browse(
     query: &Query,
     token: &[u8],
 ) -> Result<Result<browse::Found, Error>, sim::Error> {
+    let mut found = browse_each(&[kind], query, token)?;
+    Ok(found.remove(0))
+}
+
+/// What `Supervisor::browse` gives for each of `kinds` in turn, on one supervisor,
+/// as [`browse`] gives one.
+fn browse_each(
+    kinds: &[&str],
+    query: &Query,
+    token: &[u8],
+) -> Result<Vec<Result<browse::Found, Error>>, sim::Error> {
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
-    let (kind, query, token) = (kind.to_owned(), query.clone(), token.to_vec());
+    let kinds: Vec<String> = kinds.iter().map(|&kind| kind.to_owned()).collect();
+    let (query, token) = (query.clone(), token.to_vec());
     sim.run_on(&node, move |node, tasks| async move {
         let env = hub::testing::Env {
             files: node.files(),
@@ -165,11 +236,17 @@ fn browse(
             entropy: node.entropy(),
             tasks,
         };
-        let kinds = Table::new().with("plant", Plant).with("blind", Blind);
-        let config = create_config(env, node.net(), kinds).await;
+        let table = (Table::new().with("plant", Plant))
+            .with("dice", Dice)
+            .with("blind", Blind);
+        let config = create_config(env, node.net(), table).await;
         create_secret(&node.files(), &"plant.token".parse().unwrap(), &token).await;
         let supervisor = Supervisor::new(config);
-        supervisor.browse(&kind, &block(&kind), &query).await
+        let mut found = Vec::new();
+        for kind in &kinds {
+            found.push(supervisor.browse(kind, &block(kind), &query).await);
+        }
+        found
     })
 }
 
@@ -208,6 +285,16 @@ fn browses_a_block_with_only_its_kind_node_and_address() {
 }
 
 #[test]
+fn gives_each_browse_a_new_random_source() {
+    let found = browse_each(&["dice", "dice"], &query(Scope::Level(None)), b"t1")
+        .expect("the run ends");
+    let names: Vec<_> = (found.into_iter())
+        .map(|found| found.expect("found").entries[0].path.to_string())
+        .collect();
+    assert_ne!(names[0], names[1]);
+}
+
+#[test]
 fn gives_the_error_of_the_kind() {
     let result =
         browse("plant", &query(Scope::Level(None)), b"t2").expect("the run ends");
@@ -238,7 +325,7 @@ fn refuses_a_kind_that_the_build_does_not_have() {
         Code::new("connector.unknown-kind"),
         None,
         r#"this build has no connector kind "modbus""#.into(),
-        r#"Use one of ["blind", "plant"]"#.into(),
+        r#"Use one of ["blind", "dice", "plant"]"#.into(),
     );
     assert_eq!(diagnostic(result), expected);
 }
