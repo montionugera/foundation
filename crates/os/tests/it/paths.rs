@@ -278,6 +278,52 @@ fn within_writes_a_new_name_whose_resolved_path_is_too_long_as_free() {
     });
 }
 
+/// A work folder that a program moves away and makes again holds nothing at either
+/// name until a new `within`.
+#[test]
+fn a_folder_that_a_program_moves_and_makes_again_holds_nothing() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        fs::rename(base.join("work"), base.join("moved")).unwrap();
+        fs::create_dir(base.join("work")).unwrap();
+        let moved = within.read(&base.join("moved/a.hcl"), 1);
+        host.paths.write(&base.join("work/a.hcl"), b"y").unwrap();
+        let made = within.read(&base.join("work/a.hcl"), 1);
+        assert_eq!((moved, made), (Err(Error::Outside), Err(Error::Outside)));
+    });
+}
+
+/// A hidden file that is not there, at a short path through a relative link, whose
+/// resolved path is one byte past the longest path of the OS.
+#[test]
+fn within_hides_a_hidden_name_whose_resolved_path_is_too_long() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let most: usize = if cfg!(target_os = "macos") {
+            1023
+        } else {
+            4095
+        };
+        let top = base.join("work");
+        let (mut deep, mut relative) = (top.clone(), PathBuf::new());
+        while deep.as_os_str().len() + 201 < most - 50 {
+            deep.push("d".repeat(200));
+            relative.push("d".repeat(200));
+            fs::create_dir(&deep).unwrap();
+        }
+        symlink(&relative, top.join("s")).unwrap();
+        let name = "f".repeat(most - deep.as_os_str().len());
+        let key = top.join("s").join(&name);
+        let within = host
+            .paths
+            .within(slice::from_ref(&top), slice::from_ref(&key))
+            .unwrap();
+        assert_eq!(within.write(&key, b"x"), Err(Error::Hidden));
+        assert!(!deep.join(&name).exists());
+        assert_eq!(within.write(&top.join("b.hcl"), b"x"), Ok(()));
+    });
+}
+
 /// A link in `work` that leads, through a chain of short links, to a directory whose
 /// resolved path is longer than the OS takes, in the hidden folder or outside.
 #[test]

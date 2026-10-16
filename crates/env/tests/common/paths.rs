@@ -56,6 +56,7 @@ macro_rules! tests {
             a_resolve_of_a_link_to_nothing_with_a_slash_is_not_found,
             within_hides_a_hidden_folder_that_is_not_there,
             within_hides_a_hidden_file_that_a_write_replaces,
+            within_holds_nothing_in_a_file_that_a_write_replaces,
             within_hides_a_hidden_folder_that_the_limits_refuse,
             a_directory_made_takes_files,
             a_directory_made_again_or_through_a_link_is_ok,
@@ -511,6 +512,17 @@ pub(crate) fn within_hides_a_hidden_file_that_a_write_replaces(host: &Host<'_>) 
     assert_eq!(within.read(&file, 3), Err(Error::Hidden));
     let link = base.join("work/link");
     assert_eq!(within.read(&link, 3), Err(Error::Hidden));
+}
+
+/// A write makes a new file, as the rename of a write of `os` does, so a folder of
+/// `folders` that is a file holds nothing after it.
+pub(crate) fn within_holds_nothing_in_a_file_that_a_write_replaces(host: &Host<'_>) {
+    let (_, base) = within_work(host);
+    let file = base.join("work/a.hcl");
+    let within = host.paths.within(slice::from_ref(&file), &[]).unwrap();
+    assert_eq!(within.read(&file, 1), Ok(Found::File(b"x".to_vec())));
+    host.paths.write(&file, b"y").unwrap();
+    assert_eq!(within.read(&file, 1), Err(Error::Outside));
 }
 
 /// A hidden folder that the limits of the handle refuse, but that is there, still
