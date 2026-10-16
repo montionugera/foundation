@@ -193,6 +193,55 @@ fn writes_the_unit_that_spec_gives_for_the_text_and_the_code() {
     }
 }
 
+fn coded(unit: Option<&str>, code: &str) -> Facts {
+    Facts {
+        unit_code: Some(code.into()),
+        ..facts(Some(Type::Scalar(Scalar::F64)), unit)
+    }
+}
+
+#[test]
+fn fills_a_code_that_does_not_read_with_no_text() {
+    for unit in [None, Some("")] {
+        assert_eq!(
+            check(&coded(unit, "XYZ")),
+            Err(vec![unfilled(
+                "the unit, which the device gives as the code \"XYZ\""
+            )]),
+            "{unit:?}"
+        );
+    }
+}
+
+#[test]
+fn fills_a_text_and_a_code_that_do_not_read_with_both() {
+    assert_eq!(
+        check(&coded(Some("°K"), "XYZ")),
+        Err(vec![unfilled(
+            "the unit, which the device gives as \"°K\" with the code \"XYZ\""
+        )])
+    );
+}
+
+#[test]
+fn writes_a_text_that_reads_and_drops_a_code_that_does_not() {
+    let f64 = Type::Scalar(Scalar::F64);
+    assert_eq!(
+        check(&coded(Some("°C"), "XYZ")),
+        Ok(entries(data(f64, Some("degC"))))
+    );
+}
+
+#[test]
+fn takes_an_empty_code_as_none() {
+    let f64 = Type::Scalar(Scalar::F64);
+    assert_eq!(check(&coded(None, "")), Ok(entries(data(f64, None))));
+    assert_eq!(
+        check(&coded(Some("°K"), "")),
+        Err(vec![unfilled("the unit, which the device gives as \"°K\"")])
+    );
+}
+
 #[test]
 fn fills_a_missing_sample_type_and_keeps_the_unit() {
     assert_eq!(

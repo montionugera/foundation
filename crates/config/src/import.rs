@@ -12,9 +12,10 @@ use types::name::Name;
 /// The `channel` block of the data channel `name` on the index channel `index`, with
 /// the sample type and the unit of `facts`. When `facts` has no sample type, the block
 /// holds [`fill`]`("the sample type")`. The unit is what [`Unit::given`] gives for the
-/// unit and its code in `facts`. When it gives none for a unit text that is not
-/// empty, the block holds `fill("the unit, which the device gives as \"<unit>\"")`.
-/// A sample type that holds no number gets no unit.
+/// unit and its code in `facts`, where an empty text or code counts as none. When it
+/// gives none, the block holds `fill("the unit, which the device gives as <what>")`,
+/// where `<what>` is `"<unit>"`, `the code "<code>"`, or `"<unit>" with the code
+/// "<code>"`, as `facts` holds them. A sample type that holds no number gets no unit.
 #[must_use]
 pub fn channel(name: &Name, index: &Name, facts: &Facts) -> Block {
     let data_type = facts.data_type.map(DataType::Sample);
@@ -29,12 +30,19 @@ pub fn channel(name: &Name, index: &Name, facts: &Facts) -> Block {
         ),
         attribute("index", string(index.as_str())),
     ];
-    let text = facts.unit.as_deref();
-    let unit = match Unit::given(text, facts.unit_code.as_deref()) {
-        Some(unit) => Some(string(unit.as_str())),
-        None => text
-            .filter(|text| !text.is_empty())
-            .map(|text| fill(&format!("the unit, which the device gives as {text:?}"))),
+    let text = facts.unit.as_deref().filter(|text| !text.is_empty());
+    let code = facts.unit_code.as_deref().filter(|code| !code.is_empty());
+    let given = |what: String| {
+        Some(fill(&format!("the unit, which the device gives as {what}")))
+    };
+    let unit = match (Unit::given(text, code), text, code) {
+        (Some(unit), ..) => Some(string(unit.as_str())),
+        (None, None, None) => None,
+        (None, Some(text), None) => given(format!("{text:?}")),
+        (None, None, Some(code)) => given(format!("the code {code:?}")),
+        (None, Some(text), Some(code)) => {
+            given(format!("{text:?} with the code {code:?}"))
+        }
     };
     if let Some(unit) = unit.filter(|_| numeric) {
         attributes.push(attribute("unit", unit));
