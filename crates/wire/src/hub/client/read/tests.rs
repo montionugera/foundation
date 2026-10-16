@@ -816,7 +816,7 @@ mod reader {
     /// messages, the last a refusal.
     #[test]
     fn refuses_each_other_run_input_of_the_fuzz_target() {
-        let cases: [(&[u8], Vec<Step>); 8] = [
+        let cases: [(&[u8], Vec<Step>); 9] = [
             (
                 corpus!("reader_place_cut"),
                 vec![more(), refused(Error::Length { len: 21 })],
@@ -846,6 +846,15 @@ mod reader {
                 vec![
                     more(),
                     refused(Error::Sample(text::Error::Parse(sample::Error::Syntax))),
+                ],
+            ),
+            (
+                corpus!("reader_repeated"),
+                vec![
+                    more(),
+                    refused(Error::Repeated {
+                        key: channel::Key::from_u128(1),
+                    }),
                 ],
             ),
             (
