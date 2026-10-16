@@ -179,16 +179,16 @@ fn client_reads(variable: client::Variable, count: usize) -> Vec<u64> {
 }
 
 /// As through the manager, the ask allocates 3 and the answer allocates 1 for its
-/// results array and 1 for the value of each node. The sleep of a drive until the
-/// next timer of the loop allocates nothing, since the manager keeps it. The client
-/// swaps two buffers of values. The connect fills one with 1 value, and read 2 is the first to
-/// fill it with more. The sim net allocates one more for each segment of 1460 bytes
+/// results array and 1 for the value of each node. The sleep of a drive until the next
+/// timer of the loop allocates nothing, since the manager keeps it. The client swaps
+/// two buffers of values. The connect fills one with 1 value, and read 2 is the first
+/// to fill it with more. The sim net allocates one more for each segment of 1460 bytes
 /// past the first: the ask of 64 names takes 2. A read of 300 or 600 nodes takes 2 or 3
 /// requests, of [`client::PER_READ`] nodes and the rest. Each request allocates 4 for
-/// its ask and its results array, and each node 1: 308 and 612.
-/// The rest, 2 and 7, is the segments of the asks, as measured: the sim net cuts the
-/// bytes that the client writes into segments as the window of the server lets them
-/// go, so the asks of one read share segments.
+/// its ask and its results array, and each node 1: 308 and 612. The rest, 2 and 7, is
+/// the segments of the asks, as measured: the sim net cuts the bytes that the client
+/// writes into segments as the window of the server lets them go, so the asks of one
+/// read share segments.
 fn a_read_of_a_client_allocates_a_fixed_count() {
     let cases = [
         (client::Variable::Number, 1, 5),

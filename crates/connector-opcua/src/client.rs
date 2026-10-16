@@ -54,9 +54,9 @@ const _: () = assert!(
 /// A client of open62541 with an active session, on its own loop and connection
 /// manager, on the thread that made it. Its loop runs only in its calls, so a client
 /// that waits for longer than the channel lifetime of its server (often 10 minutes)
-/// outside [`Client::idle`] loses its connection, and each later read fails. A drop closes its connection and waits
-/// for nothing, but leaves its session on the server until the session times out; a
-/// [`Client::close`] closes the session too.
+/// outside [`Client::idle`] loses its connection, and each later read fails. A drop
+/// closes its connection and waits for nothing, but leaves its session on the server
+/// until the session times out; a [`Client::close`] closes the session too.
 pub(crate) struct Client {
     raw: NonNull<ffi::Client>,
     /// C holds a pointer to it until `raw` is deleted, which calls the callback of each
