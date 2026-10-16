@@ -35,6 +35,21 @@ fn writes_one_line_at_the_stamp_after_the_gap() {
 }
 
 #[test]
+fn gives_the_count_of_its_line() {
+    let mut gap = gap();
+    let mut out = Vec::new();
+    assert_eq!(gap.line(&mut out, 15, Stamp::from_nanos(1_000)), 0);
+    assert!(out.is_empty());
+    gap.add(10..12);
+    gap.add(13..14);
+    assert_eq!(gap.line(&mut out, 15, Stamp::from_nanos(1_000)), 5);
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "foundation_gaps,connector=influx,index=edge.time,path=live count=5i 1000\n"
+    );
+}
+
+#[test]
 fn tags_a_backfill_gap_with_its_path() {
     let mut gap = named("influx", "edge.time", Path::Backfill);
     gap.add(10..15);

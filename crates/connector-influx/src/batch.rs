@@ -181,11 +181,9 @@ impl Body {
             panic!("invariant: a frame after the gap {seqs:?} holds a sample")
         });
         let stamp = Stamp::from_nanos(i64::from_le_bytes(*first));
-        let lost = seqs.end.checked_sub(seqs.start);
-        let lost = lost.expect("invariant: a gap range is not reversed");
         let end = seqs.end;
         gap.add(seqs);
-        gap.line(&mut self.bytes, end, stamp);
+        let lost = gap.line(&mut self.bytes, end, stamp);
         self.lines = self.lines.saturating_add(1);
         self.lost = self.lost.saturating_add(lost);
     }

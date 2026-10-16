@@ -75,9 +75,10 @@ impl Gap {
         });
     }
 
-    /// Appends the gap's line to `out` and empties the gap. The line counts each seq
-    /// from the gap's first seq up to `seq`, the seq of the first sample after the
-    /// gap, and has that sample's `stamp`. An empty gap appends nothing.
+    /// Appends the gap's line to `out`, empties the gap, and gives the line's count.
+    /// The line counts each seq from the gap's first seq up to `seq`, the seq of the
+    /// first sample after the gap, and has that sample's `stamp`. An empty gap appends
+    /// nothing and gives 0.
     ///
     /// Only `out` then holds the gap: a request built again from the samples holds
     /// it only when the reader reports the gap again.
@@ -86,8 +87,10 @@ impl Gap {
     ///
     /// When `seq` is below the end of a range the gap holds, or the line counts
     /// 2^63 seqs or more.
-    pub fn line(&mut self, out: &mut Vec<u8>, seq: u64, stamp: Stamp) {
-        let Some(seqs) = self.seqs.take() else { return };
+    pub fn line(&mut self, out: &mut Vec<u8>, seq: u64, stamp: Stamp) -> u64 {
+        let Some(seqs) = self.seqs.take() else {
+            return 0;
+        };
         assert!(
             seqs.end <= seq,
             "invariant: the sample after the gap {seqs:?} has seq {seq}"
@@ -103,6 +106,7 @@ impl Gap {
             });
         let values = [(&self.count, Value::Integer(count))];
         self.measurement.line(out, values, stamp);
+        count.unsigned_abs()
     }
 }
 
