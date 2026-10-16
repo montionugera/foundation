@@ -366,8 +366,6 @@ pub struct Path(Option<Arc<Link>>);
 struct Link {
     folder: Path,
     name: Arc<str>,
-    /// The count of names of the path.
-    len: usize,
 }
 
 impl Path {
@@ -385,7 +383,6 @@ impl Path {
         Self(Some(Arc::new(Link {
             folder: self.clone(),
             name: name.into(),
-            len: self.len() + 1,
         })))
     }
 
@@ -395,13 +392,9 @@ impl Path {
         self.links().into_iter().map(|link| &*link.name)
     }
 
-    fn len(&self) -> usize {
-        self.0.as_ref().map_or(0, |link| link.len)
-    }
-
     /// The link of each name from the root, in order.
     fn links(&self) -> Vec<&Arc<Link>> {
-        let mut links = Vec::with_capacity(self.len());
+        let mut links = Vec::new();
         let mut at = self;
         while let Some(link) = &at.0 {
             links.push(link);
