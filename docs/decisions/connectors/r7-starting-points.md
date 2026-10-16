@@ -105,6 +105,15 @@
   does and which #1248 needs again in another layer; and trust of an end certificate
   that is equal to a root, which is a later step on #2702 when a user's server cannot
   get a new certificate. Until the influx kind takes a `ca`, its plan refuses `https`.
+  The roots are `node::Config::roots`, an `os::Roots`, and main gives `os::roots()`:
+  the certificate files on Linux and the keychain on macOS. When `SSL_CERT_FILE` or
+  `SSL_CERT_DIR` is set, it reads only the files that they name, on each OS. Before
+  `started`, shard 0 logs a warning "a part of the OS roots was not read" with the
+  `error` of each failure, "OS roots that do not parse are skipped" with the count
+  `skipped`, and "the OS roots hold no certificate, so each https connect fails". This
+  supersedes `node::Config::roots: Vec<Vec<u8>>` of 6207437988 (`laptop.architect-2`,
+  2026-10-16T10:09:09Z:
+  https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6213160739).
   `laptop.architect-2` ruled `Tls`, `tokio-rustls`, the name `server` of the test
   host, the `CA:TRUE` text, and the refusal (2026-10-16T07:51:33Z:
   https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210764044).

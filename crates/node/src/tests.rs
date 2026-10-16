@@ -35,6 +35,9 @@ const OWN: types::node::Key = types::node::Key::from_u128(1);
 /// The bytes of the seal key in the data directory of [`keyed`].
 const SEAL: [u8; 32] = [3; 32];
 
+/// The DER bytes of a CA certificate, the one root of [`config`].
+const CA: &[u8] = include_bytes!("tests/ca.der");
+
 /// A disk budget of two rings of 64 MiB, with their header blocks.
 const DISK: Size = Size::from_bytes(2 * (8192 + (64 << 20)));
 
@@ -93,6 +96,10 @@ fn config<M>(
         name: "edge".parse().expect("a name"),
         settings: crate::Settings::default(),
         vars: std::collections::BTreeMap::new(),
+        roots: os::Roots {
+            certificates: vec![CA.to_vec()],
+            failures: Vec::new(),
+        },
         log: crate::Log {
             writer: Box::new(std::io::sink()),
             format: ops::Log::default(),
