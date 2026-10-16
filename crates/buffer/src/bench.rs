@@ -492,18 +492,25 @@ mod tests {
         assert_eq!(logs.inner.durable(Slot::new(1), Path::Live).seq, 3);
     }
 
-    /// Each header of a table decodes, with and without headers with no samples.
+    /// Each header of a table decodes, with and without headers with no samples. No
+    /// call of `Table` gives its headers, only the count of `decode`, so the test
+    /// parses `bytes`.
     #[test]
     fn each_header_of_a_table_decodes() {
         assert_eq!(Table::new(5, 0).decode(), 5);
         assert_eq!(Table::new(5, 2).decode(), 5);
-        let table = Table::new(3, 2);
-        let headers = entry::parse(&table.bytes, table.bytes.len()).expect("a table");
-        let lasts: Vec<Last> = headers
-            .map(|header| header.expect("a header").0.last)
-            .collect();
+        let lasts = |table: Table| -> Vec<Last> {
+            entry::parse(&table.bytes, table.bytes.len())
+                .expect("a table")
+                .map(|header| header.expect("a header").0.last)
+                .collect()
+        };
         let stamp = Last::Stamp(Some(Stamp::from_nanos(9)));
-        assert_eq!(lasts, [Last::Count(1), stamp, Last::Count(1)]);
+        assert_eq!(
+            lasts(Table::new(3, 2)),
+            [Last::Count(1), stamp, Last::Count(1)]
+        );
+        assert_eq!(lasts(Table::new(3, 0)), [stamp; 3]);
     }
 
     /// A read holds the record two commits back, so the runs of the records after it
