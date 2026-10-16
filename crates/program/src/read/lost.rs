@@ -17,8 +17,8 @@ pub(super) struct Lost {
 /// The lost seqs of one entry.
 #[derive(Clone, Debug, Default)]
 struct Entry {
-    /// The seqs lost after the series before the one at `at`. Given, and so stale,
-    /// once `at` is at or after the last gap.
+    /// The seqs lost after the series before the one at `at`. Stale once a later
+    /// frame passes.
     seqs: Range<u64>,
     /// The frame, of `passed`, of the last series of the entry.
     at: u64,
@@ -137,15 +137,16 @@ mod tests {
     }
 
     #[test]
-    fn stops_touching_entries_once_each_got_a_series_after_the_gap() {
+    fn gives_the_last_entry_its_gap_after_the_others_had_a_series() {
         let mut lost = Lost::new(3);
         lost.pass(1..3, [0]);
-        assert_eq!(lost.pending, 2);
+        assert_eq!([lost.get(0), lost.get(1), lost.get(2)], [1..3, 0..0, 0..0]);
         lost.pass(0..0, [0, 1]);
-        assert_eq!(lost.pending, 1);
+        assert_eq!([lost.get(0), lost.get(1), lost.get(2)], [0..0, 1..3, 0..0]);
         lost.pass(0..0, [2]);
-        assert_eq!(lost.pending, 0);
-        assert_eq!(lost.get(2), 1..3);
+        assert_eq!([lost.get(0), lost.get(1), lost.get(2)], [0..0, 0..0, 1..3]);
+        lost.pass(0..0, [0, 1, 2]);
+        assert_eq!([lost.get(0), lost.get(1), lost.get(2)], [0..0, 0..0, 0..0]);
     }
 
     #[test]
