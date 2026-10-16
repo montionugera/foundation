@@ -1572,11 +1572,18 @@ fn a_complete_reader_gets_the_gap_before_a_frame_with_no_sample_on_the_next_fram
         },
         |test, _| async move {
             let mut reader = test.reader(&["value"], Mode::Complete).await;
+            let mut positions = Vec::new();
             for (count, gap) in [(2, None), (0, None), (2, Some(2..5))] {
                 let received = reader.next().await.expect("a frame");
                 let range = received.view().range(0).expect("an index");
                 assert_eq!((range.count, received.gap()), (count, gap));
+                positions.push(received.position());
             }
+            assert_eq!(
+                positions[1], positions[0],
+                "the frame with no sample keeps the position before the gap"
+            );
+            assert_ne!(positions[2], positions[0]);
         },
     );
 }

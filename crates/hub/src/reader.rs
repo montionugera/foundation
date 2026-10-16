@@ -107,12 +107,21 @@ impl<'a> Received<'a> {
     }
 
     /// The reader's position after this frame. Give it to [`Reader::ack`] when the
-    /// frame is safe at its target.
+    /// frame is safe at its target. A frame with no sample keeps the position before
+    /// the gap that a later frame gives.
     #[must_use]
     pub fn position(&self) -> Position {
+        let Lent {
+            mode, seqs, from, ..
+        } = self.lent;
+        let live = match mode {
+            Mode::Complete if seqs.is_empty() => *from,
+            Mode::Complete => seqs.end,
+            Mode::Latest => self.lens.seqs(self.view.frame()).end,
+        };
         let position = Position {
             index: self.lens.index,
-            live: self.lens.seqs(self.view.frame()).end,
+            live,
         };
         self.lent.given.set(Some(position.live));
         position
@@ -340,7 +349,6 @@ pub struct Reader {
     source: Source,
     /// The slot of the reader's index.
     index: channel::Slot,
-    mode: Mode,
     lent: Lent,
     /// The frame that the last [`Received`] lends.
     frame: Option<Frame>,
@@ -350,6 +358,7 @@ pub struct Reader {
 /// stays as small as with no names.
 #[derive(Debug)]
 struct Lent {
+    mode: Mode,
     /// `None` for a reader of a client read. A box keeps the reader small.
     names: Option<Box<Names>>,
     /// The `live` of the last position that [`Received::position`] gave, or `None`
@@ -365,9 +374,10 @@ struct Lent {
 }
 
 impl Lent {
-    /// What a reader that opened at `live` lends before its first frame.
-    fn at(live: u64) -> Self {
+    /// What a reader in `mode` that opened at `live` lends before its first frame.
+    fn at(mode: Mode, live: u64) -> Self {
         Self {
+            mode,
             names: None,
             given: Cell::new(None),
             seqs: live..live,
@@ -509,9 +519,8 @@ impl Reader {
                 Self {
                     index: slots[index],
                     source: Source::Remote(Box::new(remote)),
-                    mode,
                     // A session that ended before it opened gives no frame.
-                    lent: Lent::at(live.unwrap_or_default()),
+                    lent: Lent::at(mode, live.unwrap_or_default()),
                     frame: None,
                 }
             }
@@ -546,8 +555,7 @@ impl Reader {
         let reader = Self {
             source: Source::Local(local),
             index: slot,
-            mode,
-            lent: Lent::at(live),
+            lent: Lent::at(mode, live),
             frame: None,
         };
         Ok((reader, live))
@@ -586,7 +594,7 @@ impl Reader {
                 },
                 Source::Remote(remote) => remote.take().await?,
             };
-            if self.mode == Mode::Complete {
+            if self.lent.mode == Mode::Complete {
                 if !self.lent.seqs.is_empty() {
                     self.lent.from = self.lent.seqs.end;
                 }
