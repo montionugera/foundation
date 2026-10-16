@@ -7,8 +7,12 @@ use types::name::Name;
 
 use crate::browse::Path;
 
+/// The name of the reserved call that [`fill`] writes. `config` refuses each call of
+/// this name.
+pub const FILL: &str = "fill";
+
 /// `fill("<what>")`: the value of a fact that the device does not give, such as
-/// `fill("the sample type")`. `plan` refuses it.
+/// `fill("the sample type")`. `config` refuses it.
 #[must_use]
 pub fn fill(what: &str) -> Value {
     let what = Value {
@@ -16,7 +20,7 @@ pub fn fill(what: &str) -> Value {
         span: None,
     };
     let call = Call {
-        function: "fill".into(),
+        function: FILL.into(),
         function_span: None,
         arguments: vec![what],
     };
@@ -27,24 +31,21 @@ pub fn fill(what: &str) -> Value {
 }
 
 /// The `<what>` of `value` when it is `fill("<what>")`, as [`fill`] writes it, or
-/// `None`. `fill` is a reserved call: in any value at any depth, also in the config of
-/// a kind, `config` refuses it as a fact that the import did not find, so no kind may
-/// give a call `fill` a meaning of its own.
+/// `None`. [`FILL`] is a reserved call: in any value at any depth, also in the config
+/// of a kind, `config` refuses it, so no kind may give a call `fill` a meaning of its
+/// own.
 #[must_use]
 pub fn unfilled(value: &Value) -> Option<&str> {
     let Kind::Call(call) = &value.kind else {
         return None;
     };
-    match (&*call.function, call.arguments.as_slice()) {
-        (
-            "fill",
-            [
-                Value {
-                    kind: Kind::String(what),
-                    ..
-                },
-            ],
-        ) => Some(what),
+    match call.arguments.as_slice() {
+        [
+            Value {
+                kind: Kind::String(what),
+                ..
+            },
+        ] if &*call.function == FILL => Some(what),
         _ => None,
     }
 }

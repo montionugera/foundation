@@ -14,6 +14,7 @@ mod private_key;
 mod retention;
 mod subject;
 mod unfilled;
+mod walk;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -87,9 +88,10 @@ pub struct Entry {
 ///
 /// A private key anywhere in the Documents gives only `config.private-key`, once for
 /// each string that holds one.
-/// Then each `fill("<what>")` that an import wrote, at any depth, gives only
-/// `config.unfilled`, once for each, in the order of their [`document::Source`], then
-/// in source order.
+/// Then each call `fill` at any depth gives only problems of `fill`, once for each, in
+/// the order of their [`document::Source`], then in source order: `config.unfilled`
+/// for `fill("<what>")` that an import wrote, and `config.bad-fill` for a call `fill`
+/// of other arguments.
 /// Each other problem in the Documents, in the order of their [`document::Source`],
 /// then in source order.
 /// A problem with no span has no defined place in that order. A value that a reader
@@ -3458,30 +3460,36 @@ mod tests {
         }
 
         #[test]
-        fn takes_a_call_that_is_not_a_fill_of_one_string_as_another_value() {
-            let not_fill = Kind::Call(Call {
-                function: "fill".into(),
-                function_span: at(0, 50),
-                arguments: vec![value(Kind::Integer(1), at(0, 51))],
-            });
-            let data =
-                channel(&[("data_type", not_fill), ("index", string("edge.time"))]);
-            let index = block(
-                0,
-                200,
-                "channel",
-                &["edge.time"],
-                &[("kind", string("index"))],
-            );
-            assert_eq!(
-                check(&[document(vec![data, index])]),
-                Err(vec![refused(
-                    "config.bad-data-type",
-                    at(0, 11),
-                    "the data type is a string or a reference, not a call",
-                    "Write a string such as \"f64\"",
-                )])
-            );
+        fn refuses_a_fill_that_is_not_of_one_string_and_not_what_it_holds() {
+            let call = |arguments: Vec<Value>| {
+                Kind::Call(Call {
+                    function: "fill".into(),
+                    function_span: at(0, 50),
+                    arguments,
+                })
+            };
+            let cases = [
+                call(vec![]),
+                call(vec![value(Kind::Integer(1), at(0, 51))]),
+                call(vec![
+                    value(string("a"), at(0, 51)),
+                    value(string("b"), at(0, 53)),
+                ]),
+                call(vec![value(fill("the node", 70), at(0, 51))]),
+            ];
+            for kind in cases {
+                let data = channel(&[("data_type", kind.clone())]);
+                assert_eq!(
+                    check(&[document(vec![data])]),
+                    Err(vec![refused(
+                        "config.bad-fill",
+                        at(0, 11),
+                        "`fill` takes one string",
+                        "Write the value in place of `fill`",
+                    )]),
+                    "{kind:?}"
+                );
+            }
         }
     }
 }
