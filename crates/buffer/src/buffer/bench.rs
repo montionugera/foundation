@@ -7,8 +7,7 @@ use types::channel::{self, Slot};
 use types::frame::Path;
 use types::time::Stamp;
 
-use super::{HEADER_LEN, State, seal, take};
-use crate::carry;
+use super::{State, seal, tails_max, take};
 use crate::entry::{Entry, Samples};
 use crate::group::{self, Closed, Sealed};
 use crate::header::Header;
@@ -49,7 +48,7 @@ impl Deadline {
         let config = block::Config::new(1 << 21).expect("the budget fits");
         let pool = Pool::new(config.clone(), Heap::new(config.reservation()));
         let block_max = group::block_max(&pool).expect("the budget holds an entry");
-        let tails_max = carry::count(pool.largest().saturating_sub(HEADER_LEN));
+        let tails_max = tails_max(&pool);
         let part = pool.alloc(100).expect("the pool has room").freeze();
         let chain = 9;
         let state = State::new(
@@ -80,11 +79,12 @@ impl Deadline {
     ///
     /// # Panics
     ///
-    /// When the ring or the pool has no room for the group.
+    /// When the group is over a body of two blocks, as one of 64 indexes is, or the
+    /// ring or the pool has no room for it.
     pub fn commit(&mut self, period: u32) -> usize {
         let slow = self.deadlines.is_multiple_of(period);
         self.deadlines = self.deadlines.wrapping_add(1);
-        let appended = self.firsts.len() - usize::from(!slow);
+        let appended = self.firsts.len().saturating_sub(usize::from(!slow));
         let part = &self.part;
         let entries = self.firsts.iter_mut().take(appended).zip(0..);
         self.batch.extend(entries.map(|(first, n)| {
@@ -108,11 +108,10 @@ impl Deadline {
         state
             .open
             .fit(&self.pool, self.block_max, &state.writer, &self.batch)
-            .expect("the ring has room");
+            .expect("the group fits a body of two blocks and the ring has room");
         take(&mut state.open, &mut state.logs, &mut self.batch);
-        state.take(&mut self.taken);
-        let checkpoint = state.checkpoint(&self.pool);
-        let carry = state.carry(&self.pool, self.tails_max);
+        let (checkpoint, carry) =
+            state.deadline(&self.pool, Some(self.tails_max), &mut self.taken);
         let carrying;
         (carrying, self.chain) =
             seal(&mut self.taken, &mut self.sealed, carry, self.chain);
@@ -122,5 +121,39 @@ impl Deadline {
         let tail = checkpoint.map(|checkpoint| checkpoint.tail);
         state.synced(&mut self.sealed, carrying, tail);
         tails
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bench::PHASE;
+
+    #[test]
+    fn each_deadline_after_the_warm_up_trims_and_writes_a_checkpoint() {
+        let blocks = 64 + PHASE;
+        let mut deadline = Deadline::new(1, blocks);
+        for _ in 0..2 * 64 {
+            deadline.commit(1);
+        }
+        for _ in 0..10 * blocks {
+            let tail = deadline.state.writer.tail();
+            let header = deadline.state.header;
+            deadline.commit(1);
+            assert_ne!(deadline.state.writer.tail(), tail, "the deadline trims");
+            assert_ne!(deadline.state.header, header, "the deadline checkpoints");
+        }
+    }
+
+    #[test]
+    fn a_deadline_of_no_indexes_takes_no_entry() {
+        let mut deadline = Deadline::new(0, 64 + PHASE);
+        assert_eq!((deadline.commit(2), deadline.commit(2)), (0, 0));
+    }
+
+    #[test]
+    #[should_panic(expected = "the group fits a body of two blocks")]
+    fn a_deadline_of_a_group_over_two_blocks_panics() {
+        Deadline::new(64, 64 + PHASE).commit(1);
     }
 }

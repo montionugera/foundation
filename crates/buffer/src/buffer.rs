@@ -301,13 +301,8 @@ impl Shared {
     /// Takes the groups of a commit into `taken`, and gives its checkpoint and carry
     /// record in the same borrow, or neither when [`Config::trimmed`] is false.
     fn take(&self, taken: &mut Vec<Closed>) -> (Option<Checkpoint>, Option<Carry>) {
-        let mut state = self.state.borrow_mut();
-        state.take(taken);
-        if !self.trimmed {
-            return (None, None);
-        }
-        let checkpoint = state.checkpoint(&self.pool);
-        (checkpoint, state.carry(&self.pool, self.tails_max))
+        let tails = self.trimmed.then_some(self.tails_max);
+        self.state.borrow_mut().deadline(&self.pool, tails, taken)
     }
 
     /// Ends the task's idle span. The caller holds no borrow of `state`.
@@ -500,6 +495,23 @@ impl State {
         }
     }
 
+    /// Takes the groups of a commit into `taken`, and gives its checkpoint and carry
+    /// record of at most `tails` tails, in blocks of `pool`, or neither when `tails`
+    /// is `None`.
+    fn deadline(
+        &mut self,
+        pool: &Pool,
+        tails: Option<usize>,
+        taken: &mut Vec<Closed>,
+    ) -> (Option<Checkpoint>, Option<Carry>) {
+        self.take(taken);
+        let Some(tails) = tails else {
+            return (None, None);
+        };
+        let checkpoint = self.checkpoint(pool);
+        (checkpoint, self.carry(pool, tails))
+    }
+
     /// The checkpoint of the trim of the commit whose groups the caller just took, in
     /// a block of `pool`. `None` when the commit does not trim, or the pool has no
     /// block: the next deadline then tries again.
@@ -677,7 +689,7 @@ impl Buffer {
         let (writer, sealed) = cursor.writer(header.tail.offset(), chain)?;
         write_restart(&file, &pool, sealed, chain).await?;
         file.sync().await?;
-        let tails_max = carry::count(pool.largest().saturating_sub(HEADER_LEN));
+        let tails_max = tails_max(&pool);
         let shared = Rc::new(Shared {
             file,
             pool,
@@ -903,6 +915,11 @@ impl Buffer {
             waiter: Waiter::new(&self.shared, Event::End),
         }
     }
+}
+
+/// The most tails of a carry record whose body fits the largest block of `pool`.
+fn tails_max(pool: &Pool) -> usize {
+    carry::count(pool.largest().saturating_sub(HEADER_LEN))
 }
 
 /// Appends each entry of `batch` to `logs`, in order, and takes it into `open` with
