@@ -2085,6 +2085,23 @@ fn create_node(seed: u64) -> (sim::Sim, sim::node::Node) {
     (sim, node)
 }
 
+/// Appends `batch`, and waits one commit span after each [`Rejected::Full`], at
+/// most `spans` times. Gives the result of the last append.
+async fn append_within(
+    buffer: &Buffer,
+    clock: &Clock,
+    batch: &[Entry],
+    spans: u32,
+) -> Result<(), Rejected> {
+    for _ in 0..spans {
+        match buffer.append(batch.iter().cloned()) {
+            Err(Rejected::Full { .. }) => clock.sleep(COMMIT).await,
+            done => return done,
+        }
+    }
+    buffer.append(batch.iter().cloned())
+}
+
 /// Starts a shard named `name` on `node` to run `main`.
 fn on_node<F>(
     node: &sim::node::Node,
@@ -7239,21 +7256,11 @@ fn refused_past_a_range_where_no_trim_lands(
             buffer.committed().await.expect("commits");
         }
         for (n, seq) in (between..between + 200).enumerate() {
-            let mut spans = 0;
-            loop {
-                match buffer.append([data(seq)]) {
-                    Ok(()) => break,
-                    Err(Rejected::Full { .. }) if spans < 100 => {
-                        spans += 1;
-                        clock.sleep(COMMIT).await;
-                    }
-                    Err(error) => {
-                        let n = u64::try_from(n).expect("a small count");
-                        *given.lock().expect("no panic held the lock") =
-                            Some((n, error));
-                        return;
-                    }
-                }
+            if let Err(error) = append_within(&buffer, &clock, &[data(seq)], 100).await
+            {
+                let n = u64::try_from(n).expect("a small count");
+                *given.lock().expect("no panic held the lock") = Some((n, error));
+                return;
             }
             buffer.committed().await.expect("commits");
         }

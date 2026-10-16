@@ -2,10 +2,11 @@
 
 use super::*;
 
-/// `paths` live paths get one entry of one sample each in turn, four in each
-/// commit, for 600 commits on a ring of 24 blocks with trims. Gives the first
-/// commit that the ring still refuses after 1000 commit spans, with its error.
-fn refused_with_paths(seed: u64, paths: u32) -> Option<(u64, Rejected)> {
+/// `paths` live paths get one entry each in turn, four in each commit, for 600
+/// commits on a ring of 24 blocks with trims: with `empty`, an entry with no
+/// samples at seq 0, else one sample at the next seq. Gives the first commit that
+/// the ring still refuses after 1000 commit spans, with its error.
+fn refused_with_paths(seed: u64, paths: u32, empty: bool) -> Option<(u64, Rejected)> {
     let (mut sim, node) = create_node(seed);
     let own = node.clone();
     let found = Arc::new(Mutex::new(None));
@@ -27,25 +28,18 @@ fn refused_with_paths(seed: u64, paths: u32) -> Option<(u64, Rejected)> {
                     let lap = u64::from(next / paths);
                     next += 1;
                     let slot = slots.index(key(index));
-                    let last = i64::try_from(lap).expect("small") + 1;
-                    let parts = Parts::default();
-                    entry(index, slot, Path::Live, lap, 1, Some(last), parts)
+                    if empty {
+                        entry(index, slot, Path::Live, 0, 0, None, Parts::default())
+                    } else {
+                        let last = i64::try_from(lap).expect("small") + 1;
+                        let parts = Parts::default();
+                        entry(index, slot, Path::Live, lap, 1, Some(last), parts)
+                    }
                 })
                 .collect();
-            let mut spans = 0;
-            loop {
-                match buffer.append(batch.clone()) {
-                    Ok(()) => break,
-                    Err(Rejected::Full { .. }) if spans < 1000 => {
-                        spans += 1;
-                        clock.sleep(COMMIT).await;
-                    }
-                    Err(error) => {
-                        *given.lock().expect("no panic held the lock") =
-                            Some((commit, error));
-                        return;
-                    }
-                }
+            if let Err(error) = append_within(&buffer, &clock, &batch, 1000).await {
+                *given.lock().expect("no panic held the lock") = Some((commit, error));
+                return;
             }
             buffer.committed().await.expect("commits");
         }
@@ -60,7 +54,18 @@ fn refused_with_paths(seed: u64, paths: u32) -> Option<(u64, Rejected)> {
 #[test]
 fn a_thousand_paths_with_samples_do_not_stall_the_ring() {
     let failures: Vec<_> = (0..32)
-        .filter_map(|seed| refused_with_paths(seed, 1000).map(|r| (seed, r)))
+        .filter_map(|seed| refused_with_paths(seed, 1000, false).map(|r| (seed, r)))
+        .collect();
+    assert_eq!(failures, Vec::new());
+}
+
+/// Paths of entries with no samples at one seq keep their counts in their headers,
+/// so a trim may land between any two records, and 292 such paths, more tails than
+/// three free blocks hold, never stall the ring.
+#[test]
+fn paths_of_entries_with_no_samples_do_not_stall_the_ring() {
+    let failures: Vec<_> = (0..32)
+        .filter_map(|seed| refused_with_paths(seed, 292, true).map(|r| (seed, r)))
         .collect();
     assert_eq!(failures, Vec::new());
 }
