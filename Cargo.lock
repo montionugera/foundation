@@ -1483,6 +1483,7 @@ dependencies = [
  "counting",
  "env",
  "hub",
+ "proptest",
  "sim",
  "spec",
  "tracing",
