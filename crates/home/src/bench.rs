@@ -47,9 +47,8 @@ pub fn stored(
     bytes.copy_from_slice(&body);
     Ok(buffer::Stored {
         first: entry.first,
-        len: entry.len,
+        samples: entry.samples,
         stored_at: entry.stored_at,
-        last: entry.last,
         tag: entry.tag,
         bytes: bytes.freeze(),
     })

@@ -50,7 +50,7 @@ pub fn encode(
 
 /// Appends the MBAP header of a frame, with its length left to [`seal`], and gives
 /// where the frame starts in `out`.
-fn open(header: Header, out: &mut Vec<u8>) -> usize {
+pub(crate) fn open(header: Header, out: &mut Vec<u8>) -> usize {
     let start = out.len();
     out.extend_from_slice(&header.transaction.to_be_bytes());
     out.extend_from_slice(&[0, 0, 0, 0, header.unit]);
@@ -64,7 +64,7 @@ fn open(header: Header, out: &mut Vec<u8>) -> usize {
 ///
 /// Only on a bug in this crate: no header at `start`, or a PDU longer than 253
 /// bytes.
-fn seal(out: &mut [u8], start: usize) {
+pub(crate) fn seal(out: &mut [u8], start: usize) {
     let (head, pdu) = out
         .get_mut(start..)
         .and_then(|frame| frame.split_first_chunk_mut::<HEADER>())

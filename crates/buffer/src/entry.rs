@@ -23,6 +23,7 @@
 use std::array;
 use std::iter;
 use std::mem;
+use std::num::{NonZeroU32, NonZeroU64};
 
 use block::Block;
 use types::channel::{self, Slot};
@@ -104,13 +105,10 @@ pub struct Entry {
     pub path: Path,
     /// The first seq.
     pub first: u64,
-    /// How many samples. A caller record has `len` 0.
-    pub len: u32,
+    /// The samples, `None` for a caller record.
+    pub samples: Option<Samples>,
     /// Mesh time at which the home stored it. A retention `keep` counts from it.
     pub stored_at: Stamp,
-    /// The newest stamp of the samples, `None` for a caller record. An entry with no
-    /// samples has no stamp.
-    pub last: Option<Stamp>,
     /// A tag the caller gives and reads back. The buffer gives it no meaning, apart
     /// from 0: [`Buffer::newest`](crate::Buffer::newest) never gives an entry of tag
     /// 0, and compares each other tag with the tag its caller gives.
@@ -119,24 +117,24 @@ pub struct Entry {
     pub parts: Parts,
 }
 
+/// The samples of an entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Samples {
+    /// How many samples.
+    pub len: NonZeroU32,
+    /// The newest stamp of the samples, if they have one.
+    pub last: Option<Stamp>,
+}
+
 impl Entry {
-    /// The header of this entry, with the size of its parts.
+    /// The header of this entry, of `kind`, with the size of its parts. `kind` is
+    /// the one that [`Logs::append`](crate::log::Logs::append) gives for the entry.
     ///
     /// # Panics
     ///
     /// When the parts hold more than `u32::MAX` bytes: a group checks the body
-    /// before it takes the entry. When the entry has no samples and a stamp.
-    pub(crate) fn header(&self) -> Header {
-        if let (0, Some(stamp)) = (self.len, self.last) {
-            panic!(
-                "invariant: an entry of index {} on path {:?} at seq {} has no samples \
-                 and the stamp {}",
-                self.index,
-                self.path,
-                self.first,
-                stamp.nanos()
-            );
-        }
+    /// before it takes the entry.
+    pub(crate) fn header(&self, kind: Kind) -> Header {
         let len = self.parts.bytes();
         let Ok(bytes) = u32::try_from(len) else {
             unreachable!("invariant: the entry of {len} bytes is under the maximum");
@@ -145,13 +143,8 @@ impl Entry {
             index: self.index,
             path: self.path,
             first: self.first,
-            len: self.len,
             stored_at: self.stored_at,
-            last: if self.len == 0 {
-                Last::Count(0)
-            } else {
-                Last::Stamp(self.last)
-            },
+            kind,
             tag: self.tag,
             bytes,
         }
@@ -165,34 +158,37 @@ pub(crate) struct Header {
     pub(crate) path: Path,
     /// The first seq.
     pub(crate) first: u64,
-    /// How many samples. A caller record has `len` 0.
-    pub(crate) len: u32,
     /// Mesh time at which the home stored it.
     pub(crate) stored_at: Stamp,
-    /// [`Last::Count`] when `len` is 0, else [`Last::Stamp`].
-    pub(crate) last: Last,
+    pub(crate) kind: Kind,
     /// A tag the caller gives and reads back.
     pub(crate) tag: u8,
     /// The size of the entry's bytes in the body.
     pub(crate) bytes: u32,
 }
 
-/// The `last` field of a [`Header`].
+/// The samples of a [`Header`], or the count of an entry with no samples.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Last {
-    /// The newest stamp of the entry's samples, if the entry has one.
-    Stamp(Option<Stamp>),
-    /// The entries with no samples at `first` on the path, this one included: from
-    /// 1. 0 until [`Logs::append`](crate::log::Logs::append) counts the entry.
-    Count(u64),
+pub(crate) enum Kind {
+    Samples(Samples),
+    /// The entries with no samples at `first` on the path, this one included.
+    Record(NonZeroU64),
 }
 
 impl Header {
-    /// The newest stamp of the entry's samples: none for an entry with no samples.
-    pub(crate) const fn stamp(&self) -> Option<Stamp> {
-        match self.last {
-            Last::Stamp(stamp) => stamp,
-            Last::Count(_) => None,
+    /// How many samples: 0 for an entry with no samples.
+    pub(crate) const fn len(&self) -> u32 {
+        match self.kind {
+            Kind::Samples(samples) => samples.len.get(),
+            Kind::Record(_) => 0,
+        }
+    }
+
+    /// The samples: none for an entry with no samples.
+    pub(crate) const fn samples(&self) -> Option<Samples> {
+        match self.kind {
+            Kind::Samples(samples) => Some(samples),
+            Kind::Record(_) => None,
         }
     }
 
@@ -203,7 +199,7 @@ impl Header {
             &self.index.as_u128().to_le_bytes()[..],
             &[path_byte(self.path)],
             &self.first.to_le_bytes(),
-            &self.len.to_le_bytes(),
+            &self.len().to_le_bytes(),
             &self.stored_at.nanos().to_le_bytes(),
             &self.last_bytes(),
             &[self.tag],
@@ -223,10 +219,12 @@ impl Header {
         let first = u64::from_le_bytes(fields.take());
         let len = u32::from_le_bytes(fields.take());
         let stored_at = Stamp::from_nanos(i64::from_le_bytes(fields.take()));
-        let last = if len == 0 {
-            Last::Count(fields.given()?)
-        } else {
-            Last::Stamp(fields.last()?)
+        let kind = match NonZeroU32::new(len) {
+            Some(len) => Kind::Samples(Samples {
+                len,
+                last: fields.last()?,
+            }),
+            None => Kind::Record(fields.given()?),
         };
         let [tag] = fields.take();
         let bytes = u32::from_le_bytes(fields.take());
@@ -234,9 +232,8 @@ impl Header {
             index,
             path,
             first,
-            len,
             stored_at,
-            last,
+            kind,
             tag,
             bytes,
         })
@@ -245,12 +242,12 @@ impl Header {
     /// The `last` field: the stamp as [`last_bytes`] writes it, or presence 0 and
     /// the count.
     fn last_bytes(&self) -> [u8; 9] {
-        match self.last {
-            Last::Stamp(stamp) => last_bytes(stamp),
-            Last::Count(count) => {
+        match self.kind {
+            Kind::Samples(samples) => last_bytes(samples.last),
+            Kind::Record(count) => {
                 let mut bytes = [0; 9];
                 let (_, slot) = bytes.split_at_mut(1);
-                slot.copy_from_slice(&count.to_le_bytes());
+                slot.copy_from_slice(&count.get().to_le_bytes());
                 bytes
             }
         }
@@ -310,12 +307,11 @@ impl Fields<'_> {
     ///
     /// [`Invalid::Stamped`] for presence 1, [`Invalid::Presence`] for a presence
     /// byte over 1, and [`Invalid::Uncounted`] for a count of 0.
-    fn given(&mut self) -> Result<u64, Invalid> {
+    fn given(&mut self) -> Result<NonZeroU64, Invalid> {
         let [presence] = self.take();
         let given = u64::from_le_bytes(self.take());
         match presence {
-            0 if given != 0 => Ok(given),
-            0 => Err(Invalid::Uncounted),
+            0 => NonZeroU64::new(given).ok_or(Invalid::Uncounted),
             1 => Err(Invalid::Stamped),
             byte => Err(Invalid::Presence(byte)),
         }
@@ -513,9 +509,11 @@ mod tests {
             index: channel::Key::from_u128(0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10),
             path: Path::Backfill,
             first: 0x1112_1314_1516_1718,
-            len: 0x2122_2324,
             stored_at: Stamp::from_nanos(0x3132_3334_3536_3738),
-            last: Last::Stamp(Some(Stamp::from_nanos(-2))),
+            kind: Kind::Samples(Samples {
+                len: NonZeroU32::new(0x2122_2324).expect("not 0"),
+                last: Some(Stamp::from_nanos(-2)),
+            }),
             tag: 0x41,
             bytes,
         }
@@ -554,7 +552,10 @@ mod tests {
     #[test]
     fn encodes_no_last_stamp_as_a_zero_presence_byte_and_zero_stamp() {
         let header = Header {
-            last: Last::Stamp(None),
+            kind: Kind::Samples(Samples {
+                len: NonZeroU32::MIN,
+                last: None,
+            }),
             ..header(0)
         };
         let encoded = header.encode();
@@ -566,15 +567,14 @@ mod tests {
     #[test]
     fn stores_the_count_of_an_entry_with_no_samples_in_the_stamp_bytes() {
         let header = Header {
-            len: 0,
-            last: Last::Count(5),
+            kind: Kind::Record(NonZeroU64::new(5).expect("not 0")),
             ..header(0)
         };
         let encoded = header.encode();
         assert_eq!(&encoded[37..46], &[0, 5, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(Header::decode(&encoded), Ok(header));
         let largest = Header {
-            last: Last::Count(u64::MAX),
+            kind: Kind::Record(NonZeroU64::MAX),
             ..header
         };
         assert_eq!(Header::decode(&largest.encode()), Ok(largest));
@@ -695,22 +695,20 @@ mod tests {
             any::<u8>(),
         )
             .prop_map(
-                |(index, backfill, first, len, stored_at, last, given, tag)| {
-                    let empty = len == 0;
-                    Header {
-                        index: channel::Key::from_u128(index),
-                        path: if backfill { Path::Backfill } else { Path::Live },
-                        first,
-                        len,
-                        stored_at: Stamp::from_nanos(stored_at),
-                        last: if empty {
-                            Last::Count(given)
-                        } else {
-                            Last::Stamp(last.map(Stamp::from_nanos))
-                        },
-                        tag,
-                        bytes: 0,
-                    }
+                |(index, backfill, first, len, stored_at, last, given, tag)| Header {
+                    index: channel::Key::from_u128(index),
+                    path: if backfill { Path::Backfill } else { Path::Live },
+                    first,
+                    stored_at: Stamp::from_nanos(stored_at),
+                    kind: match NonZeroU32::new(len) {
+                        Some(len) => Kind::Samples(Samples {
+                            len,
+                            last: last.map(Stamp::from_nanos),
+                        }),
+                        None => Kind::Record(NonZeroU64::new(given).expect("from 1")),
+                    },
+                    tag,
+                    bytes: 0,
                 },
             )
     }

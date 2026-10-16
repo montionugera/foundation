@@ -7,8 +7,22 @@ use types::name::Name;
 
 use crate::browse::Path;
 
+/// The name of the reserved call that [`fill`] writes.
+const FILL: &str = "fill";
+
+/// A call `fill`, the reserved call that [`fill`] writes. `config` refuses each one
+/// that is not inside another, in any value at any depth, also in the config of a
+/// kind, so no kind may give a call `fill` a meaning of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fill<'a> {
+    /// `fill("<what>")`, as [`fill`] writes it.
+    Of(&'a str),
+    /// A call `fill` of other arguments.
+    Bad,
+}
+
 /// `fill("<what>")`: the value of a fact that the device does not give, such as
-/// `fill("the sample type")`. `plan` refuses it.
+/// `fill("the sample type")`. `config` refuses it.
 #[must_use]
 pub fn fill(what: &str) -> Value {
     let what = Value {
@@ -16,13 +30,33 @@ pub fn fill(what: &str) -> Value {
         span: None,
     };
     let call = Call {
-        function: "fill".into(),
+        function: FILL.into(),
         function_span: None,
         arguments: vec![what],
     };
     Value {
         kind: Kind::Call(call),
         span: None,
+    }
+}
+
+/// The call `fill` that `value` is, or `None` when it is not a call `fill`.
+#[must_use]
+pub fn unfilled(value: &Value) -> Option<Fill<'_>> {
+    let Kind::Call(call) = &value.kind else {
+        return None;
+    };
+    if &*call.function != FILL {
+        return None;
+    }
+    match call.arguments.as_slice() {
+        [
+            Value {
+                kind: Kind::String(what),
+                ..
+            },
+        ] => Some(Fill::Of(what)),
+        _ => Some(Fill::Bad),
     }
 }
 
@@ -70,13 +104,10 @@ fn default(
     let mut base = connector.as_str().to_owned();
     for name in names {
         base.push('.');
-        base.extend(name.chars().map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        }));
+        base.extend(
+            name.chars()
+                .map(|c| if Name::segment_char(c) { c } else { '_' }),
+        );
     }
     let (mut text, mut suffix) = (base.clone(), 1);
     while used.contains(&text.to_ascii_lowercase()) {

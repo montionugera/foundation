@@ -16,7 +16,7 @@ use types::name::Name;
 use types::time::Span;
 
 use crate::kind::{self, Context, Error};
-use crate::{browse, cancel, reader, retry, status};
+use crate::{browse, cancel, http, reader, retry, status};
 
 /// The waits between restarts.
 const RESTART: retry::Config = retry::Config {
@@ -38,6 +38,8 @@ pub struct Config {
     pub entropy: Entropy,
     /// The network that kinds connect through.
     pub net: Net,
+    /// The roots that an `https` connect of a kind trusts.
+    pub roots: http::Roots,
     /// The shard's tasks.
     pub tasks: Tasks,
     /// The shard's hub. Each session a kind opens acts as its connector.
@@ -3610,6 +3612,7 @@ mod tests {
                 clock: node.clock(),
                 entropy: node.entropy(),
                 net: node.net(),
+                roots: http::Roots::default(),
                 tasks: tasks.clone(),
                 hub: hub::testing::open(env(&node, tasks.clone())).await.0,
                 secrets: testing::create_secrets(node.files()),
@@ -3661,6 +3664,7 @@ mod tests {
                 clock: clock.clone(),
                 entropy: node.entropy(),
                 net: node.net(),
+                roots: http::Roots::default(),
                 tasks: tasks.clone(),
                 hub,
                 secrets: testing::create_secrets(node.files()),
@@ -4321,7 +4325,9 @@ mod tests {
     }
 
     /// A run whose held reader reads from disk while the pool has no block gets
-    /// `Retry` from the end of its reader, and the next run reads the frame.
+    /// `Retry` from the end of its reader, and the next run reads the frame. The
+    /// read waits for the commit of the records of the open, which frees a block, so
+    /// the run fills the pool again after it.
     #[test]
     fn retries_a_read_from_disk_while_the_pool_is_full() {
         let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);
@@ -4334,7 +4340,10 @@ mod tests {
                     let channels = status_names("plant.write", &[]);
                     let writer = ctx.writer(channels, Authority(1), None).await;
                     let writer = writer.expect("the writer opens");
-                    Some((fill(&writer), writer))
+                    let mut drafts = fill(&writer);
+                    ctx.clock().sleep(Span::SECOND).await;
+                    drafts.extend(fill(&writer));
+                    Some((drafts, writer))
                 } else {
                     None
                 };
@@ -4365,9 +4374,10 @@ mod tests {
         assert_eq!(read.got[2], Ok(vec![1]));
     }
 
-    /// The first run acks the frame at 100 ms. The frame at 1 s finds no room, so the
-    /// held position of the next run is at a lost seq: it reads the frame at 1.5 s,
-    /// with the lost seq as its gap.
+    /// The first run acks the frame at 100 ms. The frame at 900 ms finds no room, so
+    /// the held position of the next run is at a lost seq: it reads the frame at
+    /// 1.5 s, with the lost seq as its gap. The pool fills before the tick of the
+    /// records at 1 s, so the order of the two does not decide the run.
     #[test]
     fn opens_a_held_reader_at_a_lost_frame_at_the_frame_after_it() {
         let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);
@@ -4407,7 +4417,7 @@ mod tests {
                     matches!(outcomes[..], [hub::home::Outcome::Applied { .. }]),
                     "{outcomes:?}"
                 );
-                clock.sleep_until(start + ms(1_000)).await;
+                clock.sleep_until(start + ms(900)).await;
                 let mut held = fill(&writer);
                 drop(held.pop());
                 let stamp = writer.now().nanos();

@@ -1,9 +1,9 @@
 - **HANDOFF RECORD (#191)** The home records each handoff that `Gate::handoff` gives
   (GATE RULES) as a buffer entry on the live path of the index, with tag `HANDOFF`,
-  `len` 0, and `first` at the live tail. It records a handoff after the gate input that
-  gave it and before the next stored frame of its index. It records it before the next
-  input too, except for a handoff with no room or after a failed commit
-  (`laptop.architect`, #2318, 2026-10-11T10:46:58Z:
+  no samples (`samples: None`, `len` 0 on disk), and `first` at the live tail. It
+  records a handoff after the gate input that gave it and before the next stored frame
+  of its index. It records it before the next input too, except for a handoff with no
+  room or after a failed commit (`laptop.architect`, #2318, 2026-10-11T10:46:58Z:
   https://github.com/synnaxlabs/foundation/pull/2318#issuecomment-6108217840).
   Supersedes "before the next input or frame" of
   https://github.com/synnaxlabs/foundation/pull/402. Its bytes are empty when no writer

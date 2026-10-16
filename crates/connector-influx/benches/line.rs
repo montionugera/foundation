@@ -12,7 +12,7 @@ use types::time::Stamp;
 
 fn main() {
     for shape in SHAPES {
-        let mut store = Store::default();
+        let mut store = Store::unsigned();
         let body = shape.body(&shape.measurement(), Vec::new());
         store.write(&body).expect("each line stores");
         assert_eq!(
@@ -39,7 +39,7 @@ struct Shape {
     values: fn(u32, &mut [Option<Value>]),
 }
 
-const SHAPES: [Shape; 3] = [
+const SHAPES: [Shape; 4] = [
     Shape {
         name: "float",
         fields: &["value"],
@@ -53,6 +53,17 @@ const SHAPES: [Shape; 3] = [
                 Some(float(k)),
                 Some(Value::Integer(i64::from(k))),
                 Some(Value::Boolean(k % 2 == 0)),
+            ]);
+        },
+    },
+    Shape {
+        name: "unsigned",
+        fields: &["value", "count", "total"],
+        values: |k, values| {
+            values.copy_from_slice(&[
+                Some(float(k)),
+                Some(Value::Integer(i64::from(k))),
+                Some(Value::Unsigned(u64::MAX - u64::from(k))),
             ]);
         },
     },

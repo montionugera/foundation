@@ -1,7 +1,9 @@
 //! The files of the host by the paths that a user gave.
 
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -9,7 +11,7 @@ use env::entropy::Driver as _;
 use env::paths::{Error, Found, names_directory};
 use rustix::io::Errno;
 
-use crate::{dir, entropy};
+use crate::{dir, entropy, host};
 
 #[derive(Debug)]
 pub(crate) struct Driver;
@@ -21,6 +23,10 @@ impl env::paths::Driver for Driver {
 
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
         write(path, bytes).map_err(|e| error(&e))
+    }
+
+    fn make_dir(&self, path: &Path) -> Result<(), Error> {
+        make_dir(path).map_err(|e| error(&e))
     }
 
     fn resolve(&self, path: &Path) -> Result<PathBuf, Error> {
@@ -60,24 +66,25 @@ fn resolve(path: &Path) -> io::Result<PathBuf> {
 }
 
 fn read(path: &Path, most: usize) -> io::Result<Found> {
-    #[expect(clippy::disallowed_methods, reason = "os reads the user's files")]
-    let file = File::open(path)?;
-    if file.metadata()?.is_dir() {
-        let (mut entries, mut size) = (Vec::new(), 0_usize);
-        for name in dir::names(file)? {
-            let entry = path.join(name?);
-            size = size.saturating_add(entry.as_os_str().len());
-            if size > most {
-                return Ok(Found::Large);
+    let file = match host::open(path)? {
+        host::Readable::Regular(file, _) => file,
+        host::Readable::Directory(dir) => {
+            let (mut entries, mut size) = (Vec::new(), 0_usize);
+            for name in dir::names(dir)? {
+                let entry = path.join(name?);
+                size = size.saturating_add(entry.as_os_str().len());
+                if size > most {
+                    return Ok(Found::Large);
+                }
+                entries.push(entry);
             }
-            entries.push(entry);
+            entries.sort_unstable();
+            return Ok(Found::Directory(entries));
         }
-        entries.sort_unstable();
-        return Ok(Found::Directory(entries));
-    }
+    };
     let over = u64::try_from(most).map_or(u64::MAX, |most| most.saturating_add(1));
     let mut bytes = Vec::new();
-    file.take(over).read_to_end(&mut bytes)?;
+    File::from(file).take(over).read_to_end(&mut bytes)?;
     if bytes.len() > most {
         return Ok(Found::Large);
     }
@@ -105,6 +112,19 @@ fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     fill(open(&new)?, bytes)
         .and_then(|()| fs::rename(&new, path))
         .or_else(|e| fs::remove_file(&new).and(Err(e)))
+}
+
+/// Makes a directory at `path` as [`dir::make`] does.
+fn make_dir(path: &Path) -> io::Result<()> {
+    // macOS makes the target of a link to nothing at a path that ends in `/`, and
+    // Linux gives `EEXIST`.
+    let bytes = path.as_os_str().as_bytes();
+    let end = bytes
+        .iter()
+        .rposition(|&byte| byte != b'/')
+        .map_or(1, |at| at + 1);
+    let path = Path::new(OsStr::from_bytes(bytes.get(..end).unwrap_or(bytes)));
+    dir::make(rustix::fs::CWD, path).map_err(io::Error::from)
 }
 
 /// Makes a file at `path` whose permission bits give only this user access.

@@ -304,7 +304,8 @@ state on `main`.
   reads the documents into definitions, and the influx kind reads the config of each
   `connector` block of kind `influx`. Fuzzed: `config_check`, which only the inputs
   `influx_*` take to the influx kind, through `connector::reader::read`,
-  `connector::http::uri`, `secret::Source::read` (the inputs `influx_token_*`), and
+  `connector::http::uri`, `secret::Source::read` (the inputs `influx_token_*`, and
+  `influx_ca_*` and `influx_address_https` for `ca`), and
   `connector_influx::Kind::parse` (#1817).
 - A person or an agent reviews the files and the plan before `apply` (K3). Text
   that shows one thing and reads as another defeats that review. Questions for a
@@ -437,6 +438,13 @@ state on `main`.
   the time until the allocator gives that memory again. Trigger for a request path
   that clears them: an attacker who reads freed heap of the node and not its live
   heap.
+- Whoever can write the `ca` source of an `influx` connector can make the node trust
+  a server of their own, so they can stand in for the InfluxDB server and get the
+  token. A `ca` adds to the roots of the node and never replaces them, so it cannot
+  make a node trust fewer servers. Over `http`, the token crosses the network in clear,
+  with or without a `ca`. `plan` refuses a `ca` with an `http` address, so its user
+  does not think that the token goes under TLS (INFLUX KIND). `Roots::with_pem` reads
+  the text of the `ca`. Fuzzed: `connector_pem`.
 - A join ticket is a secret (BQ11a).
 - Rule for every crate: no secret value in a log, a status channel, an error, or
   plan output.
@@ -475,7 +483,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `wire_hub_home` | `wire::hub::Home::decode`, `Open::encode`, `Credit::encode`, `keys::encode` | Each message encodes to the same bytes; each event comes in the order of a session, and each refusal is one that the order or the mode of the session gives; each valid message made from the input decodes to itself |
 | `wire_blob` | `wire::blob::Server::decode`, `Requester::decode`, `Put::body`, `Reply::body`, `Body::take`, `Body::end`, `get::encode`, `Put::encode`, `Reply::encode` | Each message encodes to the same bytes; each body counts exactly the bytes of its head, and each refusal of a body is the one that its rest gives; a body ends unfinished while bytes remain; each valid message made from the input decodes to itself |
 | `wire_hub_reader` | `wire::hub::Reader::decode`, `Reader::end`, `Reply::encode`, `ends::encode` | Each message encodes to the same bytes; each event comes in the order of a session; each head is live, ends at or below `u64::MAX`, and starts at or after the end of the head before it or, for the first head, the `live` of `Opened`; each refusal is one that the order, the mode, or the heads of the session give; the body is where `Reader::body` says; `Reader::end` refuses each point before `Behind`, with `Unfinished` inside a body; each valid message made from the input decodes to itself |
-| `wire_hub_frames` | `wire::hub::Frames::open`, `due`, `decode`, `received`, `draft`, `finished`, with a small pool | No input panics; each frame has the path and range of its head; a layout error comes again from the next `due`; a run that receives each body message in place gives the same steps as a run that gives each whole to `decode` |
+| `wire_hub_frames` | `wire::hub::Frames::open`, `due`, `decode`, `received`, `draft`, `finished`, with a small pool | No input panics; each frame has the path and range of its head; a layout error comes again from the next `due`; a run that receives each body message in place gives the same steps as a run that gives each whole to `decode`; in a complete session, the lost seqs of each frame (`Frames::lost`) and the ranges of its frames with a sample tile the seqs from the open position on, and a latest session or a frame with no sample loses none |
 | `wire_hub_client` | `wire::hub::client::Challenge::decode`, `Signed::decode`, `Request::decode`, `Response::decode`, `First::decode`, `Read::decode`, `Open::decode`, `Reader::decode`, `Places::decode`, `place::decode`, `Body::take`, `Body::end`, and the encoders of each message | Each message encodes to the same bytes; each decoder but `Open::decode` and `Reader::decode` refuses another kind with `Error::Kind`, and `Reader::decode` refuses a first message of another kind with it; `First::decode` gives what the decoder of the kind of the message gives; each body ends at its length and nowhere else, and each refusal of a body is the one that its rest gives; a `Reader` of each mode gives nothing before the last place; a `Places` over `PLACES_MAX` gives `Error::Places`; each message of the run holds no more places than remain, and a stamp at the index place; with the last place, and at no message before it, the reader gives the start: the places of the run, their key set in place order with the index group at the index place, and the `hub::Reader` of their count and the mode; places that name a channel twice give `Error::Repeated`; a refused message leaves the reader as it was, and the end of the stream before the last place gives `Error::Finished`; each valid message made from the input decodes to itself |
 | `transport_hello` | `transport::fuzzing::Hello::decode`, `Hello::encode` (feature `fuzzing`) | Gives the hello, or the refusal, that a second reader of the STREAM WIRE rules gives; its encoding decodes to itself |
 | `transport_certificate` | `transport::fuzzing::peer`: the client verifier and the peer of a node's server, for a dialer's chain of 0 to 3 certificates (feature `fuzzing`) | Gives the peer that a second reader of the rules gives: a client for no certificate, none for a chain of more than one or a certificate over 1024 bytes, and else none or the node whose key follows the Ed25519 key header in the certificate; a certificate that a node issues reads back to its key, and two of it are refused. Not reached: the handshake signature, which fuzzed bytes cannot make |
@@ -500,8 +508,9 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `config_hcl_write` | `config_hcl::write` | Its text reads back as an equal document |
 | `config_plan` | `config::plan::Plan::decode` | Encodes to the same bytes |
 | `config_check` | `config::check` on the documents that `config_hcl::read` reads from up to three files, with the influx kind in the kind table | The same entries or the same problems for the files in either order; with no problem, one entry for each block and one for each status channel of each connector, and no other, unique in any case, each policy and connector decodes to itself, and each edge of a channel names a channel entry; each problem's span is in its file, in the order of the files, then of the source; files that pass alone, with keys that differ in more than case and no subject named as a connector in any ASCII case, pass together and give the union of their entries |
+| `connector_pem` | `connector::http::Roots::with_pem` on the text of a `ca` | The same error with a UTF-8 byte order mark put at the start; an `Ok` holds a root |
 | `connector_modbus_rtu` | `connector_modbus::rtu::decode_request`, `decode_reply`, `pdu::Request::decode`, `Request::decode_reply` | A request reads back unchanged; a reply has the asked count |
-| `connector_modbus_tcp` | `connector_modbus::tcp::decode`, `pdu::Request::decode`, `decode_reply`, `poll::groups`, `poll::Group::values` | A request reads back unchanged; a reply has the asked count; reads of each register type that tile a read request group into that request, and give the values of its reply in address order, in each register order |
+| `connector_modbus_tcp` | `connector_modbus::tcp::decode`, `pdu::Request::decode`, `decode_reply`, `read::groups`, `read::Group::values` | A request reads back unchanged; a reply has the asked count; reads of each register type that tile a read request group into that request, and give the values of its reply in address order, in each register order |
 | `connector_opcua_decode` | `connector_opcua::fuzz::decode`: `UA_decodeBinary` of open62541, as each type of `UA_TYPES` | No memory fault or leak; a decoded value encodes to its `UA_calcSizeBinary` length, and that encoding decodes, reads exactly its length, and encodes to the same bytes. A decoded `DataValue` gives the same read of its value (`Value::of` of the kind), or the same fault, from both decodes. Until #435 is fixed, the encoding decodes with as many zeros after it as its length. |
 | `ops_mcp` | `foundation mcp`, through `ops::cli` | No error, and at most one reply for each line |
 | `types_name` | `Name` | Prints as the text it was read from |
@@ -536,6 +545,7 @@ the data directory (`node::name::decode`, #2174), the file `budget` of the data
 directory (`node::budget::decode`, #2174), the parsers of `/proc/self/mountinfo` and
 `/proc/self/cgroup` in `os::memory` (#2226), the request of a remote program and the
 reply of its node (`ops::serve`, #2563), the newest handoff record of each index in the
-ring (`home::handoff::read`, #2278), the buffer entry that a complete reader reads from
+ring (`home::handoff::read`, #2278), the newest named reader entry of each index in
+the ring (`home::named::read`, #2278), the buffer entry that a complete reader reads from
 disk (`home::stored::Decoder::frame`, #2738), and the chunk processing of open62541
 (`ua_securechannel.c`, #1990).

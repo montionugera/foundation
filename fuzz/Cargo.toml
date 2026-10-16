@@ -117,6 +117,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "connector_pem"
+path = "fuzz_targets/connector_pem.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "connector_modbus_rtu"
 path = "fuzz_targets/connector_modbus_rtu.rs"
 test = false
