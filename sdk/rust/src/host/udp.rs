@@ -197,11 +197,18 @@ impl receiver::Driver for Receiver {
             let outcome = bound
                 .socket
                 .try_io(Interest::READABLE, || bound.receive(buffers, meta));
-            match outcome {
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-                outcome => return Poll::Ready(outcome.map_err(|e| from_io(&e))),
+            if let Poll::Ready(received) = received(outcome) {
+                return Poll::Ready(received);
             }
         }
+    }
+}
+
+/// The outcome of a receive: `Pending` when the socket holds no datagram.
+fn received(outcome: io::Result<usize>) -> Poll<Result<usize, Error>> {
+    match outcome {
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
+        outcome => Poll::Ready(outcome.map_err(|e| from_io(&e))),
     }
 }
 

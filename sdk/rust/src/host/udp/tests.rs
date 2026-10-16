@@ -144,6 +144,20 @@ fn maps_each_outcome_of_a_send() {
 }
 
 #[test]
+fn maps_each_outcome_of_a_receive() {
+    let refused = io::Error::from_raw_os_error(111);
+    assert_eq!(received(Ok(3)), Poll::Ready(Ok(3)));
+    assert_eq!(
+        received(Err(io::ErrorKind::WouldBlock.into())),
+        Poll::Pending
+    );
+    assert_eq!(
+        received(Err(refused)),
+        Poll::Ready(Err(Error::Io { code: 111 }))
+    );
+}
+
+#[test]
 #[should_panic(expected = "a socket call failed with no OS code: invalid data")]
 fn an_error_with_no_os_code_panics() {
     drop(from_io(&io::Error::from(io::ErrorKind::InvalidData)));

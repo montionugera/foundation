@@ -1,5 +1,7 @@
 use std::any::Any;
+use std::net::Ipv6Addr;
 use std::panic::AssertUnwindSafe;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use super::*;
@@ -73,5 +75,53 @@ fn each_error_names_its_cause() {
             "cannot bind the local UDP socket: the peer stopped answering",
             "the node finished a stream with no answer",
         ]
+    );
+}
+
+/// A thread of a client that runs `body` with the receiver of its end.
+fn thread(body: impl FnOnce(oneshot::Receiver<()>) + Send + 'static) -> Thread {
+    let (end, ended) = oneshot::channel();
+    #[expect(clippy::disallowed_methods, reason = "a thread of a client")]
+    let handle = thread::spawn(move || body(ended));
+    Thread { end, handle }
+}
+
+#[test]
+fn a_drop_ends_the_thread_and_waits_for_it() {
+    let (ended, end) = mpsc::channel();
+    let client = Client(Some(thread(move |receiver| {
+        drop(receiver.blocking_recv());
+        ended.send(()).unwrap();
+    })));
+    drop(client);
+    assert_eq!(end.try_recv(), Ok(()));
+}
+
+#[test]
+#[should_panic(expected = "the session failed")]
+fn a_drop_resumes_a_panic_of_the_thread() {
+    drop(Client(Some(thread(|_| panic!("the session failed")))));
+}
+
+#[test]
+fn a_client_of_port_0_is_unroutable() {
+    let address = SocketAddr::from((Ipv6Addr::LOCALHOST, 0));
+    let peer = PrivateKey([7; 32]).public();
+    let credentials = Credentials {
+        node: types::node::Key::from_u128(1),
+        public_key: peer,
+        subject: "plant.operator".parse().unwrap(),
+        private_key: PrivateKey([8; 32]),
+    };
+    let unreachable = transport::Error::Unreachable {
+        peer,
+        attempts: vec![(
+            transport::Address::Udp(address),
+            transport::Error::Unroutable,
+        )],
+    };
+    assert_eq!(
+        Client::connect(address, credentials).unwrap_err(),
+        Error::Session(program::Error::Transport(unreachable))
     );
 }

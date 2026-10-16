@@ -196,6 +196,11 @@ exclude_re = [
   # The loop of the constant assertion of the status names: a mutant that skips it
   # still builds, and no test sees a check that runs at compile time.
   'crates/node/src/status\.rs:.*replace < with (==|>)$',
+  # `NonZeroUsize::MIN` is 1.
+  'sdk/rust/src/host/udp\.rs:.*replace <impl udp::Driver for Udp>::send_batch_max -> NonZeroUsize with 1',
+  # Only a read takes a block of the frames pool, and `sdk` has no read until a PR of
+  # the C6 list of #2177 adds one. Its test removes this line.
+  'sdk/rust/src/lib\.rs:30:.*replace << with >>$',
   # A stub that panics until PR B2 of #432 fills it; B2 removes this line.
   'crates/connector-modbus/src/kind\.rs:.*replace <impl kind::Kind for Kind>::run ->',
 ]
