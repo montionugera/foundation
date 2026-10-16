@@ -480,7 +480,7 @@ mod reader {
     fn in_run(mode: Mode, places: Places) -> Reader {
         let mut reader = Reader::new(mode);
         reader
-            .decode(&encode_places(places))
+            .decode(Some(&encode_places(places)))
             .expect("the places decode");
         reader
     }
@@ -488,7 +488,7 @@ mod reader {
     /// The decoder of the replies that `reader` gives with the last place, in
     /// `message`.
     fn last(reader: &mut Reader, message: &[u8]) -> hub::Reader {
-        match reader.decode(message) {
+        match reader.decode(Some(message)) {
             Ok(Some(start)) => start.home,
             other => panic!("the last place gave {other:?}"),
         }
@@ -518,7 +518,7 @@ mod reader {
     }
 
     fn event(reader: &mut Reader, message: &[u8]) -> Result<Event, Error> {
-        reader.decode(message).map(|decoded| split(decoded).0)
+        reader.decode(Some(message)).map(|decoded| split(decoded).0)
     }
 
     #[derive(Debug, PartialEq)]
@@ -550,7 +550,7 @@ mod reader {
             places,
             set,
             mut home,
-        })) = reader.decode(&messages[1])
+        })) = reader.decode(Some(&messages[1]))
         else {
             panic!("the last place gave no start");
         };
@@ -574,18 +574,21 @@ mod reader {
     #[test]
     fn decodes_the_first_message_as_places() {
         let mut reader = Reader::new(Mode::Latest);
-        assert_eq!(reader.decode(&[]).err(), Some(Error::Empty));
+        assert_eq!(reader.decode(Some(&[])).err(), Some(Error::Empty));
         assert_eq!(
-            reader.decode(&[OPENED]).err(),
+            reader.decode(Some(&[OPENED])).err(),
             Some(Error::Kind { kind: OPENED })
         );
         assert_eq!(
-            reader.decode(&encode_run(&[stamp(2)])).err(),
+            reader.decode(Some(&encode_run(&[stamp(2)]))).err(),
             Some(Error::Kind { kind: 2 })
         );
-        assert_eq!(reader.decode(&[6]).err(), Some(Error::Length { len: 1 }));
         assert_eq!(
-            reader.decode(&zeros(6, Places::LEN)).err(),
+            reader.decode(Some(&[6])).err(),
+            Some(Error::Length { len: 1 })
+        );
+        assert_eq!(
+            reader.decode(Some(&zeros(6, Places::LEN))).err(),
             Some(Error::Index { index: 0, count: 0 })
         );
         let places = Places { count: 1, index: 0 };
@@ -597,14 +600,14 @@ mod reader {
         let places = Places { count: 1, index: 0 };
         let mut reader = in_run(Mode::Complete, places);
         assert_eq!(
-            reader.decode(&encode_places(places)).err(),
+            reader.decode(Some(&encode_places(places))).err(),
             Some(Error::Length { len: 9 })
         );
         assert_eq!(
-            reader.decode(&[OPENED]).err(),
+            reader.decode(Some(&[OPENED])).err(),
             Some(Error::Length { len: 1 })
         );
-        assert_eq!(reader.decode(&[]).err(), Some(Error::Empty));
+        assert_eq!(reader.decode(Some(&[])).err(), Some(Error::Empty));
         assert_eq!(
             event(&mut reader, &encode_run(&[stamp(1)])),
             Ok(Event::Start(vec![stamp(1)]))
@@ -617,7 +620,7 @@ mod reader {
         let mut reader = in_run(Mode::Complete, places);
         let three = [stamp(1), byte(2), byte(3)];
         assert_eq!(
-            reader.decode(&encode_run(&three)).err(),
+            reader.decode(Some(&encode_run(&three))).err(),
             Some(Error::Run {
                 items: 3,
                 remain: 2
@@ -628,7 +631,7 @@ mod reader {
             Ok(Event::More)
         );
         assert_eq!(
-            reader.decode(&encode_run(&three[1..])).err(),
+            reader.decode(Some(&encode_run(&three[1..]))).err(),
             Some(Error::Run {
                 items: 2,
                 remain: 1
@@ -645,7 +648,7 @@ mod reader {
         let places = Places { count: 1, index: 0 };
         let mut reader = in_run(Mode::Complete, places);
         assert_eq!(
-            reader.decode(&encode_run(&[byte(1), byte(2)])).err(),
+            reader.decode(Some(&encode_run(&[byte(1), byte(2)]))).err(),
             Some(Error::Run {
                 items: 2,
                 remain: 1
@@ -668,16 +671,16 @@ mod reader {
             let held = usize::try_from(index / 2).unwrap();
             for message in &messages[..held] {
                 reader
-                    .decode(message)
+                    .decode(Some(message))
                     .expect("a message before the index decodes");
             }
             assert_eq!(
-                reader.decode(&messages[held]).err(),
+                reader.decode(Some(&messages[held])).err(),
                 Some(unstamped.clone()),
                 "{index}"
             );
             assert_eq!(
-                reader.decode(&[OPENED]).err(),
+                reader.decode(Some(&[OPENED])).err(),
                 Some(Error::Length { len: 1 }),
                 "the reader is still in the run"
             );
@@ -725,7 +728,7 @@ mod reader {
                 steps.push(Step::Reply(reply(home, message)));
                 continue;
             }
-            let event = reader.decode(message).map(|decoded| {
+            let event = reader.decode(Some(message)).map(|decoded| {
                 let (event, given) = split(decoded);
                 home = given;
                 event
@@ -899,7 +902,62 @@ mod reader {
         let places = Places { count: 1, index: 0 };
         let mut reader = in_run(Mode::Complete, places);
         last(&mut reader, &encode_run(&[stamp(1)]));
-        drop(reader.decode(&[OPENED]));
+        drop(reader.decode(Some(&[OPENED])));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "a read stream is decoded after the decoder gave its start"
+    )]
+    fn panics_on_the_end_after_the_last_place() {
+        let mut reader = in_run(Mode::Complete, Places { count: 1, index: 0 });
+        last(&mut reader, &encode_run(&[stamp(1)]));
+        drop(reader.decode(None));
+    }
+
+    /// The end of the stream before the last place, at the places and in the run,
+    /// leaves the decoder as it was.
+    #[test]
+    fn refuses_the_end_before_the_last_place() {
+        let mut reader = Reader::new(Mode::Complete);
+        assert_eq!(reader.decode(None).err(), Some(Error::Finished));
+        let places = Places { count: 2, index: 0 };
+        assert_eq!(event(&mut reader, &encode_places(places)), Ok(Event::More));
+        assert_eq!(
+            event(&mut reader, &encode_run(&[stamp(1)])),
+            Ok(Event::More)
+        );
+        let error = reader.decode(None).expect_err("the end");
+        assert_eq!(error, Error::Finished);
+        assert_eq!(
+            error.to_string(),
+            "the node finished the read stream before its last place"
+        );
+        assert_eq!(
+            event(&mut reader, &encode_run(&[byte(2)])),
+            Ok(Event::Start(vec![stamp(1), byte(2)]))
+        );
+    }
+
+    /// A refused repeat keeps neither the places of its message nor their count,
+    /// so a later last message gives the start.
+    #[test]
+    fn leaves_the_decoder_as_it_was_after_a_repeat() {
+        let mut reader = in_run(Mode::Complete, Places { count: 4, index: 0 });
+        assert_eq!(
+            event(&mut reader, &encode_run(&[stamp(1), byte(2)])),
+            Ok(Event::More)
+        );
+        assert_eq!(
+            reader.decode(Some(&encode_run(&[byte(3), byte(2)]))).err(),
+            Some(Error::Repeated {
+                key: channel::Key::from_u128(2)
+            })
+        );
+        assert_eq!(
+            event(&mut reader, &encode_run(&[byte(3), byte(4)])),
+            Ok(Event::Start(vec![stamp(1), byte(2), byte(3), byte(4)]))
+        );
     }
 
     #[test]
@@ -927,7 +985,7 @@ mod reader {
         assert_eq!(messages.len(), 2);
         let mut reader = in_run(Mode::Complete, Places { count: 4, index: 0 });
         assert_eq!(event(&mut reader, &messages[0]), Ok(Event::More));
-        let error = reader.decode(&messages[1]).expect_err("a repeat");
+        let error = reader.decode(Some(&messages[1])).expect_err("a repeat");
         assert_eq!(
             error,
             Error::Repeated {
@@ -947,7 +1005,7 @@ mod reader {
     fn refuses_an_array_of_stamps_as_the_index() {
         let mut reader = in_run(Mode::Complete, Places { count: 1, index: 0 });
         let error = reader
-            .decode(&encode_run(&[pt(1, "timestamp[2]", "a")]))
+            .decode(Some(&encode_run(&[pt(1, "timestamp[2]", "a")])))
             .expect_err("an array is not a stamp");
         assert_eq!(
             error,
@@ -1201,7 +1259,7 @@ proptest! {
         let count = u32::try_from(places.len()).unwrap();
         let reply = Places { count, index: u32::try_from(index).unwrap() };
         let first = encode_places(reply);
-        prop_assert!(matches!(reader.decode(&first), Ok(None)));
+        prop_assert!(matches!(reader.decode(Some(&first)), Ok(None)));
         let messages: Vec<_> = place::messages(&places, max).collect();
         let mut sent = 0_usize;
         let mut last = None;
@@ -1210,7 +1268,7 @@ proptest! {
             let len = place::decode(&bytes)?.len();
             let held = (sent..sent.saturating_add(len)).contains(&index);
             sent = sent.saturating_add(len);
-            match reader.decode(&bytes) {
+            match reader.decode(Some(&bytes)) {
                 Ok(start) => {
                     let end = at.saturating_add(1) == messages.len();
                     prop_assert_eq!(start.is_some(), end);
@@ -1251,13 +1309,13 @@ proptest! {
         let count = u32::try_from(places.len()).unwrap();
         let reply = Places { count, index: 0 };
         let mut reader = Reader::new(Mode::Complete);
-        reader.decode(&encode_places(reply))?;
+        reader.decode(Some(&encode_places(reply)))?;
         let messages: Vec<_> = place::messages(&places, max).collect();
         let at = at.index(messages.len());
         let mut sent = 0_usize;
         for message in messages.into_iter().take(at) {
             let bytes = encode_message(message);
-            prop_assert!(matches!(reader.decode(&bytes), Ok(None)));
+            prop_assert!(matches!(reader.decode(Some(&bytes)), Ok(None)));
             sent = sent.saturating_add(place::decode(&bytes)?.len());
         }
         let (bytes, error) = match fault {
@@ -1270,7 +1328,7 @@ proptest! {
                 (encode_run(&over), Error::Run { items: over.len(), remain })
             }
         };
-        prop_assert_eq!(reader.decode(&bytes).err(), Some(error));
+        prop_assert_eq!(reader.decode(Some(&bytes)).err(), Some(error));
     }
 
     #[test]

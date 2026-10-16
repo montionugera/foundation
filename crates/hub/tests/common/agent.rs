@@ -105,18 +105,22 @@ impl Stream {
             let message = self.recv().await.expect("receives");
             message.expect("a message before the finish")
         };
-        let first = next().await;
-        let places = Places::decode(&first).expect("the places come first");
-        let mut decoded = start.decode(&first).expect("the places decode");
+        let mut decoded = None;
         let client::Start {
             places: run,
+            set,
             home: mut reader,
-            ..
         } = loop {
             if let Some(decoded) = decoded {
                 break decoded;
             }
-            decoded = start.decode(&next().await).expect("a message of the run");
+            decoded = start
+                .decode(Some(&next().await))
+                .expect("a message of the run");
+        };
+        let places = Places {
+            count: u32::try_from(run.len()).expect("the count fits a u32"),
+            index: u32::try_from(set.groups()[0]).expect("the index fits a u32"),
         };
         let Ok(FromHome::Opened { live }) = reader.decode(&next().await) else {
             panic!("then `Opened`");

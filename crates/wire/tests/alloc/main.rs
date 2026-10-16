@@ -325,12 +325,12 @@ fn place_messages() {
     let mut reader = Reader::new(Mode::Complete);
     let mut first = [0; Places::LEN];
     Places { count: 3, index: 0 }.encode(&mut first);
-    reader.decode(&first).expect("the places decode");
+    reader.decode(Some(&first)).expect("the places decode");
     let mut rest = &out[..];
     let mut start = None;
     for len in lens {
         let (message, after) = rest.split_at(len);
-        start = reader.decode(message).expect("a message of the run");
+        start = reader.decode(Some(message)).expect("a message of the run");
         rest = after;
     }
     let start = start.expect("the last place gives the start");

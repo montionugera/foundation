@@ -4,12 +4,13 @@
 //! decodes encodes to its bytes, each body ends at its length and nowhere else, each
 //! refusal of a body is the one that its rest gives, a read stream gives with its last
 //! place the places of its run, their key set, and the decoder of a session of their
-//! count and the mode, and each valid message made from the input reads back.
+//! count and the mode, a refused message of a read stream leaves its decoder as it
+//! was, and each valid message made from the input reads back.
 //!
 //! Input: the messages of one stream (`fuzz::messages`). Each decoder reads each
 //! message, an open among them; the body of the first message, when it is a request, a
 //! response, or a read, takes each later message; and a `client::Reader` of each mode
-//! takes each message until it refuses one or gives the last place.
+//! takes each message until it gives the last place, and then the end of the stream.
 
 #![no_main]
 #![expect(clippy::disallowed_methods, reason = "fuzz_target! calls File::create")]
@@ -125,17 +126,19 @@ fn unkinded(message: &[u8]) {
     }
 }
 
-/// Drives a reader of `mode` on `bytes` until it refuses a message or gives the last
-/// place. Each message that it takes decodes alone as places or as a run that encodes
-/// to it, a run holds no more places than remain and a stamp at the index place, and
-/// only the message with the last place gives the start: the places of the run, their
-/// key set in place order, and the decoder of a session of the count and the mode.
+/// Drives a reader of `mode` on `bytes` until it gives the last place, then ends the
+/// stream. A refused message leaves the reader as it was. Each message that it takes
+/// decodes alone as places or as a run that encodes to it, a run holds no more places
+/// than remain and a stamp at the index place, and only the message with the last
+/// place gives the start: the places of the run, their key set in place order, and
+/// the decoder of a session of the count and the mode. An end before the last place
+/// gives `Error::Finished`.
 fn drive(bytes: &[u8], mode: Mode) {
     let mut reader = Reader::new(mode);
     let mut run: Option<(Places, u32, Vec<Place>)> = None;
     for message in fuzz::messages(bytes) {
-        let Ok(start) = reader.decode(message) else {
-            return;
+        let Ok(start) = reader.decode(Some(message)) else {
+            continue;
         };
         let Some((reply, remain, all)) = &mut run else {
             let places = Places::decode(message).expect("the places decode alone");
@@ -184,6 +187,7 @@ fn drive(bytes: &[u8], mode: Mode) {
         );
         return;
     }
+    assert_eq!(reader.decode(None).err(), Some(Error::Finished));
 }
 
 /// Checks each decoder on `message`, and gives its body when it is a request, a

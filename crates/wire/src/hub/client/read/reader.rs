@@ -1,16 +1,14 @@
+use std::sync::Arc;
+
 use types::frame::key_set::KeySet;
 use types::sample::{Scalar, Type};
 
 use super::{Mode, Place, Places, place};
-use crate::common::rest_of_run;
-use crate::hub::frames::to_usize;
+use crate::common::{rest_of_run, to_usize};
 use crate::hub::{self, client::Error};
 
 /// A decoder of the start of a read stream at the program: the places and their
 /// run. With the last place it gives the [`Start`] of the read.
-///
-/// The stream may not end before the last place. When the node finishes it there,
-/// the caller gives [`Error::Finished`].
 #[derive(Debug)]
 pub struct Reader {
     latest: bool,
@@ -37,7 +35,7 @@ pub struct Start {
     pub places: Vec<Place>,
     /// The key set of each frame of the read, from [`KeySet::ordered`]: entry `n` is
     /// place `n`.
-    pub set: KeySet,
+    pub set: Arc<KeySet>,
     /// The decoder of the replies of the reader session, for the count of places and
     /// the mode of the read.
     pub home: hub::Reader,
@@ -53,27 +51,35 @@ impl Reader {
         }
     }
 
-    /// Decodes the next message from the node, up to the last place. Gives the start
-    /// of the read with the last place, else `None`.
+    /// Decodes the next message from the node, up to the last place, or `None` when
+    /// the node finished the stream. Gives the start of the read with the last place,
+    /// else `None`.
     ///
     /// # Errors
     ///
-    /// The first message decodes as [`Places`] and gives its errors:
-    /// [`Error::Empty`], [`Error::Kind`] for another kind, [`Error::Length`], or
-    /// [`Error::Index`]. A message of the run gives, in order, the error of its bytes
-    /// ([`Error::Empty`], [`Error::Length`], [`Error::Sample`], or [`Error::Name`]),
-    /// [`Error::Run`] when it holds more places than remain, and
-    /// [`Error::Unstamped`] when it holds the index place and that place's sample
-    /// type is not `Stamp`. The last message then gives [`Error::Repeated`] when the
-    /// places name a channel more than once.
+    /// [`Error::Finished`] when `message` is `None`. The first message decodes as
+    /// [`Places`] and gives its errors: [`Error::Empty`], [`Error::Kind`] for another
+    /// kind, [`Error::Length`], or [`Error::Index`]. A message of the run gives, in
+    /// order, the error of its bytes ([`Error::Empty`], [`Error::Length`],
+    /// [`Error::Sample`], or [`Error::Name`]), [`Error::Run`] when it holds more
+    /// places than remain, and [`Error::Unstamped`] when it holds the index place and
+    /// that place's sample type is not `Stamp`. The last message then gives
+    /// [`Error::Repeated`] when the places name a channel more than once.
     ///
     /// The stream is then not valid ([`MALFORMED`](crate::header::MALFORMED)), and
-    /// the caller stops it.
+    /// the caller stops it. A refused message leaves the decoder as it was.
     ///
     /// # Panics
     ///
     /// When it gave the start before.
-    pub fn decode(&mut self, message: &[u8]) -> Result<Option<Start>, Error> {
+    pub fn decode(&mut self, message: Option<&[u8]>) -> Result<Option<Start>, Error> {
+        let message = match (&self.next, message) {
+            (Next::Given, _) => {
+                panic!("a read stream is decoded after the decoder gave its start")
+            }
+            (_, None) => return Err(Error::Finished),
+            (_, Some(message)) => message,
+        };
         match &mut self.next {
             Next::Places => {
                 let places = Places::decode(message)?;
@@ -106,22 +112,26 @@ impl Reader {
                         sample: index.data_type,
                     });
                 }
-                all.extend(run);
                 if rest > 0 {
+                    all.extend(run);
                     *remain = rest;
                     return Ok(None);
                 }
-                let channels = all.iter().map(|place| (place.key, place.data_type));
+                let channels = all.iter().chain(&run);
+                let channels = channels.map(|place| (place.key, place.data_type));
                 let set = KeySet::ordered(channels, to_usize(places.index))
                     .map_err(|repeated| Error::Repeated { key: repeated.key })?;
                 let home = hub::Reader::of(places.count, self.latest);
-                let places = std::mem::take(all);
+                let mut places = std::mem::take(all);
+                places.extend(run);
                 self.next = Next::Given;
-                Ok(Some(Start { places, set, home }))
+                Ok(Some(Start {
+                    places,
+                    set: Arc::new(set),
+                    home,
+                }))
             }
-            Next::Given => {
-                panic!("a read stream is decoded after the decoder gave its start")
-            }
+            Next::Given => unreachable!("invariant: checked above"),
         }
     }
 }

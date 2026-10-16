@@ -268,8 +268,8 @@ pub enum Error {
         /// The channel.
         key: channel::Key,
     },
-    /// The node finished a read stream before its last place. The caller of
-    /// [`Reader`] gives it.
+    /// The node finished a read stream before its last place: [`Reader::decode`] got
+    /// `None`.
     Finished,
 }
 

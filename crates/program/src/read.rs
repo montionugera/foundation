@@ -66,7 +66,9 @@ impl Reader {
         &self.places
     }
 
-    /// The key set of each frame, from `KeySet::ordered`: entry `n` is place `n`.
+    /// The key set of each frame, from [`KeySet::ordered`]. Its entries are the
+    /// places, in order. Its key and the slot of each entry are the reader's own, not
+    /// the node's.
     #[must_use]
     pub fn set(&self) -> &Arc<KeySet> {
         self.frames.set()
@@ -166,15 +168,14 @@ async fn start(
     shared.send_chunks(sender, &body).await?;
     let mut decoder = client::Reader::new(open.mode);
     let start = loop {
-        let message = receiver.recv().await?.ok_or(client::Error::Finished)?;
-        if let Some(start) = decoder.decode(&message)? {
+        let message = receiver.recv().await?;
+        if let Some(start) = decoder.decode(message.as_deref())? {
             break start;
         }
     };
     let message = receiver.recv().await?;
-    let (frames, _live) =
-        Frames::open(start.home, Arc::new(start.set), message.as_deref())
-            .map_err(Error::Reply)?;
+    let (frames, _live) = Frames::open(start.home, start.set, message.as_deref())
+        .map_err(Error::Reply)?;
     Ok((start.places, frames))
 }
 
