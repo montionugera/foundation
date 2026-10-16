@@ -621,7 +621,8 @@ fn panics_at_a_value_of_another_type() {
 /// `plant.s` is a `string`, so the `u16` value of its place panics.
 #[test]
 #[should_panic(
-    expected = "invariant: the value of channel 1 is u16, and its samples are not"
+    expected = "invariant: the value of channel 1 is u16, and its samples are not \
+                scalars"
 )]
 fn panics_at_a_value_of_a_channel_of_no_fixed_width() {
     let channels = ["plant.a", "plant.s", "plant.b"];
