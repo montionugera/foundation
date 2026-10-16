@@ -129,14 +129,14 @@
   with `Region::Absent`. The cap of 16 failures keeps the warnings from filling the log
   queue and dropping `started` (`laptop.architect-2`, 2026-10-16T20:40:05Z, #2920:
   https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6224274551). For the
-  same reason, an `error` or a `source` of more than 1024 bytes keeps at most its first
-  and last 510 bytes, cut at char boundaries and joined by `…`, as a line of a PEM file
-  can be of any length (`laptop.architect-2`, 2026-10-16T22:26:26Z, #2920:
+  same reason, an `error` of more than 1024 bytes keeps at most its first and last 510
+  bytes, cut at char boundaries and joined by `…`, as a line of a PEM file can be of any
+  length (`laptop.architect-2`, 2026-10-16T22:26:26Z, #2920:
   https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6225870705).
   `os::roots` gives the `source` as `os::Source`: `the OS store`, or the paths of
   `SSL_CERT_FILE` and `SSL_CERT_DIR` that it read in place of the store. `os` owns this
-  pick, so `node` never derives it from its `vars` (`laptop.architect-2`,
-  2026-10-16T22:27:09Z, #2920:
+  pick, so `node` never derives it from its `vars`, and `node` cuts the `source` as it
+  cuts an `error` (`laptop.architect-2`, 2026-10-16T22:27:09Z, #2920:
   https://github.com/synnaxlabs/foundation/pull/2941#issuecomment-6225879413). This
   supersedes the warning for each failure that
   https://github.com/synnaxlabs/foundation/pull/2862#issuecomment-6213377062 approved,
