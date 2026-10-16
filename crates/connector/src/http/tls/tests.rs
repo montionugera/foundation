@@ -711,6 +711,7 @@ fn skips_a_byte_order_mark_at_the_start_of_a_pem_text() {
     let roots = Roots::default().with_pem(&format!("\u{feff}{}", sim::CA));
     let plain = Roots::default().with_pem(sim::CA).expect("the CA parses");
     let marked = roots.clone().expect("the CA parses");
+    // A private read: no public call shows that two stores hold the same anchors.
     assert_eq!(marked.0.roots, plain.0.roots);
     let mut network = Network::new(9, Certificate::Valid, JUNE_2026);
     let body = network.send(roots.expect("the CA parses"), "https://server:8086/ping");
