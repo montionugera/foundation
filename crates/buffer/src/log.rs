@@ -700,11 +700,11 @@ impl Logs {
         let mut walk = limit.saturating_mul(FILL);
         for (number, offset, at) in self.items.since(self.scanned) {
             if offset >= reach {
-                if room == limit || walk == 0 {
+                let Some(left) = walk.checked_sub(1).filter(|_| room < limit) else {
                     self.scanned = number;
                     return;
-                }
-                walk -= 1;
+                };
+                walk = left;
             }
             let log = nth(&self.paths, at);
             if log.holder != Some(offset) {
