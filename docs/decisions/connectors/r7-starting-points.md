@@ -54,7 +54,8 @@
   A zone in brackets follows `%25`, as `[fe80::1%252]` for zone 2, and the `Host`
   header of the request has no zone (RFC 6874). Amended in the review of #2804
   (https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6207830826; the
-  move to `host::uri` and the header, approval owed).
+  move to `host::uri` and the header,
+  https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6208160301).
   Text after `]` is part of the host up to a `:`, so `http://[fd00::2]8086/` gives
   `Host` (https://github.com/synnaxlabs/foundation/issues/1179#issuecomment-6032542190).
   A `[` in a host that is not in brackets gives `Host`. A built URI with an empty path

@@ -303,7 +303,8 @@
   `connector::http`; `connector-opcua` in #2803). `connector::http` parses the host
   again on each request, until #1218. Approved by `laptop.architect-2` (2026-10-16,
   https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6207830826; the
-  move to `host::uri`, approval owed).
+  move to `host::uri`,
+  https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6208160301).
   From the review of #1018: the bracketed IPv6 literal, and what `NotFound` and `Io`
   mean to a caller. Amended (2026-10-07, #1117): `Mode::Create` makes a missing file
   with `len` zeroed bytes. It treats an empty file that is there as missing and
