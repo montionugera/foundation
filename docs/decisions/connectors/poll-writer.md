@@ -22,7 +22,13 @@
   https://github.com/synnaxlabs/foundation/pull/2817#issuecomment-6207963206).
   The writer owns one value slot for each channel, and `write` takes the values of a
   frame as an iterator, which fills each slot again: no kind keeps slots, and no value
-  of a frame before can stay. `write` panics when the iterator gives fewer or more
+  of a frame before can stay. A kind that reads a frame in more than one exchange
+  keeps only the values of the tick, in a buffer that `take` drains and that panics on
+  a slot that no reply filled (MODBUS KIND, `connector_modbus::read::Values`;
+  `laptop.architect-2`, 2026-10-16T14:33:20Z:
+  https://github.com/synnaxlabs/foundation/pull/2860#issuecomment-6217778354, and the
+  name, 2026-10-16T14:42:11Z:
+  https://github.com/synnaxlabs/foundation/pull/2860#issuecomment-6217947516). `write` panics when the iterator gives fewer or more
   values than the channels. `connector-opcua` maps its reads by position, with no `zip`
   over its channels, so a read past its channels panics in the kind and is never lost
   with no count, and the Modbus kind of PR B2 of #432 will map its reads the same way
