@@ -15,9 +15,10 @@ typedef struct {
     size_t length;
 } shim_node;
 
-/* A scalar of a type from Boolean to Double, as `ffi::Scalar` gives it. The field
- * that holds it is that of its kind: the `UA_DataTypeKind` of its type, which for
- * these types is also the index of the type in `UA_TYPES`. */
+/* A scalar of a type from Boolean to Double, as `ffi::Scalar` gives it, or the type of
+ * another value. The field that holds a scalar is that of its kind: the
+ * `UA_DataTypeKind` of its type, which for these types is also the index of the type in
+ * `UA_TYPES`. */
 typedef union {
     UA_Boolean boolean;
     UA_SByte sbyte;
@@ -30,7 +31,11 @@ typedef union {
     UA_UInt64 uint64;
     UA_Float float_;
     UA_Double double_;
+    const UA_DataType *type;
 } shim_scalar;
+
+/* The bit that `shim_value_scalar` adds to the kind of an array. */
+#define SHIM_ARRAY 0x8000
 
 /* Gives the id of `node`, which borrows its name. */
 static inline UA_NodeId shim_node_id(shim_node node) {

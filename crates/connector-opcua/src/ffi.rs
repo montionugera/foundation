@@ -80,6 +80,11 @@ impl Status {
     #[cfg(test)]
     pub(crate) const BAD_SECURITY_MODE_REJECTED: Self = Self(0x8054_0000);
 
+    /// Whether the code is of the severity Uncertain.
+    pub(crate) fn uncertain(self) -> bool {
+        self.0 >> 30 == 0b01
+    }
+
     /// Gives the name of the code, such as `BadNodeIdUnknown`.
     pub(crate) fn name(self) -> &'static str {
         // SAFETY: `UA_StatusCode_name` takes any code and gives a static C string.
@@ -160,8 +165,14 @@ pub(crate) const UINT64: u16 = 8;
 pub(crate) const FLOAT: u16 = 9;
 pub(crate) const DOUBLE: u16 = 10;
 
+/// The bit that `shim_value_scalar` adds to the kind of an array, `SHIM_ARRAY`.
+pub(crate) const ARRAY: u16 = 0x8000;
+
 /// The index of `ByteString` in `UA_TYPES`.
 pub(crate) const BYTE_STRING: usize = 14;
+
+/// The index of `DataValue` in `UA_TYPES`.
+pub(crate) const DATA_VALUE: usize = 22;
 
 /// The index of `Variant` in `UA_TYPES`.
 #[cfg(test)]
@@ -390,8 +401,8 @@ pub(crate) struct ReadRequest([u8; 0]);
 #[repr(C)]
 pub(crate) struct ReadResponse([u8; 0]);
 
-/// `shim_scalar`: a scalar of a type from [`BOOLEAN`] to [`DOUBLE`]. Its kind tells
-/// which field holds it.
+/// `shim_scalar`: a scalar of a type from [`BOOLEAN`] to [`DOUBLE`], or the type of
+/// another value. Its kind tells which field holds it.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) union Scalar {
@@ -406,6 +417,7 @@ pub(crate) union Scalar {
     pub(crate) uint64: u64,
     pub(crate) float: f32,
     pub(crate) double: f64,
+    pub(crate) data_type: *const DataType,
 }
 
 /// `UA_DataValue`, which Rust holds only by pointer.

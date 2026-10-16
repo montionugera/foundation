@@ -79,15 +79,18 @@ fn shows_each_definition_in_file_order_then_the_counts() {
 + channel plant.trend
 + connector plc
 + channel plc.status.backoff
++ channel plc.status.bad
 + channel plc.status.class
 + channel plc.status.error
 + channel plc.status.in
 + channel plc.status.lost
 + channel plc.status.missed
++ channel plc.status.mistyped
 + channel plc.status.note
 + channel plc.status.restarts
 + channel plc.status.state
 + channel plc.status.time
++ channel plc.status.uncertain
 + connector influx
 + channel influx.status.backoff
 + channel influx.status.class
@@ -98,7 +101,7 @@ fn shows_each_definition_in_file_order_then_the_counts() {
 + channel influx.status.restarts
 + channel influx.status.state
 + channel influx.status.time
-25 to add, 0 to change, 0 to remove.
+28 to add, 0 to change, 0 to remove.
 "
     );
 }
@@ -685,15 +688,18 @@ fn shows_a_kind_change_as_an_add_and_a_removal() {
 + channel plant.trend
 + connector plc
 + channel plc.status.backoff
++ channel plc.status.bad
 + channel plc.status.class
 + channel plc.status.error
 + channel plc.status.in
 + channel plc.status.lost
 + channel plc.status.missed
++ channel plc.status.mistyped
 + channel plc.status.note
 + channel plc.status.restarts
 + channel plc.status.state
 + channel plc.status.time
++ channel plc.status.uncertain
 + connector influx
 + channel influx.status.backoff
 + channel influx.status.class
@@ -705,7 +711,7 @@ fn shows_a_kind_change_as_an_add_and_a_removal() {
 + channel influx.status.state
 + channel influx.status.time
 - channel plc
-25 to add, 0 to change, 1 to remove.
+28 to add, 0 to change, 1 to remove.
 "
     );
 }
@@ -726,15 +732,18 @@ fn shows_a_channel_that_replaces_a_connector_as_an_add_and_a_removal() {
 + channel plant.trend
 + connector plc
 + channel plc.status.backoff
++ channel plc.status.bad
 + channel plc.status.class
 + channel plc.status.error
 + channel plc.status.in
 + channel plc.status.lost
 + channel plc.status.missed
++ channel plc.status.mistyped
 + channel plc.status.note
 + channel plc.status.restarts
 + channel plc.status.state
 + channel plc.status.time
++ channel plc.status.uncertain
 + connector influx
 + channel influx.status.backoff
 + channel influx.status.class
@@ -746,7 +755,7 @@ fn shows_a_channel_that_replaces_a_connector_as_an_add_and_a_removal() {
 + channel influx.status.state
 + channel influx.status.time
 - connector plant.time
-25 to add, 0 to change, 1 to remove.
+28 to add, 0 to change, 1 to remove.
 "
     );
 }

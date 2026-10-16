@@ -109,6 +109,14 @@ fn kinds() -> Table {
     let failing = "no route to the device";
     let forging = "refused\nsite.a: config error: forged by the device";
     let wide = &[("in", 0), ("confirmed", 0), ("extra", 0)];
+    let opcua = &[
+        ("in", 1520),
+        ("lost", 0),
+        ("missed", 0),
+        ("bad", 0),
+        ("uncertain", 0),
+        ("mistyped", 0),
+    ];
     Table::new()
         .with("steady", Scripted::new(counts, Script::Steady))
         .with("failing", Scripted::new(counts, Script::Fails(failing)))
@@ -120,10 +128,7 @@ fn kinds() -> Table {
             "shifted",
             Scripted::new(&[("in", 0), ("other", 0)], Script::Steady),
         )
-        .with(
-            "opcua",
-            Scripted::new(&[("in", 1520), ("lost", 0), ("missed", 0)], Script::Steady),
-        )
+        .with("opcua", Scripted::new(opcua, Script::Steady))
         .with(
             "influx",
             Scripted::new(&[("confirmed", 1517), ("lost", 0)], Script::Steady),

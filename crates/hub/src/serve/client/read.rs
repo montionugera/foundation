@@ -119,7 +119,7 @@ where
         Home::Away(home) => return Err(refused(reader::Error::Remote { home })),
     };
     let layout = Layout::new(channels.slots.clone(), channels.index);
-    let (reader, live) = Reader::here(state, channels, mode).map_err(refused)?;
+    let (reader, live) = Reader::here(state, channels, mode);
     Ok(Some((reader, live, places, layout)))
 }
 

@@ -20,7 +20,7 @@ use crate::connection::{CHUNKS, Manager, SENDS};
 use crate::event::Time;
 use crate::ffi::{self, Status};
 use crate::node::{Key, Node};
-use crate::value::Value;
+use crate::value::{Fault, Value};
 
 #[cfg(test)]
 mod tests;
@@ -40,7 +40,7 @@ const SPLIT: usize = 7;
 
 /// The value of a slot that no read has written yet. No read gives it: a read ends only
 /// when each of its requests has its answer, which writes each of its values.
-const UNREAD: Result<Value, Status> = Err(Status::BAD_UNEXPECTED_ERROR);
+const UNREAD: Result<Value, Fault> = Err(Fault::status(Status::BAD_UNEXPECTED_ERROR));
 
 const _: () = assert!(
     READS as usize * CHUNKS as usize <= SENDS / 2,
@@ -60,7 +60,7 @@ pub(crate) struct Client {
     reads: Box<Reads>,
     /// The values of the last read, which [`Client::read`] gives. It swaps them with
     /// [`Reads::values`], so neither grows past the most nodes of a read.
-    values: Vec<Result<Value, Status>>,
+    values: Vec<Result<Value, Fault>>,
     clock: Clock,
     /// The request timeout of the client.
     timeout: Span,
@@ -88,7 +88,7 @@ struct Reads {
     /// The status of the first failed answer of the last read.
     failed: Cell<Option<Status>>,
     /// The values of the last read, in node order.
-    values: Cell<Vec<Result<Value, Status>>>,
+    values: Cell<Vec<Result<Value, Fault>>>,
     /// The requests that open62541 took and has not called back, of each read, at most
     /// [`READS`].
     pending: Cell<u16>,
@@ -304,7 +304,7 @@ impl Client {
 
     /// Reads the Value of each node of `nodes`, and gives the value of each node in
     /// order: its scalar, the status of its value when that is not Good (a Good with a
-    /// subcode is Good), or `BadTypeMismatch` for an array or a type that is not one of
+    /// subcode is Good), or the type of an array or of a scalar that is not one of
     /// [`Value`]. It sends the requests of `nodes` at once, but while [`READS`] are in
     /// flight it sends the next only when one ends. A read of no nodes gives no values
     /// and sends nothing. A request of a read that fails, times out, or whose future
@@ -326,7 +326,7 @@ impl Client {
     pub(crate) async fn read(
         &mut self,
         nodes: &Nodes,
-    ) -> Result<&[Result<Value, Status>], Status> {
+    ) -> Result<&[Result<Value, Fault>], Status> {
         assert!(
             Rc::ptr_eq(&nodes.client, &self.key),
             "invariant: a client reads only the nodes that it checked"

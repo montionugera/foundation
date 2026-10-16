@@ -463,27 +463,38 @@ fn samples_from_an_opc_ua_server_reach_influxdb() {
 }
 
 #[test]
-#[ignore = "waits on #435, #2510"]
-fn a_bad_status_keeps_its_quality() {
+fn a_bad_value_is_left_out_and_counted() {
     let plant = create_plant(QUALITY);
     let spike = &VARIABLES[..1];
     first_stored(&plant, spike);
-    let traces = held(&plant, &change(&plant.opcua, spike, BAD));
-    let [trace] = &traces[..] else {
-        panic!("one variable: {traces:?}");
+    let [reads] = &change(&plant.opcua, spike, BAD)[..] else {
+        panic!("one variable");
     };
-    let qualities = |samples: &[Sample]| -> Vec<Option<Quality>> {
-        samples.iter().map(|sample| sample.quality).collect()
-    };
-    let served = qualities(&trace.served);
     // One read can fall between the count of the reads and the first change.
-    let (before, changes) = served.split_at(trace.unchanged);
-    assert!(
-        before.iter().all(|quality| *quality == Some(Quality::GOOD))
-            && changes[1..].iter().all(|quality| *quality == Some(BAD)),
-        "Good before the changes, then Bad: {trace:?}"
-    );
-    assert_eq!(qualities(&trace.stored), served[..trace.stored.len()]);
+    let bad = u64::try_from(reads.changed - reads.unchanged - 1).expect("a few");
+    plant.rig.wait("`bad` of `plc` counts the Bad reads", || {
+        match count(&plant.rig.status(), "plc", "bad") {
+            Some(counted) if counted >= bad => Ok(()),
+            counted => Err(format!("{counted:?} of at least {bad}")),
+        }
+    });
+    let mut served = plant.opcua.served();
+    let served = served.remove(reads.variable).unwrap_or_default();
+    let before = &served[..=reads.unchanged];
+    let good = |sample: &Sample| sample.quality == Some(Quality::GOOD);
+    // InfluxDB holds no status, so a sample is Good when its read is.
+    let mut stored = plant.influx.stored();
+    for sample in stored.remove(reads.channel).unwrap_or_default() {
+        let read = |read: &Sample| {
+            good(read)
+                && read.value.to_bits() == sample.value.to_bits()
+                && (sample.time - read.time).nanos().abs() <= BOUND.nanos()
+        };
+        assert!(
+            before.iter().any(read),
+            "{sample:?} is a Good read before the changes: {before:?}"
+        );
+    }
 }
 
 #[test]

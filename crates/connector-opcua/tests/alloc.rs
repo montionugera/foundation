@@ -211,26 +211,51 @@ fn a_read_of_a_client_allocates_a_fixed_count() {
 
 /// Ticks 3 to 100 of a run of the `opcua` kind allocate what a read of a client
 /// allocates for its count of nodes, and nothing more: the frame and its write
-/// allocate nothing. Tick 1 connects, and tick 2 fills the second buffer of values.
+/// allocate nothing, also when values of another type are left out and named in the
+/// note. Tick 1 connects, and tick 2 fills the second buffer of values.
 fn a_tick_of_the_kind_allocates_what_its_read_allocates() {
-    for (nodes, read) in [(1, 6), (64, 69)] {
-        let ticks = kind::run(nodes, 100, |poll| ALLOCATOR.count(poll).1).ticks;
-        assert_eq!(ticks[2..], [read; 98], "ticks 3 to 100 of {nodes} nodes");
+    let runs: [(usize, &[Scalar], u64); 4] = [
+        (1, &[Scalar::F64], 6),
+        (64, &[Scalar::F64], 69),
+        (1, &[Scalar::F32], 6),
+        (64, &[Scalar::F64, Scalar::F32], 69),
+    ];
+    for (nodes, scalars, read) in runs {
+        let count = |poll: &mut dyn FnMut()| ALLOCATOR.count(poll).1;
+        let ticks = kind::run(nodes, scalars, 100, count).ticks;
+        let of = format!("ticks 3 to 100 of {nodes} nodes of {scalars:?}");
+        assert_eq!(ticks[2..], [read; 98], "{of}");
     }
 }
 
 /// Writes 21 to 100 of a frame of the `opcua` kind allocate nothing, for channels of
-/// each width. The test home grows the `Vec`s of its groups in its first two commits,
-/// which the first 20 writes cover, as in the `kind` bench.
+/// each width, with one value or each value left out, and with values left out that
+/// start after write 20 and change in count. The test home grows the `Vec`s of its
+/// groups in its first two commits, which the first 20 writes cover, as in the `kind`
+/// bench.
 fn a_write_of_a_frame_of_any_type_allocates_nothing() {
-    let widths: [&[Scalar]; 4] = [
-        &[Scalar::Bool],
-        &[Scalar::I16],
-        &[Scalar::F32],
-        &[Scalar::F64],
+    /// The count of Bad values of each write.
+    type Bad = fn(usize) -> usize;
+    let runs: [(&[Scalar], Bad, &str); 7] = [
+        (&[Scalar::Bool], |_| 0, "none"),
+        (&[Scalar::I16], |_| 0, "none"),
+        (&[Scalar::F32], |_| 0, "none"),
+        (&[Scalar::F64], |_| 0, "none"),
+        (&[Scalar::F64], |_| 1, "1"),
+        (&[Scalar::F64], |_| 64, "64"),
+        (
+            &[Scalar::F64],
+            |at| [0, 63, 1, 32][at.saturating_sub(16) / 8 % 4],
+            "late",
+        ),
     ];
-    for scalars in widths {
-        let writes = kind::writes(64, scalars, 100, |work| ALLOCATOR.count(work).1).0;
-        assert_eq!(writes[20..], [0; 80], "writes 21 to 100 of {scalars:?}");
+    for (scalars, bad, bads) in runs {
+        let count = |work: &mut dyn FnMut()| ALLOCATOR.count(work).1;
+        let writes = kind::writes(64, scalars, 100, bad, count).0;
+        assert_eq!(
+            writes[20..],
+            [0; 80],
+            "writes 21 to 100 of {scalars:?}, Bad values: {bads}"
+        );
     }
 }

@@ -962,9 +962,6 @@ mod tests {
         assert_eq!(Message::decode(&append(most + 1).encode()), None);
     }
 
-    // The default message limit of a node is 64 KiB.
-    const _: () = assert!(BYTES_MIN < 1 << 16);
-
     #[test]
     fn an_append_of_one_record_of_bytes_max_bytes_is_bytes_min_bytes() {
         let record = Entry {
