@@ -101,14 +101,6 @@ pub(crate) struct Unaligned {
     pub(crate) offset: u64,
 }
 
-/// A range of records in which no trim lands: from after the record at `after` up
-/// to and with the record at `record`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Fence {
-    pub(crate) after: u64,
-    pub(crate) record: u64,
-}
-
 /// A record boundary: where the next record starts and the chain value it follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Position {
@@ -574,19 +566,11 @@ impl Writer {
     }
 
     /// The offset that the trim of the next commit wants to move the tail to, when
-    /// that commit is as large as the records not yet synced. When `marked` gives a
-    /// fence that holds that offset, as for [`trimmed`](Self::trimmed), it is the
-    /// end of the newest record of the fence, which the trim must pass. A path
-    /// whose holder is before it needs a carry now.
-    pub(crate) fn reach(&self, marked: impl FnOnce(u64) -> Option<Fence>) -> u64 {
+    /// that commit is as large as the records not yet synced. A path whose holder
+    /// is before it needs a carry now.
+    pub(crate) fn reach(&self) -> u64 {
         let queued = self.queued();
-        let want = self.want(self.head.saturating_add(queued), queued);
-        marked(want).map_or(want, |fence| {
-            let past = self.ends.partition_point(|end| end.offset <= fence.record);
-            let end = self.ends.get(past);
-            end.expect("invariant: a marked record is synced and kept")
-                .offset
-        })
+        self.want(self.head.saturating_add(queued), queued)
     }
 
     /// Plans a record of `kind` with a body of `len` bytes. It leaves the room of
@@ -691,21 +675,15 @@ impl Writer {
     /// The tail that frees the oldest synced records, up to the first boundary
     /// that leaves the headroom free. `None` when the headroom is free, or when no
     /// record can go. The tail never passes the last synced record, or the offset
-    /// `kept`: the oldest record that must stay. `marked` gives the [`Fence`] that
-    /// holds that boundary. The tail is then the boundary after its `record` when
-    /// that one may go, else the newest boundary at or before its `after`. Once the
-    /// tail is durable, [`release`](Self::release) frees the records.
+    /// `kept`: the oldest record that must stay. Once the tail is durable,
+    /// [`release`](Self::release) frees the records.
     ///
     /// The headroom is three times the larger of the largest record and the records
     /// not yet synced, and the three blocks that [`append`](Self::append) leaves free.
     /// The space of a trim is free only at its release. From one trim to the release
     /// of the next, the ring takes the records of two commits and the blocks that one
     /// wrap skips.
-    pub(crate) fn trimmed(
-        &self,
-        kept: Option<u64>,
-        marked: impl FnOnce(u64) -> Option<Fence>,
-    ) -> Option<Position> {
+    pub(crate) fn trimmed(&self, kept: Option<u64>) -> Option<Position> {
         let want = self.want(self.head, self.queued());
         if want <= self.tail {
             return None;
@@ -715,21 +693,7 @@ impl Writer {
             .ends
             .partition_point(|end| kept.is_none_or(|kept| end.offset <= kept));
         let last = free.checked_sub(1)?;
-        let boundary = enough.min(last);
-        let at = match marked(self.ends.get(boundary)?.offset) {
-            None => boundary,
-            Some(fence) => {
-                let past = self.ends.partition_point(|end| end.offset <= fence.record);
-                if past <= last {
-                    past
-                } else {
-                    let before =
-                        self.ends.partition_point(|end| end.offset <= fence.after);
-                    before.checked_sub(1)?
-                }
-            }
-        };
-        self.ends.get(at).copied()
+        self.ends.get(enough.min(last)).copied()
     }
 
     /// The boundary after the last synced record, or the tail.
@@ -1382,7 +1346,7 @@ mod tests {
         /// Trims as a commit does: moves the tail where the writer says and frees
         /// the records before it. `kept` is the offset of a record that must stay.
         fn trim(&mut self, kept: Option<u64>) -> Option<Position> {
-            let tail = self.writer.trimmed(kept, |_| None)?;
+            let tail = self.writer.trimmed(kept)?;
             assert!(
                 self.bounds().contains(&tail),
                 "a trim to {tail:?}, which is not after a record"
@@ -1969,13 +1933,13 @@ mod tests {
 
         #[test]
         fn trimmed_gives_no_tail_while_three_of_the_largest_record_fit() {
-            assert_eq!(filled(9).trimmed(None, |_| None), None);
+            assert_eq!(filled(9).trimmed(None), None);
         }
 
         #[test]
         fn trimmed_frees_records_until_three_of_the_largest_record_fit() {
-            assert_eq!(filled(10).trimmed(None, |_| None), Some(at(1, 9)));
-            assert_eq!(filled(11).trimmed(None, |_| None), Some(at(2, 1)));
+            assert_eq!(filled(10).trimmed(None), Some(at(1, 9)));
+            assert_eq!(filled(11).trimmed(None), Some(at(2, 1)));
         }
 
         #[test]
@@ -1984,11 +1948,11 @@ mod tests {
             let queued: Vec<Ends> = (9..=11)
                 .map(|chain| queue(&mut writer, 8, chain).expect("the ring has room"))
                 .collect();
-            assert_eq!(writer.trimmed(None, |_| None), Some(at(8, 7)));
+            assert_eq!(writer.trimmed(None), Some(at(8, 7)));
             for ends in queued {
                 writer.synced(ends);
             }
-            assert_eq!(writer.trimmed(None, |_| None), Some(at(2, 1)));
+            assert_eq!(writer.trimmed(None), Some(at(2, 1)));
         }
 
         #[test]
@@ -1997,54 +1961,19 @@ mod tests {
             for chain in 3..=12 {
                 queue(&mut writer, 8, chain).expect("the ring has room");
             }
-            assert_eq!(writer.trimmed(None, |_| None), Some(at(3, 2)));
+            assert_eq!(writer.trimmed(None), Some(at(3, 2)));
             writer.release(3 * 4096);
-            assert_eq!(writer.trimmed(None, |_| None), None);
+            assert_eq!(writer.trimmed(None), None);
         }
 
         #[test]
         fn trimmed_stops_at_the_record_that_must_stay() {
             let mut writer = filled(12);
-            assert_eq!(writer.trimmed(None, |_| None), Some(at(3, 2)));
-            assert_eq!(writer.trimmed(Some(2 * 4096), |_| None), Some(at(2, 1)));
-            assert_eq!(writer.trimmed(Some(4096), |_| None), Some(at(1, 9)));
+            assert_eq!(writer.trimmed(None), Some(at(3, 2)));
+            assert_eq!(writer.trimmed(Some(2 * 4096)), Some(at(2, 1)));
+            assert_eq!(writer.trimmed(Some(4096)), Some(at(1, 9)));
             writer.release(4096);
-            assert_eq!(writer.trimmed(Some(4096), |_| None), None);
-        }
-
-        /// The boundary at block 3 is in the range after record 2 up to and with
-        /// record 4, and the trim may pass record 4, so it lands after it.
-        #[test]
-        fn trimmed_passes_a_marked_range_that_it_may_pass() {
-            let marked = |offset| {
-                assert_eq!(offset, 3 * 4096, "the boundary of the headroom");
-                Some(Fence {
-                    after: 2 * 4096,
-                    record: 4 * 4096,
-                })
-            };
-            let writer = filled(12);
-            assert_eq!(writer.trimmed(None, marked), Some(at(5, 4)));
-            assert_eq!(writer.trimmed(Some(5 * 4096), marked), Some(at(5, 4)));
-        }
-
-        /// Record 4 must stay, so the trim lands at the newest boundary at or before
-        /// the start of the range, else nowhere.
-        #[test]
-        fn trimmed_moves_down_out_of_a_marked_range_that_it_may_not_pass() {
-            let writer = filled(12);
-            let kept = Some(4 * 4096);
-            let range = |after| {
-                move |_| {
-                    Some(Fence {
-                        after,
-                        record: 4 * 4096,
-                    })
-                }
-            };
-            assert_eq!(writer.trimmed(kept, range(4096)), Some(at(1, 9)));
-            assert_eq!(writer.trimmed(kept, range(2 * 4096)), Some(at(2, 1)));
-            assert_eq!(writer.trimmed(kept, range(0)), None);
+            assert_eq!(writer.trimmed(Some(4096)), None);
         }
 
         /// A ring of 32 blocks: one record of 4 blocks queued after it skips 3 blocks
@@ -2061,16 +1990,12 @@ mod tests {
             let ends = queue(&mut writer, BODY_MAX, 99).expect("the ring has room");
             assert_eq!(ends.wrap.map(|wrap| wrap.offset), Some(32 * 4096));
             assert_eq!(writer.head(), 36 * 4096);
-            assert_eq!(writer.trimmed(None, |_| None), Some(at(19, 18)));
+            assert_eq!(writer.trimmed(None), Some(at(19, 18)));
             let next = queue(&mut writer, 8, 100).expect("the ring has room");
-            assert_eq!(writer.trimmed(None, |_| None), Some(at(23, 22)));
+            assert_eq!(writer.trimmed(None), Some(at(23, 22)));
             writer.synced(ends);
             writer.synced(next);
-            assert_eq!(
-                writer.trimmed(None, |_| None),
-                Some(at(20, 19)),
-                "all synced"
-            );
+            assert_eq!(writer.trimmed(None), Some(at(20, 19)), "all synced");
         }
 
         /// A record not synced before the wrap: the skip of 3 blocks stays out.
@@ -2085,7 +2010,7 @@ mod tests {
             queue(&mut writer, 8, 28).expect("the ring has room");
             let ends = queue(&mut writer, BODY_MAX, 99).expect("the ring has room");
             assert_eq!(ends.wrap.map(|wrap| wrap.offset), Some(32 * 4096));
-            assert_eq!(writer.trimmed(None, |_| None), Some(at(22, 21)));
+            assert_eq!(writer.trimmed(None), Some(at(22, 21)));
         }
 
         /// The skipped blocks of a wrap are enough for the headroom, so the trim
@@ -2126,7 +2051,7 @@ mod tests {
             let mut writer = Writer::empty(layout, 0);
             let mut queued = Vec::new();
             for (commit, (during, after)) in commits.into_iter().enumerate() {
-                let tail = writer.trimmed(None, |_| None);
+                let tail = writer.trimmed(None);
                 let synced = mem::take(&mut queued);
                 for len in during {
                     match queue(&mut writer, len, 1) {
@@ -2504,8 +2429,7 @@ mod tests {
         /// With each record synced, the want of the next trim is three of the
         /// largest record and the three kept blocks behind the head. A queued record
         /// of the largest size moves it by twice its size: once as the head, once as
-        /// the commit that syncs it. When a range in which no trim lands holds it,
-        /// the reach is the end of the newest record of the range.
+        /// the commit that syncs it.
         #[test]
         fn reach_is_the_want_of_the_next_trim() {
             let mut writer = Writer::empty(layout(), 0);
@@ -2513,20 +2437,11 @@ mod tests {
                 let ends = queue(&mut writer, 1, chain).expect("the ring has room");
                 writer.synced(ends);
             }
-            assert_eq!(writer.reach(|_| None), 6 * 4096);
-            let mut asked = None;
-            let reach = writer.reach(|offset| {
-                asked = Some(offset);
-                Some(Fence {
-                    after: 4096,
-                    record: 7 * 4096,
-                })
-            });
-            assert_eq!((asked, reach), (Some(6 * 4096), 8 * 4096));
-            let tail = writer.trimmed(None, |_| None).map(Position::offset);
-            assert_eq!(tail, Some(writer.reach(|_| None)));
+            assert_eq!(writer.reach(), 6 * 4096);
+            let tail = writer.trimmed(None).map(Position::offset);
+            assert_eq!(tail, Some(writer.reach()));
             queue(&mut writer, BODY_MAX, 9).expect("the ring has room");
-            assert_eq!(writer.reach(|_| None), 14 * 4096);
+            assert_eq!(writer.reach(), 14 * 4096);
         }
 
         /// A commit marks its records synced and frees the records before the tail
@@ -2542,7 +2457,7 @@ mod tests {
             let ends: Vec<Ends> = (9..11)
                 .map(|chain| queue(&mut writer, 1, chain).expect("the ring has room"))
                 .collect();
-            let tail = writer.trimmed(None, |_| None);
+            let tail = writer.trimmed(None);
             assert_eq!(tail.map(Position::offset), Some(8 * 4096));
             writer.committed(ends, tail);
             assert_eq!(writer.tail(), 8 * 4096);

@@ -78,9 +78,8 @@ fn trim_held(bencher: Bencher<'_, '_>, indexes: u32) {
         .bench_local(|| logs.trim(64, 64));
 }
 
-/// Each commit syncs an entry with no samples of each index, so each marks a range,
-/// and carries each tail. The trim of the next commit passes the range. The oldest
-/// holder is the carry record, past each range, so no landing moves.
+/// Each commit syncs an entry with no samples of each index and carries each tail.
+/// The trim of the next commit lands at the oldest holder, the carry record.
 #[divan::bench(args = [1, 64, 256])]
 fn mark(bencher: Bencher<'_, '_>, indexes: u32) {
     let mut logs = Logs::new(indexes);

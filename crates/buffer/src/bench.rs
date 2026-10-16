@@ -75,7 +75,7 @@ impl Ring {
             let record = Position::new(plan.next, self.chain).expect("aligned");
             self.ends.push(Ends { wrap, record });
         }
-        let tail = self.writer.trimmed(None, |_| None);
+        let tail = self.writer.trimmed(None);
         self.writer.committed(self.ends.drain(..), tail);
     }
 }
@@ -148,7 +148,7 @@ impl Group {
             .expect("the ring has room");
         let sealed = group.close(&mut self.writer).seal(self.chain);
         self.chain = sealed.ends().record.chain();
-        let tail = self.writer.trimmed(None, |_| None);
+        let tail = self.writer.trimmed(None);
         self.writer.committed([sealed.ends()], tail);
         self.spare = sealed.clear();
     }
@@ -177,6 +177,7 @@ impl Logs {
                     len: 1,
                     stored_at: Stamp::from_nanos(1),
                     last: Some(Stamp::from_nanos(1)),
+                    given: 0,
                     tag: 0,
                     bytes: 8,
                 };
@@ -264,19 +265,19 @@ impl Logs {
         self.offset += BLOCK;
     }
 
-    /// One commit that marks a range for each index, as a commit that trims and
-    /// keeps up. It hides the records before the landing of the oldest holder,
-    /// syncs one entry with no samples of each index at the seq of its durable
-    /// tail, then carries the durable end of each index in the next record.
+    /// One commit of an entry with no samples for each index, as a commit that
+    /// trims and keeps up. It hides the records before the oldest holder, syncs one
+    /// entry with no samples of each index at the seq of its durable tail, then
+    /// carries the durable end of each index in the next record.
     pub fn mark(&mut self) {
         self.keep_up();
         for (slot, header) in &self.headers {
-            let empty = Header {
+            let mut empty = Header {
                 len: 0,
                 last: None,
                 ..*header
             };
-            self.inner.append(*slot, &empty).expect("entries in order");
+            empty.given = self.inner.append(*slot, &empty).expect("entries in order");
             self.inner
                 .sync(*slot, &empty, self.offset)
                 .expect("entries in order");
@@ -294,12 +295,10 @@ impl Logs {
         self.offset += BLOCK;
     }
 
-    /// Hides the records before the landing of the oldest holder, as a trim that
-    /// keeps up.
+    /// Hides the records before the oldest holder, as a trim that keeps up.
     fn keep_up(&mut self) {
         if let Some(kept) = self.inner.kept() {
-            let landing = self.inner.marked().land(kept);
-            self.inner.hide(landing);
+            self.inner.hide(kept);
         }
     }
 }
@@ -453,21 +452,18 @@ mod tests {
         assert_eq!(offsets, [5 * BLOCK, 6 * BLOCK, 7 * BLOCK]);
     }
 
-    /// Each call after the first marks the range from the carry record of the call
-    /// before to its data record, and the trim of the next call passes it, so only
-    /// the newest range stays. An entry with no samples moves no stamp. It reads the
-    /// private logs: `mark` gives nothing back, and only the `logs` bench and the
-    /// `alloc` test call it. So only this test kills the mutant that deletes
-    /// `last: None` in `mark`: it changes only the stamp of a bench entry, which no
-    /// caller reads.
+    /// Each call hides the records before the carry record of the call before, so
+    /// only the newest data record keeps a run. An entry with no samples moves no
+    /// stamp. It reads the private logs: `mark` gives nothing back, and only the
+    /// `logs` bench and the `alloc` test call it. So only this test kills the
+    /// mutant that deletes `last: None` in `mark`: it changes only the stamp of a
+    /// bench entry, which no caller reads.
     #[test]
-    fn each_mark_of_the_logs_marks_one_range_and_hides_the_one_before() {
+    fn each_mark_of_the_logs_hides_the_records_before_the_carry_before() {
         let mut logs = Logs::new(2);
         for _ in 0..3 {
             logs.mark();
         }
-        assert_eq!(logs.inner.marked().land(3 * BLOCK), 3 * BLOCK);
-        assert_eq!(logs.inner.marked().land(5 * BLOCK), 4 * BLOCK);
         assert_eq!(logs.inner.kept(), Some(6 * BLOCK));
         for n in 0..2 {
             let runs = logs.inner.runs(Slot::new(n), Path::Live);

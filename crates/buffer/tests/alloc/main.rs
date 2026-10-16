@@ -127,12 +127,15 @@ fn slow(logs: &mut buffer::bench::Logs, entries: u64) {
     logs.commit(0);
 }
 
-/// Each trim drops the range that the commit before marked, so the ranges stay in
+/// A commit of entries with no samples and its carry keep the runs and items in
 /// the memory that the warm-up gave them. The runs of the other shapes swing inside
 /// a lap, so the room of each lap holds the runs of the next.
 fn logs_take_no_allocation() {
     let n = commits(4, buffer::bench::Logs::mark);
-    assert_eq!(n, 0, "{n} allocations in 1024 marked trims");
+    assert_eq!(
+        n, 0,
+        "{n} allocations in 1024 commits of entries with no samples"
+    );
     let mut entries = 0;
     let n = commits(4, |logs| {
         entries = entries % 4 + 1;

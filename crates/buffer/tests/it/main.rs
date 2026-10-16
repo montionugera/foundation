@@ -1885,6 +1885,31 @@ fn an_entry_below_the_tail_is_a_broken_invariant() {
 }
 
 #[test]
+fn an_entry_with_no_samples_and_a_stamp_is_a_broken_invariant() {
+    let (mut sim, _handle) = start(13, |shard| async move {
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("opens");
+        let a = slots.index(key(1));
+        let stamped = entry(1, a, Path::Live, 2, 0, Some(9), Parts::default());
+        drop(buffer.append([stamped]));
+    });
+    assert_eq!(
+        sim.run(),
+        Err(sim::Error::Panicked {
+            thread: DIR.into(),
+            message: "invariant: an entry of index \
+                      00000000-0000-0000-0000-000000000001 on path Live at seq 2 has no \
+                      samples and the stamp 9"
+                .into(),
+            seed: 13,
+        })
+    );
+}
+
+#[test]
 fn an_entry_past_the_last_seq_is_a_broken_invariant() {
     let (mut sim, _handle) = start(11, |shard| async move {
         let mut slots = Slots::new();
@@ -3851,19 +3876,20 @@ fn an_open_refuses_a_carry_record_of_the_wrong_shape() {
 /// seq 3, and kept a record with two more. A carry record after the kept ones gives
 /// the count of them all. Each case: the seqs of the entries with no samples of each
 /// record, the count of a carry record at seq 3 in place of the first kept record,
-/// the carried count, and whether the open takes it. A carried count below the walked
-/// one, above it while a walked entry is not one at the carried seq, or above it
-/// after a carry record that came first, is a wrong shape.
+/// the carried count, and the block of the record that the open refuses. A count
+/// that is not the walked one is a wrong shape.
 #[test]
 fn an_open_counts_the_entries_with_no_samples_that_a_trim_passed() {
     type Records = &'static [&'static [u64]];
-    let cases: [(Records, Option<u64>, u64, bool); 4] = [
-        (&[&[3], &[3, 3]], None, 3, true),
-        (&[&[3], &[3, 3]], None, 1, false),
-        (&[&[3], &[3, 3], &[4]], None, 2, false),
-        (&[&[3], &[3], &[3]], Some(1), 3, false),
+    let cases: [(Records, Option<u64>, u64, Option<u64>); 6] = [
+        (&[&[3], &[3, 3]], None, 3, None),
+        (&[&[3], &[3, 3]], None, 1, Some(3)),
+        (&[&[3], &[3, 3]], None, 4, Some(3)),
+        (&[&[3], &[3, 3], &[4]], None, 2, Some(4)),
+        (&[&[3], &[3], &[3]], Some(2), 4, Some(4)),
+        (&[&[3], &[3], &[3]], Some(1), 3, Some(3)),
     ];
-    for (records, first, given, taken) in cases {
+    for (records, first, given, refused) in cases {
         run(188, move |shard| async move {
             let ring = layout(AREA, BODY_MAX);
             let mut slots = Slots::new();
@@ -3893,8 +3919,8 @@ fn an_open_counts_the_entries_with_no_samples_that_a_trim_passed() {
             let chain = shard.bytes().await[chain..chain + 4].to_vec();
             shard.tamper(TAIL_AT, &(2 * BLOCK).to_le_bytes()).await;
             shard.tamper(CHAIN_AT, &chain).await;
-            if !taken {
-                return shard.open_invalid(ring, carry).await;
+            if let Some(block) = refused {
+                return shard.open_invalid(ring, block * BLOCK).await;
             }
             let mut slots = Slots::new();
             let buffer = shard.open(ring, &mut slots).await.expect("opens");
@@ -3921,12 +3947,20 @@ fn an_open_counts_the_entries_with_no_samples_that_a_trim_passed() {
     }
 }
 
-/// Data records at 1, 2, and 4 blocks each hold an entry with no samples at seq 3.
-/// The carry record at 3 blocks, written over the third, takes two more, which a
-/// trim passed. It gives an exact count, so the one at 5 blocks takes no more.
+/// Data records at 1, 2, and 4 blocks each hold an entry with no samples at seq 3,
+/// and a trim passed the first two. The carry record at 3 blocks, written over the
+/// third, gives a count, and the records after it count on from it. Each case: the
+/// count of the carry record at 3 blocks, the count of the one at 5 blocks, and the
+/// block of the record that the open refuses.
 #[test]
-fn an_open_refuses_more_entries_with_no_samples_after_a_carry_record_of_the_path() {
-    for (given, taken) in [(5, true), (6, false)] {
+fn an_open_refuses_a_count_after_a_carry_record_that_is_not_the_walked_one() {
+    let cases = [
+        (3, 4, None),
+        (3, 5, Some(5)),
+        (3, 3, Some(5)),
+        (2, 4, Some(4)),
+    ];
+    for (first, given, refused) in cases {
         run(189, move |shard| async move {
             let ring = layout(AREA, BODY_MAX);
             let mut slots = Slots::new();
@@ -3939,14 +3973,18 @@ fn an_open_refuses_more_entries_with_no_samples_after_a_carry_record_of_the_path
             }
             drop(buffer);
             shard
-                .put_carry(3 * BLOCK, &carry_body(&[carried(1, 3, 4, None)]))
+                .put_carry(3 * BLOCK, &carry_body(&[carried(1, 3, first, None)]))
                 .await;
             shard.seal(4 * BLOCK).await;
             shard
                 .put_carry(5 * BLOCK, &carry_body(&[carried(1, 3, given, None)]))
                 .await;
-            if !taken {
-                return shard.open_invalid(ring, 5 * BLOCK).await;
+            let chain = to_usize(AREA_START + 2 * BLOCK) + 4;
+            let chain = shard.bytes().await[chain..chain + 4].to_vec();
+            shard.tamper(TAIL_AT, &(3 * BLOCK).to_le_bytes()).await;
+            shard.tamper(CHAIN_AT, &chain).await;
+            if let Some(block) = refused {
+                return shard.open_invalid(ring, block * BLOCK).await;
             }
             let mut slots = Slots::new();
             let buffer = shard.open(ring, &mut slots).await.expect("opens");
@@ -4893,7 +4931,7 @@ fn step() -> impl Strategy<Value = Step> {
                 skip,
                 len,
                 bytes,
-                last,
+                last: last.filter(|_| len != 0),
             }),
         2 => Just(Step::Commit),
         1 => Just(Step::Reopen),
@@ -7211,12 +7249,11 @@ fn newest_gives_no_entry_that_is_not_durable() {
 }
 
 /// Writes an entry with no samples of index 1 at seq 0, `between` records of index
-/// 2, and a second entry with no samples of index 1 at seq 0, each its own commit:
-/// no trim lands in the records after the first entry up to the second. With
-/// `held`, the record of the second entry also holds the only entry of index 3.
+/// 2, and a second entry with no samples of index 1 at seq 0, each its own commit.
+/// With `held`, the record of the second entry also holds the only entry of index 3.
 /// Then 200 records of index 2 fill a ring of 32 blocks, with trims. Gives the first
 /// of them that the ring still refuses after 100 commit spans, with its error.
-fn refused_past_a_range_where_no_trim_lands(
+fn refused_after_entries_with_no_samples_at_a_seq(
     between: u64,
     held: bool,
 ) -> Option<(u64, Rejected)> {
@@ -7270,15 +7307,15 @@ fn refused_past_a_range_where_no_trim_lands(
     found.lock().expect("no panic held the lock").take()
 }
 
-/// A trim that would land in the records between two entries with no samples at
-/// one seq passes them, so the ring frees room for each later record. When the
-/// record of the second entry holds another path, a carry first moves that path
-/// out, also when the record is past the room that the trim wants.
+/// A trim lands in the records between two entries with no samples at one seq, so
+/// the ring frees room for each later record. When the record of the second entry
+/// holds another path, a carry first moves that path out, also when the record is
+/// past the room that the trim wants.
 #[test]
-fn a_trim_passes_a_range_where_no_trim_lands_so_the_ring_frees_room() {
+fn a_trim_between_entries_with_no_samples_at_a_seq_frees_room() {
     for held in [false, true] {
         for between in 0..8 {
-            let refused = refused_past_a_range_where_no_trim_lands(between, held);
+            let refused = refused_after_entries_with_no_samples_at_a_seq(between, held);
             assert_eq!(refused, None, "with {between} records between, held {held}");
         }
     }

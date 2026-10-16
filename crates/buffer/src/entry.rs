@@ -8,7 +8,9 @@
 //! A header is `index: u128, path: u8, first: u64, len: u32, stored_at: i64,
 //! last: u8 + i64, tag: u8, bytes: u32`, little-endian and fixed width. `last` is a
 //! presence byte then the stamp; under presence 0 the stamp is written as 0 and not
-//! read. One table block and the callers' blocks make one vectored write, with no
+//! read. An entry with no samples has presence 0 and, in place of the stamp, its
+//! count: the entries with no samples at `first` on its path, it included. One
+//! table block and the callers' blocks make one vectored write, with no
 //! copy and no block per entry.
 
 #![deny(
@@ -26,6 +28,8 @@ use block::Block;
 use types::channel::{self, Slot};
 use types::frame::Path;
 use types::time::Stamp;
+
+use crate::carry::GIVEN_MAX;
 
 /// The encoded size of one [`Header`].
 pub(crate) const HEADER_LEN: usize = 16 + 1 + 8 + 4 + 8 + 9 + 1 + 4;
@@ -106,7 +110,8 @@ pub struct Entry {
     pub len: u32,
     /// Mesh time at which the home stored it. A retention `keep` counts from it.
     pub stored_at: Stamp,
-    /// The newest stamp of the samples, `None` for a caller record.
+    /// The newest stamp of the samples, `None` for a caller record. An entry with no
+    /// samples has no stamp.
     pub last: Option<Stamp>,
     /// A tag the caller gives and reads back. The buffer gives it no meaning, apart
     /// from 0: [`Buffer::newest`](crate::Buffer::newest) never gives an entry of tag
@@ -122,8 +127,18 @@ impl Entry {
     /// # Panics
     ///
     /// When the parts hold more than `u32::MAX` bytes: a group checks the body
-    /// before it takes the entry.
+    /// before it takes the entry. When the entry has no samples and a stamp.
     pub(crate) fn header(&self) -> Header {
+        if let (0, Some(stamp)) = (self.len, self.last) {
+            panic!(
+                "invariant: an entry of index {} on path {:?} at seq {} has no samples \
+                 and the stamp {}",
+                self.index,
+                self.path,
+                self.first,
+                stamp.nanos()
+            );
+        }
         let len = self.parts.bytes();
         let Ok(bytes) = u32::try_from(len) else {
             unreachable!("invariant: the entry of {len} bytes is under the maximum");
@@ -135,6 +150,7 @@ impl Entry {
             len: self.len,
             stored_at: self.stored_at,
             last: self.last,
+            given: 0,
             tag: self.tag,
             bytes,
         }
@@ -154,6 +170,9 @@ pub(crate) struct Header {
     pub(crate) stored_at: Stamp,
     /// The newest stamp of the entry's samples; none for a caller record.
     pub(crate) last: Option<Stamp>,
+    /// For an entry with no samples, the entries with no samples at `first` on its
+    /// path, it included: from 1 to [`GIVEN_MAX`]. 0 for an entry with samples.
+    pub(crate) given: u64,
     /// A tag the caller gives and reads back.
     pub(crate) tag: u8,
     /// The size of the entry's bytes in the body.
@@ -170,7 +189,7 @@ impl Header {
             &self.first.to_le_bytes(),
             &self.len.to_le_bytes(),
             &self.stored_at.nanos().to_le_bytes(),
-            &last_bytes(self.last),
+            &self.last_bytes(),
             &[self.tag],
             &self.bytes.to_le_bytes(),
         ] {
@@ -188,7 +207,11 @@ impl Header {
         let first = u64::from_le_bytes(fields.take());
         let len = u32::from_le_bytes(fields.take());
         let stored_at = Stamp::from_nanos(i64::from_le_bytes(fields.take()));
-        let last = fields.last()?;
+        let (last, given) = if len == 0 {
+            (None, fields.given()?)
+        } else {
+            (fields.last()?, 0)
+        };
         let [tag] = fields.take();
         let bytes = u32::from_le_bytes(fields.take());
         Ok(Self {
@@ -198,9 +221,22 @@ impl Header {
             len,
             stored_at,
             last,
+            given,
             tag,
             bytes,
         })
+    }
+
+    /// The `last` field: the stamp as [`last_bytes`] writes it, or for an entry
+    /// with no samples, presence 0 and the count.
+    fn last_bytes(&self) -> [u8; 9] {
+        if self.len != 0 {
+            return last_bytes(self.last);
+        }
+        let mut bytes = [0; 9];
+        let (_, count) = bytes.split_at_mut(1);
+        count.copy_from_slice(&self.given.to_le_bytes());
+        bytes
     }
 }
 
@@ -246,6 +282,24 @@ impl Fields<'_> {
         match presence {
             0 => Ok(None),
             1 => Ok(Some(stamp)),
+            byte => Err(Invalid::Presence(byte)),
+        }
+    }
+
+    /// The next presence byte and count of an entry with no samples, as
+    /// [`Header`] writes them.
+    ///
+    /// # Errors
+    ///
+    /// [`Invalid::Stamped`] for presence 1, [`Invalid::Presence`] for a presence
+    /// byte over 1, and [`Invalid::Given`] for a count of 0 or over [`GIVEN_MAX`].
+    fn given(&mut self) -> Result<u64, Invalid> {
+        let [presence] = self.take();
+        let given = u64::from_le_bytes(self.take());
+        match presence {
+            0 if (1..=GIVEN_MAX).contains(&given) => Ok(given),
+            0 => Err(Invalid::Given(given)),
+            1 => Err(Invalid::Stamped),
             byte => Err(Invalid::Presence(byte)),
         }
     }
@@ -319,7 +373,10 @@ pub(crate) enum Invalid {
     Path(u8),
     /// A `last` presence byte that is not 0 or 1.
     Presence(u8),
-    /// A carried `given` over [`crate::carry::GIVEN_MAX`].
+    /// An entry with no samples has presence 1.
+    Stamped,
+    /// A carried `given` over [`GIVEN_MAX`], or the count of an entry with no
+    /// samples that is 0 or over it.
     Given(u64),
     /// This many bytes follow the last entry and no header names them.
     Trailing(usize),
@@ -443,6 +500,7 @@ mod tests {
             len: 0x2122_2324,
             stored_at: Stamp::from_nanos(0x3132_3334_3536_3738),
             last: Some(Stamp::from_nanos(-2)),
+            given: 0,
             tag: 0x41,
             bytes,
         }
@@ -487,6 +545,32 @@ mod tests {
         let encoded = header.encode();
         assert_eq!(&encoded[37..46], &[0; 9]);
         assert_eq!(Header::decode(&encoded), Ok(header));
+    }
+
+    /// An entry with no samples has presence 0 and its count in the stamp bytes.
+    #[test]
+    fn stores_the_count_of_an_entry_with_no_samples_in_the_stamp_bytes() {
+        let header = Header {
+            len: 0,
+            last: None,
+            given: 5,
+            ..header(0)
+        };
+        let encoded = header.encode();
+        assert_eq!(&encoded[37..46], &[0, 5, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(Header::decode(&encoded), Ok(header));
+        let over = [&[0][..], &(GIVEN_MAX + 1).to_le_bytes()].concat();
+        let cases = [
+            (vec![1, 5, 0, 0, 0, 0, 0, 0, 0], Invalid::Stamped),
+            (vec![0; 9], Invalid::Given(0)),
+            (over, Invalid::Given(GIVEN_MAX + 1)),
+            (vec![2, 5, 0, 0, 0, 0, 0, 0, 0], Invalid::Presence(2)),
+        ];
+        for (bytes, invalid) in cases {
+            let mut wrong = encoded;
+            wrong[37..46].copy_from_slice(&bytes);
+            assert_eq!(Header::decode(&wrong), Err(invalid), "{bytes:?}");
+        }
     }
 
     #[test]
@@ -582,23 +666,28 @@ mod tests {
             any::<u128>(),
             any::<bool>(),
             any::<u64>(),
-            any::<u32>(),
+            prop_oneof![Just(0), any::<u32>()],
             any::<i64>(),
             any::<Option<i64>>(),
+            1..=GIVEN_MAX,
             any::<u8>(),
         )
-            .prop_map(|(index, backfill, first, len, stored_at, last, tag)| {
-                Header {
-                    index: channel::Key::from_u128(index),
-                    path: if backfill { Path::Backfill } else { Path::Live },
-                    first,
-                    len,
-                    stored_at: Stamp::from_nanos(stored_at),
-                    last: last.map(Stamp::from_nanos),
-                    tag,
-                    bytes: 0,
-                }
-            })
+            .prop_map(
+                |(index, backfill, first, len, stored_at, last, given, tag)| {
+                    let empty = len == 0;
+                    Header {
+                        index: channel::Key::from_u128(index),
+                        path: if backfill { Path::Backfill } else { Path::Live },
+                        first,
+                        len,
+                        stored_at: Stamp::from_nanos(stored_at),
+                        last: last.filter(|_| !empty).map(Stamp::from_nanos),
+                        given: if empty { given } else { 0 },
+                        tag,
+                        bytes: 0,
+                    }
+                },
+            )
     }
 
     fn any_entry() -> impl Strategy<Value = (Header, Vec<u8>)> {
