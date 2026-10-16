@@ -39,6 +39,7 @@ pub mod memory;
 mod net;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod paths;
+mod roots;
 mod shards;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[expect(unsafe_code, reason = "a signal mask is an OS call")]
@@ -52,6 +53,7 @@ mod wall;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use files::Disk;
+pub use roots::Roots;
 
 /// The monotonic clock of this node, which counts time while the machine sleeps. Each
 /// call starts a new clock at `Monotonic(0)`. Clones read the same clock. Never
@@ -230,6 +232,14 @@ pub fn stored(
     name: &str,
 ) -> Result<(Disk, env::thread::Handle), Error> {
     Disk::stored(dir, threads, name)
+}
+
+/// Reads the CA certificates of the OS store: the certificate files on Linux, and the
+/// keychain on macOS. When `SSL_CERT_FILE` or `SSL_CERT_DIR` is set, it reads only the
+/// files that they name, on each OS. It blocks on the reads.
+#[must_use]
+pub fn roots() -> Roots {
+    roots::read()
 }
 
 /// Holds SIGINT and SIGTERM: the first that comes does not end the process, and the
