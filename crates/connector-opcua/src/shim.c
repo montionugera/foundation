@@ -873,17 +873,20 @@ UA_StatusCode shim_value_scalar(const void *value, shim_scalar *out, UA_UInt16 *
     if(status != UA_STATUSCODE_GOOD)
         return status;
     const UA_Variant *variant = &((const UA_DataValue *)value)->value;
+    /* Locals: with `-fno-strict-aliasing`, each store to `out` makes C load again. */
+    const UA_DataType *type = variant->type;
     if(!UA_Variant_isScalar(variant)) {
-        if(variant->type == NULL)
+        if(type == NULL)
             return UA_STATUSCODE_BADNODATA;
-        *kind = (UA_UInt16)(variant->type->typeKind | SHIM_ARRAY);
-        out->type = variant->type;
+        *kind = (UA_UInt16)(type->typeKind | SHIM_ARRAY);
+        out->type = type;
         return UA_STATUSCODE_GOOD;
     }
-    *kind = (UA_UInt16)variant->type->typeKind;
+    UA_UInt32 typeKind = type->typeKind;
+    *kind = (UA_UInt16)typeKind;
     /* A load of fixed size for each kind, since a `memcpy` of `memSize` calls glibc. */
     const void *data = variant->data;
-    switch(variant->type->typeKind) {
+    switch(typeKind) {
     case UA_DATATYPEKIND_BOOLEAN: out->boolean = *(const UA_Boolean *)data; break;
     case UA_DATATYPEKIND_SBYTE: out->sbyte = *(const UA_SByte *)data; break;
     case UA_DATATYPEKIND_BYTE: out->byte = *(const UA_Byte *)data; break;
@@ -895,7 +898,7 @@ UA_StatusCode shim_value_scalar(const void *value, shim_scalar *out, UA_UInt16 *
     case UA_DATATYPEKIND_UINT64: out->uint64 = *(const UA_UInt64 *)data; break;
     case UA_DATATYPEKIND_FLOAT: out->float_ = *(const UA_Float *)data; break;
     case UA_DATATYPEKIND_DOUBLE: out->double_ = *(const UA_Double *)data; break;
-    default: out->type = variant->type; break;
+    default: out->type = type; break;
     }
     return UA_STATUSCODE_GOOD;
 }
