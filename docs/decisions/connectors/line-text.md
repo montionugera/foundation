@@ -24,7 +24,14 @@
   (https://github.com/synnaxlabs/foundation/issues/1098#issuecomment-6046284871), and
   the crate by the person on 2026-10-08T01:48:32Z
   (https://github.com/synnaxlabs/foundation/issues/1098#issuecomment-6050501586).
-  A `u8`, `u16`, or `u32` sample is an `i` integer. A `u64` sample is a `u` integer
+  A `u8`, `u16`, or `u32` sample is an `i` integer. A quality channel
+  (`DataType::Quality`) is an `i` field, as each `u32` channel is. The person has this
+  choice: sent to `laptop.monitor` as a key choice of kind (e) on 2026-10-16T09:45:11Z
+  (message `xixh5fcx`,
+  https://github.com/synnaxlabs/foundation/pull/2855#issuecomment-6212747967), and the
+  quality fields wait on
+  https://github.com/synnaxlabs/foundation/issues/2510#issuecomment-6212750985.
+  A `u64` sample is a `u` integer
   (`line::Value::Unsigned`) to a `bucket`, as InfluxDB 2 and 3 store it. To a
   `database`, the kind refuses a `u64` channel with `Error::Config` and
   `influx.unsigned` where the run first learns the type, before it writes a line of that
