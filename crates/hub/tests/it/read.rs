@@ -4,6 +4,7 @@
 use std::cell::Cell;
 use std::path::{Path as FilePath, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use access::proof::{Error as Refusal, Kind};
@@ -425,24 +426,52 @@ fn opens_a_read_whose_places_pass_the_share() {
 }
 
 /// The node caps the places of a read at `PLACES_MAX`: the `MANY` channels of `w` and
-/// their index are at the cap, and `value` takes them over it.
+/// their index are at the cap, and `value` takes them over it. The read over the cap
+/// does not carry the index, so only the read after it polls the hub's tasks, at its
+/// new carry.
 #[test]
 fn stops_a_read_whose_places_are_over_the_cap_as_malformed() {
     const MANY: u32 = PLACES_MAX - 1;
-    let ready = async |test: &Test| {
+    let (polls, ended) = (
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let (counted, ending) = (Arc::clone(&polls), Arc::clone(&ended));
+    let ready = async move |test: &Test| {
         let names: Vec<String> = (0..MANY).map(|n| format!("w.{n}")).collect();
         test.define(names.iter().enumerate().map(|(n, channel)| {
             let key = 100 + u128::try_from(n).expect("fits");
             (key, channel.as_str(), DataType::Sample(I64), 1)
         }))
         .await;
+        let (pause, clock) = (Rc::clone(&test.pause), test.clock.clone());
+        let before = pause.polls.get();
+        test.tasks.spawn(async move {
+            while !ending.load(Ordering::Relaxed) {
+                counted.store(pause.polls.get() - before, Ordering::Relaxed);
+                clock.sleep(Span::MILLISECOND).await;
+            }
+        });
     };
     let home = read_session(322, ready, |mut agent| async move {
         agent.admit().await;
         let mut over = agent.read(Mode::Complete, &["w.**", "value"]).await;
         assert_eq!(over.recv().await, reset_with(MALFORMED));
+        agent.sleep(QUIET).await;
+        assert_eq!(
+            polls.load(Ordering::Relaxed),
+            0,
+            "the read over the cap polled"
+        );
         let mut stream = agent.read(Mode::Complete, &["w.**"]).await;
         let (places, _, _) = stream.opened().await;
+        agent.sleep(QUIET).await;
+        assert_eq!(
+            polls.load(Ordering::Relaxed),
+            1,
+            "the new carry polled once"
+        );
+        ended.store(true, Ordering::Relaxed);
         assert_eq!(
             places,
             Places {
