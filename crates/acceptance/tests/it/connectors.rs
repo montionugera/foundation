@@ -34,7 +34,7 @@ fn opc_ua_reads_and_commands() {
 }
 
 #[test]
-#[ignore = "waits on #274, #432, #1957, #2145"]
+#[ignore = "waits on #274, #1957, #2145, #2711"]
 fn modbus_tcp_reads_and_commands() {
     check(Protocol::ModbusTcp, include_str!("fixtures/modbus_tcp.hcl"));
 }

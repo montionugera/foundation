@@ -672,9 +672,9 @@ impl Lab {
     }
 
     /// Attaches a simulated device to `node` at `address`.
-    #[expect(clippy::todo, reason = "waits on #432, #434, #435, #436")]
+    #[expect(clippy::todo, reason = "waits on #434, #435, #436, #2711")]
     pub(crate) fn device(&mut self, _node: Node, _protocol: Protocol, _address: &str) {
-        todo!("waits on #432, #434, #435, #436")
+        todo!("waits on #434, #435, #436, #2711")
     }
 
     /// Attaches a simulated Influx store to `node` at `address`.
@@ -684,15 +684,15 @@ impl Lab {
     }
 
     /// The value of `point` on the device at `address`.
-    #[expect(clippy::todo, reason = "waits on #432, #434, #435, #436")]
+    #[expect(clippy::todo, reason = "waits on #434, #435, #436, #2711")]
     pub(crate) fn point(&self, _address: &str, _point: &str) -> f64 {
-        todo!("waits on #432, #434, #435, #436")
+        todo!("waits on #434, #435, #436, #2711")
     }
 
     /// Sets the value of `point` on the device at `address`.
-    #[expect(clippy::todo, reason = "waits on #432, #434, #435, #436")]
+    #[expect(clippy::todo, reason = "waits on #434, #435, #436, #2711")]
     pub(crate) fn set_point(&mut self, _address: &str, _point: &str, _value: f64) {
-        todo!("waits on #432, #434, #435, #436")
+        todo!("waits on #434, #435, #436, #2711")
     }
 
     /// Writes `count` samples to `channel` on `node` at `rate` samples per second,

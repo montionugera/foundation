@@ -1,5 +1,5 @@
-//! Some tests read the `pub(crate)` fields of a `Config`: until `run` (PR B2 of #432),
-//! no public call shows them. `gives_another_config_for_each_other_value` and
+//! Some tests read the `pub(crate)` fields of a `Config`: `run` shows them only in the
+//! requests it sends to a device. `gives_another_config_for_each_other_value` and
 //! `gives_the_defaults_as_written` show the same values through `PartialEq` alone.
 #![expect(clippy::arithmetic_side_effects, reason = "a test may panic")]
 
