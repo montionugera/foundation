@@ -76,8 +76,10 @@
   https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207344849).
   (9) The thread `log` writes each line, so no event waits on the writer. An event puts
   its line in a queue of 1024 lines and 1 MiB, and wakes the thread. The lines, the
-  count of dropped lines, the panic lines, and the waker are under one lock, so each
-  line, each drop, and each close wakes the thread; a loom model checks it. A line
+  count of dropped lines, the panic lines, the waker, and the run of the thread are
+  under one lock, so each line, each drop, and each close wakes the thread, and a
+  line that comes as the thread ends gets a thread that writes it; loom models check
+  both. A line
   drops when 1024 lines wait or when it does not fit in 1 MiB with them, and each line
   after it drops until the thread takes the queue. The thread writes WARN `dropped`
   (target `node::log`) with the field `lines`, their count, after the last line that
@@ -128,7 +130,13 @@
   1 MiB cap, the gauge when the node has metrics, the count under the one lock, the
   thread that ends and starts again, and the name `Flush`, by `laptop.architect-2`
   (2026-10-16T05:54:05Z,
-  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209084526). Lost:
+  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209084526). Each
+  line after a drop drops until the thread takes the queue, and the count of a drop
+  starts the thread, by `laptop.architect-2` (2026-10-16T06:52:19Z,
+  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209868324). The
+  bound of 2048 lines and 2 MiB with the batch, the loom model of the handoff, and one
+  end of a run (2026-10-16T07:05:11Z,
+  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6210050516). Lost:
   one thread for the life of the log, which makes each sim run end as `Stuck`; a write
   on the thread of `join`, which loses the bound of `main` on a stuck writer;
   `tracing-appender::non_blocking`, which starts its own OS thread, so no sim run
