@@ -258,7 +258,10 @@
   https://github.com/synnaxlabs/foundation/pull/2765#issuecomment-6203316949). A
   complete remote reader gives the seqs from `live` to its first frame with a sample as
   the gap of that frame (`hub::reader::Received::gap`). A complete client read gets
-  `live`, from which the client finds the seqs before the seq of its first head. Lost:
+  `live`, from which the client finds the seqs before the seq of its first head.
+  `program::Reader` drops `live` until #2829 gives that gap (`laptop.architect`,
+  2026-10-16T05:17:07Z:
+  https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6208645775). Lost:
   `Opened` with no field, so a loss between the open and the first frame was silent.
   Decided by `laptop.architect` (2026-10-15T19:40:52Z,
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6200757306).
