@@ -633,7 +633,7 @@ impl Body {
         if self.0.remain() == 0 {
             return Err(Error::Trailing);
         }
-        self.0.take(message)?;
+        self.0.take(message.len())?;
         Ok(message)
     }
 

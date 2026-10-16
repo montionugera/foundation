@@ -502,6 +502,7 @@ fn error_has_one_case_for_each_cause_that_a_public_call_gives() {
         | Error::UnknownNode(_)
         | Error::Homes { .. }
         | Error::Voters { .. }
+        | Error::Limit { .. }
         | Error::Founding { .. }
         | Error::Unfounded { .. } => {}
     };

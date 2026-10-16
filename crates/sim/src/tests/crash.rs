@@ -383,6 +383,23 @@ fn a_read_after_a_failed_sync_sees_its_lost_writes_until_the_cache_drops_them() 
     assert_eq!(outcomes, BTreeSet::from([(1, 1), (2, 1), (2, 2)]));
 }
 
+#[test]
+fn a_power_cut_keeps_whether_a_file_is_exposed() {
+    let (mut sim, node) = disk(0);
+    sim.run_on(&node, |node, _| async move {
+        create(&node, "a", KIB).await.close().await;
+        node.files().sync_dir(Path::new("")).await.unwrap();
+        node.expose_file(Path::new("a"));
+    })
+    .unwrap();
+    sim.crash(&node, Crash::Power);
+    let exposed = sim.run_on(&node, |node, _| async move {
+        let file = node.files().open(Path::new("a"), Mode::Read).await;
+        file.unwrap().exposed()
+    });
+    assert!(exposed.unwrap());
+}
+
 /// The bytes of the file of [`create_torn`] after a write of one 3 at its start, a
 /// sync, and a power cut.
 fn rewritten(seed: u64) -> Vec<u8> {

@@ -26,12 +26,15 @@ use wire::hub::{Credit, Head, Refusal, Reply, ends};
 use super::region::OTHER;
 use super::{
     AREA, BODY_MAX, I64, NODE, POOL, TIME, TIME_B, Test, VALUE, fill, names, samples,
-    unnamed, without, write, write_series, write_wide,
+    unnamed, without, write, write_samples, write_series, write_wide,
 };
 use crate::net::{HOME, PEER, PORT, own_pool, public_key, transport_sized};
 
 /// The fewest bytes that a transport takes in one message.
 const MESSAGE_MIN: usize = 1472;
+/// The fewest bytes that the transport of a node with a region takes in one message,
+/// as `mesh::Mesh::open` refuses less.
+const REGION_MIN: usize = 50_355;
 /// The window of a transport of a test, in bytes.
 const WINDOW: usize = 1 << 20;
 
@@ -989,10 +992,14 @@ async fn define_many(test: &Test, count: u128) -> Vec<String> {
 #[test]
 fn a_reader_whose_keys_and_frames_each_take_many_messages_gets_each_frame() {
     const FRAMES: i64 = 3;
+    // A frame of more bytes than the reader's limit, and at most `BODY_MAX`. Each
+    // value takes 8 bytes, and the index almost none.
+    const SAMPLES: i64 = 7_000;
+    assert!(usize::try_from(SAMPLES).unwrap() * 8 > REGION_MIN);
     remote_sized(
         9,
         sim::link::Config::default(),
-        [(MESSAGE_MIN, WINDOW); 2],
+        [(REGION_MIN, WINDOW), (MESSAGE_MIN, WINDOW)],
         |node, tasks, transport, steps| async move {
             let kept = Arc::clone(&steps);
             hub_home(node, tasks, transport, steps, |test| async move {
@@ -1001,7 +1008,7 @@ fn a_reader_whose_keys_and_frames_each_take_many_messages_gets_each_frame() {
                 until(&test.clock, &kept.opened).await;
                 let now = test.now();
                 for n in 0..FRAMES {
-                    write_wide(&mut writer, now, n);
+                    write_samples(&mut writer, now + n * SAMPLES, SAMPLES);
                 }
             })
             .await;
@@ -1025,7 +1032,10 @@ fn a_reader_whose_keys_and_frames_each_take_many_messages_gets_each_frame() {
                 stamps.extend(samples(&received, 1));
             }
             let first = stamps[0];
-            assert_eq!(stamps, (first..first + FRAMES * 1000).collect::<Vec<_>>());
+            assert_eq!(
+                stamps,
+                (first..first + FRAMES * SAMPLES).collect::<Vec<_>>()
+            );
         },
     );
 }
@@ -1719,7 +1729,7 @@ fn a_reader_whose_pool_has_no_room_for_a_message_of_keys_stops_the_stream_with_b
     remote_sized(
         41,
         sim::link::Config::default(),
-        [(MESSAGE_MIN, WINDOW), (MESSAGE_MIN, 2 * MESSAGE_MIN)],
+        [(REGION_MIN, WINDOW), (MESSAGE_MIN, 2 * MESSAGE_MIN)],
         |node, _, transport, steps| async move {
             let session = transport.accept().await.expect("a session");
             let mut incoming = session.accept().await.expect("a stream");

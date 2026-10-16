@@ -81,10 +81,15 @@
   (https://github.com/synnaxlabs/foundation/pull/2477#issuecomment-6131426790).
   `Mesh::open` refuses a node that takes less than `BYTES_MIN` (`Error::Limit`), and
   `propose_voters` refuses a set of more than 127 voters, so that the proof of a message
-  with no link fits. Both refusals land in the third PR of #1361. Lost: `mesh` cuts a
-  large message into parts and the receiver joins them, because nothing bounds what the
-  receiver holds before it decodes. Decided by `laptop.architect`, 2026-10-12T18:29:52Z
+  with no link fits. Lost: `mesh` cuts a large message into parts and the receiver
+  joins them, because nothing bounds what the receiver holds before it decodes.
+  Decided by `laptop.architect`, 2026-10-12T18:29:52Z
   (https://github.com/synnaxlabs/foundation/issues/1361#issuecomment-6130215772).
+  The check reads the size of the largest block of the pool, not its room: a pool whose
+  budget is near that block can stall the mesh with no error (#2784). Lost: a bound on
+  the budget, which refuses some pools that work and passes some that stall. Decided by
+  `laptop.architect`, 2026-10-16T00:21:57Z
+  (https://github.com/synnaxlabs/foundation/pull/2781#issuecomment-6205117345).
   The decode of the proof of a message refuses more than 254 grants, the two sets of a
   joint configuration of 127 voters each, so that each proof that `raft` keeps fits a
   message with no entry and no link. Decided by `laptop.architect`, 2026-10-12T20:07:11Z
@@ -98,3 +103,7 @@
   Supersedes point 3 of
   https://github.com/synnaxlabs/foundation/pull/2477#issuecomment-6131920823 for the
   founding set.
+  The decode of a `Data::Voters` entry does not bound its set by `VOTERS_MAX`: only
+  `propose_voters` of the leader makes one, and `raft` trusts its voters
+  (`docs/security.md`). Decided by `laptop.architect`, 2026-10-12T23:42:08Z
+  (https://github.com/synnaxlabs/foundation/issues/1361#issuecomment-6134741309).
