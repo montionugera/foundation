@@ -352,8 +352,9 @@ fn refuses_a_body_over_the_cap() {
             error,
             Error::TooLarge {
                 status: StatusCode::OK,
+                ref body,
                 max: BODY_MAX
-            }
+            } if body[..] == *"x".repeat(BODY_MAX).as_bytes()
         ),
         "{error:?}"
     );
@@ -381,8 +382,9 @@ fn refuses_chunks_that_together_pass_the_cap() {
             error,
             Error::TooLarge {
                 status: StatusCode::BAD_REQUEST,
+                ref body,
                 max: BODY_MAX
-            }
+            } if body[..] == *"x".repeat(BODY_MAX).as_bytes()
         ),
         "{error:?}"
     );

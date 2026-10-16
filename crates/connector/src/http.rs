@@ -187,9 +187,12 @@ impl Client {
             poll_fn(|cx| Pin::new(&mut incoming).poll_frame(cx)).await
         {
             if let Ok(data) = frame?.into_data() {
-                if data.len() > self.body_max.saturating_sub(bytes.len()) {
+                let room = self.body_max.saturating_sub(bytes.len());
+                if data.len() > room {
+                    bytes.extend_from_slice(&data[..room]);
                     return Err(Error::TooLarge {
                         status: parts.status,
+                        body: Bytes::from(bytes),
                         max: self.body_max,
                     });
                 }
@@ -408,10 +411,13 @@ pub enum Error {
     Connect(net::Error),
     /// The exchange was not done at the timeout.
     TimedOut,
-    /// The response body is larger than the cap.
+    /// The response body is larger than `max` bytes. `status` is the status of the
+    /// response, and `body` holds its first `max` bytes.
     TooLarge {
         /// The status of the response.
         status: StatusCode,
+        /// The first `max` bytes of the body.
+        body: Bytes,
         /// The cap, in bytes.
         max: usize,
     },

@@ -134,23 +134,38 @@ async fn send(
     let mut backoff = None;
     loop {
         let request = request(uri, &body, token.borrow().as_ref());
-        let refused = match client.send(request).await {
+        let answer = match client.send(request).await {
             Ok(answer) if answer.status() == StatusCode::NO_CONTENT => {
                 ctx.clear_error();
                 return Ok(());
             }
-            Ok(answer) => {
-                let text = String::from_utf8_lossy(answer.body());
-                answered(ctx, answer.status(), text.trim())
-            }
-            Err(error @ connector::http::Error::TooLarge { status, .. }) => {
-                answered(ctx, status, &error.to_string())
+            Ok(answer) => Some((answer.status(), answer.into_body())),
+            Err(connector::http::Error::TooLarge { status, body, .. }) => {
+                Some((status, body))
             }
             Err(error) => {
                 ctx.error(&format_args!("the write to InfluxDB failed: {error}"));
-                false
+                None
             }
         };
+        let mut refused = false;
+        if let Some((status, body)) = answer {
+            let text = String::from_utf8_lossy(&body);
+            let text = text.trim();
+            let token =
+                matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
+            let source = ctx.config().token.as_ref().filter(|_| token);
+            refused = source.is_some();
+            match source {
+                Some(source) => ctx.error(&format_args!(
+                    "InfluxDB answered {status}. Check the token {source}: {text}"
+                )),
+                None => ctx.error(&format_args!(
+                    "InfluxDB answered {status}: {text}{}",
+                    fix(status)
+                )),
+            }
+        }
         let backoff =
             backoff.get_or_insert_with(|| Backoff::new(ctx.clock(), ctx.rng(), RETRY));
         if !backoff.wait(ctx.cancel()).await {
@@ -163,10 +178,9 @@ async fn send(
     }
 }
 
-/// Shows the answer of `status` with `text`, which is not a 204, as the run's error.
-/// Returns whether InfluxDB refused the token of the run.
-fn answered(ctx: &Context<Config>, status: StatusCode, text: &str) -> bool {
-    let fix = match status {
+/// The fix that the error text of an answer of `status` ends with, after its body.
+fn fix(status: StatusCode) -> &'static str {
+    match status {
         StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
             ". For a field type conflict, write to another `measurement` or delete the \
              old field in InfluxDB. For points older than the retention period, raise \
@@ -176,18 +190,8 @@ fn answered(ctx: &Context<Config>, status: StatusCode, text: &str) -> bool {
             ". Create the database, the bucket, or the org in InfluxDB, or name one \
              that exists"
         }
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
-            if let Some(source) = &ctx.config().token =>
-        {
-            ctx.error(&format_args!(
-                "InfluxDB answered {status}. Check the token {source}: {text}"
-            ));
-            return true;
-        }
         _ => "",
-    };
-    ctx.error(&format_args!("InfluxDB answered {status}: {text}{fix}"));
-    false
+    }
 }
 
 /// The request of one attempt to write `body` to `uri`, with the header of `token`.
