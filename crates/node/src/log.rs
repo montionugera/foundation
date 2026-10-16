@@ -19,8 +19,8 @@ use types::time::Stamp;
 /// above, with the stamp, the level, the target, the message, and the fields.
 pub struct Log {
     /// Where each line goes, with one write for each line. `main` gives stderr. A
-    /// write blocks the thread of its event until it returns. A failed write drops
-    /// the line.
+    /// write blocks the thread of its event until it returns, and each other event of
+    /// the node, on any thread, waits for it. A failed write drops the line.
     pub writer: Box<dyn io::Write + Send>,
     /// The form of each line, text or JSON, and the least level of an event that the
     /// log holds.
@@ -204,7 +204,7 @@ impl Entry<'_> {
     /// message first), and `mesh_time`, in that order.
     #[expect(
         clippy::unwrap_in_result,
-        reason = "only a defect of `Serialize` fails, and `fmt` drops the line with no word"
+        reason = "only a defect of `Serialize` fails, and `fmt` drops it with no word"
     )]
     fn json(&self, w: &mut Writer<'_>) -> fmt::Result {
         let line = serde_json::to_string(self)

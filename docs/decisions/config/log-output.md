@@ -41,7 +41,8 @@
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6201622804).
   Lost: a `Layer` of our own, which builds again what `fmt` gives; the `json` format
   of `fmt`, which needs a second clock read or a splice for `mesh_time`. A write
-  blocks the thread of its event until stderr takes the line. Later step (#2764): the
+  blocks the thread of its event until stderr takes the line, and each other event of
+  the node, on any shard or thread, waits for that write. Later step (#2764): the
   node never blocks on its log reader, by `laptop.monitor` with the details of
   `laptop.architect-2` (2026-10-15T21:39:25Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202838819).
@@ -54,7 +55,9 @@
   the file `address` holds the address. `Node::join` writes `stopped`: INFO after a
   stop, ERROR with `error` after a failure, also a failure before any shard started.
   (6) The fix of `node.session` does not point to the log, which holds no event of a
-  failed session yet (OPS OUTPUT, #2767).
+  failed session yet (OPS OUTPUT, #2767). By `laptop.architect-2`
+  (2026-10-15T22:05:27Z,
+  https://github.com/synnaxlabs/foundation/pull/2762#issuecomment-6203245390).
   (7) `node` starts no thread through `env::threads::Threads`, and no thread of `main`
   writes an event, so `node::Config` has no `threads` yet. The first part that needs
   one (the thread of open62541) adds `Config::threads` and calls `Threads::logged`.
