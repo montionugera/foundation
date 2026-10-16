@@ -28,7 +28,7 @@ use wire::hub::Reply;
 use wire::hub::client::{Mode, OPEN_BYTES_MAX, Open, Place, Refusal};
 
 use crate::agent::{AGENT, SUBJECT, name};
-use crate::connect::{connect, connect_with};
+use crate::connect::{ample, connect, connect_with};
 use crate::hand::{accept_read, by_hand, opened, reply, send, send_frame, start};
 use crate::node::env;
 use crate::session::{admit, raw};
@@ -428,7 +428,7 @@ fn gives_a_frame_whose_draft_waited_at_a_call_that_dropped() {
                 config.clone(),
                 block::Heap::new(config.reservation()),
             );
-            let session = connect_with(&node, tasks, at, AGENT, Rc::new(pool))
+            let session = connect_with(&node, tasks, at, AGENT, ample(), Rc::new(pool))
                 .await
                 .expect("connects");
             let mut reader = session

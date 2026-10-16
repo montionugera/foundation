@@ -20,7 +20,7 @@ use wire::hub::client::{
 };
 
 use crate::agent::{AGENT, SUBJECT, name};
-use crate::connect::{connect, connect_with};
+use crate::connect::{ample, connect, connect_with};
 use crate::hand::by_hand;
 use crate::home::{accept, serve_session, serve_session_on};
 use crate::net::{HOME, header, own_pool, public_key, transport};
@@ -732,7 +732,7 @@ fn fill(pool: &block::Pool) -> Vec<block::Unique> {
 fn renews_the_hello_once_the_pool_has_room() {
     let home = serve_session(136, true, Some(rules()), |node, tasks, at| async move {
         let pool = own_pool();
-        let session = connect_with(&node, tasks, at, AGENT, Rc::clone(&pool))
+        let session = connect_with(&node, tasks, at, AGENT, Rc::clone(&pool), ample())
             .await
             .expect("connects");
         let half = Span::from_nanos(LIFE.nanos() / 2 - Span::SECOND.nanos());
@@ -750,6 +750,32 @@ fn renews_the_hello_once_the_pool_has_room() {
     assert_eq!(
         home.served[0],
         Ok(Got::Request(name(SUBJECT), b"late".to_vec()))
+    );
+}
+
+/// Frames that fill [`Config::frames`](program::Config::frames) leave the renewal on
+/// time: it sends from the session pool.
+#[test]
+fn renews_the_hello_on_time_while_frames_fill_their_pool() {
+    raw(
+        425,
+        |session, mut hello, node| async move {
+            let came = admit(&mut hello, &node.clock()).await;
+            let late = Span::from_nanos(came.nanos() - HALF.nanos());
+            assert!(late < RETRY, "the renewal comes on time: {late:?}");
+            drop(session);
+        },
+        |node, tasks, at| async move {
+            let frames = ample();
+            let session =
+                connect_with(&node, tasks, at, AGENT, ample(), Rc::clone(&frames))
+                    .await
+                    .expect("connects");
+            let held = fill(&frames);
+            node.clock().sleep(HALF).await;
+            node.clock().sleep(Span::SECOND).await;
+            drop((held, session));
+        },
     );
 }
 
@@ -784,9 +810,10 @@ fn retries_a_renewal_every_ten_milliseconds_while_the_pool_is_full() {
         },
         |node, tasks, at| async move {
             let pool = own_pool();
-            let session = connect_with(&node, tasks, at, AGENT, Rc::clone(&pool))
-                .await
-                .expect("connects");
+            let session =
+                connect_with(&node, tasks, at, AGENT, Rc::clone(&pool), ample())
+                    .await
+                    .expect("connects");
             node.clock()
                 .sleep(Span::from_nanos(HALF.nanos() - Span::SECOND.nanos()))
                 .await;
@@ -817,9 +844,10 @@ fn ends_the_wait_for_a_block_when_the_session_closes() {
         },
         |node, tasks, at| async move {
             let pool = own_pool();
-            let session = connect_with(&node, tasks, at, AGENT, Rc::clone(&pool))
-                .await
-                .expect("connects");
+            let session =
+                connect_with(&node, tasks, at, AGENT, Rc::clone(&pool), ample())
+                    .await
+                    .expect("connects");
             let held = fill(&pool);
             let got = within(&node.clock(), LIFE, session.request(b"ab")).await;
             assert_eq!(got, Some(Err(Error::Refused(Refusal::Busy))));
@@ -882,7 +910,7 @@ fn connects_once_the_memory_of_the_pool_has_room() {
         switch.refuse();
         allow_after(&tasks, node.clock(), switch, Span::SECOND);
         let began = node.clock().now();
-        let session = connect_with(&node, tasks, at, AGENT, pool)
+        let session = connect_with(&node, tasks, at, AGENT, pool, ample())
             .await
             .expect("connects");
         assert!(node.clock().now() - began >= Span::SECOND);
@@ -901,7 +929,7 @@ fn connects_once_the_memory_of_the_pool_has_room() {
 fn sends_a_request_once_the_memory_of_the_pool_has_room() {
     let home = serve_session(148, true, Some(rules()), |node, tasks, at| async move {
         let (pool, switch) = scarce();
-        let session = connect_with(&node, tasks.clone(), at, AGENT, pool)
+        let session = connect_with(&node, tasks.clone(), at, AGENT, pool, ample())
             .await
             .expect("connects");
         node.clock().sleep(QUIET).await;
@@ -927,7 +955,9 @@ fn refuses_to_connect_from_a_pool_with_no_block_for_the_header() {
         let config = block::Config::new(0).expect("the budget fits");
         let heap = block::Heap::new(config.reservation());
         let pool = Rc::new(block::Pool::new(config, heap));
-        let refused = connect_with(&node, tasks, at, AGENT, pool).await.map(drop);
+        let refused = connect_with(&node, tasks, at, AGENT, pool, ample())
+            .await
+            .map(drop);
         *kept.lock().expect("not poisoned") = Some(refused);
     });
     let got = got.lock().expect("not poisoned").take().expect("ran");
@@ -951,7 +981,7 @@ fn sends_a_body_over_the_largest_block_of_its_pool() {
         let pool =
             block::Pool::new(config.clone(), block::Heap::new(config.reservation()));
         let body = body(pool.largest() + 1);
-        let session = connect_with(&node, tasks, at, AGENT, Rc::new(pool))
+        let session = connect_with(&node, tasks, at, AGENT, Rc::new(pool), ample())
             .await
             .expect("connects");
         assert_eq!(session.request(&body).await, Ok(reversed(&body)));
@@ -971,7 +1001,7 @@ fn sends_a_body_over_the_room_of_its_pool() {
         let config = block::Config::new(1 << 17).expect("the budget fits");
         let pool =
             block::Pool::new(config.clone(), block::Heap::new(config.reservation()));
-        let session = connect_with(&node, tasks, at, AGENT, Rc::new(pool))
+        let session = connect_with(&node, tasks, at, AGENT, Rc::new(pool), ample())
             .await
             .expect("connects");
         let sent = body(256 << 10);
@@ -1153,9 +1183,10 @@ fn sends_a_body_at_the_cap_from_a_pool_of_one_chunk_on_each_link() {
                     config.clone(),
                     block::Heap::new(config.reservation()),
                 );
-                let session = connect_with(&node, tasks, at, AGENT, Rc::new(pool))
-                    .await
-                    .expect("connects");
+                let session =
+                    connect_with(&node, tasks, at, AGENT, Rc::new(pool), ample())
+                        .await
+                        .expect("connects");
                 let cap = usize::try_from(BODY_BYTES_MAX).expect("fits");
                 let sent = body(cap);
                 let got = session.request(&sent).await;

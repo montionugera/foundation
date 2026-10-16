@@ -60,17 +60,22 @@ pub struct Config {
     /// waits for a block, so a small pool makes the session slower, not fail. The wait
     /// ends when the session closes.
     pub pool: Rc<block::Pool>,
+    /// The pool that the frames of each reader take their blocks from. A frame holds
+    /// its block until it drops, and a frame that finds the pool full makes
+    /// `Reader::next` wait. Give a pool apart from `pool` and from the transport's:
+    /// frames that the program holds there stop the renewal of the hello.
+    pub frames: Rc<block::Pool>,
 }
 
 /// A program's session with one node, as one subject. It keeps the subject's hello
 /// admitted, sends one request at a time, and opens reads beside them. It stays on
-/// the thread that made it. A clone is the same session. When the last clone drops, it
-/// closes the session with `Code(0)`.
+/// the thread that made it. A clone is the same session. When the last clone and the
+/// last [`Reader`] drop, it closes the session with `Code(0)`.
 #[derive(Clone, Debug)]
 pub struct Session(Rc<Handle>);
 
-/// Closes the session when the last clone of a [`Session`] drops. The renewal task
-/// holds only the [`Shared`] part.
+/// Closes the session when the last clone of a [`Session`] and the last [`Reader`]
+/// drop. The renewal task holds only the [`Shared`] part.
 #[derive(Debug)]
 struct Handle(Rc<Shared>);
 
@@ -91,6 +96,7 @@ struct Shared {
     clock: env::clock::Clock,
     tasks: env::tasks::Tasks,
     pool: Rc<block::Pool>,
+    frames: Rc<block::Pool>,
     turn: Rc<Turn>,
     /// The error that ended the renewal.
     ended: RefCell<Option<Error>>,
@@ -122,6 +128,7 @@ impl Session {
             entropy,
             tasks,
             pool,
+            frames,
         } = config;
         let session = transport.dial(node, &addresses).await?;
         let (mut sender, mut receiver) = session.open(Class::Complete).await?;
@@ -136,6 +143,7 @@ impl Session {
             clock,
             tasks: tasks.clone(),
             pool,
+            frames,
             turn: Rc::default(),
             ended: RefCell::new(None),
         });
@@ -421,8 +429,8 @@ pub enum Error {
     /// The node finished a stream with no answer: a request with no response, or the
     /// hello stream with no challenge.
     Unanswered,
-    /// No block of the pool can hold a message that the session sends, or a frame of
-    /// a read.
+    /// No block of [`Config::pool`] can hold a message that the session sends, or no
+    /// block of [`Config::frames`] can hold a frame of a read.
     Pool(block::Error),
     /// The open of a read is over `OPEN_BYTES_MAX`. Nothing was sent.
     Open {

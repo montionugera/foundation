@@ -66,16 +66,17 @@ impl Reader {
         &self.places
     }
 
-    /// The key set of each frame. Its entries are the places, in order.
+    /// The key set of each frame. Its entries are the places, in order. Its key and the
+    /// slot of each entry are the reader's own, not the node's.
     #[must_use]
     pub fn set(&self) -> &Arc<KeySet> {
         self.frames.set()
     }
 
     /// The next frame. Its series are encoded, and its entries index
-    /// [`Reader::set`]. It holds a block of the session's pool until it drops, and a
-    /// frame that finds the pool full waits for a block. A frame whose call drops goes
-    /// on at the next call.
+    /// [`Reader::set`]. It holds a block of [`Config::frames`](crate::Config::frames)
+    /// until it drops, and a frame that finds the pool full waits for a block. A frame
+    /// whose call drops goes on at the next call.
     ///
     /// # Errors
     ///
@@ -110,7 +111,7 @@ impl Reader {
                 Due::Draft(layout) => {
                     let shared = &self.session.0;
                     let draft = shared
-                        .retry(|| layout.draft(&shared.pool, Form::Encoded))
+                        .retry(|| layout.draft(&shared.frames, Form::Encoded))
                         .await?;
                     self.frames.draft(draft)
                 }
