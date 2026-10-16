@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::future::poll_fn;
+use std::net::IpAddr;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -14,7 +15,8 @@ use connector::status::{self, Class, Reading};
 use connector::testing::Rig;
 use document::value::{Kind as Of, Value};
 use document::{Attribute, Block, Label, Map};
-use env::net::Listener;
+use env::clock::Clock;
+use env::net::{Listener, Tcp};
 use env::tasks::Tasks;
 use hub::reader::{Mode, Received};
 use spec::channel::{Channel, Data};
@@ -265,7 +267,10 @@ fn definitions(items: &[Item]) -> Vec<(Name, Definition)> {
             control: None,
         },
     });
-    let data = (2..).zip(items).map(|(key, item)| {
+    let data = (2..)
+        .zip(items)
+        .filter(|(_, item)| item.channel != "plc.time");
+    let data = data.map(|(key, item)| {
         let data = Data::new(index, None, DataType::Sample(item.sample), None);
         let kind = spec::channel::Kind::Data(data.expect("no unit"));
         let key = channel::Key::from_u128(key);
@@ -337,6 +342,8 @@ struct Record {
     frames: Vec<Frame>,
     /// Each status of the connector.
     statuses: Vec<Reading>,
+    /// The time that the stop of the connector took.
+    stopped: Span,
 }
 
 impl Record {
@@ -431,6 +438,30 @@ impl Scene {
         *self.server.borrow_mut() = Some(stop);
     }
 
+    /// Accepts streams on port 502 and answers each request after `delay`, with the
+    /// exception `code`, or as the device does with none, in place of the server.
+    fn answer(&self, delay: Span, code: Option<u8>) {
+        let (mut listener, clock) = (self.listen(), self.node.clock());
+        let (stop, device) = (Token::new(), Arc::clone(&self.device));
+        let until = stop.clone();
+        self.tasks.spawn(async move {
+            until
+                .race(async move {
+                    while let Ok(stream) = poll_fn(|cx| listener.poll_accept(cx)).await
+                    {
+                        answer(stream, &clock, delay, code, &device).await;
+                    }
+                })
+                .await;
+        });
+        *self.server.borrow_mut() = Some(stop);
+    }
+
+    /// Runs no server, so that the node refuses each connect.
+    fn refuse(&self) {
+        *self.server.borrow_mut() = Some(Token::new());
+    }
+
     /// Stops the server, which closes its listener and its stream.
     fn stop(&self) {
         let stop = self.server.borrow_mut().take();
@@ -453,6 +484,65 @@ impl Scene {
     }
 }
 
+/// Answers each request of `stream` after `delay`, with the exception `code`, or
+/// as `device` does with none, until the stream ends.
+async fn answer(
+    mut stream: Tcp,
+    clock: &Clock,
+    delay: Span,
+    code: Option<u8>,
+    device: &Mutex<Device>,
+) {
+    let (mut received, mut buffer) = (Vec::new(), [0; 260]);
+    loop {
+        let Ok(Some(frame)) = crate::tcp::decode(&received) else {
+            match poll_fn(|cx| stream.poll_read(cx, &mut buffer)).await {
+                Ok(n) if n > 0 => received.extend_from_slice(&buffer[..n]),
+                _ => return,
+            }
+            continue;
+        };
+        clock.sleep(delay).await;
+        let mut pdu = Vec::new();
+        match code {
+            Some(code) => pdu.extend([frame.pdu[0] | 0x80, code]),
+            None => device.lock().expect("no panic").answer(frame.pdu, &mut pdu),
+        }
+        let header = frame.header;
+        let mut reply = header.transaction.to_be_bytes().to_vec();
+        let len = u16::try_from(pdu.len() + 1).expect("a short reply");
+        reply.extend([0, 0]);
+        reply.extend(len.to_be_bytes());
+        reply.push(header.unit);
+        reply.extend(pdu);
+        received.drain(..frame.len);
+        let parts = [std::io::IoSlice::new(&reply)];
+        if poll_fn(|cx| stream.poll_write(cx, &parts)).await != Ok(reply.len()) {
+            return;
+        }
+    }
+}
+
+/// The sim of a scene: its seed, and the addresses of the node that the lookup of
+/// `plc` gives after `delay`.
+#[derive(Clone, Copy)]
+struct World {
+    seed: u64,
+    lookup: fn(&[IpAddr]) -> Vec<IpAddr>,
+    delay: Span,
+}
+
+impl Default for World {
+    /// The seed of the default sim, and the first address of the node at once.
+    fn default() -> Self {
+        Self {
+            seed: ::sim::Config::default().seed,
+            lookup: |all| vec![all[0]],
+            delay: Span::ZERO,
+        }
+    }
+}
+
 /// Runs `script` on the scene, serves `device` when `script` starts no server or
 /// hold, and runs [`PLC`] with `config` and channels of `items` for `span`. Records
 /// the frames and the statuses until 1 s after the run ends.
@@ -466,12 +556,30 @@ fn run<F>(
 where
     F: Future<Output = ()> + 'static,
 {
-    let mut sim = Sim::new(::sim::Config::default());
+    run_in(World::default(), device, items, config, span, script)
+}
+
+/// As [`run`], in `world`.
+fn run_in<F>(
+    world: World,
+    device: Device,
+    items: &'static [Item],
+    config: Document,
+    span: Span,
+    script: impl FnOnce(Rc<Scene>) -> F + Send + 'static,
+) -> Record
+where
+    F: Future<Output = ()> + 'static,
+{
+    let mut sim = Sim::new(::sim::Config {
+        seed: world.seed,
+        ..::sim::Config::default()
+    });
     let node = sim.node(node::Config::default());
-    let answer = ::sim::name::Answer::Addresses(vec![node.addresses()[0]]);
+    let answer = ::sim::name::Answer::Addresses((world.lookup)(&node.addresses()));
     let lookup = ::sim::name::Config {
         answer,
-        ..::sim::name::Config::default()
+        delay: world.delay,
     };
     sim.name("plc", lookup);
     let run = sim.run_on(&node, move |node, tasks| async move {
@@ -507,16 +615,18 @@ where
         let status = |received: &Received<'_>| Reading::of(received).expect("a status");
         let statuses = record(rig.hub(), &names, &tasks, status).await;
         node.clock().sleep(span).await;
+        let start = node.clock().now();
         let result = connector.stop().await;
+        let stopped = node.clock().now() - start;
         node.clock().sleep(Span::SECOND).await;
-        (result, frames.take(), statuses.take())
+        Record {
+            result,
+            frames: frames.take(),
+            statuses: statuses.take(),
+            stopped,
+        }
     });
-    let (result, frames, statuses) = run.expect("the run ends");
-    Record {
-        result,
-        frames,
-        statuses,
-    }
+    run.expect("the run ends")
 }
 
 /// The keys of the index and of each of `items`, in order.
@@ -757,51 +867,54 @@ fn ends_the_run_with_a_device_error_when_a_reply_is_late() {
     assert_eq!(record.frames, []);
 }
 
+/// The supervisor waits a random backoff before each new run, so each seed takes
+/// another time to read again.
 #[test]
 fn reads_again_in_order_after_the_device_resets_its_stream() {
     const ONE: [Item; 1] = [item("plc.u16", Scalar::U16, "holding", 0, 7)];
-    let record = run(
-        device(&ONE, Order::Big),
-        &ONE,
-        connector("plc", &ONE, &[]),
-        ms(5_050),
-        |scene| async move {
-            scene.after(ms(1_050), |scene| async move { scene.stop() });
-            scene.after(ms(3_050), |scene| async move { scene.serve() });
-        },
-    );
-    assert_eq!(record.result.as_ref().map_err(ToString::to_string), Ok(&()));
-    let errors = record.errors();
-    assert_eq!(errors.len(), 2, "{errors:?}");
-    assert_eq!(
-        errors[0],
-        (
+    for seed in 0..16 {
+        let world = World {
+            seed,
+            ..World::default()
+        };
+        let record = run_in(
+            world,
+            device(&ONE, Order::Big),
+            &ONE,
+            connector("plc", &ONE, &[]),
+            ms(30_050),
+            |scene| async move {
+                scene.after(ms(1_050), |scene| async move { scene.stop() });
+                scene.after(ms(3_050), |scene| async move { scene.serve() });
+            },
+        );
+        let result = record.result.as_ref().map_err(ToString::to_string);
+        assert_eq!(result, Ok(&()), "seed {seed}");
+        let reset = (
             Class::Device,
             "the read of the holding registers from address 0 failed: 10.0.0.1:502 \
              reset the stream"
-                .to_owned()
-        )
-    );
-    assert_eq!(
-        errors[1],
-        (
+                .to_owned(),
+        );
+        let refused = (
             Class::Device,
             "the connect to 10.0.0.1:502 failed: 10.0.0.1:502 refused the connection"
-                .to_owned()
-        )
-    );
-    let start = record.stamps()[0];
-    let stamps: Vec<_> = record.stamps().iter().map(|at| at - start).collect();
-    assert!(stamps.is_sorted_by(|a, b| a < b), "{stamps:?}");
-    let (before, after): (Vec<i64>, Vec<i64>) =
-        stamps.into_iter().partition(|&at| at <= ms(1_000).nanos());
-    assert_eq!(before.len(), 11);
-    assert!(
-        !after.is_empty() && after[0] > ms(3_000).nanos(),
-        "{after:?}"
-    );
-    let frames = u64::try_from(record.frames.len()).expect("a few");
-    assert_eq!(record.last("in"), frames);
+                .to_owned(),
+        );
+        assert_eq!(record.errors(), [reset, refused], "seed {seed}");
+        let start = record.stamps()[0];
+        let stamps: Vec<_> = record.stamps().iter().map(|at| at - start).collect();
+        assert!(stamps.is_sorted_by(|a, b| a < b), "seed {seed}: {stamps:?}");
+        let (before, after): (Vec<i64>, Vec<i64>) =
+            stamps.into_iter().partition(|&at| at <= ms(1_000).nanos());
+        assert_eq!(before.len(), 11, "seed {seed}");
+        assert!(
+            !after.is_empty() && after[0] > ms(3_000).nanos(),
+            "seed {seed}: {after:?}"
+        );
+        let frames = u64::try_from(record.frames.len()).expect("a few");
+        assert_eq!(record.last("in"), frames, "seed {seed}");
+    }
 }
 
 #[test]
@@ -824,4 +937,202 @@ fn counts_the_ticks_that_a_pause_of_the_node_skipped() {
     let frames = u64::try_from(record.frames.len()).expect("a few");
     assert_eq!(frames + missed, 31);
     assert_eq!(record.last("in"), frames);
+}
+
+#[test]
+fn refuses_a_read_into_an_index() {
+    const INTO: [Item; 2] = [
+        item("plc.time", Scalar::I64, "holding", 0, 0),
+        item("plc.u16", Scalar::U16, "holding", 4, 0),
+    ];
+    let record = run(
+        device(&INTO, Order::Big),
+        &INTO,
+        connector("plc", &INTO, &[]),
+        ms(250),
+        |_| async {},
+    );
+    let index = Diagnostic::new(
+        Code::new("connector.index"),
+        None,
+        "the channel `plc.time` is an index, which holds the stamp of each request"
+            .into(),
+        "Write the value to a data channel".into(),
+    );
+    assert_eq!(record.diagnostics(), [index]);
+    assert_eq!(record.frames, []);
+}
+
+/// The diagnostic of the read of `plc.u16` at address 0, which the device refused
+/// with `exception`.
+fn refused_with(exception: &str) -> Diagnostic {
+    Diagnostic::new(
+        Code::new("modbus.exception"),
+        None,
+        format!(
+            "the device refused the read of the channel `plc.u16` at address 0 of the \
+             holding registers with exception {exception}"
+        ),
+        "Read a table and addresses that the device has".into(),
+    )
+}
+
+#[test]
+fn ends_with_a_config_error_for_exceptions_1_2_and_3() {
+    const ONE: [Item; 1] = [item("plc.u16", Scalar::U16, "holding", 0, 0)];
+    let cases = [
+        (1, "1 (illegal function)"),
+        (2, "2 (illegal data address)"),
+        (3, "3 (illegal data value)"),
+    ];
+    for (code, exception) in cases {
+        let record = run(
+            device(&ONE, Order::Big),
+            &ONE,
+            connector("plc", &ONE, &[]),
+            ms(250),
+            move |scene| async move { scene.answer(Span::ZERO, Some(code)) },
+        );
+        assert_eq!(record.diagnostics(), [refused_with(exception)]);
+        assert_eq!(record.frames, []);
+    }
+}
+
+#[test]
+fn ends_the_run_with_a_device_error_for_exception_8() {
+    const ONE: [Item; 1] = [item("plc.u16", Scalar::U16, "holding", 0, 0)];
+    let record = run(
+        device(&ONE, Order::Big),
+        &ONE,
+        connector("plc", &ONE, &[]),
+        ms(250),
+        |scene| async move { scene.answer(Span::ZERO, Some(8)) },
+    );
+    assert_eq!(record.result.as_ref().map_err(ToString::to_string), Ok(&()));
+    assert_eq!(
+        record.errors(),
+        [(
+            Class::Device,
+            "the device refused the read of the holding registers from address 0 with \
+             exception 8 (memory parity error)"
+                .to_owned()
+        )]
+    );
+}
+
+#[test]
+fn takes_a_reply_that_comes_before_the_timeout_of_1_s() {
+    const ONE: [Item; 1] = [item("plc.u16", Scalar::U16, "holding", 0, 7)];
+    let record = run(
+        device(&ONE, Order::Big),
+        &ONE,
+        connector("plc", &ONE, &[]),
+        ms(2_050),
+        |scene| async move { scene.answer(ms(990), None) },
+    );
+    assert_eq!(record.result.as_ref().map_err(ToString::to_string), Ok(&()));
+    assert_eq!(record.errors(), []);
+    let values: Vec<_> = record.frames.iter().map(|frame| frame[&2][0]).collect();
+    assert_eq!(values, [7, 7]);
+}
+
+#[test]
+fn ends_the_run_with_a_device_error_for_a_reply_after_the_timeout_of_1_s() {
+    const ONE: [Item; 1] = [item("plc.u16", Scalar::U16, "holding", 0, 7)];
+    let record = run(
+        device(&ONE, Order::Big),
+        &ONE,
+        connector("plc", &ONE, &[]),
+        ms(1_250),
+        |scene| async move { scene.answer(ms(1_010), None) },
+    );
+    assert_eq!(
+        record.errors(),
+        [(
+            Class::Device,
+            "the read of the holding registers from address 0 failed: no whole reply \
+             came before the timeout"
+                .to_owned()
+        )]
+    );
+    assert_eq!(record.frames, []);
+}
+
+#[test]
+fn stops_at_once_during_the_lookup() {
+    const ONE: [Item; 1] = [item("plc.u16", Scalar::U16, "holding", 0, 7)];
+    let world = World {
+        delay: Span::MINUTE,
+        ..World::default()
+    };
+    let record = run_in(
+        world,
+        device(&ONE, Order::Big),
+        &ONE,
+        connector("plc", &ONE, &[]),
+        ms(250),
+        |_| async {},
+    );
+    assert_eq!(record.result.as_ref().map_err(ToString::to_string), Ok(&()));
+    assert_eq!(record.stopped, Span::ZERO);
+    assert_eq!(record.frames, []);
+}
+
+#[test]
+fn stops_at_once_during_an_exchange() {
+    const ONE: [Item; 1] = [item("plc.u16", Scalar::U16, "holding", 0, 7)];
+    let record = run(
+        device(&ONE, Order::Big),
+        &ONE,
+        connector("plc", &ONE, &[]),
+        ms(500),
+        |scene| async move { scene.hold() },
+    );
+    assert_eq!(record.result.as_ref().map_err(ToString::to_string), Ok(&()));
+    assert_eq!(record.stopped, Span::ZERO);
+    assert_eq!(record.errors(), []);
+}
+
+#[test]
+fn connects_to_the_next_address_when_the_first_refuses() {
+    const ONE: [Item; 1] = [item("plc.u16", Scalar::U16, "holding", 0, 7)];
+    let world = World {
+        lookup: |all| vec![all[1], all[0]],
+        ..World::default()
+    };
+    let record = run_in(
+        world,
+        device(&ONE, Order::Big),
+        &ONE,
+        connector("plc", &ONE, &[]),
+        ms(250),
+        |_| async {},
+    );
+    assert_eq!(record.errors(), []);
+    assert_frames(&record, &ONE, 3);
+}
+
+#[test]
+fn ends_with_the_connect_error_of_the_first_address_when_none_connects() {
+    const ONE: [Item; 1] = [item("plc.u16", Scalar::U16, "holding", 0, 7)];
+    let world = World {
+        lookup: |all| vec![all[1], all[0]],
+        ..World::default()
+    };
+    let record = run_in(
+        world,
+        device(&ONE, Order::Big),
+        &ONE,
+        connector("plc", &ONE, &[]),
+        ms(250),
+        |scene| async move { scene.refuse() },
+    );
+    assert_eq!(
+        record.errors(),
+        [(
+            Class::Device,
+            "the connect to [fd00::1]:502 failed: [fd00::1]:502 refused the connection"
+                .to_owned()
+        )]
+    );
 }
