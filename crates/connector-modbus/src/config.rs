@@ -165,8 +165,8 @@ fn endpoint(value: &Value) -> Result<(Box<str>, u16), Diagnostic> {
     }
     let port = match port {
         None => PORT,
-        Some(text) => match text.parse() {
-            Ok(port) if text.bytes().all(|byte| byte.is_ascii_digit()) => port,
+        Some(digits) => match digits.parse() {
+            Ok(port) if digits.bytes().all(|byte| byte.is_ascii_digit()) => port,
             _ => {
                 return Err(refused(format!(
                     "the address {text:?} has a port that is not 0 to 65535"
@@ -250,7 +250,8 @@ fn register(value: &Value) -> Result<u16, Diagnostic> {
 /// The words of `items` in quotes, as a list that ends with "or", such as `"big" or
 /// "little"`.
 fn words<T>(items: &[(&str, T)]) -> String {
-    let quoted: Vec<String> = items.iter().map(|(word, _)| format!("{word:?}")).collect();
+    let quoted: Vec<String> =
+        items.iter().map(|(word, _)| format!("{word:?}")).collect();
     match quoted.split_last() {
         Some((last, [first])) => format!("{first} or {last}"),
         Some((last, rest)) => format!("{}, or {last}", rest.join(", ")),
@@ -309,12 +310,7 @@ fn reads(config: &Document, diagnostics: &mut Vec<Diagnostic>) -> Vec<Read> {
                 .into(),
         );
         let address = address.map_err(|error| diagnostics.push(error));
-        diagnostics.extend(read::unknown(
-            &block.body,
-            OF,
-            &["address", "table"],
-            &[],
-        ));
+        diagnostics.extend(read::unknown(&block.body, OF, &["address", "table"], &[]));
         let Ok(channel) = channel else { continue };
         match channels.entry(channel) {
             Entry::Occupied(first) => {
