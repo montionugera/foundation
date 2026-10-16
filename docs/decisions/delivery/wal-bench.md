@@ -8,11 +8,20 @@
   commits of 1 and 8 records, with the bench IDs 64 and 4096: 1 record gives the cost
   for each commit (`trimmed`, `release`), 8 the cost for each record (`append`,
   `synced`). Each ring has 4 blocks more than its bench ID (68 and 4100 blocks): with
-  the three blocks that each record keeps free (#160), each commit of 1 record trims
-  at those sizes, as at 64 and 4096 before. One `#[doc(hidden)] pub const PHASE` of
-  `bench` holds the 4 blocks, and the bench and a test of `bench` read it. The test
-  checks 10 laps of each ring after the warm-up. Both benches use the same rings.
-  The IDs stay, so the baseline compares the same work.
+  the three blocks that each record keeps free (#160), the trims come at most 19
+  commits apart on the ring of 64 and 64 apart on the ring of 4096 (#2943). One
+  `#[doc(hidden)] pub const PHASE` of `bench` holds the 4 blocks, and the bench and a
+  test of `bench` read it. The test checks 10 laps of each ring after the warm-up.
+  Both benches use the same rings.
+  Since a commit trims only once for each step (STORE TRIM), each sample of the `wal`
+  benches holds `bench::SAMPLE_SIZE` (1000) commits, so at least 10 trims, and the
+  `bench` tests check the most commits between trims. `deadline_trim` times only the
+  deadline of 1 or 32 indexes that trims a step on the ring of ID 4096, after a
+  warm-up past two laps that a test of `bench::Deadline` pins. Lost: the default
+  sample, which holds 0 to 2 trims, so that its median moves with the phase of the
+  trims. `SAMPLE_SIZE` is decided by `laptop.architect` (#2943,
+  2026-10-16T22:20:35Z):
+  https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6225798040.
   Decided by `laptop.architect` (#2683, 2026-10-14T19:58:01Z):
   https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6177122793.
   `PHASE` is decided by `laptop.architect` (#2683, 2026-10-15T13:17:53Z):

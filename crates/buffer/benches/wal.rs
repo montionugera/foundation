@@ -12,7 +12,8 @@
 //! buffer queues a batch. `deadline` times a deadline of the commit task that trims,
 //! with an entry of each of 1 or 32 indexes: the work of `queue_group` with the
 //! checkpoint of the trim and the sync of the logs. `deadline_carry` times one that
-//! also writes a carry record of 32 tails.
+//! also writes a carry record of 32 tails. `deadline_trim` times only the deadline
+//! that trims a step of 100 blocks on the ring of ID 4096.
 
 use buffer::bench::{Deadline, Group, PHASE, Ring, SAMPLE_SIZE};
 use divan::Bencher;
@@ -93,6 +94,27 @@ fn deadline_carry(bencher: Bencher<'_, '_>) {
         })
         .bench_local_values(|mut deadline| {
             assert_eq!(deadline.commit(4096), 32, "the deadline carries 32 tails");
+            deadline
+        });
+}
+
+/// The deadline of 1 or 32 indexes after the warm-up of 8228 or 4133 deadlines,
+/// past two laps, trims 101 or 102 blocks and writes a checkpoint. A test of
+/// `bench::Deadline` pins the warm-ups.
+#[divan::bench(args = [1, 32], sample_size = 1)]
+fn deadline_trim(bencher: Bencher<'_, '_>, indexes: u32) {
+    let warm = if indexes == 1 { 8228 } else { 4133 };
+    bencher
+        .counter(ItemsCount::new(usize::try_from(indexes).expect("fits")))
+        .with_inputs(|| {
+            let mut deadline = Deadline::new(indexes, 4096 + PHASE);
+            for _ in 0..warm {
+                deadline.commit(1);
+            }
+            deadline
+        })
+        .bench_local_values(|mut deadline| {
+            deadline.commit(divan::black_box(1));
             deadline
         });
 }

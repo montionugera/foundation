@@ -155,6 +155,25 @@ mod tests {
         }
     }
 
+    /// The warm-ups of the `deadline_trim` bench, of 1 and of 32 indexes, end
+    /// past two laps of the ring of 4100 blocks, at the deadline before a trim of a
+    /// step, which carries no tail and writes a checkpoint.
+    #[test]
+    fn the_deadline_after_each_warm_up_of_the_trim_bench_trims_a_step() {
+        for (indexes, warm, freed) in [(1, 8228, 101 * BLOCK), (32, 4133, 102 * BLOCK)]
+        {
+            let mut deadline = Deadline::new(indexes, 4096 + PHASE);
+            for _ in 0..warm {
+                deadline.commit(1);
+            }
+            let (tail, header) = (deadline.state.writer.tail(), deadline.state.header);
+            assert!(deadline.state.writer.head() > 2 * 4100 * BLOCK, "{indexes}");
+            assert_eq!(deadline.commit(1), 0, "{indexes}");
+            assert_eq!(deadline.state.writer.tail() - tail, freed, "{indexes}");
+            assert_ne!(deadline.state.header, header, "{indexes}");
+        }
+    }
+
     #[test]
     fn a_deadline_of_no_indexes_takes_no_entry() {
         let mut deadline = Deadline::new(0, 64 + PHASE);

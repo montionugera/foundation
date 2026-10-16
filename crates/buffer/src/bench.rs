@@ -17,8 +17,8 @@ use crate::wal::{Ends, Layout, Position, Writer};
 
 pub use crate::buffer::bench::Deadline;
 
-/// The blocks that each ring of the `wal` bench adds to its ID, so that its times
-/// compare with those of earlier commits.
+/// The blocks that each ring of the `wal` bench adds to its ID. The tests of `bench`
+/// pin the most commits between trims on these rings.
 #[doc(hidden)]
 pub const PHASE: u64 = 4;
 

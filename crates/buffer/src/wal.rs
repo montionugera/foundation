@@ -46,8 +46,8 @@ const _: () = assert!(HEADER_LEN + RESTART_LEN <= ALIGN, "a restart record fits"
 /// the tails. This holds after any count of opens.
 const SPARE: u64 = REOPEN + OWED + REOPEN;
 
-/// The most bytes that a trim frees past its low mark, so that one checkpoint frees
-/// at least this many bytes of records on a large ring.
+/// The bytes from the low mark to the high mark of a trim on a large ring. A trim
+/// that no hold stops frees to the first record end at or past the high mark.
 const STEP: u64 = 100 * BLOCK;
 
 /// The room that a record of `kind` leaves free.
@@ -571,10 +571,12 @@ impl Writer {
 
     /// The high mark of the trim of the next commit, when that commit is as large
     /// as the records not yet synced. A path whose holder is before it needs a
-    /// carry now.
+    /// carry now. So a path is carried once each lead less step bytes: up to twice
+    /// each lap on a ring whose step is half its lead.
     pub(crate) fn reach(&self) -> u64 {
         let queued = self.queued();
-        self.want(self.head.saturating_add(queued), queued).end
+        let (_, high) = self.marks(self.head.saturating_add(queued), queued);
+        high
     }
 
     /// Plans a record of `kind` with a body of `len` bytes. It leaves the room of
@@ -692,11 +694,11 @@ impl Writer {
     /// the low mark to the release of the next trim, the ring takes the records of
     /// two commits and the blocks that one wrap skips.
     pub(crate) fn trimmed(&self, kept: Option<u64>) -> Option<Position> {
-        let want = self.want(self.head, self.queued());
-        if want.start <= self.tail {
+        let (low, high) = self.marks(self.head, self.queued());
+        if low <= self.tail {
             return None;
         }
-        let enough = self.ends.partition_point(|end| end.offset < want.end);
+        let enough = self.ends.partition_point(|end| end.offset < high);
         let free = self
             .ends
             .partition_point(|end| kept.is_none_or(|kept| end.offset <= kept));
@@ -722,11 +724,12 @@ impl Writer {
 
     /// The low and high marks of [`trimmed`](Self::trimmed), with the head at
     /// `head` and `queued` bytes of records not yet synced.
-    fn want(&self, head: u64, queued: u64) -> Range<u64> {
+    fn marks(&self, head: u64, queued: u64) -> (u64, u64) {
         let room = queued.max(self.layout.window).saturating_mul(3);
         let lead = self.layout.area.saturating_sub(SPARE + room);
         let step = STEP.min(lead / 2);
-        head.saturating_sub(lead)..head.saturating_add(step).saturating_sub(lead)
+        let high = head.saturating_add(step).saturating_sub(lead);
+        (head.saturating_sub(lead), high)
     }
 
     /// The bytes that a record may take and leave `spare` bytes free: the area not
@@ -1979,7 +1982,7 @@ mod tests {
             assert_eq!(writer.trimmed(None), Some(at(202, 201)));
         }
 
-        /// Two queued records make the headroom 12 blocks and the lead 7, so the
+        /// Two queued records make the headroom 9 blocks and the lead 7, so the
         /// low mark is at 3 blocks and the high mark at 6.5. Once they sync, the low
         /// mark is at the tail.
         #[test]
@@ -2059,6 +2062,23 @@ mod tests {
             writer.release(22 * 4096);
             assert_eq!(writer.trimmed(None), Some(at(29, 28)));
             writer.release(23 * 4096);
+            assert_eq!(writer.trimmed(None), None);
+        }
+
+        /// Once the records of the test before sync, the headroom is 15 blocks
+        /// again, so the low mark is at 20 blocks and the high mark at 28.5.
+        #[test]
+        fn trimmed_gives_back_the_headroom_of_a_queued_wrap_once_it_syncs() {
+            let mut writer = Writer::empty(wide(), 0);
+            push(&mut writer, 1..=28);
+            writer.release(9 * 4096);
+            let ends = queue(&mut writer, BODY_MAX, 99).expect("the ring has room");
+            let next = queue(&mut writer, 8, 100).expect("the ring has room");
+            writer.synced(ends);
+            writer.synced(next);
+            writer.release(19 * 4096);
+            assert_eq!(writer.trimmed(None), Some(at(29, 28)), "all synced");
+            writer.release(20 * 4096);
             assert_eq!(writer.trimmed(None), None);
         }
 
@@ -2208,7 +2228,11 @@ mod tests {
         #[test]
         fn a_wrap_takes_the_blocks_that_it_skips_from_the_headroom() {
             assert_eq!(jumped(57, 25), None);
-            assert_eq!(jumped(57, 26).map(|(commit, _)| commit), Some(57));
+            let full = Full {
+                needed: 16384,
+                free: 0,
+            };
+            assert_eq!(jumped(57, 26), Some((57, full)));
             assert_eq!(jumped(60, 24), None);
             let full = Full {
                 needed: 16384,
