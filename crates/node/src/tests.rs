@@ -35,6 +35,9 @@ const OWN: types::node::Key = types::node::Key::from_u128(1);
 /// The bytes of the seal key in the data directory of [`keyed`].
 const SEAL: [u8; 32] = [3; 32];
 
+/// The DER bytes of a CA certificate, the one root of [`config`].
+const CA: &[u8] = include_bytes!("tests/ca.der");
+
 /// A disk budget of two rings of 64 MiB, with their header blocks.
 const DISK: Size = Size::from_bytes(2 * (8192 + (64 << 20)));
 
@@ -93,6 +96,10 @@ fn config<M>(
         name: "edge".parse().expect("a name"),
         settings: crate::Settings::default(),
         vars: std::collections::BTreeMap::new(),
+        roots: os::Roots {
+            certificates: vec![CA.to_vec()],
+            failures: Vec::new(),
+        },
         log: crate::Log {
             writer: Box::new(std::io::sink()),
             format: ops::Log::default(),
@@ -715,9 +722,10 @@ fn unnamed(channel: &str, mode: ::hub::reader::Mode) -> ::hub::reader::Config {
 
 mod buffer {
     use std::cell::RefCell;
+    use std::num::NonZeroU32;
     use std::rc::Rc;
 
-    use ::buffer::{Buffer, Entry};
+    use ::buffer::{Buffer, Entry, Samples};
     use types::channel::{Key, Slots};
     use types::frame::Path as Stream;
     use types::time::Stamp;
@@ -750,9 +758,11 @@ mod buffer {
                 slot: slots.index(index),
                 path: Stream::Live,
                 first: 0,
-                len: 1,
+                samples: Some(Samples {
+                    len: NonZeroU32::MIN,
+                    last: Some(Stamp::from_nanos(1)),
+                }),
                 stored_at: Stamp::from_nanos(1),
-                last: Some(Stamp::from_nanos(1)),
                 tag: 0,
                 parts: pool.alloc(8).expect("a block").freeze().into(),
             };
@@ -6987,7 +6997,16 @@ pub(crate) mod port {
             founding: Founding,
             text: String,
         ) -> (Node, BTreeMap<Name, Definition>) {
-            let node = start(host, founding);
+            applied_on(sim, start(host, founding), text)
+        }
+
+        /// Applies `text` through the operations of the started `node`, then gives
+        /// the node and the definitions after the apply.
+        fn applied_on(
+            sim: &mut sim::Sim,
+            node: Node,
+            text: String,
+        ) -> (Node, BTreeMap<Name, Definition>) {
             let applied = Arc::new(Mutex::new(None));
             let out = Arc::clone(&applied);
             node.operate(move |ops| async move {
@@ -7195,8 +7214,10 @@ pub(crate) mod port {
             let planned = Arc::new(Mutex::new(Vec::new()));
             let out = Arc::clone(&planned);
             node.operate(move |ops| async move {
-                for kind in ["influx", "modbus"] {
-                    let files = vec![(PathBuf::from("plant.hcl"), connector(kind))];
+                let modbus = format!("{CHANNELS}{}", modbus());
+                let texts = [connector("influx"), modbus, connector("mqtt")];
+                for text in texts {
+                    let files = vec![(PathBuf::from("plant.hcl"), text)];
                     let plan = ops.plan(files).await;
                     let plan = plan.map(|_| ()).map_err(|error| error.to_string());
                     out.lock().unwrap().push(plan);
@@ -7208,11 +7229,12 @@ pub(crate) mod port {
             assert_eq!(node.join(), Ok(()));
             let unknown = concat!(
                 r#"{"errors":[{"code":"connector.unknown-kind","#,
-                r#""fix":"Use one of [\"influx\", \"opcua\"]","#,
-                r#""message":"this build has no connector kind \"modbus\"","#,
+                r#""fix":"Use one of [\"influx\", \"modbus\", \"opcua\"]","#,
+                r#""message":"this build has no connector kind \"mqtt\"","#,
                 r#""notes":[],"place":{"column":10,"file":"plant.hcl","line":2}}]}"#,
             );
-            assert_eq!(*planned.lock().unwrap(), [Ok(()), Err(unknown.to_owned())]);
+            let planned = planned.lock().unwrap();
+            assert_eq!(*planned, [Ok(()), Ok(()), Err(unknown.to_owned())]);
         }
 
         /// The node runs a connector that an apply places on it, and runs it again when
@@ -7273,6 +7295,44 @@ pub(crate) mod port {
                 r#""counts":{"confirmed":0,"lost":0},"error":{"class":"config","text":"#,
                 r#""the selector matches no channel. Select a channel that the spec "#,
                 r#"defines"},"note":null}]}}"#,
+                "\n",
+            );
+            assert_eq!(reply, connectors);
+        }
+
+        /// The node runs a `modbus` connector that an apply places on it. With no
+        /// device at its address, `status` gives the device error of its lookup.
+        #[test]
+        fn status_gives_the_lookup_error_of_a_modbus_connector_with_no_device() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let founding = region(&[member(OWN, &KEY, &host)]);
+            let watch = format!(
+                "subject \"plant.operator\" {{ keys = [\"{OPERATOR}\"] }}\n\
+                 access \"plant.watch\" {{\n  subjects = \"plant.operator\"\n  \
+                 select = \"plant.plc.**\"\n  allow = [read]\n}}\n"
+            );
+            let text = format!("{CHANNELS}{}{watch}", modbus());
+            let (node, _) = applied(&mut sim, &host, founding, text);
+            assert_eq!(sim.run_for(TEN), Ok(()));
+            let replied = Arc::new(Mutex::new(None));
+            let out = Arc::clone(&replied);
+            node.operate(move |ops| async move {
+                let subject = "plant.operator".parse().expect("a name");
+                let reply = ops::serve(&ops, &subject, b"{\"status\":{}}\n").await;
+                *out.lock().unwrap() = Some(String::from_utf8(reply).expect("UTF-8"));
+            });
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let reply = replied.lock().unwrap().take().expect("a reply");
+            let connectors = concat!(
+                r#"{"output":{"connectors":[{"name":"plant.plc","kind":"modbus","#,
+                r#""state":"restarting","address":"plc:502","restarts":6,"#,
+                r#""counts":{"in":0,"lost":0,"missed":0},"error":{"class":"device","#,
+                r#""text":"the lookup of plc failed: name plc has no address"},"#,
+                r#""note":null}]}}"#,
                 "\n",
             );
             assert_eq!(reply, connectors);
@@ -7414,6 +7474,22 @@ pub(crate) mod port {
             )
         }
 
+        /// The channels that [`modbus`] reads into.
+        const CHANNELS: &str = "channel \"plant.time\" { kind = \"index\" }\n\
+                                channel \"plant.u16\" {\n  data_type = \"u16\"\n  \
+                                index = \"plant.time\"\n}\n";
+
+        /// The text of a spec with the connector `plant.plc` of kind `modbus` on
+        /// [`OWN`], which reads `plant.u16`.
+        fn modbus() -> String {
+            format!(
+                "connector \"plant.plc\" {{\n  kind = \"modbus\"\n  \
+                 node = \"plant.node{OWN}\"\n  address = \"plc:502\"\n  \
+                 rate = \"10Hz\"\n  read \"plant.u16\" {{\n    \
+                 table = \"holding\"\n    address = 0\n  }}\n}}\n"
+            )
+        }
+
         /// `operate` refuses a node with no region, which has no mesh to operate on.
         #[test]
         #[should_panic(expected = "`operate` on a node with no region")]
@@ -7422,6 +7498,103 @@ pub(crate) mod port {
             let host = keyed(&mut sim, 2);
             let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
             node.operate(|_| async {});
+        }
+
+        /// Starts an InfluxDB sim named `server` that serves `https` on port 8086 with
+        /// the valid certificate of the test CA, and gives its store and its shard.
+        fn influx_tls(
+            sim: &mut sim::Sim,
+        ) -> (
+            Arc<Mutex<connector_influx::sim::Store>>,
+            env::thread::Handle,
+        ) {
+            let influx = sim.node(sim::node::Config::default());
+            let answer = sim::name::Answer::Addresses(vec![influx.addresses()[0]]);
+            let name = sim::name::Config {
+                answer,
+                ..sim::name::Config::default()
+            };
+            sim.name("server", name);
+            let listen = env::net::tcp::Listen {
+                local: SocketAddr::new(influx.addresses()[0], 8086),
+                backlog: 4,
+                options: env::net::tcp::Options {
+                    send_buffer_bytes: 1 << 16,
+                    recv_buffer_bytes: 1 << 16,
+                    unsent_bytes_max: NonZeroUsize::new(1 << 14).unwrap(),
+                    delayed: false,
+                },
+            };
+            let listener = influx.net().listen(&listen).expect("the port is free");
+            let store = Arc::new(Mutex::new(connector_influx::sim::Store::default()));
+            let into = Arc::clone(&store);
+            let shard = env::shards::Config {
+                name: "influx".into(),
+                core: Some(0),
+            };
+            let server = influx
+                .shards()
+                .start(shard, move |tasks| async move {
+                    let certificate = connector::http::sim::Certificate::Valid;
+                    let served = connector_influx::sim::serve_tls(
+                        listener,
+                        tasks,
+                        into,
+                        "plant".into(),
+                        None,
+                        certificate,
+                    );
+                    panic!("the listener failed: {}", served.await);
+                })
+                .expect("the shard starts");
+            (store, server)
+        }
+
+        /// The roots of `Config::roots` reach the supervisor: a node whose roots hold
+        /// a root that does not parse and the test CA writes a sample to an InfluxDB
+        /// that serves `https` with a certificate that this CA signs, and the connector
+        /// has no `ca`.
+        #[test]
+        fn a_node_writes_over_https_with_the_ca_of_its_roots() {
+            use super::super::hub::{WALL, write_at, writer};
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let (store, _server) = influx_tls(&mut sim);
+            let text = format!(
+                "{}channel \"plant.value\" {{\n  data_type = \"f64\"\n  \
+                 index = \"plant.time\"\n}}\n{}",
+                text("time", &[]),
+                connector("influx")
+                    .replace("http://influx:8086", "https://server:8086")
+                    .replace("plant.*", "plant.value"),
+            );
+            let node = Node::start(Config {
+                region: Region::Given(region(&[member(OWN, &KEY, &host)])),
+                roots: os::Roots {
+                    certificates: vec![b"not DER".to_vec(), CA.to_vec()],
+                    failures: Vec::new(),
+                },
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            let (node, definitions) = applied_on(&mut sim, node, text);
+            let keys =
+                ["time", "value"].map(|name| key_of(&definitions, name).as_u128());
+            node.spawn(move |hub| async move {
+                let mut writer = writer(&hub, &["plant.value"]).await;
+                let value = i64::from_le_bytes(7.0_f64.to_le_bytes());
+                write_at(&mut writer, keys, WALL, value);
+                std::future::pending::<()>().await;
+            });
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            node.stop();
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let store = store.lock().unwrap();
+            let times: Vec<_> = store
+                .points("telemetry", &[])
+                .map(|point| point.time.nanos())
+                .collect();
+            assert_eq!(times, [WALL]);
         }
     }
 }

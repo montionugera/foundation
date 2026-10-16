@@ -18,6 +18,7 @@ getrandom = { workspace = true }
 rustix = { workspace = true, features = ["fs", "net"] }
 tokio = { workspace = true, features = ["net", "rt", "sync", "time"] }
 tracing = { workspace = true }
+rustls-native-certs = { workspace = true }
 types = { path = "../types" }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
@@ -47,6 +48,10 @@ harness = false
 
 [[test]]
 name = "interrupt"
+harness = false
+
+[[test]]
+name = "roots"
 harness = false
 
 # Needs `sudo`: only one CI step on a GitHub-hosted runner runs it.

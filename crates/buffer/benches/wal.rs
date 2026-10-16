@@ -5,9 +5,10 @@
 //! also holds the bench's own work to make the ends of each record, so a change of the
 //! writer shows smaller than it is. Each ring has [`PHASE`] blocks more than its
 //! argument, so that each commit of 1 record trims. `commit_group` times one group
-//! commit of 1 or 32 entries on the ring of ID 64: the push, which checks that the
-//! record fits, the close, the seal with the CRC of the body, and the same trim and
-//! sync.
+//! commit of 1 or 32 entries on the ring of ID 64: the fit, which checks that the
+//! record fits, the take, the close, the seal with the CRC of the body, and the same
+//! trim and sync. `queue_group` adds the append of each entry to the logs, as the
+//! buffer queues a batch.
 
 use buffer::bench::{Group, PHASE, Ring};
 use divan::Bencher;
@@ -48,18 +49,27 @@ fn steady_ring(blocks: u64, records: usize) -> Ring {
 
 #[divan::bench(args = [1, 32])]
 fn commit_group(bencher: Bencher<'_, '_>, entries: usize) {
-    let mut group = steady_group(entries);
+    let mut group = steady_group(entries, Group::commit);
     bencher
         .counter(ItemsCount::new(entries))
         .bench_local(|| group.commit(divan::black_box(entries)));
 }
 
-/// The group ring of 64 blocks after the warm-up, out of line as [`steady_ring`] is.
+#[divan::bench(args = [1, 32])]
+fn queue_group(bencher: Bencher<'_, '_>, entries: usize) {
+    let mut group = steady_group(entries, Group::queue);
+    bencher
+        .counter(ItemsCount::new(entries))
+        .bench_local(|| group.queue(divan::black_box(entries)));
+}
+
+/// The group ring of 64 blocks after the warm-up of `commit`, out of line as
+/// [`steady_ring`] is.
 #[inline(never)]
-fn steady_group(entries: usize) -> Group {
+fn steady_group(entries: usize, commit: fn(&mut Group, usize)) -> Group {
     let mut group = Group::new(64 + PHASE);
     for _ in 0..2 * 64 {
-        group.commit(entries);
+        commit(&mut group, entries);
     }
     group
 }

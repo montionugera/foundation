@@ -48,6 +48,24 @@ impl Host {
             Kind::Ip(_) | Kind::Scoped(..) => None,
         }
     }
+
+    /// The IP address of the host, or `None` for a name. A scoped IPv6 address gives
+    /// its address with no zone.
+    ///
+    /// ```
+    /// let ip: env::net::host::Host = "fe80::1%2".parse().expect("an address");
+    /// assert_eq!(ip.ip(), Some("fe80::1".parse().expect("an address")));
+    /// let name: env::net::host::Host = "plc".parse().expect("a name");
+    /// assert_eq!(name.ip(), None);
+    /// ```
+    #[must_use]
+    pub fn ip(&self) -> Option<IpAddr> {
+        match &self.0 {
+            Kind::Ip(ip) => Some(*ip),
+            Kind::Scoped(ip, _) => Some((*ip).into()),
+            Kind::Name(_) => None,
+        }
+    }
 }
 
 impl FromStr for Host {
@@ -378,6 +396,15 @@ mod tests {
         assert_eq!(parse("10.0.0.2").unwrap().name(), None);
         assert_eq!(parse("fd00::1").unwrap().name(), None);
         assert_eq!(parse("fe80::1%2").unwrap().name(), None);
+    }
+
+    #[test]
+    fn gives_the_ip_of_an_ip_only() {
+        let ip = |text: &str| text.parse::<IpAddr>().unwrap();
+        assert_eq!(parse("10.0.0.2").unwrap().ip(), Some(ip("10.0.0.2")));
+        assert_eq!(parse("[fd00::1]").unwrap().ip(), Some(ip("fd00::1")));
+        assert_eq!(parse("fe80::1%2").unwrap().ip(), Some(ip("fe80::1")));
+        assert_eq!(parse("plc.local").unwrap().ip(), None);
     }
 
     #[test]

@@ -8,7 +8,7 @@ mod memory;
 
 use std::collections::BTreeSet;
 use std::future::poll_fn;
-use std::num::NonZeroU8;
+use std::num::{NonZeroU8, NonZeroU32};
 use std::ops::Range;
 use std::path::{Path as FilePath, PathBuf};
 use std::pin::{Pin, pin};
@@ -20,7 +20,7 @@ use std::task::{Context, Poll, Wake, Waker};
 use block::{Block, Heap, Pool};
 use buffer::{
     Buffer, Commit, Config, End, Entry, Error, Layout, Limit, Mark, Parts, Read,
-    Rejected, Stored, Tail, Unfit,
+    Rejected, Samples, Stored, Tail, Unfit,
 };
 use env::clock::Clock;
 use env::entropy::Entropy;
@@ -355,12 +355,21 @@ fn entry(
         slot,
         path,
         first,
-        len,
+        samples: samples(len, last),
         stored_at: Stamp::from_nanos(7),
-        last: last.map(Stamp::from_nanos),
         tag: 0,
         parts,
     }
+}
+
+/// The samples of an entry of `len` samples with the newest stamp `last`.
+fn samples(len: u32, last: Option<i64>) -> Option<Samples> {
+    let Some(len) = NonZeroU32::new(len) else {
+        assert_eq!(last, None, "an entry with no samples has no stamp");
+        return None;
+    };
+    let last = last.map(Stamp::from_nanos);
+    Some(Samples { len, last })
 }
 
 fn tail(seq: u64, stamp: Option<i64>) -> Tail {
@@ -400,9 +409,8 @@ fn carry_body(tails: &[Vec<u8>]) -> Vec<u8> {
 fn stored(first: u64, len: u32, last: Option<i64>, bytes: Block) -> Stored {
     Stored {
         first,
-        len,
+        samples: samples(len, last),
         stored_at: Stamp::from_nanos(7),
-        last: last.map(Stamp::from_nanos),
         tag: 0,
         bytes,
     }
@@ -448,7 +456,7 @@ async fn read_all(
             } else {
                 assert_eq!(entry.first, at, "a gap before entry {number}");
             }
-            at = entry.first + u64::from(entry.len);
+            at = entry.seqs().end;
         }
         if read.entries.is_empty() {
             assert_eq!(read.gap, None, "a gap with no entry");
@@ -1880,31 +1888,6 @@ fn an_entry_below_the_tail_is_a_broken_invariant() {
                       below the tail 3"
                 .into(),
             seed: 9,
-        })
-    );
-}
-
-#[test]
-fn an_entry_with_no_samples_and_a_stamp_is_a_broken_invariant() {
-    let (mut sim, _handle) = start(13, |shard| async move {
-        let mut slots = Slots::new();
-        let buffer = shard
-            .open(layout(AREA, BODY_MAX), &mut slots)
-            .await
-            .expect("opens");
-        let a = slots.index(key(1));
-        let stamped = entry(1, a, Path::Live, 2, 0, Some(9), Parts::default());
-        drop(buffer.append([stamped]));
-    });
-    assert_eq!(
-        sim.run(),
-        Err(sim::Error::Panicked {
-            thread: DIR.into(),
-            message: "invariant: an entry of index \
-                      00000000-0000-0000-0000-000000000001 on path Live at seq 2 has no \
-                      samples and the stamp 9"
-                .into(),
-            seed: 13,
         })
     );
 }
@@ -6369,8 +6352,7 @@ fn a_failed_ring_read_gives_its_error_and_a_later_read_passes() {
             .expect("the next read passes");
         assert_eq!(read.entries.len(), 1);
         assert_eq!(read.entries[0].first, 0);
-        assert_eq!(read.entries[0].len, 3);
-        assert_eq!(read.entries[0].last, Some(Stamp::from_nanos(30)));
+        assert_eq!(read.entries[0].samples, samples(3, Some(30)));
         assert_eq!(&*read.entries[0].bytes, &[]);
         assert_eq!(read.next, mark(3, 0));
     })
@@ -6628,17 +6610,11 @@ fn a_read_after_a_power_cut_gives_the_entries_the_tail_reports() {
             (tail, reads)
         });
         let (tail, reads) = read.unwrap_or_else(|e| panic!("cut at {cut} ns: {e}"));
-        let firsts: Vec<(u64, u32)> = entries(&reads)
-            .iter()
-            .map(|entry| (entry.first, entry.len))
-            .collect();
-        let expected = if tail.seq == 5 {
-            vec![(0, 3), (3, 2)]
-        } else {
-            vec![(0, 3)]
-        };
+        let seqs: Vec<Range<u64>> = entries(&reads).iter().map(Stored::seqs).collect();
+        let entries = if tail.seq == 5 { 2 } else { 1 };
         assert_eq!(
-            firsts, expected,
+            seqs,
+            &[0..3, 3..5][..entries],
             "seed {seed}, cut at {cut} ns, tail {tail:?}"
         );
         assert!(cut != 0 || !ended, "seed {seed}: the cut missed the commit");

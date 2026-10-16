@@ -361,14 +361,26 @@
   would compute the midpoint again, and a change of the home's rule would make its
   stamps `Ahead`. Connector time sync adds what it needs with its own caller. Lost: a
   writer that stamps the frame, because only the caller knows when it read each sample.
-  `writer::Writer::time` gives a `writer::Time`, which a caller keeps apart from the
+  `writer::Writer::time` gives a `hub::Time`, which a caller keeps apart from the
   writer: `Time::now` reads what `Writer::now` reads, also after the writer drops. The
   open62541 loop of the opcua kind reads it inside each client call, while the kind
-  holds its writer to write. A `Time` comes only from a writer, so mesh time is known.
-  Lost: the writer in `Rc<RefCell<_>>` in the kind, because it adds a borrow to each
-  draft and write. No `Hub::time`. Decided by `laptop.architect`
+  holds its writer to write. Lost: the writer in `Rc<RefCell<_>>` in the kind, because
+  it adds a borrow to each draft and write. Decided by `laptop.architect`
   (https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6147197858,
   2026-10-13 13:56 UTC).
+  `Hub::time` gives a `hub::Time` to a task with no writer, such as the TLS check of
+  a kind that only reads. It waits for the node's first mesh time, as the open of a
+  writer does, so `Time::now` cannot fail. Lost: `Time::now` that gives
+  `Option<Stamp>`, or a `Time::known` beside it, because each caller then handles a
+  case that no writer has. `writer::Time` moved to `hub::Time`, because a hub gives
+  it. It has no bound: the caller races it against its own clock. Supersedes the "No
+  `Hub::time`" of
+  https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6147197858.
+  Decided by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207425675,
+  2026-10-16 03:28 UTC;
+  https://github.com/synnaxlabs/foundation/issues/2837#issuecomment-6209931375,
+  2026-10-16 06:56 UTC).
   `writer::Writer::entries` gives the entry of each channel of
   `writer::Config::channels`, in that order: its position in the entries of
   `Writer::set`, as `Writer::draft` and `Draft::series_mut` take it. A channel named

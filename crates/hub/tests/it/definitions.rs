@@ -593,7 +593,7 @@ fn seq_after_restart(n: u64, first: Option<BTreeMap<Name, Definition>>) -> u64 {
 
 /// A hub on the ring that a hub of `node` left, as after a restart, with no
 /// definitions.
-async fn reopen(
+pub(super) async fn reopen(
     node: &sim::node::Node,
     tasks: env::tasks::Tasks,
     mesh: clock::Reader,

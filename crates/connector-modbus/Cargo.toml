@@ -12,17 +12,21 @@ env = { path = "../env" }
 types = { path = "../types" }
 
 [dev-dependencies]
+codec = { path = "../codec" }
+connector = { path = "../connector", features = ["sim"] }
 counting = { path = "../counting" }
 divan.workspace = true
-sim = { path = "../sim" }
+hub = { path = "../hub", features = ["sim"] }
 proptest.workspace = true
+sim = { path = "../sim" }
+spec = { path = "../spec" }
 
 [[test]]
 name = "alloc"
 harness = false
 
 [[bench]]
-name = "poll"
+name = "read"
 harness = false
 test = true
 

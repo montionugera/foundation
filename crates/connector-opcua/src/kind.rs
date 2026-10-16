@@ -1,12 +1,13 @@
 //! The `opcua` kind: reads OPC UA nodes at a fixed rate, and writes at most one frame
 //! per tick.
 
-use std::{fmt, future};
+use std::fmt;
 
 use connector::kind::{self, Channels, Context, Error};
-use connector::{pace, poll, status};
-use document::Document;
+use connector::{browse, pace, poll, status};
 use document::diagnostic::{Code, Diagnostic};
+use document::{Block, Document};
+use types::name::Name;
 use types::sample::{self, Scalar, Type};
 #[cfg(feature = "sim")]
 use types::time::Span;
@@ -90,6 +91,23 @@ impl kind::Kind for Kind {
     /// at once, when the client loses its channel or its session between two ticks.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         run(ctx)
+    }
+
+    /// Gives `read "<channel>" { node_id = "<tag>" }`, which `parse` reads. It reads
+    /// no fact: the browse of the kind gives no `Write`, so each point gets a read
+    /// block.
+    ///
+    /// # Errors
+    ///
+    /// `opcua.bad-node-id`, with the tag, when `tag` is not a node ID that `parse`
+    /// reads.
+    fn block(
+        &self,
+        tag: &str,
+        _: &browse::Facts,
+        channel: &Name,
+    ) -> Result<Vec<Block>, Vec<Diagnostic>> {
+        config::block(tag, channel)
     }
 }
 
@@ -186,7 +204,7 @@ pub async fn writes(
             })
             .collect();
         ctx.clock().sleep(Span::from_nanos(1_000_000)).await;
-        let ((), stamp) = frames.writer.request(future::ready(())).await;
+        let ((), stamp) = frames.writer.request(std::future::ready(())).await;
         let mut written = Ok(());
         measures.push(measure(&mut || {
             written = frames.write(&values, stamp);
@@ -205,8 +223,6 @@ struct Frames<'a> {
     /// The sample type of the channel of each read, in order.
     types: Vec<Scalar>,
     left: Left,
-    /// The value of each read that a frame keeps.
-    kept: Vec<Option<sample::Value>>,
 }
 
 /// The counts of the values that a frame leaves out.
@@ -243,7 +259,6 @@ impl<'a> Frames<'a> {
         Ok(Self {
             ctx,
             writer,
-            kept: vec![None; types.len()],
             types,
             left: Left {
                 bad: ctx.count("bad"),
@@ -271,13 +286,11 @@ impl<'a> Frames<'a> {
         values: &[Result<Value, Fault>],
         stamp: Stamp,
     ) -> Result<(), Error> {
-        let invariant = "invariant: a frame has one value for each read";
-        assert_eq!(values.len(), self.kept.len(), "{invariant}");
         let (mut bad, mut uncertain, mut mistyped) = (0, 0, 0);
         let mut first = None;
-        let reads = values.iter().zip(&self.types).zip(&mut self.kept);
-        for (at, ((value, &sample), kept)) in reads.enumerate() {
-            *kept = match Why::of(value, sample) {
+        let kept = values.iter().enumerate().map(|(at, value)| {
+            let sample = self.types[at];
+            match Why::of(value, sample) {
                 Ok(value) => Some(value),
                 Err(Why::Bad) => {
                     bad += 1;
@@ -292,11 +305,13 @@ impl<'a> Frames<'a> {
                     first = first.or(Some((at, value, sample)));
                     None
                 }
-            };
-        }
+            }
+        });
+        // `write` takes each value before it returns, so the counts are whole after it.
+        let written = self.writer.write(kept, stamp);
         self.left.add(bad, uncertain, mistyped);
         self.left.note(self.ctx, first);
-        self.writer.write(&self.kept, stamp)
+        written
     }
 }
 

@@ -57,8 +57,10 @@ true`. CI denies warnings. r16 gives the reason for each lint.
   calls the OS clock, files, sockets, randomness, and threads. Only `node` reads
   arguments and exits. Each such call carries one `#[expect]`.
 - `clippy.toml` also forbids the rustls calls that read the OS clock, a key log file,
-  or the process-wide provider. Only `transport::tls` builds rustls configs, with
-  `builder_with_details`, its own provider, and a fixed time.
+  or the process-wide provider. Only `transport::tls` and `connector::http` build
+  rustls configs, with `builder_with_details` and their own provider. The time of a
+  `transport::tls` config is fixed, and that of a `connector::http` config is the
+  mesh time of its connect.
 - `clippy.toml` also forbids the noq-proto constructors and types that draw OS
   randomness or read the OS clock. Only `transport::quic::settings` builds noq-proto
   configs and endpoints. It sets every random value from `Entropy`.

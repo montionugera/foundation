@@ -98,6 +98,7 @@ impl Network {
                         tasks: tasks.clone(),
                         timeout: TIMEOUT,
                         body_max: 1024,
+                        tls: None,
                     });
                     for request in requests {
                         let response = client.send(request).await.expect("an answer");

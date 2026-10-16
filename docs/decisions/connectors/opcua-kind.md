@@ -79,3 +79,17 @@
   at once on a lost channel or session: decided by `laptop.architect-2`
   (2026-10-16T04:04:38Z,
   https://github.com/synnaxlabs/foundation/pull/2809#issuecomment-6207818990).
+  Import: the block of a point is `read "<channel>" { node_id = "<tag>" }`, which
+  `parse` reads. A tag that is not a node ID that `parse` reads gives
+  `opcua.bad-node-id`, with the tag. The browse of the kind gives no `Write`, so
+  `block` reads no fact and each point gets a read block. A match on the kind of a
+  built-in type, Boolean (1) to Double (11), decodes a read, and the sample type of
+  each kind comes from that decode at build time. The type of a browse comes from
+  `SCALARS`, so the two cannot disagree. The plan: `laptop.architect-2`,
+  2026-10-16T21:14:25Z
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6224815609). No
+  `opcua.no-write`, in place of the plan's: `laptop.architect-2`, 2026-10-16T21:59:16Z
+  (https://github.com/synnaxlabs/foundation/pull/2931#issuecomment-6225496840). The
+  decode by match, with no table of the built-in types: `laptop.architect-2`,
+  2026-10-16T22:17:22Z
+  (https://github.com/synnaxlabs/foundation/pull/2931#issuecomment-6225757093).

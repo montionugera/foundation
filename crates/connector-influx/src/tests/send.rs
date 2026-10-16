@@ -1,10 +1,12 @@
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 
 use bytes::Bytes;
+use connector::http::Roots;
+use connector::http::sim::Certificate;
 use connector::supervisor;
 use env::clock::Clock;
 use env::net::tcp;
@@ -18,7 +20,7 @@ use types::channel;
 use types::frame::{Form, Label, Path};
 use types::name::{Name, Selector};
 use types::sample::{Scalar, Type};
-use types::time::Span;
+use types::time::{Span, Stamp};
 
 use super::*;
 
@@ -29,12 +31,46 @@ const OPTIONS: tcp::Options = tcp::Options {
     unsent_bytes_max: NonZeroUsize::new(1 << 14).unwrap(),
     delayed: false,
 };
+/// The name, key, and type of each channel of another sample type, on `edge.time`.
+const TYPED: [(&str, u128, Type); 15] = [
+    ("edge.bool", 10, Type::Scalar(Scalar::Bool)),
+    ("edge.i8", 11, Type::Scalar(Scalar::I8)),
+    ("edge.i16", 12, Type::Scalar(Scalar::I16)),
+    ("edge.i32", 13, Type::Scalar(Scalar::I32)),
+    ("edge.u8", 14, Type::Scalar(Scalar::U8)),
+    ("edge.u16", 15, Type::Scalar(Scalar::U16)),
+    ("edge.u32", 16, Type::Scalar(Scalar::U32)),
+    ("edge.u64", 17, Type::Scalar(Scalar::U64)),
+    ("edge.f32", 18, Type::Scalar(Scalar::F32)),
+    ("edge.stamp", 19, Type::Scalar(Scalar::Stamp)),
+    ("edge.span", 20, Type::Scalar(Scalar::Span)),
+    ("edge.uuid", 21, Type::Scalar(Scalar::Uuid)),
+    (
+        "edge.xyz",
+        22,
+        Type::Array {
+            element: Scalar::F32,
+            len: 3,
+        },
+    ),
+    ("edge.text", 23, Type::String),
+    ("edge.blob", 24, Type::Bytes),
+];
 /// The key of the first status channel of `influx`.
 const STATUS: u128 = 100;
 /// The file of the token of `file(TOKEN_FILE)`.
 const TOKEN_FILE: &str = "/run/secrets/influx";
 /// The value of `connector::status::Class::Retry` on the `class` channel.
 const RETRY: u8 = 3;
+/// The file of the CA of `file(CA_FILE)`.
+const CA_FILE: &str = "/etc/influx/ca.pem";
+/// The PEM of the CA that signs each certificate of `serve_tls` but `OtherCa`.
+const CA: &[u8] = connector::http::sim::CA.as_bytes();
+/// The PEM of the CA that signs `Certificate::OtherCa`.
+const OTHER_CA: &[u8] = connector::http::sim::OTHER_CA.as_bytes();
+/// 2026-06-01T00:00:00Z, inside the validity of each certificate of `serve_tls` but
+/// `Expired`.
+const JUNE_2026: Stamp = Stamp::from_nanos(1_780_272_000_000_000_000);
 
 /// One request that the InfluxDB of a plant got: its path and query, and its body.
 type Got = (String, String);
@@ -44,10 +80,10 @@ type End = Rc<RefCell<Option<Result<(), Error>>>>;
 
 /// A node with a hub that defines `edge.time` (key 1), the `f64` channels `edge.a`
 /// (2) and `edge.b` (3), the `i64` channel `edge.count` (4), the `f64` channel `time`
-/// (5), and the status channels of `influx`, and an InfluxDB that answers each
-/// request with the next answer of its list. After the last, it writes the body to its
-/// store, and answers 204, or 400 when the store refuses a line. Its store holds the
-/// secret `plant.influx_token` (`s3cret`).
+/// (5), a channel of each type of [`TYPED`], and the status channels of `influx`, and
+/// an InfluxDB that answers each request with the next answer of its list. After the
+/// last, it writes the body to its store, and answers 204, or 400 when the store
+/// refuses a line. Its store holds the secret `plant.influx_token` (`s3cret`).
 struct Plant {
     hub: hub::Hub,
     supervisor: Supervisor,
@@ -67,8 +103,12 @@ struct Plant {
     errors: Rc<RefCell<Vec<String>>>,
     /// Each value of `influx.status.class`, as [`read_status`] gives them.
     classes: Rc<RefCell<Vec<u8>>>,
+    /// Each value of `influx.status.restarts`.
+    restarts: Rc<RefCell<Vec<u64>>>,
     confirmed: Rc<RefCell<Vec<u64>>>,
     lost: Rc<RefCell<Vec<u64>>>,
+    /// The certificate of an InfluxDB that serves TLS.
+    certificate: Option<Certificate>,
 }
 
 impl Plant {
@@ -81,6 +121,28 @@ impl Plant {
 
     /// A plant whose InfluxDB refuses each connection until [`Plant::serve`].
     async fn unserved(node: ::sim::node::Node, tasks: Tasks) -> Self {
+        Self::with(node, tasks, None, Roots::default()).await
+    }
+
+    /// A plant whose InfluxDB serves TLS with `certificate` from the start, at the
+    /// name `server` of [`run_tls`], and whose node trusts `roots`.
+    async fn tls(
+        node: ::sim::node::Node,
+        tasks: Tasks,
+        certificate: Certificate,
+        roots: Roots,
+    ) -> Self {
+        let plant = Self::with(node, tasks, Some(certificate), roots).await;
+        plant.serve();
+        plant
+    }
+
+    async fn with(
+        node: ::sim::node::Node,
+        tasks: Tasks,
+        certificate: Option<Certificate>,
+        roots: Roots,
+    ) -> Self {
         let address = SocketAddr::new(node.addresses()[0], PORT);
         let env = hub::testing::Env {
             files: node.files(),
@@ -90,13 +152,17 @@ impl Plant {
             tasks: tasks.clone(),
         };
         let kinds = Table::new().with("influx", Kind);
-        let inputs = testing::create_config(env, node.net(), kinds).await;
+        let inputs = supervisor::Config {
+            roots,
+            ..testing::create_config(env, node.net(), kinds).await
+        };
         let token = "plant.influx_token".parse().expect("a name");
         testing::create_secret(&node.files(), &token, b"s3cret").await;
         define(&inputs);
         let errors = read_errors(&inputs.hub, &tasks).await;
         let classes =
             read_status(&inputs.hub, &tasks, "class", |sample| sample[0]).await;
+        let restarts = read_count(&inputs.hub, &tasks, "restarts").await;
         let confirmed = read_confirmed(&inputs.hub, &tasks).await;
         let lost = read_count(&inputs.hub, &tasks, "lost").await;
         Self {
@@ -114,8 +180,10 @@ impl Plant {
             store: Rc::default(),
             errors,
             classes,
+            restarts,
             confirmed,
             lost,
+            certificate,
         }
     }
 
@@ -159,16 +227,31 @@ impl Plant {
             *response.status_mut() = status;
             response
         };
-        let server = connector::http::sim::serve(listener, self.tasks.clone(), answer);
+        let tasks = self.tasks.clone();
+        let certificate = self.certificate;
         self.tasks.spawn(async move {
-            let error = server.await;
+            let error = match certificate {
+                Some(certificate) => {
+                    connector::http::sim::serve_tls(
+                        listener,
+                        tasks,
+                        certificate,
+                        answer,
+                    )
+                    .await
+                }
+                None => connector::http::sim::serve(listener, tasks, answer).await,
+            };
             panic!("the listener failed: {error}");
         });
     }
 
     /// The config of an influx connector at this plant's InfluxDB.
     fn config(&self) -> Document {
-        config(string(&format!("http://{}", self.address)))
+        match self.certificate {
+            Some(_) => config(string(&format!("https://server:{PORT}"))),
+            None => config(string(&format!("http://{}", self.address))),
+        }
     }
 
     /// Supervises the connector `influx` with `config` until the token it gives is
@@ -213,15 +296,15 @@ fn name(text: &str) -> Name {
 
 fn define(inputs: &supervisor::Config) {
     let time = channel::Key::from_u128(1);
-    let on = |index, key, scalar| {
-        let data_type = DataType::Sample(Type::Scalar(scalar));
+    let on = |index, key, data_type| {
+        let data_type = DataType::Sample(data_type);
         let data = Data::new(index, None, data_type, None).expect("no unit");
         let key = channel::Key::from_u128(key);
         let kind = spec::channel::Kind::Data(data);
         Definition::Channel(Channel { key, kind })
     };
-    let data = |key, scalar| on(time, key, scalar);
-    let site = |key| on(channel::Key::from_u128(6), key, Scalar::F64);
+    let data = |key, scalar| on(time, key, Type::Scalar(scalar));
+    let site = |key| on(channel::Key::from_u128(6), key, Type::Scalar(Scalar::F64));
     let index = spec::channel::Kind::Index {
         error: None,
         control: None,
@@ -252,6 +335,9 @@ fn define(inputs: &supervisor::Config) {
         ),
         (name("site.c"), site(7)),
     ]);
+    let typed =
+        TYPED.map(|(text, key, data_type)| (name(text), on(time, key, data_type)));
+    definitions.extend(typed);
     inputs
         .hub
         .set_definitions(definitions.iter().map(|(name, def)| (name, def)));
@@ -359,6 +445,28 @@ fn write_draft(
     first: i64,
     columns: &[(u128, &[f64])],
 ) -> Vec<hub::home::Outcome> {
+    let count = columns.first().map_or(0, |(_, samples)| samples.len());
+    let bytes: Vec<(u128, Vec<u8>)> = (columns.iter())
+        .map(|&(key, samples)| {
+            (key, samples.iter().flat_map(|s| s.to_le_bytes()).collect())
+        })
+        .collect();
+    let raw: Vec<(u128, &[u8])> = bytes
+        .iter()
+        .map(|(key, bytes)| (*key, bytes.as_slice()))
+        .collect();
+    write_raw(writer, first, count, &raw)
+}
+
+/// Writes one frame through `writer` of `count` sample times at `first` and each
+/// nanosecond after, with the raw samples of each channel key of `columns`, and gives
+/// the outcome of each group.
+fn write_raw(
+    writer: &mut hub::writer::Writer,
+    first: i64,
+    count: usize,
+    columns: &[(u128, &[u8])],
+) -> Vec<hub::home::Outcome> {
     let entries = writer.set().entries();
     let at = |key| {
         let key = channel::Key::from_u128(key);
@@ -367,20 +475,20 @@ fn write_draft(
             .position(|entry| entry.key == key)
             .expect("written")
     };
-    let count = columns.first().map_or(0, |(_, samples)| samples.len());
     let time = at(1);
     let group = entries[time].group;
-    let mut series: Vec<_> = std::iter::once(time)
-        .chain(columns.iter().map(|&(key, _)| at(key)))
-        .map(|entry| (entry, count * 8))
+    let mut series: Vec<_> = std::iter::once((time, count * 8))
+        .chain(columns.iter().map(|&(key, bytes)| (at(key), bytes.len())))
         .collect();
     series.sort_unstable();
     let mut draft = writer.draft(Form::Raw, &series).expect("a frame");
     let times = (first..).take(count).flat_map(i64::to_le_bytes);
     fill(draft.series_mut(time).expect("the index"), times);
-    for &(key, samples) in columns {
-        let bytes = samples.iter().flat_map(|sample| sample.to_le_bytes());
-        fill(draft.series_mut(at(key)).expect("a series"), bytes);
+    for &(key, bytes) in columns {
+        fill(
+            draft.series_mut(at(key)).expect("a series"),
+            bytes.iter().copied(),
+        );
     }
     draft.set_count(group, u32::try_from(count).expect("fits"));
     let outcomes = writer.write(Label::Path(Path::Live), draft);
@@ -1249,76 +1357,204 @@ fn counts_no_line_toward_a_full_batch_for_a_sample_time_of_only_nan() {
     );
 }
 
-/// The end of a run with `config` that gets one frame of the channel `channel`, of
-/// key `key`, which holds 8-byte samples, and the requests that InfluxDB gets.
-fn end_of_one_frame(
+/// What one frame gave: the end of the run once it returned, each request, the stamp
+/// of the frame's first sample, and the fields of each point of the store.
+struct Frame {
+    end: Option<Result<(), Error>>,
+    got: Vec<Got>,
+    first: i64,
+    points: Vec<BTreeMap<String, crate::sim::Field>>,
+}
+
+/// Writes one frame of `count` sample times, with the raw samples of each channel of
+/// `columns` (its name, key, and bytes), to a connector that selects `select`. It
+/// writes to the database `plant`, or to the bucket `edge` when `bucket`, and then the
+/// store takes a `u` integer, as InfluxDB 2 and 3 do.
+fn one_frame(
     select: &'static str,
-    channel: &'static str,
-    key: u128,
-) -> (Option<Result<(), Error>>, Vec<Got>) {
+    bucket: bool,
+    count: usize,
+    columns: Vec<(&'static str, u128, Vec<u8>)>,
+) -> Frame {
     run(move |node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
-        let (_, end) = plant.start(with(plant.config(), "select", &string(select)));
-        let mut writer = plant.writer(&["edge.time", channel]).await;
+        let mut config = with(plant.config(), "select", &string(select));
+        if bucket {
+            *plant.store.borrow_mut() = crate::sim::Store::unsigned();
+            let target = [(60, "bucket", string("edge")), (62, "org", string("o"))];
+            config = plus(without(config, "database"), &target);
+        }
+        let (_, end) = plant.start(config);
+        let names = columns.iter().map(|&(name, _, _)| name);
+        let names: Vec<_> = std::iter::once("edge.time").chain(names).collect();
+        let mut writer = plant.writer(&names).await;
         plant.clock.sleep(Span::SECOND).await;
-        let entries = writer.set().entries();
-        let at = |key| {
-            let key = channel::Key::from_u128(key);
-            entries
-                .iter()
-                .position(|entry| entry.key == key)
-                .expect("written")
-        };
-        let (time, value) = (at(1), at(key));
-        let group = entries[time].group;
-        let mut series = [(time, 8), (value, 8)];
-        series.sort_unstable();
-        let mut draft = writer.draft(Form::Raw, &series).expect("a frame");
-        let stamp = writer.now().nanos();
-        fill(
-            draft.series_mut(time).expect("the index"),
-            stamp.to_le_bytes().into_iter(),
-        );
-        fill(
-            draft.series_mut(value).expect("the value"),
-            7_i64.to_le_bytes().into_iter(),
-        );
-        draft.set_count(group, 1);
-        writer
-            .write(Label::Path(Path::Live), draft)
-            .expect("the home takes it");
+        let first = writer.now().nanos();
+        let raw: Vec<_> = (columns.iter())
+            .map(|(_, key, bytes)| (*key, bytes.as_slice()))
+            .collect();
+        let outcomes = write_raw(&mut writer, first, count, &raw);
+        let applied = outcomes
+            .iter()
+            .all(|outcome| matches!(outcome, hub::home::Outcome::Applied { .. }));
+        assert!(applied, "the frame applies: {outcomes:?}");
         plant.clock.sleep(Span::SECOND).await;
         let end = end.borrow_mut().take();
-        (end, plant.got())
+        let points = (plant.store.borrow().points("telemetry", &[]))
+            .map(|point| {
+                let fields = point.fields.iter();
+                fields.map(|(key, field)| (key.to_owned(), field)).collect()
+            })
+            .collect();
+        Frame {
+            end,
+            got: plant.got(),
+            first,
+            points,
+        }
     })
 }
 
+/// The little-endian bytes of each sample of `samples`.
+macro_rules! bytes {
+    ($($sample:expr),* $(,)?) => {
+        [$($sample.to_le_bytes().to_vec()),*].concat()
+    };
+}
+
 #[test]
-fn stops_with_a_config_error_at_a_channel_that_does_not_hold_f64() {
-    let (end, got) = end_of_one_frame("edge.*", "edge.count", 4);
-    assert_eq!(got, []);
-    let Some(Err(Error::Config(diagnostics))) = end else {
-        panic!("a config error, not {end:?}");
+fn writes_each_scalar_type_other_than_u64_and_uuid_as_its_field() {
+    let columns = vec![
+        ("edge.bool", 10, vec![1, 0]),
+        ("edge.i8", 11, bytes![i8::MIN, i8::MAX]),
+        ("edge.i16", 12, bytes![i16::MIN, i16::MAX]),
+        ("edge.i32", 13, bytes![i32::MIN, i32::MAX]),
+        ("edge.count", 4, bytes![i64::MIN, i64::MAX]),
+        ("edge.u8", 14, bytes![0_u8, u8::MAX]),
+        ("edge.u16", 15, bytes![0_u16, u16::MAX]),
+        ("edge.u32", 16, bytes![0_u32, u32::MAX]),
+        ("edge.f32", 18, bytes![0.1_f32, f32::NAN]),
+        (
+            "edge.stamp",
+            19,
+            bytes![-1_i64, 1_700_000_000_123_456_789_i64],
+        ),
+        ("edge.span", 20, bytes![-5_i64, i64::MAX]),
+    ];
+    let frame = one_frame("edge.*", false, 2, columns);
+    assert!(frame.end.is_none(), "the run goes on: {:?}", frame.end);
+    let first = frame.first;
+    let body = format!(
+        "telemetry edge.bool=t,edge.i8=-128i,edge.i16=-32768i,edge.i32=-2147483648i,\
+         edge.count=-9223372036854775808i,edge.u8=0i,edge.u16=0i,edge.u32=0i,\
+         edge.f32=1.0000000149011612e-1,edge.stamp=-1i,edge.span=-5i {first}\n\
+         telemetry edge.bool=f,edge.i8=127i,edge.i16=32767i,edge.i32=2147483647i,\
+         edge.count=9223372036854775807i,edge.u8=255i,edge.u16=65535i,\
+         edge.u32=4294967295i,edge.stamp=1700000000123456789i,\
+         edge.span=9223372036854775807i {}\n",
+        first + 1
+    );
+    assert_eq!(frame.got, vec![(WRITE.into(), body)]);
+    assert_eq!(frame.points.len(), 2);
+}
+
+#[test]
+fn writes_an_f32_that_is_infinite_as_no_field() {
+    let columns = vec![(
+        "edge.f32",
+        18,
+        bytes![f32::INFINITY, f32::NEG_INFINITY, -2.5_f32],
+    )];
+    let frame = one_frame("edge.*", false, 3, columns);
+    let body = format!("telemetry edge.f32=-2.5e0 {}\n", frame.first + 2);
+    assert_eq!(frame.got, vec![(WRITE.into(), body)]);
+}
+
+#[test]
+fn writes_a_u64_to_a_bucket_as_an_unsigned_integer() {
+    let columns = vec![("edge.u64", 17, bytes![0_u64, u64::MAX])];
+    let frame = one_frame("edge.*", true, 2, columns);
+    assert!(frame.end.is_none(), "the run goes on: {:?}", frame.end);
+    let first = frame.first;
+    let body = format!(
+        "telemetry edge.u64=0u {first}\n\
+         telemetry edge.u64=18446744073709551615u {}\n",
+        first + 1
+    );
+    let uri = "/api/v2/write?org=o&bucket=edge&precision=ns";
+    assert_eq!(frame.got, vec![(uri.into(), body)]);
+    let field = |value| BTreeMap::from([("edge.u64".into(), value)]);
+    assert_eq!(
+        frame.points,
+        [
+            field(crate::sim::Field::Unsigned(0)),
+            field(crate::sim::Field::Unsigned(u64::MAX)),
+        ]
+    );
+}
+
+#[test]
+fn stops_with_a_config_error_at_a_u64_channel_to_a_database() {
+    let frame = one_frame("edge.*", false, 1, vec![("edge.u64", 17, bytes![1_u64])]);
+    assert_eq!(frame.got, []);
+    assert!(frame.points.is_empty());
+    let Some(Err(Error::Config(diagnostics))) = frame.end else {
+        panic!("a config error, not {:?}", frame.end);
     };
     assert_eq!(
         diagnostics,
         [Diagnostic::new(
-            Code::new("influx.sample-type"),
+            Code::new("influx.unsigned"),
             None,
-            "the channel \"edge.count\" holds i64 samples, which the influx kind does \
-             not write"
+            "the channel \"edge.u64\" holds u64 samples, which InfluxDB 1 does not \
+             store"
                 .into(),
-            "Select only f64 channels".into(),
+            "Write to a `bucket` of InfluxDB 2 or 3, or leave the channel out of \
+             `select`"
+                .into(),
         )]
     );
 }
 
 #[test]
+fn stops_with_a_config_error_at_a_channel_of_a_type_it_does_not_write() {
+    let uuid = ("edge.uuid", 21, vec![7; 16], "uuid");
+    let xyz = ("edge.xyz", 22, bytes![1.0_f32, 2.0_f32, 3.0_f32], "f32[3]");
+    let variable = |data_type, sample: &[u8]| {
+        let form = codec::Variable::of(data_type).expect("a variable type");
+        let mut bytes = vec![0; form.len(&[sample]).expect("fits")];
+        form.write(&[sample], &mut bytes);
+        bytes
+    };
+    let text = ("edge.text", 23, variable(Type::String, b"hi"), "string");
+    let blob = ("edge.blob", 24, variable(Type::Bytes, &[0, 255]), "bytes");
+    for (channel, key, bytes, data_type) in [uuid, xyz, text, blob] {
+        let frame = one_frame("edge.*", true, 1, vec![(channel, key, bytes)]);
+        assert_eq!(frame.got, []);
+        let Some(Err(Error::Config(diagnostics))) = frame.end else {
+            panic!("a config error, not {:?}", frame.end);
+        };
+        assert_eq!(
+            diagnostics,
+            [Diagnostic::new(
+                Code::new("influx.sample-type"),
+                None,
+                format!(
+                    "the channel {channel:?} holds {data_type} samples, which the \
+                     influx kind does not write"
+                ),
+                "Leave the channel out of `select`".into(),
+            )]
+        );
+    }
+}
+
+#[test]
 fn stops_with_a_config_error_at_a_channel_whose_name_is_no_field_key() {
-    let (end, got) = end_of_one_frame("time", "time", 5);
-    assert_eq!(got, []);
-    let Some(Err(Error::Config(diagnostics))) = end else {
-        panic!("a config error, not {end:?}");
+    let frame = one_frame("time", false, 1, vec![("time", 5, bytes![7.0_f64])]);
+    assert_eq!(frame.got, []);
+    let Some(Err(Error::Config(diagnostics))) = frame.end else {
+        panic!("a config error, not {:?}", frame.end);
     };
     assert_eq!(
         diagnostics,
@@ -1520,4 +1756,357 @@ fn loses_the_batch_in_flight_at_a_restart_with_no_hold() {
         "{second:?}"
     );
     assert_eq!(second[0].lines().count(), 1, "{second:?}");
+}
+
+/// As [`run`], on a node at the name `server` whose wall starts at [`JUNE_2026`], with
+/// a host directory `/etc/influx` too.
+fn run_tls<T, F>(main: impl FnOnce(::sim::node::Node, Tasks) -> F + Send + 'static) -> T
+where
+    T: Send + 'static,
+    F: Future<Output = T> + 'static,
+{
+    let mut sim = ::sim::Sim::new(::sim::Config::default());
+    let node = sim.node(::sim::node::Config {
+        wall: JUNE_2026,
+        ..::sim::node::Config::default()
+    });
+    let answer = ::sim::name::Answer::Addresses(vec![node.addresses()[0]]);
+    let name = ::sim::name::Config {
+        answer,
+        ..::sim::name::Config::default()
+    };
+    sim.name("server", name);
+    node.make_dir(std::path::Path::new("/run/secrets"));
+    node.make_dir(std::path::Path::new("/etc/influx"));
+    sim.run_on(&node, main).expect("the run ends")
+}
+
+/// The config of `plant` with `ca` set to a call of `function` with `argument`.
+fn with_ca(plant: &Plant, function: &str, argument: &str) -> Document {
+    plus(plant.config(), &[(60, "ca", call(function, argument))])
+}
+
+/// Runs [`send_one`] on a plant whose InfluxDB serves `certificate`, whose node
+/// trusts `roots`, and whose config reads `ca` from `file(CA_FILE)` when it holds
+/// bytes. Gives the errors, whether the run went on, the lines stored, and each value
+/// of `class` and of `restarts`.
+fn send_over_tls(
+    certificate: Certificate,
+    roots: Roots,
+    ca: &'static [u8],
+) -> (Vec<String>, bool, usize, Vec<u8>, Vec<u64>) {
+    run_tls(move |node, tasks| async move {
+        node.paths()
+            .write(std::path::Path::new(CA_FILE), ca)
+            .expect("writes");
+        let plant = Plant::tls(node, tasks, certificate, roots).await;
+        let config = if ca.is_empty() {
+            plant.config()
+        } else {
+            with_ca(&plant, "file", CA_FILE)
+        };
+        let (_, errors, end) = send_one(&plant, config).await;
+        let points = plant.store.borrow().points("telemetry", &[]).count();
+        let classes = plant.classes.borrow().clone();
+        let restarts = plant.restarts.borrow().clone();
+        (errors, end.is_none(), points, classes, restarts)
+    })
+}
+
+#[test]
+fn writes_over_https_with_the_ca_of_a_file_or_a_store() {
+    let got = [("file", CA_FILE), ("secret", "plant.influx_ca")].map(
+        |(function, argument)| {
+            run_tls(move |node, tasks| async move {
+                node.paths()
+                    .write(std::path::Path::new(CA_FILE), CA)
+                    .expect("writes");
+                let ca = "plant.influx_ca".parse().expect("a name");
+                testing::create_secret(&node.files(), &ca, CA).await;
+                let plant =
+                    Plant::tls(node, tasks, Certificate::Valid, Roots::default()).await;
+                let config = with_ca(&plant, function, argument);
+                let (_, errors, end) = send_one(&plant, config).await;
+                let points = plant.store.borrow().points("telemetry", &[]).count();
+                (errors, end.is_none(), points)
+            })
+        },
+    );
+    assert_eq!(
+        got,
+        [
+            (vec![String::new()], true, 1),
+            (vec![String::new()], true, 1)
+        ]
+    );
+}
+
+#[test]
+fn writes_over_https_with_the_roots_of_the_node_and_no_ca() {
+    assert_eq!(
+        send_over_tls(Certificate::Valid, connector::http::sim::ca(), b""),
+        (vec![String::new()], true, 1, vec![0], vec![0])
+    );
+}
+
+#[test]
+fn shows_why_tls_fails_and_retries_in_the_run_with_no_ca() {
+    let failed = |reasons: Vec<String>| {
+        let errors = reasons.into_iter().map(|reason| {
+            format!(
+                "the write to InfluxDB failed: TLS with server:8086 failed: {reason}"
+            )
+        });
+        let mut errors: Vec<_> = errors.collect();
+        errors.insert(0, String::new());
+        errors.push(String::new());
+        errors
+    };
+    // Each attempt checks the certificate at its own mesh time.
+    let expired = [1, 2, 3, 6, 9].map(|after: u64| {
+        format!(
+            "invalid peer certificate: certificate expired: verification time {} \
+             (UNIX), but certificate is not valid after 1769904000 ({} seconds ago)",
+            1_780_272_000 + after,
+            10_368_000 + after
+        )
+    });
+    for (certificate, reasons) in [
+        (
+            Certificate::OtherHost,
+            vec![
+                "invalid peer certificate: certificate not valid for name \"server\"; \
+                 certificate is only valid for DnsName(\"other\")"
+                    .to_owned(),
+            ],
+        ),
+        (Certificate::Expired, expired.to_vec()),
+        (
+            Certificate::OtherCa,
+            vec!["invalid peer certificate: UnknownIssuer".to_owned()],
+        ),
+    ] {
+        let (errors, going, points, _, restarts) =
+            send_over_tls(certificate, connector::http::sim::ca(), b"");
+        assert_eq!(
+            (errors, going, points, restarts),
+            (failed(reasons), true, 0, vec![0]),
+            "{certificate:?}"
+        );
+    }
+}
+
+#[test]
+fn retries_a_tls_failure_with_a_ca_in_the_run() {
+    let (errors, going, points, _, restarts) =
+        send_over_tls(Certificate::OtherCa, Roots::default(), CA);
+    let error = format!(
+        "the write to InfluxDB failed: TLS with server:8086 failed: invalid peer \
+         certificate: UnknownIssuer. Check the ca file(\"{CA_FILE}\")"
+    );
+    assert_eq!(
+        (errors, going, points, restarts),
+        (vec![String::new(), error, String::new()], true, 0, vec![0])
+    );
+}
+
+/// Runs a plant whose InfluxDB serves [`Certificate::OtherCa`], with `ca` read from
+/// `file(CA_FILE)`, which holds [`CA`] at the start and `fixed` from 5 s after the
+/// first sample. Gives the points stored, the errors, and each value of `class` and
+/// of `restarts`.
+fn after_a_new_ca(fixed: &'static [u8]) -> (usize, Vec<String>, Vec<u8>, Vec<u64>) {
+    run_tls(move |node, tasks| async move {
+        let paths = node.paths();
+        paths
+            .write(std::path::Path::new(CA_FILE), CA)
+            .expect("writes");
+        let plant =
+            Plant::tls(node, tasks, Certificate::OtherCa, Roots::default()).await;
+        let run = plant.start(with_ca(&plant, "file", CA_FILE));
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write(&mut writer, first, &[(1.0, 2.0)]);
+        plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
+        paths
+            .write(std::path::Path::new(CA_FILE), fixed)
+            .expect("writes");
+        plant.clock.sleep(Span::MINUTE).await;
+        let end = plant.stop(run).await;
+        assert!(end.is_ok(), "ok after a cancel");
+        let points = plant.store.borrow().points("telemetry", &[]).count();
+        let errors = plant.errors.borrow().clone();
+        let classes = plant.classes.borrow().clone();
+        let restarts = plant.restarts.borrow().clone();
+        (points, errors, classes, restarts)
+    })
+}
+
+#[test]
+fn reads_again_a_ca_fixed_while_the_node_runs() {
+    let (points, _, _, restarts) = after_a_new_ca(OTHER_CA);
+    assert_eq!(
+        (points, restarts),
+        (1, vec![0]),
+        "the run reads the fixed ca"
+    );
+}
+
+#[test]
+fn ends_the_run_at_a_ca_that_gives_no_root_when_read_again() {
+    let (points, errors, classes, restarts) = after_a_new_ca(b"not a certificate\n");
+    let error = format!(
+        "the ca file(\"{CA_FILE}\") holds no PEM certificate. Write the CA \
+         certificate of the server in PEM"
+    );
+    assert_eq!(
+        (points, errors.last(), classes.last(), restarts.len() > 1),
+        (0, Some(&error), Some(&RETRY), true)
+    );
+}
+
+/// With no `hold`, InfluxDB closes the first connection in the TLS handshake, then
+/// serves. Gives the points stored and each value of `restarts`.
+fn after_a_close_in_the_handshake(ca: bool) -> (usize, Vec<u64>) {
+    run_tls(move |node, tasks| async move {
+        node.paths()
+            .write(std::path::Path::new(CA_FILE), CA)
+            .expect("writes");
+        let roots = if ca {
+            Roots::default()
+        } else {
+            connector::http::sim::ca()
+        };
+        let plant = Plant::with(node, tasks, Some(Certificate::Valid), roots).await;
+        let listen = tcp::Listen {
+            local: plant.address,
+            backlog: 4,
+            options: OPTIONS,
+        };
+        let mut listener = plant.net.listen(&listen).expect("the port is free");
+        let mut config = if ca {
+            with_ca(&plant, "file", CA_FILE)
+        } else {
+            plant.config()
+        };
+        config.blocks.clear();
+        let run = plant.start(config);
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write(&mut writer, first, &[(1.0, 2.0)]);
+        let tcp = std::future::poll_fn(|cx| listener.poll_accept(cx))
+            .await
+            .expect("accepts");
+        drop((tcp, listener));
+        plant.clock.sleep(Span::from_nanos(10_000_000)).await;
+        plant.serve();
+        plant.clock.sleep(Span::MINUTE).await;
+        let end = plant.stop(run).await;
+        assert!(end.is_ok(), "ok after a cancel");
+        let points = plant.store.borrow().points("telemetry", &[]).count();
+        let restarts = plant.restarts.borrow().clone();
+        (points, restarts)
+    })
+}
+
+#[test]
+fn keeps_the_sample_of_a_close_in_the_handshake_with_no_hold() {
+    let got = [false, true].map(after_a_close_in_the_handshake);
+    assert_eq!(got, [(1, vec![0]), (1, vec![0])]);
+}
+
+#[test]
+fn keeps_the_roots_of_the_node_with_a_ca() {
+    assert_eq!(
+        send_over_tls(Certificate::Valid, connector::http::sim::ca(), OTHER_CA),
+        (vec![String::new()], true, 1, vec![0], vec![0])
+    );
+}
+
+#[test]
+fn reads_a_ca_that_starts_with_a_byte_order_mark() {
+    const MARKED: &[u8] = &{
+        let mut marked = [0; 3 + CA.len()];
+        let (mark, rest) = marked.split_at_mut(3);
+        mark.copy_from_slice(b"\xEF\xBB\xBF");
+        rest.copy_from_slice(CA);
+        marked
+    };
+    assert_eq!(
+        send_over_tls(Certificate::Valid, Roots::default(), MARKED),
+        (vec![String::new()], true, 1, vec![0], vec![0])
+    );
+}
+
+#[test]
+fn shows_that_no_ca_is_trusted_with_no_roots_and_no_ca() {
+    let (errors, going, points, ..) =
+        send_over_tls(Certificate::Valid, Roots::default(), b"");
+    assert_eq!(
+        (errors, going, points),
+        (
+            vec![
+                String::new(),
+                "the write to InfluxDB failed: no CA is trusted: install the CA \
+                 certificates of the OS, or give `ca`"
+                    .to_owned(),
+                String::new(),
+            ],
+            true,
+            0
+        )
+    );
+}
+
+#[test]
+fn ends_the_run_at_a_ca_that_gives_no_root() {
+    for (ca, held) in [
+        (&b"not a certificate\n"[..], "no PEM certificate"),
+        (
+            b"-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
+            "a PEM certificate that does not parse",
+        ),
+    ] {
+        let (errors, _, points, classes, _) =
+            send_over_tls(Certificate::Valid, connector::http::sim::ca(), ca);
+        let error = format!(
+            "the ca file(\"{CA_FILE}\") holds {held}. Write the CA certificate of the \
+             server in PEM"
+        );
+        assert_eq!(
+            (errors, points, classes),
+            (vec![String::new(), error], 0, vec![0, RETRY]),
+            "{held}"
+        );
+    }
+}
+
+#[test]
+fn retries_a_refused_connect_in_the_run_with_a_ca() {
+    let got = run_tls(|node, tasks| async move {
+        node.paths()
+            .write(std::path::Path::new(CA_FILE), CA)
+            .expect("writes");
+        let plant =
+            Plant::with(node, tasks, Some(Certificate::Valid), Roots::default()).await;
+        let run = plant.start(with_ca(&plant, "file", CA_FILE));
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write(&mut writer, first, &[(1.0, 2.0)]);
+        plant.clock.sleep(Span::from_nanos(6_000_000_000)).await;
+        plant.serve();
+        plant.clock.sleep(Span::MINUTE).await;
+        let end = plant.stop(run).await;
+        assert!(end.is_ok(), "ok after a cancel");
+        let points = plant.store.borrow().points("telemetry", &[]).count();
+        let errors = plant.errors.borrow().clone();
+        let restarts = plant.restarts.borrow().clone();
+        (points, errors, restarts)
+    });
+    let refused = "the write to InfluxDB failed: the connect failed: 10.0.0.1:8086 \
+                   refused the connection";
+    let errors = vec![String::new(), refused.to_owned(), String::new()];
+    assert_eq!(got, (1, errors, vec![0]), "a refused connect keeps the run");
 }

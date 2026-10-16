@@ -33,3 +33,17 @@
   6042958763),
   https://github.com/synnaxlabs/foundation/pull/1473#issuecomment-6042291321 (the doc
   of finding 1, by 6042446508 item 1 and 6042839816).
+  `connector::http::sim::serve_tls(listener, tasks, certificate, answer)` is the same
+  server under TLS 1.2 or 1.3, with one of the fixed test certificates of
+  `crates/connector/src/http/sim/tls/`, whose README gives the commands and each
+  validity window. Each certificate is for the host `server` or its IP address, so no
+  kind is named (`laptop.architect-2`, 2026-10-16T07:51:33Z:
+  https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210764044,
+  item 2). `sim::ca()` gives roots that hold the test CA. A stream whose
+  handshake fails ends with no answer. The server sends no session ticket and checks no
+  client certificate, so it reads no time. Each key is Ed25519, so the size of each
+  handshake packet is the same on each run of one simulation. Each test sets the mesh
+  time of its client inside or outside the validity of a certificate, so no test
+  depends on the date it runs (`laptop.architect-2`, 2026-10-16T03:30:01Z:
+  https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207437988,
+  item 5).

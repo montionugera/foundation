@@ -458,6 +458,29 @@ fn refuses_a_connect_with_no_listener() {
 }
 
 #[test]
+fn gives_up_a_connect_after_the_timeout() {
+    let mut network = Network::new(16);
+    let slow = sim::link::Config {
+        delay: Span::SECOND,
+        ..sim::link::Config::default()
+    };
+    network.sim.link(&network.client, &network.device, slow);
+    let _listener = network.listen(1 << 16);
+    let (net, clock) = (network.client.net(), network.client.clock());
+    let remote = network.remote();
+    let got = network.on_client(move || async move {
+        let config = tcp::Config {
+            remote,
+            options: options(1 << 16),
+        };
+        let start = clock.now();
+        let got = Client::connect(&net, &config, clock.clone(), TIMEOUT).await;
+        (got.err(), clock.now() - start)
+    });
+    assert_eq!(got, (Some(net::Error::TimedOut { remote }), TIMEOUT));
+}
+
+#[test]
 fn serves_the_next_stream_after_one_ends_or_is_out_of_step() {
     let mut network = Network::new(11);
     network.serve(&device());
@@ -585,14 +608,7 @@ fn serves_a_client_that_comes_back_after_a_power_cut() {
 #[test]
 fn a_timeout_below_zero_acts_as_zero() {
     let mut network = Network::new(15);
-    network.on_device(1 << 16, |mut listener, clock| async move {
-        let mut stream = poll_fn(|cx| listener.poll_accept(cx))
-            .await
-            .expect("a stream comes");
-        request(&mut stream).await;
-        clock.sleep(Span::HOUR).await;
-        drop((stream, listener));
-    });
+    let _listener = network.listen(1 << 16);
     let (net, clock) = (network.client.net(), network.client.clock());
     let remote = network.remote();
     let got = network.on_client(move || async move {
@@ -601,12 +617,126 @@ fn a_timeout_below_zero_acts_as_zero() {
             options: options(1 << 16),
         };
         let timeout = Span::from_nanos(i64::MIN);
-        let mut client = Client::connect(&net, &config, clock.clone(), timeout)
-            .await
-            .expect("the device listens");
         let start = clock.now();
-        let got = said(client.exchange(UNIT, &read(Table::Coils, 0, 1)).await);
-        (got, clock.now() - start)
+        let got = Client::connect(&net, &config, clock.clone(), timeout).await;
+        (got.err(), clock.now() - start)
     });
-    assert_eq!(got, (Err(Failure::Timeout), Span::ZERO));
+    assert_eq!(got, (Some(net::Error::TimedOut { remote }), Span::ZERO));
+}
+
+/// The link back from the device keeps its 250 us, so a one-way delay of 299.75 ms
+/// makes a handshake of exactly `TIMEOUT`.
+#[test]
+fn connects_at_the_timeout_and_gives_up_just_past_it() {
+    let cases = [
+        (299_749_999, true, Span::from_nanos(299_999_999)),
+        (299_750_000, true, TIMEOUT),
+        (299_750_001, false, TIMEOUT),
+    ];
+    for (delay, connected, spent) in cases {
+        for seed in 0..32 {
+            let mut network = Network::new(1000 + seed);
+            let slow = sim::link::Config {
+                delay: Span::from_nanos(delay),
+                ..sim::link::Config::default()
+            };
+            network.sim.link(&network.client, &network.device, slow);
+            let _listener = network.listen(1 << 16);
+            let (net, clock) = (network.client.net(), network.client.clock());
+            let remote = network.remote();
+            let got = network.on_client(move || async move {
+                let config = tcp::Config {
+                    remote,
+                    options: options(1 << 16),
+                };
+                let start = clock.now();
+                let got = Client::connect(&net, &config, clock.clone(), TIMEOUT).await;
+                (got.map(drop), clock.now() - start)
+            });
+            let want = if connected {
+                Ok(())
+            } else {
+                Err(net::Error::TimedOut { remote })
+            };
+            assert_eq!(got, (want, spent), "delay {delay}, seed {seed}");
+        }
+    }
+}
+
+/// Each way of the link takes 250 us, so a device that waits 299.5 ms answers in
+/// exactly `TIMEOUT`.
+#[test]
+fn takes_a_reply_at_the_timeout_and_drops_one_just_past_it() {
+    let cases = [
+        (299_499_999, true, Span::from_nanos(299_999_999)),
+        (299_500_000, true, TIMEOUT),
+        (299_500_001, false, TIMEOUT),
+    ];
+    for (wait, answered, spent) in cases {
+        for seed in 0..32 {
+            let mut network = Network::new(3000 + seed);
+            network.raw(move |mut stream, clock| async move {
+                let first = request(&mut stream).await;
+                write(&mut stream, &registers(first, &[1])).await;
+                let second = request(&mut stream).await;
+                clock.sleep(Span::from_nanos(wait)).await;
+                write(&mut stream, &registers(second, &[2])).await;
+                stream
+            });
+            let got = network.client(1 << 16, |mut client, clock| async move {
+                let request = read(Table::HoldingRegisters, 0, 1);
+                let first = said(client.exchange(UNIT, &request).await);
+                let start = clock.now();
+                let second = said(client.exchange(UNIT, &request).await);
+                (first, second, clock.now() - start)
+            });
+            let second = if answered {
+                Ok(Said::Registers(vec![2]))
+            } else {
+                Err(Failure::Timeout)
+            };
+            let want = (Ok(Said::Registers(vec![1])), second, spent);
+            assert_eq!(got, want, "wait {wait}, seed {seed}");
+        }
+    }
+}
+
+#[test]
+fn gives_each_exchange_its_whole_timeout_after_the_sleep_of_the_one_before() {
+    for seed in 0..32 {
+        let mut network = Network::new(2000 + seed);
+        network.raw(|mut stream, clock| async move {
+            let first = request(&mut stream).await;
+            write(&mut stream, &registers(first, &[1])).await;
+            let second = request(&mut stream).await;
+            clock.sleep(ms(299)).await;
+            write(&mut stream, &registers(second, &[2])).await;
+            let _third = request(&mut stream).await;
+            let fourth = request(&mut stream).await;
+            clock.sleep(ms(299)).await;
+            write(&mut stream, &registers(fourth, &[4])).await;
+            stream
+        });
+        let got = network.client(1 << 16, |mut client, clock| async move {
+            let request = read(Table::HoldingRegisters, 0, 1);
+            let mut got = Vec::new();
+            for _ in 0..4 {
+                let start = clock.now();
+                let said = said(client.exchange(UNIT, &request).await);
+                got.push((said, clock.now() - start));
+            }
+            got
+        });
+        let answered = Span::from_nanos(299_500_000);
+        assert_eq!(
+            got,
+            [
+                (Ok(Said::Registers(vec![1])), Span::from_nanos(500_000)),
+                (Ok(Said::Registers(vec![2])), answered),
+                (Err(Failure::Timeout), TIMEOUT),
+                (Ok(Said::Registers(vec![4])), answered),
+            ],
+            "seed {seed}"
+        );
+    }
 }
