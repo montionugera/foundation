@@ -114,7 +114,8 @@ pub(crate) fn parse(config: &Document) -> Result<Config, Vec<Diagnostic>> {
 
 /// Reads a host and an optional port, such as `"plc:502"`, `"plc"`, or
 /// `"[fd00::1]:502"`. Port 502 when it has none. The host is an
-/// [`env::net::host::Host`], and an IPv6 host is in brackets.
+/// [`env::net::host::Host`]. An IPv6 host is in brackets, and the text in them is
+/// parsed bare.
 fn endpoint(value: &Value) -> Result<(Host, u16), Diagnostic> {
     let message = match &value.kind {
         Of::String(text) => match address(text) {
@@ -134,6 +135,9 @@ fn endpoint(value: &Value) -> Result<(Host, u16), Diagnostic> {
 /// The host and port of the address `text`, or the message of its problem.
 fn address(text: &str) -> Result<(Host, u16), String> {
     let (host, port) = split(text)?;
+    if text.starts_with('[') && !host.contains(':') {
+        return Err(format!("the address {text:?} has {}", host::Error::Ipv6));
+    }
     let host = host.parse().map_err(|problem: host::Error| {
         format!("the address {text:?} has {problem}")
     })?;
@@ -155,8 +159,8 @@ fn address(text: &str) -> Result<(Host, u16), String> {
     Ok((host, port))
 }
 
-/// The host of the address `text`, with its brackets, and the text of its port when
-/// it has one.
+/// The host of the address `text`, with no brackets, and the text of its port when it
+/// has one.
 fn split(text: &str) -> Result<(&str, Option<&str>), String> {
     let Some(rest) = text.strip_prefix('[') else {
         return match text.split_once(':') {
@@ -168,11 +172,9 @@ fn split(text: &str) -> Result<(&str, Option<&str>), String> {
             None => Ok((text, None)),
         };
     };
-    let Some((_, port)) = rest.split_once(']') else {
+    let Some((host, port)) = rest.split_once(']') else {
         return Err(format!("the address {text:?} has no `]`"));
     };
-    let host = text.strip_suffix(port);
-    let host = host.expect("invariant: the address ends with the text after its `]`");
     if port.is_empty() {
         return Ok((host, None));
     }
