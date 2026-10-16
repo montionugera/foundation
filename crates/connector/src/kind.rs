@@ -42,9 +42,14 @@ pub trait Kind: Send + Sync + 'static {
     /// One diagnostic for each thing the device cannot do.
     fn check(&self, config: &Self::Config) -> Result<Channels, Vec<Diagnostic>>;
 
-    /// Finds connectors this node can run, as config documents. The default gives
-    /// [`Error::Config`] with `connector.no-discover`: the kind cannot look, which an
-    /// empty list must not say.
+    /// Finds the devices that this node can reach, as connector blocks. The default
+    /// gives [`Error::Config`] with `connector.no-discover`: the kind cannot find
+    /// devices.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] with `connector.no-discover` by default. A kind that finds
+    /// devices gives [`Error::Device`] when the network or a device fails.
     fn discover(
         &self,
         cancel: &cancel::Token,
@@ -104,7 +109,7 @@ pub struct Channels {
 /// Why a run or a discovery stopped. One handler for each variant.
 #[derive(Debug)]
 pub enum Error {
-    /// The config cannot work. The connector stops until the next spec change.
+    /// Only a change of the spec fixes it. A run stops until the next spec change.
     Config(Vec<Diagnostic>),
     /// The device or endpoint is in a bad state. Restarted with backoff.
     Device(Box<dyn std::error::Error + Send + Sync>),
@@ -117,8 +122,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Config(diagnostics) => {
-                write!(f, "the config cannot work")?;
-                let mut separator = ": ";
+                let mut separator = "";
                 for diagnostic in diagnostics {
                     write!(f, "{separator}{diagnostic}")?;
                     separator = "; ";
@@ -1373,7 +1377,7 @@ mod tests {
         ]);
         assert_eq!(
             config.to_string(),
-            "the config cannot work: n is over 8. Fix it; no integer n. Fix it"
+            "n is over 8. Fix it; no integer n. Fix it"
         );
         assert!(std::error::Error::source(&config).is_none());
     }
