@@ -266,7 +266,7 @@ impl std::error::Error for Error {}
 mod tests {
     use std::ops::Range;
     use std::os::fd::AsRawFd;
-    use std::slice;
+    use std::{iter, slice};
 
     use block::{Config, Memory as _, Pool};
     use rustix::param::page_size;
@@ -546,34 +546,36 @@ mod tests {
         assert_eq!(mappings(&reserve), 3, "a purge splits the mapping");
     }
 
+    /// Each cycle cools the small blocks to make large ones, then the large blocks to
+    /// make small ones again. The first cycle also commits the large span, which
+    /// macOS keeps as a region of its own, so the count starts after it.
     #[test]
     fn a_pool_that_gives_the_pages_of_free_blocks_to_another_size_splits_no_mapping() {
         const LARGE: usize = 1 << 20;
         // Most small blocks hold one whole page.
-        let small = 2 * page_size();
-        let count = 4 * LARGE / small;
-        let budget = (count + 1) * block::footprint(small) + block::footprint(LARGE);
+        let size = 2 * page_size();
+        let count = 4 * LARGE / size;
+        let budget = (count + 1) * block::footprint(size) + block::footprint(LARGE);
         let config = Config::new(u64::try_from(budget).unwrap()).unwrap();
         let memory = Memory::new(config.reservation()).unwrap();
         let reserve = reserve(&memory);
         let pool = Pool::new(config, memory);
-        let mut small: Vec<_> =
-            (0..=count).map(|_| pool.alloc(small).unwrap()).collect();
+        let mut small: Vec<_> = (0..=count).map(|_| pool.alloc(size).unwrap()).collect();
         let held = small.pop();
         drop(small);
         let first = pool.alloc(LARGE).unwrap();
-        let before = mappings(&reserve);
-        let mut large = vec![first];
-        let error = loop {
-            match pool.alloc(LARGE) {
-                Ok(block) => large.push(block),
-                Err(error) => break error,
-            }
-        };
-        assert!(matches!(error, block::Error::Exhausted { .. }), "{error}");
-        assert_eq!(large.len(), 3, "two take the pages of free blocks");
-        assert_eq!(mappings(&reserve), before);
-        drop((held, large));
+        let mut regions = None;
+        for _ in 0..4 {
+            let large: Vec<_> = iter::from_fn(|| pool.alloc(LARGE).ok()).collect();
+            assert_eq!(large.len(), 2, "two take the pages of free blocks");
+            let after = *regions.get_or_insert(mappings(&reserve));
+            assert_eq!(mappings(&reserve), after);
+            drop(large);
+            let small: Vec<_> = iter::from_fn(|| pool.alloc(size).ok()).collect();
+            assert!(small.len() > count / 2, "{} small blocks", small.len());
+            assert_eq!(mappings(&reserve), after);
+        }
+        drop((held, first));
     }
 
     #[test]
