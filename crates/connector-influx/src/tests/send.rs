@@ -1039,15 +1039,15 @@ fn confirms_no_sample_of_a_batch_until_its_204() {
     assert_eq!(confirmed, [0, 2]);
 }
 
-/// The bodies that the InfluxDB of a plant gets in two runs, one after the other, and
-/// the errors that the second run shows. InfluxDB answers each request of the first
-/// run with 500, or with 204 when `accepted`, and each of the second with 204. Each
-/// run writes one frame of one sample time, at which each channel holds its value of
+/// The bodies that the InfluxDB of a plant gets in each run, one run after the other,
+/// and the errors that the last run shows. InfluxDB answers each request of the first
+/// run with 500, or with 204 when `accepted`, and each later one with 204. Each run
+/// writes one frame of one sample time, at which each channel holds its value of
 /// `values`.
-fn two_runs(
+fn runs<const N: usize>(
     accepted: bool,
-    values: [f64; 2],
-) -> (Vec<String>, Vec<String>, Vec<String>) {
+    values: [f64; N],
+) -> ([Vec<String>; N], Vec<String>) {
     run(move |node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
         if !accepted {
@@ -1069,14 +1069,13 @@ fn two_runs(
             bodies.push(got.into_iter().map(|(_, body)| body).collect::<Vec<_>>());
         }
         let errors = plant.errors.borrow().clone();
-        let second = bodies.pop().expect("two runs");
-        (bodies.pop().expect("two runs"), second, errors)
+        (bodies.try_into().expect("a body list for each run"), errors)
     })
 }
 
 #[test]
 fn acks_no_batch_before_a_204() {
-    let (first, second, errors) = two_runs(false, [1.0, 2.0]);
+    let ([first, second, third], errors) = runs(false, [1.0, 2.0, 3.0]);
     assert!(first.len() > 1, "{first:?}");
     let sent = first.first().expect("a request");
     assert!(first.iter().all(|body| body == sent), "{first:?}");
@@ -1087,12 +1086,14 @@ fn acks_no_batch_before_a_204() {
     assert_eq!(second.len(), 2, "{second:?}");
     assert_eq!(&second[0], sent);
     assert!(second[1].starts_with("telemetry edge.a=2e0,edge.b=2e0 "));
+    assert_eq!(third.len(), 1, "{third:?}");
+    assert!(third[0].starts_with("telemetry edge.a=3e0,edge.b=3e0 "));
     assert_eq!(errors, [""]);
 }
 
 #[test]
 fn acks_a_batch_after_its_204() {
-    let (first, second, errors) = two_runs(true, [1.0, 2.0]);
+    let ([first, second], errors) = runs(true, [1.0, 2.0]);
     assert_eq!(first.len(), 1, "{first:?}");
     assert!(first[0].starts_with("telemetry edge.a=1e0,edge.b=1e0 "));
     assert_eq!(second.len(), 1, "{second:?}");
@@ -1102,7 +1103,7 @@ fn acks_a_batch_after_its_204() {
 
 #[test]
 fn acks_a_batch_of_no_line_with_no_request() {
-    let (first, second, errors) = two_runs(true, [f64::NAN, 2.0]);
+    let ([first, second], errors) = runs(true, [f64::NAN, 2.0]);
     assert_eq!(first, Vec::<String>::new());
     assert_eq!(second.len(), 1, "{second:?}");
     assert!(second[0].starts_with("telemetry edge.a=2e0,edge.b=2e0 "));
