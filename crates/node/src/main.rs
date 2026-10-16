@@ -116,36 +116,47 @@ fn command_line(shards: &Shards, args: Vec<OsString>) -> Result<Run, Failure> {
         .expect("invariant: the shard sends its run before it ends"))
 }
 
-/// The client of the node that runs on the data directory `dir`. The first reach that
-/// opens `dir` keeps its files in `files`, and sends the handle of the I/O thread
-/// that reads it to `started`, for the main thread to join. Each later reach uses
-/// them, so a command line reaches one data directory.
+/// The client of the node that runs on the data directory `dir`, which is the same at
+/// each call in one run. A reach that opens `dir` keeps its files in `kept`, and sends
+/// the handle of the I/O thread that reads it to `started`, for the main thread to
+/// join. A later reach uses the kept files, and when it fails through them, opens `dir`
+/// again, so it reaches a node on a data directory made again.
 async fn reach(
     dir: &Path,
-    files: &mut Option<env::files::Files>,
+    kept: &mut Option<env::files::Files>,
     tasks: &Tasks,
     started: &mpsc::Sender<env::thread::Handle>,
 ) -> Result<program::Session, Failure> {
-    let files = if let Some(files) = files {
-        files
-    } else {
-        let threads = os::threads().map_err(failed)?;
-        let (disk, handle) = os::stored(dir, &threads, "files-reach")
-            .map_err(|error| stored(dir, error))?;
-        started
-            .send(handle)
-            .expect("invariant: `main` keeps the receiver");
-        files.insert(env::files::Files::new(disk))
-    };
-    let reached = node::client::reach(node::client::Config {
-        files: files.clone(),
+    if let Some(files) = kept
+        && let Ok(session) = client(files.clone(), tasks).await
+    {
+        return Ok(session);
+    }
+    let threads = os::threads().map_err(failed)?;
+    let (disk, handle) =
+        os::stored(dir, &threads, "files-reach").map_err(|error| stored(dir, error))?;
+    started
+        .send(handle)
+        .expect("invariant: `main` keeps the receiver");
+    let files = kept.insert(env::files::Files::new(disk));
+    client(files.clone(), tasks)
+        .await
+        .map_err(|error| unreached(dir, error))
+}
+
+/// The client of the node whose data directory `files` reads.
+async fn client(
+    files: env::files::Files,
+    tasks: &Tasks,
+) -> Result<program::Session, node::client::Error> {
+    node::client::reach(node::client::Config {
+        files,
         net: net(),
         clock: os::clock(),
         entropy: os::entropy(),
         tasks: tasks.clone(),
     })
-    .await;
-    reached.map_err(|error| unreached(dir, error))
+    .await
 }
 
 /// What sends a request through `client` and gives the reply.

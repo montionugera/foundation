@@ -472,16 +472,7 @@ fn mcp_shows_status_of_the_node_of_data_across_a_restart() {
     let mut replies = status_reply(1, Ok(empty.clone()));
     mcp.ask(&status(1), &replies);
     rig.stop();
-    // The kept session fails first, and the next call reaches again.
-    let lost = serde_json::json!({
-        "code": "node.no-reply",
-        "message": "the node gave no reply: the session failed: the peer closed the \
-                    session (0)",
-        "fix": "See that the node runs, then run the command again. After `apply`, plan \
-                again to see whether the change applied",
-        "notes": [],
-    });
-    replies.push_str(&status_reply(2, Err(lost)));
+    replies.push_str(&status_reply(2, Err(unreached())));
     mcp.ask(&status(2), &replies);
     rig.start_with(&["--data", "plant"]);
     replies.push_str(&status_reply(3, Ok(empty)));
@@ -523,6 +514,52 @@ fn start_runs_on_the_data_directory_that_mcp_made() {
             text(&output.stderr)
         ),
         (Some(0), replies.as_str(), "")
+    );
+}
+
+/// The user removes the data directory and starts a new node on it while one
+/// `foundation mcp` runs.
+#[test]
+fn mcp_reaches_a_node_on_a_data_directory_made_again() {
+    let mut rig = Rig::new();
+    rig.start_with(&["--name", "edge", "--data", "plant"]);
+    let mut mcp = rig.talk(&["mcp", "--data", "plant"]);
+    let status = |id| {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\
+             \"params\":{{\"name\":\"status\"}}}}\n"
+        )
+    };
+    let empty = serde_json::json!({ "connectors": [] });
+    let mut replies = status_reply(1, Ok(empty.clone()));
+    mcp.ask(&status(1), &replies);
+    rig.stop();
+    std::fs::remove_dir_all(rig.dir.join("plant")).expect("a remove");
+    rig.start_with(&["--name", "edge", "--data", "plant"]);
+    replies.push_str(&status_reply(2, Ok(empty)));
+    mcp.ask(&status(2), &replies);
+    let output = mcp.close();
+    assert_eq!(output.status.code(), Some(0));
+}
+
+/// A client starts `foundation mcp` at `/`, as the decision says one may, as a user who
+/// cannot write `/`.
+#[test]
+fn mcp_at_the_root_names_files_and_makes_nothing() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_foundation"))
+        .arg("mcp")
+        .current_dir("/")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("a run");
+    let errors = text(&output.stderr);
+    assert_eq!(
+        (
+            output.status.code(),
+            errors.starts_with("error[ops.wide-folder]")
+        ),
+        (Some(2), true),
+        "{errors}"
     );
 }
 
