@@ -177,6 +177,19 @@ fn reads_an_address_with_a_path_of_slash() {
 }
 
 #[test]
+fn refuses_an_https_address() {
+    assert_eq!(
+        Kind.parse(&config(string("https://influx:8086"))),
+        Err(vec![refused(
+            "influx.bad-address",
+            1,
+            "the scheme of the URI is not http",
+            "Write an `http` URI such as \"http://10.0.0.2:8086\"",
+        )])
+    );
+}
+
+#[test]
 fn refuses_an_address_that_uri_refuses() {
     for (address, message) in [
         (
