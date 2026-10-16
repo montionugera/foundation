@@ -13,7 +13,8 @@ use crate::kind::{Error, config_error};
 /// The most points that one browse of a pattern gives.
 pub const LIMIT: usize = 500;
 
-/// The most entries that one browse of a pattern takes from the device.
+/// The most entries that one browse takes from the device: the entries that find its
+/// start, and for a pattern each entry that it walks.
 pub const VISITS: usize = 10_000;
 
 /// A device open for one browse. A kind implements it on its session, so one walk
@@ -699,8 +700,8 @@ pub enum End {
     Next(Cursor),
     /// More than [`LIMIT`] points match.
     Limit,
-    /// It took [`VISITS`] entries from the device before it saw each one, so more
-    /// may match.
+    /// It took [`VISITS`] entries from the device before it found its start or saw
+    /// each entry under it, so more may match.
     Budget,
 }
 
