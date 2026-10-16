@@ -486,7 +486,8 @@ mod walk {
             prop_assert_eq!(found.end, end);
             prop_assert!(found.values.is_empty());
             for browsed in &tree.browsed[1..] {
-                let names: Vec<&str> = browsed.names().iter().map(String::as_str).collect();
+                let names: Vec<&str> =
+                    browsed.names().iter().map(String::as_str).collect();
                 prop_assert!(extends(&segments, &names), "browsed {browsed:?}");
             }
         }
@@ -629,7 +630,7 @@ mod walk {
 
     #[test]
     #[should_panic(
-        expected = r#"invariant: the device gave a page of 501 entries at "", more than 500"#
+        expected = r#"invariant: the device gave 501 entries at "", over 500"#
     )]
     fn panics_on_a_page_of_more_than_the_limit() {
         let points: Vec<Node> = (0..=LIMIT).map(|i| point(&format!("p{i}"))).collect();

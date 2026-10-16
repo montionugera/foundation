@@ -137,7 +137,7 @@ impl<D: Device> Walker<'_, D> {
             .ok_or_else(|| no_folder(path))?;
         assert!(
             page.entries.len() <= LIMIT,
-            "invariant: the device gave a page of {} entries at {path:?}, more than {LIMIT}",
+            "invariant: the device gave {} entries at {path:?}, over {LIMIT}",
             page.entries.len(),
         );
         Ok(page)
