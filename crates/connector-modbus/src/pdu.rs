@@ -14,8 +14,8 @@ const WRITE_COILS: u8 = 15;
 const WRITE_REGISTERS: u8 = 16;
 const EXCEPTION: u8 = 0x80;
 
-pub(crate) const MAX_READ_BITS: u16 = 2000;
-pub(crate) const MAX_READ_REGISTERS: u16 = 125;
+const MAX_READ_BITS: u16 = 2000;
+const MAX_READ_REGISTERS: u16 = 125;
 const MAX_WRITE_BITS: u16 = 1968;
 const MAX_WRITE_REGISTERS: u16 = 123;
 const ON: u16 = 0xFF00;
@@ -34,7 +34,8 @@ pub enum Table {
 }
 
 impl Table {
-    fn function(self) -> u8 {
+    /// The function code that reads the table. It orders the tables.
+    pub(crate) fn function(self) -> u8 {
         match self {
             Self::Coils => READ_COILS,
             Self::DiscreteInputs => READ_DISCRETE_INPUTS,
@@ -55,6 +56,25 @@ impl Table {
 
     pub(crate) fn bits(self) -> bool {
         matches!(self, Self::Coils | Self::DiscreteInputs)
+    }
+
+    /// The most items that one request reads.
+    pub(crate) fn max_read(self) -> u16 {
+        if self.bits() {
+            MAX_READ_BITS
+        } else {
+            MAX_READ_REGISTERS
+        }
+    }
+
+    /// The name of the table in text.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Coils => "coils",
+            Self::DiscreteInputs => "discrete inputs",
+            Self::HoldingRegisters => "holding registers",
+            Self::InputRegisters => "input registers",
+        }
     }
 }
 
@@ -272,12 +292,7 @@ impl Request {
                 start,
                 count,
             } => {
-                let max = if table.bits() {
-                    MAX_READ_BITS
-                } else {
-                    MAX_READ_REGISTERS
-                };
-                check(*start, usize::from(*count), max)?;
+                check(*start, usize::from(*count), table.max_read())?;
                 Ok(5)
             }
             Self::WriteCoil { .. } | Self::WriteRegister { .. } => Ok(5),
