@@ -8,11 +8,11 @@ use transport::Code;
 use transport::stream::{Receiver, Sender};
 use transport::{Class, Error as Stream};
 use types::frame::key_set::{Group, Interner, KeySet};
-use types::frame::{Draft, Form, Frame, Layout};
+use types::frame::{Form, Frame};
 use wire::Protocol;
 use wire::header::MALFORMED;
 use wire::hub::client::{self, FromNode, Mode, Open, Place, Read};
-use wire::hub::{FromHome, Head};
+use wire::hub::{Due, Frames, Step};
 
 use crate::{Error, Handle};
 
@@ -25,15 +25,7 @@ pub struct Reader {
     /// `None` once the read ended.
     stream: Option<(Sender, Receiver)>,
     places: Vec<Place>,
-    set: Arc<KeySet>,
-    decoder: wire::hub::Reader,
-    /// The frame that is arriving: its head, its ends, and its draft.
-    head: Option<Head>,
-    ends: Vec<(usize, usize)>,
-    /// Whether the ends are whole and the draft is not made. A call of `next` that
-    /// drops while the draft waits for the pool leaves it set.
-    drafting: bool,
-    draft: Option<Draft>,
+    frames: Frames,
     /// The error that ended the read.
     ended: Option<Error>,
 }
@@ -50,7 +42,7 @@ impl Reader {
             Mode::Complete => Class::Complete,
         };
         let (mut sender, mut receiver) = shared.session.open(class).await?;
-        let (places, set, decoder) =
+        let (places, frames) =
             match start(&session, &mut sender, &mut receiver, open).await {
                 Ok(started) => started,
                 Err(error) => {
@@ -62,12 +54,7 @@ impl Reader {
             session,
             stream: Some((sender, receiver)),
             places,
-            set,
-            decoder,
-            head: None,
-            ends: Vec::new(),
-            drafting: false,
-            draft: None,
+            frames,
             ended: None,
         })
     }
@@ -82,7 +69,7 @@ impl Reader {
     /// The key set of each frame. Its entries are the places, in order.
     #[must_use]
     pub fn set(&self) -> &Arc<KeySet> {
-        &self.set
+        self.frames.set()
     }
 
     /// The next frame. Its series are encoded, and its entries index
@@ -120,77 +107,45 @@ impl Reader {
             .as_mut()
             .expect("invariant: a reader holds its stream until it ends");
         loop {
-            if self.drafting {
-                let layout =
-                    Layout::from_ends(&self.set, &self.ends).map_err(Error::Frame)?;
-                let shared = &self.session.0;
-                let draft = shared
-                    .retry(|| layout.draft(&shared.pool, Form::Encoded))
-                    .await?;
-                self.drafting = false;
-                self.draft = Some(draft);
-                if self.decoder.body().is_none() {
-                    return Ok(self.freeze());
+            let step = match self.frames.due().map_err(Error::Frame)? {
+                Due::Draft(layout) => {
+                    let shared = &self.session.0;
+                    let draft = shared
+                        .retry(|| layout.draft(&shared.pool, Form::Encoded))
+                        .await?;
+                    self.frames.draft(draft)
                 }
-            }
-            if let Some(start) = self.decoder.body() {
-                let draft = self
-                    .draft
-                    .as_mut()
-                    .expect("invariant: a body arrives into its draft");
-                let body = &mut draft.body_mut()[start..];
-                let last = match receiver.recv_into(body).await {
-                    Ok(Some(len)) => last(self.decoder.decode(&body[..len]))?,
-                    Ok(None) => return Err(finished(&self.decoder)),
+                Due::Body(body) => match receiver.recv_into(body).await {
+                    Ok(Some(len)) => self.frames.received(len).map_err(Error::Reply)?,
+                    Ok(None) => return Err(Error::Reply(self.frames.finished())),
                     Err(Stream::TooLarge { .. }) => {
-                        let message = recv(receiver, &self.decoder).await?;
-                        last(self.decoder.decode(&message))?
+                        let message = recv(receiver, &self.frames).await?;
+                        self.frames.decode(&message).map_err(Error::Reply)?
                     }
                     Err(error) => return Err(error.into()),
-                };
-                if last {
-                    return Ok(self.freeze());
+                },
+                Due::Message => {
+                    let message = recv(receiver, &self.frames).await?;
+                    self.frames.decode(&message).map_err(Error::Reply)?
                 }
-                continue;
-            }
-            let message = recv(receiver, &self.decoder).await?;
-            match self.decoder.decode(&message).map_err(Error::Reply)? {
-                FromHome::Head(head) => {
-                    self.head = Some(head);
-                    self.ends.clear();
-                }
-                FromHome::Ends { ends, last } => {
-                    self.ends.extend(
-                        ends.map(|(place, end)| (to_usize(place), to_usize(end))),
-                    );
-                    self.drafting = last;
-                }
-                FromHome::Behind => return Err(Error::Behind),
-                FromHome::Opened | FromHome::Body { .. } => {
-                    unreachable!("invariant: the decoder gives no opened or body here")
-                }
+            };
+            match step {
+                Step::Head(_) | Step::More => {}
+                Step::Frame(frame) => return Ok(frame),
+                Step::Behind => return Err(Error::Behind),
             }
         }
-    }
-
-    /// The frame of the head and the draft that arrived.
-    fn freeze(&mut self) -> Frame {
-        let head = self.head.take().expect("invariant: a frame has a head");
-        let mut draft = self.draft.take().expect("invariant: a frame has a draft");
-        draft.set_count(0, head.range.count);
-        draft.set_seq(0, head.range.seq);
-        draft.freeze(head.path)
     }
 }
 
 /// Sends the header, the read of `open`, and `open`, then takes the places and
-/// `Opened`. Gives the places, their key set, and the decoder of the replies.
+/// `Opened`. Gives the places and the frames of the read.
 async fn start(
     session: &Handle,
     sender: &mut Sender,
     receiver: &mut Receiver,
     open: &Open,
-) -> Result<(Vec<Place>, Arc<KeySet>, wire::hub::Reader), Error> {
+) -> Result<(Vec<Place>, Frames), Error> {
     let shared = &session.0;
     let mut body = vec![0; open.encoded_len()];
     open.encode(&mut body);
@@ -210,7 +165,7 @@ async fn start(
     let mut decoder = client::Reader::new(open.mode);
     let mut places = Vec::new();
     let mut index = 0;
-    let mut decoder = loop {
+    let reader = loop {
         let message = receiver.recv().await?.ok_or(client::Error::Finished)?;
         match decoder.decode(&message)? {
             FromNode::Places(head) => index = to_usize(head.index),
@@ -223,11 +178,14 @@ async fn start(
         }
     };
     let set = set(&places, index)?;
-    let message = recv(receiver, &decoder).await?;
-    match decoder.decode(&message).map_err(Error::Reply)? {
-        FromHome::Opened => Ok((places, set, decoder)),
-        _ => unreachable!("invariant: the first reply that decodes is Opened"),
-    }
+    let Some(message) = receiver.recv().await? else {
+        let error = reader
+            .end()
+            .expect_err("a reader before opened may not end");
+        return Err(Error::Reply(error));
+    };
+    let frames = Frames::open(reader, set, &message).map_err(Error::Reply)?;
+    Ok((places, frames))
 }
 
 /// The key set of `places` whose index is at `index`: each place is the entry at its
@@ -268,29 +226,12 @@ fn end((sender, receiver): (Sender, Receiver), error: &Error) {
     }
 }
 
-/// The next message of `receiver`, whose replies `decoder` decodes.
-async fn recv(
-    receiver: &mut Receiver,
-    decoder: &wire::hub::Reader,
-) -> Result<block::Block, Error> {
-    receiver.recv().await?.ok_or_else(|| finished(decoder))
-}
-
-/// The error of a stream that the node finished where `decoder` is.
-fn finished(decoder: &wire::hub::Reader) -> Error {
-    Error::Reply(
-        decoder
-            .end()
-            .expect_err("invariant: a reader reads no message after Behind"),
-    )
-}
-
-/// Whether the body message that `decoded` gave is the last of its body.
-fn last(decoded: Result<FromHome<'_>, wire::hub::Error>) -> Result<bool, Error> {
-    match decoded.map_err(Error::Reply)? {
-        FromHome::Body { last, .. } => Ok(last),
-        _ => unreachable!("invariant: inside a body the decoder gives body bytes"),
-    }
+/// The next message of `receiver`, whose replies `frames` decodes.
+async fn recv(receiver: &mut Receiver, frames: &Frames) -> Result<block::Block, Error> {
+    receiver
+        .recv()
+        .await?
+        .ok_or_else(|| Error::Reply(frames.finished()))
 }
 
 fn to_usize(n: u32) -> usize {
