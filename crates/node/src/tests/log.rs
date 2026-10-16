@@ -621,6 +621,33 @@ fn an_event_never_waits_on_a_stuck_writer() {
 }
 
 /// The name of the test whose child runs [`panics`].
+#[test]
+#[expect(clippy::disallowed_methods, reason = "the test waits for an OS thread")]
+fn a_wait_ends_when_the_writer_panics() {
+    let lines = Lines::default();
+    let format = ops::Log {
+        json: false,
+        level: tracing::Level::INFO,
+    };
+    let (_, mesh) = clock::Clock::new(os::clock());
+    let threads = os::threads().expect("threads");
+    let wall = os::wall().expect("a wall clock");
+    let writer = Box::new(Panics(lines.clone()));
+    let log = log::open(Log { writer, format }, &threads, wall, mesh);
+    let hold = log.hold().expect("the thread log starts");
+    tracing::dispatcher::with_default(&log.dispatch, || {
+        tracing::info!(target: "test", "boom");
+    });
+    let start = std::time::Instant::now();
+    assert!(!log.wait(Duration::from_secs(30)), "the writer panicked");
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        start.elapsed()
+    );
+    drop(hold);
+}
+
 const PANICS: &str = "tests::log::a_panic_writes_the_queued_lines_then_the_panic";
 
 /// Runs [`panics`] in a child process with `CHILD` set to `case`, and gives its

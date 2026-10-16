@@ -142,7 +142,8 @@ impl Flush {
     fn written(&self, sent: u64, bound: Duration) -> bool {
         let queue = &self.queue;
         let busy = |state: &mut State| {
-            state.written < sent || (queue.lines.closed() && state.running)
+            let live = state.running || state.writer.is_some();
+            live && (state.written < sent || (queue.lines.closed() && state.running))
         };
         #[expect(
             clippy::disallowed_methods,
@@ -152,7 +153,7 @@ impl Flush {
             .written
             .wait_timeout_while(lock(&queue.state), bound, busy)
             .expect("invariant: nothing panics while it holds the log lock");
-        if waited.timed_out() {
+        if waited.timed_out() || state.written < sent {
             return false;
         }
         let ended = (!state.running).then(|| state.ended()).flatten();
@@ -205,6 +206,14 @@ struct State {
 }
 
 impl State {
+    /// Ends the run of the thread `log`, which gives back `writer`, or `None` after the
+    /// writer panicked.
+    fn end(&mut self, writer: Option<Writer>) {
+        self.writer = writer;
+        self.running = false;
+        self.thread = None;
+    }
+
     /// The thread `log` that ran last, to join once the lock drops, other than after
     /// the writer panicked: that panic has reached the panic hook.
     fn ended(&mut self) -> Option<Handle> {
@@ -330,10 +339,7 @@ impl Drop for Drain {
     /// not wait for a thread that writes no more lines.
     fn drop(&mut self) {
         if self.writer.take().is_some() {
-            let mut state = lock(&self.queue.state);
-            state.running = false;
-            state.thread = None;
-            drop(state);
+            lock(&self.queue.state).end(None);
             self.queue.written.notify_all();
         }
     }
@@ -359,9 +365,7 @@ impl Future for Drain {
                         }
                         Taken::Empty => return Poll::Pending,
                         Taken::Closed => {
-                            state.writer = drain.writer.take();
-                            state.running = false;
-                            state.thread = None;
+                            state.end(drain.writer.take());
                             drop(state);
                             queue.written.notify_all();
                             return Poll::Ready(());
