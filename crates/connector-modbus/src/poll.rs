@@ -11,10 +11,10 @@ use crate::pdu::{Exception, Reply, Request, Table};
 /// item, and its type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Read {
-    table: Table,
-    address: u16,
-    scalar: Scalar,
-    count: u16,
+    pub(crate) table: Table,
+    pub(crate) address: u16,
+    pub(crate) scalar: Scalar,
+    pub(crate) count: u16,
 }
 
 impl Read {
@@ -226,9 +226,35 @@ fn value(
     Value::read(scalar, sample)
 }
 
-/// Why a read is not valid.
+/// The registers that hold `value` in `order`, in address order: the inverse of
+/// [`value`].
+pub(crate) fn words(value: Value, order: Order) -> Vec<u16> {
+    let mut sample = [0; 8];
+    let scalar = value.scalar();
+    let sample = sample.get_mut(..scalar.width()).unwrap_or_else(|| {
+        panic!("invariant: `Read::new` gives no register read of {scalar:?}")
+    });
+    value.write(sample);
+    let words = sample
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&pair| u16::from_le_bytes(pair));
+    match order {
+        Order::Big => words.rev().collect(),
+        Order::Little => words.collect(),
+    }
+}
+
+/// Why a read or a write is not valid.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
+    /// A write to a table that the protocol does not write. [`Read::new`] never
+    /// gives it.
+    ReadOnly {
+        /// The table.
+        table: Table,
+    },
     /// A type that the table does not hold.
     Type {
         /// The table.
@@ -248,6 +274,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ReadOnly { table } => write!(f, "the {} are read-only", table.name()),
             Self::Type { table, sample } => {
                 write!(f, "the {} hold no {sample} values", table.name())
             }

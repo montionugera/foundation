@@ -9,6 +9,7 @@
 
 use std::fmt;
 
+pub mod command;
 pub mod device;
 pub mod pdu;
 pub mod poll;
