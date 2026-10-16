@@ -14,7 +14,8 @@ use crate::kind::{Error, config_error};
 pub const LIMIT: usize = 500;
 
 /// The most entries that one browse takes from the device: the entries that find its
-/// start, and for a pattern each entry that it walks.
+/// start, and for a pattern each entry that it walks, where a page with no entries
+/// counts as one.
 pub const VISITS: usize = 10_000;
 
 /// A device open for one browse. A kind implements it on its session, so one walk
@@ -69,9 +70,8 @@ pub trait Device {
 ///
 /// # Panics
 ///
-/// When `device` gives a page of more than [`LIMIT`] entries, an empty page with a
-/// next one, an entry that is not in the folder it browsed, or a count of values that
-/// is not the count of tags.
+/// When `device` gives a page of more than [`LIMIT`] entries, an entry that is not in
+/// the folder it browsed, or a count of values that is not the count of tags.
 pub async fn walk(device: &mut impl Device, query: &Query) -> Result<Found, Error> {
     walk_within(device, query, LIMIT, VISITS).await
 }
@@ -143,10 +143,6 @@ impl<D: Device> Walker<'_, D> {
             "invariant: the device gave {} entries at {path:?}, over {LIMIT}",
             page.entries.len(),
         );
-        assert!(
-            page.next.is_none() || !page.entries.is_empty(),
-            "invariant: the device gave an empty page with a next one at {path:?}",
-        );
         for entry in &page.entries {
             let parent = entry.path.names.split_last().map(|(_, parent)| parent);
             assert!(
@@ -156,6 +152,20 @@ impl<D: Device> Walker<'_, D> {
             );
         }
         Ok(page)
+    }
+
+    /// The page of `folder` in a walk, where a page with no entries counts as one
+    /// visit, so pages with no entries and a next one end at the budget.
+    async fn take(
+        &mut self,
+        folder: Option<&Entry>,
+        cursor: Option<&Cursor>,
+    ) -> Result<ControlFlow<End, Page>, Error> {
+        let page = self.page(folder, cursor).await?;
+        if page.entries.is_empty() && !self.visit() {
+            return Ok(ControlFlow::Break(End::Budget));
+        }
+        Ok(ControlFlow::Continue(page))
     }
 
     /// Counts one entry taken from the device: `false` past the budget.
@@ -173,7 +183,11 @@ impl<D: Device> Walker<'_, D> {
         for (i, name) in start.names.iter().enumerate() {
             let mut cursor = None;
             let child = 'pages: loop {
-                let page = self.page(folder.as_ref(), cursor.as_ref()).await?;
+                let ControlFlow::Continue(page) =
+                    self.take(folder.as_ref(), cursor.as_ref()).await?
+                else {
+                    return Ok(ControlFlow::Break(End::Budget));
+                };
                 for entry in page.entries {
                     if !self.visit() {
                         return Ok(ControlFlow::Break(End::Budget));
@@ -206,13 +220,20 @@ impl<D: Device> Walker<'_, D> {
         limit: usize,
     ) -> Result<(Vec<Entry>, End), Error> {
         let mut found = Vec::new();
-        let mut stack = vec![self.open(folder, pattern.start()).await?];
+        let ControlFlow::Continue(first) = self.open(folder, pattern.start()).await?
+        else {
+            return Ok((found, End::Budget));
+        };
+        let mut stack = vec![first];
         while let Some(frame) = stack.last_mut() {
             let Some(entry) = frame.entries.next() else {
                 match frame.next.take() {
                     Some(cursor) => {
-                        let page =
-                            self.page(frame.folder.as_ref(), Some(&cursor)).await?;
+                        let ControlFlow::Continue(page) =
+                            self.take(frame.folder.as_ref(), Some(&cursor)).await?
+                        else {
+                            return Ok((found, End::Budget));
+                        };
                         frame.entries = page.entries.into_iter();
                         frame.next = page.next;
                     }
@@ -237,7 +258,10 @@ impl<D: Device> Walker<'_, D> {
                     .filter_map(|frame| frame.folder.as_ref())
                     .any(|folder| folder.tag == entry.tag);
                 if pattern.open(&state) && !looped {
-                    stack.push(self.open(Some(entry), state).await?);
+                    match self.open(Some(entry), state).await? {
+                        ControlFlow::Continue(frame) => stack.push(frame),
+                        ControlFlow::Break(end) => return Ok((found, end)),
+                    }
                 }
             } else if pattern.matched(&state) {
                 if found.len() == limit {
@@ -254,14 +278,17 @@ impl<D: Device> Walker<'_, D> {
         &mut self,
         folder: Option<Entry>,
         state: State,
-    ) -> Result<Frame, Error> {
-        let page = self.page(folder.as_ref(), None).await?;
-        Ok(Frame {
+    ) -> Result<ControlFlow<End, Frame>, Error> {
+        let page = match self.take(folder.as_ref(), None).await? {
+            ControlFlow::Continue(page) => page,
+            ControlFlow::Break(end) => return Ok(ControlFlow::Break(end)),
+        };
+        Ok(ControlFlow::Continue(Frame {
             folder,
             state,
             entries: page.entries.into_iter(),
             next: page.next,
-        })
+        }))
     }
 }
 

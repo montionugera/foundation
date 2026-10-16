@@ -401,6 +401,12 @@ fn expect(
         found: Vec<String>,
     }
     fn go(walk: &mut Walk<'_>, names: &[&str], nodes: &[Node]) -> ControlFlow<End> {
+        if nodes.is_empty() {
+            walk.seen += 1;
+            if walk.seen > walk.visits {
+                return ControlFlow::Break(End::Budget);
+            }
+        }
         for node in nodes {
             walk.seen += 1;
             if walk.seen > walk.visits {
@@ -695,14 +701,16 @@ mod walk {
     }
 
     #[test]
-    #[should_panic(
-        expected = r#"invariant: the device gave an empty page with a next one at """#
-    )]
-    fn panics_on_an_empty_page_with_a_next_one() {
-        drop(now(walk(
-            &mut Empty,
-            &query("", Scope::Match(pattern("**"))),
-        )));
+    fn counts_a_page_with_no_entries_as_one_visit() {
+        for start in ["", "a"] {
+            let query = query(start, Scope::Match(pattern("**")));
+            for visits in [0, 1, 5] {
+                let found = now(walk_within(&mut Empty, &query, LIMIT, visits));
+                let found = found.expect("found");
+                assert_eq!(found.entries, [], "{start} {visits}");
+                assert_eq!(found.end, End::Budget, "{start} {visits}");
+            }
+        }
     }
 
     #[test]
