@@ -1067,7 +1067,7 @@ fn mcp_starts_only_on_a_folder_that_is_not_too_wide() {
     );
 }
 
-fn breaker_start(
+fn start_with(
     working: &str,
     home: &str,
     args: &[&str],
@@ -1115,12 +1115,12 @@ fn breaker_start(
 /// A user who cannot write `/` starts `foundation mcp` at `/` with no `--files`, as a
 /// client may. The decision says it refuses with the fix that names `--files`.
 #[test]
-fn breaker_a_start_at_the_root_that_cannot_make_data_is_too_wide() {
+fn mcp_at_the_root_that_cannot_make_data_is_too_wide() {
     let wide = Error::WideFolder {
         working: PathBuf::from("/"),
     };
     let (run, output, errors, _) =
-        breaker_start("/", "/home", &[], Some(("/foundation-data", 13)));
+        start_with("/", "/home", &[], Some(("/foundation-data", 13)));
     assert_eq!(
         (run, output, errors),
         (Run::Exit(2), String::new(), wide.text())
@@ -1129,8 +1129,8 @@ fn breaker_a_start_at_the_root_that_cannot_make_data_is_too_wide() {
 
 /// A refused start at the home folder makes nothing there.
 #[test]
-fn breaker_a_refused_start_at_home_makes_no_data_directory() {
-    let (run, _, _, left) = breaker_start("/home", "/home", &[], None);
+fn mcp_refused_at_home_makes_no_data_directory() {
+    let (run, _, _, left) = start_with("/home", "/home", &[], None);
     assert_eq!((run, left), (Run::Exit(2), None));
 }
 
