@@ -250,8 +250,7 @@ impl Client {
     /// A TLS session for `origin`, which checks the certificate at mesh time now.
     fn tls(&self, origin: &Origin) -> Box<rustls::Connection> {
         let config = tls::client(&self.provider, &self.roots, self.time.now());
-        let host = origin.host.trim_start_matches('[').trim_end_matches(']');
-        let name = ServerName::try_from(host.to_owned())
+        let name = name(&origin.host)
             .expect("invariant: origin checked the host as a TLS name");
         let session = rustls::ClientConnection::new(config, name)
             .expect("invariant: a client config with roots makes a session");
@@ -385,8 +384,7 @@ fn origin(uri: &Uri) -> Result<Origin, Error> {
             .is_some_and(|v6| v6.parse::<Ipv6Addr>().is_ok()),
         None => !host.is_empty() && !host.contains('['),
     };
-    let named = !secure || ServerName::try_from(host.trim_matches(['[', ']'])).is_ok();
-    if !valid || !named {
+    if !valid || secure && name(host).is_none() {
         return Err(Error::Host);
     }
     // `u16::from_str` takes a leading `+`.
@@ -404,6 +402,13 @@ fn origin(uri: &Uri) -> Result<Origin, Error> {
         host: host.to_ascii_lowercase(),
         port,
     })
+}
+
+/// The name that a TLS server's certificate must hold for `host`: a DNS name or an IP
+/// address, with no brackets. `None` when the host is neither.
+fn name(host: &str) -> Option<ServerName<'static>> {
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    ServerName::try_from(host.to_owned()).ok()
 }
 
 /// A copy of `request`, to send again.
