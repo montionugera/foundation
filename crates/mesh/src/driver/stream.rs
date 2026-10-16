@@ -153,6 +153,7 @@ fn code(error: &Error) -> Option<Code> {
         | Error::UnknownNode(_)
         | Error::Homes { .. }
         | Error::Voters { .. }
+        | Error::Limit { .. }
         | Error::Founding { .. }
         | Error::Unfounded { .. } => Some(REFUSED),
     }

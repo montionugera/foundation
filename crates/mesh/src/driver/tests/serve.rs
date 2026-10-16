@@ -101,7 +101,11 @@ where
     let (node, result) = (nodes[0].clone(), Arc::clone(&served));
     let main = move |tasks: Tasks| async move {
         let pool = pool();
-        let transport = create_transport(&node, &tasks, 1, PORT, Rc::clone(&pool));
+        let transport = bind(
+            &node,
+            PORT,
+            transport_config(&node, &tasks, 1, Rc::clone(&pool)),
+        );
         let session = transport.accept().await.unwrap();
         let mut incoming = session.accept().await.unwrap();
         {
@@ -117,7 +121,11 @@ where
     let (node, result) = (nodes[1].clone(), Arc::clone(&sent));
     let main = move |tasks: Tasks| async move {
         let pool = create_pool();
-        let transport = create_transport(&node, &tasks, 2, PORT, Rc::clone(&pool));
+        let transport = bind(
+            &node,
+            PORT,
+            transport_config(&node, &tasks, 2, Rc::clone(&pool)),
+        );
         let addresses = [Address::Udp(at)];
         let session = transport.dial(public(1), &addresses).await.unwrap();
         let clock = node.clock();
