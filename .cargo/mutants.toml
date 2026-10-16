@@ -208,7 +208,7 @@ exclude_re = [
   # On Linux the kernel refuses an IPv6 source to an IPv4 address with the same EINVAL,
   # so no caller sees the mutant there. On macOS,
   # `a_source_that_the_socket_cannot_send_from_is_invalid` kills it.
-  'sdk/rust/src/host/udp\.rs:.*replace \|\| with && in route$',
+  'sdk/rust/src/host/udp\.rs:199:13: replace \|\| with && in route$',
   # A stub that panics until PR B2 of #432 fills it; B2 removes this line.
   'crates/connector-modbus/src/kind\.rs:.*replace <impl kind::Kind for Kind>::run ->',
 ]
