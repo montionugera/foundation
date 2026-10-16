@@ -4,6 +4,7 @@ use std::fs::{self, Permissions};
 use std::io::Read;
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt, chown, symlink};
 use std::path::{Path, PathBuf};
+use std::slice;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 
@@ -73,6 +74,76 @@ fn a_new_directory_gives_other_users_no_access() {
     let path = scratch.0.join("data");
     os::paths().make_dir(&path).unwrap();
     assert_eq!(mode(&path), 0o700);
+}
+
+#[test]
+fn within_hides_a_folder_that_this_user_cannot_list() {
+    let scratch = Scratch::new();
+    let base = fs::canonicalize(&scratch.0).unwrap();
+    let data = base.join("data");
+    fs::create_dir(&data).unwrap();
+    fs::set_permissions(&data, Permissions::from_mode(0o300)).unwrap();
+    let within = os::paths().within(slice::from_ref(&base), slice::from_ref(&data));
+    let error = within.as_ref().err().copied();
+    fs::set_permissions(&data, Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(error, None);
+    let key = data.join("admin.key");
+    assert_eq!(within.unwrap().write(&key, b"x"), Err(Error::Hidden));
+}
+
+#[test]
+fn within_refuses_a_hidden_pipe_and_ends() {
+    let scratch = Scratch::new();
+    let base = fs::canonicalize(&scratch.0).unwrap();
+    let pipe = base.join("pipe");
+    mkfifo(&pipe);
+    let (sent, got) = std::sync::mpsc::channel();
+    let hidden = pipe.clone();
+    #[expect(clippy::disallowed_methods, reason = "the test bounds the call")]
+    let call = thread::spawn(move || {
+        let within = os::paths().within(&[base], &[hidden]);
+        sent.send(within.err()).unwrap();
+    });
+    #[expect(clippy::disallowed_methods, reason = "the test bounds the call")]
+    let ended = got.recv_timeout(std::time::Duration::from_secs(5));
+    if ended.is_err() {
+        #[expect(clippy::disallowed_methods, reason = "the test frees the call")]
+        let _writer = fs::OpenOptions::new().write(true).open(&pipe).unwrap();
+    }
+    call.join().unwrap();
+    let error = Error::Io {
+        code: cases::NOT_DIRECTORY,
+    };
+    assert_eq!(ended, Ok(Some(error)));
+}
+
+/// APFS ignores the case and the form of a name.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_hidden_folder_holds_each_case_and_form_of_its_names() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let upper = base.join("work/DATA");
+        let nfd = base.join("work/cafe\u{301}");
+        (host.make_dir)(&base.join("work/caf\u{e9}"));
+        let within = host
+            .paths
+            .within(&[base.join("work")], &[base.join("work/caf\u{e9}")])
+            .unwrap();
+        assert_eq!(within.make_dir(&nfd.join("new")), Err(Error::Hidden), "nfd");
+        assert_eq!(
+            within.write(&nfd.join("x"), b"y"),
+            Err(Error::Hidden),
+            "nfd"
+        );
+        let within = host
+            .paths
+            .within(&[base.join("work")], &[base.join("work/data")])
+            .unwrap();
+        assert_eq!(within.make_dir(&upper.join("new")), Err(Error::Hidden));
+        assert_eq!(within.write(&upper.join("x"), b"y"), Err(Error::Hidden));
+        assert_eq!(within.read(&upper.join("admin.key"), 1), Err(Error::Hidden));
+    });
 }
 
 #[test]
