@@ -38,7 +38,7 @@ pub fn fill(what: &str) -> Value {
 ///
 /// # Panics
 ///
-/// When a path of `picks` is not below `start`.
+/// When the path of a pick with no given name is not below `start`.
 #[must_use]
 pub fn names<'a>(
     connector: &Name,
