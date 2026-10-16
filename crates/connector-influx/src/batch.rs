@@ -20,7 +20,7 @@ const BAD_CHANNEL: Code = Code::new("influx.bad-channel");
 const LINES_MAX: usize = 5_000;
 
 /// The lines of the frames added since the last [`Batch::take`], and the reader's
-/// position after the last of them.
+/// position to ack after them.
 #[derive(Debug)]
 pub struct Batch {
     measurement: Measurement,
@@ -29,7 +29,8 @@ pub struct Batch {
     gap: Option<Gap>,
     /// The wait of the gap for a line with a value, while the gap holds seqs.
     waiting: Option<Waiting>,
-    position: Option<Position>,
+    /// Whether a frame was added since the last take.
+    added: bool,
     /// The position after the last frame added, also before the last take.
     last: Option<Position>,
     layout: Option<Layout>,
@@ -120,7 +121,7 @@ impl Batch {
             connector: connector.clone(),
             gap: None,
             waiting: None,
-            position: None,
+            added: false,
             last: None,
             layout: None,
             body: Body::default(),
@@ -141,7 +142,7 @@ impl Batch {
     /// not a valid field key.
     pub fn add(&mut self, received: &Received<'_>) -> Result<(), Error> {
         let before = self.last.replace(received.position());
-        self.position = self.last;
+        self.added = true;
         if let Some(seqs) = received.gap() {
             let connector = &self.connector;
             let gap = (self.gap).get_or_insert_with(|| live(connector, received));
@@ -187,8 +188,10 @@ impl Batch {
     /// The lines of the frames added, or `None` when no frame was added. Empties the
     /// batch.
     pub fn take(&mut self) -> Option<Taken> {
-        let position = self.position.take()?;
-        let position = self.waiting.map_or(Some(position), |waiting| waiting.ack);
+        if !std::mem::take(&mut self.added) {
+            return None;
+        }
+        let position = self.waiting.map_or(self.last, |waiting| waiting.ack);
         self.body.lines = 0;
         self.body.most = self.body.most.max(self.body.bytes.len());
         let bytes = Vec::with_capacity(self.body.most);
