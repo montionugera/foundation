@@ -193,33 +193,36 @@ fn frames_of(places: u32, body: u32) -> (Frames, block::Pool) {
     (frames, block::Pool::new(config, memory))
 }
 
-/// Builds one frame as `hub` does: a head and its ends whole, a draft from `pool`,
-/// then each body message received in place. Gives the frame's first body byte.
-fn build(
+/// Builds one frame with the loop of `hub`'s remote reader: ask [`Frames::due`], then
+/// give it the next of `messages`, a body message received in place, or a draft from
+/// `pool`. Gives the frame's first body byte.
+fn build<'m>(
     frames: &mut Frames,
     pool: &block::Pool,
-    head: &[u8],
-    run: &[u8],
-    body: &[u8],
-    size: usize,
+    messages: impl IntoIterator<Item = &'m [u8]>,
 ) -> u8 {
-    assert!(matches!(frames.decode(head), Ok(Step::Head(_))), "a head");
-    assert!(matches!(frames.decode(run), Ok(Step::More)), "the ends");
-    let Ok(Due::Draft(layout)) = frames.due() else {
-        panic!("a draft is due");
-    };
-    let draft = layout.draft(pool, Form::Encoded).expect("a block");
-    let mut step = frames.draft(draft);
-    for message in body.chunks(size) {
-        let Ok(Due::Body(rest)) = frames.due() else {
-            panic!("a body is due");
+    let mut messages = messages.into_iter();
+    loop {
+        let step = match frames.due().expect("the layout holds") {
+            Due::Message => {
+                let message = messages.next().expect("a message");
+                frames.decode(divan::black_box(message))
+            }
+            Due::Body(rest) => {
+                let message = divan::black_box(messages.next().expect("a message"));
+                rest[..message.len()].copy_from_slice(message);
+                frames.received(message.len())
+            }
+            Due::Draft(layout) => {
+                let draft = layout.draft(pool, Form::Encoded).expect("a block");
+                Ok(frames.draft(draft))
+            }
         };
-        rest[..message.len()].copy_from_slice(divan::black_box(message));
-        step = frames.received(message.len()).expect("the body decodes");
-    }
-    match step {
-        Step::Frame(frame) => frame.body()[0],
-        other => panic!("no frame: {other:?}"),
+        match step.expect("the frame decodes") {
+            Step::Head(_) | Step::More => {}
+            Step::Frame(frame) => return frame.body()[0],
+            Step::Behind => panic!("behind"),
+        }
     }
 }
 
@@ -232,7 +235,7 @@ fn build_a_frame(bencher: Bencher<'_, '_>, series: u32) {
     self::head(series).encode(&mut head);
     let run = run_of(series);
     let body = vec![7; usize::try_from(series * 8).expect("a u32 fits a usize")];
-    let mut frame = || build(&mut frames, &pool, &head, &run, &body, body.len());
+    let mut frame = || build(&mut frames, &pool, [&head, &run[..], &body]);
     frame();
     bencher.bench_local(frame);
 }
@@ -247,7 +250,10 @@ fn build_a_body(bencher: Bencher<'_, '_>, messages: u32) {
     let mut run = [0; ends::LEN];
     ends::encode([(0, messages * 1_024)], &mut run);
     let body = vec![7; usize::try_from(messages * 1_024).expect("a u32 fits a usize")];
-    let mut frame = || build(&mut frames, &pool, &head, &run, &body, 1_024);
+    let mut frame = || {
+        let messages = [&head, &run[..]].into_iter().chain(body.chunks(1_024));
+        build(&mut frames, &pool, messages)
+    };
     frame();
     bencher.bench_local(frame);
 }
