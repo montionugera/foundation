@@ -20,6 +20,8 @@ fn create_pool(budget: usize) -> Pool {
 #[divan::bench]
 fn alloc_free(bencher: Bencher<'_, '_>) {
     let pool = create_pool(1 << 16);
+    // A carve before the loop, so divan sizes its samples by the reuse alone.
+    drop(pool.alloc(1000).expect("the budget has room"));
     bencher.bench_local(|| drop(pool.alloc(1000).expect("the budget has room")));
 }
 
@@ -75,7 +77,7 @@ fn alloc_under_pressure(bencher: Bencher<'_, '_>) {
 
 /// Blocks of two sizes in turn, with a budget for two of the larger size while one of
 /// them stays in use: the small alloc gives back the payload pages of the free large
-/// block, and the large alloc releases the small size and commits that block again.
+/// block, and the large alloc releases the small size and takes that block back.
 #[divan::bench]
 fn alloc_cold(bencher: Bencher<'_, '_>) {
     const LARGE: usize = 16_384;
