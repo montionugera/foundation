@@ -992,8 +992,10 @@ async fn define_many(test: &Test, count: u128) -> Vec<String> {
 #[test]
 fn a_reader_whose_keys_and_frames_each_take_many_messages_gets_each_frame() {
     const FRAMES: i64 = 3;
-    // A frame of more bytes than the reader's limit, and at most `BODY_MAX`.
-    const SAMPLES: i64 = 3_500;
+    // A frame of more bytes than the reader's limit, and at most `BODY_MAX`. Each
+    // value takes 8 bytes, and the index almost none.
+    const SAMPLES: i64 = 7_000;
+    assert!(usize::try_from(SAMPLES).unwrap() * 8 > REGION_MIN);
     remote_sized(
         9,
         sim::link::Config::default(),
