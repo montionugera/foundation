@@ -110,3 +110,20 @@
   another size blocks), and a frame that no block of `frames` can hold gives
   `Error::Pool` at once. Lost: one
   reserved block for the renewal, a second pool that the caller cannot see.
+  Amended (#2829): a complete `program::Reader` goes on past seqs that the node's
+  buffer lost. `Reader::next` gives only frames, and `Reader::lost` gives the seqs of
+  the index lost just before the frame that the last `next` gave, `0..0` when none.
+  Each channel of that frame lost these seqs. The reader writes one `tracing::warn!`
+  for each gap, with the index's name and the lost seqs as fields. A latest reader
+  gives no gap. No strict mode: a program that must stop at a loss checks `lost`.
+  `wire::hub::Frames::lost` computes the gap by the rule of `Received::gap`, and
+  `program` computes nothing. The remote reader of `hub` keeps its own computation,
+  which also serves local sessions, which have no `Frames`. The person decided the
+  shape (2026-10-16T05:22:29Z: "We need to preserve the sanctity of the python clients
+  nominal path"; 05:23:50Z, on a gap on each channel's data with a warning by default:
+  "Yes that's fine";
+  https://github.com/synnaxlabs/foundation/issues/2829#issuecomment-6208729798). Lost:
+  an item that is a frame or a gap, which breaks the nominal path. The names, the doc,
+  and the warning are by `laptop.architect` (2026-10-16T05:26:47Z,
+  https://github.com/synnaxlabs/foundation/issues/2829#issuecomment-6208760389). Lost:
+  `next` giving `(Frame, Range<u64>)`, and a second `Frame` type that wraps the first.
