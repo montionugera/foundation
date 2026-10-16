@@ -4814,6 +4814,35 @@ pub(crate) mod port {
             }
         }
 
+        /// The least pool budget that each buffer takes also holds an append of the
+        /// largest record, so `Budget::pool` names no refusal of the mesh.
+        #[test]
+        fn the_least_pool_budget_of_the_buffers_opens_the_mesh() {
+            let start = |budget| {
+                let mut sim = sim::Sim::new(sim::Config::default());
+                let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+                let node = Node::start(Config {
+                    region: Region::Given(region(&pair(&hosts))),
+                    ..config(&hosts[0], budget, Box::new(heap))
+                });
+                assert_eq!(sim.run_for(TEN), Ok(()));
+                node.stop();
+                assert_eq!(sim.run(), Ok(()));
+                node.join()
+            };
+            let Err(Error::Buffer {
+                error: ::buffer::Error::Budget { min, .. },
+                ..
+            }) = start(Size::from_bytes(1))
+            else {
+                panic!("a pool budget of 1 byte opens no buffer");
+            };
+            assert_eq!(
+                start(Size::from_bytes(2 * u64::try_from(min).unwrap())),
+                Ok(())
+            );
+        }
+
         /// A node of the least message limit that its transport takes, 1472 bytes,
         /// cannot take an append of the largest record, so its mesh does not open.
         #[test]
