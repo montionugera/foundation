@@ -128,6 +128,7 @@ impl Network {
                     tasks,
                     timeout: TIMEOUT,
                     body_max: 1024,
+                    tls: None,
                 });
                 for request in requests {
                     let response = client.send(request).await.expect("an answer");
@@ -428,6 +429,7 @@ fn gives_the_error_of_a_failed_accept_and_serves_the_streams_it_accepted() {
                 tasks,
                 timeout: TIMEOUT,
                 body_max: 1024,
+                tls: None,
             });
             for path in ["/before", "/after"] {
                 let request = Request::post(format!("http://{remote}{path}"))

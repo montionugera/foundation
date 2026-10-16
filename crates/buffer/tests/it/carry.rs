@@ -70,6 +70,21 @@ fn paths_of_entries_with_no_samples_do_not_stall_the_ring() {
     assert_eq!(failures, Vec::new());
 }
 
+/// The other cases of #2796: 292 and 600 paths with samples, and 291 paths of
+/// entries with no samples, never stall the ring.
+#[test]
+fn paths_near_the_room_of_a_carry_record_do_not_stall_the_ring() {
+    let cases = [(292, false), (600, false), (291, true)];
+    let failures: Vec<_> = cases
+        .into_iter()
+        .flat_map(|(paths, empty)| (0..32).map(move |seed| (seed, paths, empty)))
+        .filter_map(|(seed, paths, empty)| {
+            refused_with_paths(seed, paths, empty).map(|r| (seed, paths, r))
+        })
+        .collect();
+    assert_eq!(failures, Vec::new());
+}
+
 /// A path whose newest record holds only an entry with no samples keeps that record
 /// as its holder through the trims that pass its older record, so a reopen counts
 /// on from both entries.

@@ -2,11 +2,12 @@
 
 use std::collections::btree_map::Entry::Occupied;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
 use env::paths::{Error, Found, names_directory};
 
-use crate::{DIRECTORY, LOOP, NOT_DIRECTORY};
+use crate::{DIRECTORY, EXISTS, LOOP, NOT_DIRECTORY};
 
 /// The most symbolic links that one path goes through, as on Linux.
 const LINKS: usize = 40;
@@ -80,6 +81,47 @@ impl Paths {
         }
         self.entries.insert((node, at), Entry::File(bytes.to_vec()));
         Ok(())
+    }
+
+    /// Makes a directory at `path` as `os` makes one: only in a directory that is
+    /// there, and none through a link at the last name. `Ok` when a directory is
+    /// there, also through a link, else `EEXIST` when anything is there. A path that
+    /// ends in `.` or `..` makes nothing.
+    pub(crate) fn make_dir(&mut self, node: usize, path: &Path) -> Result<(), Error> {
+        self.fault(node, path)?;
+        let Some((dir, name)) = last(path) else {
+            let at = self.resolve(node, path)?;
+            return if self.directory(node, &at) {
+                Ok(())
+            } else {
+                Err(Error::NotFound)
+            };
+        };
+        let dir = self.resolve(node, dir)?;
+        if self.file(node, &dir) {
+            return Err(Error::Io {
+                code: NOT_DIRECTORY,
+            });
+        }
+        if !self.directory(node, &dir) {
+            return Err(Error::NotFound);
+        }
+        let at = dir.join(name);
+        match self.entries.get(&(node, at.clone())) {
+            None => {
+                self.entries.insert((node, at), Entry::Directory);
+                Ok(())
+            }
+            Some(Entry::Directory) => Ok(()),
+            Some(Entry::Link(_))
+                if self
+                    .resolve(node, path)
+                    .is_ok_and(|to| self.directory(node, &to)) =>
+            {
+                Ok(())
+            }
+            Some(_) => Err(Error::Io { code: EXISTS }),
+        }
     }
 
     /// `path` from the working directory, with each `.`, `..`, and symbolic link
@@ -164,7 +206,7 @@ impl Paths {
 
     /// Makes a directory at `path`, which is absolute with no `..`, and so each
     /// directory above it.
-    pub(crate) fn make_dir(&mut self, node: usize, path: &Path) {
+    pub(crate) fn place_dir(&mut self, node: usize, path: &Path) {
         let at = self.place(node, path);
         let entry = self.entries.entry((node, at));
         let there =
@@ -216,14 +258,20 @@ impl Paths {
 
     /// The resolved path of a call, after the fault that waits on its path.
     fn check(&mut self, node: usize, path: &Path) -> Result<PathBuf, Error> {
+        self.fault(node, path)?;
+        self.resolve(node, path)
+    }
+
+    /// The fault that waits on the path of a call, or `NotFound` for an empty path.
+    fn fault(&mut self, node: usize, path: &Path) -> Result<(), Error> {
         if path.as_os_str().is_empty() {
             return Err(Error::NotFound);
         }
         let fault = self.faults.get_mut(&(node, self.absolute(node, path)));
-        if let Some(code) = fault.and_then(VecDeque::pop_front) {
-            return Err(Error::Io { code });
+        match fault.and_then(VecDeque::pop_front) {
+            Some(code) => Err(Error::Io { code }),
+            None => Ok(()),
         }
-        self.resolve(node, path)
     }
 
     fn working(&self, node: usize) -> PathBuf {
@@ -270,4 +318,22 @@ impl Paths {
         }
         at
     }
+}
+
+/// The directory and the last name of `path`, or `None` when that name, with no end
+/// in `/`, is `.`, which `Path` drops, or `..`, for which `Path` gives no name.
+fn last(path: &Path) -> Option<(&Path, &OsStr)> {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    let end = bytes.iter().rposition(|&byte| byte != b'/')?;
+    let name = bytes[..=end].rsplit(|&byte| byte == b'/').next();
+    if name == Some(b".") {
+        return None;
+    }
+    let dir = path.parent()?;
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    Some((dir, path.file_name()?))
 }

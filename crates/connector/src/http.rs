@@ -8,13 +8,16 @@ mod pool;
 #[cfg(feature = "sim")]
 pub mod sim;
 mod stream;
+mod tls;
 
 use std::cell::Cell;
 use std::fmt;
 use std::future::poll_fn;
+use std::io;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use bytes::Bytes;
 use document::diagnostic::{Code, Diagnostic};
@@ -28,11 +31,14 @@ use http::{HeaderValue, Request, Response, StatusCode, Uri, header};
 use http_body::Body as _;
 use hyper::body::Incoming;
 use hyper::client::conn::http1::{self, SendRequest};
+use rustls::crypto::CryptoProvider;
+use rustls::pki_types::ServerName;
 use types::time::{Monotonic, Span};
 
 use self::body::Whole;
 use self::pool::Pool;
 use self::stream::Stream;
+pub use self::tls::{Pem, Roots};
 use crate::deadline::before;
 
 /// The shortest share of the timeout that a connect to one address gets.
@@ -45,8 +51,9 @@ const OPTIONS: tcp::Options = tcp::Options {
     delayed: false,
 };
 
-/// Sends HTTP/1.1 requests over `env`. It keeps one idle connection for each origin,
-/// the host and port of a URI, and reuses it with no new name lookup. It does not
+/// Sends HTTP/1.1 requests over `env`, as plain bytes for `http` and under TLS for
+/// `https`. It keeps one idle connection for each origin, the scheme, host, and port
+/// of a URI, and reuses it with no new name lookup. It does not
 /// reuse a connection idle longer than 90 s, and the next send closes it. It drops a
 /// connection that the server closed, and the connection of a request that failed. A
 /// dropped client closes its idle connections. It stays on the thread that made it.
@@ -55,6 +62,10 @@ const OPTIONS: tcp::Options = tcp::Options {
 /// it once more on a new connection: always when the connection did not write it, and
 /// for an idempotent method when no byte of a response came. Else it fails, because
 /// the server may have acted on it.
+///
+/// A TLS connect trusts only the configured roots, checks the server's certificate
+/// for the host of the URI at mesh time, and takes TLS 1.2 or 1.3. No setting turns
+/// the check off.
 ///
 /// ```
 /// use bytes::Bytes;
@@ -74,6 +85,8 @@ pub struct Client {
     tasks: Tasks,
     timeout: Span,
     body_max: usize,
+    tls: Option<Tls>,
+    provider: Arc<CryptoProvider>,
     pool: Pool,
 }
 
@@ -92,6 +105,18 @@ pub struct Config {
     pub timeout: Span,
     /// The largest response body the client reads.
     pub body_max: usize,
+    /// What an `https` connect checks the server's certificate against. `None`
+    /// trusts no root, so each `https` send gives [`Error::NoRoots`].
+    pub tls: Option<Tls>,
+}
+
+/// The trust of an `https` connect.
+#[derive(Clone, Debug)]
+pub struct Tls {
+    /// The roots that a server's certificate must chain to.
+    pub roots: Roots,
+    /// The mesh time that the certificate's validity is checked against.
+    pub time: hub::Time,
 }
 
 impl Client {
@@ -104,12 +129,15 @@ impl Client {
             tasks: config.tasks,
             timeout: config.timeout.max(Span::ZERO),
             body_max: config.body_max,
+            tls: config.tls,
+            provider: Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
             pool: Pool::default(),
         }
     }
 
-    /// Sends `request` and reads the whole response. The URI gives the host and the
-    /// port, which defaults to 80. A new connection looks up the host and tries each
+    /// Sends `request` and reads the whole response. The URI gives the scheme, the
+    /// host, and the port, which defaults to 80 for `http` and 443 for `https`. A new
+    /// connection looks up the host and tries each
     /// address in order. Each address gets an equal share of the time left, but at
     /// least 2 s or all that is left. The client sets `Host`, with no zone, when the
     /// request has none, and sends the path and query only.
@@ -118,9 +146,11 @@ impl Client {
     ///
     /// - [`Error::Scheme`], [`Error::UserInfo`], [`Error::Host`], and [`Error::Port`],
     ///   as each says, checked in that order.
+    /// - [`Error::NoRoots`] for `https` when no root is trusted, before the lookup.
     /// - [`Error::Connect`] when the name lookup failed, or no address of the host
     ///   took the connection. It holds the lookup error, or the error of the first
     ///   address.
+    /// - [`Error::Tls`] when the TLS handshake of a new connection failed.
     /// - [`Error::TimedOut`] when the whole exchange was not done at the timeout.
     /// - [`Error::TooLarge`] when the response body is larger than the cap.
     /// - [`Error::Protocol`] when the stream failed, the server broke HTTP, or the
@@ -208,11 +238,24 @@ impl Client {
         origin: &Origin,
         deadline: Option<Monotonic>,
     ) -> Result<Connection, Error> {
+        let tls = match &self.tls {
+            _ if !origin.secure => None,
+            Some(tls) if !tls.roots.empty() => Some(tls),
+            _ => return Err(Error::NoRoots),
+        };
         let tcp = self.dial(origin, deadline).await?;
         let received = Rc::default();
-        let stream = Stream {
-            tcp,
-            received: Rc::clone(&received),
+        let stream = if let Some(tls) = tls {
+            let config = tls::client(&self.provider, &tls.roots, tls.time.now());
+            let name = name(&origin.host);
+            Stream::client(tcp, config, name, Rc::clone(&received))
+                .await
+                .map_err(|cause| Error::Tls {
+                    origin: origin.to_string(),
+                    cause: Failure(Cause::Io(cause)),
+                })?
+        } else {
+            Stream::plain(tcp, Rc::clone(&received))
         };
         let (sender, connection) = http1::handshake(stream).await?;
         // `hyper` gives a connection error to the request in flight, which reports it.
@@ -280,7 +323,7 @@ pub fn uri(value: &Value) -> Result<Uri, Diagnostic> {
             BAD_URI,
             value.span,
             message,
-            "Write an `http` URI such as \"http://10.0.0.2:8086\"".into(),
+            "Write an `http` or `https` URI such as \"http://10.0.0.2:8086\"".into(),
         )
     };
     let value::Kind::String(text) = &value.kind else {
@@ -307,18 +350,31 @@ fn share(now: Monotonic, deadline: Monotonic, left: usize) -> Option<Monotonic> 
     (share < remaining).then(|| now + Span::from_nanos(share))
 }
 
-/// Where requests go: a host and a port.
+/// Where requests go: under TLS or not, a host, and a port.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Origin {
+    secure: bool,
     host: Host,
     port: u16,
+}
+
+/// Shows the host and the port, with an IPv6 address in brackets, as `[fe80::1%2]:443`.
+impl fmt::Display for Origin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let host = &self.host;
+        if host.ip().is_some_and(|ip| ip.is_ipv6()) {
+            write!(f, "[{host}]:{}", self.port)
+        } else {
+            write!(f, "{host}:{}", self.port)
+        }
+    }
 }
 
 /// A connection to a server.
 #[derive(Debug)]
 struct Connection {
     sender: SendRequest<Whole>,
-    /// The count of bytes that its stream read, which wraps.
+    /// The count of bytes that `hyper` read from its stream, which wraps.
     received: Rc<Cell<u64>>,
 }
 
@@ -326,9 +382,11 @@ struct Connection {
 /// in that order. No error holds text from `uri`: a `/` or `?` in a password ends the
 /// authority early, which puts the password in the host or the port.
 fn origin(uri: &Uri) -> Result<Origin, Error> {
-    if uri.scheme() != Some(&Scheme::HTTP) {
-        return Err(Error::Scheme);
-    }
+    let secure = match uri.scheme() {
+        Some(scheme) if *scheme == Scheme::HTTP => false,
+        Some(scheme) if *scheme == Scheme::HTTPS => true,
+        _ => return Err(Error::Scheme),
+    };
     let authority = uri
         .authority()
         .expect("a URI with a scheme has an authority");
@@ -345,6 +403,7 @@ fn origin(uri: &Uri) -> Result<Origin, Error> {
     let host = host::uri(host).map_err(Error::Host)?;
     // `u16::from_str` takes a leading `+`.
     let port = match port {
+        "" if secure => 443,
         "" => 80,
         _ => Some(port)
             .filter(|port| port.bytes().all(|b| b.is_ascii_digit()))
@@ -352,7 +411,22 @@ fn origin(uri: &Uri) -> Result<Origin, Error> {
             .filter(|&port| port != 0)
             .ok_or(Error::Port)?,
     };
-    Ok(Origin { host, port })
+    Ok(Origin { secure, host, port })
+}
+
+/// The name that a TLS server's certificate must hold for `host`: its IP address with
+/// no zone, or its name with no final dot.
+fn name(host: &Host) -> ServerName<'static> {
+    if let Some(ip) = host.ip() {
+        return ServerName::IpAddress(ip.into());
+    }
+    let name = host
+        .name()
+        .expect("invariant: a host with no IP address is a name");
+    let bare = name.strip_suffix('.').unwrap_or(name);
+    // `takes_each_name_of_a_host_as_a_tls_name` pins that the grammar of `Host` is
+    // inside the grammar of a TLS name.
+    ServerName::try_from(bare.to_owned()).expect("invariant: each host is a TLS name")
 }
 
 /// A copy of `request`, to send again.
@@ -397,7 +471,7 @@ fn origin_form(parts: &mut http::request::Parts) {
 /// Why an exchange failed.
 #[derive(Debug)]
 pub enum Error {
-    /// The scheme of the URI is not `http`.
+    /// The scheme of the URI is not `http` or `https`.
     Scheme,
     /// The URI holds user info. The error keeps none of it.
     UserInfo,
@@ -409,6 +483,18 @@ pub enum Error {
     /// The name lookup failed, or no address of the host took the connection. It
     /// holds the lookup error, or the error of the first address.
     Connect(net::Error),
+    /// The URI is `https`, and no root is trusted.
+    NoRoots,
+    /// The TLS handshake failed: the server's certificate is not trusted, is not for
+    /// the host, is expired or not valid yet, or has `CA:TRUE`, or the server broke
+    /// TLS or closed.
+    Tls {
+        /// The host and port of the URI.
+        origin: String,
+        /// Why the handshake failed. Its sources reach the `env` error when the stream
+        /// failed.
+        cause: Failure,
+    },
     /// The exchange was not done at the timeout.
     TimedOut,
     /// The response body is larger than `max` bytes. `status` is the status of the
@@ -425,21 +511,28 @@ pub enum Error {
     Protocol(Failure),
 }
 
-/// What went wrong in an exchange after the connect. Its sources reach the `env`
-/// error when the stream failed.
+/// What went wrong in a TLS handshake or in an exchange after the connect. Its
+/// sources reach the `env` error when the stream failed.
 #[derive(Debug)]
-pub struct Failure(hyper::Error);
+pub struct Failure(Cause);
+
+#[derive(Debug)]
+enum Cause {
+    Hyper(hyper::Error),
+    /// A failed handshake: it wraps the rustls or the `env` error.
+    Io(io::Error),
+}
 
 impl From<hyper::Error> for Error {
     fn from(error: hyper::Error) -> Self {
-        Self::Protocol(Failure(error))
+        Self::Protocol(Failure(Cause::Hyper(error)))
     }
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Scheme => write!(f, "the scheme of the URI is not http"),
+            Self::Scheme => write!(f, "the scheme of the URI is not http or https"),
             Self::UserInfo => write!(
                 f,
                 "the URI holds user info; give a credential through a secret"
@@ -449,6 +542,13 @@ impl fmt::Display for Error {
                 write!(f, "the port of the URI is not a number from 1 to 65535")
             }
             Self::Connect(error) => write!(f, "the connect failed: {error}"),
+            Self::NoRoots => write!(
+                f,
+                "no CA is trusted: install the CA certificates of the OS, or give `ca`"
+            ),
+            Self::Tls { origin, cause } => {
+                write!(f, "TLS with {origin} failed: {cause}")
+            }
             Self::TimedOut => write!(f, "the exchange timed out"),
             Self::TooLarge { max, .. } => {
                 write!(f, "the response body is larger than {max} bytes")
@@ -463,8 +563,9 @@ impl std::error::Error for Error {
         match self {
             Self::Host(error) => Some(error),
             Self::Connect(error) => Some(error),
-            Self::Protocol(failure) => Some(failure),
-            Self::Scheme
+            Self::Protocol(failure) | Self::Tls { cause: failure, .. } => Some(failure),
+            Self::NoRoots
+            | Self::Scheme
             | Self::UserInfo
             | Self::Port
             | Self::TimedOut
@@ -475,14 +576,34 @@ impl std::error::Error for Error {
 
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        match &self.0 {
+            Cause::Hyper(error) => error.fmt(f),
+            Cause::Io(error) if tls::ca_as_server(error) => write!(
+                f,
+                "the server's certificate is a CA certificate, with CA:TRUE: give the \
+                 server a certificate with CA:FALSE, or one that this CA signs"
+            ),
+            Cause::Io(error) => error.fmt(f),
+        }
     }
 }
 
 impl std::error::Error for Failure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.0.source()
+        match &self.0 {
+            Cause::Hyper(error) => {
+                let source = error.source()?;
+                let io = source.downcast_ref::<io::Error>();
+                Some(io.and_then(payload).unwrap_or(source))
+            }
+            Cause::Io(error) => payload(error),
+        }
     }
+}
+
+/// The error inside `error`, which `io::Error::source` skips.
+fn payload(error: &io::Error) -> Option<&(dyn std::error::Error + 'static)> {
+    Some(error.get_ref()?)
 }
 
 #[cfg(test)]

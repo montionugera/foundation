@@ -16,6 +16,7 @@ hub = { path = "../hub" }
 mesh = { path = "../mesh" }
 node = { path = "../node", features = ["sim"] }
 ops = { path = "../ops" }
+os = { path = "../os" }
 proptest.workspace = true
 serde_json.workspace = true
 sim = { path = "../sim" }

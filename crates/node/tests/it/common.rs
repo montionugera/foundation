@@ -17,9 +17,9 @@ use crate::rig::Rig;
 /// How long a test waits for a step of another thread.
 pub(crate) const PATIENCE: Duration = Duration::from_secs(60);
 
-/// Starts the node "edge" on the real OS in `rig`, which listens on `listen`. The
-/// disk of each shard is `wrap` over the disk of `rig`.
-pub(crate) fn start_node<D: Driver + Send + 'static>(
+/// The config of the node "edge" on the real OS in `rig`, which listens on `listen`
+/// and logs nothing. The disk of each shard is `wrap` over the disk of `rig`.
+pub(crate) fn config<D: Driver + Send + 'static>(
     rig: &Rig,
     shards: &env::shards::Shards,
     threads: &env::threads::Threads,
@@ -27,10 +27,10 @@ pub(crate) fn start_node<D: Driver + Send + 'static>(
     listen: SocketAddr,
     region: node::Region,
     wrap: impl Fn(os::Disk) -> D + Send + 'static,
-) -> node::Node {
+) -> node::Config<block::Heap> {
     let cores = u64::try_from(shards.cores().get()).unwrap();
-    let (dir, threads, io) = (rig.dir.clone(), threads.clone(), Rc::clone(io));
-    node::Node::start(node::Config {
+    let (dir, files_threads, io) = (rig.dir.clone(), threads.clone(), Rc::clone(io));
+    node::Config {
         shards: shards.clone(),
         clock: os::clock(),
         wall: os::wall().unwrap(),
@@ -40,7 +40,7 @@ pub(crate) fn start_node<D: Driver + Send + 'static>(
         },
         memory: Box::new(|len| Ok(block::Heap::new(len))),
         files: Box::new(move || {
-            let disk = wrap(files(&dir, &threads, &io));
+            let disk = wrap(files(&dir, &files_threads, &io));
             Box::new(move || env::files::Files::new(disk))
         }),
         entropy: os::entropy(),
@@ -50,11 +50,13 @@ pub(crate) fn start_node<D: Driver + Send + 'static>(
         name: "edge".parse().expect("a name"),
         settings: node::Settings::default(),
         vars: std::collections::BTreeMap::new(),
+        roots: os::Roots::default(),
         log: node::Log {
             writer: Box::new(std::io::sink()),
             format: ops::Log::default(),
         },
-    })
+        threads: threads.clone(),
+    }
 }
 
 /// What a shard sends on `receiver`.

@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::future;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
@@ -1084,10 +1085,11 @@ const TYPED_CHANNELS: [&str; 11] = [
     "plant.f64",
 ];
 
-/// The `opcua` kind, whose run writes one frame with no value.
-struct Short;
+/// The `opcua` kind, whose run writes a frame of one Good value for each read, then a
+/// frame of `count(reads)` values, each Bad.
+struct Count(fn(usize) -> usize);
 
-impl kind::Kind for Short {
+impl kind::Kind for Count {
     type Config = Config;
 
     fn parse(&self, config: &Document) -> Result<Config, Vec<Diagnostic>> {
@@ -1098,27 +1100,42 @@ impl kind::Kind for Short {
         Kind::default().check(config)
     }
 
-    fn discover(
-        &self,
-        _: &Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        future::ready(Ok(Vec::new()))
-    }
-
     async fn run(&self, ctx: Context<Config>) -> Result<(), Error> {
         let mut frames = Frames::open(&ctx).await?;
+        let one = |&scalar| Ok(crate::value::Value::one(scalar));
+        let good: Vec<_> = frames.types.iter().map(one).collect();
         let ((), stamp) = frames.writer.request(future::ready(())).await;
-        frames.write(&[], stamp)
+        frames.write(&good, stamp)?;
+        let ((), stamp) = frames.writer.request(future::ready(())).await;
+        let count = (self.0)(ctx.config().reads.len());
+        let bad = || Err(Fault::status(Status::BAD_NOT_FOUND));
+        let values: Vec<_> = std::iter::repeat_with(bad).take(count).collect();
+        frames.write(&values, stamp)
     }
 }
 
 /// `Client::read` gives one value for each node of its request, or an error, so no
 /// run of [`Kind`] writes a short frame: only a kind that calls `Frames::write`
-/// itself reaches the check. `Frames::kept` keeps the values of the frame before, so
-/// with no check of the length a short frame writes them again.
+/// itself reaches the check.
 #[test]
-#[should_panic(expected = "invariant: a frame has one value for each read")]
+#[should_panic(expected = "invariant: a kind gives 0 values for 3 channels")]
 fn panics_at_a_frame_with_no_value_for_each_read() {
+    write_after_a_full_frame(Count(|_| 0));
+}
+
+/// `Client::read` gives `BadUnexpectedError` for an answer with more values than the
+/// nodes of its request, which the run gives as `Error::Device`, so no run of [`Kind`]
+/// writes a long frame. A `zip` over `types` in `Frames::write` would cut the value and
+/// the writer would see the right count, so only this test sees that loss.
+#[test]
+#[should_panic(expected = "index out of bounds: the len is 3 but the index is 3")]
+fn panics_at_a_frame_with_a_value_more_than_its_reads() {
+    write_after_a_full_frame(Count(|reads| reads + 1));
+}
+
+/// Runs `kind` as `opcua` on the reads of [`Setup::three`] for 1 s: a frame of one Good
+/// value for each read, then the frame of the kind.
+fn write_after_a_full_frame(kind: Count) {
     let mut sim = Sim::new(::sim::Config::default());
     let node = sim.node(node::Config::default());
     let run = sim.run_on(&node, |node, tasks| async move {
@@ -1129,7 +1146,7 @@ fn panics_at_a_frame_with_no_value_for_each_read() {
             entropy: node.entropy(),
             tasks: tasks.clone(),
         };
-        let kinds = Table::new().with("opcua", Short);
+        let kinds = Table::new().with("opcua", kind);
         let mut rig = testing::Rig::open(env, node.net(), kinds).await;
         let setup = Setup::three();
         let channels = setup.channels.iter();

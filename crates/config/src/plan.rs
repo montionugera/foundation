@@ -16,7 +16,7 @@ use types::name::Name;
 
 use crate::{
     Definition, Entry, Found, KINDS, channel, checked, connector, duplicate, placement,
-    private_key, sort, span, subject,
+    private_key, sort, span, subject, unfilled,
 };
 
 pub use codec::Error;
@@ -98,15 +98,17 @@ pub fn plan(
 /// The problems of the first stage that has any, with no span or note:
 ///
 /// 1. `config.private-key` for each string of a definition that holds a private key.
-/// 2. The diagnostics of `kinds` for each connector whose kind or config it refuses,
+/// 2. `config.unfilled` and `config.bad-fill` for each call `fill` in a connector
+///    config, as [`check`](crate::check) gives them.
+/// 3. The diagnostics of `kinds` for each connector whose kind or config it refuses,
 ///    and `config.long-name` for each with a status name that is too long, then
 ///    `config.duplicate-name`, whose earlier name is the first in name order, and
 ///    `config.subject-is-connector`.
-/// 3. `config.implied-channel` for each status channel that the kind of a connector
+/// 4. `config.implied-channel` for each status channel that the kind of a connector
 ///    writes, then for each status channel of a connector that `definitions` lack or
 ///    hold as another channel, then for each other channel with an edge to a status
 ///    channel, once for each status channel that it points at.
-/// 4. Each problem of the rules of [`plan`] from `config.unplaced` to
+/// 5. Each problem of the rules of [`plan`] from `config.unplaced` to
 ///    `config.unknown-node`.
 pub fn check(
     definitions: &BTreeMap<Name, definition::Definition>,
@@ -135,6 +137,18 @@ fn problems(
     let alarms = private_key::in_definitions(definitions);
     if !alarms.is_empty() {
         return alarms;
+    }
+    let unfilled =
+        unfilled::problems(definitions.values().filter_map(
+            |definition| match definition {
+                definition::Definition::Connector(connector) => {
+                    Some(connector.config().document())
+                }
+                _ => None,
+            },
+        ));
+    if !unfilled.is_empty() {
+        return unfilled;
     }
     let mut diagnostics = Vec::new();
     let writes = writes(definitions, kinds, &mut diagnostics);
