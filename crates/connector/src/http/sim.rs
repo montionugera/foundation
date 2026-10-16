@@ -30,14 +30,16 @@ use super::tls::At;
 /// UTC, other than [`Certificate::Expired`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Certificate {
-    /// For the host `influx`.
+    /// For the host `server`.
     Valid,
     /// For the host `other`.
     OtherHost,
-    /// For the host `influx`, valid from 2026-01-01 to 2026-02-01 UTC.
+    /// For the host `server`, valid from 2026-01-01 to 2026-02-01 UTC.
     Expired,
-    /// For the host `influx`, signed by a CA that [`ca`] does not hold.
+    /// For the host `server`, signed by a CA that [`ca`] does not hold.
     OtherCa,
+    /// For the IP addresses `10.0.0.2` and `fd00::2`.
+    Ip,
 }
 
 /// Roots that hold only the test CA, which is valid from 2025-01-01 to 2036-01-01
@@ -85,8 +87,8 @@ pub async fn serve_tls(
 pub(super) fn server(certificate: Certificate) -> Arc<ServerConfig> {
     let (pem, key) = match certificate {
         Certificate::Valid => (
-            include_str!("sim/tls/influx.pem"),
-            include_str!("sim/tls/influx.key"),
+            include_str!("sim/tls/server.pem"),
+            include_str!("sim/tls/server.key"),
         ),
         Certificate::OtherHost => (
             include_str!("sim/tls/other.pem"),
@@ -99,6 +101,10 @@ pub(super) fn server(certificate: Certificate) -> Arc<ServerConfig> {
         Certificate::OtherCa => (
             include_str!("sim/tls/stranger.pem"),
             include_str!("sim/tls/stranger.key"),
+        ),
+        Certificate::Ip => (
+            include_str!("sim/tls/ip.pem"),
+            include_str!("sim/tls/ip.key"),
         ),
     };
     let chain = CertificateDer::pem_slice_iter(pem.as_bytes())

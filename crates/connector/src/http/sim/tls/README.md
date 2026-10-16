@@ -15,10 +15,13 @@ The script deletes the two CA keys, so a new run makes all the files again.
 | --- | --- | --- | --- | --- |
 | `ca.pem` | none, a CA | itself | 2025-01-01 to 2036-01-01 | the roots of `ca()` |
 | `other-ca.pem` | none, a CA | itself | 2025-01-01 to 2036-01-01 | none |
-| `influx.pem`, `.key` | `influx` | `ca` | 2026-01-01 to 2027-01-01 | `Valid` |
+| `server.pem`, `.key` | `server` | `ca` | 2026-01-01 to 2027-01-01 | `Valid` |
 | `other.pem`, `.key` | `other` | `ca` | 2026-01-01 to 2027-01-01 | `OtherHost` |
-| `expired.pem`, `.key` | `influx` | `ca` | 2026-01-01 to 2026-02-01 | `Expired` |
-| `stranger.pem`, `.key` | `influx` | `other-ca` | 2026-01-01 to 2027-01-01 | `OtherCa` |
+| `expired.pem`, `.key` | `server` | `ca` | 2026-01-01 to 2026-02-01 | `Expired` |
+| `stranger.pem`, `.key` | `server` | `other-ca` | 2026-01-01 to 2027-01-01 | `OtherCa` |
+| `ip.pem`, `.key` | `10.0.0.2`, `fd00::2` | `ca` | 2026-01-01 to 2027-01-01 | `Ip` |
+| `self.pem`, `.key` | `server`, with `CA:false` | itself | 2026-01-01 to 2027-01-01 | none |
+| `self-ca.pem`, `.key` | `server`, with `CA:true` | itself | 2026-01-01 to 2027-01-01 | none |
 
 Each test sets the mesh time of its client node, so no test depends on the date it
 runs.

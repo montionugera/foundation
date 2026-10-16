@@ -40,21 +40,34 @@ request() {
 CA="basicConstraints = critical, CA:true
 keyUsage = critical, keyCertSign, cRLSign"
 
-# leaf <name> <host> <serial> <start> <end> <ca>
+# leaf <name> <common name> <names> <serial> <start> <end> <ca>
 leaf() {
   request "$1" "$2"
-  sign "$1" "$3" "$4" "$5" "basicConstraints = critical, CA:false
+  sign "$1" "$4" "$5" "$6" "basicConstraints = critical, CA:false
 keyUsage = critical, digitalSignature
 extendedKeyUsage = serverAuth
-subjectAltName = DNS:$2" -cert "$6.pem" -keyfile "$6.key"
+subjectAltName = $3" -cert "$7.pem" -keyfile "$7.key"
 }
 
 request ca "Foundation test CA"
 sign ca 01 20250101000000Z 20360101000000Z "$CA" -selfsign -keyfile ca.key
 request other-ca "Foundation other test CA"
 sign other-ca 02 20250101000000Z 20360101000000Z "$CA" -selfsign -keyfile other-ca.key
-leaf influx influx 10 20260101000000Z 20270101000000Z ca
-leaf other other 11 20260101000000Z 20270101000000Z ca
-leaf expired influx 12 20260101000000Z 20260201000000Z ca
-leaf stranger influx 13 20260101000000Z 20270101000000Z other-ca
+leaf server server DNS:server 10 20260101000000Z 20270101000000Z ca
+leaf other other DNS:other 11 20260101000000Z 20270101000000Z ca
+leaf expired server DNS:server 12 20260101000000Z 20260201000000Z ca
+leaf stranger server DNS:server 13 20260101000000Z 20270101000000Z other-ca
+leaf ip 10.0.0.2 "IP:10.0.0.2, IP:fd00::2" 14 20260101000000Z 20270101000000Z ca
+# A self-signed server certificate with CA:false, which is its own root.
+request self server
+sign self 15 20260101000000Z 20270101000000Z "basicConstraints = critical, CA:false
+keyUsage = critical, digitalSignature
+extendedKeyUsage = serverAuth
+subjectAltName = DNS:server" -selfsign -keyfile self.key
+# As `openssl req -x509` makes by default: CA:true, so it cannot be a server's.
+request self-ca server
+sign self-ca 16 20260101000000Z 20270101000000Z "subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+basicConstraints = critical, CA:true
+subjectAltName = DNS:server" -selfsign -keyfile self-ca.key
 rm ca.key other-ca.key

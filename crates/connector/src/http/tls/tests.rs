@@ -51,7 +51,7 @@ enum Step {
     Wait(Span),
 }
 
-/// A server node at the name `influx` that runs `serve_tls`, and a client node whose
+/// A server node at the name `server` that runs `serve_tls`, and a client node whose
 /// mesh time starts at a given wall time. The answer gives the length of the body at
 /// `/length`, [`LARGE`] bytes at `/large`, and else the path.
 struct Network {
@@ -75,7 +75,7 @@ impl Network {
         let server = sim.node(node::Config::default());
         let answer = name::Answer::Addresses(vec![server.addresses()[0]]);
         sim.name(
-            "influx",
+            "server",
             name::Config {
                 answer,
                 ..name::Config::default()
@@ -239,13 +239,13 @@ fn failed(outcome: Outcome) -> String {
     outcome.expect_err("the send fails").to_string()
 }
 
-/// A server config for the certificate of `influx` that takes only `versions`.
+/// A server config for the certificate of `server` that takes only `versions`.
 fn server(versions: &[&'static rustls::SupportedProtocolVersion]) -> Arc<ServerConfig> {
-    let pem = include_str!("../sim/tls/influx.pem");
+    let pem = include_str!("../sim/tls/server.pem");
     let chain = CertificateDer::pem_slice_iter(pem.as_bytes())
         .collect::<Result<Vec<_>, _>>()
         .expect("the certificate parses");
-    let key = include_str!("../sim/tls/influx.key");
+    let key = include_str!("../sim/tls/server.key");
     let key = PrivateKeyDer::from_pem_slice(key.as_bytes()).expect("the key parses");
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     #[expect(clippy::disallowed_methods, reason = "a fixed time")]
@@ -306,14 +306,14 @@ where
 #[test]
 fn exchanges_with_a_server_whose_certificate_the_roots_trust() {
     let mut network = Network::new(1, Certificate::Valid, JUNE_2026);
-    let body = network.send(sim::ca(), "https://influx:8086/ping");
+    let body = network.send(sim::ca(), "https://server:8086/ping");
     assert_eq!(body.expect("the server answers"), "/ping");
 }
 
 #[test]
 fn takes_port_443_for_https_with_no_port() {
     let mut network = Network::new(1, Certificate::Valid, JUNE_2026);
-    let error = failed(network.send(sim::ca(), "https://influx/ping"));
+    let error = failed(network.send(sim::ca(), "https://server/ping"));
     let remote = SocketAddr::new(network.server.addresses()[0], 443);
     assert_eq!(
         error,
@@ -325,9 +325,9 @@ fn takes_port_443_for_https_with_no_port() {
 fn refuses_a_certificate_for_another_host() {
     let mut network = Network::new(2, Certificate::OtherHost, JUNE_2026);
     assert_eq!(
-        failed(network.send(sim::ca(), "https://influx:8086/ping")),
-        "TLS with influx:8086 failed: invalid peer certificate: certificate not \
-         valid for name \"influx\"; certificate is only valid for DnsName(\"other\")"
+        failed(network.send(sim::ca(), "https://server:8086/ping")),
+        "TLS with server:8086 failed: invalid peer certificate: certificate not \
+         valid for name \"server\"; certificate is only valid for DnsName(\"other\")"
     );
 }
 
@@ -335,8 +335,8 @@ fn refuses_a_certificate_for_another_host() {
 fn refuses_an_expired_certificate_at_mesh_time() {
     let mut network = Network::new(3, Certificate::Expired, JUNE_2026);
     assert_eq!(
-        failed(network.send(sim::ca(), "https://influx:8086/ping")),
-        "TLS with influx:8086 failed: invalid peer certificate: certificate \
+        failed(network.send(sim::ca(), "https://server:8086/ping")),
+        "TLS with server:8086 failed: invalid peer certificate: certificate \
          expired: verification time 1780272000 (UNIX), but certificate is not valid \
          after 1769904000 (10368000 seconds ago)"
     );
@@ -346,8 +346,8 @@ fn refuses_an_expired_certificate_at_mesh_time() {
 fn refuses_a_certificate_that_is_not_valid_yet_at_mesh_time() {
     let mut network = Network::new(4, Certificate::Valid, JUNE_2025);
     assert_eq!(
-        failed(network.send(sim::ca(), "https://influx:8086/ping")),
-        "TLS with influx:8086 failed: invalid peer certificate: certificate not \
+        failed(network.send(sim::ca(), "https://server:8086/ping")),
+        "TLS with server:8086 failed: invalid peer certificate: certificate not \
          valid yet: verification time 1748736000 (UNIX), but certificate is not \
          valid before 1767225600 (18489600 seconds in future)"
     );
@@ -357,8 +357,8 @@ fn refuses_a_certificate_that_is_not_valid_yet_at_mesh_time() {
 fn refuses_a_certificate_of_a_ca_that_the_roots_do_not_hold() {
     let mut network = Network::new(5, Certificate::OtherCa, JUNE_2026);
     assert_eq!(
-        failed(network.send(sim::ca(), "https://influx:8086/ping")),
-        "TLS with influx:8086 failed: invalid peer certificate: UnknownIssuer"
+        failed(network.send(sim::ca(), "https://server:8086/ping")),
+        "TLS with server:8086 failed: invalid peer certificate: UnknownIssuer"
     );
 }
 
@@ -370,8 +370,8 @@ fn fails_the_handshake_with_a_server_that_does_not_speak_tls() {
         drop(sim::serve(listener, tasks, answer).await);
     });
     assert_eq!(
-        failed(network.send(sim::ca(), "https://influx:8087/ping")),
-        "TLS with influx:8087 failed: received corrupt message of type \
+        failed(network.send(sim::ca(), "https://server:8087/ping")),
+        "TLS with server:8087 failed: received corrupt message of type \
          InvalidContentType"
     );
 }
@@ -388,8 +388,8 @@ fn fails_the_handshake_with_a_server_that_closes_the_stream() {
         }
     });
     assert_eq!(
-        failed(network.send(sim::ca(), "https://influx:8087/ping")),
-        "TLS with influx:8087 failed: tls handshake eof"
+        failed(network.send(sim::ca(), "https://server:8087/ping")),
+        "TLS with server:8087 failed: tls handshake eof"
     );
 }
 
@@ -403,11 +403,11 @@ fn fails_the_handshake_with_a_server_that_resets_the_stream() {
     });
     let remote = SocketAddr::new(network.server.addresses()[0], 8087);
     let error = network
-        .send(sim::ca(), "https://influx:8087/ping")
+        .send(sim::ca(), "https://server:8087/ping")
         .expect_err("the server resets the stream");
     assert_eq!(
         error.to_string(),
-        format!("TLS with influx:8087 failed: {remote} reset the stream")
+        format!("TLS with server:8087 failed: {remote} reset the stream")
     );
     let mut source = std::error::Error::source(&error);
     let mut stream = None;
@@ -446,7 +446,7 @@ fn fails_a_handshake_whose_first_write_finds_the_stream_reset() {
             client.clock().sleep(Span::SECOND).await;
             let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
             let config = super::client(&provider, &sim::ca(), JUNE_2026);
-            let name = "influx".try_into().expect("a DNS name");
+            let name = "server".try_into().expect("a DNS name");
             let Err(error) = Stream::client(tcp, config, name, Rc::default()).await
             else {
                 panic!("the stream is reset")
@@ -465,8 +465,8 @@ fn sends_and_reads_bodies_that_fill_the_stream() {
     let mut network = Network::new(13, Certificate::Valid, JUNE_2026);
     network.slow();
     let steps = vec![
-        Step::Upload("https://influx:8086/length"),
-        Step::Send("https://influx:8086/large"),
+        Step::Upload("https://server:8086/length"),
+        Step::Send("https://server:8086/large"),
     ];
     let texts = network.crash_after(steps, Span::MINUTE);
     assert_eq!(texts, [LARGE.to_string(), "x".repeat(LARGE)]);
@@ -476,7 +476,7 @@ fn sends_and_reads_bodies_that_fill_the_stream() {
 fn fails_an_upload_when_the_server_crashes() {
     let mut network = Network::new(14, Certificate::Valid, JUNE_2026);
     network.slow();
-    let steps = vec![Step::Upload("https://influx:8086/length")];
+    let steps = vec![Step::Upload("https://server:8086/length")];
     let texts = network.crash_after(steps, Span::from_nanos(500_000_000));
     assert_eq!(
         texts,
@@ -491,7 +491,7 @@ fn fails_an_upload_when_the_server_crashes() {
 fn fails_a_download_when_the_server_crashes() {
     let mut network = Network::new(15, Certificate::Valid, JUNE_2026);
     network.slow();
-    let steps = vec![Step::Send("https://influx:8086/large")];
+    let steps = vec![Step::Send("https://server:8086/large")];
     let texts = network.crash_after(steps, Span::from_nanos(500_000_000));
     assert_eq!(
         texts,
@@ -532,7 +532,7 @@ fn fails_a_body_that_ends_with_no_close_notify() {
     });
     assert_eq!(
         network
-            .send(sim::ca(), "https://influx:8087/ping")
+            .send(sim::ca(), "https://server:8087/ping")
             .map_err(|error| chain(&error)),
         Err(
             "the exchange failed: error reading a body from connection <- error \
@@ -562,10 +562,10 @@ fn fails_https_with_no_roots_before_the_lookup() {
 fn reuses_an_https_connection_and_opens_a_new_one_for_http() {
     let mut network = Network::new(7, Certificate::Valid, JUNE_2026);
     let steps = vec![
-        Step::Send("https://influx:8086/first"),
+        Step::Send("https://server:8086/first"),
         Step::Wait(Span::from_nanos(10_000_000_000)),
-        Step::Send("https://influx:8086/second"),
-        Step::Send("http://influx:8086/plain"),
+        Step::Send("https://server:8086/second"),
+        Step::Send("http://server:8086/plain"),
     ];
     let out = network.start(sim::ca(), steps);
     network
@@ -594,7 +594,7 @@ fn reuses_an_https_connection_and_opens_a_new_one_for_http() {
 fn gives_the_same_run_for_the_same_seed() {
     let run = || {
         let mut network = Network::new(8, Certificate::Valid, JUNE_2026);
-        let body = network.send(sim::ca(), "https://influx:8086/ping");
+        let body = network.send(sim::ca(), "https://server:8086/ping");
         (body.expect("the server answers"), network.sim.digest())
     };
     assert_eq!(run(), run());
@@ -610,7 +610,7 @@ fn adds_the_certificates_of_a_pem_text_to_the_roots() {
         .expect("the CA parses");
     for certificate in [Certificate::Valid, Certificate::OtherCa] {
         let mut network = Network::new(9, certificate, JUNE_2026);
-        let body = network.send(both.clone(), "https://influx:8086/ping");
+        let body = network.send(both.clone(), "https://server:8086/ping");
         assert_eq!(
             body.expect("the server answers"),
             "/ping",
@@ -618,16 +618,16 @@ fn adds_the_certificates_of_a_pem_text_to_the_roots() {
         );
     }
     let mut network = Network::new(9, Certificate::OtherCa, JUNE_2026);
-    let error = failed(network.send(roots, "https://influx:8086/ping"));
+    let error = failed(network.send(roots, "https://server:8086/ping"));
     assert_eq!(
         error,
-        "TLS with influx:8086 failed: invalid peer certificate: UnknownIssuer"
+        "TLS with server:8086 failed: invalid peer certificate: UnknownIssuer"
     );
 }
 
 #[test]
 fn gives_empty_for_a_pem_text_with_no_certificate() {
-    let key = include_str!("../sim/tls/influx.key");
+    let key = include_str!("../sim/tls/server.key");
     for text in ["", "no PEM here", key] {
         let error = Roots::default().with_pem(text).expect_err("no certificate");
         assert_eq!(error, Pem::Empty, "{text}");
@@ -659,12 +659,12 @@ fn skips_and_counts_der_certificates_that_do_not_parse() {
     let (roots, skipped) = Roots::from_der([der.as_slice(), b"not DER".as_slice()]);
     assert_eq!(skipped, 1);
     let mut network = Network::new(10, Certificate::Valid, JUNE_2026);
-    let body = network.send(roots, "https://influx:8086/ping");
+    let body = network.send(roots, "https://server:8086/ping");
     assert_eq!(body.expect("the server answers"), "/ping");
     let (roots, skipped) = Roots::from_der([b"not DER".as_slice()]);
     assert_eq!(skipped, 1);
     let mut network = Network::new(10, Certificate::Valid, JUNE_2026);
-    let error = network.send(roots, "https://influx:8086/ping");
+    let error = network.send(roots, "https://server:8086/ping");
     assert!(matches!(error, Err(Error::NoRoots)), "{error:?}");
 }
 
@@ -676,7 +676,7 @@ fn exchanges_with_a_server_that_takes_only_tls_1_2() {
         server(&[&rustls::version::TLS12]),
         |_| async { String::new() },
     );
-    let body = network.send(sim::ca(), "https://influx:8087/ping");
+    let body = network.send(sim::ca(), "https://server:8087/ping");
     assert_eq!(body.map_err(|error| chain(&error)).as_deref(), Ok("ok"));
     assert_eq!(out.lock().expect("no panic").as_deref(), Some(""));
 }
@@ -698,7 +698,7 @@ fn sends_close_notify_when_the_client_closes_a_stream() {
             }
         },
     );
-    let body = network.send(sim::ca(), "https://influx:8087/ping");
+    let body = network.send(sim::ca(), "https://server:8087/ping");
     assert_eq!(body.map_err(|error| chain(&error)).as_deref(), Ok("ok"));
     assert_eq!(
         out.lock().expect("no panic").as_deref(),
