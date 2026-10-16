@@ -296,7 +296,7 @@ impl Node {
             Ok(hold) => Arc::new(hold),
             Err(e) => return Self::failed(Error::Start(e), log, regional),
         };
-        let shards = shards.logged(log.log.clone());
+        let shards = shards.logged(log.dispatch.clone());
         let serve = Serve {
             interner: last,
             budget: config.budget,
@@ -465,12 +465,12 @@ impl Node {
             (joined, shard.failed.get().cloned())
         });
         let joined = error(self.failed, shards.collect());
-        tracing::dispatcher::with_default(&self.log.log, || match &joined {
+        tracing::dispatcher::with_default(&self.log.dispatch, || match &joined {
             Ok(()) => tracing::info!("stopped"),
             Err(error) => tracing::error!(%error, "stopped"),
         });
         // A thread that cannot start leaves the line for `Flush::wait`.
-        drop(self.log.resume());
+        self.log.resume();
         joined
     }
 }

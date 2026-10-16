@@ -64,7 +64,7 @@ impl Log {
     /// The dispatch that a node sets for each shard.
     #[must_use]
     pub fn dispatch(&self) -> &tracing::Dispatch {
-        &self.flush.log
+        &self.flush.dispatch
     }
 }
 

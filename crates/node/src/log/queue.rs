@@ -27,7 +27,7 @@ const PANIC: Duration = Duration::from_secs(1);
 pub struct Flush {
     queue: Arc<Queue>,
     /// The node's dispatch, whose events go into `queue`.
-    pub(crate) log: Dispatch,
+    pub(crate) dispatch: Dispatch,
 }
 
 impl Flush {
@@ -57,12 +57,12 @@ impl Flush {
             threads: threads.logged(Dispatch::none()),
             line: line.clone(),
         });
-        let log = super::dispatch(line, level, Pipe(Arc::clone(&queue)));
-        Self { queue, log }
+        let dispatch = super::dispatch(line, level, Pipe(Arc::clone(&queue)));
+        Self { queue, dispatch }
     }
 
-    /// Starts the thread `log`, which runs until each clone of the [`Hold`] has
-    /// dropped and the queue is empty.
+    /// Starts the thread `log`, which runs until the [`Hold`] drops and the queue is
+    /// empty.
     ///
     /// # Errors
     ///
@@ -75,15 +75,11 @@ impl Flush {
     }
 
     /// Starts the thread `log` when none runs, so the lines that came after each
-    /// [`Hold`] dropped reach the writer. Call it outside an event: an OS thread
-    /// cannot start inside one.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Start`] when the thread cannot start. The lines then wait for the next
-    /// call.
-    pub(crate) fn resume(&self) -> Result<(), Error> {
-        self.queue.resume()
+    /// [`Hold`] dropped reach the writer. Returns `false` when the thread could not
+    /// start: the lines then wait for the next call. Call it outside an event: an OS
+    /// thread cannot start inside one.
+    pub(crate) fn resume(&self) -> bool {
+        self.queue.resume().is_ok()
     }
 
     /// Starts the thread `log` as [`Flush::resume`] does, then blocks until the writer
@@ -101,7 +97,7 @@ impl Flush {
     )]
     pub fn wait(&self, bound: Duration) -> bool {
         let sent = self.queue.sent.load(Ordering::Acquire);
-        if self.queue.resume().is_err() {
+        if !self.resume() {
             return false;
         }
         self.written(sent, bound)
@@ -151,9 +147,9 @@ impl Flush {
     }
 }
 
-/// Keeps the thread `log` running while a line can come: each shard holds a clone.
-/// The drop of the last one lets the thread end once the queue is empty. A later line
-/// waits for [`Flush::resume`] or [`Flush::wait`].
+/// Keeps the thread `log` running while a line can come: each shard holds an `Arc` of
+/// it. The drop lets the thread end once the queue is empty. A later line waits for
+/// [`Flush::resume`] or [`Flush::wait`].
 #[derive(Debug)]
 pub(crate) struct Hold(Arc<Queue>);
 

@@ -306,8 +306,8 @@ fn opened(
 
 /// Puts the lines of `events` in the queue of `log`, then writes them in `sim`.
 fn write(sim: &mut sim::Sim, log: &Flush, events: impl FnOnce()) {
-    tracing::dispatcher::with_default(&log.log, events);
-    log.resume().expect("the thread log starts");
+    tracing::dispatcher::with_default(&log.dispatch, events);
+    assert!(log.resume(), "the thread log starts");
     assert_eq!(sim.run(), Ok(()));
 }
 
@@ -383,7 +383,7 @@ fn a_line_after_the_shards_end_comes_before_stopped() {
     node.stop();
     assert_eq!(sim.run(), Ok(()));
     let late = || tracing::info!(target: "test", "late");
-    tracing::dispatcher::with_default(&node.flush().log, late);
+    tracing::dispatcher::with_default(&node.flush().dispatch, late);
     assert_eq!(sim.run(), Ok(()));
     assert_eq!(lines.read().len(), 1, "the line waits for the join");
     assert_eq!(node.join(), Ok(()));
@@ -442,10 +442,10 @@ fn stuck() -> (
 #[test]
 fn an_event_never_waits_on_a_stuck_writer() {
     let (log, hold, lines, blocked, free) = stuck();
-    tracing::dispatcher::with_default(&log.log, numbered(0, 1));
+    tracing::dispatcher::with_default(&log.dispatch, numbered(0, 1));
     #[expect(clippy::disallowed_methods, reason = "the test waits for an OS thread")]
     blocked.recv().expect("the writer blocks");
-    tracing::dispatcher::with_default(&log.log, numbered(1, 1030));
+    tracing::dispatcher::with_default(&log.dispatch, numbered(1, 1030));
     assert!(!log.wait(Duration::from_millis(10)));
     free.send(()).expect("the writer waits");
     drop(hold);
@@ -508,8 +508,8 @@ fn panics(stuck: bool, late: bool) -> ! {
     let wall = os::wall().expect("a wall clock");
     let log = log::open(Log { writer, format }, &threads, wall, mesh);
     let hold = log.hold().expect("the thread log starts");
-    tracing::dispatcher::with_default(&log.log, numbered(0, 3));
-    let dispatch = log.log.clone();
+    tracing::dispatcher::with_default(&log.dispatch, numbered(0, 3));
+    let dispatch = log.dispatch.clone();
     let previous = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
         if log.panicked(info) {
