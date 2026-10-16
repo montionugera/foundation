@@ -315,6 +315,7 @@ fn write(address: SocketAddr, lines: &'static str) -> String {
             tasks,
             timeout: Span::MINUTE,
             body_max: 1 << 10,
+            tls: None,
         });
         let request = Request::post(format!("http://{address}/write?db=plant"))
             .body(Bytes::from_static(lines.as_bytes()))

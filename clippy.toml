@@ -51,7 +51,8 @@ disallowed-methods = [
   { path = "clock::source::Wall::measure", reason = "read mesh time from clock" },
   { path = "clock::log::Reader::now", reason = "only the log of node reads it" },
   # rustls: its default provider is a process global and its default time the OS
-  # clock. `transport::tls` builds every config, with `builder_with_details`.
+  # clock. `transport::tls` and `connector::http` build every config, with
+  # `builder_with_details`.
   { path = "rustls::ClientConfig::builder", reason = "use tls" },
   { path = "rustls::ServerConfig::builder", reason = "use tls" },
   { path = "rustls::ClientConfig::builder_with_protocol_versions", reason = "use tls" },
