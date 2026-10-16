@@ -38,6 +38,9 @@ use crate::wal::{
     self, Cursor, Ends, Layout, Limit, Plan, Position, Step, Unfit, Window, Writer,
 };
 
+#[cfg(feature = "sim")]
+pub(crate) mod bench;
+
 /// How many reads at once hold records with no allocation.
 const HOLDS: usize = 16;
 
@@ -287,26 +290,13 @@ struct Shared {
     pool: Rc<Pool>,
     block_max: usize,
     layout: Layout,
-    /// [`Config::trimmed`].
-    trimmed: bool,
-    /// The most tails of a carry record whose body fits the largest block of `pool`.
-    tails_max: usize,
+    /// With [`Config::trimmed`], the most tails of a carry record whose body fits
+    /// the largest block of `pool`. Else `None`.
+    tails: Option<usize>,
     state: RefCell<State>,
 }
 
 impl Shared {
-    /// Takes the groups of a commit into `taken`, and gives its checkpoint and carry
-    /// record in the same borrow, or neither when [`Config::trimmed`] is false.
-    fn take(&self, taken: &mut Vec<Closed>) -> (Option<Checkpoint>, Option<Carry>) {
-        let mut state = self.state.borrow_mut();
-        state.take(taken);
-        if !self.trimmed {
-            return (None, None);
-        }
-        let checkpoint = state.checkpoint(&self.pool);
-        (checkpoint, state.carry(&self.pool, self.tails_max))
-    }
-
     /// Ends the task's idle span. The caller holds no borrow of `state`.
     fn unpark(&self) {
         let parked = self.state.borrow_mut().parked.0.take();
@@ -329,6 +319,8 @@ struct State {
     logs: Logs,
     /// The last checkpoint written.
     header: Header,
+    /// The chain value of the last sealed record.
+    chain: u32,
     /// The tails of the carry record of the last deadline, or none when it wrote
     /// none. The next carry reuses its room.
     carried: Carried,
@@ -370,6 +362,32 @@ impl fmt::Debug for Parked {
 }
 
 impl State {
+    /// The state of a ring that `writer`, `logs`, the last checkpoint `header`, and
+    /// the chain value `chain` of the last record give, with nothing queued.
+    fn new(writer: Writer, logs: Logs, header: Header, chain: u32) -> Self {
+        Self {
+            writer,
+            open: Group::default(),
+            spares: Vec::new(),
+            queue: Vec::new(),
+            logs,
+            header,
+            chain,
+            carried: Carried::default(),
+            starved: false,
+            held: Vec::with_capacity(HOLDS),
+            taken: 0,
+            commits: 0,
+            committing: wait::Set::new(),
+            ending: wait::Set::new(),
+            next_key: 0,
+            parked: Parked(None),
+            closed: false,
+            ended: false,
+            failed: None,
+        }
+    }
+
     /// How the task ended, once it ended: with the error of a failed file call, else
     /// with `Ok`.
     fn outcome(&self) -> Option<Result<(), files::Error>> {
@@ -460,21 +478,42 @@ impl State {
         }
     }
 
-    /// Takes the groups of a commit into `taken`.
-    fn take(&mut self, taken: &mut Vec<Closed>) {
+    /// Seals the groups of a commit into `sealed`, and gives its checkpoint and its
+    /// sealed carry record of at most `tails` tails, in blocks of `pool`. Gives
+    /// neither with `tails` of `None`, as [`Shared::tails`] is without
+    /// [`Config::trimmed`].
+    fn deadline(
+        &mut self,
+        pool: &Pool,
+        tails: Option<usize>,
+        sealed: &mut Vec<Sealed>,
+    ) -> (Option<Checkpoint>, Option<Carrying>) {
         self.starved = false;
         if !self.open.is_empty() {
             self.close_open();
         }
-        mem::swap(&mut self.queue, taken);
-        if !taken.is_empty() {
+        if !self.queue.is_empty() {
             self.taken += 1;
         }
+        let (checkpoint, carry) = match tails {
+            Some(tails) => (self.checkpoint(pool), self.carry(pool, tails)),
+            None => (None, None),
+        };
+        for closed in self.queue.drain(..) {
+            let record = closed.seal(self.chain);
+            self.chain = record.ends().record.chain();
+            sealed.push(record);
+        }
+        let carrying = carry.map(|carry| carry.seal(self.chain));
+        if let Some(carrying) = &carrying {
+            self.chain = carrying.ends.record.chain();
+        }
+        (checkpoint, carrying)
     }
 
-    /// The checkpoint of the trim of the commit whose groups the caller just took, in
-    /// a block of `pool`. `None` when the commit does not trim, or the pool has no
-    /// block: the next deadline then tries again.
+    /// The checkpoint of the trim of the commit at this deadline, in a block of `pool`.
+    /// `None` when the commit does not trim, or the pool has no block: the next
+    /// deadline then tries again.
     fn checkpoint(&mut self, pool: &Pool) -> Option<Checkpoint> {
         let tail = self.trimmed()?;
         let mut block = pool.alloc(ALIGN).ok()?;
@@ -649,36 +688,16 @@ impl Buffer {
         let (writer, sealed) = cursor.writer(header.tail.offset(), chain)?;
         write_restart(&file, &pool, sealed, chain).await?;
         file.sync().await?;
-        let tails_max = carry::count(pool.largest().saturating_sub(HEADER_LEN));
+        let tails = trimmed.then(|| tails_max(&pool));
         let shared = Rc::new(Shared {
             file,
             pool,
             block_max,
             layout: header.layout,
-            trimmed,
-            tails_max,
-            state: RefCell::new(State {
-                writer,
-                open: Group::default(),
-                spares: Vec::new(),
-                queue: Vec::new(),
-                logs,
-                header,
-                carried: Carried::default(),
-                starved: false,
-                held: Vec::with_capacity(HOLDS),
-                taken: 0,
-                commits: 0,
-                committing: wait::Set::new(),
-                ending: wait::Set::new(),
-                next_key: 0,
-                parked: Parked(None),
-                closed: false,
-                ended: false,
-                failed: None,
-            }),
+            tails,
+            state: RefCell::new(State::new(writer, logs, header, chain)),
         });
-        tasks.spawn(run(Rc::clone(&shared), clock, commit, chain));
+        tasks.spawn(run(Rc::clone(&shared), clock, commit));
         Ok(Self {
             shared,
             batch: RefCell::default(),
@@ -849,7 +868,7 @@ impl Buffer {
                     .map_err(rejected)?;
             }
             Err(full @ group::Rejected::Ring(_)) => {
-                if shared.trimmed {
+                if shared.tails.is_some() {
                     state.starved = true;
                     drop(guard);
                     shared.unpark();
@@ -901,6 +920,11 @@ impl Buffer {
             waiter: Waiter::new(&self.shared, Event::End),
         }
     }
+}
+
+/// The most tails of a carry record whose body fits the largest block of `pool`.
+fn tails_max(pool: &Pool) -> usize {
+    carry::count(pool.largest().saturating_sub(HEADER_LEN))
 }
 
 /// Appends each entry of `batch` to `logs`, in order, and takes it into `open` with
@@ -1167,13 +1191,10 @@ fn small_record(
 /// The commit task. It parks while the state idles; an append that queues an entry, an
 /// append that the ring refuses, or the drop wakes it. Each deadline takes the closed
 /// groups and the open one with the trim and the carry record of the commit, seals
-/// the records in order from `chain`, the value of the restart record, writes them
-/// and the checkpoint, syncs once, and wakes the waiters. A deadline with none of
-/// these writes nothing. A failed file call ends the task, and so does the drop
-/// once nothing is queued.
-async fn run(shared: Rc<Shared>, clock: Clock, commit: Span, chain: u32) {
-    let mut chain = chain;
-    let mut taken: Vec<Closed> = Vec::new();
+/// the records in order, writes them and the checkpoint, syncs once, and wakes the
+/// waiters. A deadline with none of these writes nothing. A failed file call ends
+/// the task, and so does the drop once nothing is queued.
+async fn run(shared: Rc<Shared>, clock: Clock, commit: Span) {
     let mut sealed: Vec<Sealed> = Vec::new();
     let mut woken: Vec<Waker> = Vec::new();
     let mut sleep = clock.sleep(commit);
@@ -1208,12 +1229,14 @@ async fn run(shared: Rc<Shared>, clock: Clock, commit: Span, chain: u32) {
         }
         (&mut sleep).await;
         sleep.reset(clock.now() + commit);
-        let (checkpoint, carry) = shared.take(&mut taken);
-        if taken.is_empty() && checkpoint.is_none() && carry.is_none() {
+        let (checkpoint, carrying) =
+            shared
+                .state
+                .borrow_mut()
+                .deadline(&shared.pool, shared.tails, &mut sealed);
+        if sealed.is_empty() && checkpoint.is_none() && carrying.is_none() {
             continue;
         }
-        let carrying;
-        (carrying, chain) = seal(&mut taken, &mut sealed, carry, chain);
         let result =
             write(&shared, &sealed, carrying.as_ref(), checkpoint.as_ref()).await;
         let failed = result.is_err();
@@ -1238,27 +1261,6 @@ async fn run(shared: Rc<Shared>, clock: Clock, commit: Span, chain: u32) {
             return;
         }
     }
-}
-
-/// Seals the `taken` groups into `sealed`, then `carry`, in order from `chain`, the
-/// chain value of the record before. Gives the sealed carry record and the chain
-/// value after the last record.
-fn seal(
-    taken: &mut Vec<Closed>,
-    sealed: &mut Vec<Sealed>,
-    carry: Option<Carry>,
-    mut chain: u32,
-) -> (Option<Carrying>, u32) {
-    for closed in taken.drain(..) {
-        let record = closed.seal(chain);
-        chain = record.ends().record.chain();
-        sealed.push(record);
-    }
-    let carrying = carry.map(|carry| carry.seal(chain));
-    let chain = carrying
-        .as_ref()
-        .map_or(chain, |carrying| carrying.ends.record.chain());
-    (carrying, chain)
 }
 
 /// Writes each sealed group's records, then the carry record and the checkpoint of
