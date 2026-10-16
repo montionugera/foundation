@@ -23,14 +23,17 @@
   The writer owns one value slot for each channel, and `write` takes the values of a
   frame as an iterator, which fills each slot again: no kind keeps slots, and no value
   of a frame before can stay. A kind that reads a frame in more than one exchange
-  keeps only the values of the tick, in a buffer that `take` drains and that panics on
-  a slot that no reply filled (MODBUS KIND, `connector_modbus::read::Values`;
-  `laptop.architect-2`, 2026-10-16T14:33:20Z:
+  never writes a value of a tick before (`laptop.architect-2`, 2026-10-16T15:03:40Z,
+  item 1: https://github.com/synnaxlabs/foundation/pull/2860#issuecomment-6218356587).
+  The Modbus kind drains `read::Values`, which panics on a slot that no reply filled
+  (MODBUS KIND; `laptop.architect-2`, 2026-10-16T14:33:20Z:
   https://github.com/synnaxlabs/foundation/pull/2860#issuecomment-6217778354, the
   name, 2026-10-16T14:42:11Z:
   https://github.com/synnaxlabs/foundation/pull/2860#issuecomment-6217947516, and
   final, 2026-10-16T14:48:11Z:
-  https://github.com/synnaxlabs/foundation/pull/2860#issuecomment-6218066529).
+  https://github.com/synnaxlabs/foundation/pull/2860#issuecomment-6218066529). The
+  OPC UA kind fails each read in which an answer does not have a value for each node
+  of its request, so a good read writes each slot.
   `write` panics when the iterator gives fewer or more values than the channels.
   `connector-opcua` maps its reads by position, with no `zip` over its channels, so a
   read past its channels panics in the kind and is never lost
