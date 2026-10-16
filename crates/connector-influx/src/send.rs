@@ -117,9 +117,9 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
 }
 
 /// Sends `body` until InfluxDB answers 204. Shows each other answer as the run's
-/// error and waits a backoff before the next attempt. After a 401 or a 403, it reads
-/// the token again before that attempt. Never ends after the cancel of the run, which
-/// the caller sees first.
+/// error, with the fix for a 400, a 404, or a 422, and waits a backoff before the
+/// next attempt. After a 401 or a 403, it reads the token again before that attempt.
+/// Never ends after the cancel of the run, which the caller sees first.
 ///
 /// # Errors
 ///
@@ -134,37 +134,41 @@ async fn send(
     let mut backoff = None;
     loop {
         let request = request(uri, &body, token.borrow().as_ref());
-        let refused = match client.send(request).await {
-            Ok(answer) if answer.status() == StatusCode::NO_CONTENT => {
-                ctx.clear_error();
-                return Ok(());
-            }
-            Ok(answer) => {
-                let status = answer.status();
-                let text = String::from_utf8_lossy(answer.body());
-                let refused =
-                    matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
-                let source = ctx.config().token.as_ref().filter(|_| refused);
-                match source {
-                    Some(source) => {
-                        ctx.error(&format_args!(
-                            "InfluxDB answered {status}. Check the token {source}: {}",
-                            text.trim()
-                        ));
-                    }
-                    None => {
-                        ctx.error(&format_args!(
-                            "InfluxDB answered {status}: {}",
-                            text.trim()
-                        ));
-                    }
+        // A block, so that `answer` does not grow the future across the backoff.
+        let refused = {
+            let answer = match client.send(request).await {
+                Ok(answer) if answer.status() == StatusCode::NO_CONTENT => {
+                    ctx.clear_error();
+                    return Ok(());
                 }
-                source.is_some()
+                Ok(answer) => Some((answer.status(), answer.into_body())),
+                Err(connector::http::Error::TooLarge { status, body, .. }) => {
+                    Some((status, body))
+                }
+                Err(error) => {
+                    ctx.error(&format_args!("the write to InfluxDB failed: {error}"));
+                    None
+                }
+            };
+            let mut refused = false;
+            if let Some((status, body)) = answer {
+                let text = String::from_utf8_lossy(&body);
+                let text = text.trim();
+                let token =
+                    matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
+                let source = ctx.config().token.as_ref().filter(|_| token);
+                refused = source.is_some();
+                match source {
+                    Some(source) => ctx.error(&format_args!(
+                        "InfluxDB answered {status}. Check the token {source}: {text}"
+                    )),
+                    None => ctx.error(&format_args!(
+                        "InfluxDB answered {status}: {text}{}",
+                        fix(status)
+                    )),
+                }
             }
-            Err(error) => {
-                ctx.error(&format_args!("the write to InfluxDB failed: {error}"));
-                false
-            }
+            refused
         };
         let backoff =
             backoff.get_or_insert_with(|| Backoff::new(ctx.clock(), ctx.rng(), RETRY));
@@ -175,6 +179,22 @@ async fn send(
             // Boxed, so this rare read does not grow the future of `send`.
             *token.borrow_mut() = Box::pin(Token::read(ctx)).await?;
         }
+    }
+}
+
+/// The fix that the error text of an answer of `status` ends with, after its body.
+fn fix(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
+            ". For a field type conflict, write to another `measurement` or delete the \
+             old field in InfluxDB. For points older than the retention period, raise \
+             it or write to another bucket"
+        }
+        StatusCode::NOT_FOUND => {
+            ". Create the database, the bucket, or the org in InfluxDB, or name one \
+             that exists"
+        }
+        _ => "",
     }
 }
 
