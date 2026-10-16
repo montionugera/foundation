@@ -11,9 +11,20 @@
   carved blocks are all free, until the allocation fits. Under this pressure, at most
   two partial pages per class stay resident, and `Config::budget` states that slack. An
   idle class that no allocation presses keeps its pages until the purge after idle. A
-  class that a reader keeps partly in use keeps its budget. The person accepted this
-  (design H) on 2026-10-05 ("Ok fine"), #2, #270. Purges per block that give back every
-  page they credit (design P) wait in a follow-up issue. When the system refuses to
+  class that a reader keeps partly in use kept its budget: the person accepted this
+  (design H) on 2026-10-05 ("Ok fine"), #2, #270. Amended (#2810): when the sizes with
+  no block in use do not cover an allocation, the pool gives back the payload pages of
+  free blocks of the other sizes, and credits the budget by the whole pages of each
+  payload. It gives back no page unless all of these together cover the allocation.
+  Each such block keeps its header and the partial pages at the ends of its payload,
+  with their budget, and an allocation of its size commits its payload again before
+  it carves a new block. A free block whose payload holds no whole page keeps its
+  budget, so a waiter of another size can wait until the last block of that size
+  frees. Decided
+  by `laptop.architect` (2026-10-16T17:05:20Z):
+  https://github.com/synnaxlabs/foundation/issues/2810#issuecomment-6220640348. The
+  rest of design P, the headers in a table and the pages of blocks with no whole page,
+  waits on #291, before the exit of ONE NODE. When the system refuses to
   commit pages, the pool gives back one idle size at a time, in the order a purge for
   room in the budget uses, and tries the commit again; after the last idle size the
   allocation fails with `Error::Refused`, a separate error from a full pool (the person
