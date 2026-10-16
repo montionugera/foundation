@@ -126,17 +126,16 @@ async fn reach(
     tasks: &Tasks,
     started: &mpsc::Sender<env::thread::Handle>,
 ) -> Result<program::Session, Failure> {
-    let files = match files {
-        Some(files) => files,
-        None => {
-            let threads = os::threads().map_err(failed)?;
-            let (disk, handle) = os::stored(dir, &threads, "files-reach")
-                .map_err(|error| stored(dir, error))?;
-            started
-                .send(handle)
-                .expect("invariant: `main` keeps the receiver");
-            files.insert(env::files::Files::new(disk))
-        }
+    let files = if let Some(files) = files {
+        files
+    } else {
+        let threads = os::threads().map_err(failed)?;
+        let (disk, handle) = os::stored(dir, &threads, "files-reach")
+            .map_err(|error| stored(dir, error))?;
+        started
+            .send(handle)
+            .expect("invariant: `main` keeps the receiver");
+        files.insert(env::files::Files::new(disk))
     };
     let reached = node::client::reach(node::client::Config {
         files: files.clone(),
