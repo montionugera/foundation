@@ -40,12 +40,8 @@
   `ansi`, `json`, or `tracing-serde`. By `laptop.architect-2` (2026-10-15T20:28:52Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6201622804).
   Lost: a `Layer` of our own, which builds again what `fmt` gives; the `json` format
-  of `fmt`, which needs a second clock read or a splice for `mesh_time`. A write
-  blocks the thread of its event until stderr takes the line, and each other event of
-  the node, on any shard or thread, waits for that write. Later step (#2764): the
-  node never blocks on its log reader, by `laptop.monitor` with the details of
-  `laptop.architect-2` (2026-10-15T21:39:25Z,
-  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202838819).
+  of `fmt`, which needs a second clock read or a splice for `mesh_time`. The writer
+  of `fmt` puts each line in the queue of item 9, so no event waits on stderr.
   (5) No dispatch is global (crate map rule 9, `clippy.toml`). `Node::start` makes the
   dispatch from `Config::log` and gives it to its shards through `Shards::logged`.
   `node::Log` holds the writer and the `ops::Log` that `start` parses, whose default
@@ -58,19 +54,44 @@
   failed session yet (OPS OUTPUT, #2767). By `laptop.architect-2`
   (2026-10-15T22:05:27Z,
   https://github.com/synnaxlabs/foundation/pull/2762#issuecomment-6203245390).
-  (7) `node` starts no thread through `env::threads::Threads`, and no thread of `main`
-  writes an event, so `node::Config` has no `threads` yet. The first part that needs
-  one (the thread of open62541) adds `Config::threads` and calls `Threads::logged`.
-  The threads of `main` (`show`, `stop`, the I/O thread of each disk) get the dispatch
-  with the first event one of them writes. By `laptop.architect-2`
-  (2026-10-15T20:38:04Z,
-  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6201785053).
+  (7) `node::Config::threads` starts the thread `log` (item 9), with `Threads::logged`
+  and no dispatch, so the events of that thread go nowhere. The threads of `main`
+  (`show`, `stop`, the I/O thread of each disk) get the dispatch with the first event
+  one of them writes. By `laptop.architect-2` (2026-10-15T20:38:04Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6201785053), with
+  the thread of #2764.
   (8) P1 holds at `info`: about 1.1 µs for each run of a node and 33 KB idle. A level
   under `info` is an operator's choice for debug, and its cost is outside P1. At
   `debug` and `trace`, `noq-proto` writes a line for each packet and frame of QUIC, at
   about 425 to 739 ns and 2 to 6 allocations before the write, and at `trace` a span
   at 118 ns and 2 allocations (laptop, M3 Max, load 9, 3 passes). The help of
-  `--log-level` says so. #2764 carries the shared lock, the allocations, the span
-  fields that `Line` never prints, and the WARN of `noq-proto` for each Initial packet
-  with an invalid retry token. By `laptop.architect-2` (2026-10-16T01:49:38Z,
-  https://github.com/synnaxlabs/foundation/pull/2762#issuecomment-6206195113).
+  `--log-level` says so. #2764 carries the shared lock, the allocations, and the span
+  fields that `Line` never prints. #2807 carries the WARN of `noq-proto` for each
+  Initial packet with an invalid retry token. By `laptop.architect-2`
+  (2026-10-16T01:49:38Z,
+  https://github.com/synnaxlabs/foundation/pull/2762#issuecomment-6206195113), and the
+  split to #2807 (2026-10-16T03:22:23Z,
+  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207344849).
+  (9) The thread `log` writes each line, so no event waits on the writer. An event puts
+  its line in a queue of 1024 lines (`std::sync::mpsc::sync_channel`) and wakes the
+  thread. A line that finds the queue full drops, and the thread writes WARN `dropped`
+  (target `node::log`) with the field `lines`, their count, after the last line that
+  came before the first of them. A write that fails or panics drops its line. The thread
+  starts with the node, which fails with `Error::Start` when it cannot. It ends once
+  each shard has ended and the queue is empty, so a sim run ends. A line after that
+  waits in the queue for `Node::join` (after `stopped`), `Flush::wait`, or
+  `Flush::panicked`. Each starts the thread again through one private resume, which
+  starts it only when none runs and a line waits, so at most one thread `log` runs and
+  the lines keep their order. An OS thread cannot start inside a `tracing` event. A line
+  from another thread after the last `Flush::wait` of `main` is lost. `main` waits up to
+  1 s for the log at its end. Its panic hook logs ERROR `panicked` with the field
+  `panic` as the last line, waits up to 1 s, and calls the hook before it only when the
+  log wrote each line within that bound. Decision by `laptop.monitor`
+  (2026-10-15T21:39:25Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202838819). The
+  plan by `laptop.architect-2` (2026-10-15T21:43:54Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202910326), and its
+  change (2026-10-16T03:22:23Z,
+  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207344849). Lost:
+  one thread for the life of the log, which makes each sim run end as `Stuck`; a write
+  on the thread of `join`, which loses the bound of `main` on a stuck writer.
