@@ -60,20 +60,34 @@ impl Read {
         self.count
     }
 
-    /// Puts the registers of `value` in `order` into `out`, in address order: the
-    /// inverse of the decode of [`Group::values`].
+    /// Puts the registers of `value` in `order` into `out`, the [`Read::count`]
+    /// registers of the read in address order: the inverse of the decode of
+    /// [`Group::values`].
     ///
     /// # Panics
     ///
-    /// When `value` is not of the type of the read, or `out` does not hold its
-    /// registers.
+    /// When `value` is not of the type of the read.
     pub(crate) fn words(self, value: Value, order: Order, out: &mut [u16]) {
         assert_eq!(
             value.scalar(),
             self.scalar,
             "{value:?} is not a value of the write of {self:?}"
         );
-        words(value, order, out);
+        let mut sample = [0; 8];
+        let sample = sample.get_mut(..self.scalar.width()).unwrap_or_else(|| {
+            panic!("invariant: `Read::new` gives no register read of {self:?}")
+        });
+        value.write(sample);
+        let words = sample
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&pair| u16::from_le_bytes(pair));
+        let put = |(slot, word): (&mut u16, u16)| *slot = word;
+        match order {
+            Order::Big => out.iter_mut().rev().zip(words).for_each(put),
+            Order::Little => out.iter_mut().zip(words).for_each(put),
+        }
     }
 }
 
@@ -246,32 +260,6 @@ fn value(
         panic!("invariant: `Read::new` gives no register read of {scalar:?}")
     });
     Value::read(scalar, sample)
-}
-
-/// Puts the registers of `value` in `order` into `out`, in address order: the
-/// inverse of [`value`].
-///
-/// # Panics
-///
-/// When `out` does not hold exactly the registers of `value`.
-fn words(value: Value, order: Order, out: &mut [u16]) {
-    let mut sample = [0; 8];
-    let scalar = value.scalar();
-    let sample = sample.get_mut(..scalar.width()).unwrap_or_else(|| {
-        panic!("invariant: `Read::new` gives no register read of {scalar:?}")
-    });
-    value.write(sample);
-    let words = sample
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|&pair| u16::from_le_bytes(pair));
-    assert_eq!(words.len(), out.len(), "the registers of {value:?}");
-    let put = |(slot, word): (&mut u16, u16)| *slot = word;
-    match order {
-        Order::Big => out.iter_mut().rev().zip(words).for_each(put),
-        Order::Little => out.iter_mut().zip(words).for_each(put),
-    }
 }
 
 /// Why a read or a write is not valid.
