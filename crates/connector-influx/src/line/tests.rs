@@ -44,6 +44,9 @@ fn value(text: &str) -> Value {
         _ if text.ends_with('i') => {
             Value::Integer(text.trim_end_matches('i').parse().unwrap())
         }
+        _ if text.ends_with('u') => {
+            Value::Unsigned(text.trim_end_matches('u').parse().unwrap())
+        }
         _ => Value::Float(float(text.parse().unwrap())),
     }
 }
@@ -126,6 +129,15 @@ fn writes_one_known_line() {
         text(&out),
         "before\nplant,line=a\\ b,site=west temp=2.15e1,n=-3i,open=t 1000\n"
     );
+}
+
+#[test]
+fn writes_an_unsigned_integer_with_u() {
+    let measurement = build("m", &[], &["a", "b"]).unwrap();
+    let mut out = Vec::new();
+    let values = [Some(Value::Unsigned(u64::MAX)), Some(Value::Unsigned(0))];
+    write(&measurement, &mut out, &values, Stamp::EPOCH);
+    assert_eq!(text(&out), "m a=18446744073709551615u,b=0u 0\n");
 }
 
 #[test]
@@ -557,6 +569,7 @@ fn field_value() -> impl Strategy<Value = Value> {
             .prop_map(Value::Float),
         any::<i64>().prop_map(Value::Integer),
         any::<bool>().prop_map(Value::Boolean),
+        any::<u64>().prop_map(Value::Unsigned),
     ]
 }
 
