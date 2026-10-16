@@ -385,12 +385,26 @@ fn exchanges_with_an_ip_host_whose_certificate_names_the_ip() {
 
 #[test]
 fn refuses_an_ip_host_whose_certificate_names_only_a_dns_name() {
-    let mut network = Network::new(1, Certificate::Valid, JUNE_2026);
-    assert_eq!(
-        failed(network.send(sim::ca(), "https://[fd00::2]:8086/ping")),
-        "TLS with [fd00::2]:8086 failed: invalid peer certificate: certificate not \
-         valid for name \"fd00::2\"; certificate is only valid for DnsName(\"server\")"
-    );
+    for (uri, origin, ip) in [
+        ("https://10.0.0.2:8086/ping", "10.0.0.2:8086", "10.0.0.2"),
+        ("https://[fd00::2]:8086/ping", "[fd00::2]:8086", "fd00::2"),
+        (
+            "https://[fd00::2%252]:8086/ping",
+            "[fd00::2%2]:8086",
+            "fd00::2",
+        ),
+    ] {
+        let mut network = Network::new(1, Certificate::Valid, JUNE_2026);
+        assert_eq!(
+            failed(network.send(sim::ca(), uri)),
+            format!(
+                "TLS with {origin} failed: invalid peer certificate: certificate not \
+                 valid for name \"{ip}\"; certificate is only valid for \
+                 DnsName(\"server\")"
+            ),
+            "{uri}"
+        );
+    }
 }
 
 #[test]
@@ -843,13 +857,14 @@ proptest! {
     /// each.
     #[test]
     fn takes_each_name_of_a_host_as_a_tls_name(text in host_name()) {
-        if let Ok(host) = text.parse::<Host>() {
-            let shown = host.name().expect("a name").trim_end_matches('.').to_owned();
-            prop_assert_eq!(
-                super::super::name(&host),
-                ServerName::try_from(shown).expect("a TLS name")
-            );
-        }
+        let host = text.parse::<Host>();
+        prop_assume!(host.is_ok(), "`Host` refuses {:?}", text);
+        let host = host.expect("a host");
+        let shown = host.name().expect("a name").trim_end_matches('.').to_owned();
+        prop_assert_eq!(
+            super::super::name(&host),
+            ServerName::try_from(shown).expect("a TLS name")
+        );
     }
 }
 
