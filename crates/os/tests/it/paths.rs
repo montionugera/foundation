@@ -179,6 +179,100 @@ fn a_folder_holds_its_files_through_the_data_volume() {
         assert_eq!(within.write(&key, b"y"), Err(Error::Hidden));
         let plan = volume.join("work/a.hcl");
         assert_eq!(within.read(&plan, 1), Ok(Found::File(b"x".to_vec())));
+        let file = base.join("work/a.hcl");
+        let within = host
+            .paths
+            .within(&[base.join("work")], slice::from_ref(&file))
+            .unwrap();
+        host.paths.write(&file, b"new").unwrap();
+        assert_eq!(within.read(&plan, 3), Err(Error::Hidden));
+    });
+}
+
+/// `/proc` and `/sys` are each inode 1, on two devices.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_folder_is_its_device_and_its_inode() {
+    use std::os::unix::fs::MetadataExt;
+    let ino = |path| fs::metadata(path).unwrap().ino();
+    assert_eq!((ino("/proc"), ino("/sys")), (1, 1));
+    let within = os::paths().within(&["/proc".into()], &[]).unwrap();
+    let read = within.read(Path::new("/sys/kernel"), 1 << 16);
+    assert_eq!(read, Err(Error::Outside));
+}
+
+#[test]
+fn a_hard_link_to_a_hidden_file_is_hidden() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let key = base.join("work/data/admin.key");
+        let twin = base.join("work/twin");
+        fs::hard_link(&key, &twin).unwrap();
+        let within = host
+            .paths
+            .within(&[base.join("work")], slice::from_ref(&key))
+            .unwrap();
+        assert_eq!(within.read(&twin, 1), Err(Error::Hidden));
+        assert_eq!(within.write(&twin, b"y"), Err(Error::Hidden));
+    });
+}
+
+/// Another program moves the hidden folder away and makes a new one at its name.
+#[test]
+fn a_hidden_folder_that_a_program_moves_and_makes_again_stays_hidden() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        let data = base.join("work/data");
+        fs::rename(&data, base.join("work/old")).unwrap();
+        fs::create_dir(&data).unwrap();
+        fs::write(data.join("admin.key"), b"k").unwrap();
+        assert_eq!(within.read(&data.join("admin.key"), 1), Err(Error::Hidden));
+        let old = base.join("work/old/admin.key");
+        assert_eq!(within.read(&old, 1), Err(Error::Hidden));
+    });
+}
+
+/// A relative link in `work` to a deep directory, so the given path is short and the
+/// resolved path of a new name in it is one byte past the longest path of the OS.
+#[test]
+fn within_writes_a_new_name_whose_resolved_path_is_too_long_as_free() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        let most: usize = if cfg!(target_os = "macos") {
+            1023
+        } else {
+            4095
+        };
+        let mut found = Vec::new();
+        for top in ["work", "work/data"] {
+            let top = base.join(top);
+            let (mut deep, mut relative) = (top.clone(), PathBuf::new());
+            while deep.as_os_str().len() + 201 < most - 50 {
+                deep.push("d".repeat(200));
+                relative.push("d".repeat(200));
+                fs::create_dir(&deep).unwrap();
+            }
+            symlink(&relative, top.join("s")).unwrap();
+            let name = "f".repeat(most - deep.as_os_str().len());
+            assert_eq!(deep.join(&name).as_os_str().len(), most + 1);
+            let free = host.paths.write(&top.join("s").join(&name), b"x");
+            let named = top.join("s").join(name.replace('f', "g"));
+            let dir = top.join("s").join(name.replace('f', "h"));
+            let made = within.make_dir(&dir);
+            found.push((
+                free,
+                within.write(&named, b"x"),
+                made,
+                fs::symlink_metadata(&dir).is_ok(),
+            ));
+        }
+        assert_eq!(
+            found,
+            [
+                (Ok(()), Ok(()), Ok(()), true),
+                (Ok(()), Err(Error::Hidden), Err(Error::Hidden), false),
+            ]
+        );
     });
 }
 
