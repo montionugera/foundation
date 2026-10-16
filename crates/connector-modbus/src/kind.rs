@@ -100,7 +100,7 @@ impl kind::Kind for Kind {
     }
 }
 
-/// The time that one exchange waits for its reply.
+/// The time that one connect or one exchange waits.
 const TIMEOUT: Span = Span::SECOND;
 
 const SAMPLE_TYPE: Code = Code::new("modbus.sample-type");
