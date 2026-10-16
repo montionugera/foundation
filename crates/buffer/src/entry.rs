@@ -29,8 +29,6 @@ use types::channel::{self, Slot};
 use types::frame::Path;
 use types::time::Stamp;
 
-use crate::carry::GIVEN_MAX;
-
 /// The encoded size of one [`Header`].
 pub(crate) const HEADER_LEN: usize = 16 + 1 + 8 + 4 + 8 + 9 + 1 + 4;
 
@@ -149,8 +147,11 @@ impl Entry {
             first: self.first,
             len: self.len,
             stored_at: self.stored_at,
-            last: self.last,
-            given: 0,
+            last: if self.len == 0 {
+                Last::Count(0)
+            } else {
+                Last::Stamp(self.last)
+            },
             tag: self.tag,
             bytes,
         }
@@ -168,18 +169,33 @@ pub(crate) struct Header {
     pub(crate) len: u32,
     /// Mesh time at which the home stored it.
     pub(crate) stored_at: Stamp,
-    /// The newest stamp of the entry's samples; none for a caller record.
-    pub(crate) last: Option<Stamp>,
-    /// For an entry with no samples, the entries with no samples at `first` on its
-    /// path, it included: from 1 to [`GIVEN_MAX`]. 0 for an entry with samples.
-    pub(crate) given: u64,
+    /// [`Last::Count`] when `len` is 0, else [`Last::Stamp`].
+    pub(crate) last: Last,
     /// A tag the caller gives and reads back.
     pub(crate) tag: u8,
     /// The size of the entry's bytes in the body.
     pub(crate) bytes: u32,
 }
 
+/// The `last` field of a [`Header`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Last {
+    /// The newest stamp of the entry's samples, if the entry has one.
+    Stamp(Option<Stamp>),
+    /// The entries with no samples at `first` on the path, this one included: from
+    /// 1. 0 until [`Logs::append`](crate::log::Logs::append) counts the entry.
+    Count(u64),
+}
+
 impl Header {
+    /// The newest stamp of the entry's samples: none for an entry with no samples.
+    pub(crate) const fn stamp(&self) -> Option<Stamp> {
+        match self.last {
+            Last::Stamp(stamp) => stamp,
+            Last::Count(_) => None,
+        }
+    }
+
     fn encode(&self) -> [u8; HEADER_LEN] {
         let mut out = [0; HEADER_LEN];
         let mut rest: &mut [u8] = &mut out;
@@ -207,10 +223,10 @@ impl Header {
         let first = u64::from_le_bytes(fields.take());
         let len = u32::from_le_bytes(fields.take());
         let stored_at = Stamp::from_nanos(i64::from_le_bytes(fields.take()));
-        let (last, given) = if len == 0 {
-            (None, fields.given()?)
+        let last = if len == 0 {
+            Last::Count(fields.given()?)
         } else {
-            (fields.last()?, 0)
+            Last::Stamp(fields.last()?)
         };
         let [tag] = fields.take();
         let bytes = u32::from_le_bytes(fields.take());
@@ -221,22 +237,23 @@ impl Header {
             len,
             stored_at,
             last,
-            given,
             tag,
             bytes,
         })
     }
 
-    /// The `last` field: the stamp as [`last_bytes`] writes it, or for an entry
-    /// with no samples, presence 0 and the count.
+    /// The `last` field: the stamp as [`last_bytes`] writes it, or presence 0 and
+    /// the count.
     fn last_bytes(&self) -> [u8; 9] {
-        if self.len != 0 {
-            return last_bytes(self.last);
+        match self.last {
+            Last::Stamp(stamp) => last_bytes(stamp),
+            Last::Count(count) => {
+                let mut bytes = [0; 9];
+                let (_, slot) = bytes.split_at_mut(1);
+                slot.copy_from_slice(&count.to_le_bytes());
+                bytes
+            }
         }
-        let mut bytes = [0; 9];
-        let (_, count) = bytes.split_at_mut(1);
-        count.copy_from_slice(&self.given.to_le_bytes());
-        bytes
     }
 }
 
@@ -292,13 +309,13 @@ impl Fields<'_> {
     /// # Errors
     ///
     /// [`Invalid::Stamped`] for presence 1, [`Invalid::Presence`] for a presence
-    /// byte over 1, and [`Invalid::Given`] for a count of 0 or over [`GIVEN_MAX`].
+    /// byte over 1, and [`Invalid::Uncounted`] for a count of 0.
     fn given(&mut self) -> Result<u64, Invalid> {
         let [presence] = self.take();
         let given = u64::from_le_bytes(self.take());
         match presence {
-            0 if (1..=GIVEN_MAX).contains(&given) => Ok(given),
-            0 => Err(Invalid::Given(given)),
+            0 if given != 0 => Ok(given),
+            0 => Err(Invalid::Uncounted),
             1 => Err(Invalid::Stamped),
             byte => Err(Invalid::Presence(byte)),
         }
@@ -375,9 +392,8 @@ pub(crate) enum Invalid {
     Presence(u8),
     /// An entry with no samples has presence 1.
     Stamped,
-    /// A carried `given` over [`GIVEN_MAX`], or the count of an entry with no
-    /// samples that is 0 or over it.
-    Given(u64),
+    /// An entry with no samples has a count of 0.
+    Uncounted,
     /// This many bytes follow the last entry and no header names them.
     Trailing(usize),
 }
@@ -499,8 +515,7 @@ mod tests {
             first: 0x1112_1314_1516_1718,
             len: 0x2122_2324,
             stored_at: Stamp::from_nanos(0x3132_3334_3536_3738),
-            last: Some(Stamp::from_nanos(-2)),
-            given: 0,
+            last: Last::Stamp(Some(Stamp::from_nanos(-2))),
             tag: 0x41,
             bytes,
         }
@@ -539,7 +554,7 @@ mod tests {
     #[test]
     fn encodes_no_last_stamp_as_a_zero_presence_byte_and_zero_stamp() {
         let header = Header {
-            last: None,
+            last: Last::Stamp(None),
             ..header(0)
         };
         let encoded = header.encode();
@@ -552,18 +567,20 @@ mod tests {
     fn stores_the_count_of_an_entry_with_no_samples_in_the_stamp_bytes() {
         let header = Header {
             len: 0,
-            last: None,
-            given: 5,
+            last: Last::Count(5),
             ..header(0)
         };
         let encoded = header.encode();
         assert_eq!(&encoded[37..46], &[0, 5, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(Header::decode(&encoded), Ok(header));
-        let over = [&[0][..], &(GIVEN_MAX + 1).to_le_bytes()].concat();
+        let largest = Header {
+            last: Last::Count(u64::MAX),
+            ..header
+        };
+        assert_eq!(Header::decode(&largest.encode()), Ok(largest));
         let cases = [
             (vec![1, 5, 0, 0, 0, 0, 0, 0, 0], Invalid::Stamped),
-            (vec![0; 9], Invalid::Given(0)),
-            (over, Invalid::Given(GIVEN_MAX + 1)),
+            (vec![0; 9], Invalid::Uncounted),
             (vec![2, 5, 0, 0, 0, 0, 0, 0, 0], Invalid::Presence(2)),
         ];
         for (bytes, invalid) in cases {
@@ -571,6 +588,11 @@ mod tests {
             wrong[37..46].copy_from_slice(&bytes);
             assert_eq!(Header::decode(&wrong), Err(invalid), "{bytes:?}");
         }
+    }
+
+    #[test]
+    fn a_header_takes_64_bytes() {
+        assert_eq!(mem::size_of::<Header>(), 64);
     }
 
     #[test]
@@ -669,7 +691,7 @@ mod tests {
             prop_oneof![Just(0), any::<u32>()],
             any::<i64>(),
             any::<Option<i64>>(),
-            1..=GIVEN_MAX,
+            1..=u64::MAX,
             any::<u8>(),
         )
             .prop_map(
@@ -681,8 +703,11 @@ mod tests {
                         first,
                         len,
                         stored_at: Stamp::from_nanos(stored_at),
-                        last: last.filter(|_| !empty).map(Stamp::from_nanos),
-                        given: if empty { given } else { 0 },
+                        last: if empty {
+                            Last::Count(given)
+                        } else {
+                            Last::Stamp(last.map(Stamp::from_nanos))
+                        },
                         tag,
                         bytes: 0,
                     }

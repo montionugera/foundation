@@ -207,7 +207,8 @@ impl Group {
     }
 
     /// The slot and header of each entry at `positions`, in order. A caller sets
-    /// each `given` before [`close`](Self::close) writes the table.
+    /// the [`Last::Count`](crate::entry::Last::Count) of each entry with no samples
+    /// before [`close`](Self::close) writes the table.
     ///
     /// # Panics
     ///
@@ -402,7 +403,7 @@ mod tests {
     use types::hash;
     use types::time::Stamp;
 
-    use crate::entry::{ENTRIES_MAX, Parts, table_len};
+    use crate::entry::{ENTRIES_MAX, Last, Parts, table_len};
     use crate::log::Mark;
     use crate::record::HEADER_LEN;
     use crate::wal::{self, Cursor, Position, Step, Window};
@@ -437,8 +438,7 @@ mod tests {
             first,
             len: 2,
             stored_at: Stamp::from_nanos(5),
-            last: Some(Stamp::from_nanos(9)),
-            given: 0,
+            last: Last::Stamp(Some(Stamp::from_nanos(9))),
             tag: 3,
             bytes: 99,
         }
@@ -463,7 +463,7 @@ mod tests {
             first: header.first,
             len: header.len,
             stored_at: header.stored_at,
-            last: header.last,
+            last: header.stamp(),
             tag: header.tag,
             parts,
         }
@@ -653,7 +653,7 @@ mod tests {
                 )
                 .expect("the ring has room");
             for (_, pushed) in group.entries(pushed) {
-                pushed.given = header.given;
+                pushed.last = header.last;
             }
         }
 
@@ -744,8 +744,11 @@ mod tests {
                         first,
                         len: next.len,
                         stored_at: Stamp::from_nanos(5),
-                        last: next.last.map(Stamp::from_nanos),
-                        given: if next.len == 0 { mark.given } else { 0 },
+                        last: if next.len == 0 {
+                            Last::Count(mark.given)
+                        } else {
+                            Last::Stamp(next.last.map(Stamp::from_nanos))
+                        },
                         tag: next.tag,
                         bytes: u32::try_from(bytes.len()).expect("under 300 bytes"),
                     };

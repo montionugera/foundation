@@ -8,7 +8,7 @@ use types::channel::{self, Slot};
 use types::frame::Path;
 use types::time::Stamp;
 
-use crate::entry::{Entry, Header};
+use crate::entry::{Entry, Header, Last};
 use crate::group;
 use crate::log::Carried;
 use crate::record::{ALIGN, BLOCK};
@@ -176,8 +176,7 @@ impl Logs {
                     first: 0,
                     len: 1,
                     stored_at: Stamp::from_nanos(1),
-                    last: Some(Stamp::from_nanos(1)),
-                    given: 0,
+                    last: Last::Stamp(Some(Stamp::from_nanos(1))),
                     tag: 0,
                     bytes: 8,
                 };
@@ -273,10 +272,12 @@ impl Logs {
         for (slot, header) in &self.headers {
             let mut empty = Header {
                 len: 0,
-                last: None,
+                last: Last::Count(0),
                 ..*header
             };
-            empty.given = self.inner.append(*slot, &empty).expect("entries in order");
+            self.inner
+                .append(*slot, &mut empty)
+                .expect("entries in order");
             self.inner
                 .sync(*slot, &empty, self.offset)
                 .expect("entries in order");
