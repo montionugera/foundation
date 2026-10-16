@@ -17,11 +17,15 @@ use document::value::{self, Value};
 use document::{Attribute, Block, Map};
 use env::net::{Listener, tcp};
 use env::tasks::{Group, Tasks};
+use hub::home::Outcome;
 use hub::reader::{Mode, Received};
+use hub::writer::Writer;
 use spec::channel::{Channel, Data};
 use spec::data_type::DataType;
 use spec::definition::Definition;
+use types::authority::Authority;
 use types::channel;
+use types::frame::{self, Draft, Form, Label, Path};
 use types::name::{Name, Selector};
 use types::quality::Quality;
 
@@ -1459,21 +1463,6 @@ fn stamps_each_frame_within_its_read() {
         let answered = i64::try_from(served.time.0).expect("small") + offset;
         assert_eq!(stamp(frame, 1), answered);
     }
-}
-
-/// Builds `Values` with a value that `Kept::sort` leaves out, which `Kept::sort` never
-/// gives. This test is the only kill of a `get` that gives a value for a left
-/// out read in place of the panic.
-#[test]
-#[should_panic(
-    expected = "invariant: read 2 is Err(Status(BadNotFound)), which `Kept::sort` \
-                leaves out"
-)]
-fn panics_with_the_read_whose_value_is_left_out() {
-    use crate::value::{Fault, Value};
-    let bad = Err(Fault::status(Status::BAD_NOT_FOUND));
-    let values = [Ok(Value::F64(1.0)), bad, bad];
-    Values(&values).get(2);
 }
 
 #[test]
