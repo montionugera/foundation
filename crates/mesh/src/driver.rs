@@ -6371,8 +6371,9 @@ mod tests {
         #[test]
         fn refuses_a_set_of_more_than_voters_max() {
             solo(|node, tasks| async move {
-                let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
-                lead(&mesh, &node.clock(), home_to(1)).await;
+                let members: Vec<u8> = (1..=127).collect();
+                let mesh = open(&node, &tasks, 1, &members, &[1]).await.unwrap();
+                let at = lead(&mesh, &node.clock(), home_to(1)).await;
                 let refused = mesh.propose_voters((1..=128).map(key).collect()).await;
                 let voters = Error::Voters {
                     voters: 128,
@@ -6383,7 +6384,7 @@ mod tests {
                             hold";
                 assert_eq!(refused.unwrap_err().to_string(), text);
                 let most = mesh.propose_voters((1..=127).map(key).collect()).await;
-                assert_eq!(most, Err(Error::NotMember(key(2))));
+                assert_eq!(most, Ok(after(at, 1)));
             });
         }
     }
