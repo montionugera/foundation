@@ -70,10 +70,11 @@ pub trait Kind: Send + Sync + 'static {
     /// The blocks to add to the body of the connector block, so that it reads or
     /// writes the point `tag` as the channel `channel`. `tag` and `facts` are those of
     /// a [`browse::Shape::Point`] that a browse of the kind gave. The blocks hold only
-    /// how the kind reaches the point, such as the tag and `facts.access`: the
-    /// `channel` block holds the sample type and the unit. For each value that the
-    /// blocks need and the device does not give, they hold
-    /// [`fill`](crate::import::fill).
+    /// how the kind reaches the point: the `channel` block holds the sample type and
+    /// the unit. A point whose `facts.access` is `Write` gets a write block. Each other
+    /// point, `None` too, gets a read block, since a write to a device needs the
+    /// user's choice. For each value that the kind needs and the browse does not give,
+    /// the blocks hold [`fill`](crate::import::fill).
     ///
     /// # Errors
     ///

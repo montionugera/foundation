@@ -7,9 +7,8 @@ use document::value::{self, Value};
 use document::{Attribute, Block, Document, Label, Map};
 use types::name::Name;
 
-/// A kind whose blocks of a point are `read "<channel>" { tag = "<tag>" }`, a `write`
-/// block in its place for a point that a connector can only write, and both for a
-/// point that it can read and write.
+/// A kind whose block of a point is `read "<channel>" { tag = "<tag>" }`, or a `write`
+/// block in its place for a point that a connector can only write.
 struct Points;
 
 impl Kind for Points {
@@ -33,15 +32,11 @@ impl Kind for Points {
         facts: &Facts,
         channel: &Name,
     ) -> Result<Vec<Block>, Vec<Diagnostic>> {
-        let keywords: &[&str] = match facts.access {
-            None | Some(Access::Read) => &["read"],
-            Some(Access::Write) => &["write"],
-            Some(Access::ReadWrite) => &["read", "write"],
+        let keyword = match facts.access {
+            Some(Access::Write) => "write",
+            None | Some(Access::Read | Access::ReadWrite) => "read",
         };
-        Ok(keywords
-            .iter()
-            .map(|keyword| point(keyword, channel, tag))
-            .collect())
+        Ok(vec![point(keyword, channel, tag)])
     }
 }
 
@@ -112,14 +107,10 @@ fn gives_the_blocks_of_the_kind() {
 }
 
 #[test]
-fn gives_each_block_that_the_kind_gives_for_a_point() {
-    let access = Some(Access::ReadWrite);
+fn gives_the_write_block_of_a_point_that_a_connector_can_only_write() {
+    let access = Some(Access::Write);
     let blocks = table().block("points", "ns=2;s=T1", &facts(access), &channel());
-    let expected = vec![
-        point("read", &channel(), "ns=2;s=T1"),
-        point("write", &channel(), "ns=2;s=T1"),
-    ];
-    assert_eq!(blocks, Ok(expected));
+    assert_eq!(blocks, Ok(vec![point("write", &channel(), "ns=2;s=T1")]));
 }
 
 #[test]
