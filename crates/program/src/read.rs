@@ -187,7 +187,7 @@ async fn start(
             .expect_err("a reader before opened may not end");
         return Err(Error::Reply(error));
     };
-    let frames = Frames::open(reader, set, &message).map_err(Error::Reply)?;
+    let (frames, _live) = Frames::open(reader, set, &message).map_err(Error::Reply)?;
     Ok((places, frames))
 }
 

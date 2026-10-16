@@ -169,7 +169,10 @@ fn status_gives_each_connector_as_json() {
             state: "stopped".into(),
             address: Some("http://127.0.0.1:1".into()),
             restarts: Some(0),
-            counts: Some(BTreeMap::from([("confirmed".into(), 0)])),
+            counts: Some(BTreeMap::from([
+                ("confirmed".into(), 0),
+                ("lost".into(), 0)
+            ])),
             error: Some(status::Error {
                 class: "config".into(),
                 text: concat!(
