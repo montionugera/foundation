@@ -134,8 +134,8 @@ impl Paths {
     /// file, also a device. On Linux, the walk of a link that a rename replaces during
     /// the call can read only a first part of its old target, so the call can open a
     /// folder on the way to that target, such as the folder of the link or `/`, and the
-    /// rest of `path` resolves under that folder, and the read gives the entries of
-    /// that folder.
+    /// rest of `path` resolves under that folder. When the link is the last part of
+    /// `path`, the read gives the entries of that folder.
     ///
     /// ```
     /// use std::path::{Path, PathBuf};
