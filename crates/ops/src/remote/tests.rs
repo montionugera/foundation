@@ -11,7 +11,7 @@ use super::Limits;
 use super::{Link, Scope, apply, most, plan, status};
 use crate::apply::Applied;
 use crate::common::{self, create_node, name, placed_site, solo};
-use crate::error::{Error, Problem, Unread, Unwritten};
+use crate::error::{Error, Problem, Unread, Unusable, Unwritten};
 use crate::front_end::File;
 use crate::operation::{DATA, Response};
 use crate::plan::Output;
@@ -876,7 +876,7 @@ fn mcp_refuses_each_path_outside_its_folders() {
         assert_eq!(run, Run::Exit(0));
         let outside = |path: &str| Error::Outside {
             path: PathBuf::from(path),
-            limits: Some(work()),
+            limits: work(),
         };
         let hidden = Error::Hidden {
             path: PathBuf::from("foundation-data/admin.key"),
@@ -961,7 +961,7 @@ fn mcp_writes_a_plan_file_only_under_its_folders_and_with_its_end() {
         let (_, replies) = remote.mcp(&paths, &[], &[out]).await;
         let outside = Error::Outside {
             path: PathBuf::from("x.plan"),
-            limits: Some(work()),
+            limits: work(),
         };
         assert_eq!(replies[0]["result"], failed(&outside));
         let read = paths.read(Path::new("/out/x.plan"), 16).expect("a read");
@@ -1036,7 +1036,7 @@ fn mcp_starts_only_on_a_folder_that_is_not_too_wide() {
     assert_eq!(served.0, Run::Exit(2));
     let folder = Error::Folder {
         path: PathBuf::from("/home/plant"),
-        error: Some(env::paths::Error::NotFound),
+        cause: Unusable::Failed(env::paths::Error::NotFound),
     };
     assert_eq!(served.2, folder.text());
     assert_eq!(
@@ -1053,7 +1053,7 @@ fn mcp_starts_only_on_a_folder_that_is_not_too_wide() {
     assert_eq!(served, (Run::Exit(0), pong, String::new()));
     let file = Error::Folder {
         path: PathBuf::from("/work/f"),
-        error: None,
+        cause: Unusable::File,
     };
     let refused = start("/home", "/home", &["--files", "/work/f"]);
     assert_eq!(refused, (Run::Exit(2), String::new(), file.text()));

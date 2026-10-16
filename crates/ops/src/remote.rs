@@ -7,7 +7,7 @@ use wire::hub::client::BODY_BYTES_MAX;
 
 use crate::Failure;
 use crate::apply::Applied;
-use crate::error::{self, Error, Unread, Unwritten};
+use crate::error::{self, Error, Unread, Unusable, Unwritten};
 use crate::front_end::{self, File};
 use crate::plan::Output;
 use crate::{serve, status};
@@ -60,12 +60,14 @@ impl Scope {
             path: data.to_owned(),
             error,
         };
-        let folder = |path: &Path, error| Error::Folder {
+        let folder = |path: &Path, cause| Error::Folder {
             path: path.to_owned(),
-            error,
+            cause,
         };
-        let resolve =
-            |path: &Path| paths.resolve(path).map_err(|e| folder(path, Some(e)));
+        let resolve = |path: &Path| {
+            let failed = |error| folder(path, Unusable::Failed(error));
+            paths.resolve(path).map_err(failed)
+        };
         let working = resolve(Path::new("."))?;
         let folders = if files.is_empty() {
             if working.parent().is_none() || paths.home().as_ref() == Some(&working) {
@@ -86,9 +88,9 @@ impl Scope {
                         folders.push(resolved);
                     }
                     Ok(paths::Found::File(_) | paths::Found::Large) => {
-                        return Err(folder(file, None));
+                        return Err(folder(file, Unusable::File));
                     }
-                    Err(error) => return Err(folder(file, Some(error))),
+                    Err(error) => return Err(folder(file, Unusable::Failed(error))),
                 }
             }
             folders
@@ -112,15 +114,16 @@ impl Scope {
     /// or `Hidden`.
     fn refused(&self, path: &Path, error: paths::Error) -> Error {
         let path = path.to_owned();
-        match (error, &self.limits) {
-            (paths::Error::Hidden, Some(limits)) => Error::Hidden {
+        let limits = self
+            .limits
+            .clone()
+            .expect("invariant: only the paths of a scope with limits refuse a path");
+        match error {
+            paths::Error::Hidden => Error::Hidden {
                 path,
-                data: limits.data.clone(),
+                data: limits.data,
             },
-            _ => Error::Outside {
-                path,
-                limits: self.limits.clone(),
-            },
+            _ => Error::Outside { path, limits },
         }
     }
 

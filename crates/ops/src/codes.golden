@@ -12,10 +12,10 @@ ops.denied	Ask an admin of the region for an access policy that allows it
 ops.large-reply	Plan and apply the change in smaller steps
 ops.channel-read	Fix the cause in the message, then ask for the status again
 ops.read	Fix the cause in the message, then run the command again
-ops.write	Give `--out` a path in a directory that can be written
+ops.write	Give `--out`, or `out` of the MCP tool, a path in a directory that can be written
 ops.large-request	Make the config files smaller
 ops.bad-reply	Use a `foundation` program of the same version as the node
-ops.outside	Give a path under one of those folders, also when it is relative. To reach another folder, add `--files <DIR>` to the command of the MCP server
+ops.outside	Give a path under one of those folders. A relative path is relative to the working directory /work. To reach another folder, add `--files <DIR>` to the command of the MCP server
 ops.hidden	Give a path outside /work/foundation-data
 ops.plan-name	Give `out` a path that ends in `.plan` and is not a link to another file
 ops.wide-folder	Add `--files <DIR>` for each folder that the tools may read and write

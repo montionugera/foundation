@@ -619,7 +619,11 @@ fn every() -> Vec<Error> {
         },
         Error::Outside {
             path: PathBuf::new(),
-            limits: None,
+            limits: crate::remote::Limits {
+                folders: vec![PathBuf::from("/work")],
+                data: PathBuf::from("/work/foundation-data"),
+                working: PathBuf::from("/work"),
+            },
         },
         Error::Hidden {
             path: PathBuf::new(),
@@ -634,7 +638,7 @@ fn every() -> Vec<Error> {
         },
         Error::Folder {
             path: PathBuf::new(),
-            error: None,
+            cause: crate::error::Unusable::File,
         },
         Error::Data {
             path: PathBuf::from("/work/foundation-data"),

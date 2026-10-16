@@ -108,12 +108,8 @@ pub(crate) enum Error {
     Reply { message: String },
     /// The errors that a node gave a command line, and the exit status of the reply.
     Remote { problems: Vec<Problem>, status: u8 },
-    /// A path that resolves outside the folders of `foundation mcp`, with them, or
-    /// with `None` past a limit that no command line sets.
-    Outside {
-        path: PathBuf,
-        limits: Option<Limits>,
-    },
+    /// A path that resolves outside the folders of `foundation mcp`, with them.
+    Outside { path: PathBuf, limits: Limits },
     /// A path that resolves under the data directory `data` of `foundation mcp`.
     Hidden { path: PathBuf, data: PathBuf },
     /// An `out` of a tool of `foundation mcp` that resolves to `resolved`, which does
@@ -122,12 +118,8 @@ pub(crate) enum Error {
     /// `foundation mcp` with no `--files`, in a working directory that is `/` or the
     /// home folder.
     WideFolder { working: PathBuf },
-    /// A folder of `foundation mcp` that did not resolve or read, with `None` when a
-    /// file is at it.
-    Folder {
-        path: PathBuf,
-        error: Option<env::paths::Error>,
-    },
+    /// A folder of `--files` of `foundation mcp` that it cannot use.
+    Folder { path: PathBuf, cause: Unusable },
     /// The data directory of `foundation mcp`, which it did not make.
     Data {
         path: PathBuf,
@@ -142,6 +134,15 @@ pub(crate) enum Unread {
     Directory,
     NotUtf8,
     Io { code: i32 },
+}
+
+/// Why `foundation mcp` cannot use a folder of `--files`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unusable {
+    /// A file is at it.
+    File,
+    /// It did not resolve or read.
+    Failed(env::paths::Error),
 }
 
 /// Why a command line did not write a plan file.
@@ -326,7 +327,9 @@ impl Error {
             ),
             Self::Write { .. } => (
                 WRITE,
-                "Give `--out` a path in a directory that can be written".to_owned(),
+                "Give `--out`, or `out` of the MCP tool, a path in a directory that can \
+                 be written"
+                    .to_owned(),
             ),
             Self::LargeRequest => {
                 (LARGE_REQUEST, "Make the config files smaller".to_owned())
@@ -335,12 +338,14 @@ impl Error {
                 BAD_REPLY,
                 "Use a `foundation` program of the same version as the node".to_owned(),
             ),
-            Self::Outside { .. } => (
+            Self::Outside { limits, .. } => (
                 OUTSIDE,
-                "Give a path under one of those folders, also when it is relative. To \
-                 reach another folder, add `--files <DIR>` to the command of the MCP \
-                 server"
-                    .to_owned(),
+                format!(
+                    "Give a path under one of those folders. A relative path is relative \
+                     to the working directory {}. To reach another folder, add \
+                     `--files <DIR>` to the command of the MCP server",
+                    limits.working.display()
+                ),
             ),
             Self::PlanName { .. } => (
                 PLAN_NAME,
@@ -644,10 +649,7 @@ impl fmt::Display for Error {
                 [one] => f.write_str(&one.message),
                 _ => write!(f, "the node gave {} problems", problems.len()),
             },
-            Self::Outside {
-                path,
-                limits: Some(limits),
-            } => {
+            Self::Outside { path, limits } => {
                 let folders: Vec<String> = limits
                     .folders
                     .iter()
@@ -659,9 +661,6 @@ impl fmt::Display for Error {
                     path.display(),
                     folders.join(", ")
                 )
-            }
-            Self::Outside { path, limits: None } => {
-                write!(f, "`{}` is outside the folders it may use", path.display())
             }
             Self::PlanName { path, resolved } => write!(
                 f,
@@ -682,8 +681,11 @@ impl fmt::Display for Error {
                 path.display(),
                 data.display()
             ),
-            Self::Folder { path, error } => {
-                let failed = error.map_or_else(|| "is a file".to_owned(), failed);
+            Self::Folder { path, cause } => {
+                let failed = match cause {
+                    Unusable::File => "is a file".to_owned(),
+                    Unusable::Failed(error) => failed(*error),
+                };
                 write!(f, "the folder `{}` of `--files` {failed}", path.display())
             }
             Self::Data {

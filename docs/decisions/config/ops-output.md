@@ -203,7 +203,8 @@
   read, or for the encoded request, status 2, fix `Make the config files smaller`; the
   check comes before the reach. `ops.write`: `the directory of the plan file <path> is
   not there` or `the write of the plan file <path> failed with OS error <code>`, status
-  1, fix ``Give `--out` a path in a directory that can be written``. `ops.bad-reply`:
+  1, fix ``Give `--out`, or `out` of the MCP tool, a path in a directory that can be
+  written``. `ops.bad-reply`:
   `the reply of the node is no reply: <why>`, status 1, fix ``Use a `foundation` program
   of the same version as the node``. A failure to reach the node, or of its request, has
   status 1 and one of the codes `node.not-running`, `node.unreadable`, `node.admin-key`,
@@ -319,14 +320,18 @@
   resolved before the check (`Paths::within` of ENV SEAMS). With no `--files`, a start
   whose working directory resolves to the root or the home directory fails with
   `ops.wide-folder` (2). A `--files` that is not there, that is a file, or that fails to
-  resolve is `ops.folder` (2). `foundation mcp` makes its data directory with
-  `Paths::make_dir` before a tool serves, and a failure is `ops.data` (1), whose fix at
-  `NotFound` names the directory above it. The `out` of `plan` through MCP must resolve
+  resolve is `ops.folder` (2). After these checks and before a tool serves,
+  `foundation mcp` makes its data directory with `Paths::make_dir`, and a failure is
+  `ops.data` (1), whose fix at `NotFound` names the directory above it. So a start that
+  these checks refuse makes nothing. The `out` of `plan` through MCP must resolve
   to a name that ends in `.plan`, else `ops.plan-name` (2). A path outside the folders
   is `ops.outside` (2): "`{path}` is not under a folder of this MCP server ({folders})",
-  with a fix that names `--files`. A path in the data directory is `ops.hidden` (2):
+  with a fix that names the working directory, where a relative path starts, and
+  `--files`. A path in the data directory is `ops.hidden` (2):
   "`{path}` is in the data directory {data} of this MCP server, which no tool reads or
-  writes", with the fix "Give a path outside {data}". Each is a tool error (`isError`).
+  writes", with the fix "Give a path outside {data}". `ops.plan-name`, `ops.outside`,
+  and `ops.hidden` are tool errors (`isError`); `ops.wide-folder`, `ops.folder`, and
+  `ops.data` end the start.
   The command line keeps free paths, since a person types them. Decided by
   `laptop.monitor` for the person, who delegated it at 2026-10-16T04:51:01Z with "I'll
   let you choose the right path" (2026-10-16T04:51:22Z,
@@ -340,3 +345,24 @@
   free paths for the tools, with which a model that text steers quotes or replaces any
   file of the user; MCP roots, which the 2026-07-28 revision of the specification
   deprecates; and `ops.outside` with no folders, which shows the agent no way out.
+  Amended (2026-10-16T04:45:05Z, #2526): one MCP server talks to one node, picked at
+  start with `foundation mcp --data <dir>`, and a tool call cannot pick another. A
+  failed `plan`, `apply`, or `status` is a tool result with `isError` and the text
+  `{"errors": [...]}`, while an unknown tool and a malformed request or argument stay a
+  JSON-RPC error. Each operation of `foundation --help` but `start` and `mcp` is a tool,
+  with the output schema of its `--json`. `version`, `docs`, and `status` have
+  `readOnlyHint`; `plan` and `apply` have `destructiveHint`, since the `out` of `plan`
+  replaces a file that is there, so a client that asks the person before a destructive
+  tool asks for `plan` too. `foundation mcp` reaches its node again at each tool call
+  that needs it, and keeps no session between calls: the thread that serves waits on
+  the next line of input, so a kept session sends no keep-alive and ends after a pause.
+  Decided by the person, "Yeah that's fine" (2026-10-16T04:45:05Z, relayed by
+  `laptop.monitor`,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208278565;
+  the tools and their hints by `laptop.architect-2`, 2026-10-16T04:46:50Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208295673; the
+  reach at each call, laptop.integrator-2, ruling owed,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6224344313). Lost: one
+  MCP server for many nodes, which lets text that steers the model pick the node; and a
+  session kept between calls with a thread that reads input, which changes the input of
+  `ops::cli` and saves only one loopback handshake for each call.
