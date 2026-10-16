@@ -460,9 +460,88 @@ fn fill(writer: &hub::writer::Writer) -> Vec<Draft> {
     held
 }
 
+#[test]
+fn loses_the_samples_of_a_group_that_another_writer_controls() {
+    let all = [true; 3];
+    let writes = vec![values(1.5, 7, -3, all), values(2.5, 8, -4, all)];
+    let record = run(writes.clone(), (2, 4), |hub, clock, tasks| async move {
+        let rival = rival(&hub, Authority::ABSOLUTE, &["plant.a"]).await;
+        tasks.spawn(async move {
+            clock.sleep(Span::from_nanos(10_000_000_000)).await;
+            drop(rival);
+        });
+    });
+    assert_eq!(record.result.as_ref().map_err(ToString::to_string), Ok(&()));
+    assert_eq!(record.time, []);
+    let start = stamp(&record.clock[0], 4);
+    let clock: Vec<_> = (0..)
+        .zip(writes)
+        .filter_map(|(at, values)| frames(values, start + at * TICK.nanos()).1)
+        .collect();
+    assert_eq!(record.clock, clock);
+    assert_eq!(record.counts, (2, 4));
+}
+
+/// The diagnostics of `record`, which ends with [`Error::Config`].
+fn diagnostics(record: &Record) -> Vec<(String, String, String)> {
+    let Err(Error::Config(diagnostics)) = &record.result else {
+        panic!("a config error, not {:?}", record.result)
+    };
+    (diagnostics.iter())
+        .map(|diagnostic| {
+            let code = diagnostic.code.to_string();
+            (code, diagnostic.message.clone(), diagnostic.fix.clone())
+        })
+        .collect()
+}
+
+#[test]
+fn refuses_a_channel_that_is_an_index() {
+    let channels = ["plant.time", "plant.a", "plant.b"];
+    let writes = vec![[Some(F64(1.5)), Some(F64(1.5)), Some(Value::I32(-3))]];
+    let record = run_of(channels, writes, (0, 0), |_, _, _| async {});
+    let message = "the channel `plant.time` is an index, which holds the stamp of each \
+                   request";
+    let want = (
+        "connector.index",
+        message,
+        "Write the value to a data channel",
+    );
+    let want =
+        [want].map(|(code, message, fix)| (code.into(), message.into(), fix.into()));
+    assert_eq!(diagnostics(&record), want);
+    assert_eq!((record.time, record.counts), (Vec::new(), (0, 0)));
+}
+
+#[test]
+fn refuses_a_channel_named_again() {
+    let channels = ["plant.a", "plant.a", "plant.b"];
+    let writes = vec![[Some(F64(1.5)), None, Some(Value::I32(-3))]];
+    let record = run_of(channels, writes, (0, 0), |_, _, _| async {});
+    let message =
+        "the connector writes the channel `plant.a` more than once per request";
+    let want = ("connector.repeated", message, "Write each channel once");
+    let want =
+        [want].map(|(code, message, fix)| (code.into(), message.into(), fix.into()));
+    assert_eq!(diagnostics(&record), want);
+    assert_eq!((record.time, record.counts), (Vec::new(), (0, 0)));
+}
+
+/// `plant.a` is an `f64`, so an `i64` of the same width panics.
+#[test]
+#[should_panic(
+    expected = "invariant: the value of channel 0 is i64, and its samples are f64"
+)]
+fn panics_at_a_value_of_another_type() {
+    let writes = vec![[Some(Value::I64(1)), Some(U16(7)), Some(Value::I32(-3))]];
+    run(writes, (0, 0), |_, _, _| async {});
+}
+
 /// `plant.s` is a `string`, so the `u16` value of its place panics.
 #[test]
-#[should_panic(expected = "a sample of 2 bytes, not 0")]
+#[should_panic(
+    expected = "invariant: the value of channel 1 is u16, and its samples are string"
+)]
 fn panics_at_a_value_of_a_channel_of_no_fixed_width() {
     let channels = ["plant.a", "plant.s", "plant.b"];
     let writes = vec![values(1.5, 7, -3, [true; 3])];
@@ -474,5 +553,5 @@ fn panics_at_a_value_of_a_channel_of_no_fixed_width() {
     expected = "invariant: a frame keeps no value of channel 1, which is `None`"
 )]
 fn panics_with_the_channel_whose_value_is_left_out() {
-    super::value(&[Some(Value::F64(1.0)), None], 1);
+    super::value(&[Some(Value::F64(1.0)), None], 1, Type::Scalar(Scalar::F64));
 }

@@ -2,6 +2,7 @@
 
 use std::mem;
 
+use document::diagnostic::{Code, Diagnostic};
 use hub::home::{Outcome, Refusal, order};
 use hub::writer::Time;
 use types::authority::Authority;
@@ -17,6 +18,13 @@ use crate::status;
 #[cfg(test)]
 #[cfg(not(loom))]
 mod tests;
+
+/// The counts that a [`Writer`] adds to: the samples that the home applied, and the
+/// samples that a frame lost. The `check` of a kind that opens a `Writer` names each.
+pub const COUNTS: [&str; 2] = ["in", "lost"];
+
+const INDEX: Code = Code::new("connector.index");
+const REPEATED: Code = Code::new("connector.repeated");
 
 /// The frames of a kind that reads one value of each channel per request: each frame
 /// has one sample of each channel that it keeps, and the stamp of the request in each
@@ -70,6 +78,7 @@ struct Fill {
     /// The position of the channel of the entry, or `None` for an index, whose sample
     /// is the stamp.
     channel: Option<usize>,
+    sample: Type,
 }
 
 impl Writer {
@@ -78,26 +87,48 @@ impl Writer {
     ///
     /// # Errors
     ///
-    /// The error of [`Context::writer`].
+    /// The error of [`Context::writer`], and [`Error::Config`] with a diagnostic of
+    /// each channel that is an index (`connector.index`), whose sample is the stamp
+    /// of the request, and of each channel that `channels` names again
+    /// (`connector.repeated`).
     ///
     /// # Panics
     ///
-    /// When `check` of the kind did not name the counts `in` and `lost`.
+    /// When `check` of the kind did not name each of [`COUNTS`].
     pub async fn open<C>(ctx: &Context<C>, channels: Vec<Name>) -> Result<Self, Error> {
-        let writer = ctx.writer(channels, Authority::ABSOLUTE, None).await?;
+        let writer = ctx
+            .writer(channels.clone(), Authority::ABSOLUTE, None)
+            .await?;
         let set = writer.set();
         let entries = set.entries();
         let mut channel_of = vec![None; entries.len()];
-        for (channel, &entry) in writer.entries().iter().enumerate() {
-            channel_of[entry] = Some(channel);
+        let mut wrong = Vec::new();
+        for ((channel, &entry), name) in
+            writer.entries().iter().enumerate().zip(&channels)
+        {
+            if set.groups().contains(&entry) {
+                wrong.push(index(name));
+            } else if channel_of[entry].replace(channel).is_some() {
+                wrong.push(repeated(name));
+            }
+        }
+        if !wrong.is_empty() {
+            return Err(Error::Config(wrong));
         }
         let mut samples = vec![0; set.groups().len()];
         let fills: Vec<_> = (entries.iter().zip(channel_of))
-            .map(|(&key_set::Entry { group, .. }, channel)| {
+            .map(|(entry, channel)| {
+                let key_set::Entry {
+                    group, data_type, ..
+                } = *entry;
                 if channel.is_some() {
                     samples[to_usize(group)] += 1;
                 }
-                Fill { group, channel }
+                Fill {
+                    group,
+                    channel,
+                    sample: data_type,
+                }
             })
             .collect();
         let groups = (fills.iter())
@@ -118,8 +149,8 @@ impl Writer {
             all,
             fills,
             stamps: Stamps::default(),
-            applied: ctx.count("in"),
-            lost: ctx.count("lost"),
+            applied: ctx.count(COUNTS[0]),
+            lost: ctx.count(COUNTS[1]),
             hub: writer,
         })
     }
@@ -131,7 +162,7 @@ impl Writer {
         (self.hub.entries().iter()).map(|&entry| entries[entry].data_type)
     }
 
-    /// The mesh time of the hub of the writer.
+    /// The mesh time of the writer's hub, as [`hub::writer::Writer::time`] gives it.
     #[must_use]
     pub fn time(&self) -> Time {
         self.hub.time()
@@ -144,8 +175,7 @@ impl Writer {
     }
 
     /// Writes one frame at `stamp` with the value of each channel, in order, and leaves
-    /// out each `None`. Each value is of the sample type of its channel. Writes no
-    /// frame when it keeps none. A group that the home refuses as `Backwards` is
+    /// out each `None`. Writes no frame when it keeps none. A group that the home refuses as `Backwards` is
     /// written again once, after the stamp that the refusal gives. A frame for which
     /// the pool has no block now loses its samples.
     ///
@@ -156,9 +186,9 @@ impl Writer {
     ///
     /// # Panics
     ///
-    /// When `values` has another length than the channels, a value has another width
-    /// than the sample type of its channel (each value of a channel of no fixed
-    /// width), or the home refuses a group as `Backwards` again.
+    /// When `values` has another length than the channels, a value is not of the
+    /// sample type of its channel (each value of a channel of no fixed width), or the
+    /// home refuses a group as `Backwards` again.
     pub fn write(
         &mut self,
         values: &[Option<Value>],
@@ -273,7 +303,7 @@ impl Kept {
             }
         }
         let held = |&&(entry, _): &&(usize, usize)| {
-            let Fill { group, channel } = fills[entry];
+            let Fill { group, channel, .. } = fills[entry];
             channel.map_or(samples[to_usize(group)] > 0, |channel| channels[channel])
         };
         shape.series.clear();
@@ -377,9 +407,12 @@ fn fill(
     groups: &[u32],
 ) {
     for (entry, bytes) in draft.iter_mut() {
-        match fills[entry].channel {
+        let Fill {
+            channel, sample, ..
+        } = fills[entry];
+        match channel {
             None => Value::Stamp(stamp).write(bytes),
-            Some(channel) => value(values, channel).write(bytes),
+            Some(channel) => value(values, channel, sample).write(bytes),
         }
     }
     for &group in groups {
@@ -387,9 +420,14 @@ fn fill(
     }
 }
 
-/// The value of the channel at `at`, which a frame keeps.
-fn value(values: &[Option<Value>], at: usize) -> Value {
-    values[at].unwrap_or_else(|| left_out(at))
+/// The value of the channel at `at`, which a frame keeps, and whose samples are of
+/// type `sample`.
+fn value(values: &[Option<Value>], at: usize, sample: Type) -> Value {
+    let value = values[at].unwrap_or_else(|| left_out(at));
+    if Type::Scalar(value.scalar()) != sample {
+        mistyped(at, value, sample);
+    }
+    value
 }
 
 /// Cold and apart from `value`, so the loop of a send stores nothing per sample for
@@ -398,6 +436,36 @@ fn value(values: &[Option<Value>], at: usize) -> Value {
 #[inline(never)]
 fn left_out(at: usize) -> ! {
     panic!("invariant: a frame keeps no value of channel {at}, which is `None`")
+}
+
+/// As [`left_out`].
+#[cold]
+#[inline(never)]
+fn mistyped(at: usize, value: Value, sample: Type) -> ! {
+    let of = Type::Scalar(value.scalar());
+    panic!("invariant: the value of channel {at} is {of}, and its samples are {sample}")
+}
+
+/// The diagnostic of the channel `name`, which is an index.
+fn index(name: &Name) -> Diagnostic {
+    Diagnostic::new(
+        INDEX,
+        None,
+        format!(
+            "the channel `{name}` is an index, which holds the stamp of each request"
+        ),
+        "Write the value to a data channel".into(),
+    )
+}
+
+/// The diagnostic of the channel `name`, which the writer names again.
+fn repeated(name: &Name) -> Diagnostic {
+    Diagnostic::new(
+        REPEATED,
+        None,
+        format!("the connector writes the channel `{name}` more than once per request"),
+        "Write each channel once".into(),
+    )
 }
 
 /// `group` as a position.
