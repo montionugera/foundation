@@ -707,6 +707,16 @@ fn adds_the_certificates_of_a_pem_text_to_the_roots() {
 }
 
 #[test]
+fn skips_a_byte_order_mark_at_the_start_of_a_pem_text() {
+    let roots = Roots::default().with_pem(&format!("\u{feff}{}", sim::CA));
+    let mut network = Network::new(9, Certificate::Valid, JUNE_2026);
+    let body = network.send(roots.expect("the CA parses"), "https://server:8086/ping");
+    assert_eq!(body.expect("the server answers"), "/ping");
+    let late = Roots::default().with_pem(&format!("\n\u{feff}{}", sim::CA));
+    assert_eq!(late.expect_err("a mark not at the start"), Pem::Empty);
+}
+
+#[test]
 fn gives_empty_for_a_pem_text_with_no_certificate() {
     let key = include_str!("../sim/tls/server.key");
     for text in ["", "no PEM here", key] {
