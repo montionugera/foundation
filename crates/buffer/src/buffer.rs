@@ -330,7 +330,7 @@ struct State {
     logs: Logs,
     /// The last checkpoint written.
     header: Header,
-    /// Empty, with room from open on for the tails of the largest carry record.
+    /// Empty, with the capacity of the tails of the last carry record, for the next.
     carried: Carried,
     /// Whether an append got [`Rejected::Full`] since the last deadline, with
     /// [`Config::trimmed`]. The task then commits also with no entry, so that its
@@ -666,9 +666,7 @@ impl Buffer {
                 queue: Vec::new(),
                 logs,
                 header,
-                carried: Carried::with_capacity(
-                    header.layout.tails_max().min(tails_max),
-                ),
+                carried: Carried::default(),
                 starved: false,
                 held: Vec::with_capacity(HOLDS),
                 taken: 0,
@@ -2144,12 +2142,12 @@ mod tests {
             assert_eq!(*found, Some(((Some(0..3), vec![], Mark::at(3)), tail)));
         }
 
-        /// The carry of a buffer has room at open for the tails of the largest carry
-        /// record. Records of one entry of each of more paths than that record holds
-        /// come first, then the commits of index 0 turn the ring of 64 blocks, so
-        /// full carry records take their tails. The room stays.
+        /// The carry of a buffer has no room at open. Records of one entry of each of
+        /// more paths than the largest carry record holds come first, then the commits
+        /// of index 0 turn the ring of 64 blocks, so full carry records take their
+        /// tails, and the carry has room for them.
         #[test]
-        fn a_carry_has_room_for_the_largest_record_from_open_on() {
+        fn a_carry_has_no_room_until_it_carries() {
             let mut sim = sim::Sim::new(sim::Config::default());
             let node = sim.node(sim::node::Config::default());
             let found = Arc::new(Mutex::new(Vec::new()));
@@ -2190,7 +2188,12 @@ mod tests {
             );
             let tails = carry::count(8000);
             let found = found.lock().expect("no panic held the lock");
-            assert_eq!(found[..2], [(tails, 0), (tails, 0)]);
+            assert_eq!(found[0], (0, 0), "no room at open");
+            assert!(
+                found[1].0 >= tails,
+                "room for a full record: {:?}",
+                found[1]
+            );
             let (seq, last) = found[2];
             assert_eq!(seq, 3, "a carry record keeps the tail of the last path");
             let last = Slot::new(u32::try_from(last).expect("fits"));

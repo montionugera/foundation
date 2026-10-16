@@ -696,6 +696,7 @@ impl Logs {
     /// so the tail is the end after those records, and the carry record goes right
     /// after them.
     pub(crate) fn carry(&mut self, reach: u64, limit: usize, carried: &mut Carried) {
+        carried.reserve(limit.min(self.paths.len()));
         let mut room = limit;
         let mut walk = limit.saturating_mul(FILL);
         for (number, offset, at) in self.items.since(self.scanned) {
@@ -1017,6 +1018,7 @@ pub(crate) struct Carried {
 impl Carried {
     /// Room for `tails` tails, so that a carry of at most that many allocates
     /// nothing.
+    #[cfg(feature = "sim")]
     pub(crate) fn with_capacity(tails: usize) -> Self {
         Self {
             tails: Vec::with_capacity(tails),
@@ -1029,6 +1031,12 @@ impl Carried {
     #[cfg(test)]
     pub(crate) fn capacity(&self) -> usize {
         self.tails.capacity().min(self.places.capacity())
+    }
+
+    /// Room for `tails` tails in all, which grows as a `Vec` grows.
+    fn reserve(&mut self, tails: usize) {
+        self.tails.reserve(tails.saturating_sub(self.tails.len()));
+        self.places.reserve(tails.saturating_sub(self.places.len()));
     }
 
     /// The tails, in the order of the record body.
@@ -3086,6 +3094,20 @@ mod tests {
         assert_eq!(tails.tails().len(), 1);
         assert_eq!(tails.tails()[0].index, channel::Key::from_u128(1));
         assert_eq!(logs.scanned, 9);
+    }
+
+    /// A call takes room for the tails of the paths in one step, so 10 tails take a
+    /// capacity of 10, not the 16 of a `Vec` that grows as it is filled.
+    #[test]
+    fn a_carry_takes_room_for_each_path_at_once() {
+        let mut logs = Logs::new(AREA);
+        for index in 1..=10 {
+            synced(&mut logs, index, 4096);
+        }
+        let mut tails = Carried::default();
+        logs.carry(8192, 1023, &mut tails);
+        assert_eq!(tails.tails().len(), 10);
+        assert_eq!(tails.capacity(), 10);
     }
 
     /// A call that takes no tail before the reach stops there, also when `carried`
