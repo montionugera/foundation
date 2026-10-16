@@ -272,6 +272,7 @@ unsafe extern "C" {
         parent: Node<'_>,
         name: *const std::ffi::c_char,
     ) -> u32;
+    pub(crate) fn shim_server_add_tree(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_run_shutdown(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_delete(server: *mut Server) -> u32;
     pub(crate) fn UA_Server_getLifecycleState(server: *mut Server) -> Lifecycle;

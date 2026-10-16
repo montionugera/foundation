@@ -180,6 +180,19 @@ impl Server {
         unsafe { (*source.as_ptr()).added = true };
     }
 
+    /// Adds the tree of [`crate::sim::serve`], and caps each page of a Browse at 8
+    /// references.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses a node of the tree, such as one that the server has.
+    #[cfg(feature = "sim")]
+    pub(crate) fn add_tree(&self) {
+        // SAFETY: the server lives.
+        let status = Status(unsafe { ffi::test::shim_server_add_tree(self.raw()) });
+        assert_eq!(status, Status::GOOD, "open62541 refused the tree");
+    }
+
     /// Makes `answer` answer each later read of the variable `node`, which open62541
     /// adds, such as the state of the server, as [`Server::add_source`] does.
     ///

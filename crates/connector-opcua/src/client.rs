@@ -30,7 +30,7 @@ use crate::value::{Fault, Value};
     not(test),
     expect(dead_code, reason = "the opcua kind of #2705 is the first user")
 )]
-mod browse;
+pub(crate) mod browse;
 mod service;
 #[cfg(test)]
 mod tests;
