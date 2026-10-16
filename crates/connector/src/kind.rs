@@ -447,9 +447,9 @@ const LARGE_FRAME: Code = Code::new("connector.large-frame");
 const BAD_SECRET_NAME: Code = Code::new("connector.bad-secret-name");
 /// The fix of [`MANY_READERS`]. A connector's reader is always named, and a latest
 /// one adds no record.
-const FEWER_READERS: &str = "Read the index from fewer connectors in complete mode, or \
-                             set `mode = \"latest\"` on one; a removed reader keeps its \
-                             place until its hold ends";
+const FEWER_READERS: &str = "Read the index from fewer connectors in complete \
+                             mode, or set `mode = \"latest\"` on one; a removed reader \
+                             keeps its place until its hold ends";
 /// The fix of [`LARGE_FRAME`].
 const FEWER_CHANNELS: &str = "Give the connector fewer channels";
 
@@ -483,7 +483,13 @@ pub(crate) fn reader_error(error: hub::reader::Error) -> Error {
     let (code, fix) = match error {
         Hub::Empty => (NO_CHANNEL, "Select a channel that the spec defines"),
         Hub::ManyIndexes { .. } => (MANY_INDEXES, "Select channels of one index"),
-        Hub::Full { .. } => (MANY_READERS, FEWER_READERS),
+        // The hub's text says to open the reader unnamed, which a spec cannot do.
+        Hub::Full { limit } => {
+            let fact = format!(
+                "the records of the named readers of the index would pass {limit} bytes"
+            );
+            return config_error(MANY_READERS, &fact, FEWER_READERS);
+        }
         Hub::Remote { .. } | Hub::Mesh(_) => return Error::Retry(Box::new(error)),
         Hub::Unsynced => panic!("invariant: a reader opened before mesh time: {error}"),
         Hub::Transport(_) | Hub::Refused(_) | Hub::Message(_) | Hub::Pool(_) => {
@@ -1193,9 +1199,7 @@ mod tests {
         let want = Diagnostic::new(
             Code::new("connector.many-readers"),
             None,
-            "the records of the named readers of the index would pass 4032 bytes: \
-             close a named reader of the index whose hold is zero, wait for a hold to \
-             end, or open this one unnamed"
+            "the records of the named readers of the index would pass 4032 bytes"
                 .into(),
             "Read the index from fewer connectors in complete mode, or set \
              `mode = \"latest\"` on one; a removed reader keeps its place until its \

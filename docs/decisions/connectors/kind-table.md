@@ -21,10 +21,13 @@
   https://github.com/synnaxlabs/foundation/issues/2354#issuecomment-6105802513, item 5):
   `Config`, with one diagnostic with no span and the hub error's text, for an error that
   only a spec change fixes: reader `Empty` (`connector.no-channel`), `ManyIndexes`
-  (`connector.many-indexes`), and `Full` (`connector.many-readers`,
-  `laptop.architect-2`, 2026-10-16T05:24:48Z:
-  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6208736533); writer
-  `Unknown` (`connector.unknown-channel`), `Empty`
+  (`connector.many-indexes`), and `Full` (`connector.many-readers`, with only the
+  fact of the hub's text, because a spec cannot open the reader unnamed as the hub's
+  text says; `laptop.architect-2`, 2026-10-16T05:24:48Z:
+  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6208736533, and
+  2026-10-16T06:45:15Z:
+  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6209768377);
+  writer `Unknown` (`connector.unknown-channel`), `Empty`
   (`connector.no-channel`), and `Home` with a lease that is not longer than zero
   (`connector.lease`). `Retry`, with the hub error: `Remote` and `Mesh` of each, since
   the home can move back, and a mesh that stops ends the run at the cancel after at most
