@@ -112,9 +112,9 @@ impl<'a> Received<'a> {
     /// the gap that a later frame gives.
     #[must_use]
     pub fn position(&self) -> Position {
-        let live = match self.lent.mode {
-            Mode::Complete => self.lent.gaps.live(),
-            Mode::Latest => self.lens.end(self.view.frame()),
+        let live = match &self.lent.gaps {
+            Some(gaps) => gaps.live(),
+            None => self.lens.end(self.view.frame()),
         };
         let position = Position {
             index: self.lens.index,
@@ -131,8 +131,8 @@ impl<'a> Received<'a> {
     /// `None`, and the next frame with one gives the gap.
     #[must_use]
     pub fn gap(&self) -> Option<Range<u64>> {
-        let gap = &self.lent.gap;
-        (!gap.is_empty()).then(|| gap.clone())
+        let gap = self.lent.gaps.as_ref()?.last();
+        (!gap.is_empty()).then_some(gap)
     }
 }
 
@@ -357,28 +357,22 @@ pub struct Reader {
 /// stays as small as with no names.
 #[derive(Debug)]
 struct Lent {
-    mode: Mode,
     /// `None` for a reader of a client read. A box keeps the reader small.
     names: Option<Box<Names>>,
     /// The `live` of the last position that [`Received::position`] gave, or `None`
     /// before it gave one. The positions of a reader rise, so it is the highest.
     given: Cell<Option<u64>>,
-    /// The gaps of a complete reader. A latest reader keeps them at the open
-    /// position, as it gets no gap.
-    gaps: Gaps,
-    /// The gap of the frame that the last [`Received`] lends.
-    gap: Range<u64>,
+    /// The gaps of a complete reader, `None` for a latest reader, which gets no gap.
+    gaps: Option<Gaps>,
 }
 
 impl Lent {
     /// What a reader in `mode` that opened at `live` lends before its first frame.
     fn at(mode: Mode, live: u64) -> Self {
         Self {
-            mode,
             names: None,
             given: Cell::new(None),
-            gaps: Gaps::new(live),
-            gap: 0..0,
+            gaps: (mode == Mode::Complete).then(|| Gaps::new(live)),
         }
     }
 }
@@ -604,8 +598,8 @@ impl Reader {
                 },
                 Source::Remote(remote) => remote.take().await?,
             };
-            if self.lent.mode == Mode::Complete {
-                self.lent.gap = self.lent.gaps.before(lens.range(&frame));
+            if let Some(gaps) = &mut self.lent.gaps {
+                gaps.pass(lens.range(&frame));
             }
             let frame = self.frame.insert(frame);
             Ok(Received {

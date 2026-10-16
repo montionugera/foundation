@@ -21,7 +21,6 @@ pub struct Frames {
     draft: Option<Draft>,
     /// `None` in a latest session.
     gaps: Option<Gaps>,
-    lost: ops::Range<u64>,
 }
 
 /// What [`Frames`] waits for next.
@@ -82,7 +81,6 @@ impl Frames {
             FromHome::Opened { live } => {
                 let frames = Self {
                     gaps: (!reader.latest()).then(|| Gaps::new(live)),
-                    lost: 0..0,
                     reader,
                     set,
                     head: None,
@@ -110,7 +108,7 @@ impl Frames {
     #[must_use]
     #[inline]
     pub fn lost(&self) -> ops::Range<u64> {
-        self.lost.clone()
+        self.gaps.as_ref().map_or(0..0, Gaps::last)
     }
 
     /// What the frames wait for. Ask it before each input: a call that dropped
@@ -230,10 +228,9 @@ impl Frames {
     fn freeze(&mut self) -> Frame {
         let head = self.head.take().expect("invariant: a frame has a head");
         let mut draft = self.draft.take().expect("invariant: a frame has a draft");
-        self.lost = self
-            .gaps
-            .as_mut()
-            .map_or(0..0, |gaps| gaps.before(head.range));
+        if let Some(gaps) = &mut self.gaps {
+            gaps.pass(head.range);
+        }
         draft.set_count(0, head.range.count);
         draft.set_seq(0, head.range.seq);
         draft.freeze(head.path)
