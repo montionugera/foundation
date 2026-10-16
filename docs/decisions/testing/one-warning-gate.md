@@ -8,6 +8,7 @@
   Clippy step of `fuzz` keeps `-D warnings` for the `fuzz/` workspace, and the Clippy
   step of `loom`, on the pinned stable, keeps it for `ring` and `block` under `--cfg
   loom`. `check` sees neither. Decided by `laptop.monitor` under the CI delegation of
-  the person (2026-10-15T18:20:23Z), with the person's agreement at
+  the person (2026-10-15T18:20:23Z) in
+  https://github.com/synnaxlabs/foundation/issues/2798, with the person's agreement at
   2026-10-16T02:17:03Z ("Ok, that's fine"):
   https://github.com/synnaxlabs/foundation/issues/2798#issuecomment-6207535014.
