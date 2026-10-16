@@ -100,6 +100,8 @@
   the panic hook with no thread start (2026-10-16T03:48:16Z,
   https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207638284), and
   no wait on the thread `log` (2026-10-16T04:04:09Z,
-  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207813688). Lost:
+  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207813688), and
+  `Flush::hook` (2026-10-16T04:37:28Z,
+  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6208190479). Lost:
   one thread for the life of the log, which makes each sim run end as `Stuck`; a write
   on the thread of `join`, which loses the bound of `main` on a stuck writer.
