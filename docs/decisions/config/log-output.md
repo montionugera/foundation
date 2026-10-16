@@ -65,9 +65,9 @@
   `debug` and `trace`, `noq-proto` writes a line for each packet and frame of QUIC, at
   about 425 to 739 ns and 2 to 6 allocations before the write, and at `trace` a span
   at 118 ns and 2 allocations (laptop, M3 Max, load 9, 3 passes). The help of
-  `--log-level` says so. #2764 carries the shared lock, the allocations, and the span
-  fields that `Line` never prints. #2807 carries the WARN of `noq-proto` for each
-  Initial packet with an invalid retry token. By `laptop.architect-2`
+  `--log-level` says so. #2764 removes the shared lock. #2815 carries the allocations
+  and the span fields that `Line` never prints. #2807 carries the WARN of `noq-proto`
+  for each Initial packet with an invalid retry token. By `laptop.architect-2`
   (2026-10-16T01:49:38Z,
   https://github.com/synnaxlabs/foundation/pull/2762#issuecomment-6206195113), and the
   split to #2807 (2026-10-16T03:22:23Z,
