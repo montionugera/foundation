@@ -105,14 +105,26 @@ impl Flush {
         self.written(sent, bound)
     }
 
-    /// Logs ERROR `panicked` with the field `panic`, the text of `info`. For a panic
-    /// hook: it can run inside an event, so it sets no dispatch and starts no
-    /// thread. While a shard runs, waits as [`Flush::wait`] does with a bound of 1 s,
-    /// and returns `false` when the bound passed first: the writer may then block a
-    /// write of the hook too. After each shard has ended, or for a panic of the
-    /// writer, returns `true` at once, and the line waits for the log to write it.
-    #[must_use]
-    pub fn panicked(&self, info: &PanicHookInfo<'_>) -> bool {
+    /// Sets the panic hook of the process. It logs ERROR `panicked` with the field
+    /// `panic`, the text of the panic, as the last line of the log, then calls the hook
+    /// before it. It sets no dispatch and starts no thread, so a panic inside an event
+    /// does not abort. While a shard runs, it first waits up to 1 s for the log to
+    /// write each line, and when the bound passes, it does not call the hook before it:
+    /// the writer may block that write too. After each shard has ended, and for a panic
+    /// of the writer, it calls the hook before it at once.
+    pub fn hook(&self) {
+        let flush = self.clone();
+        let previous = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            if flush.panicked(info) {
+                previous(info);
+            }
+        }));
+    }
+
+    /// Logs the panic line of `info`, then gives whether the hook before may write:
+    /// after a wait of up to [`PANIC`] while a shard runs, and at once otherwise.
+    fn panicked(&self, info: &PanicHookInfo<'_>) -> bool {
         self.queue.push(self.queue.line.panicked(info).into_bytes());
         let writing = self.queue.lock().thread == Some(thread::current().id());
         if writing || self.queue.closed.load(Ordering::Acquire) {

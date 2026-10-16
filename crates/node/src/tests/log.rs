@@ -520,27 +520,21 @@ fn panics(case: Case) -> ! {
     let log = log::open(Log { writer, format }, &threads, wall, mesh);
     let hold = log.hold().expect("the thread log starts");
     tracing::dispatcher::with_default(&log.dispatch, numbered(0, 3));
-    let flush = log.clone();
-    let previous = panic::take_hook();
-    panic::set_hook(Box::new(move |info| {
-        if log.panicked(info) {
-            previous(info);
-        }
-    }));
+    log.hook();
     match case {
         Case::Late => {
             drop(hold);
-            tracing::dispatcher::with_default(&flush.dispatch, || {
+            tracing::dispatcher::with_default(&log.dispatch, || {
                 tracing::info!(target: "test", field = %Boom);
             });
         }
         Case::Writes => {
-            tracing::dispatcher::with_default(&flush.dispatch, || {
+            tracing::dispatcher::with_default(&log.dispatch, || {
                 tracing::info!(target: "test", "boom");
                 tracing::info!(target: "test", "c");
             });
             let bound = Duration::from_millis(500);
-            assert!(flush.wait(bound), "the line after the panic is late");
+            assert!(log.wait(bound), "the line after the panic is late");
         }
         Case::Free | Case::Stuck => {}
     }
@@ -736,4 +730,19 @@ proptest! {
         let line: Value = serde_json::from_str(&line).expect("JSON");
         prop_assert_eq!(&line["fields"]["field"], &json!(field));
     }
+}
+
+#[test]
+fn the_debug_of_a_log_hides_its_writer() {
+    let (_, mesh) = clock::Clock::new(os::clock());
+    let format = ops::Log {
+        json: false,
+        level: tracing::Level::INFO,
+    };
+    let writer = Box::new(Lines::default());
+    let threads = os::threads().expect("threads");
+    let wall = os::wall().expect("a wall clock");
+    let log = log::open(Log { writer, format }, &threads, wall, mesh);
+    let debug = format!("{log:?}");
+    assert!(debug.contains("parts: Some(Parts { .. })"), "{debug}");
 }

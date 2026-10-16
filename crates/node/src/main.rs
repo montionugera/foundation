@@ -4,7 +4,6 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{self, Write};
-use std::panic;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::mpsc;
@@ -330,7 +329,7 @@ fn node(
         threads: threads.clone(),
     });
     let flush = node.flush();
-    hook(flush.clone());
+    flush.hook();
     let stopper = node.stopper();
     let stop = threads.start("stop", move || async move {
         interrupt.await;
@@ -356,19 +355,6 @@ fn node(
     let ended = stop.map(drop).map_err(failed);
     drop(show);
     joined.and(closed.map_err(failed)).and(ended)
-}
-
-/// Sets the panic hook of the process: it logs the panic to the log of `flush` as its
-/// last line, then calls the hook before it when [`node::Flush::panicked`] allows.
-fn hook(flush: node::Flush) {
-    let previous = panic::take_hook();
-    // A log that does not take the panic within its bound has a stuck writer, which
-    // would block the default hook's write to stderr too.
-    panic::set_hook(Box::new(move |info| {
-        if flush.panicked(info) {
-            previous(info);
-        }
-    }));
 }
 
 /// The disk of each of `cores` shards on the data directory `dir`, and the handle of
