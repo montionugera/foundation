@@ -224,20 +224,18 @@ fn ca(
     config: &Document,
     address: &Result<Uri, Diagnostic>,
 ) -> Result<Option<secret::Source>, Diagnostic> {
-    match (source(config, "ca"), address) {
-        (Ok(Some(_)), Ok(address)) if address.scheme() != Some(&Scheme::HTTPS) => {
-            let ca = config
-                .attributes
-                .get("ca")
-                .expect("invariant: a `ca` is read");
-            Err(Diagnostic::new(
-                CA_WITH_HTTP,
-                ca.key_span,
-                "the connector has a `ca`, which only an `https` address takes".into(),
-                "Use an `https` address, or remove `ca`".into(),
-            ))
-        }
-        (ca, _) => ca,
+    let Some(ca) = config.attributes.get("ca") else {
+        return Ok(None);
+    };
+    let source = secret::Source::read(&ca.value)?;
+    match address {
+        Ok(address) if address.scheme() != Some(&Scheme::HTTPS) => Err(Diagnostic::new(
+            CA_WITH_HTTP,
+            ca.key_span,
+            "the connector has a `ca`, which only an `https` address takes".into(),
+            "Use an `https` address, or remove `ca`".into(),
+        )),
+        _ => Ok(Some(source)),
     }
 }
 
