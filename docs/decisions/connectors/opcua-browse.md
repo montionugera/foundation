@@ -1,0 +1,33 @@
+- **OPCUA BROWSE (#2705)** The OPC UA client browses a server and describes its
+  variables for an import (`client::browse`, crate-private). `Client::browse` and
+  `Client::browse_next` give the forward `HierarchicalReferences` of a node and their
+  subtypes, of the classes Object, Variable, and View, a page at a time, with the type,
+  the names, and the class of each reference. A continuation point lives in its
+  session. `Client::describe` gives the base type, the `ValueRank`, the
+  `UserAccessLevel`, and the `EngineeringUnits` of each variable. The base is the first
+  built-in type of namespace 0 up the inverse `HasSubtype` references; a subtype of
+  `Enumeration` is Int32, as OPC 10000-3, 5.8 encodes it; `Structure`, `BaseDataType`,
+  the abstract numbers, a loop, a walk of more than 16 links, and a type on the walk
+  whose id is not a number or a name give none. Each step of the walk is one Browse of
+  each type of the call that the client does not know yet, and the client keeps the
+  supertype of each type that it browsed. The unit comes from a Translate of
+  `HasProperty` `0:EngineeringUnits`, then a Read of the Value of each target. The
+  client sends one request at a time, and splits each by the limit of its service on
+  the server (`MaxNodesPerRead`, `MaxNodesPerBrowse`, or
+  `MaxNodesPerTranslateBrowsePathsToNodeIds`) and by the size of a message. It reads
+  the limits of a Browse and a Translate once, at the first `describe`, not in the
+  connect of a read task. The strategy and the base type: approved by
+  `laptop.monitor` (2026-10-16T16:40:53Z:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6220213470). The
+  limit of each service, the batched walk, the reference type, and `None` for a type
+  that is not a number or a name: `laptop.architect-2` (2026-10-16T16:43:06Z:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6220251690). Unit
+  code: `EUInformation.unitId` is a UN/CEFACT Recommendation 20 code only when its
+  `namespaceUri` is `http://www.opcfoundation.org/UA/units/un/cefact` (OPC 10000-8,
+  5.6.4), else the code is `None` and the unit comes from the display name
+  (`laptop.monitor`, same link). The code is the 2 or 3 bytes of `unitId` after its
+  zero bytes, each an ASCII capital letter or digit, so `P1` (`%`) reads, else `None`
+  (`laptop.architect-2`, same link). Later steps, in PR 5 of #2705: the kind shows a
+  reference of a GUID or opaque node to the user, and its plan sends that choice to
+  `laptop.monitor` as kind e; its plan bounds the continuation points of a walk
+  (`MaxBrowseContinuationPoints`), and adds a release of a point if it needs one.
