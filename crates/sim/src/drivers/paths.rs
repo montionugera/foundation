@@ -1,6 +1,6 @@
 //! The `env::paths` driver of a simulated node.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use env::paths::{Error, Found};
 
@@ -14,5 +14,13 @@ impl env::paths::Driver for Node {
 
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
         lock(&self.shared).paths().write(self.node, path, bytes)
+    }
+
+    fn resolve(&self, path: &Path) -> Result<PathBuf, Error> {
+        lock(&self.shared).paths().resolve(self.node, path)
+    }
+
+    fn home(&self) -> Option<PathBuf> {
+        lock(&self.shared).paths().home(self.node)
     }
 }

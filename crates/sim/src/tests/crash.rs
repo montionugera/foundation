@@ -1920,6 +1920,7 @@ fn a_crash_closes_a_leaked_file_and_gives_its_path() {
 fn a_crash_closes_a_leaked_host_file_and_gives_its_absolute_path() {
     let (mut sim, node) = disk(0);
     crash_after(&mut sim, &node, Crash::Process, |node| async move {
+        node.make_dir(Path::new("/run"));
         node.paths().write(Path::new("/run/a"), b"abc").unwrap();
         let path = Absolute::new("/run/a").unwrap();
         let file = node.files().open_absolute(&path).await.unwrap();
