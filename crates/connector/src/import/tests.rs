@@ -145,6 +145,46 @@ fn fills_a_fact_with_a_call_of_one_string() {
     assert_eq!(fill("the sample type").kind, expected);
 }
 
+fn string(text: &str) -> Value {
+    Value {
+        kind: Kind::String(text.into()),
+        span: None,
+    }
+}
+
+fn call(function: &str, arguments: Vec<Value>) -> Value {
+    Value {
+        kind: Kind::Call(Call {
+            function: function.into(),
+            function_span: None,
+            arguments,
+        }),
+        span: None,
+    }
+}
+
+#[test]
+fn reads_the_text_of_a_fill() {
+    assert_eq!(unfilled(&call("fill", vec![string("x")])), Some("x"));
+}
+
+#[test]
+fn reads_no_text_of_a_value_that_is_not_a_fill_of_one_string() {
+    let integer = Value {
+        kind: Kind::Integer(1),
+        span: None,
+    };
+    for value in [
+        call("fill", vec![]),
+        call("fill", vec![integer]),
+        call("fill", vec![string("a"), string("b")]),
+        call("secret", vec![string("x")]),
+        string("fill"),
+    ] {
+        assert_eq!(unfilled(&value), None, "{value:?}");
+    }
+}
+
 /// A name of a device, with characters that a name allows and does not allow.
 fn device_name() -> impl Strategy<Value = String> {
     proptest::collection::vec(
@@ -183,6 +223,12 @@ fn base(names: &[String]) -> String {
 }
 
 proptest! {
+    #[test]
+    fn reads_the_text_that_fill_writes(what in any::<String>()) {
+        let value = fill(&what);
+        prop_assert_eq!(unfilled(&value), Some(what.as_str()));
+    }
+
     #[test]
     fn gives_valid_unique_names_and_keeps_each_given_name(
         start in prop::sample::select(vec!["", "Objects"]),

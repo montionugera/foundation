@@ -26,6 +26,29 @@ pub fn fill(what: &str) -> Value {
     }
 }
 
+/// The `<what>` of `value` when it is `fill("<what>")`, as [`fill`] writes it, or
+/// `None`. `fill` is a reserved call: in any value at any depth, also in the config of
+/// a kind, `config` refuses it as a fact that the import did not find, so no kind may
+/// give a call `fill` a meaning of its own.
+#[must_use]
+pub fn unfilled(value: &Value) -> Option<&str> {
+    let Kind::Call(call) = &value.kind else {
+        return None;
+    };
+    match (&*call.function, call.arguments.as_slice()) {
+        (
+            "fill",
+            [
+                Value {
+                    kind: Kind::String(what),
+                    ..
+                },
+            ],
+        ) => Some(what),
+        _ => None,
+    }
+}
+
 /// The channel name of each pick, in the order of `picks`. A pick is the path of a
 /// point and the name that the import gives it, if any. A given name is kept as it
 /// is. Each other pick gets the default `<connector>.<path>`: each name of its path
