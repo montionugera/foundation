@@ -57,7 +57,15 @@ impl env::tasks::Driver for Spawned {
 #[derive(Debug)]
 pub struct Log {
     flush: crate::Flush,
-    _hold: crate::log::Hold,
+    hold: Option<crate::log::Hold>,
+}
+
+impl Drop for Log {
+    /// Ends the thread `log` and joins it, after it writes each line, or after 60 s.
+    fn drop(&mut self) {
+        drop(self.hold.take());
+        self.flush.wait(std::time::Duration::from_mins(1));
+    }
 }
 
 impl Log {
@@ -83,5 +91,8 @@ pub fn log(
 ) -> Log {
     let flush = crate::log::open(log, threads, wall, mesh);
     let hold = flush.hold().expect("the thread log starts");
-    Log { flush, _hold: hold }
+    Log {
+        flush,
+        hold: Some(hold),
+    }
 }

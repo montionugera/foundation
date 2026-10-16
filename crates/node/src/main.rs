@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{self, Write};
+use std::panic;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::mpsc;
@@ -24,6 +25,8 @@ const POOL_MOST: Size = Size::GIBIBYTE;
 const DISK_MOST: Size = Size::from_bytes(8 << 30);
 /// The longest the end of the process waits for the log.
 const FLUSH: Duration = Duration::from_secs(1);
+/// The longest a panic waits for the log.
+const PANIC: Duration = Duration::from_secs(1);
 
 const BUSY: Code = Code::new("node.busy");
 const DATA: Code = Code::new("node.data");
@@ -329,7 +332,7 @@ fn node(
         threads: threads.clone(),
     });
     let flush = node.flush();
-    flush.hook();
+    panic::set_hook(flush.hook(panic::take_hook(), PANIC));
     let stopper = node.stopper();
     let stop = threads.start("stop", move || async move {
         interrupt.await;

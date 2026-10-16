@@ -1,6 +1,6 @@
 use std::io;
 use std::panic;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::Duration;
 
@@ -63,6 +63,28 @@ impl io::Write for Panics {
             "the writer panics"
         );
         self.0.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A writer to stderr whose first write waits 50 ms, while `slow`.
+/// A writer to stderr whose first write blocks until its receiver gets a message or
+/// drops.
+struct Gated(Option<mpsc::Receiver<()>>);
+
+impl io::Write for Gated {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let Some(free) = self.0.take() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "a writer blocks the thread log"
+            )]
+            free.recv().unwrap_or_default();
+        }
+        io::stderr().write(bytes)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -353,22 +375,50 @@ fn a_full_queue_drops_each_new_line_and_counts_them_after_the_lines_before() {
 }
 
 #[test]
-fn a_write_that_panics_loses_only_its_line() {
+fn a_write_that_panics_ends_the_thread_log_after_the_lines_before() {
     let (mut sim, host) = host(1);
     let lines = Lines::default();
     let log = opened(&host, false, Box::new(Panics(lines.clone())));
-    write(&mut sim, &log, || {
+    tracing::dispatcher::with_default(&log.dispatch, || {
         tracing::info!(target: "test", "a");
         tracing::info!(target: "test", "boom");
         tracing::info!(target: "test", "c");
     });
+    assert!(log.resume(), "the thread log starts");
+    assert_eq!(
+        sim.run(),
+        Err(sim::Error::Panicked {
+            thread: "log".to_owned(),
+            message: "the writer panics".to_owned(),
+            seed: 1,
+        })
+    );
+    assert!(log.resume(), "no thread log starts, and none fails to");
     assert_eq!(
         lines.read(),
-        [
-            "2026-01-01T00:00:00.000000Z INFO test: a mesh_time=none",
-            "2026-01-01T00:00:00.000000Z INFO test: c mesh_time=none",
-        ]
+        ["2026-01-01T00:00:00.000000Z INFO test: a mesh_time=none"]
     );
+}
+
+#[test]
+fn a_json_count_line_gives_the_count_as_a_number() {
+    let (mut sim, host) = host(1);
+    let lines = Lines::default();
+    let log = opened(&host, true, Box::new(lines.clone()));
+    write(&mut sim, &log, numbered(0, 1025));
+    let read = lines.read();
+    let count: Value = serde_json::from_str(&read[1024]).expect("JSON");
+    assert_eq!(
+        count,
+        json!({
+            "timestamp": "2026-01-01T00:00:00.000000Z",
+            "level": "WARN",
+            "target": "node::log",
+            "fields": { "message": "dropped", "lines": 1 },
+            "mesh_time": null,
+        })
+    );
+    assert_eq!(read.len(), 1025);
 }
 
 #[test]
@@ -457,20 +507,42 @@ fn an_event_never_waits_on_a_stuck_writer() {
     assert_eq!(unstamped(&lines.read()), written);
 }
 
-/// Runs the test `name` again in a child process with `CHILD` set to `case`, and
-/// gives its stderr.
-fn child(name: &str, case: &str) -> String {
+/// The name of the test whose child runs [`panics`].
+const PANICS: &str = "tests::log::a_panic_writes_the_queued_lines_then_the_panic";
+
+/// Runs [`panics`] in a child process with `CHILD` set to `case`, and gives its
+/// stderr. Unless `case` is `abort`, asserts that the child panics with no abort.
+fn child(case: &str) -> String {
     let output = Command::new(std::env::current_exe().expect("the test binary"))
-        .args(["--exact", name, "--nocapture"])
+        .args(["--exact", PANICS, "--nocapture"])
         .env(CHILD, case)
         .output()
         .expect("the child runs");
-    assert_eq!(
-        output.status.code(),
-        Some(101),
-        "the child panics with no abort"
-    );
+    let ended = if case == "abort" { None } else { Some(101) };
+    assert_eq!(output.status.code(), ended, "the end of the child");
     String::from_utf8(output.stderr).expect("UTF-8")
+}
+
+/// The log lines of `stderr` before the line of the hook of the test harness, with
+/// no stamp, and the rest.
+fn logged(stderr: &str) -> (Vec<String>, &str) {
+    let (logged, hook) = stderr
+        .split_once("\nthread '")
+        .expect("the hook of the test harness writes after the log");
+    let lines: Vec<String> = logged.lines().map(str::to_owned).collect();
+    let lines = unstamped(&lines).into_iter().map(str::to_owned).collect();
+    (lines, hook)
+}
+
+/// Asserts that `line` is the text panic line of the panic of [`panics`].
+#[track_caller]
+fn assert_panicked(line: &str, stderr: &str) {
+    let at = r#"ERROR node: panicked panic="panicked at crates/node/src/tests/log.rs:"#;
+    let panicked = line.strip_prefix(at).expect("the panic line");
+    assert!(
+        panicked.ends_with(r#":\nthe test panics" mesh_time=none"#),
+        "{stderr}"
+    );
 }
 
 /// A value whose `Display` panics.
@@ -493,6 +565,14 @@ enum Case {
     Late,
     /// The writer panics at one line, and the log waits for the next.
     Writes,
+    /// The log writes to stderr once the queue is full.
+    Full,
+    /// The log writes to stderr, and the hook before aborts, as in a release build.
+    Abort,
+    /// The log writes JSON lines to stderr.
+    Json,
+    /// The log writes to a stderr that nothing reads, then drops its hold.
+    Hang,
 }
 
 /// In a child process: a log with its thread `log` held and each line of
@@ -500,7 +580,7 @@ enum Case {
 /// `case` says.
 fn panics(case: Case) -> ! {
     let (_, mesh) = clock::Clock::new(os::clock());
-    let (_free, freed) = mpsc::channel();
+    let (free, freed) = mpsc::channel();
     let (entered, _blocked) = mpsc::channel();
     let writer: Box<dyn io::Write + Send> = match case {
         Case::Stuck => Box::new(Stuck {
@@ -509,18 +589,29 @@ fn panics(case: Case) -> ! {
             free: freed,
         }),
         Case::Writes => Box::new(Panics(Lines::default())),
-        Case::Free | Case::Late => Box::new(io::stderr()),
+        Case::Full => Box::new(Gated(Some(freed))),
+        Case::Free | Case::Late | Case::Abort | Case::Json | Case::Hang => {
+            Box::new(io::stderr())
+        }
     };
     let format = ops::Log {
-        json: false,
+        json: matches!(case, Case::Json),
         level: tracing::Level::INFO,
     };
     let threads = os::threads().expect("threads");
     let wall = os::wall().expect("a wall clock");
     let log = log::open(Log { writer, format }, &threads, wall, mesh);
-    let hold = log.hold().expect("the thread log starts");
     tracing::dispatcher::with_default(&log.dispatch, numbered(0, 3));
-    log.hook();
+    let hold = log.hold().expect("the thread log starts");
+    let previous = match case {
+        Case::Abort => Box::new(|info: &panic::PanicHookInfo<'_>| {
+            let line = format!("the hook before runs: {info}\n");
+            drop(io::Write::write_all(&mut io::stderr(), line.as_bytes()));
+            std::process::abort();
+        }),
+        _ => panic::take_hook(),
+    };
+    panic::set_hook(log.hook(previous, Duration::from_secs(1)));
     match case {
         Case::Late => {
             drop(hold);
@@ -534,9 +625,23 @@ fn panics(case: Case) -> ! {
                 tracing::info!(target: "test", "c");
             });
             let bound = Duration::from_millis(500);
-            assert!(log.wait(bound), "the line after the panic is late");
+            assert!(!log.wait(bound), "a line after the panic is written");
         }
-        Case::Free | Case::Stuck => {}
+        Case::Hang => {
+            let text = "x".repeat(4096);
+            tracing::dispatcher::with_default(&log.dispatch, || {
+                for n in 0..200_u64 {
+                    tracing::info!(target: "test", n, text);
+                }
+            });
+            assert!(!log.wait(Duration::from_millis(500)), "the pipe is full");
+            drop(hold);
+        }
+        Case::Full => {
+            tracing::dispatcher::with_default(&log.dispatch, numbered(3, 1100));
+            free.send(()).expect("the writer waits");
+        }
+        Case::Free | Case::Stuck | Case::Abort | Case::Json => {}
     }
     panic!("the test panics");
 }
@@ -549,52 +654,135 @@ fn a_panic_writes_the_queued_lines_then_the_panic() {
         Ok("stuck") => panics(Case::Stuck),
         Ok("late") => panics(Case::Late),
         Ok("writes") => panics(Case::Writes),
+        Ok("full") => panics(Case::Full),
+        Ok("abort") => panics(Case::Abort),
+        Ok("json") => panics(Case::Json),
+        Ok("hang") => panics(Case::Hang),
         _ => {}
     }
-    let name = "tests::log::a_panic_writes_the_queued_lines_then_the_panic";
-    let stderr = child(name, "free");
-    let (logged, hook) = stderr
-        .split_once("\nthread '")
-        .expect("the hook of the test harness writes after the log");
-    let lines: Vec<String> = logged.lines().map(str::to_owned).collect();
-    let lines = unstamped(&lines);
-    assert_eq!(
-        lines[..3],
-        [
-            "INFO test: n=0 mesh_time=none",
-            "INFO test: n=1 mesh_time=none",
-            "INFO test: n=2 mesh_time=none",
-        ],
-        "{stderr}"
-    );
-    let at = r#"ERROR node: panicked panic="panicked at crates/node/src/tests/log.rs:"#;
-    let panicked = lines[3].strip_prefix(at).expect("the panic line");
-    assert!(
-        panicked.ends_with(r#":\nthe test panics" mesh_time=none"#),
-        "{stderr}"
-    );
+    let stderr = child("free");
+    let (lines, hook) = logged(&stderr);
+    let queued: Vec<String> = (0..3)
+        .map(|n| format!("INFO test: n={n} mesh_time=none"))
+        .collect();
+    assert_eq!(lines[..3], queued, "{stderr}");
+    assert_panicked(&lines[3], &stderr);
     assert_eq!(lines.len(), 4, "{stderr}");
     assert!(hook.contains("panicked at"), "{stderr}");
 }
 
 #[test]
+fn a_panic_with_a_full_queue_writes_its_line_after_the_queued_lines() {
+    let stderr = child("full");
+    let (lines, _) = logged(&stderr);
+    let (panicked, lines) = lines.split_last().expect("lines");
+    assert_panicked(panicked, &stderr);
+    let mut numbers = Vec::new();
+    let mut dropped = 0;
+    for line in lines {
+        let field = |prefix| {
+            let value = line.strip_prefix(prefix)?.strip_suffix(" mesh_time=none")?;
+            value.parse::<usize>().ok()
+        };
+        match (
+            field("INFO test: n="),
+            field("WARN node::log: dropped lines="),
+        ) {
+            (Some(n), None) => numbers.push(n),
+            (None, Some(lines)) => dropped += lines,
+            _ => panic!("not a line of the test: {line:?}\n{stderr}"),
+        }
+    }
+    assert!(dropped > 0, "the queue was full: {stderr}");
+    assert_eq!(numbers.len() + dropped, 1100, "{stderr}");
+    assert!(numbers.is_sorted(), "{stderr}");
+}
+
+#[test]
+fn a_panic_writes_its_line_before_a_hook_before_that_aborts() {
+    let stderr = child("abort");
+    let (logged, hook) = stderr
+        .split_once("the hook before runs: ")
+        .expect("the hook before runs");
+    let lines: Vec<String> = logged.lines().map(str::to_owned).collect();
+    let lines = unstamped(&lines);
+    assert_eq!(lines.len(), 4, "{stderr}");
+    assert_panicked(lines[3], &stderr);
+    assert!(hook.contains("the test panics"), "{stderr}");
+}
+
+#[test]
+fn a_json_panic_line_gives_the_panic_as_a_field() {
+    let stderr = child("json");
+    let (logged, _) = stderr
+        .split_once("\nthread '")
+        .expect("the hook of the test harness writes after the log");
+    let last = logged.lines().last().expect("the panic line");
+    let mut line: Value = serde_json::from_str(last).expect("JSON");
+    let panic = line["fields"]["panic"].take();
+    let panic = panic.as_str().expect("the panic text");
+    assert!(
+        panic.starts_with("panicked at crates/node/src/tests/log.rs:"),
+        "{panic}"
+    );
+    assert!(panic.ends_with(":\nthe test panics"), "{panic}");
+    line["timestamp"].take();
+    assert_eq!(
+        line,
+        json!({
+            "timestamp": null,
+            "level": "ERROR",
+            "target": "node",
+            "fields": { "message": "panicked", "panic": null },
+            "mesh_time": null,
+        })
+    );
+}
+
+#[test]
 fn a_panic_with_a_stuck_writer_ends_after_the_bound_with_no_line() {
-    let name = "tests::log::a_panic_writes_the_queued_lines_then_the_panic";
-    let stderr = child(name, "stuck");
+    let stderr = child("stuck");
     assert!(!stderr.contains("the test panics"), "{stderr}");
 }
 
 #[test]
+fn a_panic_after_the_hold_drops_with_a_stuck_stderr_ends_after_the_bound() {
+    let mut child = Command::new(std::env::current_exe().expect("the test binary"))
+        .args(["--exact", PANICS, "--nocapture"])
+        .env(CHILD, "hang")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the child runs");
+    let mut ended = None;
+    for _ in 0..400 {
+        if let Some(status) = child.try_wait().expect("a wait") {
+            ended = Some(status.code());
+            break;
+        }
+        #[expect(clippy::disallowed_methods, reason = "the test waits for a child")]
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if ended.is_none() {
+        child.kill().expect("a kill");
+        child.wait().expect("a wait");
+    }
+    assert_eq!(
+        ended,
+        Some(Some(101)),
+        "the child ends within 20 s, after the bound of the hook"
+    );
+}
+
+#[test]
 fn a_panic_in_an_event_after_the_shards_end_reaches_stderr_with_no_abort() {
-    let name = "tests::log::a_panic_writes_the_queued_lines_then_the_panic";
-    let stderr = child(name, "late");
+    let stderr = child("late");
     assert!(stderr.contains("the field panics"), "{stderr}");
 }
 
 #[test]
-fn a_panic_of_a_write_waits_for_no_line_and_runs_the_hook_before() {
-    let name = "tests::log::a_panic_writes_the_queued_lines_then_the_panic";
-    let stderr = child(name, "writes");
+fn a_panic_of_the_writer_ends_the_log_and_runs_the_hook_before_at_once() {
+    let stderr = child("writes");
     assert!(stderr.contains("the writer panics"), "{stderr}");
     assert!(stderr.contains("the test panics"), "{stderr}");
 }
@@ -744,7 +932,7 @@ fn the_debug_of_a_log_hides_its_writer() {
     let wall = os::wall().expect("a wall clock");
     let log = log::open(Log { writer, format }, &threads, wall, mesh);
     let debug = format!("{log:?}");
-    assert!(debug.contains("parts: Some(Parts { .. })"), "{debug}");
+    assert!(debug.contains("writer: Some(Writer)"), "{debug}");
 }
 
 #[test]

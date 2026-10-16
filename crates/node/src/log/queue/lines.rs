@@ -1,0 +1,240 @@
+//! The lines between a node's events and the thread `log`, and the wake of that thread.
+
+use std::collections::VecDeque;
+use std::mem;
+use std::task::Waker;
+
+#[cfg(loom)]
+use loom::sync::{Mutex, MutexGuard};
+#[cfg(not(loom))]
+use std::sync::{Mutex, MutexGuard};
+
+/// The lines that wait for the thread `log`, in the order they came. Each change and
+/// each take happen under one lock, so a line or a close always wakes a take that
+/// waits.
+#[derive(Debug)]
+pub(super) struct Lines {
+    inner: Mutex<Inner>,
+    /// The lines that can wait. A line that finds this many drops.
+    bound: usize,
+}
+
+#[derive(Debug)]
+struct Inner {
+    lines: VecDeque<Vec<u8>>,
+    /// The panic lines, which never drop.
+    panics: Vec<Vec<u8>>,
+    /// The lines that dropped since the last take.
+    dropped: u64,
+    /// The lines that went into `lines` or `panics`.
+    sent: u64,
+    closed: bool,
+    /// The waker of the take that waits.
+    waker: Option<Waker>,
+}
+
+/// The lines of one take, in the order to write them: `lines`, then the count line
+/// of `dropped` when it is not 0, then `panics`. Each line of `lines` came before
+/// each line that dropped.
+#[derive(Debug, Default)]
+pub(super) struct Batch {
+    pub(super) lines: VecDeque<Vec<u8>>,
+    pub(super) dropped: u64,
+    pub(super) panics: Vec<Vec<u8>>,
+}
+
+impl Batch {
+    /// The lines of the take that came into `sent`.
+    pub(super) fn sent(&self) -> u64 {
+        (self.lines.len() + self.panics.len()) as u64
+    }
+}
+
+/// What a take gives.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Taken {
+    /// The batch holds lines.
+    Lines,
+    /// No line waits. The next line or close wakes the waker of the take.
+    Empty,
+    /// No line waits, and [`Lines::close`] came after the last [`Lines::open`].
+    Closed,
+}
+
+impl Lines {
+    /// Lines with no line, which hold up to `bound` lines, and closed.
+    pub(super) fn new(bound: usize) -> Self {
+        let inner = Inner {
+            lines: VecDeque::with_capacity(bound),
+            panics: Vec::new(),
+            dropped: 0,
+            sent: 0,
+            closed: true,
+            waker: None,
+        };
+        Self {
+            inner: Mutex::new(inner),
+            bound,
+        }
+    }
+
+    /// Puts `line` after the lines that wait, or counts it as dropped when `bound`
+    /// lines wait.
+    pub(super) fn push(&self, line: Vec<u8>) {
+        let mut inner = self.lock();
+        if inner.lines.len() == self.bound {
+            inner.dropped += 1;
+            return;
+        }
+        inner.lines.push_back(line);
+        inner.sent += 1;
+        wake(inner);
+    }
+
+    /// Puts the panic line `line` after each line that waits; it never drops. Gives
+    /// the lines sent with it.
+    pub(super) fn panic(&self, line: Vec<u8>) -> u64 {
+        let mut inner = self.lock();
+        inner.panics.push(line);
+        inner.sent += 1;
+        let sent = inner.sent;
+        wake(inner);
+        sent
+    }
+
+    /// Lets a take wait for a line after the queue is empty.
+    pub(super) fn open(&self) {
+        self.lock().closed = false;
+    }
+
+    /// Lets a take end once no line waits.
+    pub(super) fn close(&self) {
+        let mut inner = self.lock();
+        inner.closed = true;
+        wake(inner);
+    }
+
+    pub(super) fn closed(&self) -> bool {
+        self.lock().closed
+    }
+
+    /// The lines that went in, other than each line that dropped.
+    pub(super) fn sent(&self) -> u64 {
+        self.lock().sent
+    }
+
+    /// Moves each line that waits into `batch`, whose lines must be empty. When none
+    /// waits and the lines are not closed, keeps `waker` to wake at the next line or
+    /// close.
+    pub(super) fn take(&self, batch: &mut Batch, waker: &Waker) -> Taken {
+        let mut inner = self.lock();
+        if inner.lines.is_empty() && inner.panics.is_empty() {
+            if inner.closed {
+                return Taken::Closed;
+            }
+            inner.waker = Some(waker.clone());
+            return Taken::Empty;
+        }
+        mem::swap(&mut inner.lines, &mut batch.lines);
+        mem::swap(&mut inner.panics, &mut batch.panics);
+        batch.dropped = mem::take(&mut inner.dropped);
+        Taken::Lines
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.inner
+            .lock()
+            .expect("invariant: nothing panics while it holds the lines lock")
+    }
+}
+
+/// Wakes the take that waits, after the lock of `inner` drops.
+fn wake(mut inner: MutexGuard<'_, Inner>) {
+    let waker = inner.waker.take();
+    drop(inner);
+    if let Some(waker) = waker {
+        waker.wake();
+    }
+}
+
+#[cfg(test)]
+#[cfg(loom)]
+mod model {
+    use std::future::poll_fn;
+    use std::task::Poll;
+
+    use loom::future::block_on;
+    use loom::sync::Arc;
+    use loom::thread;
+
+    use super::{Batch, Lines, Taken};
+
+    /// Takes until the lines close, and gives each line and the count of each line
+    /// that dropped.
+    fn drain(lines: &Lines) -> (Vec<Vec<u8>>, u64) {
+        let mut batch = Batch::default();
+        let (mut written, mut dropped) = (Vec::new(), 0);
+        block_on(poll_fn(|cx| {
+            loop {
+                match lines.take(&mut batch, cx.waker()) {
+                    Taken::Lines => {
+                        written.extend(batch.lines.drain(..));
+                        dropped += batch.dropped;
+                        written.append(&mut batch.panics);
+                    }
+                    Taken::Empty => return Poll::Pending,
+                    Taken::Closed => return Poll::Ready(()),
+                }
+            }
+        }));
+        (written, dropped)
+    }
+
+    /// Lines from two threads and a close after them each reach a take that waits on
+    /// a third.
+    #[test]
+    fn each_line_before_the_close_reaches_a_take_that_waits() {
+        loom::model(|| {
+            let lines = Arc::new(Lines::new(4));
+            lines.open();
+            let push = |line: &'static [u8]| {
+                let lines = Arc::clone(&lines);
+                thread::spawn(move || lines.push(line.to_vec()))
+            };
+            let pushes = [push(b"a"), push(b"b")];
+            let taker = {
+                let lines = Arc::clone(&lines);
+                thread::spawn(move || drain(&lines))
+            };
+            for push in pushes {
+                push.join().unwrap();
+            }
+            lines.close();
+            let (mut written, dropped) = taker.join().unwrap();
+            written.sort();
+            assert_eq!((written, dropped), (vec![b"a".to_vec(), b"b".to_vec()], 0));
+        });
+    }
+
+    /// A line that finds the bound drops and counts, and a panic line that finds it
+    /// comes after each line before it.
+    #[test]
+    fn a_full_queue_drops_a_line_but_never_a_panic_line() {
+        loom::model(|| {
+            let lines = Arc::new(Lines::new(1));
+            lines.open();
+            let taker = {
+                let lines = Arc::clone(&lines);
+                thread::spawn(move || drain(&lines))
+            };
+            lines.push(b"a".to_vec());
+            lines.push(b"b".to_vec());
+            assert_eq!(lines.panic(b"p".to_vec()), lines.sent());
+            lines.close();
+            let (written, dropped) = taker.join().unwrap();
+            assert_eq!(written.len() as u64 + dropped, 3);
+            assert_eq!(written.first(), Some(&b"a".to_vec()));
+            assert_eq!(written.last(), Some(&b"p".to_vec()));
+        });
+    }
+}
