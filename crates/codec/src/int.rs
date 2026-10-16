@@ -10,6 +10,10 @@ use crate::word;
 ///
 /// Panics when `chunk` holds no sample.
 pub(crate) fn plan<const W: usize>(chunk: &[u8], signed: bool) -> Plan {
+    // No codec saves 1/8 of one sample. Skips the statistics of a poll.
+    if chunk.len() == W {
+        return Plan::Raw;
+    }
     let mask = word::mask(W);
     let high = mask ^ mask.wrapping_shr(1);
     // Flipping the sign bit makes unsigned order match signed order.
@@ -158,6 +162,23 @@ mod tests {
         let rle = Plan::Rle { runs: 4 };
         assert_eq!(delta.len(96, 1), rle.len(96, 1), "the sizes must tie");
         assert_eq!(plan::<1>(&chunk, false), delta);
+    }
+
+    #[test]
+    fn plans_a_vector_of_one_sample_raw() {
+        for width in [1, 2, 4, 8] {
+            for sample in [0, 1, 0x80, u64::MAX] {
+                let chunk = &sample.to_le_bytes()[..width];
+                let plan = match width {
+                    1 => plan::<1>(chunk, true),
+                    2 => plan::<2>(chunk, false),
+                    4 => plan::<4>(chunk, true),
+                    _ => plan::<8>(chunk, false),
+                };
+                assert_eq!(plan, Plan::Raw, "{width}-byte sample {sample:#x}");
+                check(width, true, &[sample]);
+            }
+        }
     }
 
     proptest! {
