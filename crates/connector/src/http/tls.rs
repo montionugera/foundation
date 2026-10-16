@@ -119,6 +119,8 @@ pub(super) fn ca_as_server(error: &io::Error) -> bool {
     else {
         return false;
     };
+    // The downcast finds the error only when this `rustls-webpki` is the version that
+    // `rustls` uses.
     matches!(
         other.0.downcast_ref(),
         Some(webpki::Error::CaUsedAsEndEntity)

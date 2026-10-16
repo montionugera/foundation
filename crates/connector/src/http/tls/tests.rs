@@ -817,15 +817,38 @@ fn tells_how_to_fix_a_self_signed_certificate_with_ca_true() {
     );
 }
 
+/// A text in the name grammar of `Host`: parts of 1 to 63 bytes, or a name of 253
+/// bytes, each with or with no final dot.
+fn host_name() -> impl Strategy<Value = String> {
+    const PART: &str = "[a-zA-Z0-9_-]{1,63}";
+    let parts = prop::collection::vec(PART, 1..=5);
+    let longest = (
+        "[a-zA-Z0-9_-]{63}",
+        "[a-zA-Z0-9_-]{63}",
+        "[a-zA-Z0-9_-]{63}",
+    )
+        .prop_flat_map(|(a, b, c)| ("[a-zA-Z0-9_-]{61}", Just(vec![a, b, c])))
+        .prop_map(|(d, mut parts)| {
+            parts.push(d);
+            parts
+        });
+    (prop_oneof![parts, longest], any::<bool>()).prop_map(|(parts, dot)| {
+        let name = parts.join(".");
+        if dot { name + "." } else { name }
+    })
+}
+
 proptest! {
     /// It calls `name` itself, since a send of each case would build a simulation for
     /// each.
     #[test]
-    fn takes_each_name_of_a_host_as_a_tls_name(
-        text in "[a-zA-Z0-9_-]{1,64}(\\.[a-zA-Z0-9_-]{1,64}){0,4}\\.?",
-    ) {
+    fn takes_each_name_of_a_host_as_a_tls_name(text in host_name()) {
         if let Ok(host) = text.parse::<Host>() {
-            prop_assert!(matches!(super::super::name(&host), ServerName::DnsName(_)));
+            let shown = host.name().expect("a name").trim_end_matches('.').to_owned();
+            prop_assert_eq!(
+                super::super::name(&host),
+                ServerName::try_from(shown).expect("a TLS name")
+            );
         }
     }
 }
