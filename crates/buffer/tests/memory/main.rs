@@ -311,11 +311,41 @@ fn counts_carried() {
     );
 }
 
+/// A drain starts the next lap of each path that waited at the tail of its hide. So
+/// each path that shrinks to room for 10 runs at commits 513 to 516 shrinks to room
+/// for 4 a lap later, not at the next trim.
+fn restarts() {
+    assert_eq!(
+        frees(
+            16384,
+            &[
+                Trims(40, 1, 16),
+                Trims(400, 1, 0),
+                Climb(1..=3),
+                Trims(62, 1, 3),
+                Trims(707, 1, 0),
+            ],
+        ),
+        [
+            (513, -2_297_856),
+            (514, -2_297_856),
+            (515, -2_297_856),
+            (516, -1_757_184),
+            (769, -626_688),
+            (771, -626_688),
+            (772, -626_688),
+            (773, -479_232),
+        ],
+        "a drain starts the next lap at the tail of its hide"
+    );
+}
+
 fn main() {
     waits_behind();
     drains();
     counts_first();
     counts_carried();
+    restarts();
     assert_eq!(freed(6), 0, "a lap of at most 8 runs keeps room for 32");
     assert_eq!(
         freed(4),
