@@ -40,8 +40,8 @@ impl<'a> Context<'a> {
         Self { config, inputs }
     }
 
-    /// The connector block from the files. A kind reads only what it needs to reach
-    /// the device, so a block with no `rate` and no `read` works.
+    /// The connector block from the files. A kind reads only the attributes that it
+    /// needs to reach its device, so a block that `parse` refuses can browse.
     #[must_use]
     pub fn config(&self) -> &Document {
         self.config

@@ -48,15 +48,20 @@
   `Supervisor::browse(kind, config, query)` runs it apart from any run of the connector,
   with the network, clock, randomness, and secrets of the supervisor; a kind reads only
   what it needs to reach the device, so a block with only `kind`, `node`, and `address`
-  browses. A kind implements `browse::Device` on its open session, so one walk is one
-  session and can use a continuation point; a `Cursor` that a front end gets holds no
-  session state. `level` takes a folder as the `Entry` that the device gave, never a
-  path, and gives at most `LIMIT` entries a page; `values` gives `types::sample::Value`,
-  so there is one value model. Trigger for a text value: a kind that reads a `string`
-  channel. Lost: a count of matches up to the budget; trigger: the agent test (PR 9)
-  shows a task with two over-limit refusals one after the other. `import --match` uses
-  the same walk, so the points that `browse --match` shows are the points that `import
-  --match` takes.
+  browses. It gives no mesh time: `hub` gives it only through a writer, and a browse
+  opens none. Deferred to #2837, on which PR 5 waits; PR 5 says what a browse does
+  before mesh time, never with a wait that has no bound. `browse::Context` and
+  `kind::Context` stay two types: the inputs that both give are reads of a field, and
+  `secret` is one function. Trigger to make them one: a third context, or a second
+  shared input whose body is more than a read of a field. A kind implements
+  `browse::Device` on its open session, so one walk is one session and can use a
+  continuation point; a `Cursor` that a front end gets holds no session state. `level`
+  takes a folder as the `Entry` that the device gave, never a path, and gives at most
+  `LIMIT` entries a page; `values` gives `types::sample::Value`, so there is one value
+  model. Trigger for a text value: a kind that reads a `string` channel. Lost: a count
+  of matches up to the budget; trigger: the agent test (PR 9) shows a task with two
+  over-limit refusals one after the other. `import --match` uses the same walk, so the
+  points that `browse --match` shows are the points that `import --match` takes.
   The person's words, through `laptop.monitor`: decision 1, 2026-10-15 17:17 UTC, "Ok,
   this is fine. I approve"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6197989240);
@@ -111,4 +116,6 @@
   error: `laptop.architect-2`, 2026-10-16 06:46 UTC
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6209790559). No
   check of two names of one folder in `walk`: `laptop.architect-2`, 2026-10-16 06:50 UTC
-  (https://github.com/synnaxlabs/foundation/pull/2836#issuecomment-6209844506).
+  (https://github.com/synnaxlabs/foundation/pull/2836#issuecomment-6209844506). The
+  deferral of mesh time, and two contexts: `laptop.architect-2`, 2026-10-16 06:55 UTC
+  (https://github.com/synnaxlabs/foundation/pull/2836#issuecomment-6209911107).
