@@ -1,16 +1,19 @@
-//! The round trip of open62541 binary decoding, for the `connector_opcua_decode` fuzz
-//! target.
+//! The round trip of open62541 binary decoding, and the read of each decoded
+//! `DataValue`, for the `connector_opcua_decode` fuzz target.
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
 use std::ffi::c_void;
 
-use crate::ffi::{self, BYTE_STRING, Bytes, DataType, DecodeOptions, Status, TYPES};
+use crate::ffi::{self, BYTE_STRING, Bytes, DATA_VALUE, DataType, DecodeOptions};
+use crate::ffi::{Status, TYPES};
+use crate::value::Cause;
 
 /// Decodes `data[2..]` as the type of `UA_TYPES` that the little-endian `u16` of
 /// `data[..2]` picks, by its remainder by the table length. When the decode gives
 /// `Good`, it encodes the value, decodes those bytes with as many zeros after them as
-/// their length (#435), and encodes again. An input of fewer than 2 bytes decodes
+/// their length (#435), and encodes again. A `DataValue` gives the same read of its
+/// value, or the same fault, from both decodes. An input of fewer than 2 bytes decodes
 /// nothing.
 ///
 /// # Panics
@@ -58,6 +61,31 @@ pub fn decode(data: &[u8]) {
         once, twice,
         "{name}: the encoding changes on a second round trip"
     );
+    if std::ptr::eq(data_type, &raw const ffi::types()[DATA_VALUE]) {
+        assert_eq!(
+            read_of(&value),
+            read_of(&again),
+            "{name}: {once:02x?} reads two ways"
+        );
+    }
+}
+
+/// The text of the read of `value`, a `DataValue`: a `NaN` equals itself.
+///
+/// # Panics
+///
+/// When `value` is not a `DataValue`.
+fn read_of(value: &Value) -> String {
+    let data_value = &raw const ffi::types()[DATA_VALUE];
+    assert!(std::ptr::eq(value.data_type, data_value), "a DataValue");
+    // SAFETY: `value` is a live `DataValue`, as the assert checks.
+    match unsafe { crate::value::Value::of(value.pointer().cast()) } {
+        Ok(read) => format!("{read:?}"),
+        Err(fault) => match fault.cause() {
+            Cause::Status(status) => status.name().to_owned(),
+            Cause::Type(opc_type) => opc_type.to_string(),
+        },
+    }
 }
 
 /// Splits `data` into the type that its first two bytes pick and the rest.
@@ -158,8 +186,13 @@ mod tests {
     fn the_layout_of_data_type_and_the_count_match_the_copy() {
         let types = ffi::types();
         assert_eq!(
-            [0, BYTE_STRING, TYPES - 1].map(|at| types[at].name()),
-            ["Boolean", "ByteString", "PubSubConfiguration2DataType"]
+            [0, BYTE_STRING, DATA_VALUE, TYPES - 1].map(|at| types[at].name()),
+            [
+                "Boolean",
+                "ByteString",
+                "DataValue",
+                "PubSubConfiguration2DataType"
+            ]
         );
         assert_eq!(
             [0, BYTE_STRING, VARIANT].map(|at| types[at].size()),
@@ -291,6 +324,63 @@ mod tests {
             .unwrap();
         assert_eq!(read, 5 + 100 * 3);
         decode(&data);
+    }
+
+    #[test]
+    fn a_data_value_reads_its_value_or_its_fault() {
+        let read = |bytes: &[u8]| {
+            let data_value = &ffi::types()[DATA_VALUE];
+            let (value, _) = Value::decode(data_value, bytes)
+                .map_err(Status::name)
+                .unwrap();
+            read_of(&value)
+        };
+        let mut double = vec![0x01, 0x0b];
+        double.extend(1.5_f64.to_le_bytes());
+        let string = [0x01, 0x0c, 2, 0, 0, 0, b'h', b'i'];
+        let doubles = [0x01, 0x8b, 0, 0, 0, 0];
+        let bad = [0x02, 0, 0, 0x34, 0x80];
+        assert_eq!(
+            [&double[..], &string, &doubles, &bad, &[0]].map(read),
+            [
+                "F64(1.5)",
+                "String",
+                "array of Double",
+                "BadNodeIdUnknown",
+                "BadNoData"
+            ]
+        );
+        let mut data = vec![u8::try_from(DATA_VALUE).unwrap(), 0];
+        data.extend(double);
+        decode(&data);
+        let scalars = [1, 1, 1, 2, 2, 4, 4, 8, 8].into_iter().zip(1..);
+        let ones = scalars.map(|(width, kind)| {
+            let mut bytes = vec![0x01, kind, 1];
+            bytes.resize(2 + width, 0);
+            read(&bytes)
+        });
+        assert_eq!(
+            ones.collect::<Vec<_>>(),
+            [
+                "Bool(true)",
+                "I8(1)",
+                "U8(1)",
+                "I16(1)",
+                "U16(1)",
+                "I32(1)",
+                "U32(1)",
+                "I64(1)",
+                "U64(1)"
+            ]
+        );
+        let mut float = vec![0x01, 0x0a];
+        float.extend(1.5_f32.to_le_bytes());
+        let mut range = vec![0x01, 0x16, 0x01, 0, 0x76, 0x03, 0x01, 16, 0, 0, 0];
+        range.extend([0; 16]);
+        assert_eq!(
+            [&float[..], &range, &[0x01, 0]].map(read),
+            ["F32(1.5)", "Range", "BadNoData"]
+        );
     }
 
     #[test]

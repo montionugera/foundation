@@ -27,6 +27,32 @@ fn text(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes).expect("UTF-8")
 }
 
+/// The log of a node at the start of `stderr`, and the lines after it. `foundation
+/// start` prints its own lines once `Node::join` logs `stopped`, the last line of the
+/// log.
+fn logged(stderr: &[u8]) -> (&str, &str) {
+    let text = text(stderr);
+    let log = (text.split_inclusive('\n'))
+        .take_while(|line| {
+            let level = after_stamp(line);
+            line.starts_with("{\"timestamp\":")
+                || level.is_some_and(|level| {
+                    ["ERROR ", "WARN ", "INFO ", "DEBUG ", "TRACE "]
+                        .iter()
+                        .any(|name| level.starts_with(name))
+                })
+        })
+        .map(str::len)
+        .sum();
+    text.split_at(log)
+}
+
+/// The text log line `line` after its stamp and the space, or `None` when it starts
+/// with no stamp.
+fn after_stamp(line: &str) -> Option<&str> {
+    line.get(26..)?.strip_prefix("Z ")
+}
+
 /// The commit of `HEAD` that `git` reads here, or `None` when it fails.
 fn head() -> Option<String> {
     let output = std::process::Command::new("git")

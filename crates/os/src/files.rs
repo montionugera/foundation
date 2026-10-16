@@ -121,15 +121,16 @@ impl Disk {
     fn file<'a>(
         &self,
         path: &'a Path,
-        opened: impl Future<Output = Result<(Opened, u64), Error>> + 'a,
+        opened: impl Future<Output = Result<Found, Error>> + 'a,
     ) -> Request<'a, Box<dyn Descriptor>> {
         let (data, queue) = (Arc::clone(&self.data), self.queue.clone());
         Box::pin(async move {
-            let (fd, len) = opened.await?;
+            let Found { fd, len, exposed } = opened.await?;
             let file: Box<dyn Descriptor> = Box::new(File {
                 fd: Arc::new(fd),
                 data,
                 len,
+                exposed,
                 path: RefCell::new(Arc::from(path)),
                 queue,
             });
@@ -191,6 +192,7 @@ struct File {
     /// The data directory, which a rename acts in.
     data: Arc<OwnedFd>,
     len: u64,
+    exposed: bool,
     /// The path of the file now: a rename changes it.
     path: RefCell<Arc<Path>>,
     queue: Queue,
@@ -214,6 +216,10 @@ impl File {
 impl Descriptor for File {
     fn len(&self) -> u64 {
         self.len
+    }
+
+    fn exposed(&self) -> bool {
+        self.exposed
     }
 
     fn write_at<'a>(&'a self, offset: u64, parts: &'a [Block]) -> Request<'a, ()> {
@@ -353,9 +359,16 @@ impl Drop for Opened {
     }
 }
 
-/// Opens the file at `path`, and gives it and its length. A write open locks the
-/// file first, so a held file gives `Busy` before any other check.
-fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(Opened, u64), Error> {
+/// An open file, with its length and whether other users can read it.
+struct Found {
+    fd: Opened,
+    len: u64,
+    exposed: bool,
+}
+
+/// Opens the file at `path`. A write open locks the file first, so a held file gives
+/// `Busy` before any other check.
+fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<Found, Error> {
     let failed = fail(path, Operation::Open);
     let flags = match mode {
         Mode::Read => OFlags::RDONLY,
@@ -388,7 +401,8 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(Opened, u64), Error>
         return Err(failed(Errno::ISDIR));
     }
     let found = stat.st_size.cast_unsigned();
-    match mode {
+    let exposed = exposed(&stat);
+    let len = match mode {
         // Not atomic: a crash before `allocate` sets the length leaves an empty file,
         // which this allocates.
         Mode::Create { len } if found == 0 && len != 0 => {
@@ -403,16 +417,17 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<(Opened, u64), Error>
                     freed.and(Err(errno))
                 })
                 .map_err(&failed)?;
-            Ok((fd, len))
+            len
         }
-        _ => Ok((fd, found)),
-    }
+        _ => found,
+    };
+    Ok(Found { fd, len, exposed })
 }
 
-/// Opens the file at absolute `path` to read, and gives it and its length. The open
-/// does not wait for a writer of a FIFO, and gives 21 (`EISDIR`) for a directory and
-/// 22 (`EINVAL`) for any other file that is not a regular file.
-fn open_absolute(path: &Path) -> Result<(Opened, u64), Error> {
+/// Opens the file at absolute `path` to read. The open does not wait for a writer of
+/// a FIFO, and gives 21 (`EISDIR`) for a directory and 22 (`EINVAL`) for any other
+/// file that is not a regular file.
+fn open_absolute(path: &Path) -> Result<Found, Error> {
     let failed = fail(path, Operation::Open);
     // The check before the open keeps the open of a socket from giving `ENXIO`, and
     // that of a device from running its driver. The check after it covers a swap.
@@ -421,8 +436,15 @@ fn open_absolute(path: &Path) -> Result<(Opened, u64), Error> {
         fd: fs::open(path, READ_HOST, fs::Mode::empty()).map_err(&failed)?,
         locked: false,
     };
-    let len = regular(&fs::fstat(&fd).map_err(&failed)?).map_err(&failed)?;
-    Ok((fd, len))
+    let stat = fs::fstat(&fd).map_err(&failed)?;
+    let len = regular(&stat).map_err(&failed)?;
+    let exposed = exposed(&stat);
+    Ok(Found { fd, len, exposed })
+}
+
+/// Whether the mode of `stat` gives read to other users.
+fn exposed(stat: &fs::Stat) -> bool {
+    stat.st_mode & 0o004 != 0
 }
 
 /// The length of the regular file of `stat`, or the error of another kind of file.

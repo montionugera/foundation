@@ -76,6 +76,9 @@ exclude_re = [
   # `rows` fills bits 0 to 15 and `columns << 16` bits 16 to 31, so `|` and `^` give
   # the same `n`.
   'crates/home/src/stored\.rs:.*replace \| with \^ in codes',
+  # `at` fills bits 0 to 15 and `array << 16` bit 16, so `|` and `^` give the same
+  # fault.
+  'crates/connector-opcua/src/value\.rs:.*replace \| with \^ in Fault::of_type',
   # The oracle of `node.key` in the `node_identity` fuzz target and the property
   # tests. It panics only when `sector::written` disagrees with `encode` of `fields`,
   # and the mutants of `written` show that it does.
@@ -178,4 +181,6 @@ exclude_re = [
   # The loop of the constant assertion of the status names: a mutant that skips it
   # still builds, and no test sees a check that runs at compile time.
   'crates/node/src/status\.rs:.*replace < with (==|>)$',
+  # A stub that panics until PR B2 of #432 fills it; B2 removes this line.
+  'crates/connector-modbus/src/kind\.rs:.*replace <impl kind::Kind for Kind>::run ->',
 ]

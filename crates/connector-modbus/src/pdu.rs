@@ -1,5 +1,7 @@
 //! The Modbus PDU: requests, and the replies to them read in place.
 
+use std::ops::Range;
+
 use crate::Error;
 
 const READ_COILS: u8 = 1;
@@ -32,7 +34,8 @@ pub enum Table {
 }
 
 impl Table {
-    fn function(self) -> u8 {
+    /// The function code that reads the table. It orders the tables.
+    pub(crate) fn function(self) -> u8 {
         match self {
             Self::Coils => READ_COILS,
             Self::DiscreteInputs => READ_DISCRETE_INPUTS,
@@ -51,8 +54,31 @@ impl Table {
         }
     }
 
-    fn bits(self) -> bool {
+    pub(crate) fn bits(self) -> bool {
         matches!(self, Self::Coils | Self::DiscreteInputs)
+    }
+
+    pub(crate) fn read_only(self) -> bool {
+        matches!(self, Self::DiscreteInputs | Self::InputRegisters)
+    }
+
+    /// The most items that one request reads.
+    pub(crate) fn max_read(self) -> u16 {
+        if self.bits() {
+            MAX_READ_BITS
+        } else {
+            MAX_READ_REGISTERS
+        }
+    }
+
+    /// The name of the table in text.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Coils => "coils",
+            Self::DiscreteInputs => "discrete inputs",
+            Self::HoldingRegisters => "holding registers",
+            Self::InputRegisters => "input registers",
+        }
     }
 }
 
@@ -270,12 +296,7 @@ impl Request {
                 start,
                 count,
             } => {
-                let max = if table.bits() {
-                    MAX_READ_BITS
-                } else {
-                    MAX_READ_REGISTERS
-                };
-                check(*start, usize::from(*count), max)?;
+                check(*start, usize::from(*count), table.max_read())?;
                 Ok(5)
             }
             Self::WriteCoil { .. } | Self::WriteRegister { .. } => Ok(5),
@@ -406,6 +427,15 @@ impl<'a> Bits<'a> {
             .flat_map(|&byte| (0..8).map(move |bit| byte >> bit & 1 == 1))
             .take(self.len())
     }
+
+    /// The bit at `index`, or `None` past the last.
+    pub(crate) fn get(&self, index: usize) -> Option<bool> {
+        if index >= self.len() {
+            return None;
+        }
+        let byte = self.bytes.get(index / 8)?;
+        Some(byte >> (index % 8) & 1 == 1)
+    }
 }
 
 /// The registers of a read reply, read in place, in address order.
@@ -432,6 +462,15 @@ impl<'a> Registers<'a> {
             .0
             .iter()
             .map(|&pair| u16::from_be_bytes(pair))
+    }
+
+    /// The registers at `range`, in address order, or `None` when it passes the last.
+    pub(crate) fn get(
+        &self,
+        range: Range<usize>,
+    ) -> Option<impl DoubleEndedIterator<Item = u16>> {
+        let pairs = self.0.as_chunks::<2>().0.get(range)?;
+        Some(pairs.iter().map(|&pair| u16::from_be_bytes(pair)))
     }
 }
 
@@ -632,6 +671,24 @@ mod tests {
             start,
             count,
         }
+    }
+
+    #[test]
+    fn get_gives_none_past_the_count() {
+        let Ok(Reply::Bits(bits)) =
+            read(Table::Coils, 0, 9).decode_reply(&[1, 2, 0xFF, 0x01])
+        else {
+            panic!("bits");
+        };
+        assert_eq!((bits.get(8), bits.get(9)), (Some(true), None));
+        let Ok(Reply::Registers(registers)) =
+            read(Table::HoldingRegisters, 0, 2).decode_reply(&[3, 4, 0, 1, 0, 2])
+        else {
+            panic!("registers");
+        };
+        let got: Option<Vec<u16>> = registers.get(1..2).map(Iterator::collect);
+        assert_eq!(got, Some(vec![2]));
+        assert!(registers.get(1..3).is_none(), "a range past the count");
     }
 
     /// The examples of the Modbus Application Protocol specification v1.1b3.

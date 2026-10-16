@@ -5,7 +5,9 @@
 mod sim;
 
 use std::collections::BTreeMap;
+use std::fs::Permissions;
 use std::net::SocketAddr;
+use std::os::unix::fs::PermissionsExt;
 
 use types::quality::Quality;
 use types::time::{Span, Stamp};
@@ -26,12 +28,12 @@ const VARIABLES: [(&str, &str); 3] = [
     ("ns=3;s=PositiveTrendData", "plant.trend"),
 ];
 
-/// The changes of each variable: 5 s at 10 Hz.
-const TICKS: usize = 50;
+/// The changes of each variable: 2 s at 10 Hz. Each change steps the value.
+const TICKS: usize = 20;
 
-/// The fewest reads of each variable that the server answers in the [`TICKS`] changes,
-/// so that a node that reads too few fails the test: half the ticks of `rate = "10Hz"`.
-const READS: usize = TICKS / 2;
+/// The changes of each variable in the test of the time bound: 5 s at 10 Hz, so that a
+/// time error that grows slowly passes [`BOUND`].
+const TRACED: usize = 50;
 
 /// The MVP target of the time error bound.
 const BOUND: Span = Span::SECOND;
@@ -159,19 +161,20 @@ fn first_stored(plant: &Plant, variables: &[(&str, &str)]) {
     });
 }
 
-/// Changes each variable of `variables` [`TICKS`] times with `quality`, and gives the
-/// reads of each. Panics when the server answered fewer than [`READS`] reads of a
-/// variable in the changes.
+/// Changes each variable of `variables` `ticks` times with `quality`, and gives the
+/// reads of each. Panics when the server answered fewer than half of `ticks` reads of a
+/// variable in the changes, so that a node that reads too few at `rate = "10Hz"` fails.
 fn change(
     opcua: &Opcua,
     variables: &[(&'static str, &'static str)],
     quality: Quality,
+    ticks: usize,
 ) -> Vec<Reads> {
     let count = |served: &BTreeMap<String, Vec<Sample>>, variable| {
         served.get(variable).map_or(0, Vec::len)
     };
     let before = opcua.served();
-    opcua.change(TICKS, quality);
+    opcua.change(ticks, quality);
     let after = opcua.served();
     let reads: Vec<_> = variables
         .iter()
@@ -186,7 +189,7 @@ fn change(
         let in_changes = reads.changed - reads.unchanged;
         let channel = reads.channel;
         assert!(
-            in_changes >= READS,
+            in_changes >= ticks / 2,
             "{channel}: {in_changes} reads in the changes"
         );
     }
@@ -455,7 +458,7 @@ fn each_config_names_the_served_addresses() {
 fn samples_from_an_opc_ua_server_reach_influxdb() {
     let plant = create_plant(plant());
     first_stored(&plant, &VARIABLES);
-    let reads = change(&plant.opcua, &VARIABLES, Quality::GOOD);
+    let reads = change(&plant.opcua, &VARIABLES, Quality::GOOD, TRACED);
     for trace in held(&plant, &reads) {
         let good = |sample: &Sample| sample.quality == Some(Quality::GOOD);
         assert!(trace.served.iter().all(good), "{trace:?}");
@@ -463,27 +466,38 @@ fn samples_from_an_opc_ua_server_reach_influxdb() {
 }
 
 #[test]
-#[ignore = "waits on #435, #2510"]
-fn a_bad_status_keeps_its_quality() {
+fn a_bad_value_is_left_out_and_counted() {
     let plant = create_plant(QUALITY);
     let spike = &VARIABLES[..1];
     first_stored(&plant, spike);
-    let traces = held(&plant, &change(&plant.opcua, spike, BAD));
-    let [trace] = &traces[..] else {
-        panic!("one variable: {traces:?}");
+    let [reads] = &change(&plant.opcua, spike, BAD, TICKS)[..] else {
+        panic!("one variable");
     };
-    let qualities = |samples: &[Sample]| -> Vec<Option<Quality>> {
-        samples.iter().map(|sample| sample.quality).collect()
-    };
-    let served = qualities(&trace.served);
     // One read can fall between the count of the reads and the first change.
-    let (before, changes) = served.split_at(trace.unchanged);
-    assert!(
-        before.iter().all(|quality| *quality == Some(Quality::GOOD))
-            && changes[1..].iter().all(|quality| *quality == Some(BAD)),
-        "Good before the changes, then Bad: {trace:?}"
-    );
-    assert_eq!(qualities(&trace.stored), served[..trace.stored.len()]);
+    let bad = u64::try_from(reads.changed - reads.unchanged - 1).expect("a few");
+    plant.rig.wait("`bad` of `plc` counts the Bad reads", || {
+        match count(&plant.rig.status(), "plc", "bad") {
+            Some(counted) if counted >= bad => Ok(()),
+            counted => Err(format!("{counted:?} of at least {bad}")),
+        }
+    });
+    let mut served = plant.opcua.served();
+    let served = served.remove(reads.variable).unwrap_or_default();
+    let before = &served[..=reads.unchanged];
+    let good = |sample: &Sample| sample.quality == Some(Quality::GOOD);
+    // InfluxDB holds no status, so a sample is Good when its read is.
+    let mut stored = plant.influx.stored();
+    for sample in stored.remove(reads.channel).unwrap_or_default() {
+        let read = |read: &Sample| {
+            good(read)
+                && read.value.to_bits() == sample.value.to_bits()
+                && (sample.time - read.time).nanos().abs() <= BOUND.nanos()
+        };
+        assert!(
+            before.iter().any(read),
+            "{sample:?} is a Good read before the changes: {before:?}"
+        );
+    }
 }
 
 #[test]
@@ -571,7 +585,7 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
         }
     });
     let mut plant = Plant { rig, opcua, influx };
-    let reads = change(&plant.opcua, &VARIABLES, Quality::GOOD);
+    let reads = change(&plant.opcua, &VARIABLES, Quality::GOOD, TICKS);
     plant.influx.serve();
     held(&plant, &reads);
 }
@@ -609,14 +623,22 @@ fn a_token_file_shows_its_fix_until_it_holds_the_token() {
             source
         });
         let (source, path) = given.expect("the plant names its source");
+        let shown = path.display();
+        let hidden = if named {
+            format!(", unreadable by other users: chmod o-r {shown}")
+        } else {
+            String::new()
+        };
         let missing = format!(
-            "the secret {source}: the file {} is not there. Write the value to it",
-            path.display()
+            "the secret {source}: the file {shown} is not there. Write the value to \
+             it{hidden}"
         );
         refuses_the_token(&plant.rig, &missing);
         let dir = path.parent().expect("a directory");
         std::fs::create_dir_all(dir).expect("makes the directory");
         std::fs::write(&path, b"t0ken\n").expect("writes the token");
+        std::fs::set_permissions(&path, Permissions::from_mode(0o600))
+            .expect("makes the token private");
         let output = plant
             .rig
             .run(&["plan", "plant.hcl", "--out", "plant.plan"], b"");
@@ -633,6 +655,8 @@ fn a_token_file_shows_its_fix_until_it_holds_the_token() {
             }
         );
         std::fs::write(&path, b"t0ken\n").expect("writes the token");
+        std::fs::set_permissions(&path, Permissions::from_mode(0o600))
+            .expect("makes the token private");
         first_stored(&plant, &VARIABLES);
     }
 }
@@ -641,7 +665,7 @@ fn a_token_file_shows_its_fix_until_it_holds_the_token() {
 fn status_shows_samples_flow() {
     let plant = create_plant(plant());
     let rig = &plant.rig;
+    // The node reads each variable at each tick, also when its value does not change.
     let before = rig.wait("both counts are above 0", || counts_above(rig, (0, 0)));
-    plant.opcua.change(TICKS, Quality::GOOD);
     rig.wait("both counts grow", || counts_above(rig, before));
 }

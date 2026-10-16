@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
 use connector::cancel::Token;
-use connector::kind::{self, Channels, Context, Error, Table};
+use connector::kind::{self, Channels, Context, Error, Kind as _, Table};
 use connector::status::{self, Reading};
 use connector::supervisor::{self, Supervisor};
 use connector::testing;
@@ -37,9 +37,6 @@ use types::time::{Monotonic, Span};
 /// The time between two ticks of the connector, at 10 Hz.
 const PERIOD: Span = Span::from_nanos(100_000_000);
 
-/// The counts of the `opcua` kind.
-const COUNTS: [&str; 3] = ["in", "missed", "lost"];
-
 /// What a measure gives for each poll of a run: the time of the poll and the value.
 type Polls = Arc<Mutex<Vec<(Monotonic, u64)>>>;
 
@@ -47,9 +44,11 @@ type Polls = Arc<Mutex<Vec<(Monotonic, u64)>>>;
 enum Of {
     /// Each poll of the run of the `opcua` kind.
     Polls(Polls),
-    /// Each of `count` writes of a frame of its reads, with no server.
+    /// Each of `count` writes of a frame of its reads, with no server, the first
+    /// `bad(i)` of which are Bad in write `i`.
     Writes {
         count: usize,
+        bad: Box<dyn Fn(usize) -> usize + Send + Sync>,
         measures: Arc<Mutex<Vec<u64>>>,
     },
 }
@@ -95,9 +94,13 @@ impl<M: Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static> kind::Kind
                 })
                 .await
             }
-            Of::Writes { count, measures } => {
+            Of::Writes {
+                count,
+                bad,
+                measures,
+            } => {
                 let writes = connector_opcua::bench::kind::writes;
-                let written = writes(&ctx, *count, &self.measure).await?;
+                let written = writes(&ctx, *count, bad, &self.measure).await?;
                 *measures.lock().expect("no panic under the lock") = written;
                 Ok(())
             }
@@ -112,14 +115,16 @@ fn name(text: &str) -> Name {
 /// Runs a connector at 10 Hz that reads `nodes` variables of the sim server, each with
 /// a Double value, for `count` ticks and two more, and gives what `measure` gives for
 /// its polls: for the run start (the open of its writer, its frames, its connect, and
-/// its first request), and for each of the first `count` reads. `measure` calls the
-/// poll that it gets once.
+/// its first request), and for each of the first `count` reads. Read `i` goes into a
+/// channel of the type `scalars[i % scalars.len()]`. `measure` calls the poll that it
+/// gets once.
 ///
 /// # Panics
 ///
 /// If the run ends with an error, or the server answered fewer than `count` reads.
 pub(crate) fn run(
     nodes: usize,
+    scalars: &[Scalar],
     count: usize,
     measure: impl Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static,
 ) -> Measures {
@@ -129,10 +134,11 @@ pub(crate) fn run(
         of: Of::Polls(Arc::clone(&polls)),
     };
     let texts: Vec<String> = (2..).take(nodes).map(|key| read(key).1).collect();
+    let scalars = scalars.to_vec();
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let run = sim.run_on(&node, move |node, tasks| async move {
-        let inputs = inputs(&node, &tasks, kind, nodes, &[Scalar::F64]).await;
+        let inputs = inputs(&node, &tasks, kind, nodes, &scalars).await;
         let variables =
             Variables::new(&texts.iter().map(String::as_str).collect::<Vec<_>>());
         let (stop, serving) = (Token::new(), Group::new(tasks.clone()));
@@ -178,8 +184,9 @@ pub(crate) fn run(
 /// Writes `count` frames of a connector that reads `nodes` variables, with no server,
 /// and gives what `measure` gives for the check of the values and the write of each
 /// frame, and each status of the connector that the home applied, in order. Read `i`
-/// goes into a channel of the type `scalars[i % scalars.len()]`. `measure` calls the
-/// work that it gets once.
+/// goes into a channel of the type `scalars[i % scalars.len()]`, and the first
+/// `bad(i)` reads of write `i` (from 0) are Bad. `measure` calls the work that it gets
+/// once.
 ///
 /// # Panics
 ///
@@ -188,6 +195,7 @@ pub(crate) fn writes(
     nodes: usize,
     scalars: &'static [Scalar],
     count: usize,
+    bad: impl Fn(usize) -> usize + Send + Sync + 'static,
     measure: impl Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static,
 ) -> (Vec<u64>, Vec<Reading>) {
     let measures = Arc::<Mutex<Vec<u64>>>::default();
@@ -195,6 +203,7 @@ pub(crate) fn writes(
         measure,
         of: Of::Writes {
             count,
+            bad: Box::new(bad),
             measures: Arc::clone(&measures),
         },
     };
@@ -225,9 +234,17 @@ pub(crate) fn writes(
     (measures.clone(), readings)
 }
 
+/// The counts of the `opcua` kind, as its check gives them.
+fn counts() -> Vec<Name> {
+    let kind = connector_opcua::Kind::default();
+    let config = kind.parse(&config("opc.tcp://plc:4840", 1));
+    let config = config.expect("the config parses");
+    kind.check(&config).expect("the config checks").counts
+}
+
 /// A reader of the status channels of `plant.plc`.
 async fn status(hub: &hub::Hub) -> hub::reader::Reader {
-    let names = status::channels(&name("plant.plc"), &COUNTS.map(name));
+    let names = status::channels(&name("plant.plc"), &counts());
     let (time, channels) = names.expect("the status names are names");
     let channels = channels.iter().map(|(name, _)| name.as_str());
     let select = Selector::new(std::iter::once(time.as_str()).chain(channels));
@@ -261,7 +278,7 @@ async fn inputs(
     };
     let kinds = Table::new().with("opcua", kind);
     let inputs = testing::create_config(env, node.net(), kinds).await;
-    let counts = COUNTS.map(name);
+    let counts = counts();
     let first = channel::Key::from_u128(1_000_000);
     let mut definitions = testing::create_status(&name("plant.plc"), &counts, first);
     definitions.push((name("plant.time"), index(1)));

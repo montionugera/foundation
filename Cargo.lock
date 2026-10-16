@@ -451,6 +451,10 @@ dependencies = [
 name = "connector-modbus"
 version = "0.0.0"
 dependencies = [
+ "connector",
+ "counting",
+ "divan",
+ "document",
  "env",
  "proptest",
  "sim",
@@ -1207,6 +1211,8 @@ dependencies = [
  "serde_json",
  "sim",
  "spec",
+ "tracing",
+ "tracing-subscriber",
  "transport",
  "types",
  "wire",
@@ -1342,6 +1348,7 @@ dependencies = [
  "serde_json",
  "sim",
  "spec",
+ "tracing",
  "transport",
  "types",
  "wire",
@@ -1470,6 +1477,8 @@ dependencies = [
  "access",
  "aws-lc-rs",
  "block",
+ "codec",
+ "counting",
  "env",
  "hub",
  "sim",
@@ -2499,6 +2508,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 name = "wire"
 version = "0.0.0"
 dependencies = [
+ "block",
  "counting",
  "divan",
  "proptest",

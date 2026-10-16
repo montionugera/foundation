@@ -16,6 +16,7 @@ use crate::identity::{self, Identity};
 use crate::{Budget, Config, Error, Node, Region};
 
 mod address;
+mod log;
 mod region;
 
 struct Run {
@@ -92,6 +93,10 @@ fn config<M>(
         name: "edge".parse().expect("a name"),
         settings: crate::Settings::default(),
         vars: std::collections::BTreeMap::new(),
+        log: crate::Log {
+            writer: Box::new(std::io::sink()),
+            format: ops::Log::default(),
+        },
     }
 }
 
@@ -412,7 +417,7 @@ fn join_gives_a_shard_with_no_memory_over_one_that_panicked() {
 }
 
 #[test]
-fn a_config_shows_its_budget_entropy_and_settings_but_not_its_memory_or_files() {
+fn a_config_shows_its_budget_entropy_settings_and_log_but_not_its_memory_or_files() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = sim.node(sim::node::Config::default());
     let config = config(&host, Size::from_bytes(4096), Box::new(heap));
@@ -423,7 +428,8 @@ fn a_config_shows_its_budget_entropy_and_settings_but_not_its_memory_or_files() 
             "Config {{ shards: Shards {{ .. }}, clock: {clock:?}, wall: {wall:?}, \
              budget: Budget {{ pool: Size(4096), disk: {DISK:?} }}, entropy: {entropy:?}, \
              listen: {listen:?}, region: Absent, name: Name(\"edge\"), \
-             settings: {settings:?}, .. }}",
+             settings: {settings:?}, log: Log {{ format: Log {{ json: false, level: Level(Info) }}, .. }}, \
+             .. }}",
             listen = config.listen,
             settings = config.settings,
         )
@@ -473,8 +479,8 @@ fn a_host_that_cannot_pin_starts_shards_on_no_core() {
     assert_eq!(run.node.join(), Ok(()));
 }
 
-/// Starts a node on `host`, runs it for an hour, stops it, and gives what `join`
-/// gives.
+/// Starts a node on `host`, runs it until its opens end, stops it, and gives what
+/// `join` gives.
 fn run_on(sim: &mut sim::Sim, host: &sim::node::Node) -> Result<(), Error> {
     run_on_disk(sim, host, DISK.bytes())
 }
@@ -492,7 +498,16 @@ fn run_on_disk(
         },
         ..config(host, Size::MEBIBYTE, Box::new(heap))
     });
-    assert_eq!(sim.run_for(Span::HOUR), Ok(()));
+    // The task runs once each file that a caller reads is there, or drops as the
+    // node fails.
+    let probe = probe(&node);
+    let mut ms = 0;
+    while fate(&probe) == Fate::Waiting {
+        let after = Span::from_nanos(ms * Span::MILLISECOND.nanos());
+        assert!(after < Span::HOUR, "the opens go on");
+        assert_eq!(sim.run_for(Span::MILLISECOND), Ok(()));
+        ms += 1;
+    }
     node.stop();
     assert_eq!(sim.run(), Ok(()));
     node.join()
@@ -4770,6 +4785,131 @@ pub(crate) mod port {
             assert_eq!(node.join(), Ok(()));
         }
 
+        /// A node of the default message limit is a voter that takes each append of
+        /// the leader: each of 50 homes, which the peer sets at once, commits within
+        /// 10 s.
+        #[test]
+        fn homes_commit_with_a_voter_of_the_default_message_limit() {
+            for seed in 0..4 {
+                let mut sim = sim::Sim::new(sim::Config {
+                    seed,
+                    ..sim::Config::default()
+                });
+                let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+                let members = pair(&hosts);
+                let node = start(&hosts[0], region(&members));
+                let set = Arc::new(Mutex::new(0));
+                let out = Arc::clone(&set);
+                peer(&hosts[1], &members, move |mesh, own| async move {
+                    own.clock().sleep(Span::SECOND).await;
+                    let mut sets = Vec::new();
+                    for key in 100..150 {
+                        let (mesh, out) = (mesh.clone(), Arc::clone(&out));
+                        sets.push(Box::pin(async move {
+                            let index = channel::Key::from_u128(key);
+                            if mesh.set_home(index, OTHER.0).await.is_ok() {
+                                *out.lock().unwrap() += 1;
+                            }
+                        }));
+                    }
+                    let mut end = pin!(own.clock().sleep(TEN));
+                    poll_fn(|cx| {
+                        sets.retain_mut(|set| set.as_mut().poll(cx).is_pending());
+                        if sets.is_empty() {
+                            return Poll::Ready(());
+                        }
+                        end.as_mut().poll(cx)
+                    })
+                    .await;
+                });
+                assert_eq!(sim.run_for(TWENTY), Ok(()));
+                node.stop();
+                assert_eq!(sim.run(), Ok(()));
+                assert_eq!(node.join(), Ok(()));
+                assert_eq!(*set.lock().unwrap(), 50, "{seed}");
+            }
+        }
+
+        /// The least pool budget that each buffer takes also holds an append of the
+        /// largest record, so `Budget::pool` names no refusal of the mesh.
+        #[test]
+        fn the_least_pool_budget_of_the_buffers_opens_the_mesh() {
+            let start = |budget| {
+                let mut sim = sim::Sim::new(sim::Config::default());
+                let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+                let node = Node::start(Config {
+                    region: Region::Given(region(&pair(&hosts))),
+                    ..config(&hosts[0], budget, Box::new(heap))
+                });
+                assert_eq!(sim.run_for(TEN), Ok(()));
+                node.stop();
+                assert_eq!(sim.run(), Ok(()));
+                node.join()
+            };
+            let Err(Error::Buffer {
+                error: ::buffer::Error::Budget { min, .. },
+                ..
+            }) = start(Size::from_bytes(1))
+            else {
+                panic!("a pool budget of 1 byte opens no buffer");
+            };
+            assert_eq!(
+                start(Size::from_bytes(2 * u64::try_from(min).unwrap())),
+                Ok(())
+            );
+        }
+
+        /// A node of the least message limit that its transport takes, 1472 bytes,
+        /// cannot take an append of the largest record, so its mesh does not open.
+        #[test]
+        fn a_node_of_the_least_message_limit_does_not_start() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let least = crate::Settings {
+                message_bytes_max: NonZeroUsize::new(1472).unwrap(),
+                window_bytes: 2 * 1472,
+                ..crate::Settings::default()
+            };
+            let node = Node::start(Config {
+                region: Region::Given(region(&pair(&hosts))),
+                settings: least,
+                ..config(&hosts[0], Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run(), Ok(()));
+            let limit = ::mesh::Error::Limit {
+                bytes_max: 1472,
+                bytes_min: 50_355,
+            };
+            let refused = node.join().unwrap_err();
+            assert_eq!(refused, Error::Mesh(limit));
+            assert_eq!(
+                refused.to_string(),
+                "the node's mesh did not open: this node takes messages of at most 1472 \
+                 bytes, below the 50355 bytes of an append of the largest record"
+            );
+        }
+
+        /// A node with no region opens no mesh, so it starts at that limit.
+        #[test]
+        fn a_node_with_no_region_of_the_least_message_limit_starts() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2)];
+            let least = crate::Settings {
+                message_bytes_max: NonZeroUsize::new(1472).unwrap(),
+                window_bytes: 2 * 1472,
+                ..crate::Settings::default()
+            };
+            let node = Node::start(Config {
+                region: Region::Absent,
+                settings: least,
+                ..config(&hosts[0], Size::MEBIBYTE, Box::new(heap))
+            });
+            assert_eq!(sim.run_for(TEN), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+        }
+
         /// A task's reader of a channel whose home is the peer holds a session to the
         /// peer when the node stops. The stop drops the hub and the reader, and each
         /// task of the hub then lets go of the transport (`hub::Hub::new`), so the
@@ -6152,11 +6292,23 @@ pub(crate) mod port {
         #[test]
         fn the_log_of_the_mesh_is_free_once_the_lock_is() {
             let (mut held, mut logged, mut ordered) = (false, false, false);
-            // The mesh opens at about 1.5 ms, and from 1.6 s the log writes a home
-            // about each 0.7 ms.
-            let opens = (0..200).map(|step| step * 13_000);
-            let writes = (0..100).map(|step| 1_700_000_000 + step * 7_000);
-            for after in opens.chain(writes) {
+            // The probe finds the lock free and the log made, from about 4.1 ms.
+            let mut freed = false;
+            // Three orders of the last closes of the log, `shard-1/ring`, and
+            // `address` that the stops in a write give at seed 0: the log first, the
+            // address first, and the ring first. They do not show which file call is
+            // in flight (#2778), so a drift of the writes can still keep each order.
+            let mut crossed = [false; 3];
+            // A stop from about 1.35 ms comes after the node starts to open its
+            // mesh, which opens its log at about 3.1 ms. From about 1.1 s the log
+            // writes a home about each 0.7 ms, and the stops in the writes step from
+            // before the write of one home, through its write and its sync, to after
+            // them.
+            let starts = (0..200).map(|step| step * 13_000);
+            let opens = starts.chain((0..42).map(|step| 2_600_000 + step * 52_000));
+            let opens = opens.map(|after| (after, false));
+            let writes = (0..13).map(|step| (1_700_553_000 + step * 7_000, true));
+            for (after, write) in opens.chain(writes) {
                 let mut sim = sim::Sim::new(sim::Config::default());
                 let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
                 let members = pair(&hosts);
@@ -6168,12 +6320,19 @@ pub(crate) mod port {
                 let (waited, port, log, closes) = probe(&mut sim, &hosts[0]);
                 held |= waited;
                 logged |= log.is_ok();
+                freed |= !waited && log.is_ok();
                 let busy = matches!(log, Err(env::files::Error::Busy { .. }));
                 assert!(!busy, "at {after:?}: {log:?}");
                 let last = |path| closes.iter().rposition(|c| c == Path::new(path));
                 if let (Some(log), Some(lock)) = (last(LOG), last("lock")) {
                     assert!(log < lock, "at {after:?}: {closes:?}");
                     ordered = true;
+                }
+                let order = (last(LOG), last("shard-1/ring"), last("address"));
+                if let (true, (Some(log), Some(ring), Some(address))) = (write, order) {
+                    crossed[0] |= log < ring;
+                    crossed[1] |= address < log;
+                    crossed[2] |= ring < log && log < address;
                 }
                 // A probe that takes the lock before the claim refuses the node.
                 let refused = Error::Directory(env::files::Error::Busy {
@@ -6185,7 +6344,11 @@ pub(crate) mod port {
                     assert_eq!(port, Ok(()), "at {after:?}");
                 }
             }
-            assert!(held && logged && ordered);
+            assert!(held && logged && ordered && freed);
+            assert_eq!(
+                crossed, [true; 3],
+                "the stops miss an order of the closes: find the write times again"
+            );
         }
 
         /// When the mesh's group stops the node while a peer holds a session with it,

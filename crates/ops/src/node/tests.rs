@@ -61,7 +61,7 @@ fn applies_with_each_connector_kind_of_the_node() {
             effect: Effect {
                 pointer: Pointer::from(mesh.pointer()),
                 counts: Counts {
-                    added: 24,
+                    added: 27,
                     changed: 0,
                     removed: 0,
                 },
@@ -341,7 +341,8 @@ fn refuses_a_plan_with_each_secret_of_the_node_that_has_no_value() {
             ),
             unresolved(
                 "the secret secret(\"plant.pw\"): the file /data/secrets/plant.pw is \
-                 not there. Write the value to it",
+                 not there. Write the value to it, unreadable by other users: chmod \
+                 o-r /data/secrets/plant.pw",
                 7,
                 12,
             ),
