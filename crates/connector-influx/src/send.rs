@@ -134,38 +134,42 @@ async fn send(
     let mut backoff = None;
     loop {
         let request = request(uri, &body, token.borrow().as_ref());
-        let answer = match client.send(request).await {
-            Ok(answer) if answer.status() == StatusCode::NO_CONTENT => {
-                ctx.clear_error();
-                return Ok(());
+        // A block, so that `answer` does not grow the future across the backoff.
+        let refused = {
+            let answer = match client.send(request).await {
+                Ok(answer) if answer.status() == StatusCode::NO_CONTENT => {
+                    ctx.clear_error();
+                    return Ok(());
+                }
+                Ok(answer) => Some((answer.status(), answer.into_body())),
+                Err(connector::http::Error::TooLarge { status, body, .. }) => {
+                    Some((status, body))
+                }
+                Err(error) => {
+                    ctx.error(&format_args!("the write to InfluxDB failed: {error}"));
+                    None
+                }
+            };
+            let mut refused = false;
+            if let Some((status, body)) = answer {
+                let text = String::from_utf8_lossy(&body);
+                let text = text.trim();
+                let token =
+                    matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
+                let source = ctx.config().token.as_ref().filter(|_| token);
+                refused = source.is_some();
+                match source {
+                    Some(source) => ctx.error(&format_args!(
+                        "InfluxDB answered {status}. Check the token {source}: {text}"
+                    )),
+                    None => ctx.error(&format_args!(
+                        "InfluxDB answered {status}: {text}{}",
+                        fix(status)
+                    )),
+                }
             }
-            Ok(answer) => Some((answer.status(), answer.into_body())),
-            Err(connector::http::Error::TooLarge { status, body, .. }) => {
-                Some((status, body))
-            }
-            Err(error) => {
-                ctx.error(&format_args!("the write to InfluxDB failed: {error}"));
-                None
-            }
+            refused
         };
-        let mut refused = false;
-        if let Some((status, body)) = answer {
-            let text = String::from_utf8_lossy(&body);
-            let text = text.trim();
-            let token =
-                matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
-            let source = ctx.config().token.as_ref().filter(|_| token);
-            refused = source.is_some();
-            match source {
-                Some(source) => ctx.error(&format_args!(
-                    "InfluxDB answered {status}. Check the token {source}: {text}"
-                )),
-                None => ctx.error(&format_args!(
-                    "InfluxDB answered {status}: {text}{}",
-                    fix(status)
-                )),
-            }
-        }
         let backoff =
             backoff.get_or_insert_with(|| Backoff::new(ctx.clock(), ctx.rng(), RETRY));
         if !backoff.wait(ctx.cancel()).await {

@@ -16,7 +16,7 @@ fn size<'a, R>(
 #[test]
 fn keeps_the_read_of_the_token_out_of_the_future_of_send() {
     let got = size(send);
-    assert!(got <= 640, "the future of `send` is {got} B");
+    assert!(got <= 600, "the future of `send` is {got} B");
 }
 
 #[test]
