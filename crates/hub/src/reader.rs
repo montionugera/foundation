@@ -112,7 +112,7 @@ impl<'a> Received<'a> {
     pub fn position(&self) -> Position {
         let position = Position {
             index: self.lens.index,
-            live: self.lent.seqs.end,
+            live: self.lens.seqs(self.view.frame()).end,
         };
         self.lent.given.set(Some(position.live));
         position
@@ -355,8 +355,9 @@ struct Lent {
     /// The `live` of the last position that [`Received::position`] gave, or `None`
     /// before it gave one. The positions of a reader rise, so it is the highest.
     given: Cell<Option<u64>>,
-    /// The seqs of the index in the frame that the last [`Received`] lends, or the
-    /// empty range at the open position before the first frame.
+    /// For a complete reader, the seqs of the index in the frame that the last
+    /// [`Received`] lends, or the empty range at the open position before the first
+    /// frame. A latest reader keeps the empty range, as it gets no gap.
     seqs: Range<u64>,
     /// The first live seq that the reader had not got before that frame: the start of
     /// its gap.
@@ -585,13 +586,12 @@ impl Reader {
                 },
                 Source::Remote(remote) => remote.take().await?,
             };
-            let seqs = lens.seqs(&frame);
-            self.lent.from = match self.mode {
-                Mode::Complete if self.lent.seqs.is_empty() => self.lent.from,
-                Mode::Complete => self.lent.seqs.end,
-                Mode::Latest => seqs.start,
-            };
-            self.lent.seqs = seqs;
+            if self.mode == Mode::Complete {
+                if !self.lent.seqs.is_empty() {
+                    self.lent.from = self.lent.seqs.end;
+                }
+                self.lent.seqs = lens.seqs(&frame);
+            }
             let frame = self.frame.insert(frame);
             Ok(Received {
                 view: View::new(frame, &lens.mask),
