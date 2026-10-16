@@ -2,11 +2,12 @@
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::net::Ipv6Addr;
 
 use connector::kind;
 use document::diagnostic::{Code, Diagnostic, Note};
 use document::value::{Kind as Of, Value};
-use document::{Block, Document, Span, read};
+use document::{Block, Document, read};
 use types::name::Name;
 use types::time::Rate;
 
@@ -59,8 +60,6 @@ pub(crate) struct Read {
     pub(crate) channel: Name,
     pub(crate) table: Table,
     pub(crate) address: u16,
-    /// The `read` block, for a diagnostic of the run.
-    pub(crate) span: Option<Span>,
 }
 
 /// Reads `address`, `rate`, the optional `unit` and `order`, and one or more `read`
@@ -115,66 +114,89 @@ pub(crate) fn parse(config: &Document) -> Result<Config, Vec<Diagnostic>> {
 }
 
 /// Reads a host and an optional port, such as `"plc:502"`, `"plc"`, or
-/// `"[fd00::1]:502"`. Port 502 when it has none.
+/// `"[fd00::1]:502"`. Port 502 when it has none. A host in brackets is an IPv6
+/// address. Each other host has only letters, digits, `-`, and `.`.
 fn endpoint(value: &Value) -> Result<(Box<str>, u16), Diagnostic> {
-    let refused = |message| {
-        Diagnostic::new(
-            BAD_ADDRESS,
-            value.span,
-            message,
-            "Write a host and a port, such as \"plc:502\" or \"[fd00::1]:502\"".into(),
-        )
-    };
-    let Of::String(text) = &value.kind else {
-        return Err(refused(format!(
-            "an address is a string, not {}",
-            value.kind.noun()
-        )));
-    };
-    let (host, port) = match text.strip_prefix('[') {
-        Some(rest) => {
-            let Some((host, port)) = rest.split_once(']') else {
-                return Err(refused(format!("the address {text:?} has no `]`")));
-            };
-            match port {
-                "" => (host, None),
-                port => match port.strip_prefix(':') {
-                    Some(port) => (host, Some(port)),
-                    None => {
-                        return Err(refused(format!(
-                            "the address {text:?} has {port:?} after its `]`, not a \
-                             `:` and a port"
-                        )));
-                    }
-                },
-            }
-        }
-        None => match text.split_once(':') {
-            Some((_, port)) if port.contains(':') => {
-                return Err(refused(format!(
-                    "the address {text:?} has more than one `:`. Put an IPv6 host in \
-                     brackets"
-                )));
-            }
-            Some((host, port)) => (host, Some(port)),
-            None => (&**text, None),
+    let message = match &value.kind {
+        Of::String(text) => match address(text) {
+            Ok(endpoint) => return Ok(endpoint),
+            Err(message) => message,
         },
+        other => format!("an address is a string, not {}", other.noun()),
     };
+    Err(Diagnostic::new(
+        BAD_ADDRESS,
+        value.span,
+        message,
+        "Write a host and a port, such as \"plc:502\" or \"[fd00::1]:502\"".into(),
+    ))
+}
+
+/// The host and port of the address `text`, or the message of its problem.
+fn address(text: &str) -> Result<(Box<str>, u16), String> {
+    let (host, port) = split(text)?;
     if host.is_empty() {
-        return Err(refused(format!("the address {text:?} has no host")));
+        return Err(format!("the address {text:?} has no host"));
+    }
+    if text.starts_with('[') {
+        if host.parse::<Ipv6Addr>().is_err() {
+            return Err(format!(
+                "the address {text:?} has {host:?} in brackets, which is not an IPv6 \
+                 address"
+            ));
+        }
+    } else if !host
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || b"-.".contains(&byte))
+    {
+        return Err(format!(
+            "the address {text:?} has a host with a character other than a letter, a \
+             digit, `-`, or `.`"
+        ));
     }
     let port = match port {
         None => PORT,
         Some(digits) => match digits.parse() {
-            Ok(port) if digits.bytes().all(|byte| byte.is_ascii_digit()) => port,
+            Ok(port)
+                if port != 0 && digits.bytes().all(|byte| byte.is_ascii_digit()) =>
+            {
+                port
+            }
             _ => {
-                return Err(refused(format!(
-                    "the address {text:?} has a port that is not 0 to 65535"
-                )));
+                return Err(format!(
+                    "the address {text:?} has a port that is not 1 to 65535"
+                ));
             }
         },
     };
     Ok((host.into(), port))
+}
+
+/// The host of the address `text`, with no brackets, and the text of its port when it
+/// has one.
+fn split(text: &str) -> Result<(&str, Option<&str>), String> {
+    let Some(rest) = text.strip_prefix('[') else {
+        return match text.split_once(':') {
+            Some((_, port)) if port.contains(':') => Err(format!(
+                "the address {text:?} has more than one `:`. Put an IPv6 host in \
+                 brackets"
+            )),
+            Some((host, port)) => Ok((host, Some(port))),
+            None => Ok((text, None)),
+        };
+    };
+    let Some((host, port)) = rest.split_once(']') else {
+        return Err(format!("the address {text:?} has no `]`"));
+    };
+    if port.is_empty() {
+        return Ok((host, None));
+    }
+    match port.strip_prefix(':') {
+        Some(port) => Ok((host, Some(port))),
+        None => Err(format!(
+            "the address {text:?} has {port:?} after its `]`, not a `:` and a port"
+        )),
+    }
 }
 
 /// Reads the unit of the device: a whole number, 0 to 255.
@@ -194,38 +216,40 @@ fn unit(value: &Value) -> Result<u8, Diagnostic> {
     ))
 }
 
-/// Reads a word order: `"big"` or `"little"`.
+/// Reads a word order: `big` or `little`.
 fn order(value: &Value) -> Result<Order, Diagnostic> {
-    word(value, &ORDERS).ok_or_else(|| {
+    word(value, &ORDERS, "an order").map_err(|message| {
         Diagnostic::new(
             BAD_ORDER,
             value.span,
-            format!("an order is {}, not {}", words(&ORDERS), shown(value)),
-            "Write \"big\" when the first register holds the high word, or \"little\""
-                .into(),
+            message,
+            "Use `big` when the first register holds the high word, or `little`".into(),
         )
     })
 }
 
-/// Reads a table: `"coil"`, `"discrete"`, `"holding"`, or `"input"`.
+/// Reads a table: `coil`, `discrete`, `holding`, or `input`.
 fn table(value: &Value) -> Result<Table, Diagnostic> {
-    word(value, &TABLES).ok_or_else(|| {
-        Diagnostic::new(
-            BAD_TABLE,
-            value.span,
-            format!("a table is {}, not {}", words(&TABLES), shown(value)),
-            "Write the table of the value, such as \"holding\"".into(),
-        )
+    word(value, &TABLES, "a table").map_err(|message| {
+        let words = TABLES.map(|(word, _)| word);
+        let fix = format!("Use {}", read::one_of(&words));
+        Diagnostic::new(BAD_TABLE, value.span, message, fix)
     })
 }
 
-/// The item of the word that `value` holds, when it is a string of one of `items`.
-fn word<T: Copy>(value: &Value, items: &[(&str, T)]) -> Option<T> {
-    let Of::String(text) = &value.kind else {
-        return None;
+/// The item of the word that `value` holds, as a string or a reference, or the message
+/// of a value that is not one of `items`, each `noun`, such as "a table".
+fn word<T: Copy>(value: &Value, items: &[(&str, T)], noun: &str) -> Result<T, String> {
+    let Some(text) = value.kind.text() else {
+        return Err(format!(
+            "{noun} is a string or a reference, not {}",
+            value.kind.noun()
+        ));
     };
-    let found = items.iter().find(|(word, _)| **text == **word);
-    found.map(|&(_, item)| item)
+    let found = items.iter().find(|(word, _)| text == *word);
+    found
+        .map(|&(_, item)| item)
+        .ok_or_else(|| format!("{text:?} is not {noun}"))
 }
 
 /// Reads the address of a read: a whole number, 0 to 65535.
@@ -245,26 +269,6 @@ fn read_address(value: &Value) -> Result<u16, Diagnostic> {
          register"
             .into(),
     ))
-}
-
-/// The words of `items` in quotes, as a list that ends with "or", such as `"big" or
-/// "little"`.
-fn words<T>(items: &[(&str, T)]) -> String {
-    let quoted: Vec<String> =
-        items.iter().map(|(word, _)| format!("{word:?}")).collect();
-    match quoted.split_last() {
-        Some((last, [first])) => format!("{first} or {last}"),
-        Some((last, rest)) => format!("{}, or {last}", rest.join(", ")),
-        None => String::new(),
-    }
-}
-
-/// A string value in quotes, or the noun of another value.
-fn shown(value: &Value) -> String {
-    match &value.kind {
-        Of::String(text) => format!("{text:?}"),
-        other => other.noun().into(),
-    }
 }
 
 /// Reads the `read` blocks of `config`, and adds each problem to `diagnostics`.
@@ -322,7 +326,6 @@ fn reads(config: &Document, diagnostics: &mut Vec<Diagnostic>) -> Vec<Read> {
                         channel: slot.key().clone(),
                         table,
                         address,
-                        span: block.span,
                     });
                 }
                 slot.insert(block);

@@ -1,7 +1,10 @@
+//! Some tests read the `pub(crate)` fields of a `Config`: until `run` (PR B2 of #432),
+//! no public call shows them. `gives_another_config_for_each_other_value` and
+//! `gives_the_defaults_as_written` show the same values through `PartialEq` alone.
 #![expect(clippy::arithmetic_side_effects, reason = "a test may panic")]
 
 use document::value::Kind as Value;
-use document::{Attribute, Label, Map, Position, Source};
+use document::{Attribute, Label, Map, Position, Source, Span};
 use proptest::prelude::*;
 
 use super::*;
@@ -40,7 +43,8 @@ fn document(attributes: &[(u32, &str, Value)], blocks: Vec<Block>) -> Document {
 }
 
 /// A block with `keyword` at `offset`, each label one byte after the one before, and
-/// `attributes`.
+/// `attributes`. The block itself spans from `offset + 100`, so a test tells the two
+/// spans apart.
 fn block(
     offset: u32,
     keyword: &str,
@@ -56,7 +60,7 @@ fn block(
         keyword_span: at(offset),
         labels: labels.collect(),
         body: document(attributes, Vec::new()),
-        span: at(offset),
+        span: at(offset + 100),
     }
 }
 
@@ -110,11 +114,10 @@ fn reads_each_attribute_and_each_read() {
         (14, "unit", Value::Integer(17)),
         (16, "order", string("little")),
     ];
-    let read = |channel, table, address, offset| Read {
+    let read = |channel, table, address| Read {
         channel: name(channel),
         table,
         address,
-        span: at(offset),
     };
     assert_eq!(
         parse(&config(string("10.0.0.7:1502"), &others, reads)),
@@ -125,13 +128,116 @@ fn reads_each_attribute_and_each_read() {
             rate: Rate::new(10, 1).expect("a rate"),
             order: Order::Little,
             reads: vec![
-                read("plc.temp", Table::HoldingRegisters, 40, 20),
-                read("plc.run", Table::Coils, 0, 40),
-                read("plc.door", Table::DiscreteInputs, 65535, 60),
-                read("plc.flow", Table::InputRegisters, 7, 80),
+                read("plc.temp", Table::HoldingRegisters, 40),
+                read("plc.run", Table::Coils, 0),
+                read("plc.door", Table::DiscreteInputs, 65535),
+                read("plc.flow", Table::InputRegisters, 7),
             ],
         })
     );
+}
+
+/// The example of MODBUS KIND parses as it states.
+#[test]
+fn reads_the_example_of_the_record() {
+    let reads = vec![read(20, "plc.temp", string("holding"), Value::Integer(40))];
+    let rate = [(10, "rate", string("10Hz"))];
+    let mut example = document(&rate, reads);
+    example.attributes = Map::new(vec![
+        Attribute {
+            key: "address".into(),
+            key_span: at(0),
+            value: document::value::Value {
+                kind: string("plc:502"),
+                span: at(1),
+            },
+        },
+        example.attributes.get("rate").expect("a rate").clone(),
+    ])
+    .expect("unique keys");
+    assert_eq!(
+        parse(&example),
+        Ok(Config {
+            host: "plc".into(),
+            port: 502,
+            unit: 1,
+            rate: Rate::new(10, 1).expect("a rate"),
+            order: Order::Big,
+            reads: vec![Read {
+                channel: name("plc.temp"),
+                table: Table::HoldingRegisters,
+                address: 40,
+            }],
+        })
+    );
+}
+
+#[test]
+fn reads_a_table_and_an_order_as_references() {
+    let reads = vec![read(
+        20,
+        "plc.run",
+        Value::Reference(name("coil")),
+        Value::Integer(3),
+    )];
+    let others = [(16, "order", Value::Reference(name("little")))];
+    let config = parse(&config(string("plc"), &others, reads)).expect("a config");
+    let tables: Vec<Table> = config.reads.iter().map(|read| read.table).collect();
+    assert_eq!((config.order, tables), (Order::Little, vec![Table::Coils]));
+}
+
+#[test]
+fn gives_the_defaults_as_written() {
+    let written = [
+        (14, "unit", Value::Integer(1)),
+        (16, "order", string("big")),
+    ];
+    assert_eq!(
+        parse(&config(string("plc"), &[], vec![temp()])),
+        parse(&config(string("plc:502"), &written, vec![temp()]))
+    );
+}
+
+#[test]
+fn gives_another_config_for_each_other_value() {
+    let base = || {
+        let others = [
+            (14, "unit", Value::Integer(1)),
+            (16, "order", string("big")),
+        ];
+        config(string("plc:502"), &others, vec![temp()])
+    };
+    let with = |key: &str, kind: Value| {
+        let mut changed = base();
+        let attributes = changed.attributes.iter().map(|attribute| {
+            let mut attribute = attribute.clone();
+            if &*attribute.key == key {
+                attribute.value.kind = kind.clone();
+            }
+            attribute
+        });
+        changed.attributes = Map::new(attributes.collect()).expect("unique keys");
+        changed
+    };
+    let reading = |read: Block| {
+        let mut changed = base();
+        changed.blocks = vec![read];
+        changed
+    };
+    let parsed = parse(&base()).expect("a config");
+    for other in [
+        with("address", string("plc2:502")),
+        with("address", string("plc:503")),
+        with("unit", Value::Integer(2)),
+        with("order", string("little")),
+        with("rate", string("20Hz")),
+        reading(read(20, "plc.flow", string("holding"), Value::Integer(40))),
+        reading(read(20, "plc.temp", string("input"), Value::Integer(40))),
+        reading(read(20, "plc.temp", string("holding"), Value::Integer(41))),
+    ] {
+        let other = parse(&other).expect("a config");
+        assert_ne!(parsed, other);
+    }
 }
 
 #[test]
@@ -156,7 +262,7 @@ fn reads_an_ipv6_host_in_brackets() {
 fn refuses_a_bad_address() {
     let fix = "Write a host and a port, such as \"plc:502\" or \"[fd00::1]:502\"";
     let port = |address: &str| {
-        format!("the address {address:?} has a port that is not 0 to 65535")
+        format!("the address {address:?} has a port that is not 1 to 65535")
     };
     for (address, message) in [
         (
@@ -175,6 +281,8 @@ fn refuses_a_bad_address() {
         ),
         (string("plc:"), port("plc:")),
         (string("plc:65536"), port("plc:65536")),
+        (string("plc:0"), port("plc:0")),
+        (string("[fd00::1]:0"), port("[fd00::1]:0")),
         (string("plc:+502"), port("plc:+502")),
         (string("plc:x"), port("plc:x")),
         (string("[fd00::1]:"), port("[fd00::1]:")),
@@ -182,6 +290,11 @@ fn refuses_a_bad_address() {
             string("fd00::1"),
             "the address \"fd00::1\" has more than one `:`. Put an IPv6 host in \
              brackets"
+                .into(),
+        ),
+        (
+            string("[fd00::1]]"),
+            "the address \"[fd00::1]]\" has \"]\" after its `]`, not a `:` and a port"
                 .into(),
         ),
         (
@@ -194,6 +307,48 @@ fn refuses_a_bad_address() {
              port"
                 .into(),
         ),
+    ] {
+        assert_eq!(
+            parse(&config(address.clone(), &[], vec![temp()])),
+            Err(vec![refused("modbus.bad-address", 1, &message, fix)]),
+            "{address:?}"
+        );
+    }
+}
+
+#[test]
+fn refuses_a_host_that_is_not_a_name_or_an_ip_address() {
+    let fix = "Write a host and a port, such as \"plc:502\" or \"[fd00::1]:502\"";
+    let host = |address: &str| {
+        format!(
+            "the address {address:?} has a host with a character other than a letter, \
+             a digit, `-`, or `.`"
+        )
+    };
+    for (address, message) in [
+        (
+            string("[plc]:502"),
+            "the address \"[plc]:502\" has \"plc\" in brackets, which is not an IPv6 \
+             address"
+                .into(),
+        ),
+        (
+            string("[10.0.0.2]:502"),
+            "the address \"[10.0.0.2]:502\" has \"10.0.0.2\" in brackets, which is \
+             not an IPv6 address"
+                .into(),
+        ),
+        (
+            string("[[fd00::1]:502"),
+            "the address \"[[fd00::1]:502\" has \"[fd00::1\" in brackets, which is \
+             not an IPv6 address"
+                .into(),
+        ),
+        (string("plc :502"), host("plc :502")),
+        (string("pl c"), host("pl c")),
+        (string("plc/x:502"), host("plc/x:502")),
+        (string("plc]:502"), host("plc]:502")),
+        (string("p[lc:502"), host("p[lc:502")),
     ] {
         assert_eq!(
             parse(&config(address.clone(), &[], vec![temp()])),
@@ -231,18 +386,19 @@ fn reads_units_0_and_255() {
 
 #[test]
 fn refuses_a_bad_order() {
-    let fix =
-        "Write \"big\" when the first register holds the high word, or \"little\"";
-    for (order, shown) in [
-        (string("middle"), "\"middle\""),
-        (string("Big"), "\"Big\""),
-        (Value::Bool(true), "a bool"),
+    let fix = "Use `big` when the first register holds the high word, or `little`";
+    for (order, message) in [
+        (string("middle"), "\"middle\" is not an order"),
+        (string("Big"), "\"Big\" is not an order"),
+        (
+            Value::Bool(true),
+            "an order is a string or a reference, not a bool",
+        ),
     ] {
         let others = [(16, "order", order.clone())];
-        let message = format!("an order is \"big\" or \"little\", not {shown}");
         assert_eq!(
             parse(&config(string("plc"), &others, vec![temp()])),
-            Err(vec![refused("modbus.bad-order", 17, &message, fix)]),
+            Err(vec![refused("modbus.bad-order", 17, message, fix)]),
             "{order:?}"
         );
     }
@@ -250,8 +406,7 @@ fn refuses_a_bad_order() {
 
 #[test]
 fn refuses_a_bad_table_or_register_address() {
-    let tables = "\"coil\", \"discrete\", \"holding\", or \"input\"";
-    let table_fix = "Write the table of the value, such as \"holding\"";
+    let table_fix = "Use `coil`, `discrete`, `holding`, or `input`";
     let address_fix = "Write the address of the protocol, from 0, such as 40 for the \
                        41st holding register";
     for (table, address, refusal) in [
@@ -261,7 +416,7 @@ fn refuses_a_bad_table_or_register_address() {
             refused(
                 "modbus.bad-table",
                 31,
-                &format!("a table is {tables}, not \"holdings\""),
+                "\"holdings\" is not a table",
                 table_fix,
             ),
         ),
@@ -271,7 +426,7 @@ fn refuses_a_bad_table_or_register_address() {
             refused(
                 "modbus.bad-table",
                 31,
-                &format!("a table is {tables}, not an integer"),
+                "a table is a string or a reference, not an integer",
                 table_fix,
             ),
         ),
@@ -419,12 +574,72 @@ fn refuses_a_channel_in_two_read_blocks() {
     );
 }
 
+#[test]
+fn refuses_a_read_with_no_channel_or_a_bad_one() {
+    let attributes = [
+        (30, "table", string("coil")),
+        (32, "address", Value::Integer(1)),
+    ];
+    for (labels, refusal) in [
+        (
+            &[][..],
+            refused(
+                "document.label-count",
+                20,
+                "the `read` block has no labels, and it takes 1 label",
+                "Name the channel of the block, such as `read \"plc.temp\"`",
+            ),
+        ),
+        (
+            &["Plc Temp"][..],
+            refused(
+                "document.bad-name",
+                21,
+                "a segment is not valid: \"Plc Temp\" in \"Plc Temp\"",
+                "Use one or more ASCII letters, digits, `_`, and `-` in that segment, \
+                 after an optional leading `@`",
+            ),
+        ),
+    ] {
+        let reads = vec![block(20, "read", labels, &attributes)];
+        assert_eq!(
+            parse(&config(string("plc"), &[], reads)),
+            Err(vec![refusal]),
+            "{labels:?}"
+        );
+    }
+}
+
+#[test]
+fn refuses_an_unknown_block_in_the_connector_or_in_a_read() {
+    let mut read = temp();
+    read.body.blocks.push(block(50, "range", &[], &[]));
+    let reads = vec![read, block(40, "write", &["plc.cmd"], &[])];
+    assert_eq!(
+        parse(&config(string("plc"), &[], reads)),
+        Err(vec![
+            refused(
+                "document.unknown-block",
+                50,
+                "the `read` block cannot hold the `range` block",
+                "Remove it",
+            ),
+            refused(
+                "document.unknown-block",
+                40,
+                "the connector cannot hold the `write` block",
+                "Use `read`, or remove it",
+            ),
+        ])
+    );
+}
+
 proptest! {
     #[test]
     fn reads_each_host_and_port(
         host in "[a-z0-9.-]{1,20}",
         ipv6 in any::<std::net::Ipv6Addr>(),
-        port in any::<u16>(),
+        port in 1..=u16::MAX,
     ) {
         let ipv6 = ipv6.to_string();
         for (address, want) in [

@@ -1,30 +1,52 @@
 use connector::kind::Kind as _;
-use types::time::Rate;
+use document::value::{Kind as Of, Value};
+use document::{Attribute, Block, Label, Map};
 
 use super::*;
-use crate::config::Read;
-use crate::pdu::Table;
-use crate::poll::Order;
 
-fn read(channel: &str, address: u16) -> Read {
-    Read {
-        channel: channel.parse().expect("a name"),
-        table: Table::HoldingRegisters,
-        address,
+/// An attribute of `key` with `kind` and no span.
+fn attribute(key: &str, kind: Of) -> Attribute {
+    Attribute {
+        key: key.into(),
+        key_span: None,
+        value: Value { kind, span: None },
+    }
+}
+
+/// The config of a connector at `plc` with a `read` block of each channel.
+fn config(channels: &[&str]) -> Document {
+    let read = |(address, channel): (i128, &&str)| Block {
+        keyword: "read".into(),
+        keyword_span: None,
+        labels: vec![Label {
+            text: (*channel).into(),
+            span: None,
+        }],
+        body: Document {
+            attributes: Map::new(vec![
+                attribute("table", Of::String("holding".into())),
+                attribute("address", Of::Integer(address)),
+            ])
+            .expect("unique keys"),
+            blocks: Vec::new(),
+        },
         span: None,
+    };
+    Document {
+        attributes: Map::new(vec![
+            attribute("address", Of::String("plc".into())),
+            attribute("rate", Of::String("10Hz".into())),
+        ])
+        .expect("unique keys"),
+        blocks: (0..).zip(channels).map(read).collect(),
     }
 }
 
 #[test]
 fn check_gives_each_channel_as_a_write_in_order_and_the_counts() {
-    let config = Config {
-        host: "plc".into(),
-        port: 502,
-        unit: 1,
-        rate: Rate::new(10, 1).expect("a rate"),
-        order: Order::Big,
-        reads: vec![read("plc.temp", 40), read("plc.flow", 2)],
-    };
+    let config = Kind
+        .parse(&config(&["plc.temp", "plc.flow"]))
+        .expect("a config");
     let names = |names: &[&str]| -> Vec<_> {
         names
             .iter()
@@ -39,6 +61,13 @@ fn check_gives_each_channel_as_a_write_in_order_and_the_counts() {
             counts: names(&["in", "missed", "lost"]),
         })
     );
+}
+
+#[test]
+fn the_table_of_kinds_checks_the_kind() {
+    let table = kind::Table::new().with("modbus", Kind);
+    let checked = table.check("modbus", None, &config(&["plc.temp"]));
+    assert_eq!(checked.map(|channels| channels.writes.len()), Ok(1));
 }
 
 #[test]
