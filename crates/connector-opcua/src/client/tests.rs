@@ -2449,8 +2449,8 @@ fn a_read_sends_no_request_after_an_answer_of_it_fails() {
 }
 
 /// A connect whose read of the `MaxNodesPerRead` of the server fails gives the status
-/// of the read, and closes its session: a server with room for one session takes the
-/// next client.
+/// of the read, and closes its session with one `CloseSession`: a server with room
+/// for one session takes the next client.
 #[test]
 fn a_connect_whose_read_of_the_max_nodes_per_read_fails_closes_its_session() {
     let (connect, _) = run(0, async |node| {
@@ -2461,12 +2461,12 @@ fn a_connect_whose_read_of_the_max_nodes_per_read_fails_closes_its_session() {
                     recount_of(message, 0);
                 }
             };
-            let connect =
-                relayed(&node, &Relay::default(), rewrite, peer.connect(&url)).await;
+            let control = Relay::default();
+            let connect = relayed(&node, &control, rewrite, peer.connect(&url)).await;
             peer.connected().await.close().await;
-            connect.err()
+            (connect.err(), control.closes.get())
         })
         .await
     });
-    assert_eq!(connect, Some(Status::BAD_UNEXPECTED_ERROR));
+    assert_eq!(connect, (Some(Status::BAD_UNEXPECTED_ERROR), 1));
 }
