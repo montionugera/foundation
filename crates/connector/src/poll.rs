@@ -206,12 +206,15 @@ impl Writer {
         values: impl IntoIterator<Item = Option<Value>>,
         stamp: Stamp,
     ) -> Result<(), Error> {
+        let channels = self.slots.len();
         let mut slots = self.slots.iter_mut();
-        let put = |value| *slots.next().expect("a value of each channel") = value;
+        let put = |value| *slots.next().unwrap_or_else(|| more(channels)) = value;
         // Not a loop of `next`: rustc keeps the `next` of a kind's `map` out of line,
         // a call per value (6 ns per sample on box1).
         values.into_iter().for_each(put);
-        assert!(slots.next().is_none(), "a value of each channel");
+        if slots.len() != 0 {
+            fewer(channels - slots.len(), channels);
+        }
         self.send(stamp)
     }
 
@@ -457,6 +460,20 @@ fn value(values: &[Option<Value>], at: usize, scalar: Option<Scalar>) -> Value {
 #[inline(never)]
 fn left_out(at: usize) -> ! {
     panic!("invariant: a frame keeps no value of channel {at}, which is `None`")
+}
+
+/// As [`left_out`].
+#[cold]
+#[inline(never)]
+fn more(channels: usize) -> ! {
+    panic!("invariant: a kind gives more values than its {channels} channels")
+}
+
+/// As [`left_out`].
+#[cold]
+#[inline(never)]
+fn fewer(given: usize, channels: usize) -> ! {
+    panic!("invariant: a kind gives {given} values for {channels} channels")
 }
 
 /// As [`left_out`].
