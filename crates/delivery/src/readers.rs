@@ -820,6 +820,13 @@ impl Readers {
         self.changed || self.complete.iter().any(moved)
     }
 
+    /// Whether a named complete session is open, whose acks change its record with no
+    /// other call. Takes time linear in the complete readers.
+    #[must_use]
+    pub fn moving(&self) -> bool {
+        self.complete.iter().any(|session| session.named.is_some())
+    }
+
     /// Marks the records that [`Readers::records`] gives as in the index log.
     pub fn recorded(&mut self) {
         self.changed = false;
@@ -2058,8 +2065,25 @@ pub(super) mod tests {
                 .open(Reader::Unnamed, Start::At(live(0)), 0, Charge::Whole)
                 .key;
             readers.ack(key, live(2)).expect("forward");
+            assert!(!readers.changed(), "an unnamed ack changes no record");
             readers.close(key.into(), None);
             assert_eq!(drained(&mut readers), []);
+        }
+
+        #[test]
+        fn move_only_while_a_named_complete_session_is_open() {
+            let mut readers = Readers::new(0);
+            let unnamed = readers
+                .open(Reader::Unnamed, Start::At(live(0)), 0, Charge::Whole)
+                .key;
+            assert!(!readers.moving(), "an unnamed session moves no record");
+            let key = readers
+                .open(named("a", 10), Start::At(live(0)), 0, Charge::Whole)
+                .key;
+            assert!(readers.moving());
+            readers.close(key.into(), Some(at(1)));
+            assert!(!readers.moving(), "a held reader moves no record");
+            readers.close(unnamed.into(), None);
         }
     }
 
