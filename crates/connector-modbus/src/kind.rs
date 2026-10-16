@@ -1,8 +1,8 @@
 //! The `modbus` kind: reads the tables of a Modbus TCP device at a fixed rate, and
 //! writes one frame per tick.
 
-use std::net::SocketAddr;
 use std::fmt;
+use std::net::SocketAddr;
 
 use connector::kind::{self, Channels, Context, Error};
 use connector::{pace, poll};
