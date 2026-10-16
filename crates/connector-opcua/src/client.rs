@@ -181,7 +181,6 @@ impl Client {
         let connected = this
             .connections
             .drive_until(Some(deadline), |_| {
-                this.connections.events().run();
                 let state = this.state();
                 if state.status != Status::GOOD {
                     Poll::Ready(Err(state.status))
@@ -349,24 +348,17 @@ impl Client {
         let read = self
             .connections
             .drive_until(Some(deadline), |_| {
-                loop {
-                    if let Err(status) = self.send(nodes, &mut sent) {
-                        return Poll::Ready(Err(status));
-                    }
-                    self.connections.events().run();
-                    if let Some(status) = self.reads.failed.get() {
-                        return Poll::Ready(Err(status));
-                    }
-                    if sent == nodes.parts.len() {
-                        return if self.reads.requests.borrow().is_empty() {
-                            Poll::Ready(Ok(()))
-                        } else {
-                            Poll::Pending
-                        };
-                    }
-                    if self.reads.pending.get() == READS {
-                        return Poll::Pending;
-                    }
+                if let Some(status) = self.reads.failed.get() {
+                    return Poll::Ready(Err(status));
+                }
+                if let Err(status) = self.send(nodes, &mut sent) {
+                    return Poll::Ready(Err(status));
+                }
+                if sent == nodes.parts.len() && self.reads.requests.borrow().is_empty()
+                {
+                    Poll::Ready(Ok(()))
+                } else {
+                    Poll::Pending
                 }
             })
             .await;
@@ -421,7 +413,6 @@ impl Client {
         // open62541 then activates the session, which the server keeps.
         self.connections
             .drive(|_| {
-                self.connections.events().run();
                 if self.state().session == ffi::Session::CREATE_REQUESTED {
                     Poll::Pending
                 } else {
@@ -433,7 +424,6 @@ impl Client {
         unsafe { ffi::UA_Client_disconnectAsync(self.raw.as_ptr()) };
         self.connections
             .drive(|_| {
-                self.connections.events().run();
                 if self.state().channel == ffi::Channel::CLOSED {
                     Poll::Ready(())
                 } else {

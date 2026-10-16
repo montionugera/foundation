@@ -303,7 +303,6 @@ impl Side {
         let mut end = self.clock.sleep(span);
         let mut drive = pin!(self.manager.drive(|_| {
             runs.set(runs.get() + 1);
-            self.events().run();
             Poll::<Infallible>::Pending
         }));
         poll_fn(|cx| {
@@ -1060,7 +1059,6 @@ fn a_drive_ends_with_the_first_value_of_run() {
             let at = side
                 .manager
                 .drive(|_| {
-                    side.events().run();
                     if side.calls().len() == 2 {
                         Poll::Ready(side.clock.now())
                     } else {
@@ -1151,7 +1149,6 @@ fn a_send_from_the_run_that_ends_a_drive_goes_out() {
             side.add_timer(act, 10.0, ptr::from_ref(&later).cast_mut().cast());
             side.manager
                 .drive(|_| {
-                    side.events().run();
                     if side.clock.now() >= due {
                         Poll::Ready(())
                     } else {
@@ -1269,10 +1266,7 @@ fn a_source_that_run_polls_wakes_the_drive() {
             let mut source = side.clock.sleep(Span::SECOND);
             let at = side
                 .manager
-                .drive(|cx| {
-                    side.events().run();
-                    Pin::new(&mut source).poll(cx).map(|()| side.clock.now())
-                })
+                .drive(|cx| Pin::new(&mut source).poll(cx).map(|()| side.clock.now()))
                 .await;
             assert_eq!(at, start + Span::SECOND);
         })
@@ -1403,7 +1397,6 @@ fn a_closing_with_no_stream_drops_the_connection_at_once() {
             assert_eq!(side.close(1), Status::GOOD);
             let mut end = side.clock.sleep(Span::SECOND);
             let mut drive = pin!(side.manager.drive(|_| {
-                side.events().run();
                 if side.connections() == 0 {
                     Poll::Ready(side.clock.now())
                 } else {
@@ -1526,7 +1519,6 @@ fn a_close_drops_the_connection_when_the_peer_closes_its_side() {
             let dropped = side
                 .manager
                 .drive(|cx| {
-                    side.events().run();
                     if side.connections() == 0 {
                         Poll::Ready(Some(side.clock.now()))
                     } else {

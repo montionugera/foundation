@@ -254,7 +254,6 @@ impl Manager {
         let clients = self.clients.len();
         let mut deadline = clock.sleep(CONNECT_TIMEOUT);
         let mut connect = pin!(self.connections.drive(|_| {
-            self.connections.events().run();
             if self.connected() == clients {
                 Poll::Ready(())
             } else {
@@ -280,8 +279,8 @@ impl Manager {
         self.drive_after(|| ());
     }
 
-    /// Drives the manager once, as `drive` does, with a run that first asks the first
-    /// client for a read of the current time of the server.
+    /// Drives the manager once, as `drive` does, and asks the first client after the
+    /// run for a read of the current time of the server.
     ///
     /// # Panics
     ///
@@ -354,7 +353,6 @@ impl Manager {
             if let Some(first) = first.take() {
                 first();
             }
-            self.connections.events().run();
             Poll::Ready(())
         }));
         let ready = drive.poll(&mut Context::from_waker(Waker::noop()));

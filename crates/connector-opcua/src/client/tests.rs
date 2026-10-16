@@ -172,10 +172,7 @@ async fn serve<T>(
     };
     let paused = Rc::clone(&peer.paused);
     let out = {
-        let mut server_drive = pin!(manager.drive(|_| {
-            manager.events().run();
-            Poll::<()>::Pending
-        }));
+        let mut server_drive = pin!(manager.drive(|_| Poll::<()>::Pending));
         let mut body = pin!(body(peer));
         poll_fn(|cx| {
             if !paused.get() {
