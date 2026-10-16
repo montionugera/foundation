@@ -72,8 +72,8 @@ fn run(args: &[OsString], vars: BTreeMap<OsString, OsString>) -> Result<u8, Fail
     }
 }
 
-/// Runs the command line `args` on a shard of its own. The shard and the I/O thread
-/// of its reaches end before this returns, so a node that `foundation start` runs gets
+/// Runs the command line `args` on a shard of its own. The shard and each I/O thread
+/// of a reach end before this returns, so a node that `foundation start` runs gets
 /// every shard, and its first thread takes the signals.
 ///
 /// # Panics
@@ -91,14 +91,13 @@ fn command_line(shards: &Shards, args: Vec<OsString>) -> Result<Run, Failure> {
         core: None,
     };
     let shard = shards.start(config, move |tasks| async move {
-        let mut files = None;
         let run = ops::cli(
             args,
             io::stdin().lock(),
             io::stdout().lock(),
             io::stderr().lock(),
             &os::paths(),
-            async |dir: &Path| reach(dir, &mut files, &tasks, &started).await.map(send),
+            async |dir: &Path| reach(dir, &tasks, &started).await.map(send),
         )
         .await;
         ran.send(run).expect("invariant: `main` keeps the receiver");
@@ -116,47 +115,28 @@ fn command_line(shards: &Shards, args: Vec<OsString>) -> Result<Run, Failure> {
         .expect("invariant: the shard sends its run before it ends"))
 }
 
-/// The client of the node that runs on the data directory `dir`, which is the same at
-/// each call in one run. A reach that opens `dir` keeps its files in `kept`, and sends
-/// the handle of the I/O thread that reads it to `started`, for the main thread to
-/// join. A later reach uses the kept files, and when it fails through them, opens `dir`
-/// again, so it reaches a node on a data directory made again.
+/// The client of the node that runs on the data directory `dir`. It sends the handle
+/// of the I/O thread that reads `dir` to `started`, for the main thread to join.
 async fn reach(
     dir: &Path,
-    kept: &mut Option<env::files::Files>,
     tasks: &Tasks,
     started: &mpsc::Sender<env::thread::Handle>,
 ) -> Result<program::Session, Failure> {
-    if let Some(files) = kept
-        && let Ok(session) = client(files.clone(), tasks).await
-    {
-        return Ok(session);
-    }
     let threads = os::threads().map_err(failed)?;
     let (disk, handle) =
         os::stored(dir, &threads, "files-reach").map_err(|error| stored(dir, error))?;
     started
         .send(handle)
         .expect("invariant: `main` keeps the receiver");
-    let files = kept.insert(env::files::Files::new(disk));
-    client(files.clone(), tasks)
-        .await
-        .map_err(|error| unreached(dir, error))
-}
-
-/// The client of the node whose data directory `files` reads.
-async fn client(
-    files: env::files::Files,
-    tasks: &Tasks,
-) -> Result<program::Session, node::client::Error> {
-    node::client::reach(node::client::Config {
-        files,
+    let reached = node::client::reach(node::client::Config {
+        files: env::files::Files::new(disk),
         net: net(),
         clock: os::clock(),
         entropy: os::entropy(),
         tasks: tasks.clone(),
     })
-    .await
+    .await;
+    reached.map_err(|error| unreached(dir, error))
 }
 
 /// What sends a request through `client` and gives the reply.
