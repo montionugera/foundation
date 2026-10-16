@@ -76,18 +76,31 @@
   2026-10-08 05:03 UTC). Supersedes the `Host` and `Port` fields and messages of
   https://github.com/synnaxlabs/foundation/issues/1159#issuecomment-6032370253.
   `https` (#2702): the client runs rustls with the aws-lc-rs provider and its default
-  versions, TLS 1.2 and 1.3, inside its stream, and ends the handshake before `hyper`
-  gets the stream. The port defaults to 443. A host that rustls cannot name gives
-  `Host`. It trusts only `http::Config::roots`, which `node` reads from the OS, and a
-  kind adds a CA with `Roots::with_pem`. With no root, a send gives `NoRoots` before
-  the lookup. Each connect reads mesh time once, from `http::Config::time`, and rustls
-  checks the certificate at that instant; the request timeout bounds its age. Each
+  versions, TLS 1.2 and 1.3, through `tokio-rustls` over an adapter of the `env`
+  stream, and ends the handshake before `hyper` gets the stream. The port defaults to
+  443. The TLS name is the host of the origin, with the final dot of a name and the
+  zone of an IPv6 address dropped, so each host that `uri` takes has a name and
+  `https` adds no `Host` error. It trusts only `http::Config::tls`: a `Tls` with the
+  roots, which `node` reads from the OS, and mesh time. A kind adds a CA with
+  `Roots::with_pem`. A `ca` takes a CA, or a self-signed certificate with `CA:FALSE`;
+  a server certificate with `CA:TRUE` gives `Tls` with a text that names both fixes.
+  With no `Tls` or no root, a send gives `NoRoots` before the lookup, so a plain
+  `http` client needs no hub. Each connect reads mesh time once, and rustls checks the
+  certificate at that instant; the request timeout bounds its age. Each
   handshake failure is `Tls`, with the host and port, and a failure after it is
   `Protocol`. The client resumes no session. Lost: a
   `tls: Option<Arc<rustls::ClientConfig>>` from each kind, which repeats the roots and
   the time in each kind, puts a rustls type in the public surface, and lets a kind turn
-  off the check; and an `Unsynced` error, which the wait of `Hub::time` defines out of
-  existence. Decided by `laptop.architect-2` (2026-10-16T03:30:01Z:
+  off the check; an `Unsynced` error, which the wait of `Hub::time` defines out of
+  existence; a `hub::Time` in each `http::Config`, which makes each plain client open
+  a hub; a TLS driver by hand inside the stream, which repeats what `tokio-rustls`
+  does and which #1248 needs again in another layer; and trust of an end certificate
+  that is equal to a root, which is a later step on #2702 when a user's server cannot
+  get a new certificate. Until the influx kind takes a `ca`, its plan refuses `https`.
+  `laptop.architect-2` ruled `Tls`, `tokio-rustls`, the name `server` of the test
+  host, the `CA:TRUE` text, and the refusal (2026-10-16T07:51:33Z:
+  https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210764044).
+  Decided by `laptop.architect-2` (2026-10-16T03:30:01Z:
   https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207437988;
   2026-10-16T03:30:54Z:
   https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207447936) and
