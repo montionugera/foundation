@@ -2163,8 +2163,7 @@ mod tests {
                         let state = buffer.shared.state.borrow();
                         (state.carried.capacity(), state.carried.tails().len())
                     };
-                    let mut given = given.lock().expect("no panic held the lock");
-                    given.push(room(&buffer));
+                    let mut rooms = vec![room(&buffer)];
                     let byte = pool.alloc(1).expect("a block").freeze();
                     let part = pool.alloc(100).expect("a block").freeze();
                     let paths = u32::try_from(carry::count(8000)).expect("fits") + 10;
@@ -2180,12 +2179,12 @@ mod tests {
                     }
                     let filler = slots.index(channel::Key::from_u128(0));
                     commit_each(&buffer, (0, filler), &part, 0..80).await;
-                    given.push(room(&buffer));
+                    rooms.push(room(&buffer));
                     let last = slots.index(channel::Key::from_u128(paths.into()));
                     let seq = buffer.durable(last, Path::Live).seq;
                     let last = usize::try_from(last.get()).expect("fits");
-                    given.push((usize::try_from(seq).expect("fits"), last));
-                    drop(given);
+                    rooms.push((usize::try_from(seq).expect("fits"), last));
+                    *given.lock().expect("no panic held the lock") = rooms;
                     buffer
                 },
             );
