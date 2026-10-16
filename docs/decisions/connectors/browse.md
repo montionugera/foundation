@@ -16,6 +16,18 @@
   character as it is). It is not a `types::name` selector, where `*` matches one whole
   segment of a dot-separated name: a device's names hold any character, a glob looks
   inside one name, and the walk asks at each folder whether a longer path can match.
+  A run of `**` names reads as one, so `**/**/x` is `**/x`. A pattern of more than
+  `DEPTH` (64) names other than `**` gives `Malformed::Deep` ("it has more than 64
+  names, and a browse finds no path that long") before any call to the device: a match
+  of n names holds n folders open. A path has no such limit. So a step of a walk costs
+  at most 129 segments, and its close is linear (`laptop.architect-2`,
+  2026-10-16T17:52:04Z:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6221453512). A
+  glob matches a name in time linear in both: it splits at each `*` that no `\` takes,
+  and a name matches when it holds at least the bytes of all pieces, starts with the
+  first, ends with the last, and holds each other piece in order at its leftmost place.
+  No cap on a name (`laptop.architect-2`, 2026-10-16T17:55:41Z:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6221521864).
   Values are read only when the `Query` asks, in one call for the points that it gives.
   A new filter is a new field of `Query`. The walk lives once in `connector`
   (`browse::walk`). It finds the start from the root, one name at a time; a name that is

@@ -298,12 +298,14 @@ enum Reference {
 }
 
 fn segments() -> impl Strategy<Value = Vec<Reference>> {
+    // Up to 5 characters, so a first and a last piece can overlap in a short name,
+    // with an escaped `*` as `Some('*')`.
     let glob = prop::collection::vec(
         prop_oneof![
             Just(None),
             prop::sample::select(vec!['a', 'b', '/', '*', '\\']).prop_map(Some),
         ],
-        1..4,
+        1..6,
     )
     // `**` alone is `Any`.
     .prop_filter("not two stars alone", |glob| glob != &[None, None]);
@@ -402,6 +404,50 @@ mod pattern {
         let star = pattern(r"a\*");
         assert!(steps(&star, &["a*"]));
         assert!(!steps(&star, &["ab"]));
+        let escaped = pattern(r"a\*b");
+        assert!(steps(&escaped, &["a*b"]));
+        assert!(!steps(&escaped, &["ab"]));
+        assert!(!steps(&escaped, &["axb"]));
+        let then = pattern(r"a\**");
+        assert!(steps(&then, &["a*"]));
+        assert!(steps(&then, &["a*x"]));
+        assert!(!steps(&then, &["ax"]));
+    }
+
+    #[test]
+    fn matches_no_name_where_the_first_and_last_piece_overlap() {
+        assert!(!steps(&pattern("ab*ba"), &["aba"]));
+        assert!(steps(&pattern("ab*ba"), &["abba"]));
+    }
+
+    #[test]
+    fn matches_no_long_name_that_one_late_byte_breaks() {
+        let glob = format!("*{}b", "a".repeat(800));
+        assert!(!steps(&pattern(&glob), &["a".repeat(1_000).as_str()]));
+        assert!(steps(
+            &pattern(&glob),
+            &[format!("{}b", "a".repeat(900)).as_str()]
+        ));
+    }
+
+    #[test]
+    fn reads_a_run_of_two_stars_as_one() {
+        let run = pattern(&format!("{}x", "**/".repeat(2_000)));
+        assert_eq!(run, pattern("**/x"));
+        assert_eq!(run.to_string(), "**/x");
+        assert_eq!(pattern("a/**/**/b/**/**"), pattern("a/**/b/**"));
+    }
+
+    #[test]
+    fn refuses_more_than_depth_names() {
+        let names = |count: usize| vec!["a"; count].join("/**/");
+        assert_eq!(names(DEPTH).parse::<Pattern>().map(|_| ()), Ok(()));
+        assert_eq!(names(DEPTH + 1).parse::<Pattern>(), Err(Malformed::Deep));
+        assert_eq!(
+            Malformed::Deep.to_string(),
+            "it has more than 64 names, and a browse finds no path that long",
+        );
+        assert_eq!(names(DEPTH + 1).parse::<Path>().map(|_| ()), Ok(()));
     }
 
     proptest! {
