@@ -511,9 +511,9 @@ impl State {
         (checkpoint, carrying)
     }
 
-    /// The checkpoint of the trim of the commit whose groups the caller just took, in
-    /// a block of `pool`. `None` when the commit does not trim, or the pool has no
-    /// block: the next deadline then tries again.
+    /// The checkpoint of the trim of the commit at this deadline, in a block of `pool`.
+    /// `None` when the commit does not trim, or the pool has no block: the next
+    /// deadline then tries again.
     fn checkpoint(&mut self, pool: &Pool) -> Option<Checkpoint> {
         let tail = self.trimmed()?;
         let mut block = pool.alloc(ALIGN).ok()?;

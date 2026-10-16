@@ -131,7 +131,8 @@ mod tests {
     use crate::bench::PHASE;
 
     /// Reads the private `state`: `commit` gives only the tails of the carry record,
-    /// and no public call shows the trim or the checkpoint.
+    /// and a deadline with no trim shows only later, as the panic of a full ring. No
+    /// public call shows that each deadline trims and writes a checkpoint.
     #[test]
     fn each_deadline_after_the_warm_up_trims_and_writes_a_checkpoint() {
         let blocks = 64 + PHASE;
