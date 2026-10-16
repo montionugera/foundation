@@ -62,8 +62,8 @@
   for an empty value, is an answer, so it proves the channel and the session
   (`laptop.architect-2`,
   https://github.com/synnaxlabs/foundation/pull/2809#issuecomment-6208511068). The
-  value of the server state is not judged. The first failed check ends the run with `Error::Device` and the text "the connectivity check failed
-  with <status>", so the supervisor connects again with its backoff. A channel or a
+  value of the server state is not judged. The first failed check ends the run with
+  `Error::Device` and the text "the connectivity check failed with <status>", so the supervisor connects again with its backoff. A channel or a
   session that the client loses between two checks ends the run at once with the same
   text, from the state of the client: the status of the connect, else
   `BadConnectionClosed` or `BadSessionClosed`. The check is in Rust: open62541 calls its
