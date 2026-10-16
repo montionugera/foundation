@@ -13,6 +13,7 @@ bytes.workspace = true
 http.workspace = true
 http-body.workspace = true
 hyper.workspace = true
+rustls = { workspace = true, features = ["tls12"] }
 block = { path = "../block" }
 codec = { path = "../codec" }
 env = { path = "../env" }

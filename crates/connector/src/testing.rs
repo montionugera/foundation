@@ -295,8 +295,8 @@ impl Drop for Run {
 const SECRETS: &str = "secrets";
 
 /// A supervisor's inputs for the tests of `connector` and the kinds: `kinds`, the
-/// seams of `env` and `net`, a hub on a new shard in `env`, and the store of
-/// [`create_secrets`] on `env.files`.
+/// seams of `env` and `net`, a hub on a new shard in `env`, the store of
+/// [`create_secrets`] on `env.files`, and no roots.
 ///
 /// # Panics
 ///
@@ -315,6 +315,7 @@ pub async fn create_config(
         clock,
         entropy,
         net,
+        roots: crate::http::Roots::default(),
         tasks,
         hub,
         secrets: create_secrets(files),

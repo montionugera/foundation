@@ -177,8 +177,8 @@ fn reads_an_address_with_a_path_of_slash() {
 fn refuses_an_address_that_uri_refuses() {
     for (address, message) in [
         (
-            string("https://influx:8086"),
-            "the scheme of the URI is not http",
+            string("ftp://influx:8086"),
+            "the scheme of the URI is not http or https",
         ),
         (
             string("http://admin:hunter2@influx:8086"),
@@ -189,7 +189,10 @@ fn refuses_an_address_that_uri_refuses() {
             string("http://influx:0"),
             "the port of the URI is not a number from 1 to 65535",
         ),
-        (string("influx"), "the scheme of the URI is not http"),
+        (
+            string("influx"),
+            "the scheme of the URI is not http or https",
+        ),
         (
             string("http://influx:8086/#site"),
             "the URI has a fragment, which no request sends",
@@ -206,7 +209,7 @@ fn refuses_an_address_that_uri_refuses() {
                 "connector.bad-uri",
                 1,
                 message,
-                "Write an `http` URI such as \"http://10.0.0.2:8086\"",
+                "Write an `http` or `https` URI such as \"http://10.0.0.2:8086\"",
             )]),
             "{address:?}"
         );

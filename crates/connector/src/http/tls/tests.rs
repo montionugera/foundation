@@ -1,0 +1,318 @@
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+
+use ::sim::{Sim, name, node};
+use bytes::Bytes;
+use env::net::tcp;
+use env::thread::Handle;
+use http::{Request, Response};
+use types::time::{Span, Stamp};
+
+use super::{Pem, Roots};
+use crate::http::sim::{self, Certificate};
+use crate::http::{Client, Config, Error};
+
+const PORT: u16 = 8086;
+const TIMEOUT: Span = Span::from_nanos(10_000_000_000);
+/// 2026-06-01T00:00:00Z, inside the validity of each certificate but the expired one.
+const JUNE_2026: Stamp = Stamp::from_nanos(1_780_272_000_000_000_000);
+/// 2025-06-01T00:00:00Z, before the validity of each server certificate.
+const JUNE_2025: Stamp = Stamp::from_nanos(1_748_736_000_000_000_000);
+
+fn shard(name: &str) -> env::shards::Config {
+    env::shards::Config {
+        name: name.into(),
+        core: Some(0),
+    }
+}
+
+/// What a body gives, or the error of its send.
+type Outcome = Result<String, Error>;
+
+/// What the client does next in [`Network::start`].
+enum Step {
+    Send(&'static str),
+    Wait(Span),
+}
+
+/// A server node at the name `influx` that runs `serve_tls`, with an answer that
+/// gives the path of each request, and a client node whose mesh time starts at a
+/// given wall time.
+struct Network {
+    sim: Sim,
+    client: node::Node,
+    server: node::Node,
+    handles: Vec<Handle>,
+}
+
+impl Network {
+    fn new(seed: u64, certificate: Certificate, wall: Stamp) -> Self {
+        let mut sim = Sim::new(::sim::Config {
+            seed,
+            steps_max: 10_000_000,
+            ..::sim::Config::default()
+        });
+        let client = sim.node(node::Config {
+            wall,
+            ..node::Config::default()
+        });
+        let server = sim.node(node::Config::default());
+        let answer = name::Answer::Addresses(vec![server.addresses()[0]]);
+        sim.name(
+            "influx",
+            name::Config {
+                answer,
+                ..name::Config::default()
+            },
+        );
+        let listen = tcp::Listen {
+            local: SocketAddr::new(server.addresses()[0], PORT),
+            backlog: 4,
+            options: super::super::OPTIONS,
+        };
+        let listener = server.net().listen(&listen).expect("the port is free");
+        let handle = server
+            .shards()
+            .start(shard("server"), move |tasks| async move {
+                let answer = |request: Request<Bytes>| {
+                    Response::new(Bytes::from(request.uri().path().to_owned()))
+                };
+                drop(sim::serve_tls(listener, tasks, certificate, answer).await);
+                // The streams it accepted end when this shard ends.
+                std::future::pending::<()>().await;
+            })
+            .expect("the shard starts");
+        Self {
+            sim,
+            client,
+            server,
+            handles: vec![handle],
+        }
+    }
+
+    /// Starts one client that trusts `roots` on the client node, which runs `steps`
+    /// once the node has mesh time. Gives the outcome of each send, as the sends end.
+    fn start(&mut self, roots: Roots, steps: Vec<Step>) -> Arc<Mutex<Vec<Outcome>>> {
+        let client = self.client.clone();
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let slot = Arc::clone(&out);
+        let handle = self
+            .client
+            .shards()
+            .start(shard("client"), move |tasks| async move {
+                let env = crate::common::env(&client, tasks.clone());
+                let (hub, _) = hub::testing::open(env).await;
+                let clock = client.clock();
+                let http = Client::new(Config {
+                    net: client.net(),
+                    clock: clock.clone(),
+                    tasks,
+                    timeout: TIMEOUT,
+                    body_max: 64,
+                    roots,
+                    time: hub.time().await,
+                });
+                for step in steps {
+                    match step {
+                        Step::Wait(span) => clock.sleep(span).await,
+                        Step::Send(uri) => {
+                            let request = Request::get(uri)
+                                .body(Bytes::new())
+                                .expect("a request");
+                            let outcome = http.send(request).await.map(|response| {
+                                String::from_utf8(response.into_body().to_vec())
+                                    .expect("UTF-8")
+                            });
+                            slot.lock().expect("no panic under the lock").push(outcome);
+                        }
+                    }
+                }
+                drop(http);
+                clock.sleep(Span::MINUTE).await;
+            })
+            .expect("the shard starts");
+        self.handles.push(handle);
+        out
+    }
+
+    /// Sends a GET of `uri` from a client that trusts `roots`.
+    #[expect(clippy::unwrap_in_result, reason = "a test may panic")]
+    fn send(&mut self, roots: Roots, uri: &'static str) -> Outcome {
+        let out = self.start(roots, vec![Step::Send(uri)]);
+        self.sim.run_for(Span::MINUTE).expect("the run ends");
+        let mut outcomes = std::mem::take(&mut *out.lock().expect("no panic"));
+        assert_eq!(outcomes.len(), 1, "one send gives one outcome");
+        outcomes.pop().expect("one outcome")
+    }
+}
+
+fn failed(outcome: Outcome) -> String {
+    outcome.expect_err("the send fails").to_string()
+}
+
+#[test]
+fn exchanges_with_a_server_whose_certificate_the_roots_trust() {
+    let mut network = Network::new(1, Certificate::Valid, JUNE_2026);
+    let body = network.send(sim::ca(), "https://influx:8086/ping");
+    assert_eq!(body.expect("the server answers"), "/ping");
+}
+
+#[test]
+fn takes_port_443_for_https_with_no_port() {
+    let mut network = Network::new(1, Certificate::Valid, JUNE_2026);
+    let error = failed(network.send(sim::ca(), "https://influx/ping"));
+    let remote = SocketAddr::new(network.server.addresses()[0], 443);
+    assert_eq!(
+        error,
+        format!("the connect failed: {remote} refused the connection")
+    );
+}
+
+#[test]
+fn refuses_a_certificate_for_another_host() {
+    let mut network = Network::new(2, Certificate::OtherHost, JUNE_2026);
+    assert_eq!(
+        failed(network.send(sim::ca(), "https://influx:8086/ping")),
+        "TLS with influx:8086 failed: invalid peer certificate: certificate not \
+         valid for name \"influx\"; certificate is only valid for DnsName(\"other\")"
+    );
+}
+
+#[test]
+fn refuses_an_expired_certificate_at_mesh_time() {
+    let mut network = Network::new(3, Certificate::Expired, JUNE_2026);
+    assert_eq!(
+        failed(network.send(sim::ca(), "https://influx:8086/ping")),
+        "TLS with influx:8086 failed: invalid peer certificate: certificate \
+         expired: verification time 1780272000 (UNIX), but certificate is not valid \
+         after 1769904000 (10368000 seconds ago)"
+    );
+}
+
+#[test]
+fn refuses_a_certificate_that_is_not_valid_yet_at_mesh_time() {
+    let mut network = Network::new(4, Certificate::Valid, JUNE_2025);
+    assert_eq!(
+        failed(network.send(sim::ca(), "https://influx:8086/ping")),
+        "TLS with influx:8086 failed: invalid peer certificate: certificate not \
+         valid yet: verification time 1748736000 (UNIX), but certificate is not \
+         valid before 1767225600 (18489600 seconds in future)"
+    );
+}
+
+#[test]
+fn refuses_a_certificate_of_a_ca_that_the_roots_do_not_hold() {
+    let mut network = Network::new(5, Certificate::OtherCa, JUNE_2026);
+    assert_eq!(
+        failed(network.send(sim::ca(), "https://influx:8086/ping")),
+        "TLS with influx:8086 failed: invalid peer certificate: UnknownIssuer"
+    );
+}
+
+#[test]
+fn fails_https_with_no_roots_before_the_lookup() {
+    let mut network = Network::new(6, Certificate::Valid, JUNE_2026);
+    // No name gives `absent` an address, so a lookup would fail the connect.
+    let outcome = network.send(Roots::default(), "https://absent:8086/ping");
+    let error = outcome.expect_err("the send fails");
+    assert!(matches!(error, Error::NoRoots), "{error:?}");
+    assert_eq!(
+        error.to_string(),
+        "no CA is trusted: install the CA certificates of the OS, or give `ca`"
+    );
+}
+
+#[test]
+fn reuses_an_https_connection_and_opens_a_new_one_for_http() {
+    let mut network = Network::new(7, Certificate::Valid, JUNE_2026);
+    let steps = vec![
+        Step::Send("https://influx:8086/first"),
+        Step::Wait(Span::from_nanos(10_000_000_000)),
+        Step::Send("https://influx:8086/second"),
+        Step::Send("http://influx:8086/plain"),
+    ];
+    let out = network.start(sim::ca(), steps);
+    network
+        .sim
+        .run_for(Span::from_nanos(5_000_000_000))
+        .expect("the run ends");
+    let remote = SocketAddr::new(network.server.addresses()[0], PORT);
+    network.server.fail_listener(remote);
+    network.sim.run_for(Span::MINUTE).expect("the run ends");
+    let outcomes = std::mem::take(&mut *out.lock().expect("no panic"));
+    let texts: Vec<_> = outcomes
+        .into_iter()
+        .map(|outcome| outcome.unwrap_or_else(|error| error.to_string()))
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "/first".to_owned(),
+            "/second".to_owned(),
+            format!("the connect failed: {remote} refused the connection"),
+        ]
+    );
+}
+
+#[test]
+fn gives_the_same_run_for_the_same_seed() {
+    let run = || {
+        let mut network = Network::new(8, Certificate::Valid, JUNE_2026);
+        let body = network.send(sim::ca(), "https://influx:8086/ping");
+        (body.expect("the server answers"), network.sim.digest())
+    };
+    assert_eq!(run(), run());
+}
+
+#[test]
+fn adds_the_certificates_of_a_pem_text_to_the_roots() {
+    let ca = include_str!("../sim/tls/ca.pem");
+    let other = include_str!("../sim/tls/other-ca.pem");
+    let roots = Roots::default().with_pem(ca).expect("the CA parses");
+    let both = roots
+        .with_pem(&format!("text before\n{other}"))
+        .expect("the CA parses");
+    assert_eq!(format!("{roots:?}"), "Roots { count: 1 }");
+    assert_eq!(format!("{both:?}"), "Roots { count: 2 }");
+    let mut network = Network::new(9, Certificate::OtherCa, JUNE_2026);
+    let body = network.send(both, "https://influx:8086/ping");
+    assert_eq!(body.expect("the server answers"), "/ping");
+}
+
+#[test]
+fn gives_empty_for_a_pem_text_with_no_certificate() {
+    let key = include_str!("../sim/tls/influx.key");
+    for text in ["", "no PEM here", key] {
+        let error = Roots::default().with_pem(text).expect_err("no certificate");
+        assert_eq!(error, Pem::Empty, "{text}");
+        assert_eq!(error.to_string(), "the PEM text holds no certificate");
+    }
+}
+
+#[test]
+fn gives_invalid_for_a_pem_certificate_that_does_not_parse() {
+    let broken = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
+    let bad_base64 = "-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n";
+    let ca = include_str!("../sim/tls/ca.pem");
+    for text in [broken, bad_base64, &format!("{ca}{broken}")] {
+        let error = Roots::default().with_pem(text).expect_err("a broken one");
+        assert_eq!(error, Pem::Invalid, "{text}");
+        assert_eq!(
+            error.to_string(),
+            "a certificate of the PEM text does not parse"
+        );
+    }
+}
+
+#[test]
+fn skips_and_counts_der_certificates_that_do_not_parse() {
+    let ca = include_str!("../sim/tls/ca.pem");
+    let der = rustls::pki_types::pem::PemObject::from_pem_slice(ca.as_bytes())
+        .map(|der: rustls::pki_types::CertificateDer<'_>| der.to_vec())
+        .expect("the CA parses");
+    let (roots, skipped) = Roots::from_der([der.as_slice(), b"not DER".as_slice()]);
+    assert_eq!(skipped, 1);
+    assert_eq!(format!("{roots:?}"), "Roots { count: 1 }");
+    assert!(!roots.empty());
+    assert!(Roots::default().empty());
+}

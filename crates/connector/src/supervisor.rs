@@ -16,7 +16,7 @@ use types::name::Name;
 use types::time::Span;
 
 use crate::kind::{self, Context, Error};
-use crate::{cancel, reader, retry, status};
+use crate::{cancel, http, reader, retry, status};
 
 /// The waits between restarts.
 const RESTART: retry::Config = retry::Config {
@@ -38,6 +38,8 @@ pub struct Config {
     pub entropy: Entropy,
     /// The network that kinds connect through.
     pub net: Net,
+    /// The roots that an `https` connect of a kind trusts.
+    pub roots: http::Roots,
     /// The shard's tasks.
     pub tasks: Tasks,
     /// The shard's hub. Each session a kind opens acts as its connector.
@@ -3649,6 +3651,7 @@ mod tests {
                 clock: node.clock(),
                 entropy: node.entropy(),
                 net: node.net(),
+                roots: http::Roots::default(),
                 tasks: tasks.clone(),
                 hub: hub::testing::open(env(&node, tasks.clone())).await.0,
                 secrets: testing::create_secrets(node.files()),
@@ -3700,6 +3703,7 @@ mod tests {
                 clock: clock.clone(),
                 entropy: node.entropy(),
                 net: node.net(),
+                roots: http::Roots::default(),
                 tasks: tasks.clone(),
                 hub,
                 secrets: testing::create_secrets(node.files()),

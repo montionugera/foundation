@@ -30,8 +30,9 @@
   carry a request for another. Decided by the architect on #1111
   (https://github.com/synnaxlabs/foundation/pull/1111#issuecomment-6031412223). The key
   is the host name in lower case and the port. `influx.` and `influx` are two keys,
-  because a resolver may expand a name with no final dot. The client takes only `http`
-  today; with TLS, the key also holds the scheme. A new connection looks up the host
+  because a resolver may expand a name with no final dot. The key also holds the
+  scheme, so an `http` request never goes on an `https` connection to the same host and
+  port. A new connection looks up the host
   through `env` and tries each address in order, as Go does: each address gets an equal
   share of the time left to the deadline, but at least 2 s or all that is left. A
   refused address moves the dial to the next at once, and no connect starts once the
@@ -66,3 +67,21 @@
   (https://github.com/synnaxlabs/foundation/pull/1794#issuecomment-6052684931,
   2026-10-08 05:03 UTC). Supersedes the `Host` and `Port` fields and messages of
   https://github.com/synnaxlabs/foundation/issues/1159#issuecomment-6032370253.
+  `https` (#2702): the client runs rustls with the aws-lc-rs provider and its default
+  versions, TLS 1.2 and 1.3, inside its stream, and ends the handshake before `hyper`
+  gets the stream. The port defaults to 443. A host that rustls cannot name gives
+  `Host`. It trusts only `http::Config::roots`, which `node` reads from the OS, and a
+  kind adds a CA with `Roots::with_pem`. With no root, a send gives `NoRoots` before
+  the lookup. Each connect reads mesh time once, from `http::Config::time`, and rustls
+  checks the certificate at that instant; the request timeout bounds its age. Each
+  handshake failure is `Tls`, with the host and port, and a failure after it is
+  `Protocol`. The client resumes no session. Lost: a
+  `tls: Option<Arc<rustls::ClientConfig>>` from each kind, which repeats the roots and
+  the time in each kind, puts a rustls type in the public surface, and lets a kind turn
+  off the check; and an `Unsynced` error, which the wait of `Hub::time` defines out of
+  existence. Decided by `laptop.architect-2` (2026-10-16T03:30:01Z:
+  https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207437988;
+  2026-10-16T03:30:54Z:
+  https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207447936) and
+  `laptop.architect` for `Hub::time` (2026-10-16T03:28:57Z:
+  https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207425675).

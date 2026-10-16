@@ -418,6 +418,7 @@ dependencies = [
  "hyper",
  "loom",
  "proptest",
+ "rustls",
  "secret",
  "sim",
  "spec",

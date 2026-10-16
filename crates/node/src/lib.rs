@@ -1195,6 +1195,7 @@ impl Serve {
                             clock: clock.clone(),
                             entropy,
                             net,
+                            roots: connector::http::Roots::default(),
                             tasks: tasks.clone(),
                             hub: hub.clone(),
                             secrets,

@@ -144,7 +144,14 @@
   supervisor runs on each shard, made from `supervisor::Config` (the kinds, clock,
   entropy, network, tasks, and the shard's hub) (`laptop.architect-2`,
   2026-10-08T03:05:58Z:
-  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6051331538). Only
+  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6051331538). It
+  also holds the roots that an `https` connect of a kind trusts, which a run reads with
+  `Context::roots`. `Context::time` gives the mesh time of the shard's hub, which stamps
+  samples and checks a certificate: it waits for the node's first mesh time and does
+  not watch the cancel, so a run races it with `Context::cancel`. `Context::clock` is
+  the clock of deadlines (`laptop.architect-2`, 2026-10-16T03:30:01Z:
+  https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207437988; 2026-10-16T03:30:54Z:
+  https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207447936). Only
   a shard that has a hub runs one, so today only shard 0 (`laptop.architect`,
   2026-10-10T14:41:53Z:
   https://github.com/synnaxlabs/foundation/pull/2261#issuecomment-6098661378;

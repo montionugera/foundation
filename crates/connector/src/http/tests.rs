@@ -113,6 +113,7 @@ impl Network {
     /// gives the outcome of each send. The client shard lives on for a minute after
     /// the drop, so the connection tasks end on their own.
     fn run(&mut self, steps: Vec<Step>) -> Vec<Result<Response<Bytes>, Error>> {
+        let node = self.client.clone();
         let (net, clock) = (self.client.net(), self.client.clock());
         let waits = steps
             .iter()
@@ -131,12 +132,16 @@ impl Network {
             self.client
                 .shards()
                 .start(shard("client"), move |tasks| async move {
+                    let env = crate::common::env(&node, tasks.clone());
+                    let (hub, _) = hub::testing::open(env).await;
                     let client = Client::new(Config {
                         net,
                         clock: clock.clone(),
                         tasks,
                         timeout: TIMEOUT,
                         body_max: BODY_MAX,
+                        roots: super::Roots::default(),
+                        time: hub.time().await,
                     });
                     for step in steps {
                         match step {
@@ -531,7 +536,7 @@ fn bad(message: &str) -> Diagnostic {
         Code::new("connector.bad-uri"),
         value(value::Kind::Bool(true)).span,
         message.into(),
-        "Write an `http` URI such as \"http://10.0.0.2:8086\"".into(),
+        "Write an `http` or `https` URI such as \"http://10.0.0.2:8086\"".into(),
     )
 }
 
@@ -554,6 +559,9 @@ fn reads_a_uri_that_send_takes() {
         "http://10.0.0.2/write?db=site",
         "http://[fd00::2]:65535/",
         "HTTP://Influx:1",
+        "https://influx",
+        "HTTPS://[fd00::2]:8086/",
+        "https://10.0.0.2:8086/",
     ] {
         assert_eq!(
             uri(&value(value::Kind::String(text.into()))),
@@ -594,10 +602,13 @@ fn refuses_a_fragment() {
 
 #[test]
 fn refuses_a_scheme_other_than_http() {
-    for uri in ["https://10.0.0.2/", "/write", "https://admin:secret@[]:0/"] {
+    for uri in ["ftp://10.0.0.2/", "/write", "wss://admin:secret@[]:0/"] {
         let error = refused(uri);
         assert!(matches!(error, Error::Scheme), "{uri}: {error:?}");
-        assert_eq!(error.to_string(), "the scheme of the URI is not http");
+        assert_eq!(
+            error.to_string(),
+            "the scheme of the URI is not http or https"
+        );
     }
 }
 
@@ -651,10 +662,30 @@ fn refuses_a_host_that_is_not_valid() {
         "http://a[::1]/",
         "http://a[::1]:80/",
         "http://a:8[0]/",
+        "https://[influx]/",
     ] {
         let error = refused(uri);
         assert!(matches!(error, Error::Host), "{uri}: {error:?}");
         assert_eq!(error.to_string(), "the URI has no valid host");
+    }
+}
+
+#[test]
+fn refuses_an_https_host_that_tls_cannot_name() {
+    for uri in [
+        "https://-influx/",
+        "https://influx-/",
+        "https://123/",
+        "https://a..b/",
+    ] {
+        let error = refused(uri);
+        assert!(matches!(error, Error::Host), "{uri}: {error:?}");
+        assert_eq!(error.to_string(), "the URI has no valid host");
+        let plain = format!("http{}", uri.strip_prefix("https").expect("https"));
+        assert!(
+            super::uri(&value(value::Kind::String(plain.as_str().into()))).is_ok(),
+            "{plain}"
+        );
     }
 }
 
@@ -701,6 +732,7 @@ fn stream_is_vectored_and_writes_a_whole_plain_write() {
             let tcp = net.connect(&config).await.expect("the server listens");
             let mut stream = super::Stream {
                 tcp,
+                tls: None,
                 received: std::rc::Rc::default(),
             };
             assert!(
