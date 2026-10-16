@@ -152,24 +152,26 @@ fn ipv6(text: &str) -> Result<Kind, Error> {
 
 /// A name that a resolver looks up, and never reads as an address.
 fn name(text: &str) -> Result<Kind, Error> {
-    let allowed = |byte: u8| byte.is_ascii_alphanumeric() || b"-._".contains(&byte);
-    if !text.bytes().all(allowed) {
-        return Err(Error::Character);
-    }
     let bare = text.strip_suffix('.').unwrap_or(text);
-    let bad = |part: &str| {
-        part.is_empty()
-            || part.len() > 63
-            || part.starts_with('-')
-            || part.ends_with('-')
-    };
-    if bare.split('.').any(bad) {
+    let mut part = 0..0;
+    let mut bad = false;
+    for (at, byte) in bare.bytes().enumerate() {
+        match byte {
+            b'.' => {
+                bad |= bad_part(&bare[part]);
+                part = at + 1..at + 1;
+            }
+            b'-' | b'_' | b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z' => part.end = at + 1,
+            _ => return Err(Error::Character),
+        }
+    }
+    let last = &bare[part];
+    if bad || bad_part(last) {
         return Err(Error::Part);
     }
     if bare.len() > 253 {
         return Err(Error::Long);
     }
-    let last = bare.rsplit('.').next().unwrap_or(bare);
     let number = match last.strip_prefix("0x").or_else(|| last.strip_prefix("0X")) {
         Some(digits) => digits.bytes().all(|byte| byte.is_ascii_hexdigit()),
         None => last.bytes().all(|byte| byte.is_ascii_digit()),
@@ -178,6 +180,10 @@ fn name(text: &str) -> Result<Kind, Error> {
         return Err(Error::Number);
     }
     Ok(Kind::Name(text.to_ascii_lowercase().into()))
+}
+
+fn bad_part(part: &str) -> bool {
+    part.is_empty() || part.len() > 63 || part.starts_with('-') || part.ends_with('-')
 }
 
 #[cfg(test)]
