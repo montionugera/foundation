@@ -515,7 +515,8 @@ fn a_read_of_a_path_that_swaps_a_directory_for_a_file_gives_one_of_them() {
 }
 
 /// `link` names a file or a FIFO at each instant. A read gives the file or `Io` 22,
-/// never the empty read of the FIFO, and never waits for its writer.
+/// never the empty read of the FIFO, and never waits for its writer. On Linux it can
+/// also give a folder on the way to the target.
 #[test]
 fn a_read_of_a_path_that_swaps_a_file_for_a_pipe_gives_the_file_or_an_invalid_argument()
 {
@@ -531,11 +532,40 @@ fn a_read_of_a_path_that_swaps_a_file_for_a_pipe_gives_the_file_or_an_invalid_ar
             fs::rename(&next, &link).unwrap();
         }
     };
-    let other = race(swap, 5_000, &link, |read| {
-        matches!(read, Ok(Found::File(bytes)) if bytes == b"x")
-            || *read == Err(Error::Io { code: 22 })
+    let other = race(swap, 5_000, &link, |read| match read {
+        Ok(Found::File(bytes)) => bytes == b"x",
+        Ok(Found::Directory(entries)) => on_the_way(entries, &link, &scratch.0),
+        read => *read == Err(Error::Io { code: 22 }),
     });
     assert_eq!(other, None);
+}
+
+/// Whether `entries`, as a read of `link` gives them, are the names of `scratch` or of
+/// a folder above it, which holds the next folder on the way to `scratch`. Other tests
+/// change the folders above, so only that one name is sure.
+fn on_the_way(entries: &[PathBuf], link: &Path, scratch: &Path) -> bool {
+    let names: Option<Vec<&Path>> = entries
+        .iter()
+        .map(|entry| entry.strip_prefix(link).ok())
+        .collect();
+    let Some(names) = names else {
+        return false;
+    };
+    // `next` is there only during a swap.
+    let here = [
+        ["file", "link", "pipe"].as_slice(),
+        &["file", "link", "next", "pipe"],
+    ];
+    if here
+        .iter()
+        .any(|here| names.iter().copied().eq(here.iter().map(Path::new)))
+    {
+        return true;
+    }
+    scratch.ancestors().skip(1).any(|folder| {
+        let next = scratch.strip_prefix(folder).unwrap().iter().next();
+        next.is_some_and(|next| names.contains(&Path::new(next)))
+    })
 }
 
 /// `plant` and `file` swap a directory and a file in one step.

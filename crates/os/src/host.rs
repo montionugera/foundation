@@ -26,9 +26,12 @@ pub(crate) enum Readable {
 /// # Errors
 ///
 /// 22 (`EINVAL`) for a file that is neither a regular file nor a directory, else the
-/// error of the stat or the open. A link that another writer changes between the
-/// stat and the open gives the error of the open of the file that it then names, and
-/// the open of a device there runs its driver.
+/// error of the stat or the open. A link that another writer changes between the stat
+/// and the open gives the error of the open of the file that it then names, and the
+/// open of a device there runs its driver. On Linux, the walk of a link that a rename
+/// replaces during the call can read only a first part of its old target, so the call
+/// can open a folder on the way to that target, such as the folder of the link or `/`,
+/// and the rest of `path` resolves under that folder.
 pub(crate) fn open(path: &Path) -> Result<Readable, Errno> {
     kind(&fs::stat(path)?)?;
     opened(path)

@@ -133,7 +133,11 @@ impl Files {
     /// neither a regular file nor a directory, such as a FIFO or a device. The open
     /// does not wait for a writer of a FIFO. When another writer changes a link in
     /// `path` during the call, it gives the error of the open of the file that the link
-    /// then names, and opens that file, also a device.
+    /// then names, and opens that file, also a device. On Linux, the walk of a link
+    /// that a rename replaces during the call can read only a first part of its old
+    /// target, so the call can open a folder on the way to that target, such as the
+    /// folder of the link or `/`, and the rest of `path` resolves under that folder,
+    /// and the call gives code 21.
     ///
     /// ```
     /// use env::files::Absolute;
