@@ -4,6 +4,7 @@ use types::frame::key_set::KeySet;
 use types::frame::{Draft, Frame, Layout};
 
 use super::{Error, FromHome, Head, Reader};
+use crate::common::to_usize;
 
 /// The frames of a reader session, built from its replies from `Opened` on, at the
 /// reader's node and at the program. The caller receives each message and makes each
@@ -246,10 +247,6 @@ fn last(decoded: Result<FromHome<'_>, Error>) -> Result<bool, Error> {
         FromHome::Body { last, .. } => Ok(last),
         _ => unreachable!("invariant: inside a body the decoder gives body bytes"),
     }
-}
-
-pub(super) fn to_usize(n: u32) -> usize {
-    usize::try_from(n).expect("invariant: a usize holds a u32")
 }
 
 #[cfg(test)]

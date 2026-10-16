@@ -66,6 +66,11 @@ pub(crate) fn rest_of_run(remain: u32, items: usize) -> Result<u32, Run> {
     }
 }
 
+/// `n` as a `usize`.
+pub(crate) fn to_usize(n: u32) -> usize {
+    usize::try_from(n).expect("invariant: a usize holds a u32")
+}
+
 /// Reads the fields of one message from the front.
 pub(crate) struct Fields<'b> {
     rest: &'b [u8],
