@@ -54,10 +54,11 @@
   failed session yet (OPS OUTPUT, #2767). By `laptop.architect-2`
   (2026-10-15T22:05:27Z,
   https://github.com/synnaxlabs/foundation/pull/2762#issuecomment-6203245390).
-  (7) `node::Config::threads` starts the thread `log` (item 9), with `Threads::logged`
-  and no dispatch, so the events of that thread go nowhere. The threads of `main`
-  (`show`, `stop`, the I/O thread of each disk) get the dispatch with the first event
-  one of them writes. By `laptop.architect-2` (2026-10-15T20:38:04Z,
+  (7) The thread `log` (item 9) starts from `node::Config::threads` with
+  `Threads::logged` and no dispatch, so the events of that thread go nowhere.
+  `Config::threads` keeps the dispatch of the node for each other thread. The threads
+  of `main` (`show`, `stop`, the I/O thread of each disk) get the dispatch with the
+  first event one of them writes. By `laptop.architect-2` (2026-10-15T20:38:04Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6201785053), with
   the thread of #2764.
   (8) P1 holds at `info`: about 1.1 µs for each run of a node and 33 KB idle. A level
@@ -73,10 +74,16 @@
   split to #2807 (2026-10-16T03:22:23Z,
   https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207344849).
   (9) The thread `log` writes each line, so no event waits on the writer. An event puts
-  its line in a queue of 1024 lines (`std::sync::mpsc::sync_channel`) and wakes the
-  thread. A line that finds the queue full drops, and the thread writes WARN `dropped`
-  (target `node::log`) with the field `lines`, their count, after the last line that
-  came before the first of them. A write that fails or panics drops its line. The thread
+  its line in a queue of 1024 lines and wakes the thread. The lines, the count of
+  dropped lines, the panic lines, and the waker are under one lock, so each line and
+  each close wakes the thread; a loom model checks it. A line that finds the queue
+  full drops, and the thread writes WARN `dropped` (target `node::log`) with the field
+  `lines`, their count, after the last line that came before the first of them. At
+  λ lines a second, 1024 lines hold a stall of the writer of 1024/λ s: 10 ms at
+  100,000 lines a second, a rate only `debug` and `trace` reach (item 8). The count
+  line reports each loss. A write that
+  fails drops its line. A write that panics ends the thread `log`, and no later line
+  reaches the writer; a release build, with `panic = "abort"`, ends there. The thread
   starts with the node, which fails with `Error::Start` when it cannot. It ends once
   each shard has ended and the queue is empty, so a sim run ends. A line after that
   waits in the queue for `Node::join` (after `stopped`) or `Flush::wait`. Each starts
@@ -84,13 +91,15 @@
   a line waits, so at most one thread `log` runs and the lines keep their order. Inside
   a `tracing` event, no OS thread can start and no dispatch can be set. A line from
   another thread after the last `Flush::wait` of `main` is lost. `main` waits up to 1 s
-  for the log at its end. Its panic hook, which `Flush::hook` sets, puts ERROR
-  `panicked` with the field `panic` in the queue as the last line, with no dispatch and
-  no thread start, since a panic can come from inside an event. While a shard runs, the
-  hook waits up to 1 s and calls the hook before it only when the log wrote each line
-  within that bound. After each shard has ended, it calls the hook before it at once,
-  and the line waits for the next `Flush::wait`. A panic of the writer, on the thread
-  `log`, also calls it at once, since only that thread writes the line. Decision by
+  for the log at its end. `main` alone sets the panic hook, to `Flush::hook` over the
+  hook before it. The hook puts ERROR `panicked` with the field `panic` in the queue
+  after each line there, also when the queue is full: this line never drops. It sets
+  no dispatch and starts no thread, since a panic can come from inside an event.
+  While a shard runs, the hook waits up to 1 s and calls the hook before it only when
+  the log wrote each line within that bound. After each shard has ended, it calls the
+  hook before it at once, and the line waits for the next `Flush::wait`. A panic of
+  the writer, on the thread `log`, also calls it at once, since only that thread
+  writes the line. Decision by
   `laptop.monitor` (2026-10-15T21:39:25Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202838819). The
   plan by `laptop.architect-2` (2026-10-15T21:43:54Z,
@@ -102,6 +111,10 @@
   no wait on the thread `log` (2026-10-16T04:04:09Z,
   https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207813688), and
   `Flush::hook` (2026-10-16T04:37:28Z,
-  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6208190479). Lost:
+  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6208190479). The
+  hook in `main` only, by `laptop.director` (2026-10-15T21:38:54Z,
+  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6202830785). Lost:
   one thread for the life of the log, which makes each sim run end as `Stuck`; a write
-  on the thread of `join`, which loses the bound of `main` on a stuck writer.
+  on the thread of `join`, which loses the bound of `main` on a stuck writer;
+  `tracing-appender::non_blocking`, which starts its own OS thread, so no sim run
+  drives it, and counts a dropped line with no line in the log.
