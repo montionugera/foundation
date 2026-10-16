@@ -189,6 +189,14 @@ struct Header {
     payload: Track,
 }
 
+impl Header {
+    /// Gives a free block, off its list, to one holder.
+    fn lend(&self) {
+        self.refs.store(1, Relaxed);
+        self.payload.write();
+    }
+}
+
 const _: () = assert!(
     size_of::<Region>() <= HEADER && size_of::<Header>() <= HEADER,
     "the headers fit in the bytes before a payload"
@@ -383,7 +391,8 @@ impl Pool {
     }
 
     /// Returns a writable block of `len` bytes, aligned to [`ALIGN`]. It never waits.
-    /// The bytes are not cleared: a block that is used again holds old bytes or zeros.
+    /// The bytes are not cleared: a block that is used again holds bytes that are not
+    /// known.
     ///
     /// # Errors
     ///
@@ -405,17 +414,18 @@ impl Pool {
         if class.free.get() == NONE {
             self.reclaim();
         }
-        let header = if class.free.get() == NONE {
-            self.carve(index, len)?
-        } else {
+        let header = if class.free.get() != NONE {
             // SAFETY: a block on a free list has a header, and only the pool uses it.
             let header = unsafe { self.header(class.free.get()) };
             // SAFETY: as above.
             let free = unsafe { header.as_ref() };
             class.free.set(free.next.load(Relaxed));
-            free.refs.store(1, Relaxed);
-            free.payload.write();
+            free.lend();
             header
+        } else if class.cold.head.get() != NONE {
+            self.thaw(index, len)?
+        } else {
+            self.carve(index, len)?
         };
         class.lent.set(class.lent.get() + 1);
         #[expect(
@@ -439,18 +449,12 @@ impl Pool {
         Ok(block.freeze())
     }
 
-    /// A block of class `index`, which has no free block: a cold block, which takes
-    /// back its budget and makes no commit, else a new block at the end of the carved
-    /// range.
-    fn carve(&self, index: usize, len: usize) -> Result<NonNull<Header>, Error> {
+    /// The first cold block of class `index`, which takes back its budget and makes no
+    /// commit.
+    fn thaw(&self, index: usize, len: usize) -> Result<NonNull<Header>, Error> {
         let class = &self.classes[index];
-        let size = class_footprint(index);
         let cold = class.cold.head.get();
-        let need = if cold == NONE {
-            size
-        } else {
-            self.pages(cold, index)
-        };
+        let need = self.pages(cold, index);
         let available = self.press(index, need);
         if need > available {
             return Err(Error::Exhausted {
@@ -458,16 +462,26 @@ impl Pool {
                 available,
             });
         }
-        if cold != NONE {
-            self.committed.set(self.committed.get() + need);
-            // SAFETY: a block on a cold list has a header, and only the pool uses it.
-            let header = unsafe { self.header(cold) };
-            // SAFETY: as above.
-            let block = unsafe { header.as_ref() };
-            class.cold.pop(block, need);
-            block.refs.store(1, Relaxed);
-            block.payload.write();
-            return Ok(header);
+        self.committed.set(self.committed.get() + need);
+        // SAFETY: a block on a cold list has a header, and only the pool uses it.
+        let header = unsafe { self.header(cold) };
+        // SAFETY: as above.
+        let block = unsafe { header.as_ref() };
+        class.cold.pop(block, need);
+        block.lend();
+        Ok(header)
+    }
+
+    /// A new block of class `index` at the end of its carved range.
+    fn carve(&self, index: usize, len: usize) -> Result<NonNull<Header>, Error> {
+        let class = &self.classes[index];
+        let size = class_footprint(index);
+        let available = self.press(index, size);
+        if size > available {
+            return Err(Error::Exhausted {
+                requested: len,
+                available,
+            });
         }
         let start = self.span_start(index) + class.carved.get();
         let mut idle = self.idle(index);
