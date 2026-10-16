@@ -18,8 +18,8 @@ fn injected(name: &str) -> thread::Error {
 #[test]
 fn a_fault_fails_only_the_next_start_of_its_name_on_its_node() {
     let mut sim = sim(0);
-    let node = sim.node(node::Config::default());
     let other = sim.node(node::Config::default());
+    let node = sim.node(node::Config::default());
     node.fail_thread("log");
     let threads = node.threads();
     let ran = Arc::new(AtomicBool::new(false));
@@ -56,6 +56,20 @@ fn faults_on_one_name_fire_in_turn() {
     assert_eq!(second.unwrap_err(), injected("log"));
     sim.run().unwrap();
     third.unwrap().join().unwrap();
+}
+
+#[test]
+fn a_start_takes_the_fault_of_its_name_past_faults_of_other_names() {
+    let mut sim = sim(0);
+    let node = sim.node(node::Config::default());
+    node.fail_thread("a");
+    node.fail_thread("b");
+    let threads = node.threads();
+    assert_eq!(threads.start("b", || async {}).unwrap_err(), injected("b"));
+    assert_eq!(threads.start("a", || async {}).unwrap_err(), injected("a"));
+    let again = threads.start("a", || async {});
+    sim.run().unwrap();
+    again.unwrap().join().unwrap();
 }
 
 #[test]
