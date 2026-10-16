@@ -22,8 +22,9 @@ fn main() {
     reads_the_certificates_of_the_pem_file_of_ssl_cert_file();
     gives_the_failure_of_a_pem_file_that_is_not_there();
     reads_the_certificates_of_the_os_store();
-    reads_the_os_store_when_ssl_cert_dir_names_no_directory();
+    reads_the_os_store_when_ssl_cert_dir_holds_no_path();
     reads_only_the_files_of_the_directory_of_ssl_cert_dir();
+    gives_only_the_failure_of_a_path_that_is_not_there_or_no_directory();
 }
 
 fn reads_the_certificates_of_the_pem_file_of_ssl_cert_file() {
@@ -58,7 +59,7 @@ fn reads_the_certificates_of_the_os_store() {
     assert!(text.lines().count() > 0, "the OS store gave no certificate");
 }
 
-fn reads_the_os_store_when_ssl_cert_dir_names_no_directory() {
+fn reads_the_os_store_when_ssl_cert_dir_holds_no_path() {
     // The keychain of macOS gives its certificates in a different order on each read.
     let sorted = |text: String| {
         let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
@@ -85,6 +86,42 @@ fn reads_only_the_files_of_the_directory_of_ssl_cert_dir() {
         }),
         "the certificate of the directory"
     );
+}
+
+fn gives_only_the_failure_of_a_path_that_is_not_there_or_no_directory() {
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/roots/ca.pem");
+    let cases = [
+        (
+            "SSL_CERT_FILE",
+            OsStr::new(""),
+            "failure failed to read PEM from file: No such file or directory \
+             (os error 2) at ''\n"
+                .to_owned(),
+        ),
+        (
+            "SSL_CERT_DIR",
+            OsStr::new("/nonexistent"),
+            "failure opening directory: No such file or directory (os error 2) at \
+             '/nonexistent'\n"
+                .to_owned(),
+        ),
+        (
+            "SSL_CERT_DIR",
+            file.as_os_str(),
+            format!(
+                "failure opening directory: Not a directory (os error 20) at '{}'\n",
+                file.display()
+            ),
+        ),
+    ];
+    for (var, value, failure) in cases {
+        assert_eq!(
+            child(&[(var, value)]),
+            failure,
+            "the roots with {var}={}",
+            value.display()
+        );
+    }
 }
 
 /// The lines that the child writes for `roots`.
