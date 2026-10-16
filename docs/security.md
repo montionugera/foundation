@@ -354,10 +354,11 @@ state on `main`.
   stamp, and a larger count after a carried tail: the open refuses each (#2796);
   `carry_met_after_carry` gives a larger count to a path whose only entry has no
   samples, then a second carry record, and the open refuses the first; and `carry_twice`
-  lists one path twice in one record, which it refuses. Three reach the count of an
+  lists one path twice in one record, which it refuses. Four reach the count of an
   entry with no samples (#2796), and the open refuses each: `empty_count_zero` gives a
-  count of 0, `empty_presence` a presence byte of 2, and `empty_counted` a count that is
-  not the walked one on a path that the walk met. The `body_over_max` input holds a data
+  count of 0, `empty_presence` a presence byte of 2, `empty_counted` a count that is not
+  the walked one on a path that the walk met, and `empty_crowded` an entry with no
+  samples after a count of `u64::MAX` at its seq. The `body_over_max` input holds a data
   record that follows the chain with a body over `body_max`.
 
 ### Device to connector
