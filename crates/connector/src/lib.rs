@@ -1,10 +1,12 @@
-//! Defines the kind contract (parse, check, discover, run, browse), the browse walk,
-//! the thin supervisor, `ctx`, the component library, and the compositions.
+//! Defines the kind contract (parse, check, discover, run, browse, block), the browse
+//! walk, the names of an import, the thin supervisor, `ctx`, the component library,
+//! and the compositions.
 
 pub mod browse;
 pub mod cancel;
 pub mod endpoint;
 pub mod http;
+pub mod import;
 pub mod kind;
 pub mod pace;
 pub mod reader;

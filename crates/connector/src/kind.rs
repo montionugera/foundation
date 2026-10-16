@@ -67,6 +67,31 @@ pub trait Kind: Send + Sync + 'static {
         ctx: Context<Self::Config>,
     ) -> impl Future<Output = Result<(), Error>>;
 
+    /// The attributes and blocks to add to the body of the connector block, so that
+    /// it reads the point `tag` as the channel `channel`. `tag` and `facts` are those
+    /// of a [`browse::Shape::Point`] that a browse of the kind gave. For each fact
+    /// that the blocks need and `facts` does not have, they hold
+    /// [`fill`](crate::import::fill).
+    /// The default gives [`Error::Config`] with `connector.no-import`: the kind
+    /// cannot write the block of a point.
+    ///
+    /// # Errors
+    ///
+    /// The default gives [`Error::Config`] with `connector.no-import`.
+    fn block(
+        &self,
+        tag: &str,
+        facts: &browse::Facts,
+        channel: &Name,
+    ) -> Result<Document, Error> {
+        let _: (&str, &browse::Facts, &Name) = (tag, facts, channel);
+        Err(config_error(
+            NO_IMPORT,
+            &"this connector kind cannot write the block of a point",
+            "Write the blocks of the points by hand",
+        ))
+    }
+
     /// Browses the device of the connector block `ctx.config()` as `query` asks. A
     /// kind connects to its device and gives [`browse::walk`] over it. The default
     /// gives [`Error::Config`] with `connector.no-browse`: the kind cannot browse.
@@ -439,6 +464,23 @@ impl Table {
             .await
     }
 
+    /// The blocks of `kind` that read the point `tag` as `channel`, as
+    /// [`Kind::block`] gives them.
+    ///
+    /// # Errors
+    ///
+    /// The kind's error, or [`Error::Config`] with `connector.unknown-kind`.
+    pub fn block(
+        &self,
+        kind: &str,
+        tag: &str,
+        facts: &browse::Facts,
+        channel: &Name,
+    ) -> Result<Document, Error> {
+        let kind = self.get(kind, None).map_err(Error::Config)?;
+        kind.block(tag, facts, channel)
+    }
+
     /// Browses with `kind` as `query` asks.
     pub(crate) async fn browse(
         &self,
@@ -492,6 +534,7 @@ impl fmt::Debug for Table {
 const UNKNOWN_KIND: Code = Code::new("connector.unknown-kind");
 const NO_BROWSE: Code = Code::new("connector.no-browse");
 const NO_DISCOVER: Code = Code::new("connector.no-discover");
+const NO_IMPORT: Code = Code::new("connector.no-import");
 const UNKNOWN_CHANNEL: Code = Code::new("connector.unknown-channel");
 const NO_CHANNEL: Code = Code::new("connector.no-channel");
 const MANY_INDEXES: Code = Code::new("connector.many-indexes");
@@ -688,6 +731,13 @@ trait Erased: Send + Sync {
         ctx: &'a browse::Context<'a>,
         query: &'a browse::Query,
     ) -> Browse<'a>;
+
+    fn block(
+        &self,
+        tag: &str,
+        facts: &browse::Facts,
+        channel: &Name,
+    ) -> Result<Document, Error>;
 }
 
 impl<K: Kind> Erased for K {
@@ -717,6 +767,15 @@ impl<K: Kind> Erased for K {
         query: &'a browse::Query,
     ) -> Browse<'a> {
         Box::pin(Kind::browse(self, ctx, query))
+    }
+
+    fn block(
+        &self,
+        tag: &str,
+        facts: &browse::Facts,
+        channel: &Name,
+    ) -> Result<Document, Error> {
+        Kind::block(self, tag, facts, channel)
     }
 }
 
