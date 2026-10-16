@@ -50,10 +50,11 @@ pub(crate) fn file(path: &Path) -> Result<(OwnedFd, fs::Stat), Errno> {
     }
 }
 
-/// Opens `path`, after a stat found a regular file or a directory there.
+/// Opens `path`, after a stat found a regular file or a directory there. The stat of
+/// the caller keeps the open of a socket from giving `ENXIO`, and that of a device from
+/// running its driver.
 fn opened(path: &Path) -> Result<Readable, Errno> {
-    // The check before the open keeps the open of a socket from giving `ENXIO`, and
-    // that of a device from running its driver. The check after it refuses a swap.
+    // The fstat after the open refuses a swap.
     let fd = fs::open(path, READ, fs::Mode::empty())?;
     let stat = fs::fstat(&fd)?;
     Ok(match kind(&stat)? {
