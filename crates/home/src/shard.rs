@@ -6466,6 +6466,45 @@ mod tests {
                 }
 
                 #[test]
+                fn reads_a_reopen_from_disk_after_its_entry_commits_while_a_sync_runs()
+                {
+                    run(701, |test| async move {
+                        let set = two_indexes();
+                        let mut shard = test.shard(AREA).await;
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        let a = open(&mut shard, "a");
+                        committed(&test, &mut shard, w, &[10, 20]).await;
+                        assert_eq!(
+                            taken(&mut shard, a.into(), 0),
+                            [seq(0, 1), seq(1, 1)]
+                        );
+                        shard.ack(a, live(1)).expect("forward");
+                        shard.close_reader(a.into());
+                        shard.committed().await.expect("the commit ends");
+                        test.clock.sleep(COMMIT).await;
+                        write(&test, &mut shard, w, &[30]);
+                        let first = shard.committed();
+                        test.clock.sleep(SYNC).await;
+                        let a = open(&mut shard, "a");
+                        assert_eq!(
+                            shard.buffer.durable_at(),
+                            shard.buffer.commits() + 2,
+                            "a sync runs, and the entry waits for the next commit"
+                        );
+                        first.await.expect("the first commit ends");
+                        woken(&mut shard);
+                        assert_eq!(caught_up(&mut shard, a, 0).await, []);
+                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(woken(&mut shard), [a.into()]);
+                        assert_eq!(
+                            caught_up(&mut shard, a, 0).await,
+                            [seq(1, 1), seq(2, 1)]
+                        );
+                    });
+                }
+
+                #[test]
                 fn keeps_the_old_position_when_the_tick_finds_no_block() {
                     let before = async |test: &Test, shard: &mut Shard, w| {
                         let a = open(shard, "a");
