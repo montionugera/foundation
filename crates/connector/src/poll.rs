@@ -24,7 +24,6 @@ mod tests;
 pub const COUNTS: [&str; 2] = ["in", "lost"];
 
 const INDEX: Code = Code::new("connector.index");
-const REPEATED: Code = Code::new("connector.repeated");
 
 /// The frames of a kind that reads one value of each channel per request: each frame
 /// has one sample of each channel that it keeps, and the stamp of the request in each
@@ -89,12 +88,12 @@ impl Writer {
     ///
     /// The error of [`Context::writer`], and [`Error::Config`] with a diagnostic of
     /// each channel that is an index (`connector.index`), whose sample is the stamp
-    /// of the request, and of each channel that `channels` names again
-    /// (`connector.repeated`).
+    /// of the request.
     ///
     /// # Panics
     ///
-    /// When `check` of the kind did not name each of [`COUNTS`].
+    /// When `check` of the kind did not name each of [`COUNTS`]. When `channels`
+    /// names a channel again, which the parse of the kind refuses.
     pub async fn open<C>(ctx: &Context<C>, channels: Vec<Name>) -> Result<Self, Error> {
         let writer = ctx
             .writer(channels.clone(), Authority::ABSOLUTE, None)
@@ -109,7 +108,9 @@ impl Writer {
             if set.groups().contains(&entry) {
                 wrong.push(index(name));
             } else if channel_of[entry].replace(channel).is_some() {
-                wrong.push(repeated(name));
+                panic!(
+                    "invariant: the parse of the kind refuses the channel `{name}` again"
+                );
             }
         }
         if !wrong.is_empty() {
@@ -455,16 +456,6 @@ fn index(name: &Name) -> Diagnostic {
             "the channel `{name}` is an index, which holds the stamp of each request"
         ),
         "Write the value to a data channel".into(),
-    )
-}
-
-/// The diagnostic of the channel `name`, which the writer names again.
-fn repeated(name: &Name) -> Diagnostic {
-    Diagnostic::new(
-        REPEATED,
-        None,
-        format!("the connector writes the channel `{name}` more than once per request"),
-        "Write each channel once".into(),
     )
 }
 

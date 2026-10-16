@@ -514,17 +514,13 @@ fn refuses_a_channel_that_is_an_index() {
 }
 
 #[test]
-fn refuses_a_channel_named_again() {
+#[should_panic(
+    expected = "invariant: the parse of the kind refuses the channel `plant.a` again"
+)]
+fn panics_at_a_channel_named_again() {
     let channels = ["plant.a", "plant.a", "plant.b"];
     let writes = vec![[Some(F64(1.5)), None, Some(Value::I32(-3))]];
-    let record = run_of(channels, writes, (0, 0), |_, _, _| async {});
-    let message =
-        "the connector writes the channel `plant.a` more than once per request";
-    let want = ("connector.repeated", message, "Write each channel once");
-    let want =
-        [want].map(|(code, message, fix)| (code.into(), message.into(), fix.into()));
-    assert_eq!(diagnostics(&record), want);
-    assert_eq!((record.time, record.counts), (Vec::new(), (0, 0)));
+    run_of(channels, writes, (0, 0), |_, _, _| async {});
 }
 
 /// `plant.a` is an `f64`, so an `i64` of the same width panics.
