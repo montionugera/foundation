@@ -60,7 +60,7 @@
   a Bad status other than `BadNoData`, when it gets no answer in the request timeout
   (5 s), or when the close of the channel cuts it. A `BadNoData`, from the server or
   for an empty value, is an answer, so it proves the channel and the session
-  (`laptop.architect-2`,
+  (`laptop.architect-2`, 2026-10-16T05:05:50Z,
   https://github.com/synnaxlabs/foundation/pull/2809#issuecomment-6208511068). The
   value of the server state is not judged. The first failed check ends the run with
   `Error::Device` and the text "the connectivity check failed with <status>", so the
