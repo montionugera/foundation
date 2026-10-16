@@ -109,7 +109,8 @@ impl Writer {
                 wrong.push(index(name));
             } else if channel_of[entry].replace(channel).is_some() {
                 panic!(
-                    "invariant: the parse of the kind refuses the channel `{name}` again"
+                    "invariant: the parse of the kind refuses the channel `{name}` \
+                     again"
                 );
             }
         }
@@ -176,9 +177,9 @@ impl Writer {
     }
 
     /// Writes one frame at `stamp` with the value of each channel, in order, and leaves
-    /// out each `None`. Writes no frame when it keeps none. A group that the home refuses as `Backwards` is
-    /// written again once, after the stamp that the refusal gives. A frame for which
-    /// the pool has no block now loses its samples.
+    /// out each `None`. Writes no frame when it keeps none. A group that the home
+    /// refuses as `Backwards` is written again once, after the stamp that the refusal
+    /// gives. A frame for which the pool has no block now loses its samples.
     ///
     /// # Errors
     ///
