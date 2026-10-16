@@ -1,12 +1,16 @@
 - **INFLUX KIND** `connector_influx::Kind` reads `address` and the reader settings
   (READER SETTINGS). `address` is an `http::Uri`, since a `Name` is a mesh name. `parse`
   reads `address` through `connector::http::uri`, so a plan finds an address that `send`
-  refuses before a run. `discover` gives no documents. Decided by `laptop.architect-2`
-  on #1153
+  refuses before a run. Decided by `laptop.architect-2` on #1153
   (https://github.com/synnaxlabs/foundation/issues/1153#issuecomment-6051297152,
-  2026-10-08 03:02 UTC). Until the kind takes a CA (#2702), it also refuses the scheme
-  `https`, with `influx.bad-address` and the text "the scheme of the URI is not http"
-  (`laptop.architect-2`, 2026-10-16T07:51:33Z:
+  2026-10-08 03:02 UTC). `discover` gives the default `connector.no-discover`
+  (`laptop.architect-2`, 2026-10-16 04:00 UTC:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6207771367; it
+  supersedes
+  https://github.com/synnaxlabs/foundation/issues/1153#issuecomment-6051297152, where
+  `discover` gave no documents). Until the kind takes a CA (#2702), it also refuses the
+  scheme `https`, with `influx.bad-address` and the text "the scheme of the URI is not
+  http" (`laptop.architect-2`, 2026-10-16T07:51:33Z:
   https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210764044,
   item 5). The scheme is a rule of the influx address, not of the shared `uri`, so
   the code is not `connector.bad-uri` (`laptop.architect-2`, 2026-10-16T09:11:38Z:
@@ -89,20 +93,40 @@
   set is a workload whose frames alternate key sets, as `laptop.architect-2` decided on
   2026-10-13T07:36:47Z
   (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6140691273). It acks
-  a batch only after a 204. Each other answer, and each failed request, keeps the batch,
-  shows its text with `Context::error`, and sends the batch again after a
-  `retry::Backoff` of 1 s to 1 min. A 204 clears the error, and adds the fields of the
-  batch to the count `confirmed` with `Count::add`, and the `count` of each gap line of
-  the batch to the count `lost`: the seqs that the gap lines of this connector count,
-  which InfluxDB took with a 204. A batch sent again counts once. A gap that the reader
-  reports again after a restart counts again, so `lost` is an upper bound, as the sum of
-  `count` in `foundation_gaps` is. Each later out kind names the same count `lost`. It
-  counts sample times of the reader's index. The `lost` of `opcua` counts data samples
-  (OPCUA KIND). The ruling did not take a count of all out kinds in `connector`, as the
-  supervisor does not see the frames of a kind's reader. The trigger to make it is a
-  second out kind (6199058253). Both counts hold across the runs of one call
-  (SUPERVISOR). The person gave the choice of the path to the architects on 2026-10-15
-  ("Best devx possible. You choose the path", through `laptop.monitor`:
+  a batch only after a 204. Each other answer, and each failed request, keeps the
+  batch, shows its text with `Context::error`, and sends the batch again after a
+  `retry::Backoff` of 1 s to 1 min. No answer ends the run, other than a 401 or a 403
+  after which the read of the token fails: an action in InfluxDB fixes a 400, a 404, or
+  a 422, and the next try after it lands the batch. The reader stays open meanwhile, as
+  in an outage of InfluxDB. The text is `InfluxDB answered {status}: {body}`, and for
+  these three statuses it adds a fix. A 400 and a 422 (InfluxDB 1 gives 400, and
+  InfluxDB 2 gives 422, for a field type conflict and for points past retention): "For a
+  field type conflict, write to another `measurement` or delete the old field in
+  InfluxDB. For points older than the retention period, raise it or write to another
+  bucket". A 404: "Create the database, the bucket, or the org in InfluxDB, or name one
+  that exists". An answer whose body is over the cap of 64 KiB has its first 64 KiB as
+  `{body}`, as `connector::http::Error::TooLarge` holds them, and the fix of its status
+  (`laptop.architect-2`, 2026-10-16T07:38:36Z,
+  https://github.com/synnaxlabs/foundation/pull/2838#issuecomment-6210559216). Decided
+  by `laptop.architect-2` on 2026-10-16T07:18:54Z
+  (https://github.com/synnaxlabs/foundation/pull/2838#issuecomment-6210258673), which
+  replaces the stop at a 400, a 404, or a 422 of the ruling of 2026-10-14T01:32:02Z
+  (https://github.com/synnaxlabs/foundation/issues/2607#issuecomment-6158874569).
+  QUARANTINE, which lets the connector go on past refused points, is a later step
+  (#2841). A 401 and a 403 keep the backoff, since the run reads the token again before
+  the next try (#2687). A 413 keeps the backoff too. Trigger for a split of the batch: a
+  server whose body limit is below one batch. A 204 clears the error, and adds the
+  fields of the batch to the count `confirmed` with `Count::add`, and the `count` of
+  each gap line of the batch to the count `lost`: the seqs that the gap lines of this
+  connector count, which InfluxDB took with a 204. A batch sent again counts once. A gap
+  that the reader reports again after a restart counts again, so `lost` is an upper
+  bound, as the sum of `count` in `foundation_gaps` is. Each later out kind names the
+  same count `lost`. It counts sample times of the reader's index. The `lost` of `opcua`
+  counts data samples (OPCUA KIND). The ruling did not take a count of all out kinds in
+  `connector`, as the supervisor does not see the frames of a kind's reader. The trigger
+  to make it is a second out kind (6199058253). Both counts hold across the runs of one
+  call (SUPERVISOR). The person gave the choice of the path to the architects on
+  2026-10-15 ("Best devx possible. You choose the path", through `laptop.monitor`:
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922).
   `laptop.architect` gave the count of lost seqs, and `laptop.architect-2` ruled its
   shape on 2026-10-15T18:13:22Z

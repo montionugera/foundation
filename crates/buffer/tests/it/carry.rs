@@ -2,10 +2,11 @@
 
 use super::*;
 
-/// `paths` live paths get one entry of one sample each in turn, four in each
-/// commit, for 600 commits on a ring of 24 blocks with trims. Gives the first
-/// commit that the ring still refuses after 1000 commit spans, with its error.
-fn refused_with_paths(seed: u64, paths: u32) -> Option<(u64, Rejected)> {
+/// `paths` live paths get one entry each in turn, four in each commit, for 600
+/// commits on a ring of 24 blocks with trims: with `empty`, an entry with no
+/// samples at seq 0, else one sample at the next seq. Gives the first commit that
+/// the ring still refuses after 1000 commit spans, with its error.
+fn refused_with_paths(seed: u64, paths: u32, empty: bool) -> Option<(u64, Rejected)> {
     let (mut sim, node) = create_node(seed);
     let own = node.clone();
     let found = Arc::new(Mutex::new(None));
@@ -27,25 +28,18 @@ fn refused_with_paths(seed: u64, paths: u32) -> Option<(u64, Rejected)> {
                     let lap = u64::from(next / paths);
                     next += 1;
                     let slot = slots.index(key(index));
-                    let last = i64::try_from(lap).expect("small") + 1;
-                    let parts = Parts::default();
-                    entry(index, slot, Path::Live, lap, 1, Some(last), parts)
+                    if empty {
+                        entry(index, slot, Path::Live, 0, 0, None, Parts::default())
+                    } else {
+                        let last = i64::try_from(lap).expect("small") + 1;
+                        let parts = Parts::default();
+                        entry(index, slot, Path::Live, lap, 1, Some(last), parts)
+                    }
                 })
                 .collect();
-            let mut spans = 0;
-            loop {
-                match buffer.append(batch.clone()) {
-                    Ok(()) => break,
-                    Err(Rejected::Full { .. }) if spans < 1000 => {
-                        spans += 1;
-                        clock.sleep(COMMIT).await;
-                    }
-                    Err(error) => {
-                        *given.lock().expect("no panic held the lock") =
-                            Some((commit, error));
-                        return;
-                    }
-                }
+            if let Err(error) = append_within(&buffer, &clock, &batch, 1000).await {
+                *given.lock().expect("no panic held the lock") = Some((commit, error));
+                return;
             }
             buffer.committed().await.expect("commits");
         }
@@ -60,7 +54,70 @@ fn refused_with_paths(seed: u64, paths: u32) -> Option<(u64, Rejected)> {
 #[test]
 fn a_thousand_paths_with_samples_do_not_stall_the_ring() {
     let failures: Vec<_> = (0..32)
-        .filter_map(|seed| refused_with_paths(seed, 1000).map(|r| (seed, r)))
+        .filter_map(|seed| refused_with_paths(seed, 1000, false).map(|r| (seed, r)))
         .collect();
     assert_eq!(failures, Vec::new());
+}
+
+/// Paths of entries with no samples at one seq keep their counts in their headers,
+/// so a trim may land between any two records, and 292 such paths, more tails than
+/// three free blocks hold, never stall the ring.
+#[test]
+fn paths_of_entries_with_no_samples_do_not_stall_the_ring() {
+    let failures: Vec<_> = (0..32)
+        .filter_map(|seed| refused_with_paths(seed, 292, true).map(|r| (seed, r)))
+        .collect();
+    assert_eq!(failures, Vec::new());
+}
+
+/// A path whose newest record holds only an entry with no samples keeps that record
+/// as its holder through the trims that pass its older record, so a reopen counts
+/// on from both entries.
+#[test]
+fn a_reopen_after_trims_counts_on_from_the_holder_of_entries_with_no_samples() {
+    let (mut sim, node) = create_node(0);
+    sim.run_on(&node, |node, tasks| async move {
+        let config = || Config {
+            layout: layout(32 * BLOCK, BODY_MAX),
+            trimmed: true,
+            ..node_config(&node, tasks.clone(), DIR)
+        };
+        let first = config();
+        let pool = Rc::clone(&first.pool);
+        let clock = node.clock();
+        let mut slots = Slots::new();
+        let buffer = Buffer::open(first, &mut slots).await.expect("opens");
+        let one = slots.index(key(1));
+        let two = slots.index(key(2));
+        let empty = || entry(1, one, Path::Live, 0, 0, None, Parts::default());
+        for _ in 0..2 {
+            buffer.append([empty()]).expect("the ring has room");
+            buffer.committed().await.expect("commits");
+        }
+        for seq in 0..200 {
+            let parts = Parts::from(pool.alloc(100).expect("a block").freeze());
+            let last = i64::try_from(seq).expect("a small seq") + 1;
+            let data = entry(2, two, Path::Live, seq, 1, Some(last), parts);
+            append_within(&buffer, &clock, &[data], 100)
+                .await
+                .expect("the ring frees room");
+            buffer.committed().await.expect("commits");
+        }
+        let ending = buffer.ended();
+        drop(buffer);
+        ending.await.expect("ends");
+        let mut slots = Slots::new();
+        let buffer = Buffer::open(config(), &mut slots).await.expect("reopens");
+        let one = slots.index(key(1));
+        let empty = entry(1, one, Path::Live, 0, 0, None, Parts::default());
+        buffer.append([empty]).expect("the ring has room");
+        buffer.committed().await.expect("commits");
+        let read = buffer
+            .reader()
+            .read(one, Path::Live, mark(0, 0), usize::MAX)
+            .await
+            .expect("reads");
+        assert_eq!(read.next, mark(0, 3));
+    })
+    .expect("the buffer ends");
 }

@@ -31,10 +31,6 @@ const LEN: usize = 16 + 1 + 8 + 8 + 9;
 /// `body_max`, so a layout with a small one holds fewer.
 pub(crate) const TAILS_MAX: usize = entry::ENTRIES_MAX;
 
-/// The largest carried `given`. A path gets far fewer entries with no samples at
-/// one seq, so its count from here does not overflow.
-pub(crate) const GIVEN_MAX: u64 = (1 << 63) - 1;
-
 /// Where one path of an index stood on disk when a commit carried it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Tail {
@@ -72,9 +68,6 @@ impl Tail {
         let path = fields.path()?;
         let seq = u64::from_le_bytes(fields.take());
         let given = u64::from_le_bytes(fields.take());
-        if given > GIVEN_MAX {
-            return Err(Invalid::Given(given));
-        }
         let stamp = fields.last()?;
         Ok(Self {
             index,
@@ -142,7 +135,7 @@ pub(crate) fn write(tails: &[Tail], into: &mut [u8]) -> usize {
 /// [`Invalid::Truncated`] when the body holds no count or fewer tails than the
 /// count, [`Invalid::Count`] when the count is over [`TAILS_MAX`], and
 /// [`Invalid::Trailing`] when bytes follow the last tail. Each tail checks its path
-/// byte, its `given`, and its presence byte.
+/// byte and its presence byte.
 pub(crate) fn parse(
     body: &[u8],
 ) -> Result<impl Iterator<Item = Result<Tail, Invalid>>, Invalid> {
@@ -275,15 +268,10 @@ mod tests {
     }
 
     #[test]
-    fn ends_the_tails_at_a_given_over_the_maximum() {
-        let mut body = body(&[tail(GIVEN_MAX, None), tail(2, None)]);
-        body[4 + LEN + 32] = 0x80;
+    fn takes_each_given_up_to_the_largest_u64() {
+        let body = body(&[tail(u64::MAX, None), tail(0, None)]);
         let tails: Vec<_> = parse(&body).expect("the count holds").collect();
-        let over = GIVEN_MAX + 1 + 2;
-        assert_eq!(
-            tails,
-            [Ok(tail(GIVEN_MAX, None)), Err(Invalid::Given(over))]
-        );
+        assert_eq!(tails, [Ok(tail(u64::MAX, None)), Ok(tail(0, None))]);
     }
 
     fn any_tail() -> impl Strategy<Value = Tail> {
@@ -291,7 +279,7 @@ mod tests {
             any::<u128>(),
             prop::bool::ANY,
             any::<u64>(),
-            0..=GIVEN_MAX,
+            any::<u64>(),
             prop::option::of(any::<i64>()),
         )
             .prop_map(|(index, backfill, seq, given, stamp)| Tail {

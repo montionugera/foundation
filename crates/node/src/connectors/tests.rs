@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use connector::cancel;
 use connector::kind::{Channels, Context, Error, Kind, Table};
 use connector::testing;
 use document::diagnostic::Diagnostic;
@@ -57,13 +56,6 @@ impl Kind for Hold {
         Ok(Channels::default())
     }
 
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     async fn run(&self, ctx: Context<usize>) -> Result<(), Error> {
         let start = (ctx.name().to_string(), ctx.clock().now(), *ctx.config());
         self.starts.lock().expect("no panic").push(start.clone());
@@ -107,13 +99,6 @@ impl Kind for Tally {
         })
     }
 
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     async fn run(&self, ctx: Context<usize>) -> Result<(), Error> {
         let start = (ctx.name().to_string(), ctx.clock().now(), *ctx.config());
         self.starts.lock().expect("no panic").push(start);
@@ -138,13 +123,6 @@ impl Kind for Source {
 
     fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
         Ok(Channels::default())
-    }
-
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
     }
 
     async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
@@ -199,13 +177,6 @@ impl Kind for Sink {
             reader: Some(self.settings.clone()),
             ..Channels::default()
         })
-    }
-
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
     }
 
     async fn run(&self, mut ctx: Context<()>) -> Result<(), Error> {
@@ -712,13 +683,6 @@ impl Kind for Write {
 
     fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
         Ok(Channels::default())
-    }
-
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
     }
 
     async fn run(&self, ctx: Context<()>) -> Result<(), Error> {

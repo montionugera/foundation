@@ -16,7 +16,7 @@ use types::name::Name;
 use types::time::Span;
 
 use crate::kind::{self, Context, Error};
-use crate::{cancel, http, reader, retry, status};
+use crate::{browse, cancel, http, reader, retry, status};
 
 /// The waits between restarts.
 const RESTART: retry::Config = retry::Config {
@@ -58,6 +58,26 @@ impl Supervisor {
     #[must_use]
     pub fn new(config: Config) -> Self {
         Self(Rc::new(config))
+    }
+
+    /// Browses the device of the connector block `config` of `kind` as `query`
+    /// asks, with the network, clock, randomness, and secrets of the supervisor. It
+    /// connects apart from any run of the connector and keeps no state after it
+    /// returns. A drop of the future ends the browse. The future is not `Send`: call
+    /// it on a shard.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Kind::browse`](kind::Kind::browse), and [`Error::Config`] with
+    /// `connector.unknown-kind`.
+    pub async fn browse(
+        &self,
+        kind: &str,
+        config: &Document,
+        query: &browse::Query,
+    ) -> Result<browse::Found, Error> {
+        let ctx = browse::Context::new(config, &self.0);
+        self.0.kinds.browse(kind, &ctx, query).await
     }
 
     /// Opens the status channels of the connector `name` once the node has mesh
@@ -528,13 +548,6 @@ mod tests {
                 true => Err(vec![worse()]),
                 false => Ok(Channels::default()),
             }
-        }
-
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
         }
 
         async fn run(&self, ctx: Context<bool>) -> Result<(), Error> {
@@ -1241,13 +1254,6 @@ mod tests {
             Ok(Channels::default())
         }
 
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
-        }
-
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
             let value = ctx.secret(&self.0).await?;
             assert_eq!(value.expose(), b"t");
@@ -1301,9 +1307,9 @@ mod tests {
             let statuses = read_status(&inputs.hub, "plant.locked", &[], &tasks).await;
             let paths = node.paths();
             let large = vec![b't'; (1 << 16) + 1];
-            paths
-                .write(std::path::Path::new(path), &large)
-                .expect("writes it");
+            let path = std::path::Path::new(path);
+            node.make_dir(path.parent().expect("a directory"));
+            paths.write(path, &large).expect("writes it");
             let (shown, clock) = (Rc::clone(&statuses), node.clock());
             tasks.spawn(async move {
                 while shown.borrow().len() < 2 {
@@ -2117,13 +2123,6 @@ mod tests {
             })
         }
 
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
-        }
-
         fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
             std::future::ready(Ok(()))
         }
@@ -2530,13 +2529,6 @@ mod tests {
             Ok(Channels::default())
         }
 
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
-        }
-
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
             let config = tcp::Config {
                 remote: self.remote,
@@ -2649,13 +2641,6 @@ mod tests {
 
         fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
             Ok(Channels::default())
-        }
-
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
         }
 
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
@@ -2872,13 +2857,6 @@ mod tests {
             })
         }
 
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
-        }
-
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
             let count = ctx.count(self.count);
             for i in 1..=self.n {
@@ -2923,13 +2901,6 @@ mod tests {
                 reader: self.reader.clone(),
                 ..Channels::default()
             })
-        }
-
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
         }
 
         fn run(&self, ctx: Context<()>) -> impl Future<Output = Result<(), Error>> {
@@ -3802,13 +3773,6 @@ mod tests {
 
         fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
             Ok(Channels::default())
-        }
-
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
         }
 
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {

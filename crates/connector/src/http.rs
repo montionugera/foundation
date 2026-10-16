@@ -27,7 +27,7 @@ use env::net::host::{self, Host};
 use env::net::{self, Net, Tcp, tcp};
 use env::tasks::Tasks;
 use http::uri::Scheme;
-use http::{HeaderValue, Request, Response, Uri, header};
+use http::{HeaderValue, Request, Response, StatusCode, Uri, header};
 use http_body::Body as _;
 use hyper::body::Incoming;
 use hyper::client::conn::http1::{self, SendRequest};
@@ -217,8 +217,14 @@ impl Client {
             poll_fn(|cx| Pin::new(&mut incoming).poll_frame(cx)).await
         {
             if let Ok(data) = frame?.into_data() {
-                if data.len() > self.body_max.saturating_sub(bytes.len()) {
-                    return Err(Error::TooLarge { max: self.body_max });
+                let room = self.body_max.saturating_sub(bytes.len());
+                if data.len() > room {
+                    bytes.extend_from_slice(&data[..room]);
+                    return Err(Error::TooLarge {
+                        status: parts.status,
+                        body: Bytes::from(bytes),
+                        max: self.body_max,
+                    });
                 }
                 bytes.extend_from_slice(&data);
             }
@@ -491,8 +497,13 @@ pub enum Error {
     },
     /// The exchange was not done at the timeout.
     TimedOut,
-    /// The response body is larger than the cap.
+    /// The response body is larger than `max` bytes. `status` is the status of the
+    /// response, and `body` holds its first `max` bytes.
     TooLarge {
+        /// The status of the response.
+        status: StatusCode,
+        /// The first `max` bytes of the body.
+        body: Bytes,
         /// The cap, in bytes.
         max: usize,
     },
@@ -539,7 +550,7 @@ impl fmt::Display for Error {
                 write!(f, "TLS with {origin} failed: {cause}")
             }
             Self::TimedOut => write!(f, "the exchange timed out"),
-            Self::TooLarge { max } => {
+            Self::TooLarge { max, .. } => {
                 write!(f, "the response body is larger than {max} bytes")
             }
             Self::Protocol(failure) => write!(f, "the exchange failed: {failure}"),

@@ -19,28 +19,36 @@
   ```
 
   1. **Endpoint.** `address` is a host and a port, such as `"plc:502"`, port 502 when it
-     has none. A host in brackets is an IPv6 address (`"[fd00::1]:502"`), with an
-     optional zone of letters, digits, `-`, `.`, and `_` (`"[fe80::1%eth0]"`; #1927).
-     When #1927 lands, this grammar comes from the host and port type of `connector`
-     (#1218), and the copy here goes (`laptop.architect-2`, 2026-10-16T00:58:00Z:
-     https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205573301; the
-     zone cases, 2026-10-16T00:58:33Z:
-     https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205579706). Each
-     other host has only letters, digits, `-`, `.`, and `_`, as Docker Compose names
-     such as `plc_1` resolve. No part between dots is empty, longer than 63 characters,
-     or starts or ends with `-`. A host with a number last (digits, or `0x` or `0X` and
-     hex digits) is an IPv4 address of four plain parts, as a resolver reads `"10.1"` as
-     10.0.0.1, `"010"` as octal, and `"10.0xa"` as 10.0.0.10. The port is 1 to 65535
-     (`laptop.architect-2`, 2026-10-16T00:25:03Z:
-     https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205157567). The
-     host rules: `laptop.architect-2`, 2026-10-16T00:41:10Z:
-     https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205359213, and
-     2026-10-16T00:50:34Z:
-     https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205484684. The run
-     resolves the host through `env::net`. `unit` is optional, 0 to 255, default 1 (C2
-     item 1). Lost: the host rule of a library (`rustls_pki_types::ServerName`), which
-     takes `"10.0xa"` and `"0xa000001"` as names that a resolver reads as IPv4
-     addresses, and refuses a zone (#1218 has the shared host type).
+     has none. The port is 1 to 65535 (`laptop.architect-2`, 2026-10-16T00:25:03Z:
+     https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205157567). An
+     IPv6 host is in brackets (`"[fd00::1]:502"`, `"[fe80::1%2]"`), and the kind
+     parses the text in them bare. The host is an `env::net::host::Host`, parsed at
+     plan, with the grammar of ENV SEAMS (`laptop.architect-2`, 2026-10-16T02:53:11Z:
+     https://github.com/synnaxlabs/foundation/issues/1927#issuecomment-6206963417). The
+     kind imports `env::net::host` and keeps the split of the host and the port until
+     the host and port type of `connector` (#1218) takes it; its own host rules go
+     (`box1.builder-2`, 2026-10-16T03:24:43Z:
+     https://github.com/synnaxlabs/foundation/issues/1218#issuecomment-6207374015;
+     approved by `laptop.architect-2`, 2026-10-16T08:46:11Z:
+     https://github.com/synnaxlabs/foundation/pull/2852#issuecomment-6211699251; the
+     bare parse in brackets and the import of `env::net::host`,
+     `laptop.architect-2`, 2026-10-16T08:55:35Z:
+     https://github.com/synnaxlabs/foundation/pull/2852#issuecomment-6211871391).
+     Supersedes the host rules of
+     https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205359213
+     (`laptop.architect-2`, 2026-10-16T00:41:10Z) and
+     https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205484684
+     (2026-10-16T00:50:34Z), the zone cases of
+     https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205579706
+     (2026-10-16T00:58:33Z), and, in item 1 of
+     https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205573301
+     (2026-10-16T00:58:00Z), that the kind reaches the grammar only through the type
+     of #1218 and never imports `env`. The
+     run resolves the host through `env::net`. `unit` is optional, 0 to 255, default 1
+     (C2 item 1). Lost: the host rule of a library (`rustls_pki_types::ServerName`),
+     which takes `"10.0xa"` and `"0xa000001"` as names that a resolver reads as IPv4
+     addresses, and refuses a zone; and a zone by interface name (`"%eth0"`), which
+     ENV SEAMS refuses until a user needs it.
   2. **A read.** `table` is `coil`, `discrete`, `holding`, or `input`, as a string or
      a reference (HCL REFERENCES; `laptop.architect-2`, 2026-10-16T00:41:10Z, link
      above), as `order` is. `address` is the address of the protocol, from 0. Lost:
@@ -82,9 +90,12 @@
   Codes of `parse`: `modbus.bad-address`, `modbus.bad-unit`, `modbus.bad-order`,
   `modbus.bad-table`, `modbus.bad-read-address`, `modbus.no-read`, and
   `modbus.repeated-channel`. `check` gives the channel of each `read` as a write, in
-  order, no reader, and the counts. `discover` finds nothing (`laptop.architect-2`,
-  2026-10-16T00:16:17Z:
-  https://github.com/synnaxlabs/foundation/issues/432#issuecomment-6205044071).
+  order, no reader, and the counts. `discover` gives the default `connector.no-discover`
+  (`laptop.architect-2`, 2026-10-16 04:00 UTC:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6207771367; it
+  supersedes
+  https://github.com/synnaxlabs/foundation/issues/432#issuecomment-6205044071, where
+  `discover` found nothing).
 
   Deferred: one connection that two connectors share through `endpoint::Registry`.
   Trigger: a gateway with two units, or a device that takes one connection (#2712).

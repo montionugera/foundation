@@ -49,13 +49,6 @@ impl Kind for Ticks {
         })
     }
 
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
         let (clock, cancel) = (ctx.clock().clone(), ctx.cancel().clone());
         let lingered = Arc::clone(&self.lingered);
@@ -89,13 +82,6 @@ impl Kind for Refuses {
 
     fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
         Err(vec![refused()])
-    }
-
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
     }
 
     fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {

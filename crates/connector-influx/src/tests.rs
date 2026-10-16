@@ -1,5 +1,6 @@
 #![expect(clippy::arithmetic_side_effects, reason = "a test may panic")]
 
+use connector::cancel;
 use connector::kind::{Kind as _, Table};
 use connector::supervisor::Supervisor;
 use connector::testing;
@@ -540,17 +541,27 @@ fn refuses_each_key_it_does_not_take() {
 }
 
 #[test]
-fn discovers_nothing() {
+fn refuses_to_discover() {
     let found = run(|_, _| async {
         Table::new()
             .with("influx", Kind)
             .discover("influx", &cancel::Token::new())
             .await
     });
-    assert!(matches!(found.as_deref(), Ok([])), "{found:?}");
+    let Err(Error::Config(diagnostics)) = found else {
+        panic!("a config error: {found:?}");
+    };
+    let expected = Diagnostic::new(
+        Code::new("connector.no-discover"),
+        None,
+        "this connector kind cannot find its devices".into(),
+        "Write the connector block by hand".into(),
+    );
+    assert_eq!(diagnostics, [expected]);
 }
 
-/// Runs `main` on a shard of one simulated node and returns its output.
+/// Runs `main` on a shard of one simulated node, with a host directory
+/// `/run/secrets`, and returns its output.
 fn run<T, F>(main: impl FnOnce(::sim::node::Node, Tasks) -> F + Send + 'static) -> T
 where
     T: Send + 'static,
@@ -558,5 +569,6 @@ where
 {
     let mut sim = ::sim::Sim::new(::sim::Config::default());
     let node = sim.node(::sim::node::Config::default());
+    node.make_dir(std::path::Path::new("/run/secrets"));
     sim.run_on(&node, main).expect("the run ends")
 }

@@ -405,15 +405,12 @@ impl State {
         self.logs.kept().into_iter().chain(held).min()
     }
 
-    /// The tail of the trim due now, as [`Writer::trimmed`] gives it for [`kept`]
-    /// and the marked ranges of the logs.
+    /// The tail of the trim due now, as [`Writer::trimmed`] gives it for [`kept`].
     ///
     /// [`kept`]: Self::kept
     fn trimmed(&mut self) -> Option<Position> {
         let kept = self.kept();
-        let logs = &self.logs;
-        self.writer
-            .trimmed(kept, |offset| logs.marked().holding(offset))
+        self.writer.trimmed(kept)
     }
 
     /// The key of the next [`Commit`] or [`End`].
@@ -504,9 +501,7 @@ impl State {
     fn carry(&mut self, pool: &Pool, most: usize) -> Option<Carry> {
         let mut carried = mem::take(&mut self.carried);
         let limit = self.writer.tails().min(most);
-        let reach = self
-            .writer
-            .reach(|offset| self.logs.marked().holding(offset));
+        let reach = self.writer.reach();
         self.logs.idle(reach, limit, &mut carried);
         let count = carried.tails().len();
         let len = HEADER_LEN + carry::body_len(count);
@@ -814,8 +809,10 @@ impl Buffer {
     /// # Panics
     ///
     /// When a `first` is below the tail of its path, with the index, the path,
-    /// `first`, and the tail, when `first + len` passes `u64::MAX`, or when an
-    /// entry's slot held another index on its path before.
+    /// `first`, and the tail, when `first + len` passes `u64::MAX`, when an entry
+    /// with `len` 0 has a `last`: an entry with no samples has no stamp, when an
+    /// entry with no samples follows `u64::MAX` of them at its seq on its path, or
+    /// when an entry's slot held another index on its path before.
     pub fn append(
         &self,
         entries: impl IntoIterator<Item = Entry>,
@@ -857,6 +854,7 @@ impl Buffer {
             }
             Err(other) => return Err(rejected(other)),
         };
+        let state = &mut *state;
         for (slot, header) in state.open.entries(taken) {
             state
                 .logs
@@ -1090,8 +1088,7 @@ fn recover(
             return Err(Error::Pool(block::Error::TooLarge { requested, largest }));
         }
         let slot = slots.index(header.index);
-        logs.append(slot, &header).map_err(misplaced)?;
-        logs.sync(slot, &header, offset).map_err(misplaced)?;
+        logs.walk(slot, &header, offset).map_err(misplaced)?;
     }
     Ok(())
 }
@@ -1699,7 +1696,7 @@ mod tests {
                     buffer.committed().await.expect("commits");
                 }
                 let state = buffer.shared.state.borrow();
-                let trimmed = state.writer.trimmed(None, |_| None);
+                let trimmed = state.writer.trimmed(None);
                 *found.lock().expect("no panic held the lock") =
                     Some(trimmed.unwrap_or(state.header.tail));
                 drop(state);
@@ -1802,6 +1799,7 @@ mod tests {
                 let part = pool.alloc(100).expect("a block").freeze();
                 let tagged = Entry {
                     len: 0,
+                    last: None,
                     tag: 1,
                     ..entry(1, one, Path::Live, 0, &part)
                 };
@@ -1855,6 +1853,7 @@ mod tests {
                 let part = pool.alloc(100).expect("a block").freeze();
                 let tagged = Entry {
                     len: 0,
+                    last: None,
                     tag: 1,
                     ..entry(1, one, Path::Live, 0, &part)
                 };
@@ -1910,13 +1909,12 @@ mod tests {
     }
 
     /// A read from (0, 1) holds the record at 8192, whose entry with no samples at
-    /// seq 0 comes after the one at 4096. A walk from 8192 would count it from
-    /// (0, 0), so the trim lands at 4096, though 58 more records want more room.
-    /// Once the read drops, the trim goes on to the room they want. The test asks
-    /// the writer for its trim, or the checkpoint for the tail when the commits
-    /// trimmed.
+    /// seq 0 stores its count, so the trim lands at 8192, though 58 more records
+    /// want more room. Once the read drops, the trim goes on to the room they want.
+    /// The test asks the writer for its trim, or the checkpoint for the tail when
+    /// the commits trimmed.
     #[test]
-    fn a_trim_held_after_entries_with_no_samples_at_a_seq_lands_before_them() {
+    fn a_trim_held_at_an_entry_with_no_samples_lands_at_its_record() {
         let mut sim = sim::Sim::new(sim::Config::default());
         let node = sim.node(sim::node::Config::default());
         let tails = Arc::new(Mutex::new(Vec::new()));
@@ -1962,7 +1960,7 @@ mod tests {
             },
         );
         let tails = tails.lock().expect("no panic held the lock");
-        assert_eq!(*tails, [(Some(8192), 4096), (Some(60 * 4096), 6 * 4096)]);
+        assert_eq!(*tails, [(Some(8192), 8192), (Some(60 * 4096), 6 * 4096)]);
     }
 
     /// The durable end counts the entries with no samples at its seq. A read that
@@ -1983,6 +1981,7 @@ mod tests {
                 let part = pool.alloc(100).expect("a block").freeze();
                 let empty = || Entry {
                     len: 0,
+                    last: None,
                     ..entry(1, one, Path::Live, 3, &part)
                 };
                 let batch = [entry(1, one, Path::Live, 0, &part), empty(), empty()];
@@ -2250,12 +2249,12 @@ mod tests {
         }
 
         /// Records 1 and 2 hold an entry with no samples at seq 0, and record 3 holds
-        /// [0, 3). 53 more records want the room of record 1. A walk from record 2
-        /// would count its entry from (0, 0), and the trim may pass record 2, so it
-        /// lands at record 3. After a cut of the power, the open walks from there, and
-        /// a read from (0, 1) gives the entries from 0 with no gap.
+        /// [0, 3). 53 more records want the room of record 1, so the trim lands at
+        /// record 2. After a cut of the power, the open walks from there with the
+        /// count that record 2 stores, and a read from (0, 1) gives its entry, then
+        /// the samples from 0, with no gap.
         #[test]
-        fn a_trim_into_entries_with_no_samples_at_a_seq_passes_them() {
+        fn a_trim_into_entries_with_no_samples_at_a_seq_lands_on_one() {
             let mut sim = sim::Sim::new(sim::Config::default());
             let node = sim.node(sim::node::Config::default());
             let wanted = Arc::new(Mutex::new(None));
@@ -2279,7 +2278,7 @@ mod tests {
                     commit_each(&buffer, (1, one), &part, 0..54).await;
                     let mut state = buffer.shared.state.borrow_mut();
                     let kept = state.kept();
-                    let want = state.writer.trimmed(kept, |_| None);
+                    let want = state.writer.trimmed(kept);
                     *found.lock().expect("no panic held the lock") = Some((
                         want.map(crate::wal::Position::offset),
                         state.header.tail.offset(),
@@ -2317,11 +2316,11 @@ mod tests {
             let wanted = wanted.lock().expect("no panic held the lock");
             assert_eq!(
                 *wanted,
-                Some((None, 3 * 4096)),
-                "the trim landed at the end of record 3, and no trim is due"
+                Some((None, 2 * 4096)),
+                "the trim landed at record 2, and no trim is due"
             );
             let found = found.lock().expect("no panic held the lock");
-            assert_eq!(*found, Some((None, vec![(0, 3), (3, 3)])));
+            assert_eq!(*found, Some((None, vec![(0, 0), (0, 3)])));
         }
 
         /// While a read holds the record at 4096, appends of index 2 fill the ring

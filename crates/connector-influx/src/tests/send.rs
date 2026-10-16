@@ -510,13 +510,43 @@ fn writes_to_a_bucket_and_an_org_of_the_longest_names() {
     assert_eq!(got, vec![(uri, line("1e0", "2e0", first))]);
 }
 
+/// The fix in the text of a 400 or a 422.
+const REFUSED: &str = "For a field type conflict, write to another `measurement` or \
+                       delete the old field in InfluxDB. For points older than the \
+                       retention period, raise it or write to another bucket";
+/// The fix in the text of a 404.
+const UNKNOWN: &str =
+    "Create the database, the bucket, or the org in InfluxDB, or name one that exists";
+
+/// An answer of InfluxDB 1 to a batch of bad lines, of 65537 bytes or more.
+fn large() -> String {
+    let line = "unable to parse 'telemetry a=': missing field value\n";
+    line.repeat((1 << 16) / line.len() + 1)
+}
+
+/// The status text of the ASCII error `full`, over 1024 bytes.
+fn shown(full: &str) -> String {
+    let head: String = full.chars().take(510).collect();
+    let tail: String = full.chars().skip(full.len() - 510).collect();
+    format!("{head}…{tail}")
+}
+
 #[test]
 fn sends_a_batch_again_after_each_other_answer_and_shows_the_error_until_a_204() {
-    let (got, errors) = run(|node, tasks| async move {
+    let (got, errors, confirmed, points) = run(|node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
+        let large: &'static str = large().leak();
         plant.answers.borrow_mut().extend([
             (StatusCode::INTERNAL_SERVER_ERROR, " the disk is full \n"),
+            (StatusCode::SERVICE_UNAVAILABLE, "starting"),
+            (StatusCode::UNAUTHORIZED, "unauthorized access"),
+            (StatusCode::PAYLOAD_TOO_LARGE, "request too large"),
+            (StatusCode::TOO_MANY_REQUESTS, "slow down"),
+            (StatusCode::BAD_REQUEST, "field type conflict"),
+            (StatusCode::UNPROCESSABLE_ENTITY, "beyond retention policy"),
             (StatusCode::NOT_FOUND, "database not found: \"plant\""),
+            (StatusCode::BAD_REQUEST, large),
+            (StatusCode::NOT_FOUND, large),
             (StatusCode::OK, "ok"),
         ]);
         let run = plant.start(plant.config());
@@ -524,24 +554,49 @@ fn sends_a_batch_again_after_each_other_answer_and_shows_the_error_until_a_204()
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
         write(&mut writer, first, &[(1.0, 2.0)]);
-        plant.clock.sleep(Span::from_nanos(20_000_000_000)).await;
+        plant.clock.sleep(Span::from_nanos(600_000_000_000)).await;
         plant.stop(run).await.expect("ok after a cancel");
         let got = (plant.got().into_iter())
             .map(|(uri, body)| (uri, body == line("1e0", "2e0", first)))
             .collect::<Vec<_>>();
-        (got, plant.errors.borrow().clone())
+        let points = plant.store.borrow().points("telemetry", &[]).count();
+        let confirmed = plant.confirmed.borrow().clone();
+        (got, plant.errors.borrow().clone(), confirmed, points)
     });
-    assert_eq!(got, vec![(WRITE.to_owned(), true); 4]);
+    let head = large().chars().take(1 << 16).collect::<String>();
+    let head = head.trim();
+    assert_eq!(got, vec![(WRITE.to_owned(), true); 12]);
     assert_eq!(
         errors,
         [
-            "",
-            "InfluxDB answered 500 Internal Server Error: the disk is full",
-            "InfluxDB answered 404 Not Found: database not found: \"plant\"",
-            "InfluxDB answered 200 OK: ok",
-            "",
+            String::new(),
+            "InfluxDB answered 500 Internal Server Error: the disk is full".into(),
+            "InfluxDB answered 503 Service Unavailable: starting".into(),
+            "InfluxDB answered 401 Unauthorized: unauthorized access".into(),
+            "InfluxDB answered 413 Payload Too Large: request too large".into(),
+            "InfluxDB answered 429 Too Many Requests: slow down".into(),
+            format!(
+                "InfluxDB answered 400 Bad Request: field type conflict. {REFUSED}"
+            ),
+            format!(
+                "InfluxDB answered 422 Unprocessable Entity: beyond retention policy. \
+                 {REFUSED}"
+            ),
+            format!(
+                "InfluxDB answered 404 Not Found: database not found: \"plant\". \
+                 {UNKNOWN}"
+            ),
+            shown(&format!(
+                "InfluxDB answered 400 Bad Request: {head}. {REFUSED}"
+            )),
+            shown(&format!(
+                "InfluxDB answered 404 Not Found: {head}. {UNKNOWN}"
+            )),
+            "InfluxDB answered 200 OK: ok".into(),
+            String::new(),
         ]
     );
+    assert_eq!((confirmed, points), (vec![0, 2], 1));
 }
 
 /// The config of `plant` with `token` set to a call of `function` with `argument`.
@@ -674,6 +729,35 @@ fn keeps_the_token_after_an_answer_other_than_401_or_403() {
             ],
             true,
             1,
+        )
+    );
+}
+
+#[test]
+fn reads_the_token_again_after_a_401_whose_body_is_over_the_cap() {
+    let got = run(move |node, tasks| async move {
+        let plant = Plant::new(node.clone(), tasks).await;
+        (node.paths())
+            .write(std::path::Path::new(TOKEN_FILE), b"old")
+            .expect("writes");
+        let body: &'static str = large().leak();
+        (plant.answers.borrow_mut()).push_back((StatusCode::UNAUTHORIZED, body));
+        plant.tokens.borrow_mut().push_back(b"new\n");
+        let config = with_token(&plant, "file", TOKEN_FILE);
+        let (auth, errors, end) = send_one(&plant, config).await;
+        (auth, errors, end.is_none())
+    });
+    let head = large().chars().take(1 << 16).collect::<String>();
+    let full = format!(
+        "InfluxDB answered 401 Unauthorized. Check the token file({TOKEN_FILE:?}): {}",
+        head.trim()
+    );
+    assert_eq!(
+        got,
+        (
+            vec![Some("Token old".to_owned()), Some("Token new".to_owned())],
+            vec![String::new(), shown(&full), String::new()],
+            true,
         )
     );
 }

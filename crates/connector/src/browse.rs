@@ -6,10 +6,15 @@ use std::ops::ControlFlow;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use document::Document;
 use document::diagnostic::Code;
+use env::clock::Clock;
+use env::net::Net;
+use env::rng::Rng;
 use types::sample::Value;
 
-use crate::kind::{Error, config_error};
+use crate::kind::{self, Error, config_error};
+use crate::{secret, supervisor};
 
 /// The most points that one browse of a pattern gives.
 pub const LIMIT: usize = 500;
@@ -22,17 +27,67 @@ pub const VISITS: usize = 10_000;
 /// The most folders that a pattern holds open at one time, its start with them.
 pub const DEPTH: usize = 64;
 
+/// One browse's inputs: the connector block as the files give it, and the node's
+/// network, clock, randomness, and secrets. It is not `Send`.
+#[derive(Debug)]
+pub struct Context<'a> {
+    config: &'a Document,
+    inputs: &'a supervisor::Config,
+}
+
+impl<'a> Context<'a> {
+    pub(crate) fn new(config: &'a Document, inputs: &'a supervisor::Config) -> Self {
+        Self { config, inputs }
+    }
+
+    /// The connector block from the files. A kind reads only the attributes that it
+    /// needs to reach its device, so a block that `parse` refuses can browse.
+    #[must_use]
+    pub fn config(&self) -> &Document {
+        self.config
+    }
+
+    /// The node's clock, as [`kind::Context::clock`].
+    #[must_use]
+    pub fn clock(&self) -> &Clock {
+        &self.inputs.clock
+    }
+
+    /// A new random source, as [`kind::Context::rng`].
+    #[must_use]
+    pub fn rng(&self) -> Rng {
+        self.inputs.entropy.rng()
+    }
+
+    /// Connects streams and datagrams, as [`kind::Context::net`].
+    #[must_use]
+    pub fn net(&self) -> &Net {
+        &self.inputs.net
+    }
+
+    /// Reads the value of `source`, as [`kind::Context::secret`].
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`kind::Context::secret`]. Nothing retries a browse: the caller
+    /// browses again once the value is in its place.
+    pub async fn secret(
+        &self,
+        source: &secret::Source,
+    ) -> Result<secret::Value, Error> {
+        kind::read_secret(&self.inputs.secrets, source).await
+    }
+}
+
 /// A device open for one browse. A kind implements it on its session, so one walk
 /// connects once. [`walk`] gives `connector.broken-browse` when the kind gives a page
-/// over [`LIMIT`], an entry outside its folder or with an empty name, or a count of
-/// values that is not the count of tags.
+/// over [`LIMIT`], an entry with an empty name, or a count of values that is not the
+/// count of tags.
 pub trait Device {
     /// Gives one page of the entries of `folder`, or of the root when `None`, in
     /// device order, from `cursor`, or from the first entry when `None`. A page holds
-    /// at most [`LIMIT`] entries. The path of each entry is the path of `folder` and
-    /// its name, which is not empty: the record of the kind says what it gives for an
-    /// empty name of the device. No two entries of one folder have the same name.
-    /// `None` when the device no longer has `folder` as a folder.
+    /// at most [`LIMIT`] entries. `None` when the device no longer has `folder` as a
+    /// folder.
     ///
     /// # Errors
     ///
@@ -121,6 +176,12 @@ struct Walker<'a, D> {
     visits: usize,
 }
 
+/// A page of a folder whose entries the walk made from what the kind gave.
+struct Level {
+    entries: Vec<Entry>,
+    next: Option<Cursor>,
+}
+
 /// One folder of a walk whose entries are not all seen.
 struct Frame {
     folder: Option<Entry>,
@@ -135,10 +196,10 @@ impl<D: Device> Walker<'_, D> {
         &mut self,
         folder: Option<&Entry>,
         cursor: Option<&Cursor>,
-    ) -> Result<Page, Error> {
+    ) -> Result<Level, Error> {
         let root = Path::root();
         let path = folder.map_or(&root, |folder| &folder.path);
-        let mut page = self
+        let page = self
             .device
             .level(folder, cursor)
             .await?
@@ -150,27 +211,22 @@ impl<D: Device> Walker<'_, D> {
             }
             .into());
         }
-        for entry in &mut page.entries {
-            let broken = match &entry.path.0 {
-                Some(link) if link.folder == *path => {
-                    if !link.name.is_empty() {
-                        // A kind may build each path from the root: share the
-                        // folder's, so an entry holds one link at any depth.
-                        entry.path = path.child(Arc::clone(&link.name));
-                        continue;
-                    }
-                    Broken::Empty {
-                        folder: path.clone(),
-                    }
-                }
-                _ => Broken::Outside {
+        let entries = page.entries.into_iter().map(|child| {
+            if child.name.is_empty() {
+                return Err(Broken::Empty {
                     folder: path.clone(),
-                    entry: entry.path.clone(),
-                },
-            };
-            return Err(broken.into());
-        }
-        Ok(page)
+                });
+            }
+            Ok(Entry {
+                path: path.child(child.name),
+                tag: child.tag,
+                shape: child.shape,
+            })
+        });
+        Ok(Level {
+            entries: entries.collect::<Result<_, _>>()?,
+            next: page.next,
+        })
     }
 
     /// The page of `folder` in a walk, where a page with no entries counts as one
@@ -180,7 +236,7 @@ impl<D: Device> Walker<'_, D> {
         &mut self,
         folder: Option<&Entry>,
         cursor: Option<&Cursor>,
-    ) -> Result<ControlFlow<End, Page>, Error> {
+    ) -> Result<ControlFlow<End, Level>, Error> {
         if self.seen >= self.visits {
             return Ok(ControlFlow::Break(End::Budget));
         }
@@ -359,16 +415,15 @@ const NO_FOLDER: Code = Code::new("connector.no-folder");
 const BROKEN: Code = Code::new("connector.broken-browse");
 
 /// The path of an entry from the root of a device's tree: the name of each entry on
-/// the way, its own last. No name of a path that [`walk`] gives is empty. Its text
-/// joins the names with `/`, with `\` before each `/`, `*`, and `\` in a name. The
-/// root is the empty text.
+/// the way, its own last. No name of a path is empty. Its text joins the names with
+/// `/`, with `\` before each `/`, `*`, and `\` in a name. The root is the empty text.
 #[derive(Clone)]
 pub struct Path(Option<Arc<Link>>);
 
 /// The last name of a path that is not the root, and the path of its folder.
 struct Link {
     folder: Path,
-    name: Arc<str>,
+    name: Box<str>,
 }
 
 impl Path {
@@ -379,10 +434,9 @@ impl Path {
     }
 
     /// The path of the entry `name` in this folder. It shares this path, so it costs
-    /// one link at any depth. [`walk`] refuses an entry whose name is empty: no text
-    /// names it.
+    /// one link at any depth.
     #[must_use]
-    pub fn child(&self, name: impl Into<Arc<str>>) -> Self {
+    fn child(&self, name: impl Into<Box<str>>) -> Self {
         Self(Some(Arc::new(Link {
             folder: self.clone(),
             name: name.into(),
@@ -413,7 +467,6 @@ impl PartialEq for Path {
         let (mut a, mut b) = (self, other);
         loop {
             match (&a.0, &b.0) {
-                (Some(x), Some(y)) if Arc::ptr_eq(x, y) => return true,
                 (Some(x), Some(y)) if x.name == y.name => {
                     (a, b) = (&x.folder, &y.folder);
                 }
@@ -695,8 +748,6 @@ impl std::error::Error for Malformed {}
 enum Broken {
     /// A page of `folder` held `count` entries, over [`LIMIT`].
     Large { folder: Path, count: usize },
-    /// A page of `folder` held `entry`, which is not in it.
-    Outside { folder: Path, entry: Path },
     /// A page of `folder` held an entry whose name is empty.
     Empty { folder: Path },
     /// The device gave `given` values for `asked` tags.
@@ -711,11 +762,6 @@ impl fmt::Display for Broken {
                 f,
                 "a page holds at most {LIMIT} entries, and a page of \"{folder}\" held \
                  {count}",
-            ),
-            Self::Outside { folder, entry } => write!(
-                f,
-                "an entry is in the folder of its page, and \"{entry}\" is not in \
-                 \"{folder}\"",
             ),
             Self::Empty { folder } => write!(
                 f,
@@ -746,6 +792,21 @@ pub struct Entry {
     pub path: Path,
     /// Its address in the device, in the form of the kind: an OPC UA node ID, a
     /// register. Two entries with the same tag are one entry of the device.
+    pub tag: String,
+    /// What it is.
+    pub shape: Shape,
+}
+
+/// An entry of a folder as a kind gives it in a [`Page`]. [`walk`] gives it as an
+/// [`Entry`] whose path is the path of the folder and `name`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Child {
+    /// Its name in the folder. It is not empty: the record of the kind says what it
+    /// gives for an empty name of the device. No two entries of one folder have the
+    /// same name. [`walk`] does not check this: one level gives one page, so it never
+    /// holds each name of a folder.
+    pub name: String,
+    /// Its address in the device, as [`Entry::tag`].
     pub tag: String,
     /// What it is.
     pub shape: Shape,
@@ -789,7 +850,7 @@ pub enum Access {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Page {
     /// The entries, in device order.
-    pub entries: Vec<Entry>,
+    pub entries: Vec<Child>,
     /// Where the next page starts, or `None` after the last.
     pub next: Option<Cursor>,
 }
