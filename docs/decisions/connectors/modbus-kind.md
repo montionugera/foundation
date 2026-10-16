@@ -20,10 +20,15 @@
 
   1. **Endpoint.** `address` is a host and a port, such as `"plc:502"`, port 502 when
      it has none. A host in brackets is an IPv6 address (`"[fd00::1]:502"`). Each
-     other host has only letters, digits, `-`, `.`, and `_`, since Docker Compose
-     names such as `plc_1` resolve. The port is 1 to 65535. The run resolves the host
-     through `env::net`. `unit` is optional, 0 to 255, default 1 (the ruling on B1,
-     below).
+     other host has only letters, digits, `-`, `.`, and `_`, as Docker Compose names
+     such as `plc_1` resolve. No part between dots is empty, longer than 63
+     characters, or starts or ends with `-`. A host with a number last is an IPv4
+     address of four plain parts, as a resolver reads `"10.1"` as 10.0.0.1 and
+     `"010"` as octal. The port is 1 to 65535. The run resolves the host through
+     `env::net`. `unit` is optional, 0 to 255, default 1 (the ruling on B1, below).
+     Lost: an IPv6 address with a zone (`"[fe80::1%eth0]"`), which `Ipv6Addr`
+     refuses; and the host rule of a library (`rustls_pki_types::ServerName`), which
+     is a new dependency of the crate for one check (#1218 has the shared host type).
   2. **A read.** `table` is `coil`, `discrete`, `holding`, or `input`, as a string or
      a reference (HCL REFERENCES), as `order` is. `address` is the address of the
      protocol, from 0. Lost: the `40001` form, which mixes the table into the number
@@ -33,8 +38,9 @@
      other type, an array, and a string are `modbus.sample-type` at run, as
      `opcua.sample-type` is. A value whose registers run past address 65535 is
      `modbus.range` at run. Each has no span and names the channel, the table, and
-     the address, since a config that a node gets from the mesh has no spans. Only
-     the run has the sample type of each channel (#2788).
+     the address, as a config that a node gets from the mesh has no spans. Only the
+     run has the sample type of each channel. When `check` gets the sample types
+     (#2788), these move to plan with the span of the `read` block.
   4. **Word order.** `order` on the connector block, a policy over all reads: `big`
      (default, the first register holds the high word) or `little`. Each register
      is big-endian. Trigger for a byte-swapped order or an order per read: a device
