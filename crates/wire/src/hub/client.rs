@@ -43,6 +43,7 @@
 
 use std::fmt;
 
+use types::channel;
 use types::connection;
 use types::ed25519::PublicKey;
 use types::hello::Hello;
@@ -58,9 +59,7 @@ use crate::header::MALFORMED;
 mod read;
 pub mod text;
 
-pub use read::{
-    FromNode, Mode, OPEN_BYTES_MAX, Open, Place, Places, Read, Reader, place,
-};
+pub use read::{Mode, OPEN_BYTES_MAX, Open, Place, Places, Read, Reader, Start, place};
 
 const HELLO: u8 = 4;
 const REQUEST: u8 = 5;
@@ -264,8 +263,13 @@ pub enum Error {
         /// The sample type of the index place.
         sample: sample::Type,
     },
-    /// The node finished a read stream before its last place. The caller of
-    /// [`Reader`] gives it.
+    /// The places of a read name a channel more than once.
+    Repeated {
+        /// The channel.
+        key: channel::Key,
+    },
+    /// The node finished a read stream before its last place: [`Reader::decode`] got
+    /// `None`.
     Finished,
 }
 
@@ -329,6 +333,12 @@ impl fmt::Display for Error {
                 f,
                 "the index place of the read has sample type {sample}, not timestamp"
             ),
+            Self::Repeated { key } => {
+                write!(
+                    f,
+                    "the places of the read name channel {key} more than once"
+                )
+            }
             Self::Finished => {
                 f.write_str("the node finished the read stream before its last place")
             }

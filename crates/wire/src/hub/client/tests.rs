@@ -705,6 +705,13 @@ fn names_each_error() {
             "the index place of the read has sample type u8, not timestamp",
         ),
         (
+            Error::Repeated {
+                key: channel::Key::from_u128(2),
+            },
+            "the places of the read name channel 00000000-0000-0000-0000-000000000002 \
+             more than once",
+        ),
+        (
             Error::Finished,
             "the node finished the read stream before its last place",
         ),

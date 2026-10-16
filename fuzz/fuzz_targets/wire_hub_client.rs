@@ -2,14 +2,15 @@
 //! `Reader::decode` refuses a message of another kind with `Error::Kind`,
 //! `Reader::decode` refuses a first message of another kind with it, each message that
 //! decodes encodes to its bytes, each body ends at its length and nowhere else, each
-//! refusal of a body is the one that its rest gives, a read stream gives its places,
-//! then its run, and with the last place the decoder of a session of their count and
-//! the mode, and each valid message made from the input reads back.
+//! refusal of a body is the one that its rest gives, a read stream gives with its last
+//! place the places of its run, their key set, and the decoder of a session of their
+//! count and the mode, a refused message of a read stream leaves its decoder as it
+//! was, and each valid message made from the input reads back.
 //!
 //! Input: the messages of one stream (`fuzz::messages`). Each decoder reads each
 //! message, an open among them; the body of the first message, when it is a request, a
 //! response, or a read, takes each later message; and a `client::Reader` of each mode
-//! takes each message until it refuses one or gives the last place.
+//! takes each message until it gives the last place, and then the end of the stream.
 
 #![no_main]
 #![expect(clippy::disallowed_methods, reason = "fuzz_target! calls File::create")]
@@ -28,8 +29,8 @@ use types::sample::{Scalar, Type};
 use types::time::{Interval, Stamp};
 use wire::hub;
 use wire::hub::client::{
-    BODY_BYTES_MAX, Body, Challenge, Error, First, FromNode, Mode, OPEN_BYTES_MAX,
-    Open, Place, Places, Read, Reader, Request, Response, Signed, place,
+    BODY_BYTES_MAX, Body, Challenge, Error, First, Mode, OPEN_BYTES_MAX, Open, Place,
+    Places, Read, Reader, Request, Response, Signed, place,
 };
 
 /// Checks one decoder of kind `kind` on `message`: a decoded message encodes to it,
@@ -115,14 +116,6 @@ fn encode_run(run: &[Place]) -> Vec<u8> {
     out
 }
 
-/// The places in `message`, the first message of a read stream.
-fn first_places(message: &[u8]) -> Result<Places, Error> {
-    match Reader::new(Mode::Latest).decode(message)? {
-        FromNode::Places(places) => Ok(places),
-        other => panic!("{other:?} is the first message of a read stream"),
-    }
-}
-
 /// Checks the decoder of a message with no kind byte, an open: one that decodes must
 /// encode to its bytes.
 fn unkinded(message: &[u8]) {
@@ -133,57 +126,104 @@ fn unkinded(message: &[u8]) {
     }
 }
 
-/// Drives a reader of `mode` on `bytes` until it refuses a message or gives the last
-/// place. Each places and each run that it gives encodes to its message, a run holds
-/// no more places than remain and a stamp at the index place, and only the message
-/// with the last place gives a `home`: the decoder of a session of the count and the
-/// mode.
+/// Drives a reader of `mode` on `bytes` until it gives the last place, then ends the
+/// stream. A refused message leaves the reader as it was. Each message that it takes
+/// decodes alone as places or as a run that encodes to it, a run holds no more places
+/// than remain and a stamp at the index place, and only the message with the last
+/// place gives the start: the places of the run, their key set in place order, and
+/// the decoder of a session of the count and the mode. An end before the last place
+/// gives `Error::Finished`.
 fn drive(bytes: &[u8], mode: Mode) {
     let mut reader = Reader::new(mode);
-    let mut run: Option<(Places, u32)> = None;
+    let mut run: Option<(Places, u32, Vec<Place>)> = None;
     for message in fuzz::messages(bytes) {
-        let Ok(decoded) = reader.decode(message) else {
-            return;
+        let start = match reader.decode(Some(message)) {
+            Ok(start) => start,
+            Err(error) => {
+                if let Some(repeated) = refusal(run.as_ref(), message) {
+                    let expected = repeated.map(|key| Error::Repeated { key });
+                    assert_eq!(Some(error), expected, "a valid message refused");
+                }
+                continue;
+            }
         };
-        match (decoded, &mut run) {
-            (FromNode::Places(places), None) => {
-                let mut out = [0; Places::LEN];
-                places.encode(&mut out);
-                assert_eq!(out, message, "the places changed");
-                run = Some((places, places.count));
-            }
-            (FromNode::Run { places, home }, Some((reply, remain))) => {
-                assert_eq!(encode_run(&places), message, "the run changed");
-                let first = reply.count - *remain;
-                *remain -= u32::try_from(places.len()).expect("the run fits a u32");
-                let at = usize::try_from(reply.index.wrapping_sub(first)).ok();
-                if let Some(index) = at.and_then(|at| places.get(at)) {
-                    assert_eq!(index.data_type, Type::Scalar(Scalar::Stamp));
-                }
-                let session = (*remain == 0).then(|| {
-                    hub::Reader::new(&hub::Open {
-                        mode: match mode {
-                            Mode::Latest => hub::Mode::Latest,
-                            Mode::Complete => hub::Mode::Complete { limit_bytes: 0 },
-                        },
-                        channels: reply.count,
-                    })
-                });
-                // `hub::Reader` has no `PartialEq`. Its derived `Debug` shows each
-                // field, so an equal text is an equal state; `wire_hub_reader` checks
-                // its replies.
-                assert_eq!(
-                    format!("{home:?}"),
-                    format!("{session:?}"),
-                    "the home differs"
-                );
-                if home.is_some() {
-                    return;
-                }
-            }
-            (other, _) => panic!("{other:?} came out of order"),
+        let Some((reply, remain, all)) = &mut run else {
+            let places = Places::decode(message).expect("the places decode alone");
+            let mut out = [0; Places::LEN];
+            places.encode(&mut out);
+            assert_eq!(out, message, "the places changed");
+            assert!(start.is_none(), "the places gave the start");
+            run = Some((places, places.count, Vec::new()));
+            continue;
+        };
+        let places = place::decode(message).expect("the run decodes alone");
+        assert_eq!(encode_run(&places), message, "the run changed");
+        if let Some(index) = index_place(*reply, *remain, &places) {
+            assert_eq!(index.data_type, Type::Scalar(Scalar::Stamp));
         }
+        *remain -= u32::try_from(places.len()).expect("the run fits a u32");
+        all.extend(places);
+        let Some(start) = start else {
+            assert_ne!(*remain, 0, "the last place gave no start");
+            continue;
+        };
+        assert_eq!(*remain, 0, "a start before the last place");
+        assert_eq!(start.places, *all, "the places differ");
+        let keys = start.set.entries().iter().map(|entry| entry.key);
+        assert!(
+            keys.eq(all.iter().map(|place| place.key)),
+            "the set differs"
+        );
+        let index = usize::try_from(reply.index).expect("a u32 fits a usize");
+        assert_eq!(start.set.groups(), [index], "the index differs");
+        let session = hub::Reader::new(&hub::Open {
+            mode: match mode {
+                Mode::Latest => hub::Mode::Latest,
+                Mode::Complete => hub::Mode::Complete { limit_bytes: 0 },
+            },
+            channels: reply.count,
+        });
+        // `hub::Reader` has no `PartialEq`. Its derived `Debug` shows each field, so
+        // an equal text is an equal state; `wire_hub_reader` checks its replies.
+        assert_eq!(
+            format!("{:?}", start.home),
+            format!("{session:?}"),
+            "the home differs"
+        );
+        return;
     }
+    assert_eq!(reader.decode(None).err(), Some(Error::Finished));
+}
+
+/// The index place in `places`, a message of the run after `remain` places remained.
+fn index_place(reply: Places, remain: u32, places: &[Place]) -> Option<&Place> {
+    let at = usize::try_from(reply.index.wrapping_sub(reply.count - remain)).ok();
+    at.and_then(|at| places.get(at))
+}
+
+/// `None` when `message` is not a valid message of `run`. Else `Some` of the least key
+/// that its places and those before them name twice when it holds the last place, or
+/// `Some(None)`.
+fn refusal(
+    run: Option<&(Places, u32, Vec<Place>)>,
+    message: &[u8],
+) -> Option<Option<channel::Key>> {
+    let (reply, remain, all) = run?;
+    let places = place::decode(message).ok()?;
+    let stamp = Type::Scalar(Scalar::Stamp);
+    let remain_len = usize::try_from(*remain).ok()?;
+    if places.len() > remain_len
+        || index_place(*reply, *remain, &places).is_some_and(|at| at.data_type != stamp)
+    {
+        return None;
+    }
+    if places.len() < remain_len {
+        return Some(None);
+    }
+    let mut keys: Vec<_> = all.iter().chain(&places).map(|place| place.key).collect();
+    keys.sort_unstable();
+    let repeated = keys.windows(2).find(|pair| pair[0] == pair[1]);
+    Some(repeated.map(|pair| pair[0]))
 }
 
 /// Checks each decoder on `message`, and gives its body when it is a request, a
@@ -203,12 +243,12 @@ fn fixed(message: &[u8]) -> Option<(Body, u64)> {
         assert_eq!(Request::decode(message), Err(Error::Empty));
         assert_eq!(Response::decode(message), Err(Error::Empty));
         assert_eq!(Read::decode(message), Err(Error::Empty));
-        assert_eq!(first_places(message), Err(Error::Empty));
+        assert_eq!(Places::decode(message), Err(Error::Empty));
         return None;
     }
     decode(message, 4, Challenge::decode, challenge);
     decode(message, 4, Signed::decode, signed);
-    decode(message, 6, first_places, places);
+    decode(message, 6, Places::decode, places);
     let sent = decode(message, 5, Request::decode, request);
     let answered = decode(message, 5, Response::decode, response);
     let opened = decode(message, 6, Read::decode, read_message);
@@ -339,7 +379,7 @@ fn write_read(input: &mut Unstructured) -> arbitrary::Result<()> {
     let reply = Places { count, index };
     let mut out = [0; Places::LEN];
     reply.encode(&mut out);
-    assert_eq!(first_places(&out), Ok(reply), "the places changed");
+    assert_eq!(Places::decode(&out), Ok(reply), "the places changed");
 
     let patterns: Vec<&str> = input.arbitrary()?;
     if let Ok(select) = Selector::new(patterns) {
@@ -362,16 +402,11 @@ fn write_read(input: &mut Unstructured) -> arbitrary::Result<()> {
             data_type,
             name,
         }];
-        let mut reader = Reader::new(Mode::Complete);
-        let mut first = [0; Places::LEN];
-        Places { count: 2, index: 1 }.encode(&mut first);
-        reader.decode(&first).expect("the places decode");
-        match reader.decode(&encode_run(&run)) {
-            Ok(FromNode::Run { places, .. }) => {
-                assert_eq!(places, run, "the place changed")
-            }
-            other => panic!("{other:?} is not the run"),
-        }
+        assert_eq!(
+            place::decode(&encode_run(&run)),
+            Ok(run.to_vec()),
+            "the place changed"
+        );
     }
     Ok(())
 }

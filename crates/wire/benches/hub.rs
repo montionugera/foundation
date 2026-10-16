@@ -186,8 +186,8 @@ fn frames_of(places: u32, body: u32) -> (Frames, block::Pool) {
         channels: places,
     };
     let opened = [1, 0, 0, 0, 0, 0, 0, 0, 0];
-    let (frames, _) =
-        Frames::open(Reader::new(&open), set_of(places), &opened).expect("opened");
+    let (frames, _) = Frames::open(Reader::new(&open), set_of(places), Some(&opened))
+        .expect("opened");
     let bytes = (u64::from(body) + (1 << 20)).next_power_of_two();
     let config = block::Config::new(bytes).expect("the budget fits");
     let memory = block::Heap::new(config.reservation());

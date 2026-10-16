@@ -11,8 +11,7 @@ use types::time::Span;
 use wire::Protocol;
 use wire::hub::FromHome;
 use wire::hub::client::{
-    self, Challenge, FromNode, Mode, Open, Place, Places, Read, Request, Response,
-    Signed,
+    self, Challenge, Mode, Open, Place, Places, Read, Request, Response, Signed,
 };
 
 use crate::net::{HOME, NODE, own_pool, public_key};
@@ -106,18 +105,22 @@ impl Stream {
             let message = self.recv().await.expect("receives");
             message.expect("a message before the finish")
         };
-        let Ok(FromNode::Places(places)) = start.decode(&next().await) else {
-            panic!("the places come first");
-        };
-        let mut run = Vec::new();
-        let mut reader = loop {
-            let Ok(FromNode::Run { places, home }) = start.decode(&next().await) else {
-                panic!("a message of the run of places");
-            };
-            run.extend(places);
-            if let Some(home) = home {
-                break home;
+        let mut decoded = None;
+        let client::Start {
+            places: run,
+            set,
+            home: mut reader,
+        } = loop {
+            if let Some(decoded) = decoded {
+                break decoded;
             }
+            decoded = start
+                .decode(Some(&next().await))
+                .expect("a message of the run");
+        };
+        let places = Places {
+            count: u32::try_from(run.len()).expect("the count fits a u32"),
+            index: u32::try_from(set.groups()[0]).expect("the index fits a u32"),
         };
         let Ok(FromHome::Opened { live }) = reader.decode(&next().await) else {
             panic!("then `Opened`");
