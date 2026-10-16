@@ -111,6 +111,9 @@ exclude_re = [
   # A `Tcp` has no write buffer, so a flush is ready at once. `Poll::Ready(Ok(()))` is
   # what the body returns.
   'crates/connector/src/http/stream\.rs:.*<impl AsyncWrite for Adapter>::poll_flush',
+  # rustls writes TLS records only with `write_vectored` (rustls 0.23.46, `vecbuf.rs`),
+  # which `tokio-rustls` maps to `poll_write_vectored`, so no path calls `poll_write`.
+  'crates/connector/src/http/stream\.rs:.*<impl AsyncWrite for Adapter>::poll_write ->',
   # An out connector has no device channel. `Ok(Channels::default())` is what the body
   # returns.
   'crates/connector-influx/src/lib\.rs:.*replace <impl kind::Kind for Kind>::check ->',

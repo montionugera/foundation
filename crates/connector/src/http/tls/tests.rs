@@ -733,7 +733,7 @@ fn exchanges_with_a_server_that_takes_only_tls_1_2() {
 }
 
 #[test]
-fn sends_close_notify_when_the_client_closes_a_stream() {
+fn sends_close_notify_and_a_close_when_the_client_closes_a_stream() {
     let mut network = Network::new(18, Certificate::Valid, JUNE_2026);
     let out = serve_one(
         &mut network,
@@ -743,9 +743,15 @@ fn sends_close_notify_when_the_client_closes_a_stream() {
             let mut buf = ReadBuf::new(&mut bytes);
             let read =
                 poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, buf.unfilled())).await;
-            match read {
+            let tls = match read {
                 Ok(()) => format!("read {} bytes", buf.filled().len()),
                 Err(error) => error.to_string(),
+            };
+            // A stream that the client drops with no close is a reset.
+            let tcp = poll_fn(|cx| stream.tcp().poll_read(cx, &mut bytes)).await;
+            match tcp {
+                Ok(n) => format!("{tls}, then TCP read {n} bytes"),
+                Err(error) => format!("{tls}, then {error}"),
             }
         },
     );
@@ -753,7 +759,7 @@ fn sends_close_notify_when_the_client_closes_a_stream() {
     assert_eq!(body.map_err(|error| chain(&error)).as_deref(), Ok("ok"));
     assert_eq!(
         out.lock().expect("no panic").as_deref(),
-        Some("read 0 bytes")
+        Some("read 0 bytes, then TCP read 0 bytes")
     );
 }
 
