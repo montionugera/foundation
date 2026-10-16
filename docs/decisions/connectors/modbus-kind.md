@@ -10,7 +10,7 @@
     kind    = "modbus"
     node    = "edge"
     address = "plc:502"
-    rate    = 10
+    rate    = "10Hz"
     read "plc.temp" {
       table   = "holding"
       address = 40
@@ -19,24 +19,28 @@
   ```
 
   1. **Endpoint.** `address` is a host and a port, such as `"plc:502"`, port 502 when
-     it has none, and an IPv6 host in brackets (`"[fd00::1]:502"`). The run resolves
-     the host through `env::net`. `unit` is optional, 0 to 255, default 1.
-  2. **A read.** `table` is `"coil"`, `"discrete"`, `"holding"`, or `"input"`.
-     `address` is the address of the protocol, from 0. Lost: the `40001` form, which
-     mixes the table into the number and is one off.
+     it has none. A host in brackets is an IPv6 address (`"[fd00::1]:502"`). Each
+     other host has only letters, digits, `-`, and `.`. The port is 1 to 65535. The
+     run resolves the host through `env::net`. `unit` is optional, 0 to 255, default
+     1 (the ruling on B1, below).
+  2. **A read.** `table` is `coil`, `discrete`, `holding`, or `input`, as a string or
+     a reference (HCL REFERENCES), as `order` is. `address` is the address of the
+     protocol, from 0. Lost: the `40001` form, which mixes the table into the number
+     and is one off.
   3. **Types.** `coil` and `discrete`: `bool`. `holding` and `input`: `u16` and `i16`
      (1 register), `u32`, `i32`, and `f32` (2), `u64`, `i64`, and `f64` (4). Each
      other type, an array, and a string are `modbus.sample-type` at run, as
      `opcua.sample-type` is. A value whose registers run past address 65535 is
-     `modbus.range` at run. Both are at the span of the `read` block. Only the run
-     has the sample type of each channel.
-  4. **Word order.** `order` on the connector block, a policy over all reads: `"big"`
-     (default, the first register holds the high word) or `"little"`. Each register
+     `modbus.range` at run. Each has no span and names the channel, the table, and
+     the address, since a config that a node gets from the mesh has no spans. Only
+     the run has the sample type of each channel (#2788).
+  4. **Word order.** `order` on the connector block, a policy over all reads: `big`
+     (default, the first register holds the high word) or `little`. Each register
      is big-endian. Trigger for a byte-swapped order or an order per read: a device
      that needs one.
   5. **Requests.** Each tick reads the reads of one table that touch or overlap as one
      request, at most 125 registers or 2000 bits, one request at a time on one
-     connection. Lost: a request across a gap, since an address in the gap that the
+     connection. Lost: a request across a gap, as an address in the gap that the
      device does not have fails the whole request. `connector_modbus::poll` holds
      items 3, 4, and 5, so the kind never sees an offset into a reply
      (`laptop.architect-2`, 2026-10-15T23:57:47Z:
@@ -44,11 +48,13 @@
   6. **Time and frames.** One frame per tick, stamped at the midpoint of the mesh times
      before the first request and after the last reply, with half that span as its
      error (STAMP). One index for the connector. Counts `in`, `missed`, and `lost`.
-  7. **Errors.** An exception of `IllegalFunction`, `IllegalAddress`, or
+  7. **Errors.** An exception of a read of `IllegalFunction`, `IllegalAddress`, or
      `IllegalValue` is `Error::Config` with `modbus.exception`, and the text names
      the channel, the table, the address, and the exception: only a spec change fixes
      it. Each other exception, a timeout, and a cut link are `Error::Device`, so the
-     supervisor connects again with backoff.
+     supervisor connects again with backoff. On a write, each exception reply is
+     `refused` (#2711,
+     https://github.com/synnaxlabs/foundation/issues/2711#issuecomment-6204912305).
   8. **Samples.** The decode writes each value through `types::sample::Value`.
 
   Codes of `parse`: `modbus.bad-address`, `modbus.bad-unit`, `modbus.bad-order`,
