@@ -55,12 +55,15 @@ fn filtered() {
     tracing::debug!(pn = divan::black_box(7_u64), "packet");
 }
 
-/// An event under the level allocates nothing.
+/// An event under the level allocates nothing, and one at the level allocates its line.
 fn check() {
     let d = dispatch(false, Level::INFO);
     let ((), allocations) =
         tracing::dispatcher::with_default(&d, || ALLOCATOR.count(filtered));
     assert_eq!(allocations, 0, "allocations of a filtered event");
+    let ((), allocations) =
+        tracing::dispatcher::with_default(&d, || ALLOCATOR.count(started));
+    assert_ne!(allocations, 0, "allocations of an event at the level");
 }
 
 #[divan::bench(args = [false, true])]
