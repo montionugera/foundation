@@ -497,9 +497,9 @@ impl State {
     }
 
     /// Plans the carry record of the paths whose holder is before the reach of the
-    /// next trim, as many as one record holds, and at most `most`. `None` when no
-    /// path needs one, or `pool` has no blocks for it: the next deadline then scans
-    /// the same paths.
+    /// next trim, filled with the oldest holders after it, as many as one record
+    /// holds, and at most `most`. `None` when no path needs one, or `pool` has no
+    /// blocks for it: the next deadline then scans the same paths.
     fn carry(&mut self, pool: &Pool, most: usize) -> Option<Carry> {
         let mut carried = mem::take(&mut self.carried);
         let limit = self.writer.tails().min(most);
@@ -2551,8 +2551,8 @@ mod tests {
             );
             assert_eq!(
                 after,
-                (97, 4096, 63 * 4096, Some(60 * 4096)),
-                "the carry takes the owed block, and path 2 holds the oldest record"
+                (97, 4096, 63 * 4096, Some(62 * 4096)),
+                "the carry takes the owed block, and holds paths 1 and 2"
             );
             let found = Arc::new(Mutex::new(None));
             let given = Arc::clone(&found);
@@ -2589,12 +2589,12 @@ mod tests {
                 trimmed.expect("the shard gave the result");
             assert_eq!(
                 opened,
-                (0, 4096, 64 * 4096, Some(60 * 4096)),
+                (0, 4096, 64 * 4096, Some(62 * 4096)),
                 "the restart record took the last free block"
             );
             assert_eq!(
                 trimmed,
-                (190, 9 * 4096, 64 * 4096, Some(60 * 4096)),
+                (190, 9 * 4096, 64 * 4096, Some(62 * 4096)),
                 "no carry record, and the trim passes the old holder of path 1"
             );
             assert_eq!(refused, Err(FULL), "the trim comes after the refusal");
@@ -2667,8 +2667,8 @@ mod tests {
             assert_eq!(before, opened, "the open wrote over the restart record");
             assert_eq!(
                 after,
-                (97, 4096, 63 * 4096, Some(60 * 4096)),
-                "the carry takes the owed block"
+                (97, 4096, 63 * 4096, Some(62 * 4096)),
+                "the carry takes the owed block, and holds paths 1 and 2"
             );
         }
 
@@ -2723,8 +2723,9 @@ mod tests {
             assert_eq!(rooms[..2], [opened, opened], "no block, no trim, no carry");
             assert_eq!(
                 rooms[2],
-                (190, 3 * 4096, 63 * 4096, Some(60 * 4096)),
-                "the carry takes the owed block, and the trim stops at path 1"
+                (190, 3 * 4096, 63 * 4096, Some(62 * 4096)),
+                "the carry takes the owed block and holds paths 1 and 2, and the trim \
+                 stops at path 1"
             );
             assert_eq!(
                 rooms[3],
@@ -2866,12 +2867,12 @@ mod tests {
             assert_eq!(rooms[0], dropped, "the open walks from the trimmed tail");
             assert_eq!(
                 rooms[1],
-                (190, 3 * 4096, 64 * 4096, Some(62 * 4096)),
-                "the first commit carries path 1 after its data record"
+                (190, 3 * 4096, 64 * 4096, Some(63 * 4096)),
+                "the first commit carries paths 1 and 2 after its data record"
             );
             assert_eq!(
                 rooms[2],
-                (190, 9 * 4096, 64 * 4096, Some(62 * 4096)),
+                (190, 9 * 4096, 64 * 4096, Some(63 * 4096)),
                 "the commit after it trims past the old holder of path 1"
             );
             assert_eq!(durable_after_open(&mut sim, &node), 9);

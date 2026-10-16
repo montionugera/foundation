@@ -240,9 +240,10 @@ impl Logs {
     /// One commit that the oldest holder bounds, as a commit that trims. It appends
     /// and syncs one data entry of each index but the last, which syncs one each
     /// `period` commits, so its item is the last of its record. Then it takes the
-    /// idle tails before the record, at most one per index, and hides the records
-    /// before the oldest holder, or before the record `held` commits back, as a
-    /// read that holds it, when that one is older.
+    /// idle tails before the record, and when one is idle, the other tails of the
+    /// record, at most one per index. It hides the records before the oldest
+    /// holder, or before the record `held` commits back, as a read that holds it,
+    /// when that one is older.
     pub fn trim(&mut self, period: u32, held: u64) {
         let slow = self.commits.is_multiple_of(period);
         self.commits = self.commits.wrapping_add(1);
@@ -418,7 +419,8 @@ mod tests {
     }
 
     /// The last index syncs each third commit, so a trim keeps the records from its
-    /// holder on, and its tail is idle once for each holder.
+    /// holder on. Its tail is idle once for each holder, and that carry also takes
+    /// the tail of the other index.
     #[test]
     fn a_trim_keeps_the_records_after_the_holder_of_the_slow_index() {
         let mut logs = Logs::new(2);
@@ -427,7 +429,7 @@ mod tests {
             logs.trim(3, 0);
             idle.push(logs.carried.tails().len());
         }
-        assert_eq!(idle, [0, 1, 0, 0, 1, 0, 0]);
+        assert_eq!(idle, [0, 2, 0, 0, 2, 0, 0]);
         let first: Vec<_> = logs.inner.runs(Slot::new(1), Path::Live).collect();
         let second = logs.inner.runs(Slot::new(0), Path::Live).count();
         assert_eq!(

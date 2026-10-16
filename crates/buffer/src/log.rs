@@ -692,15 +692,16 @@ impl Logs {
     }
 
     /// Puts in `carried` the appended tail of each path whose holder is before
-    /// `reach`, at most `limit`, oldest holder first. The next call goes on at the
-    /// first path that this call left out. Call it in the borrow that takes the
-    /// records of a commit: each appended entry is then in a taken record, so the
-    /// tail is the end after those records, and the carry record goes right after
-    /// them.
+    /// `reach`, at most `limit`, oldest holder first. When it puts in one, it fills
+    /// `carried` up to `limit` with the oldest holders after `reach`, so that small
+    /// carry records merge. The next call goes on at the first path that this call
+    /// left out. Call it in the borrow that takes the records of a commit: each
+    /// appended entry is then in a taken record, so the tail is the end after those
+    /// records, and the carry record goes right after them.
     pub(crate) fn idle(&mut self, reach: u64, limit: usize, carried: &mut Carried) {
         let mut room = limit;
         for (number, offset, at) in self.items.since(self.scanned) {
-            if offset >= reach {
+            if offset >= reach && carried.tails.is_empty() {
                 self.scanned = number;
                 return;
             }
@@ -1434,7 +1435,8 @@ mod tests {
 
         /// Checks the tails of one call of `idle` up to `reach` with `limit`, made
         /// when each path had its holder in `holders`, after the sync of the
-        /// entries that it saw appended.
+        /// entries that it saw appended. Tails past `reach` only fill a call that
+        /// gave a tail before it.
         fn check(
             &mut self,
             tails: &[carry::Tail],
@@ -1443,16 +1445,16 @@ mod tests {
             holders: &hash::Map<(u32, Path), u64>,
         ) -> Result<(), TestCaseError> {
             prop_assert!(tails.len() <= limit);
+            if let Some(first) = tails.first() {
+                let holder = holders[&(index_of(first.index), first.path)];
+                prop_assert!(holder < reach, "first holder {}", holder);
+            }
             let mut previous = 0;
             for tail in tails {
                 let key = (index_of(tail.index), tail.path);
                 let holder = holders[&key];
                 let (_, end, stamp) = self.paths[&key];
-                prop_assert!(
-                    self.hidden <= holder && holder < reach,
-                    "holder {}",
-                    holder
-                );
+                prop_assert!(self.hidden <= holder, "holder {}", holder);
                 prop_assert!(previous <= holder, "oldest holder first");
                 previous = holder;
                 prop_assert_eq!(
@@ -1463,8 +1465,9 @@ mod tests {
                 prop_assert!(first, "given twice");
             }
             if tails.len() < limit {
+                let end = if tails.is_empty() { reach } else { u64::MAX };
                 let left = holders.iter().find(|&(&(index, path), &holder)| {
-                    holder < reach && !self.given.contains(&(index, path, holder))
+                    holder < end && !self.given.contains(&(index, path, holder))
                 });
                 prop_assert!(left.is_none(), "{:?} is left out", left);
             }
