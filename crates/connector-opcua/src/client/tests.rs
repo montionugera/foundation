@@ -1014,8 +1014,9 @@ fn a_connect_whose_create_session_gets_no_answer_ends() {
 /// `CreateSession` and for the `CloseSession` for [`GRACE`] in all. The client sends
 /// the `CreateSession` just before the deadline and the server answers it at 9 s, or
 /// the client sends it just after the check of timeouts at 4 s and the server answers
-/// it just before its timeout, and then stops. The client sends no `CloseSession`, and the second client still connects:
-/// the server drops a session that is not active when its channel closes.
+/// it just before its timeout, and then stops. The client sends no `CloseSession`,
+/// and the second client still connects: the server drops a session that is not
+/// active when its channel closes.
 #[test]
 fn a_connect_whose_create_session_answers_late_ends_one_grace_later() {
     let before_the_deadline = times_out_and_closes(&[
@@ -1074,6 +1075,23 @@ fn a_client_idle_for_twenty_one_minutes_reads() {
     });
     let (first, second, value) = reads;
     assert_eq!((first, second), (Ok(value), Ok(value)));
+}
+
+/// A connect whose wait has already ended gives no client.
+#[test]
+fn a_connect_whose_wait_has_ended_gives_none() {
+    let (connect, _) = run(0, async |node| {
+        serve(&node, 1, async |mut peer| {
+            let url = CString::new(peer.url.clone()).expect("the URL holds no NUL");
+            let time = event::Time::monotonic(Clock::clone(&peer.clock));
+            let net = Net::clone(&peer.net);
+            let ended = future::ready(());
+            let connect = Client::connect(time, net, &mut peer.rng, &url, ended).await;
+            connect.map(|client| client.is_none())
+        })
+        .await
+    });
+    assert_eq!(connect, Ok(true));
 }
 
 /// The close of a client idle for 15 min frees its session on a server with room for

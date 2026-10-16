@@ -146,11 +146,12 @@ impl Client {
         let mut client = Self::new(time, net, rng);
         let opened = {
             let (mut until, mut open) = (pin!(until), pin!(client.open(url)));
+            // The first poll of `open` starts the loop, which the close drives.
             future::poll_fn(|cx| {
-                if until.as_mut().poll(cx).is_ready() {
-                    return Poll::Ready(None);
+                if let Poll::Ready(opened) = open.as_mut().poll(cx) {
+                    return Poll::Ready(Some(opened));
                 }
-                open.as_mut().poll(cx).map(Some)
+                until.as_mut().poll(cx).map(|()| None)
             })
             .await
         };
