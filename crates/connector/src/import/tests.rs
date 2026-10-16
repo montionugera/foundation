@@ -206,7 +206,7 @@ proptest! {
         let mut used: Set<String> = taken
             .iter()
             .chain(given.iter().flatten().copied())
-            .map(folded)
+            .map(|name| name.as_str().to_ascii_lowercase())
             .collect();
         for ((names, given), result) in picks.iter().zip(&result) {
             if let Some(given) = given {
@@ -227,7 +227,7 @@ proptest! {
                     let parsed = default.as_str().parse::<Name>();
                     prop_assert_eq!(parsed, Ok(default.clone()));
                     prop_assert!(!default.reserved());
-                    prop_assert!(used.insert(folded(default)), "{default} is in use");
+                    prop_assert!(used.insert(default.as_str().to_ascii_lowercase()), "{default} is in use");
                 }
             }
         }
