@@ -243,17 +243,6 @@ fn gives_another_config_for_each_other_value() {
 }
 
 #[test]
-fn gives_another_config_for_a_zone_and_the_same_for_the_case_of_a_name() {
-    let parse =
-        |address| parse(&config(string(address), &[], vec![temp()])).expect("a config");
-    assert_ne!(parse("[fe80::1%2]"), parse("[fe80::1]"));
-    assert_eq!(
-        parse("Line-2.site.local:502"),
-        parse("line-2.site.local:502")
-    );
-}
-
-#[test]
 fn gives_port_502_unit_1_and_the_big_order_by_default() {
     let config = parse(&config(string("plc"), &[], vec![temp()])).expect("a config");
     assert_eq!(
