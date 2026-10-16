@@ -259,7 +259,8 @@ fn reads_a_named_secret_from_the_store() {
         assert_eq!(
             get(&resolver, &source).await,
             missing(
-                "the file /data/secrets/plant.token is not there. Write the value to it"
+                "the file /data/secrets/plant.token is not there. Write the value to it, \
+                 unreadable by other users: chmod o-r /data/secrets/plant.token"
             )
         );
         put(&node.files(), b"t\n").await;

@@ -60,12 +60,17 @@ impl Reads {
         let file = match opened {
             Ok(file) => file,
             Err(files::Error::NotFound { .. }) => {
-                return Err(Error::Missing {
-                    detail: format!(
-                        "the file {} is not there. Write the value to it",
-                        path.display()
+                let shown = path.display();
+                let detail = match place {
+                    Place::Data(_) => format!(
+                        "the file {shown} is not there. Write the value to it, \
+                         unreadable by other users: chmod o-r {shown}"
                     ),
-                });
+                    Place::Host(_) => {
+                        format!("the file {shown} is not there. Write the value to it")
+                    }
+                };
+                return Err(Error::Missing { detail });
             }
             Err(error) => return Err(unavailable(&error, &path)),
         };

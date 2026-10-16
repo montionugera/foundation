@@ -32,8 +32,9 @@ fn reads_the_secret_from_the_file_that_its_text_names() {
         assert_eq!(
             detail,
             format!(
-                "the file {} is not there. Write the value to it",
-                file.display()
+                "the file {shown} is not there. Write the value to it, unreadable by \
+                 other users: chmod o-r {shown}",
+                shown = file.display()
             )
         );
         std::fs::create_dir_all(file.parent().expect("a directory"))

@@ -611,9 +611,15 @@ fn a_token_file_shows_its_fix_until_it_holds_the_token() {
             source
         });
         let (source, path) = given.expect("the plant names its source");
+        let shown = path.display();
+        let hidden = if named {
+            format!(", unreadable by other users: chmod o-r {shown}")
+        } else {
+            String::new()
+        };
         let missing = format!(
-            "the secret {source}: the file {} is not there. Write the value to it",
-            path.display()
+            "the secret {source}: the file {shown} is not there. Write the value to \
+             it{hidden}"
         );
         refuses_the_token(&plant.rig, &missing);
         let dir = path.parent().expect("a directory");

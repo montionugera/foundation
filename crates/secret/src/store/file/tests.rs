@@ -55,7 +55,10 @@ fn store(files: Files) -> File {
 
 fn missing(path: &str) -> Result<Vec<u8>, Error> {
     Err(Error::Missing {
-        detail: format!("the file /data/{path} is not there. Write the value to it"),
+        detail: format!(
+            "the file /data/{path} is not there. Write the value to it, unreadable by \
+             other users: chmod o-r /data/{path}"
+        ),
     })
 }
 
