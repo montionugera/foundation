@@ -75,9 +75,9 @@ impl Lost {
         }
     }
 
-    /// The seqs lost after the last series of `entry` up to the last frame, from the
-    /// first lost seq to the last. `0..0` when that frame holds no series of `entry`,
-    /// when none was lost, and before the first frame.
+    /// The seqs lost after the last series of `entry` with a sample up to the last
+    /// frame, from the first lost seq to the last. `0..0` when that frame holds no
+    /// sample of `entry`, when none was lost, and before the first frame.
     ///
     /// # Panics
     ///

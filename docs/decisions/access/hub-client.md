@@ -112,12 +112,12 @@
   reserved block for the renewal, a second pool that the caller cannot see.
   Amended (#2829): a complete `program::Reader` goes on past seqs that the node's
   buffer lost. `Reader::next` gives only frames. `Reader::lost(entry)` gives the seqs
-  of the index lost after the last series of `entry` up to the frame that the last
-  `next` gave, as one range from the first lost seq to the last, and an empty range
-  when that frame holds no series of `entry` or none was lost. The entry of the index
-  gives the gap of the frame. The reader writes one `tracing::warn!` for each gap of
-  the index, with the index's name and the lost seqs as fields. A latest reader gives
-  no gap. No strict mode: a program that must stop at a loss checks `lost`.
+  of the index lost after the last series of `entry` with a sample up to the frame
+  that the last `next` gave, as one range from the first lost seq to the last, and an
+  empty range when that frame holds no sample of `entry` or none was lost. The entry of
+  the index gives the gap of the frame. The reader writes one `tracing::warn!` for each
+  gap of the index, with the index's name and the lost seqs as fields. A latest reader
+  gives no gap. No strict mode: a program that must stop at a loss checks `lost`.
   `wire::hub::Gaps` holds the rule of the gap of a frame, and `wire::hub::Frames` and
   the reader of `hub` each call it. The person decided the shape (2026-10-16T05:22:29Z:
   "We need to preserve the sanctity of the python clients nominal path"; 05:23:50Z, on

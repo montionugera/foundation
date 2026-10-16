@@ -83,11 +83,11 @@ impl Reader {
         self.frames.set()
     }
 
-    /// The seqs of the index lost after the last series of `entry`, an entry of
-    /// [`Reader::set`], up to the frame that the last [`Reader::next`] gave: one range
-    /// from the first lost seq to the last. A seq in it that the reader got held no
-    /// series of `entry`. Empty when that frame holds no series of `entry`, when none
-    /// was lost, before the first frame, and for a latest reader.
+    /// The seqs of the index lost after the last series of `entry` with a sample, an
+    /// entry of [`Reader::set`], up to the frame that the last [`Reader::next`] gave:
+    /// one range from the first lost seq to the last. A seq in it that the reader got
+    /// held no sample of `entry`. Empty when that frame holds no sample of `entry`,
+    /// when none was lost, before the first frame, and for a latest reader.
     ///
     /// # Panics
     ///
