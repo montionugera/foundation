@@ -51,9 +51,12 @@
   channel, which reads each value up to three times and makes the kind count `bad` and
   `uncertain` in another pass (`laptop.architect-2`, 2026-10-16T04:07:48Z:
   https://github.com/synnaxlabs/foundation/pull/2817#issuecomment-6207854657); a bit set
-  of the kept channels beside the values, which each caller keeps in step; an error
-  at the open for a channel named again, which the parse refuses first; and slots that
-  the kind fills through `Writer::values`, which live across frames, so a short fill
-  writes the values of the frame before, and a clear of each slot after the send leaves
-  out each channel that a short fill did not fill, with no count (the plan and
-  `laptop.architect-2`, 2026-10-16T06:42:57Z and 06:44:07Z, above).
+  of the kept channels beside the values, which each caller keeps in step; an error at
+  the open for a channel named again, which the parse refuses first; slots that the kind
+  fills through `Writer::values`, which live across frames, so a short fill writes the
+  values of the frame before, and a clear of each slot after the send leaves out each
+  channel that a short fill did not fill, with no count (the plan and
+  `laptop.architect-2`, 2026-10-16T06:42:57Z and 06:44:07Z, above); and one buffer for
+  the values of a tick in `poll::Writer`, an option again when a third kind reads a
+  frame in more than one exchange (`laptop.architect-2`, 2026-10-16T15:03:40Z, item 1:
+  https://github.com/synnaxlabs/foundation/pull/2860#issuecomment-6218356587).
