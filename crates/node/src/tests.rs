@@ -6151,11 +6151,23 @@ pub(crate) mod port {
         #[test]
         fn the_log_of_the_mesh_is_free_once_the_lock_is() {
             let (mut held, mut logged, mut ordered) = (false, false, false);
-            // The mesh opens at about 1.5 ms, and from 1.6 s the log writes a home
-            // about each 0.7 ms.
-            let opens = (0..200).map(|step| step * 13_000);
-            let writes = (0..100).map(|step| 1_700_000_000 + step * 7_000);
-            for after in opens.chain(writes) {
+            // The probe finds the lock free and the log made, from about 4.1 ms.
+            let mut freed = false;
+            // Three orders of the last closes of the log, `shard-1/ring`, and
+            // `address` that the stops in a write give at seed 0: the log first, the
+            // address first, and the ring first. They do not show which file call is
+            // in flight (#2778), so a drift of the writes can still keep each order.
+            let mut crossed = [false; 3];
+            // A stop from about 1.35 ms comes after the node starts to open its
+            // mesh, which opens its log at about 3.1 ms. From about 1.1 s the log
+            // writes a home about each 0.7 ms, and the stops in the writes step from
+            // before the write of one home, through its write and its sync, to after
+            // them.
+            let starts = (0..200).map(|step| step * 13_000);
+            let opens = starts.chain((0..42).map(|step| 2_600_000 + step * 52_000));
+            let opens = opens.map(|after| (after, false));
+            let writes = (0..13).map(|step| (1_700_553_000 + step * 7_000, true));
+            for (after, write) in opens.chain(writes) {
                 let mut sim = sim::Sim::new(sim::Config::default());
                 let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
                 let members = pair(&hosts);
@@ -6167,12 +6179,19 @@ pub(crate) mod port {
                 let (waited, port, log, closes) = probe(&mut sim, &hosts[0]);
                 held |= waited;
                 logged |= log.is_ok();
+                freed |= !waited && log.is_ok();
                 let busy = matches!(log, Err(env::files::Error::Busy { .. }));
                 assert!(!busy, "at {after:?}: {log:?}");
                 let last = |path| closes.iter().rposition(|c| c == Path::new(path));
                 if let (Some(log), Some(lock)) = (last(LOG), last("lock")) {
                     assert!(log < lock, "at {after:?}: {closes:?}");
                     ordered = true;
+                }
+                let order = (last(LOG), last("shard-1/ring"), last("address"));
+                if let (true, (Some(log), Some(ring), Some(address))) = (write, order) {
+                    crossed[0] |= log < ring;
+                    crossed[1] |= address < log;
+                    crossed[2] |= ring < log && log < address;
                 }
                 // A probe that takes the lock before the claim refuses the node.
                 let refused = Error::Directory(env::files::Error::Busy {
@@ -6184,7 +6203,11 @@ pub(crate) mod port {
                     assert_eq!(port, Ok(()), "at {after:?}");
                 }
             }
-            assert!(held && logged && ordered);
+            assert!(held && logged && ordered && freed);
+            assert_eq!(
+                crossed, [true; 3],
+                "the stops miss an order of the closes: find the write times again"
+            );
         }
 
         /// When the mesh's group stops the node while a peer holds a session with it,
