@@ -10,7 +10,8 @@ use std::str::FromStr;
 ///
 /// - An IPv4 address in four decimal parts, with no leading zeros.
 /// - An IPv6 address, bare or in brackets, with an optional zone of a decimal
-///   interface number that fits in `u32`: `fe80::1%2` or `[fe80::1%2]`.
+///   interface number that fits in `u32`: `fe80::1%2` or `[fe80::1%2]`. Zone 0 is no
+///   zone.
 /// - A name: parts of ASCII letters, digits, `-`, and `_`, between dots. Each part is
 ///   1 to 63 bytes and does not start or end with `-`. The name is at most 253 bytes
 ///   without one optional final dot, and its last part is not a number. Letters go to
@@ -143,8 +144,10 @@ fn ipv6(text: &str) -> Result<Kind, Error> {
     if !zone.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(Error::Zone);
     }
-    let zone = zone.parse().map_err(|_invalid| Error::Zone)?;
-    Ok(Kind::Scoped(ip, zone))
+    match zone.parse().map_err(|_invalid| Error::Zone)? {
+        0 => Ok(Kind::Ip(ip.into())),
+        zone => Ok(Kind::Scoped(ip, zone)),
+    }
 }
 
 /// A name that a resolver looks up, and never reads as an address.
@@ -199,7 +202,7 @@ mod tests {
             ("fe80::1%2", "fe80::1%2"),
             ("[fe80::1%2]", "fe80::1%2"),
             ("fd00::1%1", "fd00::1%1"),
-            ("fe80::1%0", "fe80::1%0"),
+            ("fe80::1%0", "fe80::1"),
             ("fe80::1%4294967295", "fe80::1%4294967295"),
             ("fe80::1%007", "fe80::1%7"),
             ("plc", "plc"),
@@ -215,6 +218,12 @@ mod tests {
             let host = parse(text).unwrap_or_else(|e| panic!("{text:?}: {e}"));
             assert_eq!(host.to_string(), shown, "{text:?}");
         }
+    }
+
+    #[test]
+    fn zone_0_is_no_zone() {
+        assert_eq!(parse("fe80::1%0"), parse("fe80::1"));
+        assert_eq!(parse("[fe80::1%000]"), parse("fe80::1"));
     }
 
     #[test]
