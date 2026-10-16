@@ -61,11 +61,12 @@
   keyed by the channel name. A NaN or infinite value is left out, and so is a line with
   no other value. A `bool` channel is a boolean field. An `i8` to `i64`, `u8` to `u32`,
   `timestamp` (ns since the Unix epoch), or `duration` (ns) channel is an `i` integer.
-  An `f32` or `f64` channel is a float, where an `f32` is the `f64` of the same value
-  (0.1 as 1.0000000149011612e-1), so a reader that narrows it gets back the same bits. A
-  `u64` channel is a `u` integer to a `bucket`, and to a `database` it ends the run with
-  `Error::Config` and `influx.unsigned` (LINE TEXT). Each other type (`uuid`, `string`,
-  `bytes`, `array`, `list`, `matrix`) ends the run with `Error::Config` and
+  So is a quality channel (`DataType::Quality`), a choice that the person has (LINE
+  TEXT). An `f32` or `f64` channel is a float, where an `f32` is the `f64` of the same
+  value (0.1 as 1.0000000149011612e-1), so a reader that narrows it gets back the same
+  bits. A `u64` channel is a `u` integer to a `bucket`, and to a `database` it ends the
+  run with `Error::Config` and `influx.unsigned` (LINE TEXT). Each other type (`uuid`,
+  `string`, `bytes`, `array`, `list`, `matrix`) ends the run with `Error::Config` and
   `influx.sample-type`, and a channel name that is not a field key with
   `influx.bad-channel`. The run picks the conversion of a channel with its field, at the
   first frame of each key set that holds it. Lost: an `f32` as its shortest text
