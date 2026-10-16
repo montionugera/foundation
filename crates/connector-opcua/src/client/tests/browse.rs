@@ -1,6 +1,7 @@
 use std::cell::Cell;
 use std::ffi::CStr;
 use std::num::NonZeroU32;
+use std::panic::{self, AssertUnwindSafe};
 
 use proptest::prelude::*;
 
@@ -1160,17 +1161,24 @@ fn a_page_asks_for_the_references_that_fit_one_message() {
     assert_eq!(page, Ok(Some(fits)));
 }
 
-/// Gives the answer of a Read of the Value of [`VALUE`] to `read`.
+/// Gives the answer of a Read of the Value of [`VALUE`] to `read`, and panics as `read`
+/// does after the client and the server close.
 fn read_answer(read: impl FnOnce(&service::Answer) + Send + 'static) {
-    let ((), _) = run(0, async move |node| {
+    let (outcome, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
             let answer = client.serve(&Request::values(&[(&VALUE).into()])).await;
-            read(&answer.expect("the read works"));
+            let answer = answer.expect("the read works");
+            let outcome = panic::catch_unwind(AssertUnwindSafe(|| read(&answer)));
+            drop(answer);
             client.close().await;
+            outcome
         })
-        .await;
+        .await
     });
+    if let Err(payload) = outcome {
+        panic::resume_unwind(payload);
+    }
 }
 
 #[test]
