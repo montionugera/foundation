@@ -1153,6 +1153,34 @@ proptest! {
     }
 }
 
+/// A browse whose request is the most bytes that the client sends goes to the
+/// server, and one a byte larger gives `BadRequestTooLarge`.
+#[test]
+fn a_browse_of_the_most_bytes_goes_to_the_server() {
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            peer.server.set_limits(Limits {
+                message: 8192,
+                ..Limits::default()
+            });
+            let mut client = peer.connected().await;
+            let bytes = |length| {
+                let node = long(length);
+                Request::browse(&[(&node).into()], 0, false, 0, NonZeroU32::MIN)
+                    .bytes(client.token)
+            };
+            let length = client.sends - bytes(1) + 1;
+            assert_eq!(bytes(length), client.sends);
+            let most = client.browse(&long(length), ALL).await.map(|_| ());
+            let past = client.browse(&long(length + 1), ALL).await.map(|_| ());
+            client.close().await;
+            (most, past)
+        })
+        .await
+    });
+    assert_eq!(out, (Ok(()), Err(Status::BAD_REQUEST_TOO_LARGE)));
+}
+
 /// A browse whose request does not fit one message sends nothing and gives
 /// `BadRequestTooLarge`, so the session stays and the next browse and read work.
 #[test]
