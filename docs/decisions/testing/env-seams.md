@@ -883,7 +883,7 @@
   https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221156481; the folder
   of the link and the evidence, 2026-10-16T17:48:30Z,
   https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221386763).
-  Amended (2026-10-16T17:13:18Z, 19:43:31Z, 20:05:43Z, and 20:19:38Z, #2898):
+  Amended (2026-10-16T17:13:18Z, 19:43:31Z, 20:05:43Z, 20:19:38Z, and 20:27:04Z, #2898):
   `Paths::within` compares files, not names. It keeps the resolved path of each folder
   of `folders` and `hidden`, and each call takes the `paths::Key` of each folder again,
   from the new `paths::Driver::key`: (`st_dev`, `st_ino`) of a stat on `os`, and on
@@ -902,44 +902,45 @@
   hidden folder that a program moves away stays hidden, but not the listing of the moved
   folder itself. That key is never compared with the key of the path itself, since a
   write by rename frees the inode of a hidden file and ext4 gives it again to a new
-  file. After a hidden folder is removed, a file that the system gives its old key is
-  hidden too. While nothing is at a hidden folder, a call that makes a new name in the
-  deepest directory on its way that is there gives `Hidden`, also for a name that does
-  not make that folder. So no name in other case, in other Unicode form, or through the
-  `/System/Volumes/Data` prefix makes it, and no folding rules are needed. The cost is
-  that a new file beside a missing hidden folder is refused. So a hidden file that a
+  file. After a hidden folder is removed, a directory that the system gives its old key
+  hides what it holds. While nothing is at a hidden folder, a call that makes a new name
+  in the deepest directory on its way that is there gives `Hidden`, also for a name that
+  does not make that folder. So no name in other case, in other Unicode form, or through
+  the `/System/Volumes/Data` prefix makes it, and no folding rules are needed. The cost
+  is that a new file beside a missing hidden folder is refused. So a hidden file that a
   write replaces, a hidden folder that a program makes again, and one that is made after
   `within` stay hidden. `make_dir` of a path that does not resolve checks its resolved
   directory, since no folder is at a name that does not resolve. A folder of `folders`
   that is not there gives `NotFound` at `within`. A folder of `folders` keeps the key of
   what was there at `within`, and holds a path only while the file at its resolved path
   has that key, so a folder that a program removes, renames away, replaces with a link,
-  or makes again holds nothing. A folder of `hidden` that is not there gives no error,
-  also when the limits of the handle refuse it, and one that is there gives its key,
-  also when the limits refuse it, so a later folder under it stays hidden. A folder
-  whose key a call cannot take holds nothing at that call, so a hidden folder that this
-  user cannot search fails no call outside it. A hidden folder that is a file, a pipe,
-  or a folder that this user cannot search passes, and the path of each such file gives
-  `Hidden`. The cost is one stat for each name of the resolved path and for each folder
-  on each call of `Paths`, for tools, plans, and secrets, not frames. Supersedes the
-  resolve of `<hidden>/..`, its `Io` 20 and 13, and the skip of a hidden folder that the
-  limits of its handle refuse, of the amendment of 2026-10-16T08:08:47Z. Lost: the key
-  of each hidden folder once at `within`, which a write by rename or a folder made again
-  makes stale; the key of each folder of `folders` at each call, which a link that
-  replaces the folder widens; the match of the name of a hidden folder, which a name in
-  other case or other Unicode form passes on macOS; a compare of the key at `within`
-  with the key of the path itself, which a reused inode makes a false `Hidden`; a
-  compare of the text after case folding, which refuses a distinct folder on a file
-  system that keeps case, needs the folding rules of each file system, and misses a bind
-  mount; the name on disk by a read of each directory on the way, which is slow and
-  misses a bind mount; and an open beneath the folder (`openat2` with
+  or makes again holds nothing until a new `within`. A folder of `hidden` that is not
+  there gives no error, also when the limits of the handle refuse it, and one that is
+  there gives its key, also when the limits refuse it. That key comes from the path that
+  the caller gave, as for the path of a call, so a later folder under it stays hidden. A
+  folder whose key a call cannot take holds nothing at that call, so a hidden folder
+  that this user cannot search fails no call outside it. A hidden folder that is a file,
+  a pipe, or a folder that this user cannot search passes, and the path of each such
+  file gives `Hidden`. The cost is one stat for each name of the resolved path and for
+  each folder on each call of `Paths`, for tools, plans, and secrets, not frames.
+  Supersedes the resolve of `<hidden>/..`, its `Io` 20 and 13, and the skip of a hidden
+  folder that the limits of its handle refuse, of the amendment of 2026-10-16T08:08:47Z.
+  Lost: the key of each hidden folder once at `within`, which a write by rename or a
+  folder made again makes stale; the key of each folder of `folders` at each call, which
+  a link that replaces the folder widens; the match of the name of a hidden folder,
+  which a name in other case or other Unicode form passes on macOS; a compare of the key
+  at `within` with the key of the path itself, which a reused inode makes a false
+  `Hidden`; a compare of the text after case folding, which refuses a distinct folder on
+  a file system that keeps case, needs the folding rules of each file system, and misses
+  a bind mount; the name on disk by a read of each directory on the way, which is slow
+  and misses a bind mount; and an open beneath the folder (`openat2` with
   `RESOLVE_BENEATH`), which macOS does not have. Trigger for the last: a need to close
-  the race between the check and the call. A hard link to a file of a hidden folder from
-  a folder outside it gives `Hidden` when the link is made before the call. Making it
-  needs write access to both, which already gives the power to read the file
-  (`docs/security.md`, "Other local user"). `/dev/fd/<n>` on macOS still reaches a
-  hidden file that the node holds open (#2917). Decided by `laptop.architect-2` (the
-  mechanism, 2026-10-16T17:13:18Z,
+  the race between the check and the call. A hard link to a hidden file gives `Hidden`
+  when the link is made before the call. A hard link to a file of a hidden folder, from
+  a folder outside it, still passes: making it needs write access to both, which already
+  gives the power to read the file (`docs/security.md`, "Other local user").
+  `/dev/fd/<n>` on macOS still reaches a hidden file that the node holds open (#2917).
+  Decided by `laptop.architect-2` (the mechanism, 2026-10-16T17:13:18Z,
   https://github.com/synnaxlabs/foundation/issues/2898#issuecomment-6220778186; the
   order before PR 1 of #2526, 2026-10-16T19:36:24Z,
   https://github.com/synnaxlabs/foundation/issues/2898#issuecomment-6223241814; the
@@ -952,5 +953,5 @@
   https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6223945647; the new
   name beside a missing hidden folder, the key of a folder of `folders` at `within`, a
   key that a call cannot take, and the compare of a hidden key only with the directories
-  on the way, asked at
-  https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224136662).
+  on the way, 2026-10-16T20:27:04Z,
+  https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224070884).
