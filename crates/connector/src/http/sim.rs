@@ -42,6 +42,13 @@ pub enum Certificate {
     Ip,
 }
 
+/// The PEM text of the test CA of [`ca`].
+pub const CA: &str = include_str!("sim/tls/ca.pem");
+
+/// The PEM text of the CA that signs [`Certificate::OtherCa`], which [`ca`] does not
+/// hold.
+pub const OTHER_CA: &str = include_str!("sim/tls/other-ca.pem");
+
 /// Roots that hold only the test CA, which is valid from 2025-01-01 to 2036-01-01
 /// UTC.
 ///
@@ -51,7 +58,7 @@ pub enum Certificate {
 #[must_use]
 pub fn ca() -> Roots {
     Roots::default()
-        .with_pem(include_str!("sim/tls/ca.pem"))
+        .with_pem(CA)
         .expect("invariant: the test CA parses")
 }
 

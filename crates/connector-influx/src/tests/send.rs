@@ -5,6 +5,8 @@ use std::num::NonZeroUsize;
 use std::rc::Rc;
 
 use bytes::Bytes;
+use connector::http::Roots;
+use connector::http::sim::Certificate;
 use connector::supervisor;
 use env::clock::Clock;
 use env::net::tcp;
@@ -18,7 +20,7 @@ use types::channel;
 use types::frame::{Form, Label, Path};
 use types::name::{Name, Selector};
 use types::sample::{Scalar, Type};
-use types::time::Span;
+use types::time::{Span, Stamp};
 
 use super::*;
 
@@ -60,6 +62,15 @@ const STATUS: u128 = 100;
 const TOKEN_FILE: &str = "/run/secrets/influx";
 /// The value of `connector::status::Class::Retry` on the `class` channel.
 const RETRY: u8 = 3;
+/// The file of the CA of `file(CA_FILE)`.
+const CA_FILE: &str = "/etc/influx/ca.pem";
+/// The PEM of the CA that signs each certificate of `serve_tls` but `OtherCa`.
+const CA: &[u8] = connector::http::sim::CA.as_bytes();
+/// The PEM of the CA that signs `Certificate::OtherCa`.
+const OTHER_CA: &[u8] = connector::http::sim::OTHER_CA.as_bytes();
+/// 2026-06-01T00:00:00Z, inside the validity of each certificate of `serve_tls` but
+/// `Expired`.
+const JUNE_2026: Stamp = Stamp::from_nanos(1_780_272_000_000_000_000);
 
 /// One request that the InfluxDB of a plant got: its path and query, and its body.
 type Got = (String, String);
@@ -92,8 +103,12 @@ struct Plant {
     errors: Rc<RefCell<Vec<String>>>,
     /// Each value of `influx.status.class`, as [`read_status`] gives them.
     classes: Rc<RefCell<Vec<u8>>>,
+    /// Each value of `influx.status.restarts`.
+    restarts: Rc<RefCell<Vec<u64>>>,
     confirmed: Rc<RefCell<Vec<u64>>>,
     lost: Rc<RefCell<Vec<u64>>>,
+    /// The certificate of an InfluxDB that serves TLS.
+    certificate: Option<Certificate>,
 }
 
 impl Plant {
@@ -106,6 +121,28 @@ impl Plant {
 
     /// A plant whose InfluxDB refuses each connection until [`Plant::serve`].
     async fn unserved(node: ::sim::node::Node, tasks: Tasks) -> Self {
+        Self::with(node, tasks, None, Roots::default()).await
+    }
+
+    /// A plant whose InfluxDB serves TLS with `certificate` from the start, at the
+    /// name `server` of [`run_tls`], and whose node trusts `roots`.
+    async fn tls(
+        node: ::sim::node::Node,
+        tasks: Tasks,
+        certificate: Certificate,
+        roots: Roots,
+    ) -> Self {
+        let plant = Self::with(node, tasks, Some(certificate), roots).await;
+        plant.serve();
+        plant
+    }
+
+    async fn with(
+        node: ::sim::node::Node,
+        tasks: Tasks,
+        certificate: Option<Certificate>,
+        roots: Roots,
+    ) -> Self {
         let address = SocketAddr::new(node.addresses()[0], PORT);
         let env = hub::testing::Env {
             files: node.files(),
@@ -115,13 +152,17 @@ impl Plant {
             tasks: tasks.clone(),
         };
         let kinds = Table::new().with("influx", Kind);
-        let inputs = testing::create_config(env, node.net(), kinds).await;
+        let inputs = supervisor::Config {
+            roots,
+            ..testing::create_config(env, node.net(), kinds).await
+        };
         let token = "plant.influx_token".parse().expect("a name");
         testing::create_secret(&node.files(), &token, b"s3cret").await;
         define(&inputs);
         let errors = read_errors(&inputs.hub, &tasks).await;
         let classes =
             read_status(&inputs.hub, &tasks, "class", |sample| sample[0]).await;
+        let restarts = read_count(&inputs.hub, &tasks, "restarts").await;
         let confirmed = read_confirmed(&inputs.hub, &tasks).await;
         let lost = read_count(&inputs.hub, &tasks, "lost").await;
         Self {
@@ -139,8 +180,10 @@ impl Plant {
             store: Rc::default(),
             errors,
             classes,
+            restarts,
             confirmed,
             lost,
+            certificate,
         }
     }
 
@@ -184,16 +227,31 @@ impl Plant {
             *response.status_mut() = status;
             response
         };
-        let server = connector::http::sim::serve(listener, self.tasks.clone(), answer);
+        let tasks = self.tasks.clone();
+        let certificate = self.certificate;
         self.tasks.spawn(async move {
-            let error = server.await;
+            let error = match certificate {
+                Some(certificate) => {
+                    connector::http::sim::serve_tls(
+                        listener,
+                        tasks,
+                        certificate,
+                        answer,
+                    )
+                    .await
+                }
+                None => connector::http::sim::serve(listener, tasks, answer).await,
+            };
             panic!("the listener failed: {error}");
         });
     }
 
     /// The config of an influx connector at this plant's InfluxDB.
     fn config(&self) -> Document {
-        config(string(&format!("http://{}", self.address)))
+        match self.certificate {
+            Some(_) => config(string(&format!("https://server:{PORT}"))),
+            None => config(string(&format!("http://{}", self.address))),
+        }
     }
 
     /// Supervises the connector `influx` with `config` until the token it gives is
@@ -1698,4 +1756,357 @@ fn loses_the_batch_in_flight_at_a_restart_with_no_hold() {
         "{second:?}"
     );
     assert_eq!(second[0].lines().count(), 1, "{second:?}");
+}
+
+/// As [`run`], on a node at the name `server` whose wall starts at [`JUNE_2026`], with
+/// a host directory `/etc/influx` too.
+fn run_tls<T, F>(main: impl FnOnce(::sim::node::Node, Tasks) -> F + Send + 'static) -> T
+where
+    T: Send + 'static,
+    F: Future<Output = T> + 'static,
+{
+    let mut sim = ::sim::Sim::new(::sim::Config::default());
+    let node = sim.node(::sim::node::Config {
+        wall: JUNE_2026,
+        ..::sim::node::Config::default()
+    });
+    let answer = ::sim::name::Answer::Addresses(vec![node.addresses()[0]]);
+    let name = ::sim::name::Config {
+        answer,
+        ..::sim::name::Config::default()
+    };
+    sim.name("server", name);
+    node.make_dir(std::path::Path::new("/run/secrets"));
+    node.make_dir(std::path::Path::new("/etc/influx"));
+    sim.run_on(&node, main).expect("the run ends")
+}
+
+/// The config of `plant` with `ca` set to a call of `function` with `argument`.
+fn with_ca(plant: &Plant, function: &str, argument: &str) -> Document {
+    plus(plant.config(), &[(60, "ca", call(function, argument))])
+}
+
+/// Runs [`send_one`] on a plant whose InfluxDB serves `certificate`, whose node
+/// trusts `roots`, and whose config reads `ca` from `file(CA_FILE)` when it holds
+/// bytes. Gives the errors, whether the run went on, the lines stored, and each value
+/// of `class` and of `restarts`.
+fn send_over_tls(
+    certificate: Certificate,
+    roots: Roots,
+    ca: &'static [u8],
+) -> (Vec<String>, bool, usize, Vec<u8>, Vec<u64>) {
+    run_tls(move |node, tasks| async move {
+        node.paths()
+            .write(std::path::Path::new(CA_FILE), ca)
+            .expect("writes");
+        let plant = Plant::tls(node, tasks, certificate, roots).await;
+        let config = if ca.is_empty() {
+            plant.config()
+        } else {
+            with_ca(&plant, "file", CA_FILE)
+        };
+        let (_, errors, end) = send_one(&plant, config).await;
+        let points = plant.store.borrow().points("telemetry", &[]).count();
+        let classes = plant.classes.borrow().clone();
+        let restarts = plant.restarts.borrow().clone();
+        (errors, end.is_none(), points, classes, restarts)
+    })
+}
+
+#[test]
+fn writes_over_https_with_the_ca_of_a_file_or_a_store() {
+    let got = [("file", CA_FILE), ("secret", "plant.influx_ca")].map(
+        |(function, argument)| {
+            run_tls(move |node, tasks| async move {
+                node.paths()
+                    .write(std::path::Path::new(CA_FILE), CA)
+                    .expect("writes");
+                let ca = "plant.influx_ca".parse().expect("a name");
+                testing::create_secret(&node.files(), &ca, CA).await;
+                let plant =
+                    Plant::tls(node, tasks, Certificate::Valid, Roots::default()).await;
+                let config = with_ca(&plant, function, argument);
+                let (_, errors, end) = send_one(&plant, config).await;
+                let points = plant.store.borrow().points("telemetry", &[]).count();
+                (errors, end.is_none(), points)
+            })
+        },
+    );
+    assert_eq!(
+        got,
+        [
+            (vec![String::new()], true, 1),
+            (vec![String::new()], true, 1)
+        ]
+    );
+}
+
+#[test]
+fn writes_over_https_with_the_roots_of_the_node_and_no_ca() {
+    assert_eq!(
+        send_over_tls(Certificate::Valid, connector::http::sim::ca(), b""),
+        (vec![String::new()], true, 1, vec![0], vec![0])
+    );
+}
+
+#[test]
+fn shows_why_tls_fails_and_retries_in_the_run_with_no_ca() {
+    let failed = |reasons: Vec<String>| {
+        let errors = reasons.into_iter().map(|reason| {
+            format!(
+                "the write to InfluxDB failed: TLS with server:8086 failed: {reason}"
+            )
+        });
+        let mut errors: Vec<_> = errors.collect();
+        errors.insert(0, String::new());
+        errors.push(String::new());
+        errors
+    };
+    // Each attempt checks the certificate at its own mesh time.
+    let expired = [1, 2, 3, 6, 9].map(|after: u64| {
+        format!(
+            "invalid peer certificate: certificate expired: verification time {} \
+             (UNIX), but certificate is not valid after 1769904000 ({} seconds ago)",
+            1_780_272_000 + after,
+            10_368_000 + after
+        )
+    });
+    for (certificate, reasons) in [
+        (
+            Certificate::OtherHost,
+            vec![
+                "invalid peer certificate: certificate not valid for name \"server\"; \
+                 certificate is only valid for DnsName(\"other\")"
+                    .to_owned(),
+            ],
+        ),
+        (Certificate::Expired, expired.to_vec()),
+        (
+            Certificate::OtherCa,
+            vec!["invalid peer certificate: UnknownIssuer".to_owned()],
+        ),
+    ] {
+        let (errors, going, points, _, restarts) =
+            send_over_tls(certificate, connector::http::sim::ca(), b"");
+        assert_eq!(
+            (errors, going, points, restarts),
+            (failed(reasons), true, 0, vec![0]),
+            "{certificate:?}"
+        );
+    }
+}
+
+#[test]
+fn retries_a_tls_failure_with_a_ca_in_the_run() {
+    let (errors, going, points, _, restarts) =
+        send_over_tls(Certificate::OtherCa, Roots::default(), CA);
+    let error = format!(
+        "the write to InfluxDB failed: TLS with server:8086 failed: invalid peer \
+         certificate: UnknownIssuer. Check the ca file(\"{CA_FILE}\")"
+    );
+    assert_eq!(
+        (errors, going, points, restarts),
+        (vec![String::new(), error, String::new()], true, 0, vec![0])
+    );
+}
+
+/// Runs a plant whose InfluxDB serves [`Certificate::OtherCa`], with `ca` read from
+/// `file(CA_FILE)`, which holds [`CA`] at the start and `fixed` from 5 s after the
+/// first sample. Gives the points stored, the errors, and each value of `class` and
+/// of `restarts`.
+fn after_a_new_ca(fixed: &'static [u8]) -> (usize, Vec<String>, Vec<u8>, Vec<u64>) {
+    run_tls(move |node, tasks| async move {
+        let paths = node.paths();
+        paths
+            .write(std::path::Path::new(CA_FILE), CA)
+            .expect("writes");
+        let plant =
+            Plant::tls(node, tasks, Certificate::OtherCa, Roots::default()).await;
+        let run = plant.start(with_ca(&plant, "file", CA_FILE));
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write(&mut writer, first, &[(1.0, 2.0)]);
+        plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
+        paths
+            .write(std::path::Path::new(CA_FILE), fixed)
+            .expect("writes");
+        plant.clock.sleep(Span::MINUTE).await;
+        let end = plant.stop(run).await;
+        assert!(end.is_ok(), "ok after a cancel");
+        let points = plant.store.borrow().points("telemetry", &[]).count();
+        let errors = plant.errors.borrow().clone();
+        let classes = plant.classes.borrow().clone();
+        let restarts = plant.restarts.borrow().clone();
+        (points, errors, classes, restarts)
+    })
+}
+
+#[test]
+fn reads_again_a_ca_fixed_while_the_node_runs() {
+    let (points, _, _, restarts) = after_a_new_ca(OTHER_CA);
+    assert_eq!(
+        (points, restarts),
+        (1, vec![0]),
+        "the run reads the fixed ca"
+    );
+}
+
+#[test]
+fn ends_the_run_at_a_ca_that_gives_no_root_when_read_again() {
+    let (points, errors, classes, restarts) = after_a_new_ca(b"not a certificate\n");
+    let error = format!(
+        "the ca file(\"{CA_FILE}\") holds no PEM certificate. Write the CA \
+         certificate of the server in PEM"
+    );
+    assert_eq!(
+        (points, errors.last(), classes.last(), restarts.len() > 1),
+        (0, Some(&error), Some(&RETRY), true)
+    );
+}
+
+/// With no `hold`, InfluxDB closes the first connection in the TLS handshake, then
+/// serves. Gives the points stored and each value of `restarts`.
+fn after_a_close_in_the_handshake(ca: bool) -> (usize, Vec<u64>) {
+    run_tls(move |node, tasks| async move {
+        node.paths()
+            .write(std::path::Path::new(CA_FILE), CA)
+            .expect("writes");
+        let roots = if ca {
+            Roots::default()
+        } else {
+            connector::http::sim::ca()
+        };
+        let plant = Plant::with(node, tasks, Some(Certificate::Valid), roots).await;
+        let listen = tcp::Listen {
+            local: plant.address,
+            backlog: 4,
+            options: OPTIONS,
+        };
+        let mut listener = plant.net.listen(&listen).expect("the port is free");
+        let mut config = if ca {
+            with_ca(&plant, "file", CA_FILE)
+        } else {
+            plant.config()
+        };
+        config.blocks.clear();
+        let run = plant.start(config);
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write(&mut writer, first, &[(1.0, 2.0)]);
+        let tcp = std::future::poll_fn(|cx| listener.poll_accept(cx))
+            .await
+            .expect("accepts");
+        drop((tcp, listener));
+        plant.clock.sleep(Span::from_nanos(10_000_000)).await;
+        plant.serve();
+        plant.clock.sleep(Span::MINUTE).await;
+        let end = plant.stop(run).await;
+        assert!(end.is_ok(), "ok after a cancel");
+        let points = plant.store.borrow().points("telemetry", &[]).count();
+        let restarts = plant.restarts.borrow().clone();
+        (points, restarts)
+    })
+}
+
+#[test]
+fn keeps_the_sample_of_a_close_in_the_handshake_with_no_hold() {
+    let got = [false, true].map(after_a_close_in_the_handshake);
+    assert_eq!(got, [(1, vec![0]), (1, vec![0])]);
+}
+
+#[test]
+fn keeps_the_roots_of_the_node_with_a_ca() {
+    assert_eq!(
+        send_over_tls(Certificate::Valid, connector::http::sim::ca(), OTHER_CA),
+        (vec![String::new()], true, 1, vec![0], vec![0])
+    );
+}
+
+#[test]
+fn reads_a_ca_that_starts_with_a_byte_order_mark() {
+    const MARKED: &[u8] = &{
+        let mut marked = [0; 3 + CA.len()];
+        let (mark, rest) = marked.split_at_mut(3);
+        mark.copy_from_slice(b"\xEF\xBB\xBF");
+        rest.copy_from_slice(CA);
+        marked
+    };
+    assert_eq!(
+        send_over_tls(Certificate::Valid, Roots::default(), MARKED),
+        (vec![String::new()], true, 1, vec![0], vec![0])
+    );
+}
+
+#[test]
+fn shows_that_no_ca_is_trusted_with_no_roots_and_no_ca() {
+    let (errors, going, points, ..) =
+        send_over_tls(Certificate::Valid, Roots::default(), b"");
+    assert_eq!(
+        (errors, going, points),
+        (
+            vec![
+                String::new(),
+                "the write to InfluxDB failed: no CA is trusted: install the CA \
+                 certificates of the OS, or give `ca`"
+                    .to_owned(),
+                String::new(),
+            ],
+            true,
+            0
+        )
+    );
+}
+
+#[test]
+fn ends_the_run_at_a_ca_that_gives_no_root() {
+    for (ca, held) in [
+        (&b"not a certificate\n"[..], "no PEM certificate"),
+        (
+            b"-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
+            "a PEM certificate that does not parse",
+        ),
+    ] {
+        let (errors, _, points, classes, _) =
+            send_over_tls(Certificate::Valid, connector::http::sim::ca(), ca);
+        let error = format!(
+            "the ca file(\"{CA_FILE}\") holds {held}. Write the CA certificate of the \
+             server in PEM"
+        );
+        assert_eq!(
+            (errors, points, classes),
+            (vec![String::new(), error], 0, vec![0, RETRY]),
+            "{held}"
+        );
+    }
+}
+
+#[test]
+fn retries_a_refused_connect_in_the_run_with_a_ca() {
+    let got = run_tls(|node, tasks| async move {
+        node.paths()
+            .write(std::path::Path::new(CA_FILE), CA)
+            .expect("writes");
+        let plant =
+            Plant::with(node, tasks, Some(Certificate::Valid), Roots::default()).await;
+        let run = plant.start(with_ca(&plant, "file", CA_FILE));
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write(&mut writer, first, &[(1.0, 2.0)]);
+        plant.clock.sleep(Span::from_nanos(6_000_000_000)).await;
+        plant.serve();
+        plant.clock.sleep(Span::MINUTE).await;
+        let end = plant.stop(run).await;
+        assert!(end.is_ok(), "ok after a cancel");
+        let points = plant.store.borrow().points("telemetry", &[]).count();
+        let errors = plant.errors.borrow().clone();
+        let restarts = plant.restarts.borrow().clone();
+        (points, errors, restarts)
+    });
+    let refused = "the write to InfluxDB failed: the connect failed: 10.0.0.1:8086 \
+                   refused the connection";
+    let errors = vec![String::new(), refused.to_owned(), String::new()];
+    assert_eq!(got, (1, errors, vec![0]), "a refused connect keeps the run");
 }

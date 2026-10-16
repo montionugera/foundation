@@ -304,7 +304,8 @@ state on `main`.
   reads the documents into definitions, and the influx kind reads the config of each
   `connector` block of kind `influx`. Fuzzed: `config_check`, which only the inputs
   `influx_*` take to the influx kind, through `connector::reader::read`,
-  `connector::http::uri`, `secret::Source::read` (the inputs `influx_token_*`), and
+  `connector::http::uri`, `secret::Source::read` (the inputs `influx_token_*`, and
+  `influx_ca_*` and `influx_address_https` for `ca`), and
   `connector_influx::Kind::parse` (#1817).
 - A person or an agent reviews the files and the plan before `apply` (K3). Text
   that shows one thing and reads as another defeats that review. Questions for a
@@ -437,6 +438,13 @@ state on `main`.
   the time until the allocator gives that memory again. Trigger for a request path
   that clears them: an attacker who reads freed heap of the node and not its live
   heap.
+- Whoever can write the `ca` source of an `influx` connector can make the node trust
+  a server of their own, so they can stand in for the InfluxDB server and get the
+  token. A `ca` adds to the roots of the node and never replaces them, so it cannot
+  make a node trust fewer servers. Over `http`, the token crosses the network in clear,
+  with or without a `ca`. `plan` refuses a `ca` with an `http` address, so its user
+  does not think that the token goes under TLS (INFLUX KIND). `Roots::with_pem` reads
+  the text of the `ca`. Fuzzed: `connector_pem`.
 - A join ticket is a secret (BQ11a).
 - Rule for every crate: no secret value in a log, a status channel, an error, or
   plan output.
@@ -500,6 +508,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `config_hcl_write` | `config_hcl::write` | Its text reads back as an equal document |
 | `config_plan` | `config::plan::Plan::decode` | Encodes to the same bytes |
 | `config_check` | `config::check` on the documents that `config_hcl::read` reads from up to three files, with the influx kind in the kind table | The same entries or the same problems for the files in either order; with no problem, one entry for each block and one for each status channel of each connector, and no other, unique in any case, each policy and connector decodes to itself, and each edge of a channel names a channel entry; each problem's span is in its file, in the order of the files, then of the source; files that pass alone, with keys that differ in more than case and no subject named as a connector in any ASCII case, pass together and give the union of their entries |
+| `connector_pem` | `connector::http::Roots::with_pem` on the text of a `ca` | The same error with a UTF-8 byte order mark put at the start; an `Ok` holds a root |
 | `connector_modbus_rtu` | `connector_modbus::rtu::decode_request`, `decode_reply`, `pdu::Request::decode`, `Request::decode_reply` | A request reads back unchanged; a reply has the asked count |
 | `connector_modbus_tcp` | `connector_modbus::tcp::decode`, `pdu::Request::decode`, `decode_reply`, `read::groups`, `read::Group::values` | A request reads back unchanged; a reply has the asked count; reads of each register type that tile a read request group into that request, and give the values of its reply in address order, in each register order |
 | `connector_opcua_decode` | `connector_opcua::fuzz::decode`: `UA_decodeBinary` of open62541, as each type of `UA_TYPES` | No memory fault or leak; a decoded value encodes to its `UA_calcSizeBinary` length, and that encoding decodes, reads exactly its length, and encodes to the same bytes. A decoded `DataValue` gives the same read of its value (`Value::of` of the kind), or the same fault, from both decodes. Until #435 is fixed, the encoding decodes with as many zeros after it as its length. |
