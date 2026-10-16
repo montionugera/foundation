@@ -11,6 +11,7 @@ pub mod serve;
 mod task;
 #[cfg(feature = "sim")]
 pub mod testing;
+mod time;
 mod used;
 pub mod writer;
 
@@ -28,6 +29,7 @@ use types::name::Name;
 
 pub use link::{Link, Served};
 use reader::Reader;
+pub use time::Time;
 use writer::Writer;
 
 /// The `home` items that hub calls give, so that layer 3 names them through `hub`.

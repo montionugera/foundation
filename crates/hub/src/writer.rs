@@ -15,7 +15,8 @@ use types::sample::Type;
 use types::time::{Span, Stamp};
 
 use crate::pending::Pending;
-use crate::{Away, Ending, State};
+use crate::time::now;
+use crate::{Away, Ending, State, Time};
 
 /// What a writer session opens with.
 #[derive(Clone, Debug)]
@@ -253,7 +254,8 @@ impl Writer {
         now(&self.state)
     }
 
-    /// The mesh time of the writer's hub, as [`Writer::now`] gives it.
+    /// The mesh time of the writer's hub, as [`Writer::now`] gives it, also after the
+    /// writer drops.
     #[must_use]
     pub fn time(&self) -> Time {
         Time(Rc::clone(&self.state))
@@ -317,22 +319,4 @@ impl Drop for Writer {
     fn drop(&mut self) {
         self.state.borrow_mut().close_writer(self.key);
     }
-}
-
-/// Mesh time of the hub of a writer, which a caller can keep apart from the writer.
-/// It reads what [`Writer::now`] reads, also after the writer drops.
-#[derive(Clone, Debug)]
-pub struct Time(Rc<RefCell<State>>);
-
-impl Time {
-    /// As [`Writer::now`].
-    #[must_use]
-    pub fn now(&self) -> Stamp {
-        now(&self.0)
-    }
-}
-
-fn now(state: &RefCell<State>) -> Stamp {
-    let now = state.borrow().home.now();
-    now.expect("invariant: mesh time stays once known")
 }

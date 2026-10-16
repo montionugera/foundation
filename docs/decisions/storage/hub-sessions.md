@@ -359,7 +359,7 @@
   would compute the midpoint again, and a change of the home's rule would make its
   stamps `Ahead`. Connector time sync adds what it needs with its own caller. Lost: a
   writer that stamps the frame, because only the caller knows when it read each sample.
-  `writer::Writer::time` gives a `writer::Time`, which a caller keeps apart from the
+  `writer::Writer::time` gives a `hub::Time`, which a caller keeps apart from the
   writer: `Time::now` reads what `Writer::now` reads, also after the writer drops. The
   open62541 loop of the opcua kind reads it inside each client call, while the kind
   holds its writer to write. A `Time` comes only from a writer, so mesh time is known.
