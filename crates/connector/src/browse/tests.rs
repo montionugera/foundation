@@ -585,6 +585,17 @@ mod walk {
     }
 
     #[test]
+    fn refuses_a_start_at_a_point_that_the_device_can_list() {
+        let mut tree = Tree::new(&plant(), 10);
+        tree.folders.insert(path("Clock"), Vec::new());
+        let found = now(walk(&mut tree, &query("Clock", Scope::Level(None))));
+        assert_eq!(
+            diagnostic(found).message,
+            r#"the device has no folder at "Clock""#,
+        );
+    }
+
+    #[test]
     fn finds_a_start_under_a_paged_parent() {
         let mut tree = Tree::new(&plant(), 1);
         let query = query("Line2/Oven", Scope::Match(pattern("*")));

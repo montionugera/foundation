@@ -291,7 +291,7 @@ const NO_FOLDER: Code = Code::new("connector.no-folder");
 /// The path of an entry from the root of a device's tree: the name of each entry on
 /// the way, its own last. Its text joins the names with `/`, with `\` before each `/`,
 /// `*`, and `\` in a name. The root is the empty text.
-#[derive(Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Path {
     names: Vec<String>,
 }
@@ -300,7 +300,7 @@ impl Path {
     /// The root, with no name.
     #[must_use]
     pub fn root() -> Self {
-        Self::default()
+        Self { names: Vec::new() }
     }
 
     /// The path of the entry `name` in this folder.
@@ -428,23 +428,23 @@ impl Pattern {
 /// Whether `name` matches `glob`, in which `None` is any text.
 fn glob_matches(glob: &[Option<char>], name: &[char]) -> bool {
     let (mut g, mut n) = (0, 0);
-    // Where the last `None` was, and where in `name` its text ends now.
+    // Past the last `None`, and where in `name` its text ends now.
     let mut star = None;
     while n < name.len() {
         match glob.get(g) {
             Some(None) => {
-                star = Some((g, n));
                 g += 1;
+                star = Some((g, n));
             }
             Some(Some(c)) if *c == name[n] => {
                 g += 1;
                 n += 1;
             }
-            _ => match star {
-                Some((at, end)) => {
-                    g = at + 1;
-                    n = end + 1;
-                    star = Some((at, end + 1));
+            _ => match &mut star {
+                Some((after, end)) => {
+                    *end += 1;
+                    g = *after;
+                    n = *end;
                 }
                 None => return false,
             },
