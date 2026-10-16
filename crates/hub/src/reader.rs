@@ -13,9 +13,10 @@ use std::task::{Context, Poll, ready};
 use ::home::reader::{Next, disk};
 use types::channel;
 use types::frame::key_set::{Group, KeySet};
-use types::frame::{Frame, Mask, View};
+use types::frame::{self, Frame, Mask, View};
 use types::name::{Name, Selector};
 use types::time::Span;
+use wire::hub::Gaps;
 
 use crate::channel::Channel;
 use crate::pending::Pending;
@@ -111,13 +112,9 @@ impl<'a> Received<'a> {
     /// the gap that a later frame gives.
     #[must_use]
     pub fn position(&self) -> Position {
-        let Lent {
-            mode, seqs, from, ..
-        } = self.lent;
-        let live = match mode {
-            Mode::Complete if seqs.is_empty() => *from,
-            Mode::Complete => seqs.end,
-            Mode::Latest => self.lens.seqs(self.view.frame()).end,
+        let live = match self.lent.mode {
+            Mode::Complete => self.lent.gaps.live(),
+            Mode::Latest => self.lens.end(self.view.frame()),
         };
         let position = Position {
             index: self.lens.index,
@@ -134,9 +131,8 @@ impl<'a> Received<'a> {
     /// `None`, and the next frame with one gives the gap.
     #[must_use]
     pub fn gap(&self) -> Option<Range<u64>> {
-        let Range { start, end } = self.lent.seqs;
-        let from = self.lent.from;
-        (from < start && start < end).then_some(from..start)
+        let gap = &self.lent.gap;
+        (!gap.is_empty()).then(|| gap.clone())
     }
 }
 
@@ -181,16 +177,19 @@ impl Lens {
         }
     }
 
-    /// The seqs of the index's samples in `frame`, a frame of this lens's key set. The
-    /// mask holds the index, so the frame's range of its group is the view's.
-    fn seqs(&self, frame: &Frame) -> Range<u64> {
-        let range = frame
+    /// The range of the index in `frame`, a frame of this lens's key set. The mask
+    /// holds the index, so the frame's range of its group is the view's.
+    fn range(&self, frame: &Frame) -> frame::Range {
+        frame
             .range(self.group)
-            .expect("invariant: a frame holds the range of each group");
-        let end = range
+            .expect("invariant: a frame holds the range of each group")
+    }
+
+    /// The seq after the last sample of the index of `frame`.
+    fn end(&self, frame: &Frame) -> u64 {
+        self.range(frame)
             .end()
-            .expect("invariant: the home gives no range past u64::MAX");
-        range.seq..end
+            .expect("invariant: the home gives no range past u64::MAX")
     }
 }
 
@@ -364,13 +363,11 @@ struct Lent {
     /// The `live` of the last position that [`Received::position`] gave, or `None`
     /// before it gave one. The positions of a reader rise, so it is the highest.
     given: Cell<Option<u64>>,
-    /// For a complete reader, the seqs of the index in the frame that the last
-    /// [`Received`] lends, or the empty range at the open position before the first
-    /// frame. A latest reader keeps the empty range, as it gets no gap.
-    seqs: Range<u64>,
-    /// The first live seq that the reader had not got before that frame: the start of
-    /// its gap.
-    from: u64,
+    /// The gaps of a complete reader. A latest reader keeps them at the open
+    /// position, as it gets no gap.
+    gaps: Gaps,
+    /// The gap of the frame that the last [`Received`] lends.
+    gap: Range<u64>,
 }
 
 impl Lent {
@@ -380,8 +377,8 @@ impl Lent {
             mode,
             names: None,
             given: Cell::new(None),
-            seqs: live..live,
-            from: live,
+            gaps: Gaps::new(live),
+            gap: 0..0,
         }
     }
 }
@@ -608,10 +605,7 @@ impl Reader {
                 Source::Remote(remote) => remote.take().await?,
             };
             if self.lent.mode == Mode::Complete {
-                if !self.lent.seqs.is_empty() {
-                    self.lent.from = self.lent.seqs.end;
-                }
-                self.lent.seqs = lens.seqs(&frame);
+                self.lent.gap = self.lent.gaps.before(lens.range(&frame));
             }
             let frame = self.frame.insert(frame);
             Ok(Received {

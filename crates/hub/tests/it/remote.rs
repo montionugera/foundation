@@ -1691,8 +1691,8 @@ fn lost(messages: &[Vec<u8>]) -> Vec<ops::Range<u64>> {
     }
 }
 
-/// `hub` and `wire` each compute the gap of a frame. This pins the two copies to
-/// each other: `Received::gap` equals `Frames::lost` at each frame.
+/// The remote reader gives as the gap of each frame the `Frames::lost` of the same
+/// messages: a gap at the open, none, a frame with no sample, and a later jump.
 #[test]
 fn a_complete_reader_gets_the_gap_of_each_frame_that_frames_gives_as_lost() {
     remote(
