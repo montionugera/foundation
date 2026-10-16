@@ -43,6 +43,9 @@ Rules:
    `codec`, so its read tests decode the encoded series of each frame
    (`laptop.architect`, 2026-10-15T23:36:14Z,
    https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204521616).
+   `node` may take `sdk`, so its tests run the client of a program against a real node
+   (`laptop.architect`, 2026-10-16T21:33:33Z,
+   https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225122027).
    A crate may also take itself, so its tests and benches build with its own `sim`
    feature (STORED BENCH; `laptop.architect`, 2026-10-08T01:01:28Z:
    https://github.com/synnaxlabs/foundation/pull/1568#issuecomment-6049989224). A
@@ -80,7 +83,7 @@ Order: layer 1 (`block`, `ring`, `counting`, `waker`) -> `types` -> (`env`, `doc
 `raft`, `estimate`, `control`, `delivery`) -> `codec` -> `wire` -> `spec` -> `access`;
 layer 2 `os` -> (`transport`, `buffer`) -> (`clock`, `blob`, `sim`, `program`) ->
 `mesh` -> (`home`, `replica`) -> `hub`; layer 3 `secret` -> `connector` ->
-`connector-<kind>`; layer 4 (`config-hcl`, `config`) -> `ops` -> `node`.
+`connector-<kind>`; layer 4 (`config-hcl`, `config`) -> `ops` -> `node` -> `sdk`.
 
 | Layer | Crate | Job (one sentence) | Allowed dependencies |
 | --- | --- | --- | --- |
