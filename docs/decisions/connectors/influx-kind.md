@@ -106,9 +106,9 @@
   once, and the run takes it. `Config` is opaque, as in `opcua` and `modbus`: only
   `parse` makes one, so each `Config` holds checked names (`laptop.architect-2`,
   2026-10-16T17:27:53Z:
-  https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6221027616). Its
-  condition: whichever of this change and #2888 merges second makes `Config::ca`
-  `pub(crate)` too. `check` gives the reader of its settings and no written channel.
+  https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6221027616).
+  #2888 merged first, so this change makes `Config::ca` `pub(crate)` too. `check`
+  gives the reader of its settings and no written channel.
   `run` writes each frame of the reader to the write path of its target: one line for
   each sample time, with a field for each channel of the frame, keyed by the channel
   name. A NaN or infinite value is left out, and so is a line with no other value. A
@@ -235,9 +235,9 @@
   reader's index. The `lost` of `opcua` counts data samples (OPCUA KIND). The ruling did
   not take a count of all out kinds in `connector`, as the supervisor does not see the
   frames of a kind's reader. The trigger to make it is a second out kind (6199058253).
-  Both counts hold across the runs of one call (SUPERVISOR). The person gave the choice
-  of the path to the architects on 2026-10-15 ("Best devx possible. You choose the
-  path", through `laptop.monitor`:
+  The three counts hold across the runs of one call (SUPERVISOR). The person gave the
+  choice of the path to the architects on 2026-10-15 ("Best devx possible. You choose
+  the path", through `laptop.monitor`:
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922).
   `laptop.architect` gave the count of lost seqs, and `laptop.architect-2` ruled its
   shape on 2026-10-15T18:13:22Z
