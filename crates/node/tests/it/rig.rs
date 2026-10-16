@@ -117,6 +117,7 @@ impl Rig {
     /// when the node exits before it prints a line, or when 90 s pass first.
     pub(crate) fn start_with(&mut self, args: &[&str]) {
         assert!(self.node.is_none(), "a node runs");
+        let from = std::time::Instant::now();
         let command = self.starting(&[&["start"], args].concat());
         // The node reads no input.
         let (mut node, _) = Running::new(command);
@@ -126,7 +127,10 @@ impl Rig {
             None => Err(node.seen()),
         });
         match started {
-            Ok(None) => self.node = Some(node),
+            Ok(None) => {
+                split("start", from);
+                self.node = Some(node)
+            }
             Ok(Some(status)) => {
                 panic!("the node exited with {status}:\n{}", node.seen())
             }
@@ -141,13 +145,17 @@ impl Rig {
     /// exits and closes its pipes. Panics when no node runs, or when 90 s pass first.
     #[cfg(unix)]
     pub(crate) fn stop(&mut self) -> Output {
+        let from = std::time::Instant::now();
         let mut node = self.node.take().expect("a node runs");
         node.process.term();
         let ended = poll(&self.clock, PATIENCE, || {
             node.ended().ok_or_else(|| node.seen())
         });
         match ended {
-            Ok(status) => node.output(status),
+            Ok(status) => {
+                split("stop", from);
+                node.output(status)
+            }
             Err(seen) => {
                 node.process.end();
                 late("the node exits at SIGTERM", PATIENCE, &seen)
@@ -1361,4 +1369,14 @@ fn create_tree(run: u32, dirs: u32, files: u32) -> PathBuf {
         }
     }
     dir
+}
+
+/// Measure only (#2748): writes the time of a start or a stop to the standard error
+/// of the test binary, which libtest does not capture.
+fn split(what: &str, from: std::time::Instant) {
+    use std::io::Write as _;
+    let name = std::thread::current().name().unwrap_or("?").to_owned();
+    let secs = from.elapsed().as_secs_f64();
+    let line = format!("split\t{name}\t{what}\t{secs:.3}\n");
+    std::io::stderr().write_all(line.as_bytes()).expect("write the split");
 }
