@@ -1,18 +1,18 @@
-//! Gives the block of a point through `Table::block`, with kinds of this file.
+//! Gives the blocks of a point through `Table::block`, with kinds of this file.
 
-use connector::browse::Facts;
-use connector::import::fill;
+use connector::browse::{Access, Facts};
 use connector::kind::{Channels, Context, Error, Kind, Table};
 use document::diagnostic::{Code, Diagnostic};
 use document::value::{self, Value};
 use document::{Attribute, Block, Document, Label, Map};
 use types::name::Name;
 
-/// A kind whose block of a point is `read "<channel>" { tag = "<tag>", unit = ... }`,
-/// with `fill("the unit")` for a unit that the device does not give.
-struct Reads;
+/// A kind whose blocks of a point are `read "<channel>" { tag = "<tag>" }`, a `write`
+/// block in its place for a point that a connector can only write, and both for a
+/// point that it can read and write.
+struct Points;
 
-impl Kind for Reads {
+impl Kind for Points {
     type Config = ();
 
     fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
@@ -32,16 +32,20 @@ impl Kind for Reads {
         tag: &str,
         facts: &Facts,
         channel: &Name,
-    ) -> Result<Document, Error> {
-        let unit = facts
-            .unit
-            .as_deref()
-            .map_or_else(|| fill("the unit"), string);
-        Ok(read(channel, tag, unit))
+    ) -> Result<Vec<Block>, Vec<Diagnostic>> {
+        let keywords: &[&str] = match facts.access {
+            None | Some(Access::Read) => &["read"],
+            Some(Access::Write) => &["write"],
+            Some(Access::ReadWrite) => &["read", "write"],
+        };
+        Ok(keywords
+            .iter()
+            .map(|keyword| point(keyword, channel, tag))
+            .collect())
     }
 }
 
-/// A kind with no block.
+/// A kind with no blocks.
 struct Blind;
 
 impl Kind for Blind {
@@ -60,82 +64,62 @@ impl Kind for Blind {
     }
 }
 
-fn string(text: &str) -> Value {
-    Value {
-        kind: value::Kind::String(text.into()),
-        span: None,
-    }
-}
-
-/// `read "<channel>" { tag = "<tag>", unit = <unit> }`.
-fn read(channel: &Name, tag: &str, unit: Value) -> Document {
-    let attribute = |key: &str, value| Attribute {
-        key: key.into(),
+/// `<keyword> "<channel>" { tag = "<tag>" }`.
+fn point(keyword: &str, channel: &Name, tag: &str) -> Block {
+    let tag = Attribute {
+        key: "tag".into(),
         key_span: None,
-        value,
-    };
-    let body = Document {
-        attributes: Map::new(vec![
-            attribute("tag", string(tag)),
-            attribute("unit", unit),
-        ])
-        .expect("distinct keys"),
-        blocks: Vec::new(),
+        value: Value {
+            kind: value::Kind::String(tag.into()),
+            span: None,
+        },
     };
     let label = Label {
         text: channel.as_str().into(),
         span: None,
     };
-    Document {
-        attributes: Map::default(),
-        blocks: vec![Block {
-            keyword: "read".into(),
-            keyword_span: None,
-            labels: vec![label],
-            body,
-            span: None,
-        }],
+    Block {
+        keyword: keyword.into(),
+        keyword_span: None,
+        labels: vec![label],
+        body: Document {
+            attributes: Map::new(vec![tag]).expect("one key"),
+            blocks: Vec::new(),
+        },
+        span: None,
     }
 }
 
 fn table() -> Table {
-    Table::new().with("blind", Blind).with("reads", Reads)
+    Table::new().with("blind", Blind).with("points", Points)
 }
 
 fn channel() -> Name {
     "plc.Line1.Temp".parse().expect("a valid name")
 }
 
-/// The one diagnostic of a config error.
-fn diagnostic(result: Result<Document, Error>) -> Diagnostic {
-    match result {
-        Err(Error::Config(mut diagnostics)) if diagnostics.len() == 1 => {
-            diagnostics.remove(0)
-        }
-        other => panic!("not one config diagnostic: {other:?}"),
+fn facts(access: Option<Access>) -> Facts {
+    Facts {
+        access,
+        ..Facts::default()
     }
 }
 
 #[test]
-fn gives_the_block_of_the_kind() {
-    let facts = Facts {
-        unit: Some("degC".into()),
-        ..Facts::default()
-    };
-    let block = table().block("reads", "ns=2;s=T1", &facts, &channel());
-    assert_eq!(
-        block.ok(),
-        Some(read(&channel(), "ns=2;s=T1", string("degC")))
-    );
+fn gives_the_blocks_of_the_kind() {
+    let blocks = table().block("points", "ns=2;s=T1", &facts(None), &channel());
+    assert_eq!(blocks, Ok(vec![point("read", &channel(), "ns=2;s=T1")]));
 }
 
 #[test]
-fn fills_a_fact_that_the_device_does_not_give() {
-    let block = table().block("reads", "ns=2;s=T1", &Facts::default(), &channel());
-    assert_eq!(
-        block.ok(),
-        Some(read(&channel(), "ns=2;s=T1", fill("the unit")))
-    );
+fn gives_each_block_that_the_kind_gives_for_a_point() {
+    let access = Some(Access::ReadWrite);
+    let blocks = table().block("points", "ns=2;s=T1", &facts(access), &channel());
+    let expected = vec![
+        point("read", &channel(), "ns=2;s=T1"),
+        point("write", &channel(), "ns=2;s=T1"),
+    ];
+    assert_eq!(blocks, Ok(expected));
 }
 
 #[test]
@@ -147,7 +131,7 @@ fn refuses_a_kind_that_cannot_write_a_block() {
         "this connector kind cannot write the block of a point".into(),
         "Write the blocks of the points by hand".into(),
     );
-    assert_eq!(diagnostic(result), expected);
+    assert_eq!(result, Err(vec![expected]));
 }
 
 #[test]
@@ -157,7 +141,7 @@ fn refuses_a_kind_that_the_build_does_not_have() {
         Code::new("connector.unknown-kind"),
         None,
         r#"this build has no connector kind "modbus""#.into(),
-        r#"Use one of ["blind", "reads"]"#.into(),
+        r#"Use one of ["blind", "points"]"#.into(),
     );
-    assert_eq!(diagnostic(result), expected);
+    assert_eq!(result, Err(vec![expected]));
 }

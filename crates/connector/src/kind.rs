@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 
 use document::diagnostic::{Code, Diagnostic};
-use document::{Document, Span};
+use document::{Block, Document, Span};
 use env::clock::Clock;
 use env::net::Net;
 use env::rng::Rng;
@@ -67,27 +67,30 @@ pub trait Kind: Send + Sync + 'static {
         ctx: Context<Self::Config>,
     ) -> impl Future<Output = Result<(), Error>>;
 
-    /// The attributes and blocks to add to the body of the connector block, so that
-    /// it reads the point `tag` as the channel `channel`. `tag` and `facts` are those
-    /// of a [`browse::Shape::Point`] that a browse of the kind gave. For each fact
-    /// that the blocks need and `facts` does not have, they hold
+    /// The blocks to add to the body of the connector block, so that it reads or
+    /// writes the point `tag` as the channel `channel`. `tag` and `facts` are those of
+    /// a [`browse::Shape::Point`] that a browse of the kind gave. The blocks hold only
+    /// how the kind reaches the point, such as the tag and `facts.access`: the
+    /// `channel` block holds the sample type and the unit. For each value that the
+    /// blocks need and the device does not give, they hold
     /// [`fill`](crate::import::fill).
     ///
     /// # Errors
     ///
-    /// The default gives [`Error::Config`] with `connector.no-import`.
+    /// The default gives `connector.no-import`.
     fn block(
         &self,
         tag: &str,
         facts: &browse::Facts,
         channel: &Name,
-    ) -> Result<Document, Error> {
+    ) -> Result<Vec<Block>, Vec<Diagnostic>> {
         let _: (&str, &browse::Facts, &Name) = (tag, facts, channel);
-        Err(config_error(
+        Err(vec![Diagnostic::new(
             NO_IMPORT,
-            &"this connector kind cannot write the block of a point",
-            "Write the blocks of the points by hand",
-        ))
+            None,
+            "this connector kind cannot write the block of a point".into(),
+            "Write the blocks of the points by hand".into(),
+        )])
     }
 
     /// Browses the device of the connector block `ctx.config()` as `query` asks. A
@@ -131,8 +134,8 @@ pub struct Channels {
 /// Why a run or a discovery stopped. One handler for each variant.
 #[derive(Debug)]
 pub enum Error {
-    /// Not retried: a browse, a discover, or an import fails, and a run stops until
-    /// the next spec change.
+    /// Not retried: a browse or a discover fails, and a run stops until the next spec
+    /// change.
     Config(Vec<Diagnostic>),
     /// The device or endpoint is in a bad state. Restarted with backoff.
     Device(Box<dyn std::error::Error + Send + Sync>),
@@ -467,16 +470,15 @@ impl Table {
     ///
     /// # Errors
     ///
-    /// The kind's error, or [`Error::Config`] with `connector.unknown-kind`.
+    /// The kind's diagnostics, or `connector.unknown-kind`.
     pub fn block(
         &self,
         kind: &str,
         tag: &str,
         facts: &browse::Facts,
         channel: &Name,
-    ) -> Result<Document, Error> {
-        let kind = self.get(kind, None).map_err(Error::Config)?;
-        kind.block(tag, facts, channel)
+    ) -> Result<Vec<Block>, Vec<Diagnostic>> {
+        self.get(kind, None)?.block(tag, facts, channel)
     }
 
     /// Browses with `kind` as `query` asks.
@@ -735,7 +737,7 @@ trait Erased: Send + Sync {
         tag: &str,
         facts: &browse::Facts,
         channel: &Name,
-    ) -> Result<Document, Error>;
+    ) -> Result<Vec<Block>, Vec<Diagnostic>>;
 }
 
 impl<K: Kind> Erased for K {
@@ -772,7 +774,7 @@ impl<K: Kind> Erased for K {
         tag: &str,
         facts: &browse::Facts,
         channel: &Name,
-    ) -> Result<Document, Error> {
+    ) -> Result<Vec<Block>, Vec<Diagnostic>> {
         Kind::block(self, tag, facts, channel)
     }
 }
