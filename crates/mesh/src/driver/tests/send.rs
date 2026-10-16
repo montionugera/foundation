@@ -755,3 +755,15 @@ fn a_proposal_whose_write_waits_gives_a_removed_stop() {
     let expected = (Some(Err(Error::Stopped(removed.clone()))), Err(removed));
     assert_eq!(outcome.lock().unwrap().take(), Some(expected));
 }
+
+#[test]
+#[should_panic(
+    expected = "invariant: each message of the mesh fits a block of its pool"
+)]
+fn a_message_that_no_block_of_the_pool_fits_panics() {
+    let budget = block::Config::new(0).expect("the budget fits");
+    let memory = block::Heap::new(budget.reservation());
+    let pool = Pool::new(budget, memory);
+    let message = common::message(1, 2, Body::Heartbeat { commit: 0 });
+    drop(crate::driver::send::copy(&pool, message));
+}
