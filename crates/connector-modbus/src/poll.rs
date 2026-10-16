@@ -220,9 +220,9 @@ fn value(
         Order::Big => slots.zip(words.rev()).for_each(put),
         Order::Little => slots.zip(words).for_each(put),
     }
-    let sample = sample
-        .get(..scalar.width())
-        .expect("invariant: a register value is at most 8 bytes");
+    let sample = sample.get(..scalar.width()).unwrap_or_else(|| {
+        panic!("invariant: `Read::new` gives no register read of {scalar:?}")
+    });
     Value::read(scalar, sample)
 }
 
