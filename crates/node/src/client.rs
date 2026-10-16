@@ -15,9 +15,10 @@ const POOL: block::Config = match block::Config::new(1 << 21) {
     Err(_) => panic!("invariant: the budget fits"),
 };
 
-/// The budget of the pool of the frames of the session's reads. Its largest block is
-/// the largest frame that a read takes: a larger one gives `program::Error::Pool`.
-const FRAMES: block::Config = match block::Config::new(1 << 21) {
+/// The budget of the pool of the frames of the session's reads. No command reads yet,
+/// so it is small. Its largest block is the largest frame that a read takes: a larger
+/// one gives `program::Error::Pool`.
+const FRAMES: block::Config = match block::Config::new(64 << 10) {
     Ok(config) => config,
     Err(_) => panic!("invariant: the budget fits"),
 };

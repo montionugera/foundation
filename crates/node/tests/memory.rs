@@ -2,9 +2,8 @@
 //!
 //! - `node::name` on a data directory with no file `name` and no mesh directory makes
 //!   no pool for the read of a founding, whose reservation is over 2 MiB.
-//! - `node::client::reach` makes two pools, one for its transport and its
-//!   `program::Session` and one for the frames of the session's reads, each of which
-//!   reserves at most 128 MiB.
+//! - `node::client::reach` makes one pool for its transport and its
+//!   `program::Session`, which reserves at most 128 MiB.
 //!
 //! The count covers each thread, so this binary has no test harness.
 
@@ -23,7 +22,7 @@ static ALLOCATOR: counting::Bytes = counting::Bytes::new();
 const NAME_BOUND: usize = 64 << 10;
 
 /// The most bytes that `node::client::reach` may hold at once.
-const REACH_BOUND: usize = 1 << 28;
+const REACH_BOUND: usize = 1 << 27;
 
 fn main() {
     name();
