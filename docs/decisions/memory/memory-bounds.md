@@ -12,12 +12,12 @@
   two partial pages per class stay resident, and `Config::budget` states that slack. An
   idle class that no allocation presses keeps its pages until the purge after idle. A
   class that a reader keeps partly in use kept its budget: the person accepted this
-  (design H) on 2026-10-05 ("Ok fine"), #2, #270. Amended (#2810; this supersedes the design H sentence
-  before it, #270; `laptop.architect`, 2026-10-16T19:23:50Z:
-  https://github.com/synnaxlabs/foundation/pull/2907#issuecomment-6223028676): when the sizes with
-  no block in use do not cover an allocation, the pool gives back the payload pages of
-  free blocks of the other sizes, and credits the budget by the whole pages of each
-  payload. It gives back no page unless all of these together cover the allocation.
+  (design H) on 2026-10-05 ("Ok fine"), #2, #270. Amended (#2810; this supersedes the
+  design H sentence before it, #270; `laptop.architect`, 2026-10-16T19:23:50Z:
+  https://github.com/synnaxlabs/foundation/pull/2907#issuecomment-6223028676): when the
+  sizes with no block in use do not cover an allocation, the pool gives back the payload
+  pages of free blocks of the other sizes, and credits the budget by the whole pages of
+  each payload. It gives back no page unless all of these together cover the allocation.
   Each such block keeps its header and the partial pages at the ends of its payload,
   with their budget. It gives back its pages with a discard, which keeps their
   protection and their commit charge, so it splits no mapping. An allocation of its
