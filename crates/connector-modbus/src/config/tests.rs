@@ -279,7 +279,7 @@ fn refuses_a_bad_table_or_register_address() {
             string("holding"),
             Value::Integer(-1),
             refused(
-                "modbus.bad-register",
+                "modbus.bad-read-address",
                 33,
                 "the address -1 is not 0 to 65535",
                 address_fix,
@@ -289,7 +289,7 @@ fn refuses_a_bad_table_or_register_address() {
             string("holding"),
             Value::Integer(65536),
             refused(
-                "modbus.bad-register",
+                "modbus.bad-read-address",
                 33,
                 "the address 65536 is not 0 to 65535",
                 address_fix,
@@ -299,7 +299,7 @@ fn refuses_a_bad_table_or_register_address() {
             string("holding"),
             string("40001"),
             refused(
-                "modbus.bad-register",
+                "modbus.bad-read-address",
                 33,
                 "an address is an integer, not a string",
                 address_fix,

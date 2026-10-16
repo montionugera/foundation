@@ -56,7 +56,7 @@ impl kind::Kind for Kind {
         future::ready(Ok(Vec::new()))
     }
 
-    #[expect(clippy::todo, reason = "dark: `node` has no table line for the kind")]
+    #[expect(clippy::todo, reason = "a stub until PR B2 of #432")]
     async fn run(&self, _: Context<Config>) -> Result<(), Error> {
         todo!("waits on PR B2 of #432")
     }

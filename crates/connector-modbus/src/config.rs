@@ -20,7 +20,7 @@ const BAD_ADDRESS: Code = Code::new("modbus.bad-address");
 const BAD_UNIT: Code = Code::new("modbus.bad-unit");
 const BAD_ORDER: Code = Code::new("modbus.bad-order");
 const BAD_TABLE: Code = Code::new("modbus.bad-table");
-const BAD_REGISTER: Code = Code::new("modbus.bad-register");
+const BAD_READ_ADDRESS: Code = Code::new("modbus.bad-read-address");
 const NO_READ: Code = Code::new("modbus.no-read");
 const REPEATED_CHANNEL: Code = Code::new("modbus.repeated-channel");
 
@@ -229,7 +229,7 @@ fn word<T: Copy>(value: &Value, items: &[(&str, T)]) -> Option<T> {
 }
 
 /// Reads the address of a read: a whole number, 0 to 65535.
-fn register(value: &Value) -> Result<u16, Diagnostic> {
+fn read_address(value: &Value) -> Result<u16, Diagnostic> {
     let message = match &value.kind {
         Of::Integer(address) => match u16::try_from(*address) {
             Ok(address) => return Ok(address),
@@ -238,7 +238,7 @@ fn register(value: &Value) -> Result<u16, Diagnostic> {
         other => format!("an address is an integer, not {}", other.noun()),
     };
     Err(Diagnostic::new(
-        BAD_REGISTER,
+        BAD_READ_ADDRESS,
         value.span,
         message,
         "Write the address of the protocol, from 0, such as 40 for the 41st holding \
@@ -305,7 +305,7 @@ fn reads(config: &Document, diagnostics: &mut Vec<Diagnostic>) -> Vec<Read> {
             OF,
             block.keyword_span,
             "address",
-            register,
+            read_address,
             "Add an `address` attribute with the address of the value, such as 40"
                 .into(),
         );
