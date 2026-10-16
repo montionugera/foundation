@@ -89,7 +89,7 @@ impl Deadline {
         let entries = self.firsts.iter_mut().take(appended).zip(0..);
         self.batch.extend(entries.map(|(first, n)| {
             let entry = Entry {
-                index: channel::Key::from_u128(u128::from(n) + 1),
+                index: channel::Key::from_u128(n.into()),
                 slot: Slot::new(n),
                 path: Path::Live,
                 first: *first,
