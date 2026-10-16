@@ -65,7 +65,9 @@
   value is left out, and so is a line with no other value. Until #2555, only `f64`
   channels are written: another type ends the run with `Error::Config` and
   `influx.sample-type`, and a channel name that is not a field key with
-  `influx.bad-channel`. The run writes no gap line until #341. One request is in flight
+  `influx.bad-channel`. Before the lines of a frame whose `Received::gap` is not
+  `None`, the run writes its gap line with `path=live` at the stamp of the frame's
+  first sample (INFLUX SEQ AND GAPS), in the same batch. One request is in flight
   at a time. While it is, the run reads the next batch, up to 5,000 lines, and a frame
   goes in whole. The run keeps the field of each channel that it saw in the frames of
   one key set. A frame of another key set builds them again, as the `hub` reader builds
@@ -76,8 +78,18 @@
   a batch only after a 204. Each other answer, and each failed request, keeps the
   batch, shows its text with `Context::error`, and sends the batch again after a
   `retry::Backoff` of 1 s to 1 min. A 204 clears the error, and adds the fields of the
-  batch to the count `confirmed` with `Count::add`. The count holds across the runs of
-  one call (SUPERVISOR). A NaN or infinite sample writes no field and is not counted
+  batch to the count `confirmed` with `Count::add`, and the `count` of each gap line
+  of the batch to the count `lost`: the seqs that the gap lines of this connector
+  count, which InfluxDB took with a 204. A batch sent again counts once. A gap that the
+  reader reports again after a restart counts again, so `lost` is an upper bound, as
+  the sum of `count` in `foundation_gaps` is. Each later out kind names the same count
+  `lost`. Both counts hold across the runs of one call (SUPERVISOR). The person
+  approved a count of lost seqs on 2026-10-15 ("Best devx possible. You choose the
+  path", through `laptop.monitor`), and `laptop.architect-2` ruled its shape on
+  2026-10-15T18:13:22Z
+  (https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199058253) and
+  the gap lines of the run on 2026-10-15T18:20:15Z
+  (https://github.com/synnaxlabs/foundation/issues/2725#issuecomment-6199190890). A NaN or infinite sample writes no field and is not counted
   (#2559, the plan that `laptop.architect-2` approved on 2026-10-13T09:52:20Z:
   https://github.com/synnaxlabs/foundation/issues/2559#issuecomment-6142931456). A
   batch whose request takes longer than the timeout of 10 s is sent again with no end,
