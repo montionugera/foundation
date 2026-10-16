@@ -79,9 +79,10 @@
   `deadline_carry` of `benches/wal.rs`, on the ring of ID 64. `commit` appends one entry
   of 100 bytes of each index but the last, which appends one each `period` deadlines.
   Then it does the work of the commit task at a deadline with `trimmed`, in the order of
-  `run`: the fit and take of the group, `State::deadline` (the take, the checkpoint, and
-  the carry record), `seal`, and `State::synced`, with no file write. So a time holds
-  the cost of the commit path of a buffer that trims for each deadline, and
+  `run`: the fit and take of the group, `State::deadline` (the take, the checkpoint, the
+  carry record, and the seal of the records), and `State::synced`, with no file write.
+  `new` refuses more than 54 indexes, whose group is over a body of two blocks. So a
+  time holds the cost of the commit path of a buffer that trims for each deadline, and
   `deadline_carry` that of a carry record of 32 tails. `benches/logs.rs` also gets the
   case `lap_shrink` of 10000 paths, which times only the commit that ends the lap of
   each path, with 2756 shrinks. Lost: a sim `Buffer` over a sim file, timed from
