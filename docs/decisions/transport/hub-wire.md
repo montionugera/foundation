@@ -293,3 +293,12 @@
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204591536, with
   `due` in place of its `layout` and `body` at 2026-10-16T00:11:01Z:
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204972440).
+  A program's reader has no `Behind` error: after #2723 and #2725 no case gives it
+  (`laptop.architect`, 2026-10-16T00:46:53Z,
+  https://github.com/synnaxlabs/foundation/issues/2725#issuecomment-6205434126). Until
+  #2790 makes `wire` refuse it, `program` gives `Error::Reply` of
+  `wire::hub::Error::Kind { kind: 3 }` for a `Step::Behind`, and never calls
+  `Frames::finished` after it (`laptop.architect`, 2026-10-16T01:51:28Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6206217799; lost:
+  a hold of the program reader on #2725 and #2790, and a public variant of `program`
+  that no case gives).

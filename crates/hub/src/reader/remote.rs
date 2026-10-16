@@ -673,12 +673,16 @@ async fn handshake(
         })
         .await?;
     }
+    let reader = wire::hub::Reader::new(open);
     match receiver.recv().await {
         Ok(Some(message)) => {
-            Frames::open(wire::hub::Reader::new(open), Arc::clone(set), &message)
-                .map_err(Error::Message)
+            Frames::open(reader, Arc::clone(set), &message).map_err(Error::Message)
         }
-        Ok(None) => Err(Error::Message(wire::hub::Error::Finished)),
+        Ok(None) => Err(Error::Message(
+            reader
+                .end()
+                .expect_err("a reader before opened may not end"),
+        )),
         Err(error) => Err(refused(error).map_or_else(Error::Transport, Error::Refused)),
     }
 }

@@ -344,6 +344,8 @@ dependencies = [
 name = "connector-modbus"
 version = "0.0.0"
 dependencies = [
+ "connector",
+ "document",
  "env",
  "types",
 ]
@@ -898,7 +900,11 @@ dependencies = [
  "os",
  "program",
  "secret",
+ "serde",
+ "serde_json",
  "spec",
+ "tracing",
+ "tracing-subscriber",
  "transport",
  "types",
  "wire",
@@ -977,6 +983,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spec",
+ "tracing",
  "types",
  "wire",
 ]

@@ -33,7 +33,7 @@ pub use front_end::{FrontEnd, FrontEnds};
 pub use node::{Config, Node};
 use operation::Parsed;
 pub use serve::serve;
-pub use start::Start;
+pub use start::{Log, Start};
 
 /// What the process does once [`cli`] returns.
 #[derive(Debug, PartialEq, Eq)]

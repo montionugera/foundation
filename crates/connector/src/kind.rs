@@ -1071,14 +1071,16 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "the secret secret(\"plant.influx_token\"): the file \
-             /data/secrets/plant.influx_token is not there. Write the value to it"
+             /data/secrets/plant.influx_token is not there. Write the value to it, \
+             unreadable by other users: chmod o-r /data/secrets/plant.influx_token"
         );
         let source = error.source().map(ToString::to_string);
         assert_eq!(
             source.as_deref(),
             Some(
                 "the file /data/secrets/plant.influx_token is not there. Write the \
-                 value to it"
+                 value to it, unreadable by other users: chmod o-r \
+                 /data/secrets/plant.influx_token"
             )
         );
         assert_eq!(read.expect("the store has the value"), b"t0");

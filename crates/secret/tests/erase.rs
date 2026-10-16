@@ -4,13 +4,16 @@
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
 use std::hint::black_box;
+use std::path::Path;
 use std::pin::pin;
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use aws_lc_rs::agreement::{self, PrivateKey, UnparsedPublicKey, X25519};
-use secret::Value;
+use env::files::Mode;
 use secret::seal::{Opener, seal};
 use secret::store::{Sealed, Store};
+use secret::{Error, Resolver, Source, Value};
 use types::name::Name;
 
 #[global_allocator]
@@ -68,6 +71,52 @@ fn main() {
         found, 0,
         "put and get leave the shared secret in no freed block"
     );
+
+    let (refused, found) = refused();
+    assert_eq!(found, 0, "a refused get leaves the value in no freed block");
+    let exposed = "other users can read the file /data/secrets/site.token. Make it \
+                   unreadable by other users: chmod o-r /data/secrets/site.token";
+    assert_eq!(
+        refused,
+        Err(Error::Unavailable {
+            detail: exposed.into()
+        }),
+        "the store refuses a file that others can read"
+    );
+}
+
+/// A get of the file store, on the sim disk, of a file that holds `PLAIN` and that
+/// other users can read. Gives what it gave and the count of freed
+/// blocks that hold `PLAIN` during the get.
+fn refused() -> (Result<(), Error>, u64) {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    let path = Path::new("secrets/site.token");
+    let put = sim.run_on(&node, move |node, _| async move {
+        let files = node.files();
+        files
+            .create_dir(Path::new("secrets"))
+            .await
+            .expect("makes it");
+        let len = u64::try_from(PLAIN.len()).expect("fits");
+        let file = files.open(path, Mode::Create { len }).await;
+        let file = file.expect("makes it");
+        let pool = block::Pool::heap(block::Config::new(1 << 18).expect("fits"));
+        let block = pool.copy(&PLAIN).expect("holds it");
+        file.write_at(0, &[block]).await.expect("writes it");
+        file.close().await;
+        node.expose_file(path);
+    });
+    put.expect("the run ends");
+    ALLOCATOR.freed_holding(&PLAIN, || {
+        let get = sim.run_on(&node, |node, _| async move {
+            let resolver =
+                Resolver::new(Arc::default(), node.files(), Path::new("secrets"));
+            let source = Source::Secret("site.token".parse().expect("a valid name"));
+            resolver.get(&source).await.map(drop)
+        });
+        get.expect("the run ends")
+    })
 }
 
 /// The X25519 shared secret of the node key `own` and the encapsulated key that
