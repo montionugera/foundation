@@ -737,3 +737,22 @@
   of the resolve error of a path: a tool can learn whether a directory outside the
   folders is there. Decided by `laptop.architect-2` (2026-10-16T05:41:58Z, items 1
   and 2 of https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6208939762).
+  Amended (2026-10-16T06:56:55Z, #2526): a resolve and a read on `sim` through a
+  directory that is not there, or of a link to nothing, give `NotFound`, as `os` does,
+  and `sim::Node::make_dir` makes an empty directory. `Paths::home` stays a call of
+  the driver, since the home is an OS fact with its own fallbacks, not only `HOME`. On
+  a file system that ignores case, a hidden folder that is not there yet does not hide
+  a name in other case, because a resolve keeps a last name that is not there as
+  given. Deferred to PR 1 of #2526: `within` gives `Error::NotFound` for a hidden
+  folder that is not there, and `foundation mcp` makes the data directory before its
+  `within`. Decided by `laptop.architect-2` (2026-10-16T06:56:55Z, items 1 to 5, A,
+  and B of https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6209932709).
+  Amended (2026-10-16T07:11:58Z, #2526): `sim` keeps each directory as an entry, in
+  place of "a directory is there while a file is under it". A write on `sim` through a
+  directory that is not there, or on a link to nothing, gives `NotFound`, as `os` and
+  `Paths::write` give, so a test makes each directory with `sim::Node::make_dir`
+  before it writes under it. `sim::Node::link_path` and `make_dir` make each directory
+  above their path. On macOS, `os` gives `ENOTDIR` for a resolve that ends in `/`,
+  `/.`, or `/..` after a file, also through a link, as Linux does, because it stats the
+  path after `canonicalize`. Lost: a write on `sim` that makes its directories, where
+  `os` and `within` give `NotFound`. Decided by `laptop.architect-2` (approval owed).
