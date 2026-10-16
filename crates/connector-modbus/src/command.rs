@@ -31,7 +31,7 @@ impl Write {
         sample: Type,
         order: Order,
     ) -> Result<Self, poll::Error> {
-        if matches!(table, Table::DiscreteInputs | Table::InputRegisters) {
+        if table.read_only() {
             return Err(poll::Error::ReadOnly { table });
         }
         Ok(Self {
