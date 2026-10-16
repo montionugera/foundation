@@ -8,7 +8,7 @@ use hub::writer::Time;
 use types::authority::Authority;
 use types::frame::{self, Draft, Form, Label, Path, key_set};
 use types::name::Name;
-use types::sample::{Type, Value};
+use types::sample::{Scalar, Type, Value};
 use types::time::Stamp;
 
 use crate::kind::{Context, Error};
@@ -77,7 +77,8 @@ struct Fill {
     /// The position of the channel of the entry, or `None` for an index, whose sample
     /// is the stamp.
     channel: Option<usize>,
-    sample: Type,
+    /// The type of the samples of the entry, or `None` when they are not scalars.
+    scalar: Option<Scalar>,
 }
 
 impl Writer {
@@ -105,11 +106,12 @@ impl Writer {
         for ((channel, &entry), name) in
             writer.entries().iter().enumerate().zip(&channels)
         {
-            if set.groups().contains(&entry) {
+            if set.index(entry) == entry {
                 wrong.push(index(name));
             } else if channel_of[entry].replace(channel).is_some() {
                 panic!(
-                    "invariant: the parse of the kind refuses the channel `{name}` again"
+                    "invariant: the parse of the kind refuses the channel `{name}` \
+                     again"
                 );
             }
         }
@@ -125,10 +127,14 @@ impl Writer {
                 if channel.is_some() {
                     samples[to_usize(group)] += 1;
                 }
+                let scalar = match data_type {
+                    Type::Scalar(scalar) => Some(scalar),
+                    _ => None,
+                };
                 Fill {
                     group,
                     channel,
-                    sample: data_type,
+                    scalar,
                 }
             })
             .collect();
@@ -143,6 +149,7 @@ impl Writer {
             samples,
             groups,
         };
+        let [applied, lost] = COUNTS;
         Ok(Self {
             again: Vec::with_capacity(all.series.len()),
             backwards: Vec::with_capacity(all.samples.len()),
@@ -150,8 +157,8 @@ impl Writer {
             all,
             fills,
             stamps: Stamps::default(),
-            applied: ctx.count(COUNTS[0]),
-            lost: ctx.count(COUNTS[1]),
+            applied: ctx.count(applied),
+            lost: ctx.count(lost),
             hub: writer,
         })
     }
@@ -176,9 +183,9 @@ impl Writer {
     }
 
     /// Writes one frame at `stamp` with the value of each channel, in order, and leaves
-    /// out each `None`. Writes no frame when it keeps none. A group that the home refuses as `Backwards` is
-    /// written again once, after the stamp that the refusal gives. A frame for which
-    /// the pool has no block now loses its samples.
+    /// out each `None`. Writes no frame when it keeps none. A group that the home
+    /// refuses as `Backwards` is written again once, after the stamp that the refusal
+    /// gives. A frame for which the pool has no block now loses its samples.
     ///
     /// # Errors
     ///
@@ -409,11 +416,11 @@ fn fill(
 ) {
     for (entry, bytes) in draft.iter_mut() {
         let Fill {
-            channel, sample, ..
+            channel, scalar, ..
         } = fills[entry];
         match channel {
             None => Value::Stamp(stamp).write(bytes),
-            Some(channel) => value(values, channel, sample).write(bytes),
+            Some(channel) => value(values, channel, scalar).write(bytes),
         }
     }
     for &group in groups {
@@ -422,11 +429,11 @@ fn fill(
 }
 
 /// The value of the channel at `at`, which a frame keeps, and whose samples are of
-/// type `sample`.
-fn value(values: &[Option<Value>], at: usize, sample: Type) -> Value {
+/// type `scalar`, or not scalars for `None`.
+fn value(values: &[Option<Value>], at: usize, scalar: Option<Scalar>) -> Value {
     let value = values[at].unwrap_or_else(|| left_out(at));
-    if Type::Scalar(value.scalar()) != sample {
-        mistyped(at, value, sample);
+    if Some(value.scalar()) != scalar {
+        mistyped(at, value, scalar);
     }
     value
 }
@@ -442,8 +449,10 @@ fn left_out(at: usize) -> ! {
 /// As [`left_out`].
 #[cold]
 #[inline(never)]
-fn mistyped(at: usize, value: Value, sample: Type) -> ! {
+fn mistyped(at: usize, value: Value, scalar: Option<Scalar>) -> ! {
     let of = Type::Scalar(value.scalar());
+    let sample =
+        scalar.map_or("not scalars".to_owned(), |s| Type::Scalar(s).to_string());
     panic!("invariant: the value of channel {at} is {of}, and its samples are {sample}")
 }
 

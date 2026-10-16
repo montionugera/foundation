@@ -18,7 +18,7 @@ use types::frame::{Draft, Form, Label, Path, key_set};
 use types::name::{Name, Selector};
 use types::sample::Value::{F64, U16};
 use types::sample::{Scalar, Type, Value};
-use types::time::Span;
+use types::time::{Span, Stamp};
 
 use super::Writer;
 use crate::cancel;
@@ -456,6 +456,8 @@ async fn rival(
     hub.writer(config).await.expect("opens")
 }
 
+/// The pool has a block for the draft of no write until the third, after the open of
+/// the writer.
 #[test]
 fn loses_the_samples_of_a_frame_for_which_the_pool_has_no_block() {
     let all = [true; 3];
@@ -465,10 +467,11 @@ fn loses_the_samples_of_a_frame_for_which_the_pool_has_no_block() {
         values(3.5, 9, -5, all),
     ];
     let record = run(writes.clone(), (3, 6), |hub, clock, tasks| async move {
-        let rival = rival(&hub, Authority(1), &["plant.a"]).await;
-        let held = fill(&rival);
+        let rival = rival(&hub, Authority(1), &CHANNELS).await;
         tasks.spawn(async move {
-            clock.sleep(Span::from_nanos(250_000_000)).await;
+            clock.sleep(Span::from_nanos(50_000_000)).await;
+            let held = fill(&rival);
+            clock.sleep(Span::from_nanos(200_000_000)).await;
             drop(held);
             drop(rival);
         });
@@ -559,7 +562,8 @@ fn diagnostics(record: &Record) -> Vec<(String, String, String)> {
 #[test]
 fn refuses_a_channel_that_is_an_index() {
     let channels = ["plant.time", "plant.a", "plant.b"];
-    let writes = vec![vec![Some(F64(1.5)), Some(F64(1.5)), Some(Value::I32(-3))]];
+    let stamp = Value::Stamp(Stamp::from_nanos(1));
+    let writes = vec![vec![Some(stamp), Some(F64(1.5)), Some(Value::I32(-3))]];
     let record = run_of(channels, writes, (0, 0), |_, _, _| async {});
     let message = "the channel `plant.time` is an index, which holds the stamp of each \
                    request";
@@ -570,6 +574,26 @@ fn refuses_a_channel_that_is_an_index() {
     );
     let want =
         [want].map(|(code, message, fix)| (code.into(), message.into(), fix.into()));
+    assert_eq!(diagnostics(&record), want);
+    assert_eq!((record.time, record.counts), (Vec::new(), (0, 0)));
+}
+
+#[test]
+fn refuses_each_channel_that_is_an_index_in_order() {
+    let channels = ["plant.time", "plant.a", "plant.clock"];
+    let stamp = Value::Stamp(Stamp::from_nanos(1));
+    let writes = vec![vec![Some(stamp), Some(F64(1.5)), Some(stamp)]];
+    let record = run_of(channels, writes, (0, 0), |_, _, _| async {});
+    let want = ["plant.time", "plant.clock"].map(|name| {
+        let message = format!(
+            "the channel `{name}` is an index, which holds the stamp of each request"
+        );
+        (
+            "connector.index".into(),
+            message,
+            "Write the value to a data channel".into(),
+        )
+    });
     assert_eq!(diagnostics(&record), want);
     assert_eq!((record.time, record.counts), (Vec::new(), (0, 0)));
 }
@@ -597,7 +621,7 @@ fn panics_at_a_value_of_another_type() {
 /// `plant.s` is a `string`, so the `u16` value of its place panics.
 #[test]
 #[should_panic(
-    expected = "invariant: the value of channel 1 is u16, and its samples are string"
+    expected = "invariant: the value of channel 1 is u16, and its samples are not"
 )]
 fn panics_at_a_value_of_a_channel_of_no_fixed_width() {
     let channels = ["plant.a", "plant.s", "plant.b"];
@@ -613,7 +637,7 @@ fn panics_at_a_value_of_a_channel_of_no_fixed_width() {
     expected = "invariant: a frame keeps no value of channel 1, which is `None`"
 )]
 fn panics_with_the_channel_whose_value_is_left_out() {
-    super::value(&[Some(Value::F64(1.0)), None], 1, Type::Scalar(Scalar::F64));
+    super::value(&[Some(Value::F64(1.0)), None], 1, Some(Scalar::F64));
 }
 
 /// One value more than the channels.

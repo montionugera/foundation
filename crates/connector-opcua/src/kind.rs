@@ -29,14 +29,10 @@ const LARGE_READ: Code = Code::new("opcua.large-read");
 /// The counts of the status of each connector: the samples that the home applied,
 /// the ticks that the timer skipped, the samples that a frame lost, and the values
 /// that a frame leaves out as Bad, as Uncertain, and as of another type.
-const COUNTS: [&str; 6] = [
-    poll::COUNTS[0],
-    "missed",
-    poll::COUNTS[1],
-    "bad",
-    "uncertain",
-    "mistyped",
-];
+const COUNTS: [&str; 6] = {
+    let [applied, lost] = poll::COUNTS;
+    [applied, "missed", lost, "bad", "uncertain", "mistyped"]
+};
 
 /// The `opcua` kind: reads the Value of OPC UA nodes at a fixed rate, in Read requests
 /// that each fit one message of the server, and writes at most one frame per tick.
@@ -84,17 +80,23 @@ impl kind::Kind for Kind {
     /// `uncertain`, another one that is not Good adds 1 to `bad`, and one of another
     /// type adds 1 to `mistyped`. The note names the first node of another type of
     /// the latest tick that has one, and a tick with none clears it. A tick that
-    /// leaves out each value writes no frame. After a cancel or an error, the run
-    /// closes its session: it sends `CloseSession`, waits at most 1 s for the answer,
-    /// then closes the connection. So a run ends within 1 s of a cancel.
+    /// leaves out each value writes no frame. When 10 s pass with no read, the run
+    /// reads the state of the server to check the connection. After a cancel or an
+    /// error, the run closes its session: it sends `CloseSession`, waits at most 1 s
+    /// for the answer, then closes the connection. So a run ends within 1 s of a
+    /// cancel.
     ///
     /// # Errors
     ///
     /// The error of [`Context::writer`] and of each failed write. [`Error::Config`]
-    /// with `opcua.sample-type` for each channel whose sample type is not `bool`, `i8`
-    /// to `u64`, `f32`, or `f64`, and with `opcua.large-read` when the Read of one node
-    /// alone is past one message of the server. [`Error::Device`] when the connect or a
-    /// read fails.
+    /// with `connector.index` for each channel that is an index; that error comes
+    /// alone. Else [`Error::Config`] with `opcua.sample-type` for each channel whose
+    /// sample type is not `bool`, `i8` to `u64`, `f32`, or `f64`, and with
+    /// `opcua.large-read` when the Read of one node alone is past one message of the
+    /// server. [`Error::Device`] when the connect, a read, or one check fails: a check
+    /// fails on a Bad status other than `BadNoData` or on no answer in 5 s. Also
+    /// [`Error::Device`], at once, when the client loses its channel or its session
+    /// between two ticks.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         run(ctx)
     }
@@ -138,7 +140,11 @@ async fn read(
         .map_err(|large| large_read(reads, large))?;
     let missed = ctx.count("missed");
     let mut timer = pace::Timer::new(ctx.clock(), ctx.config().rate);
-    while let Some(tick) = client.idle(timer.tick(ctx.cancel())).await {
+    loop {
+        let idle = client.idle(timer.tick(ctx.cancel())).await;
+        let Some(tick) = idle.map_err(|status| device(Failure::Check(status)))? else {
+            break;
+        };
         missed.add(tick.missed);
         let Some((read, stamp)) = ctx
             .cancel()
@@ -226,8 +232,8 @@ impl<'a> Frames<'a> {
     ///
     /// # Errors
     ///
-    /// The error of [`poll::Writer::open`]. [`Error::Config`] with
-    /// `opcua.sample-type` for each channel whose sample type is not one of
+    /// The error of [`poll::Writer::open`], which comes alone. Else [`Error::Config`]
+    /// with `opcua.sample-type` for each channel whose sample type is not one of
     /// [`SCALARS`].
     async fn open(ctx: &'a Context<Config>) -> Result<Self, Error> {
         let reads = &ctx.config().reads;
@@ -246,7 +252,7 @@ impl<'a> Frames<'a> {
         Ok(Self {
             ctx,
             writer,
-            kept: Vec::with_capacity(types.len()),
+            kept: vec![None; types.len()],
             types,
             left: Left {
                 bad: ctx.count("bad"),
@@ -272,9 +278,9 @@ impl<'a> Frames<'a> {
     ) -> Result<(), Error> {
         let (mut bad, mut uncertain, mut mistyped) = (0, 0, 0);
         let mut first = None;
-        self.kept.clear();
-        for (at, (value, &sample)) in values.iter().zip(&self.types).enumerate() {
-            let kept = match Why::of(value, sample) {
+        let reads = values.iter().zip(&self.types).zip(&mut self.kept);
+        for (at, ((value, &sample), kept)) in reads.enumerate() {
+            *kept = match Why::of(value, sample) {
                 Ok(value) => Some(value),
                 Err(Why::Bad) => {
                     bad += 1;
@@ -290,7 +296,6 @@ impl<'a> Frames<'a> {
                     None
                 }
             };
-            self.kept.push(kept);
         }
         self.left.add(bad, uncertain, mistyped);
         self.left.note(self.ctx, first);
@@ -406,6 +411,7 @@ fn large_read(reads: &[Read], Large { node, bytes, most }: Large) -> Error {
 enum Failure {
     Connect { address: String, status: Status },
     Read(Status),
+    Check(Status),
 }
 
 impl fmt::Display for Failure {
@@ -415,6 +421,9 @@ impl fmt::Display for Failure {
                 write!(f, "the connect to {address} failed with {}", status.name())
             }
             Self::Read(status) => write!(f, "the read failed with {}", status.name()),
+            Self::Check(status) => {
+                write!(f, "the connectivity check failed with {}", status.name())
+            }
         }
     }
 }
