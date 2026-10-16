@@ -79,7 +79,98 @@ fn holds_a_sorted_table_of_units_that_read() {
     }
 }
 
+#[test]
+fn holds_each_code_once_in_the_table() {
+    let mut codes: Vec<_> = TABLE.iter().map(|(_, code)| code).collect();
+    codes.sort_unstable();
+    let len = codes.len();
+    codes.dedup();
+    assert_eq!(codes.len(), len);
+}
+
+#[test]
+fn spells_each_common_spelling_as_a_unit_in_the_table() {
+    for (spelling, text) in SPELLINGS {
+        assert!(unit(text).code().is_some(), "{spelling}");
+    }
+}
+
+fn given(text: Option<&str>, code: Option<&str>) -> Option<String> {
+    Unit::given(text, code).map(|unit| unit.as_str().to_owned())
+}
+
+#[test]
+fn gives_the_unit_of_a_code_in_the_table_whatever_the_text() {
+    assert_eq!(given(Some("°K"), Some("CEL")).as_deref(), Some("degC"));
+    assert_eq!(given(Some("kPa"), Some("BAR")).as_deref(), Some("bar"));
+    assert_eq!(given(None, Some("KPA")).as_deref(), Some("kPa"));
+    for (text, code) in TABLE {
+        assert_eq!(
+            given(Some(""), Some(code)).as_deref(),
+            Some(*text),
+            "{code}"
+        );
+    }
+}
+
+#[test]
+fn reads_the_text_when_the_table_has_no_code() {
+    assert_eq!(given(Some("rpm"), Some("XYZ")).as_deref(), Some("rpm"));
+    assert_eq!(given(Some("rpm"), Some("cel")).as_deref(), Some("rpm"));
+    assert_eq!(given(Some("rpm"), None).as_deref(), Some("rpm"));
+}
+
+#[test]
+fn gives_the_ascii_form_of_a_common_spelling() {
+    for (text, expected) in [
+        ("°C", "degC"),
+        ("°F", "degF"),
+        ("\u{3A9}", "ohm"),
+        ("\u{2126}", "ohm"),
+        ("m³", "m3"),
+        ("m/s²", "m/s2"),
+        ("\u{B5}A", "uA"),
+        ("\u{3BC}s", "us"),
+        ("\u{B5}\u{3A9}", "uohm"),
+        ("\u{3BC}°C", "udegC"),
+    ] {
+        assert_eq!(given(Some(text), None).as_deref(), Some(expected), "{text}");
+    }
+}
+
+#[test]
+fn gives_no_unit_for_a_text_that_no_step_reads() {
+    for text in [
+        "",
+        "k Pa",
+        "°K",
+        "k\u{3A9}",
+        "°C ",
+        "\u{B5}",
+        "\u{B5}\u{B5}A",
+        "\u{B5}k Pa",
+        "A\u{B5}",
+        "\u{2126}m",
+    ] {
+        assert_eq!(given(Some(text), None), None, "{text:?}");
+    }
+    assert_eq!(given(None, None), None);
+    assert_eq!(given(None, Some("XYZ")), None);
+    let longest = format!("\u{B5}{}", "a".repeat(31));
+    assert_eq!(
+        given(Some(&longest), None),
+        Some(format!("u{}", "a".repeat(31)))
+    );
+    let long = format!("\u{B5}{}", "a".repeat(32));
+    assert_eq!(given(Some(&long), None), None);
+}
+
 proptest! {
+    #[test]
+    fn gives_each_text_that_reads_as_it_is(text in "[!-~]{1,32}") {
+        prop_assert_eq!(given(Some(&text), None), Some(text));
+    }
+
     #[test]
     fn reads_exactly_the_short_printable_ascii_texts(
         text in "[\\x00-\\x7f°\u{200B}]{0,40}",
