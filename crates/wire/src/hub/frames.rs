@@ -76,7 +76,9 @@ impl Frames {
                 drafting: false,
                 draft: None,
             }),
-            _ => panic!("a reader before opened gives only opened"),
+            other => {
+                panic!("a reader before opened gave {other:?} for its first message")
+            }
         }
     }
 
@@ -137,8 +139,8 @@ impl Frames {
                 Ok(Step::More)
             }
             FromHome::Behind => Ok(Step::Behind),
-            FromHome::Opened | FromHome::Body { .. } => {
-                unreachable!("invariant: an open decoder gives no opened or body here")
+            other @ (FromHome::Opened | FromHome::Body { .. }) => {
+                unreachable!("invariant: an open decoder outside a body gave {other:?}")
             }
         }
     }
@@ -148,7 +150,8 @@ impl Frames {
     ///
     /// # Errors
     ///
-    /// Each [`Error`] of [`Reader::decode`].
+    /// [`Error::Empty`] when `len` is 0. The caller then stops the stream as
+    /// `MALFORMED`.
     ///
     /// # Panics
     ///
@@ -355,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "a reader before opened gives only opened")]
+    #[should_panic(expected = "a reader before opened gave")]
     fn panics_at_a_reader_past_opened() {
         let mut reader = create_reader(false);
         reader.decode(&[OPENED]).expect("opened");
