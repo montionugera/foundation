@@ -505,6 +505,7 @@ fn a_wait_after_the_hold_drops_waits_for_the_thread_log_to_end_then_joins_it() {
     assert!(!log.wait(Duration::ZERO), "the thread log runs");
     assert_eq!(sim.run(), Ok(()));
     assert!(log.wait(Duration::ZERO), "the thread log has ended");
+    // A join leaves no trace other than the empty slot of the handle.
     let debug = format!("{log:?}");
     assert!(debug.contains("running: false, thread: None"), "{debug}");
     assert!(
