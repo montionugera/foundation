@@ -728,6 +728,30 @@ enum Case {
     Hang,
 }
 
+/// The writer of the child of `case`. A writer that blocks sends on `entered`, then
+/// waits on `free`.
+fn writer(
+    case: Case,
+    entered: mpsc::Sender<()>,
+    free: mpsc::Receiver<()>,
+) -> Box<dyn io::Write + Send> {
+    match case {
+        Case::Stuck => Box::new(Stuck {
+            lines: Lines::default(),
+            entered: Some(entered),
+            free,
+        }),
+        Case::Writes => Box::new(Panics(Lines::default())),
+        Case::Full => Box::new(Gated {
+            entered,
+            free: Some(free),
+        }),
+        Case::Free | Case::Late | Case::Abort | Case::Json | Case::Hang => {
+            Box::new(io::stderr())
+        }
+    }
+}
+
 /// In a child process: a log with its thread `log` held and each line of
 /// `numbered(0, 3)` in its queue, and the panic hook of `main`, then a panic, as
 /// `case` says.
@@ -735,21 +759,7 @@ fn panics(case: Case) -> ! {
     let (_, mesh) = clock::Clock::new(os::clock());
     let (free, freed) = mpsc::channel();
     let (entered, blocked) = mpsc::channel();
-    let writer: Box<dyn io::Write + Send> = match case {
-        Case::Stuck => Box::new(Stuck {
-            lines: Lines::default(),
-            entered: Some(entered),
-            free: freed,
-        }),
-        Case::Writes => Box::new(Panics(Lines::default())),
-        Case::Full => Box::new(Gated {
-            entered,
-            free: Some(freed),
-        }),
-        Case::Free | Case::Late | Case::Abort | Case::Json | Case::Hang => {
-            Box::new(io::stderr())
-        }
-    };
+    let writer = writer(case, entered, freed);
     let format = ops::Log {
         json: matches!(case, Case::Json),
         level: tracing::Level::INFO,
