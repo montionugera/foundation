@@ -278,10 +278,12 @@ pub enum Error {
     },
     /// The reader is named and the node has no mesh time yet. Open it again later.
     Unsynced,
-    /// The reader is named and complete, and the records of the named readers of the
-    /// index would pass `limit` bytes, the most that one entry of the home's buffer
-    /// holds. Close a named reader of the index whose hold is zero, wait for a hold to
-    /// end, or open this one unnamed.
+    /// The reader is named and complete, holds no record, and the records of the
+    /// named readers of the index would pass `limit` bytes, the most that one entry of
+    /// the home's buffer holds. Close a named reader of the index whose hold is zero,
+    /// wait for a hold to end, or open this one unnamed. A reader that holds a record
+    /// opens over the limit and records nothing: a restart of the home after its old
+    /// hold ends resumes it at the live tail, until #2833.
     Full {
         /// The most bytes of one entry.
         limit: usize,

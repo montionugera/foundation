@@ -272,9 +272,10 @@ impl Hub {
     /// Then [`reader::Error::Mesh`] when the mesh stopped. A named reader:
     /// [`reader::Error::Remote`] when the home is another node,
     /// [`reader::Error::Unsynced`] before the node has mesh time, and, when complete,
-    /// [`reader::Error::Full`] when the records of the named readers of the index
-    /// would pass one entry of the buffer, and [`reader::Error::Unrecorded`] when the
-    /// home had no room to record the reader's position. At the home of another node:
+    /// [`reader::Error::Full`] when it holds no record and the records of the named
+    /// readers of the index would pass one entry of the buffer, and
+    /// [`reader::Error::Unrecorded`] when the home had no room to record the reader's
+    /// position. At the home of another node:
     /// [`reader::Error::Transport`] when the dial or the stream fails,
     /// [`reader::Error::Refused`] when the home refuses the session,
     /// [`reader::Error::Message`] for a reply that breaks the hub protocol, and

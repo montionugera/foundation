@@ -66,10 +66,12 @@ impl std::error::Error for Unsynced {}
 pub enum Unopened {
     /// As [`Unsynced`].
     Unsynced,
-    /// The open changes the records of the named readers of the index, and they
+    /// The open adds a record, and the records of the named readers of the index
     /// would pass `limit` bytes, the most that one entry of the buffer holds. Close a
     /// named reader of the index whose hold is zero, wait for a hold to end, or open
-    /// the reader unnamed.
+    /// the reader unnamed. An open of a reader that holds a record opens over the
+    /// limit and records nothing: a restart after its old hold ends resumes it at the
+    /// live tail, until #2833.
     Full {
         /// The most bytes of one entry.
         limit: usize,
@@ -367,13 +369,14 @@ impl Set {
     /// The records of the index at `place` as a named complete open of `reader` with
     /// `hold` makes them, at its held position, else at seq `live`, when the open
     /// changes its record: a first open, a reopen in its hold, or a takeover with a
-    /// new hold. `None` when its session is open with `hold`.
+    /// new hold. `None` when its session is open with `hold`, or when it holds a
+    /// record and the records pass `limit` bytes, as on a smaller pool after a
+    /// restart.
     ///
     /// # Errors
     ///
-    /// [`Unopened::Full`] when the records with its record pass `limit` bytes, the
-    /// most of one named entry, also when it holds a record, as on a smaller pool
-    /// after a restart.
+    /// [`Unopened::Full`] when the reader holds no record and the records with its
+    /// record pass `limit` bytes, the most of one named entry.
     pub(crate) fn opening(
         &self,
         place: usize,
@@ -392,17 +395,25 @@ impl Set {
             hold,
             closed: None,
         };
-        match records.iter_mut().find(|record| record.reader == *reader) {
+        let added = match records.iter_mut().find(|record| record.reader == *reader) {
             Some(record) if record.closed.is_none() && record.hold == hold => {
                 return Ok(None);
             }
-            Some(record) => *record = open(record.position.live),
-            None => records.push(open(live)),
-        }
+            Some(record) => {
+                *record = open(record.position.live);
+                false
+            }
+            None => {
+                records.push(open(live));
+                true
+            }
+        };
         if crate::named::len(&records) <= limit {
             Ok(Some(records))
-        } else {
+        } else if added {
             Err(Unopened::Full { limit })
+        } else {
+            Ok(None)
         }
     }
 
@@ -1380,13 +1391,20 @@ mod tests {
         }
 
         #[test]
-        fn refuse_a_held_record_past_the_limit() {
+        fn open_a_held_record_past_the_limit_with_no_append() {
             let mut set = carried(1);
             let a = open(&mut set, "a");
             set.close(0, a.into(), Some(Stamp::from_nanos(1)));
             let hold = Span::from_nanos(10);
-            let refused = set.opening(0, &named("a"), hold, 3, 0);
-            assert_eq!(refused, Err(Unopened::Full { limit: 0 }));
+            assert_eq!(set.opening(0, &named("a"), hold, 3, 0), Ok(None));
+        }
+
+        #[test]
+        fn take_over_with_a_new_hold_past_the_limit_with_no_append() {
+            let mut set = carried(1);
+            open(&mut set, "a");
+            let hold = Span::from_nanos(10);
+            assert_eq!(set.opening(0, &named("a"), hold, 3, 0), Ok(None));
         }
 
         #[test]
