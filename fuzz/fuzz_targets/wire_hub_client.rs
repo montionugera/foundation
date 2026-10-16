@@ -137,8 +137,15 @@ fn drive(bytes: &[u8], mode: Mode) {
     let mut reader = Reader::new(mode);
     let mut run: Option<(Places, u32, Vec<Place>)> = None;
     for message in fuzz::messages(bytes) {
-        let Ok(start) = reader.decode(Some(message)) else {
-            continue;
+        let start = match reader.decode(Some(message)) {
+            Ok(start) => start,
+            Err(error) => {
+                if let Some(repeated) = last(run.as_ref(), message) {
+                    let expected = repeated.map(|key| Error::Repeated { key });
+                    assert_eq!(Some(error), expected, "a last message refused");
+                }
+                continue;
+            }
         };
         let Some((reply, remain, all)) = &mut run else {
             let places = Places::decode(message).expect("the places decode alone");
@@ -151,12 +158,10 @@ fn drive(bytes: &[u8], mode: Mode) {
         };
         let places = place::decode(message).expect("the run decodes alone");
         assert_eq!(encode_run(&places), message, "the run changed");
-        let first = reply.count - *remain;
-        *remain -= u32::try_from(places.len()).expect("the run fits a u32");
-        let at = usize::try_from(reply.index.wrapping_sub(first)).ok();
-        if let Some(index) = at.and_then(|at| places.get(at)) {
+        if let Some(index) = index_place(*reply, *remain, &places) {
             assert_eq!(index.data_type, Type::Scalar(Scalar::Stamp));
         }
+        *remain -= u32::try_from(places.len()).expect("the run fits a u32");
         all.extend(places);
         let Some(start) = start else {
             assert_ne!(*remain, 0, "the last place gave no start");
@@ -188,6 +193,32 @@ fn drive(bytes: &[u8], mode: Mode) {
         return;
     }
     assert_eq!(reader.decode(None).err(), Some(Error::Finished));
+}
+
+/// The index place in `places`, a message of the run after `remain` places remained.
+fn index_place(reply: Places, remain: u32, places: &[Place]) -> Option<&Place> {
+    let at = usize::try_from(reply.index.wrapping_sub(reply.count - remain)).ok();
+    at.and_then(|at| places.get(at))
+}
+
+/// When `message` is a valid last message of `run`, the least key that its places,
+/// with those before it, name twice, if any.
+fn last(
+    run: Option<&(Places, u32, Vec<Place>)>,
+    message: &[u8],
+) -> Option<Option<channel::Key>> {
+    let (reply, remain, all) = run?;
+    let places = place::decode(message).ok()?;
+    let stamp = Type::Scalar(Scalar::Stamp);
+    if usize::try_from(*remain).ok()? != places.len()
+        || index_place(*reply, *remain, &places).is_some_and(|at| at.data_type != stamp)
+    {
+        return None;
+    }
+    let mut keys: Vec<_> = all.iter().chain(&places).map(|place| place.key).collect();
+    keys.sort_unstable();
+    let repeated = keys.windows(2).find(|pair| pair[0] == pair[1]);
+    Some(repeated.map(|pair| pair[0]))
 }
 
 /// Checks each decoder on `message`, and gives its body when it is a request, a
