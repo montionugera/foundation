@@ -211,9 +211,7 @@ impl Paths {
         match (self.check(path), path.parent(), path.file_name()) {
             // A link to nothing does not resolve. The call makes nothing through a
             // link at `path`, so the place of the link is what the limits check.
-            (Err(Error::NotFound), Some(dir), Some(name))
-                if !self.limits.is_empty() =>
-            {
+            (Err(Error::NotFound), Some(dir), Some(name)) => {
                 let dir = if dir.as_os_str().is_empty() {
                     Path::new(".")
                 } else {
@@ -341,7 +339,7 @@ mod tests {
 
     use super::*;
 
-    /// One file, at any path but one under `/none`, which does not resolve past
+    /// One file, at any path but one under `/none`, and no resolve of a name in
     /// `/none`. A path is under `/`, and `link` names `/out`. A directory that it
     /// makes is the file `dir`.
     #[derive(Debug, Default)]
@@ -373,7 +371,9 @@ mod tests {
 
         fn resolve(&self, path: &Path) -> Result<PathBuf, Error> {
             match path.strip_prefix("link") {
-                _ if path.as_os_str().is_empty() || path.starts_with("/none/") => {
+                _ if path.as_os_str().is_empty()
+                    || path.parent() == Some(Path::new("/none")) =>
+                {
                     Err(Error::NotFound)
                 }
                 Ok(rest) => Ok(Path::new("/out").join(rest)),
@@ -459,6 +459,15 @@ mod tests {
         assert_eq!(free.within(&empty, &[]).err(), Some(Error::NotFound));
         let folders = ["/work".into()];
         assert_eq!(free.within(&folders, &empty).err(), Some(Error::NotFound));
+    }
+
+    #[test]
+    fn make_dir_checks_a_path_that_does_not_resolve_by_its_place() {
+        let free = Paths::new(One::default());
+        let paths = free.within(&["/none".into()], &[]).unwrap();
+        assert_eq!(paths.make_dir(Path::new("/none/link")), Ok(()));
+        let paths = free.within(&["/work".into()], &[]).unwrap();
+        assert_eq!(paths.make_dir(Path::new("/none/a")), Err(Error::Outside));
     }
 
     #[test]
