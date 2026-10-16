@@ -561,6 +561,11 @@ mod tests {
         assert_eq!(free.within(&none, &[]).err(), Some(Error::NotFound));
         let new = ["/work/new".into()];
         assert_eq!(free.within(&new, &[]).err(), Some(Error::NotFound));
+        let work = ["/work".into()];
+        assert_eq!(free.within(&work, &new).err(), Some(Error::NotFound));
+        let limited = free.within(&work, &[]).unwrap();
+        let refused = ["/other/new".into()];
+        assert_eq!(limited.within(&work, &refused).err(), None);
         let paths = free
             .within(&["/none".into()], &["/work/data".into()])
             .unwrap();
