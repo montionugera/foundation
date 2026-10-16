@@ -70,39 +70,38 @@
   line (INFLUX SEQ AND GAPS), in the same batch. The line's `count` also counts each
   sample time that the run left out between the gap and that line. While the gap waits
   for that line, a batch acks only the position before the gap, so a run that stops
-  then gets the gap again at its next open. One request is in flight
-  at a time. While it is, the run reads the next batch, up to 5,000 lines, and a frame
-  goes in whole. The run keeps the field of each channel that it saw in the frames of
-  one key set. A frame of another key set builds them again, as the `hub` reader builds
-  its lens, so frames that alternate key sets build them at each change. The trigger to
-  keep them for each key set is a workload whose frames alternate key sets, as
-  `laptop.architect-2` decided on 2026-10-13T07:36:47Z
+  then gets the gap again at its next open. One request is in flight at a time. While it
+  is, the run reads the next batch, up to 5,000 lines, and a frame goes in whole. The
+  run keeps the field of each channel that it saw in the frames of one key set. A frame
+  of another key set builds them again, as the `hub` reader builds its lens, so frames
+  that alternate key sets build them at each change. The trigger to keep them for each
+  key set is a workload whose frames alternate key sets, as `laptop.architect-2` decided
+  on 2026-10-13T07:36:47Z
   (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6140691273). It acks
-  a batch only after a 204. Each other answer, and each failed request, keeps the
-  batch, shows its text with `Context::error`, and sends the batch again after a
+  a batch only after a 204. Each other answer, and each failed request, keeps the batch,
+  shows its text with `Context::error`, and sends the batch again after a
   `retry::Backoff` of 1 s to 1 min. A 204 clears the error, and adds the fields of the
-  batch to the count `confirmed` with `Count::add`, and the `count` of each gap line
-  of the batch to the count `lost`: the seqs that the gap lines of this connector
-  count, which InfluxDB took with a 204. A batch sent again counts once. A gap that the
-  reader reports again after a restart counts again, so `lost` is an upper bound, as
-  the sum of `count` in `foundation_gaps` is. Each later out kind names the same count
-  `lost`. The ruling did not take a count of all out kinds in `connector`, as the
-  supervisor does not see the frames of a kind's reader. The trigger to make it is a
-  second out kind (6199058253). Both counts hold across the runs of one call
-  (SUPERVISOR). The person gave the choice of the path to the architects on 2026-10-15
-  ("Best devx possible. You choose the path", through `laptop.monitor`:
+  batch to the count `confirmed` with `Count::add`, and the `count` of each gap line of
+  the batch to the count `lost`: the seqs that the gap lines of this connector count,
+  which InfluxDB took with a 204. A batch sent again counts once. A gap that the reader
+  reports again after a restart counts again, so `lost` is an upper bound, as the sum of
+  `count` in `foundation_gaps` is. Each later out kind names the same count `lost`. The
+  ruling did not take a count of all out kinds in `connector`, as the supervisor does
+  not see the frames of a kind's reader. The trigger to make it is a second out kind
+  (6199058253). Both counts hold across the runs of one call (SUPERVISOR). The person
+  gave the choice of the path to the architects on 2026-10-15 ("Best devx possible. You
+  choose the path", through `laptop.monitor`:
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922).
   `laptop.architect` gave the count of lost seqs, and `laptop.architect-2` ruled its
-  shape on
-  2026-10-15T18:13:22Z
-  (https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199058253) and
-  the gap lines of the run on 2026-10-15T18:20:15Z
-  (https://github.com/synnaxlabs/foundation/issues/2725#issuecomment-6199190890). A
-  NaN or infinite sample writes no field and is not counted
-  (#2559, the plan that `laptop.architect-2` approved on 2026-10-13T09:52:20Z:
-  https://github.com/synnaxlabs/foundation/issues/2559#issuecomment-6142931456). A
-  batch whose request takes longer than the timeout of 10 s is sent again with no end,
-  until #2558, as `laptop.architect-2` decided on 2026-10-13T06:20:10Z
+  shape on 2026-10-15T18:13:22Z
+  (https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199058253) and the
+  gap lines of the run on 2026-10-15T18:20:15Z
+  (https://github.com/synnaxlabs/foundation/issues/2725#issuecomment-6199190890). A NaN
+  or infinite sample writes no field and is not counted (#2559, the plan that
+  `laptop.architect-2` approved on 2026-10-13T09:52:20Z:
+  https://github.com/synnaxlabs/foundation/issues/2559#issuecomment-6142931456). A batch
+  whose request takes longer than the timeout of 10 s is sent again with no end, until
+  #2558, as `laptop.architect-2` decided on 2026-10-13T06:20:10Z
   (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6139570127). A
   restart within the `hold` of the reader sends the batch in flight again: the next run
   reads its frames again from disk (#274 B1; `laptop.architect-2`, 2026-10-15T18:05:36Z:
