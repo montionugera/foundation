@@ -85,11 +85,13 @@
   enter is still refused, as `ssh` refuses it. It does not check write bits. Add that
   check when a secret whose change by another user is a threat comes, such as a key that
   signs. It does not check the owner: a node that runs as root reads a file of mode 0600
-  that another user owns. Add the owner check with the check of write bits. `os::files`
-  builds only on Linux and macOS. A driver for another OS states what `exposed` means
-  there. The `sim` disk makes each file not exposed, as `os` makes a file with mode
-  0600, and `sim::node::Node::expose_file` and `hide_file` set it, as a `chmod` from
-  outside the node does (`laptop.architect-2`, 2026-10-15T23:58:31Z:
+  that another user owns. Add the owner check with the check of write bits. The person
+  agreed: "Yes, skip it" (2026-10-16T01:59Z, through `laptop.monitor`:
+  https://github.com/synnaxlabs/foundation/pull/2792#issuecomment-6206316669).
+  `os::files` builds only on Linux and macOS. A driver for another OS states what
+  `exposed` means there. The `sim` disk makes each file not exposed, as `os` makes a
+  file with mode 0600, and `sim::node::Node::expose_file` and `hide_file` set it, as a
+  `chmod` from outside the node does (`laptop.architect-2`, 2026-10-15T23:58:31Z:
   https://github.com/synnaxlabs/foundation/issues/2596#issuecomment-6204800336). The
   person allowed group read on 2026-10-16T01:24Z ("Ok, that sounds like a plan", through
   `laptop.monitor`:
