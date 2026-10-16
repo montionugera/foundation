@@ -5,7 +5,7 @@
 //! - `node::client::reach` makes two pools, one for its transport and its
 //!   `program::Session` and one for the frames of the session's reads, which together
 //!   reserve at most 128 MiB.
-//! - A started node keeps no byte of the DER of `Config::roots`.
+//! - A started node keeps no `os::Roots` of `Config::roots`.
 //!
 //! The count covers each thread, so this binary has no test harness.
 

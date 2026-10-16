@@ -238,7 +238,9 @@ pub fn stored(
 /// keychain on macOS. When `SSL_CERT_FILE` is set, or `SSL_CERT_DIR` holds a path that
 /// is not empty, it reads only that file and those paths, on each OS. A path that is
 /// not there, or a `SSL_CERT_DIR` path that is not a directory, gives a failure and no
-/// root of the OS store. It blocks on the reads, and gives the whole store in memory.
+/// root of the OS store. On Linux, a `SSL_CERT_DIR` of only `:` characters also reads
+/// the directory of that whole name in the working directory, when it is there. It
+/// blocks on the reads, and gives the whole store in memory.
 #[must_use]
 pub fn roots() -> Roots {
     let read = rustls_native_certs::load_native_certs();
