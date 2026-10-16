@@ -331,16 +331,8 @@ mod tests {
             {
                 return flags.split_whitespace().map(str::to_owned).collect();
             }
-            let range = line
-                .split_once(' ')
-                .and_then(|(range, _)| range.split_once('-'));
-            if let Some((start, end)) = range
-                && let (Ok(start), Ok(end)) = (
-                    usize::from_str_radix(start, 16),
-                    usize::from_str_radix(end, 16),
-                )
-            {
-                holds = (start..end).contains(&at);
+            if let Some(range) = range(line) {
+                holds = range.contains(&at);
             }
         }
         panic!("no mapping holds the address");
@@ -352,18 +344,23 @@ mod tests {
         start..start + memory.len()
     }
 
+    /// The addresses of a mapping line of `/proc/self/maps` or `/proc/self/smaps`, or
+    /// `None` for another line.
+    #[cfg(target_os = "linux")]
+    fn range(line: &str) -> Option<Range<usize>> {
+        let (range, _) = line.split_once(' ')?;
+        let (from, to) = range.split_once('-')?;
+        let from = usize::from_str_radix(from, 16).ok()?;
+        let to = usize::from_str_radix(to, 16).ok()?;
+        Some(from..to)
+    }
+
     /// How many mappings of `/proc/self/maps` hold a byte of `reserve`.
     #[cfg(target_os = "linux")]
     fn mappings(reserve: &Range<usize>) -> usize {
         let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
         maps.lines()
-            .filter_map(|line| {
-                let (range, _) = line.split_once(' ')?;
-                let (from, to) = range.split_once('-')?;
-                let from = usize::from_str_radix(from, 16).ok()?;
-                let to = usize::from_str_radix(to, 16).ok()?;
-                Some(from..to)
-            })
+            .filter_map(range)
             .filter(|range| range.start < reserve.end && reserve.start < range.end)
             .count()
     }
