@@ -62,7 +62,7 @@ pub trait Kind: Send + Sync + 'static {
     ///
     /// [`Error::Config`] when the block does not name a device that the kind can
     /// reach, and the errors of [`browse::walk`]. [`Error::Device`] when the device
-    /// fails, and the errors of [`browse::Context::secret`] for a secret that it reads.
+    /// fails. The errors of [`browse::Context::secret`] for each secret that it reads.
     fn browse(
         &self,
         ctx: &browse::Context<'_>,

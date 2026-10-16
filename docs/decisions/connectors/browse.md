@@ -128,9 +128,14 @@
   (https://github.com/synnaxlabs/foundation/pull/2836#issuecomment-6209844506). The
   deferral of mesh time, and two contexts: `laptop.architect-2`, 2026-10-16 06:55 UTC
   (https://github.com/synnaxlabs/foundation/pull/2836#issuecomment-6209911107).
-  `Hub::time` and the bound in `Supervisor::browse`: `laptop.architect`, 2026-10-16
-  06:56 UTC
+  `Hub::time`, which waits with no bound, and a bound that `connector` sets:
+  `laptop.architect`, 2026-10-16 06:56 UTC
   (https://github.com/synnaxlabs/foundation/issues/2837#issuecomment-6209931375). The
-  race on the first read of mesh time, and the trigger of a body of its own:
-  `laptop.architect-2`, 2026-10-16 07:09 UTC
-  (https://github.com/synnaxlabs/foundation/pull/2836#issuecomment-6210109901).
+  race on the first read of mesh time (Supersedes
+  https://github.com/synnaxlabs/foundation/issues/2837#issuecomment-6209931375, the race
+  in `Supervisor::browse`), and the trigger of a body of its own (Supersedes
+  https://github.com/synnaxlabs/foundation/pull/2836#issuecomment-6209911107, a shared
+  input whose body is more than a field read): `laptop.architect-2`, 2026-10-16 07:09
+  UTC (https://github.com/synnaxlabs/foundation/pull/2836#issuecomment-6210109901); its
+  `hub` text: `laptop.architect`, 07:20 UTC
+  (https://github.com/synnaxlabs/foundation/pull/2836#issuecomment-6210289921).
