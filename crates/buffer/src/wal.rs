@@ -693,8 +693,8 @@ impl Writer {
     /// record can go. The tail never passes the last synced record, or the offset
     /// `kept`: the oldest record that must stay. `marked` gives the [`Fence`] that
     /// holds that boundary. The tail is then the boundary after its `record` when
-    /// that one may go, else the newest boundary at or before its `after`. Once the tail is durable,
-    /// [`release`](Self::release) frees the records.
+    /// that one may go, else the newest boundary at or before its `after`. Once the
+    /// tail is durable, [`release`](Self::release) frees the records.
     ///
     /// The headroom is three times the larger of the largest record and the records
     /// not yet synced, and the three blocks that [`append`](Self::append) leaves free.
