@@ -67,8 +67,7 @@ pub struct Config {
     /// queued during a commit longer than `commit` waits until that commit ends.
     pub commit: Span,
     /// Each commit frees the oldest records that no path needs, when the ring needs
-    /// their room. False until the open trims too. No caller sets it until #2796
-    /// merges.
+    /// their room. False until the open trims too.
     pub trimmed: bool,
 }
 
@@ -330,7 +329,8 @@ struct State {
     logs: Logs,
     /// The last checkpoint written.
     header: Header,
-    /// Empty, with the capacity of the tails of the last carry record, for the next.
+    /// The tails of the carry record of the last deadline, or none when it wrote
+    /// none. The next carry reuses its room.
     carried: Carried,
     /// Whether an append got [`Rejected::Full`] since the last deadline, with
     /// [`Config::trimmed`]. The task then commits also with no entry, so that its
@@ -449,13 +449,10 @@ impl State {
             self.spares.push(record.clear());
         }
         if let Some(Carrying {
-            mut carried,
-            offset,
-            ..
+            carried, offset, ..
         }) = carrying
         {
             self.logs.hold(&carried, offset);
-            carried.clear();
             self.carried = carried;
         }
         if counted {
@@ -495,14 +492,15 @@ impl State {
     }
 
     /// Plans the carry record of the paths whose holder is before the reach of the
-    /// next trim, filled with the oldest holders after it, as many as one record
-    /// holds, and at most `most`. `None` when no path needs one, or `pool` has no
-    /// blocks for it: the next deadline then scans the same paths.
+    /// next trim, filled with the oldest holders that [`Logs::carry`] finds after
+    /// it, at most as many as one record holds and at most `most`. `None` when no
+    /// path needs one, or `pool` has no blocks for it: the next deadline then scans
+    /// the same paths.
     fn carry(&mut self, pool: &Pool, most: usize) -> Option<Carry> {
         let mut carried = mem::take(&mut self.carried);
         let limit = self.writer.tails().min(most);
         let reach = self.writer.reach();
-        self.logs.idle(reach, limit, &mut carried);
+        self.logs.carry(reach, limit, &mut carried);
         let count = carried.tails().len();
         let len = HEADER_LEN + carry::body_len(count);
         let blocks = (count > 0).then(|| (pool.alloc(len), pool.alloc(ALIGN)));
