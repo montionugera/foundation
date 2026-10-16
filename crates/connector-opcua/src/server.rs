@@ -200,6 +200,20 @@ impl Server {
         id
     }
 
+    /// Adds the variable `node` with the String `text`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node, or the key of `node` is the number 0.
+    #[cfg(test)]
+    pub(crate) fn add_string(&self, node: &Node) {
+        // SAFETY: the server lives, and it copies the name of `node`.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_string(self.raw(), added(node))
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
     /// Adds the variable `node` with a `ByteString` of `length` zero bytes.
     ///
     /// # Panics
@@ -212,6 +226,14 @@ impl Server {
             ffi::test::shim_server_add_bytes(self.raw(), added(node), size)
         });
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Refuses each Read of more than `most` nodes, 0 for none, with
+    /// `BadTooManyOperations`. It adds no variable `ns=0;i=11705`, so a client does
+    /// not know the limit.
+    pub(crate) fn refuse_reads_past(&self, most: u32) {
+        // SAFETY: the server lives.
+        unsafe { ffi::test::shim_server_reads(self.raw(), most) };
     }
 
     /// Sets the limits of each later channel of the server.
@@ -235,8 +257,7 @@ impl Server {
     ///
     /// On a second call, as open62541 refuses the second add of the variable.
     pub(crate) fn set_per_read(&self, most: u32) {
-        // SAFETY: the server lives.
-        unsafe { ffi::test::shim_server_reads(self.raw(), most) };
+        self.refuse_reads_past(most);
         let node = Node {
             namespace: 0,
             key: Key::Number(ffi::MAX_NODES_PER_READ),

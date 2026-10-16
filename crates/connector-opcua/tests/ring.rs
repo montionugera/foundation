@@ -16,15 +16,28 @@ use types::sample::Scalar;
 
 #[test]
 fn a_run_that_writes_past_the_ring_of_its_home_returns_ok() {
-    let (writes, status) = kind::writes(256, &[Scalar::F64], 8_000, |work| {
-        work();
-        0
-    });
+    let (writes, status) = kind::writes(
+        256,
+        &[Scalar::F64],
+        8_000,
+        |_| 0,
+        |work| {
+            work();
+            0
+        },
+    );
     assert_eq!(writes.len(), 8_000, "each write of the run");
     // The full ring drops the status frames after this one, the end of the run too,
     // so the user sees the lost writes as they were then.
     let last = status.last().expect("the home applied a status");
-    let counts = [("in", 96_512), ("lost", 159_488), ("missed", 0)];
+    let counts = [
+        ("bad", 0),
+        ("in", 96_512),
+        ("lost", 159_488),
+        ("missed", 0),
+        ("mistyped", 0),
+        ("uncertain", 0),
+    ];
     let counts = counts.map(|(count, n)| (count.parse().expect("a name"), n));
     assert_eq!(last.state, State::Running);
     assert_eq!(last.counts, BTreeMap::from(counts));
