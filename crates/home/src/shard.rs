@@ -734,14 +734,12 @@ impl Shard {
     /// # Errors
     ///
     /// [`reader::Unopened::Unsynced`] before the node first has mesh time, and
-    /// [`reader::Unopened::Full`] when the open adds a record, and the records of the
-    /// index with it would pass the most bytes of one entry of the buffer: at least 7
-    /// records of the longest subjects and names. An open of a reader that holds a
-    /// record opens also when the records pass it, as on a smaller pool after a
-    /// restart, and appends nothing: a restart after the old hold ends resumes it at
-    /// the live tail. [`reader::Unopened::Unrecorded`] when the open adds a record,
-    /// opens a held one, or takes over an open session with a new hold, and the buffer
-    /// has no block or no room for the entry that holds the records.
+    /// [`reader::Unopened::Full`] when the open changes the records of the index, and
+    /// they would pass the most bytes of one entry of the buffer: at least 7 records of
+    /// the longest subjects and names, or fewer on a smaller pool after a restart.
+    /// [`reader::Unopened::Unrecorded`] when the open adds a record, opens a held one,
+    /// or takes over an open session with a new hold, and the buffer has no block or no
+    /// room for the entry that holds the records.
     ///
     /// # Panics
     ///
@@ -6549,9 +6547,10 @@ mod tests {
                 }
 
                 /// A smaller pool after a restart bounds an entry lower than the
-                /// ring that holds the records.
+                /// ring that holds the records. The refusal changes no record, so the
+                /// readers resume on the first pool.
                 #[test]
-                fn a_held_reader_resumes_when_the_records_are_over_the_limit() {
+                fn refuses_a_held_reader_while_the_records_are_over_the_limit() {
                     const BODY: usize = 8192;
                     /// The least budget of a ring: an entry holds about 4 KiB.
                     const SMALL: usize = 62_272;
@@ -6599,22 +6598,19 @@ mod tests {
                         let mut shard = test.over(buffer).await;
                         assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
                         assert_eq!(open(&mut shard, 8), Err(Unopened::Full { limit }));
-                        let a = open(&mut shard, 0).expect("it adds no record").key;
-                        assert_eq!(
-                            caught_up(&mut shard, a, 0).await,
-                            [seq(0, 1), seq(1, 1)]
-                        );
+                        assert_eq!(open(&mut shard, 0), Err(Unopened::Full { limit }));
                         shard.committed().await.expect("the commit ends");
                     })
                     .expect("the second run ends");
                     sim.crash(&node, sim::Crash::Power);
                     sim.run_on(&node, move |node, tasks| async move {
-                        let test = small(node, tasks);
+                        let test = Test::new(node, tasks);
                         let buffer = test.create_buffer(AREA, BODY, 4).await;
                         let mut shard = test.over(buffer).await;
                         assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
                         for n in 0..8 {
                             let key = open(&mut shard, n).expect("opens").key;
+                            shard.committed().await.expect("the commit ends");
                             assert_eq!(
                                 caught_up(&mut shard, key, 0).await,
                                 [seq(0, 1), seq(1, 1)],

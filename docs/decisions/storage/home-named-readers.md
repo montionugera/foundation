@@ -49,23 +49,26 @@
   entry before it opens, and its reader reads from disk only after the commit that holds
   the entry. When the entry finds no block or no room, it opens nothing and gives
   `Unopened::Unrecorded`, and `hub` gives `reader::Error::Unrecorded`, so a restart
-  never loses the frames of a first open, a reopen, or a takeover whose records fit one
-  entry. After a failed commit, the open opens, and its reader ends with the error of
-  the commit. Another entry that finds no room or no block stays due for the next tick,
-  so a restart before it resumes at an older position: a repeat, not a loss. Trimming
-  must keep the newest named entry of each index (#406). Until it does, a trim (STORE
-  TRIM) can free that entry, and a restart resumes the readers of its index at the live
-  tail, as HANDOFF RECORD states for a handoff. One entry holds every record of its
-  index, at most `min(Buffer::block_max, Layout::entry_max)` bytes: 546 bytes for a
-  record of the longest names, so at least 7 records. A named complete open that adds a
-  record past it gives `Unopened::Full`, and `hub` gives `reader::Error::Full`. An open
-  of a reader that holds a record opens also when the records pass it, as on a smaller
-  pool after a restart, and appends nothing: those records reach the log only with
-  #2833, and a restart after the old hold ends resumes the reader at the live tail. A
-  latest reader adds no record. #2833 holds records past one entry. Decided by
-  `laptop.architect` (2026-10-16T05:22:26Z:
+  never loses the frames of a first open, a reopen, or a takeover. After a failed
+  commit, the open opens, and its reader ends with the error of the commit. Another
+  entry that finds no room or no block stays due for the next tick, so a restart before
+  it resumes at an older position: a repeat, not a loss. Trimming must keep the newest
+  named entry of each index (#406). Until it does, a trim (STORE TRIM) can free that
+  entry, and a restart resumes the readers of its index at the live tail, as HANDOFF
+  RECORD states for a handoff. One entry holds every record of its index, at most
+  `min(Buffer::block_max, Layout::entry_max)` bytes: 546 bytes for a record of the
+  longest names, so at least 7 records. A named complete open that adds a record past it
+  gives `Unopened::Full`, and `hub` gives `reader::Error::Full`. An open of a reader
+  that holds a record gives `Unopened::Full` too when the records pass it, as on a
+  smaller pool after a restart, and changes nothing. A latest reader adds no record.
+  #2833 holds records past one entry. Decided by `laptop.architect`
+  (2026-10-16T05:22:26Z:
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6208708096;
   `Unrecorded` and the trim gap until #406: 2026-10-16T07:08:03Z:
   https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6210093371; the reopen
-  in its hold, the failed commit, and the records over the limit: 2026-10-16T09:43:45Z:
-  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6212725793).
+  in its hold and the failed commit: 2026-10-16T09:43:45Z:
+  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6212725793; the read
+  after the commit and the takeover: 2026-10-16T14:40:25Z:
+  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6217913457; the
+  refusal over the limit: 2026-10-16T14:41:12Z:
+  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6217928514).
