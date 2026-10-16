@@ -717,3 +717,73 @@ fn gives_the_error_of_the_renewal_to_an_open_reader() {
         },
     );
 }
+
+/// A reader keeps its session open after the last clone of the session drops, and the
+/// session closes when the reader drops.
+#[test]
+fn keeps_the_session_open_while_a_reader_lives() {
+    let home = with_writes(402, &[10, 20], |session, clock| async move {
+        let mut reader = session
+            .reader(select(&["value"]), Mode::Complete)
+            .await
+            .expect("opens");
+        drop(session);
+        for value in [10, 20] {
+            let frame = reader.next().await.expect("a frame");
+            assert_eq!(samples(&reader, &frame)[0], (0, vec![value]));
+        }
+        drop(reader);
+        clock.sleep(QUIET).await;
+    });
+    assert_eq!(home.served, [closed(), closed()]);
+}
+
+/// A frame that no block of `Config::frames` holds ends the reader with
+/// `Error::Pool`, and the program drops the stream: the node broke no rule.
+#[test]
+fn ends_a_read_whose_frame_no_block_of_its_pool_holds() {
+    const LEN: usize = 4096;
+    raw(
+        427,
+        |session, mut hello, node| async move {
+            admit(&mut hello, &node.clock()).await;
+            let mut read = opened(&session, &around(), 1).await;
+            let end = u32::try_from(LEN).expect("fits");
+            let range = Range { seq: 0, count: 1 };
+            send_frame(&mut read, range, &[(1, end)], &[0; LEN], &[LEN]).await;
+            assert_eq!(
+                read.receiver
+                    .recv()
+                    .await
+                    .map(|got| got.map(|block| block.to_vec())),
+                Err(transport::Error::Reset { code: Code(0) })
+            );
+            node.clock().sleep(QUIET).await;
+        },
+        move |node, tasks, at| async move {
+            let config = block::Config::new(
+                u64::try_from(block::footprint(1 << 10)).expect("a usize fits a u64"),
+            )
+            .expect("the budget fits");
+            let frames = block::Pool::new(
+                config.clone(),
+                block::Heap::new(config.reservation()),
+            );
+            let session =
+                connect_with(&node, tasks, at, AGENT, ample(), Rc::new(frames))
+                    .await
+                    .expect("connects");
+            let mut reader = session
+                .reader(select(&["a", "b"]), Mode::Complete)
+                .await
+                .expect("opens");
+            let got = reader.next().await.map(drop);
+            let pool = block::Error::TooLarge {
+                requested: 4136,
+                largest: 1024,
+            };
+            assert_eq!(got, Err(Error::Pool(pool)));
+            node.clock().sleep(QUIET).await;
+        },
+    );
+}

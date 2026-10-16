@@ -753,28 +753,74 @@ fn renews_the_hello_once_the_pool_has_room() {
     );
 }
 
-/// Frames that fill [`Config::frames`](program::Config::frames) leave the renewal on
-/// time: it sends from the session pool.
+/// Frames that a reader holds until they fill
+/// [`Config::frames`](program::Config::frames) leave the renewal on time.
 #[test]
-fn renews_the_hello_on_time_while_frames_fill_their_pool() {
+fn renews_the_hello_on_time_while_held_frames_fill_their_pool() {
+    /// More frames than a pool of `small` holds.
+    const SENT: u64 = 3000;
+    let small = || {
+        let config = block::Config::new(
+            u64::try_from(block::footprint(1 << 16)).expect("a usize fits a u64"),
+        )
+        .expect("the budget fits");
+        Rc::new(block::Pool::new(
+            config.clone(),
+            block::Heap::new(config.reservation()),
+        ))
+    };
     raw(
-        425,
+        426,
         |session, mut hello, node| async move {
-            let came = admit(&mut hello, &node.clock()).await;
+            let clock = node.clock();
+            challenge(&mut hello, Stamp::EPOCH).await;
+            take(&mut hello).await;
+            let sent = clock.now();
+            challenge(&mut hello, Stamp::EPOCH).await;
+            let stamp = types::sample::Type::Scalar(types::sample::Scalar::Stamp);
+            let i64 = types::sample::Type::Scalar(types::sample::Scalar::I64);
+            let place = |at: u128, data_type, channel: &str| wire::hub::client::Place {
+                key: types::channel::Key::from_u128(at),
+                data_type,
+                name: name(channel),
+            };
+            let places = [
+                place(10, i64, "a"),
+                place(1, stamp, "time"),
+                place(11, i64, "b"),
+            ];
+            let mut read = crate::hand::opened(&session, &places, 1).await;
+            for seq in 0..SENT {
+                let range = types::frame::Range { seq, count: 1 };
+                crate::hand::send_frame(&mut read, range, &[(1, 8)], &[0; 8], &[8])
+                    .await;
+            }
+            take(&mut hello).await;
+            let came = clock.now() - sent;
             let late = Span::from_nanos(came.nanos() - HALF.nanos());
             assert!(late < RETRY, "the renewal comes on time: {late:?}");
             drop(session);
         },
-        |node, tasks, at| async move {
-            let frames = ample();
-            let session =
-                connect_with(&node, tasks, at, AGENT, ample(), Rc::clone(&frames))
-                    .await
-                    .expect("connects");
-            let held = fill(&frames);
+        move |node, tasks, at| async move {
+            let session = connect_with(&node, tasks, at, AGENT, small(), small())
+                .await
+                .expect("connects");
+            let select = types::name::Selector::new(["a", "b"]).expect("a selector");
+            let mut reader = session
+                .reader(select, wire::hub::client::Mode::Complete)
+                .await
+                .expect("opens");
+            let mut held = Vec::new();
+            while let Some(frame) =
+                within(&node.clock(), Span::SECOND, reader.next()).await
+            {
+                held.push(frame.expect("a frame"));
+            }
+            let count = u64::try_from(held.len()).expect("fits");
+            assert!(count < SENT, "the frames fill their pool: {count}");
             node.clock().sleep(HALF).await;
             node.clock().sleep(Span::SECOND).await;
-            drop((held, session));
+            drop((held, reader, session));
         },
     );
 }
