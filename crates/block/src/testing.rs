@@ -152,6 +152,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_pool_on_it_gives_the_pages_of_a_free_block_to_another_size() {
+        let budget = 2 * crate::footprint(8192);
+        let config = crate::Config::new(budget as u64).expect("a small budget");
+        let (memory, _switch) = Scarce::new(config.reservation());
+        let pool = crate::Pool::new(config, memory);
+        let held = pool.alloc(8192).expect("the budget has room");
+        drop(pool.alloc(8192).expect("the budget has room"));
+        let small = pool.alloc(64).expect("the free block gives a page");
+        assert_eq!(pool.committed(), budget - 4096 + 128);
+        drop((held, small));
+    }
+
+    #[test]
     fn a_clone_controls_the_same_memory() {
         let (memory, switch) = Scarce::new(256);
         switch.clone().refuse();

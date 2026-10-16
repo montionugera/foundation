@@ -30,6 +30,10 @@ exclude_re = [
   # A node would intern 2^32 - 1 key sets before the bound shows, which no test or
   # node can hold. `panics_on_the_interned_set_of_the_ordered_key` kills it.
   'crates/types/src/frame/key_set\.rs:.*replace < with <= in interned$',
+  # Each makes the bound larger or the walk longer (`<` is only in the walk). The
+  # bound only skips a walk that gives the same sum, and a walk past the need changes
+  # no answer of `press`.
+  'crates/block/src/lib\.rs:.*replace (/ with \*|- with \+|< with <=) in Pool::coolable$',
   # Empty outside loom. The loom models fail when a marker is removed.
   'crates/block/src/sync\.rs:.*Track::(read|write)',
   # The stub is built only under loom, so no test of another build sees its mutant.

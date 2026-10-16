@@ -521,7 +521,7 @@ impl Pool {
             .idle(index)
             .map(|other| self.classes[other].held())
             .sum();
-        if spare < short && spare + self.coolable(index, short - spare) < short {
+        if spare + self.coolable(index, short.saturating_sub(spare)) < short {
             return available;
         }
         for other in self.idle(index) {
@@ -530,16 +530,14 @@ impl Pool {
             }
             available += self.release(other);
         }
-        if available < need {
-            available += self.cool(index, need - available);
-        }
-        available
+        available + self.cool(index, need.saturating_sub(available))
     }
 
-    /// Idle classes other than `index`: those above smallest first, so one release
-    /// covers the need, then those below largest first.
+    /// Idle classes above `index` smallest first, so one release covers the
+    /// need, then those below largest first. Class `index` is never idle here:
+    /// callers reach it with no free block.
     fn idle(&self, index: usize) -> impl Iterator<Item = usize> {
-        let above = index + 1..self.classes.len();
+        let above = index..self.classes.len();
         let below = (0..index).rev();
         above
             .chain(below)
@@ -568,7 +566,7 @@ impl Pool {
                 free * (class_payload(other) / self.page * self.page)
             })
             .sum();
-        if most < need {
+        if need > most {
             return most;
         }
         let mut given = 0;
@@ -1959,6 +1957,55 @@ mod tests {
                     },
                 ]
             );
+            drop((held, large));
+        }
+
+        #[test]
+        fn gives_back_the_pages_of_only_the_free_blocks_that_the_need_takes() {
+            let (pool, watch) = create_watched_pool_of(960, 128);
+            let mut blocks: Vec<_> = (0..3)
+                .map(|_| pool.alloc(256).expect("the budget has room"))
+                .collect();
+            let held = blocks.remove(0);
+            drop(blocks);
+            pool.reclaim();
+            let small = pool
+                .alloc(192)
+                .expect("one free block gives the need exactly");
+            assert_eq!(pool.committed(), 960);
+            assert_eq!(
+                watch.calls()[3..],
+                [
+                    Purge {
+                        offset: 3328,
+                        len: 256
+                    },
+                    Commit {
+                        offset: 1984,
+                        len: 256
+                    },
+                ],
+                "the other free block keeps its pages"
+            );
+            drop((held, small));
+        }
+
+        #[test]
+        fn counts_each_free_block_of_a_size_with_many_blocks_in_use() {
+            let (pool, watch) = create_watched_pool_of(1152, 64);
+            let mut blocks: Vec<_> = (0..6)
+                .map(|_| pool.alloc(128).expect("the budget has room"))
+                .collect();
+            let held: Vec<_> = blocks.drain(..2).collect();
+            drop(blocks);
+            let large = pool.alloc(384).expect("four free blocks give 512 bytes");
+            assert_eq!(pool.committed(), 1088);
+            let purges = watch
+                .calls()
+                .iter()
+                .filter(|call| matches!(call, Purge { .. }))
+                .count();
+            assert_eq!(purges, 4);
             drop((held, large));
         }
 
