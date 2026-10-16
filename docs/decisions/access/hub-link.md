@@ -193,3 +193,6 @@
   node (#2418). Lost: the places under `BODIES_BYTES_MAX` and the share, which refuses a
   read wider than the share at each retry (`laptop.architect`, 2026-10-11T15:17:29Z,
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6110496809, item 4).
+  Amended (#2725, with #2723 and #2553): no case gives `Behind` now. A complete session
+  that misses a frame reads it from disk, and a seq lost for no room comes as the gap of
+  the next frame. The variants stay until #2790 removes them.

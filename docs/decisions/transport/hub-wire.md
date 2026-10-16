@@ -262,3 +262,6 @@
   no field, so a loss between the open and the first frame was silent. Decided by
   `laptop.architect` (2026-10-15T19:40:52Z,
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6200757306).
+  Amended (#2725, with #2723 and #2553): no case gives `Behind` now. A complete session
+  that misses a frame reads it from disk, and a seq lost for no room comes as the gap of
+  the next frame. The variants stay until #2790 removes them.

@@ -57,7 +57,7 @@
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159325971 and
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159349684). The hub
   `sim` test
-  `ends_a_complete_reader_that_sleeps_past_its_window_as_behind_but_not_past_its_ring`
+  `gives_a_complete_reader_that_sleeps_past_its_window_or_its_ring_each_applied_frame`
   checks the frame past the window, and, after #2553, that a frame lost for no room ends
   nothing. A seq lost for no room stays a miss under the catch-up of #274 B1: a reader
   that reaches it ends with `Behind`, never a gap, and the B1 plan states how it knows
@@ -520,3 +520,6 @@
   2026-10-15T18:27:16Z:
   https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6199323861, items 5
   and 6).
+  Amended (#2725, with #2723 and #2553): no case gives `Behind` now. A complete session
+  that misses a frame reads it from disk, and a seq lost for no room comes as the gap of
+  the next frame. The variants stay until #2790 removes them.
