@@ -559,8 +559,8 @@ impl Files {
         self.disks[node].path(handle).to_path_buf()
     }
 
-    /// Sets whether users other than the owner can read the file at `path` on `node`.
-    /// Gives whether a file is there.
+    /// Sets whether other users can read the file at `path` on `node`. Gives whether a
+    /// file is there.
     pub(crate) fn expose(&mut self, node: usize, path: &Path, exposed: bool) -> bool {
         self.disks[node].expose(path, exposed)
     }

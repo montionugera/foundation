@@ -125,7 +125,7 @@ impl Reads {
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Place<'a> {
     /// A path relative to the data directory, which the node owns. A file there that
-    /// users other than its owner can read is refused, unread.
+    /// other users can read is refused, unread.
     Data(&'a Path),
     /// A path on the host.
     Host(&'a Absolute),

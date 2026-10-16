@@ -359,7 +359,7 @@ impl Drop for Opened {
     }
 }
 
-/// An open file, with its length and whether users other than its owner can read it.
+/// An open file, with its length and whether other users can read it.
 struct Found {
     fd: Opened,
     len: u64,

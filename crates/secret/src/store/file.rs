@@ -47,8 +47,8 @@ impl File {
     /// with the path to write it to, as
     /// [`env::files::Files::shown`] gives it.
     /// [`Error::BadName`] when `name` has an ASCII capital. [`Error::Unavailable`]
-    /// when users other than the owner of the file can read it, the file is more than
-    /// 64 KiB, or a file call fails, with the fix.
+    /// when other users can read the file, the file is more than 64 KiB, or a file
+    /// call fails, with the fix.
     pub(crate) async fn get(&self, name: &Name) -> Result<Value, Error> {
         if name.as_str().bytes().any(|byte| byte.is_ascii_uppercase()) {
             return Err(Error::BadName {

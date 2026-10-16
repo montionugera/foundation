@@ -39,7 +39,7 @@ fn reads_the_secret_from_the_file_that_its_text_names() {
         std::fs::create_dir_all(file.parent().expect("a directory"))
             .expect("makes the directory");
         std::fs::write(&file, b"t\n").expect("writes it");
-        std::fs::set_permissions(&file, Permissions::from_mode(0o644))
+        std::fs::set_permissions(&file, Permissions::from_mode(0o604))
             .expect("lets other users read it");
         let exposed = resolver
             .get(&source)
@@ -53,8 +53,8 @@ fn reads_the_secret_from_the_file_that_its_text_names() {
             ),
         });
         assert_eq!(exposed, refused);
-        std::fs::set_permissions(&file, Permissions::from_mode(0o640))
-            .expect("lets only the group read it");
+        std::fs::set_permissions(&file, Permissions::from_mode(0o660))
+            .expect("gives the group read and write, as `fsGroup` does");
         let read = resolver
             .get(&source)
             .await

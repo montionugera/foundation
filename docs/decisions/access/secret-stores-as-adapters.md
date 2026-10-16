@@ -69,23 +69,26 @@
   `env::files::File::exposed` gives the fact from the `fstat` of the open, on the
   descriptor that the store reads, so no swap of the file between the check and the read
   passes it. On Unix, a file is exposed when its mode gives read to other users
-  (`0o004`). Group read is allowed: with `fsGroup`, Kubernetes adds group read to each
-  file of a volume at each pod start, so a `chmod` would not last (the person,
-  2026-10-16T01:24Z, to "refuse only when every account on the machine can read the
-  file": "Ok, that sounds like a plan", relayed by `laptop.monitor`:
-  https://github.com/synnaxlabs/foundation/issues/2596#issuecomment-6205893055). The get
-  gives `Unavailable`, so `ctx.secret` gives `Error::Retry` and a fixed mode heals the
-  run at its next restart, with the text `other users can read the file <path>. Make it
+  (`0o004`). Group read is allowed: with `fsGroup`, the kubelet adds group read and
+  write to each file of a volume at each pod start, so a check of group read would
+  refuse each secret of a node on such a volume after each restart. The get gives
+  `Unavailable`, so `ctx.secret` gives `Error::Retry` and a fixed mode heals the run at
+  its next restart, with the text `other users can read the file <path>. Make it
   unreadable by other users: chmod o-r <path>`. The check covers only the store: a
-  `file()` source is never checked (#2583). It does not see group read, or an ACL entry
-  that grants read: on Linux the mask of a named entry is in the group bits, and `ssh`
-  does not see a macOS entry either. It does not check write bits. Add that check when a
-  secret whose change by another user is a threat comes, such as a key that signs.
-  `os::files` builds only on Linux and macOS. A driver for another OS states what
-  `exposed` means there. The `sim` disk makes each file not exposed, as `os` makes a
-  file with mode 0600, and `sim::node::Node::set_file_exposed` sets it, as a `chmod`
-  from outside the node does (`laptop.architect-2`, 2026-10-15T23:58:31Z:
+  `file()` source is never checked (#2583). It does not see group read, an ACL entry on
+  macOS that grants read, or a named ACL entry on Linux, whose mask is in the group
+  bits. It does not check write bits. Add that check when a secret whose change by
+  another user is a threat comes, such as a key that signs. `os::files` builds only on
+  Linux and macOS. A driver for another OS states what `exposed` means there. The `sim`
+  disk makes each file not exposed, as `os` makes a file with mode 0600, and
+  `sim::node::Node::set_file_exposed` sets it, as a `chmod` from outside the node does
+  (`laptop.architect-2`, 2026-10-15T23:58:31Z:
   https://github.com/synnaxlabs/foundation/issues/2596#issuecomment-6204800336). The
+  person allowed group read on 2026-10-16T01:24Z ("Ok, that sounds like a plan", through
+  `laptop.monitor`:
+  https://github.com/synnaxlabs/foundation/issues/2596#issuecomment-6205893055), and
+  `laptop.architect-2` amended the ruling (2026-10-16T01:26:00Z:
+  https://github.com/synnaxlabs/foundation/issues/2596#issuecomment-6205909515). The
   refusal of capitals and what a file holds are architect calls (`laptop.architect-2`,
   2026-10-13T16:54:37Z:
   https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150705009).

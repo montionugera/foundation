@@ -88,7 +88,7 @@ struct Dir {
 
 pub(crate) struct File {
     len: u64,
-    /// Users other than its owner can read it.
+    /// Other users can read it.
     exposed: bool,
     /// The sectors written, by index. A missing sector holds zeros.
     sectors: BTreeMap<u64, Sector>,
@@ -268,8 +268,8 @@ impl Disk {
         Ok((handle, len, exposed))
     }
 
-    /// Sets whether users other than the owner can read the file at `path`. Gives
-    /// whether a file is there.
+    /// Sets whether other users can read the file at `path`. Gives whether a file is
+    /// there.
     pub(crate) fn expose(&mut self, path: &Path, exposed: bool) -> bool {
         let Ok(Target::File(inode)) = self.target(path, Mode::Read) else {
             return false;
