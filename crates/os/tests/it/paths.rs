@@ -421,6 +421,18 @@ fn a_read_of_a_device_is_an_invalid_argument() {
 }
 
 #[test]
+fn a_read_of_a_socket_is_an_invalid_argument() {
+    // A socket path has a bound of 104 bytes on macOS, which the scratch path can pass.
+    let socket =
+        PathBuf::from(format!("/tmp/foundation-os-r-{}.sock", std::process::id()));
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let read = os::paths().read(&socket, 1);
+    drop(listener);
+    fs::remove_file(&socket).unwrap();
+    assert_eq!(read, Err(Error::Io { code: 22 }));
+}
+
+#[test]
 fn a_write_on_a_link_writes_the_file_it_names() {
     let scratch = Scratch::new();
     let (file, link) = (scratch.0.join("plant.hcl"), scratch.0.join("link"));
