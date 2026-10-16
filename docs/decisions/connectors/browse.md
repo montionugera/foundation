@@ -39,20 +39,21 @@
   of tags, `walk` gives `Error::Config` with `connector.broken-browse`, whose message
   names the rule, then what broke it, and the browse fails with no retry. It never
   panics: in release a panic stops the node and each of its connectors. The browse
-  operation adds the connector and its kind to each error that it gives from `walk`.
-  `Kind::browse(ctx, query)` connects and gives `walk` over the session, and gives
-  `connector.no-browse` by default. `Supervisor::browse(kind, config, query)` runs it
-  apart from any run of the connector, with the network, clock, randomness, and secrets
-  of the supervisor; a kind reads only what it needs to reach the device, so a block
-  with only `kind`, `node`, and `address` browses. A kind implements `browse::Device` on
-  its open session, so one walk is one session and can use a continuation point; a
-  `Cursor` that a front end gets holds no session state. `level` takes a folder as the
-  `Entry` that the device gave, never a path, and gives at most `LIMIT` entries a page;
-  `values` gives `types::sample::Value`, so there is one value model. Trigger for a text
-  value: a kind that reads a `string` channel. Lost: a count of matches up to the
-  budget; trigger: the agent test (PR 9) shows a task with two over-limit refusals one
-  after the other. `import --match` uses the same walk, so the points that `browse
-  --match` shows are the points that `import --match` takes.
+  operation of `ops` adds the connector and its kind to each error that it gives from
+  `walk`; `Supervisor::browse` adds neither. `Kind::browse(ctx, query)` connects and
+  gives `walk` over the session, and gives `connector.no-browse` by default.
+  `Supervisor::browse(kind, config, query)` runs it apart from any run of the connector,
+  with the network, clock, randomness, and secrets of the supervisor; a kind reads only
+  what it needs to reach the device, so a block with only `kind`, `node`, and `address`
+  browses. A kind implements `browse::Device` on its open session, so one walk is one
+  session and can use a continuation point; a `Cursor` that a front end gets holds no
+  session state. `level` takes a folder as the `Entry` that the device gave, never a
+  path, and gives at most `LIMIT` entries a page; `values` gives `types::sample::Value`,
+  so there is one value model. Trigger for a text value: a kind that reads a `string`
+  channel. Lost: a count of matches up to the budget; trigger: the agent test (PR 9)
+  shows a task with two over-limit refusals one after the other. `import --match` uses
+  the same walk, so the points that `browse --match` shows are the points that `import
+  --match` takes.
   The person's words, through `laptop.monitor`: decision 1, 2026-10-15 17:17 UTC, "Ok,
   this is fine. I approve"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6197989240);
@@ -102,4 +103,7 @@
   the PR list measures the cost of the OPC UA sim server. The two triggers come from the
   ruling of 2026-10-16 04:00 UTC. A page of `Child` entries, with a name and no path,
   and a private `Path::child`: `laptop.architect-2`, 2026-10-16 05:50 UTC
-  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6209047339).
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6209047339). The
+  operation of `ops`, not `Supervisor::browse`, names the connector and its kind in an
+  error: `laptop.architect-2`, 2026-10-16 06:46 UTC
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6209790559).
