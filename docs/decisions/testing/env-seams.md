@@ -804,14 +804,14 @@
   a link, `NotFound` when the directory above is not there or when the path ends in `.`
   or `..` and names no directory, and `Io` 17 (`EEXIST`) when anything else is there,
   also a file or a link to nothing at a path that ends in `/`. `os` gives `Ok` only
-  after `EEXIST` with a directory there, from one private call that `os::files` uses
-  too, and makes the directory with mode 0700, so the group and other users get no
-  access. `sim` makes one directory only, apart from `sim::Node::make_dir`, which makes
-  each one above. On a handle of `within`, a link to nothing at the path, which does
-  not resolve, passes the limits by the place of the link. `within` resolves
+  after `EEXIST` with a directory there, from one private call that the `CreateDir`
+  of `os::files` uses too, and makes each directory, also the data directory, with one
+  mode, 0700, so the group and other users get no access. `sim` makes one directory only, apart from `sim::Node::make_dir`, which makes
+  each one above. On a handle of `within`, a path that does not resolve, such as a link
+  to nothing or a loop, passes the limits by the place of its last name. `within` resolves
   `<hidden>/..` after the resolve of each hidden folder, which opens no file. It gives
   `NotFound` when the folder is not there, and `Io` 20 (`ENOTDIR`) when it is not a
-  directory. It skips a hidden folder that the limits of its handle refuse, since a
+  directory, or on `os` `Io` 13 (`EACCES`) when this user cannot search it. It skips a hidden folder that the limits of its handle refuse, since a
   path under that folder fails by those limits. A path under a hidden folder of a limit
   fails with the new `paths::Error::Hidden`, also when it is not under the folders of
   another limit, and `Outside` is only for a path not under the folders. This amendment
@@ -828,5 +828,9 @@
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6211011171, approved
   with conditions 1 to 3, 2026-10-16T08:08:47Z,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6211047580; the
-  order of `Hidden` over `Outside` and the `os` rule, 2026-10-16T14:34:56Z,
-  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6217809418).
+  order of `Hidden` over `Outside`, 2026-10-16T14:34:56Z,
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6217809418; the
+  `EEXIST` rule of `os`, the drop of end slashes, the resolve of `<hidden>/..`, `Io`
+  for a hidden folder that is not a directory, the skip of a hidden folder past the
+  limits, and the check of a link by its place, 2026-10-16T15:45:37Z,
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219155635).
