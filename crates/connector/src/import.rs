@@ -7,9 +7,19 @@ use types::name::Name;
 
 use crate::browse::Path;
 
-/// The name of the reserved call that [`fill`] writes. `config` refuses each call of
-/// this name.
-pub const FILL: &str = "fill";
+/// The name of the reserved call that [`fill`] writes.
+const FILL: &str = "fill";
+
+/// A call `fill`, the reserved call that [`fill`] writes. `config` refuses each one,
+/// in any value at any depth, also in the config of a kind, so no kind may give a
+/// call `fill` a meaning of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fill<'a> {
+    /// `fill("<what>")`, as [`fill`] writes it.
+    Of(&'a str),
+    /// A call `fill` of other arguments.
+    Bad,
+}
 
 /// `fill("<what>")`: the value of a fact that the device does not give, such as
 /// `fill("the sample type")`. `config` refuses it.
@@ -30,23 +40,23 @@ pub fn fill(what: &str) -> Value {
     }
 }
 
-/// The `<what>` of `value` when it is `fill("<what>")`, as [`fill`] writes it, or
-/// `None`. [`FILL`] is a reserved call: in any value at any depth, also in the config
-/// of a kind, `config` refuses it, so no kind may give a call `fill` a meaning of its
-/// own.
+/// The call `fill` that `value` is, or `None` when it is not a call `fill`.
 #[must_use]
-pub fn unfilled(value: &Value) -> Option<&str> {
+pub fn unfilled(value: &Value) -> Option<Fill<'_>> {
     let Kind::Call(call) = &value.kind else {
         return None;
     };
+    if &*call.function != FILL {
+        return None;
+    }
     match call.arguments.as_slice() {
         [
             Value {
                 kind: Kind::String(what),
                 ..
             },
-        ] if &*call.function == FILL => Some(what),
-        _ => None,
+        ] => Some(Fill::Of(what)),
+        _ => Some(Fill::Bad),
     }
 }
 

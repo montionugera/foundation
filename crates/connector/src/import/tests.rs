@@ -165,11 +165,14 @@ fn call(function: &str, arguments: Vec<Value>) -> Value {
 
 #[test]
 fn reads_the_text_of_a_fill() {
-    assert_eq!(unfilled(&call("fill", vec![string("x")])), Some("x"));
+    assert_eq!(
+        unfilled(&call("fill", vec![string("x")])),
+        Some(Fill::Of("x"))
+    );
 }
 
 #[test]
-fn reads_no_text_of_a_value_that_is_not_a_fill_of_one_string() {
+fn gives_a_bad_fill_for_a_call_fill_of_other_arguments() {
     let integer = Value {
         kind: Kind::Integer(1),
         span: None,
@@ -178,9 +181,15 @@ fn reads_no_text_of_a_value_that_is_not_a_fill_of_one_string() {
         call("fill", vec![]),
         call("fill", vec![integer]),
         call("fill", vec![string("a"), string("b")]),
-        call("secret", vec![string("x")]),
-        string("fill"),
+        call("fill", vec![fill("x")]),
     ] {
+        assert_eq!(unfilled(&value), Some(Fill::Bad), "{value:?}");
+    }
+}
+
+#[test]
+fn gives_none_for_a_value_that_is_not_a_call_fill() {
+    for value in [call("secret", vec![string("x")]), string("fill")] {
         assert_eq!(unfilled(&value), None, "{value:?}");
     }
 }
@@ -226,7 +235,7 @@ proptest! {
     #[test]
     fn reads_the_text_that_fill_writes(what in any::<String>()) {
         let value = fill(&what);
-        prop_assert_eq!(unfilled(&value), Some(what.as_str()));
+        prop_assert_eq!(unfilled(&value), Some(Fill::Of(&what)));
     }
 
     #[test]

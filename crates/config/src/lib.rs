@@ -92,6 +92,7 @@ pub struct Entry {
 /// the order of their [`document::Source`], then in source order: `config.unfilled`
 /// for `fill("<what>")` that an import wrote, and `config.bad-fill` for a call `fill`
 /// of other arguments.
+/// A call `fill` inside a call `fill` gives no problem of its own.
 /// Each other problem in the Documents, in the order of their [`document::Source`],
 /// then in source order.
 /// A problem with no span has no defined place in that order. A value that a reader
