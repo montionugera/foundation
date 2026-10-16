@@ -8,11 +8,15 @@ use crate::hash;
 use crate::sample::{Scalar, Type};
 
 /// A key set's number in its node's [`Interner`]: dense from 0 and node-local, never
-/// sent on the wire or stored on disk. A set from [`KeySet::ordered`] has key 0.
+/// sent on the wire or stored on disk. A set from [`KeySet::ordered`] has a key that no
+/// `Interner` gives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Key(u32);
 
 impl Key {
+    /// The key of each set from [`KeySet::ordered`].
+    const ORDERED: Self = Self(u32::MAX);
+
     pub(super) const fn new(n: u32) -> Self {
         Self(n)
     }
@@ -36,9 +40,9 @@ pub struct KeySet {
 
 impl KeySet {
     /// The key set of one group whose entries are `channels`, in order: entry `n` has
-    /// slot `n`, and the entry at `index` is the group's index. Its key is 0. Its key
-    /// and slots are its own, not a node's: never look up either in an [`Interner`] or
-    /// a [`Slots`].
+    /// slot `n`, and the entry at `index` is the group's index. Its key is one that no
+    /// [`Interner`] gives. Its slots are its own, not a node's: never look up one in a
+    /// [`Slots`].
     ///
     /// # Errors
     ///
@@ -77,7 +81,7 @@ impl KeySet {
             return Err(Repeated { key });
         }
         Ok(Self {
-            key: Key::new(0),
+            key: Key::ORDERED,
             entries,
             groups: Arc::new([index]),
         })
@@ -181,7 +185,7 @@ impl Interner {
     ///
     /// If a channel appears twice: the `hub` builds groups from the spec, so that is a
     /// bug. Also if the slot table already assigned 2^32 slots, or the node already
-    /// holds 2^32 key sets.
+    /// holds 2^32 - 1 key sets.
     pub fn intern(&mut self, groups: &[Group<'_>]) -> Arc<KeySet> {
         let stamp = Type::Scalar(Scalar::Stamp);
         let len = groups.iter().map(|group| group.data.len()).sum::<usize>();
@@ -226,10 +230,8 @@ impl Interner {
         if let Some(set) = self.sets.get(&shape) {
             return Arc::clone(set);
         }
-        let n =
-            u32::try_from(self.sets.len()).expect("a node holds at most 2^32 key sets");
         let set = Arc::new(KeySet {
-            key: Key::new(n),
+            key: interned(self.sets.len()),
             entries: Arc::clone(&shape.0),
             groups: Arc::clone(&shape.1),
         });
@@ -244,6 +246,19 @@ impl Interner {
     pub fn snapshot(&self) -> Snapshot {
         self.snapshot.clone()
     }
+}
+
+/// The key of a new set of an [`Interner`] that holds `count` sets.
+///
+/// # Panics
+///
+/// When the key would be [`Key::ORDERED`] or past it.
+fn interned(count: usize) -> Key {
+    u32::try_from(count)
+        .ok()
+        .filter(|&n| n < Key::ORDERED.0)
+        .map(Key::new)
+        .expect("a node holds at most 2^32 - 1 key sets")
 }
 
 /// A key set would hold a channel twice.
@@ -716,6 +731,22 @@ mod tests {
             check(&[(7, F64), (3, STAMP), (7, F64), (3, F64)], 1, 3);
         }
 
+        /// No key of an `Interner` is the key of an ordered set.
+        #[test]
+        fn has_a_key_that_no_interner_gives() {
+            let set = KeySet::ordered([(key(1), STAMP)], 0).unwrap();
+            assert_eq!(set.key(), Key::new(u32::MAX));
+            let last = usize::try_from(u32::MAX - 1).unwrap();
+            assert_eq!(interned(last), Key::new(u32::MAX - 1));
+            assert_ne!(Interner::new().intern(&[]).key(), set.key());
+        }
+
+        #[test]
+        #[should_panic(expected = "a node holds at most 2^32 - 1 key sets")]
+        fn panics_on_the_interned_set_of_the_ordered_key() {
+            let _key = interned(usize::try_from(u32::MAX).unwrap());
+        }
+
         #[test]
         #[should_panic(expected = "the index is entry 2 of 2")]
         fn panics_on_an_index_past_the_entries() {
@@ -750,7 +781,7 @@ mod tests {
             #[test]
             fn keeps_the_order_of_its_channels((channels, index) in channels()) {
                 let set = KeySet::ordered(channels.iter().copied(), index).unwrap();
-                prop_assert_eq!(set.key().get(), 0);
+                prop_assert_eq!(set.key().get(), u32::MAX);
                 prop_assert_eq!(set.groups(), [index]);
                 prop_assert_eq!(set.entries().len(), channels.len());
                 for (at, (entry, &(key, data_type))) in
