@@ -69,3 +69,55 @@ fn paths_of_entries_with_no_samples_do_not_stall_the_ring() {
         .collect();
     assert_eq!(failures, Vec::new());
 }
+
+/// A path whose newest record holds only an entry with no samples keeps that record
+/// as its holder through the trims that pass its older record, so a reopen counts
+/// on from both entries.
+#[test]
+fn a_reopen_after_trims_counts_on_from_the_holder_of_entries_with_no_samples() {
+    let (mut sim, node) = create_node(0);
+    sim.run_on(&node, |node, tasks| async move {
+        let config = || Config {
+            layout: layout(32 * BLOCK, BODY_MAX),
+            trimmed: true,
+            ..node_config(&node, tasks.clone(), DIR)
+        };
+        let first = config();
+        let pool = Rc::clone(&first.pool);
+        let clock = node.clock();
+        let mut slots = Slots::new();
+        let buffer = Buffer::open(first, &mut slots).await.expect("opens");
+        let one = slots.index(key(1));
+        let two = slots.index(key(2));
+        let empty = || entry(1, one, Path::Live, 0, 0, None, Parts::default());
+        for _ in 0..2 {
+            buffer.append([empty()]).expect("the ring has room");
+            buffer.committed().await.expect("commits");
+        }
+        for seq in 0..200 {
+            let parts = Parts::from(pool.alloc(100).expect("a block").freeze());
+            let last = i64::try_from(seq).expect("a small seq") + 1;
+            let data = entry(2, two, Path::Live, seq, 1, Some(last), parts);
+            append_within(&buffer, &clock, &[data], 100)
+                .await
+                .expect("the ring frees room");
+            buffer.committed().await.expect("commits");
+        }
+        let ending = buffer.ended();
+        drop(buffer);
+        ending.await.expect("ends");
+        let mut slots = Slots::new();
+        let buffer = Buffer::open(config(), &mut slots).await.expect("reopens");
+        let one = slots.index(key(1));
+        let empty = entry(1, one, Path::Live, 0, 0, None, Parts::default());
+        buffer.append([empty]).expect("the ring has room");
+        buffer.committed().await.expect("commits");
+        let read = buffer
+            .reader()
+            .read(one, Path::Live, mark(0, 0), usize::MAX)
+            .await
+            .expect("reads");
+        assert_eq!(read.next, mark(0, 3));
+    })
+    .expect("the buffer ends");
+}

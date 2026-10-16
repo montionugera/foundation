@@ -3737,10 +3737,10 @@ fn an_open_refuses_a_carried_tail_that_is_not_the_tail_of_the_records() {
 }
 
 /// A carried `given` of `u64::MAX`, then a data record with an entry with no
-/// samples at the carried seq. The open refuses the carry record, and does not
-/// count past `u64::MAX`.
+/// samples at the carried seq. The open takes the carry record and refuses the data
+/// record: it does not count past `u64::MAX`.
 #[test]
-fn an_open_refuses_a_carried_given_that_no_ring_holds() {
+fn an_open_refuses_an_entry_with_no_samples_after_a_carried_given_of_u64_max() {
     run(161, |shard| async move {
         shard.create_two_records().await;
         shard
@@ -3761,23 +3761,19 @@ fn an_open_refuses_a_carried_given_that_no_ring_holds() {
             .put_carry(3 * BLOCK, &carry_body(&[carried(2, 4, u64::MAX, None)]))
             .await;
         shard.seal(4 * BLOCK).await;
-        shard.open_invalid(ring, 3 * BLOCK).await;
+        shard.open_invalid(ring, 5 * BLOCK).await;
     });
 }
 
-/// A carried `given` of 2^63 - 1 is the largest that the open takes.
+/// The open takes each carried `given`, up to `u64::MAX`.
 #[test]
-fn an_open_takes_a_carried_given_up_to_2_pow_63_less_one() {
-    for (given, taken) in [((1 << 63) - 1, true), (1 << 63, false)] {
+fn an_open_takes_a_carried_given_up_to_u64_max() {
+    for given in [(1 << 63) - 1, 1 << 63, u64::MAX] {
         run(163, move |shard| async move {
             shard.create_two_records().await;
             let body = carry_body(&[carried(2, 4, given, None)]);
             shard.put_carry(3 * BLOCK, &body).await;
             let ring = layout(AREA, BODY_MAX);
-            if !taken {
-                shard.open_invalid(ring, 3 * BLOCK).await;
-                return;
-            }
             let mut slots = Slots::new();
             let buffer = shard.open(ring, &mut slots).await.expect("opens");
             let b = slots.index(key(2));
@@ -3843,8 +3839,7 @@ fn an_open_refuses_a_data_body_over_body_max_within_the_window() {
 }
 
 /// A carry record of the wrong shape: no count, a count over the tails it holds,
-/// bytes after its tails, a wrong path byte, a `given` over the maximum, and a wrong
-/// presence byte.
+/// bytes after its tails, a wrong path byte, and a wrong presence byte.
 #[test]
 fn an_open_refuses_a_carry_record_of_the_wrong_shape() {
     let one = carry_body(&[carried(2, 4, 0, None)]);
@@ -3860,7 +3855,6 @@ fn an_open_refuses_a_carry_record_of_the_wrong_shape() {
         short,
         [one.clone(), vec![0]].concat(),
         with(16, 2),
-        with(32, 0x80),
         with(33, 2),
     ];
     for body in bodies {
@@ -7319,4 +7313,70 @@ fn a_trim_between_entries_with_no_samples_at_a_seq_frees_room() {
             assert_eq!(refused, None, "with {between} records between, held {held}");
         }
     }
+}
+
+/// Writes an entry with no samples of index 1 at seq 0, sets its stored count to
+/// `count`, and reopens the ring.
+async fn reopen_with_count(shard: &Shard, count: u64) -> (Buffer, Slot) {
+    let ring = layout(AREA, BODY_MAX);
+    let mut slots = Slots::new();
+    let buffer = shard.open(ring, &mut slots).await.expect("opens");
+    let one = slots.index(key(1));
+    buffer
+        .append([entry(1, one, Path::Live, 0, 0, None, Parts::default())])
+        .expect("queues");
+    buffer.committed().await.expect("commits");
+    let ending = buffer.ended();
+    drop(buffer);
+    ending.await.expect("ends");
+    // The table count, then `index`, `path`, `first`, `len`, `stored_at`, and the
+    // presence byte come before the count.
+    let at = 4 + 16 + 1 + 8 + 4 + 8 + 1;
+    shard.tamper_record(BLOCK, at, &count.to_le_bytes()).await;
+    let mut slots = Slots::new();
+    let buffer = shard.open(ring, &mut slots).await.expect("the count opens");
+    (buffer, slots.index(key(1)))
+}
+
+/// An entry with no samples after a count of 2^63 - 1 commits a count of 2^63, and
+/// the ring reopens.
+#[test]
+fn a_count_past_two_to_the_63_reopens() {
+    run(211, |shard| async move {
+        let (buffer, one) = reopen_with_count(&shard, (1 << 63) - 1).await;
+        buffer
+            .append([entry(1, one, Path::Live, 0, 0, None, Parts::default())])
+            .expect("queues");
+        buffer.committed().await.expect("commits");
+        let ending = buffer.ended();
+        drop(buffer);
+        ending.await.expect("ends");
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("a count the buffer wrote opens");
+        let read = buffer
+            .reader()
+            .read(slots.index(key(1)), Path::Live, Mark::at(0), usize::MAX)
+            .await
+            .expect("reads");
+        assert_eq!(read.next, mark(0, 1 << 63));
+    });
+}
+
+/// The ring opens with the largest count, and the next entry with no samples at its
+/// seq panics.
+#[test]
+#[should_panic(
+    expected = "invariant: an entry of index 00000000-0000-0000-0000-000000000001 on \
+                path Live with no samples follows u64::MAX of them at seq 0"
+)]
+fn an_entry_with_no_samples_after_the_largest_count_panics() {
+    run(212, |shard| async move {
+        let (buffer, one) = reopen_with_count(&shard, u64::MAX).await;
+        buffer
+            .append([entry(1, one, Path::Live, 0, 0, None, Parts::default())])
+            .expect("queues");
+    });
 }
