@@ -1,9 +1,11 @@
+use std::future::poll_fn;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use ::sim::{Sim, name, node};
 use bytes::Bytes;
-use env::net::tcp;
+use env::net::{Listener, tcp};
+use env::tasks::Tasks;
 use env::thread::Handle;
 use http::{Request, Response};
 use types::time::{Span, Stamp};
@@ -88,6 +90,32 @@ impl Network {
             server,
             handles: vec![handle],
         }
+    }
+
+    /// Starts a server on port `port` of the server node that runs `run` on its
+    /// listener.
+    fn listen<F>(
+        &mut self,
+        port: u16,
+        run: impl FnOnce(Listener, Tasks) -> F + Send + 'static,
+    ) where
+        F: Future<Output = ()> + 'static,
+    {
+        let listen = tcp::Listen {
+            local: SocketAddr::new(self.server.addresses()[0], port),
+            backlog: 4,
+            options: super::super::OPTIONS,
+        };
+        let listener = self.server.net().listen(&listen).expect("the port is free");
+        let handle = self
+            .server
+            .shards()
+            .start(shard("other"), move |tasks| async move {
+                run(listener, tasks).await;
+                std::future::pending::<()>().await;
+            })
+            .expect("the shard starts");
+        self.handles.push(handle);
     }
 
     /// Starts one client that trusts `roots` on the client node, which runs `steps`
@@ -206,6 +234,52 @@ fn refuses_a_certificate_of_a_ca_that_the_roots_do_not_hold() {
     assert_eq!(
         failed(network.send(sim::ca(), "https://influx:8086/ping")),
         "TLS with influx:8086 failed: invalid peer certificate: UnknownIssuer"
+    );
+}
+
+#[test]
+fn fails_the_handshake_with_a_server_that_does_not_speak_tls() {
+    let mut network = Network::new(10, Certificate::Valid, JUNE_2026);
+    network.listen(8087, |listener, tasks| async move {
+        let answer = |_: Request<Bytes>| Response::new(Bytes::new());
+        drop(sim::serve(listener, tasks, answer).await);
+    });
+    assert_eq!(
+        failed(network.send(sim::ca(), "https://influx:8087/ping")),
+        "TLS with influx:8087 failed: received corrupt message of type \
+         InvalidContentType"
+    );
+}
+
+#[test]
+fn fails_the_handshake_with_a_server_that_closes_the_stream() {
+    let mut network = Network::new(11, Certificate::Valid, JUNE_2026);
+    network.listen(8087, |mut listener, _| async move {
+        while let Ok(mut tcp) = poll_fn(|cx| listener.poll_accept(cx)).await {
+            // A close with unread bytes resets the stream, so it reads the hello.
+            let mut hello = [0; 4096];
+            drop(poll_fn(|cx| tcp.poll_read(cx, &mut hello)).await);
+            drop(poll_fn(|cx| tcp.poll_close(cx)).await);
+        }
+    });
+    assert_eq!(
+        failed(network.send(sim::ca(), "https://influx:8087/ping")),
+        "TLS with influx:8087 failed: the peer closed the stream in the handshake"
+    );
+}
+
+#[test]
+fn fails_the_handshake_with_a_server_that_resets_the_stream() {
+    let mut network = Network::new(12, Certificate::Valid, JUNE_2026);
+    network.listen(8087, |mut listener, _| async move {
+        while let Ok(tcp) = poll_fn(|cx| listener.poll_accept(cx)).await {
+            drop(tcp);
+        }
+    });
+    let remote = SocketAddr::new(network.server.addresses()[0], 8087);
+    assert_eq!(
+        failed(network.send(sim::ca(), "https://influx:8087/ping")),
+        format!("TLS with influx:8087 failed: {remote} reset the stream")
     );
 }
 
