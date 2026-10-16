@@ -432,9 +432,7 @@ impl Kept {
     ) -> Option<(Shape<'s>, Values<'v>)> {
         let mut pairs = values.iter().zip(&layout.types);
         if pairs.all(|(value, &sample)| Why::of(value, sample).is_none()) {
-            if left.noted.is_some() {
-                left.note(ctx, None);
-            }
+            left.note(ctx, None);
             self.reads.clear();
             return Some((layout.shape(), Values(values)));
         }
@@ -456,9 +454,7 @@ impl Kept {
             self.reads.push(why.is_none());
         }
         left.add(bad, uncertain, mistyped);
-        if first.map(|(at, value, _)| (at, value)) != left.noted {
-            left.note(ctx, first);
-        }
+        left.note(ctx, first);
         if self.reads != self.last {
             self.keep(layout);
         }
@@ -510,10 +506,22 @@ impl Left {
         self.mistyped.add(mistyped);
     }
 
-    /// Sets the note of `ctx` for `mistyped`: the read at a value of another type,
-    /// its type, and the sample type of its channel. `None` clears the note.
-    #[cold]
+    /// Sets the note of `ctx` for `mistyped`, when it is not the note of the tick
+    /// before: the read at a value of another type, its type, and the sample type of
+    /// its channel. `None` clears the note.
+    #[inline]
     fn note(
+        &mut self,
+        ctx: &Context<Config>,
+        mistyped: Option<(usize, value::Type, Scalar)>,
+    ) {
+        if mistyped.map(|(at, value, _)| (at, value)) != self.noted {
+            self.show(ctx, mistyped);
+        }
+    }
+
+    #[cold]
+    fn show(
         &mut self,
         ctx: &Context<Config>,
         mistyped: Option<(usize, value::Type, Scalar)>,
