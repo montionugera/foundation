@@ -35,9 +35,9 @@
   https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6212322447). A
   hold that ends frees room, and a `Full` that stays costs one open for each backoff,
   with the cause in the status at each try. Only an open that adds a record gives
-  `Full`: a held reader opens over the limit and records nothing, and a restart of its
-  home after its old hold ends resumes it at the live tail, until #2833
-  (`laptop.architect`, 2026-10-16T15:47:15Z:
+  `Full`: a held reader opens over the limit and records nothing, the home writes a
+  warning event, and a restart of its home after its old hold ends resumes it at the
+  live tail, until #2833 (`laptop.architect`, 2026-10-16T15:47:15Z:
   https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6219185219). Lost:
   `Config` (`connector.many-readers`), which stops the connector and its data for good
   on a cause that clears itself (`laptop.architect-2`, 2026-10-16T07:08:14Z:

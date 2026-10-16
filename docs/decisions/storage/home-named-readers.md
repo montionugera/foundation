@@ -61,8 +61,9 @@
   record of the longest names, so at least 7 records. A named complete open that adds a
   record past it gives `Unopened::Full`, and `hub` gives `reader::Error::Full`. An open
   of a reader that holds a record, by a reopen or by a takeover with a new hold, opens
-  when the records pass it, as on a smaller pool after a restart, and appends nothing: a
-  restart after the old hold ends resumes the reader at the live tail, until #2833
+  when the records pass it, as on a smaller pool after a restart, appends nothing, and
+  writes a warning event that names the index, the reader, and the bytes over one entry:
+  a restart after the old hold ends resumes the reader at the live tail, until #2833
   records it. A latest reader adds no record. #2833 holds records past one entry.
   Decided by `laptop.architect` (2026-10-16T05:22:26Z:
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6208708096;
@@ -75,4 +76,6 @@
   refusal over the limit: 2026-10-16T14:41:12Z:
   https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6217928514, reversed
   for a held reader: 2026-10-16T15:47:15Z:
-  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6219185219).
+  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6219185219; the
+  warning event: `laptop.monitor`, 2026-10-16:
+  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6219286206).

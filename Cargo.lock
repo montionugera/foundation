@@ -924,6 +924,7 @@ dependencies = [
  "home",
  "proptest",
  "sim",
+ "tracing",
  "types",
 ]
 

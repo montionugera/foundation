@@ -18,6 +18,7 @@ codec = { path = "../codec" }
 control = { path = "../control" }
 delivery = { path = "../delivery" }
 env = { path = "../env" }
+tracing = { workspace = true }
 types = { path = "../types" }
 
 [dev-dependencies]

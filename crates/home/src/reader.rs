@@ -70,8 +70,8 @@ pub enum Unopened {
     /// would pass `limit` bytes, the most that one entry of the buffer holds. Close a
     /// named reader of the index whose hold is zero, wait for a hold to end, or open
     /// the reader unnamed. An open of a reader that holds a record opens over the
-    /// limit and records nothing: a restart after its old hold ends resumes it at the
-    /// live tail, until #2833.
+    /// limit, records nothing, and writes a warning event: a restart after its old
+    /// hold ends resumes it at the live tail, until #2833.
     Full {
         /// The most bytes of one entry.
         limit: usize,
@@ -173,6 +173,19 @@ pub(crate) struct Set {
     /// until then: a restart before the commit would lose the frames that it got and
     /// did not ack.
     recording: hash::Map<complete::Key, Recording>,
+}
+
+/// What a named complete open does to the records of its index.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Opening {
+    /// Its session is open with its hold, and the records stay.
+    Kept,
+    /// The records with its new record: a first open, a reopen in its hold, or a
+    /// takeover with a new hold.
+    Records(Vec<Record>),
+    /// It holds a record, and the records with its new one pass the limit by `bytes`,
+    /// as on a smaller pool after a restart. It opens and appends nothing.
+    Over { bytes: usize },
 }
 
 /// The commit that a named complete reader waits for before it takes a frame.
@@ -366,12 +379,8 @@ impl Set {
         self.note(place);
     }
 
-    /// The records of the index at `place` as a named complete open of `reader` with
-    /// `hold` makes them, at its held position, else at seq `live`, when the open
-    /// changes its record: a first open, a reopen in its hold, or a takeover with a
-    /// new hold. `None` when its session is open with `hold`, or when it holds a
-    /// record and the records pass `limit` bytes, as on a smaller pool after a
-    /// restart.
+    /// What a named complete open of `reader` with `hold` does to the records of the
+    /// index at `place`, at its held position, else at seq `live`.
     ///
     /// # Errors
     ///
@@ -384,7 +393,7 @@ impl Set {
         hold: Span,
         live: u64,
         limit: usize,
-    ) -> Result<Option<Vec<Record>>, Unopened> {
+    ) -> Result<Opening, Unopened> {
         let mut records = self.records(place);
         let open = |live| Record {
             reader: reader.clone(),
@@ -397,7 +406,7 @@ impl Set {
         };
         let added = match records.iter_mut().find(|record| record.reader == *reader) {
             Some(record) if record.closed.is_none() && record.hold == hold => {
-                return Ok(None);
+                return Ok(Opening::Kept);
             }
             Some(record) => {
                 *record = open(record.position.live);
@@ -408,12 +417,13 @@ impl Set {
                 true
             }
         };
-        if crate::named::len(&records) <= limit {
-            Ok(Some(records))
+        let len = crate::named::len(&records);
+        if len <= limit {
+            Ok(Opening::Records(records))
         } else if added {
             Err(Unopened::Full { limit })
         } else {
-            Ok(None)
+            Ok(Opening::Over { bytes: len - limit })
         }
     }
 
@@ -1336,8 +1346,11 @@ mod tests {
             let _b = open(&mut set, "b");
             let limit = bytes(&["a", "b", "c"]);
             let hold = Span::from_nanos(10);
-            let added = set.opening(0, &named("c"), hold, 3, limit);
-            let mut added = added.expect("it fits").expect("it adds a record");
+            let Ok(Opening::Records(mut added)) =
+                set.opening(0, &named("c"), hold, 3, limit)
+            else {
+                panic!("it adds a record that fits");
+            };
             added.sort_by(|a, b| a.reader.name.cmp(&b.reader.name));
             assert_eq!(added, [opened("a", 0), opened("b", 0), record("c", None)]);
             assert_eq!(
@@ -1351,7 +1364,8 @@ mod tests {
             let mut set = carried(1);
             let _a = open(&mut set, "a");
             let hold = Span::from_nanos(10);
-            assert_eq!(set.opening(0, &named("a"), hold, 3, usize::MAX), Ok(None));
+            let kept = set.opening(0, &named("a"), hold, 3, usize::MAX);
+            assert_eq!(kept, Ok(Opening::Kept));
         }
 
         #[test]
@@ -1364,7 +1378,7 @@ mod tests {
                 hold,
                 ..opened("a", 0)
             };
-            assert_eq!(records, Ok(Some(vec![taken])));
+            assert_eq!(records, Ok(Opening::Records(vec![taken])));
         }
 
         #[test]
@@ -1387,7 +1401,7 @@ mod tests {
                 hold,
                 ..opened("a", 2)
             };
-            assert_eq!(records, Ok(Some(vec![reopened])));
+            assert_eq!(records, Ok(Opening::Records(vec![reopened])));
         }
 
         #[test]
@@ -1396,15 +1410,25 @@ mod tests {
             let a = open(&mut set, "a");
             set.close(0, a.into(), Some(Stamp::from_nanos(1)));
             let hold = Span::from_nanos(10);
-            assert_eq!(set.opening(0, &named("a"), hold, 3, 0), Ok(None));
+            let bytes = crate::named::len(&[Record {
+                hold,
+                ..opened("a", 0)
+            }]);
+            let over = set.opening(0, &named("a"), hold, 3, 1);
+            assert_eq!(over, Ok(Opening::Over { bytes: bytes - 1 }));
         }
 
         #[test]
         fn take_over_with_a_new_hold_past_the_limit_with_no_append() {
             let mut set = carried(1);
             open(&mut set, "a");
-            let hold = Span::from_nanos(10);
-            assert_eq!(set.opening(0, &named("a"), hold, 3, 0), Ok(None));
+            let hold = Span::from_nanos(20);
+            let bytes = crate::named::len(&[Record {
+                hold,
+                ..opened("a", 0)
+            }]);
+            let over = set.opening(0, &named("a"), hold, 3, 1);
+            assert_eq!(over, Ok(Opening::Over { bytes: bytes - 1 }));
         }
 
         #[test]

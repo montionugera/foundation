@@ -282,8 +282,9 @@ pub enum Error {
     /// named readers of the index would pass `limit` bytes, the most that one entry of
     /// the home's buffer holds. Close a named reader of the index whose hold is zero,
     /// wait for a hold to end, or open this one unnamed. A reader that holds a record
-    /// opens over the limit and records nothing: a restart of the home after its old
-    /// hold ends resumes it at the live tail, until #2833.
+    /// opens over the limit, records nothing, and the home writes a warning event: a
+    /// restart of the home after its old hold ends resumes it at the live tail, until
+    /// #2833.
     Full {
         /// The most bytes of one entry.
         limit: usize,

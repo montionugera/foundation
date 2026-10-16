@@ -739,8 +739,9 @@ impl Shard {
     /// index with it would pass the most bytes of one entry of the buffer: at least 7
     /// records of the longest subjects and names. An open of a reader that holds a
     /// record opens also when the records pass it, as on a smaller pool after a
-    /// restart, and appends nothing: a restart after the old hold ends resumes it at
-    /// the live tail, until #2833.
+    /// restart, appends nothing, and writes a warning event that names the index, the
+    /// reader, and the bytes over the limit: a restart after the old hold ends resumes
+    /// it at the live tail, until #2833.
     /// [`reader::Unopened::Unrecorded`] when the open adds a record, opens a held one,
     /// or takes over an open session with a new hold, and the buffer has no block or no
     /// room for the entry that holds the records.
@@ -764,7 +765,22 @@ impl Shard {
         // takes no frame until they commit: a restart before then would lose the frames
         // that it got and did not ack.
         let limit = named::limit(&self.buffer);
-        let records = self.readers.opening(place, &reader, hold, live, limit)?;
+        let records = match self.readers.opening(place, &reader, hold, live, limit)? {
+            reader::Opening::Kept => None,
+            reader::Opening::Records(records) => Some(records),
+            reader::Opening::Over { bytes } => {
+                tracing::warn!(
+                    index = %self.indexes[place].key,
+                    subject = %reader.subject,
+                    name = %reader.name,
+                    over_bytes = bytes,
+                    "the records of the named readers of the index pass one entry, so \
+                     the reader opens and records nothing: a restart after its old \
+                     hold ends resumes it at the live tail"
+                );
+                None
+            }
+        };
         if let Some(records) = &records
             && !append_named(&self.buffer, &self.indexes[place], records, now)
         {
@@ -6100,10 +6116,71 @@ mod tests {
             }
 
             mod records {
+                use std::fmt::Write as _;
+                use std::sync::Mutex;
+
+                use tracing::field::{Field, Visit};
+                use tracing::span::Id;
+
                 use super::*;
 
                 /// A hold that no test reaches.
                 const LONG: Span = Span::from_nanos(3_600_000_000_000);
+
+                /// The level, the message, and the fields of each event that its
+                /// dispatch got, in order.
+                #[derive(Clone, Default)]
+                struct Log(Arc<Mutex<Vec<String>>>);
+
+                impl Log {
+                    fn dispatch(&self) -> tracing::Dispatch {
+                        tracing::Dispatch::new(self.clone())
+                    }
+
+                    fn events(&self) -> Vec<String> {
+                        self.0.lock().expect("no event panics").clone()
+                    }
+                }
+
+                impl tracing::Subscriber for Log {
+                    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+                        true
+                    }
+
+                    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> Id {
+                        Id::from_u64(1)
+                    }
+
+                    fn record(&self, _: &Id, _: &tracing::span::Record<'_>) {}
+
+                    fn record_follows_from(&self, _: &Id, _: &Id) {}
+
+                    fn event(&self, event: &tracing::Event<'_>) {
+                        let mut fields = Fields(String::new(), String::new());
+                        event.record(&mut fields);
+                        let level = event.metadata().level();
+                        let text = format!("{level} {}{}", fields.0, fields.1);
+                        self.0.lock().expect("no event panics").push(text);
+                    }
+
+                    fn enter(&self, _: &Id) {}
+
+                    fn exit(&self, _: &Id) {}
+                }
+
+                /// The message, and each other field as ` <name>=<value>`.
+                struct Fields(String, String);
+
+                impl Visit for Fields {
+                    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+                        if field.name() == "message" {
+                            self.0 = format!("{value:?}");
+                        } else {
+                            write!(self.1, " {}={value:?}", field.name())
+                                .expect("fits");
+                        }
+                    }
+                }
 
                 /// Opens the named complete reader `r` of `subject` on the index at
                 /// slot 0, with a hold of `LONG`.
@@ -6740,7 +6817,26 @@ mod tests {
                         let mut shard = test.over(buffer).await;
                         assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
                         assert_eq!(open(&mut shard, 8), Err(Unopened::Full { limit }));
-                        let a = open(&mut shard, 0).expect("it adds no record").key;
+                        let log = Log::default();
+                        let a = tracing::dispatcher::with_default(&log.dispatch(), || {
+                            open(&mut shard, 0)
+                        });
+                        let a = a.expect("it adds no record").key;
+                        let reader = long(0);
+                        // Eight records of 546 bytes, and an entry head of 5 bytes.
+                        assert_eq!(
+                            log.events(),
+                            [format!(
+                                "WARN the records of the named readers of the index pass \
+                                 one entry, so the reader opens and records nothing: a \
+                                 restart after its old hold ends resumes it at the live \
+                                 tail index={} subject={} name={} over_bytes={}",
+                                common::key(Slot::new(0)),
+                                reader.subject,
+                                reader.name,
+                                8 * 546 + 5 - limit,
+                            )]
+                        );
                         assert_eq!(
                             caught_up(&mut shard, a, 0).await,
                             [seq(0, 1), seq(1, 1)]
