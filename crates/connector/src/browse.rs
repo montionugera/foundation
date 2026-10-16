@@ -27,8 +27,8 @@ pub const VISITS: usize = 10_000;
 /// The most folders that a pattern holds open at one time, its start with them.
 pub const DEPTH: usize = 64;
 
-/// The most `*` in the names of a pattern, since each is a search of each name that a
-/// walk tests.
+/// The most `*` in the names of a pattern, since each adds a piece that a walk tests in
+/// each name.
 pub const STARS: usize = 256;
 
 /// One browse's inputs: the connector block as the files give it, and the node's
@@ -530,7 +530,7 @@ impl fmt::Debug for Path {
 /// number of names (none too), `*` matches any text in one name, and `\` takes the
 /// next character as it is. A run of `**` names is one, and a pattern holds at most
 /// [`DEPTH`] other names. A run of `*` in a name is one, and a pattern holds at most
-/// [`STARS`] in its names other than `**`.
+/// [`STARS`] `*` in its names other than `**`.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Pattern {
     segments: Vec<Segment>,
@@ -791,7 +791,7 @@ impl fmt::Display for Malformed {
             ),
             Self::Stars => write!(
                 f,
-                "it has more than {STARS} `*`, and each costs a search of each name"
+                "it has more than {STARS} `*`, each a piece to test in each name"
             ),
         }
     }

@@ -472,7 +472,7 @@ mod pattern {
         assert_eq!(stars(257).parse::<Pattern>(), Err(Malformed::Stars));
         assert_eq!(
             Malformed::Stars.to_string(),
-            "it has more than 256 `*`, and each costs a search of each name",
+            "it has more than 256 `*`, each a piece to test in each name",
         );
         let spread = format!("{}/*a*a*a*a*a", vec!["*a*a*a*a"; 63].join("/**/"));
         assert_eq!(spread.parse::<Pattern>(), Err(Malformed::Stars));
