@@ -57,9 +57,12 @@
   client. When 10 s pass with no read, `idle` reads `Server_ServerStatus_State`
   (ns=0;i=2259) to check the connection, so a run that reads more often than each 10 s
   sends no check. A check fails when its answer has a bad service result or a value with
-  a bad status, when it gets no answer in the request timeout (5 s), or when the close
-  of the channel cuts it. The value of the server state is not judged. The first failed
-  check ends the run with `Error::Device` and the text "the connectivity check failed
+  a Bad status other than `BadNoData`, when it gets no answer in the request timeout
+  (5 s), or when the close of the channel cuts it. A `BadNoData`, from the server or
+  for an empty value, is an answer, so it proves the channel and the session
+  (`laptop.architect-2`,
+  https://github.com/synnaxlabs/foundation/pull/2809#issuecomment-6208511068). The
+  value of the server state is not judged. The first failed check ends the run with `Error::Device` and the text "the connectivity check failed
   with <status>", so the supervisor connects again with its backoff. A channel or a
   session that the client loses between two checks ends the run at once with the same
   text, from the state of the client: the status of the connect, else
