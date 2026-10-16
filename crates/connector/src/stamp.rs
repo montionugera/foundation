@@ -7,7 +7,7 @@ use types::time::{Span, Stamp};
 #[cfg(not(loom))]
 mod tests;
 
-/// The stamps of the frames of one index. Each is the midpoint of the request that
+/// The stamps of the frames of one writer. Each is the midpoint of the request that
 /// read its samples, or the nanosecond after the stamp before it when that is later,
 /// so no two are equal and none goes back.
 #[derive(Debug, Default)]

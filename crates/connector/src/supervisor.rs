@@ -16,7 +16,7 @@ use types::name::Name;
 use types::time::Span;
 
 use crate::kind::{self, Context, Error};
-use crate::{browse, cancel, reader, retry, status};
+use crate::{browse, cancel, http, reader, retry, status};
 
 /// The waits between restarts.
 const RESTART: retry::Config = retry::Config {
@@ -38,6 +38,8 @@ pub struct Config {
     pub entropy: Entropy,
     /// The network that kinds connect through.
     pub net: Net,
+    /// The roots that an `https` connect of a kind trusts.
+    pub roots: http::Roots,
     /// The shard's tasks.
     pub tasks: Tasks,
     /// The shard's hub. Each session a kind opens acts as its connector.
@@ -546,13 +548,6 @@ mod tests {
                 true => Err(vec![worse()]),
                 false => Ok(Channels::default()),
             }
-        }
-
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
         }
 
         async fn run(&self, ctx: Context<bool>) -> Result<(), Error> {
@@ -1257,13 +1252,6 @@ mod tests {
 
         fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
             Ok(Channels::default())
-        }
-
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
         }
 
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
@@ -2135,13 +2123,6 @@ mod tests {
             })
         }
 
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
-        }
-
         fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
             std::future::ready(Ok(()))
         }
@@ -2548,13 +2529,6 @@ mod tests {
             Ok(Channels::default())
         }
 
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
-        }
-
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
             let config = tcp::Config {
                 remote: self.remote,
@@ -2667,13 +2641,6 @@ mod tests {
 
         fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
             Ok(Channels::default())
-        }
-
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
         }
 
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
@@ -2890,13 +2857,6 @@ mod tests {
             })
         }
 
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
-        }
-
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
             let count = ctx.count(self.count);
             for i in 1..=self.n {
@@ -2941,13 +2901,6 @@ mod tests {
                 reader: self.reader.clone(),
                 ..Channels::default()
             })
-        }
-
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
         }
 
         fn run(&self, ctx: Context<()>) -> impl Future<Output = Result<(), Error>> {
@@ -3659,6 +3612,7 @@ mod tests {
                 clock: node.clock(),
                 entropy: node.entropy(),
                 net: node.net(),
+                roots: http::Roots::default(),
                 tasks: tasks.clone(),
                 hub: hub::testing::open(env(&node, tasks.clone())).await.0,
                 secrets: testing::create_secrets(node.files()),
@@ -3710,6 +3664,7 @@ mod tests {
                 clock: clock.clone(),
                 entropy: node.entropy(),
                 net: node.net(),
+                roots: http::Roots::default(),
                 tasks: tasks.clone(),
                 hub,
                 secrets: testing::create_secrets(node.files()),
@@ -3818,13 +3773,6 @@ mod tests {
 
         fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
             Ok(Channels::default())
-        }
-
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
         }
 
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {

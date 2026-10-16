@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 
 use document::diagnostic::{Code, Diagnostic};
-use document::{Document, Span};
+use document::{Block, Document, Span};
 use env::clock::Clock;
 use env::net::Net;
 use env::rng::Rng;
@@ -15,7 +15,7 @@ use types::authority::Authority;
 use types::name::Name;
 use types::time;
 
-use crate::{browse, cancel, reader, status, supervisor};
+use crate::{browse, cancel, http, reader, status, supervisor};
 
 /// The noun of the document that [`Kind::parse`] gets, for the text of a diagnostic.
 pub const NOUN: &str = "the connector";
@@ -42,17 +42,57 @@ pub trait Kind: Send + Sync + 'static {
     /// One diagnostic for each thing the device cannot do.
     fn check(&self, config: &Self::Config) -> Result<Channels, Vec<Diagnostic>>;
 
-    /// Finds connectors this node can run, as config documents.
+    /// Finds the devices that this node can reach, as connector blocks. The default
+    /// gives [`Error::Config`] with `connector.no-discover`: the kind cannot find
+    /// devices.
+    ///
+    /// # Errors
+    ///
+    /// The default gives [`Error::Config`] with `connector.no-discover`.
     fn discover(
         &self,
         cancel: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>>;
+    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+        let _: &cancel::Token = cancel;
+        std::future::ready(Err(config_error(
+            NO_DISCOVER,
+            &"this connector kind cannot find its devices",
+            "Write the connector block by hand",
+        )))
+    }
 
     /// Runs one connector until `ctx.cancel()` is cancelled or an error leaves it.
     fn run(
         &self,
         ctx: Context<Self::Config>,
     ) -> impl Future<Output = Result<(), Error>>;
+
+    /// The blocks to add to the body of the connector block, so that it reads or
+    /// writes the point `tag` as the channel `channel`. `tag` and `facts` are those of
+    /// a [`browse::Shape::Point`] that a browse of the kind gave. The blocks hold only
+    /// how the kind reaches the point: the `channel` block holds the sample type and
+    /// the unit. A point whose `facts.access` is `Write` gets a write block. Each other
+    /// point, `None` too, gets a read block, since a write to a device needs the
+    /// user's choice. For each value that the kind needs and the browse does not give,
+    /// the blocks hold [`fill`](crate::import::fill).
+    ///
+    /// # Errors
+    ///
+    /// The default gives `connector.no-import`.
+    fn block(
+        &self,
+        tag: &str,
+        facts: &browse::Facts,
+        channel: &Name,
+    ) -> Result<Vec<Block>, Vec<Diagnostic>> {
+        let _: (&str, &browse::Facts, &Name) = (tag, facts, channel);
+        Err(vec![Diagnostic::new(
+            NO_IMPORT,
+            None,
+            "this connector kind cannot write the block of a point".into(),
+            "Write the blocks of the points by hand".into(),
+        )])
+    }
 
     /// Browses the device of the connector block `ctx.config()` as `query` asks. A
     /// kind connects to its device and gives [`browse::walk`] over it. The default
@@ -95,7 +135,8 @@ pub struct Channels {
 /// Why a run or a discovery stopped. One handler for each variant.
 #[derive(Debug)]
 pub enum Error {
-    /// The config cannot work. The connector stops until the next spec change.
+    /// Not retried: a browse or a discover fails, and a run stops until the next spec
+    /// change.
     Config(Vec<Diagnostic>),
     /// The device or endpoint is in a bad state. Restarted with backoff.
     Device(Box<dyn std::error::Error + Send + Sync>),
@@ -108,8 +149,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Config(diagnostics) => {
-                write!(f, "the config cannot work")?;
-                let mut separator = ": ";
+                let mut separator = "";
                 for diagnostic in diagnostics {
                     write!(f, "{separator}{diagnostic}")?;
                     separator = "; ";
@@ -305,6 +345,20 @@ impl<C> Context<C> {
         &self.inputs.net
     }
 
+    /// The roots that an `https` connect trusts, as `supervisor::Config::roots`
+    /// gives them.
+    #[must_use]
+    pub fn roots(&self) -> &http::Roots {
+        &self.inputs.roots
+    }
+
+    /// The mesh time of the run's hub, which stamps samples. Waits for the node's first
+    /// mesh time. Dropping the future ends the wait, so race it with
+    /// [`Context::cancel`]. [`Context::clock`] is the clock of deadlines.
+    pub fn time(&self) -> impl Future<Output = hub::Time> {
+        self.inputs.hub.time()
+    }
+
     /// Reads the value of `source`. Each call reads the file or the store again, so
     /// a kind that reads it at the start of each run sees a value changed there at
     /// its next run. An `env()` gives the value of the node's start. Send its bytes
@@ -408,7 +462,7 @@ impl Table {
         Ok(channels)
     }
 
-    /// Finds connectors of `kind` that this node can run.
+    /// Finds the devices of `kind` that this node can reach, as connector blocks.
     ///
     /// # Errors
     ///
@@ -424,6 +478,22 @@ impl Table {
             .map_err(Error::Config)?
             .discover(cancel)
             .await
+    }
+
+    /// The blocks of `kind` that read or write the point `tag` as `channel`, as
+    /// [`Kind::block`] gives them.
+    ///
+    /// # Errors
+    ///
+    /// The kind's diagnostics, or `connector.unknown-kind`.
+    pub fn block(
+        &self,
+        kind: &str,
+        tag: &str,
+        facts: &browse::Facts,
+        channel: &Name,
+    ) -> Result<Vec<Block>, Vec<Diagnostic>> {
+        self.get(kind, None)?.block(tag, facts, channel)
     }
 
     /// Browses with `kind` as `query` asks.
@@ -478,6 +548,8 @@ impl fmt::Debug for Table {
 
 const UNKNOWN_KIND: Code = Code::new("connector.unknown-kind");
 const NO_BROWSE: Code = Code::new("connector.no-browse");
+const NO_DISCOVER: Code = Code::new("connector.no-discover");
+const NO_IMPORT: Code = Code::new("connector.no-import");
 const UNKNOWN_CHANNEL: Code = Code::new("connector.unknown-channel");
 const NO_CHANNEL: Code = Code::new("connector.no-channel");
 const MANY_INDEXES: Code = Code::new("connector.many-indexes");
@@ -694,6 +766,13 @@ trait Erased: Send + Sync {
         ctx: &'a browse::Context<'a>,
         query: &'a browse::Query,
     ) -> Browse<'a>;
+
+    fn block(
+        &self,
+        tag: &str,
+        facts: &browse::Facts,
+        channel: &Name,
+    ) -> Result<Vec<Block>, Vec<Diagnostic>>;
 }
 
 impl<K: Kind> Erased for K {
@@ -723,6 +802,15 @@ impl<K: Kind> Erased for K {
         query: &'a browse::Query,
     ) -> Browse<'a> {
         Box::pin(Kind::browse(self, ctx, query))
+    }
+
+    fn block(
+        &self,
+        tag: &str,
+        facts: &browse::Facts,
+        channel: &Name,
+    ) -> Result<Vec<Block>, Vec<Diagnostic>> {
+        Kind::block(self, tag, facts, channel)
     }
 }
 
@@ -941,13 +1029,6 @@ mod tests {
             })
         }
 
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
-        }
-
         fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
             std::future::ready(Ok(()))
         }
@@ -1061,6 +1142,23 @@ mod tests {
             panic!("a config error: {found:?}");
         };
         assert_eq!(diagnostics, [unknown("modbus", "[\"counter\"]")]);
+    }
+
+    #[test]
+    fn refuses_to_discover_with_a_kind_that_cannot_look() {
+        let table = Table::new().with("counts", Counts(&[]));
+        let found =
+            run(|_, _, _| async move { table.discover("counts", &Token::new()).await });
+        let Err(Error::Config(diagnostics)) = found else {
+            panic!("a config error: {found:?}");
+        };
+        let expected = Diagnostic::new(
+            NO_DISCOVER,
+            None,
+            "this connector kind cannot find its devices".into(),
+            "Write the connector block by hand".into(),
+        );
+        assert_eq!(diagnostics, [expected]);
     }
 
     #[test]
@@ -1394,7 +1492,7 @@ mod tests {
         ]);
         assert_eq!(
             config.to_string(),
-            "the config cannot work: n is over 8. Fix it; no integer n. Fix it"
+            "n is over 8. Fix it; no integer n. Fix it"
         );
         assert!(std::error::Error::source(&config).is_none());
     }

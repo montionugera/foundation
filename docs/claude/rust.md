@@ -57,8 +57,10 @@ true`. CI denies warnings. r16 gives the reason for each lint.
   calls the OS clock, files, sockets, randomness, and threads. Only `node` reads
   arguments and exits. Each such call carries one `#[expect]`.
 - `clippy.toml` also forbids the rustls calls that read the OS clock, a key log file,
-  or the process-wide provider. Only `transport::tls` builds rustls configs, with
-  `builder_with_details`, its own provider, and a fixed time.
+  or the process-wide provider. Only `transport::tls` and `connector::http` build
+  rustls configs, with `builder_with_details` and their own provider. The time of a
+  `transport::tls` config is fixed, and that of a `connector::http` config is the
+  mesh time of its connect.
 - `clippy.toml` also forbids the noq-proto constructors and types that draw OS
   randomness or read the OS clock. Only `transport::quic::settings` builds noq-proto
   configs and endpoints. It sets every random value from `Entropy`.
@@ -82,7 +84,10 @@ true`. CI denies warnings. r16 gives the reason for each lint.
   (r16 2). The exceptions are in R16-10: a crate re-exports, under the same name in one
   of its modules, an item that its own public surface names, for callers that may not
   depend on the home of the item (`hub::home::Error`, `home::reader::Next`).
-- Fields are all private, or all public on plain data with no invariant (r16 4).
+- Fields are all private, or all public on plain data with no invariant (r16 4). An
+  invariant is a property that code relies on when it takes the type. A relation that
+  only the function that returns the value states is a postcondition of that function,
+  and the value is plain data.
 - A type with an invariant has a fallible constructor and no `From` that can panic
   (r16 5).
 - A `bool` or `Option` argument that callers pass as a literal becomes two functions

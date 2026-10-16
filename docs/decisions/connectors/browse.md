@@ -7,7 +7,8 @@
   `Path`, a `tag` (the address in the device; two entries with the same tag are one
   entry of the device), and a `Shape`: `Folder`, `Point(Facts)`, or `Unreadable(reason)`
   for a point that the kind cannot read, such as an array. `Facts` holds the sample
-  type, the unit, and read or write, each `None` when the source cannot know it;
+  type, the unit (its text and its UN/CEFACT Recommendation 20 code), and read or
+  write, each `None` when the source cannot know it;
   `import` writes such a fact as `fill("<what>")`, which `plan` refuses. `browse` has
   two forms: one level, paged by a `Cursor` of the kind, or each entry that is not a
   folder whose path from the start matches a `Pattern` (`/` splits names, `**` alone
@@ -44,27 +45,33 @@
   release a panic stops the node and each of its connectors. The browse operation of
   `ops` adds the connector and its kind to each error of `Supervisor::browse`;
   `Supervisor::browse` adds neither. `Kind::browse(ctx, query)` connects and gives
-  `walk` over the session, and gives `connector.no-browse` by default.
-  `Supervisor::browse(kind, config, query)` runs it apart from any run of the connector,
-  with the network, clock, randomness, and secrets of the supervisor; a kind reads only
-  what it needs to reach the device, so a block with only `kind`, `node`, and `address`
-  browses. It gives no mesh time: `hub` gives it only through a writer, and a browse
-  opens none. Deferred to #2837: `Hub::time` waits with no bound. When a kind first
-  reads mesh time from `browse::Context`, it races `Hub::time` against a bound that
-  `Supervisor::browse` sets, and gives an error at the bound, so a kind that reads no
-  mesh time never waits. PR 5 waits on it, and gives that read with its doc, the bound,
-  and the exact error. `browse::Context` and `kind::Context` stay two types: each input
-  that both give is a read of a field or one call, and `secret` is one function. Trigger
-  to make them one: a third context, or a second shared input with a body of its own, as
-  `secret` has in `read_secret`. A kind implements `browse::Device` on its open session,
-  so one walk is one session and can use a continuation point; a `Cursor` that a front
-  end gets holds no session state. `level` takes a folder as the `Entry` that the device
-  gave, never a path, and gives at most `LIMIT` entries a page; `values` gives
-  `types::sample::Value`, so there is one value model. Trigger for a text value: a kind
-  that reads a `string` channel. Lost: a count of matches up to the budget; trigger: the
-  agent test (PR 9) shows a task with two over-limit refusals one after the other.
-  `import --match` uses the same walk, so the points that `browse --match` shows are the
-  points that `import --match` takes.
+  `walk` over the session, and gives `connector.no-browse` by default. `Kind::discover`
+  gives `connector.no-discover` by default, not an empty list, which says that the kind
+  looked and found none. Only the default is decided. Its signature is deferred to
+  #2851; trigger: the first kind that finds devices. `discover` for OPC UA is not in C1;
+  trigger: the person asks, or a kind that can find its devices (NI cards) is built
+  (`laptop.architect-2`, 2026-10-15 17:32 UTC, parameter 5 of
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198270136).
+  `Supervisor::browse(kind, config, query)` runs `Kind::browse` apart from any run of
+  the connector, with the network, clock, randomness, and secrets of the supervisor; a
+  kind reads only what it needs to reach the device, so a block with only `kind`,
+  `node`, and `address` browses. It gives no mesh time: `hub` gives it only through a
+  writer, and a browse opens none. Deferred to #2837: `Hub::time` waits with no bound.
+  When a kind first reads mesh time from `browse::Context`, it races `Hub::time` against
+  a bound that `Supervisor::browse` sets, and gives an error at the bound, so a kind
+  that reads no mesh time never waits. PR 5 waits on it, and gives that read with its
+  doc, the bound, and the exact error. `browse::Context` and `kind::Context` stay two
+  types: each input that both give is a read of a field or one call, and `secret` is one
+  function. Trigger to make them one: a third context, or a second shared input with a
+  body of its own, as `secret` has in `read_secret`. A kind implements `browse::Device`
+  on its open session, so one walk is one session and can use a continuation point; a
+  `Cursor` that a front end gets holds no session state. `level` takes a folder as the
+  `Entry` that the device gave, never a path, and gives at most `LIMIT` entries a page;
+  `values` gives `types::sample::Value`, so there is one value model. Trigger for a text
+  value: a kind that reads a `string` channel. Lost: a count of matches up to the
+  budget; trigger: the agent test (PR 9) shows a task with two over-limit refusals one
+  after the other. `import --match` uses the same walk, so the points that `browse
+  --match` shows are the points that `import --match` takes.
   The person's words, through `laptop.monitor`: decision 1, 2026-10-15 17:17 UTC, "Ok,
   this is fine. I approve"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6197989240);
@@ -78,10 +85,11 @@
   shape `Unreadable`, the limit, and the PR list: `laptop.architect-2`, 2026-10-15 17:32
   UTC (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198270136).
   `browse::Device`, `level` by entry, the page bound, `sample::Value`, the name
-  `Malformed`, `Kind::browse` with the default `connector.no-browse`, `browse::Context`,
-  `Supervisor::browse` apart from any run, a block with only `kind`, `node`, and
-  `address`, and "more than `<limit>`" in place of the count of decision 6:
-  `laptop.architect-2`, 2026-10-16 04:00 UTC, on the plan of `box1.builder-3`
+  `Malformed`, `Kind::browse` with the default `connector.no-browse`, `Kind::discover`
+  with the default `connector.no-discover`, `browse::Context`, `Supervisor::browse`
+  apart from any run, a block with only `kind`, `node`, and `address`, and "more than
+  `<limit>`" in place of the count of decision 6: `laptop.architect-2`, 2026-10-16 04:00
+  UTC, on the plan of `box1.builder-3`
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6207771367). One
   session for the whole browse: the person, through `laptop.monitor`, 2026-10-16
   03:54:58 UTC, "As long as thats the industry standard browsing practice I approve"
@@ -138,4 +146,6 @@
   input whose body is more than a field read): `laptop.architect-2`, 2026-10-16 07:09
   UTC (https://github.com/synnaxlabs/foundation/pull/2836#issuecomment-6210109901); its
   `hub` text: `laptop.architect`, 07:20 UTC
-  (https://github.com/synnaxlabs/foundation/pull/2836#issuecomment-6210289921).
+  (https://github.com/synnaxlabs/foundation/pull/2836#issuecomment-6210289921). The
+  deferral of the signature of `discover`: `laptop.architect-2`, 2026-10-16 08:30 UTC
+  (https://github.com/synnaxlabs/foundation/pull/2850#issuecomment-6211422272).

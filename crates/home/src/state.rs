@@ -24,9 +24,8 @@ pub(crate) fn entry(
         slot,
         path: Path::Live,
         first,
-        len: 0,
+        samples: None,
         stored_at,
-        last: None,
         tag: tag.get(),
         parts: body.into(),
     }

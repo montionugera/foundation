@@ -195,7 +195,7 @@ fn refuses_a_connector_with_no_kind_or_no_node() {
 #[test]
 fn places_the_problems_of_the_kind_in_source_order() {
     let text = "connector \"influx\" {\n  kind = \"influx\"\n  node = 3\n  \
-                address = \"https://influx\"\n  database = \"edge\"\n  \
+                address = \"ftp://influx\"\n  database = \"edge\"\n  \
                 measurement = \"telemetry\"\n  select = \"edge.*\"\n  port = 1\n}\n";
     assert_eq!(
         problems(text),
@@ -210,9 +210,9 @@ fn places_the_problems_of_the_kind_in_source_order() {
             problem(
                 text,
                 "connector.bad-uri",
-                "\"https://influx\"",
-                "the scheme of the URI is not http",
-                "Write an `http` URI such as \"http://10.0.0.2:8086\"",
+                "\"ftp://influx\"",
+                "the scheme of the URI is not http or https",
+                "Write an `http` or `https` URI such as \"http://10.0.0.2:8086\"",
             ),
             problem(
                 text,

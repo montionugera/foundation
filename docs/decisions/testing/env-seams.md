@@ -798,3 +798,47 @@
   https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6210062728; the `os`
   stat, 2026-10-16T08:00:56Z,
   https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6210913415).
+  Amended (2026-10-16T08:08:47Z, #2526): `Paths::make_dir` makes the directory at a
+  path. It makes no directory above it, and none through a symbolic link at the path,
+  also when the path ends in `/`. It gives `Ok` when a directory is there, also through
+  a link, `NotFound` when the directory above is not there or when the path ends in `.`
+  or `..` and names no directory, and `Io` 17 (`EEXIST`) when anything else is there,
+  also a file or a link to nothing at a path that ends in `/`. `os` gives `Ok` only
+  after `EEXIST` with a directory there, from one private call that the `CreateDir` of
+  `os::files` uses too, and makes each directory, also the data directory, with one
+  mode, 0700, so the group and other users get no access. `sim` makes one directory
+  only, apart from `sim::Node::make_dir`, which makes each one above. On a handle of
+  `within`, a path that does not resolve, such as a link to nothing or a loop, passes
+  the limits by its own place. When it still does not resolve after the make, such as a
+  link to a directory whose resolved path is longer than the OS takes, it gives the
+  error of its resolve, as `read` gives. `within` resolves `<hidden>/..` after the
+  resolve of each hidden folder, which opens no file. It gives `NotFound` when the
+  folder is not there, and `Io` 20 (`ENOTDIR`) when it is not a directory, or on `os`
+  `Io` 13 (`EACCES`) when this user cannot search it. It skips a hidden folder that the
+  limits of its handle refuse, since a path under that folder fails by those limits. A
+  path under a hidden folder of a limit fails with the new `paths::Error::Hidden`, also
+  when it is not under the folders of another limit, and `Outside` is only for a path
+  not under the folders. This amendment gives the hidden check that the amendment of
+  2026-10-16T06:56:55Z defers, and the call with which `foundation mcp` makes its data
+  directory in PR 1 of #2526. Supersedes "or that resolves under one of its hidden
+  folders, fails with `paths::Error::Outside`" of the amendment of 2026-10-16T04:52:58Z.
+  Lost: a check that `within` makes the hidden folder, which writes in a call that only
+  limits; a resolve of `<hidden>/.` as the check, which `os` resolves to `Ok` when the
+  folder is not there; and a read of the folder, which blocks on a pipe and fails on a
+  folder with no read bit. Decided by `laptop.architect-2` (item B of
+  https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6209932709; the plan
+  of `laptop.integrator-2`, 2026-10-16T08:06:32Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6211011171, approved
+  with conditions 1 to 3, 2026-10-16T08:08:47Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6211047580; the
+  order of `Hidden` over `Outside`, 2026-10-16T14:34:56Z,
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6217809418; the
+  `EEXIST` rule of `os`, the drop of end slashes, the resolve of `<hidden>/..`, `Io` for
+  a hidden folder that is not a directory or that this user cannot search, the skip of a
+  hidden folder past the limits, and the check of a link to nothing by its place,
+  2026-10-16T15:45:37Z,
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219155635; the check
+  of each path that does not resolve by its own place, 2026-10-16T16:02:28Z,
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219471401; the error
+  of its resolve after the make, 2026-10-16T16:26:58Z,
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219956876).

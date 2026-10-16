@@ -11,6 +11,7 @@ pub mod serve;
 mod task;
 #[cfg(feature = "sim")]
 pub mod testing;
+mod time;
 mod used;
 pub mod writer;
 
@@ -28,6 +29,7 @@ use types::name::Name;
 
 pub use link::{Link, Served};
 use reader::Reader;
+pub use time::Time;
 use writer::Writer;
 
 /// The `home` items that hub calls give, so that layer 3 names them through `hub`.
@@ -231,6 +233,14 @@ impl Hub {
             "a hub with a region takes its definitions from the region's mesh"
         );
         state.define(definitions);
+    }
+
+    /// The node's mesh time. Waits for the node's first mesh time, as the open of a
+    /// writer does, so the [`Time`] it gives always has a stamp. Dropping the future
+    /// ends the wait.
+    pub async fn time(&self) -> Time {
+        time::known(&self.0).await;
+        Time(Rc::clone(&self.0))
     }
 
     /// Opens a writer session on `config.channels` and the index of each. It waits

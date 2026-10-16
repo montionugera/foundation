@@ -5,4 +5,6 @@
 
 mod browse;
 mod cancel;
+mod import;
+mod inputs;
 mod secret;

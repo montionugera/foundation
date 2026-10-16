@@ -44,6 +44,22 @@ fn a_relative_path_is_under_the_root() {
 }
 
 #[test]
+fn within_checks_a_relative_link_by_its_place() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/w"));
+    node.set_working_dir(Path::new("/w"));
+    node.link_path(Path::new("/w/to-none"), Path::new("/w/none"));
+    let within = node.paths().within(&["/w".into()], &[]).unwrap();
+    let made = within.make_dir(Path::new("to-none"));
+    assert_eq!(
+        made,
+        Err(Error::Io {
+            code: cases::EXISTS
+        })
+    );
+}
+
+#[test]
 fn a_write_on_the_root_is_on_a_directory() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     let on_dir = node.paths().write(Path::new("/"), b"x");
@@ -66,6 +82,18 @@ fn a_fault_fails_one_call_with_its_code_and_changes_nothing() {
     assert_eq!(paths.write(path, b"y"), Err(Error::Io { code: 13 }));
     assert_eq!(paths.read(path, 1), Err(Error::Io { code: 5 }));
     assert_eq!(paths.read(path, 1), Ok(Found::File(b"x".to_vec())));
+}
+
+#[test]
+fn a_fault_fails_one_make_of_a_directory_and_makes_nothing() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    let path = Path::new("/data");
+    node.fail_path(path, 13);
+    assert_eq!(paths.make_dir(path), Err(Error::Io { code: 13 }));
+    assert_eq!(paths.read(path, 1), Err(Error::NotFound));
+    assert_eq!(paths.make_dir(path), Ok(()));
+    assert_eq!(paths.read(path, 1), Ok(Found::Directory(Vec::new())));
 }
 
 #[test]
@@ -252,6 +280,22 @@ fn a_directory_that_a_node_makes_is_there_with_no_entry() {
     paths.write(Path::new("/target/a/b.hcl"), b"x").unwrap();
     let entries = Ok(Found::Directory(vec![PathBuf::from("/w/a/b.hcl")]));
     assert_eq!(paths.read(Path::new("/w/a"), 64), entries);
+}
+
+#[test]
+fn a_relative_directory_is_made_under_the_working_directory() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/w"));
+    node.set_working_dir(Path::new("/w"));
+    node.link_path(Path::new("/w/to-none"), Path::new("none"));
+    let exists = Err(Error::Io {
+        code: cases::EXISTS,
+    });
+    assert_eq!(paths.make_dir(Path::new("to-none")), exists);
+    assert_eq!(paths.make_dir(Path::new("new")), Ok(()));
+    let empty = Ok(Found::Directory(vec![]));
+    assert_eq!(paths.read(Path::new("/w/new"), 0), empty);
 }
 
 #[test]

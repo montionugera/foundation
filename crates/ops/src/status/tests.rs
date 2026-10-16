@@ -69,13 +69,6 @@ impl kind::Kind for Scripted {
         })
     }
 
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, kind::Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     async fn run(&self, context: Context<()>) -> Result<(), kind::Error> {
         match self.script {
             Script::Steady => {}
@@ -326,6 +319,7 @@ async fn supervise(fixture: &Fixture, node: &Node, names: &[&str]) -> cancel::To
         clock: fixture.sim.clock(),
         entropy: fixture.sim.entropy(),
         net: fixture.sim.net(),
+        roots: connector::http::Roots::default(),
         tasks: fixture.tasks.clone(),
         hub: fixture.hub.clone(),
         secrets: connector::testing::create_secrets(fixture.sim.files()),

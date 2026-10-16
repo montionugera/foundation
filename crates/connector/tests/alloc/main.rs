@@ -220,13 +220,6 @@ mod status {
             })
         }
 
-        fn discover(
-            &self,
-            _: &Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
-        }
-
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
             let count = ctx.count("samples");
             match self.shows {

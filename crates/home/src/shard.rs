@@ -3808,9 +3808,8 @@ mod tests {
                 slot: Slot::new(0),
                 path: Path::Live,
                 first: 0,
-                len: 0,
+                samples: None,
                 stored_at: Stamp::from_nanos(1),
-                last: None,
                 tag: 1,
                 parts: Some(body).into(),
             };
@@ -7146,9 +7145,8 @@ mod tests {
                             slot: Slot::new(0),
                             path: Path::Live,
                             first: 0,
-                            len: 0,
+                            samples: None,
                             stored_at: Stamp::from_nanos(1),
-                            last: None,
                             tag: 2,
                             parts: Some(body).into(),
                         };

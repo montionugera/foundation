@@ -1,7 +1,9 @@
 //! The files of the host by the paths that a user gave.
 
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -21,6 +23,10 @@ impl env::paths::Driver for Driver {
 
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
         write(path, bytes).map_err(|e| error(&e))
+    }
+
+    fn make_dir(&self, path: &Path) -> Result<(), Error> {
+        make_dir(path).map_err(|e| error(&e))
     }
 
     fn resolve(&self, path: &Path) -> Result<PathBuf, Error> {
@@ -105,6 +111,19 @@ fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     fill(open(&new)?, bytes)
         .and_then(|()| fs::rename(&new, path))
         .or_else(|e| fs::remove_file(&new).and(Err(e)))
+}
+
+/// Makes a directory at `path` as [`dir::make`] does.
+fn make_dir(path: &Path) -> io::Result<()> {
+    // macOS makes the target of a link to nothing at a path that ends in `/`, and
+    // Linux gives `EEXIST`.
+    let bytes = path.as_os_str().as_bytes();
+    let end = bytes
+        .iter()
+        .rposition(|&byte| byte != b'/')
+        .map_or(1, |at| at + 1);
+    let path = Path::new(OsStr::from_bytes(bytes.get(..end).unwrap_or(bytes)));
+    dir::make(rustix::fs::CWD, path).map_err(io::Error::from)
 }
 
 /// Makes a file at `path` whose permission bits give only this user access.

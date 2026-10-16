@@ -415,9 +415,8 @@ const NO_FOLDER: Code = Code::new("connector.no-folder");
 const BROKEN: Code = Code::new("connector.broken-browse");
 
 /// The path of an entry from the root of a device's tree: the name of each entry on
-/// the way, its own last. No name of a path that [`walk`] gives is empty. Its text
-/// joins the names with `/`, with `\` before each `/`, `*`, and `\` in a name. The
-/// root is the empty text.
+/// the way, its own last. No name of a path is empty. Its text joins the names with
+/// `/`, with `\` before each `/`, `*`, and `\` in a name. The root is the empty text.
 #[derive(Clone)]
 pub struct Path(Option<Arc<Link>>);
 
@@ -832,6 +831,8 @@ pub struct Facts {
     pub data_type: Option<types::sample::Type>,
     /// The unit, as the device gives it.
     pub unit: Option<String>,
+    /// The UN/CEFACT Recommendation 20 common code of the unit, such as `CEL`.
+    pub unit_code: Option<String>,
     /// Whether a connector can read it, write it, or both.
     pub access: Option<Access>,
 }
