@@ -36,7 +36,8 @@ impl Node {
 /// offset of the next one as the cursor.
 #[derive(Debug, Default)]
 struct Tree {
-    folders: BTreeMap<Path, Vec<Entry>>,
+    /// The entries of each folder, by the text of its path.
+    folders: BTreeMap<String, Vec<Entry>>,
     values: BTreeMap<String, Value>,
     size: usize,
     /// Each folder that `level` was asked for, in order, and each `values` call.
@@ -69,7 +70,7 @@ impl Tree {
             let tag = path.to_string();
             entries.push(Entry { path, tag, shape });
         }
-        self.folders.insert(at.clone(), entries);
+        self.folders.insert(at.to_string(), entries);
     }
 }
 
@@ -80,7 +81,7 @@ impl Tree {
         cursor: Option<&Cursor>,
     ) -> Option<Page> {
         let at = folder.map_or_else(Path::root, |folder| folder.path.clone());
-        let entries = self.folders.get(&at)?;
+        let entries = self.folders.get(&at.to_string())?;
         self.browsed.push(at);
         let from = cursor.map_or(0, |cursor| cursor.as_str().parse().expect("offset"));
         let to = (from + self.size).min(entries.len());
@@ -576,7 +577,7 @@ mod walk {
     #[test]
     fn refuses_a_folder_that_is_gone() {
         let mut tree = Tree::new(&plant(), 2);
-        tree.folders.remove(&path("Line2/Oven"));
+        tree.folders.remove("Line2/Oven");
         let query = query("", Scope::Match(pattern("**")));
         let found = now(walk(&mut tree, &query));
         assert_eq!(
@@ -588,7 +589,7 @@ mod walk {
     #[test]
     fn refuses_a_start_at_a_point_that_the_device_can_list() {
         let mut tree = Tree::new(&plant(), 10);
-        tree.folders.insert(path("Clock"), Vec::new());
+        tree.folders.insert("Clock".into(), Vec::new());
         let found = now(walk(&mut tree, &query("Clock", Scope::Level(None))));
         assert_eq!(
             diagnostic(found).message,
@@ -636,6 +637,86 @@ mod walk {
         let points: Vec<Node> = (0..=LIMIT).map(|i| point(&format!("p{i}"))).collect();
         let mut tree = Tree::new(&points, LIMIT + 1);
         drop(now(walk(&mut tree, &query("", Scope::Level(None)))));
+    }
+
+    /// A device whose each folder holds the folder `a`, with the tag `loop`, and the
+    /// point `p`.
+    struct Loop;
+
+    impl Device for Loop {
+        fn level(
+            &mut self,
+            folder: Option<&Entry>,
+            _: Option<&Cursor>,
+        ) -> impl Future<Output = Result<Option<Page>, Error>> {
+            let at = folder.map_or_else(Path::root, |folder| folder.path.clone());
+            let entry = |name: &str, tag: &str, shape| Entry {
+                path: at.child(name),
+                tag: tag.into(),
+                shape,
+            };
+            let entries = vec![
+                entry("a", "loop", Shape::Folder),
+                entry(
+                    "p",
+                    &at.child("p").to_string(),
+                    Shape::Point(Facts::default()),
+                ),
+            ];
+            std::future::ready(Ok(Some(Page {
+                entries,
+                next: None,
+            })))
+        }
+    }
+
+    #[test]
+    fn browses_no_folder_with_the_tag_of_a_folder_above_it() {
+        let query = query("", Scope::Match(pattern("**/p")));
+        let found = now(walk(&mut Loop, &query)).expect("found");
+        assert_eq!(paths(&found), ["a/p", "p"]);
+        assert_eq!(found.end, End::Done);
+    }
+
+    /// A device whose each page is empty, with a next one.
+    struct Empty;
+
+    impl Device for Empty {
+        fn level(
+            &mut self,
+            _: Option<&Entry>,
+            _: Option<&Cursor>,
+        ) -> impl Future<Output = Result<Option<Page>, Error>> {
+            std::future::ready(Ok(Some(Page {
+                entries: Vec::new(),
+                next: Some(Cursor::new("more".into())),
+            })))
+        }
+    }
+
+    #[test]
+    #[should_panic(
+        expected = r#"invariant: the device gave an empty page with a next one at """#
+    )]
+    fn panics_on_an_empty_page_with_a_next_one() {
+        drop(now(walk(
+            &mut Empty,
+            &query("", Scope::Match(pattern("**"))),
+        )));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = r#"invariant: the device gave "Line9/Temp1" in the folder "Line1""#
+    )]
+    fn panics_on_an_entry_that_is_not_in_its_folder() {
+        let mut tree = Tree::new(&plant(), 10);
+        let entries = tree.folders.get_mut("Line1").expect("Line1");
+        entries[0].path = path("Line9/Temp1");
+        drop(now(walk(
+            &mut tree,
+            &query("", Scope::Match(pattern("**"))),
+        )));
     }
 
     /// The path of each point of `nodes` under `at`.

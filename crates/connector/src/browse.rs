@@ -57,8 +57,9 @@ pub trait Device {
 }
 
 /// Runs `query` over `device`. It finds the start from the root, one name at a time.
-/// A pattern walks depth first, in device order, and browses no folder that no match
-/// can be under.
+/// A pattern walks depth first, in device order. It browses no folder that no match
+/// can be under, and no folder whose tag is the tag of a folder above it, so a loop
+/// in the device's graph ends.
 ///
 /// # Errors
 ///
@@ -68,8 +69,9 @@ pub trait Device {
 ///
 /// # Panics
 ///
-/// When `device` gives a page of more than [`LIMIT`] entries, an entry with no name,
-/// or a count of values that is not the count of tags.
+/// When `device` gives a page of more than [`LIMIT`] entries, an empty page with a
+/// next one, an entry that is not in the folder it browsed, or a count of values that
+/// is not the count of tags.
 pub async fn walk(device: &mut impl Device, query: &Query) -> Result<Found, Error> {
     walk_within(device, query, LIMIT, VISITS).await
 }
@@ -141,6 +143,18 @@ impl<D: Device> Walker<'_, D> {
             "invariant: the device gave {} entries at {path:?}, over {LIMIT}",
             page.entries.len(),
         );
+        assert!(
+            page.next.is_none() || !page.entries.is_empty(),
+            "invariant: the device gave an empty page with a next one at {path:?}",
+        );
+        for entry in &page.entries {
+            let parent = entry.path.names.split_last().map(|(_, parent)| parent);
+            assert!(
+                parent == Some(&path.names[..]),
+                "invariant: the device gave {:?} in the folder {path:?}",
+                entry.path,
+            );
+        }
         Ok(page)
     }
 
@@ -218,7 +232,11 @@ impl<D: Device> Walker<'_, D> {
                 .expect("invariant: an entry has a name");
             let state = pattern.step(&frame.state, name);
             if entry.shape == Shape::Folder {
-                if pattern.open(&state) {
+                let looped = stack
+                    .iter()
+                    .filter_map(|frame| frame.folder.as_ref())
+                    .any(|folder| folder.tag == entry.tag);
+                if pattern.open(&state) && !looped {
                     stack.push(self.open(Some(entry), state).await?);
                 }
             } else if pattern.matched(&state) {
@@ -293,7 +311,7 @@ const NO_FOLDER: Code = Code::new("connector.no-folder");
 /// The path of an entry from the root of a device's tree: the name of each entry on
 /// the way, its own last. Its text joins the names with `/`, with `\` before each `/`,
 /// `*`, and `\` in a name. The root is the empty text.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Path {
     names: Vec<String>,
 }
@@ -631,7 +649,8 @@ pub struct Page {
 }
 
 /// Where the next page of a folder starts, in the form of the kind. It holds no
-/// session state, so a later browse takes it.
+/// session state, so a later browse takes it. In one session, a kind may also keep a
+/// faster way on from a cursor that it gave, such as an OPC UA continuation point.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cursor(String);
 
@@ -674,7 +693,8 @@ pub enum Scope {
 pub enum Values {
     /// It reads none.
     Skipped,
-    /// It reads the value of each point that it gives, in one call.
+    /// It reads the value of each point that it gives, in one call. A kind that cannot
+    /// read values fails only when the browse gives a point.
     Read,
 }
 
