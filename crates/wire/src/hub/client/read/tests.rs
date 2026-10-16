@@ -812,6 +812,25 @@ mod reader {
         }
     }
 
+    /// The input `reader_repeated_last` of the fuzz target reads its valid last
+    /// message after the refusal of a repeat in the one before it.
+    #[test]
+    fn reads_the_input_with_a_last_place_after_a_repeat() {
+        assert_eq!(
+            steps(corpus!("reader_repeated_last")),
+            vec![
+                more(),
+                refused(Error::Repeated {
+                    key: channel::Key::from_u128(1),
+                }),
+                Step::Event(Ok(Event::Start(vec![
+                    pt(1, "timestamp", "a.time"),
+                    pt(2, "f64", "b"),
+                ]))),
+            ]
+        );
+    }
+
     /// Each other input `reader_*` of the fuzz target gives the step of each of its
     /// messages, the last a refusal.
     #[test]

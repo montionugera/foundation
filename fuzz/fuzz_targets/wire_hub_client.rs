@@ -140,9 +140,9 @@ fn drive(bytes: &[u8], mode: Mode) {
         let start = match reader.decode(Some(message)) {
             Ok(start) => start,
             Err(error) => {
-                if let Some(repeated) = last(run.as_ref(), message) {
+                if let Some(repeated) = refusal(run.as_ref(), message) {
                     let expected = repeated.map(|key| Error::Repeated { key });
-                    assert_eq!(Some(error), expected, "a last message refused");
+                    assert_eq!(Some(error), expected, "a valid message refused");
                 }
                 continue;
             }
@@ -201,19 +201,23 @@ fn index_place(reply: Places, remain: u32, places: &[Place]) -> Option<&Place> {
     at.and_then(|at| places.get(at))
 }
 
-/// When `message` is a valid last message of `run`, the least key that its places,
-/// with those before it, name twice, if any.
-fn last(
+/// When `message` is a valid message of `run`, the least key that its places, with
+/// those before it, name twice if it holds the last place, else `None`.
+fn refusal(
     run: Option<&(Places, u32, Vec<Place>)>,
     message: &[u8],
 ) -> Option<Option<channel::Key>> {
     let (reply, remain, all) = run?;
     let places = place::decode(message).ok()?;
     let stamp = Type::Scalar(Scalar::Stamp);
-    if usize::try_from(*remain).ok()? != places.len()
+    let remain_len = usize::try_from(*remain).ok()?;
+    if places.len() > remain_len
         || index_place(*reply, *remain, &places).is_some_and(|at| at.data_type != stamp)
     {
         return None;
+    }
+    if places.len() < remain_len {
+        return Some(None);
     }
     let mut keys: Vec<_> = all.iter().chain(&places).map(|place| place.key).collect();
     keys.sort_unstable();
