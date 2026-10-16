@@ -5,9 +5,6 @@ all_features = true
 # Mutants that no caller or peer can see, that only a job outside the mutants run
 # kills, or that no test kills yet (with its open issue). Each has its reason.
 exclude_re = [
-  # A shortcut: links that are one give equal names. Without it, the page check of
-  # `walk` compares each name of the folder's path for each entry.
-  'crates/connector/src/browse\.rs:.*guard Arc::ptr_eq\(x, y\) with false',
   # A type name shows only in a panic of `connector_opcua::fuzz::decode`, which a
   # correct open62541 never gives. `fuzz::tests` checks the names.
   'crates/connector-opcua/src/ffi\.rs:.*replace DataType::name -> &.static str with',
