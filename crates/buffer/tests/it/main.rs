@@ -7380,3 +7380,33 @@ fn an_entry_with_no_samples_after_the_largest_count_panics() {
             .expect("queues");
     });
 }
+
+/// After the largest count, an entry with samples at its seq and an entry with no
+/// samples at a later seq commit, and the ring reopens.
+#[test]
+fn after_the_largest_count_other_entries_commit_and_reopen() {
+    run(213, |shard| async move {
+        let (buffer, one) = reopen_with_count(&shard, u64::MAX).await;
+        buffer
+            .append([
+                entry(1, one, Path::Live, 0, 1, Some(9), Parts::default()),
+                entry(1, one, Path::Live, 1, 0, None, Parts::default()),
+            ])
+            .expect("queues");
+        buffer.committed().await.expect("commits");
+        let ending = buffer.ended();
+        drop(buffer);
+        ending.await.expect("ends");
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("reopens");
+        let read = buffer
+            .reader()
+            .read(slots.index(key(1)), Path::Live, Mark::at(0), usize::MAX)
+            .await
+            .expect("reads");
+        assert_eq!(read.next, mark(1, 1));
+    });
+}
