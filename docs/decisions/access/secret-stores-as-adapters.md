@@ -65,7 +65,9 @@
   after exit test 1 (`laptop.architect-2`, 2026-10-13T19:53:57Z:
   https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6153933564, under the
   person's rule of 2026-10-13T19:52:40Z:
-  https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6153919476).
+  https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6153919476), less
+  its refusal of group read. The person's change below supersedes that refusal of
+  https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150297190.
   `env::files::File::exposed` gives the fact from the `fstat` of the open, on the
   descriptor that the store reads, so no swap of the file between the check and the read
   passes it. On Unix, a file is exposed when its mode gives read to other users
