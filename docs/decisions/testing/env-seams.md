@@ -883,8 +883,8 @@
   https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221156481; the folder
   of the link and the evidence, 2026-10-16T17:48:30Z,
   https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221386763).
-  Amended (2026-10-16T17:13:18Z, 19:43:31Z, 20:05:43Z, 20:19:38Z, and 20:27:04Z, #2898):
-  `Paths::within` compares files, not names. It keeps the resolved path of each folder
+  Amended (2026-10-16T17:13:18Z, 19:43:31Z, 20:05:43Z, 20:19:38Z, 20:27:04Z, and
+  20:41:21Z, #2898): `Paths::within` compares files, not names. It keeps the resolved path of each folder
   of `folders` and `hidden`, and each call takes the `paths::Key` of each folder again,
   from the new `paths::Driver::key`: (`st_dev`, `st_ino`) of a stat on `os`, and on
   `sim` an inode that each entry gets when it is made, and a new one when a write
@@ -917,12 +917,15 @@
   or makes again holds nothing until a new `within`. A folder of `hidden` that is not
   there gives no error, also when the limits of the handle refuse it, and one that is
   there gives its key, also when the limits refuse it. That key comes from the path that
-  the caller gave, as for the path of a call, so a later folder under it stays hidden. A
+  the caller gave, at `within` and at each call, as for the path of a call, so a later
+  folder under it stays hidden. A
   folder whose key a call cannot take holds nothing at that call, so a hidden folder
   that this user cannot search fails no call outside it. A hidden folder that is a file,
   a pipe, or a folder that this user cannot search passes, and the path of each such
-  file gives `Hidden`. The cost is one stat for each name of the resolved path and for
-  each folder on each call of `Paths`, for tools, plans, and secrets, not frames.
+  file gives `Hidden`. The cost is one stat for each name of the resolved path, for each
+  hidden folder, for each directory above a hidden folder that is not there up to the
+  first that is there, and for each folder on each call of `Paths`, for tools, plans,
+  and secrets, not frames.
   Supersedes the resolve of `<hidden>/..`, its `Io` 20 and 13, and the skip of a hidden
   folder that the limits of its handle refuse, of the amendment of 2026-10-16T08:08:47Z.
   Lost: the key of each hidden folder once at `within`, which a write by rename or a
@@ -954,4 +957,6 @@
   name beside a missing hidden folder, the key of a folder of `folders` at `within`, a
   key that a call cannot take, and the compare of a hidden key only with the directories
   on the way, 2026-10-16T20:27:04Z,
-  https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224070884).
+  https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224070884; the key of
+  a hidden folder at `within` from the given path, 2026-10-16T20:41:21Z,
+  https://github.com/synnaxlabs/foundation/pull/2915#issuecomment-6224298302).
