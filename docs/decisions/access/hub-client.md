@@ -28,9 +28,9 @@
   wait: `TooLarge` never succeeds, so it gives `Error::Pool` at once, which means that
   no block of `pool` can hold a message that the session sends. Lost: a bound of two
   windows from the stream credit, which ack loss can exceed; a `Bytes` body with no
-  copy; a wait in `block::Pool` that wakes at each free. Three callers poll a pool now:
-  the transport's reads, the session's sends on `pool`, and the frames of a read on
-  `frames`. The trigger fired with the third (#2802; `laptop.architect`,
+  copy; a wait in `block::Pool` that wakes at each free. Three callers in a program
+  poll a pool now: the transport's reads, the session's sends on `pool`, and the frames
+  of a read on `frames`. The trigger fired with the third (#2802; `laptop.architect`,
   2026-10-16T03:39:42Z,
   https://github.com/synnaxlabs/foundation/pull/2802#issuecomment-6207544466): #2811
   adds the wait that a free wakes to `block`.
@@ -91,9 +91,10 @@
   approved by `laptop.architect` at 2026-10-15T23:19:38Z
   (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204306531).
   A frame takes a block of `Config::frames`, a pool apart from `pool` and from the
-  transport's, and holds it until it drops. A frame that finds it full waits as a
-  message does, and a frame that no block of `frames` can hold gives `Error::Pool` at
-  once. So frames that the program holds never stop the renewal of the hello
-  (`laptop.architect`, 2026-10-16T03:12:49Z,
-  https://github.com/synnaxlabs/foundation/pull/2802#issuecomment-6207214002). Lost: one
+  transport's, and holds it until it drops. So frames that the program holds never stop
+  the renewal of the hello (`laptop.architect`, 2026-10-16T03:12:49Z,
+  https://github.com/synnaxlabs/foundation/pull/2802#issuecomment-6207214002). A frame
+  that finds `frames` full waits as a message does (#2810 ends a wait that the carve of
+  another size blocks), and a frame that no block of `frames` can hold gives
+  `Error::Pool` at once. Lost: one
   reserved block for the renewal, a second pool that the caller cannot see.
