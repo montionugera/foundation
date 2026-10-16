@@ -92,7 +92,7 @@ pub(crate) struct Unit {
     /// The text of its display name, or `None` when empty.
     pub(crate) text: Option<String>,
     /// Its UN/CEFACT Recommendation 20 code from `unitId`, such as `CEL`, or `None`
-    /// for -1 or a number that is not three ASCII letters or digits.
+    /// for -1 or a number that is not 1 to 4 ASCII letters or digits.
     pub(crate) code: Option<String>,
 }
 
@@ -459,7 +459,7 @@ fn unit_of(value: *const ffi::DataValue) -> Option<Unit> {
 }
 
 /// Gives the UN/CEFACT Recommendation 20 code of the `unitId` `id`: its bytes from
-/// the most significant, after the zero bytes, when they are 1 to 3 ASCII letters or
+/// the most significant, after the zero bytes, when they are 1 to 4 ASCII letters or
 /// digits.
 pub(super) fn code_of(id: i32) -> Option<String> {
     let bytes = id.to_be_bytes();
