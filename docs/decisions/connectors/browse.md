@@ -49,20 +49,22 @@
   with the network, clock, randomness, and secrets of the supervisor; a kind reads only
   what it needs to reach the device, so a block with only `kind`, `node`, and `address`
   browses. It gives no mesh time: `hub` gives it only through a writer, and a browse
-  opens none. Deferred to #2837: `Hub::time` waits with no bound, and
-  `Supervisor::browse` races it against a bound of its clock and gives an error at the
-  bound. PR 5 waits on it. `browse::Context` and `kind::Context` stay two types: each
-  input that both give is a read of a field or one call, and `secret` is one function.
-  Trigger to make them one: a third context, or a second shared input whose body is more
-  than a read of a field or one call. A kind implements `browse::Device` on its open
-  session, so one walk is one session and can use a continuation point; a `Cursor` that
-  a front end gets holds no session state. `level` takes a folder as the `Entry` that
-  the device gave, never a path, and gives at most `LIMIT` entries a page; `values`
-  gives `types::sample::Value`, so there is one value model. Trigger for a text value: a
-  kind that reads a `string` channel. Lost: a count of matches up to the budget;
-  trigger: the agent test (PR 9) shows a task with two over-limit refusals one after the
-  other. `import --match` uses the same walk, so the points that `browse --match` shows
-  are the points that `import --match` takes.
+  opens none. Deferred to #2837: `Hub::time` waits with no bound. When a kind first
+  reads mesh time from `browse::Context`, it races `Hub::time` against a bound that
+  `Supervisor::browse` sets, and gives an error at the bound, so a kind that reads no
+  mesh time never waits. PR 5 waits on it, and gives that read with its doc, the bound,
+  and the exact error. `browse::Context` and `kind::Context` stay two types: each input
+  that both give is a read of a field or one call, and `secret` is one function. Trigger
+  to make them one: a third context, or a second shared input with a body of its own, as
+  `secret` has in `read_secret`. A kind implements `browse::Device` on its open session,
+  so one walk is one session and can use a continuation point; a `Cursor` that a front
+  end gets holds no session state. `level` takes a folder as the `Entry` that the device
+  gave, never a path, and gives at most `LIMIT` entries a page; `values` gives
+  `types::sample::Value`, so there is one value model. Trigger for a text value: a kind
+  that reads a `string` channel. Lost: a count of matches up to the budget; trigger: the
+  agent test (PR 9) shows a task with two over-limit refusals one after the other.
+  `import --match` uses the same walk, so the points that `browse --match` shows are the
+  points that `import --match` takes.
   The person's words, through `laptop.monitor`: decision 1, 2026-10-15 17:17 UTC, "Ok,
   this is fine. I approve"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6197989240);
@@ -126,4 +128,7 @@
   (https://github.com/synnaxlabs/foundation/pull/2836#issuecomment-6209911107).
   `Hub::time` and the bound in `Supervisor::browse`: `laptop.architect`, 2026-10-16
   06:56 UTC
-  (https://github.com/synnaxlabs/foundation/issues/2837#issuecomment-6209931375).
+  (https://github.com/synnaxlabs/foundation/issues/2837#issuecomment-6209931375). The
+  race on the first read of mesh time, and the trigger of a body of its own:
+  `laptop.architect-2`, 2026-10-16 07:09 UTC
+  (https://github.com/synnaxlabs/foundation/pull/2836#issuecomment-6210109901).
