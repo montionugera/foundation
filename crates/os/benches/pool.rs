@@ -51,3 +51,28 @@ fn alloc_cold(bencher: Bencher<'_, '_>) {
     });
     drop(held);
 }
+
+/// One alloc that discards the payload pages of many free blocks, of which about one
+/// in four holds a whole page.
+#[divan::bench(args = [16, 256, 1024], sample_count = 30, sample_size = 1)]
+fn alloc_cools(bencher: Bencher<'_, '_>, blocks: usize) {
+    const SMALL: usize = 5000;
+    let large = (blocks - 1) * 4096 / 4 / 5;
+    bencher
+        .with_inputs(|| {
+            let pool = create_pool(blocks * block::footprint(SMALL));
+            let mut held: Vec<_> = (0..blocks)
+                .map(|_| {
+                    let mut block = pool.alloc(SMALL).expect("the budget has room");
+                    block.fill(1);
+                    block
+                })
+                .collect();
+            let kept = held.pop().expect("a block");
+            drop(held);
+            (pool, kept)
+        })
+        .bench_local_refs(|(pool, _)| {
+            pool.alloc(large).expect("the free blocks give their pages")
+        });
+}

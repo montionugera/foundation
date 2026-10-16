@@ -92,3 +92,22 @@ fn alloc_cold(bencher: Bencher<'_, '_>) {
     });
     drop(held);
 }
+
+/// An alloc that the budget refuses while one size holds many free blocks, of which
+/// about one in four holds a whole page: their pages cannot cover it.
+#[divan::bench(args = [16, 256, 4096])]
+fn alloc_refused(bencher: Bencher<'_, '_>, blocks: usize) {
+    const SMALL: usize = 5000;
+    let pool = create_pool(blocks * block::footprint(SMALL));
+    let mut held: Vec<_> = (0..blocks)
+        .map(|_| pool.alloc(SMALL).expect("the budget has room"))
+        .collect();
+    let kept = held.pop().expect("a block");
+    drop(held);
+    let large = (blocks - 1) * 2048;
+    bencher.bench_local(|| {
+        pool.alloc(large)
+            .expect_err("the free pages cannot cover it")
+    });
+    drop(kept);
+}
