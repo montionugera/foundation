@@ -111,6 +111,7 @@ impl Measurement {
             out,
             start,
             fields: 0,
+            oversized: 0,
         }
     }
 }
@@ -123,6 +124,7 @@ pub(crate) struct Line<'a> {
     /// The length of `out` before the line.
     start: usize,
     fields: usize,
+    oversized: usize,
 }
 
 impl Line<'_> {
@@ -159,11 +161,13 @@ impl Line<'_> {
     }
 
     /// Appends the string field `field` of the UTF-8 text `text`, with `\` before
-    /// each `"` and `\`, or leaves it out when that is over [`STRING_MAX`] bytes.
+    /// each `"` and `\`, or leaves it out as [`Line::oversized`] when that is over
+    /// [`STRING_MAX`] bytes.
     #[inline]
     pub(crate) fn string(&mut self, field: &Field, text: &[u8]) {
         let escapes = text.iter().filter(|&&byte| escaped(byte)).count();
         if text.len().saturating_add(escapes) > STRING_MAX {
+            self.oversized = self.oversized.saturating_add(1);
             return;
         }
         self.key(field);
@@ -183,11 +187,13 @@ impl Line<'_> {
     }
 
     /// Appends the string field `field` of `bytes` in base64 with padding, or leaves
-    /// it out when that is over [`STRING_MAX`] bytes: when `bytes` is over 49,152.
+    /// it out as [`Line::oversized`] when that is over [`STRING_MAX`] bytes: when
+    /// `bytes` is over 49,152.
     #[inline]
     pub(crate) fn bytes(&mut self, field: &Field, bytes: &[u8]) {
         let len = Base64::encoded_len(bytes);
         if len > STRING_MAX {
+            self.oversized = self.oversized.saturating_add(1);
             return;
         }
         self.key(field);
@@ -213,6 +219,11 @@ impl Line<'_> {
             bits & 0xffff_ffff_ffff
         )
         .expect("invariant: a write to a Vec never fails");
+    }
+
+    /// The string fields left out so far as over [`STRING_MAX`] bytes.
+    pub(crate) const fn oversized(&self) -> usize {
+        self.oversized
     }
 
     /// Appends the separator and key of one more field.

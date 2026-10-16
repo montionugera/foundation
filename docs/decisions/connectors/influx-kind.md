@@ -77,17 +77,25 @@
   bits. A `u64` channel is a `u` integer to a `bucket`, and to a `database` it ends the
   run with `Error::Config` and `influx.unsigned` (LINE TEXT). A `string` channel is a
   string field, with `\` before each `"` and `\`, and each other char kept, a newline
-  too: InfluxDB 1.8 and 2.7 (`models/points.go`) and InfluxDB 3 read only these two
-  escapes in a string field, and a newline in it does not end the line. A `uuid`
-  channel is a string field of 36 lowercase chars, its 16 bytes in RFC 9562 order, so
-  byte 0 gives the first two hex chars. A `bytes` channel is a string field of its
-  base64, the standard alphabet with padding. A string field whose text between its
-  quotes, after the escapes, is over 65,536 bytes (a `bytes` sample over 49,152) is
-  left out, as a NaN is, and the run goes on. InfluxDB 3 refuses a string field over
-  65,536 bytes, and the docs of InfluxDB 1 and 2 give 64 KB. The count is of the text as
-  written, so each version takes each line that the run sends. Lost: cut the string (a
-  changed value with no sign), or end the run (one long sample stops a stream). Decided
-  by `laptop.architect-2` on 2026-10-16T17:35:01Z
+  too. The docs of InfluxDB 1, 2, and 3 say that a field value cannot hold a newline,
+  but the parsers keep it in a quoted string field, and read only these two escapes in
+  it: `scanLine` of `models/points.go` in InfluxDB 1.8.10 (line 1144) and 2.7.12 (line
+  1170) ends a line only at a newline outside quotes, and so does `split_lines` of
+  `influxdb-line-protocol` 2.0.0 (`src/lib.rs`, line 614), whose `field_string_value`
+  (line 800) reads the string. The send test of a string with a newline pins this, so
+  a parser change fails a test. `laptop.monitor` let the key choices of this paragraph
+  go on 2026-10-16, on the condition of this text and of the count `oversized`. A
+  `uuid` channel is a string field of 36 lowercase chars, its 16 bytes in RFC 9562
+  order, so byte 0 gives the first two hex chars (S5). A `bytes` channel is a string
+  field of its base64, the standard alphabet with padding. A string
+  field whose text between its quotes, after the escapes, is over 65,536 bytes (a
+  `bytes` sample over 49,152) is left out, and the run goes on. InfluxDB 3 refuses a
+  string field over 65,536 bytes, and the docs of InfluxDB 1 and 2 give 64 KB. The
+  count is of the text as written, so each version takes each line that the run sends.
+  The count `oversized` gives each sample left out, after the 204 of its batch, as
+  `confirmed` does. Lost: cut the string (a changed value with no sign), or end the run
+  (one long sample stops a stream). Decided by `laptop.architect-2` on
+  2026-10-16T17:35:01Z
   (https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6221149361), on
   the plan of
   https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6221118220. The run

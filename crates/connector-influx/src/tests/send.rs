@@ -94,6 +94,7 @@ struct Plant {
     classes: Rc<RefCell<Vec<u8>>>,
     confirmed: Rc<RefCell<Vec<u64>>>,
     lost: Rc<RefCell<Vec<u64>>>,
+    oversized: Rc<RefCell<Vec<u64>>>,
 }
 
 impl Plant {
@@ -124,6 +125,7 @@ impl Plant {
             read_status(&inputs.hub, &tasks, "class", |sample| sample[0]).await;
         let confirmed = read_confirmed(&inputs.hub, &tasks).await;
         let lost = read_count(&inputs.hub, &tasks, "lost").await;
+        let oversized = read_count(&inputs.hub, &tasks, "oversized").await;
         Self {
             hub: inputs.hub.clone(),
             supervisor: Supervisor::new(inputs),
@@ -141,6 +143,7 @@ impl Plant {
             classes,
             confirmed,
             lost,
+            oversized,
         }
     }
 
@@ -253,7 +256,7 @@ fn define(inputs: &supervisor::Config) {
     };
     let mut definitions = testing::create_status(
         &name("influx"),
-        &[name(CONFIRMED), name(LOST)],
+        &[name(CONFIRMED), name(LOST), name(OVERSIZED)],
         channel::Key::from_u128(STATUS),
     );
     definitions.extend([
@@ -1306,6 +1309,8 @@ struct Frame {
     got: Vec<Got>,
     first: i64,
     points: Vec<BTreeMap<String, crate::sim::Field>>,
+    /// Each value of `influx.status.oversized`.
+    oversized: Vec<u64>,
 }
 
 /// Writes one frame of `count` sample times, with the raw samples of each channel of
@@ -1353,6 +1358,7 @@ fn one_frame(
             got: plant.got(),
             first,
             points,
+            oversized: plant.oversized.borrow().clone(),
         }
     })
 }
@@ -1491,7 +1497,7 @@ fn writes_a_string_with_each_quote_and_backslash_escaped_and_each_newline_kept()
 }
 
 #[test]
-fn leaves_out_a_string_over_65536_bytes_after_its_escapes_and_keeps_its_line() {
+fn leaves_out_and_counts_a_string_over_65536_bytes_after_its_escapes() {
     let kept = ["é".repeat(32_768), format!("\"{}", "x".repeat(65_534))];
     let long = ["x".repeat(65_537), format!("\"{}", "x".repeat(65_535))];
     let samples = [&kept[0], &long[0], &kept[1], &long[1]].map(String::as_bytes);
@@ -1515,6 +1521,7 @@ fn leaves_out_a_string_over_65536_bytes_after_its_escapes_and_keeps_its_line() {
     );
     assert_eq!(frame.got, vec![(WRITE.into(), body)]);
     assert_eq!(frame.points.len(), 4);
+    assert_eq!(frame.oversized, [0, 2]);
 }
 
 #[test]
@@ -1531,7 +1538,7 @@ fn writes_a_uuid_as_its_lowercase_text() {
 }
 
 #[test]
-fn writes_bytes_as_base64_with_padding_and_leaves_out_bytes_over_49152() {
+fn writes_bytes_as_base64_with_padding_and_leaves_out_and_counts_over_49152() {
     let (kept, long) = (vec![0xfb_u8; 49_152], vec![0_u8; 49_153]);
     let samples: [&[u8]; 4] = [&[0, 255, 1], &[0xfb], &kept, &long];
     let columns = vec![
@@ -1553,6 +1560,7 @@ fn writes_bytes_as_base64_with_padding_and_leaves_out_bytes_over_49152() {
     );
     assert_eq!(frame.got, vec![(WRITE.into(), body)]);
     assert_eq!(frame.points.len(), 4);
+    assert_eq!(frame.oversized, [0, 1]);
 }
 
 #[test]

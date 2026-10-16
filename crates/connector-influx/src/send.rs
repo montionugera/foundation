@@ -17,7 +17,7 @@ use hub::reader::{Ended, Received};
 use types::time::Span;
 
 use crate::batch::{Ack, Batch, Taken};
-use crate::{CONFIRMED, Config, LOST, Target};
+use crate::{CONFIRMED, Config, LOST, OVERSIZED, Target};
 
 /// The longest name of a database, bucket, or org, in bytes.
 pub(crate) const NAME_MAX: usize = 4_096;
@@ -46,8 +46,8 @@ enum Event<'a> {
 
 /// Writes the frames of the run's reader to InfluxDB until the cancel, with one
 /// request in flight. While one is in flight it reads the next batch, up to 5,000
-/// lines, and acks a batch and counts its samples and lost seqs only after InfluxDB
-/// answers 204.
+/// lines, and acks a batch and counts its samples, lost seqs, and oversized samples
+/// only after InfluxDB answers 204.
 pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     let mut reader = ctx.reader().expect("invariant: check gives a reader");
     let ctx = &ctx;
@@ -62,6 +62,7 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     let uri = write_uri(&config.address, &config.target);
     let token = RefCell::new(Token::read(ctx).await?);
     let (confirmed, lost) = (ctx.count(CONFIRMED), ctx.count(LOST));
+    let oversized = ctx.count(OVERSIZED);
     let mut batch = Batch::new(config.measurement.clone(), &config.target, ctx.name());
     let mut cancelled = pin!(ctx.cancel().wait());
     let mut flight = pin!(None);
@@ -109,6 +110,7 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
                 reader.ack(ack.position);
                 confirmed.add(ack.samples);
                 lost.add(ack.lost);
+                oversized.add(ack.oversized);
             }
             Event::Frame(Ok(received)) => batch.add(&received)?,
             Event::Frame(Err(ended)) => return Err(ended.into()),

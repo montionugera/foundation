@@ -47,6 +47,7 @@ struct Body {
     lines: usize,
     samples: u64,
     lost: u64,
+    oversized: u64,
     times: Vec<u8>,
     /// The samples of each data channel of the frame, by the order of `entries`.
     raw: Vec<Vec<u8>>,
@@ -72,6 +73,9 @@ pub struct Ack {
     pub samples: u64,
     /// The seqs that the gap lines count.
     pub lost: u64,
+    /// The `string` and `bytes` samples left out as a field of over 65,536 bytes as
+    /// written.
+    pub oversized: u64,
 }
 
 /// The data channels seen in the frames of one key set.
@@ -167,6 +171,7 @@ impl Batch {
                 position,
                 samples: std::mem::take(&mut self.body.samples),
                 lost: std::mem::take(&mut self.body.lost),
+                oversized: std::mem::take(&mut self.body.oversized),
             },
         })
     }
@@ -231,6 +236,10 @@ impl Body {
                 let channel = layout.channel(at);
                 (channel.convert)(raw, count, line, &channel.field, &mut text);
             }
+            let oversized = text.oversized();
+            let oversized =
+                u64::try_from(oversized).expect("invariant: usize fits u64");
+            self.oversized = self.oversized.saturating_add(oversized);
             let wrote = text.end(Stamp::from_nanos(i64::from_le_bytes(time)));
             if wrote > 0 {
                 self.lines = self.lines.saturating_add(1);
