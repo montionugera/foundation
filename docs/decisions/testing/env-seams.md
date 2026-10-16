@@ -851,12 +851,8 @@
   checks the kind again with an fstat after the open. A link that another writer changes
   between the stat and the open can give the error of the open, such as `Io` 102 on
   macOS or 6 on Linux for a socket, and the open of a device that the link names runs
-  its driver. On Linux, the walk of a link that a rename replaces during the call can
-  read only a first part of its old target, so the call can open a folder on the way to
-  that target, such as the folder of the link or `/`, and the rest of `path` resolves
-  under that folder. This was seen on ext4 on aarch64 in 3 of 60 runs, and not on
-  overlayfs or macOS
-  (https://github.com/synnaxlabs/foundation/actions/runs/38937329327/job/117096459445).
+  its driver. On Linux, the walk of a link that a rename replaces during the call can read only a first part of its old target, also none of it, so the call can open the folder of the link, or a folder on the way to that target, such as `/`, and the rest of `path` resolves
+  under that folder. This was seen on ext4 on x86_64 in CI (https://github.com/synnaxlabs/foundation/actions/runs/38937329327/job/117096459445), and on ext4 in the Linux VM of Docker Desktop (linuxkit 5.15.49, aarch64) on an Apple M3 Max laptop in 9 of 100 runs of the swap test without its `Directory` arm, and not on overlayfs or macOS.
   That writer can already change what the node reads (`docs/security.md`, "Other local
   user"). `os::paths` and `open_absolute` of `os::files` share this one check.
   `open_absolute` refuses a directory at the stat with 21 (`EISDIR`), so a directory

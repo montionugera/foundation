@@ -29,9 +29,9 @@ pub(crate) enum Readable {
 /// error of the stat or the open. A link that another writer changes between the stat
 /// and the open gives the error of the open of the file that it then names, and the
 /// open of a device there runs its driver. On Linux, the walk of a link that a rename
-/// replaces during the call can read only a first part of its old target, so the call
-/// can open a folder on the way to that target, such as the folder of the link or `/`,
-/// and the rest of `path` resolves under that folder.
+/// replaces during the call can read only a first part of its old target, also none of
+/// it, so the call can open the folder of the link, or a folder on the way to that
+/// target, such as `/`, and the rest of `path` resolves under that folder.
 pub(crate) fn open(path: &Path) -> Result<Readable, Errno> {
     kind(&fs::stat(path)?)?;
     opened(path)
@@ -54,8 +54,8 @@ pub(crate) fn file(path: &Path) -> Result<(OwnedFd, fs::Stat), Errno> {
 }
 
 /// Opens `path`, after a stat found a regular file or a directory there. The stat of
-/// the caller keeps the open of a socket from giving `ENXIO`, and that of a device from
-/// running its driver.
+/// the caller keeps the open of a socket from giving `ENXIO` on Linux or `EOPNOTSUPP`
+/// on macOS, and that of a device from running its driver.
 fn opened(path: &Path) -> Result<Readable, Errno> {
     // The fstat after the open refuses a swap.
     let fd = fs::open(path, READ, fs::Mode::empty())?;
