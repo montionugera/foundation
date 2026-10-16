@@ -9,11 +9,3 @@ pub struct Roots {
     /// goes on.
     pub failures: Vec<String>,
 }
-
-pub(crate) fn read() -> Roots {
-    let read = rustls_native_certs::load_native_certs();
-    Roots {
-        certificates: read.certs.into_iter().map(|der| der.to_vec()).collect(),
-        failures: read.errors.iter().map(ToString::to_string).collect(),
-    }
-}

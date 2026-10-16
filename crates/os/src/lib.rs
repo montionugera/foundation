@@ -235,11 +235,16 @@ pub fn stored(
 }
 
 /// Reads the CA certificates of the OS store: the certificate files on Linux, and the
-/// keychain on macOS. When `SSL_CERT_FILE` or `SSL_CERT_DIR` is set, it reads only the
-/// files that they name, on each OS. It blocks on the reads.
+/// keychain on macOS. When `SSL_CERT_FILE` is set, or `SSL_CERT_DIR` names a directory,
+/// it reads only that file and the files in those directories, on each OS. It blocks on
+/// the reads, and gives the whole store in memory.
 #[must_use]
 pub fn roots() -> Roots {
-    roots::read()
+    let read = rustls_native_certs::load_native_certs();
+    Roots {
+        certificates: read.certs.into_iter().map(|der| der.to_vec()).collect(),
+        failures: read.errors.iter().map(ToString::to_string).collect(),
+    }
 }
 
 /// Holds SIGINT and SIGTERM: the first that comes does not end the process, and the
