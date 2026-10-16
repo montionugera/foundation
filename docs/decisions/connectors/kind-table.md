@@ -23,7 +23,8 @@
   only a spec change fixes: reader `Empty` (`connector.no-channel`), `ManyIndexes`
   (`connector.many-indexes`), and `Full` (`connector.many-readers`,
   `laptop.architect-2`, 2026-10-16T05:24:48Z:
-  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6208736533); writer `Unknown` (`connector.unknown-channel`), `Empty`
+  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6208736533); writer
+  `Unknown` (`connector.unknown-channel`), `Empty`
   (`connector.no-channel`), and `Home` with a lease that is not longer than zero
   (`connector.lease`). `Retry`, with the hub error: `Remote` and `Mesh` of each, since
   the home can move back, and a mesh that stops ends the run at the cancel after at most

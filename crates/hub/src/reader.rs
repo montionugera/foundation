@@ -261,7 +261,8 @@ pub enum Error {
     Unsynced,
     /// The reader is named and complete, and the records of the named readers of the
     /// index would pass `limit` bytes, the most that one entry of the home's buffer
-    /// holds. Close a named reader of the index, or open this one unnamed.
+    /// holds. Close a named reader of the index whose hold is zero, wait for a hold to
+    /// end, or open this one unnamed.
     Full {
         /// The most bytes of one entry.
         limit: usize,
@@ -301,7 +302,8 @@ impl fmt::Display for Error {
             Self::Full { limit } => write!(
                 f,
                 "the records of the named readers of the index would pass {limit} \
-                 bytes: close a named reader of the index, or open this one unnamed"
+                 bytes: close a named reader of the index whose hold is zero, wait for \
+                 a hold to end, or open this one unnamed"
             ),
             Self::Remote { home } => write!(
                 f,

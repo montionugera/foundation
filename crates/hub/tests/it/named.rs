@@ -877,7 +877,8 @@ fn opens_no_named_complete_reader_past_the_records_of_one_entry() {
         assert_eq!(
             error.to_string(),
             "the records of the named readers of the index would pass 65481 bytes: \
-             close a named reader of the index, or open this one unnamed"
+             close a named reader of the index whose hold is zero, wait for a hold to \
+             end, or open this one unnamed"
         );
         let latest = named(&long(119), &"r".repeat(255), Mode::Latest, Span::ZERO);
         assert!(
