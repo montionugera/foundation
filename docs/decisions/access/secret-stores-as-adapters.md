@@ -78,14 +78,16 @@
   `the file <path> is not there. Write the value to it, unreadable by other users: chmod
   o-r <path>`. The check covers only the store: a `file()` source is never checked
   (#2583). It does not see group read, an ACL entry on macOS that grants read, or a
-  named ACL entry on Linux, whose mask is in the group bits. It does not check write
-  bits. Add that check when a secret whose change by another user is a threat comes,
-  such as a key that signs. It does not check the owner: a node that runs as root reads
-  a file of mode 0600 that another user owns. Add the owner check with the check of
-  write bits. `os::files` builds only on Linux and macOS. A driver for another OS states
-  what `exposed` means there. The `sim` disk makes each file not exposed, as `os` makes
-  a file with mode 0600, and `sim::node::Node::expose_file` and `hide_file` set it, as a
-  `chmod` from outside the node does (`laptop.architect-2`, 2026-10-15T23:58:31Z:
+  named ACL entry on Linux, whose mask is in the group bits. It does not read the modes
+  of the directories above the file, so a file under a directory that only the node can
+  enter is still refused, as `ssh` refuses it. It does not check write bits. Add that
+  check when a secret whose change by another user is a threat comes, such as a key that
+  signs. It does not check the owner: a node that runs as root reads a file of mode 0600
+  that another user owns. Add the owner check with the check of write bits. `os::files`
+  builds only on Linux and macOS. A driver for another OS states what `exposed` means
+  there. The `sim` disk makes each file not exposed, as `os` makes a file with mode
+  0600, and `sim::node::Node::expose_file` and `hide_file` set it, as a `chmod` from
+  outside the node does (`laptop.architect-2`, 2026-10-15T23:58:31Z:
   https://github.com/synnaxlabs/foundation/issues/2596#issuecomment-6204800336). The
   person allowed group read on 2026-10-16T01:24Z ("Ok, that sounds like a plan", through
   `laptop.monitor`:
@@ -93,9 +95,11 @@
   `laptop.architect-2` amended the ruling (2026-10-16T01:26:00Z:
   https://github.com/synnaxlabs/foundation/issues/2596#issuecomment-6205909515), with
   the owner limit, the text of a file that is not there, and the doc of `exposed`
-  (`laptop.architect-2`:
-  https://github.com/synnaxlabs/foundation/pull/2792#issuecomment-6205919230), and the
-  two functions of `sim` (`laptop.architect-2`:
+  (`laptop.architect-2`, 2026-10-16T01:26:48Z:
+  https://github.com/synnaxlabs/foundation/pull/2792#issuecomment-6205919230, and for
+  the doc of `exposed` and the modes of the directories, 2026-10-16T01:43:28Z:
+  https://github.com/synnaxlabs/foundation/pull/2792#issuecomment-6206117805), and the
+  two functions of `sim` (`laptop.architect-2`, 2026-10-16T01:27:17Z:
   https://github.com/synnaxlabs/foundation/pull/2792#issuecomment-6205924615). The
   refusal of capitals and what a file holds are architect calls (`laptop.architect-2`,
   2026-10-13T16:54:37Z:
