@@ -685,11 +685,9 @@ fn gives_the_same_run_for_the_same_seed() {
 
 #[test]
 fn adds_the_certificates_of_a_pem_text_to_the_roots() {
-    let ca = include_str!("../sim/tls/ca.pem");
-    let other = include_str!("../sim/tls/other-ca.pem");
-    let roots = Roots::default().with_pem(ca).expect("the CA parses");
+    let roots = Roots::default().with_pem(sim::CA).expect("the CA parses");
     let both = roots
-        .with_pem(&format!("text before\n{other}"))
+        .with_pem(&format!("text before\n{}", sim::OTHER_CA))
         .expect("the CA parses");
     for certificate in [Certificate::Valid, Certificate::OtherCa] {
         let mut network = Network::new(9, certificate, JUNE_2026);
@@ -722,8 +720,7 @@ fn gives_empty_for_a_pem_text_with_no_certificate() {
 fn gives_invalid_for_a_pem_certificate_that_does_not_parse() {
     let broken = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
     let bad_base64 = "-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n";
-    let ca = include_str!("../sim/tls/ca.pem");
-    for text in [broken, bad_base64, &format!("{ca}{broken}")] {
+    for text in [broken, bad_base64, &format!("{}{broken}", sim::CA)] {
         let error = Roots::default().with_pem(text).expect_err("a broken one");
         assert_eq!(error, Pem::Invalid, "{text}");
         assert_eq!(
@@ -735,8 +732,7 @@ fn gives_invalid_for_a_pem_certificate_that_does_not_parse() {
 
 #[test]
 fn skips_and_counts_der_certificates_that_do_not_parse() {
-    let ca = include_str!("../sim/tls/ca.pem");
-    let der = rustls::pki_types::pem::PemObject::from_pem_slice(ca.as_bytes())
+    let der = rustls::pki_types::pem::PemObject::from_pem_slice(sim::CA.as_bytes())
         .map(|der: rustls::pki_types::CertificateDer<'_>| der.to_vec())
         .expect("the CA parses");
     let (roots, skipped) = Roots::from_der([der.as_slice(), b"not DER".as_slice()]);
