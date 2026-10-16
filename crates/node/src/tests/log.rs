@@ -235,9 +235,9 @@ fn logged(roots: os::Roots, level: tracing::Level) -> Vec<String> {
     lines.read()
 }
 
-const SKIPPED: &str = "2026-01-01T00:00:00.004198Z WARN node: OS roots that do not parse are skipped \
+const SKIPPED: &str = "2026-01-01T00:00:00.004198Z WARN node::trust: OS roots that do not parse are skipped \
      skipped=1";
-const NONE: &str = "2026-01-01T00:00:00.004198Z WARN node: the OS roots hold no \
+const NONE: &str = "2026-01-01T00:00:00.004198Z WARN node::trust: the OS roots hold no \
                     certificate, so an https connect with no CA of its connector fails";
 
 #[test]
@@ -249,7 +249,7 @@ fn a_node_warns_of_each_failure_of_its_roots_and_of_each_skipped_one() {
     assert_eq!(
         warned(roots),
         [
-            "2026-01-01T00:00:00.004198Z WARN node: a part of the OS roots was not read \
+            "2026-01-01T00:00:00.004198Z WARN node::trust: a part of the OS roots was not read \
              error=\"failed to read PEM from file at '/roots.pem'\"",
             SKIPPED,
         ]
@@ -282,7 +282,7 @@ fn listed(count: usize) -> Vec<String> {
     (0..count)
         .map(|n| {
             format!(
-                "2026-01-01T00:00:00.004198Z WARN node: a part of the OS roots was not \
+                "2026-01-01T00:00:00.004198Z WARN node::trust: a part of the OS roots was not \
                  read error=\"failure {n}\""
             )
         })
@@ -293,7 +293,7 @@ fn listed(count: usize) -> Vec<String> {
 fn a_node_warns_of_the_first_16_failures_of_its_roots_and_counts_the_rest() {
     let mut expected = listed(16);
     expected.push(
-        "2026-01-01T00:00:00.004198Z WARN node: more parts of the OS roots were not \
+        "2026-01-01T00:00:00.004198Z WARN node::trust: more parts of the OS roots were not \
          read unlisted=1"
             .into(),
     );
