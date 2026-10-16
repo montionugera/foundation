@@ -29,9 +29,6 @@ const DEPTH: usize = 64;
 /// The mode of a new file: it gives the group and other users no access.
 const FILE: fs::Mode = fs::Mode::from_raw_mode(0o600);
 
-/// The mode of a new directory: it gives the group and other users no access.
-const DIR: fs::Mode = fs::Mode::from_raw_mode(0o700);
-
 /// The flags that open a directory to read.
 const READ_DIR: OFlags = OFlags::RDONLY
     .union(OFlags::DIRECTORY)
@@ -465,7 +462,7 @@ fn data(dir: &Path) -> io::Result<OwnedFd> {
 /// Opens directory `path` of `at`, first makes it when it is not there, and syncs the
 /// directory that holds it, unless `path` is on another device than its holder.
 fn make(at: impl AsFd, path: &Path) -> io::Result<OwnedFd> {
-    match fs::mkdirat(&at, path, DIR) {
+    match fs::mkdirat(&at, path, dir::MODE) {
         Ok(()) | Err(Errno::EXIST) => {}
         Err(errno) => return Err(errno),
     }
