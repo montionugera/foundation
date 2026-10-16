@@ -114,13 +114,6 @@ impl Kind for Steps {
         })
     }
 
-    fn discover(
-        &self,
-        _: &Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     #[expect(clippy::disallowed_methods, reason = "a benchmark reads a real clock")]
     async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
         let count = ctx.count("samples");

@@ -108,6 +108,11 @@ pub struct Config<M> {
     /// The environment of the node process, which `env()` in a config reads. Main
     /// gives `std::env::vars_os()`.
     pub vars: BTreeMap<OsString, OsString>,
+    /// The CA certificates that each `https` connect of a connector trusts. Main gives
+    /// [`os::roots`]. Shard 0 logs a warning for each failure, for the count of
+    /// certificates that do not parse, and when no certificate is left. It logs each
+    /// of them also with [`Region::Absent`], which runs no connector.
+    pub roots: os::Roots,
     /// Where and how the node writes its log. Each shard writes the events of its
     /// thread there, and [`Node::join`] the event `stopped`.
     pub log: Log,
@@ -303,6 +308,7 @@ impl Node {
             inbox,
             time: clock.clone(),
             vars: Arc::new(config.vars),
+            roots: config.roots,
             name: config.name.clone(),
             shards: cores,
         };
@@ -886,9 +892,32 @@ struct Serve {
     time: clock::Reader,
     /// The environment of the node process, which the node's connectors read.
     vars: Arc<BTreeMap<OsString, OsString>>,
+    /// The CA certificates that the node's connectors trust, which the event `started`
+    /// follows.
+    roots: os::Roots,
     /// The node's name and shard count, which the claim and the event `started` read.
     name: types::name::Name,
     shards: usize,
+}
+
+/// The roots of `roots`. Logs a warning for each failure of the read, for the count of
+/// certificates that do not parse, and when no certificate is left.
+fn trust(roots: &os::Roots) -> connector::http::Roots {
+    for error in &roots.failures {
+        tracing::warn!(%error, "a part of the OS roots was not read");
+    }
+    let (trusted, skipped) =
+        connector::http::Roots::from_der(roots.certificates.iter().map(Vec::as_slice));
+    if skipped > 0 {
+        tracing::warn!(skipped, "OS roots that do not parse are skipped");
+    }
+    if trusted.empty() {
+        tracing::warn!(
+            "the OS roots hold no certificate, so an https connect with no CA of its \
+             connector fails"
+        );
+    }
+    trusted
 }
 
 /// What shard 0 binds the node's port with, once it claimed the data directory.
@@ -1173,6 +1202,7 @@ impl Serve {
         let (clock, net) = (endpoint.clock.clone(), endpoint.net.clone());
         let address = endpoint.address(&identity);
         let (settings, vars, name) = (endpoint.settings, self.vars, self.name);
+        let roots = self.roots;
         let shards = self.shards;
         let opened =
             endpoint.open(identity, files.clone(), pool, &self.time, tasks.clone());
@@ -1194,6 +1224,8 @@ impl Serve {
                 secret::Resolver::new(vars, files.clone(), &directory::secrets());
             let serve = pin!(async move {
                 // `hold` polls `serve` only once the file `address` holds the address.
+                let trusted = trust(&roots);
+                drop(roots);
                 tracing::info!(%name, address = %address.bound, shards, "started");
                 let region = mesh.clone().map(|mesh| hub::Region {
                     mesh,
@@ -1230,6 +1262,7 @@ impl Serve {
                             clock: clock.clone(),
                             entropy,
                             net,
+                            roots: trusted,
                             tasks: tasks.clone(),
                             hub: hub.clone(),
                             secrets,
@@ -1350,6 +1383,7 @@ async fn follow(
 fn kinds() -> connector::kind::Table {
     connector::kind::Table::new()
         .with("influx", connector_influx::Kind::default())
+        .with("modbus", connector_modbus::Kind::default())
         .with("opcua", connector_opcua::Kind::default())
 }
 

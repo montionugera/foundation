@@ -3,7 +3,7 @@
 
 use connector_modbus::command::Write;
 use connector_modbus::pdu::Table;
-use connector_modbus::poll::Order;
+use connector_modbus::read::Order;
 use divan::{Bencher, black_box};
 use types::sample::{Type, Value};
 

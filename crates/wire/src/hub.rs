@@ -22,19 +22,22 @@
 //! - [`Open`]: kind 1 (latest) or 2 (complete), then for complete `limit_bytes`
 //!   (`u64`), then the channel count (`u32`).
 //! - [`Credit`]: kind 3, then `limit_bytes` (`u64`).
-//! - [`Reply`]: kind 1 (opened). Kind 2 (head): path (`u8`, live 0, backfill 1), seq
-//!   (`u64`), count (`u32`), and the series count (`u32`). Kind 3 (behind).
+//! - [`Reply`]: kind 1 (opened), then `live` (`u64`). Kind 2 (head): path (`u8`, live
+//!   0, backfill 1), seq (`u64`), count (`u32`), and the series count (`u32`). Kind 3
+//!   (behind).
 //! - [`keys`]: each channel key (`u128`).
 //! - [`ends`]: place and end (each `u32`) for each series.
 
 pub mod client;
 mod frames;
+mod gaps;
 mod home;
 mod reader;
 
 use std::fmt;
 
 pub use frames::{Due, Frames, Step};
+pub use gaps::Gaps;
 pub use home::{FromReader, Home};
 pub use reader::{FromHome, Reader};
 use types::frame::{Path, Range};
@@ -245,12 +248,16 @@ impl Credit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reply {
     /// The session is open at the home.
-    Opened,
+    Opened {
+        /// The first live seq of the index that the session can get: its open
+        /// position. A latest session opens at the first seq of the newest frame of
+        /// the index, or at the live tail when there is none.
+        live: u64,
+    },
     /// The head of one frame. The run of its [`ends`] follows, then its body.
     Head(Head),
-    /// The session reached a frame that the buffer lost, so the home ends it. It
-    /// follows each frame before that frame, and no message follows it: the home then
-    /// finishes its stream.
+    /// The home ends the session. No message follows it: the home then finishes its
+    /// stream. No case gives it; #2790 removes it.
     Behind,
 }
 
@@ -273,7 +280,8 @@ impl Reply {
     #[must_use]
     pub fn encoded_len(&self) -> usize {
         match self {
-            Self::Opened | Self::Behind => 1,
+            Self::Behind => 1,
+            Self::Opened { .. } => 9,
             Self::Head(_) => 18,
         }
     }
@@ -287,7 +295,10 @@ impl Reply {
     pub fn encode(&self, out: &mut [u8]) {
         let mut out = Writer::new(out, self.encoded_len());
         match self {
-            Self::Opened => out.put(&[OPENED]),
+            Self::Opened { live } => {
+                out.put(&[OPENED]);
+                out.put(&live.to_le_bytes());
+            }
             Self::Behind => out.put(&[BEHIND]),
             Self::Head(head) => {
                 assert!(head.series > 0, "a head names at least one series");
@@ -320,8 +331,9 @@ impl Reply {
         };
         match kind {
             OPENED => {
+                let live = u64::from_le_bytes(*fields.take()?);
                 fields.end()?;
-                Ok(Self::Opened)
+                Ok(Self::Opened { live })
             }
             BEHIND => {
                 fields.end()?;
@@ -551,12 +563,12 @@ pub enum Error {
     /// A head of a reader session is on the backfill path. A session gets only live
     /// frames.
     Backfill,
-    /// A head starts before the end of the head before it. The heads of a session
-    /// rise.
+    /// A head starts before the end of the head before it, or the first head before
+    /// the open position. The heads of a session rise from that position.
     Seq {
         /// The seq of the head.
         seq: u64,
-        /// The seq plus the count of the head before it.
+        /// The seq plus the count of the head before it, or the open position.
         end: u64,
     },
     /// A message of a run has more keys or ends than remain in the run.
@@ -637,8 +649,8 @@ impl fmt::Display for Error {
             }
             Self::Seq { seq, end } => write!(
                 f,
-                "the frame head starts at seq {seq}, before the end {end} of the head \
-                 before it"
+                "the frame head starts at seq {seq}, before seq {end}, where the head \
+                 before it ended or the session opened"
             ),
             Self::Run { items, remain } => write!(
                 f,
@@ -952,7 +964,12 @@ mod tests {
 
         #[test]
         fn pins_the_wire_values() {
-            assert_eq!(encode_reply(Reply::Opened), [1]);
+            assert_eq!(
+                encode_reply(Reply::Opened {
+                    live: 0x0102_0304_0506_0708
+                }),
+                [1, 8, 7, 6, 5, 4, 3, 2, 1]
+            );
             assert_eq!(encode_reply(Reply::Behind), [3]);
             let backfill = head(Path::Backfill, 0x0102_0304_0506_0708, 0x0a0b_0c0d, 3);
             assert_eq!(
@@ -973,14 +990,24 @@ mod tests {
 
         #[test]
         fn refuses_unknown_kinds_before_the_length() {
-            check_kinds(Reply::decode, &[1, 2, 3], &[1, 18]);
+            check_kinds(Reply::decode, &[1, 2, 3], &[1, 9, 18]);
         }
 
         #[test]
         fn refuses_each_wrong_length() {
-            check(Reply::decode, 1, &[2, 18]);
+            check(Reply::decode, 1, &[1, 2, 8, 10, 18]);
             check(Reply::decode, 2, &[1, 2, 17, 19]);
             check(Reply::decode, 3, &[2, 18]);
+        }
+
+        #[test]
+        fn refuses_an_opened_of_one_byte() {
+            let error = Reply::decode(&[1]).expect_err("an opened has 9 bytes");
+            assert_eq!(error, Error::Length { len: 1 });
+            assert_eq!(
+                error.to_string(),
+                "the hub message has 1 bytes, which no message of its kind has"
+            );
         }
 
         #[test]
@@ -1319,7 +1346,8 @@ mod tests {
             ),
             (
                 Error::Seq { seq: 3, end: 11 },
-                "the frame head starts at seq 3, before the end 11 of the head before it",
+                "the frame head starts at seq 3, before seq 11, where the head before it ended \
+                 or the session opened",
             ),
             (
                 Error::Run {
@@ -1368,7 +1396,7 @@ mod tests {
     fn reply() -> impl Strategy<Value = Reply> {
         let path = prop_oneof![Just(Path::Live), Just(Path::Backfill)];
         prop_oneof![
-            Just(Reply::Opened),
+            any::<u64>().prop_map(|live| Reply::Opened { live }),
             Just(Reply::Behind),
             (path, any::<u64>(), any::<u32>(), 1..=u32::MAX).prop_map(
                 |(path, seq, count, series)| {

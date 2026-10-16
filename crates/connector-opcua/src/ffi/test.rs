@@ -168,10 +168,6 @@ unsafe extern "C" {
         kind: *const c_void,
     ) -> *const c_void;
     pub(crate) fn UA_Client_disconnect(client: *mut super::Client) -> u32;
-    pub(crate) fn UA_Client_disconnectAsync(client: *mut super::Client) -> u32;
-    pub(crate) fn UA_Client_disconnectSecureChannelAsync(
-        client: *mut super::Client,
-    ) -> u32;
 
     pub(crate) fn shim_server_new(
         el: *mut EventLoop,
@@ -212,6 +208,12 @@ unsafe extern "C" {
         node: Node<'_>,
         source: *mut c_void,
     ) -> u32;
+    pub(crate) fn shim_server_set_source(
+        server: *mut Server,
+        node: Node<'_>,
+        source: *mut c_void,
+    ) -> u32;
+    pub(crate) fn shim_server_session_timeout(server: *mut Server, ms: u32);
     pub(crate) fn shim_server_data_type(
         server: *mut Server,
         node: Node<'_>,

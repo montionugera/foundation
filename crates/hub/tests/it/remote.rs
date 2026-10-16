@@ -3,6 +3,7 @@
 use std::collections::VecDeque;
 use std::future::poll_fn;
 use std::net::SocketAddr;
+use std::ops;
 use std::pin::pin;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -17,11 +18,11 @@ use spec::data_type::DataType;
 use transport::stream::{Receiver, Sender};
 use transport::{Address, Code, Session, Transport};
 use types::frame::key_set::{Group, Interner};
-use types::frame::{self, Path, Range};
+use types::frame::{self, Form, Path, Range};
 use types::time::Span;
 use wire::Protocol;
 use wire::header::MALFORMED;
-use wire::hub::{Credit, Head, Refusal, Reply, ends};
+use wire::hub::{Credit, Due, Frames, Head, Open, Refusal, Reply, Step, ends};
 
 use super::region::OTHER;
 use super::{
@@ -827,7 +828,7 @@ async fn fake_accept(transport: &Transport) -> (Session, Sender, Receiver) {
 /// [`fake_accept`], then `Opened` sent.
 async fn fake_open(transport: &Transport) -> (Session, Sender, Receiver) {
     let (session, mut sender, receiver) = fake_accept(transport).await;
-    send(&mut sender, 1, |out| Reply::Opened.encode(out)).await;
+    send(&mut sender, 9, |out| Reply::Opened { live: 0 }.encode(out)).await;
     (session, sender, receiver)
 }
 
@@ -1538,6 +1539,189 @@ fn a_reader_gets_the_seq_and_path_of_each_frame_from_the_home() {
 }
 
 #[test]
+fn a_complete_reader_gets_the_seqs_that_the_home_skipped_as_the_gap_of_the_next_frame()
+{
+    remote(
+        147,
+        sim::link::Config::default(),
+        |node, _, transport, steps| async move {
+            let (_, mut sender, _receiver) = fake_open(&transport).await;
+            let mut seq = 0;
+            for skipped in [0, 3, 0] {
+                seq += skipped;
+                send_frame(&mut sender, &mut seq, 32).await.expect("sends");
+            }
+            until(&node.clock(), &steps.done).await;
+        },
+        |test, _| async move {
+            let mut reader = test.reader(&["value"], Mode::Complete).await;
+            for gap in [None, Some(2..5), None] {
+                let received = reader.next().await.expect("a frame");
+                assert_eq!(received.gap(), gap);
+            }
+        },
+    );
+}
+
+/// A frame with no sample has no first sample to end a gap, so the gap comes on the
+/// next frame with one.
+#[test]
+fn a_complete_reader_gets_the_gap_before_a_frame_with_no_sample_on_the_next_frame() {
+    remote(
+        149,
+        sim::link::Config::default(),
+        |node, _, transport, steps| async move {
+            let (_, mut sender, _receiver) = fake_open(&transport).await;
+            let mut seq = 0;
+            send_frame(&mut sender, &mut seq, 32).await.expect("sends");
+            seq += 3;
+            send_head(&mut sender, &mut seq, 0, &[(0, 0), (1, 0)])
+                .await
+                .expect("sends");
+            send_frame(&mut sender, &mut seq, 32).await.expect("sends");
+            until(&node.clock(), &steps.done).await;
+        },
+        |test, _| async move {
+            let mut reader = test.reader(&["value"], Mode::Complete).await;
+            let mut positions = Vec::new();
+            for (count, gap) in [(2, None), (0, None), (2, Some(2..5))] {
+                let received = reader.next().await.expect("a frame");
+                let range = received.view().range(0).expect("an index");
+                assert_eq!((range.count, received.gap()), (count, gap));
+                positions.push(received.position());
+            }
+            assert_eq!(
+                positions[1], positions[0],
+                "the frame with no sample keeps the position before the gap"
+            );
+            assert_ne!(positions[2], positions[0]);
+        },
+    );
+}
+
+#[test]
+fn a_complete_reader_gets_the_seqs_from_the_open_position_as_the_gap_of_the_first_frame()
+ {
+    remote(
+        148,
+        sim::link::Config::default(),
+        |node, _, transport, steps| async move {
+            let (_, mut sender, _receiver) = fake_accept(&transport).await;
+            let opened = Reply::Opened { live: 5 };
+            send(&mut sender, 9, |out| opened.encode(out)).await;
+            let mut seq = 9;
+            for _ in 0..2 {
+                send_frame(&mut sender, &mut seq, 32).await.expect("sends");
+            }
+            until(&node.clock(), &steps.done).await;
+        },
+        |test, _| async move {
+            let mut reader = test.reader(&["value"], Mode::Complete).await;
+            for gap in [Some(5..9), None] {
+                let received = reader.next().await.expect("a frame");
+                assert_eq!(received.gap(), gap);
+            }
+        },
+    );
+}
+
+/// A message of `len` bytes that `fill` writes.
+fn message(len: usize, fill: impl FnOnce(&mut [u8])) -> Vec<u8> {
+    let mut out = vec![0; len];
+    fill(&mut out);
+    out
+}
+
+/// The messages of a home that opens at 5, then sends a frame past a gap at the open, a
+/// frame with no gap, a frame with no sample past a jump, the frame after it, and a
+/// frame past a later jump.
+fn gapped() -> Vec<Vec<u8>> {
+    let opened = Reply::Opened { live: 5 };
+    let mut messages = vec![message(9, |out| opened.encode(out))];
+    for (seq, count) in [(9, 2), (11, 2), (16, 0), (16, 2), (20, 2)] {
+        let head = Reply::Head(Head {
+            path: Path::Live,
+            range: Range { seq, count },
+            series: 2,
+        });
+        let len = 8 * count;
+        messages.push(message(head.encoded_len(), |out| head.encode(out)));
+        messages.push(message(2 * ends::LEN, |out| {
+            ends::encode([(0, len), (1, 2 * len)], out);
+        }));
+        if count > 0 {
+            let body = usize::try_from(2 * len).expect("a short body");
+            messages.push(message(body, |out| out.fill(1)));
+        }
+    }
+    messages
+}
+
+/// The [`Frames::lost`] of each frame of `messages`, which start at `Opened`, in a
+/// complete session of `time` and `value`.
+fn lost(messages: &[Vec<u8>]) -> Vec<ops::Range<u64>> {
+    let open = Open {
+        mode: wire::hub::Mode::Complete { limit_bytes: 0 },
+        channels: 2,
+    };
+    let data = [(VALUE, I64)];
+    let set = Interner::new().intern(&[Group {
+        index: TIME,
+        data: &data,
+    }]);
+    let mut messages = messages.iter().map(Vec::as_slice);
+    let (mut frames, _) =
+        Frames::open(wire::hub::Reader::new(&open), set, messages.next())
+            .expect("opens");
+    let mut lost = Vec::new();
+    loop {
+        let step = match frames.due().expect("a layout") {
+            Due::Draft(layout) => {
+                let draft = layout.draft(&own_pool(), Form::Encoded).expect("room");
+                Ok(frames.draft(draft))
+            }
+            Due::Body(_) | Due::Message => match messages.next() {
+                Some(message) => frames.decode(message),
+                None => return lost,
+            },
+        };
+        if let Step::Frame(_) = step.expect("a step") {
+            lost.push(frames.lost());
+        }
+    }
+}
+
+/// The remote reader gives as the gap of each frame the `Frames::lost` of the same
+/// messages: a gap at the open, none, a frame with no sample, and a later jump.
+#[test]
+fn a_complete_reader_gets_the_gap_of_each_frame_that_frames_gives_as_lost() {
+    remote(
+        150,
+        sim::link::Config::default(),
+        |node, _, transport, steps| async move {
+            let (_, mut sender, _receiver) = fake_accept(&transport).await;
+            for message in gapped() {
+                send(&mut sender, message.len(), |out| {
+                    out.copy_from_slice(&message);
+                })
+                .await;
+            }
+            until(&node.clock(), &steps.done).await;
+        },
+        |test, _| async move {
+            let mut reader = test.reader(&["value"], Mode::Complete).await;
+            let mut gaps = Vec::new();
+            for _ in 0..5 {
+                let received = reader.next().await.expect("a frame");
+                gaps.push(received.gap().unwrap_or(0..0));
+            }
+            assert_eq!(gaps, lost(&gapped()));
+            assert_eq!(gaps, [5..9, 0..0, 0..0, 13..16, 18..20]);
+        },
+    );
+}
+
+#[test]
 fn a_complete_reader_that_the_home_ends_with_behind_gets_behind_at_each_next() {
     remote(
         17,
@@ -1554,10 +1738,7 @@ fn a_complete_reader_that_the_home_ends_with_behind_gets_behind_at_each_next() {
             let mut reader = test.reader(&["value"], Mode::Complete).await;
             let ended = reader.next().await.expect_err("the home ended the session");
             assert_eq!(ended, Ended::Behind);
-            assert_eq!(
-                ended.to_string(),
-                "the reader reached a frame that the buffer lost: open a new reader"
-            );
+            assert_eq!(ended.to_string(), "the home ended the session");
             assert_eq!(reader.next().await.expect_err("ended"), Ended::Behind);
         },
     );
@@ -2734,7 +2915,7 @@ async fn open_a_third(
                 .expect("open");
         }
         let mut opened = third.sender.take().expect("a two-way stream");
-        send(&mut opened, 1, |out| Reply::Opened.encode(out)).await;
+        send(&mut opened, 9, |out| Reply::Opened { live: 0 }.encode(out)).await;
         until(&node.clock(), &steps.done).await;
     };
     race(serve_third, drain)
@@ -3208,7 +3389,8 @@ fn a_reader_stops_the_stream_as_malformed_when_a_head_starts_before_the_last_end
             series: 2,
         }),
         wire::hub::Error::Seq { seq: 3, end: 11 },
-        "the frame head starts at seq 3, before the end 11 of the head before it",
+        "the frame head starts at seq 3, before seq 11, where the head before it ended or \
+         the session opened",
     );
 }
 
@@ -3279,7 +3461,7 @@ fn a_reader_panics_on_an_ack_of_a_position_at_zero_before_it_gave_one() {
                     .expect("a message")
                     .expect("not finished");
             }
-            send(&mut second, 1, |out| Reply::Opened.encode(out)).await;
+            send(&mut second, 9, |out| Reply::Opened { live: 0 }.encode(out)).await;
             until(&node.clock(), &steps.done).await;
         },
         |test, _| async move {

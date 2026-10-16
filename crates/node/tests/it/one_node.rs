@@ -529,7 +529,7 @@ fn a_wrong_config_gives_its_file_line_and_fix() {
              \n\
              error[connector.bad-uri]: a URI is a string, not an integer\n  \
              --> plant.hcl:37:17\n\
-             fix: Write an `http` URI such as \"http://10.0.0.2:8086\"\n"
+             fix: Write an `http` or `https` URI such as \"http://10.0.0.2:8086\"\n"
         )
     );
     assert!(!rig.dir.join("plant.plan").exists(), "plan writes no plan");
@@ -566,7 +566,10 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
             state: "running".into(),
             address: Some(format!("http://{influx_address}")),
             restarts: Some(0),
-            counts: Some(BTreeMap::from([("confirmed".into(), 0)])),
+            counts: Some(BTreeMap::from([
+                ("confirmed".into(), 0),
+                ("lost".into(), 0),
+            ])),
             error: Some(Error {
                 class: "retry".into(),
                 text: format!(

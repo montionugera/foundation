@@ -11,6 +11,7 @@ pub mod serve;
 mod task;
 #[cfg(feature = "sim")]
 pub mod testing;
+mod time;
 mod used;
 pub mod writer;
 
@@ -28,6 +29,7 @@ use types::name::Name;
 
 pub use link::{Link, Served};
 use reader::Reader;
+pub use time::Time;
 use writer::Writer;
 
 /// The `home` items that hub calls give, so that layer 3 names them through `hub`.
@@ -231,6 +233,14 @@ impl Hub {
         state.define(definitions);
     }
 
+    /// The node's mesh time. Waits for the node's first mesh time, as the open of a
+    /// writer does, so the [`Time`] it gives always has a stamp. Dropping the future
+    /// ends the wait.
+    pub async fn time(&self) -> Time {
+        time::known(&self.0).await;
+        Time(Rc::clone(&self.0))
+    }
+
     /// Opens a writer session on `config.channels` and the index of each. It waits
     /// for the node's first mesh time, and while the mesh names no home for an index,
     /// for one. A later spec in use that removes or changes one of its channels ends
@@ -258,10 +268,10 @@ impl Hub {
     /// this node no more streams, until another reader there drops. It gets each frame
     /// of the index, as a view of only its channels and their index. An unnamed
     /// complete reader gets each live frame written after the returned future resolves,
-    /// until it reaches one that the buffer lost ([`reader::Mode::Complete`]). A named
-    /// reader takes over the open session of its subject and name, which ends with
-    /// [`reader::Ended::Replaced`], and a named complete one resumes as
-    /// [`reader::Config::name`] says.
+    /// with the seqs trimmed or lost for no room as the gap of the next frame with a
+    /// sample ([`reader::Mode::Complete`]). A named reader takes over the open session
+    /// of its subject and name, which ends with [`reader::Ended::Replaced`], and a
+    /// named complete one resumes as [`reader::Config::name`] says.
     ///
     /// # Errors
     ///

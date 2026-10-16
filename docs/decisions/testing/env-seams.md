@@ -254,6 +254,10 @@
   host with a NUL byte is `NotFound`, with no lookup. Decided by `laptop.architect-2`
   (2026-10-08 16:52 UTC, #1095,
   https://github.com/synnaxlabs/foundation/issues/1095#issuecomment-6064802287).
+  Changed (2026-10-16, #1927): a NUL byte is `host::Error::Character`, so it never
+  reaches the driver. Decided by `laptop.architect-2` (2026-10-16 02:53 UTC, #1927,
+  https://github.com/synnaxlabs/foundation/issues/1927#issuecomment-6206963417).
+  Supersedes https://github.com/synnaxlabs/foundation/issues/1095#issuecomment-6064802287.
   `EAI_NONAME` with errno `EMFILE` or `ENFILE` is `Io` with that code: the lookup met
   a full descriptor table, so glibc ran it without part of its configuration or
   without its name service modules, and its answer is not final. Lost: `NotFound`
@@ -268,9 +272,41 @@
   name server answers. Add a cap before a caller can start lookups at a rate that
   grows with peers, devices, or data.
   Lost: Tokio's blocking pool, because the drop of a runtime waits for each of its
-  blocking tasks, and `os` drops each runtime it builds. The literal grammar waits on
-  #1927. Decided by `laptop.architect-2` (2026-10-08 17:08 UTC, #1919,
+  blocking tasks, and `os` drops each runtime it builds. #1927 gives the grammar
+  (below). Decided by `laptop.architect-2` (2026-10-08 17:08 UTC, #1919,
   https://github.com/synnaxlabs/foundation/pull/1919#issuecomment-6065081738).
+  Amended (2026-10-16, #1927): `env` owns the whole grammar of a host.
+  `Net::resolve` takes an `env::net::host::Host`, which a caller parses at plan for a
+  config. An IPv4 address has four decimal parts with no leading zeros. An IPv6
+  address is bare or in brackets, with an optional zone of a decimal interface number
+  that fits in `u32`, which `resolve` gives as the scope with no lookup. A name has
+  parts of ASCII letters, digits, `-`, and `_`, each 1 to 63 bytes, none that starts
+  or ends with `-`. It is at most 253 bytes without one optional final dot, its last
+  part is not a number, and its letters go to lowercase. Only a name reaches the
+  driver, so `getaddrinfo` never reads an `inet_aton` form (`127.1`, `0x7f.0.0.1`,
+  `10.0.0.2.`): `Host` refuses each. A NUL byte is `host::Error::Character`, not
+  `NotFound`. A zone by interface name (`%eth0`) is refused, as it needs
+  `if_nametoindex`: a new driver call, and interfaces in `sim`. Trigger: a user needs
+  a link-local device by its interface name. Lost: `resolve(&str)` with a separate
+  check for plan and a new error at run time, because the grammar runs twice and a
+  caller can skip the check. Lost: a `host::Name` type for the driver, a public type
+  for one invariant inside `env`: `Driver::resolve` keeps `&str`, and `os` fails
+  loudly on a NUL. Proposed by `box1.builder-2`
+  (https://github.com/synnaxlabs/foundation/issues/1927#issuecomment-6206949254).
+  Decided by `laptop.architect-2` (2026-10-16 02:53 UTC, #1927,
+  https://github.com/synnaxlabs/foundation/issues/1927#issuecomment-6206963417).
+  Amended in the review of #2804: zone 0 is no zone, so one address has one `Host`.
+  `host::uri` reads the host of a URI: an IPv6 address is in brackets, and its zone
+  follows `%25` (RFC 6874), so `[fe80::1%252]` is zone 2 and another `%` is
+  `Error::Escape`, whose message shows the `%25` form. Each caller that reads a URI uses
+  it (R7 STARTING POINTS for `connector::http`; `connector-opcua` in #2803).
+  `connector::http` parses the host again on each request, until #1218. Approved by
+  `laptop.architect-2` (2026-10-16 04:05 UTC,
+  https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6207830826; the move
+  to `host::uri`, 04:34 UTC,
+  https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6208160301;
+  `Error::Escape`, 2026-10-16 04:58 UTC,
+  https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6208423911).
   From the review of #1018: the bracketed IPv6 literal, and what `NotFound` and `Io`
   mean to a caller. Amended (2026-10-07, #1117): `Mode::Create` makes a missing file
   with `len` zeroed bytes. It treats an empty file that is there as missing and
@@ -706,3 +742,144 @@
   https://github.com/synnaxlabs/foundation/pull/2486#issuecomment-6131997012).
   Supersedes "It reads what `path` names at its open" of item 2 of
   https://github.com/synnaxlabs/foundation/issues/2481#issuecomment-6131521237.
+  Amended (2026-10-16T04:52:58Z, #2526): `Paths::within` gives the same files, where
+  a read or a write of a path that does not resolve under one of its folders, or that
+  resolves under one of its hidden folders, fails with `paths::Error::Outside` and
+  reaches no file. A handle from `within` keeps the limits of the handle it came from.
+  A path that does not resolve fails with the error of its resolve. `Paths::resolve`
+  gives the absolute path with each `.`, `..`, and symbolic link resolved, and keeps a
+  last name that is not there on its resolved directory. `Paths::home` gives the home
+  directory of the user, resolved. `os` resolves with `std::fs::canonicalize`. On
+  macOS it takes `..` after a file as the directory above it, as `realpath` does
+  there, and an open of that path fails. A path that ends in `/` or `/.` on a file
+  gives `ENOTDIR` on both OSes. `sim` gives each host symbolic links
+  (`sim::Node::link_path`), a working directory (`sim::Node::set_working_dir`), and a
+  home (`sim::Node::set_home`). The check and the call are two steps: a link that
+  another program makes between them can lead the call out. `foundation mcp` gives its
+  tools the `Paths` of `within`, and the command line the free one. Lost: a check in
+  `ops` at each call site, which each new site must repeat; `cap-std`, which opens
+  through each folder with no gap between the check and the open. Trigger: a tool
+  that can make a link, or a server beside an untrusted writer. Decided by
+  `laptop.architect-2` (2026-10-16T04:52:58Z, items 1 and 8 of
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208362869; the
+  limits that a handle keeps and the error of a path that does not resolve,
+  2026-10-16T05:41:58Z, item 2 of
+  https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6208939762), after
+  the decision of `laptop.monitor` (2026-10-16T04:51:22Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208345441).
+  Amended (2026-10-16T05:41:58Z, #2526): `within` resolves each of its folders as
+  `Paths::resolve` gives it, and fails with the error of that resolve, so a hidden
+  folder named by a relative path or through a link still hides its files. The cost
+  of the resolve error of a path: a tool can learn whether a directory outside the
+  folders is there. Decided by `laptop.architect-2` (2026-10-16T05:41:58Z, items 1
+  and 2 of https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6208939762).
+  Amended (2026-10-16T06:56:55Z, #2526): a resolve and a read on `sim` through a
+  directory that is not there, or of a link to nothing, give `NotFound`, as `os` does,
+  and `sim::Node::make_dir` makes an empty directory. `Paths::home` stays a call of
+  the driver, since the home is an OS fact with its own fallbacks, not only `HOME`. On
+  a file system that ignores case, a hidden folder that is not there yet does not hide
+  a name in other case, because a resolve keeps a last name that is not there as
+  given. Deferred to PR 1 of #2526: `within` gives `Error::NotFound` for a hidden
+  folder that is not there, and `foundation mcp` makes the data directory before its
+  `within`. Decided by `laptop.architect-2` (2026-10-16T06:56:55Z, items 1 to 5, A,
+  and B of https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6209932709).
+  Amended (2026-10-16T07:06:00Z, #2526): `sim` keeps each directory as an entry. A
+  directory is there once `sim::Node::make_dir` makes it, and `sim::Node::link_path`
+  makes each directory above its link. A call through `Paths` on `sim` through a
+  directory that is not there, or of a link to nothing, gives `NotFound`, also a write,
+  as `os` and `Paths::write` give. On macOS, `os` gives `ENOTDIR` for a resolve that
+  ends in `/`, `/.`, or `/..` after a file, also through a link, as Linux does, because
+  it stats the path after `canonicalize`. Supersedes "a directory is there while a file
+  is under it" of the `sim` tree above, and "On macOS it takes `..` after a file as the
+  directory above it, as `realpath` does there, and an open of that path fails" of the
+  amendment of 2026-10-16T04:52:58Z. Lost: the `sim` rule, since with it a write on
+  `sim` made its directories and gave `Ok` where `os` and `within` give `NotFound`.
+  Decided by `laptop.architect-2` (2026-10-16T07:06:00Z,
+  https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6210062728; the `os`
+  stat, 2026-10-16T08:00:56Z,
+  https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6210913415).
+  Amended (2026-10-16T08:08:47Z, #2526): `Paths::make_dir` makes the directory at a
+  path. It makes no directory above it, and none through a symbolic link at the path,
+  also when the path ends in `/`. It gives `Ok` when a directory is there, also through
+  a link, `NotFound` when the directory above is not there or when the path ends in `.`
+  or `..` and names no directory, and `Io` 17 (`EEXIST`) when anything else is there,
+  also a file or a link to nothing at a path that ends in `/`. `os` gives `Ok` only
+  after `EEXIST` with a directory there, from one private call that the `CreateDir` of
+  `os::files` uses too, and makes each directory, also the data directory, with one
+  mode, 0700, so the group and other users get no access. `sim` makes one directory
+  only, apart from `sim::Node::make_dir`, which makes each one above. On a handle of
+  `within`, a path that does not resolve, such as a link to nothing or a loop, passes
+  the limits by its own place. When it still does not resolve after the make, such as a
+  link to a directory whose resolved path is longer than the OS takes, it gives the
+  error of its resolve, as `read` gives. `within` resolves `<hidden>/..` after the
+  resolve of each hidden folder, which opens no file. It gives `NotFound` when the
+  folder is not there, and `Io` 20 (`ENOTDIR`) when it is not a directory, or on `os`
+  `Io` 13 (`EACCES`) when this user cannot search it. It skips a hidden folder that the
+  limits of its handle refuse, since a path under that folder fails by those limits. A
+  path under a hidden folder of a limit fails with the new `paths::Error::Hidden`, also
+  when it is not under the folders of another limit, and `Outside` is only for a path
+  not under the folders. This amendment gives the hidden check that the amendment of
+  2026-10-16T06:56:55Z defers, and the call with which `foundation mcp` makes its data
+  directory in PR 1 of #2526. Supersedes "or that resolves under one of its hidden
+  folders, fails with `paths::Error::Outside`" of the amendment of 2026-10-16T04:52:58Z.
+  Lost: a check that `within` makes the hidden folder, which writes in a call that only
+  limits; a resolve of `<hidden>/.` as the check, which `os` resolves to `Ok` when the
+  folder is not there; and a read of the folder, which blocks on a pipe and fails on a
+  folder with no read bit. Decided by `laptop.architect-2` (item B of
+  https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6209932709; the plan
+  of `laptop.integrator-2`, 2026-10-16T08:06:32Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6211011171, approved
+  with conditions 1 to 3, 2026-10-16T08:08:47Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6211047580; the
+  order of `Hidden` over `Outside`, 2026-10-16T14:34:56Z,
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6217809418; the
+  `EEXIST` rule of `os`, the drop of end slashes, the resolve of `<hidden>/..`, `Io` for
+  a hidden folder that is not a directory or that this user cannot search, the skip of a
+  hidden folder past the limits, and the check of a link to nothing by its place,
+  2026-10-16T15:45:37Z,
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219155635; the check
+  of each path that does not resolve by its own place, 2026-10-16T16:02:28Z,
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219471401; the error
+  of its resolve after the make, 2026-10-16T16:26:58Z,
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219956876).
+  Amended (2026-10-16T16:02:30Z, #2889): `Paths::read` gives `Io` 22 (`EINVAL`) for a
+  file that is neither a regular file nor a directory, such as a FIFO, a socket, or a
+  device, as `env::files::Files::open_absolute` gives on the `os` disk. Such a file has
+  no stable content to read, and a tool or the check of `--files` must answer, not wait.
+  `os` checks the kind with a stat before the open, so the open of a device that is
+  there at the stat runs no driver, opens with no wait for a writer of a FIFO, and
+  checks the kind again with an fstat after the open. A link that another writer changes
+  between the stat and the open can give the error of the open, such as `Io` 102 on
+  macOS or 6 on Linux for a socket, and the open of a device that the link names runs
+  its driver. On Linux, the walk of a link that a rename replaces during the call can
+  read only a first part of its old target, also none of it, so the call can open the
+  folder of the link, or a folder on the way to that target, such as `/`, and the rest
+  of `path` resolves under that folder. This was seen on ext4 on x86_64 in CI
+  (https://github.com/synnaxlabs/foundation/actions/runs/38937329327/job/117096459445),
+  and on ext4 in the Linux VM of Docker Desktop (linuxkit 5.15.49, aarch64) on an Apple
+  M3 Max laptop in 9 of 100 runs of the swap test without its `Directory` arm, and not
+  on overlayfs or macOS. That writer can already change what the node reads
+  (`docs/security.md`, "Other local user"). `os::paths` and `open_absolute` of
+  `os::files` share this one check. `open_absolute` refuses a directory at the stat with
+  21 (`EISDIR`), so a directory that this user cannot read gets the advice for a
+  directory. `Files::open` in the data directory still waits for a writer of a FIFO
+  (#2678). `sim` models no such file. Supersedes "blocks on a pipe and" in the reason
+  that the amendment of 2026-10-16T08:08:47Z gives against a read of the hidden folder:
+  a read of a pipe now gives `Io` 22. `write` keeps its rule: a pipe or a device at
+  `path` takes the bytes in place. Lost: an open with `O_NONBLOCK` that then reads the
+  FIFO, which gives what a writer put there by chance, or nothing, and still runs the
+  driver of a device; an `O_PATH` open on Linux with a reopen through `/proc/self/fd`,
+  since macOS has none and keeps the race; and 22 for each error of the open after a
+  stat that saw a regular file, which hides real errors such as 13. Decided by
+  `laptop.architect-2` (2026-10-16T16:02:30Z,
+  https://github.com/synnaxlabs/foundation/issues/2889#issuecomment-6219471919; the
+  race, 2026-10-16T16:37:23Z,
+  https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6220151438; the
+  directory, 2026-10-16T16:47:51Z,
+  https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6220333948; the Linux
+  walk, 2026-10-16T17:27:15Z,
+  https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221017304; the
+  endings for a last link and the Linux-only test arm, 2026-10-16T17:35:27Z,
+  https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221156481; the folder
+  of the link and the evidence, 2026-10-16T17:48:30Z,
+  https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221386763).

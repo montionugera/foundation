@@ -1,7 +1,8 @@
 - **WAL BENCH (#324, 2026-10-08)** The cargo feature `sim` of `buffer`, off by default
   (`buffer`'s dev-dependency on itself turns it on for the bench), adds
   `#[doc(hidden)] pub mod bench` with `Ring { new, commit }` over `wal::Writer`, as
-  STORED BENCH does for `home`. Only the bench `benches/wal.rs` (`test = true`) uses it.
+  STORED BENCH does for `home`. Only the benches of `buffer` (`test = true`) and its
+  `alloc` test use it.
   `commit` appends its records, takes `trimmed`, syncs each record, and releases to the
   trimmed tail, so a time holds the writer's cost for each commit. The bench runs
   commits of 1 and 8 records, with the bench IDs 64 and 4096: 1 record gives the cost
@@ -50,3 +51,26 @@
   https://github.com/synnaxlabs/foundation/pull/2236#issuecomment-6094318889. The
   time with no tag is decided by `laptop.architect` (#2236, 2026-10-10T05:58:44Z):
   https://github.com/synnaxlabs/foundation/pull/2236#issuecomment-6094432871.
+  `bench` also has `Table { new, decode }`, for the bench `benches/decode.rs`
+  (`test = true`). `new` writes a table of headers with the encoder of the crate, each
+  of its own index, with the first header and each `empty`-th header after it with no
+  samples. `decode` parses each header, as the scan of a read and the walk of an open
+  do. Cases: 1023 headers with samples, and 1023 of which the first and every second
+  after it, 512 in all, have no samples. Lost: a time of the whole read scan, whose
+  waits and copies hide the decode. Asked by the round 2 `performance` report of #2816,
+  which found slowdowns of the decode that differed by 4 to 6 times between two forms
+  of a scratch bench (+0.09 against +0.40 ns per header with samples, and +0.11
+  against +0.61 ns with half with no samples). Decided by `laptop.architect` (#2816,
+  2026-10-16T06:47:29Z):
+  https://github.com/synnaxlabs/foundation/pull/2816#issuecomment-6209801736.
+  `bench::Logs` also has `fill(period, behind)`, as `trim(period, 0)` with the reach
+  of the carry `behind` records back, for the case `fill` of `benches/logs.rs`: 1000
+  indexes, one of them synced each 128 commits, a reach 64 records back, and the time
+  of the one commit in 128 whose carry takes the tail of that index and fills from at
+  most 4000 stale items after its reach: the first 4 of the 64 records and 4 items of
+  the fifth. Lost: the mean of each commit, in which the hides of the commits that
+  sync that index hide the fill.
+  Decided by `laptop.architect` (#2796, 2026-10-16T07:33:04Z):
+  https://github.com/synnaxlabs/foundation/issues/2796#issuecomment-6210474938, with
+  the text approved (2026-10-16T07:45:51Z):
+  https://github.com/synnaxlabs/foundation/issues/2796#issuecomment-6210673885.

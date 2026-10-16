@@ -1,24 +1,30 @@
 //! The reads of a session: one read stream each, whose frames arrive as the node
 //! sends them.
 
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use transport::Code;
 use transport::stream::{Receiver, Sender};
 use transport::{Class, Error as Stream};
-use types::frame::key_set::{Group, Interner, KeySet};
+use types::frame::key_set::KeySet;
 use types::frame::{Form, Frame};
 use wire::Protocol;
 use wire::header::MALFORMED;
-use wire::hub::client::{self, FromNode, Mode, Open, Place, Read};
+use wire::hub::client::{self, Mode, Open, Place, Read};
 use wire::hub::{Due, Frames, Step};
 
 use crate::{Error, Handle};
 
+mod lost;
+
 /// A read of a [`Session`](crate::Session): one read stream. It gives the frames of
-/// its channels that the node sends, in order, from the open on. It holds a clone of
-/// its session. Dropping it stops the stream, and the node ends the read.
+/// its channels that the node sends, in order, from the open on. A complete reader
+/// goes on past seqs that the node's buffer lost: [`Reader::lost`] gives the seqs that
+/// each channel lost, and the reader writes a warning for each gap. A latest
+/// reader skips frames by design and gives no gap. It holds a clone of its session.
+/// Dropping it stops the stream, and the node ends the read.
 #[derive(Debug)]
 pub struct Reader {
     session: Rc<Handle>,
@@ -26,6 +32,7 @@ pub struct Reader {
     stream: Option<(Sender, Receiver)>,
     places: Vec<Place>,
     frames: Frames,
+    lost: lost::Lost,
     /// The error that ended the read.
     ended: Option<Error>,
 }
@@ -53,6 +60,7 @@ impl Reader {
         Ok(Self {
             session,
             stream: Some((sender, receiver)),
+            lost: lost::Lost::new(places.len()),
             places,
             frames,
             ended: None,
@@ -66,17 +74,34 @@ impl Reader {
         &self.places
     }
 
-    /// The key set of each frame. Its entries are the places, in order. Its key and the
-    /// slot of each entry are the reader's own, not the node's.
+    /// The key set of each frame, from [`KeySet::ordered`]. Its entries are the
+    /// places, in order. Its slots are the reader's own, not the node's, and its key is
+    /// the one key of each set from `KeySet::ordered`, so it does not tell two readers
+    /// apart.
     #[must_use]
     pub fn set(&self) -> &Arc<KeySet> {
         self.frames.set()
     }
 
+    /// The seqs of the index lost after the last series of `entry` with a sample, an
+    /// entry of [`Reader::set`], up to the frame that the last [`Reader::next`] gave:
+    /// one range from the first lost seq to the last. A seq in it that the reader got
+    /// held no sample of `entry`. Empty when that frame holds no sample of `entry`,
+    /// when none was lost, before the first frame, and for a latest reader.
+    ///
+    /// # Panics
+    ///
+    /// When `entry` is not below the count of entries of [`Reader::set`].
+    #[must_use]
+    pub fn lost(&self, entry: usize) -> Range<u64> {
+        self.lost.get(entry)
+    }
+
     /// The next frame. Its series are encoded, and its entries index
     /// [`Reader::set`]. It holds a block of [`Config::frames`](crate::Config::frames)
     /// until it drops, and a frame that finds the pool full waits for a block. A frame
-    /// whose call drops goes on at the next call.
+    /// whose call drops goes on at the next call. After a gap, [`Reader::lost`] gives
+    /// it.
     ///
     /// # Errors
     ///
@@ -131,13 +156,44 @@ impl Reader {
             };
             match step {
                 Step::Head(_) | Step::More => {}
-                Step::Frame(frame) => return Ok(frame),
+                Step::Frame(frame) => {
+                    self.note(&frame);
+                    self.warn();
+                    return Ok(frame);
+                }
                 // #2790 removes this arm.
                 Step::Behind => {
                     return Err(Error::Reply(wire::hub::Error::Kind { kind: 3 }));
                 }
             }
         }
+    }
+
+    /// Moves the lost seqs of each entry past `frame`.
+    fn note(&mut self, frame: &Frame) {
+        let index = frame
+            .range(0)
+            .expect("invariant: a frame of the reader holds the index group");
+        let sampled = index.count > 0;
+        let held = frame.iter().map(|(entry, _)| entry).filter(|_| sampled);
+        self.lost.pass(self.frames.lost(), held);
+    }
+
+    /// Writes a warning when the last frame lost seqs.
+    fn warn(&self) {
+        let lost = self.frames.lost();
+        if lost.is_empty() {
+            return;
+        }
+        let index = &self.places[self.set().groups()[0]].name;
+        let (start, end) = (lost.start, lost.end);
+        tracing::warn!(
+            %index,
+            start,
+            end,
+            "the reader lost seqs {start}..{end} of index {index}: the node's buffer did \
+             not keep them"
+        );
     }
 }
 
@@ -166,64 +222,22 @@ async fn start(
     shared.send(sender, &read).await?;
     shared.send_chunks(sender, &body).await?;
     let mut decoder = client::Reader::new(open.mode);
-    let mut places = Vec::new();
-    let mut index = 0;
-    let reader = loop {
-        let message = receiver.recv().await?.ok_or(client::Error::Finished)?;
-        match decoder.decode(&message)? {
-            FromNode::Places(head) => index = to_usize(head.index),
-            FromNode::Run { places: run, home } => {
-                places.extend(run);
-                if let Some(home) = home {
-                    break home;
-                }
-            }
+    let start = loop {
+        let message = receiver.recv().await?;
+        if let Some(start) = decoder.decode(message.as_deref())? {
+            break start;
         }
     };
-    let set = set(&places, index)?;
-    let Some(message) = receiver.recv().await? else {
-        let error = reader
-            .end()
-            .expect_err("a reader before opened may not end");
-        return Err(Error::Reply(error));
-    };
-    let frames = Frames::open(reader, set, &message).map_err(Error::Reply)?;
-    Ok((places, frames))
-}
-
-/// The key set of `places` whose index is at `index`: each place is the entry at its
-/// position.
-fn set(places: &[Place], index: usize) -> Result<Arc<KeySet>, Error> {
-    let mut keys: Vec<_> = places.iter().map(|place| place.key).collect();
-    keys.sort_unstable();
-    if let Some(&[key, _]) = keys.array_windows().find(|[a, b]| a == b) {
-        return Err(Error::Repeated(key));
-    }
-    let mut interner = Interner::new();
-    let slots = interner.slots();
-    let mut data = Vec::with_capacity(places.len());
-    for (at, place) in places.iter().enumerate() {
-        if at == index {
-            slots.index(place.key);
-        } else {
-            slots.data(place.key, place.data_type);
-            data.push((place.key, place.data_type));
-        }
-    }
-    let group = Group {
-        index: places[index].key,
-        data: &data,
-    };
-    Ok(interner.intern(&[group]))
+    let message = receiver.recv().await?;
+    let (frames, _) = Frames::open(start.home, start.set, message.as_deref())
+        .map_err(Error::Reply)?;
+    Ok((start.places, frames))
 }
 
 /// Ends `stream` after `error`: stops it as `MALFORMED` when the node broke a rule of
 /// the wire, else drops it.
 fn end((sender, receiver): (Sender, Receiver), error: &Error) {
-    if matches!(
-        error,
-        Error::Message(_) | Error::Reply(_) | Error::Frame(_) | Error::Repeated(_)
-    ) {
+    if matches!(error, Error::Message(_) | Error::Reply(_) | Error::Frame(_)) {
         sender.reset(Code(MALFORMED));
         receiver.stop(Code(MALFORMED));
     }
@@ -235,8 +249,4 @@ async fn recv(receiver: &mut Receiver, frames: &Frames) -> Result<block::Block, 
         .recv()
         .await?
         .ok_or_else(|| Error::Reply(frames.finished()))
-}
-
-fn to_usize(n: u32) -> usize {
-    usize::try_from(n).expect("invariant: a u32 fits a usize")
 }

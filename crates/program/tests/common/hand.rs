@@ -101,9 +101,24 @@ pub(crate) async fn opened(
     places: &[Place],
     index: u32,
 ) -> Incoming {
+    opened_at(session, places, index, 0).await
+}
+
+/// Accepts the next read and opens it with `places`, its index at `index`, and the
+/// open position `live`.
+pub(crate) async fn opened_at(
+    session: &transport::Session,
+    places: &[Place],
+    index: u32,
+    live: u64,
+) -> Incoming {
     let mut read = accept_read(session).await;
     start(&mut read, places, index, places.len()).await;
-    reply(read.sender.as_mut().expect("two-way"), Reply::Opened).await;
+    reply(
+        read.sender.as_mut().expect("two-way"),
+        Reply::Opened { live },
+    )
+    .await;
     read
 }
 

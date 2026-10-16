@@ -79,45 +79,102 @@ impl Measurement {
     /// measurement: a field of another one can repeat a tag key of this one. With no
     /// value, nothing is written. A field that comes twice is written twice. Gives
     /// the number of fields written.
-    #[expect(clippy::missing_panics_doc, reason = "a write to a Vec never fails")]
     pub fn line<'a>(
         &self,
         out: &mut Vec<u8>,
         values: impl IntoIterator<Item = (&'a Field, Value)>,
         time: Stamp,
     ) -> usize {
+        let mut line = self.begin(out);
+        for (field, value) in values {
+            match value {
+                Value::Float(value) => line.float(field, value.get()),
+                Value::Integer(value) => line.integer(field, value),
+                Value::Unsigned(value) => line.unsigned(field, value),
+                Value::Boolean(value) => line.boolean(field, value),
+            }
+        }
+        line.end(time)
+    }
+
+    /// Appends the prefix of a line to `out`, and gives the line to fill.
+    pub(crate) fn begin<'a>(&self, out: &'a mut Vec<u8>) -> Line<'a> {
         let start = out.len();
         out.extend_from_slice(&self.prefix);
-        let mut separator = b' ';
-        let mut fields = 0_usize;
-        for (Field(key), value) in values {
-            out.push(separator);
-            separator = b',';
-            fields = fields.saturating_add(1);
-            out.extend_from_slice(key);
-            out.push(b'=');
-            let wrote = match value {
-                Value::Float(Float(float)) => write!(out, "{float:e}"),
-                Value::Integer(integer) => write!(out, "{integer}i"),
-                Value::Boolean(boolean) => {
-                    out.push(if boolean { b't' } else { b'f' });
-                    Ok(())
-                }
-            };
-            wrote.expect("invariant: a write to a Vec never fails");
+        Line {
+            out,
+            start,
+            fields: 0,
         }
-        if separator == b' ' {
-            out.truncate(start);
-            return 0;
-        }
-        writeln!(out, " {}", time.nanos())
-            .expect("invariant: a write to a Vec never fails");
-        fields
     }
 }
 
-/// One field value, in a type that InfluxDB 1, 2, and 3 each store, so no unsigned
-/// integer.
+/// One line that [`Measurement::begin`] started, as [`Measurement::line`] writes it.
+/// Until [`Line::end`], the text of the line has no time.
+#[must_use = "a line holds no time until `end`"]
+pub(crate) struct Line<'a> {
+    out: &'a mut Vec<u8>,
+    /// The length of `out` before the line.
+    start: usize,
+    fields: usize,
+}
+
+impl Line<'_> {
+    /// Appends the float field `field`, or leaves it out when `value` is NaN or
+    /// infinite, which InfluxDB cannot store.
+    #[inline]
+    pub(crate) fn float(&mut self, field: &Field, value: f64) {
+        if value.is_finite() {
+            self.key(field);
+            write!(self.out, "{value:e}")
+                .expect("invariant: a write to a Vec never fails");
+        }
+    }
+
+    /// Appends the integer field `field`.
+    #[inline]
+    pub(crate) fn integer(&mut self, field: &Field, value: i64) {
+        self.key(field);
+        write!(self.out, "{value}i").expect("invariant: a write to a Vec never fails");
+    }
+
+    /// Appends the unsigned field `field`.
+    #[inline]
+    pub(crate) fn unsigned(&mut self, field: &Field, value: u64) {
+        self.key(field);
+        write!(self.out, "{value}u").expect("invariant: a write to a Vec never fails");
+    }
+
+    /// Appends the boolean field `field`.
+    #[inline]
+    pub(crate) fn boolean(&mut self, field: &Field, value: bool) {
+        self.key(field);
+        self.out.push(if value { b't' } else { b'f' });
+    }
+
+    /// Appends the separator and key of one more field.
+    #[inline]
+    fn key(&mut self, Field(key): &Field) {
+        self.out.push(if self.fields == 0 { b' ' } else { b',' });
+        self.out.extend_from_slice(key);
+        self.out.push(b'=');
+        self.fields = self.fields.saturating_add(1);
+    }
+
+    /// Ends the line at `time`, or removes it when it has no field. Gives the
+    /// number of fields written.
+    pub(crate) fn end(self, time: Stamp) -> usize {
+        if self.fields == 0 {
+            self.out.truncate(self.start);
+            return 0;
+        }
+        writeln!(self.out, " {}", time.nanos())
+            .expect("invariant: a write to a Vec never fails");
+        self.fields
+    }
+}
+
+/// One field value.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Value {
     /// A 64-bit float.
@@ -126,6 +183,9 @@ pub enum Value {
     Integer(i64),
     /// A boolean.
     Boolean(bool),
+    /// An unsigned 64-bit integer (`u`), which InfluxDB 2 and 3 store, and InfluxDB 1
+    /// refuses.
+    Unsigned(u64),
 }
 
 /// A finite 64-bit float. InfluxDB cannot store NaN or infinity.

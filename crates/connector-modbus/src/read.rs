@@ -2,7 +2,7 @@
 //! read in their replies. A write of `command` takes its checks and its codec from
 //! [`Read`].
 
-use std::fmt;
+use std::{fmt, iter, slice};
 
 use types::sample::{Scalar, Type, Value};
 
@@ -138,7 +138,9 @@ pub fn groups(reads: &[Read], order: Order) -> Vec<Group> {
 /// One request, and the reads that its reply holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Group {
-    request: Request,
+    table: Table,
+    start: u16,
+    count: u16,
     order: Order,
     slots: Vec<Slot>,
 }
@@ -174,11 +176,9 @@ impl Group {
             })
             .collect();
         Self {
-            request: Request::Read {
-                table,
-                start,
-                count: offset(end),
-            },
+            table,
+            start,
+            count: offset(end),
             order,
             slots,
         }
@@ -186,8 +186,24 @@ impl Group {
 
     /// The request to send.
     #[must_use]
-    pub fn request(&self) -> &Request {
-        &self.request
+    pub fn request(&self) -> Request {
+        Request::Read {
+            table: self.table,
+            start: self.start,
+            count: self.count,
+        }
+    }
+
+    /// The table that the request reads.
+    #[must_use]
+    pub fn table(&self) -> Table {
+        self.table
+    }
+
+    /// The first address that the request reads.
+    #[must_use]
+    pub fn start(&self) -> u16 {
+        self.start
     }
 
     /// The index in `reads` of each read that the reply holds, in address order.
@@ -210,17 +226,14 @@ impl Group {
         &'a self,
         reply: Reply<'a>,
     ) -> Result<impl Iterator<Item = (usize, Value)> + 'a, Exception> {
-        let Request::Read { table, count, .. } = self.request else {
-            unreachable!("invariant: a group holds a read request");
-        };
-        let count = usize::from(count);
-        let matched = match (reply, table.bits()) {
+        let count = usize::from(self.count);
+        let matched = match (reply, self.table.bits()) {
             (Reply::Exception(exception), _) => return Err(exception),
             (Reply::Bits(bits), true) => bits.len() == count,
             (Reply::Registers(registers), false) => registers.len() == count,
             _ => false,
         };
-        assert!(matched, "{reply:?} is not a reply to {:?}", self.request);
+        assert!(matched, "{reply:?} is not a reply to {:?}", self.request());
         let order = self.order;
         Ok(self.slots.iter().map(move |slot| {
             let value = match reply {
@@ -240,6 +253,89 @@ impl Group {
             };
             (slot.read, value)
         }))
+    }
+}
+
+/// The values of one tick of reads: each group puts the values of its reply, and
+/// [`Values::take`] gives them all.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Values {
+    slots: Vec<Option<Value>>,
+}
+
+impl Values {
+    /// No values of `reads` reads.
+    #[must_use]
+    pub fn new(reads: usize) -> Self {
+        Self {
+            slots: vec![None; reads],
+        }
+    }
+
+    /// Puts the value of each read of `group` from `reply`, its reply.
+    ///
+    /// # Errors
+    ///
+    /// The exception of a device that refused the request.
+    ///
+    /// # Panics
+    ///
+    /// As [`Group::values`], and when `group` reads past the reads of
+    /// [`Values::new`].
+    pub fn put(&mut self, group: &Group, reply: Reply<'_>) -> Result<(), Exception> {
+        let reads = self.slots.len();
+        for (at, value) in group.values(reply)? {
+            let Some(slot) = self.slots.get_mut(at) else {
+                panic!("the group has read {at}, past the {reads} reads of `new`");
+            };
+            *slot = Some(value);
+        }
+        Ok(())
+    }
+
+    /// The value of each read, in the order of the reads. No value is left after the
+    /// iterator drops, also when it drops before its end.
+    ///
+    /// # Panics
+    ///
+    /// When the iterator reaches a read that no reply put since the last take.
+    pub fn take(&mut self) -> impl Iterator<Item = Value> {
+        Take(self.slots.iter_mut().enumerate())
+    }
+}
+
+/// The iterator of [`Values::take`], which empties the slots that it did not reach
+/// when it drops.
+struct Take<'a>(iter::Enumerate<slice::IterMut<'a, Option<Value>>>);
+
+impl Iterator for Take<'_> {
+    type Item = Value;
+
+    fn next(&mut self) -> Option<Value> {
+        self.0.next().map(taken)
+    }
+
+    // The default `fold` calls `next` out of line for each value.
+    fn fold<B, G: FnMut(B, Value) -> B>(mut self, init: B, mut g: G) -> B {
+        self.0.by_ref().fold(init, |acc, read| g(acc, taken(read)))
+    }
+}
+
+/// The value in the slot of read `at`, which the slot no longer holds.
+///
+/// # Panics
+///
+/// When no reply put a value in the slot since the last take.
+fn taken((at, slot): (usize, &mut Option<Value>)) -> Value {
+    let Some(value) = slot.take() else {
+        panic!("no reply put a value of read {at} since the last take");
+    };
+    value
+}
+
+impl Drop for Take<'_> {
+    fn drop(&mut self) {
+        self.0.by_ref().for_each(|(_, slot)| *slot = None);
     }
 }
 

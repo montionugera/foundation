@@ -12,7 +12,7 @@ pub struct Reader {
     places: u32,
     latest: bool,
     next: Next,
-    /// The seq plus the count of the last head, or 0.
+    /// The seq plus the count of the last head, or the open position of the session.
     end: u64,
 }
 
@@ -30,7 +30,12 @@ enum Next {
 #[derive(Clone, Debug)]
 pub enum FromHome<'m> {
     /// The session is open at the home.
-    Opened,
+    Opened {
+        /// The first live seq of the index that the session can get: its open
+        /// position. A latest session opens at the first seq of the newest frame of
+        /// the index, or at the live tail when there is none.
+        live: u64,
+    },
     /// The head of one frame. The run of its ends follows.
     Head(Head),
     /// One message of the ends run. After the last, [`Reader::body`] is `None` when
@@ -48,8 +53,8 @@ pub enum FromHome<'m> {
         /// The body ends with this message.
         last: bool,
     },
-    /// The session reached a frame that the buffer lost, so the home ended it. No
-    /// message follows.
+    /// The home ended the session, and no message follows. No case gives it; #2790
+    /// removes it.
     Behind,
 }
 
@@ -80,6 +85,11 @@ impl Reader {
         }
     }
 
+    /// Whether the session is latest.
+    pub(in crate::hub) fn latest(&self) -> bool {
+        self.latest
+    }
+
     /// Decodes the next message from the home.
     ///
     /// # Errors
@@ -96,9 +106,9 @@ impl Reader {
     /// 3. The content against the session: [`Error::Latest`] for a behind in a latest
     ///    session; for a head, [`Error::Places`] when it has more series than places,
     ///    [`Error::Backfill`] when it is on the backfill path, and [`Error::Seq`]
-    ///    when it starts before the end of the head before it; [`Error::Run`] for a
-    ///    message with more ends than remain; and [`Error::Body`] for a message longer
-    ///    than the rest of the body.
+    ///    when it starts before the end of the head before it, or the first head
+    ///    before the open position; [`Error::Run`] for a message with more ends than
+    ///    remain; and [`Error::Body`] for a message longer than the rest of the body.
     ///
     /// The session is then not valid ([`MALFORMED`](crate::header::MALFORMED)), and
     /// the caller stops it.
@@ -190,12 +200,15 @@ impl Reader {
             return Err(Error::Ended);
         }
         match (Reply::decode(message)?, self.next) {
-            (Reply::Opened, Next::Opened) => Ok((FromHome::Opened, Next::Head)),
+            (Reply::Opened { live }, Next::Opened) => {
+                self.end = live;
+                Ok((FromHome::Opened { live }, Next::Head))
+            }
             (Reply::Head(_), Next::Opened) => Err(Error::Unopened { kind: HEAD }),
             (Reply::Behind, Next::Opened) => Err(Error::Unopened { kind: BEHIND }),
             (Reply::Behind, _) if self.latest => Err(Error::Latest { kind: BEHIND }),
             (Reply::Behind, _) => Ok((FromHome::Behind, Next::Ended)),
-            (Reply::Opened, _) => Err(Error::Reopen { kind: OPENED }),
+            (Reply::Opened { .. }, _) => Err(Error::Reopen { kind: OPENED }),
             (Reply::Head(head), _) if head.series > self.places => Err(Error::Places {
                 series: head.series,
                 places: self.places,
@@ -245,6 +258,19 @@ fn body_len(end: u32) -> usize {
 mod tests {
     use super::*;
     use crate::hub::tests::{cut, encode_ends, encode_reply};
+    #[test]
+    fn refuses_a_first_head_of_a_latest_session_below_the_open_position() {
+        let mut reader = Reader::new(&Open {
+            mode: Mode::Latest,
+            channels: 1,
+        });
+        assert_eq!(event(&mut reader, &opened_at(5)), Ok(Event::Opened(5)));
+        assert_eq!(
+            event(&mut reader, &head_at(Path::Live, 4, 1, 1)),
+            Err(Error::Seq { seq: 4, end: 5 })
+        );
+    }
+
     use proptest::prelude::*;
 
     fn open(channels: u32) -> Open {
@@ -267,17 +293,21 @@ mod tests {
         }))
     }
 
+    fn opened_at(live: u64) -> Vec<u8> {
+        encode_reply(Reply::Opened { live })
+    }
+
     /// A reader of `places` places that the home opened.
     fn opened(places: u32) -> Reader {
         let mut reader = Reader::new(&open(places));
-        reader.decode(&[OPENED]).expect("the session opens");
+        reader.decode(&opened_at(0)).expect("the session opens");
         reader
     }
 
     /// The event for `message`, with the ends collected.
     fn event(reader: &mut Reader, message: &[u8]) -> Result<Event, Error> {
         reader.decode(message).map(|event| match event {
-            FromHome::Opened => Event::Opened,
+            FromHome::Opened { live } => Event::Opened(live),
             FromHome::Head(head) => Event::Head(head.series),
             FromHome::Ends { ends, last } => Event::Ends(ends.collect(), last),
             FromHome::Body { bytes, last } => Event::Body(bytes.to_vec(), last),
@@ -287,7 +317,7 @@ mod tests {
 
     #[derive(Debug, PartialEq)]
     enum Event {
-        Opened,
+        Opened(u64),
         Head(u32),
         Ends(Vec<(u32, u32)>, bool),
         Body(Vec<u8>, bool),
@@ -297,7 +327,7 @@ mod tests {
     #[test]
     fn decodes_each_message_of_a_session() {
         let mut reader = Reader::new(&open(3));
-        assert_eq!(event(&mut reader, &[OPENED]), Ok(Event::Opened));
+        assert_eq!(event(&mut reader, &opened_at(0)), Ok(Event::Opened(0)));
         assert_eq!(event(&mut reader, &head(2)), Ok(Event::Head(2)));
         assert_eq!(reader.body(), None);
         let ends = encode_ends(&[(0, 3), (2, 13)]);
@@ -432,7 +462,7 @@ mod tests {
             reader.decode(&head(3)).err(),
             Some(Error::Unopened { kind: 2 })
         );
-        assert_eq!(event(&mut reader, &[OPENED]), Ok(Event::Opened));
+        assert_eq!(event(&mut reader, &opened_at(0)), Ok(Event::Opened(0)));
         assert_eq!(
             reader.decode(&head(3)).err(),
             Some(Error::Places {
@@ -449,7 +479,7 @@ mod tests {
             reader.decode(&[BEHIND]).err(),
             Some(Error::Unopened { kind: 3 })
         );
-        assert_eq!(event(&mut reader, &[OPENED]), Ok(Event::Opened));
+        assert_eq!(event(&mut reader, &opened_at(0)), Ok(Event::Opened(0)));
     }
 
     #[test]
@@ -463,7 +493,7 @@ mod tests {
             Some(Error::Unopened { kind: 3 })
         );
         let mut reader = Reader::new(&latest);
-        assert_eq!(event(&mut reader, &[OPENED]), Ok(Event::Opened));
+        assert_eq!(event(&mut reader, &opened_at(0)), Ok(Event::Opened(0)));
         assert_eq!(
             reader.decode(&[BEHIND]).err(),
             Some(Error::Latest { kind: 3 })
@@ -486,7 +516,7 @@ mod tests {
         );
         assert_eq!(event(&mut reader, &[BEHIND]), Ok(Event::Behind));
         assert_eq!(reader.body(), None);
-        for message in [vec![OPENED], vec![BEHIND], head(1), ends, vec![4], vec![]] {
+        for message in [opened_at(0), vec![BEHIND], head(1), ends, vec![4], vec![]] {
             assert_eq!(reader.decode(&message).err(), Some(Error::Ended));
         }
     }
@@ -495,7 +525,7 @@ mod tests {
     fn lets_the_stream_end_only_after_behind() {
         let mut reader = Reader::new(&open(2));
         assert_eq!(reader.end(), Err(Error::Finished));
-        reader.decode(&[OPENED]).expect("the session opens");
+        reader.decode(&opened_at(0)).expect("the session opens");
         assert_eq!(reader.end(), Err(Error::Finished));
         reader.decode(&head(2)).expect("the head decodes");
         assert_eq!(reader.end(), Err(Error::Finished));
@@ -531,10 +561,29 @@ mod tests {
     }
 
     #[test]
+    fn refuses_a_first_head_that_starts_before_the_open_position() {
+        let mut reader = Reader::new(&open(1));
+        assert_eq!(event(&mut reader, &opened_at(5)), Ok(Event::Opened(5)));
+        let error = reader
+            .decode(&head_at(Path::Live, 4, 1, 1))
+            .expect_err("the head starts before the open position");
+        assert_eq!(error, Error::Seq { seq: 4, end: 5 });
+        assert_eq!(
+            error.to_string(),
+            "the frame head starts at seq 4, before seq 5, where the head before it ended \
+             or the session opened"
+        );
+        assert_eq!(
+            event(&mut reader, &head_at(Path::Live, 5, 1, 1)),
+            Ok(Event::Head(1))
+        );
+    }
+
+    #[test]
     fn refuses_a_second_opened() {
         let mut reader = opened(1);
         assert_eq!(
-            reader.decode(&[OPENED]).err(),
+            reader.decode(&opened_at(0)).err(),
             Some(Error::Reopen { kind: 1 })
         );
     }
@@ -679,7 +728,7 @@ mod tests {
     fn refuses_an_empty_message_at_each_step() {
         let mut reader = Reader::new(&open(1));
         assert_eq!(reader.decode(&[]).err(), Some(Error::Empty));
-        reader.decode(&[OPENED]).expect("the session opens");
+        reader.decode(&opened_at(0)).expect("the session opens");
         assert_eq!(reader.decode(&[]).err(), Some(Error::Empty));
         reader.decode(&head(1)).expect("the head decodes");
         assert_eq!(reader.decode(&[]).err(), Some(Error::Empty));
@@ -713,7 +762,7 @@ mod tests {
         ) {
             let mut sizes = sizes.into_iter().cycle();
             let mut reader = Reader::new(&open(places));
-            prop_assert_eq!(event(&mut reader, &[OPENED]), Ok(Event::Opened));
+            prop_assert_eq!(event(&mut reader, &opened_at(0)), Ok(Event::Opened(0)));
             for (seq, (ends, body)) in (0..).step_by(2).zip(&frames) {
                 let series = u32::try_from(ends.len()).expect("the ends fit a u32");
                 let head = head_at(Path::Live, seq, 2, series);

@@ -33,12 +33,15 @@ mod entropy;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod files;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+mod host;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[expect(unsafe_code, reason = "a pool's memory is an OS mapping")]
 pub mod memory;
 #[cfg(all(feature = "net", any(target_os = "linux", target_os = "macos")))]
 mod net;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod paths;
+mod roots;
 mod shards;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[expect(unsafe_code, reason = "a signal mask is an OS call")]
@@ -52,6 +55,7 @@ mod wall;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use files::Disk;
+pub use roots::Roots;
 
 /// The monotonic clock of this node, which counts time while the machine sleeps. Each
 /// call starts a new clock at `Monotonic(0)`. Clones read the same clock. Never
@@ -180,6 +184,9 @@ pub fn net() -> env::net::Net {
 /// part of them, and two writes at one time can leave a mix of the two. `os` sets no
 /// owner, group, or permission bit of the file, device, or pipe that takes them. A
 /// write on a symbolic link to nothing gives `NotFound` and makes no file.
+///
+/// The home directory is the one that `std::env::home_dir` gives: `HOME`, else the
+/// entry of this user in the user database.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[must_use]
 pub fn paths() -> env::paths::Paths {
@@ -230,6 +237,22 @@ pub fn stored(
     name: &str,
 ) -> Result<(Disk, env::thread::Handle), Error> {
     Disk::stored(dir, threads, name)
+}
+
+/// Reads the CA certificates of the OS store: the certificate files on Linux, and the
+/// keychain on macOS. When `SSL_CERT_FILE` is set, or `SSL_CERT_DIR` holds a path that
+/// is not empty, it reads only that file and those paths, on each OS. A path that is
+/// not there, or a `SSL_CERT_DIR` path that is not a directory, gives a failure and no
+/// root of the OS store. On Linux, a `SSL_CERT_DIR` of only `:` characters also reads
+/// the directory of that whole name in the working directory, when it is there. It
+/// blocks on the reads, and gives the whole store in memory.
+#[must_use]
+pub fn roots() -> Roots {
+    let read = rustls_native_certs::load_native_certs();
+    Roots {
+        certificates: read.certs.into_iter().map(|der| der.to_vec()).collect(),
+        failures: read.errors.iter().map(ToString::to_string).collect(),
+    }
 }
 
 /// Holds SIGINT and SIGTERM: the first that comes does not end the process, and the

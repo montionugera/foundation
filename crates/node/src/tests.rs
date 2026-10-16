@@ -35,6 +35,9 @@ const OWN: types::node::Key = types::node::Key::from_u128(1);
 /// The bytes of the seal key in the data directory of [`keyed`].
 const SEAL: [u8; 32] = [3; 32];
 
+/// The DER bytes of a CA certificate, the one root of [`config`].
+const CA: &[u8] = include_bytes!("tests/ca.der");
+
 /// A disk budget of two rings of 64 MiB, with their header blocks.
 const DISK: Size = Size::from_bytes(2 * (8192 + (64 << 20)));
 
@@ -93,6 +96,10 @@ fn config<M>(
         name: "edge".parse().expect("a name"),
         settings: crate::Settings::default(),
         vars: std::collections::BTreeMap::new(),
+        roots: os::Roots {
+            certificates: vec![CA.to_vec()],
+            failures: Vec::new(),
+        },
         log: crate::Log {
             writer: Box::new(std::io::sink()),
             format: ops::Log::default(),
@@ -717,9 +724,10 @@ fn unnamed(channel: &str, mode: ::hub::reader::Mode) -> ::hub::reader::Config {
 
 mod buffer {
     use std::cell::RefCell;
+    use std::num::NonZeroU32;
     use std::rc::Rc;
 
-    use ::buffer::{Buffer, Entry};
+    use ::buffer::{Buffer, Entry, Samples};
     use types::channel::{Key, Slots};
     use types::frame::Path as Stream;
     use types::time::Stamp;
@@ -752,9 +760,11 @@ mod buffer {
                 slot: slots.index(index),
                 path: Stream::Live,
                 first: 0,
-                len: 1,
+                samples: Some(Samples {
+                    len: NonZeroU32::MIN,
+                    last: Some(Stamp::from_nanos(1)),
+                }),
                 stored_at: Stamp::from_nanos(1),
-                last: Some(Stamp::from_nanos(1)),
                 tag: 0,
                 parts: pool.alloc(8).expect("a block").freeze().into(),
             };
@@ -7197,8 +7207,10 @@ pub(crate) mod port {
             let planned = Arc::new(Mutex::new(Vec::new()));
             let out = Arc::clone(&planned);
             node.operate(move |ops| async move {
-                for kind in ["influx", "modbus"] {
-                    let files = vec![(PathBuf::from("plant.hcl"), connector(kind))];
+                let modbus = format!("{CHANNELS}{}", modbus());
+                let texts = [connector("influx"), modbus, connector("mqtt")];
+                for text in texts {
+                    let files = vec![(PathBuf::from("plant.hcl"), text)];
                     let plan = ops.plan(files).await;
                     let plan = plan.map(|_| ()).map_err(|error| error.to_string());
                     out.lock().unwrap().push(plan);
@@ -7210,11 +7222,12 @@ pub(crate) mod port {
             assert_eq!(node.join(), Ok(()));
             let unknown = concat!(
                 r#"{"errors":[{"code":"connector.unknown-kind","#,
-                r#""fix":"Use one of [\"influx\", \"opcua\"]","#,
-                r#""message":"this build has no connector kind \"modbus\"","#,
+                r#""fix":"Use one of [\"influx\", \"modbus\", \"opcua\"]","#,
+                r#""message":"this build has no connector kind \"mqtt\"","#,
                 r#""notes":[],"place":{"column":10,"file":"plant.hcl","line":2}}]}"#,
             );
-            assert_eq!(*planned.lock().unwrap(), [Ok(()), Err(unknown.to_owned())]);
+            let planned = planned.lock().unwrap();
+            assert_eq!(*planned, [Ok(()), Ok(()), Err(unknown.to_owned())]);
         }
 
         /// The node runs a connector that an apply places on it, and runs it again when
@@ -7272,9 +7285,47 @@ pub(crate) mod port {
             let connectors = concat!(
                 r#"{"output":{"connectors":[{"name":"plant.influx","kind":"influx","#,
                 r#""state":"stopped","address":"http://influx:8086","restarts":0,"#,
-                r#""counts":{"confirmed":0},"error":{"class":"config","text":"#,
+                r#""counts":{"confirmed":0,"lost":0},"error":{"class":"config","text":"#,
                 r#""the selector matches no channel. Select a channel that the spec "#,
                 r#"defines"},"note":null}]}}"#,
+                "\n",
+            );
+            assert_eq!(reply, connectors);
+        }
+
+        /// The node runs a `modbus` connector that an apply places on it. With no
+        /// device at its address, `status` gives the device error of its lookup.
+        #[test]
+        fn status_gives_the_lookup_error_of_a_modbus_connector_with_no_device() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let founding = region(&[member(OWN, &KEY, &host)]);
+            let watch = format!(
+                "subject \"plant.operator\" {{ keys = [\"{OPERATOR}\"] }}\n\
+                 access \"plant.watch\" {{\n  subjects = \"plant.operator\"\n  \
+                 select = \"plant.plc.**\"\n  allow = [read]\n}}\n"
+            );
+            let text = format!("{CHANNELS}{}{watch}", modbus());
+            let (node, _) = applied(&mut sim, &host, founding, text);
+            assert_eq!(sim.run_for(TEN), Ok(()));
+            let replied = Arc::new(Mutex::new(None));
+            let out = Arc::clone(&replied);
+            node.operate(move |ops| async move {
+                let subject = "plant.operator".parse().expect("a name");
+                let reply = ops::serve(&ops, &subject, b"{\"status\":{}}\n").await;
+                *out.lock().unwrap() = Some(String::from_utf8(reply).expect("UTF-8"));
+            });
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let reply = replied.lock().unwrap().take().expect("a reply");
+            let connectors = concat!(
+                r#"{"output":{"connectors":[{"name":"plant.plc","kind":"modbus","#,
+                r#""state":"restarting","address":"plc:502","restarts":6,"#,
+                r#""counts":{"in":0,"lost":0,"missed":0},"error":{"class":"device","#,
+                r#""text":"the lookup of plc failed: name plc has no address"},"#,
+                r#""note":null}]}}"#,
                 "\n",
             );
             assert_eq!(reply, connectors);
@@ -7413,6 +7464,22 @@ pub(crate) mod port {
             format!(
                 "connector \"plant.influx\" {{\n  kind = \"{kind}\"\n  \
                  node = \"plant.node{OWN}\"\n{INFLUX}}}\n"
+            )
+        }
+
+        /// The channels that [`modbus`] reads into.
+        const CHANNELS: &str = "channel \"plant.time\" { kind = \"index\" }\n\
+                                channel \"plant.u16\" {\n  data_type = \"u16\"\n  \
+                                index = \"plant.time\"\n}\n";
+
+        /// The text of a spec with the connector `plant.plc` of kind `modbus` on
+        /// [`OWN`], which reads `plant.u16`.
+        fn modbus() -> String {
+            format!(
+                "connector \"plant.plc\" {{\n  kind = \"modbus\"\n  \
+                 node = \"plant.node{OWN}\"\n  address = \"plc:502\"\n  \
+                 rate = \"10Hz\"\n  read \"plant.u16\" {{\n    \
+                 table = \"holding\"\n    address = 0\n  }}\n}}\n"
             )
         }
 
