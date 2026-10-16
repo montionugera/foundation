@@ -504,14 +504,18 @@
   https://github.com/synnaxlabs/foundation/pull/2106#issuecomment-6074900634).
   The TCP connection manager of `connector-opcua` is `connection::Manager`. It owns its
   loop and its connections, on one thread, and takes the clock, network, and randomness
-  of `env` at `new`. `drive(run)` moves each connection on and polls `run` with the
-  context of the drive until `run` gives a value, so `run` can poll its own sources. One
-  drive of a manager runs at a time. A connect, a send, or a close from `run` or from
-  another task on that thread wakes the drive. After each `run`, also the one that gives
-  the value, the drive moves on each connection again after each connect, send, or close
-  on it that the `run` or such a step asks for, so it can also read and call open62541
-  back after that `run`, except the listen connection after an accept, which moves on
-  only after the next `run`. At most 256 sends wait on one connection: a send past them
+  of `env` at `new`. `drive(check)` moves each connection on, runs the loop of
+  open62541 with no wait, and then polls `check` with the context of the drive, until
+  `check` gives a value. So `check` only reads the state that the run left, and can poll
+  its own sources; no caller runs the loop
+  (https://github.com/synnaxlabs/foundation/issues/2415). The step of
+  `bench::Manager::ask` that asks for a read moves from before the run to after it. One
+  drive of a manager runs at a time. A connect, a send, or a close from `check` or from
+  another task on that thread wakes the drive. After each `check`, also the one that
+  gives the value, the drive moves on each connection again after each connect, send,
+  or close on it that the `check` or such a step asks for, so it can also read and call
+  open62541 back after that `check`, except the listen connection after an accept,
+  which moves on only after the next `check`. At most 256 sends wait on one connection: a send past them
   closes the connection. open62541 allocates each send at most at the send buffer size
   of its channel, so this bounds the memory of a connection at 256 send buffers. Sends
   wait from one pass to the next, and longer while a stream is full, so an owner keeps
