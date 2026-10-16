@@ -5,6 +5,10 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use rustls::ServerConfig;
+use rustls::pki_types::pem::PemObject as _;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
 use ::sim::{Sim, name, node};
 use bytes::Bytes;
 use env::net::{Listener, tcp};
@@ -233,6 +237,74 @@ fn failed(outcome: Outcome) -> String {
     outcome.expect_err("the send fails").to_string()
 }
 
+/// A server config for the certificate of `influx` that takes only `versions`.
+fn server(versions: &[&'static rustls::SupportedProtocolVersion]) -> Arc<ServerConfig> {
+    let pem = include_str!("../sim/tls/influx.pem");
+    let chain = CertificateDer::pem_slice_iter(pem.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .expect("the certificate parses");
+    let key = include_str!("../sim/tls/influx.key");
+    let key = PrivateKeyDer::from_pem_slice(key.as_bytes()).expect("the key parses");
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    #[expect(clippy::disallowed_methods, reason = "a fixed time")]
+    let builder = ServerConfig::builder_with_details(
+        provider,
+        Arc::new(super::At(Stamp::from_nanos(0))),
+    );
+    let config = builder
+        .with_protocol_versions(versions)
+        .expect("aws-lc-rs has suites of each version")
+        .with_no_client_auth()
+        .with_single_cert(chain, key)
+        .expect("the key matches");
+    Arc::new(config)
+}
+
+/// Serves one stream on port 8087 under `config`. It answers one request with "ok",
+/// then gives the stream to `then`. Gives the text that `then` returns.
+fn serve_one<F>(
+    network: &mut Network,
+    config: Arc<ServerConfig>,
+    then: impl FnOnce(Stream) -> F + Send + 'static,
+) -> Arc<Mutex<Option<String>>>
+where
+    F: Future<Output = String> + 'static,
+{
+    let out = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&out);
+    network.listen(8087, move |mut listener, _| async move {
+        let tcp = poll_fn(|cx| listener.poll_accept(cx))
+            .await
+            .expect("a stream");
+        let session = rustls::ServerConnection::new(config).expect("a session");
+        let mut stream = Stream {
+            tcp,
+            tls: Some(Box::new(session.into())),
+            received: Rc::default(),
+        };
+        stream.handshake().await.expect("the handshake ends");
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut bytes = [0; 1024];
+            let mut buf = ReadBuf::new(&mut bytes);
+            poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, buf.unfilled()))
+                .await
+                .expect("the head comes");
+            head.extend_from_slice(buf.filled());
+        }
+        let answer = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok";
+        poll_fn(|cx| Pin::new(&mut stream).poll_write(cx, answer))
+            .await
+            .expect("the answer goes");
+        poll_fn(|cx| Pin::new(&mut stream).poll_flush(cx))
+            .await
+            .expect("the answer goes");
+        let text = then(stream).await;
+        *slot.lock().expect("no panic under the lock") = Some(text);
+    });
+    out
+}
+
 #[test]
 fn exchanges_with_a_server_whose_certificate_the_roots_trust() {
     let mut network = Network::new(1, Certificate::Valid, JUNE_2026);
@@ -345,7 +417,10 @@ fn fails_the_handshake_with_a_server_that_resets_the_stream() {
         stream = stream.or(cause.downcast_ref::<env::net::Error>());
         source = cause.source();
     }
-    assert!(stream.is_some(), "no source of {error:?} is the `env` error");
+    assert!(
+        stream.is_some(),
+        "no source of {error:?} is the `env` error"
+    );
 }
 
 #[test]
@@ -545,11 +620,21 @@ fn adds_the_certificates_of_a_pem_text_to_the_roots() {
     let both = roots
         .with_pem(&format!("text before\n{other}"))
         .expect("the CA parses");
-    assert_eq!(format!("{roots:?}"), "Roots { count: 1 }");
-    assert_eq!(format!("{both:?}"), "Roots { count: 2 }");
+    for certificate in [Certificate::Valid, Certificate::OtherCa] {
+        let mut network = Network::new(9, certificate, JUNE_2026);
+        let body = network.send(both.clone(), "https://influx:8086/ping");
+        assert_eq!(
+            body.expect("the server answers"),
+            "/ping",
+            "{certificate:?}"
+        );
+    }
     let mut network = Network::new(9, Certificate::OtherCa, JUNE_2026);
-    let body = network.send(both, "https://influx:8086/ping");
-    assert_eq!(body.expect("the server answers"), "/ping");
+    let error = failed(network.send(roots, "https://influx:8086/ping"));
+    assert_eq!(
+        error,
+        "TLS with influx:8086 failed: invalid peer certificate: UnknownIssuer"
+    );
 }
 
 #[test]
@@ -585,7 +670,50 @@ fn skips_and_counts_der_certificates_that_do_not_parse() {
         .expect("the CA parses");
     let (roots, skipped) = Roots::from_der([der.as_slice(), b"not DER".as_slice()]);
     assert_eq!(skipped, 1);
-    assert_eq!(format!("{roots:?}"), "Roots { count: 1 }");
-    assert!(!roots.empty());
-    assert!(Roots::default().empty());
+    let mut network = Network::new(10, Certificate::Valid, JUNE_2026);
+    let body = network.send(roots, "https://influx:8086/ping");
+    assert_eq!(body.expect("the server answers"), "/ping");
+    let (roots, skipped) = Roots::from_der([b"not DER".as_slice()]);
+    assert_eq!(skipped, 1);
+    let mut network = Network::new(10, Certificate::Valid, JUNE_2026);
+    let error = network.send(roots, "https://influx:8086/ping");
+    assert!(matches!(error, Err(Error::NoRoots)), "{error:?}");
+}
+
+#[test]
+fn exchanges_with_a_server_that_takes_only_tls_1_2() {
+    let mut network = Network::new(17, Certificate::Valid, JUNE_2026);
+    let out = serve_one(
+        &mut network,
+        server(&[&rustls::version::TLS12]),
+        |_| async { String::new() },
+    );
+    let body = network.send(sim::ca(), "https://influx:8087/ping");
+    assert_eq!(body.map_err(|error| chain(&error)).as_deref(), Ok("ok"));
+    assert_eq!(out.lock().expect("no panic").as_deref(), Some(""));
+}
+
+#[test]
+fn sends_close_notify_when_the_client_closes_a_stream() {
+    let mut network = Network::new(18, Certificate::Valid, JUNE_2026);
+    let out = serve_one(
+        &mut network,
+        server(rustls::DEFAULT_VERSIONS),
+        |mut stream| async move {
+            let mut bytes = [0; 64];
+            let mut buf = ReadBuf::new(&mut bytes);
+            let read =
+                poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, buf.unfilled())).await;
+            match read {
+                Ok(()) => format!("read {} bytes", buf.filled().len()),
+                Err(error) => error.to_string(),
+            }
+        },
+    );
+    let body = network.send(sim::ca(), "https://influx:8087/ping");
+    assert_eq!(body.map_err(|error| chain(&error)).as_deref(), Ok("ok"));
+    assert_eq!(
+        out.lock().expect("no panic").as_deref(),
+        Some("read 0 bytes")
+    );
 }
