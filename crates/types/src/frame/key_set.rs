@@ -53,7 +53,7 @@ impl KeySet {
     /// # Panics
     ///
     /// When `index` is not below the count of `channels`, when the entry at `index` is
-    /// not of type `Stamp`, or when `channels` holds 2^32 entries or more.
+    /// not of type `Stamp`, or when `channels` holds more than 2^32 entries.
     pub fn ordered(
         channels: impl IntoIterator<Item = (channel::Key, Type)>,
         index: usize,
@@ -735,7 +735,8 @@ mod tests {
             check(&[(7, F64), (3, STAMP), (7, F64), (3, F64)], 1, 3);
         }
 
-        /// No key of an `Interner` is the key of an ordered set.
+        /// No key of an `Interner` is the key of an ordered set. It calls the private
+        /// `interned`, since no test can intern 2^32 - 1 sets.
         #[test]
         fn has_a_key_that_no_interner_gives() {
             let set = KeySet::ordered([(key(1), STAMP)], 0).unwrap();
@@ -745,6 +746,8 @@ mod tests {
             assert_ne!(Interner::new().intern(&[]).key(), set.key());
         }
 
+        /// The private `interned` refuses the key of an ordered set. No caller can see
+        /// this bound: it shows only after 2^32 - 1 sets, which no test can intern.
         #[test]
         #[should_panic(expected = "a node holds at most 2^32 - 1 key sets")]
         fn panics_on_the_interned_set_of_the_ordered_key() {

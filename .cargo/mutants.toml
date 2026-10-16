@@ -30,6 +30,9 @@ exclude_re = [
   # Calls the GitHub API. The review workflow runs it on each PR: with no PR record,
   # the status is `error`.
   'xtask/src/gh\.rs:.*(replace api ->| in api$)',
+  # A node would intern 2^32 - 1 key sets before the bound shows, which no test or
+  # node can hold. `panics_on_the_interned_set_of_the_ordered_key` kills it.
+  'crates/types/src/frame/key_set\.rs:.*replace < with <= in interned$',
   # Empty outside loom. The loom models fail when a marker is removed.
   'crates/block/src/sync\.rs:.*Track::(read|write)',
   # The stub is built only under loom, so no test of another build sees its mutant.
