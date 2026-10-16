@@ -1299,9 +1299,9 @@ mod tests {
             let statuses = read_status(&inputs.hub, "plant.locked", &[], &tasks).await;
             let paths = node.paths();
             let large = vec![b't'; (1 << 16) + 1];
-            paths
-                .write(std::path::Path::new(path), &large)
-                .expect("writes it");
+            let path = std::path::Path::new(path);
+            node.make_dir(path.parent().expect("a directory"));
+            paths.write(path, &large).expect("writes it");
             let (shown, clock) = (Rc::clone(&statuses), node.clock());
             tasks.spawn(async move {
                 while shown.borrow().len() < 2 {

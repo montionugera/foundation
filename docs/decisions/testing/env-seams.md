@@ -742,3 +742,59 @@
   https://github.com/synnaxlabs/foundation/pull/2486#issuecomment-6131997012).
   Supersedes "It reads what `path` names at its open" of item 2 of
   https://github.com/synnaxlabs/foundation/issues/2481#issuecomment-6131521237.
+  Amended (2026-10-16T04:52:58Z, #2526): `Paths::within` gives the same files, where
+  a read or a write of a path that does not resolve under one of its folders, or that
+  resolves under one of its hidden folders, fails with `paths::Error::Outside` and
+  reaches no file. A handle from `within` keeps the limits of the handle it came from.
+  A path that does not resolve fails with the error of its resolve. `Paths::resolve`
+  gives the absolute path with each `.`, `..`, and symbolic link resolved, and keeps a
+  last name that is not there on its resolved directory. `Paths::home` gives the home
+  directory of the user, resolved. `os` resolves with `std::fs::canonicalize`. On
+  macOS it takes `..` after a file as the directory above it, as `realpath` does
+  there, and an open of that path fails. A path that ends in `/` or `/.` on a file
+  gives `ENOTDIR` on both OSes. `sim` gives each host symbolic links
+  (`sim::Node::link_path`), a working directory (`sim::Node::set_working_dir`), and a
+  home (`sim::Node::set_home`). The check and the call are two steps: a link that
+  another program makes between them can lead the call out. `foundation mcp` gives its
+  tools the `Paths` of `within`, and the command line the free one. Lost: a check in
+  `ops` at each call site, which each new site must repeat; `cap-std`, which opens
+  through each folder with no gap between the check and the open. Trigger: a tool
+  that can make a link, or a server beside an untrusted writer. Decided by
+  `laptop.architect-2` (2026-10-16T04:52:58Z, items 1 and 8 of
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208362869; the
+  limits that a handle keeps and the error of a path that does not resolve,
+  2026-10-16T05:41:58Z, item 2 of
+  https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6208939762), after
+  the decision of `laptop.monitor` (2026-10-16T04:51:22Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208345441).
+  Amended (2026-10-16T05:41:58Z, #2526): `within` resolves each of its folders as
+  `Paths::resolve` gives it, and fails with the error of that resolve, so a hidden
+  folder named by a relative path or through a link still hides its files. The cost
+  of the resolve error of a path: a tool can learn whether a directory outside the
+  folders is there. Decided by `laptop.architect-2` (2026-10-16T05:41:58Z, items 1
+  and 2 of https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6208939762).
+  Amended (2026-10-16T06:56:55Z, #2526): a resolve and a read on `sim` through a
+  directory that is not there, or of a link to nothing, give `NotFound`, as `os` does,
+  and `sim::Node::make_dir` makes an empty directory. `Paths::home` stays a call of
+  the driver, since the home is an OS fact with its own fallbacks, not only `HOME`. On
+  a file system that ignores case, a hidden folder that is not there yet does not hide
+  a name in other case, because a resolve keeps a last name that is not there as
+  given. Deferred to PR 1 of #2526: `within` gives `Error::NotFound` for a hidden
+  folder that is not there, and `foundation mcp` makes the data directory before its
+  `within`. Decided by `laptop.architect-2` (2026-10-16T06:56:55Z, items 1 to 5, A,
+  and B of https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6209932709).
+  Amended (2026-10-16T07:06:00Z, #2526): `sim` keeps each directory as an entry. A
+  directory is there once `sim::Node::make_dir` makes it, and `sim::Node::link_path`
+  makes each directory above its link. A call through `Paths` on `sim` through a
+  directory that is not there, or of a link to nothing, gives `NotFound`, also a write,
+  as `os` and `Paths::write` give. On macOS, `os` gives `ENOTDIR` for a resolve that
+  ends in `/`, `/.`, or `/..` after a file, also through a link, as Linux does, because
+  it stats the path after `canonicalize`. Supersedes "a directory is there while a file
+  is under it" of the `sim` tree above, and "On macOS it takes `..` after a file as the
+  directory above it, as `realpath` does there, and an open of that path fails" of the
+  amendment of 2026-10-16T04:52:58Z. Lost: the `sim` rule, since with it a write on
+  `sim` made its directories and gave `Ok` where `os` and `within` give `NotFound`.
+  Decided by `laptop.architect-2` (2026-10-16T07:06:00Z,
+  https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6210062728; the `os`
+  stat, 2026-10-16T08:00:56Z,
+  https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6210913415).
