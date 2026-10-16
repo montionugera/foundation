@@ -6994,7 +6994,16 @@ pub(crate) mod port {
             founding: Founding,
             text: String,
         ) -> (Node, BTreeMap<Name, Definition>) {
-            let node = start(host, founding);
+            applied_on(sim, start(host, founding), text)
+        }
+
+        /// Applies `text` through the operations of the started `node`, then gives
+        /// the node and the definitions after the apply.
+        fn applied_on(
+            sim: &mut sim::Sim,
+            node: Node,
+            text: String,
+        ) -> (Node, BTreeMap<Name, Definition>) {
             let applied = Arc::new(Mutex::new(None));
             let out = Arc::clone(&applied);
             node.operate(move |ops| async move {
@@ -7431,15 +7440,14 @@ pub(crate) mod port {
             node.operate(|_| async {});
         }
 
-        /// The roots of `Config::roots` reach the supervisor: a node whose roots hold
-        /// a root that does not parse and the test CA writes a sample to an InfluxDB
-        /// that serves `https` with a certificate that this CA signs, and the connector
-        /// has no `ca`.
-        #[test]
-        fn a_node_writes_over_https_with_the_ca_of_its_roots() {
-            use super::super::hub::{WALL, write_at, writer};
-            let mut sim = sim::Sim::new(sim::Config::default());
-            let host = keyed(&mut sim, 2);
+        /// Starts an InfluxDB sim named `server` that serves `https` on port 8086 with
+        /// the valid certificate of the test CA, and gives its store and its shard.
+        fn influx_tls(
+            sim: &mut sim::Sim,
+        ) -> (
+            Arc<Mutex<connector_influx::sim::Store>>,
+            env::thread::Handle,
+        ) {
             let influx = sim.node(sim::node::Config::default());
             let answer = sim::name::Answer::Addresses(vec![influx.addresses()[0]]);
             let name = sim::name::Config {
@@ -7464,7 +7472,7 @@ pub(crate) mod port {
                 name: "influx".into(),
                 core: Some(0),
             };
-            let _server = influx
+            let server = influx
                 .shards()
                 .start(shard, move |tasks| async move {
                     let certificate = connector::http::sim::Certificate::Valid;
@@ -7479,6 +7487,19 @@ pub(crate) mod port {
                     panic!("the listener failed: {}", served.await);
                 })
                 .expect("the shard starts");
+            (store, server)
+        }
+
+        /// The roots of `Config::roots` reach the supervisor: a node whose roots hold
+        /// a root that does not parse and the test CA writes a sample to an InfluxDB
+        /// that serves `https` with a certificate that this CA signs, and the connector
+        /// has no `ca`.
+        #[test]
+        fn a_node_writes_over_https_with_the_ca_of_its_roots() {
+            use super::super::hub::{WALL, write_at, writer};
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let (store, _server) = influx_tls(&mut sim);
             let text = format!(
                 "{}channel \"plant.value\" {{\n  data_type = \"f64\"\n  \
                  index = \"plant.time\"\n}}\n{}",
@@ -7495,13 +7516,7 @@ pub(crate) mod port {
                 },
                 ..config(&host, Size::MEBIBYTE, Box::new(heap))
             });
-            let applied = Arc::new(Mutex::new(None));
-            let out = Arc::clone(&applied);
-            node.operate(move |ops| async move {
-                *out.lock().unwrap() = Some(apply(&ops, text).await);
-            });
-            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
-            let definitions = applied.lock().unwrap().take().expect("an apply");
+            let (node, definitions) = applied_on(&mut sim, node, text);
             let keys =
                 ["time", "value"].map(|name| key_of(&definitions, name).as_u128());
             node.spawn(move |hub| async move {
