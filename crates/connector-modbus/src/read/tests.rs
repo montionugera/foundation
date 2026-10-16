@@ -70,21 +70,16 @@ fn poll(
     reads: &[Read],
     order: Order,
 ) -> Result<Vec<Value>, Exception> {
-    let mut values = vec![None; reads.len()];
+    let mut values = Values::new(reads.len());
     for group in groups(reads, order) {
         let mut pdu = Vec::new();
         group.request().encode(&mut pdu).expect("a valid request");
         let mut reply = Vec::new();
         device.answer(&pdu, &mut reply);
         let reply = group.request().decode_reply(&reply).expect("a valid reply");
-        for (index, value) in group.values(reply)? {
-            assert_eq!(values[index].replace(value), None, "read {index} twice");
-        }
+        values.put(&group, reply)?;
     }
-    Ok(values
-        .into_iter()
-        .map(|value| value.expect("each read has a value"))
-        .collect())
+    Ok(values.take().collect())
 }
 
 /// The value of one read of `scalar` from holding registers that hold `words` from
@@ -426,7 +421,10 @@ mod groups {
                     table,
                     start,
                     count,
-                } => (table, start, count),
+                } => {
+                    assert_eq!((group.table(), group.start()), (table, start));
+                    (table, start, count)
+                }
                 ref other => panic!("a group sends {other:?}"),
             })
             .collect()
@@ -518,6 +516,49 @@ mod groups {
     #[test]
     fn no_reads_give_no_groups() {
         assert_eq!(groups(&[], Order::Big), []);
+    }
+}
+
+mod values {
+    use super::*;
+
+    fn device() -> Device {
+        Device {
+            coils: vec![true],
+            holding_registers: vec![7, 8],
+            ..Device::default()
+        }
+    }
+
+    #[test]
+    fn take_gives_each_value_in_the_order_of_the_reads() {
+        let reads = [
+            read(Table::HoldingRegisters, 1, Scalar::U16),
+            read(Table::Coils, 0, Scalar::Bool),
+            read(Table::HoldingRegisters, 0, Scalar::U16),
+        ];
+        let got = poll(&mut device(), &reads, Order::Big).expect("no exception");
+        assert_eq!(got, [Value::U16(8), Value::Bool(true), Value::U16(7)]);
+    }
+
+    #[test]
+    fn put_gives_the_exception_of_a_refused_request() {
+        let reads = [read(Table::HoldingRegisters, 2, Scalar::U16)];
+        let got = poll(&mut device(), &reads, Order::Big);
+        assert_eq!(got, Err(Exception::IllegalAddress));
+    }
+
+    #[test]
+    #[should_panic(expected = "each read has a value since the last take")]
+    fn take_leaves_no_value_for_the_next_take() {
+        let reads = [read(Table::Coils, 0, Scalar::Bool)];
+        let [group] = groups(&reads, Order::Big).try_into().expect("one group");
+        let mut values = Values::new(reads.len());
+        let pdu = vec![1, 1, 1];
+        let reply = group.request().decode_reply(&pdu).expect("a valid reply");
+        values.put(&group, reply).expect("no exception");
+        assert_eq!(values.take().collect::<Vec<_>>(), [Value::Bool(true)]);
+        values.take().for_each(drop);
     }
 }
 

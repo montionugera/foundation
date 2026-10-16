@@ -10,11 +10,11 @@ use document::Document;
 use document::diagnostic::{Code, Diagnostic};
 use env::net::host::Host;
 use env::net::{self, tcp};
-use types::sample::{Type, Value};
+use types::sample::Type;
 use types::time::Span;
 
 use crate::config::{self, Config};
-use crate::pdu::{Exception, Request, Table};
+use crate::pdu::{Exception, Table};
 use crate::read::{self, Group};
 use crate::tcp::{Client, Failure};
 
@@ -62,12 +62,13 @@ impl kind::Kind for Kind {
     /// Connects to the device and reads each `read` once per tick until the cancel,
     /// in one request for the reads of one table that touch or overlap, and writes
     /// one frame per tick, stamped at the midpoint of the mesh times of the requests.
-    /// Each exchange gives up after 1 s.
+    /// Each connect and each exchange gives up after 1 s.
     ///
     /// # Errors
     ///
     /// The error of [`Context::writer`] and of each failed write. [`Error::Config`]
-    /// with `modbus.sample-type` for each read whose channel has a type that its
+    /// with `connector.index` for each read into an index, and else with
+    /// `modbus.sample-type` for each read whose channel has a type that its
     /// table does not hold, `modbus.range` for each read whose value runs past
     /// address 65535, and `modbus.exception` for each read of a request that the
     /// device refuses with exception 1, 2, or 3. [`Error::Device`] when the lookup or
@@ -82,18 +83,18 @@ impl kind::Kind for Kind {
             return Ok(());
         };
         let mut client = client?;
-        let mut values = vec![None; config.reads.len()];
+        let mut values = read::Values::new(config.reads.len());
         let missed = ctx.count("missed");
         let mut timer = pace::Timer::new(ctx.clock(), config.rate);
         while let Some(tick) = timer.tick(ctx.cancel()).await {
             missed.add(tick.missed);
-            let read = read(config, &mut client, &groups, &mut values);
-            let Some((read, stamp)) = ctx.cancel().race(writer.request(read)).await
+            let exchange = exchange(config, &mut client, &groups, &mut values);
+            let Some((done, stamp)) = ctx.cancel().race(writer.request(exchange)).await
             else {
                 break;
             };
-            read?;
-            writer.write(values.iter().copied(), stamp)?;
+            done?;
+            writer.write(values.take().map(Some), stamp)?;
         }
         Ok(())
     }
@@ -198,30 +199,25 @@ const OPTIONS: tcp::Options = tcp::Options {
     delayed: false,
 };
 
-/// Sends the request of each of `groups` in turn, and puts the value of each read
-/// of its reply into `values`, in the order of the reads of `config`.
+/// Sends the request of each of `groups` in turn, and puts the values of its reply
+/// into `values`.
 ///
 /// # Errors
 ///
 /// As [`Kind::run`](kind::Kind::run), for an exchange.
-async fn read(
+async fn exchange(
     config: &Config,
     client: &mut Client,
     groups: &[Group],
-    values: &mut [Option<Value>],
+    values: &mut read::Values,
 ) -> Result<(), Error> {
     for group in groups {
         let reply = client.exchange(config.unit, group.request()).await;
         let reply = reply
             .map_err(|failure| device(Fault::Exchange(Items::of(group), failure)))?;
-        let read = group
-            .values(reply)
+        values
+            .put(group, reply)
             .map_err(|exception| refused(config, group, exception))?;
-        for (at, value) in read {
-            let slot = values.get_mut(at);
-            *slot.expect("invariant: a group reads only the reads of `config`") =
-                Some(value);
-        }
     }
     Ok(())
 }
@@ -275,10 +271,10 @@ struct Items {
 
 impl Items {
     fn of(group: &Group) -> Self {
-        let &Request::Read { table, start, .. } = group.request() else {
-            unreachable!("invariant: a group holds a read request");
-        };
-        Self { table, start }
+        Self {
+            table: group.table(),
+            start: group.start(),
+        }
     }
 }
 

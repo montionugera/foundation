@@ -190,6 +190,31 @@ impl Group {
         &self.request
     }
 
+    /// The table that the request reads.
+    #[must_use]
+    pub fn table(&self) -> Table {
+        self.items().0
+    }
+
+    /// The first address that the request reads.
+    #[must_use]
+    pub fn start(&self) -> u16 {
+        self.items().1
+    }
+
+    /// The table, the first address, and the count of the request.
+    fn items(&self) -> (Table, u16, u16) {
+        let Request::Read {
+            table,
+            start,
+            count,
+        } = self.request
+        else {
+            unreachable!("invariant: a group holds a read request");
+        };
+        (table, start, count)
+    }
+
     /// The index in `reads` of each read that the reply holds, in address order.
     pub fn reads(&self) -> impl Iterator<Item = usize> {
         self.slots.iter().map(|slot| slot.read)
@@ -210,9 +235,7 @@ impl Group {
         &'a self,
         reply: Reply<'a>,
     ) -> Result<impl Iterator<Item = (usize, Value)> + 'a, Exception> {
-        let Request::Read { table, count, .. } = self.request else {
-            unreachable!("invariant: a group holds a read request");
-        };
+        let (table, _, count) = self.items();
         let count = usize::from(count);
         let matched = match (reply, table.bits()) {
             (Reply::Exception(exception), _) => return Err(exception),
@@ -240,6 +263,53 @@ impl Group {
             };
             (slot.read, value)
         }))
+    }
+}
+
+/// The values of one tick of reads: each group puts the values of its reply, and
+/// [`Values::take`] gives them all.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Values {
+    slots: Vec<Option<Value>>,
+}
+
+impl Values {
+    /// No values of `reads` reads.
+    #[must_use]
+    pub fn new(reads: usize) -> Self {
+        Self {
+            slots: vec![None; reads],
+        }
+    }
+
+    /// Puts the value of each read of `group` from `reply`, its reply.
+    ///
+    /// # Errors
+    ///
+    /// The exception of a device that refused the request.
+    ///
+    /// # Panics
+    ///
+    /// As [`Group::values`], and when `group` reads past the reads of
+    /// [`Values::new`].
+    pub fn put(&mut self, group: &Group, reply: Reply<'_>) -> Result<(), Exception> {
+        for (at, value) in group.values(reply)? {
+            let slot = self.slots.get_mut(at);
+            *slot.expect("a group of the reads of `new`") = Some(value);
+        }
+        Ok(())
+    }
+
+    /// The value of each read, in the order of the reads, and none left after.
+    ///
+    /// # Panics
+    ///
+    /// When the iterator reaches a read that no reply put since the last take.
+    pub fn take(&mut self) -> impl Iterator<Item = Value> {
+        self.slots.iter_mut().map(|slot| {
+            slot.take()
+                .expect("each read has a value since the last take")
+        })
     }
 }
 
