@@ -17,13 +17,16 @@
   with a new client, before the next attempt of the same batch, as it reads the token
   again after a 401. A run with no `ca` retries a TLS failure in the run. `Error::Tls`
   also covers a server that closes in the handshake, so such a fault shows "Check the
-  ca" too. Approved by `laptop.architect-2`
-  (https://github.com/synnaxlabs/foundation/pull/2888#issuecomment-6219779608,
-  2026-10-16T16:17:47Z) as an end of the run at a TLS failure with a `ca`. The read in
-  the run replaces that end: with no `hold`, the next run does not get the batch in
-  flight again, so a close in the handshake lost a sample (#2888, round 2). A `ca`
-  that holds no PEM certificate gives `Error::Retry` with "the ca
-  {source} holds no PEM certificate. Write the CA certificate of the server in PEM", and
+  ca" too. The rule is one rule: a fault retries in the run, and a config that cannot
+  work ends it. So a `ca` that gives no root when read again ends the run with
+  `Error::Retry`, and with no `hold` that end loses the batch in flight. Approved by
+  `laptop.architect-2` (2026-10-16T16:46:18Z:
+  https://github.com/synnaxlabs/foundation/pull/2888#issuecomment-6220307355).
+  Supersedes item 1 of 6219779608: the end of the run at a TLS failure with a `ca`
+  (`laptop.architect-2`, 2026-10-16T16:17:47Z:
+  https://github.com/synnaxlabs/foundation/pull/2888#issuecomment-6219779608). A `ca`
+  that holds no PEM certificate gives `Error::Retry` with "the ca {source} holds no PEM
+  certificate. Write the CA certificate of the server in PEM", and
   one that does not parse gives "the ca {source} holds a PEM certificate that does not
   parse. Write the CA certificate of the server in PEM". Over `https`, the token does
   not cross the network in clear. Planned on #2702
