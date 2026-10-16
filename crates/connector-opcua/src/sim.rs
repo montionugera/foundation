@@ -2,8 +2,8 @@
 //! with no security, that serves variables of the `DataType` `BaseDataType`, each with
 //! a Double value, and records each read that it answers.
 //!
-//! It also serves one fixed tree to browse and import. Each node id is `ns=1;s=` and
-//! the path with `.`, such as `ns=1;s=Plant.Line.Speed`:
+//! It also serves one fixed tree to browse and import. Each node id other than that of
+//! `Guid` is `ns=1;s=` and the path with `.`, such as `ns=1;s=Plant.Line.Speed`:
 //!
 //! - `Plant`, a folder that the Objects folder `Organizes`.
 //! - `Plant.Types`, a folder that `Plant` organizes, with one variable of each type
@@ -19,6 +19,10 @@
 //!   - `Profile`, an array of the Doubles 1.5 and 2.5;
 //!   - `Locked`, a Double that a client cannot read;
 //!   - `Recipe`, of `ns=1;s=Recipe`, a subtype of `Structure`.
+//! - `Plant.Odd`, a folder that `Plant` organizes, with:
+//!   - `Guid`, a folder of the node id `ns=1;g=00000005-0006-0007-0800-000000000000`;
+//!   - `Level`, the Double 2.5, by `HasComponent` and again by `Organizes`;
+//!   - `Twin`, the Double 3.5 with the browse name `Level`.
 //!
 //! The variables of the tree hold their values with no change, and the server does not
 //! record their reads. A page of a Browse holds at most 8 references, so `Plant.Types`

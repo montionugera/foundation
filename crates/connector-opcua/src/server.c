@@ -530,5 +530,22 @@ UA_StatusCode shim_server_add_tree(UA_Server *server) {
     TRY(add_value(server, "Plant.Line.Recipe", "Plant.Line", "Recipe",
                   shim_node_id(named("Recipe")), &recipe,
                   &UA_TYPES[UA_TYPES_EXTENSIONOBJECT]));
+    TRY(shim_server_add_folder(server, named("Plant.Odd"), named("Plant"),
+                               UA_NS0ID_ORGANIZES, "Odd", "Odd"));
+    UA_ObjectAttributes key = UA_ObjectAttributes_default;
+    key.displayName = UA_LOCALIZEDTEXT("", "Guid");
+    TRY(UA_Server_addObjectNode(
+        server, UA_NODEID_GUID(1, ((UA_Guid){5, 6, 7, {8, 0, 0, 0, 0, 0, 0, 0}})),
+        shim_node_id(named("Plant.Odd")), UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+        UA_QUALIFIEDNAME(1, "Guid"), UA_NODEID_NUMERIC(0, UA_NS0ID_FOLDERTYPE), key,
+        NULL, NULL));
+    UA_Double level = 2.5;
+    TRY(add_value(server, "Plant.Odd.Level", "Plant.Odd", "Level", double_id, &level,
+                  &UA_TYPES[UA_TYPES_DOUBLE]));
+    TRY(shim_server_add_reference(server, named("Plant.Odd"), UA_NS0ID_ORGANIZES,
+                                  named("Plant.Odd.Level")));
+    UA_Double twin = 3.5;
+    TRY(add_value(server, "Plant.Odd.Twin", "Plant.Odd", "Level", double_id, &twin,
+                  &UA_TYPES[UA_TYPES_DOUBLE]));
     return UA_STATUSCODE_GOOD;
 }

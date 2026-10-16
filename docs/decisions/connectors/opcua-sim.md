@@ -47,8 +47,9 @@
   `sim` gives: the folder `ns=1;s=Plant` in the Objects folder, with a folder `Types` of
   one variable of each of 15 built-in types, and an Object `Line` with a unit, a
   subtype of Double, of `Enumeration`, and of `Structure`, an array, a variable that a
-  client cannot read, and an `Organizes` loop to `Plant`. Each node id is `ns=1;s=` and
-  the path with `.`. A page of a Browse holds at most 8 references
+  client cannot read, and an `Organizes` loop to `Plant`, and a folder `Odd` with a
+  folder of a GUID node id, a variable by two references, and a second variable of
+  its browse name. Each other node id is `ns=1;s=` and the path with `.`. A page of a Browse holds at most 8 references
   (`maxReferencesPerNode`), so `Plant.Types` takes two pages. A variable of `variables`
   at the node id of a node of the tree panics. No new parameter: each caller gets the
   same tree. Lost: a public builder `sim::Tree` given to `serve`, which repeats the
