@@ -42,6 +42,15 @@ harness = false
 name = "memory"
 harness = false
 
+[[test]]
+name = "browse"
+harness = false
+
+[[bench]]
+name = "origin"
+harness = false
+test = true
+
 [[bench]]
 name = "run"
 harness = false

@@ -3,15 +3,15 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::error::{ContextKind, ContextValue, ErrorKind};
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use types::name::Name;
 
-use crate::Start;
 use crate::error::{Among, Error};
+use crate::{Log, Start};
 
 /// The data directory of a command that names none.
 pub(crate) const DATA: &str = "foundation-data";
@@ -89,6 +89,43 @@ struct StartArgs {
     /// takes no session from another host.
     #[arg(long, default_value = "127.0.0.1:0")]
     listen: SocketAddr,
+    /// The least level of an event that the log of the node holds. `debug` and `trace`
+    /// write lines for each packet and slow the node.
+    #[arg(long, value_enum, default_value_t = Level::Info)]
+    log_level: Level,
+    /// The form of each line of the log of the node, on standard error. The default is
+    /// `json` with `--json`, else `text`.
+    #[arg(long, value_enum)]
+    log_format: Option<Format>,
+}
+
+/// The values of `--log-level`.
+#[derive(Clone, Copy, ValueEnum)]
+enum Level {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl From<Level> for tracing::Level {
+    fn from(level: Level) -> Self {
+        match level {
+            Level::Error => Self::ERROR,
+            Level::Warn => Self::WARN,
+            Level::Info => Self::INFO,
+            Level::Debug => Self::DEBUG,
+            Level::Trace => Self::TRACE,
+        }
+    }
+}
+
+/// The values of `--log-format`.
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Format {
+    Text,
+    Json,
 }
 
 #[derive(clap::Args)]
@@ -198,11 +235,21 @@ pub(crate) fn parse(args: &[OsString], json: bool) -> Result<Parsed, Error> {
     let cli = Cli::from_arg_matches(&matches).map_err(|e| from_clap(&e))?;
     match cli.command {
         Command::Run(request) => Ok(Parsed::Run(request)),
-        Command::Start(StartArgs { data, name, listen }) => Ok(Parsed::Start(Start {
+        Command::Start(StartArgs {
+            data,
+            name,
+            listen,
+            log_level,
+            log_format,
+        }) => Ok(Parsed::Start(Start {
             data,
             json,
             name,
             listen,
+            log: Log {
+                json: log_format.map_or(json, |format| format == Format::Json),
+                level: log_level.into(),
+            },
         })),
         Command::Plan(PlanArgs { files, out, node }) => Ok(Parsed::Plan {
             files,
@@ -290,6 +337,13 @@ fn from_clap(e: &clap::Error) -> Error {
     // The error of a value's parser, such as why a name is not one.
     if let Some(source) = std::error::Error::source(e) {
         message = format!("{message}: {source}");
+    }
+    if let (Some(ContextValue::String(value)), Some(ContextValue::Strings(valid))) = (
+        e.get(ContextKind::InvalidValue),
+        e.get(ContextKind::ValidValue),
+    ) {
+        let valid = valid.join(", ");
+        message = format!("{message}: `{value}` is not one of {valid}");
     }
     Error::Argument { message }
 }

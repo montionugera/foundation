@@ -69,13 +69,6 @@ impl kind::Kind for Scripted {
         })
     }
 
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, kind::Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     async fn run(&self, context: Context<()>) -> Result<(), kind::Error> {
         match self.script {
             Script::Steady => {}
@@ -131,7 +124,7 @@ fn kinds() -> Table {
         .with("opcua", Scripted::new(opcua, Script::Steady))
         .with(
             "influx",
-            Scripted::new(&[("confirmed", 1517)], Script::Steady),
+            Scripted::new(&[("confirmed", 1517), ("lost", 0)], Script::Steady),
         )
 }
 

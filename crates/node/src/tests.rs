@@ -16,6 +16,7 @@ use crate::identity::{self, Identity};
 use crate::{Budget, Config, Error, Node, Region};
 
 mod address;
+mod log;
 mod region;
 
 struct Run {
@@ -92,6 +93,10 @@ fn config<M>(
         name: "edge".parse().expect("a name"),
         settings: crate::Settings::default(),
         vars: std::collections::BTreeMap::new(),
+        log: crate::Log {
+            writer: Box::new(std::io::sink()),
+            format: ops::Log::default(),
+        },
     }
 }
 
@@ -412,7 +417,7 @@ fn join_gives_a_shard_with_no_memory_over_one_that_panicked() {
 }
 
 #[test]
-fn a_config_shows_its_budget_entropy_and_settings_but_not_its_memory_or_files() {
+fn a_config_shows_its_budget_entropy_settings_and_log_but_not_its_memory_or_files() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let host = sim.node(sim::node::Config::default());
     let config = config(&host, Size::from_bytes(4096), Box::new(heap));
@@ -423,7 +428,8 @@ fn a_config_shows_its_budget_entropy_and_settings_but_not_its_memory_or_files() 
             "Config {{ shards: Shards {{ .. }}, clock: {clock:?}, wall: {wall:?}, \
              budget: Budget {{ pool: Size(4096), disk: {DISK:?} }}, entropy: {entropy:?}, \
              listen: {listen:?}, region: Absent, name: Name(\"edge\"), \
-             settings: {settings:?}, .. }}",
+             settings: {settings:?}, log: Log {{ format: Log {{ json: false, level: Level(Info) }}, .. }}, \
+             .. }}",
             listen = config.listen,
             settings = config.settings,
         )
@@ -734,6 +740,7 @@ mod buffer {
                 layout: ::buffer::Layout::new(64 << 20, crate::BODY_MAX)
                     .expect("the test sizes make a ring"),
                 commit: crate::COMMIT,
+                trimmed: false,
             };
             let mut slots = Slots::new();
             let buffer = Buffer::open(config, &mut slots).await.expect("opens");
@@ -7263,7 +7270,7 @@ pub(crate) mod port {
             let connectors = concat!(
                 r#"{"output":{"connectors":[{"name":"plant.influx","kind":"influx","#,
                 r#""state":"stopped","address":"http://influx:8086","restarts":0,"#,
-                r#""counts":{"confirmed":0},"error":{"class":"config","text":"#,
+                r#""counts":{"confirmed":0,"lost":0},"error":{"class":"config","text":"#,
                 r#""the selector matches no channel. Select a channel that the spec "#,
                 r#"defines"},"note":null}]}}"#,
                 "\n",

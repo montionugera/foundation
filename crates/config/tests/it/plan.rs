@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use config::plan::Plan;
 use config::{Definition, Entry};
-use connector::cancel;
 use connector::kind::{self, Channels, Context, Kind, Table};
 use document::diagnostic::{Code, Diagnostic, Note};
 use document::encoding::Checked;
@@ -78,13 +77,6 @@ impl Kind for Writer {
             writes: writes.clone(),
             counts: counts.clone(),
         })
-    }
-
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, kind::Error>> {
-        std::future::ready(Ok(Vec::new()))
     }
 
     fn run(
@@ -290,13 +282,6 @@ impl Kind for Commander {
         })
     }
 
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, kind::Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     fn run(
         &self,
         _: Context<connector::reader::Settings>,
@@ -333,13 +318,6 @@ impl Kind for Once {
             writes: vec![name("a.time")],
             counts: Vec::new(),
         })
-    }
-
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, kind::Error>> {
-        std::future::ready(Ok(Vec::new()))
     }
 
     fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), kind::Error>> {
@@ -514,6 +492,7 @@ fn removes_a_definition_that_no_file_holds() {
         "influx.status.class",
         "influx.status.confirmed",
         "influx.status.error",
+        "influx.status.lost",
         "influx.status.note",
         "influx.status.restarts",
         "influx.status.state",

@@ -20,7 +20,8 @@ fn run(case: fn(&Host<'_>)) {
     case(&Host {
         paths: &os::paths(),
         dir: &scratch.0,
-        make_dir,
+        make_dir: &make_dir,
+        make_link: &|path, target| symlink(target, path).unwrap(),
     });
 }
 
@@ -547,4 +548,58 @@ fn race(
         stopped.store(true, Ordering::Relaxed);
         other
     })
+}
+
+#[test]
+fn a_resolve_of_a_relative_path_is_from_the_working_directory() {
+    let working = fs::canonicalize(".").unwrap();
+    let paths = os::paths();
+    assert_eq!(paths.resolve(Path::new(".")), Ok(working.clone()));
+    let none = paths.resolve(Path::new("none.plan"));
+    assert_eq!(none, Ok(working.join("none.plan")));
+}
+
+#[test]
+fn a_resolve_of_a_path_with_a_nul_byte_is_an_invalid_argument() {
+    let resolved = os::paths().resolve(Path::new("a\0b"));
+    assert_eq!(resolved, Err(Error::Io { code: 22 }));
+}
+
+#[test]
+fn the_home_is_the_resolved_home_of_the_os() {
+    let home = std::env::home_dir().unwrap();
+    assert_eq!(os::paths().home(), Some(fs::canonicalize(home).unwrap()));
+}
+
+/// The resolved home that the child of
+/// `a_home_through_a_link_that_is_not_there_is_as_a_resolve_gives_it` checks.
+const HOME: &str = "FOUNDATION_TEST_HOME";
+
+#[test]
+fn a_home_through_a_link_that_is_not_there_is_as_a_resolve_gives_it() {
+    let paths = os::paths();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the parent sets it for the child"
+    )]
+    if let Some(home) = std::env::var_os(HOME) {
+        assert_eq!(paths.home(), Some(PathBuf::from(home)));
+        return;
+    }
+    let scratch = Scratch::new();
+    fs::create_dir(scratch.0.join("users")).unwrap();
+    symlink(scratch.0.join("users"), scratch.0.join("home")).unwrap();
+    let home = fs::canonicalize(&scratch.0).unwrap().join("users/user");
+    let thread = thread::current();
+    let test = thread.name().expect("invariant: libtest names the thread");
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test])
+        .env(HOME, &home)
+        .env("HOME", scratch.0.join("home/user"))
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(output.status.success(), "{stderr}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("1 passed"), "{stdout}");
 }

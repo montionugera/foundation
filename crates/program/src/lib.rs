@@ -1,6 +1,7 @@
 //! The session of a program: it dials one node as a program, keeps its hello
-//! admitted, and sends signed requests.
+//! admitted, and sends signed requests and reads.
 
+mod read;
 mod turn;
 
 use std::cell::RefCell;
@@ -15,14 +16,15 @@ use transport::{Address, Class, Code};
 use types::connection;
 use types::ed25519::{Pair, PrivateKey, PublicKey};
 use types::hello::Hello;
-use types::name::Name;
+use types::name::{Name, Selector};
 use types::time::{Monotonic, Span, Stamp};
 use wire::Protocol;
 use wire::header::MALFORMED;
 use wire::hub::client::{
-    BODY_BYTES_MAX, Challenge, Refusal, Request, Response, Signed,
+    BODY_BYTES_MAX, Challenge, Mode, OPEN_BYTES_MAX, Refusal, Request, Response, Signed,
 };
 
+pub use read::Reader;
 use turn::{Taken, Turn};
 
 /// How long each hello of a [`Session`] lives. The session renews it at half its life.
@@ -58,17 +60,22 @@ pub struct Config {
     /// waits for a block, so a small pool makes the session slower, not fail. The wait
     /// ends when the session closes.
     pub pool: Rc<block::Pool>,
+    /// The pool that the frames of each reader take their blocks from. A frame holds
+    /// its block until it drops, and a frame that finds the pool full makes
+    /// `Reader::next` wait. Give a pool apart from `pool` and from the transport's:
+    /// frames that the program holds there stop the renewal of the hello.
+    pub frames: Rc<block::Pool>,
 }
 
 /// A program's session with one node, as one subject. It keeps the subject's hello
-/// admitted, and sends one request at a time. It stays on the thread that made it. A
-/// clone is the same session. When the last clone drops, it closes the session with
-/// `Code(0)`.
+/// admitted, sends one request at a time, and opens reads beside them. It stays on
+/// the thread that made it. A clone is the same session. When the last clone and the
+/// last [`Reader`] drop, it closes the session with `Code(0)`.
 #[derive(Clone, Debug)]
 pub struct Session(Rc<Handle>);
 
-/// Closes the session when the last clone of a [`Session`] drops. The renewal task
-/// holds only the [`Shared`] part.
+/// Closes the session when the last clone of a [`Session`] and the last [`Reader`]
+/// drop. The renewal task holds only the [`Shared`] part.
 #[derive(Debug)]
 struct Handle(Rc<Shared>);
 
@@ -89,6 +96,7 @@ struct Shared {
     clock: env::clock::Clock,
     tasks: env::tasks::Tasks,
     pool: Rc<block::Pool>,
+    frames: Rc<block::Pool>,
     turn: Rc<Turn>,
     /// The error that ended the renewal.
     ended: RefCell<Option<Error>>,
@@ -120,6 +128,7 @@ impl Session {
             entropy,
             tasks,
             pool,
+            frames,
         } = config;
         let session = transport.dial(node, &addresses).await?;
         let (mut sender, mut receiver) = session.open(Class::Complete).await?;
@@ -134,6 +143,7 @@ impl Session {
             clock,
             tasks: tasks.clone(),
             pool,
+            frames,
             turn: Rc::default(),
             ended: RefCell::new(None),
         });
@@ -170,6 +180,33 @@ impl Session {
             .await
             .map_err(|error| shared.ended.borrow().clone().unwrap_or(error))
     }
+
+    /// Opens a reader of `mode` on the channels that `select` matches, as the
+    /// session's subject, and waits until the node opened it. The node resolves the
+    /// names and runs the reader at the home of their index. A read takes no turn: it
+    /// runs beside the requests.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Open`] when the open of `select` is over `OPEN_BYTES_MAX`, with
+    /// nothing sent. The error that ended the renewal, when the renewal ended before
+    /// or during the open. Else [`Error::Refused`] when the node stopped the read
+    /// (`UNKNOWN` for a selector that matches no channel, `MALFORMED` for channels of
+    /// more than one index), [`Error::Transport`], [`Error::Message`] for places that
+    /// `wire` refuses or a stream that ends before the last place,
+    /// [`Error::Reply`] for a reply that `wire` refuses or a
+    /// stream that ends before `Opened`, and [`Error::Pool`].
+    pub async fn reader(&self, select: Selector, mode: Mode) -> Result<Reader, Error> {
+        let shared = &self.0.0;
+        let open = wire::hub::client::Open { mode, select };
+        let length = open.encoded_len();
+        if u64::try_from(length).map_or(true, |bytes| bytes > OPEN_BYTES_MAX) {
+            return Err(Error::Open { length });
+        }
+        Reader::open(Rc::clone(&self.0), &open)
+            .await
+            .map_err(|error| shared.ended.borrow().clone().unwrap_or(error))
+    }
 }
 
 impl Shared {
@@ -193,14 +230,11 @@ impl Shared {
             self.connection,
             body,
         ));
+        let mut request = [0; Request::LEN];
+        Request { length, signature }.encode(&mut request);
         // Never `Error::Pool`: `connect` took a larger block for its hello.
-        let mut message = self.alloc(Request::LEN).await?;
-        Request { length, signature }.encode(&mut message);
-        sender.send(message.freeze()).await?;
-        let most = sender.bytes_max().min(self.pool.largest());
-        for chunk in body.chunks(most) {
-            self.send(&mut sender, chunk).await?;
-        }
+        self.send(&mut sender, &request).await?;
+        self.send_chunks(&mut sender, body).await?;
         sender.finish()?;
         let first = receiver.recv().await;
         // Only after `recv`: a drop during it waits for the node to free the request.
@@ -220,14 +254,18 @@ impl Shared {
         Ok(reply)
     }
 
-    /// A block of `len` bytes. While the pool is full, tries again after [`RETRY`]:
-    /// the streams give their blocks back as the node acknowledges them. Gives
-    /// [`Error::Pool`] when no block can hold `len` bytes, and the error of the close
-    /// when the session closes first.
-    async fn alloc(&self, len: usize) -> Result<block::Unique, Error> {
+    /// What `take` takes from the pool. While the pool is full, tries again after
+    /// [`RETRY`]: the streams give their blocks back as the node acknowledges them,
+    /// and frames as the program drops them. Gives [`Error::Pool`] when no block can
+    /// hold what `take` asks for, and the error of the close when the session closes
+    /// first.
+    async fn retry<T>(
+        &self,
+        mut take: impl FnMut() -> Result<T, block::Error>,
+    ) -> Result<T, Error> {
         loop {
-            match self.pool.alloc(len) {
-                Ok(block) => return Ok(block),
+            match take() {
+                Ok(taken) => return Ok(taken),
                 Err(block::Error::Exhausted { .. } | block::Error::Refused { .. }) => {
                     self.sleep_until(self.clock.now() + RETRY).await?;
                 }
@@ -236,11 +274,25 @@ impl Shared {
         }
     }
 
+    /// A block of `len` bytes, as [`Shared::retry`] takes it.
+    async fn alloc(&self, len: usize) -> Result<block::Unique, Error> {
+        self.retry(|| self.pool.alloc(len)).await
+    }
+
     /// Sends `bytes` on `sender` in a block of [`Shared::alloc`].
     async fn send(&self, sender: &mut Sender, bytes: &[u8]) -> Result<(), Error> {
         let mut block = self.alloc(bytes.len()).await?;
         block.copy_from_slice(bytes);
         sender.send(block.freeze()).await?;
+        Ok(())
+    }
+
+    /// Sends `body` on `sender` in chunks that fit a message and a block of the pool.
+    async fn send_chunks(&self, sender: &mut Sender, body: &[u8]) -> Result<(), Error> {
+        let most = sender.bytes_max().min(self.pool.largest());
+        for chunk in body.chunks(most) {
+            self.send(sender, chunk).await?;
+        }
         Ok(())
     }
 
@@ -377,8 +429,19 @@ pub enum Error {
     /// The node finished a stream with no answer: a request with no response, or the
     /// hello stream with no challenge.
     Unanswered,
-    /// No block of the pool can hold a message that the session sends.
+    /// No block of [`Config::pool`] can hold a message that the session sends, or no
+    /// block of [`Config::frames`] can hold a frame of a read.
     Pool(block::Error),
+    /// The open of a read is over `OPEN_BYTES_MAX`. Nothing was sent.
+    Open {
+        /// The bytes of the open.
+        length: usize,
+    },
+    /// The node sent a reply of a read that `wire` refuses, or finished the stream
+    /// where a reply must come.
+    Reply(wire::hub::Error),
+    /// The ends of a frame of a read break a rule of the frame layout.
+    Frame(types::frame::Error),
 }
 
 impl fmt::Display for Error {
@@ -398,7 +461,21 @@ impl fmt::Display for Error {
                 f.write_str("the node finished a stream with no answer")
             }
             Self::Pool(error) => {
-                write!(f, "no block of the pool holds a message: {error}")
+                write!(
+                    f,
+                    "no block of the pool holds a message or a frame: {error}"
+                )
+            }
+            Self::Open { length } => write!(
+                f,
+                "the open of the read has {length} bytes, over the {OPEN_BYTES_MAX} \
+                 that a read holds"
+            ),
+            Self::Reply(error) => {
+                write!(f, "the node sent a reply that is not valid: {error}")
+            }
+            Self::Frame(error) => {
+                write!(f, "the node sent a frame that is not valid: {error}")
             }
         }
     }

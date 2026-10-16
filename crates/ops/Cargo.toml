@@ -19,6 +19,7 @@ serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true }
 secret = { path = "../secret" }
 spec = { path = "../spec" }
+tracing = { workspace = true }
 types = { path = "../types" }
 wire = { path = "../wire" }
 
