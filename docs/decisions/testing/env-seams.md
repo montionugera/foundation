@@ -800,7 +800,7 @@
   https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6210913415).
   Amended (2026-10-16T16:02:30Z, #2889): `Paths::read` gives `Io` 22 (`EINVAL`) for a
   file that is neither a regular file nor a directory, such as a FIFO, a socket, or a
-  device, as `Files::open_absolute` of `os::files` gives. Such a file has no stable
+  device, as `env::files::Files::open_absolute` gives on the `os` disk. Such a file has no stable
   content to read, and a tool or the check of `--files` must answer, not wait. `os`
   checks the kind with a stat before the open, so the open of a device that is there at
   the stat runs no driver, opens with no wait for a writer of a FIFO, and checks the
@@ -809,6 +809,7 @@
   on Linux for a socket, and the open of a device that the link names runs its driver.
   That writer can already change what the node reads (`docs/security.md`, "Other local
   user"). `os::paths` and `open_absolute` of `os::files` share this one check.
+  `open_absolute` refuses a directory at the stat with 21 (`EISDIR`), so a directory that this user cannot read gets the advice for a directory.
   `Files::open` in the data directory still waits for a writer of a FIFO (#2678). `sim`
   models no such file. `write` keeps its rule: a pipe or a device at `path` takes the
   bytes in place. Lost: an open with `O_NONBLOCK` that then reads the FIFO, which gives
@@ -819,4 +820,6 @@
   (2026-10-16T16:02:30Z,
   https://github.com/synnaxlabs/foundation/issues/2889#issuecomment-6219471919; the
   race, 2026-10-16T16:37:23Z,
-  https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6220151438).
+  https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6220151438; the
+  directory, 2026-10-16T16:47:51Z,
+  https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6220333948).
