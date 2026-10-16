@@ -516,7 +516,11 @@ impl Budget {
 
     /// Takes a shrink. Returns false when none is left.
     fn take(&mut self) -> bool {
-        if self.used >= self.most.saturating_add(self.trims / TRIMS) {
+        let left = self
+            .most
+            .checked_add(self.trims / TRIMS)
+            .expect("invariant: the shrinks of a hide fit in memory");
+        if self.used >= left {
             return false;
         }
         self.used = self
@@ -2819,7 +2823,7 @@ mod tests {
     #[test]
     fn a_trim_inside_a_lap_keeps_the_room() {
         let mut log = log_with(16, 3);
-        trim(&mut Laps::new(), &mut budget(usize::MAX), &mut log, 4096);
+        trim(&mut Laps::new(), &mut budget(1 << 20), &mut log, 4096);
         assert_eq!(room_of(&log), (16, 2));
         assert_eq!((log.lap, log.peak), (0, 3));
     }
@@ -2827,7 +2831,7 @@ mod tests {
     #[test]
     fn the_trim_that_ends_a_lap_keeps_the_room_of_runs_that_fill_a_quarter_of_it() {
         let mut log = log_with(16, 4);
-        trim(&mut Laps::new(), &mut budget(usize::MAX), &mut log, AREA);
+        trim(&mut Laps::new(), &mut budget(1 << 20), &mut log, AREA);
         assert_eq!(room_of(&log), (16, 4));
         assert_eq!((log.lap, log.peak), (AREA, 4));
     }
@@ -2835,7 +2839,7 @@ mod tests {
     /// The lap met 5 runs, though 1 is left at its end.
     #[test]
     fn the_trim_that_ends_a_lap_shrinks_the_room_to_twice_the_most_runs_of_the_lap() {
-        let (mut laps, mut budget) = (Laps::new(), budget(usize::MAX));
+        let (mut laps, mut budget) = (Laps::new(), budget(1 << 20));
         let mut log = log_with(32, 5);
         for record in 1..=4 {
             trim(&mut laps, &mut budget, &mut log, 4096 * record);
@@ -2848,7 +2852,7 @@ mod tests {
 
     #[test]
     fn the_trim_that_ends_a_lap_with_no_run_keeps_room_for_two() {
-        let (mut laps, mut budget) = (Laps::new(), budget(usize::MAX));
+        let (mut laps, mut budget) = (Laps::new(), budget(1 << 20));
         let mut log = log_with(8, 1);
         trim(&mut laps, &mut budget, &mut log, 4096);
         trim(&mut laps, &mut budget, &mut log, AREA);
@@ -2857,7 +2861,7 @@ mod tests {
 
     #[test]
     fn a_lap_ends_at_the_first_trim_an_area_after_its_start() {
-        let (mut laps, mut budget) = (Laps::new(), budget(usize::MAX));
+        let (mut laps, mut budget) = (Laps::new(), budget(1 << 20));
         let mut log = log_with(16, 0);
         log.lap = 4096;
         trim(&mut laps, &mut budget, &mut log, AREA);
