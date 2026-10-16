@@ -128,9 +128,17 @@ impl Files {
     ///
     /// # Errors
     ///
-    /// As [`Files::open`], and [`Error::Io`] with code 22 (`EINVAL`) for a file that is
+    /// As [`Files::open`], [`Error::Io`] with code 21 (`EISDIR`) for a directory, also
+    /// one that this user cannot read, and code 22 (`EINVAL`) for a file that is
     /// neither a regular file nor a directory, such as a FIFO or a device. The open
-    /// does not wait for a writer of a FIFO.
+    /// does not wait for a writer of a FIFO. When another writer changes a link in
+    /// `path` during the call, it gives the error of the open of the file that the link
+    /// then names, and opens that file, also a device. On Linux, the walk of a link
+    /// that a rename replaces during the call can read only a first part of its old
+    /// target, also none of it, so the call can open the folder of the link, or a
+    /// folder on the way to that target, such as `/`, and the rest of `path` resolves
+    /// under that folder. When the link is the last part of `path`, the call gives code
+    /// 21.
     ///
     /// ```
     /// use env::files::Absolute;
@@ -901,7 +909,8 @@ pub trait Driver {
 
     /// Opens the file at `path`, an absolute path outside the data directory, to read
     /// only, with no wait for a writer of a FIFO. It makes no file, and gives
-    /// [`Error::Io`] with code 22 (`EINVAL`) for a file that is neither a regular file
+    /// [`Error::Io`] with code 21 (`EISDIR`) for a directory, also one that this user
+    /// cannot read, and code 22 (`EINVAL`) for a file that is neither a regular file
     /// nor a directory.
     fn open_absolute<'a>(&'a self, path: &'a Path) -> Request<'a, Box<dyn Descriptor>>;
 

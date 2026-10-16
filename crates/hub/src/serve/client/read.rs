@@ -196,7 +196,7 @@ where
 ///
 /// # Panics
 ///
-/// For `Unsynced`, which only a named reader gives.
+/// For `Unsynced`, `Full`, and `Unrecorded`, which only a named reader gives.
 pub(in crate::serve) fn refused(error: &reader::Error) -> Refusal {
     match error {
         reader::Error::Empty => Refusal::Unknown,
@@ -207,7 +207,9 @@ pub(in crate::serve) fn refused(error: &reader::Error) -> Refusal {
         reader::Error::Mesh(_)
         | reader::Error::Transport(_)
         | reader::Error::Message(_) => Refusal::Failed,
-        reader::Error::Unsynced => {
+        reader::Error::Unsynced
+        | reader::Error::Full { .. }
+        | reader::Error::Unrecorded => {
             panic!("invariant: an unnamed reader does not give {error:?}")
         }
     }

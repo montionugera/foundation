@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
+use connector::http::sim::Certificate;
 use env::net::{self, Listener};
 use env::tasks::Tasks;
 use http::header::{AUTHORIZATION, CONTENT_ENCODING};
@@ -36,11 +37,31 @@ pub async fn serve(
     database: String,
     token: Option<String>,
 ) -> net::Error {
-    let header = token.map(|token| format!("Token {token}"));
-    let answer = move |request: Request<Bytes>| {
-        route(&request, &store, &database, header.as_deref())
-    };
+    let answer = answer(store, database, token);
     connector::http::sim::serve(listener, tasks, answer).await
+}
+
+/// As [`serve`], under TLS with `certificate`, as [`connector::http::sim::serve_tls`]
+/// serves.
+pub async fn serve_tls(
+    listener: Listener,
+    tasks: Tasks,
+    store: Arc<Mutex<Store>>,
+    database: String,
+    token: Option<String>,
+    certificate: Certificate,
+) -> net::Error {
+    let answer = answer(store, database, token);
+    connector::http::sim::serve_tls(listener, tasks, certificate, answer).await
+}
+
+fn answer(
+    store: Arc<Mutex<Store>>,
+    database: String,
+    token: Option<String>,
+) -> impl Fn(Request<Bytes>) -> Response<Bytes> + 'static {
+    let header = token.map(|token| format!("Token {token}"));
+    move |request| route(&request, &store, &database, header.as_deref())
 }
 
 fn route(

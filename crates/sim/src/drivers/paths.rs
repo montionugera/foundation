@@ -16,6 +16,10 @@ impl env::paths::Driver for Node {
         lock(&self.shared).paths().write(self.node, path, bytes)
     }
 
+    fn make_dir(&self, path: &Path) -> Result<(), Error> {
+        lock(&self.shared).paths().make_dir(self.node, path)
+    }
+
     fn resolve(&self, path: &Path) -> Result<PathBuf, Error> {
         lock(&self.shared).paths().resolve(self.node, path)
     }

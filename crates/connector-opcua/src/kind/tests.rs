@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::future;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
@@ -1097,13 +1098,6 @@ impl kind::Kind for Count {
 
     fn check(&self, config: &Config) -> Result<Channels, Vec<Diagnostic>> {
         Kind::default().check(config)
-    }
-
-    fn discover(
-        &self,
-        _: &Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        future::ready(Ok(Vec::new()))
     }
 
     async fn run(&self, ctx: Context<Config>) -> Result<(), Error> {

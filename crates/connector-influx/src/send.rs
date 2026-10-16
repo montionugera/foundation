@@ -4,10 +4,11 @@ use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::future::{self, Future as _, poll_fn};
 use std::pin::pin;
+use std::rc::Rc;
 use std::task::Poll;
 
 use bytes::Bytes;
-use connector::http::Client;
+use connector::http::{Client, Pem};
 use connector::kind::{Context, Error};
 use connector::retry::{self, Backoff};
 use connector::secret;
@@ -53,13 +54,7 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     let mut reader = ctx.reader().expect("invariant: check gives a reader");
     let ctx = &ctx;
     let config = ctx.config();
-    let client = Client::new(connector::http::Config {
-        net: ctx.net().clone(),
-        clock: ctx.clock().clone(),
-        tasks: ctx.tasks().clone(),
-        timeout: TIMEOUT,
-        body_max: BODY_MAX,
-    });
+    let client = RefCell::new(Rc::new(client(ctx).await?));
     let uri = write_uri(&config.address, &config.target);
     let token = RefCell::new(Token::read(ctx).await?);
     let (confirmed, lost) = (ctx.count(CONFIRMED), ctx.count(LOST));
@@ -117,16 +112,66 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     }
 }
 
-/// Sends `body` until InfluxDB answers 204. Shows each other answer as the run's
-/// error, with the fix for a 400, a 404, a 413, or a 422, and waits a backoff before
-/// the next attempt. After a 401 or a 403, it reads the token again before that
-/// attempt. Never ends after the cancel of the run, which the caller sees first.
+/// The client of a run, which checks a certificate at the mesh time of its hub. It
+/// trusts the roots of the node and the `ca`.
 ///
 /// # Errors
 ///
-/// The error of [`Token::read`] when a read of the token fails.
+/// The error of [`Context::secret`] when a read of the `ca` fails, and
+/// [`Error::Retry`] when the `ca` holds no PEM certificate or one that does not parse.
+async fn client(ctx: &Context<Config>) -> Result<Client, Error> {
+    let config = ctx.config();
+    let roots = match &config.ca {
+        Some(source) => {
+            let pem = ctx.secret(source).await?;
+            let roots = ctx.roots().with_pem(&String::from_utf8_lossy(pem.expose()));
+            roots.map_err(|error| {
+                let held = match error {
+                    Pem::Empty => "no PEM certificate",
+                    Pem::Invalid => "a PEM certificate that does not parse",
+                };
+                Error::Retry(
+                    format!(
+                        "the ca {source} holds {held}. Write the CA certificate of the \
+                         server in PEM"
+                    )
+                    .into(),
+                )
+            })?
+        }
+        None => ctx.roots().clone(),
+    };
+    // The reader opened, so the node has mesh time and this gives at once.
+    let time = ctx.time().await;
+    Ok(Client::new(connector::http::Config {
+        net: ctx.net().clone(),
+        clock: ctx.clock().clone(),
+        tasks: ctx.tasks().clone(),
+        timeout: TIMEOUT,
+        body_max: BODY_MAX,
+        tls: Some(connector::http::Tls { roots, time }),
+    }))
+}
+
+/// What an attempt that failed makes the next attempt read again.
+enum Read {
+    Nothing,
+    Token,
+    Ca,
+}
+
+/// Sends `body` until InfluxDB answers 204. Shows each other answer as the run's
+/// error, with the fix for a 400, a 404, a 413, or a 422, and waits a backoff before
+/// the next attempt. After a 401 or a 403, it reads the token again before that
+/// attempt, and after a TLS failure of a run with a `ca`, the `ca` and a new `client`.
+/// Never ends after the cancel of the run, which the caller sees first.
+///
+/// # Errors
+///
+/// The error of [`Token::read`] when a read of the token fails, and that of
+/// [`client`] when a read of the `ca` fails.
 async fn send(
-    client: &Client,
+    client: &RefCell<Rc<Client>>,
     ctx: &Context<Config>,
     uri: &Uri,
     token: &RefCell<Option<Token>>,
@@ -136,8 +181,10 @@ async fn send(
     loop {
         let request = request(uri, &body, token.borrow().as_ref());
         // A block, so that `answer` does not grow the future across the backoff.
-        let refused = {
-            let answer = match client.send(request).await {
+        let read = {
+            let sending = Rc::clone(&client.borrow());
+            let mut read = Read::Nothing;
+            let answer = match sending.send(request).await {
                 Ok(answer) if answer.status() == StatusCode::NO_CONTENT => {
                     ctx.clear_error();
                     return Ok(());
@@ -147,18 +194,30 @@ async fn send(
                     Some((status, body))
                 }
                 Err(error) => {
-                    ctx.error(&format_args!("the write to InfluxDB failed: {error}"));
+                    if let (connector::http::Error::Tls { .. }, Some(ca)) =
+                        (&error, &ctx.config().ca)
+                    {
+                        ctx.error(&format_args!(
+                            "the write to InfluxDB failed: {error}. Check the ca {ca}"
+                        ));
+                        read = Read::Ca;
+                    } else {
+                        ctx.error(&format_args!(
+                            "the write to InfluxDB failed: {error}"
+                        ));
+                    }
                     None
                 }
             };
-            let mut refused = false;
             if let Some((status, body)) = answer {
                 let text = String::from_utf8_lossy(&body);
                 let text = text.trim();
                 let token =
                     matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
                 let source = ctx.config().token.as_ref().filter(|_| token);
-                refused = source.is_some();
+                if source.is_some() {
+                    read = Read::Token;
+                }
                 match source {
                     Some(source) => ctx.error(&format_args!(
                         "InfluxDB answered {status}. Check the token {source}: {text}"
@@ -169,16 +228,21 @@ async fn send(
                     )),
                 }
             }
-            refused
+            read
         };
         let backoff =
             backoff.get_or_insert_with(|| Backoff::new(ctx.clock(), ctx.rng(), RETRY));
         if !backoff.wait(ctx.cancel()).await {
             future::pending::<()>().await;
         }
-        if refused {
-            // Boxed, so this rare read does not grow the future of `send`.
-            *token.borrow_mut() = Box::pin(Token::read(ctx)).await?;
+        // Boxed, so each rare read does not grow the future of `send`.
+        match read {
+            Read::Nothing => {}
+            Read::Token => *token.borrow_mut() = Box::pin(Token::read(ctx)).await?,
+            Read::Ca => {
+                let fresh = Box::pin(self::client(ctx)).await?;
+                *client.borrow_mut() = Rc::new(fresh);
+            }
         }
     }
 }

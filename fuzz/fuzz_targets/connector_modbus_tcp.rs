@@ -13,7 +13,7 @@
 
 use connector_modbus::device::Device;
 use connector_modbus::pdu::{Exception, Reply, Request, Table};
-use connector_modbus::poll::{self, Group, Order, Read};
+use connector_modbus::read::{self, Group, Order, Read};
 use connector_modbus::tcp;
 use libfuzzer_sys::fuzz_target;
 use types::sample::{Scalar, Type};
@@ -83,9 +83,9 @@ fuzz_target!(|bytes: &[u8]| {
         }
     };
     let (reads, slots) = tile(table, start, count, scalar);
-    let groups = poll::groups(&reads, order);
-    let requests: Vec<&Request> = groups.iter().map(Group::request).collect();
-    assert_eq!(requests, [&request], "the reads of one request");
+    let groups = read::groups(&reads, order);
+    let requests: Vec<Request> = groups.iter().map(Group::request).collect();
+    assert_eq!(requests, [request], "the reads of one request");
     let Ok(reply) = reply else {
         return;
     };

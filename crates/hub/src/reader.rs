@@ -13,9 +13,10 @@ use std::task::{Context, Poll, ready};
 use ::home::reader::{Next, disk};
 use types::channel;
 use types::frame::key_set::{Group, KeySet};
-use types::frame::{Frame, Mask, View};
+use types::frame::{self, Frame, Mask, View};
 use types::name::{Name, Selector};
 use types::time::Span;
+use wire::hub::Gaps;
 
 use crate::channel::Channel;
 use crate::pending::Pending;
@@ -111,13 +112,9 @@ impl<'a> Received<'a> {
     /// the gap that a later frame gives.
     #[must_use]
     pub fn position(&self) -> Position {
-        let Lent {
-            mode, seqs, from, ..
-        } = self.lent;
-        let live = match mode {
-            Mode::Complete if seqs.is_empty() => *from,
-            Mode::Complete => seqs.end,
-            Mode::Latest => self.lens.seqs(self.view.frame()).end,
+        let live = match &self.lent.gaps {
+            Some(gaps) => gaps.live(),
+            None => self.lens.end(self.view.frame()),
         };
         let position = Position {
             index: self.lens.index,
@@ -134,9 +131,8 @@ impl<'a> Received<'a> {
     /// `None`, and the next frame with one gives the gap.
     #[must_use]
     pub fn gap(&self) -> Option<Range<u64>> {
-        let Range { start, end } = self.lent.seqs;
-        let from = self.lent.from;
-        (from < start && start < end).then_some(from..start)
+        let gap = self.lent.gaps.as_ref()?.last();
+        (!gap.is_empty()).then_some(gap)
     }
 }
 
@@ -181,16 +177,19 @@ impl Lens {
         }
     }
 
-    /// The seqs of the index's samples in `frame`, a frame of this lens's key set. The
-    /// mask holds the index, so the frame's range of its group is the view's.
-    fn seqs(&self, frame: &Frame) -> Range<u64> {
-        let range = frame
+    /// The range of the index in `frame`, a frame of this lens's key set. The mask
+    /// holds the index, so the frame's range of its group is the view's.
+    fn range(&self, frame: &Frame) -> frame::Range {
+        frame
             .range(self.group)
-            .expect("invariant: a frame holds the range of each group");
-        let end = range
+            .expect("invariant: a frame holds the range of each group")
+    }
+
+    /// The seq after the last sample of the index of `frame`.
+    fn end(&self, frame: &Frame) -> u64 {
+        self.range(frame)
             .end()
-            .expect("invariant: the home gives no range past u64::MAX");
-        range.seq..end
+            .expect("invariant: the home gives no range past u64::MAX")
     }
 }
 
@@ -278,6 +277,20 @@ pub enum Error {
     },
     /// The reader is named and the node has no mesh time yet. Open it again later.
     Unsynced,
+    /// The reader is named and complete, holds no record, and the records of the
+    /// named readers of the index would pass `limit` bytes, the most that one entry of
+    /// the home's buffer holds. Close a named reader of the index whose hold is zero,
+    /// wait for a hold to end, or open this one unnamed. A reader that holds a record
+    /// opens over the limit, records nothing, and the home writes a warning event: a
+    /// restart of the home after its old hold ends resumes it at the live tail, until
+    /// #2833.
+    Full {
+        /// The most bytes of one entry.
+        limit: usize,
+    },
+    /// The reader is named and complete, and the home had no room to record its
+    /// position, so a restart would not resume it. Open it again later.
+    Unrecorded,
     /// The home of the index is `home`, another node, and this reader opens only at the
     /// home of its index: a named reader, or the reader of a program's read.
     Remote {
@@ -309,6 +322,14 @@ impl fmt::Display for Error {
             ),
             Self::Unsynced => f.write_str(
                 "the node has no mesh time yet: open the named reader again later",
+            ),
+            Self::Full { limit } => write!(
+                f,
+                "the records of the named readers of the index would pass {limit} bytes"
+            ),
+            Self::Unrecorded => f.write_str(
+                "the home had no room to record the position of the named reader: \
+                 open it again later",
             ),
             Self::Remote { home } => write!(
                 f,
@@ -342,6 +363,16 @@ impl From<::home::reader::Unsynced> for Error {
     }
 }
 
+impl From<::home::reader::Unopened> for Error {
+    fn from(unopened: ::home::reader::Unopened) -> Self {
+        match unopened {
+            ::home::reader::Unopened::Unsynced => Self::Unsynced,
+            ::home::reader::Unopened::Full { limit } => Self::Full { limit },
+            ::home::reader::Unopened::Unrecorded => Self::Unrecorded,
+        }
+    }
+}
+
 /// A reader session through the reader's channels. Dropping it closes the session;
 /// frames that wait do not go out.
 #[derive(Debug)]
@@ -358,30 +389,22 @@ pub struct Reader {
 /// stays as small as with no names.
 #[derive(Debug)]
 struct Lent {
-    mode: Mode,
     /// `None` for a reader of a client read. A box keeps the reader small.
     names: Option<Box<Names>>,
     /// The `live` of the last position that [`Received::position`] gave, or `None`
     /// before it gave one. The positions of a reader rise, so it is the highest.
     given: Cell<Option<u64>>,
-    /// For a complete reader, the seqs of the index in the frame that the last
-    /// [`Received`] lends, or the empty range at the open position before the first
-    /// frame. A latest reader keeps the empty range, as it gets no gap.
-    seqs: Range<u64>,
-    /// The first live seq that the reader had not got before that frame: the start of
-    /// its gap.
-    from: u64,
+    /// The gaps of a complete reader, `None` for a latest reader, which gets no gap.
+    gaps: Option<Gaps>,
 }
 
 impl Lent {
     /// What a reader in `mode` that opened at `live` lends before its first frame.
     fn at(mode: Mode, live: u64) -> Self {
         Self {
-            mode,
             names: None,
             given: Cell::new(None),
-            seqs: live..live,
-            from: live,
+            gaps: (mode == Mode::Complete).then(|| Gaps::new(live)),
         }
     }
 }
@@ -449,6 +472,7 @@ impl Local {
                         WINDOW,
                         CHARGE,
                     )?;
+                    state.gate.wake();
                     let live = opened.live;
                     (state.take_over(opened), live)
                 };
@@ -607,11 +631,8 @@ impl Reader {
                 },
                 Source::Remote(remote) => remote.take().await?,
             };
-            if self.lent.mode == Mode::Complete {
-                if !self.lent.seqs.is_empty() {
-                    self.lent.from = self.lent.seqs.end;
-                }
-                self.lent.seqs = lens.seqs(&frame);
+            if let Some(gaps) = &mut self.lent.gaps {
+                gaps.pass(lens.range(&frame));
             }
             let frame = self.frame.insert(frame);
             Ok(Received {

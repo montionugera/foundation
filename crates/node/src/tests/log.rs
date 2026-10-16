@@ -116,6 +116,72 @@ fn a_node_logs_its_start_and_its_stop_in_json() {
     );
 }
 
+/// The warnings that a node on `roots` logs in a run of a second.
+fn warned(roots: os::Roots) -> Vec<String> {
+    logged(roots, tracing::Level::WARN)
+}
+
+/// The lines at `level` or above that a node on `roots` logs in a run of a second.
+fn logged(roots: os::Roots, level: tracing::Level) -> Vec<String> {
+    let (mut sim, host) = host(1);
+    let lines = Lines::default();
+    let log = to(&lines, false, level);
+    let node = Node::start(Config {
+        roots,
+        log,
+        ..config(&host, Size::MEBIBYTE, Box::new(heap))
+    });
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    node.stop();
+    assert_eq!(sim.run(), Ok(()));
+    assert_eq!(node.join(), Ok(()));
+    lines.read()
+}
+
+const SKIPPED: &str = "2026-01-01T00:00:00.004198Z WARN node: OS roots that do not parse are skipped \
+     skipped=1";
+const NONE: &str = "2026-01-01T00:00:00.004198Z WARN node: the OS roots hold no \
+                    certificate, so an https connect with no CA of its connector fails";
+
+#[test]
+fn a_node_warns_of_each_failure_of_its_roots_and_of_each_skipped_one() {
+    let roots = os::Roots {
+        certificates: vec![super::CA.to_vec(), b"not DER".to_vec()],
+        failures: vec!["failed to read PEM from file at '/roots.pem'".into()],
+    };
+    assert_eq!(
+        warned(roots),
+        [
+            "2026-01-01T00:00:00.004198Z WARN node: a part of the OS roots was not read \
+             error=\"failed to read PEM from file at '/roots.pem'\"",
+            SKIPPED,
+        ]
+    );
+}
+
+#[test]
+fn a_node_warns_of_its_roots_before_it_starts() {
+    let lines = logged(os::Roots::default(), tracing::Level::INFO);
+    let warned = lines.iter().position(|line| line == NONE);
+    let started = lines
+        .iter()
+        .position(|line| line.contains(" node: started "));
+    assert!(
+        warned.is_some() && warned < started,
+        "the warning before `started`: {lines:?}"
+    );
+}
+
+#[test]
+fn a_node_with_no_root_warns_that_an_https_connect_with_no_ca_fails() {
+    assert_eq!(warned(os::Roots::default()), [NONE]);
+    let roots = os::Roots {
+        certificates: vec![b"not DER".to_vec()],
+        failures: Vec::new(),
+    };
+    assert_eq!(warned(roots), [SKIPPED, NONE]);
+}
+
 #[test]
 fn a_node_that_fails_at_its_start_logs_the_error_with_no_mesh_time() {
     let (_sim, host) = host(1);

@@ -183,8 +183,11 @@ impl Rig {
     /// `foundation` with `args` in [`Rig::dir`].
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_foundation"));
+        let roots = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/it/ca.pem");
         command
             .args(args)
+            .env("SSL_CERT_FILE", roots)
+            .env_remove("SSL_CERT_DIR")
             .envs(self.vars.iter().map(|(name, value)| (name, value)));
         command.current_dir(&self.dir);
         command
