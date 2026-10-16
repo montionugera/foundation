@@ -37,7 +37,7 @@ pub enum Mode {
     /// still waits when the hub releases the next commit with frames of the index
     /// comes later from disk, in order. Samples that the buffer trimmed before the
     /// reader got them, or that found no room in the buffer, never reach it: the next
-    /// frame gives them as its [`Received::gap`].
+    /// frame with a sample gives them as its [`Received::gap`].
     Complete,
     /// The newest live frame, before its commit.
     Latest,

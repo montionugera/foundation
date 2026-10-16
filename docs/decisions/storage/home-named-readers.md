@@ -26,8 +26,9 @@
   Amended (#274 B1): a named complete reader that opens within its hold reads the
   frames after its position from disk, then the live ones. It ends `Behind` only when
   it reaches a seq that the buffer lost for no room, also at each later open within its
-  hold. The position records and `Readers::deadline` stay as above until later parts
-  of #274 (`laptop.architect`, 2026-10-15T16:29:36Z:
+  hold. Superseded by the amendment of #2725 below. The position records and
+  `Readers::deadline` stay as above until later parts of #274 (`laptop.architect`,
+  2026-10-15T16:29:36Z:
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6197039098).
   Amended (#2725, with #2723 and #2553): no case gives `Behind` now. A complete session
   that misses a frame reads it from disk, and a seq lost for no room comes as the gap of
