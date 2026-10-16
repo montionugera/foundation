@@ -83,12 +83,8 @@ impl Paths {
         // that ignores case then misses the hidden folder in another case. Only a
         // directory at `dir` resolves `dir/..`, and the resolve opens no file.
         for dir in &limit.hidden {
-            match self.check(dir) {
-                Err(Error::Outside | Error::Hidden) => {}
-                checked => {
-                    checked?;
-                    self.driver.resolve(&dir.join(".."))?;
-                }
+            if self.allowed(dir).is_ok() {
+                self.driver.resolve(&dir.join(".."))?;
             }
         }
         Ok(Self {
@@ -209,9 +205,10 @@ impl Paths {
     /// ```
     pub fn make_dir(&self, path: &Path) -> Result<(), Error> {
         match (self.check(path), path.parent(), path.file_name()) {
-            // A link to nothing does not resolve. The call makes nothing through a
-            // link at `path`, so the place of the link is what the limits check.
-            (Err(Error::NotFound), Some(dir), Some(name)) => {
+            // A link to nothing or a loop does not resolve. The call makes nothing
+            // through a link at `path`, so the place of the link is what the limits
+            // check.
+            (Err(Error::NotFound | Error::Io { .. }), Some(dir), Some(name)) => {
                 let dir = if dir.as_os_str().is_empty() {
                     Path::new(".")
                 } else {
