@@ -525,8 +525,8 @@ mod tests {
             ));
         }
 
-        /// The bytes of the entry of a writer's raw frame of one sample on an index and
-        /// on each of 256 data channels of `scalar`, as a shard splits and stores it.
+        /// The body bytes of the entry of a writer's raw frame of one sample on an index
+        /// and on each of 256 data channels of `scalar`, as a shard splits and stores it.
         fn polled(scalar: Scalar) -> usize {
             let mut interner = Interner::new();
             let index = channel::Key::from_u128(1);

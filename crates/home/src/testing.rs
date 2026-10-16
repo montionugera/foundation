@@ -169,13 +169,18 @@ mod tests {
         assert!(at < Span::from_nanos(2_100_000_000), "mesh time at {at:?}");
     }
 
-    /// A writer on one index with one data channel, and its key set.
+    /// A writer on one index with `channels` data channels of `scalar`, and its key
+    /// set.
     fn open_writer(
         shard: &mut Shard,
         interner: &mut Interner,
+        scalar: Scalar,
+        channels: u128,
     ) -> (crate::writer::Key, Arc<KeySet>) {
         let index = channel::Key::from_u128(1);
-        let channels = [(channel::Key::from_u128(2), Type::Scalar(Scalar::I64))];
+        let channels: Vec<_> = (2..channels + 2)
+            .map(|key| (channel::Key::from_u128(key), Type::Scalar(scalar)))
+            .collect();
         let set = interner.intern(&[Group {
             index,
             data: &channels,
@@ -200,12 +205,19 @@ mod tests {
         set: &KeySet,
         stamp: Stamp,
     ) -> Vec<Outcome> {
-        let series = [(0, 8), (1, 8)];
+        let series: Vec<_> = set
+            .entries()
+            .iter()
+            .enumerate()
+            .map(|(entry, channel)| (entry, channel.data_type.width().expect("fixed")))
+            .collect();
         let mut draft =
             Draft::new(shard.pool(), set, Form::Raw, &series).expect("a frame");
-        for (entry, _) in series {
-            let bytes = draft.series_mut(entry).expect("the series is present");
-            bytes.copy_from_slice(&stamp.nanos().to_le_bytes());
+        let stamp = stamp.nanos().to_le_bytes();
+        for (_, bytes) in draft.iter_mut() {
+            bytes.fill(0);
+            let width = bytes.len().min(8);
+            bytes[..width].copy_from_slice(&stamp[..width]);
         }
         draft.set_count(0, 1);
         let outcomes = shard.write(writer, Label::Path(Route::Live), draft);
@@ -239,7 +251,8 @@ mod tests {
         let commits = run(
             sim::node::Config::default(),
             |_, mut shard, mut interner, now| async move {
-                let (writer, set) = open_writer(&mut shard, &mut interner);
+                let (writer, set) =
+                    open_writer(&mut shard, &mut interner, Scalar::I64, 1);
                 let mut commits = 0;
                 let mut stamp = now.nanos();
                 while commit(&mut shard, writer, &set, stamp..stamp + 1).await {
@@ -253,6 +266,53 @@ mod tests {
         assert_eq!(commits, 1020);
     }
 
+    /// The polls of 256 channels of `scalar`, `batch` to a commit, that a new ring
+    /// takes.
+    fn polls(scalar: Scalar, batch: i64) -> i64 {
+        run(
+            sim::node::Config::default(),
+            move |_, mut shard, mut interner, now| async move {
+                let (writer, set) = open_writer(&mut shard, &mut interner, scalar, 256);
+                let mut stamp = now.nanos();
+                while commit(&mut shard, writer, &set, stamp..stamp + batch).await {
+                    stamp += batch;
+                }
+                stamp - now.nanos()
+            },
+        )
+    }
+
+    #[test]
+    fn fills_a_new_ring_at_the_polls_of_256_channels_of_each_type() {
+        let filled: Vec<_> = crate::common::SCALARS
+            .into_iter()
+            .map(|scalar| (scalar, polls(scalar, 1), polls(scalar, 16)))
+            .collect();
+
+        // A poll a commit takes 3 blocks, 48 B a data sample, and 4 of uuid. At 16
+        // polls a commit, a sample of 4 bytes or less takes about 38 B, one of 8 bytes
+        // 44 B, and a uuid 60 B.
+        assert_eq!(
+            filled,
+            [
+                (Scalar::Bool, 340, 432),
+                (Scalar::I8, 340, 432),
+                (Scalar::I16, 340, 432),
+                (Scalar::I32, 340, 432),
+                (Scalar::I64, 340, 368),
+                (Scalar::U8, 340, 432),
+                (Scalar::U16, 340, 432),
+                (Scalar::U32, 340, 432),
+                (Scalar::U64, 340, 368),
+                (Scalar::F32, 340, 432),
+                (Scalar::F64, 340, 368),
+                (Scalar::Stamp, 340, 368),
+                (Scalar::Span, 340, 368),
+                (Scalar::Uuid, 255, 272),
+            ]
+        );
+    }
+
     #[test]
     fn opens_the_ring_that_shard_0_holds() {
         let mut sim = sim::Sim::new(sim::Config::default());
@@ -261,7 +321,8 @@ mod tests {
             .run_on(&node, |node, tasks| async move {
                 let (mut shard, mut interner, now, _) =
                     shard(env(&node, tasks.clone())).await;
-                let (writer, set) = open_writer(&mut shard, &mut interner);
+                let (writer, set) =
+                    open_writer(&mut shard, &mut interner, Scalar::I64, 1);
                 let mut stamp = now.nanos();
                 for _ in 0..10 {
                     assert!(commit(&mut shard, writer, &set, stamp..stamp + 1).await);
@@ -272,7 +333,8 @@ mod tests {
                 ended.await.expect("the buffer ends");
                 let (mut shard, mut interner, _, _) =
                     super::shard(env(&node, tasks)).await;
-                let (writer, set) = open_writer(&mut shard, &mut interner);
+                let (writer, set) =
+                    open_writer(&mut shard, &mut interner, Scalar::I64, 1);
                 let mut commits = 0;
                 while commit(&mut shard, writer, &set, stamp..stamp + 1).await {
                     commits += 1;
@@ -294,7 +356,8 @@ mod tests {
         };
         let (ahead, applied, now) =
             run(config, |_, mut shard, mut interner, now| async move {
-                let (writer, set) = open_writer(&mut shard, &mut interner);
+                let (writer, set) =
+                    open_writer(&mut shard, &mut interner, Scalar::I64, 1);
                 let late = Stamp::from_nanos(now.nanos() + 1_000_000_001);
                 let ahead = write(&mut shard, writer, &set, late);
                 (ahead, write(&mut shard, writer, &set, now), now)
@@ -338,7 +401,8 @@ mod tests {
         let elapsed = run(
             sim::node::Config::default(),
             |node, mut shard, mut interner, now| async move {
-                let (writer, set) = open_writer(&mut shard, &mut interner);
+                let (writer, set) =
+                    open_writer(&mut shard, &mut interner, Scalar::I64, 1);
                 let start = node.clock().now();
                 write(&mut shard, writer, &set, now);
                 shard.committed().await.expect("commits");
