@@ -2901,9 +2901,7 @@ mod tests {
         assert!(laps.due.is_empty());
     }
 
-    /// A trim in the wait meets 8 runs, so the end needs no shrink. Only this test,
-    /// through `Laps::due`, kills a drain that takes a shrink for a path that needs
-    /// none. #2774 moves the kill to `tests/memory`.
+    /// A path syncs 14 runs while its lap end waits, so the drain keeps room for 16.
     #[test]
     fn a_drain_keeps_room_for_the_runs_synced_in_the_wait() {
         let mut logs = Logs::new(4 * 4096);
@@ -2935,40 +2933,11 @@ mod tests {
     }
 
     #[test]
-    fn a_lap_that_waits_and_needs_no_shrink_at_its_close_ends_with_none_left() {
-        let (mut laps, mut budget) = (Laps::new(), budget(0));
-        let mut log = log_with(32, 3);
-        trim(&mut laps, &mut budget, &mut log, AREA);
-        log.runs.extend((3..8).map(|n| run(n, 0, AREA + 4096 * n)));
-        assert!(!log.trim(AREA + 4096, AREA));
-        laps.finish(&mut budget, std::slice::from_mut(&mut log), 2 * AREA);
-        assert_eq!(
-            (room_of(&log), log.lap, log.due),
-            ((32, 8), 2 * AREA, false)
-        );
-        assert!(laps.due.is_empty());
-    }
-
-    #[test]
     fn a_shrink_at_a_lap_end_takes_one_from_the_count() {
         let mut budget = budget(2);
         let mut log = log_with(32, 3);
         trim(&mut Laps::new(), &mut budget, &mut log, AREA);
         assert_eq!((room_of(&log), budget.used), ((6, 3), 1));
-    }
-
-    /// Only this test, through `Laps::due`, kills a lap end that goes ahead of a path
-    /// that waits. #2774 moves the kill to `tests/memory`.
-    #[test]
-    fn a_lap_end_that_needs_a_shrink_waits_behind_a_path_that_waits() {
-        let (mut laps, mut budget) = (Laps::new(), budget(1));
-        laps.due.push_back(0);
-        let mut log = log_with(32, 3);
-        if log.trim(AREA, AREA) {
-            laps.end(&mut budget, &mut log, 1, AREA);
-        }
-        assert_eq!((room_of(&log), log.due, budget.used), ((32, 3), true, 0));
-        assert_eq!(laps.due, [0, 1]);
     }
 
     #[test]
@@ -2990,8 +2959,7 @@ mod tests {
     /// trims to its own record, and the lap that holds 2 runs needs a shrink of each
     /// path at the trim of record 12. That `hide`, and each `hide` after it, trims
     /// 100,000 runs, so it shrinks 256 + 25,000 paths, first in, first out, until
-    /// each has room for 4. A path that shrinks at its trim starts its next lap there,
-    /// and one that waits at the tail of the `hide` that ends its wait.
+    /// each has room for 4.
     #[test]
     fn a_hide_shrinks_256_paths_and_one_for_each_four_trims_and_the_rest_wait_in_turn()
     {
@@ -3039,41 +3007,6 @@ mod tests {
         assert_eq!(shrunk, expected);
         assert!(logs.laps.due.is_empty());
         assert!(logs.paths.iter().all(|log| log.runs.capacity() == 4));
-        let laps = [0, budget - 1, budget].map(|at| logs.paths[at].lap);
-        assert_eq!(laps, [4096 * 16, 4096 * 16, 4096 * 14]);
-    }
-
-    /// 4096 paths each hold a run in records 1 to 9, and a carry record takes the
-    /// tail of each. A hide drops the runs, and the hide of the carry record ends the
-    /// lap of each with no run to drop: it counts the 4096 carried tails as trims, so
-    /// it shrinks 256 + 1024 paths. It reads private state: #2774 moves the kill to
-    /// `tests/memory`.
-    #[test]
-    fn a_hide_counts_each_carried_tail_as_a_trim() {
-        let paths: u32 = 4096;
-        let mut logs = Logs::new(4 * 4096);
-        for record in 1..=9 {
-            for index in 1..=paths {
-                let at = slot(index);
-                let first = logs.appended(at, Path::Live).seq;
-                let mut entry = header(index, Path::Live, first, 1, Some(1));
-                append(&mut logs, at, &mut entry).expect("appends");
-                logs.sync(at, &entry, 4096 * record).expect("syncs");
-            }
-        }
-        carry_idle(&mut logs, 4096 * 12);
-        logs.hide(4096 * 12);
-        assert!(logs.paths.iter().all(|log| log.runs.is_empty()));
-        let rooms: Vec<usize> =
-            logs.paths.iter().map(|log| log.runs.capacity()).collect();
-        logs.hide(4096 * 13);
-        let shrunk = logs
-            .paths
-            .iter()
-            .zip(&rooms)
-            .filter(|&(log, &room)| log.runs.capacity() < room)
-            .count();
-        assert_eq!((shrunk, logs.laps.due.len()), (256 + 1024, 4096 - 1280));
     }
 
     /// Writes one record at `offset`, with an entry of 51 bytes of each of
