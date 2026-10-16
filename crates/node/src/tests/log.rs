@@ -160,15 +160,6 @@ fn a_node_warns_of_each_failure_of_its_roots_and_of_each_skipped_one() {
 }
 
 #[test]
-fn a_node_trusts_each_root_that_parses() {
-    let roots = os::Roots {
-        certificates: vec![super::CA.to_vec(), b"not DER".to_vec()],
-        failures: Vec::new(),
-    };
-    assert_eq!(format!("{:?}", crate::trust(&roots)), "Roots { count: 1 }");
-}
-
-#[test]
 fn a_node_warns_of_its_roots_before_it_starts() {
     let lines = logged(os::Roots::default(), tracing::Level::INFO);
     let warned = lines.iter().position(|line| line == NONE);

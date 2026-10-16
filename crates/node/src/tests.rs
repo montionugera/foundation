@@ -7432,8 +7432,9 @@ pub(crate) mod port {
         }
 
         /// The roots of `Config::roots` reach the supervisor: a node whose roots hold
-        /// the test CA writes a sample to an InfluxDB that serves `https` with a
-        /// certificate that this CA signs, and the connector has no `ca`.
+        /// a root that does not parse and the test CA writes a sample to an InfluxDB
+        /// that serves `https` with a certificate that this CA signs, and the connector
+        /// has no `ca`.
         #[test]
         fn a_node_writes_over_https_with_the_ca_of_its_roots() {
             use super::super::hub::{WALL, write_at, writer};
@@ -7486,8 +7487,21 @@ pub(crate) mod port {
                     .replace("http://influx:8086", "https://server:8086")
                     .replace("plant.*", "plant.value"),
             );
-            let founding = region(&[member(OWN, &KEY, &host)]);
-            let (node, definitions) = applied(&mut sim, &host, founding, text);
+            let node = Node::start(Config {
+                region: Region::Given(region(&[member(OWN, &KEY, &host)])),
+                roots: os::Roots {
+                    certificates: vec![b"not DER".to_vec(), CA.to_vec()],
+                    failures: Vec::new(),
+                },
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            let applied = Arc::new(Mutex::new(None));
+            let out = Arc::clone(&applied);
+            node.operate(move |ops| async move {
+                *out.lock().unwrap() = Some(apply(&ops, text).await);
+            });
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            let definitions = applied.lock().unwrap().take().expect("an apply");
             let keys =
                 ["time", "value"].map(|name| key_of(&definitions, name).as_u128());
             node.spawn(move |hub| async move {
