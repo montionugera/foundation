@@ -308,31 +308,14 @@ where
 /// gives the status of the answer or the error of the client.
 fn write(address: SocketAddr, lines: &'static str) -> String {
     let (send, answer) = mpsc::channel();
-    // The client takes mesh time from a hub, whose ring needs a directory.
-    let dir = std::env::temp_dir().join(format!(
-        "foundation-write-{}-{}",
-        std::process::id(),
-        os::entropy().rng().next_u64()
-    ));
-    let threads = os::threads().expect("the OS gives the cores");
-    let (disk, io) = os::files(&dir, &threads, "write-io").expect("the disk opens");
     let shard = start("write", move |tasks| async move {
-        let env = hub::testing::Env {
-            files: env::files::Files::new(disk),
-            clock: os::clock(),
-            wall: os::wall().expect("read the wall clock"),
-            entropy: os::entropy(),
-            tasks: tasks.clone(),
-        };
-        let (hub, _) = hub::testing::open(env).await;
         let client = Client::new(connector::http::Config {
             net: os::net(),
             clock: os::clock(),
             tasks,
             timeout: Span::MINUTE,
             body_max: 1 << 10,
-            roots: connector::http::Roots::default(),
-            time: hub.time().await,
+            tls: None,
         });
         let request = Request::post(format!("http://{address}/write?db=plant"))
             .body(Bytes::from_static(lines.as_bytes()))
@@ -344,8 +327,6 @@ fn write(address: SocketAddr, lines: &'static str) -> String {
         send.send(answer).expect("the test reads the answer");
     });
     shard.join().expect("the write runs with no panic");
-    io.join().expect("the I/O thread ends");
-    std::fs::remove_dir_all(&dir).expect("removes the directory");
     answer.try_recv().expect("the shard sent the answer")
 }
 

@@ -85,8 +85,7 @@ pub struct Client {
     tasks: Tasks,
     timeout: Span,
     body_max: usize,
-    roots: Roots,
-    time: hub::Time,
+    tls: Option<Tls>,
     provider: Arc<CryptoProvider>,
     pool: Pool,
 }
@@ -106,9 +105,17 @@ pub struct Config {
     pub timeout: Span,
     /// The largest response body the client reads.
     pub body_max: usize,
-    /// The roots that an `https` connect trusts.
+    /// What an `https` connect checks the server's certificate against. `None`
+    /// trusts no root, so each `https` send gives [`Error::NoRoots`].
+    pub tls: Option<Tls>,
+}
+
+/// The trust of an `https` connect.
+#[derive(Clone, Debug)]
+pub struct Tls {
+    /// The roots that a server's certificate must chain to.
     pub roots: Roots,
-    /// The mesh time that a certificate's validity is checked against.
+    /// The mesh time that the certificate's validity is checked against.
     pub time: hub::Time,
 }
 
@@ -122,8 +129,7 @@ impl Client {
             tasks: config.tasks,
             timeout: config.timeout.max(Span::ZERO),
             body_max: config.body_max,
-            roots: config.roots,
-            time: config.time,
+            tls: config.tls,
             provider: Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
             pool: Pool::default(),
         }
@@ -226,13 +232,15 @@ impl Client {
         origin: &Origin,
         deadline: Option<Monotonic>,
     ) -> Result<Connection, Error> {
-        if origin.secure && self.roots.empty() {
-            return Err(Error::NoRoots);
-        }
+        let tls = match &self.tls {
+            _ if !origin.secure => None,
+            Some(tls) if !tls.roots.empty() => Some(tls),
+            _ => return Err(Error::NoRoots),
+        };
         let tcp = self.dial(origin, deadline).await?;
         let received = Rc::default();
-        let stream = if origin.secure {
-            let config = tls::client(&self.provider, &self.roots, self.time.now());
+        let stream = if let Some(tls) = tls {
+            let config = tls::client(&self.provider, &tls.roots, tls.time.now());
             let name = name(&origin.host);
             Stream::client(tcp, config, name, Rc::clone(&received))
                 .await

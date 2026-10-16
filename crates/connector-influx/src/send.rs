@@ -120,8 +120,10 @@ async fn client(ctx: &Context<Config>) -> Client {
         tasks: ctx.tasks().clone(),
         timeout: TIMEOUT,
         body_max: BODY_MAX,
-        roots: ctx.roots().clone(),
-        time,
+        tls: Some(connector::http::Tls {
+            roots: ctx.roots().clone(),
+            time,
+        }),
     })
 }
 

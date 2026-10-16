@@ -3,7 +3,7 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
-use connector::http::{Client, Config, Roots};
+use connector::http::{Client, Config};
 use env::net::tcp;
 use env::thread::Handle;
 use http::header::{AUTHORIZATION, CONTENT_ENCODING};
@@ -83,23 +83,13 @@ impl Network {
     /// the status and body of each response. The clients live until the last
     /// response, so each keeps its stream open.
     fn send(&mut self, clients: Vec<Vec<Request<Bytes>>>) -> Vec<(StatusCode, String)> {
-        let node = self.client.clone();
-        let (net, clock) = (node.net(), node.clock());
+        let (net, clock) = (self.client.net(), self.client.clock());
         let out = Arc::new(Mutex::new(Vec::new()));
         let slot = Arc::clone(&out);
         let handle = self
             .client
             .shards()
             .start(shard("client"), move |tasks| async move {
-                let env = hub::testing::Env {
-                    files: node.files(),
-                    clock: node.clock(),
-                    wall: node.wall(),
-                    entropy: node.entropy(),
-                    tasks: tasks.clone(),
-                };
-                let (hub, _) = hub::testing::open(env).await;
-                let time = hub.time().await;
                 let mut held = Vec::new();
                 for requests in clients {
                     let client = Client::new(Config {
@@ -108,8 +98,7 @@ impl Network {
                         tasks: tasks.clone(),
                         timeout: TIMEOUT,
                         body_max: 1024,
-                        roots: Roots::default(),
-                        time: time.clone(),
+                        tls: None,
                     });
                     for request in requests {
                         let response = client.send(request).await.expect("an answer");

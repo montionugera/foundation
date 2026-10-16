@@ -11,7 +11,7 @@ use http::{Method, Request, Response, StatusCode};
 use types::time::Span;
 
 use super::serve;
-use crate::http::{Client, Config, Roots};
+use crate::http::{Client, Config};
 
 const PORT: u16 = 8086;
 const TIMEOUT: Span = Span::from_nanos(10_000_000_000);
@@ -115,7 +115,6 @@ impl Network {
         &mut self,
         requests: Vec<Request<Bytes>>,
     ) -> Vec<(StatusCode, String, String)> {
-        let node = self.client.clone();
         let (net, clock) = (self.client.net(), self.client.clock());
         let out = Arc::new(Mutex::new(Vec::new()));
         let slot = Arc::clone(&out);
@@ -123,16 +122,13 @@ impl Network {
             .client
             .shards()
             .start(shard("client"), move |tasks| async move {
-                let env = crate::common::env(&node, tasks.clone());
-                let (hub, _) = hub::testing::open(env).await;
                 let client = Client::new(Config {
                     net,
                     clock,
                     tasks,
                     timeout: TIMEOUT,
                     body_max: 1024,
-                    roots: Roots::default(),
-                    time: hub.time().await,
+                    tls: None,
                 });
                 for request in requests {
                     let response = client.send(request).await.expect("an answer");
@@ -419,7 +415,6 @@ fn ends_the_stream_of_an_http2_preface_with_no_answer() {
 #[test]
 fn gives_the_error_of_a_failed_accept_and_serves_the_streams_it_accepted() {
     let mut network = Network::new();
-    let node = network.client.clone();
     let (net, clock, remote) =
         (network.client.net(), network.client.clock(), network.remote);
     let out = Arc::new(Mutex::new(Vec::new()));
@@ -428,16 +423,13 @@ fn gives_the_error_of_a_failed_accept_and_serves_the_streams_it_accepted() {
         .client
         .shards()
         .start(shard("client"), move |tasks| async move {
-            let env = crate::common::env(&node, tasks.clone());
-            let (hub, _) = hub::testing::open(env).await;
             let client = Client::new(Config {
                 net: net.clone(),
                 clock: clock.clone(),
                 tasks,
                 timeout: TIMEOUT,
                 body_max: 1024,
-                roots: Roots::default(),
-                time: hub.time().await,
+                tls: None,
             });
             for path in ["/before", "/after"] {
                 let request = Request::post(format!("http://{remote}{path}"))

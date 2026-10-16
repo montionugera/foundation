@@ -122,7 +122,6 @@ impl Network {
     /// gives the outcome of each send. The client shard lives on for a minute after
     /// the drop, so the connection tasks end on their own.
     fn run(&mut self, steps: Vec<Step>) -> Vec<Result<Response<Bytes>, Error>> {
-        let node = self.client.clone();
         let (net, clock) = (self.client.net(), self.client.clock());
         let waits = steps
             .iter()
@@ -141,16 +140,13 @@ impl Network {
             self.client
                 .shards()
                 .start(shard("client"), move |tasks| async move {
-                    let env = crate::common::env(&node, tasks.clone());
-                    let (hub, _) = hub::testing::open(env).await;
                     let client = Client::new(Config {
                         net,
                         clock: clock.clone(),
                         tasks,
                         timeout: TIMEOUT,
                         body_max: BODY_MAX,
-                        roots: super::Roots::default(),
-                        time: hub.time().await,
+                        tls: None,
                     });
                     for step in steps {
                         match step {
@@ -724,6 +720,16 @@ fn dials_the_zone_of_a_uri_after_its_escaped_percent() {
             "{zone}: {error:?}"
         );
     }
+}
+
+#[test]
+fn fails_https_with_no_tls_before_the_lookup() {
+    let mut network = Network::new(18);
+    // No name gives `absent` an address, so a lookup would fail the connect.
+    let error = network
+        .send(get("https://absent:8086/ping"))
+        .expect_err("no root is trusted");
+    assert!(matches!(error, Error::NoRoots), "{error:?}");
 }
 
 #[test]

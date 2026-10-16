@@ -22,7 +22,7 @@ use hyper::rt::{Read as _, ReadBuf, Write as _};
 use super::super::stream::Stream;
 use super::{Pem, Roots};
 use crate::http::sim::{self, Certificate};
-use crate::http::{Client, Config, Error};
+use crate::http::{Client, Config, Error, Tls};
 
 const PORT: u16 = 8086;
 /// The size of a body that takes many writes and reads of the stream.
@@ -155,8 +155,10 @@ impl Network {
                     tasks,
                     timeout: TIMEOUT,
                     body_max: LARGE,
-                    roots,
-                    time: hub.time().await,
+                    tls: Some(Tls {
+                        roots,
+                        time: hub.time().await,
+                    }),
                 });
                 for step in steps {
                     match step {
