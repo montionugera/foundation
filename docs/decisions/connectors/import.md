@@ -53,13 +53,15 @@
   writes, the block for each access, and #2868: `laptop.architect-2`, 2026-10-16 14:31
   UTC, on the round 1 architecture review of #2859
   (https://github.com/synnaxlabs/foundation/pull/2859#issuecomment-6217747802).
-  `fill` is a reserved call, named by `import::FILL`. `config::check` reads each value
-  at any depth, also in the config of a kind, and each call `fill` gives only a problem
-  of `fill` at its span, after `config.private-key`, with the fix "Write the value in
-  place of `fill`". `fill("<what>")` gives `config.unfilled`, "the import found no
-  value for <what>". A call `fill` of other arguments gives `config.bad-fill`, "`fill`
-  takes one string", and the check does not read inside it. `import::unfilled` is the
-  read of `fill`. No kind may give a call `fill` a meaning of its own.
+  `fill` is a reserved call. `config::check` reads each value at any depth, also in the
+  config of a kind, and each call `fill` gives only a problem of `fill` at its span,
+  after `config.private-key`, with the fix "Write the value in place of `fill`".
+  `fill("<what>")` gives `config.unfilled`, "the import found no value for <what>". A
+  call `fill` of other arguments gives `config.bad-fill`, "`fill` takes one string". A
+  call `fill` inside a call `fill` gives no problem of its own. `import::unfilled` gives
+  the call `fill` that a value is, as an `import::Fill`: `Of(<what>)` or `Bad`. So only
+  `connector` knows the name and shape of the call. No kind may give a call `fill` a
+  meaning of its own.
   `config::import::{channel, index}` writes the `channel` blocks of an import, so the
   grammar of a `channel` block stays in the crate that parses it, and no kind or `ops`
   code writes one. A missing sample type is `fill("the sample type")`. The unit is what
@@ -84,3 +86,6 @@
   `import::FILL`, `config.bad-fill`, and the `fill` of a code that does not read:
   `laptop.architect-2`, 2026-10-16 15:55 UTC, on the round 1 architecture review of
   #2883 (https://github.com/synnaxlabs/foundation/pull/2883#issuecomment-6219336388).
+  `import::Fill` in place of a public `import::FILL`, and no problem for a `fill`
+  inside a `fill`: `laptop.architect-2`, 2026-10-16 16:06 UTC, on the round 2 review
+  of #2883 (https://github.com/synnaxlabs/foundation/pull/2883#issuecomment-6219539273).
