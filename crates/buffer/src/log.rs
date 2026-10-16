@@ -460,12 +460,13 @@ impl Laps {
         }
     }
 
-    /// Ends the lap of `log`, at place `at`, at a trim at `offset`, and starts the
-    /// next there. When the room is over four times the most runs that a trim of the
-    /// lap met, or over four with none, the end shrinks it. So runs that swing inside
-    /// a lap take no allocation, and the room is at most four times the most runs of
-    /// two laps. When the end needs a shrink, and a path waits or `budget` has none
-    /// left, the lap stays open and the path waits at the back of `due`.
+    /// Ends the lap of `log`, at place `at`, at a trim at `offset`, and starts the next
+    /// there. When the room is over four times the larger of the runs that the path
+    /// holds and the most runs that a trim of the lap met, or over four with none, the
+    /// end shrinks it. So runs that swing inside a lap take no allocation, and the room
+    /// is at most four times the most runs of two laps. When the end needs a shrink,
+    /// and a path waits or `budget` has none left, the lap stays open and the path
+    /// waits at the back of `due`.
     #[cold]
     fn end(&mut self, budget: &mut Budget, log: &mut Log, at: u32, offset: u64) {
         if log.oversized() {

@@ -130,6 +130,8 @@ mod tests {
     use super::*;
     use crate::bench::PHASE;
 
+    /// Reads the private `state`: `commit` gives only the tails of the carry record,
+    /// and no public call shows the trim or the checkpoint.
     #[test]
     fn each_deadline_after_the_warm_up_trims_and_writes_a_checkpoint() {
         let blocks = 64 + PHASE;
@@ -153,10 +155,8 @@ mod tests {
     }
 
     #[test]
-    fn a_deadline_of_54_indexes_takes_each() {
-        let mut deadline = Deadline::new(54, 64 + PHASE);
-        deadline.commit(1);
-        assert_eq!(deadline.state.taken, 1);
+    fn a_task_of_54_indexes_commits() {
+        assert_eq!(Deadline::new(54, 64 + PHASE).commit(1), 0);
     }
 
     #[test]
