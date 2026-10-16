@@ -21,12 +21,17 @@
   with a new client, before the next attempt of the same batch, as it reads the token
   again after a 401. A run with no `ca` retries a TLS failure in the run. `Error::Tls`
   also covers a server that closes in the handshake, so such a fault shows "Check the
-  ca" too. The rule is one rule: a fault retries in the run, and a config that cannot
-  work ends it. So a `ca` that gives no root when read again ends the run with
-  `Error::Retry`, and with no `hold` that end loses the batch in flight. A read after
-  the start that fails is to keep the batch (#2899). Approved by `laptop.architect-2`
-  (2026-10-16T16:46:18Z:
-  https://github.com/synnaxlabs/foundation/pull/2888#issuecomment-6220307355).
+  ca" too. Only the reads at the start of a run end it. A read of the token or the `ca`
+  after the start that fails, with any error of `Context::secret` or of the `ca` text,
+  shows that error as the status gives it at the end of a run, keeps the batch and the
+  old token or client, and reads again after the next backoff, with no request until
+  the read gives a value. A config that cannot work shows its error until the user
+  fixes it, and loses no sample. Decided by `laptop.architect-2` on #2899
+  (https://github.com/synnaxlabs/foundation/issues/2899), which replaces "a config that
+  cannot work ends it" for a read after the start (2026-10-16T16:46:18Z:
+  https://github.com/synnaxlabs/foundation/pull/2888#issuecomment-6220307355). Lost:
+  the next attempt with the old value, and the read again only after it fails, since
+  the shown error then flips between the read and the answer.
   Supersedes item 1 of 6219779608: the end of the run at a TLS failure with a `ca`
   (`laptop.architect-2`, 2026-10-16T16:17:47Z:
   https://github.com/synnaxlabs/foundation/pull/2888#issuecomment-6219779608). A `ca`
@@ -184,20 +189,18 @@
   (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6140691273). It acks
   a batch only after a 204. Each other answer, and each failed request, keeps the batch,
   shows its text with `Context::error`, and sends the batch again after a
-  `retry::Backoff` of 1 s to 1 min. No answer or failed request ends the run, other than
-  a 401 or a 403 after which the read of the token fails, and a TLS failure of a run
-  with a `ca` after which the read of the `ca` fails (#2899): an action in InfluxDB
-  fixes a 400, a 404, a 413, or a 422, and the next try after it lands the batch. The
-  reader stays open meanwhile, as in an outage of InfluxDB. The text is `InfluxDB
-  answered {status}: {body}`, and for these four statuses it adds a fix. A 400 and a 422
-  (InfluxDB 1 gives 400, and InfluxDB 2 gives 422, for a field type conflict and for
-  points past retention): "For a field type conflict, write to another `measurement` or
-  delete the old field in InfluxDB. For points older than the retention period, raise it
-  or write to another bucket". A 404: "Create the database, the bucket, or the org in
-  InfluxDB, or name one that exists". A 413: "Raise the request size limit of InfluxDB
-  (`--max-http-request-size` of InfluxDB 3, `max-body-size` of InfluxDB 1), or write
-  fewer or shorter samples in each frame" (the condition of `laptop.monitor` on the
-  batch bound, 2026-10-16T19:31:19Z,
+  `retry::Backoff` of 1 s to 1 min. No answer or failed request ends the run: an action
+  in InfluxDB fixes a 400, a 404, a 413, or a 422, and the next try after it lands the
+  batch. The reader stays open meanwhile, as in an outage of InfluxDB. The text is
+  `InfluxDB answered {status}: {body}`, and for these four statuses it adds a fix. A 400
+  and a 422 (InfluxDB 1 gives 400, and InfluxDB 2 gives 422, for a field type conflict
+  and for points past retention): "For a field type conflict, write to another
+  `measurement` or delete the old field in InfluxDB. For points older than the retention
+  period, raise it or write to another bucket". A 404: "Create the database, the bucket,
+  or the org in InfluxDB, or name one that exists". A 413: "Raise the request size limit
+  of InfluxDB (`--max-http-request-size` of InfluxDB 3, `max-body-size` of InfluxDB 1),
+  or write fewer or shorter samples in each frame" (the condition of `laptop.monitor` on
+  the batch bound, 2026-10-16T19:31:19Z,
   https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223151793). An answer
   whose body is over the cap of 64 KiB has its first 64 KiB as `{body}`, as
   `connector::http::Error::TooLarge` holds them, and the fix of its status

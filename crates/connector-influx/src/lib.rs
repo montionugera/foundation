@@ -204,18 +204,20 @@ impl kind::Kind for Kind {
     /// 404, a 413, or a 422, and sends the batch again after a backoff. It reads the
     /// token at its start, and again after a 401 or a 403 before the next attempt. It
     /// reads the `ca` at its start, and again after a TLS failure before the next
-    /// attempt.
+    /// attempt. A read after the start that fails shows its error, keeps the batch and
+    /// the old token or `ca`, and reads again after the next backoff, with no request
+    /// until the read gives a value.
     ///
     /// # Errors
     ///
     /// [`Error::Config`] with `influx.sample-type` for a channel of an `array`, `list`,
     /// or `matrix` type, with `influx.unsigned` for a `u64` channel to a
     /// [`Target::Database`], and with `influx.bad-channel` for a channel name that is
-    /// not a valid field key. The error of [`hub::reader::Ended`] when the
-    /// reader ends. [`Error::Retry`] or [`Error::Config`] from [`Context::secret`] when
-    /// a read fails, and [`Error::Retry`] when the token holds a byte that an HTTP
-    /// header cannot hold, and when the `ca` holds no PEM certificate or one that does
-    /// not parse.
+    /// not a valid field key. The error of [`hub::reader::Ended`] when the reader
+    /// ends. Only the reads at the start: [`Error::Retry`] or [`Error::Config`] from
+    /// [`Context::secret`] when a read fails, and [`Error::Retry`] when the token holds
+    /// a byte that an HTTP header cannot hold, and when the `ca` holds no PEM
+    /// certificate or one that does not parse.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         send::run(ctx)
     }
