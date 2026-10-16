@@ -82,9 +82,9 @@ pub struct Config {
     /// sends it in clear, and an `https` one keeps it from the network.
     pub token: Option<secret::Source>,
     /// Where the PEM certificates come from that an `https` connect trusts in
-    /// addition to the roots of the node, such as a private CA or a self-signed
-    /// server. `None` trusts only the roots of the node. An `http` address with a `ca`
-    /// is refused.
+    /// addition to the roots of the node, such as a private CA, or the certificate of
+    /// a self-signed server with `CA:FALSE`. `None` trusts only the roots of the node.
+    /// An `http` address with a `ca` is refused.
     pub ca: Option<secret::Source>,
     /// The reader whose samples it writes.
     pub reader: reader::Settings,
