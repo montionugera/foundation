@@ -113,7 +113,8 @@ impl Client {
 
 impl Client {
     /// Closes the session, and blocks until the close goes out and the client's
-    /// thread ends.
+    /// thread ends. The transport then drains each close, such as that of a dial that
+    /// lost the stagger to another address, so it can block up to 3 s more.
     ///
     /// # Errors
     ///
@@ -131,11 +132,9 @@ impl Thread {
     /// Ends the thread and waits for it, and gives its outcome. Resumes its panic.
     fn end(self) -> Result<(), Error> {
         drop(self.end);
-        match self.handle.join() {
-            Ok(outcome) => outcome,
-            Err(payload) if !thread::panicking() => panic::resume_unwind(payload),
-            Err(_) => Ok(()),
-        }
+        self.handle
+            .join()
+            .unwrap_or_else(|payload| panic::resume_unwind(payload))
     }
 }
 
