@@ -1353,7 +1353,7 @@ mod tests {
         forwards: BTreeMap<u8, (u8, Change)>,
         /// The answer of each node to the change that it got.
         answers: BTreeMap<u8, Message>,
-        /// The members from 1 to 9 on each node, when its watch last gave a home.
+        /// The members from 1 to 109 on each node, when its watch last gave a home.
         members: BTreeMap<u8, BTreeSet<u8>>,
         /// The voter whose card has no address on each node.
         hidden: Option<u8>,
@@ -1979,7 +1979,7 @@ mod tests {
         let mut watch = mesh.watch(INDEX);
         loop {
             let home = watch.next().await.unwrap();
-            let records: BTreeMap<_, _> = (1..10)
+            let records: BTreeMap<_, _> = (1..110)
                 .filter_map(|of| Some((of, mesh.member(key(of))?)))
                 .collect();
             // No call of `Mesh` gives the use count of a ticket.
@@ -2324,9 +2324,10 @@ mod tests {
         let board = behind(&changes);
         let homes = |id| (id, board.homes[&id].last().copied().flatten());
         assert_eq!(IDS.map(homes), IDS.map(|id| (id, Some(key(2)))));
-        let joined = (10..110).filter(|&id| board.states[&1].member(key(id)).is_some());
-        assert_eq!(joined.count(), 100);
-        // No call of `Mesh` gives the members.
+        let joined = (10..110).collect::<BTreeSet<_>>();
+        assert!(board.members[&3].is_superset(&joined));
+        assert_eq!(board.records[&3], board.records[&1]);
+        // No call of `Mesh` gives the use count of a ticket.
         assert_eq!(board.states[&3], board.states[&1]);
     }
 
