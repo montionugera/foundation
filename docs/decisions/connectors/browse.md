@@ -34,11 +34,11 @@
   2026-10-16T22:19:36Z:
   https://github.com/synnaxlabs/foundation/pull/2927#issuecomment-6225785631). This
   supersedes the "no new error" and "no cap on a segment" of the ruling of 17:55:41Z.
-  Only a `*` makes a piece, and a `*` at an end of a name makes no search; #2948 fixes
-  that text.
+  The message says that each `*` costs a search, but a `*` at an end of a name makes
+  none; #2948 fixes it.
   The cap does not bound the cost of a walk: each entry tests each glob of its state,
   in time linear in its name. On box1 in release, 63 globs `**/*<1 998 a>*` over
-  folders and points named 2 000 `a` take 3.9 s to the `Budget`. A budget of compared
+  folders and points named 2 000 `a` take 3.9 s to the `Budget`, at load 5.8. A budget of compared
   bytes is open in #2948 (`laptop.architect-2`, 2026-10-16T22:37:40Z:
   https://github.com/synnaxlabs/foundation/pull/2927#issuecomment-6226011243).
   Values are read only when the `Query` asks, in one call for the points that it gives.
