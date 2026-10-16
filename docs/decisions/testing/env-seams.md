@@ -863,7 +863,9 @@
   `os::files` share this one check. `open_absolute` refuses a directory at the stat with
   21 (`EISDIR`), so a directory that this user cannot read gets the advice for a
   directory. `Files::open` in the data directory still waits for a writer of a FIFO
-  (#2678). `sim` models no such file. Supersedes "blocks on a pipe and" in the reason that the amendment of 2026-10-16T08:08:47Z gives against a read of the hidden folder: a read of a pipe now gives `Io` 22. `write` keeps its rule: a pipe or a device at
+  (#2678). `sim` models no such file. Supersedes "blocks on a pipe and" in the reason
+  that the amendment of 2026-10-16T08:08:47Z gives against a read of the hidden folder:
+  a read of a pipe now gives `Io` 22. `write` keeps its rule: a pipe or a device at
   `path` takes the bytes in place. Lost: an open with `O_NONBLOCK` that then reads the
   FIFO, which gives what a writer put there by chance, or nothing, and still runs the
   driver of a device; an `O_PATH` open on Linux with a reopen through `/proc/self/fd`,
@@ -875,4 +877,9 @@
   https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6220151438; the
   directory, 2026-10-16T16:47:51Z,
   https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6220333948; the Linux
-  walk, 2026-10-16T17:27:15Z, https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221017304; the endings for a last link and the Linux-only test arm, 2026-10-16T17:35:27Z, https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221156481; the folder of the link and the evidence, 2026-10-16T17:48:30Z, https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221386763).
+  walk, 2026-10-16T17:27:15Z,
+  https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221017304; the
+  endings for a last link and the Linux-only test arm, 2026-10-16T17:35:27Z,
+  https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221156481; the folder
+  of the link and the evidence, 2026-10-16T17:48:30Z,
+  https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221386763).
