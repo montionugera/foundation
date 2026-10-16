@@ -54,7 +54,7 @@ fn commit_group(bencher: Bencher<'_, '_>, entries: usize) {
         .bench_local(|| group.commit(divan::black_box(entries)));
 }
 
-/// The group ring of ID 64 after the warm-up, out of line as [`steady_ring`] is.
+/// The group ring of 64 blocks after the warm-up, out of line as [`steady_ring`] is.
 #[inline(never)]
 fn steady_group(entries: usize) -> Group {
     let mut group = Group::new(64 + PHASE);

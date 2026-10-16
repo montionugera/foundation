@@ -2447,7 +2447,8 @@ mod tests {
     }
 
     /// A landing that moves down out of one range can land in a range of another
-    /// path, and moves down again. A carry record ends a range.
+    /// path, and moves down again. A carry record ends a range. The record before a
+    /// range is not in it, so a trim may land there.
     #[test]
     fn a_landing_moves_down_out_of_each_range_it_lands_in() {
         let mut logs = Logs::new(AREA);
@@ -2457,6 +2458,8 @@ mod tests {
         logs.sync(slot(2), &empty(2, 5), 12288).expect("syncs");
         logs.sync(slot(1), &empty(1, 0), 16384).expect("syncs");
         assert_eq!(logs.marked.land(16384), 4096);
+        assert_eq!(logs.marked.holding(4096), None);
+        assert_eq!(logs.marked.holding(16384), Some((4096, 16384)));
         assert_eq!(logs.marked.land(20480), 20480);
         logs.recover(slot(1), &carried(0, 2, None), 20480)
             .expect("the walk met the end");
