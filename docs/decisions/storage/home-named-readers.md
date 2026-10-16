@@ -46,8 +46,9 @@
   entry with no record. With no mesh time or no room for it, a restart restores the
   holds; a later carry in the same run does not. A named complete open that adds a
   record, opens a held one, or takes over an open session with a new hold appends its
-  entry before it opens, and its reader reads from disk only after the commit that holds
-  the entry. When the entry finds no block or no room, it opens nothing and gives
+  entry before it opens, and its reader takes no frame until the commit that holds the
+  entry. A takeover with the same hold of a session that waits for that commit waits for
+  it too. When the entry finds no block or no room, it opens nothing and gives
   `Unopened::Unrecorded`, and `hub` gives `reader::Error::Unrecorded`, so a restart
   never loses the frames of a first open, a reopen, or a takeover. After a failed
   commit, the open opens, and its reader ends with the error of the commit. Another
