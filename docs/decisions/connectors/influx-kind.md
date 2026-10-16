@@ -61,8 +61,11 @@
   also reads `measurement`, a name that `line::Measurement::new` takes other than
   `foundation_gaps` (`influx.bad-measurement`). `parse` builds the
   `line::Measurement` once, and the run takes it. `Config` is opaque, as in `opcua`
-  and `modbus`: only `parse` makes one, so each `Config` holds checked names (#2555,
-  item 2). `check` gives the reader of its settings
+  and `modbus`: only `parse` makes one, so each `Config` holds checked names
+  (`laptop.architect-2`, 2026-10-16T17:27:53Z:
+  https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6221027616). Its
+  condition: whichever of this change and #2888 merges second makes `Config::ca`
+  `pub(crate)` too. `check` gives the reader of its settings
   and no written channel. `run` writes each frame of the reader to the write path of its
   target: one line for each sample time, with a field for each channel of the frame,
   keyed by the channel name. A NaN or infinite value is left out, and so is a line with
@@ -72,8 +75,26 @@
   TEXT). An `f32` or `f64` channel is a float, where an `f32` is the `f64` of the same
   value (0.1 as 1.0000000149011612e-1), so a reader that narrows it gets back the same
   bits. A `u64` channel is a `u` integer to a `bucket`, and to a `database` it ends the
-  run with `Error::Config` and `influx.unsigned` (LINE TEXT). Each other type (`uuid`,
-  `string`, `bytes`, `array`, `list`, `matrix`) ends the run with `Error::Config` and
+  run with `Error::Config` and `influx.unsigned` (LINE TEXT). A `string` channel is a
+  string field, with `\` before each `"` and `\`, and each other char kept, a newline
+  too: InfluxDB 1.8 and 2.7 (`models/points.go`) and InfluxDB 3 read only these two
+  escapes in a string field, and a newline in it does not end the line. A `uuid`
+  channel is a string field of 36 lowercase chars, its 16 bytes in RFC 9562 order, so
+  byte 0 gives the first two hex chars. A `bytes` channel is a string field of its
+  base64, the standard alphabet with padding. A string field whose text between its
+  quotes, after the escapes, is over 65,536 bytes (a `bytes` sample over 49,152) is
+  left out, as a NaN is, and the run goes on. InfluxDB 3 refuses a string field over
+  65,536 bytes, and the docs of InfluxDB 1 and 2 give 64 KB. The count is of the text as
+  written, so each version takes each line that the run sends. Lost: cut the string (a
+  changed value with no sign), or end the run (one long sample stops a stream). Decided
+  by `laptop.architect-2` on 2026-10-16T17:35:01Z
+  (https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6221149361), on
+  the plan of
+  https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6221118220. The run
+  reads a sample of a raw `string` or `bytes` series with `codec::Variable::sample`
+  (`laptop.architect`, 2026-10-16T17:33:48Z:
+  https://github.com/synnaxlabs/foundation/issues/2901#issuecomment-6221128456). Each
+  other type (`array`, `list`, `matrix`) ends the run with `Error::Config` and
   `influx.sample-type`, and a channel name that is not a field key with
   `influx.bad-channel`. The run picks the conversion of a channel with its field, at the
   first frame of each key set that holds it. Lost: an `f32` as its shortest text

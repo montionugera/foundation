@@ -2,10 +2,10 @@
 //! of a sim node. Run with `cargo bench -p connector-influx --bench batch`.
 //!
 //! For each shape, a writer writes frames of an index and `channels` channels of the
-//! shape's types in turn (`f64` only, or `MIXED`), with `samples` sample times each,
-//! and a complete reader reads them. Each frame holds `present` of the channels, a
-//! different `present` in turn, so the frames hold each channel once before they hold
-//! one again. The batch writes to a bucket, so a `u64` channel is a `u` field. Each
+//! shape's types in turn (`f64` only, `MIXED`, or `TEXT`), with `samples` sample times
+//! each, and a complete reader reads them. Each frame holds `present` of the channels,
+//! a different `present` in turn, so the frames hold each channel once before they
+//! hold one again. The batch writes to a bucket, so a `u64` channel is a `u` field. Each
 //! round adds `FRAMES` frames to one batch with `Batch::add`, then takes its body with
 //! `Batch::take`, as the send loop does for one request. Only these two calls are
 //! timed. The figures are per frame: the ns of the warm-up rounds, in which the batch
@@ -47,7 +47,7 @@ const FRAMES: usize = 16;
 /// frees.
 const ROUNDS: usize = 20;
 /// Each `(channels, samples, present, types)`.
-const SHAPES: [(usize, usize, usize, &[Scalar]); 11] = [
+const SHAPES: [(usize, usize, usize, &[Type]); 13] = [
     (1, 1, 1, F64),
     (8, 1, 8, F64),
     (64, 1, 64, F64),
@@ -59,19 +59,23 @@ const SHAPES: [(usize, usize, usize, &[Scalar]); 11] = [
     (4096, 1, 1, F64),
     (8, 1, 8, MIXED),
     (64, 10, 64, MIXED),
+    (8, 1, 8, TEXT),
+    (64, 10, 64, TEXT),
 ];
-const F64: &[Scalar] = &[Scalar::F64];
+const F64: &[Type] = &[Type::Scalar(Scalar::F64)];
 /// A type of each kind of field: boolean, `i`, `u`, and float.
-const MIXED: &[Scalar] = &[
-    Scalar::Bool,
-    Scalar::I32,
-    Scalar::I64,
-    Scalar::U32,
-    Scalar::U64,
-    Scalar::F32,
-    Scalar::F64,
-    Scalar::Stamp,
+const MIXED: &[Type] = &[
+    Type::Scalar(Scalar::Bool),
+    Type::Scalar(Scalar::I32),
+    Type::Scalar(Scalar::I64),
+    Type::Scalar(Scalar::U32),
+    Type::Scalar(Scalar::U64),
+    Type::Scalar(Scalar::F32),
+    Type::Scalar(Scalar::F64),
+    Type::Scalar(Scalar::Stamp),
 ];
+/// Each type of a string field.
+const TEXT: &[Type] = &[Type::String, Type::Scalar(Scalar::Uuid), Type::Bytes];
 /// Each count of channels of a frame that a new batch adds.
 const NEW: [usize; 4] = [1, 64, 256, 1024];
 
@@ -105,7 +109,11 @@ fn main() {
         println!(
             "{channels:>8} {samples:>7} {present:>7} {:>5} {first:>9} {:>9} {:>9} \
              {:>9} {:>11.2} {:>12.2} {body:>11}",
-            if types == F64 { "f64" } else { "mixed" },
+            match types {
+                F64 => "f64",
+                MIXED => "mixed",
+                _ => "text",
+            },
             at(10),
             at(50),
             at(90),
@@ -168,7 +176,7 @@ async fn bench(
     node: sim::node::Node,
     tasks: env::tasks::Tasks,
     (channels, samples, present): (usize, usize, usize),
-    types: &[Scalar],
+    types: &[Type],
 ) -> (u64, Vec<u64>, u64, usize) {
     let (_hub, mut writer, mut reader) = open(&node, tasks, channels, types).await;
     let mut batch =
@@ -217,7 +225,7 @@ async fn open(
     node: &sim::node::Node,
     tasks: env::tasks::Tasks,
     channels: usize,
-    types: &[Scalar],
+    types: &[Type],
 ) -> (Hub, Writer, Reader) {
     let env = hub::testing::Env {
         files: node.files(),
@@ -250,7 +258,7 @@ async fn open(
 
 /// Defines the index `edge.time` and the channels `edge.c<i>` for each `i` below
 /// `channels`, of `types` in turn, and gives each name.
-fn define(hub: &hub::Hub, channels: usize, types: &[Scalar]) -> Vec<Name> {
+fn define(hub: &hub::Hub, channels: usize, types: &[Type]) -> Vec<Name> {
     let time = channel::Key::from_u128(1);
     let index = Kind::Index {
         error: None,
@@ -264,7 +272,7 @@ fn define(hub: &hub::Hub, channels: usize, types: &[Scalar]) -> Vec<Name> {
         }),
     )];
     for at in 0..channels {
-        let data_type = DataType::Sample(Type::Scalar(types[at % types.len()]));
+        let data_type = DataType::Sample(types[at % types.len()]);
         let data = Data::new(time, None, data_type, None).expect("no unit");
         let key = channel::Key::from_u128(u128::try_from(at).expect("few") + 2);
         let channel = Channel {
@@ -298,30 +306,15 @@ fn write(
     let group = entries[index].group;
     let series: Vec<_> = (0..entries.len())
         .filter(|&at| at == index || at % groups == turn)
-        .map(|at| (at, samples * width(entries[at].data_type)))
+        .map(|at| (at, raw(entries[at].data_type, at == index, first, samples)))
         .collect();
-    let mut draft = writer.draft(Form::Raw, &series).expect("a frame");
-    for &(at, _) in &series {
-        let data_type = entries[at].data_type;
-        let series = draft.series_mut(at).expect("a series");
-        let bytes = (0..samples).flat_map(|sample| {
-            let small = u8::try_from(sample % 200).expect("fits");
-            let bytes = match data_type {
-                _ if at == index => {
-                    (first + i64::try_from(sample).expect("few")).to_le_bytes()
-                }
-                Type::Scalar(Scalar::F64) => (1.5 * f64::from(small)).to_le_bytes(),
-                Type::Scalar(Scalar::F32) => {
-                    u64::from((1.5 * f32::from(small)).to_bits()).to_le_bytes()
-                }
-                Type::Scalar(Scalar::Bool) => u64::from(small % 2).to_le_bytes(),
-                _ => u64::from(small).to_le_bytes(),
-            };
-            bytes.into_iter().take(width(data_type))
-        });
-        for (to, from) in series.iter_mut().zip(bytes) {
-            *to = from;
-        }
+    let lens: Vec<_> = series.iter().map(|(at, raw)| (*at, raw.len())).collect();
+    let mut draft = writer.draft(Form::Raw, &lens).expect("a frame");
+    for (at, raw) in &series {
+        draft
+            .series_mut(*at)
+            .expect("a series")
+            .copy_from_slice(raw);
     }
     draft.set_count(group, u32::try_from(samples).expect("few"));
     let written = writer.write(Label::Path(Path::Live), draft);
@@ -330,6 +323,39 @@ fn write(
             .all(|outcome| matches!(outcome, hub::home::Outcome::Applied { .. }))
     });
     assert!(applied, "the frame applies");
+}
+
+/// The raw series of `samples` samples of `data_type` from `first`, of the index when
+/// `index`, each nanosecond after the one before it.
+fn raw(data_type: Type, index: bool, first: i64, samples: usize) -> Vec<u8> {
+    let small = |sample: usize| u8::try_from(sample % 200).expect("fits");
+    if let Some(form) = codec::Variable::of(data_type) {
+        let texts: Vec<_> = (0..samples)
+            .map(|sample| format!("value \"{}\"", small(sample)).into_bytes())
+            .collect();
+        let mut bytes = vec![0; form.len(&texts).expect("fits")];
+        form.write(&texts, &mut bytes);
+        return bytes;
+    }
+    let width = data_type.width().expect("a fixed-width type");
+    (0..samples)
+        .flat_map(|sample| {
+            let small = small(sample);
+            let bytes = match data_type {
+                _ if index => i128::from(first + i64::try_from(sample).expect("few"))
+                    .to_le_bytes(),
+                Type::Scalar(Scalar::F64) => {
+                    u128::from((1.5 * f64::from(small)).to_bits()).to_le_bytes()
+                }
+                Type::Scalar(Scalar::F32) => {
+                    u128::from((1.5 * f32::from(small)).to_bits()).to_le_bytes()
+                }
+                Type::Scalar(Scalar::Bool) => u128::from(small % 2).to_le_bytes(),
+                _ => u128::from(small).to_le_bytes(),
+            };
+            bytes.into_iter().take(width)
+        })
+        .collect()
 }
 
 /// The result of `f`, and its ns and allocations.
@@ -342,11 +368,6 @@ fn timed<T>(f: impl FnOnce() -> T) -> (T, (u64, u64)) {
     });
     let nanos = u64::try_from(span.as_nanos()).expect("a call takes under 2^64 ns");
     (value, (nanos, allocations))
-}
-
-/// The bytes of one sample of the fixed-width `data_type`.
-fn width(data_type: Type) -> usize {
-    data_type.width().expect("a fixed-width type")
 }
 
 fn telemetry() -> Measurement {

@@ -1458,37 +1458,130 @@ fn stops_with_a_config_error_at_a_u64_channel_to_a_database() {
     );
 }
 
+/// The raw series of `samples` of the variable `data_type`.
+fn variable(data_type: Type, samples: &[&[u8]]) -> Vec<u8> {
+    let form = codec::Variable::of(data_type).expect("a variable type");
+    let mut bytes = vec![0; form.len(samples).expect("fits")];
+    form.write(samples, &mut bytes);
+    bytes
+}
+
+#[test]
+fn writes_a_string_with_each_quote_and_backslash_escaped_and_each_newline_kept() {
+    let samples: [&[u8]; 3] = [b"a\"b\\c", b"two\nlines", b""];
+    let columns = vec![("edge.text", 23, variable(Type::String, &samples))];
+    let frame = one_frame("edge.*", false, 3, columns);
+    assert!(frame.end.is_none(), "the run goes on: {:?}", frame.end);
+    let first = frame.first;
+    let body = format!(
+        "telemetry edge.text=\"a\\\"b\\\\c\" {first}\n\
+         telemetry edge.text=\"two\nlines\" {}\n\
+         telemetry edge.text=\"\" {}\n",
+        first + 1,
+        first + 2
+    );
+    assert_eq!(frame.got, vec![(WRITE.into(), body)]);
+    let field = |text: &str| {
+        BTreeMap::from([("edge.text".into(), crate::sim::Field::String(text.into()))])
+    };
+    assert_eq!(
+        frame.points,
+        [field("a\"b\\c"), field("two\nlines"), field("")]
+    );
+}
+
+#[test]
+fn leaves_out_a_string_over_65536_bytes_after_its_escapes_and_keeps_its_line() {
+    let kept = ["é".repeat(32_768), format!("\"{}", "x".repeat(65_534))];
+    let long = ["x".repeat(65_537), format!("\"{}", "x".repeat(65_535))];
+    let samples = [&kept[0], &long[0], &kept[1], &long[1]].map(String::as_bytes);
+    let columns = vec![
+        ("edge.text", 23, variable(Type::String, &samples)),
+        ("edge.count", 4, bytes![1_i64, 2_i64, 3_i64, 4_i64]),
+    ];
+    let frame = one_frame("edge.*", false, 4, columns);
+    assert!(frame.end.is_none(), "the run goes on: {:?}", frame.end);
+    let first = frame.first;
+    let body = format!(
+        "telemetry edge.text=\"{}\",edge.count=1i {first}\n\
+         telemetry edge.count=2i {}\n\
+         telemetry edge.text=\"\\{}\",edge.count=3i {}\n\
+         telemetry edge.count=4i {}\n",
+        kept[0],
+        first + 1,
+        kept[1],
+        first + 2,
+        first + 3
+    );
+    assert_eq!(frame.got, vec![(WRITE.into(), body)]);
+    assert_eq!(frame.points.len(), 4);
+}
+
+#[test]
+fn writes_a_uuid_as_its_lowercase_text() {
+    let uuid = 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef_u128.to_be_bytes();
+    let columns = vec![("edge.uuid", 21, uuid.to_vec())];
+    let frame = one_frame("edge.*", false, 1, columns);
+    assert!(frame.end.is_none(), "the run goes on: {:?}", frame.end);
+    let body = format!(
+        "telemetry edge.uuid=\"01234567-89ab-cdef-0123-456789abcdef\" {}\n",
+        frame.first
+    );
+    assert_eq!(frame.got, vec![(WRITE.into(), body)]);
+}
+
+#[test]
+fn writes_bytes_as_base64_with_padding_and_leaves_out_bytes_over_49152() {
+    let (kept, long) = (vec![0xfb_u8; 49_152], vec![0_u8; 49_153]);
+    let samples: [&[u8]; 4] = [&[0, 255, 1], &[0xfb], &kept, &long];
+    let columns = vec![
+        ("edge.blob", 24, variable(Type::Bytes, &samples)),
+        ("edge.count", 4, bytes![1_i64, 2_i64, 3_i64, 4_i64]),
+    ];
+    let frame = one_frame("edge.*", false, 4, columns);
+    assert!(frame.end.is_none(), "the run goes on: {:?}", frame.end);
+    let first = frame.first;
+    let body = format!(
+        "telemetry edge.blob=\"AP8B\",edge.count=1i {first}\n\
+         telemetry edge.blob=\"+w==\",edge.count=2i {}\n\
+         telemetry edge.blob=\"{}\",edge.count=3i {}\n\
+         telemetry edge.count=4i {}\n",
+        first + 1,
+        "+/v7".repeat(16_384),
+        first + 2,
+        first + 3
+    );
+    assert_eq!(frame.got, vec![(WRITE.into(), body)]);
+    assert_eq!(frame.points.len(), 4);
+}
+
+#[test]
+fn writes_empty_bytes_as_an_empty_string() {
+    let columns = vec![("edge.blob", 24, variable(Type::Bytes, &[&[]]))];
+    let frame = one_frame("edge.*", false, 1, columns);
+    let body = format!("telemetry edge.blob=\"\" {}\n", frame.first);
+    assert_eq!(frame.got, vec![(WRITE.into(), body)]);
+}
+
 #[test]
 fn stops_with_a_config_error_at_a_channel_of_a_type_it_does_not_write() {
-    let uuid = ("edge.uuid", 21, vec![7; 16], "uuid");
-    let xyz = ("edge.xyz", 22, bytes![1.0_f32, 2.0_f32, 3.0_f32], "f32[3]");
-    let variable = |data_type, sample: &[u8]| {
-        let form = codec::Variable::of(data_type).expect("a variable type");
-        let mut bytes = vec![0; form.len(&[sample]).expect("fits")];
-        form.write(&[sample], &mut bytes);
-        bytes
+    let xyz = bytes![1.0_f32, 2.0_f32, 3.0_f32];
+    let frame = one_frame("edge.*", true, 1, vec![("edge.xyz", 22, xyz)]);
+    assert_eq!(frame.got, []);
+    let Some(Err(Error::Config(diagnostics))) = frame.end else {
+        panic!("a config error, not {:?}", frame.end);
     };
-    let text = ("edge.text", 23, variable(Type::String, b"hi"), "string");
-    let blob = ("edge.blob", 24, variable(Type::Bytes, &[0, 255]), "bytes");
-    for (channel, key, bytes, data_type) in [uuid, xyz, text, blob] {
-        let frame = one_frame("edge.*", true, 1, vec![(channel, key, bytes)]);
-        assert_eq!(frame.got, []);
-        let Some(Err(Error::Config(diagnostics))) = frame.end else {
-            panic!("a config error, not {:?}", frame.end);
-        };
-        assert_eq!(
-            diagnostics,
-            [Diagnostic::new(
-                Code::new("influx.sample-type"),
-                None,
-                format!(
-                    "the channel {channel:?} holds {data_type} samples, which the \
-                     influx kind does not write"
-                ),
-                "Leave the channel out of `select`".into(),
-            )]
-        );
-    }
+    assert_eq!(
+        diagnostics,
+        [Diagnostic::new(
+            Code::new("influx.sample-type"),
+            None,
+            "the channel \"edge.xyz\" holds f32[3] samples, which the influx kind \
+             does not write"
+                .into(),
+            "Leave the channel out of `select`".into(),
+        )]
+    );
 }
 
 #[test]

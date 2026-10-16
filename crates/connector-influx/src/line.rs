@@ -4,8 +4,14 @@
 use std::fmt;
 use std::io::Write as _;
 
+use base64ct::{Base64, Encoding as _};
+
 use types::time::Stamp;
 use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory as _};
+
+/// The most bytes of a string field between its quotes, after the escapes, that
+/// each InfluxDB version takes.
+pub(crate) const STRING_MAX: usize = 65_536;
 
 /// One measurement's name and tags, checked and escaped once.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -150,6 +156,63 @@ impl Line<'_> {
     pub(crate) fn boolean(&mut self, field: &Field, value: bool) {
         self.key(field);
         self.out.push(if value { b't' } else { b'f' });
+    }
+
+    /// Appends the string field `field` of the UTF-8 text `text`, with `\` before
+    /// each `"` and `\`, or leaves it out when that is over [`STRING_MAX`] bytes.
+    #[inline]
+    pub(crate) fn string(&mut self, field: &Field, text: &[u8]) {
+        let escapes = text.iter().filter(|&&byte| escaped(byte)).count();
+        if text.len().saturating_add(escapes) > STRING_MAX {
+            return;
+        }
+        self.key(field);
+        self.out.push(b'"');
+        let mut rest = text;
+        while let Some(at) = rest.iter().position(|&byte| escaped(byte)) {
+            let (head, tail) = rest.split_at(at);
+            let Some((&byte, tail)) = tail.split_first() else {
+                unreachable!("invariant: `position` gives a byte of `rest`")
+            };
+            self.out.extend_from_slice(head);
+            self.out.extend_from_slice(&[b'\\', byte]);
+            rest = tail;
+        }
+        self.out.extend_from_slice(rest);
+        self.out.push(b'"');
+    }
+
+    /// Appends the string field `field` of `bytes` in base64 with padding, or leaves
+    /// it out when that is over [`STRING_MAX`] bytes: when `bytes` is over 49,152.
+    #[inline]
+    pub(crate) fn bytes(&mut self, field: &Field, bytes: &[u8]) {
+        let len = Base64::encoded_len(bytes);
+        if len > STRING_MAX {
+            return;
+        }
+        self.key(field);
+        self.out.push(b'"');
+        let start = self.out.len();
+        self.out.resize(start.saturating_add(len), 0);
+        Base64::encode(bytes, self.out.split_at_mut(start).1)
+            .expect("invariant: the text has the encoded length");
+        self.out.push(b'"');
+    }
+
+    /// Appends the string field `field` of the uuid `bits`, as 36 lowercase chars.
+    #[inline]
+    pub(crate) fn uuid(&mut self, field: &Field, bits: u128) {
+        self.key(field);
+        write!(
+            self.out,
+            "\"{:08x}-{:04x}-{:04x}-{:04x}-{:012x}\"",
+            bits >> 96,
+            bits >> 80 & 0xffff,
+            bits >> 64 & 0xffff,
+            bits >> 48 & 0xffff,
+            bits & 0xffff_ffff_ffff
+        )
+        .expect("invariant: a write to a Vec never fails");
     }
 
     /// Appends the separator and key of one more field.
@@ -336,6 +399,11 @@ fn refused(c: char) -> bool {
                 c.general_category_group(),
                 GeneralCategoryGroup::Separator | GeneralCategoryGroup::Other
             ))
+}
+
+/// Whether a string field writes a `\` before `byte`.
+const fn escaped(byte: u8) -> bool {
+    matches!(byte, b'"' | b'\\')
 }
 
 #[cfg(test)]
