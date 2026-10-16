@@ -1485,6 +1485,7 @@ dependencies = [
  "hub",
  "sim",
  "spec",
+ "tracing",
  "transport",
  "types",
  "wire",
