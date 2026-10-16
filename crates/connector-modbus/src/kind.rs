@@ -8,6 +8,7 @@ use connector::kind::{self, Channels, Context, Error};
 use connector::{cancel, pace, poll};
 use document::Document;
 use document::diagnostic::{Code, Diagnostic};
+use env::net::host::Host;
 use env::net::{self, tcp};
 use types::sample::{Type, Value};
 use types::time::Span;
@@ -100,7 +101,7 @@ impl kind::Kind for Kind {
                 break;
             };
             read?;
-            writer.write(&values, stamp)?;
+            writer.write(values.iter().copied(), stamp)?;
         }
         Ok(())
     }
@@ -261,7 +262,7 @@ fn refused(config: &Config, group: &Group, exception: Exception) -> Error {
 #[derive(Debug)]
 enum Fault {
     Lookup {
-        host: Box<str>,
+        host: Host,
         error: net::Error,
     },
     Connect {
