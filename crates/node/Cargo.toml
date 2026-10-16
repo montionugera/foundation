@@ -59,8 +59,11 @@ hub = { path = "../hub", features = ["sim"] }
 # Turns on `sim` for the bench, since the bench host runs no features.
 node = { path = ".", features = ["sim"] }
 proptest = { workspace = true }
-sdk = { path = "../../sdk/rust" }
 sim = { path = "../sim" }
+
+# Under `--cfg loom`, Tokio has no `net`.
+[target.'cfg(not(loom))'.dev-dependencies]
+sdk = { path = "../../sdk/rust" }
 
 [[test]]
 name = "erase"
