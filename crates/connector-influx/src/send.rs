@@ -69,13 +69,15 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
         if flight.is_none()
             && let Some(Taken { body, ack }) = batch.take()
         {
-            let (client, uri, token) = (&client, &uri, &token);
-            flight.set(Some(async move {
-                if !body.is_empty() {
+            if body.is_empty() {
+                reader.ack(ack.position);
+            } else {
+                let (client, uri, token) = (&client, &uri, &token);
+                flight.set(Some(async move {
                     send(client, ctx, uri, token, body.into()).await?;
-                }
-                Ok(ack)
-            }));
+                    Ok(ack)
+                }));
+            }
         }
         let full = batch.full();
         let event = {
@@ -104,9 +106,7 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
             Event::Sent(Err(error)) => return Err(error),
             Event::Sent(Ok(ack)) => {
                 flight.set(None);
-                if let Some(position) = ack.position {
-                    reader.ack(position);
-                }
+                reader.ack(ack.position);
                 confirmed.add(ack.samples);
                 lost.add(ack.lost);
             }

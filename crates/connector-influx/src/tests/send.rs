@@ -920,13 +920,17 @@ fn writes_the_gap_line_of_a_run_lost_for_no_room_and_counts_its_seqs_after_a_204
     assert_eq!(counts, (vec![0, 3], vec![0, 2, 4]));
 }
 
-/// The body that InfluxDB gets after a run lost for no room, then `after`, and the
-/// count `lost`, with the stamp of the first sample after the loss.
-fn after_a_loss(after: fn(&mut hub::writer::Writer, i64)) -> (String, Vec<u64>, i64) {
+/// What InfluxDB gets after a run lost for no room, then `after`: the body of the
+/// first run, the count `lost`, and the body of a second run, which gets one more
+/// frame at the stamp after `after`. The stamp is that of the first sample after the
+/// loss.
+fn after_a_loss(
+    after: fn(&mut hub::writer::Writer, i64),
+) -> (String, Vec<u64>, String, i64) {
     run(move |node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
-        let run = plant.start(plant.config());
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        let run = plant.start(plant.config());
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
         write(&mut writer, first, &[(1.0, 2.0)]);
@@ -936,80 +940,46 @@ fn after_a_loss(after: fn(&mut hub::writer::Writer, i64)) -> (String, Vec<u64>, 
         after(&mut writer, first + 4);
         plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
         plant.stop(run).await.expect("ok after a cancel");
-        let bodies: String = (plant.got().into_iter().skip(sent))
-            .map(|(_, body)| body)
-            .collect();
-        (bodies, plant.lost.borrow().clone(), first + 4)
+        let bodies = |got: Vec<Got>, skip| -> String {
+            got.into_iter().skip(skip).map(|(_, body)| body).collect()
+        };
+        let body = bodies(std::mem::take(&mut *plant.got.borrow_mut()), sent);
+        let lost = plant.lost.borrow().clone();
+        let run = plant.start(plant.config());
+        plant.clock.sleep(Span::SECOND).await;
+        write(&mut writer, first + 10, &[(5.0, 6.0)]);
+        plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+        plant.stop(run).await.expect("ok after a cancel");
+        (body, lost, bodies(plant.got(), 0), first + 4)
     })
 }
 
-/// INFLUX SEQ AND GAPS reads a gap line at the stamp of a data point, so a gap line
-/// waits for the first line that the run writes, and counts up to its seq.
+/// The gap line sits at the first sample time after the gap, also when the run leaves
+/// its line out, and counts only the seqs of the gap. The batch acks the frame, so the
+/// next run gets no gap again.
 #[test]
-fn writes_the_gap_line_at_the_first_sample_time_with_a_value() {
-    let (body, lost, stamp) = after_a_loss(|writer, at| {
+fn writes_the_gap_line_at_a_first_sample_time_whose_line_is_left_out() {
+    let (body, lost, again, stamp) = after_a_loss(|writer, at| {
         write(writer, at, &[(f64::NAN, f64::INFINITY), (3.0, 4.0)]);
     });
     let gap = "foundation_gaps,connector=influx,index=edge.time,path=live";
-    let line = line("3e0", "4e0", stamp + 1);
-    assert_eq!(body, format!("{gap} count=4i {}\n{line}", stamp + 1));
-    assert_eq!(lost, [0, 4]);
+    let data = line("3e0", "4e0", stamp + 1);
+    assert_eq!(body, format!("{gap} count=3i {stamp}\n{data}"));
+    assert_eq!(lost, [0, 3]);
+    assert_eq!(again, line("5e0", "6e0", stamp + 6));
 }
 
 #[test]
-fn writes_the_gap_line_at_the_next_frame_with_a_value() {
-    let (body, lost, stamp) = after_a_loss(|writer, at| {
-        write(writer, at, &[(f64::NAN, f64::NAN)]);
-        write(writer, at + 1, &[(3.0, 4.0)]);
-    });
-    let gap = "foundation_gaps,connector=influx,index=edge.time,path=live";
-    let line = line("3e0", "4e0", stamp + 1);
-    assert_eq!(body, format!("{gap} count=4i {}\n{line}", stamp + 1));
-    assert_eq!(lost, [0, 4]);
-}
-
-#[test]
-fn writes_the_gap_line_after_a_frame_with_no_data_channel() {
-    let (body, lost, stamp) = after_a_loss(|writer, at| {
+fn writes_the_gap_line_at_the_first_stamp_of_a_frame_with_no_data_channel() {
+    let (body, lost, again, stamp) = after_a_loss(|writer, at| {
         write_times(writer, at, 2);
         write(writer, at + 2, &[(3.0, 4.0)]);
     });
     let gap = "foundation_gaps,connector=influx,index=edge.time,path=live";
-    let line = line("3e0", "4e0", stamp + 2);
-    assert_eq!(body, format!("{gap} count=5i {}\n{line}", stamp + 2));
-    assert_eq!(lost, [0, 5]);
-}
-
-/// A run that stops while its gap waits for a line with a value acks no frame from
-/// the gap on, so the next run gets the gap again and writes its line.
-#[test]
-fn writes_the_gap_line_in_the_next_run_when_a_run_stops_while_it_waits() {
-    let (first, second, stamp) = run(|node, tasks| async move {
-        let plant = Plant::new(node, tasks).await;
-        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
-        let run = plant.start(plant.config());
-        plant.clock.sleep(Span::SECOND).await;
-        let first = writer.now().nanos();
-        write(&mut writer, first, &[(1.0, 2.0)]);
-        plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
-        write_lost(&mut writer, first + 1);
-        write(&mut writer, first + 4, &[(f64::NAN, f64::NAN)]);
-        plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
-        plant.stop(run).await.expect("ok after a cancel");
-        let got = std::mem::take(&mut *plant.got.borrow_mut());
-        let run = plant.start(plant.config());
-        plant.clock.sleep(Span::SECOND).await;
-        write(&mut writer, first + 5, &[(3.0, 4.0)]);
-        plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
-        plant.stop(run).await.expect("ok after a cancel");
-        let bodies = |got: Vec<Got>| got.into_iter().map(|(_, body)| body).collect();
-        let second: Vec<String> = bodies(plant.got());
-        (bodies(got), second, first + 5)
-    });
-    let gap = "foundation_gaps,connector=influx,index=edge.time,path=live";
-    assert_eq!(first, [line("1e0", "2e0", stamp - 5)]);
-    let line = line("3e0", "4e0", stamp);
-    assert_eq!(second, [format!("{gap} count=4i {stamp}\n{line}")]);
+    let data = line("3e0", "4e0", stamp + 2);
+    assert_eq!(body, format!("{gap} count=3i {stamp}\n{data}"));
+    assert_eq!(lost, [0, 3]);
+    assert_eq!(again, line("5e0", "6e0", stamp + 6));
 }
 
 #[test]
