@@ -26,12 +26,11 @@
   fail. It tries again every 10 ms, the span of the transport's reads, and the wait ends
   when the session closes, with the error of the close. Only `Exhausted` and `Refused`
   wait: `TooLarge` never succeeds, so it gives `Error::Pool` at once, which means that
-  no block of `pool` can hold a message that the session sends, or no block of `frames`
-  can hold a frame of a read. Lost: a bound of two windows from the stream credit, which
-  ack loss can exceed; a `Bytes` body with no copy; a wait in `block::Pool` that wakes
-  at each free. Two callers poll the pool now: the transport's reads and this session.
-  Trigger: a third caller that waits for a block, or a measured request latency from the
-  poll, adds the wait to `block`.
+  no block of `pool` can hold a message that the session sends. Lost: a bound of two
+  windows from the stream credit, which ack loss can exceed; a `Bytes` body with no
+  copy; a wait in `block::Pool` that wakes at each free. Two callers poll the pool now:
+  the transport's reads and this session. Trigger: a third caller that waits for a
+  block, or a measured request latency from the poll, adds the wait to `block`.
   `Session` is `Clone`, and a clone is the same session. When the last clone and the
   last `Reader` drop, it closes the session with `Code(0)`. A node's stop and close with
   a code are one error: `Error::Refused(wire::hub::client::Refusal)`, a closed set in
@@ -86,11 +85,12 @@
   place is the entry at its position, and its key and slots are not the node's (#2808
   states one checked key set for the places). The plan
   (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204280445) was
-  approved by `laptop.architect`
+  approved by `laptop.architect` at 2026-10-15T23:19:38Z
   (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204306531).
   A frame takes a block of `Config::frames`, a pool apart from `pool` and from the
   transport's, and holds it until it drops. A frame that finds it full waits as a
-  message does. So frames that the program holds never stop the renewal of the hello
+  message does, and a frame that no block of `frames` can hold gives `Error::Pool` at
+  once. So frames that the program holds never stop the renewal of the hello
   (`laptop.architect`, 2026-10-16T03:12:49Z,
   https://github.com/synnaxlabs/foundation/pull/2802#issuecomment-6207214002). Lost: one
   reserved block for the renewal, a second pool that the caller cannot see.
