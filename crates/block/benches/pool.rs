@@ -1,5 +1,6 @@
 //! Benchmarks of a pool: a block that is used again, a copy of given bytes, and a
-//! block that takes the budget of another size under pressure.
+//! block that takes the budget of another size under pressure, and a block that takes
+//! the pages of a free block of another size.
 
 use block::{Config, Heap, Pool};
 use divan::Bencher;
@@ -70,4 +71,22 @@ fn alloc_under_pressure(bencher: Bencher<'_, '_>) {
         let len = if small { 100 } else { 1000 };
         drop(pool.alloc(len).expect("the budget has room"));
     });
+}
+
+/// Blocks of two sizes in turn, with a budget for two of the larger size while one of
+/// them stays in use: the small alloc gives back the payload pages of the free large
+/// block, and the large alloc releases the small size and commits that block again.
+#[divan::bench]
+fn alloc_cold(bencher: Bencher<'_, '_>) {
+    const LARGE: usize = 16_384;
+    let pool = create_pool(2 * block::footprint(LARGE));
+    let held = pool.alloc(LARGE).expect("the budget has room");
+    drop(pool.alloc(LARGE).expect("the budget has room"));
+    let mut small = false;
+    bencher.bench_local(|| {
+        small = !small;
+        let len = if small { 8000 } else { LARGE };
+        drop(pool.alloc(len).expect("the free block gives its pages"));
+    });
+    drop(held);
 }
