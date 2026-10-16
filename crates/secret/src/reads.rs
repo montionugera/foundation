@@ -49,32 +49,33 @@ impl Reads {
         let mut turn = self.turn();
         (&mut turn).await;
         let files = &self.0.files;
-        let (opened, path) = match place {
+        let (opened, path, private) = match place {
             Place::Data(path) => {
-                (files.open(path, Mode::Read).await, files.shown(path))
+                (files.open(path, Mode::Read).await, files.shown(path), true)
             }
-            Place::Host(path) => {
-                (files.open_absolute(path).await, path.as_path().into())
-            }
+            Place::Host(path) => (
+                files.open_absolute(path).await,
+                path.as_path().into(),
+                false,
+            ),
         };
         let file = match opened {
             Ok(file) => file,
             Err(files::Error::NotFound { .. }) => {
                 let shown = path.display();
-                let detail = match place {
-                    Place::Data(_) => format!(
+                let detail = if private {
+                    format!(
                         "the file {shown} is not there. Write the value to it, \
                          unreadable by other users: chmod o-r {shown}"
-                    ),
-                    Place::Host(_) => {
-                        format!("the file {shown} is not there. Write the value to it")
-                    }
+                    )
+                } else {
+                    format!("the file {shown} is not there. Write the value to it")
                 };
                 return Err(Error::Missing { detail });
             }
             Err(error) => return Err(unavailable(&error, &path)),
         };
-        if matches!(place, Place::Data(_)) && file.exposed() {
+        if private && file.exposed() {
             file.close().await;
             let shown = path.display();
             return Err(Error::Unavailable {
