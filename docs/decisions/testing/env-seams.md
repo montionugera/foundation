@@ -883,3 +883,33 @@
   https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221156481; the folder
   of the link and the evidence, 2026-10-16T17:48:30Z,
   https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221386763).
+  Amended (2026-10-16T17:13:18Z, #2898): `Paths::within` compares files, not names. It
+  takes the `paths::Key` of each folder of `folders` and `hidden` after its resolve,
+  from the new `paths::Driver::key`: (`st_dev`, `st_ino`) of a stat on `os`, and on
+  `sim` the index of the resolved path in a table of the node, since no file of `sim`
+  has two names. A path is under a folder when the key of the path, or of a directory on
+  its way to `/`, is the key of that folder. A key of `NotFound` at the path itself, the
+  last name of a path that a write or `make_dir` makes, is no key, and each other error
+  is the error of the call. So a name in other case on a file system that ignores case,
+  and a bind mount or the `/System/Volumes/Data` prefix on macOS, reach the hidden
+  folder and give `Hidden`, and the same name of a folder passes where it gave
+  `Outside`. `make_dir` of a path that does not resolve checks the key of its resolved
+  directory, since no folder is at a name that does not resolve. A folder that is not
+  there gives `NotFound`, except a hidden folder that the limits of the handle refuse,
+  which gives no key. A hidden folder that is a file, a pipe, or a folder that this user
+  cannot search passes, and the path of each such file gives `Hidden`. The cost is one
+  stat for each name of the resolved path on each call of `Paths`, for tools, plans, and
+  secrets, not frames. Supersedes the resolve of `<hidden>/..`, and its `Io` 20 and 13,
+  of the amendment of 2026-10-16T08:08:47Z. Lost: a compare of the text after case
+  folding, which refuses a distinct folder on a file system that keeps case, needs the
+  folding rules of each file system, and misses a bind mount; the name on disk by a read
+  of each directory on the way, which is slow and misses a bind mount; and an open
+  beneath the folder (`openat2` with `RESOLVE_BENEATH`), which macOS does not have.
+  Trigger for the last: a need to close the race between the check and the call. A hard
+  link to a file of a hidden folder from a folder outside it still passes: making it
+  needs write access to both, which already gives the power to read the file
+  (`docs/security.md`, "Other local user"). Decided by `laptop.architect-2` (the
+  mechanism, 2026-10-16T17:13:18Z,
+  https://github.com/synnaxlabs/foundation/issues/2898#issuecomment-6220778186; the
+  order before PR 1 of #2526, 2026-10-16T19:36:24Z,
+  https://github.com/synnaxlabs/foundation/issues/2898#issuecomment-6223241814).
