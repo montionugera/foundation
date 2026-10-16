@@ -60,12 +60,12 @@ impl Reader {
     ///
     /// [`Error::Finished`] when `message` is `None`. The first message decodes as
     /// [`Places`] and gives its errors: [`Error::Empty`], [`Error::Kind`] for another
-    /// kind, [`Error::Length`], [`Error::Places`], or [`Error::Index`]. A message of the run gives, in
-    /// order, the error of its bytes ([`Error::Empty`], [`Error::Length`],
-    /// [`Error::Sample`], or [`Error::Name`]), [`Error::Run`] when it holds more
-    /// places than remain, and [`Error::Unstamped`] when it holds the index place and
-    /// that place's sample type is not `Stamp`. The last message then gives
-    /// [`Error::Repeated`] when the places name a channel more than once.
+    /// kind, [`Error::Length`], [`Error::Places`], or [`Error::Index`]. A message of
+    /// the run gives, in order, the error of its bytes ([`Error::Empty`],
+    /// [`Error::Length`], [`Error::Sample`], or [`Error::Name`]), [`Error::Run`] when
+    /// it holds more places than remain, and [`Error::Unstamped`] when it holds the
+    /// index place and that place's sample type is not `Stamp`. The last message then
+    /// gives [`Error::Repeated`] when the places name a channel more than once.
     ///
     /// The stream is then not valid ([`MALFORMED`](crate::header::MALFORMED)), and
     /// the caller stops it. A refused message leaves the decoder as it was.
