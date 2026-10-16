@@ -162,7 +162,13 @@ exclude_re = [
   # Only the `logs` bench calls `buffer::bench::Logs::trim`, and it gives nothing
   # back. Its test kills the mutants through the private logs and tails.
   'crates/buffer/src/bench\.rs:.*replace Logs::trim with \(\)$',
-  'crates/buffer/src/bench\.rs:.* in Logs::trim$',
+  # Only `Logs::trim` and `Logs::fill` call `buffer::bench::Logs::slow`, and it gives
+  # nothing back. Their tests kill the mutants of its body through the private logs
+  # and tails.
+  'crates/buffer/src/bench\.rs:.* in Logs::slow$',
+  # Only the `logs` bench calls `buffer::bench::Logs::fill`, and it gives nothing
+  # back. Its test kills the mutant through the private tails.
+  'crates/buffer/src/bench\.rs:.*replace Logs::fill with \(\)$',
   # Only the `logs` bench and the `alloc` test call `buffer::bench::Logs::mark`,
   # and it gives nothing back. The `alloc` test kills the mutants of its body.
   'crates/buffer/src/bench\.rs:.*replace Logs::mark with \(\)$',

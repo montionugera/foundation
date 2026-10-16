@@ -329,7 +329,8 @@ struct State {
     logs: Logs,
     /// The last checkpoint written.
     header: Header,
-    /// The tails of the last carry record, whose room the next carry reuses.
+    /// The tails of the carry record of the last deadline, or none when it wrote
+    /// none. The next carry reuses its room.
     carried: Carried,
     /// Whether an append got [`Rejected::Full`] since the last deadline, with
     /// [`Config::trimmed`]. The task then commits also with no entry, so that its

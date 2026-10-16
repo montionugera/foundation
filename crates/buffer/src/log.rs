@@ -697,11 +697,11 @@ impl Logs {
     /// goes right after them.
     pub(crate) fn carry(&mut self, reach: u64, limit: usize, carried: &mut Carried) {
         carried.clear();
-        let mut room = limit;
         let mut walk = limit.saturating_mul(FILL);
         for (number, offset, at) in self.items.since(self.scanned) {
             if offset >= reach {
-                let Some(left) = walk.checked_sub(1).filter(|_| room < limit) else {
+                let filling = !carried.tails.is_empty();
+                let Some(left) = walk.checked_sub(1).filter(|_| filling) else {
                     self.scanned = number;
                     return;
                 };
@@ -711,14 +711,13 @@ impl Logs {
             if log.holder != Some(offset) {
                 continue;
             }
-            let Some(left) = room.checked_sub(1) else {
+            if carried.tails.len() == limit {
                 self.scanned = number;
                 return;
-            };
+            }
             if carried.tails.is_empty() {
                 carried.first = number;
             }
-            room = left;
             carried.tails.push(carry::Tail {
                 index: log.index,
                 path: log.path,
@@ -2115,7 +2114,6 @@ mod tests {
             assert_eq!(logs.durable(slot(1), Path::Live), tail);
             let runs: Vec<Run> = logs.runs(slot(1), Path::Live).collect();
             assert_eq!(runs, [run(0, 0, 4096), run(3, 1, 8192)]);
-            tails.clear();
             logs.carry(16384, 2, &mut tails);
             assert_eq!(tails.tails(), [carried(5, 0, Some(20))]);
             assert_eq!(logs.kept(), Some(12288));
@@ -2134,7 +2132,6 @@ mod tests {
             assert_eq!(tails.tails(), []);
             logs.carry(8192, 2, &mut tails);
             assert_eq!(tails.tails(), [carried(3, 1, Some(20))]);
-            tails.clear();
             logs.carry(8192, 2, &mut tails);
             assert_eq!(tails.tails(), []);
             logs.dropped(&mut tails);

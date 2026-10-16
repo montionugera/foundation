@@ -80,8 +80,8 @@ fn trim_held(bencher: Bencher<'_, '_>, indexes: u32) {
 }
 
 /// One index syncs each 128th commit, and the carry reaches 64 records back. The
-/// time of the commit whose carry takes its tail and fills from the stale items of
-/// the first 4 of the 64 records after it.
+/// time of the commit whose carry takes its tail and fills from at most 4000 stale
+/// items after it: the first 4 of the 64 records and 4 items of the fifth.
 #[divan::bench(args = [1000])]
 fn fill(bencher: Bencher<'_, '_>, indexes: u32) {
     bencher

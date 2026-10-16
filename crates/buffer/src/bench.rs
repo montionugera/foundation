@@ -248,10 +248,10 @@ impl Logs {
     }
 
     /// One commit as `trim(period, 0)`, whose carry takes the idle tails before the
-    /// record `behind` commits back, then fills with the oldest holders after it.
-    /// When `behind` is under `period`, one call in `period` takes the tail of the
-    /// last index, and its fill walks the stale items of the records after that
-    /// record.
+    /// record `behind` commits back, then fills with the oldest holders in the next
+    /// `4 * indexes` items after it. When `behind` is under `period`, one call in
+    /// `period` takes the tail of the last index, and its fill walks at most
+    /// `4 * indexes` stale items of the records after that record.
     pub fn fill(&mut self, period: u32, behind: u64) {
         self.slow(period, behind, 0);
     }
