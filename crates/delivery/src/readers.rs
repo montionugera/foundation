@@ -111,7 +111,8 @@ pub struct Readers {
     woken_latest: Vec<latest::Key>,
     next_complete: u64,
     next_latest: u64,
-    /// A record changed since the last [`Readers::recorded`].
+    /// A named open or close, a takeover, the end of a hold, or a restore changed the
+    /// records since the last [`Readers::recorded`].
     changed: bool,
 }
 
@@ -126,6 +127,8 @@ struct Session {
     /// unnamed.
     hold: Span,
     position: Position,
+    /// The position moved since the last [`Readers::recorded`].
+    changed: bool,
 }
 
 const _: () = assert!(size_of::<Session>() == 64, "a `Session` is not 64 bytes");
@@ -320,6 +323,7 @@ impl Readers {
             named,
             hold,
             position,
+            changed: false,
         };
         self.changed |= session.named.is_some();
         self.complete.push(session);
@@ -371,7 +375,7 @@ impl Readers {
             live: from.live.max(position.live),
             backfill: from.backfill.max(position.backfill),
         };
-        self.changed |= session.named.is_some() && to != from;
+        session.changed |= to != from;
         session.position = to;
         Ok(())
     }
@@ -912,12 +916,16 @@ impl Readers {
     /// restore of an open session change them.
     #[must_use]
     pub fn changed(&self) -> bool {
-        self.changed
+        let moved = |session: &Session| session.changed && session.named.is_some();
+        self.changed || self.complete.iter().any(moved)
     }
 
     /// Marks the records that [`Readers::records`] gives as in the index log.
     pub fn recorded(&mut self) {
         self.changed = false;
+        for session in &mut self.complete {
+            session.changed = false;
+        }
     }
 
     /// Removes the named reader: its open session in either mode, and its hold.

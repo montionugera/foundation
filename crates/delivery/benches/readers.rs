@@ -1,17 +1,19 @@
-//! The cost of one acknowledgment, which runs per message, of one live frame to the
+//! The cost of one acknowledgment, which runs per message, by an unnamed and by a named
+//! reader, of one live frame to the
 //! complete readers, and of one frame from disk to a complete reader, which run per
 //! frame, and of one floor, which the home reads when `buffer` trims.
 
 use std::sync::Arc;
 
 use delivery::complete::{Charge, Key};
-use delivery::{Next, Position, Reader, Readers, Start};
+use delivery::{Next, Position, Reader, Readers, Start, named};
 use divan::Bencher;
 use divan::counter::ItemsCount;
 use types::channel;
 use types::frame::key_set::{Group, Interner, KeySet};
 use types::frame::{Draft, Form, Frame, Path};
 use types::sample::{Scalar, Type};
+use types::time::Span;
 
 fn main() {
     divan::main();
@@ -19,15 +21,25 @@ fn main() {
 
 /// `sessions` recording readers, each with credit for `limit_bytes`.
 fn opened(sessions: usize, limit_bytes: u64) -> (Readers, Vec<Key>) {
+    opened_as(sessions, limit_bytes, |_| Reader::Unnamed)
+}
+
+/// `sessions` recording readers that `reader` makes from each number, each with
+/// credit for `limit_bytes`.
+fn opened_as(
+    sessions: usize,
+    limit_bytes: u64,
+    reader: impl Fn(usize) -> Reader,
+) -> (Readers, Vec<Key>) {
     let start = Start::At(Position {
         live: 0,
         backfill: Some(0),
     });
     let mut readers = Readers::new(0);
     let keys = (0..sessions)
-        .map(|_| {
+        .map(|n| {
             readers
-                .open(Reader::Unnamed, start, limit_bytes, Charge::Whole)
+                .open(reader(n), start, limit_bytes, Charge::Whole)
                 .key
         })
         .collect();
@@ -37,8 +49,25 @@ fn opened(sessions: usize, limit_bytes: u64) -> (Readers, Vec<Key>) {
 /// The last of `sessions` recording readers acknowledges.
 #[divan::bench(args = [1, 16])]
 fn ack(bencher: Bencher<'_, '_>, sessions: usize) {
-    let (mut readers, keys) = opened(sessions, 0);
-    let key = keys[sessions - 1];
+    let (readers, keys) = opened(sessions, 0);
+    acked(bencher, readers, keys[sessions - 1]);
+}
+
+/// The last of `sessions` named recording readers acknowledges.
+#[divan::bench(args = [1, 16])]
+fn ack_named(bencher: Bencher<'_, '_>, sessions: usize) {
+    let (readers, keys) = opened_as(sessions, 0, |n| Reader::Named {
+        reader: named::Key {
+            subject: "bench".parse().expect("valid name"),
+            name: format!("r{n}").parse().expect("valid name"),
+        },
+        hold: Span::from_nanos(1),
+    });
+    acked(bencher, readers, keys[sessions - 1]);
+}
+
+/// `key`, a session of `readers`, acknowledges a higher position each time.
+fn acked(bencher: Bencher<'_, '_>, mut readers: Readers, key: Key) {
     let mut seq = 0;
     bencher.bench_local(|| {
         seq += 1;
