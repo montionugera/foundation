@@ -6133,8 +6133,10 @@ mod tests {
                 struct Log(Arc<Mutex<Vec<String>>>);
 
                 impl Log {
-                    fn dispatch(&self) -> tracing::Dispatch {
-                        tracing::Dispatch::new(self.clone())
+                    /// Runs `f` with this log as the default subscriber.
+                    fn during<T>(&self, f: impl FnOnce() -> T) -> T {
+                        let dispatch = tracing::Dispatch::new(self.clone());
+                        tracing::dispatcher::with_default(&dispatch, f)
                     }
 
                     fn events(&self) -> Vec<String> {
@@ -6180,6 +6182,20 @@ mod tests {
                                 .expect("fits");
                         }
                     }
+                }
+
+                /// The warning event of an open of `reader` on the index at slot 0
+                /// whose records pass one entry by `bytes`.
+                fn over(reader: &named::Key, bytes: usize) -> String {
+                    format!(
+                        "WARN the records of the named readers of the index pass one \
+                         entry, so the reader opens and records nothing: a restart \
+                         after its old hold ends resumes it at the live tail index={} \
+                         subject={} name={} over_bytes={bytes}",
+                        common::key(Slot::new(0)),
+                        reader.subject,
+                        reader.name,
+                    )
                 }
 
                 /// Opens the named complete reader `r` of `subject` on the index at
@@ -6841,30 +6857,14 @@ mod tests {
                         let mut shard = test.over(buffer).await;
                         assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
                         assert_eq!(open(&mut shard, 8), Err(Unopened::Full { limit }));
-                        let log = Log::default();
-                        let a = tracing::dispatcher::with_default(&log.dispatch(), || {
-                            open(&mut shard, 0)
-                        });
+                        let sink = Log::default();
+                        let a = sink.during(|| open(&mut shard, 0));
                         let a = a.expect("it adds no record").key;
-                        let reader = long(0);
                         // Eight records of 546 bytes, and an entry head of 5 bytes.
-                        assert_eq!(
-                            log.events(),
-                            [format!(
-                                "WARN the records of the named readers of the index pass \
-                                 one entry, so the reader opens and records nothing: a \
-                                 restart after its old hold ends resumes it at the live \
-                                 tail index={} subject={} name={} over_bytes={}",
-                                common::key(Slot::new(0)),
-                                reader.subject,
-                                reader.name,
-                                8 * 546 + 5 - limit,
-                            )]
-                        );
-                        assert_eq!(
-                            caught_up(&mut shard, a, 0).await,
-                            [seq(0, 1), seq(1, 1)]
-                        );
+                        let warning = over(&long(0), 8 * 546 + 5 - limit);
+                        assert_eq!(sink.events(), [warning]);
+                        let read = caught_up(&mut shard, a, 0).await;
+                        assert_eq!(read, [seq(0, 1), seq(1, 1)]);
                         shard.committed().await.expect("the commit ends");
                     })
                     .expect("the second run ends");
@@ -6877,11 +6877,8 @@ mod tests {
                         for n in 0..8 {
                             let key = open(&mut shard, n).expect("opens").key;
                             shard.committed().await.expect("the commit ends");
-                            assert_eq!(
-                                caught_up(&mut shard, key, 0).await,
-                                [seq(0, 1), seq(1, 1)],
-                                "reader {n}"
-                            );
+                            let read = caught_up(&mut shard, key, 0).await;
+                            assert_eq!(read, [seq(0, 1), seq(1, 1)], "reader {n}");
                         }
                     })
                     .expect("the run after the second cut ends");
