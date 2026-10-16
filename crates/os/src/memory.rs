@@ -374,6 +374,8 @@ mod tests {
         use mach2::kern_return::KERN_SUCCESS;
         use mach2::vm_region::{VM_REGION_BASIC_INFO_64, vm_region_basic_info_64};
 
+        // SAFETY: the call reads no memory and gives the port of this task.
+        let task = unsafe { mach2::traps::mach_task_self() };
         let mut count = 0;
         let mut address = reserve.start as u64;
         while address < reserve.end as u64 {
@@ -384,7 +386,7 @@ mod tests {
             // SAFETY: `info` holds `len` integers, the most the call writes.
             let code = unsafe {
                 mach2::vm::mach_vm_region(
-                    mach2::traps::mach_task_self(),
+                    task,
                     &raw mut address,
                     &raw mut size,
                     VM_REGION_BASIC_INFO_64,
