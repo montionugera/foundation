@@ -153,7 +153,7 @@ fn frames() {
         channels: 2,
     };
     let (mut frames, _) =
-        Frames::open(Reader::new(&open), set, &OPENED).expect("opened");
+        Frames::open(Reader::new(&open), set, Some(&OPENED)).expect("opened");
     let mut run = [0; 2 * ends::LEN];
     ends::encode([(0, 16), (1, 32)], &mut run);
     let body = [7; 32];
@@ -301,7 +301,7 @@ fn blob_heads() {
 /// The cut and the encode of a run of 3 places, one place a message. Each place is
 /// formatted once at each cut that tries it and once at its encode: 8 times in all.
 fn place_messages() {
-    use wire::hub::client::{FromNode, Mode, Place, Places, Reader, place};
+    use wire::hub::client::{Mode, Place, Places, Reader, place};
 
     let places =
         [(1, "timestamp"), (2, "u8"), (3, "u8")].map(|(key, data_type)| Place {
@@ -325,16 +325,14 @@ fn place_messages() {
     let mut reader = Reader::new(Mode::Complete);
     let mut first = [0; Places::LEN];
     Places { count: 3, index: 0 }.encode(&mut first);
-    reader.decode(&first).expect("the places decode");
+    reader.decode(Some(&first)).expect("the places decode");
     let mut rest = &out[..];
-    let mut decoded = Vec::new();
+    let mut start = None;
     for len in lens {
         let (message, after) = rest.split_at(len);
-        match reader.decode(message) {
-            Ok(FromNode::Run { places, .. }) => decoded.extend(places),
-            other => panic!("a message of the run: {other:?}"),
-        }
+        start = reader.decode(Some(message)).expect("a message of the run");
         rest = after;
     }
-    assert_eq!(decoded, places, "the run round trips");
+    let start = start.expect("the last place gives the start");
+    assert_eq!(start.places, places, "the run round trips");
 }

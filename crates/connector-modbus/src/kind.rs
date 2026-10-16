@@ -2,10 +2,10 @@
 //! writes one frame per tick.
 
 use std::net::SocketAddr;
-use std::{fmt, future};
+use std::fmt;
 
 use connector::kind::{self, Channels, Context, Error};
-use connector::{cancel, pace, poll};
+use connector::{pace, poll};
 use document::Document;
 use document::diagnostic::{Code, Diagnostic};
 use env::net::host::Host;
@@ -57,14 +57,6 @@ impl kind::Kind for Kind {
                 .collect(),
             counts: counts.into(),
         })
-    }
-
-    /// Finds nothing: the kind does not scan a network.
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        future::ready(Ok(Vec::new()))
     }
 
     /// Connects to the device and reads each `read` once per tick until the cancel,

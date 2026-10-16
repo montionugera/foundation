@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use connector::cancel;
 use connector::kind::{self, Channels, Context, Table};
 use document::Document;
 use document::diagnostic::Diagnostic;
@@ -89,13 +88,6 @@ impl kind::Kind for Reader {
             writes: writes.clone(),
             counts: self.counts.iter().map(|count| name(count)).collect(),
         })
-    }
-
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, kind::Error>> {
-        std::future::ready(Ok(Vec::new()))
     }
 
     fn run(

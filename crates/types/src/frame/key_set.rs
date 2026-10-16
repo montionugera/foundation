@@ -1,5 +1,7 @@
-//! Key sets: the channels that a writer session sends, interned once per session.
+//! Key sets: the channels of the frames of a session, with their types and index
+//! groups.
 
+use std::fmt;
 use std::sync::Arc;
 
 use crate::channel::{self, Slot, Slots};
@@ -7,11 +9,15 @@ use crate::hash;
 use crate::sample::{Scalar, Type};
 
 /// A key set's number in its node's [`Interner`]: dense from 0 and node-local, never
-/// sent on the wire or stored on disk.
+/// sent on the wire or stored on disk. Each set from [`KeySet::ordered`] has the same
+/// key, one that no `Interner` gives, so the key does not tell two such sets apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Key(u32);
 
 impl Key {
+    /// The key of each set from [`KeySet::ordered`].
+    const ORDERED: Self = Self(u32::MAX);
+
     pub(super) const fn new(n: u32) -> Self {
         Self(n)
     }
@@ -23,8 +29,10 @@ impl Key {
     }
 }
 
-/// The channels that a writer session sends, sorted by slot, with each entry's type and
-/// index group. Every frame of the session points at it. Only an [`Interner`] makes one.
+/// The channels of the frames of a session, sorted by slot, with each entry's type and
+/// index group. Every frame of the session points at it. An [`Interner`] makes the
+/// key sets of a node, and [`KeySet::ordered`] makes the set of a reader that is of no
+/// node.
 #[derive(Debug)]
 pub struct KeySet {
     key: Key,
@@ -33,7 +41,56 @@ pub struct KeySet {
 }
 
 impl KeySet {
-    /// The key set's number in its interner.
+    /// The key set of one group whose entries are `channels`, in order: entry `n` has
+    /// slot `n`, and the entry at `index` is the group's index. Every such set has the
+    /// same key, one that no [`Interner`] gives, so the key does not tell two of them
+    /// apart. Its slots are its own, not a node's: never look up one in a [`Slots`].
+    ///
+    /// # Errors
+    ///
+    /// [`Repeated`] with the least key that two entries share.
+    ///
+    /// # Panics
+    ///
+    /// When `index` is not below the count of `channels`, when the entry at `index` is
+    /// not of type `Stamp`, or when `channels` holds more than 2^32 entries.
+    pub fn ordered(
+        channels: impl IntoIterator<Item = (channel::Key, Type)>,
+        index: usize,
+    ) -> Result<Self, Repeated> {
+        let entries: Arc<[Entry]> = channels
+            .into_iter()
+            .enumerate()
+            .map(|(at, (key, data_type))| Entry {
+                slot: Slot::new(
+                    u32::try_from(at).expect("a key set holds at most 2^32 entries"),
+                ),
+                key,
+                data_type,
+                group: 0,
+            })
+            .collect();
+        let entry = entries.get(index).unwrap_or_else(|| {
+            panic!("the index is entry {index} of {}", entries.len())
+        });
+        let stamp = Type::Scalar(Scalar::Stamp);
+        assert!(
+            entry.data_type == stamp,
+            "the index entry {index} has type {}, not {stamp}",
+            entry.data_type
+        );
+        if let Some(key) = repeated(entries.iter().map(|entry| entry.key)) {
+            return Err(Repeated { key });
+        }
+        Ok(Self {
+            key: Key::ORDERED,
+            entries,
+            groups: Arc::new([index]),
+        })
+    }
+
+    /// The key set's number in its interner, or the one key of each set from
+    /// [`KeySet::ordered`].
     #[must_use]
     pub const fn key(&self) -> Key {
         self.key
@@ -75,7 +132,8 @@ impl KeySet {
 /// One channel of a key set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Entry {
-    /// The channel's node-local slot.
+    /// The channel's node-local slot, or its position in a set from
+    /// [`KeySet::ordered`].
     pub slot: Slot,
     /// The channel.
     pub key: channel::Key,
@@ -131,7 +189,7 @@ impl Interner {
     ///
     /// If a channel appears twice: the `hub` builds groups from the spec, so that is a
     /// bug. Also if the slot table already assigned 2^32 slots, or the node already
-    /// holds 2^32 key sets.
+    /// holds 2^32 - 1 key sets.
     pub fn intern(&mut self, groups: &[Group<'_>]) -> Arc<KeySet> {
         let stamp = Type::Scalar(Scalar::Stamp);
         let len = groups.iter().map(|group| group.data.len()).sum::<usize>();
@@ -145,10 +203,8 @@ impl Interner {
                 channels.push((self.slots.data(key, data_type), key, data_type, index));
             }
         }
-        let mut keys: Vec<_> = channels.iter().map(|&(_, key, ..)| key).collect();
-        keys.sort_unstable();
-        if let Some([key, _]) = keys.array_windows().find(|[a, b]| a == b) {
-            panic!("channel {key} appears twice in a key set");
+        if let Some(key) = repeated(channels.iter().map(|&(_, key, ..)| key)) {
+            panic!("{}", Repeated { key });
         }
         channels.sort_unstable_by_key(|&(slot, ..)| slot);
         indexes.sort_unstable();
@@ -178,10 +234,8 @@ impl Interner {
         if let Some(set) = self.sets.get(&shape) {
             return Arc::clone(set);
         }
-        let n =
-            u32::try_from(self.sets.len()).expect("a node holds at most 2^32 key sets");
         let set = Arc::new(KeySet {
-            key: Key::new(n),
+            key: interned(self.sets.len()),
             entries: Arc::clone(&shape.0),
             groups: Arc::clone(&shape.1),
         });
@@ -196,6 +250,43 @@ impl Interner {
     pub fn snapshot(&self) -> Snapshot {
         self.snapshot.clone()
     }
+}
+
+/// The key of a new set of an [`Interner`] that holds `count` sets.
+///
+/// # Panics
+///
+/// When the key would be [`Key::ORDERED`] or past it.
+fn interned(count: usize) -> Key {
+    u32::try_from(count)
+        .ok()
+        .filter(|&n| n < Key::ORDERED.0)
+        .map(Key::new)
+        .expect("a node holds at most 2^32 - 1 key sets")
+}
+
+/// A key set would hold a channel twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Repeated {
+    /// The channel.
+    pub key: channel::Key,
+}
+
+impl fmt::Display for Repeated {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "channel {} appears twice in a key set", self.key)
+    }
+}
+
+impl std::error::Error for Repeated {}
+
+/// The least key that `keys` holds twice.
+fn repeated(keys: impl Iterator<Item = channel::Key>) -> Option<channel::Key> {
+    let mut keys: Vec<_> = keys.collect();
+    keys.sort_unstable();
+    keys.array_windows()
+        .find(|[a, b]| a == b)
+        .map(|&[key, _]| key)
 }
 
 /// A key set's entries and the position of each group's index: what makes two key sets
@@ -621,6 +712,96 @@ mod tests {
             let first = interner.intern(&borrowed(&groups));
             let second = interner.intern(&borrowed(&reversed));
             prop_assert!(Arc::ptr_eq(&first, &second));
+        }
+    }
+
+    mod ordered {
+        use super::*;
+
+        fn check(channels: &[(u32, Type)], index: usize, repeated: u32) {
+            let channels = channels.iter().map(|&(n, data_type)| (key(n), data_type));
+            let error = KeySet::ordered(channels, index).expect_err("a repeat");
+            assert_eq!(error, Repeated { key: key(repeated) });
+            assert_eq!(
+                error.to_string(),
+                format!("channel {} appears twice in a key set", key(repeated))
+            );
+        }
+
+        #[test]
+        fn refuses_the_least_repeated_key() {
+            check(&[(1, STAMP), (1, STAMP)], 0, 1);
+            check(&[(10, F64), (1, STAMP), (10, U8)], 1, 10);
+            check(&[(7, F64), (3, STAMP), (7, F64), (3, F64)], 1, 3);
+        }
+
+        /// No key of an `Interner` is the key of an ordered set. It calls the private
+        /// `interned`, since no test can intern 2^32 - 1 sets.
+        #[test]
+        fn has_a_key_that_no_interner_gives() {
+            let set = KeySet::ordered([(key(1), STAMP)], 0).unwrap();
+            assert_eq!(set.key(), Key::new(u32::MAX));
+            let last = usize::try_from(u32::MAX - 1).unwrap();
+            assert_eq!(interned(last), Key::new(u32::MAX - 1));
+            assert_ne!(Interner::new().intern(&[]).key(), set.key());
+        }
+
+        /// The private `interned` refuses the key of an ordered set. No caller can see
+        /// this bound: it shows only after 2^32 - 1 sets, which no test can intern.
+        #[test]
+        #[should_panic(expected = "a node holds at most 2^32 - 1 key sets")]
+        fn panics_on_the_interned_set_of_the_ordered_key() {
+            let _key = interned(usize::try_from(u32::MAX).unwrap());
+        }
+
+        #[test]
+        #[should_panic(expected = "the index is entry 2 of 2")]
+        fn panics_on_an_index_past_the_entries() {
+            let _set = KeySet::ordered([(key(1), STAMP), (key(2), F64)], 2);
+        }
+
+        #[test]
+        #[should_panic(expected = "the index entry 1 has type f64, not timestamp")]
+        fn panics_on_an_index_that_is_not_a_stamp() {
+            let _set = KeySet::ordered([(key(1), STAMP), (key(2), F64)], 1);
+        }
+
+        /// Distinct keys of random types, and the position of one `Stamp` among them.
+        fn channels() -> impl Strategy<Value = (Vec<(channel::Key, Type)>, usize)> {
+            let kind = prop_oneof![Just(F64), Just(U8), Just(STAMP)];
+            prop::collection::btree_set(0_u32..1000, 1..40)
+                .prop_map(|keys| keys.into_iter().collect::<Vec<_>>())
+                .prop_shuffle()
+                .prop_flat_map(move |keys| {
+                    let kinds = prop::collection::vec(kind.clone(), keys.len());
+                    (Just(keys.clone()), kinds, 0..keys.len())
+                })
+                .prop_map(|(keys, kinds, index)| {
+                    let mut channels: Vec<_> =
+                        keys.into_iter().map(key).zip(kinds).collect();
+                    channels[index].1 = STAMP;
+                    (channels, index)
+                })
+        }
+
+        proptest! {
+            #[test]
+            fn keeps_the_order_of_its_channels((channels, index) in channels()) {
+                let set = KeySet::ordered(channels.iter().copied(), index).unwrap();
+                prop_assert_eq!(set.key().get(), u32::MAX);
+                prop_assert_eq!(set.groups(), [index]);
+                prop_assert_eq!(set.entries().len(), channels.len());
+                for (at, (entry, &(key, data_type))) in
+                    set.entries().iter().zip(&channels).enumerate()
+                {
+                    let n = u32::try_from(at).unwrap();
+                    prop_assert_eq!(*entry, Entry { slot: slot(n), key, data_type, group: 0 });
+                    prop_assert_eq!(set.find(slot(n)), Some(at));
+                    prop_assert_eq!(set.index(at), index);
+                }
+                let past = u32::try_from(channels.len()).unwrap();
+                prop_assert_eq!(set.find(slot(past)), None);
+            }
         }
     }
 }

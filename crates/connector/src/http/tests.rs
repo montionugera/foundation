@@ -348,7 +348,14 @@ fn refuses_a_body_over_the_cap() {
         .send(get(&network.url("/")))
         .expect_err("over the cap");
     assert!(
-        matches!(error, Error::TooLarge { max: BODY_MAX }),
+        matches!(
+            error,
+            Error::TooLarge {
+                status: StatusCode::OK,
+                ref body,
+                max: BODY_MAX
+            } if body[..] == *"x".repeat(BODY_MAX).as_bytes()
+        ),
         "{error:?}"
     );
     assert_eq!(
@@ -362,7 +369,7 @@ fn refuses_chunks_that_together_pass_the_cap() {
     let mut network = Network::new(13);
     let chunk = "x".repeat(40);
     let response: &'static str = format!(
-        "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n\
+        "HTTP/1.1 400 Bad Request\r\ntransfer-encoding: chunked\r\n\r\n\
          28\r\n{chunk}\r\n28\r\n{chunk}\r\n0\r\n\r\n"
     )
     .leak();
@@ -371,7 +378,14 @@ fn refuses_chunks_that_together_pass_the_cap() {
         .send(get(&network.url("/")))
         .expect_err("over the cap");
     assert!(
-        matches!(error, Error::TooLarge { max: BODY_MAX }),
+        matches!(
+            error,
+            Error::TooLarge {
+                status: StatusCode::BAD_REQUEST,
+                ref body,
+                max: BODY_MAX
+            } if body[..] == *"x".repeat(BODY_MAX).as_bytes()
+        ),
         "{error:?}"
     );
     assert_eq!(
