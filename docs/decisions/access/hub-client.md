@@ -28,9 +28,12 @@
   wait: `TooLarge` never succeeds, so it gives `Error::Pool` at once, which means that
   no block of `pool` can hold a message that the session sends. Lost: a bound of two
   windows from the stream credit, which ack loss can exceed; a `Bytes` body with no
-  copy; a wait in `block::Pool` that wakes at each free. Two callers poll the pool now:
-  the transport's reads and this session. Trigger: a third caller that waits for a
-  block, or a measured request latency from the poll, adds the wait to `block`.
+  copy; a wait in `block::Pool` that wakes at each free. Three callers poll a pool now:
+  the transport's reads, the session's sends on `pool`, and the frames of a read on
+  `frames`. The trigger fired with the third (#2802; `laptop.architect`,
+  2026-10-16T03:39:42Z,
+  https://github.com/synnaxlabs/foundation/pull/2802#issuecomment-6207544466): #2811
+  adds the wait that a free wakes to `block`.
   `Session` is `Clone`, and a clone is the same session. When the last clone and the
   last `Reader` drop, it closes the session with `Code(0)`. A node's stop and close with
   a code are one error: `Error::Refused(wire::hub::client::Refusal)`, a closed set in
