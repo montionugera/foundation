@@ -49,19 +49,20 @@
   with the network, clock, randomness, and secrets of the supervisor; a kind reads only
   what it needs to reach the device, so a block with only `kind`, `node`, and `address`
   browses. It gives no mesh time: `hub` gives it only through a writer, and a browse
-  opens none. Deferred to #2837, on which PR 5 waits; PR 5 says what a browse does
-  before mesh time, never with a wait that has no bound. `browse::Context` and
-  `kind::Context` stay two types: the inputs that both give are reads of a field, and
-  `secret` is one function. Trigger to make them one: a third context, or a second
-  shared input whose body is more than a read of a field. A kind implements
-  `browse::Device` on its open session, so one walk is one session and can use a
-  continuation point; a `Cursor` that a front end gets holds no session state. `level`
-  takes a folder as the `Entry` that the device gave, never a path, and gives at most
-  `LIMIT` entries a page; `values` gives `types::sample::Value`, so there is one value
-  model. Trigger for a text value: a kind that reads a `string` channel. Lost: a count
-  of matches up to the budget; trigger: the agent test (PR 9) shows a task with two
-  over-limit refusals one after the other. `import --match` uses the same walk, so the
-  points that `browse --match` shows are the points that `import --match` takes.
+  opens none. Deferred to #2837: `Hub::time` waits with no bound, and
+  `Supervisor::browse` races it against a bound of its clock and gives an error at the
+  bound. PR 5 waits on it. `browse::Context` and `kind::Context` stay two types: each
+  input that both give is a read of a field or one call, and `secret` is one function.
+  Trigger to make them one: a third context, or a second shared input whose body is more
+  than a read of a field or one call. A kind implements `browse::Device` on its open
+  session, so one walk is one session and can use a continuation point; a `Cursor` that
+  a front end gets holds no session state. `level` takes a folder as the `Entry` that
+  the device gave, never a path, and gives at most `LIMIT` entries a page; `values`
+  gives `types::sample::Value`, so there is one value model. Trigger for a text value: a
+  kind that reads a `string` channel. Lost: a count of matches up to the budget;
+  trigger: the agent test (PR 9) shows a task with two over-limit refusals one after the
+  other. `import --match` uses the same walk, so the points that `browse --match` shows
+  are the points that `import --match` takes.
   The person's words, through `laptop.monitor`: decision 1, 2026-10-15 17:17 UTC, "Ok,
   this is fine. I approve"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6197989240);
@@ -75,7 +76,9 @@
   shape `Unreadable`, the limit, and the PR list: `laptop.architect-2`, 2026-10-15 17:32
   UTC (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198270136).
   `browse::Device`, `level` by entry, the page bound, `sample::Value`, the name
-  `Malformed`, and "more than `<limit>`" in place of the count of decision 6:
+  `Malformed`, `Kind::browse` with the default `connector.no-browse`, `browse::Context`,
+  `Supervisor::browse` apart from any run, a block with only `kind`, `node`, and
+  `address`, and "more than `<limit>`" in place of the count of decision 6:
   `laptop.architect-2`, 2026-10-16 04:00 UTC, on the plan of `box1.builder-3`
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6207771367). One
   session for the whole browse: the person, through `laptop.monitor`, 2026-10-16
@@ -110,7 +113,9 @@
   tree of 9 999 points and 0.9 ms over a chain of 63 folders of 150 points each; PR 5 of
   the PR list measures the cost of the OPC UA sim server. The two triggers come from the
   ruling of 2026-10-16 04:00 UTC. A page of `Child` entries, with a name and no path,
-  and a private `Path::child`: `laptop.architect-2`, 2026-10-16 05:50 UTC
+  and a private `Path::child` (it replaces the rule of an entry outside its folder of
+  05:23 UTC, and the path that a kind built from the root of 05:30 UTC):
+  `laptop.architect-2`, 2026-10-16 05:50 UTC
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6209047339). The
   operation of `ops`, not `Supervisor::browse`, names the connector and its kind in an
   error: `laptop.architect-2`, 2026-10-16 06:46 UTC
@@ -119,3 +124,6 @@
   (https://github.com/synnaxlabs/foundation/pull/2836#issuecomment-6209844506). The
   deferral of mesh time, and two contexts: `laptop.architect-2`, 2026-10-16 06:55 UTC
   (https://github.com/synnaxlabs/foundation/pull/2836#issuecomment-6209911107).
+  `Hub::time` and the bound in `Supervisor::browse`: `laptop.architect`, 2026-10-16
+  06:56 UTC
+  (https://github.com/synnaxlabs/foundation/issues/2837#issuecomment-6209931375).

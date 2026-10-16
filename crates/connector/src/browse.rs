@@ -69,7 +69,11 @@ impl<'a> Context<'a> {
     ///
     /// # Errors
     ///
-    /// The errors of [`kind::Context::secret`].
+    /// [`Error::Config`] with code `connector.bad-secret-name` when the store cannot
+    /// hold the name of a `secret()`, with the store's text as the fix.
+    /// [`Error::Retry`] for each other error, with a text that names the source and
+    /// holds the fix. Nothing retries a browse: the caller browses again once the
+    /// value is in its place. For `env()`, restart the node with the variable set.
     pub async fn secret(
         &self,
         source: &secret::Source,
