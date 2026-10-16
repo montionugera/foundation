@@ -72,7 +72,7 @@ impl Reader {
     ///
     /// # Panics
     ///
-    /// When a call follows the message that gave the start.
+    /// When it gave the start before.
     pub fn decode(&mut self, message: &[u8]) -> Result<Option<Start>, Error> {
         match &mut self.next {
             Next::Places => {
