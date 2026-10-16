@@ -108,6 +108,7 @@ impl Status {
     #[cfg(test)]
     pub(crate) const BAD_NOT_SUPPORTED: Self = Self(0x803D_0000);
     pub(crate) const BAD_NODE_ID_UNKNOWN: Self = Self(0x8034_0000);
+    pub(crate) const BAD_CONTINUATION_POINT_INVALID: Self = Self(0x804A_0000);
     #[cfg(test)]
     pub(crate) const BAD_USER_ACCESS_DENIED: Self = Self(0x801F_0000);
     #[cfg(test)]

@@ -26,10 +26,6 @@ use crate::ffi::{self, Status};
 use crate::node::{Key, Node};
 use crate::value::{Fault, Value};
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the opcua kind of #2705 is the first user")
-)]
 pub(crate) mod browse;
 mod service;
 #[cfg(test)]
@@ -104,17 +100,9 @@ pub(crate) struct Client {
     key: Rc<()>,
     /// The supertype of each data type that the client browsed, or `None` when it has
     /// none.
-    #[cfg_attr(
-        not(any(test, feature = "sim")),
-        expect(dead_code, reason = "the opcua kind of #2705 is the first user")
-    )]
     supertypes: BTreeMap<Node, Option<Node>>,
     /// The bounds of the server on a Browse and a Translate, once
     /// [`Client::describe`] reads them.
-    #[cfg_attr(
-        not(any(test, feature = "sim")),
-        expect(dead_code, reason = "the opcua kind of #2705 is the first user")
-    )]
     bounds: Option<browse::Bounds>,
     /// Drops after `raw` is deleted, as it holds the loop of the client.
     connections: Manager,
@@ -127,10 +115,6 @@ struct Calls {
     /// service, at most [`READS`].
     pending: Cell<u16>,
     reads: Reads,
-    #[cfg_attr(
-        not(any(test, feature = "sim")),
-        expect(dead_code, reason = "the opcua kind of #2705 is the first user")
-    )]
     service: service::Slot,
 }
 

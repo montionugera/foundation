@@ -1,7 +1,7 @@
 //! The `opcua` kind: reads OPC UA nodes at a fixed rate, and writes at most one frame
 //! per tick.
 
-use std::fmt;
+use std::{fmt, future};
 
 use connector::kind::{self, Channels, Context, Error};
 use connector::{browse, pace, poll, status};
@@ -13,6 +13,7 @@ use types::sample::{self, Scalar, Type};
 use types::time::Span;
 use types::time::Stamp;
 
+use crate::browse::Server;
 use crate::client::{Client, Large};
 use crate::config::{self, Config, Read};
 use crate::event;
@@ -109,6 +110,57 @@ impl kind::Kind for Kind {
     ) -> Result<Vec<Block>, Vec<Diagnostic>> {
         config::block(tag, channel)
     }
+
+    /// Reads only `address`, as `parse` does, connects as `run` does, and walks
+    /// `query` over the tree of the server from its Objects folder. An entry is a
+    /// forward hierarchical reference to an Object, a View, or a Variable, with the
+    /// browse name as its name and the node ID as its tag. An Object or a View is a
+    /// folder. A Variable is a point, of the sample type of a built-in type from
+    /// Boolean to Double, or of no type when its data type has no built-in base. It is
+    /// unreadable when the server does not let the user read it, when its value rank
+    /// is that of an array, or when its type is another built-in type. A node whose ID
+    /// is a GUID, opaque, or of another server is unreadable, with the text of its ID
+    /// as its tag. In one folder, a second reference to a node gives no entry, and a
+    /// name that an earlier entry has gets ` (<tag>)` after it. Then it closes the
+    /// session, as `run` does. The header of each request holds the time of the clock
+    /// from the Unix epoch, not the wall time.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] with the diagnostic of `parse` for `address`, and with
+    /// `opcua.bad-cursor` for a cursor that the kind did not give. [`Error::Device`]
+    /// when the connect, a Browse, a `BrowseNext`, or a Read fails. The errors of
+    /// [`browse::walk`].
+    fn browse(
+        &self,
+        ctx: &browse::Context<'_>,
+        query: &browse::Query,
+    ) -> impl Future<Output = Result<browse::Found, Error>> {
+        walk(ctx, query)
+    }
+}
+
+async fn walk(
+    ctx: &browse::Context<'_>,
+    query: &browse::Query,
+) -> Result<browse::Found, Error> {
+    let address =
+        config::endpoint(ctx.config()).map_err(|error| Error::Config(vec![error]))?;
+    let time = event::Time::monotonic(ctx.clock().clone());
+    let rng = &mut ctx.rng();
+    let net = ctx.net().clone();
+    let connected = Client::connect(time, net, rng, &address, future::pending()).await;
+    let mut client = connected
+        .map_err(|status| {
+            device(Failure::Connect {
+                address: address.to_string_lossy().into_owned(),
+                status,
+            })
+        })?
+        .expect("invariant: a connect with no end gives a client");
+    let found = browse::walk(&mut Server::new(&mut client), query).await;
+    client.close().await;
+    found
 }
 
 async fn run(ctx: Context<Config>) -> Result<(), Error> {
@@ -420,10 +472,11 @@ fn large_read(reads: &[Read], Large { index, bytes, most }: Large) -> Error {
 
 /// Why a run ended with [`Error::Device`].
 #[derive(Debug)]
-enum Failure {
+pub(crate) enum Failure {
     Connect { address: String, status: Status },
     Read(Status),
     Check(Status),
+    Browse(Status),
 }
 
 impl fmt::Display for Failure {
@@ -436,12 +489,15 @@ impl fmt::Display for Failure {
             Self::Check(status) => {
                 write!(f, "the connectivity check failed with {}", status.name())
             }
+            Self::Browse(status) => {
+                write!(f, "the browse failed with {}", status.name())
+            }
         }
     }
 }
 
 impl std::error::Error for Failure {}
 
-fn device(failure: Failure) -> Error {
+pub(crate) fn device(failure: Failure) -> Error {
     Error::Device(Box::new(failure))
 }
