@@ -246,6 +246,10 @@ impl Descriptor for Open {
         to_u64(lock(&self.bytes).len())
     }
 
+    fn exposed(&self) -> bool {
+        false
+    }
+
     fn write_at<'a>(&'a self, offset: u64, parts: &'a [Block]) -> Request<'a, ()> {
         let failed = lock(&self.failed_write).take_if(|at| *at == offset);
         if failed.is_some() {

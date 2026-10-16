@@ -473,8 +473,8 @@ fn a_host_that_cannot_pin_starts_shards_on_no_core() {
     assert_eq!(run.node.join(), Ok(()));
 }
 
-/// Starts a node on `host`, runs it for an hour, stops it, and gives what `join`
-/// gives.
+/// Starts a node on `host`, runs it until its opens end, stops it, and gives what
+/// `join` gives.
 fn run_on(sim: &mut sim::Sim, host: &sim::node::Node) -> Result<(), Error> {
     run_on_disk(sim, host, DISK.bytes())
 }
@@ -492,7 +492,16 @@ fn run_on_disk(
         },
         ..config(host, Size::MEBIBYTE, Box::new(heap))
     });
-    assert_eq!(sim.run_for(Span::HOUR), Ok(()));
+    // The task runs once each file that a caller reads is there, or drops as the
+    // node fails.
+    let probe = probe(&node);
+    let mut ms = 0;
+    while fate(&probe) == Fate::Waiting {
+        let after = Span::from_nanos(ms * Span::MILLISECOND.nanos());
+        assert!(after < Span::HOUR, "the opens go on");
+        assert_eq!(sim.run_for(Span::MILLISECOND), Ok(()));
+        ms += 1;
+    }
     node.stop();
     assert_eq!(sim.run(), Ok(()));
     node.join()

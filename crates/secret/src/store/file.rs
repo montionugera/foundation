@@ -11,9 +11,8 @@ use crate::{Error, Value};
 /// `<dir>/plant.influx_token`, with one trailing `\n` or `\r\n` cut. It reads the
 /// file at each `get`, so a file added or changed takes effect at the next `get`.
 /// It holds no name with an ASCII capital, so no two names share a file on a file
-/// system that ignores case. It does not check the owner or mode of the file, so make
-/// the file readable only by the user that runs the node. Its gets take turns with
-/// each other read of its [`Reads`].
+/// system that ignores case. It refuses a file that other users can read, and reads
+/// no byte of it. Its gets take turns with each other read of its [`Reads`].
 #[derive(Clone)]
 pub(crate) struct File {
     reads: Reads,
@@ -48,7 +47,8 @@ impl File {
     /// with the path to write it to, as
     /// [`env::files::Files::shown`] gives it.
     /// [`Error::BadName`] when `name` has an ASCII capital. [`Error::Unavailable`]
-    /// when the file is more than 64 KiB, or a file call fails, with the fix.
+    /// when other users can read the file, the file is more than 64 KiB, or a file
+    /// call fails, with the fix.
     pub(crate) async fn get(&self, name: &Name) -> Result<Value, Error> {
         if name.as_str().bytes().any(|byte| byte.is_ascii_uppercase()) {
             return Err(Error::BadName {

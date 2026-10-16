@@ -345,7 +345,7 @@ impl Body {
     /// [`Error::Empty`] for an empty message, and [`Error::Body`] for more bytes than
     /// remain.
     pub fn take<'m>(&mut self, message: &'m [u8]) -> Result<&'m [u8], Error> {
-        self.0.take(message)?;
+        self.0.take(message.len())?;
         Ok(message)
     }
 

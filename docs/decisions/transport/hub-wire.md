@@ -241,3 +241,26 @@
   home's receive half resets with code 0, not the refusal code, until #2031
   (`laptop.architect`, 2026-10-08T23:49:49Z:
   https://github.com/synnaxlabs/foundation/pull/2003#issuecomment-6071319399).
+  `wire::hub::Frames` builds the frames of a reader session from its messages, from
+  `Opened` on, for the reader's node and for a program, so the reader end of HUB WIRE
+  is in one place (`laptop.architect`, 2026-10-15T23:19:38Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204306531; lost:
+  a copy of the loop in `program`, which can drift from the one in `hub` with no test
+  that sees it). It takes no pool, so `wire` takes `block` only in its tests
+  (`laptop.architect`, 2026-10-15T23:56:49Z:
+  https://github.com/synnaxlabs/foundation/pull/2779#issuecomment-6204779426).
+  `Frames::open` takes the first message of the session, which is `Opened`, so a
+  `Frames` is open from its start, `Step` has no opened, and no caller restates the
+  order of the open (`laptop.architect`, 2026-10-16T00:47:46Z:
+  https://github.com/synnaxlabs/foundation/pull/2779#issuecomment-6205447213; lost: an
+  `opened` call on a `Frames` made before the first message, whose state a failed
+  attempt can leave open).
+  `Frames::due` gives what comes next: a message, the body slice for `recv_into`, or
+  the `Layout` of a draft that the caller makes from its own pool and gives to
+  `Frames::draft`. So a call that drops at its wait for the pool asks `due` again and
+  resumes. A full pool is the caller's case: `hub` gives `Ended::Pool`, and `program`
+  waits. A layout error stays a `types::frame::Error` from `due`, so
+  `wire::hub::Error` stays `Copy` (`laptop.architect`, 2026-10-15T23:41:49Z,
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204591536, with
+  `due` in place of its `layout` and `body` at 2026-10-16T00:11:01Z:
+  https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204972440).

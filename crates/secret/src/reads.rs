@@ -43,32 +43,48 @@ impl Reads {
     /// # Errors
     ///
     /// [`Error::Missing`] when the file is not there or the value is empty.
-    /// [`Error::Unavailable`] when the file is more than 64 KiB, or a file call fails,
-    /// with the fix.
+    /// [`Error::Unavailable`] when a file of [`Place::Data`] is exposed, the file is
+    /// more than 64 KiB, or a file call fails, with the fix.
     pub(crate) async fn read(&self, place: Place<'_>) -> Result<Value, Error> {
         let mut turn = self.turn();
         (&mut turn).await;
         let files = &self.0.files;
-        let (opened, path) = match place {
+        let (opened, path, private) = match place {
             Place::Data(path) => {
-                (files.open(path, Mode::Read).await, files.shown(path))
+                (files.open(path, Mode::Read).await, files.shown(path), true)
             }
-            Place::Host(path) => {
-                (files.open_absolute(path).await, path.as_path().into())
-            }
+            Place::Host(path) => (
+                files.open_absolute(path).await,
+                path.as_path().into(),
+                false,
+            ),
         };
         let file = match opened {
             Ok(file) => file,
             Err(files::Error::NotFound { .. }) => {
-                return Err(Error::Missing {
-                    detail: format!(
-                        "the file {} is not there. Write the value to it",
-                        path.display()
-                    ),
-                });
+                let shown = path.display();
+                let detail = if private {
+                    format!(
+                        "the file {shown} is not there. Write the value to it, \
+                         unreadable by other users: chmod o-r {shown}"
+                    )
+                } else {
+                    format!("the file {shown} is not there. Write the value to it")
+                };
+                return Err(Error::Missing { detail });
             }
             Err(error) => return Err(unavailable(&error, &path)),
         };
+        if private && file.exposed() {
+            file.close().await;
+            let shown = path.display();
+            return Err(Error::Unavailable {
+                detail: format!(
+                    "other users can read the file {shown}. Make it unreadable by \
+                     other users: chmod o-r {shown}"
+                ),
+            });
+        }
         if file.len() > LEN_MAX {
             return Err(Error::Unavailable {
                 detail: format!(
@@ -114,7 +130,8 @@ impl Reads {
 /// Where a secret file is.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Place<'a> {
-    /// A path relative to the data directory.
+    /// A path relative to the data directory, which the node owns. A file there that
+    /// other users can read is refused, unread.
     Data(&'a Path),
     /// A path on the host.
     Host(&'a Absolute),
