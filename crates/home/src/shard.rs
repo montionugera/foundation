@@ -6413,6 +6413,39 @@ mod tests {
                 }
 
                 #[test]
+                fn arms_the_tick_of_a_restored_hold_at_the_carry() {
+                    // Slot 2 is the last carry of `Test::shard`, so no later carry
+                    // arms the tick.
+                    let hold = Span::from_nanos(5_500_000_000);
+                    let before = async move |_: &Test, shard: &mut Shard, w| {
+                        let a = shard
+                            .open_named_complete(
+                                Slot::new(2),
+                                key("a", "r"),
+                                hold,
+                                CREDIT,
+                                Charge::Whole,
+                            )
+                            .expect("opens");
+                        close(shard, a.key.into());
+                        shard.close_writer(w);
+                    };
+                    restart(
+                        214,
+                        before,
+                        async move |test: &Test, shard: &mut Shard| {
+                            let now = test.reader.now().monotonic;
+                            let deadline =
+                                shard.deadline().expect("the tick of the hold");
+                            assert!(
+                                now < deadline && deadline <= now + hold,
+                                "{deadline:?}"
+                            );
+                        },
+                    );
+                }
+
+                #[test]
                 fn arms_no_tick_for_an_index_with_no_named_reader() {
                     run(200, |test| async move {
                         let mut shard = test.shard(AREA).await;

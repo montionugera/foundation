@@ -1108,6 +1108,8 @@ mod tests {
             assert!(set.changed(0));
             assert_eq!(set.records(0).len(), 1);
             assert_eq!(set.named(), [0]);
+            set.prune();
+            assert_eq!(set.named(), [0], "the records changed");
             set.recorded(0, true);
             assert!(!set.changed(0));
             set.prune();
