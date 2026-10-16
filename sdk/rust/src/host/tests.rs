@@ -4,7 +4,6 @@ use std::thread;
 
 use env::clock::Driver as _;
 use env::entropy::Driver as _;
-use env::tasks::{Group, Tasks};
 use tokio::sync::oneshot;
 use types::time::Span;
 
@@ -76,65 +75,57 @@ fn message(payload: &(dyn Any + Send)) -> &str {
 }
 
 #[test]
-fn a_panic_in_a_task_ends_the_guarded_body() {
+fn a_panic_of_a_task_ends_a_body_that_never_wakes() {
     let outcome = local(async {
-        let spawned = Rc::new(Spawned::default());
-        let tasks = Tasks::new(Spawner(Rc::clone(&spawned)));
-        spawned
-            .guard(async {
-                tasks.spawn(async { panic!("the task failed") });
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                unreachable!("the guard missed the panic of the task");
-            })
-            .await;
+        let mut body = pin!(scope(|tasks| async move {
+            tasks.spawn(async { panic!("the task failed") });
+            std::future::pending::<()>().await;
+        }));
+        let mut limit = pin!(tokio::time::sleep(Duration::from_secs(1)));
+        poll_fn(|cx| {
+            assert!(
+                limit.as_mut().poll(cx).is_pending(),
+                "the scope missed the wake"
+            );
+            body.as_mut().poll(cx)
+        })
+        .await;
     });
     assert_eq!(message(&*outcome.unwrap_err()), "the task failed");
 }
 
 #[test]
 fn a_task_that_ends_leaves_the_body_running() {
-    let outcome = local(async {
-        let spawned = Rc::new(Spawned::default());
-        let tasks = Tasks::new(Spawner(Rc::clone(&spawned)));
+    let outcome = local(scope(|tasks| async move {
         let (done, ended) = oneshot::channel();
         tasks.spawn(async {});
-        spawned
-            .guard(async {
-                tasks.spawn(async { done.send(7).unwrap() });
-                ended.await
-            })
-            .await
-    });
+        tasks.spawn(async { done.send(7).unwrap() });
+        ended.await
+    }));
     assert_eq!(outcome.unwrap(), Ok(7));
 }
 
 #[test]
-fn the_end_of_a_group_waits_for_each_task() {
-    let outcome = local(async {
-        let spawned = Rc::new(Spawned::default());
-        let group = Group::new(Tasks::new(Spawner(Rc::clone(&spawned))));
-        let ended = Rc::new(Cell::new(false));
-        let set = Rc::clone(&ended);
-        group.tasks().spawn(async move {
-            tokio::time::sleep(Duration::from_millis(5)).await;
+fn a_scope_waits_for_each_task_after_its_body() {
+    let ended = Rc::new(Cell::new(false));
+    let set = Rc::clone(&ended);
+    let outcome = local(scope(|tasks| async move {
+        tasks.spawn(async move {
+            tokio::task::yield_now().await;
             set.set(true);
         });
-        spawned.guard(group.ended()).await;
-        ended.get()
-    });
-    assert!(outcome.unwrap());
+    }));
+    outcome.unwrap();
+    assert!(ended.get());
 }
 
 #[test]
-fn a_guard_of_the_end_of_a_group_resumes_a_panic_of_a_task() {
-    let outcome = local(async {
-        let spawned = Rc::new(Spawned::default());
-        let group = Group::new(Tasks::new(Spawner(Rc::clone(&spawned))));
-        group.tasks().spawn(async {
+fn a_scope_resumes_a_panic_of_a_task_after_its_body() {
+    let outcome = local(scope(|tasks| async move {
+        tasks.spawn(async {
             tokio::time::sleep(Duration::from_millis(5)).await;
             panic!("the task failed");
         });
-        spawned.guard(group.ended()).await;
-    });
+    }));
     assert_eq!(message(&*outcome.unwrap_err()), "the task failed");
 }

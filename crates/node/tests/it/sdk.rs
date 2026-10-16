@@ -129,7 +129,7 @@ fn the_close_of_a_client_sends_the_close_to_the_node() {
     let client = Client::connect(&node, subject).unwrap();
     let before = count.load(Ordering::SeqCst);
     assert_eq!(client.close(), Ok(()));
-    rig.wait("a datagram after the drop", || {
+    rig.wait("a datagram after the close", || {
         let after = count.load(Ordering::SeqCst);
         if after > before {
             Ok(())

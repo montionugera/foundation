@@ -11,7 +11,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use env::net::{Connect, Error, Resolve, listener, tcp};
-use env::tasks::Task;
+use env::tasks::{Group, Task, Tasks};
 use tokio::task::JoinSet;
 use tokio::time::Sleep;
 use types::time::Monotonic;
@@ -127,9 +127,23 @@ impl env::net::Driver for Net {
     }
 }
 
-/// The tasks of the client's thread. A panic in one ends the thread, as the contract
-/// of `env::tasks` asks: Tokio would keep the panic in its join handle.
-pub(crate) struct Spawned {
+/// Runs `body` with the tasks of the client's thread, then waits for each task that it
+/// spawned, so that the close of a session goes out. Call it inside a `LocalRuntime`.
+///
+/// # Panics
+///
+/// Resumes the first panic of a task, as the contract of `env::tasks` asks: Tokio
+/// would keep the panic in its join handle.
+pub(crate) async fn scope<F: Future>(body: impl FnOnce(Tasks) -> F) -> F::Output {
+    let spawned = Rc::new(Spawned::default());
+    let group = Group::new(Tasks::new(Spawner(Rc::clone(&spawned))));
+    let output = spawned.guard(body(group.tasks().clone())).await;
+    spawned.guard(group.ended()).await;
+    output
+}
+
+/// The tasks of the client's thread.
+struct Spawned {
     set: RefCell<JoinSet<()>>,
     /// Wakes the future of [`Spawned::guard`] when a task starts.
     waker: Cell<Waker>,
@@ -146,7 +160,7 @@ impl Default for Spawned {
 
 impl Spawned {
     /// Runs `body`, and resumes the first panic of a task while it runs.
-    pub(crate) async fn guard<T>(&self, body: impl Future<Output = T>) -> T {
+    async fn guard<T>(&self, body: impl Future<Output = T>) -> T {
         let mut body = pin!(body);
         poll_fn(|cx| {
             self.check(cx);
@@ -169,7 +183,7 @@ impl Spawned {
 }
 
 /// Spawns the tasks of the client's thread.
-pub(crate) struct Spawner(pub(crate) Rc<Spawned>);
+struct Spawner(Rc<Spawned>);
 
 impl env::tasks::Driver for Spawner {
     fn spawn(&self, task: Task) {

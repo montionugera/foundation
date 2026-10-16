@@ -9,8 +9,7 @@ use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 
-use env::tasks::{Group, Tasks};
-use host::{Spawned, Spawner};
+use env::tasks::Tasks;
 use tokio::runtime::{Builder, LocalOptions};
 use tokio::sync::oneshot;
 use types::ed25519::{PrivateKey, PublicKey};
@@ -192,14 +191,11 @@ fn run(
             return Ok(());
         }
     };
-    runtime.block_on(async move {
-        let spawned = Rc::new(Spawned::default());
-        let group = Group::new(Tasks::new(Spawner(Rc::clone(&spawned))));
-        let tasks = group.tasks().clone();
-        let outcome = match spawned.guard(connect(node, subject, tasks)).await {
+    runtime.block_on(host::scope(|tasks| async move {
+        match connect(node, subject, tasks).await {
             Ok(session) => {
                 if ready.send(Ok(())).is_ok() {
-                    drop(spawned.guard(ended).await);
+                    drop(ended.await);
                 }
                 session
                     .ended()
@@ -209,10 +205,8 @@ fn run(
                 drop(ready.send(Err(error)));
                 Ok(())
             }
-        };
-        spawned.guard(group.ended()).await;
-        outcome
-    })
+        }
+    }))
 }
 
 /// A session with `node` as `subject`, on the env of the calling thread.
