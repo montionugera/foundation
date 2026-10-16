@@ -470,7 +470,7 @@ impl Node {
             Err(error) => tracing::error!(%error, "stopped"),
         });
         // A thread that cannot start leaves the line for `Flush::wait`.
-        self.log.resume().ok();
+        drop(self.log.resume());
         joined
     }
 }

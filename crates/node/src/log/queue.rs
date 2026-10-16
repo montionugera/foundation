@@ -95,6 +95,10 @@ impl Flush {
     /// # Panics
     ///
     /// When the thread `log` panicked after it ended its run, which is a defect.
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "the end of `main` has nothing to do when the bound passes"
+    )]
     pub fn wait(&self, bound: Duration) -> bool {
         let sent = self.queue.sent.load(Ordering::Acquire);
         if self.queue.resume().is_err() {
@@ -102,7 +106,8 @@ impl Flush {
         }
         let queue = &self.queue;
         let busy = |state: &mut State| {
-            state.written < sent || (queue.closed.load(Ordering::Acquire) && state.running)
+            state.written < sent
+                || (queue.closed.load(Ordering::Acquire) && state.running)
         };
         #[expect(
             clippy::disallowed_methods,
@@ -219,10 +224,12 @@ impl Queue {
         }
     }
 
-    /// Starts a thread `log` when none runs.
+    /// Starts a thread `log` when none runs, and a [`Hold`] is left or a line waits.
+    /// The thread takes the writer from the slot, so a start that fails keeps it.
     fn resume(self: &Arc<Self>) -> Result<(), Error> {
         let mut state = self.lock();
-        if state.running {
+        let waiting = self.sent.load(Ordering::Acquire) > state.written;
+        if state.running || (self.closed.load(Ordering::Acquire) && !waiting) {
             return Ok(());
         }
         let queue = Arc::clone(self);
@@ -301,12 +308,20 @@ impl Drain {
     }
 
     fn put(&mut self, line: &[u8]) {
-        let parts = self.parts.as_mut().expect("invariant: a drain has its parts");
-        drop(panic::catch_unwind(AssertUnwindSafe(|| parts.writer.write_all(line))));
+        let parts = self
+            .parts
+            .as_mut()
+            .expect("invariant: a drain has its parts");
+        drop(panic::catch_unwind(AssertUnwindSafe(|| {
+            parts.writer.write_all(line)
+        })));
     }
 
     fn take(&self) -> Result<Vec<u8>, TryRecvError> {
-        let parts = self.parts.as_ref().expect("invariant: a drain has its parts");
+        let parts = self
+            .parts
+            .as_ref()
+            .expect("invariant: a drain has its parts");
         parts.receiver.try_recv()
     }
 }
