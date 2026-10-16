@@ -372,6 +372,47 @@ fn refuses_a_host_that_is_not_a_name_or_an_ip_address() {
 }
 
 #[test]
+fn refuses_a_host_that_no_resolver_finds() {
+    let fix = "Write a host and a port, such as \"plc:502\" or \"[fd00::1]:502\"";
+    let part = "has a host with a part between dots that is empty, longer than 63 \
+                characters, or starts or ends with `-`";
+    let number = "has a host with a number last that is not an IPv4 address";
+    let long = format!("{}.local:502", "a".repeat(64));
+    for (address, problem) in [
+        (".:502", part),
+        ("..", part),
+        ("a..b:502", part),
+        (".plc", part),
+        ("plc.", part),
+        ("-plc:502", part),
+        ("plc-", part),
+        (&long, part),
+        ("192.168.001.010:502", number),
+        ("010.000.000.002", number),
+        ("10.1:502", number),
+        ("0x0a.0.0.2:502", number),
+        ("167772162:502", number),
+        ("10.0.0.256", number),
+    ] {
+        let message = format!("the address {address:?} {problem}");
+        assert_eq!(
+            parse(&config(string(address), &[], vec![temp()])),
+            Err(vec![refused("modbus.bad-address", 1, &message, fix)]),
+            "{address:?}"
+        );
+    }
+}
+
+#[test]
+fn reads_a_part_of_63_characters_and_a_number_that_is_not_last() {
+    let long = format!("{}.local", "a".repeat(63));
+    for host in [&*long, "10.0.0.2", "1plc", "2.plc"] {
+        let config = parse(&config(string(host), &[], vec![temp()]));
+        assert_eq!(config.map(|config| config.host), Ok(host.into()), "{host}");
+    }
+}
+
+#[test]
 fn refuses_a_bad_unit() {
     let fix = "Write the unit of the device, 0 to 255, such as 1";
     for (unit, message) in [
@@ -650,14 +691,16 @@ fn refuses_an_unknown_block_in_the_connector_or_in_a_read() {
 proptest! {
     #[test]
     fn reads_each_host_and_port(
-        host in "[a-zA-Z0-9._-]{1,20}",
+        name in "([a-zA-Z0-9_]{1,5}\\.){0,3}[a-z_][a-zA-Z0-9_-]{0,8}[a-zA-Z0-9_]",
+        ipv4 in any::<std::net::Ipv4Addr>(),
         ipv6 in any::<std::net::Ipv6Addr>(),
         port in 1..=u16::MAX,
     ) {
-        let ipv6 = ipv6.to_string();
+        let (ipv4, ipv6) = (ipv4.to_string(), ipv6.to_string());
         for (address, want) in [
-            (format!("{host}:{port}"), (&*host, port)),
-            (host.clone(), (&*host, 502)),
+            (format!("{name}:{port}"), (&*name, port)),
+            (name.clone(), (&*name, 502)),
+            (format!("{ipv4}:{port}"), (&*ipv4, port)),
             (format!("[{ipv6}]:{port}"), (&*ipv6, port)),
         ] {
             let config = parse(&config(string(&address), &[], vec![temp()]));

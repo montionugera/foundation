@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
-use std::net::Ipv6Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use connector::kind;
 use document::diagnostic::{Code, Diagnostic, Note};
@@ -115,7 +115,8 @@ pub(crate) fn parse(config: &Document) -> Result<Config, Vec<Diagnostic>> {
 
 /// Reads a host and an optional port, such as `"plc:502"`, `"plc"`, or
 /// `"[fd00::1]:502"`. Port 502 when it has none. A host in brackets is an IPv6
-/// address. Each other host has only letters, digits, `-`, `.`, and `_`.
+/// address. Each other host is an IPv4 address or a name of letters, digits, `-`, `.`,
+/// and `_`.
 fn endpoint(value: &Value) -> Result<(Box<str>, u16), Diagnostic> {
     let message = match &value.kind {
         Of::String(text) => match address(text) {
@@ -145,14 +146,9 @@ fn address(text: &str) -> Result<(Box<str>, u16), String> {
                  address"
             ));
         }
-    } else if !host
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || b"-._".contains(&byte))
-    {
-        return Err(format!(
-            "the address {text:?} has a host with a character other than a letter, a \
-             digit, `-`, `.`, or `_`"
-        ));
+    } else {
+        self::host(host)
+            .map_err(|problem| format!("the address {text:?} has {problem}"))?;
     }
     let port = match port {
         None => PORT,
@@ -170,6 +166,39 @@ fn address(text: &str) -> Result<(Box<str>, u16), String> {
         },
     };
     Ok((host.into(), port))
+}
+
+/// Checks that `host` is an IPv4 address or a name that a resolver can find, or gives
+/// its problem.
+fn host(host: &str) -> Result<(), &'static str> {
+    if !host
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || b"-._".contains(&byte))
+    {
+        return Err(
+            "a host with a character other than a letter, a digit, `-`, `.`, or `_`",
+        );
+    }
+    if host.split('.').any(|label| {
+        label.is_empty()
+            || label.len() > 63
+            || label.starts_with('-')
+            || label.ends_with('-')
+    }) {
+        return Err(
+            "a host with a part between dots that is empty, longer than 63 \
+             characters, or starts or ends with `-`",
+        );
+    }
+    // A resolver reads a host with a number last as an IPv4 address, with parts in
+    // octal or fewer than four parts, so only the plain form is safe.
+    let last = host.rsplit('.').next().unwrap_or(host);
+    if last.bytes().all(|byte| byte.is_ascii_digit())
+        && host.parse::<Ipv4Addr>().is_err()
+    {
+        return Err("a host with a number last that is not an IPv4 address");
+    }
+    Ok(())
 }
 
 /// The host of the address `text`, with no brackets, and the text of its port when it
