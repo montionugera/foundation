@@ -69,13 +69,6 @@ impl kind::Kind for Scripted {
         })
     }
 
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, kind::Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     async fn run(&self, context: Context<()>) -> Result<(), kind::Error> {
         match self.script {
             Script::Steady => {}

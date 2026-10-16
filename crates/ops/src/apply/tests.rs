@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::task::Poll;
 
-use connector::cancel;
 use connector::kind::{self, Channels, Context, Table};
 use document::Document;
 use document::diagnostic::{Code, Diagnostic};
@@ -455,13 +454,6 @@ impl kind::Kind for Refuser {
             "refused".into(),
             "Fix it".into(),
         )])
-    }
-
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, kind::Error>> {
-        std::future::ready(Ok(Vec::new()))
     }
 
     fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), kind::Error>> {

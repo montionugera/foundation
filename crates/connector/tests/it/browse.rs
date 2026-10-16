@@ -4,7 +4,6 @@ use connector::browse::{
     self, Child, Cursor, Device, End, Entry, Facts, Page, Path, Query, Scope, Shape,
     Values,
 };
-use connector::cancel;
 use connector::kind::{Channels, Context, Error, Kind, Table};
 use connector::secret::Source;
 use connector::supervisor::Supervisor;
@@ -35,13 +34,6 @@ impl Kind for Plant {
 
     fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
         Ok(Channels::default())
-    }
-
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
     }
 
     fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
@@ -115,13 +107,6 @@ impl Kind for Dice {
         Ok(Channels::default())
     }
 
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
         std::future::ready(Ok(()))
     }
@@ -173,13 +158,6 @@ impl Kind for Vault {
         Ok(Channels::default())
     }
 
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
         std::future::ready(Ok(()))
     }
@@ -207,13 +185,6 @@ impl Kind for Blind {
 
     fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
         Ok(Channels::default())
-    }
-
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
     }
 
     fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {

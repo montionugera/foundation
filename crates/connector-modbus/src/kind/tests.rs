@@ -79,16 +79,3 @@ fn parse_reads_the_config() {
     let missing = code("document.missing-attribute");
     assert_eq!(codes, Err(vec![missing, missing, code("modbus.no-read")]));
 }
-
-#[test]
-fn discover_finds_nothing() {
-    let token = cancel::Token::new();
-    let found = Kind.discover(&token);
-    let found = std::pin::pin!(found);
-    let waker = std::task::Waker::noop();
-    let polled = found.poll(&mut std::task::Context::from_waker(waker));
-    assert!(
-        matches!(polled, std::task::Poll::Ready(Ok(ref found)) if found.is_empty()),
-        "{polled:?}"
-    );
-}
