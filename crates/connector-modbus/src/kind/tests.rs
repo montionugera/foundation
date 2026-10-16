@@ -521,13 +521,15 @@ async fn answer(
     }
 }
 
-/// The sim of a scene: its seed, and the addresses of the node that the lookup of
-/// `plc` gives after `delay`.
+/// The sim of a scene: its seed, the addresses of the node that the lookup of `plc`
+/// gives after `delay`, and the delay of each way of the link of the node to itself
+/// in place of the default.
 #[derive(Clone, Copy)]
 struct World {
     seed: u64,
     lookup: fn(&[IpAddr]) -> Vec<IpAddr>,
     delay: Span,
+    link: Option<Span>,
 }
 
 impl Default for World {
@@ -537,6 +539,7 @@ impl Default for World {
             seed: ::sim::Config::default().seed,
             lookup: |all| vec![all[0]],
             delay: Span::ZERO,
+            link: None,
         }
     }
 }
@@ -580,6 +583,13 @@ where
         delay: world.delay,
     };
     sim.name("plc", lookup);
+    if let Some(delay) = world.link {
+        let slow = ::sim::link::Config {
+            delay,
+            ..::sim::link::Config::default()
+        };
+        sim.link(&node, &node, slow);
+    }
     let run = sim.run_on(&node, move |node, tasks| async move {
         let env = hub::testing::Env {
             files: node.files(),
@@ -1018,15 +1028,16 @@ fn ends_the_run_with_a_device_error_for_exception_8() {
     );
 }
 
+/// The link takes 250 us each way, so the reply comes at exactly 1 s.
 #[test]
-fn takes_a_reply_that_comes_before_the_timeout_of_1_s() {
+fn takes_a_reply_at_the_timeout_of_1_s() {
     const ONE: [Item; 1] = [item("plc.u16", Scalar::U16, "holding", 0, 7)];
     let record = run(
         device(&ONE, Order::Big),
         &ONE,
         connector("plc", &ONE, &[]),
         ms(2_050),
-        |scene| async move { scene.answer(ms(990), None) },
+        |scene| async move { scene.answer(Span::from_nanos(999_500_000), None) },
     );
     assert_eq!(record.result.as_ref().map_err(ToString::to_string), Ok(&()));
     assert_eq!(record.errors(), []);
@@ -1035,14 +1046,14 @@ fn takes_a_reply_that_comes_before_the_timeout_of_1_s() {
 }
 
 #[test]
-fn ends_the_run_with_a_device_error_for_a_reply_after_the_timeout_of_1_s() {
+fn ends_the_run_with_a_device_error_for_a_reply_just_past_the_timeout_of_1_s() {
     const ONE: [Item; 1] = [item("plc.u16", Scalar::U16, "holding", 0, 7)];
     let record = run(
         device(&ONE, Order::Big),
         &ONE,
         connector("plc", &ONE, &[]),
         ms(1_250),
-        |scene| async move { scene.answer(ms(1_010), None) },
+        |scene| async move { scene.answer(Span::from_nanos(999_500_001), None) },
     );
     assert_eq!(
         record.errors(),
@@ -1133,4 +1144,38 @@ fn ends_with_the_connect_error_of_the_first_address_when_none_connects() {
                 .to_owned()
         )]
     );
+}
+
+/// Each way of the link takes half the round trip, so at the bound the connect
+/// takes exactly the timeout.
+#[test]
+fn connects_at_the_timeout_of_1_s_and_gives_up_just_past_it() {
+    const ONE: [Item; 1] = [item("plc.u16", Scalar::U16, "holding", 0, 7)];
+    for seed in 0..8 {
+        for (half, connected) in [(500_000_000, true), (500_000_001, false)] {
+            let world = World {
+                seed,
+                link: Some(Span::from_nanos(half)),
+                ..World::default()
+            };
+            let record = run_in(
+                world,
+                device(&ONE, Order::Big),
+                &ONE,
+                connector("plc", &ONE, &[]),
+                ms(3_050),
+                |_| async {},
+            );
+            let values: Vec<_> =
+                record.frames.iter().map(|frame| frame[&2][0]).collect();
+            let want = if connected {
+                (vec![], vec![7, 7])
+            } else {
+                let error = "the connect to 10.0.0.1:502 failed: 10.0.0.1:502 did not \
+                             answer in time";
+                (vec![(Class::Device, error.to_owned())], vec![])
+            };
+            assert_eq!((record.errors(), values), want, "seed {seed}");
+        }
+    }
 }
