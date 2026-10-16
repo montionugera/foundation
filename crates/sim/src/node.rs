@@ -82,6 +82,13 @@ impl Node {
         env::threads::Threads::new(self.0.clone())
     }
 
+    /// Makes the next start of a thread named `name` on the node, through
+    /// [`Node::threads`], give `thread::Error::Start` with reason `injected`. The start
+    /// drops its body. Faults on one name fire in turn, one per start.
+    pub fn fail_thread(&self, name: &str) {
+        lock(&self.0.shared).fail_thread(self.0.node, name);
+    }
+
     /// The node's network, on its [`Node::addresses`].
     ///
     /// - A bind, a listen, or a send from an address that is not the node's gives

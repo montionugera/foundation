@@ -76,6 +76,8 @@ struct Node {
     arm_max: Option<Span>,
     entropy: Rng,
     shards: shard::Starts,
+    /// The name of each thread start to fail, in order.
+    thread_faults: Vec<String>,
     /// The monotonic reading at boot.
     boot: Monotonic,
     /// Set from the stop of a crash to the cut, while the sim drops what the crash
@@ -199,6 +201,7 @@ impl State {
             arm_max: config.arm_max,
             entropy,
             shards: shard::Starts::default(),
+            thread_faults: Vec::new(),
             boot: config.monotonic,
             crashing: false,
             life: 0,
@@ -258,6 +261,21 @@ impl State {
 
     pub(crate) fn shards(&mut self, node: usize) -> &mut shard::Starts {
         &mut self.nodes[node].shards
+    }
+
+    pub(crate) fn fail_thread(&mut self, node: usize, name: &str) {
+        self.nodes[node].thread_faults.push(name.into());
+    }
+
+    /// Takes the first fault aimed at a thread start named `name` on `node`, and
+    /// returns whether there was one.
+    pub(crate) fn take_thread_fault(&mut self, node: usize, name: &str) -> bool {
+        let faults = &mut self.nodes[node].thread_faults;
+        let Some(at) = faults.iter().position(|aimed| aimed == name) else {
+            return false;
+        };
+        faults.remove(at);
+        true
     }
 
     pub(crate) fn fill(&mut self, node: usize, bytes: &mut [u8]) {
