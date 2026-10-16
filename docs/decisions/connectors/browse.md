@@ -26,20 +26,21 @@
   continuation point with no references), then ends `Budget`. With `Limit`, `import`
   says "More than `<limit>` points match, the most for one import; narrow the pattern,
   or import in parts", not a count. It browses no folder whose tag and pattern state are
-  those of a folder above it, so a loop in a graph such as an OPC UA address space ends,
-  and a path that a pattern names through a loop still matches. A pattern ends `Budget`
-  when it holds `DEPTH` (64) folders open, its start with them, and a match can be under
-  one more, so a chain of folders that a server makes cannot hold the walk's memory. A
-  `Path` shares the names of its folder's path, so an entry copies pointers and no text,
-  and the walk holds at most `DEPTH` pages that the device sent. An entry holds one
-  pointer of 16 bytes for each name of its path, so a start of n names costs 16·n bytes
-  in each entry; each name of the start is a visit, so `VISITS` bounds n. No path that
-  the walk gives has an empty name, and the record of each kind says what it gives for
-  an empty name of its device, so the text of each path parses. When a kind breaks one
-  of these rules of `Device`: a page over `LIMIT`, an entry outside its folder, an empty
-  name, a count of values that is not the count of tags, `walk` gives `Error::Config`
-  with `connector.broken-browse`, whose message names the rule, then what broke it, and
-  the browse fails with no retry. It never panics: in release a panic stops the node and
+  those of a folder that it holds open, so a loop in a graph such as an OPC UA address
+  space ends, and a path that a pattern names through a loop still matches. A pattern
+  ends `Budget` when it holds `DEPTH` (64) folders open, its start with them, and a
+  match can be under one more, so a chain of folders that a server makes cannot hold the
+  walk's memory. A `Path` shares the names of its folder's path, so an entry copies
+  pointers and no text, and the walk holds at most `DEPTH` pages that the device sent.
+  An entry holds one pointer of 16 bytes for each name of its path, so a start of n
+  names costs 16·n bytes in each entry; each name of the start is a visit, so `VISITS`
+  bounds n, and the entries of one browse at 80 MB. No path that the walk gives has an
+  empty name, and the record of each kind says what it gives for an empty name of its
+  device, so the text of each path parses. When a kind breaks one of these rules of
+  `Device`: a page over `LIMIT`, an entry outside its folder, an empty name, a count of
+  values that is not the count of tags, `walk` gives `Error::Config` with
+  `connector.broken-browse`, whose message names the rule, then what broke it, and the
+  browse fails with no retry. It never panics: in release a panic stops the node and
   each of its connectors. The browse operation adds the connector and its kind to each
   error that it gives from `walk`. A kind implements `browse::Device` on its open
   session, so one walk is one session and can use a continuation point; a `Cursor` that

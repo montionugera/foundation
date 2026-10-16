@@ -173,7 +173,7 @@ fn diagnostic(result: Result<Found, Error>) -> Diagnostic {
 /// The diagnostic of a break of the rule `rule` of the `Device` contract.
 fn broken(rule: &str) -> Diagnostic {
     Diagnostic::new(
-        BROKEN,
+        Code::new("connector.broken-browse"),
         None,
         format!("the connector kind broke a rule of a browse: {rule}"),
         "Report this defect of the connector kind with this message".into(),
@@ -565,11 +565,22 @@ mod walk {
 
     #[test]
     fn asks_for_no_page_past_the_budget() {
-        let mut tree = Tree::new(&[folder("a", vec![point("x"), point("y")])], 10);
-        let query = query("", Scope::Match(pattern("**")));
-        let found = now(walk_within(&mut tree, &query, LIMIT, 1)).expect("found");
-        assert_eq!(found.end, End::Budget);
-        assert_eq!(tree.browsed, [path("")]);
+        let mut nodes: Vec<Node> =
+            (0..VISITS - 1).map(|i| point(&format!("p{i}"))).collect();
+        nodes.push(folder("a", vec![point("x")]));
+        let mut tree = Tree::new(&nodes, LIMIT);
+        let found = now(walk(&mut tree, &query("", Scope::Match(pattern("a/*")))));
+        assert_eq!(found.expect("found").end, End::Budget);
+        assert!(!tree.browsed.contains(&path("a")), "{:?}", tree.browsed);
+    }
+
+    #[test]
+    fn walks_past_a_folder_with_no_entries() {
+        let mut tree = Tree::new(&[folder("e", vec![]), point("p")], 10);
+        let found = now(walk(&mut tree, &query("", Scope::Match(pattern("**")))));
+        let found = found.expect("found");
+        assert_eq!(paths(&found), ["p"]);
+        assert_eq!(found.end, End::Done);
     }
 
     /// A tree of one folder that holds `n` points.
@@ -619,7 +630,7 @@ mod walk {
             assert_eq!(
                 diagnostic(found),
                 Diagnostic::new(
-                    NO_FOLDER,
+                    Code::new("connector.no-folder"),
                     None,
                     format!("the device has no folder at {shown}"),
                     "Browse the folder above it to see the names in it".into(),
@@ -734,6 +745,48 @@ mod walk {
         assert_eq!(found.end, End::Done);
     }
 
+    /// A device whose root holds the folder `a`, `a` holds the folder `b` and the
+    /// point `p`, and `b` holds the folder `a`, with the tag of `a`, and the point `q`.
+    struct Ring;
+
+    impl Device for Ring {
+        fn level(
+            &mut self,
+            folder: Option<&Entry>,
+            _: Option<&Cursor>,
+        ) -> impl Future<Output = Result<Option<Page>, Error>> {
+            let at = folder.map_or_else(Path::root, |folder| folder.path.clone());
+            let entry = |name: &str, shape| Entry {
+                path: at.child(name),
+                tag: name.into(),
+                shape,
+            };
+            let entries = match folder.map(|folder| folder.tag.as_str()) {
+                None => vec![entry("a", Shape::Folder)],
+                Some("a") => vec![
+                    entry("b", Shape::Folder),
+                    entry("p", Shape::Point(Facts::default())),
+                ],
+                _ => vec![
+                    entry("a", Shape::Folder),
+                    entry("q", Shape::Point(Facts::default())),
+                ],
+            };
+            std::future::ready(Ok(Some(Page {
+                entries,
+                next: None,
+            })))
+        }
+    }
+
+    #[test]
+    fn ends_a_loop_of_two_folders() {
+        let found = now(walk(&mut Ring, &query("", Scope::Match(pattern("**")))));
+        let found = found.expect("found");
+        assert_eq!(paths(&found), ["a/b/q", "a/p"]);
+        assert_eq!(found.end, End::Done);
+    }
+
     #[test]
     fn finds_a_path_that_a_pattern_names_through_a_loop() {
         let query = query("", Scope::Match(pattern("a/a/p")));
@@ -820,12 +873,37 @@ mod walk {
     fn counts_a_page_with_no_entries_as_one_visit() {
         for start in ["", "a"] {
             let query = query(start, Scope::Match(pattern("**")));
-            for visits in [0, 1, 5] {
-                let found = now(walk_within(&mut Empty, &query, LIMIT, visits));
-                let found = found.expect("found");
-                assert_eq!(found.entries, [], "{start} {visits}");
-                assert_eq!(found.end, End::Budget, "{start} {visits}");
+            let found = now(walk(&mut Empty, &query)).expect("found");
+            assert_eq!(found.entries, [], "{start}");
+            assert_eq!(found.end, End::Budget, "{start}");
+        }
+    }
+
+    #[test]
+    fn refuses_a_broken_entry_of_the_root() {
+        for scope in [Scope::Level(None), Scope::Match(pattern("**"))] {
+            for (at, rule) in [
+                (
+                    "",
+                    r#"an entry is in the folder of its page, and "" is not in """#,
+                ),
+                (
+                    "a/b",
+                    r#"an entry is in the folder of its page, and "a/b" is not in """#,
+                ),
+            ] {
+                let mut tree = Tree::new(&plant(), 10);
+                let entries = tree.folders.get_mut("").expect("the root");
+                entries[2].path = path(at);
+                let found = now(walk(&mut tree, &query("", scope.clone())));
+                assert_eq!(diagnostic(found), broken(rule), "{at} {scope:?}");
             }
+            let mut tree = Tree::new(&plant(), 10);
+            let entries = tree.folders.get_mut("").expect("the root");
+            entries[2].path = Path::root().child("");
+            let found = now(walk(&mut tree, &query("", scope.clone())));
+            let rule = r#"an entry has a name, and an entry of "" has an empty name"#;
+            assert_eq!(diagnostic(found), broken(rule), "{scope:?}");
         }
     }
 
@@ -957,7 +1035,7 @@ mod values {
         assert_eq!(
             diagnostic(found),
             Diagnostic::new(
-                NO_VALUES,
+                Code::new("connector.no-values"),
                 None,
                 "this connector kind cannot read the values of its points".into(),
                 "Browse without values".into(),

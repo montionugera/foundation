@@ -66,8 +66,8 @@ pub trait Device {
 
 /// Runs `query` over `device`. It finds the start from the root, one name at a time.
 /// A pattern walks depth first, in device order. It browses no folder that no match
-/// can be under, and no folder whose tag and pattern state are those of a folder above
-/// it, so a loop in the device's graph ends. It ends when it holds [`DEPTH`] folders
+/// can be under, and no folder whose tag and pattern state are those of a folder that
+/// it holds open, so a loop in the device's graph ends. It ends when it holds [`DEPTH`] folders
 /// open and a match can be under one more.
 ///
 /// # Errors
@@ -807,7 +807,7 @@ pub struct Found {
     pub entries: Vec<Entry>,
     /// With [`Values::Read`], the value of each entry, in the order of `entries`:
     /// `None` for a folder, an unreadable point, or a value that the device did not
-    /// give. Empty with [`Values::Skipped`].
+    /// give or that is not one fixed-width scalar. Empty with [`Values::Skipped`].
     pub values: Vec<Option<Value>>,
     /// Why it stopped.
     pub end: End,
