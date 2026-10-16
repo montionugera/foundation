@@ -93,10 +93,10 @@ impl kind::Kind for Kind {
     /// alone. Else [`Error::Config`] with `opcua.sample-type` for each channel whose
     /// sample type is not `bool`, `i8` to `u64`, `f32`, or `f64`, and with
     /// `opcua.large-read` when the Read of one node alone is past one message of the
-    /// server. [`Error::Device`] when the connect, a
-    /// read, or one check fails: a check fails on a status that is not Good or on no
-    /// answer in 5 s. Also [`Error::Device`], at once, when the client loses its
-    /// channel or its session between two ticks.
+    /// server. [`Error::Device`] when the connect, a read, or one check fails: a check
+    /// fails on a status that is not Good or on no answer in 5 s. Also
+    /// [`Error::Device`], at once, when the client loses its channel or its session
+    /// between two ticks.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         run(ctx)
     }
