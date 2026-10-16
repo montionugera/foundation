@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::future::{self, Future as _, poll_fn};
 use std::pin::pin;
+use std::rc::Rc;
 use std::task::Poll;
 
 use bytes::Bytes;
@@ -52,7 +53,7 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     let mut reader = ctx.reader().expect("invariant: check gives a reader");
     let ctx = &ctx;
     let config = ctx.config();
-    let client = client(ctx).await?;
+    let client = RefCell::new(Rc::new(client(ctx).await?));
     let uri = write_uri(&config.address, &config.target);
     let token = RefCell::new(Token::read(ctx).await?);
     let (confirmed, lost) = (ctx.count(CONFIRMED), ctx.count(LOST));
@@ -151,18 +152,25 @@ async fn client(ctx: &Context<Config>) -> Result<Client, Error> {
     }))
 }
 
+/// What an attempt that failed makes the next attempt read again.
+enum Read {
+    Nothing,
+    Token,
+    Ca,
+}
+
 /// Sends `body` until InfluxDB answers 204. Shows each other answer as the run's
 /// error and waits a backoff before the next attempt. After a 401 or a 403, it reads
-/// the token again before that attempt. Never ends after the cancel of the run, which
-/// the caller sees first.
+/// the token again before that attempt, and after a TLS failure of a run with a `ca`,
+/// the `ca` and a new `client`. Never ends after the cancel of the run, which the
+/// caller sees first.
 ///
 /// # Errors
 ///
-/// The error of [`Token::read`] when a read of the token fails, and
-/// [`Error::Retry`] at a TLS failure when the run has a `ca`, so that the next run
-/// reads it again.
+/// The error of [`Token::read`] when a read of the token fails, and that of
+/// [`client`] when a read of the `ca` fails.
 async fn send(
-    client: &Client,
+    client: &RefCell<Rc<Client>>,
     ctx: &Context<Config>,
     uri: &Uri,
     token: &RefCell<Option<Token>>,
@@ -171,7 +179,8 @@ async fn send(
     let mut backoff = None;
     loop {
         let request = request(uri, &body, token.borrow().as_ref());
-        let refused = match client.send(request).await {
+        let sending = Rc::clone(&client.borrow());
+        let read = match sending.send(request).await {
             Ok(answer) if answer.status() == StatusCode::NO_CONTENT => {
                 ctx.clear_error();
                 return Ok(());
@@ -196,21 +205,24 @@ async fn send(
                         ));
                     }
                 }
-                source.is_some()
+                if source.is_some() {
+                    Read::Token
+                } else {
+                    Read::Nothing
+                }
             }
             Err(error) => {
                 if let (connector::http::Error::Tls { .. }, Some(ca)) =
                     (&error, &ctx.config().ca)
                 {
-                    return Err(Error::Retry(
-                        format!(
-                            "the write to InfluxDB failed: {error}. Check the ca {ca}"
-                        )
-                        .into(),
+                    ctx.error(&format_args!(
+                        "the write to InfluxDB failed: {error}. Check the ca {ca}"
                     ));
+                    Read::Ca
+                } else {
+                    ctx.error(&format_args!("the write to InfluxDB failed: {error}"));
+                    Read::Nothing
                 }
-                ctx.error(&format_args!("the write to InfluxDB failed: {error}"));
-                false
             }
         };
         let backoff =
@@ -218,9 +230,14 @@ async fn send(
         if !backoff.wait(ctx.cancel()).await {
             future::pending::<()>().await;
         }
-        if refused {
-            // Boxed, so this rare read does not grow the future of `send`.
-            *token.borrow_mut() = Box::pin(Token::read(ctx)).await?;
+        // Boxed, so each rare read does not grow the future of `send`.
+        match read {
+            Read::Nothing => {}
+            Read::Token => *token.borrow_mut() = Box::pin(Token::read(ctx)).await?,
+            Read::Ca => {
+                let fresh = Box::pin(self::client(ctx)).await?;
+                *client.borrow_mut() = Rc::new(fresh);
+            }
         }
     }
 }

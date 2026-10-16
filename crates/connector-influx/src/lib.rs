@@ -195,8 +195,7 @@ impl kind::Kind for Kind {
     /// and the seqs of its gap lines to `lost`. It shows each other answer as its error
     /// and sends the batch again after a backoff. It reads the token at its start, and
     /// again after a 401 or a 403 before the next attempt. It reads the `ca` at its
-    /// start, and ends at a TLS failure when it has one, so that the next run reads it
-    /// again.
+    /// start, and again after a TLS failure before the next attempt.
     ///
     /// # Errors
     ///
@@ -205,8 +204,8 @@ impl kind::Kind for Kind {
     /// valid field key. The error of [`hub::reader::Ended`] when the reader ends.
     /// [`Error::Retry`] or [`Error::Config`] from [`Context::secret`] when a read
     /// fails, and [`Error::Retry`] when the token holds a byte that an HTTP header
-    /// cannot hold, when the `ca` holds no PEM certificate or one that does not
-    /// parse, or when a send with a `ca` fails TLS.
+    /// cannot hold, and when the `ca` holds no PEM certificate or one that does not
+    /// parse.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         send::run(ctx)
     }

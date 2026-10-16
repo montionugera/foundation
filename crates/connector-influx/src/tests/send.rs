@@ -1632,27 +1632,25 @@ fn shows_why_tls_fails_and_retries_in_the_run_with_no_ca() {
 }
 
 #[test]
-fn ends_the_run_at_a_tls_failure_with_a_ca() {
-    let (errors, _, points, classes, restarts) =
+fn retries_a_tls_failure_with_a_ca_in_the_run() {
+    let (errors, going, points, _, restarts) =
         send_over_tls(Certificate::OtherCa, Roots::default(), CA);
     let error = format!(
         "the write to InfluxDB failed: TLS with server:8086 failed: invalid peer \
          certificate: UnknownIssuer. Check the ca file(\"{CA_FILE}\")"
     );
     assert_eq!(
-        (errors, points, classes),
-        (vec![String::new(), error], 0, vec![0, RETRY])
-    );
-    assert_eq!(
-        restarts,
-        (0..=6).collect::<Vec<_>>(),
-        "a new run reads the ca"
+        (errors, going, points, restarts),
+        (vec![String::new(), error, String::new()], true, 0, vec![0])
     );
 }
 
-#[test]
-fn reads_again_a_ca_fixed_while_the_node_runs() {
-    let got = run_tls(|node, tasks| async move {
+/// Runs a plant whose InfluxDB serves [`Certificate::OtherCa`], with `ca` read from
+/// `file(CA_FILE)`, which holds [`CA`] at the start and `fixed` from 5 s after the
+/// first sample. Gives the points stored, the errors, and each value of `class` and
+/// of `restarts`.
+fn after_a_new_ca(fixed: &'static [u8]) -> (usize, Vec<String>, Vec<u8>, Vec<u64>) {
+    run_tls(move |node, tasks| async move {
         let paths = node.paths();
         paths
             .write(std::path::Path::new(CA_FILE), CA)
@@ -1666,15 +1664,91 @@ fn reads_again_a_ca_fixed_while_the_node_runs() {
         write(&mut writer, first, &[(1.0, 2.0)]);
         plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
         paths
-            .write(std::path::Path::new(CA_FILE), OTHER_CA)
+            .write(std::path::Path::new(CA_FILE), fixed)
             .expect("writes");
         plant.clock.sleep(Span::MINUTE).await;
-        plant.stop(run).await.expect("ok after a cancel");
+        let end = plant.stop(run).await;
+        assert!(end.is_ok(), "ok after a cancel");
+        let points = plant.store.borrow().points("telemetry", &[]).count();
+        let errors = plant.errors.borrow().clone();
+        let classes = plant.classes.borrow().clone();
+        let restarts = plant.restarts.borrow().clone();
+        (points, errors, classes, restarts)
+    })
+}
+
+#[test]
+fn reads_again_a_ca_fixed_while_the_node_runs() {
+    let (points, _, _, restarts) = after_a_new_ca(OTHER_CA);
+    assert_eq!(
+        (points, restarts),
+        (1, vec![0]),
+        "the run reads the fixed ca"
+    );
+}
+
+#[test]
+fn ends_the_run_at_a_ca_that_gives_no_root_when_read_again() {
+    let (points, errors, classes, restarts) = after_a_new_ca(b"not a certificate\n");
+    let error = format!(
+        "the ca file(\"{CA_FILE}\") holds no PEM certificate. Write the CA \
+         certificate of the server in PEM"
+    );
+    assert_eq!(
+        (points, errors.last(), classes.last(), restarts.len() > 1),
+        (0, Some(&error), Some(&RETRY), true)
+    );
+}
+
+/// With no `hold`, InfluxDB closes the first connection in the TLS handshake, then
+/// serves. Gives the points stored and each value of `restarts`.
+fn after_a_close_in_the_handshake(ca: bool) -> (usize, Vec<u64>) {
+    run_tls(move |node, tasks| async move {
+        node.paths()
+            .write(std::path::Path::new(CA_FILE), CA)
+            .expect("writes");
+        let roots = if ca {
+            Roots::default()
+        } else {
+            connector::http::sim::ca()
+        };
+        let plant = Plant::with(node, tasks, Some(Certificate::Valid), roots).await;
+        let listen = tcp::Listen {
+            local: plant.address,
+            backlog: 4,
+            options: OPTIONS,
+        };
+        let mut listener = plant.net.listen(&listen).expect("the port is free");
+        let mut config = if ca {
+            with_ca(&plant, "file", CA_FILE)
+        } else {
+            plant.config()
+        };
+        config.blocks.clear();
+        let run = plant.start(config);
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write(&mut writer, first, &[(1.0, 2.0)]);
+        let tcp = std::future::poll_fn(|cx| listener.poll_accept(cx))
+            .await
+            .expect("accepts");
+        drop((tcp, listener));
+        plant.clock.sleep(Span::from_nanos(10_000_000)).await;
+        plant.serve();
+        plant.clock.sleep(Span::MINUTE).await;
+        let end = plant.stop(run).await;
+        assert!(end.is_ok(), "ok after a cancel");
         let points = plant.store.borrow().points("telemetry", &[]).count();
         let restarts = plant.restarts.borrow().clone();
         (points, restarts)
-    });
-    assert_eq!(got, (1, (0..=5).collect()), "the run after the fix writes");
+    })
+}
+
+#[test]
+fn keeps_the_sample_of_a_close_in_the_handshake_with_no_hold() {
+    let got = [false, true].map(after_a_close_in_the_handshake);
+    assert_eq!(got, [(1, vec![0]), (1, vec![0])]);
 }
 
 #[test]
@@ -1741,4 +1815,33 @@ fn ends_the_run_at_a_ca_that_gives_no_root() {
             "{held}"
         );
     }
+}
+
+#[test]
+fn retries_a_refused_connect_in_the_run_with_a_ca() {
+    let got = run_tls(|node, tasks| async move {
+        node.paths()
+            .write(std::path::Path::new(CA_FILE), CA)
+            .expect("writes");
+        let plant =
+            Plant::with(node, tasks, Some(Certificate::Valid), Roots::default()).await;
+        let run = plant.start(with_ca(&plant, "file", CA_FILE));
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write(&mut writer, first, &[(1.0, 2.0)]);
+        plant.clock.sleep(Span::from_nanos(6_000_000_000)).await;
+        plant.serve();
+        plant.clock.sleep(Span::MINUTE).await;
+        let end = plant.stop(run).await;
+        assert!(end.is_ok(), "ok after a cancel");
+        let points = plant.store.borrow().points("telemetry", &[]).count();
+        let errors = plant.errors.borrow().clone();
+        let restarts = plant.restarts.borrow().clone();
+        (points, errors, restarts)
+    });
+    let refused = "the write to InfluxDB failed: the connect failed: 10.0.0.1:8086 \
+                   refused the connection";
+    let errors = vec![String::new(), refused.to_owned(), String::new()];
+    assert_eq!(got, (1, errors, vec![0]), "a refused connect keeps the run");
 }
