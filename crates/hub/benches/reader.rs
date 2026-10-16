@@ -37,7 +37,7 @@
 //! part of a poll's figure, so judge a change in a poll by `net`, its p50 less the
 //! floor's. To compare two builds, run each several times in turn on one pinned core
 //! whose SMT sibling is idle: a busy sibling doubles `write`. Last, it prints the
-//! bytes of a `Received` and its parts.
+//! bytes of a `Received`, its parts, and a `Reader`.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -81,10 +81,11 @@ fn main() {
     let title = format!("ns per call over {ROUNDS} rounds of {FRAMES} frames");
     table::print(&title, &timer, &lines);
     println!(
-        "bytes: Received {}, Position {}, View {}",
+        "bytes: Received {}, Position {}, View {}, Reader {}",
         size_of::<Received<'_>>(),
         size_of::<Position>(),
-        size_of::<View<'_>>()
+        size_of::<View<'_>>(),
+        size_of::<Reader>()
     );
 }
 
@@ -138,7 +139,7 @@ async fn bench(node: sim::node::Node, tasks: env::tasks::Tasks) -> (Line, Vec<Li
         Line::new("complete wait", FRAMES - 1),
     ];
     for round in 0..WARMUP + ROUNDS {
-        let [now, first, write, wake, latest, complete, ack, grant, wait] = &mut lines;
+        let [now, first, write, wake, latest, complete @ ..] = &mut lines;
         for frame in 0..FRAMES {
             let draft = common::draft(&writer, stamp);
             stamp += 1;
@@ -160,13 +161,7 @@ async fn bench(node: sim::node::Node, tasks: env::tasks::Tasks) -> (Line, Vec<Li
         let woken = count.wakes();
         assert_eq!(woken, round + 1, "each round's last write wakes the reader");
         node.clock().sleep(SETTLE).await;
-        for _ in 0..FRAMES {
-            take_and_ack(&mut complete_reader, complete, ack);
-        }
-        grant.add(table::timed(&ALLOCATOR, || pending(&mut complete_reader)).1);
-        for _ in 1..FRAMES {
-            wait.add(table::timed(&ALLOCATOR, || pending(&mut complete_reader)).1);
-        }
+        drain(&mut complete_reader, complete);
         for line in std::iter::once(&mut timer).chain(&mut lines) {
             line.close(round >= WARMUP);
         }
@@ -175,6 +170,19 @@ async fn bench(node: sim::node::Node, tasks: env::tasks::Tasks) -> (Line, Vec<Li
     let mut lines = Vec::from(lines);
     lines.push(lose(&mut writer, &mut latest_reader, stamp));
     (timer, lines)
+}
+
+/// Takes and acks the `FRAMES` frames that wait for `reader`, a complete reader, then
+/// polls it `FRAMES` times more, and adds the figures to the lines of `complete next`,
+/// `complete ack`, `complete grant`, and `complete wait`.
+fn drain(reader: &mut Reader, [next, ack, grant, wait]: &mut [Line; 4]) {
+    for _ in 0..FRAMES {
+        take_and_ack(reader, [next, ack]);
+    }
+    grant.add(table::timed(&ALLOCATOR, || pending(reader)).1);
+    for _ in 1..FRAMES {
+        wait.add(table::timed(&ALLOCATOR, || pending(reader)).1);
+    }
 }
 
 /// The `lost write` line, from `stamp`, once the ring has no room.
@@ -247,8 +255,8 @@ fn take<T>(
 }
 
 /// Takes the frame that waits for `reader` as [`take`] does, adds the figures of its
-/// poll to `next`, and adds to `ack` those of its position and of the ack of it.
-fn take_and_ack(reader: &mut Reader, next: &mut Line, ack: &mut Line) {
+/// poll to `next`, and to `ack` those of its position and of the ack of it.
+fn take_and_ack(reader: &mut Reader, [next, ack]: [&mut Line; 2]) {
     let (figures, position) = take(reader, |received| {
         let (position, figures) = table::timed(&ALLOCATOR, || received.position());
         ack.add(figures);
