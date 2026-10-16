@@ -257,6 +257,18 @@ fn gives_port_502_unit_1_and_the_big_order_by_default() {
 }
 
 #[test]
+fn gives_one_config_for_a_name_in_any_case_and_another_for_a_dot_or_a_zone() {
+    let parsed = |address: &str| parse(&config(string(address), &[], vec![temp()]));
+    parsed("plc.local.").expect("a name keeps its final dot");
+    assert_eq!(
+        parsed("Line-2.site.local:502"),
+        parsed("line-2.site.local:502")
+    );
+    assert_ne!(parsed("plc.local."), parsed("plc.local"));
+    assert_ne!(parsed("[fe80::1%2]"), parsed("[fe80::1]"));
+}
+
+#[test]
 fn reads_each_form_of_a_host() {
     for (address, host, port) in [
         ("plc_1:502", "plc_1", 502),
