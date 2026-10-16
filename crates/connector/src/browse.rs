@@ -67,15 +67,15 @@ pub trait Device {
 /// Runs `query` over `device`. It finds the start from the root, one name at a time.
 /// A pattern walks depth first, in device order. It browses no folder that no match
 /// can be under, and no folder whose tag and pattern state are those of a folder that
-/// it holds open, so a loop in the device's graph ends. It ends when it holds [`DEPTH`] folders
-/// open and a match can be under one more.
+/// it holds open, so a loop in the device's graph ends. It ends when it holds
+/// [`DEPTH`] folders open and a match can be under one more.
 ///
 /// # Errors
 ///
 /// [`Error::Config`] with `connector.no-folder` when no folder is at a name of the
 /// start, or at a folder that the device gave and then did not have, and with
-/// `connector.broken-browse` when `device` breaks a rule of [`Device`] that its doc says
-/// [`walk`] checks.
+/// `connector.broken-browse` when `device` breaks a rule of [`Device`] that its doc
+/// says [`walk`] checks.
 /// The errors of `device`.
 pub async fn walk(device: &mut impl Device, query: &Query) -> Result<Found, Error> {
     walk_within(device, query, LIMIT, VISITS).await
