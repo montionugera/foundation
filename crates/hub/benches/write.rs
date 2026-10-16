@@ -3,9 +3,10 @@
 //! `cargo bench -p hub --bench write`.
 //!
 //! Each round is a new sim node and hub, so the ring never fills. It writes `FRAMES`
-//! frames, and commits after each `BATCH`. The draft of each write is filled before
-//! it is timed. Compare a line only with another line or another build, on one pinned
-//! core whose SMT sibling is idle.
+//! frames, and sleeps `SETTLE` after each `BATCH` of them. The 64 KiB record limit
+//! of the test ring splits a `BATCH` into more than one commit. The draft of each
+//! write is filled before it is timed. Compare a line only with another line or
+//! another build, on one pinned core whose SMT sibling is idle.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -35,8 +36,9 @@ static ALLOCATOR: counting::Allocator = counting::Allocator::new();
 
 /// Data channels in each frame.
 const CHANNELS: usize = 256;
-/// Frames per round, and frames per commit.
+/// Frames per round.
 const FRAMES: usize = 64;
+/// Frames between two sleeps of `SETTLE`.
 const BATCH: usize = 16;
 const WARMUP: usize = 5;
 const ROUNDS: usize = 50;
