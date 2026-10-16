@@ -52,6 +52,8 @@ pub use kind::Kind;
 #[cfg(test)]
 mod child;
 #[cfg(test)]
+mod gate;
+#[cfg(test)]
 #[cfg(feature = "open62541")]
 mod peer;
 

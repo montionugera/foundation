@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use connector::cancel;
 use connector::kind::{self, Channels, Context, Table};
 use document::Document;
 use document::diagnostic::Diagnostic;
@@ -64,9 +63,10 @@ pub(crate) const OPCUA: Reader = Reader {
     counts: &["in", "lost", "missed", "bad", "uncertain", "mistyped"],
 };
 
-/// The stand-in of the `influx` kind, with the count `confirmed` that #1734 gives it.
+/// The stand-in of the `influx` kind, with the count `confirmed` that #1734 gives it
+/// and the count `lost` that #2725 gives it.
 pub(crate) const INFLUX: Reader = Reader {
-    counts: &["confirmed"],
+    counts: &["confirmed", "lost"],
 };
 
 impl kind::Kind for Reader {
@@ -88,13 +88,6 @@ impl kind::Kind for Reader {
             writes: writes.clone(),
             counts: self.counts.iter().map(|count| name(count)).collect(),
         })
-    }
-
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, kind::Error>> {
-        std::future::ready(Ok(Vec::new()))
     }
 
     fn run(

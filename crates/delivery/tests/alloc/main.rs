@@ -46,7 +46,6 @@ fn main() {
     places(&frame, &set);
     alternating();
     missed(&frame, &set);
-    lost(&frame, &set);
 }
 
 fn latest(frame: &impl Fn() -> Frame) {
@@ -250,49 +249,6 @@ fn missed(frame: &impl Fn() -> Frame, set: &Arc<KeySet>) {
     assert!(
         keys.iter().all(|&key| on_disk(&mut readers, key)),
         "each session missed and reads from disk"
-    );
-}
-
-/// A thousand losses behind a queued frame, then its release, allocate nothing: a run
-/// of losses keeps one entry.
-fn lost(frame: &impl Fn() -> Frame, set: &Arc<KeySet>) {
-    let mut readers = Readers::new(0);
-    let keys: Vec<_> = (0..SESSIONS)
-        .map(|_| open(&mut readers, 0, u64::MAX))
-        .collect();
-    let mut seq = 0;
-    flow(&mut readers, &keys, frame, set, &mut seq);
-    let queued = frame();
-    let (woken, allocations) = ALLOCATOR.count(|| {
-        readers.queue(&queued, set, seq..seq + 1);
-        seq += 1;
-        let mut woken = 0;
-        for _ in 0..1_000 {
-            woken += readers.lose(seq..seq + 1).len();
-            seq += 1;
-        }
-        woken + readers.release(seq).len()
-    });
-    assert_eq!(
-        allocations, 0,
-        "lost samples behind a queued frame, or their release, allocated"
-    );
-    assert_eq!(woken, 0, "each session has frames to take, so none wakes");
-    let behind = |readers: &mut Readers, key: complete::Key| {
-        let mut frames = 0;
-        loop {
-            match readers.take(key.into()) {
-                Next::Frame(_) => frames += 1,
-                Next::Behind => break frames,
-                Next::Empty | Next::Disk { .. } => {
-                    panic!("the session missed no samples")
-                }
-            }
-        }
-    };
-    assert!(
-        keys.iter().all(|&key| behind(&mut readers, key) == 3),
-        "each session takes the three frames before the lost samples, then is behind"
     );
 }
 

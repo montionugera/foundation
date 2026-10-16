@@ -56,13 +56,15 @@
   (`laptop.architect`, 2026-10-14T02:10:24Z and 02:12:26Z:
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159325971 and
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159349684). The hub
-  `sim` test `ends_a_complete_reader_that_sleeps_past_its_window_or_its_ring_as_behind`
-  checks the lost frame, and the `delivery` tests
-  `lose::misses_the_frame_that_a_session_waits_for_a_grant_on` and
-  `lose::misses_a_held_frame_at_the_release_that_reaches_the_lost_samples` check the
-  frame that waits for a grant then. A seq lost for no room stays a miss under the
-  catch-up of #274 B1: a reader that reaches it ends with `Behind`, never a gap, and
-  the B1 plan states how it knows that seq. Supersedes item 4 of
+  `sim` test
+  `gives_a_complete_reader_that_sleeps_past_its_window_or_its_ring_each_applied_frame`
+  checks the frame past the window, and, after #2553, that a frame lost for no room ends
+  nothing. A seq lost for no room stays a miss under the catch-up of #274 B1: a reader
+  that reaches it ends with `Behind`, never a gap, and the B1 plan states how it knows
+  that seq. Superseded by #2553 (READER RULES): a seq lost for no room is no miss, and
+  the next frame gives it as its gap (`laptop.architect`, 2026-10-15T18:12:25Z:
+  https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922).
+  Supersedes item 4 of
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159325971
   (`laptop.architect`, 2026-10-14T02:29:09Z:
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159543609).
@@ -417,9 +419,13 @@
   https://github.com/synnaxlabs/foundation/pull/2183#issuecomment-6089887271;
   `laptop.architect`, 2026-10-08T10:01:19Z and 2026-10-10T00:57:58Z:
   https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6057419592 and
-  https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6091895275), or
-  lost because the buffer had no room (`laptop.architect`, 2026-10-14T02:29:09Z:
-  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159543609).
+  https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6091895275). A
+  frame lost because the buffer had no room is not in the condition: the reader gets
+  the next frame with the lost seqs as its gap (#2553, `laptop.architect`,
+  2026-10-15T18:12:25Z:
+  https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922), which
+  supersedes `laptop.architect`, 2026-10-14T02:29:09Z:
+  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159543609.
   Supersedes the line of
   https://github.com/synnaxlabs/foundation/pull/2183#issuecomment-6089887271 that a
   frame lost for no room is not in the condition.
@@ -514,3 +520,9 @@
   2026-10-15T18:27:16Z:
   https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6199323861, items 5
   and 6).
+  Amended (#2725, with #2723 and #2553): no case gives `Behind` now. A complete session
+  that misses a frame reads it from disk, and a seq lost for no room comes as the gap of
+  the next frame with a sample (`laptop.architect`, 2026-10-16T02:09:51Z:
+  https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206458946). The
+  variants stay until #2790 removes them (`laptop.architect`, 2026-10-16T00:46:53Z:
+  https://github.com/synnaxlabs/foundation/issues/2725#issuecomment-6205434126).

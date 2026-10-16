@@ -62,11 +62,14 @@ impl Status {
     #[cfg(test)]
     pub(crate) const BAD_NODE_ID_UNKNOWN: Self = Self(0x8034_0000);
     #[cfg(test)]
+    pub(crate) const BAD_USER_ACCESS_DENIED: Self = Self(0x801F_0000);
+    #[cfg(test)]
     pub(crate) const BAD_TYPE_MISMATCH: Self = Self(0x8074_0000);
     #[cfg(test)]
     pub(crate) const BAD_NO_DATA: Self = Self(0x809B_0000);
-    #[cfg(test)]
     pub(crate) const BAD_SESSION_CLOSED: Self = Self(0x8026_0000);
+    #[cfg(test)]
+    pub(crate) const BAD_SESSION_ID_INVALID: Self = Self(0x8025_0000);
     #[cfg(test)]
     pub(crate) const BAD_SECURE_CHANNEL_CLOSED: Self = Self(0x8086_0000);
     #[cfg(test)]
@@ -204,6 +207,10 @@ pub(crate) fn types() -> &'static [DataType; TYPES] {
 /// `UA_NS0ID_SERVER_SERVERCAPABILITIES_OPERATIONLIMITS_MAXNODESPERREAD`, the node of
 /// the most nodes of one Read request of a server, a `UInt32`. `shim.c` asserts it.
 pub(crate) const MAX_NODES_PER_READ: u32 = 11705;
+
+/// `UA_NS0ID_SERVER_SERVERSTATUS_STATE`, the node of the state of a server. `shim.c`
+/// asserts it.
+pub(crate) const SERVER_STATE: u32 = 2259;
 
 /// `UA_Callback`.
 pub(crate) type Callback =
@@ -432,6 +439,8 @@ pub(crate) struct Channel(pub(crate) c_int);
 impl Channel {
     /// `UA_SECURECHANNELSTATE_CLOSED`.
     pub(crate) const CLOSED: Self = Self(0);
+    /// `UA_SECURECHANNELSTATE_OPEN`.
+    pub(crate) const OPEN: Self = Self(11);
 }
 
 /// `UA_SessionState` of a client.
@@ -512,6 +521,7 @@ unsafe extern "C" {
         limits: *mut [usize; 5],
     ) -> u32;
     pub(crate) fn UA_Client_disconnectAsync(client: *mut Client) -> u32;
+    pub(crate) fn UA_Client_disconnectSecureChannelAsync(client: *mut Client) -> u32;
     pub(crate) fn UA_Client_connectAsync(
         client: *mut Client,
         url: *const c_char,

@@ -1971,14 +1971,6 @@ fn wide(first: u64, count: u64) -> Vec<Range> {
         .collect()
 }
 
-fn assert_behind(ended: &Ended) {
-    assert_eq!(*ended, Ended::Behind);
-    assert_eq!(
-        ended.to_string(),
-        "the reader reached a frame that the buffer lost: open a new reader"
-    );
-}
-
 /// Polls `next` once with a waker that sets a flag, and returns the flag.
 fn poll_flagged<F: Future>(next: Pin<&mut F>) -> (Poll<F::Output>, Arc<Flag>) {
     let flag = Arc::new(Flag::default());
@@ -2085,11 +2077,13 @@ fn gives_a_complete_reader_its_waiting_frames_then_the_missed_ones_from_disk() {
     });
 }
 
-/// A reader that sleeps while a writer writes one frame each second ends `Behind`
-/// once the ring drops a frame that it did not take. Frames of 1 sample fill the ring
-/// before the window, so the reader first gets each frame that the hub applied.
+/// A reader that sleeps while a writer writes one frame each second gets each frame
+/// that the hub applied: frames of 128 samples pass the window before they fill the
+/// ring, and come later from disk. Frames of 1 sample fill the ring first. The frames
+/// lost for no room end nothing.
 #[test]
-fn ends_a_complete_reader_that_sleeps_past_its_ring_as_behind() {
+fn gives_a_complete_reader_that_sleeps_past_its_window_or_its_ring_each_applied_frame()
+{
     for samples in [128, 1] {
         run(21, move |test| async move {
             let mut reader = test.reader(&["value"], Mode::Complete).await;
@@ -2104,28 +2098,64 @@ fn ends_a_complete_reader_that_sleeps_past_its_ring_as_behind() {
                 .iter()
                 .filter(|outcome| matches!(outcome, Outcome::Applied { .. }))
                 .count();
-            let (mut taken, mut spent) = (0, 0);
-            let ended = loop {
-                match within(&test.clock, Span::SECOND, reader.next()).await {
-                    Some(Ok(received)) => {
-                        taken += 1;
-                        spent += charge(&received.view());
-                    }
-                    Some(Err(ended)) => break ended,
-                    None => panic!(
-                        "{samples} samples a frame: no end after {taken} frames of \
-                         {spent} bytes, of {applied} applied"
-                    ),
-                }
-            };
-            assert_behind(&ended);
-            assert!(taken < 1_100, "{taken} frames");
-            // The ring fills before the window, so each applied frame comes first.
-            if samples == 1 {
-                assert_eq!(taken, applied);
+            let mut taken = 0;
+            while let Some(received) =
+                within(&test.clock, Span::SECOND, reader.next()).await
+            {
+                received.unwrap_or_else(|ended| {
+                    panic!("{samples} samples a frame: {ended} after {taken} frames")
+                });
+                taken += 1;
             }
+            assert_eq!(taken, applied, "{samples} samples a frame");
+            assert!(applied < 1_100, "{applied} applied");
         });
     }
+}
+
+#[test]
+fn gives_a_complete_reader_the_samples_lost_for_no_room_as_the_gap_of_the_next_frame() {
+    run(110, |test| async move {
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value"]).await;
+        write(&mut writer, &[test.now()], &[7]);
+        test.clock.sleep(SETTLE).await;
+        let mut blocks = fill(&test.pool);
+        drop(blocks.pop());
+        let draft = draft(&writer, &[(1, &[test.now(), test.now() + 1]), (2, &[0, 0])]);
+        let outcomes = writer.write(LIVE, draft).expect("taken").to_vec();
+        let [Outcome::Lost { range, .. }] = outcomes[..] else {
+            panic!("{outcomes:?}");
+        };
+        let lost = range.seq..range.end().expect("an end");
+        drop(blocks);
+        test.clock.sleep(SETTLE).await;
+        write(&mut writer, &[test.now()], &[8]);
+        write(&mut writer, &[test.now() + 1], &[9]);
+        test.clock.sleep(SETTLE).await;
+        for (values, gap) in [(7, None), (8, Some(lost)), (9, None)] {
+            let received = reader.next().await.expect("a frame");
+            assert_eq!(samples(&received, 2), [values]);
+            assert_eq!(received.gap(), gap, "the gap before {values}");
+        }
+    });
+}
+
+#[test]
+fn gives_a_latest_reader_that_skips_frames_no_gap() {
+    run(111, |test| async move {
+        let mut latest = test.reader(&["value"], Mode::Latest).await;
+        let mut writer = test.writer("a", &["value"]).await;
+        write(&mut writer, &[test.now()], &[7]);
+        test.clock.sleep(SETTLE).await;
+        let received = latest.next().await.expect("a frame");
+        assert_eq!((samples(&received, 2), received.gap()), (vec![7], None));
+        write(&mut writer, &[test.now()], &[8]);
+        write(&mut writer, &[test.now() + 1], &[9]);
+        test.clock.sleep(SETTLE).await;
+        let received = latest.next().await.expect("a frame");
+        assert_eq!((samples(&received, 2), received.gap()), (vec![9], None));
+    });
 }
 
 /// What `future` gives within `span` of `clock`, or `None`.

@@ -254,7 +254,6 @@ impl Manager {
         let clients = self.clients.len();
         let mut deadline = clock.sleep(CONNECT_TIMEOUT);
         let mut connect = pin!(self.connections.drive(|_| {
-            self.connections.events().run();
             if self.connected() == clients {
                 Poll::Ready(())
             } else {
@@ -277,17 +276,17 @@ impl Manager {
 
     /// Drives the manager once: a pass, one run of the loop, and the moves after it.
     pub fn drive(&self) {
-        self.drive_after(|| ());
+        self.drive_then(|| ());
     }
 
-    /// Drives the manager once, as `drive` does, with a run that first asks the first
-    /// client for a read of the current time of the server.
+    /// Drives the manager once, as `drive` does, and asks the first client after the
+    /// run for a read of the current time of the server.
     ///
     /// # Panics
     ///
     /// If open62541 refuses the read.
     pub fn ask(&self) {
-        self.drive_after(|| self.read(&self.time));
+        self.drive_then(|| self.read(&self.time));
     }
 
     /// Asks the first client for the read of `nodes`, which holds one node.
@@ -329,7 +328,7 @@ impl Manager {
         for client in &self.clients {
             // SAFETY: the client lives.
             let status = Status(unsafe {
-                ffi::test::UA_Client_disconnectSecureChannelAsync(client.as_ptr())
+                ffi::UA_Client_disconnectSecureChannelAsync(client.as_ptr())
             });
             assert_eq!(status, Status::GOOD, "open62541 refused a disconnect");
         }
@@ -348,13 +347,13 @@ impl Manager {
         unsafe { ManuallyDrop::drop(&mut self.connections) };
     }
 
-    fn drive_after(&self, first: impl FnOnce()) {
-        let mut first = Some(first);
+    /// Drives the manager once, and calls `then` after the run of the loop.
+    fn drive_then(&self, then: impl FnOnce()) {
+        let mut then = Some(then);
         let drive = pin!(self.connections.drive(|_| {
-            if let Some(first) = first.take() {
-                first();
+            if let Some(then) = then.take() {
+                then();
             }
-            self.connections.events().run();
             Poll::Ready(())
         }));
         let ready = drive.poll(&mut Context::from_waker(Waker::noop()));
@@ -768,7 +767,7 @@ mod tests {
                 namespace: 0,
                 key: Key::Number(999_999),
             }]);
-            manager.drive_after(|| manager.read(&unknown));
+            manager.drive_then(|| manager.read(&unknown));
             clock.sleep(delay()).await;
             manager.drive();
             clock.sleep(delay()).await;

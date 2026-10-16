@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 use std::ffi::CString;
+use std::future;
 use std::net::{IpAddr, SocketAddr};
 use std::panic;
 
@@ -131,9 +132,15 @@ impl Server {
         let rng = &mut Rng::from_seed(self.rng.borrow_mut().next_u64());
         let time = event::Time::monotonic(Clock::clone(&self.clock));
         let net = Net::clone(&self.net);
-        let connect = crate::client::Client::connect(time, net, rng, &self.url);
+        let connect = crate::client::Client::connect(
+            time,
+            net,
+            rng,
+            &self.url,
+            future::pending(),
+        );
         let session = match connect.await {
-            Ok(session) => session,
+            Ok(session) => session.expect("a pending wait never ends"),
             Err(status) => panic!("a connect failed: {status:?}"),
         };
         let nodes = |node: Node| {

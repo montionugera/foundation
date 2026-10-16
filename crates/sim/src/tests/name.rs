@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Waker};
 
 use env::net::Error as Net;
+use env::net::host::Host;
 use types::time::{Monotonic, Span};
 
 use super::{millis, pair, shard, sim};
@@ -46,10 +47,15 @@ fn lookup(sim: &mut Sim, node: &node::Node) -> Lookup {
     let lookup = sim.run_on(node, |node, _| async move {
         let clock = node.clock();
         let start = clock.now();
-        let answer = node.net().resolve(HOST, 4433).await;
+        let answer = node.net().resolve(&host(HOST), 4433).await;
         (answer, clock.now() - start)
     });
     lookup.unwrap()
+}
+
+/// `text` as a host.
+fn host(text: &str) -> Host {
+    text.parse().expect("a host")
 }
 
 /// The error of a lookup of [`HOST`] that finds no address.
@@ -116,7 +122,7 @@ fn a_lookup_gives_the_answer_of_its_start() {
     let answer = Arc::new(Mutex::new(None));
     let (slot, net) = (Arc::clone(&answer), node.net());
     let start = node.shards().start(shard("lookup"), move |_| async move {
-        *slot.lock().unwrap() = Some(net.resolve(HOST, 4433).await);
+        *slot.lock().unwrap() = Some(net.resolve(&host(HOST), 4433).await);
     });
     drop(start.unwrap());
     sim.run_for(millis(10)).unwrap();
@@ -132,7 +138,7 @@ fn a_name_matches_in_any_ascii_case() {
     sim.name("Historian.LOCAL", addresses(vec![v4(2)]));
     assert_eq!(lookup(&mut sim, &node), (Ok(vec![at(v4(2))]), Span::ZERO));
     let found = sim.run_on(&node, |node, _| async move {
-        node.net().resolve("HISTORIAN.Local", 4433).await
+        node.net().resolve(&host("HISTORIAN.Local"), 4433).await
     });
     assert_eq!(found, Ok(Ok(vec![at(v4(2))])));
 }
@@ -144,7 +150,7 @@ fn a_name_matches_with_or_without_a_final_dot() {
     assert_eq!(lookup(&mut sim, &node), (Ok(vec![at(v4(2))]), Span::ZERO));
     sim.name(HOST, addresses(vec![v4(3)]));
     let found = sim.run_on(&node, |node, _| async move {
-        node.net().resolve("historian.local.", 4433).await
+        node.net().resolve(&host("historian.local."), 4433).await
     });
     assert_eq!(found, Ok(Ok(vec![at(v4(3))])));
 }
@@ -181,7 +187,7 @@ fn a_lookup_that_ends_past_the_clock_never_answers() {
     let answer = Arc::new(Mutex::new(None));
     let (slot, net) = (Arc::clone(&answer), node.net());
     let start = node.shards().start(shard("lookup"), move |_| async move {
-        *slot.lock().unwrap() = Some(net.resolve(HOST, 4433).await);
+        *slot.lock().unwrap() = Some(net.resolve(&host(HOST), 4433).await);
     });
     drop(start.unwrap());
     sim.run_for(millis(10)).unwrap();
@@ -189,50 +195,27 @@ fn a_lookup_that_ends_past_the_clock_never_answers() {
 }
 
 #[test]
-#[should_panic(expected = "10.0.0.2 is an IP literal, which no lookup reads")]
-fn a_name_that_is_an_ip_literal_panics() {
+#[should_panic(expected = "10.0.0.2 is an IP address, which no lookup reads")]
+fn a_name_that_is_an_ip_address_panics() {
     let (mut sim, _) = one();
     sim.name("10.0.0.2", addresses(vec![v4(3)]));
 }
 
 #[test]
-#[should_panic(expected = "[fd00::2] is an IP literal, which no lookup reads")]
-fn a_name_that_is_an_ipv6_literal_in_brackets_panics() {
+#[should_panic(expected = "[fe80::2%1] is an IP address, which no lookup reads")]
+fn a_name_that_is_a_scoped_ipv6_address_in_brackets_panics() {
     let (mut sim, _) = one();
-    sim.name("[fd00::2]", addresses(vec![v4(3)]));
+    sim.name("[fe80::2%1]", addresses(vec![v4(3)]));
 }
 
 #[test]
-fn a_literal_with_a_final_dot_is_a_name() {
-    let (mut sim, node) = one();
-    for host in ["10.0.0.2.", "[fd00::2]."] {
-        sim.name(host, addresses(vec![v4(3)]));
-        let found = sim.run_on(&node, move |node, _| async move {
-            node.net().resolve(host, 4433).await
-        });
-        assert_eq!(found, Ok(Ok(vec![at(v4(3))])), "{host}");
-    }
-}
-
-#[test]
-fn the_empty_host_is_not_the_root() {
-    let (mut sim, node) = one();
-    sim.name(".", addresses(vec![v4(2)]));
-    let found = sim.run_on(&node, |node, _| async move {
-        node.net().resolve("", 4433).await
-    });
-    let host = String::new();
-    assert_eq!(found, Ok(Err(Net::NotFound { host })));
-}
-
-#[test]
-fn an_ipv4_address_in_brackets_is_a_name() {
-    let (mut sim, node) = one();
-    sim.name("[10.0.0.2]", addresses(vec![v4(3)]));
-    let found = sim.run_on(&node, |node, _| async move {
-        node.net().resolve("[10.0.0.2]", 4433).await
-    });
-    assert_eq!(found, Ok(Ok(vec![at(v4(3))])));
+#[should_panic(
+    expected = "\"10.0.0.2.\" is not a host: it has a host with a number last \
+                           that is not an IPv4 address"
+)]
+fn a_name_that_is_not_a_host_panics() {
+    let (mut sim, _) = one();
+    sim.name("10.0.0.2.", addresses(vec![v4(3)]));
 }
 
 #[test]
@@ -240,16 +223,17 @@ fn an_ipv4_address_in_brackets_is_a_name() {
 fn a_lookup_outside_the_sim_panics() {
     let (_sim, node) = one();
     let net = node.net();
-    let mut lookup = pin!(net.resolve(HOST, 4433));
+    let host = host(HOST);
+    let mut lookup = pin!(net.resolve(&host, 4433));
     let mut cx = Context::from_waker(Waker::noop());
     drop(lookup.as_mut().poll(&mut cx));
 }
 
 #[test]
-fn a_literal_needs_no_name() {
+fn an_ip_address_needs_no_name() {
     let (mut sim, node) = one();
     let found = sim.run_on(&node, |node, _| async move {
-        node.net().resolve("10.0.0.2", 4433).await
+        node.net().resolve(&host("10.0.0.2"), 4433).await
     });
     assert_eq!(found, Ok(Ok(vec![at(v4(2))])));
 }
