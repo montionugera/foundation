@@ -96,4 +96,6 @@
   `VISITS`: the walk's own time, median of 100 on box1 in release, is 1.1 ms over a flat
   tree of 9 999 points and 0.9 ms over a chain of 63 folders of 150 points each; PR 5 of
   the PR list measures the cost of the OPC UA sim server. The two triggers come from the
-  ruling of 2026-10-16 04:00 UTC.
+  ruling of 2026-10-16 04:00 UTC. A page of `Child` entries, with a name and no path,
+  and a private `Path::child`: `laptop.architect-2`, 2026-10-16 05:50 UTC
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6209047339).

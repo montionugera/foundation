@@ -380,7 +380,7 @@ impl Path {
     /// The path of the entry `name` in this folder. It shares this path, so it costs
     /// one link at any depth.
     #[must_use]
-    pub fn child(&self, name: impl Into<Box<str>>) -> Self {
+    fn child(&self, name: impl Into<Box<str>>) -> Self {
         Self(Some(Arc::new(Link {
             folder: self.clone(),
             name: name.into(),
