@@ -89,4 +89,6 @@
   the code under test, while the `wal` benches already time the file write. Lost: a
   `pub(crate)` `State`, which widens `State` and each method that the bench calls, for
   one bench. Decided by `laptop.architect` (#2909, 2026-10-16T19:32:27Z):
-  https://github.com/synnaxlabs/foundation/pull/2909#issuecomment-6223169251.
+  https://github.com/synnaxlabs/foundation/pull/2909#issuecomment-6223169251, with the
+  text approved (2026-10-16T20:11:06Z):
+  https://github.com/synnaxlabs/foundation/pull/2909#issuecomment-6223804759.
