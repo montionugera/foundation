@@ -23,7 +23,7 @@ pub const VISITS: usize = 10_000;
 pub const DEPTH: usize = 64;
 
 /// A device open for one browse. A kind implements it on its session, so one walk
-/// connects once.
+/// connects once. [`walk`] gives [`Broken`] when the kind breaks a rule of this trait.
 pub trait Device {
     /// Gives one page of the entries of `folder`, or of the root when `None`, in
     /// device order, from `cursor`, or from the first entry when `None`. A page holds
@@ -70,13 +70,9 @@ pub trait Device {
 /// # Errors
 ///
 /// [`Error::Config`] with `connector.no-folder` when no folder is at a name of the
-/// start, or at a folder that the device gave and then did not have. The errors of
-/// `device`.
-///
-/// # Panics
-///
-/// When `device` gives a page of more than [`LIMIT`] entries, an entry that is not in
-/// the folder it browsed, or a count of values that is not the count of tags.
+/// start, or at a folder that the device gave and then did not have, and with
+/// `connector.broken-browse` ([`Broken`]) when `device` breaks a rule of [`Device`].
+/// The errors of `device`.
 pub async fn walk(device: &mut impl Device, query: &Query) -> Result<Found, Error> {
     walk_within(device, query, LIMIT, VISITS).await
 }
@@ -143,18 +139,29 @@ impl<D: Device> Walker<'_, D> {
             .level(folder, cursor)
             .await?
             .ok_or_else(|| no_folder(path))?;
-        assert!(
-            page.entries.len() <= LIMIT,
-            "invariant: the device gave {} entries at {path:?}, over {LIMIT}",
-            page.entries.len(),
-        );
+        if page.entries.len() > LIMIT {
+            return Err(Broken::Large {
+                folder: path.clone(),
+                count: page.entries.len(),
+            }
+            .into());
+        }
         for entry in &page.entries {
-            let parent = entry.path.names.split_last().map(|(_, parent)| parent);
-            assert!(
-                parent == Some(&path.names[..]),
-                "invariant: the device gave {:?} in the folder {path:?}",
-                entry.path,
-            );
+            let broken = match entry.path.names.split_last() {
+                Some((name, parent)) if parent == &path.names[..] => {
+                    if !name.is_empty() {
+                        continue;
+                    }
+                    Broken::Empty {
+                        folder: path.clone(),
+                    }
+                }
+                _ => Broken::Outside {
+                    folder: path.clone(),
+                    entry: entry.path.clone(),
+                },
+            };
+            return Err(broken.into());
         }
         Ok(page)
     }
@@ -327,13 +334,13 @@ async fn read(
         return Ok(vec![None; entries.len()]);
     }
     let read = device.values(&points).await?;
-    assert_eq!(
-        read.len(),
-        points.len(),
-        "invariant: the device gave {} values for {} tags",
-        read.len(),
-        points.len(),
-    );
+    if read.len() != points.len() {
+        return Err(Broken::Values {
+            asked: points.len(),
+            given: read.len(),
+        }
+        .into());
+    }
     let mut read = read.into_iter();
     Ok(entries
         .iter()
@@ -346,10 +353,12 @@ async fn read(
 
 const NO_VALUES: Code = Code::new("connector.no-values");
 const NO_FOLDER: Code = Code::new("connector.no-folder");
+const BROKEN: Code = Code::new("connector.broken-browse");
 
 /// The path of an entry from the root of a device's tree: the name of each entry on
-/// the way, its own last, and no name is empty. Its text joins the names with `/`,
-/// with `\` before each `/`, `*`, and `\` in a name. The root is the empty text.
+/// the way, its own last. No name of a path that [`walk`] gives is empty. Its text
+/// joins the names with `/`, with `\` before each `/`, `*`, and `\` in a name. The
+/// root is the empty text.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Path {
     names: Vec<Arc<str>>,
@@ -362,17 +371,12 @@ impl Path {
         Self { names: Vec::new() }
     }
 
-    /// The path of the entry `name` in this folder.
-    ///
-    /// # Panics
-    ///
-    /// When `name` is empty: no text names it.
+    /// The path of the entry `name` in this folder. [`walk`] refuses an entry whose
+    /// name is empty ([`Broken::Empty`]): no text names it.
     #[must_use]
     pub fn child(&self, name: impl Into<Arc<str>>) -> Self {
-        let name = name.into();
-        assert!(!name.is_empty(), "invariant: a name is not empty");
         let mut names = self.names.clone();
-        names.push(name);
+        names.push(name.into());
         Self { names }
     }
 
@@ -638,6 +642,73 @@ impl fmt::Display for Malformed {
 }
 
 impl std::error::Error for Malformed {}
+
+/// A break of a rule of [`Device`] by the code of a kind: a defect of the kind, not of
+/// the config or the device. It becomes [`Error::Config`] with
+/// `connector.broken-browse`, since a retry gets the same answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Broken {
+    /// A page of `folder` held `count` entries, over [`LIMIT`].
+    Large {
+        /// The folder of the page.
+        folder: Path,
+        /// The count of entries in the page.
+        count: usize,
+    },
+    /// A page of `folder` held `entry`, which is not in it.
+    Outside {
+        /// The folder of the page.
+        folder: Path,
+        /// The path of the entry.
+        entry: Path,
+    },
+    /// A page of `folder` held an entry whose name is empty.
+    Empty {
+        /// The folder of the page.
+        folder: Path,
+    },
+    /// The device gave `given` values for `asked` tags.
+    Values {
+        /// The count of tags.
+        asked: usize,
+        /// The count of values.
+        given: usize,
+    },
+}
+
+impl fmt::Display for Broken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Large { folder, count } => write!(
+                f,
+                "the kind gave {count} entries in a page of \"{folder}\", over {LIMIT}",
+            ),
+            Self::Outside { folder, entry } => {
+                write!(f, "the kind gave \"{entry}\" in the folder \"{folder}\"")
+            }
+            Self::Empty { folder } => write!(
+                f,
+                "the kind gave an entry with an empty name in the folder \"{folder}\"",
+            ),
+            Self::Values { asked, given } => {
+                write!(f, "the kind gave {given} values for {asked} tags")
+            }
+        }
+    }
+}
+
+impl std::error::Error for Broken {}
+
+impl From<Broken> for Error {
+    fn from(broken: Broken) -> Self {
+        config_error(
+            BROKEN,
+            &broken,
+            "This is a defect of the connector kind, not of the config or the \
+             device; report it with this message",
+        )
+    }
+}
 
 /// One entry of a device's tree.
 #[derive(Clone, Debug, PartialEq, Eq)]

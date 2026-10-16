@@ -170,6 +170,18 @@ fn diagnostic(result: Result<Found, Error>) -> Diagnostic {
     }
 }
 
+/// The diagnostic of a break of the `Device` contract.
+fn broken(message: &str) -> Diagnostic {
+    Diagnostic::new(
+        BROKEN,
+        None,
+        message.into(),
+        "This is a defect of the connector kind, not of the config or the device; \
+         report it with this message"
+            .into(),
+    )
+}
+
 /// A plant: two lines with temperatures and a pressure, and an array.
 fn plant() -> Vec<Node> {
     vec![
@@ -244,7 +256,9 @@ mod text {
     proptest! {
         #[test]
         fn round_trips_a_path(names in prop::collection::vec("\\PC{1,4}", 0..4)) {
-            let built = names.iter().fold(Path::root(), |path, name| path.child(name.as_str()));
+            let built = names
+                .iter()
+                .fold(Path::root(), |path, name| path.child(name.as_str()));
             prop_assert_eq!(built.to_string().parse::<Path>(), Ok(built));
         }
 
@@ -673,13 +687,14 @@ mod walk {
     }
 
     #[test]
-    #[should_panic(
-        expected = r#"invariant: the device gave 501 entries at "", over 500"#
-    )]
-    fn panics_on_a_page_of_more_than_the_limit() {
+    fn refuses_a_page_of_more_than_the_limit() {
         let points: Vec<Node> = (0..=LIMIT).map(|i| point(&format!("p{i}"))).collect();
         let mut tree = Tree::new(&points, LIMIT + 1);
-        drop(now(walk(&mut tree, &query("", Scope::Level(None)))));
+        let found = now(walk(&mut tree, &query("", Scope::Level(None))));
+        assert_eq!(
+            diagnostic(found),
+            broken(r#"the kind gave 501 entries in a page of "", over 500"#),
+        );
     }
 
     /// A device whose each folder holds the folder `a`, with the tag `loop`, and the
@@ -759,9 +774,17 @@ mod walk {
     }
 
     #[test]
-    #[should_panic(expected = "invariant: a name is not empty")]
-    fn panics_on_an_empty_name() {
-        drop(Path::root().child("a").child(""));
+    fn refuses_an_entry_whose_name_is_empty() {
+        let mut tree = Tree::new(&plant(), 10);
+        let entries = tree.folders.get_mut("Line1").expect("Line1");
+        entries[1].path = path("Line1").child("");
+        let found = now(walk(&mut tree, &query("", Scope::Match(pattern("**")))));
+        assert_eq!(
+            diagnostic(found),
+            broken(
+                r#"the kind gave an entry with an empty name in the folder "Line1""#
+            ),
+        );
     }
 
     /// A device whose each page is empty, with a next one.
@@ -794,17 +817,25 @@ mod walk {
     }
 
     #[test]
-    #[should_panic(
-        expected = r#"invariant: the device gave "Line9/Temp1" in the folder "Line1""#
-    )]
-    fn panics_on_an_entry_that_is_not_in_its_folder() {
-        let mut tree = Tree::new(&plant(), 10);
-        let entries = tree.folders.get_mut("Line1").expect("Line1");
-        entries[0].path = path("Line9/Temp1");
-        drop(now(walk(
-            &mut tree,
-            &query("", Scope::Match(pattern("**"))),
-        )));
+    fn refuses_an_entry_that_is_not_in_its_folder() {
+        for (at, message) in [
+            (
+                "Line9/Temp1",
+                r#"the kind gave "Line9/Temp1" in the folder "Line1""#,
+            ),
+            ("Temp1", r#"the kind gave "Temp1" in the folder "Line1""#),
+            (
+                "Line1/a/Temp1",
+                r#"the kind gave "Line1/a/Temp1" in the folder "Line1""#,
+            ),
+            ("", r#"the kind gave "" in the folder "Line1""#),
+        ] {
+            let mut tree = Tree::new(&plant(), 10);
+            let entries = tree.folders.get_mut("Line1").expect("Line1");
+            entries[0].path = path(at);
+            let found = now(walk(&mut tree, &query("", Scope::Match(pattern("**")))));
+            assert_eq!(diagnostic(found), broken(message), "{at}");
+        }
     }
 
     /// The path of each point of `nodes` under `at`.
@@ -950,9 +981,12 @@ mod values {
     }
 
     #[test]
-    #[should_panic(expected = "invariant: the device gave 2 values for 3 tags")]
-    fn panics_on_a_count_of_values_that_is_not_the_count_of_tags() {
+    fn refuses_a_count_of_values_that_is_not_the_count_of_tags() {
         let mut short = Short(Tree::new(&plant(), 10));
-        drop(now(walk(&mut short, &read("Line1", Scope::Level(None)))));
+        let found = now(walk(&mut short, &read("Line1", Scope::Level(None))));
+        assert_eq!(
+            diagnostic(found),
+            broken("the kind gave 2 values for 3 tags"),
+        );
     }
 }

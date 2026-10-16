@@ -30,9 +30,13 @@
   ends `Budget` at a folder deeper than `DEPTH` (64) names, so a chain of folders that a
   server makes cannot hold the walk's memory. A `Path` shares the names of its folder's
   path, so an entry copies pointers and no text, and the walk holds at most `DEPTH`
-  pages that the device sent. No name is empty: `Path::child` panics on one, and the
+  pages that the device sent. No path that the walk gives has an empty name, and the
   record of each kind says what it gives for an empty name of its device, so the text of
-  each path parses. A kind implements `browse::Device` on its open session, so one walk
+  each path parses. When a kind breaks a rule of `Device` (a page over `LIMIT`, an entry
+  outside its folder, an empty name, a count of values that is not the count of tags),
+  `walk` gives `connector.broken-browse` with a message that names the rule, and the
+  browse fails. It never panics: in release a panic stops the node and each of its
+  connectors. A kind implements `browse::Device` on its open session, so one walk
   is one session and can use a continuation point; a `Cursor` that a front end gets
   holds no session state. `level` takes a folder as the `Entry` that the device gave,
   never a path, and gives at most `LIMIT` entries a page; `values` gives
@@ -65,7 +69,11 @@
   2026-10-16
   (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208174481).
   `DEPTH`, the shared names, and the empty name: `laptop.architect-2`, 2026-10-16
-  (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208244581).
+  (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208244581). An
+  error, not a panic, for a break of `Device`: the person, through `laptop.monitor`,
+  2026-10-16 04:54:26 UTC, "Yes", on "Should a browse bug return an error instead of
+  crashing the node?"
+  (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208381924).
   `VISITS`: the walk's own time, median of 100 on box1 in release, is 1.4 ms over a
   flat tree of 9 999 points and 4.7 ms over a chain of 63 folders of 150 points each;
   PR 5 of the PR list measures the cost of the OPC UA sim server. The two triggers
