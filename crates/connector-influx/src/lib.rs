@@ -98,6 +98,17 @@ pub enum Target {
     },
 }
 
+impl Target {
+    /// Whether the server stores a `u` integer: InfluxDB 2 and 3 do, InfluxDB 1 OSS
+    /// does not.
+    pub(crate) const fn unsigned(&self) -> bool {
+        match self {
+            Self::Database(_) => false,
+            Self::Bucket { .. } => true,
+        }
+    }
+}
+
 impl kind::Kind for Kind {
     type Config = Config;
 
@@ -188,10 +199,10 @@ impl kind::Kind for Kind {
     /// [`Error::Config`] with `influx.sample-type` for a channel of a `uuid`, `string`,
     /// `bytes`, `array`, `list`, or `matrix` type, with `influx.unsigned` for a `u64`
     /// channel to a [`Target::Database`], and with `influx.bad-channel` for a channel
-    /// name that is not a valid field key. The error of [`hub::reader::Ended`] when the reader ends.
-    /// [`Error::Retry`] or [`Error::Config`] from [`Context::secret`] when a read
-    /// fails, and [`Error::Retry`] when the token holds a byte that an HTTP header
-    /// cannot hold.
+    /// name that is not a valid field key. The error of [`hub::reader::Ended`] when the
+    /// reader ends. [`Error::Retry`] or [`Error::Config`] from [`Context::secret`] when
+    /// a read fails, and [`Error::Retry`] when the token holds a byte that an HTTP
+    /// header cannot hold.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         send::run(ctx)
     }

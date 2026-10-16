@@ -105,7 +105,7 @@ impl Batch {
         Self {
             measurement: Measurement::new(name, &[])
                 .expect("invariant: config checks the measurement name"),
-            unsigned: matches!(target, Target::Bucket { .. }),
+            unsigned: target.unsigned(),
             connector: connector.clone(),
             gap: None,
             position: None,
