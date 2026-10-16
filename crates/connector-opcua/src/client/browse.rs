@@ -7,7 +7,7 @@ use std::ops::Range;
 use std::ptr::{self, NonNull};
 use std::task::Poll;
 
-use types::hash::Map;
+use types::hash::{Map, Set};
 
 use super::{Client, READS, Reads, limit};
 use crate::alloc;
@@ -229,12 +229,9 @@ impl Client {
         }
         self.units(nodes, limits.translate, &mut descriptions)
             .await?;
-        self.walk(&types, limits.browse).await?;
-        for (description, data_type) in descriptions.iter_mut().zip(&types) {
-            description.base = data_type.as_ref().and_then(|data_type| {
-                base(&self.supertypes, data_type)
-                    .expect("invariant: the walk browsed each step")
-            });
+        let bases = self.walk(&types, limits.browse).await?;
+        for (description, base) in descriptions.iter_mut().zip(bases) {
+            description.base = base;
         }
         Ok(descriptions)
     }
@@ -309,23 +306,34 @@ impl Client {
 
     /// Browses the supertype of each data type that a walk from `types` needs and the
     /// client has not browsed, until [`base`] knows each of `types`, with Browse
-    /// requests of at most `most` nodes.
+    /// requests of at most `most` nodes, and gives the base of each. The client keeps
+    /// each supertype of a Good result. A result that is not Good gives no base in
+    /// this call, and the next call browses that type again.
     async fn walk(
         &mut self,
         types: &[Option<Node>],
         most: Option<NonZeroUsize>,
-    ) -> Result<(), Status> {
+    ) -> Result<Vec<Option<u32>>, Status> {
+        let mut failed = Set::default();
         loop {
             let mut missing: Vec<Node> = Vec::new();
-            for data_type in types.iter().flatten() {
-                if let Err(step) = base(&self.supertypes, data_type)
-                    && !missing.contains(&step)
-                {
-                    missing.push(step);
+            let mut bases = Vec::with_capacity(types.len());
+            for data_type in types {
+                let Some(data_type) = data_type else {
+                    bases.push(None);
+                    continue;
+                };
+                match base(&self.supertypes, &failed, data_type) {
+                    Ok(base) => bases.push(base),
+                    Err(step) => {
+                        if !missing.contains(&step) {
+                            missing.push(step);
+                        }
+                    }
                 }
             }
             if missing.is_empty() {
-                return Ok(());
+                return Ok(bases);
             }
             let browses = self.split(&missing, most, 1, Service::BROWSE, |raw| {
                 // SAFETY: `raw` holds its count, and C copies each name.
@@ -345,13 +353,14 @@ impl Client {
                 answer.has(range.len())?;
                 for (offset, index) in range.enumerate() {
                     let mut first = None;
-                    // A type has one supertype. A result that is not Good, such as of
-                    // a type that the server does not have, gives none.
-                    let supertype = answer
-                        .browsed(offset, |found| first = first.take().or(found.node))
-                        .ok()
-                        .and(first);
-                    self.supertypes.insert(missing[index].clone(), supertype);
+                    // A type has one supertype.
+                    let result = answer
+                        .browsed(offset, |found| first = first.take().or(found.node));
+                    if result.is_ok() {
+                        self.supertypes.insert(missing[index].clone(), first);
+                    } else {
+                        failed.insert(missing[index].clone());
+                    }
                 }
             }
         }
@@ -469,14 +478,16 @@ impl Client {
 /// browsed: the first type up the `HasSubtype` references that is a built-in type of
 /// namespace 0, Int32 for a subtype of `Enumeration`, and none for `Structure`,
 /// `BaseDataType`, `Number`, `Integer`, `UInteger`, a type with no supertype or one
-/// whose id is not a number or a name, and a walk of more than [`STEPS`] steps, such
-/// as a loop.
+/// whose id is not a number or a name, a type of `failed`, and a walk of more than
+/// [`STEPS`] steps, such as a loop.
 ///
 /// # Errors
 ///
-/// The first type of the walk that the client has not browsed.
+/// The first type of the walk that the client has not browsed and that is not of
+/// `failed`.
 pub(super) fn base(
     supertypes: &Map<Node, Option<Node>>,
+    failed: &Set<Node>,
     data_type: &Node,
 ) -> Result<Option<u32>, Node> {
     let mut at = data_type;
@@ -488,6 +499,9 @@ pub(super) fn base(
                 22 | 24 | 26..=28 => return Ok(None),
                 _ => {}
             }
+        }
+        if failed.contains(at) {
+            return Ok(None);
         }
         match supertypes.get(at) {
             None => return Err(at.clone()),

@@ -1,7 +1,7 @@
 use std::ffi::CStr;
 
 use proptest::prelude::*;
-use types::hash::Map;
+use types::hash::{Map, Set};
 
 use super::{
     Client, READS, RELAY, Relay, VALUE, drop_reads, long, recount_of, relayed, run,
@@ -535,6 +535,41 @@ fn each_call_at_the_bound_of_reads_in_flight_fails_with_too_many_operations() {
     assert_eq!(out, (full, full));
 }
 
+/// A walk result that is not Good gives no base, and the client does not keep it, so
+/// the next describe of the same client browses the type again and gives its base.
+#[test]
+fn describe_after_a_failed_walk_result_gives_the_base() {
+    let (bases, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let nodes = deep(peer.server, 1);
+            let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
+            let mut browses = 0;
+            let rewrite = |message: &mut Vec<u8>| {
+                if message.starts_with(b"MSG") && message[24..28] == BROWSE_RESPONSE {
+                    browses += 1;
+                    if browses == 1 {
+                        let status = Status::BAD_TOO_MANY_OPERATIONS.0.to_le_bytes();
+                        message[56..60].copy_from_slice(&status);
+                    }
+                }
+            };
+            relayed(&node, &Relay::default(), rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                let mut bases = Vec::new();
+                for _ in 0..2 {
+                    let described = client.describe(&nodes).await;
+                    bases.push(described.map(|all| all[0].base));
+                }
+                client.close().await;
+                bases
+            })
+            .await
+        })
+        .await
+    });
+    assert_eq!(bases, [Ok(None), Ok(Some(11))]);
+}
+
 /// Gives the answer of `call` through a relay that gives each response of the type
 /// `kind` no results.
 fn emptied<T: Send + 'static>(
@@ -578,25 +613,27 @@ fn an_answer_with_the_wrong_count_of_results_fails_the_call() {
 
 #[test]
 fn a_walk_gives_the_first_unbrowsed_type_and_ends_past_16_links() {
-    let mut supertypes = Map::default();
-    assert_eq!(base(&supertypes, &ns1(1)), Err(ns1(1)));
+    let (mut supertypes, none) = (Map::default(), Set::default());
+    assert_eq!(base(&supertypes, &none, &ns1(1)), Err(ns1(1)));
     supertypes.insert(ns1(1), Some(ns1(2)));
-    assert_eq!(base(&supertypes, &ns1(1)), Err(ns1(2)));
+    assert_eq!(base(&supertypes, &none, &ns1(1)), Err(ns1(2)));
+    let failed = Set::from_iter([ns1(2)]);
+    assert_eq!(base(&supertypes, &failed, &ns1(1)), Ok(None));
     supertypes.insert(ns1(2), None);
-    assert_eq!(base(&supertypes, &ns1(1)), Ok(None));
+    assert_eq!(base(&supertypes, &none, &ns1(1)), Ok(None));
     for id in 1..=16 {
         supertypes.insert(ns1(100 + id), Some(ns1(101 + id)));
     }
     supertypes.insert(ns1(117), Some(ns0(11)));
-    assert_eq!(base(&supertypes, &ns1(102)), Ok(Some(11)));
-    assert_eq!(base(&supertypes, &ns1(101)), Ok(None));
+    assert_eq!(base(&supertypes, &none, &ns1(102)), Ok(Some(11)));
+    assert_eq!(base(&supertypes, &none, &ns1(101)), Ok(None));
 }
 
 #[test]
 fn a_walk_gives_each_built_in_type_and_none_for_each_abstract_type() {
-    let supertypes = Map::default();
+    let (supertypes, none) = (Map::default(), Set::default());
     let bases: Vec<Option<u32>> = (1..=30)
-        .map(|id| base(&supertypes, &ns0(id)).unwrap_or(Some(0)))
+        .map(|id| base(&supertypes, &none, &ns0(id)).unwrap_or(Some(0)))
         .collect();
     let expected: Vec<Option<u32>> = (1..=30)
         .map(|id| match id {
@@ -607,7 +644,7 @@ fn a_walk_gives_each_built_in_type_and_none_for_each_abstract_type() {
         })
         .collect();
     assert_eq!(bases, expected);
-    assert_eq!(base(&supertypes, &ns1(11)), Err(ns1(11)));
+    assert_eq!(base(&supertypes, &none, &ns1(11)), Err(ns1(11)));
 }
 
 #[test]
