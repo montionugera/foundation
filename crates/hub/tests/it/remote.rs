@@ -1913,7 +1913,7 @@ fn a_complete_reader_whose_pool_has_no_room_for_a_credit_gives_the_frame_that_ar
         |node, _, transport, steps| async move {
             let (_, mut sender, mut receiver) = fake_open(&transport).await;
             let mut seq = 0;
-            for n in 0..33 {
+            for n in 0..34 {
                 send_credit_frame(&mut sender, &mut seq, n).await;
             }
             let error = receiver.recv().await.expect_err("the reader stopped");
@@ -1927,17 +1927,20 @@ fn a_complete_reader_whose_pool_has_no_room_for_a_credit_gives_the_frame_that_ar
             for _ in 0..32 {
                 reader.next().await.expect("a frame");
             }
-            // The task queues the 33rd frame while the caller takes nothing.
+            // The task queues the 33rd and 34th frames while the caller takes nothing.
             test.clock.sleep(Span::from_nanos(100_000_000)).await;
             let next = reader.next();
             let blocks = fill(&test.pool);
-            next.await.expect("the frame that arrived before the end");
-            // The frame goes back here, and the pool can give its pages to a credit.
-            let next = reader.next();
-            let more = fill(&test.pool);
-            let ended = next.await.expect_err("the pool has no room");
+            next.await.expect("the 33rd frame");
             let expected = test.pool.alloc(Credit::LEN).expect_err("the pool is full");
-            drop((blocks, more));
+            // The task finds no block for the credit while the 34th frame waits.
+            test.clock.sleep(Span::from_nanos(100_000_000)).await;
+            reader
+                .next()
+                .await
+                .expect("the frame that arrived before the end");
+            let ended = reader.next().await.expect_err("the pool has no room");
+            drop(blocks);
             assert_eq!(ended, Ended::Pool(expected));
             until(&test.clock, &steps.stopped).await;
         },
