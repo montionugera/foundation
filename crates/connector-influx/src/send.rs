@@ -47,7 +47,7 @@ enum Event<'a> {
 /// Writes the frames of the run's reader to InfluxDB until the cancel, with one
 /// request in flight. While one is in flight it reads the next batch, up to 5,000
 /// lines, and acks a batch and counts its samples, lost seqs, and oversized samples
-/// only after InfluxDB answers 204.
+/// only after InfluxDB answers 204, or with no request when the batch holds no line.
 pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     let mut reader = ctx.reader().expect("invariant: check gives a reader");
     let ctx = &ctx;
@@ -70,15 +70,13 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
         if flight.is_none()
             && let Some(Taken { body, ack }) = batch.take()
         {
-            if body.is_empty() {
-                reader.ack(ack.position);
-            } else {
-                let (client, uri, token) = (&client, &uri, &token);
-                flight.set(Some(async move {
+            let (client, uri, token) = (&client, &uri, &token);
+            flight.set(Some(async move {
+                if !body.is_empty() {
                     send(client, ctx, uri, token, body.into()).await?;
-                    Ok(ack)
-                }));
-            }
+                }
+                Ok(ack)
+            }));
         }
         let full = batch.full();
         let event = {

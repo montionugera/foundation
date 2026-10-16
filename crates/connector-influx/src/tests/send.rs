@@ -1572,6 +1572,26 @@ fn writes_empty_bytes_as_an_empty_string() {
 }
 
 #[test]
+fn counts_an_oversized_string_whose_line_is_left_out() {
+    let long = "x".repeat(65_537);
+    let columns = vec![("edge.text", 23, variable(Type::String, &[long.as_bytes()]))];
+    let frame = one_frame("edge.*", false, 1, columns);
+    assert!(frame.end.is_none(), "the run goes on: {:?}", frame.end);
+    assert_eq!(frame.got, []);
+    assert_eq!(frame.oversized.last(), Some(&1), "{:?}", frame.oversized);
+}
+
+#[test]
+fn counts_oversized_bytes_whose_line_is_left_out() {
+    let long = vec![0_u8; 49_153];
+    let columns = vec![("edge.blob", 24, variable(Type::Bytes, &[&long]))];
+    let frame = one_frame("edge.*", false, 1, columns);
+    assert!(frame.end.is_none(), "the run goes on: {:?}", frame.end);
+    assert_eq!(frame.got, []);
+    assert_eq!(frame.oversized.last(), Some(&1), "{:?}", frame.oversized);
+}
+
+#[test]
 fn stops_with_a_config_error_at_a_channel_of_a_type_it_does_not_write() {
     let xyz = bytes![1.0_f32, 2.0_f32, 3.0_f32];
     let frame = one_frame("edge.*", true, 1, vec![("edge.xyz", 22, xyz)]);

@@ -92,9 +92,9 @@
   `bytes` sample over 49,152) is left out, and the run goes on. InfluxDB 3 refuses a
   string field over 65,536 bytes, and the docs of InfluxDB 1 and 2 give 64 KB. The
   count is of the text as written, so each version takes each line that the run sends.
-  The count `oversized` gives each sample left out, after the 204 of its batch, as
-  `confirmed` does. Lost: cut the string (a changed value with no sign), or end the run
-  (one long sample stops a stream). Decided by `laptop.architect-2` on
+  The count `oversized` gives each sample left out, after the 204 of its batch, or at
+  once when its batch holds no line and so sends no request. Lost: cut the string (a
+  changed value with no sign), or end the run (one long sample stops a stream). Decided by `laptop.architect-2` on
   2026-10-16T17:35:01Z
   (https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6221149361), on
   the plan of

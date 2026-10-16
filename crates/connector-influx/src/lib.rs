@@ -55,8 +55,8 @@ const CONFIRMED: &str = "confirmed";
 /// across the runs of one supervisor call.
 const LOST: &str = "lost";
 /// The count of the `string` and `bytes` samples left out as a field of over 65,536
-/// bytes as written, in the batches that InfluxDB took with a 204, across the runs of
-/// one supervisor call.
+/// bytes as written, in the batches that the run acks, across the runs of one
+/// supervisor call.
 const OVERSIZED: &str = "oversized";
 
 /// The `influx` kind: writes a reader's samples to InfluxDB.
@@ -167,8 +167,8 @@ impl kind::Kind for Kind {
     /// Reads the channels of its reader settings, writes none, and names three
     /// counts: `confirmed`, the samples that InfluxDB took with a 204; `lost`, the
     /// seqs that the gap lines of this connector count, which InfluxDB took with a
-    /// 204; and `oversized`, the `string` and `bytes` samples left out of the batches
-    /// that InfluxDB took with a 204, as a field of over 65,536 bytes as written.
+    /// 204; and `oversized`, the `string` and `bytes` samples left out as a field of
+    /// over 65,536 bytes as written, when their batch is acked.
     fn check(&self, config: &Config) -> Result<Channels, Vec<Diagnostic>> {
         let count = |text: &str| text.parse().expect("invariant: a count is a name");
         Ok(Channels {
@@ -183,12 +183,12 @@ impl kind::Kind for Kind {
     /// frame after seqs that the reader did not get, it writes their `live` gap line
     /// ([`gap::MEASUREMENT`]) at the frame's first sample, also when it leaves that
     /// sample's line out. It keeps one request in flight, and acks a batch only after
-    /// InfluxDB answers 204, when it adds the batch's fields to the count
-    /// `confirmed`, the seqs of its gap lines to `lost`, and the samples it left out
-    /// as over 65,536 bytes to `oversized`. It shows each other answer as its error,
-    /// with the fix for a 400, a 404, or a 422, and sends the batch again after a
-    /// backoff. It reads the token at its start, and again after a 401 or a 403
-    /// before the next attempt.
+    /// InfluxDB answers 204, or with no request when the batch holds no line. At the
+    /// ack it adds the batch's fields to the count `confirmed`, the seqs of its gap
+    /// lines to `lost`, and the samples it left out as over 65,536 bytes to
+    /// `oversized`. It shows each other answer as its error, with the fix for a 400, a
+    /// 404, or a 422, and sends the batch again after a backoff. It reads the token at
+    /// its start, and again after a 401 or a 403 before the next attempt.
     ///
     /// # Errors
     ///
