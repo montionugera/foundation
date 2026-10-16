@@ -84,14 +84,14 @@
   a line waits, so at most one thread `log` runs and the lines keep their order. Inside
   a `tracing` event, no OS thread can start and no dispatch can be set. A line from
   another thread after the last `Flush::wait` of `main` is lost. `main` waits up to 1 s
-  for the log at its end. Its panic hook puts ERROR `panicked` with the field `panic`
-  in the queue as the last line, with no dispatch and no thread start, since a panic
-  can come from inside an event. While a shard runs, the hook waits up to 1 s and calls
-  the hook before it only when the log wrote each line within that bound. After each
-  shard has ended, it calls the hook before it at once, and the line waits for the next
-  `Flush::wait`. A panic of the writer, on the thread `log`, also calls it at once,
-  since only that thread writes the line. Decision by `laptop.monitor`
-  (2026-10-15T21:39:25Z,
+  for the log at its end. Its panic hook, which `Flush::hook` sets, puts ERROR
+  `panicked` with the field `panic` in the queue as the last line, with no dispatch and
+  no thread start, since a panic can come from inside an event. While a shard runs, the
+  hook waits up to 1 s and calls the hook before it only when the log wrote each line
+  within that bound. After each shard has ended, it calls the hook before it at once,
+  and the line waits for the next `Flush::wait`. A panic of the writer, on the thread
+  `log`, also calls it at once, since only that thread writes the line. Decision by
+  `laptop.monitor` (2026-10-15T21:39:25Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202838819). The
   plan by `laptop.architect-2` (2026-10-15T21:43:54Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202910326), and its
