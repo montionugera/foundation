@@ -32,9 +32,9 @@ pub struct Reader {
 
 impl Reader {
     /// Opens the read of `open` on `session`, whose length is at most
-    /// `OPEN_BYTES_MAX`. Gives each error of [`Session::reader`](crate::Session::reader)
-    /// but [`Error::Open`], with the error of the close in place of the error that
-    /// ended the renewal.
+    /// `OPEN_BYTES_MAX`. Gives each error of
+    /// [`Session::reader`](crate::Session::reader) but [`Error::Open`], with the error
+    /// of the close in place of the error that ended the renewal.
     pub(crate) async fn open(session: Rc<Handle>, open: &Open) -> Result<Self, Error> {
         let shared = &session.0;
         let class = match open.mode {

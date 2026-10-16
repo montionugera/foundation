@@ -63,9 +63,9 @@ pub struct Config {
 }
 
 /// A program's session with one node, as one subject. It keeps the subject's hello
-/// admitted, sends one request at a time, and opens reads beside them. It stays on the thread that made it. A
-/// clone is the same session. When the last clone drops, it closes the session with
-/// `Code(0)`.
+/// admitted, sends one request at a time, and opens reads beside them. It stays on
+/// the thread that made it. A clone is the same session. When the last clone drops, it
+/// closes the session with `Code(0)`.
 #[derive(Clone, Debug)]
 pub struct Session(Rc<Handle>);
 

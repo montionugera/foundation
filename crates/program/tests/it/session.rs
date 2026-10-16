@@ -1147,8 +1147,8 @@ fn names_each_error() {
                 requested: 9,
                 available: 0,
             }),
-            "no block of the pool holds a message or a frame: pool is full: asked for 9 \
-             bytes, 0 bytes free",
+            "no block of the pool holds a message or a frame: pool is full: asked \
+             for 9 bytes, 0 bytes free",
         ),
         (
             Error::Open { length: 70_000 },
