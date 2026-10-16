@@ -38,8 +38,9 @@ fn resolve(path: &Path) -> io::Result<PathBuf> {
         Ok(resolved) if names_directory(path) && !fs::metadata(&resolved)?.is_dir() => {
             return Err(Errno::NOTDIR.into());
         }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => e,
-        resolved => return resolved,
+        Ok(resolved) => return Ok(resolved),
+        // Only a last name that is not there passes `symlink_metadata` below.
+        Err(e) => e,
     };
     // `file_name` is `None` for an end in `..`, whose directory must be there.
     let (Some(name), Some(dir)) = (path.file_name(), path.parent()) else {
