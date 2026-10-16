@@ -15,7 +15,7 @@ use types::authority::Authority;
 use types::name::Name;
 use types::time;
 
-use crate::{cancel, reader, status, supervisor};
+use crate::{browse, cancel, reader, status, supervisor};
 
 /// The noun of the document that [`Kind::parse`] gets, for the text of a diagnostic.
 pub const NOUN: &str = "the connector";
@@ -53,6 +53,28 @@ pub trait Kind: Send + Sync + 'static {
         &self,
         ctx: Context<Self::Config>,
     ) -> impl Future<Output = Result<(), Error>>;
+
+    /// Browses the device of the connector block `ctx.config()` as `query` asks. A
+    /// kind connects to its device and gives [`browse::walk`] over it. The default
+    /// gives [`Error::Config`] with `connector.no-browse`: the kind cannot browse.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] when the block does not name a device that the kind can
+    /// reach, and the errors of [`browse::walk`]. [`Error::Device`] when the device
+    /// fails.
+    fn browse(
+        &self,
+        ctx: &browse::Context<'_>,
+        query: &browse::Query,
+    ) -> impl Future<Output = Result<browse::Found, Error>> {
+        let _ = (ctx, query);
+        std::future::ready(Err(config_error(
+            NO_BROWSE,
+            &"this connector kind cannot browse its device",
+            "Write the blocks of the points by hand",
+        )))
+    }
 }
 
 /// What a checked connector reads and writes.
@@ -300,19 +322,7 @@ impl<C> Context<C> {
         &self,
         source: &secret::Source,
     ) -> Result<secret::Value, Error> {
-        let get = self.inputs.secrets.get(source).await;
-        get.map_err(|error| match error {
-            secret::Error::BadName { detail } => {
-                let error = format!(
-                    "the secret {source} has a name that the store cannot hold"
-                );
-                config_error(BAD_SECRET_NAME, &error, &detail)
-            }
-            error => {
-                let source = source.clone();
-                Error::Retry(Box::new(Unread { source, error }))
-            }
-        })
+        read_secret(&self.inputs.secrets, source).await
     }
 
     /// Runs the kind's own tasks on its shard. Each task must end when
@@ -323,6 +333,25 @@ impl<C> Context<C> {
     pub fn tasks(&self) -> &Tasks {
         &self.tasks
     }
+}
+
+/// The value of `source` from `secrets`, with the errors of [`Context::secret`].
+pub(crate) async fn read_secret(
+    secrets: &secret::Resolver,
+    source: &secret::Source,
+) -> Result<secret::Value, Error> {
+    let get = secrets.get(source).await;
+    get.map_err(|error| match error {
+        secret::Error::BadName { detail } => {
+            let error =
+                format!("the secret {source} has a name that the store cannot hold");
+            config_error(BAD_SECRET_NAME, &error, &detail)
+        }
+        error => {
+            let source = source.clone();
+            Error::Retry(Box::new(Unread { source, error }))
+        }
+    })
 }
 
 /// The kinds this binary has, by name. `node` builds it once.
@@ -397,6 +426,17 @@ impl Table {
             .await
     }
 
+    /// Browses with `kind` as `query` asks.
+    pub(crate) async fn browse(
+        &self,
+        kind: &str,
+        ctx: &browse::Context<'_>,
+        query: &browse::Query,
+    ) -> Result<browse::Found, Error> {
+        let kind = self.get(kind, None).map_err(Error::Config)?;
+        kind.browse(ctx, query).await
+    }
+
     /// Parses `config` and starts one run of `kind` with `ctx`.
     pub(crate) fn run<'a>(
         &'a self,
@@ -437,6 +477,7 @@ impl fmt::Debug for Table {
 }
 
 const UNKNOWN_KIND: Code = Code::new("connector.unknown-kind");
+const NO_BROWSE: Code = Code::new("connector.no-browse");
 const UNKNOWN_CHANNEL: Code = Code::new("connector.unknown-channel");
 const NO_CHANNEL: Code = Code::new("connector.no-channel");
 const MANY_INDEXES: Code = Code::new("connector.many-indexes");
@@ -610,6 +651,9 @@ pub(crate) fn config_error(code: Code, error: &dyn fmt::Display, fix: &str) -> E
 /// One run of a kind.
 pub(crate) type Run<'a> = Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>;
 
+/// One browse of a kind.
+type Browse<'a> = Pin<Box<dyn Future<Output = Result<browse::Found, Error>> + 'a>>;
+
 /// A [`Kind`] with its config type erased, so one table holds every kind.
 trait Erased: Send + Sync {
     fn check(&self, config: &Document) -> Result<Channels, Vec<Diagnostic>>;
@@ -624,6 +668,12 @@ trait Erased: Send + Sync {
         config: &Document,
         ctx: Context<()>,
     ) -> Result<Run<'_>, Vec<Diagnostic>>;
+
+    fn browse<'a>(
+        &'a self,
+        ctx: &'a browse::Context<'a>,
+        query: &'a browse::Query,
+    ) -> Browse<'a>;
 }
 
 impl<K: Kind> Erased for K {
@@ -645,6 +695,14 @@ impl<K: Kind> Erased for K {
     ) -> Result<Run<'_>, Vec<Diagnostic>> {
         let config = self.parse(config)?;
         Ok(Box::pin(Kind::run(self, ctx.with(config))))
+    }
+
+    fn browse<'a>(
+        &'a self,
+        ctx: &'a browse::Context<'a>,
+        query: &'a browse::Query,
+    ) -> Browse<'a> {
+        Box::pin(Kind::browse(self, ctx, query))
     }
 }
 

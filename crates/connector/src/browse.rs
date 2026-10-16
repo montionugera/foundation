@@ -6,10 +6,15 @@ use std::ops::ControlFlow;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use document::Document;
 use document::diagnostic::Code;
+use env::clock::Clock;
+use env::net::Net;
+use env::rng::Rng;
 use types::sample::Value;
 
-use crate::kind::{Error, config_error};
+use crate::kind::{self, Error, config_error};
+use crate::{secret, supervisor};
 
 /// The most points that one browse of a pattern gives.
 pub const LIMIT: usize = 500;
@@ -21,6 +26,57 @@ pub const VISITS: usize = 10_000;
 
 /// The most folders that a pattern holds open at one time, its start with them.
 pub const DEPTH: usize = 64;
+
+/// One browse's inputs: the connector block as the files give it, and the node's
+/// network, clock, randomness, and secrets. It is not `Send`.
+#[derive(Debug)]
+pub struct Context<'a> {
+    config: &'a Document,
+    inputs: &'a supervisor::Config,
+}
+
+impl<'a> Context<'a> {
+    pub(crate) fn new(config: &'a Document, inputs: &'a supervisor::Config) -> Self {
+        Self { config, inputs }
+    }
+
+    /// The connector block from the files. A kind reads only what it needs to reach
+    /// the device, so a block with no `rate` and no `read` works.
+    #[must_use]
+    pub fn config(&self) -> &Document {
+        self.config
+    }
+
+    /// The node's clock, as [`kind::Context::clock`].
+    #[must_use]
+    pub fn clock(&self) -> &Clock {
+        &self.inputs.clock
+    }
+
+    /// A new random source, as [`kind::Context::rng`].
+    #[must_use]
+    pub fn rng(&self) -> Rng {
+        self.inputs.entropy.rng()
+    }
+
+    /// Connects streams and datagrams, as [`kind::Context::net`].
+    #[must_use]
+    pub fn net(&self) -> &Net {
+        &self.inputs.net
+    }
+
+    /// Reads the value of `source`, as [`kind::Context::secret`].
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`kind::Context::secret`].
+    pub async fn secret(
+        &self,
+        source: &secret::Source,
+    ) -> Result<secret::Value, Error> {
+        kind::read_secret(&self.inputs.secrets, source).await
+    }
+}
 
 /// A device open for one browse. A kind implements it on its session, so one walk
 /// connects once. [`walk`] gives `connector.broken-browse` when the kind gives a page
