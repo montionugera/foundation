@@ -7,9 +7,10 @@ use std::path::{Path, PathBuf};
 
 use env::entropy::Driver as _;
 use env::paths::{Error, Found, names_directory};
+use rustix::fs::FileType;
 use rustix::io::Errno;
 
-use crate::{dir, entropy};
+use crate::{dir, entropy, host};
 
 #[derive(Debug)]
 pub(crate) struct Driver;
@@ -60,9 +61,8 @@ fn resolve(path: &Path) -> io::Result<PathBuf> {
 }
 
 fn read(path: &Path, most: usize) -> io::Result<Found> {
-    #[expect(clippy::disallowed_methods, reason = "os reads the user's files")]
-    let file = File::open(path)?;
-    if file.metadata()?.is_dir() {
+    let (file, stat) = host::open(path)?;
+    if FileType::from_raw_mode(stat.st_mode).is_dir() {
         let (mut entries, mut size) = (Vec::new(), 0_usize);
         for name in dir::names(file)? {
             let entry = path.join(name?);
@@ -77,7 +77,7 @@ fn read(path: &Path, most: usize) -> io::Result<Found> {
     }
     let over = u64::try_from(most).map_or(u64::MAX, |most| most.saturating_add(1));
     let mut bytes = Vec::new();
-    file.take(over).read_to_end(&mut bytes)?;
+    File::from(file).take(over).read_to_end(&mut bytes)?;
     if bytes.len() > most {
         return Ok(Found::Large);
     }

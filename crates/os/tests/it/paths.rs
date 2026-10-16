@@ -5,7 +5,9 @@ use std::io::Read;
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt, chown, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 use env::paths::{Error, Found};
 use rustix::fs::{CWD, RenameFlags, renameat_with};
@@ -393,6 +395,28 @@ fn a_write_on_a_pipe_gives_the_bytes_to_its_reader() {
     assert_eq!(
         paths.read(&scratch.0, 1 << 12),
         Ok(Found::Directory(vec![pipe]))
+    );
+}
+
+/// The read of a FIFO with no writer answers in place of a wait.
+#[test]
+fn a_read_of_a_pipe_is_an_invalid_argument() {
+    let scratch = Scratch::new();
+    let pipe = scratch.0.join("pipe");
+    mkfifo(&pipe);
+    let (send, receive) = mpsc::channel();
+    #[expect(clippy::disallowed_methods, reason = "the test bounds a hang")]
+    thread::spawn(move || send.send(os::paths().read(&pipe, 1)).unwrap());
+    #[expect(clippy::disallowed_methods, reason = "the test bounds a hang")]
+    let read = receive.recv_timeout(Duration::from_secs(10));
+    assert_eq!(read, Ok(Err(Error::Io { code: 22 })));
+}
+
+#[test]
+fn a_read_of_a_device_is_an_invalid_argument() {
+    assert_eq!(
+        os::paths().read(Path::new("/dev/null"), 1),
+        Err(Error::Io { code: 22 })
     );
 }
 

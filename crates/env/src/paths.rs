@@ -127,7 +127,9 @@ impl Paths {
     /// # Errors
     ///
     /// [`Error::NotFound`] when nothing is at `path`, [`Error::Outside`] past the
-    /// limits of [`Paths::within`], else [`Error::Io`].
+    /// limits of [`Paths::within`], [`Error::Io`] 22 when `path` is a file that is
+    /// neither a regular file nor a directory, such as a FIFO or a device, else
+    /// [`Error::Io`].
     ///
     /// ```
     /// use std::path::{Path, PathBuf};
