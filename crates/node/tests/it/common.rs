@@ -50,6 +50,7 @@ pub(crate) fn start_node<D: Driver + Send + 'static>(
         name: "edge".parse().expect("a name"),
         settings: node::Settings::default(),
         vars: std::collections::BTreeMap::new(),
+        roots: os::Roots::default(),
         log: node::Log {
             writer: Box::new(std::io::sink()),
             format: ops::Log::default(),

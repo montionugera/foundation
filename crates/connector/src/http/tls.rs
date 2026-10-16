@@ -52,7 +52,8 @@ impl Roots {
     }
 
     /// True when the store holds no root.
-    pub(crate) fn empty(&self) -> bool {
+    #[must_use]
+    pub fn empty(&self) -> bool {
         self.0.is_empty()
     }
 }
