@@ -1196,9 +1196,16 @@ fn a_run_ends_at_its_limit_when_a_process_of_the_command_keeps_its_input() {
 fn a_run_ends_at_its_limit_when_the_command_closes_its_pipes_and_runs() {
     let mut command = Command::new("sh");
     command.args(["-c", "echo $$; exec sleep 60 <&- >&- 2>&-"]);
+    let clock = os::clock();
+    let started = clock.now();
     let limited =
-        std::panic::AssertUnwindSafe(|| run(&os::clock(), Span::SECOND, command, &[]));
+        std::panic::AssertUnwindSafe(|| run(&clock, Span::SECOND, command, &[]));
     let panic = std::panic::catch_unwind(limited).expect_err("the run panics");
+    let took = clock.now() - started;
+    assert!(
+        took < Span::from_nanos(2_000_000_000),
+        "the kill took {took}"
+    );
     let message = panic.downcast_ref::<String>().expect("a message");
     let pid = message.lines().nth(2).expect("the PID");
     assert_eq!(
@@ -1216,6 +1223,9 @@ fn a_run_ends_at_its_limit_when_the_command_closes_its_pipes_and_runs() {
     assert_eq!(alive.code(), Some(1), "{pid} still runs");
 }
 
+/// Through [`Watch`]: no command makes a read or a write of its pipes fail with an
+/// error other than a closed pipe, so no call of [`run`] or [`Talk`] gets a thread of
+/// the command that panics.
 #[test]
 fn a_wait_ends_when_a_thread_of_the_command_panics() {
     let watch = Arc::new(Watch::default());
