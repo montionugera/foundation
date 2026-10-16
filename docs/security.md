@@ -521,7 +521,8 @@ answer (`mesh::Member::decode` from a peer, #336 adds its target),
 each connector's protocol parser, the `node_id`
 text of the `opcua` kind
 (`connector_opcua::node`, #2523), its `address`, which `UA_parseEndpointUrl` of
-open62541 reads (`connector_opcua::Kind::parse`, #2523), the file `name` of the data
+open62541 reads (`connector_opcua::Kind::parse`, #2523), the `address` of the
+`modbus` kind (`connector_modbus::Kind::parse`, #2789), the file `name` of the data
 directory (`node::name::decode`, #2174), the file `budget` of the data directory
 (`node::budget::decode`, #2174), the parsers of `/proc/self/mountinfo` and
 `/proc/self/cgroup` in `os::memory` (#2226), the request of a remote program and the
