@@ -809,21 +809,23 @@
   mode, 0700, so the group and other users get no access. `sim` makes one directory
   only, apart from `sim::Node::make_dir`, which makes each one above. On a handle of
   `within`, a path that does not resolve, such as a link to nothing or a loop, passes
-  the limits by its own place. `within` resolves `<hidden>/..` after the resolve of each
-  hidden folder, which opens no file. It gives `NotFound` when the folder is not there,
-  and `Io` 20 (`ENOTDIR`) when it is not a directory, or on `os` `Io` 13 (`EACCES`) when
-  this user cannot search it. It skips a hidden folder that the limits of its handle
-  refuse, since a path under that folder fails by those limits. A path under a hidden
-  folder of a limit fails with the new `paths::Error::Hidden`, also when it is not under
-  the folders of another limit, and `Outside` is only for a path not under the folders.
-  This amendment gives the hidden check that the amendment of 2026-10-16T06:56:55Z
-  defers, and the call with which `foundation mcp` makes its data directory in PR 1 of
-  #2526. Supersedes "or that resolves under one of its hidden folders, fails with
-  `paths::Error::Outside`" of the amendment of 2026-10-16T04:52:58Z. Lost: a check that
-  `within` makes the hidden folder, which writes in a call that only limits; a resolve
-  of `<hidden>/.` as the check, which `os` resolves to `Ok` when the folder is not
-  there; and a read of the folder, which blocks on a pipe and fails on a folder with no
-  read bit. Decided by `laptop.architect-2` (item B of
+  the limits by its own place. When it still does not resolve after the make, such as a
+  link to a directory whose resolved path is longer than the OS takes, it gives the
+  error of its resolve, as `read` gives. `within` resolves `<hidden>/..` after the
+  resolve of each hidden folder, which opens no file. It gives `NotFound` when the
+  folder is not there, and `Io` 20 (`ENOTDIR`) when it is not a directory, or on `os`
+  `Io` 13 (`EACCES`) when this user cannot search it. It skips a hidden folder that the
+  limits of its handle refuse, since a path under that folder fails by those limits. A
+  path under a hidden folder of a limit fails with the new `paths::Error::Hidden`, also
+  when it is not under the folders of another limit, and `Outside` is only for a path
+  not under the folders. This amendment gives the hidden check that the amendment of
+  2026-10-16T06:56:55Z defers, and the call with which `foundation mcp` makes its data
+  directory in PR 1 of #2526. Supersedes "or that resolves under one of its hidden
+  folders, fails with `paths::Error::Outside`" of the amendment of 2026-10-16T04:52:58Z.
+  Lost: a check that `within` makes the hidden folder, which writes in a call that only
+  limits; a resolve of `<hidden>/.` as the check, which `os` resolves to `Ok` when the
+  folder is not there; and a read of the folder, which blocks on a pipe and fails on a
+  folder with no read bit. Decided by `laptop.architect-2` (item B of
   https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6209932709; the plan
   of `laptop.integrator-2`, 2026-10-16T08:06:32Z,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6211011171, approved
@@ -832,8 +834,52 @@
   order of `Hidden` over `Outside`, 2026-10-16T14:34:56Z,
   https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6217809418; the
   `EEXIST` rule of `os`, the drop of end slashes, the resolve of `<hidden>/..`, `Io` for
-  a hidden folder that is not a directory, the skip of a hidden folder past the limits,
-  and the check of a link to nothing by its place, 2026-10-16T15:45:37Z,
+  a hidden folder that is not a directory or that this user cannot search, the skip of a
+  hidden folder past the limits, and the check of a link to nothing by its place,
+  2026-10-16T15:45:37Z,
   https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219155635; the check
   of each path that does not resolve by its own place, 2026-10-16T16:02:28Z,
-  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219471401).
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219471401; the error
+  of its resolve after the make, 2026-10-16T16:26:58Z,
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219956876).
+  Amended (2026-10-16T16:02:30Z, #2889): `Paths::read` gives `Io` 22 (`EINVAL`) for a
+  file that is neither a regular file nor a directory, such as a FIFO, a socket, or a
+  device, as `env::files::Files::open_absolute` gives on the `os` disk. Such a file has
+  no stable content to read, and a tool or the check of `--files` must answer, not wait.
+  `os` checks the kind with a stat before the open, so the open of a device that is
+  there at the stat runs no driver, opens with no wait for a writer of a FIFO, and
+  checks the kind again with an fstat after the open. A link that another writer changes
+  between the stat and the open can give the error of the open, such as `Io` 102 on
+  macOS or 6 on Linux for a socket, and the open of a device that the link names runs
+  its driver. On Linux, the walk of a link that a rename replaces during the call can
+  read only a first part of its old target, also none of it, so the call can open the
+  folder of the link, or a folder on the way to that target, such as `/`, and the rest
+  of `path` resolves under that folder. This was seen on ext4 on x86_64 in CI
+  (https://github.com/synnaxlabs/foundation/actions/runs/38937329327/job/117096459445),
+  and on ext4 in the Linux VM of Docker Desktop (linuxkit 5.15.49, aarch64) on an Apple
+  M3 Max laptop in 9 of 100 runs of the swap test without its `Directory` arm, and not
+  on overlayfs or macOS. That writer can already change what the node reads
+  (`docs/security.md`, "Other local user"). `os::paths` and `open_absolute` of
+  `os::files` share this one check. `open_absolute` refuses a directory at the stat with
+  21 (`EISDIR`), so a directory that this user cannot read gets the advice for a
+  directory. `Files::open` in the data directory still waits for a writer of a FIFO
+  (#2678). `sim` models no such file. Supersedes "blocks on a pipe and" in the reason
+  that the amendment of 2026-10-16T08:08:47Z gives against a read of the hidden folder:
+  a read of a pipe now gives `Io` 22. `write` keeps its rule: a pipe or a device at
+  `path` takes the bytes in place. Lost: an open with `O_NONBLOCK` that then reads the
+  FIFO, which gives what a writer put there by chance, or nothing, and still runs the
+  driver of a device; an `O_PATH` open on Linux with a reopen through `/proc/self/fd`,
+  since macOS has none and keeps the race; and 22 for each error of the open after a
+  stat that saw a regular file, which hides real errors such as 13. Decided by
+  `laptop.architect-2` (2026-10-16T16:02:30Z,
+  https://github.com/synnaxlabs/foundation/issues/2889#issuecomment-6219471919; the
+  race, 2026-10-16T16:37:23Z,
+  https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6220151438; the
+  directory, 2026-10-16T16:47:51Z,
+  https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6220333948; the Linux
+  walk, 2026-10-16T17:27:15Z,
+  https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221017304; the
+  endings for a last link and the Linux-only test arm, 2026-10-16T17:35:27Z,
+  https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221156481; the folder
+  of the link and the evidence, 2026-10-16T17:48:30Z,
+  https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6221386763).

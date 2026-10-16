@@ -138,7 +138,16 @@ impl Paths {
     /// # Errors
     ///
     /// [`Error::NotFound`] when nothing is at `path`, [`Error::Outside`] or
-    /// [`Error::Hidden`] past the limits of [`Paths::within`], else [`Error::Io`].
+    /// [`Error::Hidden`] past the limits of [`Paths::within`], [`Error::Io`] 22 when
+    /// `path` is a file that is neither a regular file nor a directory, such as a FIFO
+    /// or a device, else [`Error::Io`]. When another writer changes a link in `path`
+    /// during the call, it gives the error of the open of the file that the link then
+    /// names, and opens that file, also a device. On Linux, the walk of a link that a
+    /// rename replaces during the call can read only a first part of its old target,
+    /// also none of it, so the call can open the folder of the link, or a folder on the
+    /// way to that target, such as `/`, and the rest of `path` resolves under that
+    /// folder. When the link is the last part of `path`, the read gives the entries of
+    /// that folder.
     ///
     /// ```
     /// use std::path::{Path, PathBuf};
@@ -188,7 +197,8 @@ impl Paths {
     /// makes no directory above it, and none through a symbolic link at `path`. A
     /// directory that it makes gives the group and other users no access. On a handle
     /// of [`Paths::within`], a path that does not resolve passes the limits by its own
-    /// place.
+    /// place, and gives the error of its resolve when it still does not resolve after
+    /// the call.
     ///
     /// # Errors
     ///
@@ -217,10 +227,16 @@ impl Paths {
                     dir
                 };
                 self.allowed(&self.driver.resolve(dir)?.join(name))?;
+                self.driver.make_dir(path)?;
+                // A link that does not resolve can still lead to a directory, which
+                // the place does not hold. A directory made at the place resolves.
+                self.check(path)
             }
-            (checked, ..) => checked?,
+            (checked, ..) => {
+                checked?;
+                self.driver.make_dir(path)
+            }
         }
-        self.driver.make_dir(path)
     }
 
     /// `Ok` when `path` passes each limit. A path that does not resolve fails with the
@@ -338,9 +354,10 @@ mod tests {
 
     use super::*;
 
-    /// One file, at any path but one under `/none`, and no resolve of a name in
-    /// `/none`. A path is under `/`, and `link` names `/out`. A directory that it
-    /// makes is the file `dir`.
+    /// One file, at any path but one under `/none`. A path is under `/`, and `link`
+    /// names `/out`. A directory that it makes is the file `dir`. A name in `/none`
+    /// resolves only after a directory is made, and `/none/deep`, a link to a
+    /// directory that does not resolve, never.
     #[derive(Debug, Default)]
     struct One(RefCell<Vec<u8>>);
 
@@ -370,8 +387,9 @@ mod tests {
 
         fn resolve(&self, path: &Path) -> Result<PathBuf, Error> {
             match path.strip_prefix("link") {
-                _ if path.as_os_str().is_empty()
-                    || path.parent() == Some(Path::new("/none")) =>
+                _ if path.as_os_str().is_empty() => Err(Error::NotFound),
+                _ if path.parent() == Some(Path::new("/none"))
+                    && (*self.0.borrow() != b"dir" || path.ends_with("deep")) =>
                 {
                     Err(Error::NotFound)
                 }
@@ -464,6 +482,10 @@ mod tests {
     fn make_dir_checks_a_path_that_does_not_resolve_by_its_place() {
         let free = Paths::new(One::default());
         let paths = free.within(&["/none".into()], &[]).unwrap();
+        assert_eq!(
+            paths.make_dir(Path::new("/none/deep")),
+            Err(Error::NotFound)
+        );
         assert_eq!(paths.make_dir(Path::new("/none/link")), Ok(()));
         let paths = free.within(&["/work".into()], &[]).unwrap();
         assert_eq!(paths.make_dir(Path::new("/none/a")), Err(Error::Outside));

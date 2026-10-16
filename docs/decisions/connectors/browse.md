@@ -7,7 +7,8 @@
   `Path`, a `tag` (the address in the device; two entries with the same tag are one
   entry of the device), and a `Shape`: `Folder`, `Point(Facts)`, or `Unreadable(reason)`
   for a point that the kind cannot read, such as an array. `Facts` holds the sample
-  type, the unit, and read or write, each `None` when the source cannot know it;
+  type, the unit (its text and its UN/CEFACT Recommendation 20 code), and read or
+  write, each `None` when the source cannot know it;
   `import` writes such a fact as `fill("<what>")`, which `plan` refuses. `browse` has
   two forms: one level, paged by a `Cursor` of the kind, or each entry that is not a
   folder whose path from the start matches a `Pattern` (`/` splits names, `**` alone

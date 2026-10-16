@@ -1,14 +1,14 @@
-//! `wal::Writer` and `log::Logs`, for the bench targets and the `alloc` test only. Not
-//! a stable surface.
+//! `wal::Writer`, `log::Logs`, and a header table, for the bench targets and the
+//! `alloc` test only. Not a stable surface.
 
-use std::{iter, mem};
+use std::{hint, iter, mem};
 
 use block::{Block, Heap, Pool};
 use types::channel::{self, Slot};
 use types::frame::Path;
 use types::time::Stamp;
 
-use crate::entry::{Entry, Header};
+use crate::entry::{self, Entry, Header, Last};
 use crate::group;
 use crate::log::Carried;
 use crate::record::{ALIGN, BLOCK};
@@ -75,7 +75,7 @@ impl Ring {
             let record = Position::new(plan.next, self.chain).expect("aligned");
             self.ends.push(Ends { wrap, record });
         }
-        let tail = self.writer.trimmed(None, |_| None);
+        let tail = self.writer.trimmed(None);
         self.writer.committed(self.ends.drain(..), tail);
     }
 }
@@ -148,7 +148,7 @@ impl Group {
             .expect("the ring has room");
         let sealed = group.close(&mut self.writer).seal(self.chain);
         self.chain = sealed.ends().record.chain();
-        let tail = self.writer.trimmed(None, |_| None);
+        let tail = self.writer.trimmed(None);
         self.writer.committed([sealed.ends()], tail);
         self.spare = sealed.clear();
     }
@@ -176,7 +176,7 @@ impl Logs {
                     first: 0,
                     len: 1,
                     stored_at: Stamp::from_nanos(1),
-                    last: Some(Stamp::from_nanos(1)),
+                    last: Last::Stamp(Some(Stamp::from_nanos(1))),
                     tag: 0,
                     bytes: 8,
                 };
@@ -222,9 +222,8 @@ impl Logs {
             header.first += 1;
         }
         self.offset += BLOCK;
-        self.carried.clear();
         self.inner
-            .idle(self.offset, self.headers.len(), &mut self.carried);
+            .carry(self.offset, self.headers.len(), &mut self.carried);
         self.inner.hold(&self.carried, self.offset);
         self.offset += BLOCK;
     }
@@ -245,6 +244,20 @@ impl Logs {
     /// holder, or before the record `held` commits back, as a read that holds it,
     /// when that one is older.
     pub fn trim(&mut self, period: u32, held: u64) {
+        self.slow(period, 0, held);
+    }
+
+    /// One commit as `trim(period, 0)`, whose carry takes the idle tails before the
+    /// record `behind` commits back, then fills with the oldest holders in the next
+    /// `4 * indexes` items after it. When `behind` is under `period`, one call in
+    /// `period` takes the tail of the last index, and its fill walks at most
+    /// `4 * indexes` stale items of the records after that record.
+    pub fn fill(&mut self, period: u32, behind: u64) {
+        self.slow(period, behind, 0);
+    }
+
+    /// [`trim`](Self::trim) with the reach of the carry `behind` records back.
+    fn slow(&mut self, period: u32, behind: u64, held: u64) {
         let slow = self.commits.is_multiple_of(period);
         self.commits = self.commits.wrapping_add(1);
         let synced = self.headers.len() - usize::from(!slow);
@@ -255,36 +268,36 @@ impl Logs {
                 .expect("entries in order");
             header.first += 1;
         }
-        self.carried.clear();
+        let reach = self.offset.saturating_sub(behind * BLOCK);
         self.inner
-            .idle(self.offset, self.headers.len(), &mut self.carried);
+            .carry(reach, self.headers.len(), &mut self.carried);
         let kept = self.inner.kept().expect("a path has a synced entry");
         let read = self.offset.saturating_sub(held * BLOCK).max(BLOCK);
         self.inner.hide(kept.min(read));
         self.offset += BLOCK;
     }
 
-    /// One commit that marks a range for each index, as a commit that trims and
-    /// keeps up. It hides the records before the landing of the oldest holder,
-    /// syncs one entry with no samples of each index at the seq of its durable
-    /// tail, then carries the durable end of each index in the next record.
+    /// One commit that syncs one entry with no samples of each index at the seq of
+    /// its durable tail, as a commit that trims and keeps up, then carries the
+    /// durable end of each index in the next record.
     pub fn mark(&mut self) {
         self.keep_up();
         for (slot, header) in &self.headers {
-            let empty = Header {
+            let mut empty = Header {
                 len: 0,
-                last: None,
+                last: Last::Count(0),
                 ..*header
             };
-            self.inner.append(*slot, &empty).expect("entries in order");
+            self.inner
+                .append(*slot, &mut empty)
+                .expect("entries in order");
             self.inner
                 .sync(*slot, &empty, self.offset)
                 .expect("entries in order");
         }
         self.offset += BLOCK;
-        self.carried.clear();
         self.inner
-            .idle(self.offset, self.headers.len(), &mut self.carried);
+            .carry(self.offset, self.headers.len(), &mut self.carried);
         let tails = self.carried.tails();
         assert_eq!(tails.len(), self.headers.len(), "a tail of each index");
         for (tail, (_, header)) in tails.iter().zip(&self.headers) {
@@ -294,13 +307,64 @@ impl Logs {
         self.offset += BLOCK;
     }
 
-    /// Hides the records before the landing of the oldest holder, as a trim that
-    /// keeps up.
+    /// Hides the records before the oldest holder, as a trim that keeps up.
     fn keep_up(&mut self) {
         if let Some(kept) = self.inner.kept() {
-            let landing = self.inner.marked().land(kept);
-            self.inner.hide(landing);
+            self.inner.hide(kept);
         }
+    }
+}
+
+/// The header table of one record, as a read or an open finds it.
+#[derive(Debug)]
+pub struct Table {
+    bytes: Vec<u8>,
+}
+
+impl Table {
+    /// A table of `headers` headers, each of its own index. The first header, and each
+    /// `empty`-th header after it, has no samples; none has when `empty` is 0.
+    #[must_use]
+    pub fn new(headers: u32, empty: u32) -> Self {
+        let headers: Vec<Header> = (0..headers)
+            .map(|n| {
+                let none = empty != 0 && n.is_multiple_of(empty);
+                Header {
+                    index: channel::Key::from_u128(u128::from(n) + 1),
+                    path: Path::Live,
+                    first: u64::from(n),
+                    len: u32::from(!none),
+                    stored_at: Stamp::from_nanos(7),
+                    last: if none {
+                        Last::Count(1)
+                    } else {
+                        Last::Stamp(Some(Stamp::from_nanos(9)))
+                    },
+                    tag: 0,
+                    bytes: 0,
+                }
+            })
+            .collect();
+        let mut bytes = vec![0; entry::table_len(headers.len())];
+        entry::write_table(&headers, &mut bytes);
+        Self { bytes }
+    }
+
+    /// Decodes each header, as the scan of a read and the walk of an open do, and
+    /// gives how many.
+    ///
+    /// # Panics
+    ///
+    /// When `new` was given over 1023 headers, the most that a table holds.
+    #[must_use]
+    pub fn decode(&self) -> usize {
+        let headers = entry::parse(&self.bytes, self.bytes.len()).expect("a table");
+        let mut decoded = 0;
+        for header in headers {
+            hint::black_box(header.expect("a header"));
+            decoded += 1;
+        }
+        decoded
     }
 }
 
@@ -440,6 +504,48 @@ mod tests {
         assert_eq!(logs.inner.durable(Slot::new(1), Path::Live).seq, 3);
     }
 
+    /// Each header of a table decodes, with and without headers with no samples. No
+    /// call of `Table` gives its headers, only the count of `decode`, so the test
+    /// parses `bytes`.
+    #[test]
+    fn each_header_of_a_table_decodes() {
+        assert_eq!(Table::new(5, 0).decode(), 5);
+        assert_eq!(Table::new(5, 2).decode(), 5);
+        let lasts = |table: Table| -> Vec<Last> {
+            entry::parse(&table.bytes, table.bytes.len())
+                .expect("a table")
+                .map(|header| header.expect("a header").0.last)
+                .collect()
+        };
+        let stamp = Last::Stamp(Some(Stamp::from_nanos(9)));
+        assert_eq!(
+            lasts(Table::new(3, 2)),
+            [Last::Count(1), stamp, Last::Count(1)]
+        );
+        assert_eq!(lasts(Table::new(3, 0)), [stamp; 3]);
+    }
+
+    /// The last index syncs each 8 commits, and the carry reaches 2 records back, so
+    /// one call in 8 takes its tail, and its fill takes a tail of each other index
+    /// from the newest record. No call of `Logs` gives its tails, so the test reads
+    /// `carried`.
+    #[test]
+    fn a_fill_takes_the_slow_tail_once_in_each_period() {
+        let mut logs = Logs::new(4);
+        let mut carried = Vec::new();
+        for call in 0..32 {
+            logs.fill(8, 2);
+            if !logs.carried.tails().is_empty() {
+                let tails = logs.carried.tails().iter();
+                let keys: Vec<u128> = tails.map(|tail| tail.index.as_u128()).collect();
+                carried.push((call, keys));
+            }
+        }
+        let tails = vec![4, 1, 2, 3];
+        let calls: Vec<_> = [3, 11, 19, 27].map(|call| (call, tails.clone())).into();
+        assert_eq!(carried, calls);
+    }
+
     /// A read holds the record two commits back, so the runs of the records after it
     /// stay.
     #[test]
@@ -453,21 +559,18 @@ mod tests {
         assert_eq!(offsets, [5 * BLOCK, 6 * BLOCK, 7 * BLOCK]);
     }
 
-    /// Each call after the first marks the range from the carry record of the call
-    /// before to its data record, and the trim of the next call passes it, so only
-    /// the newest range stays. An entry with no samples moves no stamp. It reads the
-    /// private logs: `mark` gives nothing back, and only the `logs` bench and the
-    /// `alloc` test call it. So only this test kills the mutant that deletes
-    /// `last: None` in `mark`: it changes only the stamp of a bench entry, which no
-    /// caller reads.
+    /// Each call hides the records before the carry record of the call before, so
+    /// only the newest data record keeps a run. An entry with no samples moves no
+    /// stamp. It reads the private logs: `mark` gives nothing back, and only the
+    /// `logs` bench and the `alloc` test call it. So only this test kills the
+    /// mutant that deletes `last: None` in `mark`: it changes only the stamp of a
+    /// bench entry, which no caller reads.
     #[test]
-    fn each_mark_of_the_logs_marks_one_range_and_hides_the_one_before() {
+    fn each_mark_of_the_logs_hides_the_records_before_the_carry_before() {
         let mut logs = Logs::new(2);
         for _ in 0..3 {
             logs.mark();
         }
-        assert_eq!(logs.inner.marked().land(3 * BLOCK), 3 * BLOCK);
-        assert_eq!(logs.inner.marked().land(5 * BLOCK), 4 * BLOCK);
         assert_eq!(logs.inner.kept(), Some(6 * BLOCK));
         for n in 0..2 {
             let runs = logs.inner.runs(Slot::new(n), Path::Live);

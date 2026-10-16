@@ -11,7 +11,7 @@ use env::entropy::Driver as _;
 use env::paths::{Error, Found, names_directory};
 use rustix::io::Errno;
 
-use crate::{dir, entropy};
+use crate::{dir, entropy, host};
 
 #[derive(Debug)]
 pub(crate) struct Driver;
@@ -66,24 +66,25 @@ fn resolve(path: &Path) -> io::Result<PathBuf> {
 }
 
 fn read(path: &Path, most: usize) -> io::Result<Found> {
-    #[expect(clippy::disallowed_methods, reason = "os reads the user's files")]
-    let file = File::open(path)?;
-    if file.metadata()?.is_dir() {
-        let (mut entries, mut size) = (Vec::new(), 0_usize);
-        for name in dir::names(file)? {
-            let entry = path.join(name?);
-            size = size.saturating_add(entry.as_os_str().len());
-            if size > most {
-                return Ok(Found::Large);
+    let file = match host::open(path)? {
+        host::Readable::Regular(file, _) => file,
+        host::Readable::Directory(dir) => {
+            let (mut entries, mut size) = (Vec::new(), 0_usize);
+            for name in dir::names(dir)? {
+                let entry = path.join(name?);
+                size = size.saturating_add(entry.as_os_str().len());
+                if size > most {
+                    return Ok(Found::Large);
+                }
+                entries.push(entry);
             }
-            entries.push(entry);
+            entries.sort_unstable();
+            return Ok(Found::Directory(entries));
         }
-        entries.sort_unstable();
-        return Ok(Found::Directory(entries));
-    }
+    };
     let over = u64::try_from(most).map_or(u64::MAX, |most| most.saturating_add(1));
     let mut bytes = Vec::new();
-    file.take(over).read_to_end(&mut bytes)?;
+    File::from(file).take(over).read_to_end(&mut bytes)?;
     if bytes.len() > most {
         return Ok(Found::Large);
     }

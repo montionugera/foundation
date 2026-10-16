@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 
 use document::diagnostic::{Code, Diagnostic};
-use document::{Document, Span};
+use document::{Block, Document, Span};
 use env::clock::Clock;
 use env::net::Net;
 use env::rng::Rng;
@@ -66,6 +66,33 @@ pub trait Kind: Send + Sync + 'static {
         &self,
         ctx: Context<Self::Config>,
     ) -> impl Future<Output = Result<(), Error>>;
+
+    /// The blocks to add to the body of the connector block, so that it reads or
+    /// writes the point `tag` as the channel `channel`. `tag` and `facts` are those of
+    /// a [`browse::Shape::Point`] that a browse of the kind gave. The blocks hold only
+    /// how the kind reaches the point: the `channel` block holds the sample type and
+    /// the unit. A point whose `facts.access` is `Write` gets a write block. Each other
+    /// point, `None` too, gets a read block, since a write to a device needs the
+    /// user's choice. For each value that the kind needs and the browse does not give,
+    /// the blocks hold [`fill`](crate::import::fill).
+    ///
+    /// # Errors
+    ///
+    /// The default gives `connector.no-import`.
+    fn block(
+        &self,
+        tag: &str,
+        facts: &browse::Facts,
+        channel: &Name,
+    ) -> Result<Vec<Block>, Vec<Diagnostic>> {
+        let _: (&str, &browse::Facts, &Name) = (tag, facts, channel);
+        Err(vec![Diagnostic::new(
+            NO_IMPORT,
+            None,
+            "this connector kind cannot write the block of a point".into(),
+            "Write the blocks of the points by hand".into(),
+        )])
+    }
 
     /// Browses the device of the connector block `ctx.config()` as `query` asks. A
     /// kind connects to its device and gives [`browse::walk`] over it. The default
@@ -439,6 +466,22 @@ impl Table {
             .await
     }
 
+    /// The blocks of `kind` that read or write the point `tag` as `channel`, as
+    /// [`Kind::block`] gives them.
+    ///
+    /// # Errors
+    ///
+    /// The kind's diagnostics, or `connector.unknown-kind`.
+    pub fn block(
+        &self,
+        kind: &str,
+        tag: &str,
+        facts: &browse::Facts,
+        channel: &Name,
+    ) -> Result<Vec<Block>, Vec<Diagnostic>> {
+        self.get(kind, None)?.block(tag, facts, channel)
+    }
+
     /// Browses with `kind` as `query` asks.
     pub(crate) async fn browse(
         &self,
@@ -492,6 +535,7 @@ impl fmt::Debug for Table {
 const UNKNOWN_KIND: Code = Code::new("connector.unknown-kind");
 const NO_BROWSE: Code = Code::new("connector.no-browse");
 const NO_DISCOVER: Code = Code::new("connector.no-discover");
+const NO_IMPORT: Code = Code::new("connector.no-import");
 const UNKNOWN_CHANNEL: Code = Code::new("connector.unknown-channel");
 const NO_CHANNEL: Code = Code::new("connector.no-channel");
 const MANY_INDEXES: Code = Code::new("connector.many-indexes");
@@ -688,6 +732,13 @@ trait Erased: Send + Sync {
         ctx: &'a browse::Context<'a>,
         query: &'a browse::Query,
     ) -> Browse<'a>;
+
+    fn block(
+        &self,
+        tag: &str,
+        facts: &browse::Facts,
+        channel: &Name,
+    ) -> Result<Vec<Block>, Vec<Diagnostic>>;
 }
 
 impl<K: Kind> Erased for K {
@@ -717,6 +768,15 @@ impl<K: Kind> Erased for K {
         query: &'a browse::Query,
     ) -> Browse<'a> {
         Box::pin(Kind::browse(self, ctx, query))
+    }
+
+    fn block(
+        &self,
+        tag: &str,
+        facts: &browse::Facts,
+        channel: &Name,
+    ) -> Result<Vec<Block>, Vec<Diagnostic>> {
+        Kind::block(self, tag, facts, channel)
     }
 }
 
