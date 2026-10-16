@@ -27,10 +27,9 @@
   Amended (#274 B1): a named complete reader that opens within its hold reads the
   frames after its position from disk, then the live ones. It ends `Behind` only when
   it reaches a seq that the buffer lost for no room, also at each later open within its
-  hold. Superseded by the amendment of #2725 below. The position records and
-  `Readers::deadline` come in Amended (#274 A) below (`laptop.architect`,
-  2026-10-15T16:29:36Z:
+  hold (`laptop.architect`, 2026-10-15T16:29:36Z:
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6197039098).
+  Superseded by the amendment of #2725 below.
   Amended (#2725, with #2723 and #2553): no case gives `Behind` now. A complete session
   that misses a frame reads it from disk, and a seq lost for no room comes as the gap of
   the next frame with a sample (`laptop.architect`, 2026-10-16T02:09:51Z:
@@ -47,19 +46,21 @@
   as closed at the restore, so a carry before mesh time waits for it. A shed appends an
   entry with no record. With no mesh time or no room for it, a restart restores the
   holds; a later carry in the same run does not. A named complete open that adds a
-  record appends its entry before it opens. When the entry finds no block or no room,
-  it opens nothing and gives `Unopened::Unrecorded`, and `hub` gives
-  `reader::Error::Unrecorded`, so a restart never loses the frames of a first open.
-  Another entry that finds no room or no block stays due for the next tick, so a
-  restart before it resumes at an older position: a repeat, not a loss. Trimming must
-  keep the newest named entry of each index (#406). Until it does, a trim (STORE TRIM)
-  can free that entry, and a restart resumes the readers of its index at the live tail,
-  as HANDOFF RECORD states for a handoff. One entry holds every record of
-  its index, at most `min(Buffer::block_max, Layout::entry_max)` bytes: 546 bytes for a
+  record or opens a held one appends its entry before it opens. When the entry finds no
+  block or no room, it opens nothing and gives `Unopened::Unrecorded`, and `hub` gives
+  `reader::Error::Unrecorded`, so a restart never loses the frames of a first open or a
+  reopen. After a failed commit, the open opens, and its reader ends with the error of
+  the commit. Another entry that finds no room or no block stays due for the next tick,
+  so a restart before it resumes at an older position: a repeat, not a loss. Trimming
+  must keep the newest named entry of each index (#406). Until it does, a trim (STORE
+  TRIM) can free that entry, and a restart resumes the readers of its index at the live
+  tail, as HANDOFF RECORD states for a handoff. One entry holds every record of its
+  index, at most `min(Buffer::block_max, Layout::entry_max)` bytes: 546 bytes for a
   record of the longest names, so at least 7 records. A named complete open that adds a
   record past it gives `Unopened::Full`, and `hub` gives `reader::Error::Full`. An open
   of a reader that holds a record opens also when the records pass it, as on a smaller
-  pool after a restart. A latest reader adds no record. #2833 holds records past one
+  pool after a restart, and appends nothing: those records reach the log only with
+  #2833. A latest reader adds no record. #2833 holds records past one
   entry. Decided by `laptop.architect` (2026-10-16T05:22:26Z:
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6208708096;
   `Unrecorded` and the trim gap until #406: 2026-10-16T07:08:03Z:
