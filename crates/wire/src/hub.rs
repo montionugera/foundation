@@ -28,11 +28,13 @@
 //! - [`ends`]: place and end (each `u32`) for each series.
 
 pub mod client;
+mod frames;
 mod home;
 mod reader;
 
 use std::fmt;
 
+pub use frames::{Due, Frames, Step};
 pub use home::{FromReader, Home};
 pub use reader::{FromHome, Reader};
 use types::frame::{Path, Range};
@@ -246,9 +248,9 @@ pub enum Reply {
     Opened,
     /// The head of one frame. The run of its [`ends`] follows, then its body.
     Head(Head),
-    /// The session missed a frame, so the home ends it. It follows each frame
-    /// before the miss, and no message follows it: the home then finishes its
-    /// stream.
+    /// The session reached a frame that the buffer lost, so the home ends it. It
+    /// follows each frame before that frame, and no message follows it: the home then
+    /// finishes its stream.
     Behind,
 }
 

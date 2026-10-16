@@ -309,7 +309,7 @@ fn a_session_that_fails_leaves_the_session_to_each_other_member() {
 #[test]
 fn a_message_that_the_pool_has_no_block_for_drops_and_its_stream_stays() {
     let mesh = |node: sim::node::Node, tasks: Tasks| async move {
-        let pool = small_pool();
+        let pool = open_pool();
         let config = create_config(&node, &tasks, Rc::clone(&pool)).await;
         let _mesh = Mesh::open(config).await.unwrap();
         let clock = node.clock();
@@ -342,7 +342,7 @@ fn a_message_that_the_pool_has_no_block_for_drops_and_its_stream_stays() {
 #[test]
 fn no_stream_comes_while_the_pool_has_no_block_for_its_header() {
     let mesh = |node: sim::node::Node, tasks: Tasks| async move {
-        let pool = small_pool();
+        let pool = open_pool();
         let config = create_config(&node, &tasks, Rc::clone(&pool)).await;
         let _mesh = Mesh::open(config).await.unwrap();
         let blocks = fill(&pool);
@@ -366,7 +366,7 @@ fn no_stream_comes_while_the_pool_has_no_block_for_its_header() {
 #[test]
 fn a_task_that_waits_in_a_dial_holds_no_block() {
     solo(|node, tasks| async move {
-        let pool = small_pool();
+        let pool = open_pool();
         let free = fill(&pool).len();
         let config = create_config(&node, &tasks, Rc::clone(&pool)).await;
         let _mesh = Mesh::open(config).await.unwrap();
@@ -382,7 +382,7 @@ async fn create_stranger(
     tasks: &Tasks,
 ) -> (Config, raft::Message) {
     let members = vec![create_voter(1), common::member(2), common::member(3)];
-    let mut config = config_at(node, tasks, 1, PORT, &IDS, &IDS).await;
+    let mut config = config_at(node, tasks, 1, PORT, BYTES_MAX, &IDS, &IDS).await;
     config.founding.members = members;
     let voters = Voters {
         incoming: [1, 2, 4].map(key).into(),
@@ -710,7 +710,7 @@ fn a_proposal_whose_write_waits_gives_a_removed_stop() {
     let outcome = Arc::new(Mutex::new(None));
     let written = Arc::clone(&outcome);
     let mesh = move |node: sim::node::Node, tasks: Tasks| async move {
-        let pool = small_pool();
+        let pool = open_pool();
         let config = create_config(&node, &tasks, Rc::clone(&pool)).await;
         let transport = Rc::clone(&config.transport);
         let mesh = Mesh::open(config).await.unwrap();
@@ -754,4 +754,19 @@ fn a_proposal_whose_write_waits_gives_a_removed_stop() {
     let removed = Stopped::Removed { by: key(2) };
     let expected = (Some(Err(Error::Stopped(removed.clone()))), Err(removed));
     assert_eq!(outcome.lock().unwrap().take(), Some(expected));
+}
+
+/// No caller or peer reaches this panic: `Mesh::open` refuses a pool whose largest
+/// block is below `BYTES_MIN`, `raft` sends no larger message, and `Mesh::start`
+/// sends nothing. So the test calls `send::copy` itself.
+#[test]
+#[should_panic(
+    expected = "invariant: each message of the mesh fits a block of its pool"
+)]
+fn a_message_that_no_block_of_the_pool_fits_panics() {
+    let budget = block::Config::new(0).expect("the budget fits");
+    let memory = block::Heap::new(budget.reservation());
+    let pool = Pool::new(budget, memory);
+    let message = common::message(1, 2, Body::Heartbeat { commit: 0 });
+    drop(crate::driver::send::copy(&pool, message));
 }

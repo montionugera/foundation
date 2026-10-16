@@ -27,7 +27,7 @@ use crate::ffi::{self, Status};
 use crate::node::{Key, Name, Node};
 use crate::server::{Limits, Server};
 use crate::unwind::caught;
-use crate::value::Value;
+use crate::value::{self, Fault, Value};
 
 /// The port of the test server.
 const PORT: u16 = 4840;
@@ -62,11 +62,13 @@ const TIME: Node = Node {
 
 impl Client {
     /// Reads the Value of `node` alone.
-    pub(crate) async fn read_one(&mut self, node: &Node) -> Result<Value, Status> {
+    pub(crate) async fn read_one(&mut self, node: &Node) -> Result<Value, Fault> {
         let nodes = self
             .nodes(std::slice::from_ref(node))
             .expect("one node fits");
-        self.read(&nodes).await.and_then(|values| values[0])
+        (self.read(&nodes).await)
+            .map_err(Fault::status)
+            .and_then(|values| values[0])
     }
 
     /// Builds one Read request of `nodes` for this client with no check of its size.
@@ -188,7 +190,7 @@ async fn serve<T>(
 }
 
 /// The value of [`VALUE`] and the answer of a read of it, in a run of `seed`.
-fn spike(seed: u64) -> ((Value, Result<Value, Status>), u64) {
+fn spike(seed: u64) -> ((Value, Result<Value, Fault>), u64) {
     run(seed, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
@@ -221,7 +223,7 @@ fn a_read_of_an_unknown_node_fails_with_its_status() {
         })
         .await
     });
-    assert_eq!(read, Err(Status::BAD_NODE_ID_UNKNOWN));
+    assert_eq!(read, Err(Fault::status(Status::BAD_NODE_ID_UNKNOWN)));
 }
 
 /// The name `node` must reach the server whole: it holds a `;`, an `=`, and a byte
@@ -256,7 +258,7 @@ fn a_read_of_a_name_node_gives_its_value() {
         })
         .await
     });
-    let unknown = Err(Status::BAD_NODE_ID_UNKNOWN);
+    let unknown = Err(Fault::status(Status::BAD_NODE_ID_UNKNOWN));
     let expected = (Ok(Value::F64(2.5)), Ok(Value::F64(3.5)), unknown, unknown);
     assert_eq!(reads, expected);
 }
@@ -270,7 +272,7 @@ fn a_read_of_another_type_fails_with_a_type_mismatch() {
         })
         .await
     });
-    assert_eq!(read, Err(Status::BAD_TYPE_MISMATCH));
+    assert_eq!(read, mistyped("DateTime"));
 }
 
 /// A scalar of each type at its bounds, and each special value of a float.
@@ -328,7 +330,12 @@ enum Exact {
     Other(Value),
 }
 
-fn exact(value: Result<Value, Status>) -> Result<Exact, Status> {
+/// The fault of a Good value of the OPC UA type `name`, such as `array of Double`.
+fn mistyped(name: &str) -> Result<Value, Fault> {
+    Err(Fault::of_type(value::Type::named(name)))
+}
+
+fn exact(value: Result<Value, Fault>) -> Result<Exact, Fault> {
     value.map(|value| match value {
         Value::F32(float) => Exact::F32(float.to_bits()),
         Value::F64(double) => Exact::F64(double.to_bits()),
@@ -408,8 +415,7 @@ fn a_read_of_an_array_or_a_byte_string_fails_with_a_type_mismatch() {
         })
         .await
     });
-    let mismatch = Err(Status::BAD_TYPE_MISMATCH);
-    assert_eq!(reads, (mismatch, mismatch));
+    assert_eq!(reads, (mistyped("array of Double"), mistyped("ByteString")));
 }
 
 #[test]
@@ -429,9 +435,9 @@ fn a_read_of_nodes_gives_the_value_of_each_in_order() {
         .await
     });
     let expected = [
-        Err(Status::BAD_TYPE_MISMATCH),
+        mistyped("DateTime"),
         Ok(value),
-        Err(Status::BAD_NODE_ID_UNKNOWN),
+        Err(Fault::status(Status::BAD_NODE_ID_UNKNOWN)),
         Ok(value),
     ];
     assert_eq!(values, Ok(expected.to_vec()));
@@ -442,7 +448,7 @@ fn a_read_of_nodes_gives_the_value_of_each_in_order() {
 /// reads in flight, while that read waits to send.
 fn read_after_late_answer(
     dropped: u16,
-) -> (Result<Vec<Result<Value, Status>>, Status>, Value) {
+) -> (Result<Vec<Result<Value, Fault>>, Status>, Value) {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
@@ -549,8 +555,8 @@ fn a_read_after_the_server_closes_fails_and_open62541_refuses_the_next() {
     assert_eq!(
         reads,
         (
-            Err(Status::BAD_SECURE_CHANNEL_CLOSED),
-            Err(Status::BAD_SERVER_NOT_CONNECTED)
+            Err(Fault::status(Status::BAD_SECURE_CHANNEL_CLOSED)),
+            Err(Fault::status(Status::BAD_SERVER_NOT_CONNECTED))
         )
     );
 }
@@ -580,10 +586,7 @@ fn a_read_after_a_dropped_read_gets_its_own_answer() {
         .await
     });
     let (time, value, expected) = reads;
-    assert_eq!(
-        (time, value),
-        (Err(Status::BAD_TYPE_MISMATCH), Ok(expected))
-    );
+    assert_eq!((time, value), (mistyped("DateTime"), Ok(expected)));
 }
 
 /// Starts `count` reads of `client`, each polled once and then dropped.
@@ -617,7 +620,7 @@ fn a_read_after_255_dropped_reads_gives_the_value() {
 
 /// While the server stops, a read after `dropped` dropped reads starts 2 s after them.
 /// Gives its answer and the time it took.
-fn read_after(dropped: u16) -> (Result<Value, Status>, Span) {
+fn read_after(dropped: u16) -> (Result<Value, Fault>, Span) {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
@@ -645,8 +648,8 @@ fn a_read_at_the_bound_fails_when_no_read_ends() {
     assert_eq!(
         (below, at),
         (
-            Err(Status::BAD_TIMEOUT),
-            Err(Status::BAD_TOO_MANY_OPERATIONS)
+            Err(Fault::status(Status::BAD_TIMEOUT)),
+            Err(Fault::status(Status::BAD_TOO_MANY_OPERATIONS))
         )
     );
     let timeout = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
@@ -660,7 +663,7 @@ async fn read_with_pass(
     client: &mut Client,
     peer: &Peer<'_>,
     at: Span,
-) -> (Result<Value, Status>, Span) {
+) -> (Result<Value, Fault>, Span) {
     let start = peer.clock.now();
     let mut pass = pin!(peer.clock.sleep(at));
     let (mut woke, mut passed) = (false, false);
@@ -699,7 +702,7 @@ fn the_timeout_of_a_read_counts_its_wait() {
         })
         .await
     });
-    assert_eq!(read, Err(Status::BAD_TIMEOUT));
+    assert_eq!(read, Err(Fault::status(Status::BAD_TIMEOUT)));
     let timeout = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
     assert!(timeout.contains(&took), "{took:?}");
 }
@@ -753,7 +756,7 @@ fn a_read_after_272_dropped_reads_on_a_stalled_server_gives_the_value() {
 
 /// Reads [`FITS`] and then [`PAST`] from a server that sends at most `chunks` chunks in
 /// a message.
-fn read_large(chunks: u32) -> (Result<Value, Status>, Result<Value, Status>) {
+fn read_large(chunks: u32) -> (Result<Value, Fault>, Result<Value, Fault>) {
     let (reads, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             peer.server.add_bytes(&FITS, 7 * CHUNK);
@@ -779,8 +782,8 @@ fn read_large(chunks: u32) -> (Result<Value, Status>, Result<Value, Status>) {
 #[test]
 fn an_answer_of_more_chunks_than_the_bound_fails() {
     let large = (
-        Err(Status::BAD_TYPE_MISMATCH),
-        Err(Status::BAD_SECURE_CHANNEL_CLOSED),
+        mistyped("ByteString"),
+        Err(Fault::status(Status::BAD_SECURE_CHANNEL_CLOSED)),
     );
     assert_eq!(read_large(CHUNKS), large);
     assert_eq!(read_large(0), large);
@@ -964,7 +967,7 @@ fn a_read_of_a_client_whose_server_stops_times_out() {
         })
         .await
     });
-    assert_eq!(value, Err(Status::BAD_TIMEOUT));
+    assert_eq!(value, Err(Fault::status(Status::BAD_TIMEOUT)));
     let window = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
     assert!(window.contains(&took), "{took:?}");
 }
@@ -1205,7 +1208,10 @@ fn a_request_takes_the_chunks_of_one_message() {
     let (split, read, past, after, full, sent, value) = reads;
     assert_eq!(split, [1, 1]);
     assert_eq!(read, Ok(vec![Ok(value), Ok(Value::F64(2.5))]));
-    assert_eq!(full, Ok(vec![Err(Status::BAD_NODE_ID_UNKNOWN)]));
+    assert_eq!(
+        full,
+        Ok(vec![Err(Fault::status(Status::BAD_NODE_ID_UNKNOWN))])
+    );
     let most = 8 * (65_536 - 24) - 7 * 7;
     let large = Large {
         node: 1,
@@ -1449,7 +1455,7 @@ fn read_on(
             for index in 0..count {
                 if index == 3 {
                     nodes.push(long(1));
-                    values.push(Err(Status::BAD_NODE_ID_UNKNOWN));
+                    values.push(Err(Fault::status(Status::BAD_NODE_ID_UNKNOWN)));
                 }
                 peer.server.add_scalar(&numbered(index), Value::U32(index));
                 nodes.push(numbered(index));
@@ -1903,8 +1909,8 @@ fn a_message_that_the_client_cannot_process_ends_the_session_with_no_dial() {
         .await
     });
     let reads = (
-        Err(Status::BAD_SECURE_CHANNEL_CLOSED),
-        Err(Status::BAD_SERVER_NOT_CONNECTED),
+        Err(Fault::status(Status::BAD_SECURE_CHANNEL_CLOSED)),
+        Err(Fault::status(Status::BAD_SERVER_NOT_CONNECTED)),
     );
     assert_eq!(out, (reads, 2));
 }
@@ -1973,8 +1979,8 @@ fn a_read_after_a_reset_of_an_active_session_fails_with_no_dial() {
         .await
     });
     let reads = (
-        Err(Status::BAD_SECURE_CHANNEL_CLOSED),
-        Err(Status::BAD_SERVER_NOT_CONNECTED),
+        Err(Fault::status(Status::BAD_SECURE_CHANNEL_CLOSED)),
+        Err(Fault::status(Status::BAD_SERVER_NOT_CONNECTED)),
     );
     assert_eq!(out, (reads, 1));
 }
@@ -2053,7 +2059,7 @@ fn recount_of(message: &mut Vec<u8>, count: i32) {
 }
 
 /// The value of each node of a read.
-type Values = Vec<Result<Value, Status>>;
+type Values = Vec<Result<Value, Fault>>;
 
 /// The values of a read, or its error.
 type Read = Result<Values, Status>;

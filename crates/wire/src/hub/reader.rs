@@ -48,7 +48,8 @@ pub enum FromHome<'m> {
         /// The body ends with this message.
         last: bool,
     },
-    /// The session missed a frame, so the home ended it. No message follows.
+    /// The session reached a frame that the buffer lost, so the home ended it. No
+    /// message follows.
     Behind,
 }
 
@@ -115,25 +116,52 @@ impl Reader {
                 let last = remain == 0;
                 (FromHome::Ends { ends, last }, next)
             }
-            Next::Body(mut body) => {
-                let last = body.take(message)?;
-                let next = if last { Next::Head } else { Next::Body(body) };
-                (
-                    FromHome::Body {
-                        bytes: message,
-                        last,
-                    },
-                    next,
-                )
+            Next::Body(body) => {
+                let last = self.take(body, message.len())?;
+                return Ok(FromHome::Body {
+                    bytes: message,
+                    last,
+                });
             }
         };
         self.next = next;
         Ok(event)
     }
 
+    /// Takes a body message of `len` bytes that the caller has in place, as
+    /// [`Reader::decode`] takes it. Gives whether it is the last of the body.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Empty`] when `len` is 0.
+    ///
+    /// # Panics
+    ///
+    /// When the next message is not body bytes, or `len` is over the rest of the
+    /// body.
+    #[inline]
+    pub(in crate::hub) fn received(&mut self, len: usize) -> Result<bool, Error> {
+        let Next::Body(body) = self.next else {
+            panic!("a body is due")
+        };
+        let remain = body.remain();
+        assert!(
+            len <= remain,
+            "a body message of {len} bytes is over the {remain} bytes left of its body"
+        );
+        self.take(body, len)
+    }
+
+    fn take(&mut self, mut body: body::Count, len: usize) -> Result<bool, Error> {
+        let last = body.take(len)?;
+        self.next = if last { Next::Head } else { Next::Body(body) };
+        Ok(last)
+    }
+
     /// Where in the body the next message starts, when the next message is body
     /// bytes. Read it before [`Reader::decode`] takes that message.
     #[must_use]
+    #[inline]
     pub fn body(&self) -> Option<usize> {
         match self.next {
             Next::Body(body) => Some(body.at()),

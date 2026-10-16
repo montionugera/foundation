@@ -118,7 +118,7 @@ where
         Home::Away(home) => return Err(refused(reader::Error::Remote { home })),
     };
     let layout = Layout::new(channels.slots.clone(), channels.index);
-    let reader = Reader::here(state, channels, mode).map_err(refused)?;
+    let reader = Reader::here(state, channels, mode);
     Ok(Some((reader, places, layout)))
 }
 
@@ -148,7 +148,7 @@ async fn start(
 }
 
 /// Sends each frame of `reader` until `program` finishes, or `Behind` and the finish
-/// when the reader missed a frame.
+/// when the reader reached a frame that the buffer lost.
 async fn relay<F>(
     state: &RefCell<State>,
     mut reader: Reader,

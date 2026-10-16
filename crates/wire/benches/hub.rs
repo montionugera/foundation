@@ -1,14 +1,20 @@
 //! The cost of the hub messages on a frame's path: a head, its ends, its body, and a
-//! credit.
+//! credit, and of building a frame from them with `Frames`.
+
+use std::sync::Arc;
 
 use divan::Bencher;
 use types::{
     channel,
-    frame::{self, Path, Range},
+    frame::{
+        self, Form, Path, Range,
+        key_set::{Group, Interner, KeySet},
+    },
+    sample::{Scalar, Type},
 };
 use wire::hub::{
-    Credit, Error, FromHome, FromReader, Head, Home, Mode, Open, Reader, Reply, ends,
-    keys,
+    Credit, Due, Error, Frames, FromHome, FromReader, Head, Home, Mode, Open, Reader,
+    Reply, Step, ends, keys,
 };
 
 const SERIES: [u32; 4] = [1, 3, 1_000, 100_000];
@@ -156,6 +162,97 @@ fn decode_a_body(bencher: Bencher<'_, '_>, messages: u32) {
                 other => panic!("the body did not decode: {other:?}"),
             }
         })
+    };
+    frame();
+    bencher.bench_local(frame);
+}
+
+/// An index, then `places - 1` channels of `I64`.
+fn set_of(places: u32) -> Arc<KeySet> {
+    let data: Vec<_> = (2..=u128::from(places))
+        .map(|key| (channel::Key::from_u128(key), Type::Scalar(Scalar::I64)))
+        .collect();
+    Interner::new().intern(&[Group {
+        index: channel::Key::from_u128(1),
+        data: &data,
+    }])
+}
+
+/// Frames of `places` places that the home opened, with a pool for a frame of a
+/// `body` byte body.
+fn frames_of(places: u32, body: u32) -> (Frames, block::Pool) {
+    let open = Open {
+        mode: Mode::Latest,
+        channels: places,
+    };
+    let frames =
+        Frames::open(Reader::new(&open), set_of(places), &[1]).expect("opened");
+    let bytes = (u64::from(body) + (1 << 20)).next_power_of_two();
+    let config = block::Config::new(bytes).expect("the budget fits");
+    let memory = block::Heap::new(config.reservation());
+    (frames, block::Pool::new(config, memory))
+}
+
+/// Builds one frame with the loop of `hub`'s remote reader: ask [`Frames::due`], then
+/// give it the next of `messages`, a body message received in place, or a draft from
+/// `pool`. Gives the frame's first body byte.
+fn build<'m>(
+    frames: &mut Frames,
+    pool: &block::Pool,
+    messages: impl IntoIterator<Item = &'m [u8]>,
+) -> u8 {
+    let mut messages = messages.into_iter();
+    loop {
+        let step = match frames.due().expect("the layout holds") {
+            Due::Message => {
+                let message = messages.next().expect("a message");
+                frames.decode(divan::black_box(message))
+            }
+            Due::Body(rest) => {
+                let message = divan::black_box(messages.next().expect("a message"));
+                rest[..message.len()].copy_from_slice(message);
+                frames.received(message.len())
+            }
+            Due::Draft(layout) => {
+                let draft = layout.draft(pool, Form::Encoded).expect("a block");
+                Ok(frames.draft(draft))
+            }
+        };
+        match step.expect("the frame decodes") {
+            Step::Head(_) | Step::More => {}
+            Step::Frame(frame) => return frame.body()[0],
+            Step::Behind => panic!("behind"),
+        }
+    }
+}
+
+/// Builds a frame of `series` series of 8 bytes with [`Frames`], the body in one
+/// message.
+#[divan::bench(args = SERIES)]
+fn build_a_frame(bencher: Bencher<'_, '_>, series: u32) {
+    let (mut frames, pool) = frames_of(series, series * 8);
+    let mut head = [0; 18];
+    self::head(series).encode(&mut head);
+    let run = run_of(series);
+    let body = vec![7; usize::try_from(series * 8).expect("a u32 fits a usize")];
+    let mut frame = || build(&mut frames, &pool, [&head, &run[..], &body]);
+    frame();
+    bencher.bench_local(frame);
+}
+
+/// Builds a frame of one series with [`Frames`], its body in `messages` messages of
+/// 1 024 bytes received in place.
+#[divan::bench(args = [1, 8, 64])]
+fn build_a_body(bencher: Bencher<'_, '_>, messages: u32) {
+    let (mut frames, pool) = frames_of(1, messages * 1_024);
+    let mut head = [0; 18];
+    self::head(1).encode(&mut head);
+    let mut run = [0; ends::LEN];
+    ends::encode([(0, messages * 1_024)], &mut run);
+    let body = vec![7; usize::try_from(messages * 1_024).expect("a u32 fits a usize")];
+    let mut frame = || {
+        let messages = [&head, &run[..]].into_iter().chain(body.chunks(1_024));
+        build(&mut frames, &pool, messages)
     };
     frame();
     bencher.bench_local(frame);

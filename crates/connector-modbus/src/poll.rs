@@ -5,14 +5,7 @@ use std::fmt;
 
 use types::sample::{Scalar, Type, Value};
 
-use crate::pdu::{Exception, MAX_READ_BITS, MAX_READ_REGISTERS, Reply, Request, Table};
-
-const TABLES: [Table; 4] = [
-    Table::Coils,
-    Table::DiscreteInputs,
-    Table::HoldingRegisters,
-    Table::InputRegisters,
-];
+use crate::pdu::{Exception, Reply, Request, Table};
 
 /// Where the value of a channel is in a device: a table, the address of its first
 /// item, and its type.
@@ -78,39 +71,30 @@ pub enum Order {
 /// or 2000 bits. The groups go by table, then by address.
 #[must_use]
 pub fn groups(reads: &[Read], order: Order) -> Vec<Group> {
+    let mut sorted: Vec<(usize, Read)> = reads.iter().copied().enumerate().collect();
+    sorted.sort_by_key(|&(index, read)| {
+        (read.table.function(), read.address, read.count, index)
+    });
     let mut groups = Vec::new();
-    for table in TABLES {
-        let mut sorted: Vec<(usize, Read)> = reads
-            .iter()
-            .copied()
-            .enumerate()
-            .filter(|(_, read)| read.table == table)
-            .collect();
-        sorted.sort_by_key(|&(index, read)| (read.address, read.count, index));
-        let max = u32::from(if table.bits() {
-            MAX_READ_BITS
-        } else {
-            MAX_READ_REGISTERS
-        });
-        let mut rest = sorted.as_slice();
-        while let Some(&(_, first)) = rest.first() {
-            let mut end = first.end();
-            let len = rest
-                .iter()
-                .take_while(|(_, read)| {
-                    let joined = end.max(read.end());
-                    let fits = u32::from(read.address) <= end
-                        && joined.saturating_sub(u32::from(first.address)) <= max;
-                    if fits {
-                        end = joined;
-                    }
-                    fits
-                })
-                .count();
-            let (taken, after) = rest.split_at(len);
-            groups.push(Group::new(table, first.address, end, taken, order));
-            rest = after;
+    let mut rest = sorted.as_slice();
+    while let Some(&(_, first)) = rest.first() {
+        let max = u32::from(first.table.max_read());
+        let mut end = first.end();
+        let mut len = rest.len();
+        for (at, &(_, read)) in rest.iter().enumerate() {
+            let joined = end.max(read.end());
+            if read.table != first.table
+                || u32::from(read.address) > end
+                || joined.saturating_sub(u32::from(first.address)) > max
+            {
+                len = at;
+                break;
+            }
+            end = joined;
         }
+        let (taken, after) = rest.split_at(len);
+        groups.push(Group::new(first.table, first.address, end, taken, order));
+        rest = after;
     }
     groups
 }
@@ -230,28 +214,16 @@ fn value(
     order: Order,
 ) -> Value {
     let mut sample = [0; 8];
-    let slots = sample.as_chunks_mut::<2>().0.iter_mut().rev();
-    let put = |(slot, word): (&mut [u8; 2], u16)| *slot = word.to_be_bytes();
+    let slots = sample.as_chunks_mut::<2>().0.iter_mut();
+    let put = |(slot, word): (&mut [u8; 2], u16)| *slot = word.to_le_bytes();
     match order {
         Order::Big => slots.zip(words.rev()).for_each(put),
         Order::Little => slots.zip(words).for_each(put),
     }
-    let bits = u64::from_be_bytes(sample);
-    let [_, _, _, _, b4, b5, b6, b7] = sample;
-    let low = u32::from_be_bytes([b4, b5, b6, b7]);
-    match scalar {
-        Scalar::U16 => Value::U16(u16::from_be_bytes([b6, b7])),
-        Scalar::I16 => Value::I16(i16::from_be_bytes([b6, b7])),
-        Scalar::U32 => Value::U32(low),
-        Scalar::I32 => Value::I32(low.cast_signed()),
-        Scalar::F32 => Value::F32(f32::from_bits(low)),
-        Scalar::U64 => Value::U64(bits),
-        Scalar::I64 => Value::I64(bits.cast_signed()),
-        Scalar::F64 => Value::F64(f64::from_bits(bits)),
-        _ => {
-            unreachable!("invariant: `Read::new` gives no register read of {scalar:?}")
-        }
-    }
+    let sample = sample.get(..scalar.width()).unwrap_or_else(|| {
+        panic!("invariant: `Read::new` gives no register read of {scalar:?}")
+    });
+    Value::read(scalar, sample)
 }
 
 /// Why a read is not valid.
@@ -277,13 +249,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Type { table, sample } => {
-                let table = match table {
-                    Table::Coils => "coils",
-                    Table::DiscreteInputs => "discrete inputs",
-                    Table::HoldingRegisters => "holding registers",
-                    Table::InputRegisters => "input registers",
-                };
-                write!(f, "the {table} hold no {sample} values")
+                write!(f, "the {} hold no {sample} values", table.name())
             }
             Self::Range { address, count } => write!(
                 f,

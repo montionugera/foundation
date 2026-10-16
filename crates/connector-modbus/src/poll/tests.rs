@@ -26,6 +26,11 @@ fn read(table: Table, address: u16, scalar: Scalar) -> Read {
     Read::new(table, address, Type::Scalar(scalar)).expect("a valid read")
 }
 
+/// The request that reads `read` alone.
+fn request(read: Read) -> Request {
+    groups(&[read], Order::Big)[0].request().clone()
+}
+
 /// The sample bytes of `value`, so that a NaN equals itself.
 fn bytes(value: Value) -> (Scalar, Vec<u8>) {
     let mut sample = vec![0; value.scalar().width()];
@@ -265,6 +270,20 @@ mod value {
     }
 
     #[test]
+    #[should_panic(expected = "is not a reply to Read { table: HoldingRegisters, \
+                               start: 0, count: 1 }")]
+    fn a_reply_of_bits_to_registers_panics() {
+        let group =
+            &groups(&[read(Table::HoldingRegisters, 0, Scalar::U16)], Order::Big)[0];
+        let one = Request::Read {
+            table: Table::Coils,
+            start: 0,
+            count: 1,
+        };
+        let _values = group.values(reply_of(&one, &[1, 1, 1]));
+    }
+
+    #[test]
     #[should_panic(expected = "Written is not a reply to")]
     fn a_written_reply_panics() {
         let group = &groups(&[read(Table::Coils, 0, Scalar::Bool)], Order::Big)[0];
@@ -284,10 +303,14 @@ mod new {
     #[test]
     fn bit_tables_hold_only_bool() {
         for table in [Table::Coils, Table::DiscreteInputs] {
-            assert!(matches!(
-                Read::new(table, 0, Type::Scalar(Scalar::Bool)),
-                Ok(Read { count: 1, .. })
-            ));
+            assert_eq!(
+                Read::new(table, 0, Type::Scalar(Scalar::Bool)).map(request),
+                Ok(Request::Read {
+                    table,
+                    start: 0,
+                    count: 1
+                })
+            );
             for scalar in REGISTERS.into_iter().chain([Scalar::U8, Scalar::Uuid]) {
                 let sample = Type::Scalar(scalar);
                 assert_eq!(
@@ -320,9 +343,11 @@ mod new {
         ];
         for table in [Table::HoldingRegisters, Table::InputRegisters] {
             for scalar in REGISTERS {
-                let read =
-                    Read::new(table, 0, Type::Scalar(scalar)).expect("a valid read");
-                assert_eq!(usize::from(read.count) * 2, scalar.width(), "{scalar:?}");
+                let Request::Read { count, .. } = request(read(table, 0, scalar))
+                else {
+                    panic!("a read request");
+                };
+                assert_eq!(usize::from(count) * 2, scalar.width(), "{scalar:?}");
             }
             for scalar in others {
                 let sample = Type::Scalar(scalar);
@@ -351,7 +376,14 @@ mod new {
     fn a_value_past_the_last_address_is_refused() {
         let table = Table::HoldingRegisters;
         let u64 = Type::Scalar(Scalar::U64);
-        assert!(Read::new(table, 65532, u64).is_ok_and(|read| read.address == 65532));
+        assert_eq!(
+            Read::new(table, 65532, u64).map(request),
+            Ok(Request::Read {
+                table,
+                start: 65532,
+                count: 4
+            })
+        );
         let error = Read::new(table, 65533, u64).expect_err("past the last address");
         assert_eq!(
             error,
@@ -365,10 +397,14 @@ mod new {
             "a value of 4 registers from address 65533 runs past address 65535"
         );
         let u32 = Type::Scalar(Scalar::U32);
-        assert!(matches!(
-            Read::new(table, 65534, u32),
-            Ok(Read { address: 65534, .. })
-        ));
+        assert_eq!(
+            Read::new(table, 65534, u32).map(request),
+            Ok(Request::Read {
+                table,
+                start: 65534,
+                count: 2
+            })
+        );
         assert_eq!(
             Read::new(table, 65535, u32),
             Err(Error::Range {
@@ -487,7 +523,8 @@ mod groups {
 
 const SPAN: u16 = 260;
 
-fn any_read() -> impl Strategy<Value = Read> {
+/// The table, address, and type of a read.
+fn any_read() -> impl Strategy<Value = (Table, u16, Scalar)> {
     let tables = prop_oneof![
         Just(Table::Coils),
         Just(Table::DiscreteInputs),
@@ -497,7 +534,7 @@ fn any_read() -> impl Strategy<Value = Read> {
     (tables, 0..SPAN, prop::sample::select(REGISTERS.to_vec())).prop_map(
         |(table, address, scalar)| {
             let scalar = if table.bits() { Scalar::Bool } else { scalar };
-            read(table, address, scalar)
+            (table, address, scalar)
         },
     )
 }
@@ -533,9 +570,17 @@ fn any_value() -> impl Strategy<Value = Value> {
     ]
 }
 
-/// The first address and the end of the items of `read`.
-fn items(read: Read) -> (u32, u32) {
-    (u32::from(read.address), read.end())
+/// The table, the first address, and the end of the items of `read`.
+fn items(read: Read) -> (Table, u32, u32) {
+    let Request::Read {
+        table,
+        start,
+        count,
+    } = request(read)
+    else {
+        panic!("a read request");
+    };
+    (table, u32::from(start), u32::from(start) + u32::from(count))
 }
 
 proptest! {
@@ -566,7 +611,7 @@ proptest! {
         words in prop::collection::vec(any::<u16>(), 4),
     ) {
         let read = read(Table::HoldingRegisters, 0, scalar);
-        let words = &words[..usize::from(read.count)];
+        let words = &words[..scalar.width() / 2];
         let reversed: Vec<u16> = words.iter().rev().copied().collect();
         let mut big = Device { holding_registers: words.to_vec(), ..Device::default() };
         let mut little = Device { holding_registers: reversed, ..Device::default() };
@@ -577,10 +622,14 @@ proptest! {
 
     #[test]
     fn groups_read_each_read_once_with_no_gap(
-        reads in prop::collection::vec(any_read(), 0..120),
+        specs in prop::collection::vec(any_read(), 0..120),
         order in any_order(),
         mut device in any_device(),
     ) {
+        let reads: Vec<Read> = specs
+            .iter()
+            .map(|&(table, address, scalar)| read(table, address, scalar))
+            .collect();
         let groups = groups(&reads, order);
         let mut seen = vec![0; reads.len()];
         let mut last: Option<(Table, u32, u32)> = None;
@@ -595,8 +644,8 @@ proptest! {
             for index in group.reads() {
                 seen[index] += 1;
                 let read = reads[index];
-                prop_assert_eq!(read.table, table);
-                let (first, after) = items(read);
+                let (of, first, after) = items(read);
+                prop_assert_eq!(of, table);
                 prop_assert!(start <= first && after <= end, "{read:?} in {group:?}");
                 prop_assert!(first <= covered, "a gap before {read:?} in {group:?}");
                 covered = covered.max(after);
@@ -615,22 +664,22 @@ proptest! {
         }
         prop_assert!(seen.iter().all(|&count| count == 1), "{seen:?}");
         let got = poll(&mut device, &reads, order).expect("no exception");
-        for (read, got) in reads.iter().zip(got) {
-            let start = usize::from(read.address);
-            let want = match read.table {
+        for (&(table, address, scalar), got) in specs.iter().zip(got) {
+            let start = usize::from(address);
+            let want = match table {
                 Table::Coils => Value::Bool(device.coils[start]),
                 Table::DiscreteInputs => Value::Bool(device.discrete_inputs[start]),
                 Table::HoldingRegisters | Table::InputRegisters => {
-                    let tables = if read.table == Table::InputRegisters {
+                    let tables = if table == Table::InputRegisters {
                         &device.input_registers
                     } else {
                         &device.holding_registers
                     };
-                    let end = start + usize::from(read.count);
-                    model(read.scalar, &tables[start..end], order)
+                    let end = start + scalar.width() / 2;
+                    model(scalar, &tables[start..end], order)
                 }
             };
-            prop_assert_eq!(bytes(got), bytes(want), "{:?}", read);
+            prop_assert_eq!(bytes(got), bytes(want), "{:?}", (table, address, scalar));
         }
     }
 }
