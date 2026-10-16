@@ -904,7 +904,8 @@ pub trait Driver {
 
     /// Opens the file at `path`, an absolute path outside the data directory, to read
     /// only, with no wait for a writer of a FIFO. It makes no file, and gives
-    /// [`Error::Io`] with code 22 (`EINVAL`) for a file that is neither a regular file
+    /// [`Error::Io`] with code 21 (`EISDIR`) for a directory, also one that this user
+    /// cannot read, and code 22 (`EINVAL`) for a file that is neither a regular file
     /// nor a directory.
     fn open_absolute<'a>(&'a self, path: &'a Path) -> Request<'a, Box<dyn Descriptor>>;
 
