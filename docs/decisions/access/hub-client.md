@@ -111,19 +111,28 @@
   `Error::Pool` at once. Lost: one
   reserved block for the renewal, a second pool that the caller cannot see.
   Amended (#2829): a complete `program::Reader` goes on past seqs that the node's
-  buffer lost. `Reader::next` gives only frames, and `Reader::lost` gives the seqs of
-  the index lost just before the frame that the last `next` gave, `0..0` when none.
-  Each channel of that frame lost these seqs. The reader writes one `tracing::warn!`
-  for each gap, with the index's name and the lost seqs as fields. A latest reader
-  gives no gap. No strict mode: a program that must stop at a loss checks `lost`.
-  `wire::hub::Frames::lost` computes the gap by the rule of `Received::gap`, and
-  `program` computes nothing. The remote reader of `hub` keeps its own computation,
-  which also serves local sessions, which have no `Frames`. The person decided the
-  shape (2026-10-16T05:22:29Z: "We need to preserve the sanctity of the python clients
-  nominal path"; 05:23:50Z, on a gap on each channel's data with a warning by default:
-  "Yes that's fine";
+  buffer lost. `Reader::next` gives only frames. `Reader::lost(entry)` gives the seqs
+  of the index lost after the last series of `entry` up to the frame that the last
+  `next` gave, as one range from the first lost seq to the last, and an empty range
+  when that frame holds no series of `entry` or none was lost. The entry of the index
+  gives the gap of the frame. The reader writes one `tracing::warn!` for each gap of
+  the index, with the index's name and the lost seqs as fields. A latest reader gives
+  no gap. No strict mode: a program that must stop at a loss checks `lost`.
+  `wire::hub::Gaps` holds the rule of the gap of a frame, and `wire::hub::Frames` and
+  the reader of `hub` each call it. The person decided the shape (2026-10-16T05:22:29Z:
+  "We need to preserve the sanctity of the python clients nominal path"; 05:23:50Z, on
+  a gap on each channel's data with a warning by default: "Yes that's fine";
   https://github.com/synnaxlabs/foundation/issues/2829#issuecomment-6208729798). Lost:
   an item that is a frame or a gap, which breaks the nominal path. The names, the doc,
   and the warning are by `laptop.architect` (2026-10-16T05:26:47Z,
   https://github.com/synnaxlabs/foundation/issues/2829#issuecomment-6208760389). Lost:
   `next` giving `(Frame, Range<u64>)`, and a second `Frame` type that wraps the first.
+  The gap of each entry, and `Gaps` in place of a copy of the rule in `hub` and in
+  `wire`, are by `laptop.architect` (2026-10-16T09:44:59Z,
+  https://github.com/synnaxlabs/foundation/pull/2856#issuecomment-6212746993). Lost:
+  one gap for each frame, which a channel that the gap's frame does not hold never
+  sees, and two copies of the rule with a test that pins them to each other. The
+  Python SDK, when the `sdk` crate exists, gives `frame["tc1"].lost` from `lost` of the
+  entry of `tc1`, built only when the caller reads it, and logs one WARNING for each
+  gap on its own logger with no setup. It installs no `tracing` subscriber (the person
+  and `laptop.architect`, the same comments).
