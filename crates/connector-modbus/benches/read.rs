@@ -29,7 +29,7 @@ fn values(bencher: Bencher<'_, '_>, case: usize) {
     let [group] = groups.as_slice() else {
         panic!("{case} gives one group");
     };
-    let pdu = reply(group.request());
+    let pdu = reply(&group.request());
     let reply = group.request().decode_reply(&pdu).expect("a valid reply");
     bencher
         .counter(ItemsCount::new(reads.len()))
@@ -51,7 +51,7 @@ fn put(bencher: Bencher<'_, '_>, case: usize) {
     let [group] = groups.as_slice() else {
         panic!("{case} gives one group");
     };
-    let pdu = reply(group.request());
+    let pdu = reply(&group.request());
     let reply = group.request().decode_reply(&pdu).expect("a valid reply");
     let mut values = Values::new(reads.len());
     bencher

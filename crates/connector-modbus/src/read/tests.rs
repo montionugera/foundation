@@ -28,7 +28,7 @@ fn read(table: Table, address: u16, scalar: Scalar) -> Read {
 
 /// The request that reads `read` alone.
 fn request(read: Read) -> Request {
-    groups(&[read], Order::Big)[0].request().clone()
+    groups(&[read], Order::Big)[0].request()
 }
 
 /// The sample bytes of `value`, so that a NaN equals itself.
@@ -425,7 +425,7 @@ mod groups {
     fn requests(reads: &[Read]) -> Vec<(Table, u16, u16)> {
         groups(reads, Order::Big)
             .iter()
-            .map(|group| match *group.request() {
+            .map(|group| match group.request() {
                 Request::Read {
                     table,
                     start,
@@ -701,7 +701,7 @@ proptest! {
         let mut seen = vec![0; reads.len()];
         let mut last: Option<(Table, u32, u32)> = None;
         for group in &groups {
-            let Request::Read { table, start, count } = *group.request() else {
+            let Request::Read { table, start, count } = group.request() else {
                 panic!("a group sends {:?}", group.request());
             };
             let max = if table.bits() { 2000 } else { 125 };

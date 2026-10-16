@@ -212,7 +212,7 @@ async fn exchange(
     values: &mut read::Values,
 ) -> Result<(), Error> {
     for group in groups {
-        let reply = client.exchange(config.unit, group.request()).await;
+        let reply = client.exchange(config.unit, &group.request()).await;
         let reply = reply
             .map_err(|failure| device(Fault::Exchange(Items::of(group), failure)))?;
         values

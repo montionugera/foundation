@@ -138,7 +138,9 @@ pub fn groups(reads: &[Read], order: Order) -> Vec<Group> {
 /// One request, and the reads that its reply holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Group {
-    request: Request,
+    table: Table,
+    start: u16,
+    count: u16,
     order: Order,
     slots: Vec<Slot>,
 }
@@ -174,11 +176,9 @@ impl Group {
             })
             .collect();
         Self {
-            request: Request::Read {
-                table,
-                start,
-                count: offset(end),
-            },
+            table,
+            start,
+            count: offset(end),
             order,
             slots,
         }
@@ -186,33 +186,24 @@ impl Group {
 
     /// The request to send.
     #[must_use]
-    pub fn request(&self) -> &Request {
-        &self.request
+    pub fn request(&self) -> Request {
+        Request::Read {
+            table: self.table,
+            start: self.start,
+            count: self.count,
+        }
     }
 
     /// The table that the request reads.
     #[must_use]
     pub fn table(&self) -> Table {
-        self.items().0
+        self.table
     }
 
     /// The first address that the request reads.
     #[must_use]
     pub fn start(&self) -> u16 {
-        self.items().1
-    }
-
-    /// The table, the first address, and the count of the request.
-    fn items(&self) -> (Table, u16, u16) {
-        let Request::Read {
-            table,
-            start,
-            count,
-        } = self.request
-        else {
-            unreachable!("invariant: a group holds a read request");
-        };
-        (table, start, count)
+        self.start
     }
 
     /// The index in `reads` of each read that the reply holds, in address order.
@@ -235,15 +226,14 @@ impl Group {
         &'a self,
         reply: Reply<'a>,
     ) -> Result<impl Iterator<Item = (usize, Value)> + 'a, Exception> {
-        let (table, _, count) = self.items();
-        let count = usize::from(count);
-        let matched = match (reply, table.bits()) {
+        let count = usize::from(self.count);
+        let matched = match (reply, self.table.bits()) {
             (Reply::Exception(exception), _) => return Err(exception),
             (Reply::Bits(bits), true) => bits.len() == count,
             (Reply::Registers(registers), false) => registers.len() == count,
             _ => false,
         };
-        assert!(matched, "{reply:?} is not a reply to {:?}", self.request);
+        assert!(matched, "{reply:?} is not a reply to {:?}", self.request());
         let order = self.order;
         Ok(self.slots.iter().map(move |slot| {
             let value = match reply {

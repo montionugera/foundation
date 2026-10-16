@@ -60,7 +60,7 @@ fn the_count_holds_the_allocations_of_groups() {
 fn a_decode_of_values_allocates_nothing() {
     for order in [Order::Big, Order::Little] {
         for group in read::groups(&reads(), order) {
-            let pdu = reply(group.request());
+            let pdu = reply(&group.request());
             let reply = group.request().decode_reply(&pdu).expect("a valid reply");
             let (sum, allocations) = ALLOCATOR.count(|| {
                 group
@@ -135,7 +135,7 @@ fn ticks() -> Vec<u64> {
         for _ in 0..100 {
             let mut tick = pin!(async {
                 for group in &groups {
-                    let reply = client.exchange(1, group.request()).await;
+                    let reply = client.exchange(1, &group.request()).await;
                     values
                         .put(group, reply.expect("a reply"))
                         .expect("no exception");
