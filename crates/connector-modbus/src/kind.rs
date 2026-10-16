@@ -168,7 +168,8 @@ fn at(read: &config::Read) -> String {
 ///
 /// # Errors
 ///
-/// [`Error::Device`] when the lookup fails, or with the connect error of the first address when none takes the stream.
+/// [`Error::Device`] when the lookup fails, or with the connect error of the first
+/// address when none takes the stream.
 async fn connect(ctx: &Context<Config>) -> Result<Client, Error> {
     let config = ctx.config();
     let host = &config.host;
