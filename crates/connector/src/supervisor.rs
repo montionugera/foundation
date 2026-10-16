@@ -4426,9 +4426,10 @@ mod tests {
         assert_eq!(read.got[2], Ok(vec![1]));
     }
 
-    /// The first run acks the frame at 100 ms. The frame at 1 s finds no room, so the
-    /// held position of the next run is at a lost seq: it reads the frame at 1.5 s,
-    /// with the lost seq as its gap.
+    /// The first run acks the frame at 100 ms. The frame at 900 ms finds no room, so
+    /// the held position of the next run is at a lost seq: it reads the frame at
+    /// 1.5 s, with the lost seq as its gap. The pool fills before the tick of the
+    /// records at 1 s, so the order of the two does not decide the run.
     #[test]
     fn opens_a_held_reader_at_a_lost_frame_at_the_frame_after_it() {
         let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);
@@ -4468,7 +4469,7 @@ mod tests {
                     matches!(outcomes[..], [hub::home::Outcome::Applied { .. }]),
                     "{outcomes:?}"
                 );
-                clock.sleep_until(start + ms(1_000)).await;
+                clock.sleep_until(start + ms(900)).await;
                 let mut held = fill(&writer);
                 drop(held.pop());
                 let stamp = writer.now().nanos();
