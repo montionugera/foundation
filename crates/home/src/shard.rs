@@ -443,7 +443,10 @@ impl Shard {
     /// O(n) time for n carried indexes.
     #[must_use]
     pub fn deadline(&self) -> Option<Monotonic> {
-        let gates = self.indexes.iter().filter_map(|index| index.gate.deadline());
+        let gates = self
+            .indexes
+            .iter()
+            .filter_map(|index| index.gate.deadline());
         gates.chain(self.tick).min()
     }
 
@@ -746,7 +749,10 @@ impl Shard {
         let place = self.place(slot);
         let (monotonic, now) = self.clocks().ok_or(reader::Unopened::Unsynced)?;
         self.readers.advance(place, now);
-        let limit = self.buffer.block_max().min(self.buffer.layout().entry_max());
+        let limit = self
+            .buffer
+            .block_max()
+            .min(self.buffer.layout().entry_max());
         self.readers.fits(place, &reader, limit)?;
         let live = self.indexes[place].live_tail();
         let named = Reader::Named { reader, hold };
@@ -1069,7 +1075,12 @@ fn record(
 /// ring or the pool, or that pass the most bytes of one entry of a ring that is
 /// smaller than at their last append, are not appended. A failed commit, which the
 /// next append reports, appends nothing.
-fn append_named(buffer: &Buffer, index: &Index, records: &[Record], mesh: Stamp) -> bool {
+fn append_named(
+    buffer: &Buffer,
+    index: &Index,
+    records: &[Record],
+    mesh: Stamp,
+) -> bool {
     let (key, slot, first) = (index.key, index.slot, index.live_tail());
     let entry = match named::entry(buffer.pool(), records, key, slot, first, mesh) {
         Ok(entry) => entry,
@@ -5426,7 +5437,9 @@ mod tests {
 
         mod named {
             use super::*;
-            use crate::reader::{Opened, Position, Unopened, Unsynced, complete, named};
+            use crate::reader::{
+                Opened, Position, Unopened, Unsynced, complete, named,
+            };
 
             const HOLD: Span = Span::from_nanos(1_000_000_000);
             /// One nanosecond less than `HOLD`.
@@ -6007,7 +6020,8 @@ mod tests {
                         let test = Test::new(node, tasks);
                         let set = two_indexes();
                         let mut shard = test.shard(AREA).await;
-                        let w = shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
                         before(&test, &mut shard, w).await;
                         shard.committed().await.expect("the commit ends");
                     })
@@ -6047,7 +6061,10 @@ mod tests {
                         let a = open(shard, "a");
                         assert_eq!(caught_up(shard, a, 0).await, [seq(1, 1)]);
                         let b = open(shard, "b");
-                        assert_eq!(caught_up(shard, b, 0).await, [seq(0, 1), seq(1, 1)]);
+                        assert_eq!(
+                            caught_up(shard, b, 0).await,
+                            [seq(0, 1), seq(1, 1)]
+                        );
                         let c = open(shard, "c");
                         assert_eq!(caught_up(shard, c, 0).await, []);
                     });
@@ -6061,7 +6078,10 @@ mod tests {
                     };
                     restart(191, before, async |_, shard: &mut Shard| {
                         let b = open(shard, "b");
-                        assert_eq!(caught_up(shard, b, 0).await, [seq(0, 1), seq(1, 1)]);
+                        assert_eq!(
+                            caught_up(shard, b, 0).await,
+                            [seq(0, 1), seq(1, 1)]
+                        );
                     });
                 }
 
@@ -6069,7 +6089,10 @@ mod tests {
                 fn writes_an_acked_position_only_at_the_tick() {
                     restart(192, acked, async |_, shard: &mut Shard| {
                         let a = open(shard, "a");
-                        assert_eq!(caught_up(shard, a, 0).await, [seq(0, 1), seq(1, 1)]);
+                        assert_eq!(
+                            caught_up(shard, a, 0).await,
+                            [seq(0, 1), seq(1, 1)]
+                        );
                     });
                 }
 
@@ -6121,7 +6144,8 @@ mod tests {
                         let test = Test::new(node, tasks);
                         let set = two_indexes();
                         let mut shard = test.shard(AREA).await;
-                        let w = shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
                         acked(&test, &mut shard, w).await;
                         tick(&test, &mut shard).await;
                         shard.committed().await.expect("the commit ends");
@@ -6160,7 +6184,10 @@ mod tests {
                     };
                     restart(202, before, async |_, shard: &mut Shard| {
                         let a = open(shard, "a");
-                        assert_eq!(caught_up(shard, a, 0).await, [seq(0, 1), seq(1, 1)]);
+                        assert_eq!(
+                            caught_up(shard, a, 0).await,
+                            [seq(0, 1), seq(1, 1)]
+                        );
                     });
                 }
 

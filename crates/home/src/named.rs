@@ -81,10 +81,16 @@ pub(crate) fn entry(
 /// [`block::Error`] when `pool` has no block for the bytes.
 fn body(pool: &block::Pool, records: &[Record]) -> Result<Block, block::Error> {
     let mut block = pool.alloc(len(records))?;
+    write(&mut block, records);
+    Ok(block.freeze())
+}
+
+/// Writes `records` to `out`, which has [`len`] bytes.
+fn write(out: &mut [u8], records: &[Record]) {
     let count = u32::try_from(records.len()).expect("at most u32::MAX records");
     let mut at = 0;
     let mut put = |bytes: &[u8]| {
-        block[at..at + bytes.len()].copy_from_slice(bytes);
+        out[at..at + bytes.len()].copy_from_slice(bytes);
         at += bytes.len();
     };
     put(&[VERSION]);
@@ -102,7 +108,6 @@ fn body(pool: &block::Pool, records: &[Record]) -> Result<Block, block::Error> {
         put(&[u8::from(record.closed.is_some())]);
         put(&record.closed.map_or(0, Stamp::nanos).to_le_bytes());
     }
-    Ok(block.freeze())
 }
 
 /// The records that the newest durable named entry of each index in `buffer` holds,

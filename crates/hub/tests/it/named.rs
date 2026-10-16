@@ -868,7 +868,11 @@ fn opens_no_named_complete_reader_past_the_records_of_one_entry() {
         for n in 0..119 {
             opened.push(test.hub.reader(open(n)).await.expect("the records fit"));
         }
-        let error = test.hub.reader(open(119)).await.expect_err("one more passes");
+        let error = test
+            .hub
+            .reader(open(119))
+            .await
+            .expect_err("one more passes");
         assert_eq!(error, reader::Error::Full { limit: 65481 });
         assert_eq!(
             error.to_string(),
@@ -876,9 +880,15 @@ fn opens_no_named_complete_reader_past_the_records_of_one_entry() {
              close a named reader of the index, or open this one unnamed"
         );
         let latest = named(&long(119), &"r".repeat(255), Mode::Latest, Span::ZERO);
-        assert!(test.hub.reader(latest).await.is_ok(), "a latest reader opens");
+        assert!(
+            test.hub.reader(latest).await.is_ok(),
+            "a latest reader opens"
+        );
         drop(opened.pop());
-        assert!(test.hub.reader(open(119)).await.is_ok(), "a closed record is gone");
+        assert!(
+            test.hub.reader(open(119)).await.is_ok(),
+            "a closed record is gone"
+        );
     });
 }
 

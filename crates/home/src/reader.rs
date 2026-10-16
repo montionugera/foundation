@@ -1109,7 +1109,8 @@ mod tests {
             assert_eq!(
                 Unsynced.to_string(),
                 "the node has no mesh time yet: open the named reader again later"
-            );            assert_eq!(
+            );
+            assert_eq!(
                 Unopened::Unsynced.to_string(),
                 "the node has no mesh time yet: open the named reader again later"
             );
