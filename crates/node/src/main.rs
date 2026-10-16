@@ -112,7 +112,7 @@ fn command_line(shards: &Shards, args: Vec<OsString>) -> Result<Run, Failure> {
             io::stdout().lock(),
             io::stderr().lock(),
             &os::paths(),
-            async |dir: &Path| reach(dir, &tasks, &started).await.map(send),
+            async |dir: &Path| reach(dir, &tasks).await.map(send),
         )
         .await;
         ran.send(run).expect("invariant: `main` keeps the receiver");
@@ -146,19 +146,12 @@ fn input(started: &mpsc::Sender<env::thread::Handle>) -> io::Result<os::Input> {
     Ok(input)
 }
 
-/// The client of the node that runs on the data directory `dir`. It sends the handle
-/// of the I/O thread that reads `dir` to `started`, for the main thread to join.
-async fn reach(
-    dir: &Path,
-    tasks: &Tasks,
-    started: &mpsc::Sender<env::thread::Handle>,
-) -> Result<program::Session, Failure> {
+/// The client of the node that runs on the data directory `dir`. The I/O thread that
+/// reads `dir` ends before this returns.
+async fn reach(dir: &Path, tasks: &Tasks) -> Result<program::Session, Failure> {
     let threads = os::threads().map_err(failed)?;
-    let (disk, handle) =
+    let (disk, thread) =
         os::stored(dir, &threads, "files-reach").map_err(|error| stored(dir, error))?;
-    started
-        .send(handle)
-        .expect("invariant: `main` keeps the receiver");
     let reached = node::client::reach(node::client::Config {
         files: env::files::Files::new(disk),
         net: net(),
@@ -167,6 +160,9 @@ async fn reach(
         tasks: tasks.clone(),
     })
     .await;
+    // `node::client::reach` drops its files before it returns, so this join waits for
+    // no read.
+    thread.join().map_err(failed)?;
     reached.map_err(|error| unreached(dir, error))
 }
 

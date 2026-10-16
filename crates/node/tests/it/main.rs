@@ -555,6 +555,41 @@ fn mcp_keeps_its_session_through_a_pause() {
     assert_eq!(mcp.close().status.code(), Some(0));
 }
 
+/// `foundation mcp` keeps no memory for each call that finds no node.
+#[test]
+fn mcp_holds_no_memory_for_each_failed_reach() {
+    let mut rig = Rig::new();
+    rig.start_with(&["--name", "edge", "--data", "plant"]);
+    rig.stop();
+    let mut mcp = rig.talk(&["mcp", "--data", "plant"]);
+    let status = |id| {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\
+             \"params\":{{\"name\":\"status\"}}}}\n"
+        )
+    };
+    let kib = |pid: u32| -> u64 {
+        let output = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &pid.to_string()])
+            .output()
+            .expect("run ps");
+        text(&output.stdout).trim().parse().expect("a number")
+    };
+    let mut replies = String::new();
+    let mut before = 0;
+    for id in 1..=2020 {
+        replies.push_str(&status_reply(id, Err(unreached())));
+        mcp.ask(&status(id), &replies);
+        if id == 20 {
+            before = kib(mcp.pid());
+        }
+    }
+    let after = kib(mcp.pid());
+    // Each failed reach held 16 KiB, so 2000 held 32 MiB.
+    assert!(after < before + 4 * 1024, "{before} KiB, then {after} KiB");
+    assert_eq!(mcp.close().status.code(), Some(0));
+}
+
 /// An idle `foundation mcp` holds the UDP sockets of one session after many calls, not
 /// one for each call.
 #[test]
