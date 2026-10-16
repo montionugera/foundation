@@ -8,10 +8,11 @@ use crate::poll::{self, Order, Read};
 
 /// Where the values of a command channel go in a device: a coil or the holding
 /// registers from an address, and the type of the values.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Write {
     read: Read,
     order: Order,
+    request: Request,
 }
 
 impl Write {
@@ -34,9 +35,11 @@ impl Write {
         if table.read_only() {
             return Err(poll::Error::ReadOnly { table });
         }
+        let read = Read::new(table, address, sample)?;
         Ok(Self {
-            read: Read::new(table, address, sample)?,
+            read,
             order,
+            request: read.write(),
         })
     }
 
@@ -46,33 +49,9 @@ impl Write {
     /// # Panics
     ///
     /// When `value` is not of the type of the write.
-    #[must_use]
-    pub fn request(&self, value: Value) -> Request {
-        let Read {
-            table,
-            address,
-            scalar,
-            ..
-        } = self.read;
-        assert_eq!(
-            value.scalar(),
-            scalar,
-            "{value:?} is not a value of the write {self:?}"
-        );
-        if table == Table::Coils {
-            let Value::Bool(value) = value else {
-                unreachable!("invariant: `Read::new` gives coils only `bool`");
-            };
-            return Request::WriteCoil { address, value };
-        }
-        let words = poll::words(value, self.order);
-        if let [value] = *words.as_slice() {
-            return Request::WriteRegister { address, value };
-        }
-        Request::WriteRegisters {
-            start: address,
-            values: words,
-        }
+    pub fn request(&mut self, value: Value) -> &Request {
+        self.read.put(value, self.order, &mut self.request);
+        &self.request
     }
 }
 

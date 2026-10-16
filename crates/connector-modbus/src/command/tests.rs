@@ -53,17 +53,17 @@ mod request {
 
     #[test]
     fn big_puts_the_high_word_first() {
-        let f32 = write(Table::HoldingRegisters, 10, Scalar::F32, Order::Big);
+        let mut f32 = write(Table::HoldingRegisters, 10, Scalar::F32, Order::Big);
         assert_eq!(
-            f32.request(Value::F32(1.0)),
+            *f32.request(Value::F32(1.0)),
             Request::WriteRegisters {
                 start: 10,
                 values: vec![0x3F80, 0]
             }
         );
-        let u64 = write(Table::HoldingRegisters, 0, Scalar::U64, Order::Big);
+        let mut u64 = write(Table::HoldingRegisters, 0, Scalar::U64, Order::Big);
         assert_eq!(
-            u64.request(Value::U64(0x0102_0304_0506_0708)),
+            *u64.request(Value::U64(0x0102_0304_0506_0708)),
             Request::WriteRegisters {
                 start: 0,
                 values: vec![0x0102, 0x0304, 0x0506, 0x0708]
@@ -73,17 +73,17 @@ mod request {
 
     #[test]
     fn little_puts_the_low_word_first() {
-        let f32 = write(Table::HoldingRegisters, 10, Scalar::F32, Order::Little);
+        let mut f32 = write(Table::HoldingRegisters, 10, Scalar::F32, Order::Little);
         assert_eq!(
-            f32.request(Value::F32(1.0)),
+            *f32.request(Value::F32(1.0)),
             Request::WriteRegisters {
                 start: 10,
                 values: vec![0, 0x3F80]
             }
         );
-        let i32 = write(Table::HoldingRegisters, 7, Scalar::I32, Order::Little);
+        let mut i32 = write(Table::HoldingRegisters, 7, Scalar::I32, Order::Little);
         assert_eq!(
-            i32.request(Value::I32(-2)),
+            *i32.request(Value::I32(-2)),
             Request::WriteRegisters {
                 start: 7,
                 values: vec![0xFFFE, 0xFFFF]
@@ -94,17 +94,17 @@ mod request {
     #[test]
     fn one_register_is_function_6_in_each_order() {
         for order in [Order::Big, Order::Little] {
-            let u16 = write(Table::HoldingRegisters, 10, Scalar::U16, order);
+            let mut u16 = write(Table::HoldingRegisters, 10, Scalar::U16, order);
             assert_eq!(
-                u16.request(Value::U16(7)),
+                *u16.request(Value::U16(7)),
                 Request::WriteRegister {
                     address: 10,
                     value: 7
                 }
             );
-            let i16 = write(Table::HoldingRegisters, 3, Scalar::I16, order);
+            let mut i16 = write(Table::HoldingRegisters, 3, Scalar::I16, order);
             assert_eq!(
-                i16.request(Value::I16(-2)),
+                *i16.request(Value::I16(-2)),
                 Request::WriteRegister {
                     address: 3,
                     value: 0xFFFE
@@ -115,10 +115,10 @@ mod request {
 
     #[test]
     fn a_coil_is_function_5() {
-        let coil = write(Table::Coils, 4, Scalar::Bool, Order::Big);
+        let mut coil = write(Table::Coils, 4, Scalar::Bool, Order::Big);
         for value in [false, true] {
             assert_eq!(
-                coil.request(Value::Bool(value)),
+                *coil.request(Value::Bool(value)),
                 Request::WriteCoil { address: 4, value }
             );
         }
@@ -127,29 +127,29 @@ mod request {
     #[test]
     #[should_panic(expected = "U32(7) is not a value of the write")]
     fn a_value_of_another_type_panics() {
-        let u16 = write(Table::HoldingRegisters, 0, Scalar::U16, Order::Big);
-        drop(u16.request(Value::U32(7)));
+        let mut u16 = write(Table::HoldingRegisters, 0, Scalar::U16, Order::Big);
+        u16.request(Value::U32(7));
     }
 
     #[test]
     #[should_panic(expected = "U16(1) is not a value of the write")]
     fn a_number_to_a_coil_panics() {
-        let coil = write(Table::Coils, 0, Scalar::Bool, Order::Big);
-        drop(coil.request(Value::U16(1)));
+        let mut coil = write(Table::Coils, 0, Scalar::Bool, Order::Big);
+        coil.request(Value::U16(1));
     }
 
     #[test]
     #[should_panic(expected = "I16(-2) is not a value of the write")]
     fn a_value_of_another_type_of_the_same_width_panics() {
-        let u16 = write(Table::HoldingRegisters, 0, Scalar::U16, Order::Big);
-        drop(u16.request(Value::I16(-2)));
+        let mut u16 = write(Table::HoldingRegisters, 0, Scalar::U16, Order::Big);
+        u16.request(Value::I16(-2));
     }
 
     #[test]
     #[should_panic(expected = "U32(1) is not a value of the write")]
     fn an_integer_to_a_float_write_panics() {
-        let f32 = write(Table::HoldingRegisters, 0, Scalar::F32, Order::Big);
-        drop(f32.request(Value::U32(1)));
+        let mut f32 = write(Table::HoldingRegisters, 0, Scalar::F32, Order::Big);
+        f32.request(Value::U32(1));
     }
 }
 
@@ -208,10 +208,10 @@ mod new {
     #[test]
     fn a_value_past_the_last_address_is_refused() {
         let u64 = Type::Scalar(Scalar::U64);
-        let last = Write::new(Table::HoldingRegisters, 65532, u64, Order::Big)
+        let mut last = Write::new(Table::HoldingRegisters, 65532, u64, Order::Big)
             .expect("the last four registers");
         assert_eq!(
-            last.request(Value::U64(1)),
+            *last.request(Value::U64(1)),
             Request::WriteRegisters {
                 start: 65532,
                 values: vec![0, 0, 0, 1]
@@ -281,7 +281,7 @@ proptest! {
             Table::HoldingRegisters
         };
         let before = device.clone();
-        send(&mut device, &write(table, address, scalar, order).request(value));
+        send(&mut device, write(table, address, scalar, order).request(value));
         let got = read_back(&mut device, table, address, scalar, order);
         prop_assert_eq!(bytes(got), bytes(value));
         let start = usize::from(address);
@@ -295,5 +295,24 @@ proptest! {
             is.holding_registers[start..end].fill(0);
         }
         prop_assert_eq!(was, is, "a write changed another item");
+    }
+
+    #[test]
+    fn a_second_value_leaves_nothing_of_the_first(
+        first in any_value(),
+        sample in any::<[u8; 8]>(),
+        order in any_order(),
+    ) {
+        let scalar = first.scalar();
+        let second = Value::read(scalar, &sample[..scalar.width()]);
+        let table = if scalar == Scalar::Bool {
+            Table::Coils
+        } else {
+            Table::HoldingRegisters
+        };
+        let mut used = write(table, 0, scalar, order);
+        used.request(first);
+        let mut fresh = write(table, 0, scalar, order);
+        prop_assert_eq!(used.request(second), fresh.request(second));
     }
 }

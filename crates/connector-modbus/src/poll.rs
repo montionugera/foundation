@@ -1,5 +1,6 @@
 //! The reads of one connector: the requests that read them, and the value of each
-//! read in their replies.
+//! read in their replies. A write of `command` takes its checks and its codec from
+//! [`Read`].
 
 use std::fmt;
 
@@ -11,10 +12,10 @@ use crate::pdu::{Exception, Reply, Request, Table};
 /// item, and its type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Read {
-    pub(crate) table: Table,
-    pub(crate) address: u16,
-    pub(crate) scalar: Scalar,
-    pub(crate) count: u16,
+    table: Table,
+    address: u16,
+    scalar: Scalar,
+    count: u16,
 }
 
 impl Read {
@@ -52,6 +53,47 @@ impl Read {
 
     fn end(self) -> u32 {
         u32::from(self.address).saturating_add(u32::from(self.count))
+    }
+
+    /// The request that writes a value at the place of the read, with each value
+    /// zero: function 5 for a bit, 6 for one register, and 16 for more.
+    pub(crate) fn write(self) -> Request {
+        let Self { address, count, .. } = self;
+        match (self.table.bits(), count) {
+            (true, _) => Request::WriteCoil {
+                address,
+                value: false,
+            },
+            (false, 1) => Request::WriteRegister { address, value: 0 },
+            (false, _) => Request::WriteRegisters {
+                start: address,
+                values: vec![0; usize::from(count)],
+            },
+        }
+    }
+
+    /// Puts `value` into `request`, a request of [`Read::write`], with registers in
+    /// `order`.
+    ///
+    /// # Panics
+    ///
+    /// When `value` is not of the type of the read, or `request` is not its write.
+    pub(crate) fn put(self, value: Value, order: Order, request: &mut Request) {
+        assert_eq!(
+            value.scalar(),
+            self.scalar,
+            "{value:?} is not a value of the write of {self:?}"
+        );
+        match (request, value) {
+            (Request::WriteCoil { value: bit, .. }, Value::Bool(value)) => *bit = value,
+            (Request::WriteRegister { value: word, .. }, value) => {
+                words(value, order, std::slice::from_mut(word));
+            }
+            (Request::WriteRegisters { values, .. }, value) => {
+                words(value, order, values);
+            }
+            (request, _) => panic!("{request:?} is not the write of {self:?}"),
+        }
     }
 }
 
@@ -226,9 +268,13 @@ fn value(
     Value::read(scalar, sample)
 }
 
-/// The registers that hold `value` in `order`, in address order: the inverse of
-/// [`value`].
-pub(crate) fn words(value: Value, order: Order) -> Vec<u16> {
+/// Puts the registers of `value` in `order` into `out`, in address order: the
+/// inverse of [`value`].
+///
+/// # Panics
+///
+/// When `out` does not hold exactly the registers of `value`.
+fn words(value: Value, order: Order, out: &mut [u16]) {
     let mut sample = [0; 8];
     let scalar = value.scalar();
     let sample = sample.get_mut(..scalar.width()).unwrap_or_else(|| {
@@ -240,9 +286,11 @@ pub(crate) fn words(value: Value, order: Order) -> Vec<u16> {
         .0
         .iter()
         .map(|&pair| u16::from_le_bytes(pair));
+    assert_eq!(words.len(), out.len(), "the registers of {value:?}");
+    let put = |(slot, word): (&mut u16, u16)| *slot = word;
     match order {
-        Order::Big => words.rev().collect(),
-        Order::Little => words.collect(),
+        Order::Big => out.iter_mut().rev().zip(words).for_each(put),
+        Order::Little => out.iter_mut().zip(words).for_each(put),
     }
 }
 
