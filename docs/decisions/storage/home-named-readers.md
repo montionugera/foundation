@@ -25,3 +25,20 @@
   hold. The position records and `Readers::deadline` stay as above until later parts
   of #274 (`laptop.architect`, 2026-10-15T16:29:36Z:
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6197039098).
+  Amended (#274 A): a home appends the record of each named complete reader of an
+  index, open or held, as one entry of tag 2 on its live path, version 1. It appends
+  the entry after a named open, a close, and a takeover, and at a tick each second
+  while the index has a named reader, a hold, or a changed record: an ack that moved a
+  position, or a hold that ended at the mesh midpoint. `Shard::open` keeps the newest
+  entry of each index, and a carry with mesh time restores it. A session open at the
+  crash counts as closed at the restore, so a carry before mesh time waits for it. A
+  shed appends an entry with no record. An entry that finds no room or no block stays
+  due for the next tick, so a restart before it resumes at an older position: a
+  repeat, not a loss. One entry holds every record of its index, at most
+  `min(Buffer::block_max, Layout::entry_max)` bytes: 546 bytes for a record of the
+  longest names, so at least 7 records. A named complete open that adds a record past
+  it gives `Unopened::Full`, and `hub` gives `reader::Error::Full`. An open of a reader
+  that holds a record opens also when the records pass it, as on a smaller pool after
+  a restart. A latest reader adds no record. #2833 holds records past one entry.
+  Decided by `laptop.architect` (2026-10-16T05:22:26Z:
+  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6208708096).
