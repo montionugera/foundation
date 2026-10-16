@@ -11,7 +11,9 @@ const BAD_FILL: Code = Code::new("config.bad-fill");
 /// each other call `fill`, in any value at any depth. They are in the order of their
 /// [`document::Source`], then in source order. A call `fill` inside a call `fill` gives
 /// no problem of its own.
-pub(crate) fn problems(documents: &[Document]) -> Vec<Diagnostic> {
+pub(crate) fn problems<'a>(
+    documents: impl IntoIterator<Item = &'a Document>,
+) -> Vec<Diagnostic> {
     let mut problems = Vec::new();
     for document in documents {
         walk::each(document, &mut |part| {

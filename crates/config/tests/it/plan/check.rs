@@ -461,3 +461,31 @@ fn refuses_each_fill_of_the_unfilled_fuzz_inputs() {
         ]
     );
 }
+
+#[test]
+fn refuses_each_fill_in_a_connector_config_as_check_of_the_files_does() {
+    let attributes = "writes = []\ntoken = env(fill(\"the token\"))\nhold = [fill(1)]";
+    let fix = || "Write the value in place of `fill`".to_owned();
+    let refused = [
+        (
+            "config.unfilled",
+            None,
+            "the import found no value for the token".to_owned(),
+            fix(),
+        ),
+        (
+            "config.bad-fill",
+            None,
+            "`fill` takes one string".to_owned(),
+            fix(),
+        ),
+    ];
+    assert_eq!(
+        checked([connector("c", "writer", "n", attributes)]),
+        refused
+    );
+    let text = format!(
+        "connector \"c\" {{\n  kind = \"writer\"\n  node = \"n\"\n{attributes}\n}}\n"
+    );
+    assert_eq!(checked_files(&[&text]), refused);
+}
