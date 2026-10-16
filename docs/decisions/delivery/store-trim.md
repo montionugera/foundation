@@ -31,9 +31,15 @@
   restart continues from the disk (A8). That record syncs before the checkpoint, in a
   sync of its own: a crash can keep the checkpoint and lose a record of the same sync.
   The cost of a trim grows with the paths that lose their newest record, not with all
-  paths. A carried tail is no sample: a read gives no entry for it, only the gap up to
-  it. The trim does not turn on without the carried tail, and the PR that builds it
-  records its form on disk here. Decided by the architect (#160,
+  paths. A carry record that holds one such path also takes the paths with the oldest
+  holders after the reach, up to the tails that one record may hold, so that the tails
+  of many paths do not each take a record (`laptop.architect`, 2026-10-16T01:50:57Z:
+  https://github.com/synnaxlabs/foundation/pull/2688#issuecomment-6206211723, item 2,
+  which amends the carry plan of
+  https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6158967741). A
+  carried tail is no sample: a read gives no entry for it, only the gap up to it. The
+  trim does not turn on without the carried tail, and the PR that builds it records its
+  form on disk here. Decided by the architect (#160,
   https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6032697113).
   As built (#1222): the headroom is three times the larger of the largest record and the
   records of the commit that trims, which are the records not yet synced, and the three
