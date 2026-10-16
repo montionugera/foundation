@@ -28,8 +28,10 @@ pub struct Log {
     /// thread `log` writes each line, so no event waits on a write. A write that fails
     /// drops its line, and one that panics ends the log. A line drops when 1024 lines
     /// wait, when it does not fit in 1 MiB with the lines that wait, or after a drop
-    /// until the thread `log` takes the lines that wait. WARN `dropped` with the field
-    /// `lines`, the count of these lines, comes after the lines before them.
+    /// until the thread `log` takes the lines that wait. The thread writes at most one
+    /// batch beside the lines that wait, so the log holds at most 2048 lines and 2 MiB.
+    /// WARN `dropped` with the field `lines`, the count of these lines, comes after the
+    /// lines before them.
     pub writer: Box<dyn io::Write + Send>,
     /// The form of each line, text or JSON, and the least level of an event that the
     /// log holds.

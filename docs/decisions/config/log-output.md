@@ -83,7 +83,9 @@
   (target `node::log`) with the field `lines`, their count, after the last line that
   came before the first of them. At λ lines a second, 1024 lines hold a stall of the
   writer of 1024/λ s: 10 ms at 100,000 lines a second, a rate only `debug` and `trace`
-  reach (item 8). The count line reports each loss. The depth of the queue gets a
+  reach (item 8). The thread writes at most one batch beside the lines that wait, so
+  the log holds at most 2048 lines and 2 MiB. The count line reports each loss. The
+  depth of the queue gets a
   gauge when the node has metrics. A write that fails drops its line. A write that
   panics ends the thread `log`, and no later line reaches the writer; a release
   build, with `panic = "abort"`, ends there. The thread
