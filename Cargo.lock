@@ -418,9 +418,13 @@ dependencies = [
  "hyper",
  "loom",
  "proptest",
+ "rustls",
+ "rustls-webpki",
  "secret",
  "sim",
  "spec",
+ "tokio",
+ "tokio-rustls",
  "types",
  "wire",
 ]

@@ -15,7 +15,7 @@ use types::authority::Authority;
 use types::name::Name;
 use types::time;
 
-use crate::{browse, cancel, reader, status, supervisor};
+use crate::{browse, cancel, http, reader, status, supervisor};
 
 /// The noun of the document that [`Kind::parse`] gets, for the text of a diagnostic.
 pub const NOUN: &str = "the connector";
@@ -343,6 +343,20 @@ impl<C> Context<C> {
     #[must_use]
     pub fn net(&self) -> &Net {
         &self.inputs.net
+    }
+
+    /// The roots that an `https` connect trusts, as `supervisor::Config::roots`
+    /// gives them.
+    #[must_use]
+    pub fn roots(&self) -> &http::Roots {
+        &self.inputs.roots
+    }
+
+    /// The mesh time of the run's hub, which stamps samples. Waits for the node's first
+    /// mesh time. Dropping the future ends the wait, so race it with
+    /// [`Context::cancel`]. [`Context::clock`] is the clock of deadlines.
+    pub fn time(&self) -> impl Future<Output = hub::Time> {
+        self.inputs.hub.time()
     }
 
     /// Reads the value of `source`. Each call reads the file or the store again, so

@@ -146,6 +146,7 @@ impl Network {
                         tasks,
                         timeout: TIMEOUT,
                         body_max: BODY_MAX,
+                        tls: None,
                     });
                     for step in steps {
                         match step {
@@ -245,6 +246,18 @@ fn chain(error: &Error) -> String {
         source = cause.source();
     }
     messages.join(" <- ")
+}
+
+/// The text of the first source of `error` that is the `env` error.
+pub(super) fn stream_error(error: &Error) -> Option<String> {
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        if let Some(error) = cause.downcast_ref::<env::net::Error>() {
+            return Some(error.to_string());
+        }
+        source = cause.source();
+    }
+    None
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -513,6 +526,10 @@ fn gives_the_stream_error_when_the_server_drops_the_stream() {
         chain(&error),
         format!("connection error <- {remote} reset the stream")
     );
+    assert_eq!(
+        stream_error(&error),
+        Some(format!("{remote} reset the stream"))
+    );
 }
 
 #[test]
@@ -554,7 +571,7 @@ fn bad(message: &str) -> Diagnostic {
         Code::new("connector.bad-uri"),
         value(value::Kind::Bool(true)).span,
         message.into(),
-        "Write an `http` URI such as \"http://10.0.0.2:8086\"".into(),
+        "Write an `http` or `https` URI such as \"http://10.0.0.2:8086\"".into(),
     )
 }
 
@@ -577,6 +594,9 @@ fn reads_a_uri_that_send_takes() {
         "http://10.0.0.2/write?db=site",
         "http://[fd00::2]:65535/",
         "HTTP://Influx:1",
+        "https://influx",
+        "HTTPS://[fd00::2]:8086/",
+        "https://10.0.0.2:8086/",
     ] {
         assert_eq!(
             uri(&value(value::Kind::String(text.into()))),
@@ -617,10 +637,13 @@ fn refuses_a_fragment() {
 
 #[test]
 fn refuses_a_scheme_other_than_http() {
-    for uri in ["https://10.0.0.2/", "/write", "https://admin:secret@[]:0/"] {
+    for uri in ["ftp://10.0.0.2/", "/write", "wss://admin:secret@[]:0/"] {
         let error = refused(uri);
         assert!(matches!(error, Error::Scheme), "{uri}: {error:?}");
-        assert_eq!(error.to_string(), "the scheme of the URI is not http");
+        assert_eq!(
+            error.to_string(),
+            "the scheme of the URI is not http or https"
+        );
     }
 }
 
@@ -681,6 +704,8 @@ fn refuses_a_host_that_is_not_valid() {
         ("http://[fe80::1%25eth0]/", host::Error::Zone),
         ("http://[fe80::1%2]/", host::Error::Escape),
         ("http://[fe80::1%]/", host::Error::Escape),
+        ("https://[influx]/", IPV6),
+        ("https://influx-/", host::Error::Part),
     ] {
         let refused = refused(uri);
         assert!(
@@ -725,6 +750,16 @@ fn dials_the_zone_of_a_uri_after_its_escaped_percent() {
             "{zone}: {error:?}"
         );
     }
+}
+
+#[test]
+fn fails_https_with_no_tls_before_the_lookup() {
+    let mut network = Network::new(18);
+    // No name gives `absent` an address, so a lookup would fail the connect.
+    let error = network
+        .send(get("https://absent:8086/ping"))
+        .expect_err("no root is trusted");
+    assert!(matches!(error, Error::NoRoots), "{error:?}");
 }
 
 #[test]
@@ -785,10 +820,7 @@ fn stream_is_vectored_and_writes_a_whole_plain_write() {
         .shards()
         .start(shard("client"), move |_| async move {
             let tcp = net.connect(&config).await.expect("the server listens");
-            let mut stream = super::Stream {
-                tcp,
-                received: std::rc::Rc::default(),
-            };
+            let mut stream = super::Stream::plain(tcp, std::rc::Rc::default());
             assert!(
                 hyper::rt::Write::is_write_vectored(&stream),
                 "hyper copies each body into its buffer unless the stream is vectored"

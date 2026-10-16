@@ -837,6 +837,27 @@ fn opens_a_writer_once_the_node_has_mesh_time_and_a_reader_before() {
 }
 
 #[test]
+fn gives_its_time_once_the_node_has_mesh_time() {
+    unsynced(6, |mut test| async move {
+        let hub = test.hub.clone();
+        let mut waiting = pin!(hub.time());
+        test.clock.sleep(Span::SECOND).await;
+        assert!(poll_once(waiting.as_mut()).is_pending());
+        test.sync().await;
+        let synced = test.clock.now();
+        let time = waiting.await;
+        let waited = test.clock.now() - synced;
+        assert!(
+            waited <= Span::SECOND,
+            "gave {waited} after sync, more than 1 s"
+        );
+        let writer = test.writer("a", &["value"]).await;
+        assert_eq!(time.now(), writer.now());
+        assert_eq!(time.now().nanos(), test.now());
+    });
+}
+
+#[test]
 fn the_time_of_a_writer_reads_mesh_time_also_after_the_writer_drops() {
     run(5, |test| async move {
         let writer = test.writer("a", &["value"]).await;
