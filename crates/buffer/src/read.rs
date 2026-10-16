@@ -250,7 +250,7 @@ fn stored(header: Header, bytes: Block) -> Stored {
         first: header.first,
         len: header.len,
         stored_at: header.stored_at,
-        last: header.last,
+        last: header.stamp(),
         tag: header.tag,
         bytes,
     }

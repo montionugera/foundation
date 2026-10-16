@@ -79,7 +79,7 @@ fn shrink(logs: &mut buffer::bench::Logs, mut commit: u32) -> u32 {
     }
 }
 
-/// S4: each path keeps at most 454 bytes, and room for four paths when there are fewer,
+/// S4: each path keeps at most 422 bytes, and room for four paths when there are fewer,
 /// of which 8 bytes are the room of its place in the queue of laps that wait, taken
 /// when the path is added. [`wait`] checks the bound in a wait. A carry record takes
 /// the tail of each of `paths` paths, and a trim to it leaves each with no run. The
@@ -95,7 +95,7 @@ fn per_path(paths: u32) {
     logs.commit(0);
     let held = ALLOCATOR.held() - before - base;
     let paths = usize::try_from(paths).expect("fits");
-    let bound = 454 * paths.max(4) + 16 * paths;
+    let bound = 422 * paths.max(4) + 16 * paths;
     assert!(
         held <= bound,
         "{held} bytes for {paths} paths, over {bound}"
@@ -108,12 +108,12 @@ fn per_path(paths: u32) {
 /// end of the next lap shrinks the room of 25,256 paths to 4, and the others wait in
 /// the queue, in room that it took when each path was added. Gives the bytes that each
 /// of that commit and the next 3 takes, and checks the S4 bound of each path in the
-/// wait: the bytes held but the room of the runs. Then a read holds the next 16
-/// records, and checks that a path that waited shrinks at a later lap end.
+/// wait: the bytes held after `Logs::new` but the room of the runs. Then a read holds
+/// the next 16 records, and checks that a path that waited shrinks at a later lap end.
 fn wait() -> Vec<isize> {
     let paths = 100_000;
-    let start = ALLOCATOR.held();
     let mut logs = buffer::bench::Logs::new(paths);
+    let start = ALLOCATOR.held();
     for _ in 0..40 {
         logs.trim(1, 16);
     }
@@ -129,7 +129,7 @@ fn wait() -> Vec<isize> {
             let runs = (25_256 * 4 + (100_000 - 25_256) * 32) * RUN;
             let held = ALLOCATOR.held() - start - runs;
             let paths = usize::try_from(paths).expect("fits");
-            let bound = 454 * paths + 16 * paths;
+            let bound = 422 * paths + 16 * paths;
             assert!(held <= bound, "{held} bytes in the wait, over {bound}");
         }
     }
