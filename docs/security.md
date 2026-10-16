@@ -304,8 +304,8 @@ state on `main`.
   reads the documents into definitions, and the influx kind reads the config of each
   `connector` block of kind `influx`. Fuzzed: `config_check`, which only the inputs
   `influx_*` take to the influx kind, through `connector::reader::read`,
-  `connector::http::uri`, `secret::Source::read` (the inputs `influx_token_*`; `ca`
-  takes the same reader), and
+  `connector::http::uri`, `secret::Source::read` (the inputs `influx_token_*`, and
+  `influx_ca_*` and `influx_address_https` for `ca`), and
   `connector_influx::Kind::parse` (#1817).
 - A person or an agent reviews the files and the plan before `apply` (K3). Text
   that shows one thing and reads as another defeats that review. Questions for a
@@ -438,7 +438,9 @@ state on `main`.
   a server of their own, so they can stand in for the InfluxDB server and get the
   token. A `ca` adds to the roots of the node and never replaces them, so it cannot
   make a node trust fewer servers. Over `http`, the token crosses the network in clear,
-  so `plan` refuses a `ca` with an `http` address (INFLUX KIND).
+  with or without a `ca`. `plan` refuses a `ca` with an `http` address, so its user
+  does not think that the token goes under TLS (INFLUX KIND). `Roots::with_pem` reads
+  the text of the `ca`. Fuzzed: `connector_pem`.
 - A join ticket is a secret (BQ11a).
 - Rule for every crate: no secret value in a log, a status channel, an error, or
   plan output.

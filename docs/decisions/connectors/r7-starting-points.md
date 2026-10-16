@@ -86,7 +86,10 @@
   can give that reason (`laptop.architect-2`, 2026-10-16T09:11:38Z:
   https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6212137276). It trusts
   only `http::Config::tls`: a `Tls` with the roots, which `node` reads from the OS, and
-  mesh time. A kind adds a CA with `Roots::with_pem`. A `ca` takes a CA, or a
+  mesh time. A kind adds a CA with `Roots::with_pem`, which skips a UTF-8 byte order
+  mark at the start (`laptop.architect-2`, 2026-10-16T16:17:47Z:
+  https://github.com/synnaxlabs/foundation/pull/2888#issuecomment-6219779608, item 2).
+  A `ca` takes a CA, or a
   self-signed certificate with `CA:FALSE`; a server certificate with `CA:TRUE` gives
   `Tls` with a text that names both fixes.
   This narrows design item 4 of #2702, "A self-signed server goes in `ca`"

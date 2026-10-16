@@ -11,14 +11,18 @@
   the server's certificate at mesh time (`https` in R7 starting points). A `ca` with an
   `http` address is `influx.ca-with-http`, with "the connector has a `ca`, which only an
   `https` address takes" and the fix "Use an `https` address, or remove `ca`": a `ca`
-  there trusts nothing, and its user likely thinks that the token goes under TLS. Each
-  run reads the `ca` at its start, and a TLS failure of a run with a `ca` ends the run
-  with `Error::Retry`, "the write to InfluxDB failed: {error}. Check the ca {source}",
-  so that the next run reads it again. A run with no `ca` retries a TLS failure in the
-  run. Approved by `laptop.architect-2`
+  there trusts nothing, and its user likely thinks that the token goes under TLS. A run
+  reads the `ca` at its start. A TLS failure of a run with a `ca` shows "the write to
+  InfluxDB failed: {error}. Check the ca {source}", and the run reads the `ca` again,
+  with a new client, before the next attempt of the same batch, as it reads the token
+  again after a 401. A run with no `ca` retries a TLS failure in the run. `Error::Tls`
+  also covers a server that closes in the handshake, so such a fault shows "Check the
+  ca" too. Approved by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2888#issuecomment-6219779608,
-  2026-10-16T16:17:47Z), with the skip of a UTF-8 byte order mark at the start of a
-  PEM text. A `ca` that holds no PEM certificate gives `Error::Retry` with "the ca
+  2026-10-16T16:17:47Z) as an end of the run at a TLS failure with a `ca`. The read in
+  the run replaces that end: with no `hold`, the next run does not get the batch in
+  flight again, so a close in the handshake lost a sample (#2888, round 2). A `ca`
+  that holds no PEM certificate gives `Error::Retry` with "the ca
   {source} holds no PEM certificate. Write the CA certificate of the server in PEM", and
   one that does not parse gives "the ca {source} holds a PEM certificate that does not
   parse. Write the CA certificate of the server in PEM". Over `https`, the token does
@@ -35,7 +39,8 @@
   https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6212137276), and
   design item 6 of https://github.com/synnaxlabs/foundation/issues/2702, "A `ca` with
   no certificate in it is `Error::Config`". Lost: `ca` as a setting of `connector`,
-  read for each HTTP kind, since `influx` is the one HTTP kind. Trigger: a second kind
+  read for each HTTP kind, with the read again at a TLS failure, since `influx` is the
+  one HTTP kind. Trigger: a second kind
   that sends `https` (#2894). Lost: a read of the `ca` in `plan`, which finds a bad
   file before a run, since `plan` checks only that a source resolves, and the file can
   change between plan and run. Trigger: a `plan` that reads the value of a secret
