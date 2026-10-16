@@ -465,6 +465,22 @@ mod pattern {
         assert_eq!(names(DEPTH + 1).parse::<Path>().map(|_| ()), Ok(()));
     }
 
+    #[test]
+    fn refuses_more_than_256_stars_and_reads_a_run_as_one() {
+        let stars = |count: usize| format!("**/{}/x", "*a".repeat(count));
+        assert_eq!(stars(256).parse::<Pattern>().map(|_| ()), Ok(()));
+        assert_eq!(stars(257).parse::<Pattern>(), Err(Malformed::Stars));
+        assert_eq!(
+            Malformed::Stars.to_string(),
+            "it has more than 256 `*`, and each costs a search of each name",
+        );
+        let spread = format!("{}/*a*a*a*a*a", vec!["*a*a*a*a"; 63].join("/**/"));
+        assert_eq!(spread.parse::<Pattern>(), Err(Malformed::Stars));
+        let runs = format!("**/**/{}/**", "**a".repeat(256));
+        assert_eq!(runs.parse::<Pattern>().map(|_| ()), Ok(()));
+        assert_eq!(stars(257).parse::<Path>().map(|_| ()), Ok(()));
+    }
+
     proptest! {
         #[test]
         fn matches_as_the_reference(
@@ -878,6 +894,22 @@ mod walk {
         let found = now(walk(&mut Loop, &query)).expect("found");
         assert_eq!(paths(&found), ["a/a/p"]);
         assert_eq!(found.end, End::Done);
+    }
+
+    #[test]
+    fn ends_a_loop_that_a_pattern_of_two_runs_of_stars_reaches() {
+        let query = query("", Scope::Match(pattern("**/a/**")));
+        let found = now(walk(&mut Loop, &query)).expect("found");
+        assert_eq!(paths(&found), ["a/p"]);
+        assert_eq!(found.end, End::Done);
+    }
+
+    #[test]
+    fn finds_only_the_point_that_holds_each_middle_piece_in_turn() {
+        let mut tree = Tree::new(&[point("abxx"), point("xabab")], 10);
+        let query = query("", Scope::Match(pattern("*ab*ab*")));
+        let found = now(walk(&mut tree, &query)).expect("found");
+        assert_eq!(paths(&found), ["xabab"]);
     }
 
     /// A device whose each folder holds the point `p` and then the folder `f`, each

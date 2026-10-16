@@ -27,6 +27,10 @@ pub const VISITS: usize = 10_000;
 /// The most folders that a pattern holds open at one time, its start with them.
 pub const DEPTH: usize = 64;
 
+/// The most `*` in the names of a pattern, since each is a search of each name that a
+/// walk tests.
+pub const STARS: usize = 256;
+
 /// One browse's inputs: the connector block as the files give it, and the node's
 /// network, clock, randomness, and secrets. It is not `Send`.
 #[derive(Debug)]
@@ -525,7 +529,8 @@ impl fmt::Debug for Path {
 /// A pattern of paths: `/` splits names, `**` alone between two `/` matches any
 /// number of names (none too), `*` matches any text in one name, and `\` takes the
 /// next character as it is. A run of `**` names is one, and a pattern holds at most
-/// [`DEPTH`] other names.
+/// [`DEPTH`] other names. A run of `*` in a name is one, and a pattern holds at most
+/// [`STARS`] in its names other than `**`.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Pattern {
     segments: Vec<Segment>,
@@ -639,18 +644,25 @@ impl Pattern {
 impl FromStr for Pattern {
     type Err = Malformed;
 
-    /// Reads a pattern. A run of `**` names is one.
+    /// Reads a pattern. A run of `**` names is one, and a run of `*` in a name is one.
     ///
     /// # Errors
     ///
-    /// [`Malformed`] when the text is not a pattern, or holds more than [`DEPTH`]
-    /// names other than `**`.
+    /// [`Malformed`] when the text is not a pattern, holds more than [`DEPTH`] names
+    /// other than `**`, or more than [`STARS`] `*` in those names.
     fn from_str(text: &str) -> Result<Self, Malformed> {
         let mut segments: Vec<Segment> =
             split(text)?.into_iter().map(segment).collect();
         segments.dedup_by(|a, b| *a == Segment::Any && *b == Segment::Any);
-        if segments.iter().filter(|s| **s != Segment::Any).count() > DEPTH {
+        let globs = segments.iter().filter_map(|segment| match segment {
+            Segment::Any => None,
+            Segment::Name(glob) => Some(glob),
+        });
+        if globs.clone().count() > DEPTH {
             return Err(Malformed::Deep);
+        }
+        if globs.map(|glob| glob.pieces.len() - 1).sum::<usize>() > STARS {
+            return Err(Malformed::Stars);
         }
         Ok(Self { segments })
     }
@@ -763,6 +775,9 @@ pub enum Malformed {
     /// A pattern holds more than [`DEPTH`] names other than `**`, so a walk can match
     /// no path. Only a pattern gives it.
     Deep,
+    /// A pattern holds more than [`STARS`] `*` in its names other than `**`, a run of
+    /// `*` as one. Only a pattern gives it.
+    Stars,
 }
 
 impl fmt::Display for Malformed {
@@ -773,6 +788,10 @@ impl fmt::Display for Malformed {
             Self::Deep => write!(
                 f,
                 "it has more than {DEPTH} names, and a browse finds no path that long"
+            ),
+            Self::Stars => write!(
+                f,
+                "it has more than {STARS} `*`, and each costs a search of each name"
             ),
         }
     }
