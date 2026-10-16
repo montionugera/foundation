@@ -9,8 +9,9 @@
 //! - `first write`: the first `Writer::write` of a round, after the round before it
 //!   committed.
 //! - `write`, the control: each later `Writer::write` of a round but the last. The
-//!   draft of each write is ready before it is timed, and each timed write is a call
-//!   out of line, so the layout of the bench does not move its figure.
+//!   draft of each write is ready before it is timed, and the timed window, both clock
+//!   reads and the write, is one call out of line, so the frame of the async bench
+//!   does not change its instructions.
 //! - `write wake`: the last `Writer::write` of a round. The latest reader waits for it
 //!   with a counting waker, which the write wakes.
 //! - `latest next`: one poll of a latest reader's `next` right after each write, which
@@ -162,9 +163,11 @@ async fn bench(node: sim::node::Node, tasks: env::tasks::Tasks) -> (Line, Vec<Li
                 _ if frame == FRAMES - 1 => &mut *wake,
                 _ => &mut *control,
             };
-            let (lost, figures) =
-                table::timed(&ALLOCATOR, || write(&mut writer, draft));
-            assert!(!lost, "the home applies the frame");
+            let (outcome, figures) = timed_write(&mut writer, draft);
+            assert!(
+                matches!(outcome, Outcome::Applied { .. }),
+                "the home applies the frame: {outcome:?}"
+            );
             line.add(figures);
             take_and_ack(&mut latest_reader, [latest, latest_ack], |_| ());
         }
@@ -185,6 +188,10 @@ async fn bench(node: sim::node::Node, tasks: env::tasks::Tasks) -> (Line, Vec<Li
 /// Takes and acks the `FRAMES` frames that wait for `reader`, a complete reader, then
 /// polls it `FRAMES` times more, and adds the figures to the lines of `complete next`,
 /// `complete gap`, `complete ack`, `complete grant`, and `complete wait`.
+///
+/// # Panics
+///
+/// When a frame has a gap.
 fn drain(reader: &mut Reader, [next, gap, ack, grant, wait]: &mut [Line; 5]) {
     for _ in 0..FRAMES {
         take_and_ack(reader, [next, ack], |received| {
@@ -206,8 +213,11 @@ fn lose(writer: &mut Writer, latest: &mut Reader, mut stamp: i64) -> Line {
         for _ in 0..FRAMES {
             let draft = common::draft(writer, stamp);
             stamp += 1;
-            let (lost, figures) = table::timed(&ALLOCATOR, || write(writer, draft));
-            assert!(lost, "the ring has no room for the frame");
+            let (outcome, figures) = timed_write(writer, draft);
+            assert!(
+                matches!(outcome, Outcome::Lost { .. }),
+                "the ring has no room for the frame: {outcome:?}"
+            );
             line.add(figures);
             take(latest, |_| ());
         }
@@ -231,7 +241,7 @@ async fn fill(
         for _ in 0..FRAMES {
             let draft = common::draft(writer, *stamp);
             *stamp += 1;
-            if write(writer, draft) {
+            if let Outcome::Lost { .. } = write(writer, draft) {
                 return;
             }
         }
@@ -282,18 +292,38 @@ fn take_and_ack(
     ack.add(table::timed(&ALLOCATOR, || reader.ack(position)).1);
 }
 
-/// Writes `draft` as a live frame, and gives whether the ring had no room for it. It is
-/// out of line, so the layout of the async `bench` does not move the figure of a write.
+/// Writes `draft` as a live frame, and gives its outcome.
 ///
 /// # Panics
 ///
-/// When the home neither applies nor loses the frame.
+/// When the write fails or gives other than one outcome.
+fn write(writer: &mut Writer, draft: Draft) -> Outcome {
+    outcome(writer.write(Label::Path(Path::Live), draft))
+}
+
+/// Writes `draft` as [`write`] does, and gives its outcome with the ns and allocations
+/// of the write. Both clock reads and the write are one call out of line, so the frame
+/// of the async `bench` does not change their instructions.
+///
+/// # Panics
+///
+/// When the write fails or gives other than one outcome.
 #[inline(never)]
-fn write(writer: &mut Writer, draft: Draft) -> bool {
-    match writer.write(Label::Path(Path::Live), draft) {
-        Ok([Outcome::Applied { .. }]) => false,
-        Ok([Outcome::Lost { .. }]) => true,
-        written => panic!("the home applies or loses the frame: {written:?}"),
+fn timed_write(writer: &mut Writer, draft: Draft) -> (Outcome, (u64, u64)) {
+    let (written, figures) =
+        table::timed(&ALLOCATOR, || writer.write(Label::Path(Path::Live), draft));
+    (outcome(written), figures)
+}
+
+/// The one outcome of a write.
+///
+/// # Panics
+///
+/// When the write fails or gives other than one outcome.
+fn outcome(written: Result<&[Outcome], writer::Failure>) -> Outcome {
+    match written {
+        Ok([outcome]) => outcome.clone(),
+        written => panic!("the write gives one outcome: {written:?}"),
     }
 }
 
