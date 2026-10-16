@@ -11,6 +11,7 @@ use std::fmt;
 
 pub mod device;
 pub mod pdu;
+pub mod poll;
 pub mod rtu;
 pub mod tcp;
 mod wait;
