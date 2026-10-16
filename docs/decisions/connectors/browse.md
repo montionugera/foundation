@@ -88,7 +88,9 @@
   checks: `laptop.architect-2`, 05:23 UTC
   (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208716424). The
   `types::name` sentence: `laptop.architect`, 05:20 UTC
-  (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208688678).
+  (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208688678). A `Path`
+  that shares the path of its folder: `laptop.architect-2`, 05:30 UTC
+  (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208798023).
   `VISITS`: the walk's own time, median of 100 on box1 in release, is 1.4 ms over a flat
   tree of 9 999 points and 4.7 ms over a chain of 63 folders of 150 points each; PR 5 of
   the PR list measures the cost of the OPC UA sim server. The two triggers come from the
