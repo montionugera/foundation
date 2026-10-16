@@ -5,14 +5,15 @@
   complete reader opens at its last ack within its hold, else at the live tail, and
   ends `Behind` when its position is below the frames that memory keeps. Until #274
   reads from disk, it stays `Behind` at each open within its hold. Its close starts
-  its hold. A hold that ended goes at the next named complete open of its index, until
-  #274 ends it at `Readers::deadline`. An open of the same key takes the old session
-  over, and `reader::Opened::replaced` names it. `home::reader` re-exports
+  its hold. A hold that ended goes at `Readers::deadline` (Amended (#274 A)). An open
+  of the same key takes the old session over, and `reader::Opened::replaced` names it.
+  `home::reader` re-exports
   `delivery::{Error, Position, named}`, so `hub` does not depend on `delivery`
   (`laptop.architect`, 2026-10-08T11:12:45Z:
   https://github.com/synnaxlabs/foundation/pull/1863#issuecomment-6058607367).
-  `home` drops the position records of `delivery` until #274 appends them to the index
-  log, so a reopen after a restart starts at the live tail. Lost: one open that takes a
+  Superseded by Amended (#274 A): `home` appends the position records to the index
+  log, and a reopen after a restart resumes at the last recorded ack. Lost: one open
+  that takes a
   `delivery::Reader`, because only a named open can fail. Decided by `laptop.architect`
   (2026-10-08T10:01:19Z:
   https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6057419592). The
@@ -22,18 +23,26 @@
   Amended (#274 B1): a named complete reader that opens within its hold reads the
   frames after its position from disk, then the live ones. It ends `Behind` only when
   it reaches a seq that the buffer lost for no room, also at each later open within its
-  hold. The position records and `Readers::deadline` stay as above until later parts
-  of #274 (`laptop.architect`, 2026-10-15T16:29:36Z:
+  hold (`laptop.architect`, 2026-10-15T16:29:36Z:
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6197039098).
   Amended (#274 A): a home appends the record of each named complete reader of an index,
   open or held, as one entry of tag 2 on its live path, version 1. It appends the entry
-  after a named open, a close, and a takeover, and at a tick each second when a record
-  changed: an ack that moved a named position, or a hold that ended at the mesh
-  midpoint. `Shard::open` keeps the newest entry of each index, and a carry with mesh
-  time restores it. A session open at the crash counts as closed at the restore, so a
-  carry before mesh time waits for it. A shed appends an entry with no record. An entry
-  that finds no room or no block stays due for the next tick, so a restart before it
-  resumes at an older position: a repeat, not a loss. One entry holds every record of
+  after a named open, a close, and a takeover, and at a tick when a record changed: an
+  ack that moved a named position, or a hold that ended at the mesh midpoint. The tick
+  comes each second while a named complete reader is open, or records changed or wait
+  for mesh time; else when the next hold ends. `Shard::open` keeps the newest entry of
+  each index, and a carry with mesh time restores it. A session open at the crash counts
+  as closed at the restore, so a carry before mesh time waits for it. A shed appends an
+  entry with no record. With no mesh time or no room for it, a restart restores the
+  holds; a later carry in the same run does not. A named complete open that adds a
+  record appends its entry before it opens. When the entry finds no block or no room,
+  it opens nothing and gives `Unopened::Unrecorded`, and `hub` gives
+  `reader::Error::Unrecorded`, so a restart never loses the frames of a first open.
+  Another entry that finds no room or no block stays due for the next tick, so a
+  restart before it resumes at an older position: a repeat, not a loss. Trimming must
+  keep the newest named entry of each index (#406). Until it does, a trim (STORE TRIM)
+  can free that entry, and a restart resumes the readers of its index at the live tail,
+  as HANDOFF RECORD states for a handoff. One entry holds every record of
   its index, at most `min(Buffer::block_max, Layout::entry_max)` bytes: 546 bytes for a
   record of the longest names, so at least 7 records. A named complete open that adds a
   record past it gives `Unopened::Full`, and `hub` gives `reader::Error::Full`. An open
