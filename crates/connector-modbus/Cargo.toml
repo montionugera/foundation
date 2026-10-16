@@ -24,5 +24,10 @@ name = "poll"
 harness = false
 test = true
 
+[[bench]]
+name = "command"
+harness = false
+test = true
+
 [lints]
 workspace = true

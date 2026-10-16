@@ -1,12 +1,13 @@
-//! The decode of the values in a reply allocates nothing, for each table, each width
-//! of a value, and each order.
+//! The decode of the values in a reply and the request of a command value allocate
+//! nothing, for each table, each width of a value, and each order.
 //! The count covers each thread, so this binary has no test harness.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
+use connector_modbus::command::Write;
 use connector_modbus::pdu::Table;
 use connector_modbus::poll::{self, Order, Read};
-use types::sample::{Scalar, Type};
+use types::sample::{Scalar, Type, Value};
 
 #[global_allocator]
 static ALLOCATOR: counting::Allocator = counting::Allocator::new();
@@ -14,6 +15,7 @@ static ALLOCATOR: counting::Allocator = counting::Allocator::new();
 fn main() {
     the_count_holds_the_allocations_of_groups();
     a_decode_of_values_allocates_nothing();
+    a_request_of_a_command_value_allocates_nothing();
 }
 
 fn reads() -> Vec<Read> {
@@ -55,6 +57,25 @@ fn a_decode_of_values_allocates_nothing() {
             });
             assert_eq!(sum, group.reads().sum::<usize>(), "the reads of the group");
             assert_eq!(allocations, 0, "the values of {:?}", group.request());
+        }
+    }
+}
+
+fn a_request_of_a_command_value_allocates_nothing() {
+    let values = [
+        (Table::Coils, Value::Bool(true)),
+        (Table::HoldingRegisters, Value::U16(7)),
+        (Table::HoldingRegisters, Value::F32(1.5)),
+        (Table::HoldingRegisters, Value::I64(-3)),
+    ];
+    for order in [Order::Big, Order::Little] {
+        for (table, value) in values {
+            let sample = Type::Scalar(value.scalar());
+            let mut write = Write::new(table, 0, sample, order).expect("a valid write");
+            let ((), allocations) = ALLOCATOR.count(|| {
+                write.request(value);
+            });
+            assert_eq!(allocations, 0, "the request of {value:?}");
         }
     }
 }
