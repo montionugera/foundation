@@ -152,6 +152,22 @@ mod tests {
     }
 
     #[test]
+    fn reads_no_held_entry_once_each_got_a_series_after_the_gap() {
+        let read = std::cell::Cell::new(0);
+        let counted = |held: &'static [usize]| {
+            held.iter().copied().inspect(|_| read.set(read.get() + 1))
+        };
+        let mut lost = Lost::new(2);
+        lost.pass(0..0, counted(&[0, 1]));
+        assert_eq!(read.get(), 0);
+        lost.pass(1..3, counted(&[0]));
+        lost.pass(0..0, counted(&[1]));
+        assert_eq!(read.get(), 2);
+        lost.pass(0..0, counted(&[0, 1]));
+        assert_eq!(read.get(), 2);
+    }
+
+    #[test]
     #[should_panic(expected = "index out of bounds")]
     fn panics_on_an_entry_past_the_last() {
         let _lost = Lost::new(2).get(2);
