@@ -44,14 +44,14 @@
   design item 6 of https://github.com/synnaxlabs/foundation/issues/2702, "A `ca` with
   no certificate in it is `Error::Config`". Lost: `ca` as a setting of `connector`,
   read for each HTTP kind, with the read again at a TLS failure, since `influx` is the
-  one HTTP kind. Trigger: a second kind that sends `https` (#2894). Lost: a read of
-  the `ca` in `plan`, which finds a bad file before a run, since `plan` checks only
-  that a source resolves, and the file can change between plan and run. Trigger: a
-  `plan` that reads the value of a secret source. The kind
-  also refuses a path other than empty or `/`, and a query, at the value: a path (a
-  proxy prefix) can come later as a compatible change, and a refusal cannot. Each
-  diagnostic of a kind names its document `connector::kind::NOUN` ("the connector"), as
-  `reader::read` does. Decided by `laptop.architect-2` on #1794
+  one HTTP kind. Trigger: a second kind that sends `https` (#2894). Lost: a read of the
+  `ca` in `plan`, which finds a bad file before a run, since `plan` checks only that a
+  source resolves, and the file can change between plan and run. Trigger: a `plan` that
+  reads the value of a secret source. The kind also refuses a path other than empty or
+  `/`, and a query, at the value: a path (a proxy prefix) can come later as a compatible
+  change, and a refusal cannot. Each diagnostic of a kind names its document
+  `connector::kind::NOUN` ("the connector"), as `reader::read` does. Decided by
+  `laptop.architect-2` on #1794
   (https://github.com/synnaxlabs/foundation/pull/1794#issuecomment-6052684931,
   2026-10-08 05:03 UTC). The code of that refusal is `influx.bad-address`. Proposed by
   `connector` as its address code
