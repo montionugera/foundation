@@ -304,7 +304,8 @@ state on `main`.
   reads the documents into definitions, and the influx kind reads the config of each
   `connector` block of kind `influx`. Fuzzed: `config_check`, which only the inputs
   `influx_*` take to the influx kind, through `connector::reader::read`,
-  `connector::http::uri`, `secret::Source::read` (the inputs `influx_token_*`), and
+  `connector::http::uri`, `secret::Source::read` (the inputs `influx_token_*`; `ca`
+  takes the same reader), and
   `connector_influx::Kind::parse` (#1817).
 - A person or an agent reviews the files and the plan before `apply` (K3). Text
   that shows one thing and reads as another defeats that review. Questions for a

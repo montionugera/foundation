@@ -4,15 +4,21 @@
   refuses before a run. `discover` gives no documents. Decided by `laptop.architect-2`
   on #1153
   (https://github.com/synnaxlabs/foundation/issues/1153#issuecomment-6051297152,
-  2026-10-08 03:02 UTC). Until the kind takes a CA (#2702), it also refuses the scheme
-  `https`, with `influx.bad-address` and the text "the scheme of the URI is not http"
-  (`laptop.architect-2`, 2026-10-16T07:51:33Z:
-  https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210764044,
-  item 5). The scheme is a rule of the influx address, not of the shared `uri`, so
-  the code is not `connector.bad-uri` (`laptop.architect-2`, 2026-10-16T09:11:38Z:
-  https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6212137276). The kind
-  also refuses a path other than empty or `/`, and a query, at the value: a path (a
-  proxy prefix) can come later as a compatible change, and a refusal cannot. Each
+  2026-10-08 03:02 UTC). The address takes the scheme `http` or `https` (#2702). An
+  optional `ca` is a source of a secret (SECRET SOURCES) that holds PEM certificates, so
+  `plan` refuses a `ca` with no value (`secret.unresolved`), as it does a `token`. An
+  `https` run trusts the roots of the node and each certificate of the `ca`, and checks
+  the server's certificate at mesh time (`https` in R7 starting points). `run` reads the
+  `ca` once, at its start, and only for an `https` address. A `ca` that holds no PEM
+  certificate gives `Error::Retry` with "the ca {source} holds no PEM certificate. Write
+  the CA certificate of the server in PEM", and one that does not parse gives "the ca
+  {source} holds a PEM certificate that does not parse. Write the CA certificate of the
+  server in PEM". Over `https`, the token does not cross the network in clear. Planned
+  on #2702
+  (https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6218838848,
+  2026-10-16T15:28:25Z). The kind also refuses a path other than empty or `/`, and a
+  query, at the value: a path (a proxy prefix) can come later as a compatible change,
+  and a refusal cannot. Each
   diagnostic of a kind names its document `connector::kind::NOUN` ("the connector"), as
   `reader::read` does. Decided by
   `laptop.architect-2` on #1794

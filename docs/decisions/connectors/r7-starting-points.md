@@ -104,7 +104,7 @@
   a hub; a TLS driver by hand inside the stream, which repeats what `tokio-rustls`
   does and which #1248 needs again in another layer; and trust of an end certificate
   that is equal to a root, which is a later step on #2702 when a user's server cannot
-  get a new certificate. Until the influx kind takes a `ca`, its plan refuses `https`.
+  get a new certificate. The influx kind reads its CA from `ca` (INFLUX KIND).
   The roots are `node::Config::roots`, an `os::Roots`, and main gives `os::roots()`:
   the certificate files on Linux and the keychain on macOS. When `SSL_CERT_FILE` is
   set, or `SSL_CERT_DIR` holds a path that is not empty, it reads only that file and
