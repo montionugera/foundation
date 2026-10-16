@@ -9,10 +9,10 @@ use std::task::{Context, Poll, ready};
 
 use env::net::Tcp;
 use hyper::rt::{Read, ReadBufCursor, Write};
+use rustls::ClientConfig;
 use rustls::pki_types::ServerName;
-use rustls::{ClientConfig, ServerConfig};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream};
+use tokio_rustls::{TlsConnector, TlsStream};
 
 /// The most bytes one read copies into `hyper`'s buffer.
 const READ_MAX: usize = 8192;
@@ -70,9 +70,11 @@ impl Stream {
     #[cfg(any(test, feature = "sim"))]
     pub(super) async fn server(
         tcp: Tcp,
-        config: Arc<ServerConfig>,
+        config: Arc<rustls::ServerConfig>,
     ) -> io::Result<Self> {
-        let tls = TlsAcceptor::from(config).accept(Adapter(tcp)).await?;
+        let tls = tokio_rustls::TlsAcceptor::from(config)
+            .accept(Adapter(tcp))
+            .await?;
         Ok(Self {
             io: Io::Tls(Box::new(tls.into())),
             received: Rc::default(),
