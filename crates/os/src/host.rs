@@ -26,10 +26,12 @@ pub(crate) enum Handle {
 /// # Errors
 ///
 /// 22 (`EINVAL`) for a file that is neither a regular file nor a directory, else the
-/// error of the stat or the open.
+/// error of the stat or the open. A link that another writer changes between the
+/// stat and the open gives the error of the open of the file that it then names, and
+/// the open of a device there runs its driver.
 pub(crate) fn open(path: &Path) -> Result<Handle, Errno> {
     // The check before the open keeps the open of a socket from giving `ENXIO`, and
-    // that of a device from running its driver. The check after it covers a swap.
+    // that of a device from running its driver. The check after it refuses a swap.
     kind(&fs::stat(path)?)?;
     let fd = fs::open(path, READ, fs::Mode::empty())?;
     let stat = fs::fstat(&fd)?;

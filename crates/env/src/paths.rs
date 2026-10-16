@@ -129,7 +129,9 @@ impl Paths {
     /// [`Error::NotFound`] when nothing is at `path`, [`Error::Outside`] past the
     /// limits of [`Paths::within`], [`Error::Io`] 22 when `path` is a file that is
     /// neither a regular file nor a directory, such as a FIFO or a device, else
-    /// [`Error::Io`].
+    /// [`Error::Io`]. When another writer changes a link in `path` during the call, it
+    /// gives the error of the open of the file that the link then names, and opens that
+    /// file, also a device.
     ///
     /// ```
     /// use std::path::{Path, PathBuf};
