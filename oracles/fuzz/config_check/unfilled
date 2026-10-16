@@ -1,0 +1,13 @@
+channel "edge.time" {
+  kind = "index"
+}
+channel "edge.temp" {
+  data_type = fill("the sample type")
+  index = "edge.time"
+  unit = ["a", { b = fill("the unit") }, secret(fill("c"))]
+}
+channel "edge.flow" {
+  data_type = fill()
+  index = "edge.time"
+  unit = fill("a", "b")
+}
