@@ -107,6 +107,13 @@ pub(crate) struct Client {
         expect(dead_code, reason = "the opcua kind of #2705 is the first user")
     )]
     supertypes: Map<Node, Option<Node>>,
+    /// The limits of the server on a Browse and a Translate, once
+    /// [`Client::describe`] reads them.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the opcua kind of #2705 is the first user")
+    )]
+    limits: Option<browse::Limits>,
     /// Drops after `raw` is deleted, as it holds the loop of the client.
     connections: Manager,
 }
@@ -252,6 +259,7 @@ impl Client {
             per_read: None,
             key: Rc::default(),
             supertypes: Map::default(),
+            limits: None,
             connections,
         }
     }
@@ -298,8 +306,7 @@ impl Client {
         Ok(())
     }
 
-    /// Reads the `MaxNodesPerRead` of the server: a `UInt32` above 0, else none, also
-    /// for a status that is not Good, as a server can lack the node.
+    /// Reads the `MaxNodesPerRead` of the server, as [`limit`] gives it.
     async fn per_read(&mut self) -> Result<Option<NonZeroUsize>, Status> {
         let node = Node {
             namespace: 0,
@@ -308,12 +315,7 @@ impl Client {
         let nodes = self
             .nodes(&[node])
             .expect("invariant: a read of one node by number fits one message");
-        Ok(match self.read(&nodes).await?[0] {
-            Ok(Value::U32(most)) => NonZeroUsize::new(
-                usize::try_from(most).expect("invariant: a usize holds a u32"),
-            ),
-            _ => None,
-        })
+        Ok(limit(&self.read(&nodes).await?[0]))
     }
 
     /// Builds the Read requests of the Value of each node of `nodes`, for this client
@@ -615,6 +617,17 @@ pub(crate) struct Large {
     pub(crate) bytes: usize,
     /// The most bytes of the body of one message.
     pub(crate) most: usize,
+}
+
+/// Gives the limit of a server that `value`, a value of an operation limit, gives: a
+/// `UInt32` above 0, else none, also for a fault, as a server can lack the node.
+fn limit(value: &Result<Value, Fault>) -> Option<NonZeroUsize> {
+    match value {
+        Ok(Value::U32(most)) => NonZeroUsize::new(
+            usize::try_from(*most).expect("invariant: a usize holds a u32"),
+        ),
+        _ => None,
+    }
 }
 
 /// Gives the most bytes of the body of one message of a Read in chunks of `buffer`

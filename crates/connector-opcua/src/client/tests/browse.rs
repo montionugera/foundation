@@ -23,6 +23,8 @@ const ENUMERATION: Node = ns0(29);
 
 const ROOT: Node = ns1(7000);
 
+const CEFACT: &CStr = c"http://www.opcfoundation.org/UA/units/un/cefact";
+
 const fn ns0(id: u32) -> Node {
     Node {
         namespace: 0,
@@ -44,12 +46,19 @@ fn named(name: &str) -> Node {
     }
 }
 
-fn reference(node: Option<Node>, name: &str, display: &str, class: Class) -> Reference {
+fn reference(
+    node: Option<Node>,
+    kind: u32,
+    name: &str,
+    display: &str,
+    class: Class,
+) -> Reference {
     Reference {
         node,
         name: name.to_owned(),
         display: display.to_owned(),
         class,
+        kind: Some(ns0(kind)),
     }
 }
 
@@ -94,8 +103,8 @@ fn pages(
 }
 
 /// A browse gives each forward hierarchical reference of an Object, a Variable, or a
-/// View, with its names and class, and no reference of another kind or direction. A
-/// GUID node gives no node.
+/// View, with its type, names, and class, and no reference of another kind or
+/// direction. A GUID node gives no node.
 #[test]
 fn a_browse_gives_each_hierarchical_reference_with_its_names_and_class() {
     let pages = pages(0, |server| {
@@ -122,11 +131,23 @@ fn a_browse_gives_each_hierarchical_reference_with_its_names_and_class() {
     assert_eq!(
         references,
         [
-            reference(Some(ns1(7001)), "a", "The A", Class::Object),
-            reference(None, "guid", "guid", Class::Object),
-            reference(Some(ns1(7003)), "prop", "prop", Class::Variable),
-            reference(Some(named("s;=\u{e9}")), "speed", "speed", Class::Variable),
-            reference(Some(ns1(7002)), "view", "view", Class::View),
+            reference(Some(ns1(7001)), ORGANIZES, "a", "The A", Class::Object),
+            reference(None, ORGANIZES, "guid", "guid", Class::Object),
+            reference(
+                Some(ns1(7003)),
+                HAS_PROPERTY,
+                "prop",
+                "prop",
+                Class::Variable
+            ),
+            reference(
+                Some(named("s;=\u{e9}")),
+                HAS_COMPONENT,
+                "speed",
+                "speed",
+                Class::Variable
+            ),
+            reference(Some(ns1(7002)), ORGANIZES, "view", "view", Class::View),
         ]
     );
 }
@@ -245,29 +266,56 @@ fn describe_gives_the_base_rank_and_access_of_each_variable() {
     );
 }
 
-/// The client keeps the supertype of each data type that it browsed: after the
-/// server drops a supertype, the next describe gives the same base.
+/// Adds [`ROOT`], and under it a variable of each of `count` new data types, each
+/// under its own new parent type under Double. Gives the variables.
+fn deep(server: &Server, count: u32) -> Vec<Node> {
+    server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
+    server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
+    (0..count)
+        .map(|index| {
+            let (parent, data_type, node) =
+                (ns1(7100 + index), ns1(7150 + index), ns1(7200 + index));
+            server.add_data_type(&parent, &DOUBLE, c"Parent");
+            server.add_data_type(&data_type, &parent, c"Child");
+            server.add_variable(&node, &ROOT, HAS_COMPONENT, c"v", &data_type, -1, 3);
+            node
+        })
+        .collect()
+}
+
+/// A walk sends one Browse for each step, for the types of all the nodes of a call.
+/// The client keeps the supertype of each data type that it browsed, so the next
+/// describe sends no Browse, and gives the same base after the server drops a
+/// supertype.
 #[test]
-fn describe_browses_each_data_type_once() {
-    let (bases, _) = run(0, async |node| {
+fn describe_browses_each_step_once_and_each_data_type_once() {
+    let (out, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
-            let nodes = variables(peer.server);
+            let nodes = deep(peer.server, 3);
+            let browses = peer.server.count_browses();
             let mut client = peer.connected().await;
-            let first = client.describe(&nodes[1..2]).await;
+            let first = client.describe(&nodes).await;
+            let after_first = browses.get();
             peer.server
-                .delete_reference(&DOUBLE, HAS_SUBTYPE, &ns1(7101));
+                .delete_reference(&DOUBLE, HAS_SUBTYPE, &ns1(7100));
+            let again = client.describe(&nodes).await;
+            let after_again = browses.get();
             let mut other = peer.connected().await;
-            let fresh = other.describe(&nodes[1..2]).await;
-            let again = client.describe(&nodes[1..2]).await;
-            [first, fresh, again].map(|out| out.map(|d| d[0].base))
+            let fresh = other.describe(&nodes[..1]).await;
+            let bases = [first, again, fresh].map(|out| {
+                out.map(|all| all.into_iter().map(|d| d.base).collect::<Vec<_>>())
+            });
+            (bases, after_first, after_again)
         })
         .await
     });
-    assert_eq!(bases, [Ok(Some(11)), Ok(None), Ok(Some(11))]);
+    let double = Ok(vec![Some(11); 3]);
+    assert_eq!(out, ([double.clone(), double, Ok(vec![None])], 2, 2));
 }
 
 /// The unit of each variable with an `EngineeringUnits` property, and none for one
-/// with none or with a value of another type.
+/// with none. The code is `None` for a `unitId` that is not a code and for a
+/// `namespaceUri` that is not that of UN/CEFACT, with the text kept.
 #[test]
 fn describe_gives_the_unit_of_each_variable() {
     let (units, _) = run(0, async |node| {
@@ -275,14 +323,24 @@ fn describe_gives_the_unit_of_each_variable() {
             let server = peer.server;
             server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
             server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
-            for index in 0..4 {
+            for index in 0..5 {
                 let node = ns1(7200 + index);
                 server.add_variable(&node, &ROOT, HAS_COMPONENT, c"v", &DOUBLE, -1, 3);
             }
-            server.add_unit(&ns1(7300), &ns1(7200), c"\xc2\xb0C", 0x0043_454C);
-            server.add_unit(&ns1(7302), &ns1(7202), c"", -1);
-            server.add_unit(&ns1(7303), &ns1(7203), c"rpm", 0x0001_0000);
-            let nodes: Vec<Node> = (0..4).map(|index| ns1(7200 + index)).collect();
+            let unit = |index: u32, uri, text, code| {
+                server.add_unit(
+                    &ns1(7300 + index),
+                    &ns1(7200 + index),
+                    uri,
+                    text,
+                    code,
+                );
+            };
+            unit(0, CEFACT, c"\xc2\xb0C", 0x0043_454C);
+            unit(2, CEFACT, c"", -1);
+            unit(3, CEFACT, c"rpm", 0x0001_0000);
+            unit(4, c"urn:other", c"deg", 0x0043_454C);
+            let nodes: Vec<Node> = (0..5).map(|index| ns1(7200 + index)).collect();
             let mut client = peer.connected().await;
             let out = client.describe(&nodes).await;
             out.map(|all| all.into_iter().map(|d| d.unit).collect::<Vec<_>>())
@@ -305,24 +363,29 @@ fn describe_gives_the_unit_of_each_variable() {
                 text: Some("rpm".to_owned()),
                 code: None,
             }),
+            Some(Unit {
+                text: Some("deg".to_owned()),
+                code: None,
+            }),
         ])
     );
 }
 
-/// A server whose `MaxNodesPerRead` is 6 refuses a Read of the 3 facts of 5 nodes,
-/// so describe sends them in Reads of 2 nodes and gives the same descriptions.
+/// A server whose `MaxNodesPerRead` is 4 refuses a Read of the 3 facts of 5 nodes
+/// and of their 5 units, so describe sends the facts in Reads of 1 node and the units
+/// in Reads of 4, and gives the same descriptions.
 #[test]
 fn describe_splits_by_the_max_nodes_per_read_of_the_server() {
     let (descriptions, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let server = peer.server;
-            server.set_per_read(6);
+            server.set_per_read(4);
             server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
             server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
             let nodes: Vec<Node> = (0..5).map(|index| ns1(7200 + index)).collect();
             for (index, node) in (0..).zip(&nodes) {
                 server.add_variable(node, &ROOT, HAS_COMPONENT, c"v", &DOUBLE, -1, 3);
-                server.add_unit(&ns1(7300 + index), node, c"m", 0x004D_5452);
+                server.add_unit(&ns1(7300 + index), node, CEFACT, c"m", 0x004D_5452);
             }
             let mut client = peer.connected().await;
             client.describe(&nodes).await
@@ -337,6 +400,36 @@ fn describe_splits_by_the_max_nodes_per_read_of_the_server() {
         ..described(Some(11), -1, 3)
     };
     assert_eq!(descriptions, Ok((0..5).map(|_| metre()).collect()));
+}
+
+/// A server whose `MaxNodesPerBrowse` and `MaxNodesPerTranslateBrowsePathsToNodeIds`
+/// are 2 refuses a Browse or a Translate of 5 nodes, so describe sends 3 of each and
+/// gives the same descriptions.
+#[test]
+fn describe_splits_by_the_max_nodes_per_browse_and_translate_of_the_server() {
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let server = peer.server;
+            server.set_per_browse(2, 2);
+            let nodes = deep(server, 5);
+            for (index, node) in (0..).zip(&nodes) {
+                server.add_unit(&ns1(7300 + index), node, CEFACT, c"m", 0x004D_5452);
+            }
+            let browses = server.count_browses();
+            let mut client = peer.connected().await;
+            let descriptions = client.describe(&nodes).await;
+            (descriptions, browses.get())
+        })
+        .await
+    });
+    let metre = || Description {
+        unit: Some(Unit {
+            text: Some("m".to_owned()),
+            code: Some("MTR".to_owned()),
+        }),
+        ..described(Some(11), -1, 3)
+    };
+    assert_eq!(out, (Ok((0..5).map(|_| metre()).collect()), 6));
 }
 
 /// On a server with a `MaxMessageSize` of 8192 bytes, a Read of the facts of 3 nodes
@@ -448,17 +541,25 @@ fn a_walk_gives_each_built_in_type_and_none_for_each_abstract_type() {
 }
 
 #[test]
-fn a_unit_code_that_is_not_ascii_letters_or_digits_is_none() {
-    assert_eq!(code_of(-1), None);
-    assert_eq!(code_of(0), None);
-    assert_eq!(code_of(0x0043_2D4C), None);
-    assert_eq!(code_of(0x4345_4C4D), Some("CELM".to_owned()));
+fn a_unit_code_that_is_not_2_or_3_capital_letters_or_digits_is_none() {
+    assert_eq!(code_of(0x5031), Some("P1".to_owned()));
+    for id in [
+        -1,
+        0,
+        0x0043_2D4C,
+        0x4345_4C4D,
+        0x43,
+        0x0063_656C,
+        0x0043_656C,
+    ] {
+        assert_eq!(code_of(id), None, "{id:#x}");
+    }
 }
 
 proptest! {
     #[test]
-    fn the_code_of_each_unit_id_of_letters_or_digits_is_its_text(
-        code in "[A-Z0-9]{1,3}",
+    fn the_code_of_each_unit_id_of_capital_letters_or_digits_is_its_text(
+        code in "[A-Z0-9]{2,3}",
     ) {
         let id = code.bytes().fold(0, |id, byte| id << 8 | i32::from(byte));
         prop_assert_eq!(code_of(id), Some(code));

@@ -282,14 +282,18 @@ const _: () = {
     assert!(size_of::<Node<'_>>() == 24, "shim_node changed");
     assert!(offset_of!(Node<'_>, name) == 8, "shim_node.name moved");
     assert!(size_of::<Scalar>() == 8, "shim_scalar changed");
-    assert!(size_of::<Reference>() == 64, "shim_reference changed");
+    assert!(size_of::<Reference>() == 88, "shim_reference changed");
     assert!(
-        offset_of!(Reference, class) == 56,
+        offset_of!(Reference, class) == 80,
         "shim_reference.class moved"
     );
     assert!(
-        offset_of!(Reference, local) == 60,
+        offset_of!(Reference, local) == 84,
         "shim_reference.local moved"
+    );
+    assert!(
+        offset_of!(Reference, typed) == 85,
+        "shim_reference.typed moved"
     );
 };
 
@@ -576,6 +580,8 @@ pub(crate) type Served = unsafe extern "C" fn(
 pub(crate) struct Reference {
     /// The node, valid only when `local`.
     pub(crate) node: Node<'static>,
+    /// The reference type, valid only when `typed`.
+    pub(crate) kind: Node<'static>,
     /// The text of the browse name.
     pub(crate) name: Bytes,
     /// The text of the display name.
@@ -584,6 +590,8 @@ pub(crate) struct Reference {
     pub(crate) class: u32,
     /// Whether the node is in this server, by a number or a name.
     pub(crate) local: bool,
+    /// Whether the reference type is by a number or a name.
+    pub(crate) typed: bool,
 }
 
 /// `UA_ClientAsyncReadCallback`.
@@ -734,8 +742,11 @@ unsafe extern "C" {
     );
     pub(crate) fn shim_units_new(nodes: *const Node<'_>, count: usize) -> *mut c_void;
     pub(crate) fn shim_units_count(answer: *const c_void) -> usize;
-    pub(crate) fn shim_units_found(answer: *const c_void, index: usize) -> bool;
-    pub(crate) fn shim_units_read(answer: *const c_void) -> *mut c_void;
+    pub(crate) fn shim_units_target(
+        answer: *const c_void,
+        index: usize,
+        out: *mut Node<'_>,
+    ) -> bool;
     pub(crate) fn shim_read_attributes_new(
         nodes: *const Node<'_>,
         count: usize,
@@ -745,6 +756,7 @@ unsafe extern "C" {
     pub(crate) fn shim_value_node(value: *const DataValue, out: *mut Node<'_>) -> u32;
     pub(crate) fn shim_value_unit(
         value: *const DataValue,
+        uri: *mut Bytes,
         code: *mut i32,
         text: *mut Bytes,
     ) -> u32;

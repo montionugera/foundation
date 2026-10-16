@@ -137,6 +137,52 @@ void shim_server_reads(UA_Server *server, UA_UInt32 most) {
     UA_Server_getConfig(server)->maxNodesPerRead = most;
 }
 
+/* Sets the MaxNodesPerBrowse and the MaxNodesPerTranslateBrowsePathsToNodeIds of
+ * `server`, each 0 for none. */
+void shim_server_browses(UA_Server *server, UA_UInt32 browse, UA_UInt32 translate) {
+    UA_ServerConfig *config = UA_Server_getConfig(server);
+    config->maxNodesPerBrowse = browse;
+    config->maxNodesPerTranslateBrowsePathsToNodeIds = translate;
+}
+
+/* A logger that counts the Browse requests of its server, and passes each message to
+ * the logger before it. */
+typedef struct {
+    UA_Logger logger;
+    const UA_Logger *next;
+    size_t browses;
+} shim_counter;
+
+static void count_message(void *context, UA_LogLevel level, UA_LogCategory category,
+                          const char *msg, va_list args) {
+    shim_counter *counter = (shim_counter *)context;
+    /* The end of the format of the debug message of open62541 for each Browse
+     * request, from UA_LOG_SESSION_INTERNAL. */
+    static const char browse[] = "| Processing BrowseRequest%.0s";
+    size_t length = strlen(msg);
+    if(length >= sizeof(browse) - 1 &&
+       strcmp(msg + length - (sizeof(browse) - 1), browse) == 0)
+        counter->browses++;
+    counter->next->log(counter->next->context, level, category, msg, args);
+}
+
+static void count_clear(UA_Logger *logger) { UA_free(logger->context); }
+
+/* Counts each Browse request that `server` processes from now, and gives the count,
+ * which lives until the delete of `server`, or NULL when out of memory. */
+const size_t *shim_server_count_browses(UA_Server *server) {
+    shim_counter *counter = (shim_counter *)UA_calloc(1, sizeof(*counter));
+    if(!counter)
+        return NULL;
+    UA_ServerConfig *config = UA_Server_getConfig(server);
+    counter->next = config->logging;
+    counter->logger.log = count_message;
+    counter->logger.context = counter;
+    counter->logger.clear = count_clear;
+    config->logging = &counter->logger;
+    return &counter->browses;
+}
+
 /* Sets the receive buffer size that `client` gives in its next HEL. */
 void shim_client_receive(UA_Client *client, UA_UInt32 size) {
     UA_Client_getConfig(client)->localConnectionConfig.recvBufferSize = size;
@@ -297,13 +343,14 @@ UA_StatusCode shim_server_add_data_type(UA_Server *server, shim_node node,
 }
 
 /* Adds to `server` the property `0:EngineeringUnits` `node` of the variable
- * `variable`, whose value is the EUInformation of the display name `text` and the
- * unitId `code`. */
+ * `variable`, whose value is the EUInformation of the namespaceUri `uri`, the display
+ * name `text`, and the unitId `code`. */
 UA_StatusCode shim_server_add_unit(UA_Server *server, shim_node node,
-                                   shim_node variable, const char *text,
-                                   UA_Int32 code) {
+                                   shim_node variable, const char *uri,
+                                   const char *text, UA_Int32 code) {
     UA_EUInformation unit;
     UA_EUInformation_init(&unit);
+    unit.namespaceUri = UA_STRING((char *)(uintptr_t)uri);
     unit.unitId = code;
     unit.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)text);
     UA_VariableAttributes attributes = UA_VariableAttributes_default;

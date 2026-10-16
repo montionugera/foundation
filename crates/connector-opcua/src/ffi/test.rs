@@ -198,6 +198,8 @@ unsafe extern "C" {
     );
     pub(crate) fn shim_client_receive(client: *mut super::Client, size: u32);
     pub(crate) fn shim_server_reads(server: *mut Server, most: u32);
+    pub(crate) fn shim_server_browses(server: *mut Server, browse: u32, translate: u32);
+    pub(crate) fn shim_server_count_browses(server: *mut Server) -> *const usize;
     pub(crate) fn UA_Client_getConnectionAttribute(
         client: *mut super::Client,
         key: QualifiedName,
@@ -248,6 +250,7 @@ unsafe extern "C" {
         server: *mut Server,
         node: Node<'_>,
         variable: Node<'_>,
+        uri: *const std::ffi::c_char,
         text: *const std::ffi::c_char,
         code: i32,
     ) -> u32;

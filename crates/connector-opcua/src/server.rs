@@ -315,6 +315,42 @@ impl Server {
         self.add_scalar(&node, Value::U32(most));
     }
 
+    /// Sets the `MaxNodesPerBrowse` of the server to `browse` and its
+    /// `MaxNodesPerTranslateBrowsePathsToNodeIds` to `translate`, each 0 for none, and
+    /// adds the variables `ns=0;i=11710` and `ns=0;i=11712` that give them.
+    ///
+    /// # Panics
+    ///
+    /// On a second call, as open62541 refuses the second add of each variable.
+    #[cfg(test)]
+    pub(crate) fn set_per_browse(&self, browse: u32, translate: u32) {
+        // SAFETY: the server lives.
+        unsafe { ffi::test::shim_server_browses(self.raw(), browse, translate) };
+        for (number, most) in [(11710, browse), (11712, translate)] {
+            let node = Node {
+                namespace: 0,
+                key: Key::Number(number),
+            };
+            self.add_scalar(&node, Value::U32(most));
+        }
+    }
+
+    /// Counts each Browse request that the server processes from now.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 cannot allocate the count.
+    #[cfg(test)]
+    pub(crate) fn count_browses(&self) -> Browses<'_> {
+        // SAFETY: the server lives.
+        let count = unsafe { ffi::test::shim_server_count_browses(self.raw()) };
+        Browses {
+            count: NonNull::new(count.cast_mut())
+                .expect("open62541 allocates the count"),
+            server: std::marker::PhantomData,
+        }
+    }
+
     /// Adds the folder `node` with the browse name `name` and the display name
     /// `display`, under `parent` by the reference type of the number `reference` in
     /// namespace 0.
@@ -419,7 +455,8 @@ impl Server {
     }
 
     /// Adds the property `0:EngineeringUnits` `node` of `variable`, an
-    /// `EUInformation` of the display name `text` and the `unitId` `code`.
+    /// `EUInformation` of the `namespaceUri` `uri`, the display name `text`, and the
+    /// `unitId` `code`.
     ///
     /// # Panics
     ///
@@ -429,15 +466,17 @@ impl Server {
         &self,
         node: &Node,
         variable: &Node,
+        uri: &CStr,
         text: &CStr,
         code: i32,
     ) {
-        // SAFETY: the server lives, and it copies each name and the text.
+        // SAFETY: the server lives, and it copies each name and text.
         let status = Status(unsafe {
             ffi::test::shim_server_add_unit(
                 self.raw(),
                 added(node),
                 variable.into(),
+                uri.as_ptr(),
                 text.as_ptr(),
                 code,
             )
@@ -628,6 +667,23 @@ pub(crate) struct Limits {
 /// # Panics
 ///
 /// If its key is the number 0, since open62541 then adds the node at a free number.
+/// The count of the Browse requests of a [`Server`], from [`Server::count_browses`].
+#[cfg(test)]
+pub(crate) struct Browses<'s> {
+    /// Lives until the delete of the server.
+    count: NonNull<usize>,
+    server: std::marker::PhantomData<&'s Server>,
+}
+
+#[cfg(test)]
+impl Browses<'_> {
+    /// Gives the count.
+    pub(crate) fn get(&self) -> usize {
+        // SAFETY: the server lives, and runs on this thread.
+        unsafe { self.count.read() }
+    }
+}
+
 fn added(node: &Node) -> ffi::Node<'_> {
     assert!(
         node.key != Key::Number(0),
