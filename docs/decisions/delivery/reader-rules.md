@@ -73,8 +73,11 @@
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159325971). A
   session that waits for a grant then misses that frame too (`laptop.architect`,
   2026-10-14T02:12:26Z:
-  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159349684). A named
-  complete session that the home holds over such a frame resumes with `Behind`
+  https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159349684). It
+  first reads the frames from the one it waits on from disk (#274 B1;
+  `laptop.architect`, 2026-10-15T18:27:16Z:
+  https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6199323861, item 4). A
+  named complete session that the home holds over such a frame resumes with `Behind`
   (`laptop.architect`, 2026-10-14T02:29:09Z:
   https://github.com/synnaxlabs/foundation/issues/2649#issuecomment-6159543609). Basis:
   A6, A8, B2, B3, S10, X14, #41.
