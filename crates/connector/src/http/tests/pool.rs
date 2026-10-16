@@ -106,7 +106,7 @@ fn opens_a_new_stream_after_a_body_over_the_cap() {
     });
     let outcomes = network.run(sends(&network, PORT, 2));
     assert!(
-        matches!(outcomes[0], Err(Error::TooLarge { max: BODY_MAX })),
+        matches!(outcomes[0], Err(Error::TooLarge { max: BODY_MAX, .. })),
         "{:?}",
         outcomes[0]
     );

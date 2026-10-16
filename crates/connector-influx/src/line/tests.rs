@@ -44,6 +44,9 @@ fn value(text: &str) -> Value {
         _ if text.ends_with('i') => {
             Value::Integer(text.trim_end_matches('i').parse().unwrap())
         }
+        _ if text.ends_with('u') => {
+            Value::Unsigned(text.trim_end_matches('u').parse().unwrap())
+        }
         _ => Value::Float(float(text.parse().unwrap())),
     }
 }
@@ -129,6 +132,15 @@ fn writes_one_known_line() {
 }
 
 #[test]
+fn writes_an_unsigned_integer_with_u() {
+    let measurement = build("m", &[], &["a", "b"]).unwrap();
+    let mut out = Vec::new();
+    let values = [Some(Value::Unsigned(u64::MAX)), Some(Value::Unsigned(0))];
+    write(&measurement, &mut out, &values, Stamp::EPOCH);
+    assert_eq!(text(&out), "m a=18446744073709551615u,b=0u 0\n");
+}
+
+#[test]
 fn escapes_as_the_specification_example() {
     let measurement =
         build("my Measurement", &[("tag Key1", "tag Value1")], &["f"]).unwrap();
@@ -191,6 +203,29 @@ fn writes_each_field_in_the_order_given_and_twice() {
     ];
     assert_eq!(measurement.line(&mut out, values, Stamp::from_nanos(5)), 3);
     assert_eq!(text(&out), "xm c=3i,a=1i,c=4i 5\n");
+}
+
+#[test]
+fn leaves_out_a_float_field_that_is_nan_or_infinite() {
+    let measurement = Measurement::new("m", &[("t", "v")]).unwrap();
+    let (a, b) = (
+        measurement.field("a").unwrap(),
+        measurement.field("b").unwrap(),
+    );
+    let mut out = b"x".to_vec();
+    let mut line = measurement.begin(&mut out);
+    line.float(&a, f64::NAN);
+    line.float(&b, 1.0);
+    line.float(&a, f64::INFINITY);
+    line.integer(&a, -2);
+    line.unsigned(&b, 3);
+    line.boolean(&a, false);
+    line.float(&b, f64::NEG_INFINITY);
+    assert_eq!(line.end(Stamp::from_nanos(5)), 4);
+    let mut line = measurement.begin(&mut out);
+    line.float(&a, f64::NAN);
+    assert_eq!(line.end(Stamp::EPOCH), 0, "no field, so no line");
+    assert_eq!(text(&out), "xm,t=v b=1e0,a=-2i,b=3u,a=f 5\n");
 }
 
 #[test]
@@ -557,6 +592,7 @@ fn field_value() -> impl Strategy<Value = Value> {
             .prop_map(Value::Float),
         any::<i64>().prop_map(Value::Integer),
         any::<bool>().prop_map(Value::Boolean),
+        any::<u64>().prop_map(Value::Unsigned),
     ]
 }
 

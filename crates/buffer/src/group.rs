@@ -206,22 +206,24 @@ impl Group {
         Ok(start..self.headers.len())
     }
 
-    /// The slot and header of each entry at `positions`, in order.
+    /// The slot and header of each entry at `positions`, in order. A caller sets
+    /// the [`Last::Count`](crate::entry::Last::Count) of each entry with no samples
+    /// before [`close`](Self::close) writes the table.
     ///
     /// # Panics
     ///
     /// When `positions` reaches past the entries.
     pub(crate) fn entries(
-        &self,
+        &mut self,
         positions: Range<usize>,
-    ) -> impl Iterator<Item = (Slot, &Header)> {
+    ) -> impl Iterator<Item = (Slot, &mut Header)> {
         let slots = self
             .slots
             .get(positions.clone())
             .expect("invariant: push gave the positions");
         let headers = self
             .headers
-            .get(positions)
+            .get_mut(positions)
             .expect("invariant: push gave the positions");
         slots.iter().copied().zip(headers)
     }
@@ -401,7 +403,8 @@ mod tests {
     use types::hash;
     use types::time::Stamp;
 
-    use crate::entry::{ENTRIES_MAX, Parts, table_len};
+    use crate::entry::{ENTRIES_MAX, Last, Parts, table_len};
+    use crate::log::Mark;
     use crate::record::HEADER_LEN;
     use crate::wal::{self, Cursor, Position, Step, Window};
 
@@ -435,7 +438,7 @@ mod tests {
             first,
             len: 2,
             stored_at: Stamp::from_nanos(5),
-            last: Some(Stamp::from_nanos(9)),
+            last: Last::Stamp(Some(Stamp::from_nanos(9))),
             tag: 3,
             bytes: 99,
         }
@@ -460,7 +463,7 @@ mod tests {
             first: header.first,
             len: header.len,
             stored_at: header.stored_at,
-            last: header.last,
+            last: header.stamp(),
             tag: header.tag,
             parts,
         }
@@ -638,8 +641,10 @@ mod tests {
             block_max(&self.pool).expect("the floor fits")
         }
 
+        /// Pushes the entry of `header`, and gives it the count of `header`, as the
+        /// buffer does.
         fn push(&mut self, group: &mut Group, header: Header, parts: Parts) {
-            group
+            let pushed = group
                 .push(
                     &self.pool,
                     self.block_max(),
@@ -647,6 +652,9 @@ mod tests {
                     &mut vec![entry(header, parts)],
                 )
                 .expect("the ring has room");
+            for (_, pushed) in group.entries(pushed) {
+                pushed.last = header.last;
+            }
         }
 
         /// The data bodies, as recovery reads them.
@@ -707,7 +715,7 @@ mod tests {
                 path,
                 skip,
                 len,
-                last,
+                last: last.filter(|_| len != 0),
                 tag,
                 parts,
             })
@@ -719,28 +727,33 @@ mod tests {
             groups in prop::collection::vec(prop::collection::vec(next(), 1..8), 1..5),
         ) {
             let mut area = Area::new();
-            let mut seqs: hash::Map<(u128, Path), u64> = hash::Map::default();
+            let mut marks: hash::Map<(u128, Path), Mark> = hash::Map::default();
             let mut group = Group::default();
             let mut expected: Vec<Vec<Stored>> = Vec::new();
             for entries in groups {
                 let mut stored = Vec::new();
                 let mut slots = Vec::new();
                 for next in entries {
-                    let seq = seqs.entry((next.index, next.path)).or_default();
+                    let mark = marks.entry((next.index, next.path)).or_insert(Mark::at(0));
                     let bytes = next.parts.concat();
+                    let first = mark.seq + next.skip;
+                    *mark = mark.after(first, next.len);
                     let header = Header {
                         index: key(next.index),
                         path: next.path,
-                        first: *seq + next.skip,
+                        first,
                         len: next.len,
                         stored_at: Stamp::from_nanos(5),
-                        last: next.last.map(Stamp::from_nanos),
+                        last: if next.len == 0 {
+                            Last::Count(mark.given)
+                        } else {
+                            Last::Stamp(next.last.map(Stamp::from_nanos))
+                        },
                         tag: next.tag,
                         bytes: u32::try_from(bytes.len()).expect("under 300 bytes"),
                     };
                     let slices: Vec<&[u8]> = next.parts.iter().map(Vec::as_slice).collect();
                     area.push(&mut group, header, parts(&area.pool, &slices));
-                    *seq = header.first + u64::from(header.len);
                     stored.push((header, bytes));
                     slots.push(slot(next.index));
                 }

@@ -2,17 +2,17 @@
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
-use std::net::{Ipv4Addr, Ipv6Addr};
 
 use connector::kind;
 use document::diagnostic::{Code, Diagnostic, Note};
 use document::value::{Kind as Of, Value};
 use document::{Block, Document, read};
+use env::net::host::{self, Host};
 use types::name::Name;
 use types::time::Rate;
 
 use crate::pdu::Table;
-use crate::poll::Order;
+use crate::read::Order;
 
 #[cfg(test)]
 mod tests;
@@ -44,8 +44,7 @@ const ORDERS: [(&str, Order); 2] = [("big", Order::Big), ("little", Order::Littl
 /// [`Kind::parse`](connector::kind::Kind::parse) of [`Kind`](crate::Kind) makes one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
-    /// A name or an IP address, with no brackets.
-    pub(crate) host: Box<str>,
+    pub(crate) host: Host,
     pub(crate) port: u16,
     pub(crate) unit: u8,
     pub(crate) rate: Rate,
@@ -114,10 +113,10 @@ pub(crate) fn parse(config: &Document) -> Result<Config, Vec<Diagnostic>> {
 }
 
 /// Reads a host and an optional port, such as `"plc:502"`, `"plc"`, or
-/// `"[fd00::1]:502"`. Port 502 when it has none. A host in brackets is an IPv6
-/// address, with an optional zone such as `%eth0`. Each other host is an IPv4 address
-/// or a name of letters, digits, `-`, `.`, and `_`.
-fn endpoint(value: &Value) -> Result<(Box<str>, u16), Diagnostic> {
+/// `"[fd00::1]:502"`. Port 502 when it has none. The host is an
+/// [`env::net::host::Host`]. An IPv6 host is in brackets, and the text in them is
+/// parsed bare.
+fn endpoint(value: &Value) -> Result<(Host, u16), Diagnostic> {
     let message = match &value.kind {
         Of::String(text) => match address(text) {
             Ok(endpoint) => return Ok(endpoint),
@@ -134,33 +133,11 @@ fn endpoint(value: &Value) -> Result<(Box<str>, u16), Diagnostic> {
 }
 
 /// The host and port of the address `text`, or the message of its problem.
-fn address(text: &str) -> Result<(Box<str>, u16), String> {
+fn address(text: &str) -> Result<(Host, u16), String> {
     let (host, port) = split(text)?;
-    if host.is_empty() {
-        return Err(format!("the address {text:?} has no host"));
-    }
-    if text.starts_with('[') {
-        let (ip, zone) = match host.split_once('%') {
-            Some((ip, zone)) => (ip, Some(zone)),
-            None => (host, None),
-        };
-        if ip.parse::<Ipv6Addr>().is_err() {
-            return Err(format!(
-                "the address {text:?} has {host:?} in brackets, which is not an IPv6 \
-                 address"
-            ));
-        }
-        let bad = |zone: &&str| zone.is_empty() || !zone.bytes().all(name_byte);
-        if let Some(zone) = zone.filter(bad) {
-            return Err(format!(
-                "the address {text:?} has the zone {zone:?}, which is not an \
-                 interface name or number"
-            ));
-        }
-    } else {
-        self::host(host)
-            .map_err(|problem| format!("the address {text:?} has {problem}"))?;
-    }
+    let host = host.parse().map_err(|problem: host::Error| {
+        format!("the address {text:?} has {problem}")
+    })?;
     let port = match port {
         None => PORT,
         Some(digits) => match digits.parse() {
@@ -176,49 +153,11 @@ fn address(text: &str) -> Result<(Box<str>, u16), String> {
             }
         },
     };
-    Ok((host.into(), port))
-}
-
-/// Checks that `host` is an IPv4 address or a name that a resolver can find, or gives
-/// its problem.
-fn host(host: &str) -> Result<(), &'static str> {
-    if !host.bytes().all(name_byte) {
-        return Err(
-            "a host with a character other than a letter, a digit, `-`, `.`, or `_`",
-        );
-    }
-    if host.split('.').any(|label| {
-        label.is_empty()
-            || label.len() > 63
-            || label.starts_with('-')
-            || label.ends_with('-')
-    }) {
-        return Err(
-            "a host with a part between dots that is empty, longer than 63 \
-             characters, or starts or ends with `-`",
-        );
-    }
-    // A resolver reads a host with a number last as an IPv4 address, with parts in
-    // octal, in hex, or fewer than four parts, so only the plain form is safe.
-    let last = host.rsplit('.').next().unwrap_or(host);
-    let hex = last.strip_prefix("0x").or_else(|| last.strip_prefix("0X"));
-    let number = match hex {
-        Some(digits) => digits.bytes().all(|byte| byte.is_ascii_hexdigit()),
-        None => last.bytes().all(|byte| byte.is_ascii_digit()),
-    };
-    if number && host.parse::<Ipv4Addr>().is_err() {
-        return Err("a host with a number last that is not an IPv4 address");
-    }
-    Ok(())
-}
-
-/// Whether `byte` may be in a host name or an interface name.
-fn name_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || b"-._".contains(&byte)
+    Ok((host, port))
 }
 
 /// The host of the address `text`, with no brackets, and the text of its port when it
-/// has one.
+/// has one. A host in brackets must hold a `:`.
 fn split(text: &str) -> Result<(&str, Option<&str>), String> {
     let Some(rest) = text.strip_prefix('[') else {
         return match text.split_once(':') {
@@ -233,6 +172,9 @@ fn split(text: &str) -> Result<(&str, Option<&str>), String> {
     let Some((host, port)) = rest.split_once(']') else {
         return Err(format!("the address {text:?} has no `]`"));
     };
+    if !host.contains(':') {
+        return Err(format!("the address {text:?} has {}", host::Error::Ipv6));
+    }
     if port.is_empty() {
         return Ok((host, None));
     }

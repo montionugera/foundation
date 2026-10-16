@@ -47,6 +47,13 @@ impl Name {
     pub fn reserved(&self) -> bool {
         self.segments().any(|segment| segment.starts_with('@'))
     }
+
+    /// Whether `c` may stand in a segment of a name: an ASCII letter, a digit, `_`, or
+    /// `-`. A leading `@` marks a reserved segment and is not one of them.
+    #[must_use]
+    pub const fn segment_char(c: char) -> bool {
+        c.is_ascii_alphanumeric() || c == '_' || c == '-'
+    }
 }
 
 impl fmt::Display for Name {
@@ -399,8 +406,7 @@ fn check_literal(input: &str, segment: &str) -> Result<(), Error> {
         });
     }
     let body = segment.strip_prefix('@').unwrap_or(segment);
-    let valid = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'-';
-    if body.is_empty() || !body.bytes().all(valid) {
+    if body.is_empty() || !body.chars().all(Name::segment_char) {
         return Err(Error::Segment {
             input: input.into(),
             segment: segment.into(),
@@ -509,6 +515,16 @@ mod tests {
                                that segment, after an optional leading `@`";
     const WILDCARD_FIX: &str =
         "Use `*` and `**` only as whole segments of a pattern, never in a name";
+
+    #[test]
+    fn gives_the_characters_of_a_segment() {
+        for c in ['a', 'Z', '0', '9', '_', '-'] {
+            assert!(Name::segment_char(c), "{c:?}");
+        }
+        for c in ['@', '.', '*', ' ', 'é', '/'] {
+            assert!(!Name::segment_char(c), "{c:?}");
+        }
+    }
 
     #[test]
     fn states_each_problem_and_its_fix() {

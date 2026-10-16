@@ -182,6 +182,9 @@ pub fn net() -> env::net::Net {
 /// part of them, and two writes at one time can leave a mix of the two. `os` sets no
 /// owner, group, or permission bit of the file, device, or pipe that takes them. A
 /// write on a symbolic link to nothing gives `NotFound` and makes no file.
+///
+/// The home directory is the one that `std::env::home_dir` gives: `HOME`, else the
+/// entry of this user in the user database.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[must_use]
 pub fn paths() -> env::paths::Paths {

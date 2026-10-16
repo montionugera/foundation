@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::future;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
@@ -17,11 +18,15 @@ use document::value::{self, Value};
 use document::{Attribute, Block, Map};
 use env::net::{Listener, tcp};
 use env::tasks::{Group, Tasks};
+use hub::home::Outcome;
 use hub::reader::{Mode, Received};
+use hub::writer::Writer;
 use spec::channel::{Channel, Data};
 use spec::data_type::DataType;
 use spec::definition::Definition;
+use types::authority::Authority;
 use types::channel;
+use types::frame::{self, Draft, Form, Label, Path};
 use types::name::{Name, Selector};
 use types::quality::Quality;
 
@@ -1028,6 +1033,28 @@ fn refuses_each_channel_whose_samples_are_not_a_scalar_of_a_value() {
     assert_eq!(outcome.frames, []);
 }
 
+/// A read into an index gives `connector.index` alone, with no diagnostic of the
+/// sample types of the other channels.
+#[test]
+fn refuses_a_read_into_an_index_alone() {
+    let mut setup = Setup::three();
+    setup.channels[3] = ("plant.c", data(4, 1, Type::String));
+    setup.reads[0].0 = "plant.time";
+    let outcome = run(
+        setup,
+        |scene| async move { scene.supervise(ms(1_050)).await },
+    );
+    let index = Diagnostic::new(
+        Code::new("connector.index"),
+        None,
+        "the channel `plant.time` is an index, which holds the stamp of each request"
+            .into(),
+        "Write the value to a data channel".into(),
+    );
+    assert_eq!(diagnostics(outcome.result), [index]);
+    assert_eq!(outcome.frames, []);
+}
+
 /// The nodes of [`TYPED`], one for each type of a value.
 const TYPED_NODES: &[&str] = &[
     "ns=2;i=1",
@@ -1057,6 +1084,80 @@ const TYPED_CHANNELS: [&str; 11] = [
     "plant.f32",
     "plant.f64",
 ];
+
+/// The `opcua` kind, whose run writes a frame of one Good value for each read, then a
+/// frame of `count(reads)` values, each Bad.
+struct Count(fn(usize) -> usize);
+
+impl kind::Kind for Count {
+    type Config = Config;
+
+    fn parse(&self, config: &Document) -> Result<Config, Vec<Diagnostic>> {
+        Kind::default().parse(config)
+    }
+
+    fn check(&self, config: &Config) -> Result<Channels, Vec<Diagnostic>> {
+        Kind::default().check(config)
+    }
+
+    async fn run(&self, ctx: Context<Config>) -> Result<(), Error> {
+        let mut frames = Frames::open(&ctx).await?;
+        let one = |&scalar| Ok(crate::value::Value::one(scalar));
+        let good: Vec<_> = frames.types.iter().map(one).collect();
+        let ((), stamp) = frames.writer.request(future::ready(())).await;
+        frames.write(&good, stamp)?;
+        let ((), stamp) = frames.writer.request(future::ready(())).await;
+        let count = (self.0)(ctx.config().reads.len());
+        let bad = || Err(Fault::status(Status::BAD_NOT_FOUND));
+        let values: Vec<_> = std::iter::repeat_with(bad).take(count).collect();
+        frames.write(&values, stamp)
+    }
+}
+
+/// `Client::read` gives one value for each node of its request, or an error, so no
+/// run of [`Kind`] writes a short frame: only a kind that calls `Frames::write`
+/// itself reaches the check.
+#[test]
+#[should_panic(expected = "invariant: a kind gives 0 values for 3 channels")]
+fn panics_at_a_frame_with_no_value_for_each_read() {
+    write_after_a_full_frame(Count(|_| 0));
+}
+
+/// `Client::read` gives `BadUnexpectedError` for an answer with more values than the
+/// nodes of its request, which the run gives as `Error::Device`, so no run of [`Kind`]
+/// writes a long frame. A `zip` over `types` in `Frames::write` would cut the value and
+/// the writer would see the right count, so only this test sees that loss.
+#[test]
+#[should_panic(expected = "index out of bounds: the len is 3 but the index is 3")]
+fn panics_at_a_frame_with_a_value_more_than_its_reads() {
+    write_after_a_full_frame(Count(|reads| reads + 1));
+}
+
+/// Runs `kind` as `opcua` on the reads of [`Setup::three`] for 1 s: a frame of one Good
+/// value for each read, then the frame of the kind.
+fn write_after_a_full_frame(kind: Count) {
+    let mut sim = Sim::new(::sim::Config::default());
+    let node = sim.node(node::Config::default());
+    let run = sim.run_on(&node, |node, tasks| async move {
+        let env = hub::testing::Env {
+            files: node.files(),
+            clock: node.clock(),
+            wall: node.wall(),
+            entropy: node.entropy(),
+            tasks: tasks.clone(),
+        };
+        let kinds = Table::new().with("opcua", kind);
+        let mut rig = testing::Rig::open(env, node.net(), kinds).await;
+        let setup = Setup::three();
+        let channels = setup.channels.iter();
+        let channels = channels.map(|(text, def)| (name(text), def.clone()));
+        rig.define(channels.collect());
+        let config = config("opc.tcp://plc:4840", "10Hz", &setup.reads);
+        let _connector = rig.supervise("opcua", name(PLC), config).await;
+        node.clock().sleep(Span::SECOND).await;
+    });
+    run.expect("the run ends");
+}
 
 /// One channel of each type of a value (keys 2 to 12) on `plant.time` (key 1), each
 /// reading its node of [`TYPED_NODES`].
@@ -1562,32 +1663,22 @@ fn stamps_each_frame_within_its_read() {
     }
 }
 
-/// Builds `Values` with a value that `Kept::sort` leaves out, which `Kept::sort` never
-/// gives. This test is the only kill of a `get` that gives a value for a left
-/// out read in place of the panic.
-#[test]
-#[should_panic(
-    expected = "invariant: read 2 is Err(Status(BadNotFound)), which `Kept::sort` \
-                leaves out"
-)]
-fn panics_with_the_read_whose_value_is_left_out() {
-    use crate::value::{Fault, Value};
-    let bad = Err(Fault::status(Status::BAD_NOT_FOUND));
-    let values = [Ok(Value::F64(1.0)), bad, bad];
-    Values(&values).get(2);
-}
-
 #[test]
 fn leaves_out_each_value_of_another_type_than_its_channel() {
     let [_, _, values] = extremes();
+    let bytes = |value: types::sample::Value| {
+        let mut bytes = [0; 8];
+        value.write(&mut bytes[..value.scalar().width()]);
+        bytes
+    };
     for value in values {
         for sample in SCALARS {
-            let left = Why::of(&Ok(value), sample);
+            let left = Why::of(&Ok(value), sample).map(bytes);
             if value.scalar() == sample {
-                assert_eq!(left, None);
+                assert_eq!(left, Ok(bytes(value.into())));
             } else {
                 let mistyped = Why::Mistyped(value.type_of());
-                assert_eq!(left, Some(mistyped), "{value:?} into {sample:?}");
+                assert_eq!(left, Err(mistyped), "{value:?} into {sample:?}");
             }
         }
     }
@@ -1597,12 +1688,31 @@ fn leaves_out_each_value_of_another_type_than_its_channel() {
 fn leaves_out_each_value_that_is_not_good() {
     use crate::value::Fault;
     let leave = |status: u32| Why::of(&Err(Fault::status(Status(status))), Scalar::F64);
-    assert_eq!(leave(0x4000_0000), Some(Why::Uncertain));
-    assert_eq!(leave(0x7FFF_FFFF), Some(Why::Uncertain));
-    assert_eq!(leave(Status::BAD_NOT_FOUND.0), Some(Why::Bad));
-    assert_eq!(leave(0xC000_0000), Some(Why::Bad));
-    assert_eq!(leave(0x8000_0000), Some(Why::Bad));
+    assert_eq!(leave(0x4000_0000), Err(Why::Uncertain));
+    assert_eq!(leave(0x7FFF_FFFF), Err(Why::Uncertain));
+    assert_eq!(leave(Status::BAD_NOT_FOUND.0), Err(Why::Bad));
+    assert_eq!(leave(0xC000_0000), Err(Why::Bad));
+    assert_eq!(leave(0x8000_0000), Err(Why::Bad));
     let string = crate::value::Type::named("String");
     let left = Why::of(&Err(Fault::of_type(string)), Scalar::F64);
-    assert_eq!(left, Some(Why::Mistyped(string)));
+    assert_eq!(left, Err(Why::Mistyped(string)));
+}
+
+#[test]
+fn refuses_to_discover() {
+    let token = connector::cancel::Token::new();
+    let table = connector::kind::Table::new().with("opcua", Kind);
+    let found = std::pin::pin!(table.discover("opcua", &token));
+    let waker = std::task::Waker::noop();
+    let polled = found.poll(&mut std::task::Context::from_waker(waker));
+    let std::task::Poll::Ready(Err(Error::Config(diagnostics))) = polled else {
+        panic!("a config error: {polled:?}");
+    };
+    let expected = Diagnostic::new(
+        document::diagnostic::Code::new("connector.no-discover"),
+        None,
+        "this connector kind cannot find its devices".into(),
+        "Write the connector block by hand".into(),
+    );
+    assert_eq!(diagnostics, [expected]);
 }

@@ -1349,6 +1349,7 @@ async fn follow(
 fn kinds() -> connector::kind::Table {
     connector::kind::Table::new()
         .with("influx", connector_influx::Kind::default())
+        .with("modbus", connector_modbus::Kind::default())
         .with("opcua", connector_opcua::Kind::default())
 }
 

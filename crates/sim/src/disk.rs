@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use env::files::Mode;
 use env::rng::Rng;
 
-use crate::{Crash, DIRECTORY, NOT_DIRECTORY};
+use crate::{Crash, DIRECTORY, EXISTS, NOT_DIRECTORY};
 
 /// The key of the data directory.
 pub(crate) const ROOT: u64 = 0;
@@ -18,8 +18,6 @@ pub(crate) const ROOT: u64 = 0;
 const SECTOR: u64 = env::files::SECTOR as u64;
 /// The bytes that a directory takes, as on ext4.
 const DIR_BYTES: u64 = 4_096;
-/// The Linux code for a path that is there (`EEXIST`).
-const EXISTS: i32 = 17;
 
 /// Why a call failed, before its path and operation are known.
 pub(crate) enum Cause {

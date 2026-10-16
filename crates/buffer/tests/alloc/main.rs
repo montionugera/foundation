@@ -1,9 +1,9 @@
 //! `append` makes no heap allocation once the buffer has taken a batch of each
 //! shape: its slots, its entry count, and whether it closes the open record. Nor
-//! does a `Commit` that waits and drops, a commit of the logs that marks a range
-//! and trims, or the entry of a path that a trim emptied. This binary has no test
-//! harness: the count covers each thread, and a harness allocates on its own thread
-//! at any time.
+//! does a `Commit` that waits and drops, a commit of the logs that syncs entries
+//! with no samples and trims, or the entry of a path that a trim emptied. This
+//! binary has no test harness: the count covers each thread, and a harness
+//! allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -127,12 +127,15 @@ fn slow(logs: &mut buffer::bench::Logs, entries: u64) {
     logs.commit(0);
 }
 
-/// Each trim drops the range that the commit before marked, so the ranges stay in
+/// A commit of entries with no samples and its carry keep the runs and items in
 /// the memory that the warm-up gave them. The runs of the other shapes swing inside
 /// a lap, so the room of each lap holds the runs of the next.
 fn logs_take_no_allocation() {
     let n = commits(4, buffer::bench::Logs::mark);
-    assert_eq!(n, 0, "{n} allocations in 1024 marked trims");
+    assert_eq!(
+        n, 0,
+        "{n} allocations in 1024 commits of entries with no samples"
+    );
     let mut entries = 0;
     let n = commits(4, |logs| {
         entries = entries % 4 + 1;
