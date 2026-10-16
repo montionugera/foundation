@@ -245,6 +245,20 @@ impl Logs {
     /// holder, or before the record `held` commits back, as a read that holds it,
     /// when that one is older.
     pub fn trim(&mut self, period: u32, held: u64) {
+        self.slow(period, 0, held);
+    }
+
+    /// One commit as `trim(period, 0)`, whose carry takes the idle tails before the
+    /// record `behind` commits back, then fills with the oldest holders after it.
+    /// When `behind` is under `period`, one call in `period` takes the tail of the
+    /// last index, and its fill walks the stale items of the records after that
+    /// record.
+    pub fn fill(&mut self, period: u32, behind: u64) {
+        self.slow(period, behind, 0);
+    }
+
+    /// [`trim`](Self::trim) with the reach of the carry `behind` records back.
+    fn slow(&mut self, period: u32, behind: u64, held: u64) {
         let slow = self.commits.is_multiple_of(period);
         self.commits = self.commits.wrapping_add(1);
         let synced = self.headers.len() - usize::from(!slow);
@@ -256,8 +270,9 @@ impl Logs {
             header.first += 1;
         }
         self.carried.clear();
+        let reach = self.offset.saturating_sub(behind * BLOCK);
         self.inner
-            .carry(self.offset, self.headers.len(), &mut self.carried);
+            .carry(reach, self.headers.len(), &mut self.carried);
         let kept = self.inner.kept().expect("a path has a synced entry");
         let read = self.offset.saturating_sub(held * BLOCK).max(BLOCK);
         self.inner.hide(kept.min(read));
@@ -511,6 +526,25 @@ mod tests {
             [Last::Count(1), stamp, Last::Count(1)]
         );
         assert_eq!(lasts(Table::new(3, 0)), [stamp; 3]);
+    }
+
+    /// The last index syncs each 8 commits, and the carry reaches 2 records back, so
+    /// one call in 8 takes its tail, and its fill takes a tail of each other index
+    /// from the newest record.
+    #[test]
+    fn a_fill_takes_the_slow_tail_once_in_each_period() {
+        let mut logs = Logs::new(4);
+        let mut carried = Vec::new();
+        for call in 0..32 {
+            logs.fill(8, 2);
+            if !logs.carried.tails().is_empty() {
+                let keys = logs.carried.tails().iter().map(|tail| tail.index);
+                carried.push((call, keys.map(|key| key.as_u128()).collect::<Vec<_>>()));
+            }
+        }
+        let tails = vec![4, 1, 2, 3];
+        let calls: Vec<_> = [3, 11, 19, 27].map(|call| (call, tails.clone())).into();
+        assert_eq!(carried, calls);
     }
 
     /// A read holds the record two commits back, so the runs of the records after it
