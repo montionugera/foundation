@@ -56,6 +56,7 @@ mod tests {
             .unwrap();
         let read = input.read(|_| std::thread::current().name().map(str::to_owned));
         assert_eq!(runtime.block_on(read).as_deref(), Some("input"));
+        assert_eq!(format!("{input:?}"), "Input { .. }");
         drop(input);
         thread.join().unwrap();
     }
