@@ -8,8 +8,9 @@
   infinite values, or no data channel of the reader), and `count` is the number of seqs
   from the first seq that the buffer trimmed or had no room for up to that sample. So a
   gap line can sit at a stamp with no data point. A frame with no sample gives no gap;
-  the next frame with one gives it. The person chose this ("Ok, this is fine",
-  2026-10-16T02:03Z, through `laptop.monitor`:
+  the next frame with one gives it (`laptop.architect`, 2026-10-16T02:09:51Z:
+  https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206458946). The
+  person chose this ("Ok, this is fine", 2026-10-16T02:03Z, through `laptop.monitor`:
   https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206366130), and
   `laptop.architect-2` ruled it on 2026-10-16T02:04:28Z
   (https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206384923), which
@@ -21,11 +22,11 @@
   request of that sample, and the position is acked only after InfluxDB confirms it
   (B3). The count is signed, because InfluxDB 1 OSS refuses `u`. The `connector` tag
   keeps two connectors that write one index to one database from replacing each other's
-  gap lines. Until a later sample comes, the connector keeps one gap per index, and from
-  #1270 one per index and path. After a restart the buffer reports the gap again (READER
-  RULES), so a lost gap line is sent again. The measurement name is fixed. #1734 names
-  the data measurement, and its kind check refuses `foundation_gaps` as one
-  (`laptop.architect-2`,
+  gap lines. The connector keeps one gap per index, and from #1270 one per index and
+  path, and writes its line in the batch of the frame that gives it. After a restart the
+  buffer reports the gap again (READER RULES), so a lost gap line is sent again. The
+  measurement name is fixed. #1734 names the data measurement, and its kind check
+  refuses `foundation_gaps` as one (`laptop.architect-2`,
   https://github.com/synnaxlabs/foundation/issues/1153#issuecomment-6051297152,
   2026-10-08 03:02 UTC). Supersedes the clause of
   https://github.com/synnaxlabs/foundation/issues/1151#issuecomment-6032215953 that the

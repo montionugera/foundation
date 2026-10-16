@@ -256,11 +256,11 @@
   live tail as the open position of a latest session, which made the decoder and the
   fuzz harness check the mode (`laptop.architect`, 2026-10-15T22:10:13Z:
   https://github.com/synnaxlabs/foundation/pull/2765#issuecomment-6203316949). A
-  complete remote reader gives the seqs from `live` to its first frame as the gap of
-  that frame (`hub::reader::Received::gap`). A complete client read gets `live`, from
-  which the client finds the seqs before the seq of its first head. Lost: `Opened` with
-  no field, so a loss between the open and the first frame was silent. Decided by
-  `laptop.architect` (2026-10-15T19:40:52Z,
+  complete remote reader gives the seqs from `live` to its first frame with a sample as
+  the gap of that frame (`hub::reader::Received::gap`). A complete client read gets
+  `live`, from which the client finds the seqs before the seq of its first head. Lost:
+  `Opened` with no field, so a loss between the open and the first frame was silent.
+  Decided by `laptop.architect` (2026-10-15T19:40:52Z,
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6200757306).
   Amended (#2725, with #2723 and #2553): no case gives `Behind` now. A complete session
   that misses a frame reads it from disk, and a seq lost for no room comes as the gap of
@@ -277,9 +277,10 @@
   (`laptop.architect`, 2026-10-15T23:56:49Z:
   https://github.com/synnaxlabs/foundation/pull/2779#issuecomment-6204779426).
   `Frames::open` takes the first message of the session, which is `Opened`, and gives
-  its `live` with the frames (#2553), so a `Frames` is open from its start, `Step` has
-  no opened, and no caller restates the order of the open (`laptop.architect`,
-  2026-10-16T00:47:46Z:
+  its `live` with the frames (#2553; `laptop.architect`, 2026-10-16T02:54:38Z:
+  https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206979704), so a
+  `Frames` is open from its start, `Step` has no opened, and no caller restates the
+  order of the open (`laptop.architect`, 2026-10-16T00:47:46Z:
   https://github.com/synnaxlabs/foundation/pull/2779#issuecomment-6205447213; lost: an
   `opened` call on a `Frames` made before the first message, whose state a failed
   attempt can leave open).

@@ -32,6 +32,7 @@
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6197039098).
   Amended (#2725, with #2723 and #2553): no case gives `Behind` now. A complete session
   that misses a frame reads it from disk, and a seq lost for no room comes as the gap of
-  the next frame. The variants stay until #2790 removes them (`laptop.architect`,
-  2026-10-16T00:46:53Z:
+  the next frame with a sample (`laptop.architect`, 2026-10-16T02:09:51Z:
+  https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206458946). The
+  variants stay until #2790 removes them (`laptop.architect`, 2026-10-16T00:46:53Z:
   https://github.com/synnaxlabs/foundation/issues/2725#issuecomment-6205434126).
