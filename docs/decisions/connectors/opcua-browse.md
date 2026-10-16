@@ -16,7 +16,8 @@
   Each step of the walk is one Browse of each type of the call that the client does not
   know yet, for at most one supertype each, and the client keeps the supertype of each
   Good result and releases the continuation point of a type with more. The client keeps
-  at most 1024 supertypes past a call, and clears them at the end of a call with more. A
+  at most 1024 supertypes past a call, and clears them at the end of a call with more,
+  and when a call drops in its walk. A
   result that is not Good gives no base in that call, and the next call browses the type
   again (`laptop.architect-2`, 2026-10-16T17:48:08Z:
   https://github.com/synnaxlabs/foundation/pull/2902#issuecomment-6221380182). The unit

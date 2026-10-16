@@ -1371,3 +1371,66 @@ fn a_browse_past_one_message_keeps_the_session() {
         (Err(Status::BAD_REQUEST_TOO_LARGE), Ok(Some(1)), Ok(()))
     );
 }
+
+/// A describe whose future drops in the third step of its walk drops each supertype,
+/// also those of the first two steps, so three such describes of other variables
+/// keep none.
+#[test]
+fn a_dropped_describe_keeps_no_supertypes() {
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let server = peer.server;
+            server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
+            server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
+            let mut sets = Vec::new();
+            for set in 0..3 {
+                let mut nodes = Vec::new();
+                for index in 0..513 {
+                    let at = set * 1000 + index;
+                    let (grand, parent, data_type, node) = (
+                        ns1(20_000 + at),
+                        ns1(30_000 + at),
+                        ns1(40_000 + at),
+                        ns1(50_000 + at),
+                    );
+                    server.add_data_type(&grand, &DOUBLE, c"Grand");
+                    server.add_data_type(&parent, &grand, c"Parent");
+                    server.add_data_type(&data_type, &parent, c"Child");
+                    server.add_variable(
+                        &node,
+                        &ROOT,
+                        HAS_COMPONENT,
+                        c"v",
+                        &data_type,
+                        -1,
+                        3,
+                    );
+                    nodes.push(node);
+                }
+                sets.push(nodes);
+            }
+            let browses = server.count_browses();
+            let mut client = peer.connected().await;
+            let mut kept = Vec::new();
+            for nodes in &sets {
+                let start = browses.get();
+                {
+                    let mut describe = std::pin::pin!(client.describe(nodes));
+                    let ended = std::future::poll_fn(|cx| {
+                        if browses.get() >= start + 3 {
+                            return std::task::Poll::Ready(None);
+                        }
+                        describe.as_mut().poll(cx).map(Some)
+                    })
+                    .await;
+                    assert!(ended.is_none(), "the describe ends in its third step");
+                }
+                kept.push(client.supertypes.len());
+            }
+            client.close().await;
+            kept
+        })
+        .await
+    });
+    assert_eq!(out, [0, 0, 0]);
+}
