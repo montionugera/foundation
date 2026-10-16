@@ -186,4 +186,6 @@ exclude_re = [
   'crates/node/src/status\.rs:.*replace < with (==|>)$',
   # A stub that panics until PR B2 of #432 fills it; B2 removes this line.
   'crates/connector-modbus/src/kind\.rs:.*replace <impl kind::Kind for Kind>::run ->',
+  # rustls writes TLS records only with `write_vectored`, so no caller calls `write`.
+  'crates/connector/src/http/stream\.rs:.*replace <impl io::Write for Io<.*>>::write ->',
 ]

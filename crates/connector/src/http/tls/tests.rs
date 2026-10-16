@@ -1,5 +1,8 @@
 use std::future::poll_fn;
 use std::net::SocketAddr;
+use std::num::NonZeroU64;
+use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use ::sim::{Sim, name, node};
@@ -10,11 +13,16 @@ use env::thread::Handle;
 use http::{Request, Response};
 use types::time::{Span, Stamp};
 
+use hyper::rt::{Read as _, ReadBuf, Write as _};
+
+use super::super::stream::Stream;
 use super::{Pem, Roots};
 use crate::http::sim::{self, Certificate};
 use crate::http::{Client, Config, Error};
 
 const PORT: u16 = 8086;
+/// The size of a body that takes many writes and reads of the stream.
+const LARGE: usize = 1 << 20;
 const TIMEOUT: Span = Span::from_nanos(10_000_000_000);
 /// 2026-06-01T00:00:00Z, inside the validity of each certificate but the expired one.
 const JUNE_2026: Stamp = Stamp::from_nanos(1_780_272_000_000_000_000);
@@ -34,12 +42,14 @@ type Outcome = Result<String, Error>;
 /// What the client does next in [`Network::start`].
 enum Step {
     Send(&'static str),
+    /// A POST of a body of [`LARGE`] bytes.
+    Upload(&'static str),
     Wait(Span),
 }
 
-/// A server node at the name `influx` that runs `serve_tls`, with an answer that
-/// gives the path of each request, and a client node whose mesh time starts at a
-/// given wall time.
+/// A server node at the name `influx` that runs `serve_tls`, and a client node whose
+/// mesh time starts at a given wall time. The answer gives the length of the body at
+/// `/length`, [`LARGE`] bytes at `/large`, and else the path.
 struct Network {
     sim: Sim,
     client: node::Node,
@@ -77,7 +87,11 @@ impl Network {
             .shards()
             .start(shard("server"), move |tasks| async move {
                 let answer = |request: Request<Bytes>| {
-                    Response::new(Bytes::from(request.uri().path().to_owned()))
+                    Response::new(match request.uri().path() {
+                        "/length" => Bytes::from(request.body().len().to_string()),
+                        "/large" => Bytes::from(vec![b'x'; LARGE]),
+                        path => Bytes::from(path.to_owned()),
+                    })
                 };
                 drop(sim::serve_tls(listener, tasks, certificate, answer).await);
                 // The streams it accepted end when this shard ends.
@@ -136,17 +150,20 @@ impl Network {
                     clock: clock.clone(),
                     tasks,
                     timeout: TIMEOUT,
-                    body_max: 64,
+                    body_max: LARGE,
                     roots,
                     time: hub.time().await,
                 });
                 for step in steps {
                     match step {
                         Step::Wait(span) => clock.sleep(span).await,
-                        Step::Send(uri) => {
-                            let request = Request::get(uri)
-                                .body(Bytes::new())
-                                .expect("a request");
+                        step @ (Step::Send(uri) | Step::Upload(uri)) => {
+                            let request = match step {
+                                Step::Upload(_) => Request::post(uri)
+                                    .body(Bytes::from(vec![b'x'; LARGE])),
+                                _ => Request::get(uri).body(Bytes::new()),
+                            };
+                            let request = request.expect("a request");
                             let outcome = http.send(request).await.map(|response| {
                                 String::from_utf8(response.into_body().to_vec())
                                     .expect("UTF-8")
@@ -163,6 +180,33 @@ impl Network {
         out
     }
 
+    /// Limits each way between the nodes to 1 MB/s, so a body of [`LARGE`] bytes
+    /// fills the stream.
+    fn slow(&mut self) {
+        let config = ::sim::link::Config {
+            rate: NonZeroU64::new(1_000_000),
+            ..::sim::link::Config::default()
+        };
+        self.sim.link(&self.client, &self.server, config);
+        self.sim.link(&self.server, &self.client, config);
+    }
+
+    /// Runs `steps` from a client that trusts the test CA, crashes the server after
+    /// `crash`, and gives the outcome of each send as text: an error with each of its
+    /// sources, outermost first.
+    fn crash_after(&mut self, steps: Vec<Step>, crash: Span) -> Vec<String> {
+        let out = self.start(sim::ca(), steps);
+        self.sim.run_for(crash).expect("the run ends");
+        let server = self.server.clone();
+        self.sim.crash(&server, ::sim::Crash::Process);
+        self.sim.run_for(Span::MINUTE).expect("the run ends");
+        let outcomes = std::mem::take(&mut *out.lock().expect("no panic"));
+        outcomes
+            .into_iter()
+            .map(|outcome| outcome.unwrap_or_else(|error| chain(&error)))
+            .collect()
+    }
+
     /// Sends a GET of `uri` from a client that trusts `roots`.
     #[expect(clippy::unwrap_in_result, reason = "a test may panic")]
     fn send(&mut self, roots: Roots, uri: &'static str) -> Outcome {
@@ -172,6 +216,17 @@ impl Network {
         assert_eq!(outcomes.len(), 1, "one send gives one outcome");
         outcomes.pop().expect("one outcome")
     }
+}
+
+/// The message of `error` and of each of its sources, outermost first.
+fn chain(error: &Error) -> String {
+    let mut messages = vec![error.to_string()];
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        messages.push(cause.to_string());
+        source = cause.source();
+    }
+    messages.join(" <- ")
 }
 
 fn failed(outcome: Outcome) -> String {
@@ -280,6 +335,97 @@ fn fails_the_handshake_with_a_server_that_resets_the_stream() {
     assert_eq!(
         failed(network.send(sim::ca(), "https://influx:8087/ping")),
         format!("TLS with influx:8087 failed: {remote} reset the stream")
+    );
+}
+
+#[test]
+fn sends_and_reads_bodies_that_fill_the_stream() {
+    let mut network = Network::new(13, Certificate::Valid, JUNE_2026);
+    network.slow();
+    let steps = vec![
+        Step::Upload("https://influx:8086/length"),
+        Step::Send("https://influx:8086/large"),
+    ];
+    let texts = network.crash_after(steps, Span::MINUTE);
+    assert_eq!(texts, [LARGE.to_string(), "x".repeat(LARGE)]);
+}
+
+#[test]
+fn fails_an_upload_when_the_server_crashes() {
+    let mut network = Network::new(14, Certificate::Valid, JUNE_2026);
+    network.slow();
+    let steps = vec![Step::Upload("https://influx:8086/length")];
+    let texts = network.crash_after(steps, Span::from_nanos(500_000_000));
+    assert_eq!(
+        texts,
+        [
+            "the exchange failed: connection error <- connection error <- \
+          10.0.0.2:8086 reset the stream"
+        ]
+    );
+}
+
+#[test]
+fn fails_a_download_when_the_server_crashes() {
+    let mut network = Network::new(15, Certificate::Valid, JUNE_2026);
+    network.slow();
+    let steps = vec![Step::Send("https://influx:8086/large")];
+    let texts = network.crash_after(steps, Span::from_nanos(500_000_000));
+    assert_eq!(
+        texts,
+        [
+            "the exchange failed: error reading a body from connection <- error \
+          reading a body from connection <- 10.0.0.2:8086 reset the stream"
+        ]
+    );
+}
+
+#[test]
+fn fails_a_body_that_ends_with_no_close_notify() {
+    let mut network = Network::new(16, Certificate::Valid, JUNE_2026);
+    network.listen(8087, |mut listener, _| async move {
+        let mut tcp = poll_fn(|cx| listener.poll_accept(cx))
+            .await
+            .expect("a stream");
+        let session = rustls::ServerConnection::new(sim::server(Certificate::Valid))
+            .expect("a session");
+        let mut stream = Stream {
+            tcp,
+            tls: Some(Box::new(session.into())),
+            received: Rc::default(),
+        };
+        stream.handshake().await.expect("the handshake ends");
+        // A close with unread bytes resets the stream, so it reads the whole head.
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut bytes = [0; 1024];
+            let mut buf = ReadBuf::new(&mut bytes);
+            poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, buf.unfilled()))
+                .await
+                .expect("the head comes");
+            head.extend_from_slice(buf.filled());
+        }
+        let answer = b"HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\nabc";
+        poll_fn(|cx| Pin::new(&mut stream).poll_write(cx, answer))
+            .await
+            .expect("the answer goes");
+        tcp = stream.tcp;
+        poll_fn(|cx| tcp.poll_close(cx))
+            .await
+            .expect("the stream closes");
+    });
+    assert_eq!(
+        network
+            .send(sim::ca(), "https://influx:8087/ping")
+            .map_err(|error| chain(&error)),
+        Err(
+            "the exchange failed: error reading a body from connection <- error \
+             reading a body from connection <- peer closed connection without \
+             sending TLS close_notify: \
+             https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html\
+             #unexpected-eof"
+                .to_owned()
+        )
     );
 }
 

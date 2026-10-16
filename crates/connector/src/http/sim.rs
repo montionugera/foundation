@@ -82,7 +82,7 @@ pub async fn serve_tls(
     run(listener, tasks, Some(server(certificate)), answer).await
 }
 
-fn server(certificate: Certificate) -> Arc<ServerConfig> {
+pub(super) fn server(certificate: Certificate) -> Arc<ServerConfig> {
     let (pem, key) = match certificate {
         Certificate::Valid => (
             include_str!("sim/tls/influx.pem"),

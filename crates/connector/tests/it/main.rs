@@ -4,4 +4,5 @@
 #![cfg(test)]
 
 mod cancel;
+mod inputs;
 mod secret;
