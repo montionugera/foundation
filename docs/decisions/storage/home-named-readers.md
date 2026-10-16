@@ -77,5 +77,5 @@
   https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6217928514, reversed
   for a held reader: 2026-10-16T15:47:15Z:
   https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6219185219; the
-  warning event: `laptop.monitor`, 2026-10-16:
-  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6219286206).
+  warning event: `laptop.architect`, 2026-10-16T15:48:06Z:
+  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6219200565).
