@@ -84,10 +84,12 @@
   `opcua.bad-node-id`, with the tag. The browse of the kind gives no `Write`, so
   `block` reads no fact and each point gets a read block. A match on the kind of a
   built-in type, Boolean (1) to Double (11), decodes a read, and the sample type of
-  each kind comes from that decode at build time. PR 5b gives the type of a browse from
-  the same decode, so the two cannot disagree. The plan: `laptop.architect-2`,
+  each kind comes from that decode at build time. The type of a browse comes from
+  `SCALARS`, so the two cannot disagree. The plan: `laptop.architect-2`,
   2026-10-16T21:14:25Z
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6224815609). No
   `opcua.no-write`, in place of the plan's: `laptop.architect-2`, 2026-10-16T21:59:16Z
   (https://github.com/synnaxlabs/foundation/pull/2931#issuecomment-6225496840). The
-  decode by match, with no table of the built-in types: approval owed.
+  decode by match, with no table of the built-in types: `laptop.architect-2`,
+  2026-10-16T22:17:22Z
+  (https://github.com/synnaxlabs/foundation/pull/2931#issuecomment-6225757093).
