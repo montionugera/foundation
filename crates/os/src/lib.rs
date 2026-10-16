@@ -35,6 +35,8 @@ mod files;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod host;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+mod input;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[expect(unsafe_code, reason = "a pool's memory is an OS mapping")]
 pub mod memory;
 #[cfg(all(feature = "net", any(target_os = "linux", target_os = "macos")))]
@@ -55,6 +57,8 @@ mod wall;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use files::Disk;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub use input::Input;
 pub use roots::Roots;
 
 /// The monotonic clock of this node, which counts time while the machine sleeps. Each
@@ -239,6 +243,21 @@ pub fn stored(
     Disk::stored(dir, threads, name)
 }
 
+/// The standard input of the process and the handle of I/O thread `name`, which reads
+/// it. The thread ends after the last clone of the input drops and its reads end, so
+/// a join waits while a read waits for input.
+///
+/// # Errors
+///
+/// [`Error::Thread`] when the I/O thread cannot start.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn input(
+    threads: &env::threads::Threads,
+    name: &str,
+) -> Result<(Input, env::thread::Handle), Error> {
+    Input::start(threads, name).map_err(Error::Thread)
+}
+
 /// Reads the CA certificates of the OS store: the certificate files on Linux, and the
 /// keychain on macOS. When `SSL_CERT_FILE` is set, or `SSL_CERT_DIR` holds a path that
 /// is not empty, it reads only that file and those paths, on each OS. A path that is
@@ -283,8 +302,8 @@ pub enum Error {
     Dir(std::io::Error),
     /// The OS could not give the available memory.
     Memory(std::io::Error),
-    /// A thread of `os` could not start: the I/O thread of [`files`] or the thread
-    /// of [`interrupt`].
+    /// A thread of `os` could not start: the I/O thread of [`files`] or [`input`], or
+    /// the thread of [`interrupt`].
     Thread(env::thread::Error),
     /// The OS refused a read of its wall clock.
     Wall(std::io::Error),
