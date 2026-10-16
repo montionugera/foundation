@@ -1060,6 +1060,9 @@ mod fixture {
         }
     }
 
+    /// The byte that [`Watched`] writes over the pages it discards.
+    const DISCARDED: u8 = 0xdd;
+
     /// Memory that records its calls and counts its drops.
     pub(crate) struct Watched {
         memory: Scarce,
@@ -1068,7 +1071,8 @@ mod fixture {
     }
 
     // SAFETY: each method is the one of `Scarce`, or a `page` of at least `ALIGN`
-    // bytes, each of whose units of `ALIGN` bytes a purge gives back.
+    // bytes, each of whose units of `ALIGN` bytes a purge gives back. A discard
+    // writes only the whole pages in its range.
     unsafe impl Memory for Watched {
         fn base(&self) -> NonNull<u8> {
             self.memory.base()
@@ -1088,9 +1092,19 @@ mod fixture {
             self.memory.purge(offset, len);
         }
 
+        /// Also writes [`DISCARDED`] over the whole pages in the range, since a
+        /// discard leaves their contents unknown.
         fn discard(&self, offset: usize, len: usize) {
             self.watch.record(Call::Discard { offset, len });
             self.memory.discard(offset, len);
+            let start = offset.next_multiple_of(self.page);
+            let end = (offset + len) / self.page * self.page;
+            if start < end {
+                // SAFETY: the range lies in the memory.
+                let pages = unsafe { self.base().add(start) };
+                // SAFETY: as above, and no block in use lies in it.
+                unsafe { pages.write_bytes(DISCARDED, end - start) };
+            }
         }
 
         fn page(&self) -> usize {
@@ -1965,7 +1979,6 @@ mod tests {
                 .collect();
             let held = blocks.remove(0);
             drop(blocks);
-            pool.reclaim();
             assert_eq!(pool.committed(), 960);
             (pool, watch, held)
         }
@@ -2025,7 +2038,6 @@ mod tests {
                 .collect();
             let held = blocks.remove(0);
             drop(blocks);
-            pool.reclaim();
             let small = pool
                 .alloc(192)
                 .expect("one free block gives the need exactly");
@@ -2068,24 +2080,41 @@ mod tests {
 
         #[test]
         fn keeps_free_a_block_whose_payload_holds_no_whole_page() {
-            let (pool, _watch) = create_watched_pool_of(960, 128);
+            let (pool, watch) = create_watched_pool_of(960, 128);
             let mut blocks: Vec<_> = (0..5)
                 .map(|_| pool.alloc(128).expect("the budget has room"))
                 .collect();
             let held = blocks.remove(0);
             drop(blocks);
-            pool.reclaim();
-            let class = &pool.classes[class_of(128)];
-            assert_eq!(list(&pool, class.free.get()), [1216, 1408, 1600, 1792]);
             let small = pool.alloc(192).expect("two free blocks give a page each");
             assert_eq!(pool.committed(), 960);
             assert_eq!(
-                list(&pool, class.free.get()),
-                [1408, 1792],
+                watch.calls()[5..],
+                [
+                    Discard {
+                        offset: 1280,
+                        len: 128
+                    },
+                    Discard {
+                        offset: 1664,
+                        len: 128
+                    },
+                    Commit {
+                        offset: 1984,
+                        len: 256
+                    },
+                ],
                 "the payloads at 1472 and 1856 hold no whole page"
             );
-            assert_eq!(list(&pool, class.cold.head.get()), [1600, 1216]);
-            drop((held, small));
+            let free: Vec<_> = (0..2)
+                .map(|_| pool.alloc(128).expect("a free block"))
+                .collect();
+            assert_eq!(
+                watch.calls().len(),
+                8,
+                "the blocks at 1408 and 1792 stayed free"
+            );
+            drop((held, small, free));
         }
 
         #[test]
@@ -2106,7 +2135,6 @@ mod tests {
                 .collect();
             let held = blocks.remove(0);
             drop(blocks);
-            pool.reclaim();
             assert_eq!(pool.committed(), 1088);
             let large = pool.alloc(320).expect("the idle size and the free blocks");
             assert_eq!(pool.committed(), 960);
@@ -2141,7 +2169,6 @@ mod tests {
                 .map(|_| pool.alloc(64).expect("the budget has room"))
                 .collect();
             let held = blocks.into_iter().next();
-            pool.reclaim();
             assert_eq!(pool.alloc(128).err(), Some(exhausted(128, 64)));
             assert_eq!(pool.committed(), 384);
             assert_eq!(watch.calls().len(), 3, "no page went back");
@@ -2152,12 +2179,14 @@ mod tests {
         fn serves_a_cold_block_before_it_carves() {
             let (pool, watch, held) = create_free_blocks();
             drop(pool.alloc(64).expect("a free block gives its pages"));
-            pool.reclaim();
             let warm = pool.alloc(256).expect("the free block");
             let cold = pool.alloc(256).expect("the idle size gives room");
-            assert_eq!(cold.block().offset, 3456, "the block that gave its pages");
+            assert_eq!(
+                cold.as_ptr().addr() - held.as_ptr().addr(),
+                3456 - 3136,
+                "the block that gave its pages"
+            );
             assert_eq!(pool.committed(), 960);
-            assert_eq!(pool.classes[3].carved.get(), 960, "no new carve");
             assert_eq!(
                 watch.calls()[5..],
                 [Purge {
@@ -2173,11 +2202,10 @@ mod tests {
         fn serves_a_cold_block_while_the_system_refuses_each_commit() {
             let (pool, watch, held) = create_free_blocks();
             drop(pool.alloc(64).expect("a free block gives its pages"));
-            pool.reclaim();
             let warm = pool.alloc(256).expect("the free block");
             watch.switch.refuse();
             let cold = pool.alloc(256).expect("a cold block makes no commit");
-            assert_eq!(cold.block().offset, 3456);
+            assert_eq!(cold.as_ptr().addr() - held.as_ptr().addr(), 3456 - 3136);
             assert_eq!(pool.committed(), 960);
             assert!(
                 !watch.calls()[5..]
@@ -2186,6 +2214,51 @@ mod tests {
                 "a commit for the cold block"
             );
             drop((held, warm, cold));
+        }
+
+        #[test]
+        fn gives_the_pages_of_a_block_that_was_cold_again() {
+            let (pool, _watch, held) = create_free_blocks();
+            drop(pool.alloc(64).expect("a free block gives its pages"));
+            let warm = pool.alloc(256).expect("the free block");
+            drop(pool.alloc(256).expect("the cold block"));
+            let small = pool
+                .alloc(64)
+                .expect("the block that was cold gives its pages");
+            drop((held, warm, small));
+        }
+
+        #[test]
+        fn gives_back_the_whole_budget_of_a_cold_block_that_was_served() {
+            let (pool, _watch, held) = create_free_blocks();
+            drop(pool.alloc(64).expect("a free block gives its pages"));
+            let warm = pool.alloc(256).expect("the free block");
+            let cold = pool.alloc(256).expect("the cold block");
+            drop((held, warm, cold));
+            pool.purge();
+            pool.purge();
+            assert_eq!(pool.committed(), 0);
+        }
+
+        #[test]
+        fn counts_the_free_pages_of_large_blocks_without_an_overflow() {
+            const PAGE: usize = 2 << 20;
+            let large = footprint(4 << 20);
+            let (pool, _watch) = create_watched_pool_of(8 * large, PAGE);
+            let mut blocks: Vec<_> = (0..8)
+                .map(|_| pool.alloc(4 << 20).expect("the budget has room"))
+                .collect();
+            let held = blocks.remove(0);
+            drop(blocks);
+            let small = pool
+                .alloc(1 << 20)
+                .expect("the free blocks give their pages");
+            assert_eq!(
+                pool.committed(),
+                8 * large - PAGE + footprint(1 << 20),
+                "one free block gives one page"
+            );
+            drop((held, small));
         }
 
         #[test]
@@ -2198,7 +2271,6 @@ mod tests {
                 .collect();
             let held = blocks.remove(0);
             drop(blocks);
-            pool.reclaim();
             let free = 3456 / PAGE..3776_usize.div_ceil(PAGE);
             assert_eq!(resident(&pages, free.clone()), 3 * PAGE);
             let small = pool.alloc(64).expect("a free block gives its pages");
@@ -2208,7 +2280,6 @@ mod tests {
                 "the pages of its header and of the next header stay"
             );
             drop(small);
-            pool.reclaim();
             let warm = pool.alloc(256).expect("the free block");
             let cold = pool.alloc(256).expect("the cold block");
             assert_eq!(
@@ -2414,13 +2485,65 @@ mod tests {
             pages.count() * page
         }
 
+        /// The budget that an alloc of class `index` needs, and the room for it: the
+        /// budget less what the sizes in use hold, other than the whole payload
+        /// pages of their free blocks. It reads the lists of the pool, since the
+        /// room depends on the offsets of the free and cold blocks, which no public
+        /// call gives.
+        fn need_and_room(pool: &Pool, index: usize, page: usize) -> (usize, usize) {
+            let cold = pool.classes[index].cold.head.get();
+            let need = if cold == NONE {
+                class_footprint(index)
+            } else {
+                whole_pages(cold, index, page)
+            };
+            let kept: usize = pool
+                .classes
+                .iter()
+                .enumerate()
+                .filter(|&(other, class)| other == index || class.lent.get() != 0)
+                .map(|(other, class)| {
+                    let given: usize = if other != index && class_payload(other) >= page
+                    {
+                        list(pool, class.free.get())
+                            .into_iter()
+                            .map(|offset| whole_pages(offset, other, page))
+                            .sum()
+                    } else {
+                        0
+                    };
+                    class.carved.get() - class.cold.credit.get() - given
+                })
+                .sum();
+            (need, pool.budget - kept)
+        }
+
+        /// Checks the count and the credit of each cold list against its blocks,
+        /// and `committed` against the carved ranges less those credits. Only the
+        /// lists show which blocks are cold.
+        fn check_cold(pool: &Pool, page: usize) -> Result<(), TestCaseError> {
+            let mut held = 0;
+            for (index, class) in pool.classes.iter().enumerate() {
+                let cold = list(pool, class.cold.head.get());
+                let credit: usize = cold
+                    .iter()
+                    .map(|&offset| whole_pages(offset, index, page))
+                    .sum();
+                prop_assert_eq!(class.cold.len.get(), cold.len());
+                prop_assert_eq!(class.cold.credit.get(), credit);
+                held += class.carved.get() - credit;
+            }
+            prop_assert_eq!(pool.committed(), held);
+            Ok(())
+        }
+
         proptest! {
             #![proptest_config(cases())]
 
             /// As the property above, with pages that free blocks give back: the room
             /// is the budget less what the sizes in use hold, other than the whole
             /// payload pages of their free blocks. An alloc that fails for room gives
-            /// back no page.
+            /// back no page, and a discard changes no byte of a held block.
             #[test]
             fn serves_each_alloc_that_fits_in_the_room_free_pages_leave(
                 steps in prop::collection::vec(
@@ -2433,46 +2556,27 @@ mod tests {
                 const BUDGET: usize = 4096;
                 const PAGE: usize = 128;
                 let (pool, watch) = create_watched_pool_of(BUDGET, PAGE);
-                let mut blocks: Vec<Unique> = Vec::new();
-                for ((len, dropped), refusing) in steps.into_iter().zip(refusals) {
+                let mut blocks: Vec<(Unique, u8)> = Vec::new();
+                let steps = steps.into_iter().zip(refusals).zip(1_u8..);
+                for (((len, dropped), refusing), fill) in steps {
                     if refusing {
                         watch.switch.refuse();
                     } else {
                         watch.switch.allow();
                     }
+                    // The model reads the lists after the pool takes back the
+                    // dropped blocks, as the alloc does first.
                     pool.reclaim();
                     let index = class_of(len);
-                    let class = &pool.classes[index];
-                    let warm = class.free.get() != NONE;
-                    let cold = class.cold.head.get();
-                    let need = if cold == NONE {
-                        footprint(len)
-                    } else {
-                        whole_pages(cold, index, PAGE)
-                    };
-                    let kept: usize = pool
-                        .classes
-                        .iter()
-                        .enumerate()
-                        .filter(|&(other, class)| other == index || class.lent.get() != 0)
-                        .map(|(other, class)| {
-                            let coolable = other != index && class_payload(other) >= PAGE;
-                            let given: usize = if coolable {
-                                list(&pool, class.free.get())
-                                    .into_iter()
-                                    .map(|offset| whole_pages(offset, other, PAGE))
-                                    .sum()
-                            } else {
-                                0
-                            };
-                            class.carved.get() - class.cold.credit.get() - given
-                        })
-                        .sum();
-                    let room = BUDGET - kept;
+                    let warm = pool.classes[index].free.get() != NONE;
+                    let (need, room) = need_and_room(&pool, index, PAGE);
                     let before = pool.committed();
                     let calls = watch.calls().len();
                     match pool.alloc(len) {
-                        Ok(block) => blocks.push(block),
+                        Ok(mut block) => {
+                            block.fill(fill);
+                            blocks.push((block, fill));
+                        }
                         Err(error) => {
                             prop_assert!(!warm, "{error} with a free block");
                             if need > room {
@@ -2490,25 +2594,17 @@ mod tests {
                             }
                         }
                     }
-                    let mut held = 0;
-                    for (index, class) in pool.classes.iter().enumerate() {
-                        let cold = list(&pool, class.cold.head.get());
-                        let credit: usize = cold
-                            .iter()
-                            .map(|&offset| whole_pages(offset, index, PAGE))
-                            .sum();
-                        prop_assert_eq!(class.cold.len.get(), cold.len());
-                        prop_assert_eq!(class.cold.credit.get(), credit);
-                        held += class.carved.get() - credit;
-                    }
-                    prop_assert_eq!(pool.committed(), held);
+                    check_cold(&pool, PAGE)?;
                     prop_assert!(pool.committed() <= BUDGET);
                     let lent: usize =
-                        blocks.iter().map(|block| footprint(block.len())).sum();
+                        blocks.iter().map(|(block, _)| footprint(block.len())).sum();
                     prop_assert!(pool.committed() >= lent);
                     if let Some(index) = dropped.filter(|_| !blocks.is_empty()) {
                         blocks.swap_remove(index % blocks.len());
                     }
+                }
+                for (block, fill) in &blocks {
+                    prop_assert!(block.iter().all(|byte| byte == fill));
                 }
             }
 

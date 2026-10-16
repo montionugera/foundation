@@ -64,8 +64,9 @@ pub unsafe trait Memory: Send {
     fn discard(&self, offset: usize, len: usize);
 
     /// The bytes of one page: a power of two of at least [`ALIGN`]. Pages start at
-    /// multiples of it from [`base`](Self::base). The pool counts the whole pages in
-    /// a range it discards as given back, and credits its budget by them.
+    /// multiples of it from [`base`](Self::base). The pool credits its budget by the
+    /// whole pages in a range it discards. A memory whose discard gives back pages
+    /// gives back at least those pages. [`Heap`] and [`Erased`] give back none.
     fn page(&self) -> usize;
 }
 
