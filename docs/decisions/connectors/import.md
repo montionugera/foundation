@@ -58,10 +58,11 @@
   after `config.private-key`, with the fix "Write the value in place of `fill`".
   `fill("<what>")` gives `config.unfilled`, "the import found no value for <what>". A
   call `fill` of other arguments gives `config.bad-fill`, "`fill` takes one string". A
-  call `fill` inside a call `fill` gives no problem of its own. `import::unfilled` gives
-  the call `fill` that a value is, as an `import::Fill`: `Of(<what>)` or `Bad`. So only
-  `connector` knows the name and shape of the call. No kind may give a call `fill` a
-  meaning of its own.
+  call `fill` inside a call `fill` gives no problem of its own. `config::plan::check`
+  gives the same problems for each connector config of a plan file, after
+  `config.private-key`. `import::unfilled` gives the call `fill` that a value is, as an
+  `import::Fill`: `Of(<what>)` or `Bad`. So only `connector` knows the name and shape of
+  the call. No kind may give a call `fill` a meaning of its own.
   `config::import::{channel, index}` writes the `channel` blocks of an import, so the
   grammar of a `channel` block stays in the crate that parses it, and no kind or `ops`
   code writes one. A missing sample type is `fill("the sample type")`. The unit is what
@@ -91,3 +92,6 @@
   of #2883 (https://github.com/synnaxlabs/foundation/pull/2883#issuecomment-6219539273).
   Supersedes https://github.com/synnaxlabs/foundation/pull/2883#issuecomment-6219336388,
   item 3: a public `import::FILL`.
+  `config::plan::check` refuses a `fill` in a connector config: `laptop.architect-2`,
+  2026-10-16 16:27 UTC, on the round 3 fix of #2883
+  (https://github.com/synnaxlabs/foundation/pull/2883#issuecomment-6219969435).
