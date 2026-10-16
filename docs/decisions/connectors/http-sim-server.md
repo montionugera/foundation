@@ -39,8 +39,8 @@
   validity window. `sim::ca()` gives roots that hold the test CA. A stream whose
   handshake fails ends with no answer. The server sends no session ticket and checks no
   client certificate, so it reads no time. Each key is Ed25519, so the size of each
-  handshake packet is the same on each run of a seed. Each test sets the mesh time of
-  its client inside or outside the validity of a certificate, so no test depends on
-  the date it runs (`laptop.architect-2`, 2026-10-16T03:30:01Z:
+  handshake packet is the same on each run of one simulation. Each test sets the mesh
+  time of its client inside or outside the validity of a certificate, so no test
+  depends on the date it runs (`laptop.architect-2`, 2026-10-16T03:30:01Z:
   https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207437988,
   item 5).

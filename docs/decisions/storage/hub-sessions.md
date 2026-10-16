@@ -371,9 +371,14 @@
   writer does, so `Time::now` cannot fail. Lost: `Time::now` that gives
   `Option<Stamp>`, or a `Time::known` beside it, because each caller then handles a
   case that no writer has. `writer::Time` moved to `hub::Time`, because a hub gives
-  it. Decided by `laptop.architect`
+  it. It has no bound: the caller races it against its own clock. Supersedes the "No
+  `Hub::time`" of
+  https://github.com/synnaxlabs/foundation/issues/1992#issuecomment-6147197858.
+  Decided by `laptop.architect`
   (https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207425675,
-  2026-10-16 03:28 UTC).
+  2026-10-16 03:28 UTC;
+  https://github.com/synnaxlabs/foundation/issues/2837#issuecomment-6209931375,
+  2026-10-16 06:56 UTC).
   `writer::Writer::entries` gives the entry of each channel of
   `writer::Config::channels`, in that order: its position in the entries of
   `Writer::set`, as `Writer::draft` and `Draft::series_mut` take it. A channel named
