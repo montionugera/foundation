@@ -142,8 +142,10 @@ _Static_assert(UA_NS0ID_SERVER_SERVERSTATUS_CURRENTTIME == 2258,
 _Static_assert(
     UA_NS0ID_SERVER_SERVERCAPABILITIES_OPERATIONLIMITS_MAXNODESPERREAD == 11705,
     "UA_NS0ID_SERVER_SERVERCAPABILITIES_OPERATIONLIMITS_MAXNODESPERREAD moved");
-_Static_assert(UA_SECURECHANNELSTATE_CLOSED == 0,
-               "UA_SECURECHANNELSTATE_CLOSED moved");
+_Static_assert(UA_NS0ID_SERVER_SERVERSTATUS_STATE == 2259,
+               "UA_NS0ID_SERVER_SERVERSTATUS_STATE moved");
+_Static_assert(UA_SECURECHANNELSTATE_CLOSED == 0 && UA_SECURECHANNELSTATE_OPEN == 11,
+               "UA_SecureChannelState moved");
 _Static_assert(sizeof(UA_SecureChannelState) == sizeof(int),
                "UA_SecureChannelState changed");
 _Static_assert(UA_TIMERPOLICY_ONCE == 0 && UA_TIMERPOLICY_CURRENTTIME == 1 &&
@@ -674,10 +676,6 @@ UA_Client *shim_client_new(UA_EventLoop *el, UA_UInt32 chunks) {
     /* open62541 checks the chunks of a message that it sends and of one that it takes
      * against this count, not against the count of the peer. */
     config.localConnectionConfig.localMaxChunkCount = chunks;
-    /* A read of the server state each 10 s keeps the session while the client waits.
-     * The client drops the session timeout that the server gives, and a server can
-     * give one shorter than the 20 min that the client asks for. */
-    config.connectivityCheckInterval = 10000;
     /* No custom types: `value::mistyped` finds the type of each decoded value in
      * `UA_TYPES`. */
     return UA_Client_newWithConfig(&config);

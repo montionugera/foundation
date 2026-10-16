@@ -14,11 +14,12 @@ use env::clock::Clock;
 use env::net::{Net, Tcp, tcp};
 use env::rng::Rng;
 use sim::{Sim, node};
+use types::quality::Quality;
 use types::time::Span;
 
 use super::{
-    Client, GRACE, Large, Nodes, READS, Reads, Request, SPLIT, Slots, UNREAD, answer,
-    id_bytes, most,
+    Client, GRACE, Large, Nodes, READS, Reads, Request, SPLIT, STATE, Slots, UNREAD,
+    answer, id_bytes, most,
 };
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
@@ -91,6 +92,8 @@ struct Peer<'s> {
     value: Value,
     /// The server does not run while it is closed.
     gate: Gate,
+    /// The reads of the state of the server that it answered.
+    states: Rc<Cell<u32>>,
 }
 
 impl Peer<'_> {
@@ -171,9 +174,15 @@ async fn serve<T>(
     )
     .expect("the port is free");
     // SAFETY: the close below deletes the server before the manager drops.
-    let server = unsafe { Server::start(&manager, c"", sessions) };
+    let mut server = unsafe { Server::start(&manager, c"", sessions) };
     let value = Value::F64(f64::from(u32::try_from(rng.below(1 << 20)).expect("fits")));
     server.add_scalar(&VALUE, value);
+    let states = Rc::new(Cell::new(0));
+    let count = Rc::clone(&states);
+    server.set_source(&STATE, move || {
+        count.set(count.get() + 1);
+        (Value::I32(0), Quality::GOOD)
+    });
     let peer = Peer {
         server: &server,
         clock: node.clock(),
@@ -182,6 +191,7 @@ async fn serve<T>(
         url: format!("opc.tcp://{local}"),
         value,
         gate: Gate::default(),
+        states,
     };
     let gate = peer.gate.clone();
     let out = {
@@ -1014,8 +1024,9 @@ fn a_connect_whose_create_session_gets_no_answer_ends() {
 /// `CreateSession` and for the `CloseSession` for [`GRACE`] in all. The client sends
 /// the `CreateSession` just before the deadline and the server answers it at 9 s, or
 /// the client sends it just after the check of timeouts at 4 s and the server answers
-/// it just before its timeout, and then stops. The client sends no `CloseSession`, and the second client still connects:
-/// the server drops a session that is not active when its channel closes.
+/// it just before its timeout, and then stops. The client sends no `CloseSession`,
+/// and the second client still connects: the server drops a session that is not
+/// active when its channel closes.
 #[test]
 fn a_connect_whose_create_session_answers_late_ends_one_grace_later() {
     let before_the_deadline = times_out_and_closes(&[
@@ -1047,7 +1058,10 @@ fn a_client_idle_for_eleven_minutes_reads() {
             let idle = peer
                 .clock
                 .sleep(Span::from_nanos(11 * Span::MINUTE.nanos()));
-            client.idle(idle).await;
+            client
+                .idle(idle)
+                .await
+                .expect("the client keeps its session");
             (first, client.read_one(&VALUE).await, peer.value)
         })
         .await
@@ -1057,7 +1071,7 @@ fn a_client_idle_for_eleven_minutes_reads() {
 }
 
 /// A client idle for longer than the session timeout that it asks for (20 min) keeps
-/// its session.
+/// its session, as it reads the state of the server once per 10 s of the idle.
 #[test]
 fn a_client_idle_for_twenty_one_minutes_reads() {
     let (reads, _) = run(0, async |node| {
@@ -1067,13 +1081,71 @@ fn a_client_idle_for_twenty_one_minutes_reads() {
             let idle = peer
                 .clock
                 .sleep(Span::from_nanos(21 * Span::MINUTE.nanos()));
-            client.idle(idle).await;
-            (first, client.read_one(&VALUE).await, peer.value)
+            client
+                .idle(idle)
+                .await
+                .expect("the client keeps its session");
+            let states = peer.states.get();
+            (first, client.read_one(&VALUE).await, peer.value, states)
         })
         .await
     });
-    let (first, second, value) = reads;
-    assert_eq!((first, second), (Ok(value), Ok(value)));
+    let (first, second, value, states) = reads;
+    assert_eq!((first, second, states), (Ok(value), Ok(value), 21 * 6));
+}
+
+/// A server that closes while the client waits in [`Client::idle`] ends the wait when
+/// the close reaches the client, one hop (250 us) later.
+#[test]
+fn a_server_that_closes_ends_idle_at_once() {
+    let (idle, _) = run(0, async |node| {
+        let clock = node.clock();
+        let mut client = serve(&node, 4, async |mut peer| peer.connected().await).await;
+        let start = clock.now();
+        let idle = client.idle(clock.sleep(Span::MINUTE)).await;
+        (idle, clock.now() - start)
+    });
+    let closed = Err(Status::BAD_CONNECTION_CLOSED);
+    assert_eq!(idle, (closed, Span::from_nanos(250_000)));
+}
+
+/// A client whose session the server dropped ends [`Client::idle`] at once with
+/// `BadSessionClosed`: the read that finds the drop leaves the channel open.
+#[test]
+fn a_client_with_no_session_ends_idle_at_once() {
+    let (idle, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            peer.server
+                .set_session_timeout(Span::from_nanos(5_000_000_000));
+            let mut client = peer.connected().await;
+            peer.clock.sleep(Span::from_nanos(6_000_000_000)).await;
+            let read = client.read_one(&VALUE).await;
+            let start = peer.clock.now();
+            let idle = client.idle(peer.clock.sleep(Span::MINUTE)).await;
+            (read, idle, peer.clock.now() - start)
+        })
+        .await
+    });
+    let lost = Err(Fault::status(Status::BAD_SESSION_ID_INVALID));
+    let closed = Err(Status::BAD_SESSION_CLOSED);
+    assert_eq!(idle, (lost, closed, Span::ZERO));
+}
+
+/// A connect whose wait has already ended gives no client.
+#[test]
+fn a_connect_whose_wait_has_ended_gives_none() {
+    let (connect, _) = run(0, async |node| {
+        serve(&node, 1, async |mut peer| {
+            let url = CString::new(peer.url.clone()).expect("the URL holds no NUL");
+            let time = event::Time::monotonic(Clock::clone(&peer.clock));
+            let net = Net::clone(&peer.net);
+            let ended = future::ready(());
+            let connect = Client::connect(time, net, &mut peer.rng, &url, ended).await;
+            connect.map(|client| client.is_none())
+        })
+        .await
+    });
+    assert_eq!(connect, Ok(true));
 }
 
 /// The close of a client idle for 15 min frees its session on a server with room for
@@ -1086,7 +1158,10 @@ fn the_close_of_a_client_idle_for_fifteen_minutes_frees_its_session() {
             let idle = peer
                 .clock
                 .sleep(Span::from_nanos(15 * Span::MINUTE.nanos()));
-            client.idle(idle).await;
+            client
+                .idle(idle)
+                .await
+                .expect("the client keeps its session");
             client.close().await;
             let url = peer.url.clone();
             let client = peer.connect(&url).await;
@@ -2396,8 +2471,8 @@ fn a_read_sends_no_request_after_an_answer_of_it_fails() {
 }
 
 /// A connect whose read of the `MaxNodesPerRead` of the server fails gives the status
-/// of the read, and closes its session: a server with room for one session takes the
-/// next client.
+/// of the read, and closes its session with one `CloseSession`: a server with room
+/// for one session takes the next client.
 #[test]
 fn a_connect_whose_read_of_the_max_nodes_per_read_fails_closes_its_session() {
     let (connect, _) = run(0, async |node| {
@@ -2408,12 +2483,12 @@ fn a_connect_whose_read_of_the_max_nodes_per_read_fails_closes_its_session() {
                     recount_of(message, 0);
                 }
             };
-            let connect =
-                relayed(&node, &Relay::default(), rewrite, peer.connect(&url)).await;
+            let control = Relay::default();
+            let connect = relayed(&node, &control, rewrite, peer.connect(&url)).await;
             peer.connected().await.close().await;
-            connect.err()
+            (connect.err(), control.closes.get())
         })
         .await
     });
-    assert_eq!(connect, Some(Status::BAD_UNEXPECTED_ERROR));
+    assert_eq!(connect, (Some(Status::BAD_UNEXPECTED_ERROR), 1));
 }

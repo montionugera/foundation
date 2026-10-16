@@ -438,6 +438,8 @@ struct Record {
     /// The frames of the status channels.
     statuses: Vec<Frame>,
     served: BTreeMap<String, Vec<Served>>,
+    /// The reads of the state of the server that each server answered.
+    states: u32,
 }
 
 /// Runs `script` on a scene of `setup` at 10 Hz, as [`run_at`] does.
@@ -515,15 +517,16 @@ where
             .into_iter()
             .map(|(index, frames)| (index, frames.take()));
         let indexes: BTreeMap<u128, Vec<Frame>> = indexes.collect();
-        (result, indexes, statuses.take(), scene.variables.served())
+        (result, indexes, statuses.take(), scene.variables.clone())
     });
-    let (result, mut indexes, statuses, served) = run.expect("the run ends");
+    let (result, mut indexes, statuses, variables) = run.expect("the run ends");
     Record {
         result,
         frames: indexes.remove(&1).expect("the index 1"),
         indexes,
         statuses,
-        served,
+        served: variables.served(),
+        states: variables.states(),
     }
 }
 
@@ -702,6 +705,9 @@ fn counts_the_ticks_that_a_pause_of_the_node_skipped() {
     assert_eq!(last(&outcome.statuses, LOST), 0);
 }
 
+/// The error of a run whose server closes while the run waits for its next tick.
+const CLOSED: &str = "the connectivity check failed with BadConnectionClosed";
+
 #[test]
 fn ends_the_run_with_a_device_error_when_the_server_stops_and_reads_again_after() {
     let outcome = run(Setup::three(), |scene| async move {
@@ -715,25 +721,21 @@ fn ends_the_run_with_a_device_error_when_the_server_stops_and_reads_again_after(
         "the connect to opc.tcp://10.0.0.1:4840 failed with BadConnectionRejected";
     assert_eq!(
         errors,
-        [
-            (
-                DEVICE,
-                "the read failed with BadServerNotConnected".to_owned()
-            ),
-            (DEVICE, connect.to_owned()),
-        ]
+        [(DEVICE, CLOSED.to_owned()), (DEVICE, connect.to_owned()),]
     );
     let start = stamp(&outcome.frames[0], 1);
     let stamps = outcome.frames.iter().map(|frame| stamp(frame, 1) - start);
     let (before, after): (Vec<_>, Vec<_>) =
         stamps.partition(|&at| at <= ms(1_000).nanos());
-    assert_eq!((before.len(), after.len()), (11, 46));
+    assert_eq!((before.len(), after.len()), (11, 47));
     assert!(after[0] > ms(3_050).nanos(), "{after:?}");
     assert_eq!(last(&outcome.statuses, RESTARTS), 2);
 }
 
 /// A tick period of 2000 s is longer than the channel lifetime (10 min) and the session
-/// timeout (20 min) that the client asks for, and each read still finds both.
+/// timeout (20 min) that the client asks for, and each read still finds both. The run
+/// checks the connection each 10 s with no read: 199 times in each period, and 4 times
+/// in the last 50 s.
 #[test]
 fn reads_at_a_rate_slower_than_the_session_timeout_with_no_device_error() {
     let outcome = run_at("0.0005Hz", Setup::three(), |scene| async move {
@@ -742,7 +744,71 @@ fn reads_at_a_rate_slower_than_the_session_timeout_with_no_device_error() {
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
     assert_eq!(errors(&outcome.statuses), []);
     assert_eq!(last(&outcome.statuses, RESTARTS), 0);
-    assert_eq!(outcome.frames.len(), 3);
+    assert_eq!((outcome.frames.len(), outcome.states), (3, 402));
+}
+
+/// A server that stops answering after the first read of a run at 0.01 Hz ends the
+/// run before the next tick: the check of the connection 10 s after the read gets no
+/// answer in 5 s.
+#[test]
+fn ends_the_run_when_a_check_gets_no_answer() {
+    let outcome = run_at("0.01Hz", Setup::three(), |scene| async move {
+        scene.after(ms(1_050), |scene| async move { scene.gate.close() });
+        scene.supervise(ms(16_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let check = "the connectivity check failed with BadTimeout";
+    assert_eq!(errors(&outcome.statuses), [(DEVICE, check.to_owned())]);
+    assert_eq!(outcome.frames.len(), 1);
+}
+
+/// A server that drops the session of a run at 0.01 Hz while the run waits for its
+/// next tick ends the run at the next check of the connection, at most 10 s later.
+#[test]
+fn ends_the_run_when_a_check_finds_no_session() {
+    let outcome = run_at("0.01Hz", Setup::three(), |scene| async move {
+        scene.stop().await;
+        scene.variables.time_out_sessions(ms(5_000));
+        scene.serve();
+        scene.supervise(ms(11_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let check = "the connectivity check failed with BadSessionIdInvalid";
+    assert_eq!(errors(&outcome.statuses), [(DEVICE, check.to_owned())]);
+    assert_eq!(outcome.frames.len(), 2);
+}
+
+/// A run at 10 Hz reads more often than each 10 s, so it sends no check of the
+/// connection.
+#[test]
+fn sends_no_check_when_it_reads_more_often_than_each_ten_seconds() {
+    let outcome = run(Setup::three(), |scene| async move {
+        scene.supervise(ms(60_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!((outcome.frames.len(), outcome.states), (601, 0));
+}
+
+/// A server that stops while a run at 0.01 Hz waits for its next tick ends the run at
+/// once, and the supervisor connects again and reads before that tick.
+#[test]
+fn ends_the_run_at_once_when_the_server_stops_between_ticks() {
+    let outcome = run_at("0.01Hz", Setup::three(), |scene| async move {
+        scene.after(ms(1_050), |scene| async move { scene.stop().await });
+        scene.after(ms(3_050), |scene| async move { scene.serve() });
+        scene.supervise(ms(8_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let connect =
+        "the connect to opc.tcp://10.0.0.1:4840 failed with BadConnectionRejected";
+    assert_eq!(
+        errors(&outcome.statuses),
+        [(DEVICE, CLOSED.to_owned()), (DEVICE, connect.to_owned())]
+    );
+    let start = stamp(&outcome.frames[0], 1);
+    let stamps: Vec<_> = outcome.frames.iter().map(|f| stamp(f, 1) - start).collect();
+    assert_eq!(stamps.len(), 2);
+    assert!(stamps[1] > ms(3_050).nanos(), "{stamps:?}");
 }
 
 /// The counts hold across the runs of one supervisor call, as `status::Count` does.

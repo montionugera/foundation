@@ -84,17 +84,21 @@ impl kind::Kind for Kind {
     /// `uncertain`, another one that is not Good adds 1 to `bad`, and one of another
     /// type adds 1 to `mistyped`. The note names the first node of another type of
     /// the latest tick that has one, and a tick with none clears it. A tick that
-    /// leaves out each value writes no frame. After a cancel or an error, the run
-    /// closes its session: it sends `CloseSession`, waits at most 1 s for the answer,
-    /// then closes the connection. So a run ends within 1 s of a cancel.
+    /// leaves out each value writes no frame. When 10 s pass with no read, the run
+    /// reads the state of the server to check the connection. After a cancel or an
+    /// error, the run closes its session: it sends `CloseSession`, waits at most 1 s
+    /// for the answer, then closes the connection. So a run ends within 1 s of a
+    /// cancel.
     ///
     /// # Errors
     ///
     /// The error of [`Context::writer`] and of each failed write. [`Error::Config`]
     /// with `opcua.sample-type` for each channel whose sample type is not `bool`, `i8`
     /// to `u64`, `f32`, or `f64`, and with `opcua.large-read` when the Read of one node
-    /// alone is past one message of the server. [`Error::Device`] when the connect or a
-    /// read fails.
+    /// alone is past one message of the server. [`Error::Device`] when the connect, a
+    /// read, or one check fails: a check fails on a status that is not Good or on no
+    /// answer in 5 s. Also [`Error::Device`], at once, when the client loses its
+    /// channel or its session between two ticks.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         run(ctx)
     }
@@ -138,7 +142,11 @@ async fn read(
         .map_err(|large| large_read(reads, large))?;
     let missed = ctx.count("missed");
     let mut timer = pace::Timer::new(ctx.clock(), ctx.config().rate);
-    while let Some(tick) = client.idle(timer.tick(ctx.cancel())).await {
+    loop {
+        let idle = client.idle(timer.tick(ctx.cancel())).await;
+        let Some(tick) = idle.map_err(|status| device(Failure::Check(status)))? else {
+            break;
+        };
         missed.add(tick.missed);
         let Some((read, stamp)) = ctx
             .cancel()
@@ -406,6 +414,7 @@ fn large_read(reads: &[Read], Large { node, bytes, most }: Large) -> Error {
 enum Failure {
     Connect { address: String, status: Status },
     Read(Status),
+    Check(Status),
 }
 
 impl fmt::Display for Failure {
@@ -415,6 +424,9 @@ impl fmt::Display for Failure {
                 write!(f, "the connect to {address} failed with {}", status.name())
             }
             Self::Read(status) => write!(f, "the read failed with {}", status.name()),
+            Self::Check(status) => {
+                write!(f, "the connectivity check failed with {}", status.name())
+            }
         }
     }
 }
