@@ -158,7 +158,9 @@ async fn client(ctx: &Context<Config>) -> Result<Client, Error> {
 ///
 /// # Errors
 ///
-/// The error of [`Token::read`] when a read of the token fails.
+/// The error of [`Token::read`] when a read of the token fails, and
+/// [`Error::Retry`] at a TLS failure when the run has a `ca`, so that the next run
+/// reads it again.
 async fn send(
     client: &Client,
     ctx: &Context<Config>,
@@ -197,6 +199,14 @@ async fn send(
                 source.is_some()
             }
             Err(error) => {
+                if let (connector::http::Error::Tls { .. }, Some(ca)) =
+                    (&error, &ctx.config().ca)
+                {
+                    return Err(Error::Retry(
+                        format!("the write to InfluxDB failed: {error}. Check the ca {ca}")
+                            .into(),
+                    ));
+                }
                 ctx.error(&format_args!("the write to InfluxDB failed: {error}"));
                 false
             }

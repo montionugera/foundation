@@ -40,7 +40,9 @@ const RETRY: u8 = 3;
 /// The file of the CA of `file(CA_FILE)`.
 const CA_FILE: &str = "/etc/influx/ca.pem";
 /// The PEM of the CA that signs each certificate of `serve_tls` but `OtherCa`.
-const CA: &[u8] = include_bytes!("ca.pem");
+const CA: &[u8] = connector::http::sim::CA.as_bytes();
+/// The PEM of the CA that signs `Certificate::OtherCa`.
+const OTHER_CA: &[u8] = connector::http::sim::OTHER_CA.as_bytes();
 /// 2026-06-01T00:00:00Z, inside the validity of each certificate of `serve_tls` but
 /// `Expired`.
 const JUNE_2026: Stamp = Stamp::from_nanos(1_780_272_000_000_000_000);
@@ -1615,13 +1617,74 @@ fn shows_why_tls_fails_and_writes_nothing() {
         ),
     ] {
         let (errors, going, points, _) =
-            send_over_tls(certificate, Roots::default(), CA);
+            send_over_tls(certificate, connector::http::sim::ca(), b"");
         assert_eq!(
             (errors, going, points),
             (failed(reasons), true, 0),
             "{certificate:?}"
         );
     }
+}
+
+#[test]
+fn ends_the_run_at_a_tls_failure_with_a_ca() {
+    let (errors, _, points, classes) =
+        send_over_tls(Certificate::OtherCa, Roots::default(), CA);
+    let error = format!(
+        "the write to InfluxDB failed: TLS with server:8086 failed: invalid peer \
+         certificate: UnknownIssuer. Check the ca file(\"{CA_FILE}\")"
+    );
+    assert_eq!(
+        (errors, points, classes),
+        (vec![String::new(), error], 0, vec![0, RETRY])
+    );
+}
+
+#[test]
+fn reads_again_a_ca_fixed_while_the_node_runs() {
+    let got = run_tls(|node, tasks| async move {
+        let paths = node.paths();
+        paths
+            .write(std::path::Path::new(CA_FILE), CA)
+            .expect("writes");
+        let plant = Plant::tls(node, tasks, Certificate::OtherCa, Roots::default()).await;
+        let run = plant.start(with_ca(&plant, "file", CA_FILE));
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write(&mut writer, first, &[(1.0, 2.0)]);
+        plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
+        paths
+            .write(std::path::Path::new(CA_FILE), OTHER_CA)
+            .expect("writes");
+        plant.clock.sleep(Span::MINUTE).await;
+        plant.stop(run).await.expect("ok after a cancel");
+        plant.store.borrow().points("telemetry", &[]).count()
+    });
+    assert_eq!(got, 1);
+}
+
+#[test]
+fn keeps_the_roots_of_the_node_with_a_ca() {
+    assert_eq!(
+        send_over_tls(Certificate::Valid, connector::http::sim::ca(), OTHER_CA),
+        (vec![String::new()], true, 1, vec![0])
+    );
+}
+
+#[test]
+fn reads_a_ca_that_starts_with_a_byte_order_mark() {
+    const MARKED: &[u8] = &{
+        let mut marked = [0; 3 + CA.len()];
+        let (mark, rest) = marked.split_at_mut(3);
+        mark.copy_from_slice(b"\xEF\xBB\xBF");
+        rest.copy_from_slice(CA);
+        marked
+    };
+    assert_eq!(
+        send_over_tls(Certificate::Valid, Roots::default(), MARKED),
+        (vec![String::new()], true, 1, vec![0])
+    );
 }
 
 #[test]
