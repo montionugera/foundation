@@ -112,9 +112,9 @@ impl Client {
 }
 
 impl Client {
-    /// Closes the session, and blocks until the close goes out and the client's
-    /// thread ends. The transport then drains each close, such as that of a dial that
-    /// lost the stagger to another address, so it can block up to 3 s more.
+    /// Closes the session, and blocks until the close goes out, the transport drains
+    /// each close (such as that of a dial that lost the stagger to another address,
+    /// up to 3 s), and the client's thread ends.
     ///
     /// # Errors
     ///
