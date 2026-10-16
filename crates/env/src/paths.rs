@@ -49,16 +49,21 @@ impl Paths {
     /// folder is resolved as [`Paths::resolve`] gives it, and a path is under a folder
     /// when the folder is the file at the path or a directory that holds it, by the
     /// file and not by its name: a name in other case on a file system that ignores
-    /// case, and a bind mount, reach the same folder. The limits of `self` hold too, so
-    /// a handle never reaches more than the one it came from. The check and the call
-    /// are two steps: a symbolic link that another program makes between them can lead
-    /// the call out.
+    /// case, and a bind mount, reach the same folder. Each call takes the file at each
+    /// resolved folder again, so a folder that a program removes holds nothing, and a
+    /// hidden file that a write replaces stays hidden. A path also fails with
+    /// [`Error::Hidden`] when it resolves under the resolved path of a hidden folder,
+    /// also when nothing is there, or under the file that was there at this call. The
+    /// limits of `self` hold too, so a handle never reaches more than the one it came
+    /// from. The check and the call are two steps: a symbolic link that another program
+    /// makes between them can lead the call out.
     ///
     /// # Errors
     ///
-    /// The error of [`Paths::resolve`] or [`Driver::key`] for a path of `folders` or
-    /// `hidden`: [`Error::NotFound`] when one of them is not there, except a folder of
-    /// `hidden` that the limits of `self` refuse.
+    /// The error of [`Paths::resolve`] for a path of `folders` or `hidden`, or of
+    /// [`Driver::key`] for a path of `folders`, and for a path of `hidden` other than
+    /// [`Error::NotFound`]: [`Error::NotFound`] when a folder of `folders` is not
+    /// there.
     ///
     /// ```
     /// use std::path::PathBuf;
@@ -79,18 +84,14 @@ impl Paths {
             hidden: Vec::new(),
         };
         for dir in folders {
-            limit
-                .folders
-                .push(self.driver.key(&self.driver.resolve(dir)?)?);
+            let dir = self.driver.resolve(dir)?;
+            self.driver.key(&dir)?;
+            limit.folders.push(dir);
         }
         for dir in hidden {
             let dir = self.driver.resolve(dir)?;
-            match self.driver.key(&dir) {
-                Ok(key) => limit.hidden.push(key),
-                // `self` refuses each path under it that is there.
-                Err(Error::NotFound) if self.allowed(&dir).is_err() => {}
-                Err(e) => return Err(e),
-            }
+            let key = self.key(&dir)?;
+            limit.hidden.push((dir, key));
         }
         Ok(Self {
             driver: Rc::clone(&self.driver),
@@ -231,7 +232,7 @@ impl Paths {
                 } else {
                     dir
                 };
-                self.allowed(&self.driver.resolve(dir)?)?;
+                self.allowed(dir, &self.driver.resolve(dir)?)?;
                 self.driver.make_dir(path)?;
                 // A link that does not resolve can still lead to a directory, which
                 // the place does not hold. A directory made at the place resolves.
@@ -250,27 +251,45 @@ impl Paths {
         if self.limits.is_empty() {
             return Ok(());
         }
-        self.allowed(&self.driver.resolve(path)?)
+        self.allowed(path, &self.driver.resolve(path)?)
     }
 
-    /// `Ok` when the resolved path `resolved` passes each limit.
-    fn allowed(&self, resolved: &Path) -> Result<(), Error> {
-        let mut keys = Vec::new();
-        for (at, dir) in resolved.ancestors().enumerate() {
-            match self.driver.key(dir) {
-                Ok(key) => keys.push(key),
-                // The last name of a path that a write or `make_dir` makes.
-                Err(Error::NotFound) if at == 0 => {}
-                Err(e) => return Err(e),
+    /// `Ok` when `path`, which resolves to `resolved`, passes each limit.
+    fn allowed(&self, path: &Path, resolved: &Path) -> Result<(), Error> {
+        // The key of the file itself comes from `path`, as the call reaches it: the
+        // resolved path of a new name can be longer than the host takes.
+        let mut keys: Vec<_> = self.key(path)?.into_iter().collect();
+        for dir in resolved.ancestors().skip(1) {
+            keys.push(self.driver.key(dir)?);
+        }
+        let holds =
+            |dir: &Path| Ok(self.key(dir)?.is_some_and(|key| keys.contains(&key)));
+        for limit in self.limits.iter() {
+            for (dir, was) in &limit.hidden {
+                let named = resolved.starts_with(dir);
+                if named || was.is_some_and(|key| keys.contains(&key)) || holds(dir)? {
+                    return Err(Error::Hidden);
+                }
             }
         }
-        let under = |dirs: &[Key]| dirs.iter().any(|dir| keys.contains(dir));
-        if self.limits.iter().any(|limit| under(&limit.hidden)) {
-            Err(Error::Hidden)
-        } else if self.limits.iter().all(|limit| under(&limit.folders)) {
-            Ok(())
-        } else {
-            Err(Error::Outside)
+        for limit in self.limits.iter() {
+            let mut inside = false;
+            for dir in &limit.folders {
+                inside = inside || holds(dir)?;
+            }
+            if !inside {
+                return Err(Error::Outside);
+            }
+        }
+        Ok(())
+    }
+
+    /// The key of the file at `dir`, or `None` when nothing is there.
+    fn key(&self, dir: &Path) -> Result<Option<Key>, Error> {
+        match self.driver.key(dir) {
+            Ok(key) => Ok(Some(key)),
+            Err(Error::NotFound) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 }
@@ -278,8 +297,10 @@ impl Paths {
 /// The folders of one call of [`Paths::within`].
 #[derive(Clone, Debug)]
 struct Limit {
-    folders: Vec<Key>,
-    hidden: Vec<Key>,
+    /// The resolved path of each folder.
+    folders: Vec<PathBuf>,
+    /// The resolved path of each hidden folder, with the key of what was there.
+    hidden: Vec<(PathBuf, Option<Key>)>,
 }
 
 /// The key of a file of the host: two paths that name the same file have the same
@@ -450,9 +471,9 @@ mod tests {
             if name.starts_with(b"new") || path.ends_with("/none/deep") {
                 return Err(Error::NotFound);
             }
-            self.resolve(path)?;
+            let at = self.resolve(path)?;
             // FNV-1a.
-            let folded = path.as_os_str().as_encoded_bytes().to_ascii_lowercase();
+            let folded = at.as_os_str().as_encoded_bytes().to_ascii_lowercase();
             let hash = folded
                 .iter()
                 .fold(0xcbf2_9ce4_8422_2325_u64, |hash, &byte| {
@@ -551,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_that_is_not_there_is_not_found() {
+    fn a_folder_that_is_not_there_is_not_found_and_a_hidden_one_hides_its_name() {
         let free = Paths::new(One::default());
         let none = ["/none/a".into()];
         assert_eq!(
@@ -562,7 +583,9 @@ mod tests {
         let new = ["/work/new".into()];
         assert_eq!(free.within(&new, &[]).err(), Some(Error::NotFound));
         let work = ["/work".into()];
-        assert_eq!(free.within(&work, &new).err(), Some(Error::NotFound));
+        let paths = free.within(&work, &new).unwrap();
+        assert_eq!(reached(&paths, "/work/new"), Err(Error::Hidden));
+        assert_eq!(reached(&paths, "/work/new2"), Ok(()));
         let limited = free.within(&work, &[]).unwrap();
         let refused = ["/other/new".into()];
         assert_eq!(limited.within(&work, &refused).err(), None);
@@ -570,6 +593,15 @@ mod tests {
             .within(&["/none".into()], &["/work/data".into()])
             .unwrap();
         assert_eq!(paths.read(Path::new("/none/a"), 1), Err(Error::NotFound));
+    }
+
+    #[test]
+    fn a_hidden_folder_that_the_limits_refuse_and_that_is_there_hides() {
+        let free = Paths::new(One::default());
+        let outer = free.within(&["/a/b".into()], &[]).unwrap();
+        let inner = outer.within(&["/a/b/c".into()], &["/a".into()]).unwrap();
+        assert_eq!(reached(&inner, "/a/b/c/d"), Err(Error::Hidden));
+        assert_eq!(reached(&outer, "/a/b/c/d"), Ok(()));
     }
 
     #[test]
