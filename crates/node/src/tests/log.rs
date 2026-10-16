@@ -482,23 +482,34 @@ impl std::fmt::Display for Boom {
     }
 }
 
+/// What the child of a panic test runs.
+#[derive(Clone, Copy)]
+enum Case {
+    /// The log writes to stderr.
+    Free,
+    /// The writer blocks.
+    Stuck,
+    /// The log drops its hold, then panics in an event.
+    Late,
+    /// The writer panics at one line, and the log waits for the next.
+    Writes,
+}
+
 /// In a child process: a log with its thread `log` held and each line of
-/// `numbered(0, 3)` in its queue, and the panic hook of `main`, then a panic. A
-/// `stuck` writer blocks. A `late` log drops its hold, then panics in an event.
-fn panics(stuck: bool, late: bool) -> ! {
+/// `numbered(0, 3)` in its queue, and the panic hook of `main`, then a panic, as
+/// `case` says.
+fn panics(case: Case) -> ! {
     let (_, mesh) = clock::Clock::new(os::clock());
     let (_free, freed) = mpsc::channel();
     let (entered, _blocked) = mpsc::channel();
-    let writer: Box<dyn io::Write + Send> = if stuck {
-        let lines = Lines::default();
-        let entered = Some(entered);
-        Box::new(Stuck {
-            lines,
-            entered,
+    let writer: Box<dyn io::Write + Send> = match case {
+        Case::Stuck => Box::new(Stuck {
+            lines: Lines::default(),
+            entered: Some(entered),
             free: freed,
-        })
-    } else {
-        Box::new(io::stderr())
+        }),
+        Case::Writes => Box::new(Panics(Lines::default())),
+        Case::Free | Case::Late => Box::new(io::stderr()),
     };
     let format = ops::Log {
         json: false,
@@ -509,18 +520,29 @@ fn panics(stuck: bool, late: bool) -> ! {
     let log = log::open(Log { writer, format }, &threads, wall, mesh);
     let hold = log.hold().expect("the thread log starts");
     tracing::dispatcher::with_default(&log.dispatch, numbered(0, 3));
-    let dispatch = log.dispatch.clone();
+    let flush = log.clone();
     let previous = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
         if log.panicked(info) {
             previous(info);
         }
     }));
-    if late {
-        drop(hold);
-        tracing::dispatcher::with_default(&dispatch, || {
-            tracing::info!(target: "test", field = %Boom);
-        });
+    match case {
+        Case::Late => {
+            drop(hold);
+            tracing::dispatcher::with_default(&flush.dispatch, || {
+                tracing::info!(target: "test", field = %Boom);
+            });
+        }
+        Case::Writes => {
+            tracing::dispatcher::with_default(&flush.dispatch, || {
+                tracing::info!(target: "test", "boom");
+                tracing::info!(target: "test", "c");
+            });
+            let bound = Duration::from_millis(500);
+            assert!(flush.wait(bound), "the line after the panic is late");
+        }
+        Case::Free | Case::Stuck => {}
     }
     panic!("the test panics");
 }
@@ -529,9 +551,10 @@ fn panics(stuck: bool, late: bool) -> ! {
 fn a_panic_writes_the_queued_lines_then_the_panic() {
     #[expect(clippy::disallowed_methods, reason = "the parent test marks its child")]
     match std::env::var(CHILD).as_deref() {
-        Ok("free") => panics(false, false),
-        Ok("stuck") => panics(true, false),
-        Ok("late") => panics(false, true),
+        Ok("free") => panics(Case::Free),
+        Ok("stuck") => panics(Case::Stuck),
+        Ok("late") => panics(Case::Late),
+        Ok("writes") => panics(Case::Writes),
         _ => {}
     }
     let name = "tests::log::a_panic_writes_the_queued_lines_then_the_panic";
@@ -572,6 +595,14 @@ fn a_panic_in_an_event_after_the_shards_end_reaches_stderr_with_no_abort() {
     let name = "tests::log::a_panic_writes_the_queued_lines_then_the_panic";
     let stderr = child(name, "late");
     assert!(stderr.contains("the field panics"), "{stderr}");
+}
+
+#[test]
+fn a_panic_of_a_write_waits_for_no_line_and_runs_the_hook_before() {
+    let name = "tests::log::a_panic_writes_the_queued_lines_then_the_panic";
+    let stderr = child(name, "writes");
+    assert!(stderr.contains("the writer panics"), "{stderr}");
+    assert!(stderr.contains("the test panics"), "{stderr}");
 }
 
 /// The line of an event with `field` and other fields.

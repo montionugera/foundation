@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Context, Poll, Waker};
+use std::thread::{self, ThreadId};
 use std::time::Duration;
 
 use env::thread::{Error, Handle};
@@ -50,6 +51,7 @@ impl Flush {
             state: Mutex::new(State {
                 parts: Some(Parts { writer, receiver }),
                 running: false,
+                thread: None,
                 written: 0,
                 handles: Vec::new(),
             }),
@@ -105,14 +107,15 @@ impl Flush {
 
     /// Logs ERROR `panicked` with the field `panic`, the text of `info`. For a panic
     /// hook: it can run inside an event, so it sets no dispatch and starts no
-    /// thread. While a [`Hold`] lives, waits as [`Flush::wait`] does with a bound of
-    /// 1 s, and returns `false` when the bound passed first: the writer may then
-    /// block a write of the hook too. After each [`Hold`] dropped, returns `true` at
-    /// once, and the line waits for the next [`Flush::wait`].
+    /// thread. While a shard runs, waits as [`Flush::wait`] does with a bound of 1 s,
+    /// and returns `false` when the bound passed first: the writer may then block a
+    /// write of the hook too. After each shard has ended, or for a panic of the
+    /// writer, returns `true` at once, and the line waits for the log to write it.
     #[must_use]
     pub fn panicked(&self, info: &PanicHookInfo<'_>) -> bool {
         self.queue.push(self.queue.line.panicked(info).into_bytes());
-        if self.queue.closed.load(Ordering::Acquire) {
+        let writing = self.queue.lock().thread == Some(thread::current().id());
+        if writing || self.queue.closed.load(Ordering::Acquire) {
             return true;
         }
         self.written(self.queue.sent.load(Ordering::Acquire), PANIC)
@@ -185,6 +188,8 @@ struct State {
     parts: Option<Parts>,
     /// A thread `log` runs or starts. When false, `parts` is there.
     running: bool,
+    /// The thread `log` that holds `parts`.
+    thread: Option<ThreadId>,
     /// The lines of the queue that the thread `log` has written.
     written: u64,
     handles: Vec<Handle>,
@@ -241,6 +246,7 @@ impl Queue {
         let drain = move || {
             let mut state = queue.lock();
             let (parts, written) = (state.parts.take(), state.written);
+            state.thread = Some(thread::current().id());
             drop(state);
             Drain {
                 queue,
@@ -352,6 +358,7 @@ impl Future for Drain {
                 }
                 state.parts = drain.parts.take();
                 state.running = false;
+                state.thread = None;
                 drop(state);
                 drain.queue.written.notify_all();
                 return Poll::Ready(());
