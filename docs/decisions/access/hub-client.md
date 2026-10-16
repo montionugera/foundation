@@ -84,9 +84,11 @@
   `Reader`, whose `next` gives each frame that the node sends, in order. A read takes no
   turn: it runs beside the requests. A reader holds a clone of its session. It keeps
   the error that ended it and gives it again at each `next`, and the error that ended
-  the renewal replaces it, as for `request`. The key set of a reader is its own: each
-  place is the entry at its position, and its key and slots are not the node's (#2808
-  states one checked key set for the places). The plan
+  the renewal replaces it, as for `request`. The key set of a reader is its own:
+  `wire::hub::client::Reader` builds it with `KeySet::ordered` at the last place, so
+  entry `n` is place `n`, its key and slots are not the node's, and places that name a
+  channel twice give `client::Error::Repeated` (#2808, item 1 of
+  https://github.com/synnaxlabs/foundation/pull/2802#issuecomment-6207214002). The plan
   (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204280445) was
   approved by `laptop.architect` at 2026-10-15T23:19:38Z
   (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204306531).
