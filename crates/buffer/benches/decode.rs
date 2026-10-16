@@ -1,6 +1,6 @@
 //! The time to decode each header of a record's table, as the scan of a read and the
-//! walk of an open do: a table of 1023 headers with samples, and one in which every
-//! second header has no samples.
+//! walk of an open do: a table of 1023 headers with samples, and one in which the first
+//! header and every second one after it have no samples.
 
 use buffer::bench::Table;
 use divan::Bencher;

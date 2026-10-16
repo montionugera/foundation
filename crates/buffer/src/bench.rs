@@ -1,5 +1,5 @@
-//! `wal::Writer` and `log::Logs`, for the bench targets and the `alloc` test only. Not
-//! a stable surface.
+//! `wal::Writer`, `log::Logs`, and a header table, for the bench targets and the
+//! `alloc` test only. Not a stable surface.
 
 use std::{hint, iter, mem};
 
@@ -310,8 +310,8 @@ pub struct Table {
 }
 
 impl Table {
-    /// A table of `headers` headers, each of its own index. Each `empty`-th header
-    /// has no samples; none has when `empty` is 0.
+    /// A table of `headers` headers, each of its own index. The first header, and each
+    /// `empty`-th header after it, has no samples; none has when `empty` is 0.
     #[must_use]
     pub fn new(headers: u32, empty: u32) -> Self {
         let headers: Vec<Header> = (0..headers)
@@ -343,7 +343,7 @@ impl Table {
     ///
     /// # Panics
     ///
-    /// When a header does not decode.
+    /// When `new` was given over 1023 headers, the most that a table holds.
     #[must_use]
     pub fn decode(&self) -> usize {
         let headers = entry::parse(&self.bytes, self.bytes.len()).expect("a table");
