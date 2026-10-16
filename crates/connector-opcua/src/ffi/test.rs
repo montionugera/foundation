@@ -168,7 +168,6 @@ unsafe extern "C" {
         kind: *const c_void,
     ) -> *const c_void;
     pub(crate) fn UA_Client_disconnect(client: *mut super::Client) -> u32;
-    pub(crate) fn UA_Client_disconnectAsync(client: *mut super::Client) -> u32;
 
     pub(crate) fn shim_server_new(
         el: *mut EventLoop,
