@@ -78,8 +78,9 @@
   by `laptop.architect` at 2026-10-10T23:31:47Z in the ruling below). At the program,
   `client::Reader` decodes the start of a read stream: `Places`, then the run. With the
   last place it gives the `Start`: the places, their key set, and the `hub::Reader` of
-  their count and the read's mode, with which the program decodes each reply. Only `wire` builds that reader, so the program
-  side builds no `Open` with a grant that it never sends. `client::Reader` refuses an
+  their count and the read's mode, with which the program decodes each reply. Only
+  `wire` builds that reader, so the program side builds no `Open` with a grant that it
+  never sends. `client::Reader` refuses an
   index place whose sample type is not `Stamp` with `Error::Unstamped`
   (`laptop.architect`, 2026-10-11T00:45:04Z,
   https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6103881921). It
@@ -99,7 +100,8 @@
   encodes to its bytes. `client::Reader` alone checks the run and builds the key set
   (`laptop.architect`, 2026-10-16T06:57:29Z,
   https://github.com/synnaxlabs/foundation/issues/2808#issuecomment-6209940652).
-  Supersedes https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6104390669. The
+  Supersedes
+  https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6104390669. The
   program sends no credit: the stream's flow control bounds the frames in flight. The
   program knows the kind of each stream that it opens; the node knows the kind of the
   hello stream only, and decodes the first message of each later stream with
