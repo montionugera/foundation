@@ -76,9 +76,9 @@ pub enum Unopened {
         /// The most bytes of one entry.
         limit: usize,
     },
-    /// The open adds a record or opens a held one, and the buffer had no block or no
-    /// room for the entry that holds the records, so a restart would not resume the
-    /// reader. Open it again later.
+    /// The open adds a record, opens a held one, or takes over an open session with a
+    /// new hold, and the buffer had no block or no room for the entry that holds the
+    /// records, so a restart would not resume the reader. Open it again later.
     Unrecorded,
 }
 
