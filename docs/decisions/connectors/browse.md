@@ -29,11 +29,13 @@
   No cap on the length of a name (`laptop.architect-2`, 2026-10-16T17:55:41Z:
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6221521864). A
   pattern of more than `STARS` (256) `*` in its names other than `**`, a run of `*` as
-  one, gives `Malformed::Stars` ("it has more than 256 `*`, each a piece to test in
-  each name") before any call to the device: only a `*` makes a piece
-  (`laptop.architect-2`, 2026-10-16T22:19:36Z:
+  one, gives `Malformed::Stars` ("it has more than 256 `*`, and each costs a search of
+  each name") before any call to the device (`laptop.architect-2`,
+  2026-10-16T22:19:36Z:
   https://github.com/synnaxlabs/foundation/pull/2927#issuecomment-6225785631). This
   supersedes the "no new error" and "no cap on a segment" of the ruling of 17:55:41Z.
+  Only a `*` makes a piece, and a `*` at an end of a name makes no search; #2948 fixes
+  that text.
   The cap does not bound the cost of a walk: each entry tests each glob of its state,
   in time linear in its name. On box1 in release, 63 globs `**/*<1 998 a>*` over
   folders and points named 2 000 `a` take 3.9 s to the `Budget`. A budget of compared

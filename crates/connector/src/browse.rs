@@ -791,7 +791,7 @@ impl fmt::Display for Malformed {
             ),
             Self::Stars => write!(
                 f,
-                "it has more than {STARS} `*`, each a piece to test in each name"
+                "it has more than {STARS} `*`, and each costs a search of each name"
             ),
         }
     }
