@@ -523,9 +523,10 @@ each connector's protocol parser, the `node_id`
 text of the `opcua` kind
 (`connector_opcua::node`, #2523), its `address`, which `UA_parseEndpointUrl` of
 open62541 reads (`connector_opcua::Kind::parse`, #2523), the `address` of the
-`modbus` kind (`connector_modbus::Kind::parse`, #2789), the file `name` of the data
-directory (`node::name::decode`, #2174), the file `budget` of the data directory
-(`node::budget::decode`, #2174), the parsers of `/proc/self/mountinfo` and
+`modbus` kind (`connector_modbus::Kind::parse`, #2789), the text of a browse path and
+pattern, which no front end reads yet (`connector::browse`, #2827), the file `name` of
+the data directory (`node::name::decode`, #2174), the file `budget` of the data
+directory (`node::budget::decode`, #2174), the parsers of `/proc/self/mountinfo` and
 `/proc/self/cgroup` in `os::memory` (#2226), the request of a remote program and the
 reply of its node (`ops::serve`, #2563), the newest handoff record of each index in the
 ring (`home::handoff::read`, #2278), the buffer entry that a complete reader reads from
