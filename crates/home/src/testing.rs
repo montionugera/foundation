@@ -266,18 +266,30 @@ mod tests {
         assert_eq!(commits, 1020);
     }
 
-    /// The polls of 256 channels of `scalar`, `batch` to a commit, that a new ring
-    /// takes.
+    /// The polls of 256 channels of `scalar` that a new ring takes, with a wait for
+    /// their commit after each `batch` of them.
     fn polls(scalar: Scalar, batch: i64) -> i64 {
         run(
             sim::node::Config::default(),
             move |_, mut shard, mut interner, now| async move {
                 let (writer, set) = open_writer(&mut shard, &mut interner, scalar, 256);
-                let mut stamp = now.nanos();
-                while commit(&mut shard, writer, &set, stamp..stamp + batch).await {
-                    stamp += batch;
+                let mut taken = 0;
+                loop {
+                    for _ in 0..batch {
+                        let stamp = Stamp::from_nanos(now.nanos() + taken);
+                        let outcomes = write(&mut shard, writer, &set, stamp);
+                        if !matches!(outcomes[..], [Outcome::Applied { .. }]) {
+                            assert!(
+                                matches!(outcomes[..], [Outcome::Lost { .. }]),
+                                "{outcomes:?}"
+                            );
+                            shard.committed().await.expect("commits");
+                            return taken;
+                        }
+                        taken += 1;
+                    }
+                    shard.committed().await.expect("commits");
                 }
-                stamp - now.nanos()
             },
         )
     }
@@ -289,25 +301,26 @@ mod tests {
             .map(|scalar| (scalar, polls(scalar, 1), polls(scalar, 16)))
             .collect();
 
-        // A poll a commit takes 3 blocks, 48 B a data sample, and 4 of uuid. At 16
-        // polls a commit, a sample of 4 bytes or less takes about 38 B, one of 8 bytes
-        // 44 B, and a uuid 60 B.
+        // A poll a commit takes 3 blocks, 48 B a data sample, and 4 of uuid. A record
+        // of the test ring holds at most 64 KiB, so 16 polls go in more than one
+        // commit: a sample of 4 bytes or less takes about 37 B, one of 8 bytes 43 B,
+        // and a uuid 60 B.
         assert_eq!(
             filled,
             [
-                (Scalar::Bool, 340, 432),
-                (Scalar::I8, 340, 432),
-                (Scalar::I16, 340, 432),
-                (Scalar::I32, 340, 432),
-                (Scalar::I64, 340, 368),
-                (Scalar::U8, 340, 432),
-                (Scalar::U16, 340, 432),
-                (Scalar::U32, 340, 432),
-                (Scalar::U64, 340, 368),
-                (Scalar::F32, 340, 432),
-                (Scalar::F64, 340, 368),
-                (Scalar::Stamp, 340, 368),
-                (Scalar::Span, 340, 368),
+                (Scalar::Bool, 340, 441),
+                (Scalar::I8, 340, 441),
+                (Scalar::I16, 340, 441),
+                (Scalar::I32, 340, 441),
+                (Scalar::I64, 340, 379),
+                (Scalar::U8, 340, 441),
+                (Scalar::U16, 340, 441),
+                (Scalar::U32, 340, 441),
+                (Scalar::U64, 340, 379),
+                (Scalar::F32, 340, 441),
+                (Scalar::F64, 340, 379),
+                (Scalar::Stamp, 340, 379),
+                (Scalar::Span, 340, 379),
                 (Scalar::Uuid, 255, 272),
             ]
         );
