@@ -46,8 +46,8 @@ impl Resolver {
     ///
     /// [`Error::Missing`] when the variable is not set or is empty, or the file is
     /// not there or is empty, with the fix. [`Error::Unavailable`] when the value is
-    /// more than 64 KiB or a file call fails, with the fix. Each error of the store
-    /// for `secret()`.
+    /// more than 64 KiB, a file call fails, or, for `secret()`, other users can read
+    /// its file, with the fix. Each other error of the store for `secret()`.
     pub async fn get(&self, source: &Source) -> Result<Value, Error> {
         match source {
             Source::Env(name) => {

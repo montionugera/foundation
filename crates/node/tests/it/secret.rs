@@ -1,6 +1,6 @@
 //! The file store of secrets on the real disk reads a secret from the file that its
 //! own text names, in the data directory that `foundation start --data` gets, unless
-//! the group or other users can read it, and `create_secret` writes each name there.
+//! other users can read it, and `create_secret` writes each name there.
 
 use std::fs::Permissions;
 use std::os::unix::fs::PermissionsExt;
@@ -39,8 +39,8 @@ fn reads_the_secret_from_the_file_that_its_text_names() {
         std::fs::create_dir_all(file.parent().expect("a directory"))
             .expect("makes the directory");
         std::fs::write(&file, b"t\n").expect("writes it");
-        std::fs::set_permissions(&file, Permissions::from_mode(0o640))
-            .expect("lets the group read it");
+        std::fs::set_permissions(&file, Permissions::from_mode(0o644))
+            .expect("lets other users read it");
         let exposed = resolver
             .get(&source)
             .await
@@ -48,13 +48,13 @@ fn reads_the_secret_from_the_file_that_its_text_names() {
         let shown = file.display();
         let refused = Err(Error::Unavailable {
             detail: format!(
-                "the group or other users can read the file {shown}. Make it readable \
-                 only by the user that runs the node: chmod 600 {shown}"
+                "other users can read the file {shown}. Make it unreadable by other \
+                 users: chmod o-r {shown}"
             ),
         });
         assert_eq!(exposed, refused);
-        std::fs::set_permissions(&file, Permissions::from_mode(0o600))
-            .expect("makes it private");
+        std::fs::set_permissions(&file, Permissions::from_mode(0o640))
+            .expect("lets only the group read it");
         let read = resolver
             .get(&source)
             .await

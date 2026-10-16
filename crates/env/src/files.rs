@@ -371,9 +371,9 @@ impl File {
         self.descriptor.len()
     }
 
-    /// Whether users other than the owner of the file can read it: on Unix, its mode
-    /// gives read to its group or to other users. The driver reads it at the open, so
-    /// a later change of the mode does not change it.
+    /// Whether every user of the machine can read the file: on Unix, its mode gives
+    /// read to other users. It does not see an ACL entry that grants read. The driver
+    /// reads it at the open, so a later change of the mode does not change it.
     ///
     /// ```
     /// fn private(file: &env::files::File) -> bool {

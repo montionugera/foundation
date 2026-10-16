@@ -442,9 +442,9 @@ fn open_absolute(path: &Path) -> Result<Found, Error> {
     Ok(Found { fd, len, exposed })
 }
 
-/// Whether the mode of `stat` gives read to the group or to other users.
+/// Whether the mode of `stat` gives read to other users.
 fn exposed(stat: &fs::Stat) -> bool {
-    stat.st_mode & 0o044 != 0
+    stat.st_mode & 0o004 != 0
 }
 
 /// The length of the regular file of `stat`, or the error of another kind of file.

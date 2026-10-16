@@ -3,7 +3,7 @@
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use types::time::{Monotonic, Span, Stamp};
 
@@ -260,16 +260,18 @@ impl Node {
             .fail(self.0.node, path, operation);
     }
 
-    /// Sets whether users other than the owner can read the file at `path`, relative to
-    /// the data directory, at once, as a `chmod` from outside the node does. A file
+    /// Sets whether other users can read the file at `path`, relative to the data
+    /// directory, at once, as a `chmod` from outside the node does. A file
     /// that an open makes is not exposed, as on `os`. A descriptor keeps what its open
     /// found, and a crash keeps the setting.
     ///
     /// # Panics
     ///
-    /// When `path` is absolute or no file is at `path`.
+    /// When `path` is absolute, has a `..` segment, or no file is at `path`.
     pub fn set_file_exposed(&self, path: &Path, exposed: bool) {
         assert!(path.is_relative(), "{} is absolute", path.display());
+        let parent = path.components().any(|part| part == Component::ParentDir);
+        assert!(!parent, "{} has a `..` segment", path.display());
         let found = lock(&self.0.shared)
             .files()
             .expose(self.0.node, path, exposed);

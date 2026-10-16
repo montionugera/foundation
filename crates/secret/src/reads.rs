@@ -74,8 +74,8 @@ impl Reads {
             let shown = path.display();
             return Err(Error::Unavailable {
                 detail: format!(
-                    "the group or other users can read the file {shown}. Make it \
-                     readable only by the user that runs the node: chmod 600 {shown}"
+                    "other users can read the file {shown}. Make it unreadable by \
+                     other users: chmod o-r {shown}"
                 ),
             });
         }

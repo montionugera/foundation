@@ -74,9 +74,8 @@ fn main() {
 
     let (refused, found) = refused();
     assert_eq!(found, 0, "a refused get leaves the value in no freed block");
-    let exposed = "the group or other users can read the file \
-                   /data/secrets/site.token. Make it readable only by the user that \
-                   runs the node: chmod 600 /data/secrets/site.token";
+    let exposed = "other users can read the file /data/secrets/site.token. Make it \
+                   unreadable by other users: chmod o-r /data/secrets/site.token";
     assert_eq!(
         refused,
         Err(Error::Unavailable {
@@ -87,7 +86,7 @@ fn main() {
 }
 
 /// A get of the file store, on the sim disk, of a file that holds `PLAIN` and that
-/// the group or other users can read. Gives what it gave and the count of freed
+/// other users can read. Gives what it gave and the count of freed
 /// blocks that hold `PLAIN` during the get.
 fn refused() -> (Result<(), Error>, u64) {
     let mut sim = sim::Sim::new(sim::Config::default());

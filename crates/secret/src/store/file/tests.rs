@@ -213,14 +213,14 @@ fn gives_a_failed_file_call_as_unavailable() {
 fn exposed(path: &str) -> Result<Vec<u8>, Error> {
     Err(Error::Unavailable {
         detail: format!(
-            "the group or other users can read the file /data/{path}. Make it readable \
-             only by the user that runs the node: chmod 600 /data/{path}"
+            "other users can read the file /data/{path}. Make it unreadable by other \
+             users: chmod o-r /data/{path}"
         ),
     })
 }
 
 #[test]
-fn refuses_a_file_that_the_group_or_other_users_can_read_until_its_mode_is_fixed() {
+fn refuses_a_file_that_other_users_can_read_until_its_mode_is_fixed() {
     on_sim(|node, files| async move {
         let store = store(files.clone());
         let path = Path::new("secrets/plant.token");

@@ -242,10 +242,11 @@ fn open_absolute_reads_a_file_outside_the_data_directory() {
 }
 
 #[test]
-fn an_open_gives_whether_the_group_or_other_users_can_read_the_file() {
+fn an_open_gives_whether_other_users_can_read_the_file() {
     run(|files, data| async move {
         let made = create(&files, "made", KIB).await;
         assert!(!made.exposed(), "a file that an open makes is mode 0600");
+        made.close().await;
         let host = data.parent().unwrap().join("token");
         std::fs::write(&host, b"abc").unwrap();
         let chmod = |bits| {
@@ -259,13 +260,20 @@ fn an_open_gives_whether_the_group_or_other_users_can_read_the_file() {
             (0o400, false),
             (0o700, false),
             (0o620, false),
+            (0o640, false),
+            (0o660, false),
             (0o602, false),
-            (0o640, true),
+            (0o601, false),
             (0o604, true),
             (0o644, true),
         ];
         for (mode, exposed) in modes {
             chmod(mode);
+            if mode & 0o200 != 0 {
+                let write = files.open(Path::new("made"), Mode::Write).await.unwrap();
+                assert_eq!(write.exposed(), exposed, "a write open at {mode:o}");
+                write.close().await;
+            }
             let file = files.open(Path::new("made"), Mode::Read).await.unwrap();
             let outside = files.open_absolute(&absolute(&host)).await.unwrap();
             assert_eq!((file.exposed(), outside.exposed()), (exposed, exposed));

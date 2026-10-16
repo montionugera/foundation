@@ -11,9 +11,8 @@ use crate::{Error, Value};
 /// `<dir>/plant.influx_token`, with one trailing `\n` or `\r\n` cut. It reads the
 /// file at each `get`, so a file added or changed takes effect at the next `get`.
 /// It holds no name with an ASCII capital, so no two names share a file on a file
-/// system that ignores case. It refuses a file that users other than its owner can
-/// read, and reads no byte of it. Its gets take turns with each other read of its
-/// [`Reads`].
+/// system that ignores case. It refuses a file that other users can read, and reads
+/// no byte of it. Its gets take turns with each other read of its [`Reads`].
 #[derive(Clone)]
 pub(crate) struct File {
     reads: Reads,

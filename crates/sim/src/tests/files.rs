@@ -133,6 +133,31 @@ fn an_open_gives_whether_the_file_was_exposed_when_it_ended() {
 }
 
 #[test]
+fn a_write_open_gives_whether_the_file_is_exposed() {
+    let found = run(0, MIB, |node, _| async move {
+        create(&node, "a", KIB).await.close().await;
+        let mut found = Vec::new();
+        for exposed in [true, false] {
+            node.set_file_exposed(Path::new("a"), exposed);
+            let file = node.files().open(Path::new("a"), Mode::Write).await;
+            let file = file.unwrap();
+            found.push(file.exposed());
+            file.close().await;
+        }
+        found
+    });
+    assert_eq!(found, [true, false]);
+}
+
+#[test]
+#[should_panic(expected = "x/../a has a `..` segment")]
+fn set_file_exposed_panics_on_a_parent_segment() {
+    let mut sim = sim(0);
+    let node = sim.node(node::Config::default());
+    node.set_file_exposed(Path::new("x/../a"), true);
+}
+
+#[test]
 #[should_panic(expected = "no file is at b")]
 fn set_file_exposed_panics_with_no_file_at_the_path() {
     let mut sim = sim(0);
