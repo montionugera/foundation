@@ -181,9 +181,11 @@ fn reads_a_table_and_an_order_as_references() {
         Value::Integer(3),
     )];
     let others = [(16, "order", Value::Reference(name("little")))];
-    let config = parse(&config(string("plc"), &others, reads)).expect("a config");
-    let tables: Vec<Table> = config.reads.iter().map(|read| read.table).collect();
-    assert_eq!((config.order, tables), (Order::Little, vec![Table::Coils]));
+    let written = [(16, "order", string("little"))];
+    let strings = vec![read(20, "plc.run", string("coil"), Value::Integer(3))];
+    let parsed = parse(&config(string("plc"), &others, reads));
+    assert!(parsed.is_ok(), "{parsed:?}");
+    assert_eq!(parsed, parse(&config(string("plc"), &written, strings)));
 }
 
 #[test]
@@ -264,10 +266,15 @@ fn reads_a_host_of_letters_digits_dashes_dots_and_underscores() {
 
 #[test]
 fn reads_an_ipv6_host_in_brackets() {
-    for (address, port) in [("[fd00::1]:1502", 1502), ("[fd00::1]", 502)] {
+    for (address, host, port) in [
+        ("[fd00::1]:1502", "fd00::1", 1502),
+        ("[fd00::1]", "fd00::1", 502),
+        ("[fe80::1%eth0.100]:502", "fe80::1%eth0.100", 502),
+        ("[fe80::1%2]", "fe80::1%2", 502),
+    ] {
         let config = parse(&config(string(address), &[], vec![temp()]));
         let config = config.expect("a config");
-        assert_eq!((&*config.host, config.port), ("fd00::1", port), "{address}");
+        assert_eq!((&*config.host, config.port), (host, port), "{address}");
     }
 }
 
@@ -349,6 +356,24 @@ fn refuses_a_host_that_is_not_a_name_or_an_ip_address() {
             string("[10.0.0.2]:502"),
             "the address \"[10.0.0.2]:502\" has \"10.0.0.2\" in brackets, which is \
              not an IPv6 address"
+                .into(),
+        ),
+        (
+            string("[fe80::1%]:502"),
+            "the address \"[fe80::1%]:502\" has the zone \"\", which is not an \
+             interface name or number"
+                .into(),
+        ),
+        (
+            string("[fe80::1%eth 0]"),
+            "the address \"[fe80::1%eth 0]\" has the zone \"eth 0\", which is not an \
+             interface name or number"
+                .into(),
+        ),
+        (
+            string("[plc%eth0]"),
+            "the address \"[plc%eth0]\" has \"plc%eth0\" in brackets, which is not \
+             an IPv6 address"
                 .into(),
         ),
         (

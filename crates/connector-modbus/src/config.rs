@@ -115,8 +115,8 @@ pub(crate) fn parse(config: &Document) -> Result<Config, Vec<Diagnostic>> {
 
 /// Reads a host and an optional port, such as `"plc:502"`, `"plc"`, or
 /// `"[fd00::1]:502"`. Port 502 when it has none. A host in brackets is an IPv6
-/// address. Each other host is an IPv4 address or a name of letters, digits, `-`, `.`,
-/// and `_`.
+/// address, with an optional zone such as `%eth0`. Each other host is an IPv4 address
+/// or a name of letters, digits, `-`, `.`, and `_`.
 fn endpoint(value: &Value) -> Result<(Box<str>, u16), Diagnostic> {
     let message = match &value.kind {
         Of::String(text) => match address(text) {
@@ -140,10 +140,21 @@ fn address(text: &str) -> Result<(Box<str>, u16), String> {
         return Err(format!("the address {text:?} has no host"));
     }
     if text.starts_with('[') {
-        if host.parse::<Ipv6Addr>().is_err() {
+        let (ip, zone) = match host.split_once('%') {
+            Some((ip, zone)) => (ip, Some(zone)),
+            None => (host, None),
+        };
+        if ip.parse::<Ipv6Addr>().is_err() {
             return Err(format!(
                 "the address {text:?} has {host:?} in brackets, which is not an IPv6 \
                  address"
+            ));
+        }
+        let bad = |zone: &&str| zone.is_empty() || !zone.bytes().all(name_byte);
+        if let Some(zone) = zone.filter(bad) {
+            return Err(format!(
+                "the address {text:?} has the zone {zone:?}, which is not an \
+                 interface name or number"
             ));
         }
     } else {
@@ -171,10 +182,7 @@ fn address(text: &str) -> Result<(Box<str>, u16), String> {
 /// Checks that `host` is an IPv4 address or a name that a resolver can find, or gives
 /// its problem.
 fn host(host: &str) -> Result<(), &'static str> {
-    if !host
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || b"-._".contains(&byte))
-    {
+    if !host.bytes().all(name_byte) {
         return Err(
             "a host with a character other than a letter, a digit, `-`, `.`, or `_`",
         );
@@ -199,6 +207,11 @@ fn host(host: &str) -> Result<(), &'static str> {
         return Err("a host with a number last that is not an IPv4 address");
     }
     Ok(())
+}
+
+/// Whether `byte` may be in a host name or an interface name.
+fn name_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"-._".contains(&byte)
 }
 
 /// The host of the address `text`, with no brackets, and the text of its port when it
