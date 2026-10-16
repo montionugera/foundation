@@ -47,7 +47,7 @@ const FRAMES: usize = 16;
 /// frees.
 const ROUNDS: usize = 20;
 /// Each `(channels, samples, present, types)`.
-const SHAPES: [(usize, usize, usize, &[Type]); 13] = [
+const SHAPES: [(usize, usize, usize, &[Type]); 16] = [
     (1, 1, 1, F64),
     (8, 1, 8, F64),
     (64, 1, 64, F64),
@@ -59,6 +59,9 @@ const SHAPES: [(usize, usize, usize, &[Type]); 13] = [
     (4096, 1, 1, F64),
     (8, 1, 8, MIXED),
     (64, 10, 64, MIXED),
+    (8, 1, 8, STRING),
+    (8, 1, 8, UUID),
+    (8, 1, 8, BYTES),
     (8, 1, 8, TEXT),
     (64, 10, 64, TEXT),
 ];
@@ -74,6 +77,9 @@ const MIXED: &[Type] = &[
     Type::Scalar(Scalar::F64),
     Type::Scalar(Scalar::Stamp),
 ];
+const STRING: &[Type] = &[Type::String];
+const UUID: &[Type] = &[Type::Scalar(Scalar::Uuid)];
+const BYTES: &[Type] = &[Type::Bytes];
 /// Each type of a string field.
 const TEXT: &[Type] = &[Type::String, Type::Scalar(Scalar::Uuid), Type::Bytes];
 /// Each count of channels of a frame that a new batch adds.
@@ -83,7 +89,7 @@ const NEW: [usize; 4] = [1, 64, 256, 1024];
 fn main() {
     println!("ns and allocations per frame over {ROUNDS} rounds of {FRAMES} frames");
     println!(
-        "{:>8} {:>7} {:>7} {:>5} {:>9} {:>9} {:>9} {:>9} {:>11} {:>12} {:>11}",
+        "{:>8} {:>7} {:>7} {:>6} {:>9} {:>9} {:>9} {:>9} {:>11} {:>12} {:>11}",
         "channels",
         "samples",
         "present",
@@ -107,11 +113,14 @@ fn main() {
         let at = |percent: usize| nanos[nanos.len() * percent / 100];
         let frames = ROUNDS * FRAMES;
         println!(
-            "{channels:>8} {samples:>7} {present:>7} {:>5} {first:>9} {:>9} {:>9} \
+            "{channels:>8} {samples:>7} {present:>7} {:>6} {first:>9} {:>9} {:>9} \
              {:>9} {:>11.2} {:>12.2} {body:>11}",
             match types {
                 F64 => "f64",
                 MIXED => "mixed",
+                STRING => "string",
+                UUID => "uuid",
+                BYTES => "bytes",
                 _ => "text",
             },
             at(10),
@@ -306,7 +315,12 @@ fn write(
     let group = entries[index].group;
     let series: Vec<_> = (0..entries.len())
         .filter(|&at| at == index || at % groups == turn)
-        .map(|at| (at, raw(entries[at].data_type, at == index, first, samples)))
+        .map(|at| {
+            (
+                at,
+                raw(entries[at].data_type, at, at == index, first, samples),
+            )
+        })
         .collect();
     let lens: Vec<_> = series.iter().map(|(at, raw)| (*at, raw.len())).collect();
     let mut draft = writer.draft(Form::Raw, &lens).expect("a frame");
@@ -326,12 +340,19 @@ fn write(
 }
 
 /// The raw series of `samples` samples of `data_type` from `first`, of the index when
-/// `index`, each nanosecond after the one before it.
-fn raw(data_type: Type, index: bool, first: i64, samples: usize) -> Vec<u8> {
+/// `index`, each nanosecond after the one before it. A variable sample is a text with
+/// two quotes, which a series of one sample repeats 1 to 64 times by its entry `at`, so
+/// it is 9 to 704 bytes and the same in each frame. A longer series has the text once,
+/// so the ring of the sim hub holds it.
+fn raw(data_type: Type, at: usize, index: bool, first: i64, samples: usize) -> Vec<u8> {
     let small = |sample: usize| u8::try_from(sample % 200).expect("fits");
     if let Some(form) = codec::Variable::of(data_type) {
+        let repeats = if samples == 1 { at * 9 % 64 + 1 } else { 1 };
         let texts: Vec<_> = (0..samples)
-            .map(|sample| format!("value \"{}\"", small(sample)).into_bytes())
+            .map(|sample| {
+                let text = format!("value \"{}\"", small(sample));
+                text.repeat(repeats).into_bytes()
+            })
             .collect();
         let mut bytes = vec![0; form.len(&texts).expect("fits")];
         form.write(&texts, &mut bytes);
