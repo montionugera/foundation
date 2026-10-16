@@ -7,13 +7,15 @@ use std::task::Poll;
 
 use env::files::Operation;
 use hub::reader::{self, Ended, Mode};
+use spec::data_type::DataType;
 use types::channel::Key;
 use types::name::Selector;
 use types::time::Span;
 
+use super::definitions::{I32, write_i32};
 use super::{
-    RING, SETTLE, name, poll_flagged, run, samples, unnamed, unsynced, without, write,
-    write_series, write_wide,
+    RING, SETTLE, channels, definition, keys, name, poll_flagged, run, samples,
+    unnamed, unsynced, without, write, write_series,
 };
 
 /// A reader of `subject` named `reader` on `value`, with a hold of `hold`.
@@ -118,7 +120,7 @@ fn ends_a_replaced_reader_with_replaced_after_a_removal_of_its_channel() {
 }
 
 #[test]
-fn ends_a_named_complete_reader_behind_when_it_resumes_before_a_released_frame() {
+fn resumes_a_named_complete_reader_from_disk_before_a_released_frame() {
     for (seed, closed) in [(11, false), (12, true)] {
         run(seed, move |test| async move {
             let open = named("a", "r", Mode::Complete, Span::SECOND);
@@ -132,8 +134,10 @@ fn ends_a_named_complete_reader_behind_when_it_resumes_before_a_released_frame()
             let open = named("a", "r", Mode::Complete, Span::SECOND);
             let mut reader = test.hub.reader(open).await.expect("opens");
             write(&mut writer, &[now + 1], &[8]);
-            let ended = reader.next().await.expect_err("behind");
-            assert_eq!(ended, Ended::Behind, "closed: {closed}");
+            for value in [7, 8] {
+                let received = reader.next().await.expect("a frame");
+                assert_eq!(samples(&received, 2), [value], "closed: {closed}");
+            }
             drop(first);
         });
     }
@@ -164,7 +168,7 @@ fn resumes_a_named_complete_reader_past_a_frame_released_before_its_position() {
 }
 
 #[test]
-fn ends_a_named_complete_reader_behind_on_a_frame_dropped_before_it_resumes() {
+fn resumes_a_named_complete_reader_from_disk_at_a_frame_dropped_before_it_resumes() {
     for (seed, queued) in [(20, true), (21, false)] {
         run(seed, move |test| async move {
             let open = named("a", "r", Mode::Complete, Span::SECOND);
@@ -182,8 +186,8 @@ fn ends_a_named_complete_reader_behind_on_a_frame_dropped_before_it_resumes() {
             let open = named("a", "r", Mode::Complete, Span::SECOND);
             let mut reader = test.hub.reader(open).await.expect("opens");
             test.pause.resume();
-            let ended = reader.next().await.expect_err("behind");
-            assert_eq!(ended, Ended::Behind, "queued: {queued}");
+            let received = reader.next().await.expect("a frame");
+            assert_eq!(samples(&received, 2), [7], "queued: {queued}");
         });
     }
 }
@@ -265,7 +269,10 @@ fn resumes_each_later_open_of_a_named_complete_reader_at_the_same_position() {
         let open = named("a", "r", Mode::Complete, Span::SECOND);
         let mut reader = test.hub.reader(open).await.expect("opens");
         write(&mut writer, &[test.now()], &[8]);
-        assert_eq!(reader.next().await.expect_err("behind"), Ended::Behind);
+        for value in [7, 8] {
+            let received = reader.next().await.expect("a frame");
+            assert_eq!(samples(&received, 2), [value]);
+        }
     });
 }
 
@@ -286,18 +293,17 @@ fn holds_a_named_complete_reader_for_its_hold_and_no_longer() {
             let open = named("a", "r", Mode::Complete, Span::SECOND);
             let mut reader = test.hub.reader(open).await.expect("opens");
             write(&mut writer, &[test.now()], &[8]);
-            let next = reader.next().await;
-            if held {
-                assert_eq!(next.expect_err("behind"), Ended::Behind);
-            } else {
-                assert_eq!(samples(&next.expect("a frame"), 2), [8]);
+            let values: &[i64] = if held { &[7, 8] } else { &[8] };
+            for &value in values {
+                let received = reader.next().await.expect("a frame");
+                assert_eq!(samples(&received, 2), [value], "held: {held}");
             }
         });
     }
 }
 
 #[test]
-fn ends_a_named_complete_reader_behind_when_it_resumes_at_an_ack_before_a_frame() {
+fn resumes_a_named_complete_reader_from_disk_at_an_ack_before_a_frame() {
     run(23, |test| async move {
         let open = named("a", "r", Mode::Complete, Span::SECOND);
         let mut first = test.hub.reader(open).await.expect("opens");
@@ -316,7 +322,40 @@ fn ends_a_named_complete_reader_behind_when_it_resumes_at_an_ack_before_a_frame(
         drop(first);
         let open = named("a", "r", Mode::Complete, Span::SECOND);
         let mut reader = test.hub.reader(open).await.expect("opens");
-        assert_eq!(reader.next().await.expect_err("behind"), Ended::Behind);
+        for n in 5..10 {
+            let received = reader.next().await.expect("a frame");
+            assert_eq!(samples(&received, 2), [n]);
+        }
+    });
+}
+
+/// A named complete reader that resumes after a change of type of its channel reads
+/// the frames it missed from disk with no series of the old type, as a live frame.
+#[test]
+fn resumes_a_named_complete_reader_from_disk_with_no_series_of_a_changed_type() {
+    run(24, |test| async move {
+        let open = named("a", "r", Mode::Complete, Span::SECOND);
+        let mut first = test.hub.reader(open).await.expect("opens");
+        let mut writer = test.writer("w", &["value"]).await;
+        let now = test.now();
+        write(&mut writer, &[now], &[7]);
+        let received = first.next().await.expect("a frame");
+        assert_eq!(samples(&received, 2), [7]);
+        drop(first);
+        drop(writer);
+        let mut changed = channels();
+        changed.insert(name("value"), definition(2, DataType::Sample(I32), 1));
+        test.hub.set_definitions(&changed);
+        let mut writer = test.writer("w", &["value"]).await;
+        write_i32(&mut writer, now + 1, 8);
+        let open = named("a", "r", Mode::Complete, Span::SECOND);
+        let mut reader = test.hub.reader(open).await.expect("opens");
+        let received = reader.next().await.expect("the missed frame");
+        assert_eq!(keys(&received), [1]);
+        assert_eq!(samples(&received, 1), [now]);
+        let received = reader.next().await.expect("the frame of the new type");
+        assert_eq!(keys(&received), [1, 2]);
+        assert_eq!(samples(&received, 1), [now + 1]);
     });
 }
 
@@ -325,28 +364,26 @@ fn changes_nothing_on_the_ack_of_a_reader_that_ended_behind() {
     run(31, |test| async move {
         let open = named("a", "r", Mode::Complete, Span::SECOND);
         let mut lagger = test.hub.reader(open).await.expect("opens");
-        let mut taker = test.reader(&["value"], Mode::Complete).await;
         let mut writer = test.writer("w", &["value"]).await;
-        let now = test.now();
-        let mut position = None;
-        for n in 0..400 {
-            write_wide(&mut writer, now, n);
-            taker.next().await.expect("a frame");
-            if n < 2 {
-                position = Some(lagger.next().await.expect("a frame").position());
-            }
-        }
-        let ended = loop {
-            match lagger.next().await {
-                Ok(received) => position = Some(received.position()),
-                Err(ended) => break ended,
-            }
-        };
-        assert_eq!(ended, Ended::Behind);
-        lagger.ack(position.expect("a frame"));
+        write(&mut writer, &[test.now()], &[7]);
+        let position = lagger.next().await.expect("a frame").position();
+        test.clock.sleep(SETTLE).await;
+        let mut blocks = super::fill(&test.pool);
+        drop(blocks.pop());
+        let draft = super::draft(&writer, &[(1, &[test.now()]), (2, &[8])]);
+        let outcomes = writer.write(super::LIVE, draft).expect("taken").to_vec();
+        assert!(
+            matches!(outcomes[..], [hub::home::Outcome::Lost { .. }]),
+            "{outcomes:?}"
+        );
+        drop(blocks);
+        assert_eq!(lagger.next().await.expect_err("behind"), Ended::Behind);
+        lagger.ack(position);
         drop(lagger);
         let open = named("a", "r", Mode::Complete, Span::SECOND);
         let mut reader = test.hub.reader(open).await.expect("opens");
+        let received = reader.next().await.expect("the frame before the ack");
+        assert_eq!(samples(&received, 2), [7]);
         assert_eq!(reader.next().await.expect_err("behind"), Ended::Behind);
     });
 }
@@ -441,7 +478,7 @@ fn changes_nothing_on_the_ack_of_a_latest_reader() {
 }
 
 #[test]
-fn changes_nothing_on_the_ack_of_a_reader_that_ended_on_a_failed_sync() {
+fn ends_each_open_again_of_a_reader_that_acked_after_a_failed_sync_with_its_error() {
     run(42, |test| async move {
         let open = named("a", "r", Mode::Complete, Span::SECOND);
         let mut reader = test.hub.reader(open).await.expect("opens");
@@ -455,18 +492,23 @@ fn changes_nothing_on_the_ack_of_a_reader_that_ended_on_a_failed_sync() {
         test.node.fail_file(FilePath::new(RING), Operation::Sync);
         write(&mut writer, &[now + 2], &[9]);
         test.clock.sleep(SETTLE).await;
-        let ended = reader.next().await.expect_err("the sync failed");
-        assert!(matches!(ended, Ended::Buffer(_)), "{ended:?}");
+        let failed = Ended::Buffer(env::files::Error::Io {
+            path: FilePath::new(RING).to_path_buf(),
+            operation: Operation::Sync,
+            code: 5,
+        });
+        assert_eq!(reader.next().await.err(), Some(failed.clone()));
         reader.ack(first);
         drop(reader);
         let open = named("a", "r", Mode::Complete, Span::SECOND);
         let mut reader = test.hub.reader(open).await.expect("opens");
-        assert_eq!(reader.next().await.expect_err("behind"), Ended::Behind);
+        assert_eq!(reader.next().await.err(), Some(failed));
     });
 }
 
 #[test]
-fn changes_nothing_on_an_ack_after_a_failed_sync_of_another_index() {
+fn ends_each_open_again_of_a_reader_after_a_failed_sync_of_another_index_with_its_error()
+ {
     run(44, |test| async move {
         let open = named("a", "r", Mode::Complete, Span::SECOND);
         let mut reader = test.hub.reader(open).await.expect("opens");
@@ -481,13 +523,17 @@ fn changes_nothing_on_an_ack_after_a_failed_sync_of_another_index() {
         test.node.fail_file(FilePath::new(RING), Operation::Sync);
         write_series(&mut other, &[(3, &[now + 2]), (4, &[9])]);
         test.clock.sleep(SETTLE).await;
-        let ended = reader.next().await.expect_err("the sync failed");
-        assert!(matches!(ended, Ended::Buffer(_)), "{ended:?}");
+        let failed = Ended::Buffer(env::files::Error::Io {
+            path: FilePath::new(RING).to_path_buf(),
+            operation: Operation::Sync,
+            code: 5,
+        });
+        assert_eq!(reader.next().await.err(), Some(failed.clone()));
         reader.ack(last);
         drop(reader);
         let open = named("a", "r", Mode::Complete, Span::SECOND);
         let mut reader = test.hub.reader(open).await.expect("opens");
-        assert_eq!(reader.next().await.expect_err("behind"), Ended::Behind);
+        assert_eq!(reader.next().await.err(), Some(failed));
     });
 }
 
@@ -509,7 +555,8 @@ fn changes_nothing_on_the_ack_of_a_replaced_reader() {
         drop(reader);
         let open = named("a", "r", Mode::Complete, Span::SECOND);
         let mut reader = test.hub.reader(open).await.expect("opens");
-        assert_eq!(reader.next().await.expect_err("behind"), Ended::Behind);
+        let received = reader.next().await.expect("the frame before the ack");
+        assert_eq!(samples(&received, 2), [7]);
     });
 }
 
@@ -731,8 +778,8 @@ fn opens_a_named_reader_of_each_subject_and_name_on_its_own() {
     });
 }
 
-/// An open of B at A's position would end `Behind`, and an ack of B that moved A's
-/// position would let A's later open take the next frame.
+/// An open of B at A's position would get 8 first, and an ack of B that moved A's
+/// position would make A's later open skip 8 and 9.
 #[test]
 fn leaves_the_session_and_position_of_a_named_reader_to_its_own_subject() {
     run(45, |test| async move {
@@ -758,7 +805,10 @@ fn leaves_the_session_and_position_of_a_named_reader_to_its_own_subject() {
         let open = named("a", "r", Mode::Complete, Span::SECOND);
         let mut reader = test.hub.reader(open).await.expect("opens");
         write(&mut writer, &[now + 3], &[10]);
-        assert_eq!(reader.next().await.expect_err("behind"), Ended::Behind);
+        for value in [8, 9, 10] {
+            let received = reader.next().await.expect("a frame");
+            assert_eq!(samples(&received, 2), [value]);
+        }
     });
 }
 

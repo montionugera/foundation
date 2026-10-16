@@ -1546,7 +1546,7 @@ fn a_complete_reader_that_the_home_ends_with_behind_gets_behind_at_each_next() {
             assert_eq!(ended, Ended::Behind);
             assert_eq!(
                 ended.to_string(),
-                "the reader missed a frame and gets no later one: open a new reader"
+                "the reader reached a frame that the buffer lost: open a new reader"
             );
             assert_eq!(reader.next().await.expect_err("ended"), Ended::Behind);
         },
@@ -1642,8 +1642,7 @@ fn a_reader_whose_home_finishes_the_stream_between_frames_stops_it_as_malformed(
 }
 
 #[test]
-fn a_complete_remote_reader_whose_home_stops_reading_credits_gets_its_frames_then_behind()
- {
+fn a_complete_remote_reader_whose_home_stops_reading_credits_gets_every_frame() {
     remote(
         40,
         sim::link::Config::default(),
@@ -1665,10 +1664,9 @@ fn a_complete_remote_reader_whose_home_stops_reading_credits_gets_its_frames_the
             let mut reader = test.reader(&["value"], Mode::Complete).await;
             steps.open();
             test.clock.sleep(Span::from_nanos(1_000_000_000)).await;
-            let (charges, ended) = super::take_all(&mut reader).await;
-            // The home sends the 128 frames that its grant of a window holds, then
-            // Behind, finishes, and drops its receiver, which stops the stream with 0.
-            assert_eq!((charges.len(), ended), (128, Ended::Behind));
+            let taken = super::take_waiting(&test.clock, &mut reader).await;
+            let ranges: Vec<_> = taken.into_iter().map(|(range, _)| range).collect();
+            assert_eq!(ranges, super::wide(0, 201));
         },
     );
 }

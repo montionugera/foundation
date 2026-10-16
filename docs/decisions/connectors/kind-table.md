@@ -47,11 +47,16 @@
   A kind returns each end of its reader and each failed write with `?`:
   `From<hub::reader::Ended>` and `From<hub::writer::Failure>` for `kind::Error` give
   the class, each in one match with no `_` arm. `Retry`: reader `Behind`, `Removed`,
-  `Replaced`, and `Buffer`, and writer `Removed` and `Home` `Full` and `Disk`.
+  `Replaced`, `Buffer`, and `Pool`, and writer `Removed` and `Home` `Full` and `Disk`.
+  A reader at its home ends `Pool` when a read from disk finds no block, and blocks
+  come back as the sessions of the shard drain (#274 B1; `laptop.architect-2`,
+  2026-10-15T18:05:36Z:
+  https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6198895692, finding
+  1).
   `Config`: writer `Home` `Large` (`connector.large-frame`, with the fix "Give the
   connector fewer channels"), because only a spec change or a kind that splits its
   frames fixes it. A panic with `invariant:`: reader `Stream`, `Refused`, `Message`,
-  `Frame`, `Pool`, and `Credit`, because a named reader opens only at its home, and
+  `Frame`, and `Credit`, because a named reader opens only at its home, and
   writer `Home` `Resend`, because a kind labels no frame resend. A kind that wants
   another class matches the end before `?` (the `?`, the two `From` impls, and the
   match with no `_` arm: `laptop.architect-2`, 2026-10-12T20:24:54Z:
