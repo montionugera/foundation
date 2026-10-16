@@ -29,15 +29,16 @@
   path of a pick with no given name that is not below `start` panics: the walk gives
   each path below its start, so it is a defect of the caller. The fix of a refused given
   name, "Give another name, or leave it out for `<default>`", needs no other item: `ops`
-  calls `names` again with the refused names as `None`, on the failure path only.
-  `names` keeps its own copy of the characters of a segment (A3), and its `expect` stops
-  the import loudly when `types` allows fewer. The copy goes when `types` gives them
-  (#2868). Lost: a namer with state (`give`, then `next`), where nothing makes the
-  caller give each given name before the first default; a `Document` from `Kind::block`,
-  where an attribute of one pick merges into the one connector body and collides on a
-  second pick; and the run error `Error`, which has variants that a hook with no I/O
-  cannot give. The person's words of decision 5, through `laptop.monitor`, 2026-10-15
-  17:28 UTC: "Yeah, that's fine"
+  calls `names` again with the refused names as `None`, on the failure path only. No
+  name of a path is empty: `walk` refuses an empty device name (BROWSE), and
+  `Path::from_str` refuses an empty name. `names` keeps its own copy of the characters
+  of a segment (A3), and its `expect` stops the import loudly when `types` allows fewer.
+  The copy goes when `types` gives them (#2868). Lost: a namer with state (`give`, then
+  `next`), where nothing makes the caller give each given name before the first default;
+  a `Document` from `Kind::block`, where an attribute of one pick merges into the one
+  connector body and collides on a second pick; and the run error `Error`, which has
+  variants that a hook with no I/O cannot give. The person's words of decision 5,
+  through `laptop.monitor`, 2026-10-15 17:28 UTC: "Yeah, that's fine"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198090285); given
   names first, and one set of name rules in `config`: `laptop.architect-2`, on that
   decision. `Kind::block` by tag and facts, the default `connector.no-import`,
