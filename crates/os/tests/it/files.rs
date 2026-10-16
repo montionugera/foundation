@@ -368,6 +368,25 @@ fn open_absolute_refuses_a_file_that_is_not_regular_and_waits_for_no_writer() {
     assert_eq!(found.expect("no open blocks"), expected);
 }
 
+/// As root the open passes the mode, so the test fails without the check only as
+/// another user.
+#[test]
+fn open_absolute_of_a_directory_that_this_user_cannot_read_gives_eisdir() {
+    run(|files, data| async move {
+        let dir = data.parent().unwrap().join("private");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let found = files.open_absolute(&absolute(&dir)).await.map(drop);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let expected = Error::Io {
+            path: dir,
+            operation: Operation::Open,
+            code: 21,
+        };
+        assert_eq!(found, Err(expected));
+    });
+}
+
 #[test]
 fn a_write_open_of_a_held_file_gives_busy_and_a_read_open_does_not() {
     run(|files, data| async move {

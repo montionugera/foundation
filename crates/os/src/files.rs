@@ -418,13 +418,11 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<Found, Error> {
 }
 
 /// Opens the file at absolute `path` to read. The open does not wait for a writer of
-/// a FIFO, and gives 21 (`EISDIR`) for a directory that it can open and 22 (`EINVAL`)
-/// for any other file that is not a regular file.
+/// a FIFO, and gives 21 (`EISDIR`) for a directory and 22 (`EINVAL`) for any other
+/// file that is not a regular file.
 fn open_absolute(path: &Path) -> Result<Found, Error> {
     let failed = fail(path, Operation::Open);
-    let host::Handle::File(fd, stat) = host::open(path).map_err(&failed)? else {
-        return Err(failed(Errno::ISDIR));
-    };
+    let (fd, stat) = host::file(path).map_err(&failed)?;
     let fd = Opened { fd, locked: false };
     let (len, exposed) = (stat.st_size.cast_unsigned(), exposed(&stat));
     Ok(Found { fd, len, exposed })

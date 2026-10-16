@@ -61,8 +61,8 @@ fn resolve(path: &Path) -> io::Result<PathBuf> {
 
 fn read(path: &Path, most: usize) -> io::Result<Found> {
     let file = match host::open(path)? {
-        host::Handle::File(file, _) => file,
-        host::Handle::Directory(dir) => {
+        host::Readable::Regular(file, _) => file,
+        host::Readable::Directory(dir) => {
             let (mut entries, mut size) = (Vec::new(), 0_usize);
             for name in dir::names(dir)? {
                 let entry = path.join(name?);

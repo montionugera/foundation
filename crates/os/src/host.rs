@@ -14,9 +14,9 @@ const READ: OFlags = OFlags::RDONLY
     .union(OFlags::NOCTTY);
 
 /// A regular file or a directory of the host, open to read.
-pub(crate) enum Handle {
+pub(crate) enum Readable {
     /// A regular file, with its stat.
-    File(OwnedFd, fs::Stat),
+    Regular(OwnedFd, fs::Stat),
     Directory(OwnedFd),
 }
 
@@ -29,15 +29,36 @@ pub(crate) enum Handle {
 /// error of the stat or the open. A link that another writer changes between the
 /// stat and the open gives the error of the open of the file that it then names, and
 /// the open of a device there runs its driver.
-pub(crate) fn open(path: &Path) -> Result<Handle, Errno> {
+pub(crate) fn open(path: &Path) -> Result<Readable, Errno> {
+    kind(&fs::stat(path)?)?;
+    opened(path)
+}
+
+/// Opens the regular file at `path` to read, as `open` does, and gives its stat.
+///
+/// # Errors
+///
+/// 21 (`EISDIR`) for a directory, also one that this user cannot read, else as
+/// `open`.
+pub(crate) fn file(path: &Path) -> Result<(OwnedFd, fs::Stat), Errno> {
+    if kind(&fs::stat(path)?)? == FileType::Directory {
+        return Err(Errno::ISDIR);
+    }
+    match opened(path)? {
+        Readable::Regular(fd, stat) => Ok((fd, stat)),
+        Readable::Directory(_) => Err(Errno::ISDIR),
+    }
+}
+
+/// Opens `path`, after a stat found a regular file or a directory there.
+fn opened(path: &Path) -> Result<Readable, Errno> {
     // The check before the open keeps the open of a socket from giving `ENXIO`, and
     // that of a device from running its driver. The check after it refuses a swap.
-    kind(&fs::stat(path)?)?;
     let fd = fs::open(path, READ, fs::Mode::empty())?;
     let stat = fs::fstat(&fd)?;
     Ok(match kind(&stat)? {
-        FileType::Directory => Handle::Directory(fd),
-        _ => Handle::File(fd, stat),
+        FileType::Directory => Readable::Directory(fd),
+        _ => Readable::Regular(fd, stat),
     })
 }
 
