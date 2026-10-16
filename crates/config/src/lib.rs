@@ -100,7 +100,7 @@ pub struct Entry {
 /// and reads, and the ones it needs are there. A block directly inside a definition
 /// other than a `connector` does not stop that check: only a connector's kind reads
 /// blocks, so each such block is one problem, and nothing inside it but a private key
-/// is checked.
+/// or a `fill` is checked.
 /// A bad `kind` of channel hides the problems of each other attribute that a kind of
 /// channel knows. A `kind` of connector that is missing, is not a name, or is not in
 /// `kinds` hides each problem of the connector's config, and so does a config nested

@@ -79,6 +79,8 @@ fn holds_a_sorted_table_of_units_that_read() {
     }
 }
 
+/// A code held twice gives one of its units in silence, and no public call can show
+/// which code a text was written for, so this reads the table.
 #[test]
 fn holds_each_code_once_in_the_table() {
     let mut codes: Vec<_> = TABLE.iter().map(|(_, code)| code).collect();
@@ -90,8 +92,9 @@ fn holds_each_code_once_in_the_table() {
 
 #[test]
 fn spells_each_common_spelling_as_a_unit_in_the_table() {
-    for (spelling, text) in SPELLINGS {
-        assert!(unit(text).code().is_some(), "{spelling}");
+    for (spelling, _) in SPELLINGS {
+        let code = Unit::given(Some(spelling), None).and_then(|unit| unit.code());
+        assert!(code.is_some(), "{spelling}");
     }
 }
 

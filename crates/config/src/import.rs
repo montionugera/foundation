@@ -65,7 +65,8 @@ fn block(name: &Name, attributes: Vec<Attribute>) -> Block {
             span: None,
         }],
         body: Document {
-            attributes: Map::new(attributes).expect("each key is written once"),
+            attributes: Map::new(attributes)
+                .expect("invariant: each key is written once"),
             blocks: Vec::new(),
         },
         span: None,
