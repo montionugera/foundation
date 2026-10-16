@@ -142,8 +142,8 @@ fn main() {
         start: vec!["s"; START].join("/").parse().expect("a path"),
         ..query
     };
-    // The links of the start, once: 8 KB more than from the root on ip-172-31-11-54. A
-    // copy of the start's names in each entry of the open pages is 102 MB more.
+    // The links of the start, once: 8 KB more than from the root on box1. A copy
+    // of the start's names in each entry of the open pages is 102 MB more.
     let (found, peak) = walk(&mut Wide { start: START }, &deep);
     assert_eq!(
         found.end,

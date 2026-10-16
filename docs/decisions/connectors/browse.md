@@ -115,9 +115,11 @@
   tree of 9 999 points and 0.9 ms over a chain of 63 folders of 150 points each; PR 5 of
   the PR list measures the cost of the OPC UA sim server. The two triggers come from the
   ruling of 2026-10-16 04:00 UTC. A page of `Child` entries, with a name and no path,
-  and a private `Path::child` (it replaces the rule of an entry outside its folder of
-  05:23 UTC, and the path that a kind built from the root of 05:30 UTC):
-  `laptop.architect-2`, 2026-10-16 05:50 UTC
+  and a private `Path::child` (Supersedes
+  https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208716424, the rule
+  of an entry outside its folder, and
+  https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208798023, the path
+  that a kind built from the root): `laptop.architect-2`, 2026-10-16 05:50 UTC
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6209047339). The
   operation of `ops`, not `Supervisor::browse`, names the connector and its kind in an
   error: `laptop.architect-2`, 2026-10-16 06:46 UTC
