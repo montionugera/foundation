@@ -20,9 +20,10 @@
 
   1. **Endpoint.** `address` is a host and a port, such as `"plc:502"`, port 502 when
      it has none. A host in brackets is an IPv6 address (`"[fd00::1]:502"`). Each
-     other host has only letters, digits, `-`, and `.`. The port is 1 to 65535. The
-     run resolves the host through `env::net`. `unit` is optional, 0 to 255, default
-     1 (the ruling on B1, below).
+     other host has only letters, digits, `-`, `.`, and `_`, since Docker Compose
+     names such as `plc_1` resolve. The port is 1 to 65535. The run resolves the host
+     through `env::net`. `unit` is optional, 0 to 255, default 1 (the ruling on B1,
+     below).
   2. **A read.** `table` is `coil`, `discrete`, `holding`, or `input`, as a string or
      a reference (HCL REFERENCES), as `order` is. `address` is the address of the
      protocol, from 0. Lost: the `40001` form, which mixes the table into the number

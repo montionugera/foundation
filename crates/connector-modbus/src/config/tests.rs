@@ -250,6 +250,19 @@ fn gives_port_502_unit_1_and_the_big_order_by_default() {
 }
 
 #[test]
+fn reads_a_host_of_letters_digits_dashes_dots_and_underscores() {
+    for (address, host) in [
+        ("plc_1:502", "plc_1"),
+        ("Line-2.site.local:502", "Line-2.site.local"),
+        ("10.0.0.2:502", "10.0.0.2"),
+    ] {
+        let config = parse(&config(string(address), &[], vec![temp()]));
+        let config = config.expect("a config");
+        assert_eq!((&*config.host, config.port), (host, 502), "{address}");
+    }
+}
+
+#[test]
 fn reads_an_ipv6_host_in_brackets() {
     for (address, port) in [("[fd00::1]:1502", 1502), ("[fd00::1]", 502)] {
         let config = parse(&config(string(address), &[], vec![temp()]));
@@ -322,7 +335,7 @@ fn refuses_a_host_that_is_not_a_name_or_an_ip_address() {
     let host = |address: &str| {
         format!(
             "the address {address:?} has a host with a character other than a letter, \
-             a digit, `-`, or `.`"
+             a digit, `-`, `.`, or `_`"
         )
     };
     for (address, message) in [
@@ -637,7 +650,7 @@ fn refuses_an_unknown_block_in_the_connector_or_in_a_read() {
 proptest! {
     #[test]
     fn reads_each_host_and_port(
-        host in "[a-z0-9.-]{1,20}",
+        host in "[a-zA-Z0-9._-]{1,20}",
         ipv6 in any::<std::net::Ipv6Addr>(),
         port in 1..=u16::MAX,
     ) {

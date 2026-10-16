@@ -115,7 +115,7 @@ pub(crate) fn parse(config: &Document) -> Result<Config, Vec<Diagnostic>> {
 
 /// Reads a host and an optional port, such as `"plc:502"`, `"plc"`, or
 /// `"[fd00::1]:502"`. Port 502 when it has none. A host in brackets is an IPv6
-/// address. Each other host has only letters, digits, `-`, and `.`.
+/// address. Each other host has only letters, digits, `-`, `.`, and `_`.
 fn endpoint(value: &Value) -> Result<(Box<str>, u16), Diagnostic> {
     let message = match &value.kind {
         Of::String(text) => match address(text) {
@@ -147,11 +147,11 @@ fn address(text: &str) -> Result<(Box<str>, u16), String> {
         }
     } else if !host
         .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || b"-.".contains(&byte))
+        .all(|byte| byte.is_ascii_alphanumeric() || b"-._".contains(&byte))
     {
         return Err(format!(
             "the address {text:?} has a host with a character other than a letter, a \
-             digit, `-`, or `.`"
+             digit, `-`, `.`, or `_`"
         ));
     }
     let port = match port {
