@@ -393,6 +393,10 @@ const SHRINKS: usize = 256;
 /// The trims of a [`Logs::hide`] for each shrink that it adds to [`SHRINKS`].
 const TRIMS: usize = 4;
 
+/// The items after the reach that one [`Logs::carry`] walks to fill its record, for
+/// each tail that the record may hold.
+const FILL: usize = 4;
+
 /// The paths whose lap end waits for a shrink, and the shrinks of a [`Logs::hide`]
 /// with no trim.
 #[derive(Clone, Debug)]
@@ -685,17 +689,22 @@ impl Logs {
 
     /// Puts in `carried` the appended tail of each path whose holder is before
     /// `reach`, at most `limit`, oldest holder first. When it puts in one, it fills
-    /// `carried` up to `limit` with the oldest holders after `reach`, so that small
-    /// carry records merge. The next call goes on at the first path that this call
-    /// left out. Call it in the borrow that takes the records of a commit: each
-    /// appended entry is then in a taken record, so the tail is the end after those
-    /// records, and the carry record goes right after them.
+    /// `carried` up to `limit` with the oldest holders in the next [`FILL`] `* limit`
+    /// items after `reach`, so that small carry records merge. The next call goes on
+    /// at the first item that this call did not walk. Call it in the borrow that
+    /// takes the records of a commit: each appended entry is then in a taken record,
+    /// so the tail is the end after those records, and the carry record goes right
+    /// after them.
     pub(crate) fn carry(&mut self, reach: u64, limit: usize, carried: &mut Carried) {
         let mut room = limit;
+        let mut walk = limit.saturating_mul(FILL);
         for (number, offset, at) in self.items.since(self.scanned) {
-            if offset >= reach && carried.tails.is_empty() {
-                self.scanned = number;
-                return;
+            if offset >= reach {
+                if room == limit || walk == 0 {
+                    self.scanned = number;
+                    return;
+                }
+                walk -= 1;
             }
             let log = nth(&self.paths, at);
             if log.holder != Some(offset) {
@@ -1433,7 +1442,8 @@ mod tests {
         /// Checks the tails of one call of `carry` up to `reach` with `limit`, made
         /// when each path had its holder in `holders`, after the sync of the
         /// entries that it saw appended. Tails past `reach` only fill a call that
-        /// gave a tail before it.
+        /// gave a tail before it, and a fill stops after a bounded walk, so only the
+        /// holders before the newest tail must all be given.
         fn check(
             &mut self,
             tails: &[carry::Tail],
@@ -1461,13 +1471,18 @@ mod tests {
                 let first = self.given.insert((key.0, key.1, holder));
                 prop_assert!(first, "given twice");
             }
-            if tails.len() < limit {
-                let end = if tails.is_empty() { reach } else { u64::MAX };
-                let left = holders.iter().find(|&(&(index, path), &holder)| {
-                    holder < end && !self.given.contains(&(index, path, holder))
-                });
-                prop_assert!(left.is_none(), "{:?} is left out", left);
-            }
+            let newest = tails
+                .last()
+                .map_or(0, |tail| holders[&(index_of(tail.index), tail.path)]);
+            let end = if tails.len() < limit {
+                reach.max(newest)
+            } else {
+                newest
+            };
+            let left = holders.iter().find(|&(&(index, path), &holder)| {
+                holder < end && !self.given.contains(&(index, path, holder))
+            });
+            prop_assert!(left.is_none(), "{:?} is left out", left);
             Ok(())
         }
 
@@ -3038,6 +3053,49 @@ mod tests {
     fn a_log_takes_144_bytes_and_its_place_12() {
         assert_eq!(size_of::<Log>(), 144);
         assert_eq!(size_of::<((Slot, Path), u32)>(), 12);
+    }
+
+    /// Appends and syncs the next entry of index `index` in the record at `offset`.
+    fn synced(logs: &mut Logs, index: u32, offset: u64) {
+        let first = logs
+            .log(slot(index), Path::Live)
+            .map_or(0, |log| log.appended.tail.seq + 1);
+        let mut entry = header(index, Path::Live, first, 1, Some(10));
+        logs.append(slot(index), &mut entry).expect("appends");
+        logs.sync(slot(index), &entry, offset).expect("syncs");
+    }
+
+    /// Index 1 holds the record before the reach. Indexes 2 and 3 sync in each of
+    /// the 10 records after it, so 18 items there hold no path. A call that takes the
+    /// tail of index 1 fills from at most 8 items after the reach, then stops.
+    #[test]
+    fn a_fill_walks_four_items_for_each_tail_after_the_reach() {
+        let mut logs = Logs::new(AREA);
+        synced(&mut logs, 1, 4096);
+        for record in 2..=11 {
+            synced(&mut logs, 2, 4096 * record);
+            synced(&mut logs, 3, 4096 * record);
+        }
+        let mut tails = Carried::default();
+        logs.carry(8192, 2, &mut tails);
+        assert_eq!(tails.tails().len(), 1);
+        assert_eq!(tails.tails()[0].index, channel::Key::from_u128(1));
+        assert_eq!(logs.scanned, 9);
+    }
+
+    /// A call that takes no tail before the reach stops there, also when `carried`
+    /// still holds the tails of a call before it.
+    #[test]
+    fn a_carry_with_no_tail_before_the_reach_stops_at_it() {
+        let mut logs = Logs::new(AREA);
+        synced(&mut logs, 1, 4096);
+        let mut tails = Carried::default();
+        logs.carry(8192, 2, &mut tails);
+        synced(&mut logs, 2, 12288);
+        logs.carry(8192, 2, &mut tails);
+        let indexes: Vec<_> = tails.tails().iter().map(|tail| tail.index).collect();
+        assert_eq!(indexes, [channel::Key::from_u128(1)]);
+        assert_eq!(logs.scanned, 1);
     }
 
     /// Gives the tail of each idle path a carry record at `offset`, as a commit does.
