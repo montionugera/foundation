@@ -72,14 +72,23 @@ fn poll(
 ) -> Result<Vec<Value>, Exception> {
     let mut values = Values::new(reads.len());
     for group in groups(reads, order) {
-        let mut pdu = Vec::new();
-        group.request().encode(&mut pdu).expect("a valid request");
-        let mut reply = Vec::new();
-        device.answer(&pdu, &mut reply);
-        let reply = group.request().decode_reply(&reply).expect("a valid reply");
-        values.put(&group, reply)?;
+        put(device, &group, &mut values)?;
     }
     Ok(values.take().collect())
+}
+
+/// Puts the values of the reply of `device` to `group` into `values`.
+fn put(
+    device: &mut Device,
+    group: &Group,
+    values: &mut Values,
+) -> Result<(), Exception> {
+    let mut pdu = Vec::new();
+    group.request().encode(&mut pdu).expect("a valid request");
+    let mut reply = Vec::new();
+    device.answer(&pdu, &mut reply);
+    let reply = group.request().decode_reply(&reply).expect("a valid reply");
+    values.put(group, reply)
 }
 
 /// The value of one read of `scalar` from holding registers that hold `words` from
@@ -558,6 +567,23 @@ mod values {
         let reply = group.request().decode_reply(&pdu).expect("a valid reply");
         values.put(&group, reply).expect("no exception");
         assert_eq!(values.take().collect::<Vec<_>>(), [Value::Bool(true)]);
+        values.take().for_each(drop);
+    }
+
+    #[test]
+    #[should_panic(expected = "each read has a value since the last take")]
+    fn a_take_dropped_before_its_end_leaves_no_value_for_the_next_take() {
+        let reads = [
+            read(Table::Coils, 0, Scalar::Bool),
+            read(Table::HoldingRegisters, 0, Scalar::U16),
+        ];
+        let (groups, mut device) = (groups(&reads, Order::Big), device());
+        let mut values = Values::new(reads.len());
+        for group in &groups {
+            put(&mut device, group, &mut values).expect("no exception");
+        }
+        assert_eq!(values.take().next(), Some(Value::Bool(true)));
+        put(&mut device, &groups[0], &mut values).expect("no exception");
         values.take().for_each(drop);
     }
 }

@@ -2,7 +2,7 @@
 //! read in their replies. A write of `command` takes its checks and its codec from
 //! [`Read`].
 
-use std::fmt;
+use std::{fmt, slice};
 
 use types::sample::{Scalar, Type, Value};
 
@@ -300,16 +300,36 @@ impl Values {
         Ok(())
     }
 
-    /// The value of each read, in the order of the reads, and none left after.
+    /// The value of each read, in the order of the reads. None is left after the
+    /// iterator drops, also when it drops before its end.
     ///
     /// # Panics
     ///
     /// When the iterator reaches a read that no reply put since the last take.
     pub fn take(&mut self) -> impl Iterator<Item = Value> {
-        self.slots.iter_mut().map(|slot| {
+        Take(self.slots.iter_mut())
+    }
+}
+
+/// The iterator of [`Values::take`], which empties the slots that it did not reach
+/// when it drops.
+struct Take<'a>(slice::IterMut<'a, Option<Value>>);
+
+impl Iterator for Take<'_> {
+    type Item = Value;
+
+    fn next(&mut self) -> Option<Value> {
+        let slot = self.0.next()?;
+        Some(
             slot.take()
-                .expect("each read has a value since the last take")
-        })
+                .expect("each read has a value since the last take"),
+        )
+    }
+}
+
+impl Drop for Take<'_> {
+    fn drop(&mut self) {
+        self.0.by_ref().for_each(|slot| *slot = None);
     }
 }
 
