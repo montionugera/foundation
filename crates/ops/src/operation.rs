@@ -89,7 +89,8 @@ struct StartArgs {
     /// takes no session from another host.
     #[arg(long, default_value = "127.0.0.1:0")]
     listen: SocketAddr,
-    /// The least level of an event that the log of the node holds.
+    /// The least level of an event that the log of the node holds. `debug` and `trace`
+    /// write lines for each packet and slow the node.
     #[arg(long, value_enum, default_value_t = Level::Info)]
     log_level: Level,
     /// The form of each line of the log of the node, on standard error. The default is

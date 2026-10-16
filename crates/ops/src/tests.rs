@@ -844,6 +844,7 @@ mod start {
             "[default: info]",
             "[possible values: error, warn, info, debug, trace]",
             "[possible values: text, json]",
+            "`debug` and `trace` write lines for each packet and slow the node",
         ] {
             // clap wraps the help to the width of the terminal.
             let help = exit.stdout.split_whitespace().collect::<Vec<_>>().join(" ");
