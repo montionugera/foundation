@@ -137,6 +137,20 @@ mod request {
         let coil = write(Table::Coils, 0, Scalar::Bool, Order::Big);
         drop(coil.request(Value::U16(1)));
     }
+
+    #[test]
+    #[should_panic(expected = "I16(-2) is not a value of the write")]
+    fn a_value_of_another_type_of_the_same_width_panics() {
+        let u16 = write(Table::HoldingRegisters, 0, Scalar::U16, Order::Big);
+        drop(u16.request(Value::I16(-2)));
+    }
+
+    #[test]
+    #[should_panic(expected = "U32(1) is not a value of the write")]
+    fn an_integer_to_a_float_write_panics() {
+        let f32 = write(Table::HoldingRegisters, 0, Scalar::F32, Order::Big);
+        drop(f32.request(Value::U32(1)));
+    }
 }
 
 mod new {
