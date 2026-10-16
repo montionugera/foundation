@@ -33,12 +33,11 @@
   final, 2026-10-16T14:48:11Z:
   https://github.com/synnaxlabs/foundation/pull/2860#issuecomment-6218066529). The
   OPC UA kind fails each read in which an answer does not have a value for each node
-  of its request, so a good read writes each slot.
-  `write` panics when the iterator gives fewer or more values than the channels.
-  `connector-opcua` maps its reads by position, with no `zip` over its channels, so a
-  read past its channels panics in the kind and is never lost
-  with no count, and the Modbus kind maps its reads the same way
-  (the plan, 2026-10-16T06:42:57Z:
+  of its request, so a good read writes each slot. `write` panics when the iterator
+  gives fewer or more values than the channels. `connector-opcua` maps its reads by
+  position, with no `zip` over its channels, so a read past its channels panics in the
+  kind and is never lost with no count, and the Modbus kind maps its reads the same
+  way (the plan, 2026-10-16T06:42:57Z:
   https://github.com/synnaxlabs/foundation/issues/2830#issuecomment-6209736752;
   `laptop.architect-2`, 2026-10-16T05:23:34Z:
   https://github.com/synnaxlabs/foundation/pull/2817#issuecomment-6208721580, and
