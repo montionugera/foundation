@@ -259,6 +259,13 @@ pub enum Error {
     },
     /// The reader is named and the node has no mesh time yet. Open it again later.
     Unsynced,
+    /// The reader is named and complete, and the records of the named readers of the
+    /// index would pass `limit` bytes, the most that one entry of the home's buffer
+    /// holds. Close a named reader of the index, or open this one unnamed.
+    Full {
+        /// The most bytes of one entry.
+        limit: usize,
+    },
     /// The home of the index is `home`, another node, and this reader opens only at the
     /// home of its index: a named reader, or the reader of a program's read.
     Remote {
@@ -291,6 +298,11 @@ impl fmt::Display for Error {
             Self::Unsynced => f.write_str(
                 "the node has no mesh time yet: open the named reader again later",
             ),
+            Self::Full { limit } => write!(
+                f,
+                "the records of the named readers of the index would pass {limit} \
+                 bytes: close a named reader of the index, or open this one unnamed"
+            ),
             Self::Remote { home } => write!(
                 f,
                 "the home of the index of the reader is node {home}, and this reader \
@@ -320,6 +332,15 @@ impl std::error::Error for Error {}
 impl From<::home::reader::Unsynced> for Error {
     fn from(::home::reader::Unsynced: ::home::reader::Unsynced) -> Self {
         Self::Unsynced
+    }
+}
+
+impl From<::home::reader::Unopened> for Error {
+    fn from(unopened: ::home::reader::Unopened) -> Self {
+        match unopened {
+            ::home::reader::Unopened::Unsynced => Self::Unsynced,
+            ::home::reader::Unopened::Full { limit } => Self::Full { limit },
+        }
     }
 }
 

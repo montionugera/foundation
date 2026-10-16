@@ -43,10 +43,11 @@ use wire::hub::{BUSY, Open, keys};
 #[global_allocator]
 static ALLOCATOR: counting::Bytes = counting::Bytes::new();
 
-/// The opens after which the heap is read the first time.
-const FEW: usize = 10;
-/// The opens after which the heap is read the last time.
+/// The opens over which the heap does not grow.
 const MANY: usize = 1000;
+/// The opens of a named reader after which the commits of its named entries wrapped
+/// the ring of 1024 blocks. Until then the sim disk grows the heap by each block.
+const WRAPPED: usize = 1500;
 
 fn main() {
     refuses_a_request_over_the_share_before_it_allocates_the_body();
@@ -328,8 +329,9 @@ fn refuses_a_request_over_the_share_before_it_allocates_the_body() {
     );
 }
 
-/// After [`FEW`] opens and drops of a named complete reader, [`MANY`] leave the heap
-/// at the same bytes. The sim runs on one thread, so the count is exact.
+/// After [`WRAPPED`] opens and drops of a named complete reader, [`MANY`] more leave
+/// the heap at the same bytes. The sim runs on one thread, so the count is exact.
+/// Each open and drop appends a named entry and waits for its commit.
 fn holds_the_same_bytes_over_many_opens_of_a_named_reader() {
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
@@ -342,14 +344,15 @@ fn holds_the_same_bytes_over_many_opens_of_a_named_reader() {
             name: Some(common::name("r")),
             hold: Span::SECOND,
         };
-        let mut few = 0;
-        for n in 1..=MANY {
+        let mut wrapped = 0;
+        for n in 1..=WRAPPED + MANY {
             drop(hub.reader(config()).await.expect("opens"));
-            if n == FEW {
-                few = ALLOCATOR.held();
+            node.clock().sleep(common::SETTLE).await;
+            if n == WRAPPED {
+                wrapped = ALLOCATOR.held();
             }
         }
-        assert_eq!(ALLOCATOR.held(), few, "bytes held after {MANY} opens");
+        assert_eq!(ALLOCATOR.held(), wrapped, "bytes held after {MANY} opens");
     })
     .expect("the run ends");
 }

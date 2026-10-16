@@ -108,7 +108,7 @@ pub enum Error {
     /// The reader of a read did not open. Code: `UNKNOWN` for [`reader::Error::Empty`],
     /// `MALFORMED` for `ManyIndexes`, `NOT_HOME` for `Remote`, `BUSY` for `Pool`, the
     /// code of the home's refusal but `FAILED` for its `MALFORMED`, and `FAILED` for
-    /// `Mesh`, `Transport`, and `Message`. A read gives no `Unsynced`.
+    /// `Mesh`, `Transport`, and `Message`. A read gives no `Unsynced` and no `Full`.
     Reader(Box<reader::Error>),
     /// The reader of a read ended. Code: `UNKNOWN` for [`reader::Ended::Removed`],
     /// `BUSY` for `Pool`, the code of the home's refusal but `FAILED` for its

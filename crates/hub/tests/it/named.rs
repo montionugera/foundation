@@ -12,7 +12,7 @@ use types::channel::Key;
 use types::name::Selector;
 use types::time::Span;
 
-use super::definitions::{I32, write_i32};
+use super::definitions::{I32, reopen, write_i32};
 use super::{
     RING, SETTLE, channels, definition, keys, name, poll_flagged, run, samples,
     unnamed, unsynced, without, write, write_series,
@@ -201,6 +201,8 @@ fn ends_a_named_complete_reader_behind_past_a_frame_lost_while_held() {
         let mut writer = test.writer("w", &["value"]).await;
         test.clock.sleep(SETTLE).await;
         drop(first);
+        // The commit of the named entry of the close frees its block.
+        test.clock.sleep(SETTLE).await;
         // Frees one block at a time until a write freezes the frame and still loses
         // it, which the latest reader shows.
         let mut blocks = super::fill(&test.pool);
@@ -809,6 +811,74 @@ fn leaves_the_session_and_position_of_a_named_reader_to_its_own_subject() {
             let received = reader.next().await.expect("a frame");
             assert_eq!(samples(&received, 2), [value]);
         }
+    });
+}
+
+/// The ack reaches the log only at the home's interval, so the hub wakes its gate
+/// task at the open.
+#[test]
+fn resumes_a_named_complete_reader_at_its_ack_after_a_restart_of_its_home() {
+    run(24, |test| async move {
+        let open = named("a", "r", Mode::Complete, Span::SECOND);
+        let mut first = test.hub.reader(open).await.expect("opens");
+        let mut writer = test.writer("w", &["value"]).await;
+        let now = test.now();
+        let mut acked = None;
+        for n in 0..10 {
+            write(&mut writer, &[now + n], &[n]);
+            let received = first.next().await.expect("a frame");
+            if n == 4 {
+                acked = Some(received.position());
+            }
+        }
+        first.ack(acked.expect("a fifth frame"));
+        test.clock.sleep(Span::from_nanos(1_020_000_000)).await;
+        let super::Test {
+            node,
+            mut commit,
+            hub,
+            mesh,
+            tasks,
+            clock,
+            ..
+        } = test;
+        drop((first, writer, hub));
+        assert_eq!((&mut commit).await, Ok(()));
+        drop(commit);
+        clock.sleep(SETTLE).await;
+        let hub = reopen(&node, tasks, mesh).await;
+        hub.set_definitions(&channels());
+        let open = named("a", "r", Mode::Complete, Span::SECOND);
+        let mut reader = hub.reader(open).await.expect("opens");
+        for n in 5..10 {
+            let received = reader.next().await.expect("a frame");
+            assert_eq!(samples(&received, 2), [n]);
+        }
+    });
+}
+
+/// An entry of the ring of `run` holds 65481 bytes: 119 records of 546 bytes, with
+/// the head of 5.
+#[test]
+fn opens_no_named_complete_reader_past_the_records_of_one_entry() {
+    run(25, |test| async move {
+        let long = |n: usize| format!("{n:03}{}", "s".repeat(252));
+        let open = |n| named(&long(n), &"r".repeat(255), Mode::Complete, Span::ZERO);
+        let mut opened = Vec::new();
+        for n in 0..119 {
+            opened.push(test.hub.reader(open(n)).await.expect("the records fit"));
+        }
+        let error = test.hub.reader(open(119)).await.expect_err("one more passes");
+        assert_eq!(error, reader::Error::Full { limit: 65481 });
+        assert_eq!(
+            error.to_string(),
+            "the records of the named readers of the index would pass 65481 bytes: \
+             close a named reader of the index, or open this one unnamed"
+        );
+        let latest = named(&long(119), &"r".repeat(255), Mode::Latest, Span::ZERO);
+        assert!(test.hub.reader(latest).await.is_ok(), "a latest reader opens");
+        drop(opened.pop());
+        assert!(test.hub.reader(open(119)).await.is_ok(), "a closed record is gone");
     });
 }
 

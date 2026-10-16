@@ -268,9 +268,11 @@ impl Hub {
     /// [`reader::Error::Empty`] when the selector matches no channel, and
     /// [`reader::Error::ManyIndexes`] when the channels are on more than one index.
     /// Then [`reader::Error::Mesh`] when the mesh stopped. A named reader:
-    /// [`reader::Error::Remote`] when the home is another node, and
-    /// [`reader::Error::Unsynced`] before the node has mesh time. At the home of
-    /// another node: [`reader::Error::Transport`] when the dial or the stream fails,
+    /// [`reader::Error::Remote`] when the home is another node,
+    /// [`reader::Error::Unsynced`] before the node has mesh time, and, when complete,
+    /// [`reader::Error::Full`] when the records of the named readers of the index
+    /// would pass one entry of the buffer. At the home of another node:
+    /// [`reader::Error::Transport`] when the dial or the stream fails,
     /// [`reader::Error::Refused`] when the home refuses the session,
     /// [`reader::Error::Message`] for a reply that breaks the hub protocol, and
     /// [`reader::Error::Pool`] when the shard's pool has no block for the open.
@@ -514,8 +516,10 @@ impl State {
     }
 
     /// Ends the session that `opened` took over, which the home closed, with
-    /// [`reader::Ended::Replaced`]. Returns the key of the new session.
+    /// [`reader::Ended::Replaced`], and wakes the gate task: a named open can make the
+    /// home's deadline earlier. Returns the key of the new session.
     fn take_over<K>(&mut self, opened: ::home::reader::Opened<K>) -> K {
+        self.gate.wake();
         if let Some(key) = opened.replaced {
             self.readers.replace(key);
             if let Some(waker) = self.wakers.remove(&key) {

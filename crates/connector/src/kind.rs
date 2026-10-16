@@ -442,8 +442,14 @@ const UNKNOWN_CHANNEL: Code = Code::new("connector.unknown-channel");
 const NO_CHANNEL: Code = Code::new("connector.no-channel");
 const MANY_INDEXES: Code = Code::new("connector.many-indexes");
 const LEASE: Code = Code::new("connector.lease");
+const MANY_READERS: Code = Code::new("connector.many-readers");
 const LARGE_FRAME: Code = Code::new("connector.large-frame");
 const BAD_SECRET_NAME: Code = Code::new("connector.bad-secret-name");
+/// The fix of [`MANY_READERS`]. A connector's reader is always named, and a latest
+/// one adds no record.
+const FEWER_READERS: &str = "Read the index from fewer connectors in complete mode, or \
+                             set `mode = \"latest\"` on one; a removed reader keeps its \
+                             place until its hold ends";
 /// The fix of [`LARGE_FRAME`].
 const FEWER_CHANNELS: &str = "Give the connector fewer channels";
 
@@ -477,6 +483,7 @@ pub(crate) fn reader_error(error: hub::reader::Error) -> Error {
     let (code, fix) = match error {
         Hub::Empty => (NO_CHANNEL, "Select a channel that the spec defines"),
         Hub::ManyIndexes { .. } => (MANY_INDEXES, "Select channels of one index"),
+        Hub::Full { .. } => (MANY_READERS, FEWER_READERS),
         Hub::Remote { .. } | Hub::Mesh(_) => return Error::Retry(Box::new(error)),
         Hub::Unsynced => panic!("invariant: a reader opened before mesh time: {error}"),
         Hub::Transport(_) | Hub::Refused(_) | Hub::Message(_) | Hub::Pool(_) => {
@@ -1173,6 +1180,28 @@ mod tests {
             "an attempt failed: the mesh stopped: each mesh of the group dropped";
         assert_eq!(reader(hub::reader::Error::Mesh(stopped())), mesh);
         assert_eq!(writer(hub::writer::Error::Mesh(stopped())), mesh);
+    }
+
+    /// Calls the mapping directly: a run that gives `Full` needs eight named readers
+    /// of names of 255 bytes on one index.
+    #[test]
+    fn ends_with_a_config_error_when_the_named_readers_fill_an_entry() {
+        let full = hub::reader::Error::Full { limit: 4032 };
+        let Error::Config(diagnostics) = reader_error(full) else {
+            panic!("a config error");
+        };
+        let want = Diagnostic::new(
+            Code::new("connector.many-readers"),
+            None,
+            "the records of the named readers of the index would pass 4032 bytes: \
+             close a named reader of the index, or open this one unnamed"
+                .into(),
+            "Read the index from fewer connectors in complete mode, or set \
+             `mode = \"latest\"` on one; a removed reader keeps its place until its \
+             hold ends"
+                .into(),
+        );
+        assert_eq!(diagnostics, [want]);
     }
 
     /// Calls the mapping directly: the supervisor opens a reader only after the status
