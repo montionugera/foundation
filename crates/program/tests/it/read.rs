@@ -596,75 +596,145 @@ fn refuses_a_read_finished_before_it_opened() {
     }
 }
 
-/// A read whose places name one channel twice is not valid: the program stops it as
-/// `MALFORMED`.
+/// Places that name one channel twice, also apart, or that `wire` refuses, are not
+/// valid: the program stops the read as `MALFORMED`.
 #[test]
-fn stops_a_read_whose_places_repeat_a_channel() {
-    by_hand(
-        414,
-        |session, node| async move {
-            let places = [place(1, STAMP, "time"), place(1, STAMP, "again")];
-            let mut read = accept_read(&session).await;
-            start(&mut read, &places, 0, places.len()).await;
-            let got = read
-                .receiver
-                .recv()
-                .await
-                .map(|got| got.map(|b| b.to_vec()));
-            assert_eq!(
-                got,
-                Err(transport::Error::Reset {
-                    code: Code(MALFORMED)
+fn stops_a_read_whose_places_are_not_valid() {
+    let twice = vec![place(1, STAMP, "time"), place(1, STAMP, "again")];
+    let apart = vec![
+        place(10, I64, "a"),
+        place(1, STAMP, "time"),
+        place(10, I64, "again"),
+    ];
+    let unstamped = vec![place(10, I64, "a"), place(1, I64, "time")];
+    let cases = [
+        (414, twice, 0, Error::Repeated(key(1))),
+        (418, apart, 1, Error::Repeated(key(10))),
+        (
+            419,
+            unstamped,
+            1,
+            Error::Message(wire::hub::client::Error::Unstamped { sample: I64 }),
+        ),
+    ];
+    for (seed, places, index, error) in cases {
+        by_hand(
+            seed,
+            move |session, node| async move {
+                let mut read = accept_read(&session).await;
+                start(&mut read, &places, index, places.len()).await;
+                assert_eq!(stopped(&mut read).await, Code(MALFORMED));
+                node.clock().sleep(QUIET).await;
+            },
+            move |session, node| {
+                Box::pin(async move {
+                    let opened = session.reader(select(&["a"]), Mode::Complete).await;
+                    assert_eq!(opened.map(drop), Err(error));
+                    node.clock().sleep(QUIET).await;
                 })
-            );
+            },
+        );
+    }
+}
+
+/// The code with which the program reset the stream of `read`.
+async fn stopped(read: &mut Incoming) -> Code {
+    match read.receiver.recv().await {
+        Err(transport::Error::Reset { code }) => code,
+        got => panic!("a reset, not {:?}", got.map(|got| got.map(|b| b.to_vec()))),
+    }
+}
+
+/// A read that the node refuses, as it refuses one signed with another key, gives
+/// [`Refusal::Refused`].
+#[test]
+fn gives_the_refusal_of_a_read_that_the_node_refuses() {
+    by_hand(
+        420,
+        |session, node| async move {
+            let mut read = accept_read(&session).await;
+            let code = Code(Refusal::Refused.code());
+            read.receiver.stop(code);
+            read.sender.take().expect("two-way").reset(code);
             node.clock().sleep(QUIET).await;
         },
         |session, node| {
             Box::pin(async move {
-                let opened = session.reader(select(&["time"]), Mode::Complete).await;
-                assert_eq!(opened.map(drop), Err(Error::Repeated(key(1))));
+                let opened = session.reader(select(&["a"]), Mode::Complete).await;
+                assert_eq!(opened.map(drop), Err(Error::Refused(Refusal::Refused)));
                 node.clock().sleep(QUIET).await;
             })
         },
     );
 }
 
-/// A frame that lacks its index, and a reply that `wire` refuses, each end the reader
-/// with their error, which each later call gives again, and stop the stream as
-/// `MALFORMED`.
+/// What the node does wrong after `Opened`.
+#[derive(Clone, Copy, Debug)]
+enum Fault {
+    /// A frame that lacks its index.
+    Lacks,
+    /// A second `Opened`.
+    Reopen,
+    /// A body message longer than the body.
+    Long,
+    /// A finish.
+    Finish,
+    /// A finish in a body.
+    FinishInBody,
+}
+
+/// Each reply that `wire` refuses, a frame that `types` refuses, and a stream that
+/// ends early end the reader with their error, which each later call gives again,
+/// and stop the stream as `MALFORMED`.
 #[test]
 fn stops_a_read_at_a_frame_or_a_reply_that_is_not_valid() {
     let lacks = types::frame::Error::IndexAbsent { entry: 0, index: 1 };
     let cases = [
-        (415, true, Error::Frame(lacks)),
+        (415, Fault::Lacks, Error::Frame(lacks)),
         (
             416,
-            false,
+            Fault::Reopen,
             Error::Reply(wire::hub::Error::Reopen { kind: 1 }),
         ),
+        (
+            421,
+            Fault::Long,
+            Error::Reply(wire::hub::Error::Body { len: 16, remain: 8 }),
+        ),
+        (422, Fault::Finish, Error::Reply(wire::hub::Error::Finished)),
+        (
+            423,
+            Fault::FinishInBody,
+            Error::Reply(wire::hub::Error::Unfinished { remain: 4 }),
+        ),
     ];
-    for (seed, frame, error) in cases {
+    for (seed, fault, error) in cases {
         by_hand(
             seed,
             move |session, node| async move {
                 let mut read = opened(&session, &around(), 1).await;
-                if frame {
-                    let range = Range { seq: 0, count: 1 };
-                    send_frame(&mut read, range, &[(0, 8)], &[0; 8], &[8]).await;
-                } else {
-                    reply(read.sender.as_mut().expect("two-way"), Reply::Opened).await;
+                let range = Range { seq: 0, count: 1 };
+                match fault {
+                    Fault::Lacks => {
+                        send_frame(&mut read, range, &[(0, 8)], &[0; 8], &[8]).await;
+                    }
+                    Fault::Reopen => {
+                        reply(read.sender.as_mut().expect("two-way"), Reply::Opened)
+                            .await;
+                    }
+                    Fault::Long => {
+                        send_frame(&mut read, range, &[(1, 8)], &[0; 16], &[16]).await;
+                    }
+                    Fault::Finish | Fault::FinishInBody => {
+                        if let Fault::FinishInBody = fault {
+                            send_frame(&mut read, range, &[(1, 8)], &[0; 4], &[4])
+                                .await;
+                        }
+                        let sender = read.sender.as_mut().expect("two-way");
+                        sender.finish().expect("finishes");
+                    }
                 }
-                let got = read
-                    .receiver
-                    .recv()
-                    .await
-                    .map(|got| got.map(|b| b.to_vec()));
-                assert_eq!(
-                    got,
-                    Err(transport::Error::Reset {
-                        code: Code(MALFORMED)
-                    })
-                );
+                assert_eq!(stopped(&mut read).await, Code(MALFORMED));
                 node.clock().sleep(QUIET).await;
             },
             move |session, node| {
@@ -680,6 +750,28 @@ fn stops_a_read_at_a_frame_or_a_reply_that_is_not_valid() {
             },
         );
     }
+}
+
+/// An open after a challenge that `wire` refuses ended the renewal gives that error,
+/// not the error of the close.
+#[test]
+fn gives_the_error_of_the_renewal_to_a_later_open() {
+    raw(
+        424,
+        |session, mut hello, node| async move {
+            admit(&mut hello, &node.clock()).await;
+            let sender = hello.sender.as_mut().expect("two-way");
+            send(sender, &[0xff]).await;
+            drop(session.closed().await);
+        },
+        |node, tasks, at| async move {
+            let session = connect(&node, tasks, at, AGENT).await.expect("connects");
+            node.clock().sleep(APART).await;
+            let opened = session.reader(select(&["a"]), Mode::Complete).await;
+            let ended = Error::Message(wire::hub::client::Error::Kind { kind: 0xff });
+            assert_eq!(opened.map(drop), Err(ended));
+        },
+    );
 }
 
 /// A reader open when a challenge that `wire` refuses ends the renewal gives that
