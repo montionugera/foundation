@@ -26,18 +26,19 @@ use crate::kind::{Channels, Context, Error, Kind, Table};
 use crate::testing::Rig;
 use env::tasks::Tasks;
 
-/// The time between two writes of [`Writes`].
+/// The time between two writes of [`Polls`].
 const TICK: Span = Span::from_nanos(100_000_000);
 
-/// Two indexes, `plant.time` (key 1) and `plant.clock` (key 4), and the data
-/// channels of each: `plant.a` (key 2, `f64`) and `plant.b` (key 3, `i32`) of the
-/// first, and `plant.c` (key 5, `u16`) of the second.
+/// Of the channels of [`definitions`].
 const CHANNELS: [&str; 3] = ["plant.a", "plant.c", "plant.b"];
 
 fn name(text: &str) -> Name {
     text.parse().expect("a valid name")
 }
 
+/// Two indexes, `plant.time` (key 1) and `plant.clock` (key 4), and the data
+/// channels of each: `plant.a` (key 2, `f64`) and `plant.b` (key 3, `i32`) of the
+/// first, and `plant.c` (key 5, `u16`) and `plant.s` (key 6, `string`) of the second.
 fn definitions() -> Vec<(Name, Definition)> {
     let index = |key| {
         let kind = ChannelKind::Index {
@@ -47,30 +48,32 @@ fn definitions() -> Vec<(Name, Definition)> {
         let key = channel::Key::from_u128(key);
         Definition::Channel(Channel { key, kind })
     };
-    let data = |key, index, scalar| {
+    let data = |key, index, sample| {
         let index = channel::Key::from_u128(index);
-        let data = Data::new(index, None, DataType::Sample(Type::Scalar(scalar)), None);
+        let data = Data::new(index, None, DataType::Sample(sample), None);
         let kind = ChannelKind::Data(data.expect("no unit"));
         let key = channel::Key::from_u128(key);
         Definition::Channel(Channel { key, kind })
     };
     vec![
         (name("plant.time"), index(1)),
-        (name("plant.a"), data(2, 1, Scalar::F64)),
-        (name("plant.b"), data(3, 1, Scalar::I32)),
+        (name("plant.a"), data(2, 1, Type::Scalar(Scalar::F64))),
+        (name("plant.b"), data(3, 1, Type::Scalar(Scalar::I32))),
         (name("plant.clock"), index(4)),
-        (name("plant.c"), data(5, 4, Scalar::U16)),
+        (name("plant.c"), data(5, 4, Type::Scalar(Scalar::U16))),
+        (name("plant.s"), data(6, 4, Type::String)),
     ]
 }
 
-/// A kind that opens a [`Writer`] of [`CHANNELS`], keeps its types, and writes each
-/// of `writes` one [`TICK`] after the last, until the cancel.
-struct Writes {
+/// A kind that opens a [`Writer`] of `channels`, keeps its types, and writes each of
+/// `writes` one [`TICK`] after the last, until the cancel.
+struct Polls {
+    channels: [&'static str; 3],
     writes: Vec<[Option<Value>; 3]>,
     types: Arc<Mutex<Vec<Type>>>,
 }
 
-impl Kind for Writes {
+impl Kind for Polls {
     type Config = ();
 
     fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
@@ -79,7 +82,7 @@ impl Kind for Writes {
 
     fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
         Ok(Channels {
-            writes: CHANNELS.map(name).to_vec(),
+            writes: self.channels.map(name).to_vec(),
             counts: vec![name("in"), name("lost")],
             ..Channels::default()
         })
@@ -93,7 +96,7 @@ impl Kind for Writes {
     }
 
     async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
-        let mut writer = Writer::open(&ctx, CHANNELS.map(name).to_vec()).await?;
+        let mut writer = Writer::open(&ctx, self.channels.map(name).to_vec()).await?;
         *self.types.lock().expect("no panic") = writer.types().collect();
         for values in &self.writes {
             if ctx.cancel().race(ctx.clock().sleep(TICK)).await.is_none() {
@@ -111,7 +114,7 @@ impl Kind for Writes {
 /// 8 bytes.
 type Frame = BTreeMap<u128, u64>;
 
-/// What a run of [`Writes`] recorded.
+/// What a run of [`Polls`] recorded.
 #[derive(Debug)]
 struct Record {
     result: Result<(), Error>,
@@ -124,16 +127,27 @@ struct Record {
     counts: (u64, u64),
 }
 
-/// Runs [`Writes`] with `writes`, after `script` on the hub, the clock, and the
-/// tasks of the node. Records each frame of the channels until the run ends, 1 s after
-/// the counts `in` and `lost` are `counts`.
+/// Runs [`Polls`] of [`CHANNELS`] with `writes`, after `script` on the hub, the clock,
+/// and the tasks of the node. Records each frame of the channels until the run ends,
+/// 1 s after the counts `in` and `lost` are `counts`.
 fn run<F: Future<Output = ()> + 'static>(
     writes: Vec<[Option<Value>; 3]>,
     counts: (u64, u64),
     script: impl FnOnce(Hub, Clock, Tasks) -> F + Send + 'static,
 ) -> Record {
+    run_of(CHANNELS, writes, counts, script)
+}
+
+/// As [`run`], with [`Polls`] of `channels`.
+fn run_of<F: Future<Output = ()> + 'static>(
+    channels: [&'static str; 3],
+    writes: Vec<[Option<Value>; 3]>,
+    counts: (u64, u64),
+    script: impl FnOnce(Hub, Clock, Tasks) -> F + Send + 'static,
+) -> Record {
     let types = Arc::new(Mutex::new(Vec::new()));
-    let kind = Writes {
+    let kind = Polls {
+        channels,
         writes,
         types: Arc::clone(&types),
     };
@@ -402,4 +416,21 @@ fn fill(writer: &hub::writer::Writer) -> Vec<Draft> {
         }
     }
     held
+}
+
+/// `plant.s` is a `string`, so the `u16` value of its place panics.
+#[test]
+#[should_panic(expected = "a sample of 2 bytes, not 0")]
+fn panics_at_a_value_of_a_channel_of_no_fixed_width() {
+    let channels = ["plant.a", "plant.s", "plant.b"];
+    let writes = vec![values(1.5, 7, -3, [true; 3])];
+    run_of(channels, writes, (0, 0), |_, _, _| async {});
+}
+
+#[test]
+#[should_panic(
+    expected = "invariant: a frame keeps no value of channel 1, which is `None`"
+)]
+fn panics_with_the_channel_whose_value_is_left_out() {
+    super::value(&[Some(Value::F64(1.0)), None], 1);
 }
