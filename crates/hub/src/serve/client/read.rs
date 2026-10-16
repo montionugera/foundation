@@ -14,7 +14,7 @@ use super::{Reserved, body, verify};
 use crate::State;
 use crate::channel::Channel;
 use crate::link::Session;
-use crate::reader::{self, Channels, Home, Reader};
+use crate::reader::{self, Home, Reader};
 use crate::serve::{Error, Layout, alloc, reply, unless};
 
 /// Serves the read of `subject` that `read` starts: verifies its open, opens its
@@ -120,11 +120,11 @@ where
     if count > usize::try_from(PLACES_MAX).expect("invariant: a usize holds a u32") {
         return Err(Error::Places { count });
     }
-    let keys = match home {
-        Home::Here(keys) => keys,
+    let here = match home {
+        Home::Here(here) => here,
         Home::Away(home) => return Err(refused(reader::Error::Remote { home })),
     };
-    let channels = Channels::carry(&mut state.borrow_mut(), keys, places.index);
+    let channels = here.carry(&mut state.borrow_mut());
     let head = Places {
         count: u32::try_from(count).expect("invariant: at most PLACES_MAX"),
         index: u32::try_from(places.index)
