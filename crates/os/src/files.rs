@@ -418,29 +418,21 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<Found, Error> {
 }
 
 /// Opens the file at absolute `path` to read. The open does not wait for a writer of
-/// a FIFO, and gives 21 (`EISDIR`) for a directory and 22 (`EINVAL`) for any other
-/// file that is not a regular file.
+/// a FIFO, and gives 21 (`EISDIR`) for a directory that it can open and 22 (`EINVAL`)
+/// for any other file that is not a regular file.
 fn open_absolute(path: &Path) -> Result<Found, Error> {
     let failed = fail(path, Operation::Open);
-    let (fd, stat) = host::open(path).map_err(&failed)?;
+    let host::Handle::File(fd, stat) = host::open(path).map_err(&failed)? else {
+        return Err(failed(Errno::ISDIR));
+    };
     let fd = Opened { fd, locked: false };
-    let len = regular(&stat).map_err(&failed)?;
-    let exposed = exposed(&stat);
+    let (len, exposed) = (stat.st_size.cast_unsigned(), exposed(&stat));
     Ok(Found { fd, len, exposed })
 }
 
 /// Whether the mode of `stat` gives read to other users.
 fn exposed(stat: &fs::Stat) -> bool {
     stat.st_mode & 0o004 != 0
-}
-
-/// The length of the regular file of `stat`, or the error of another kind of file.
-fn regular(stat: &fs::Stat) -> Result<u64, Errno> {
-    match FileType::from_raw_mode(stat.st_mode) {
-        FileType::RegularFile => Ok(stat.st_size.cast_unsigned()),
-        FileType::Directory => Err(Errno::ISDIR),
-        _ => Err(Errno::INVAL),
-    }
 }
 
 /// Opens `dir/data`, and first makes `dir` and `dir/data` when they are not there.

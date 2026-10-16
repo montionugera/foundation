@@ -13,26 +13,36 @@ const READ: OFlags = OFlags::RDONLY
     .union(OFlags::NONBLOCK)
     .union(OFlags::NOCTTY);
 
-/// Opens the regular file or the directory at `path` to read, and gives it with its
-/// stat. The open does not wait for a writer of a FIFO.
+/// A regular file or a directory of the host, open to read.
+pub(crate) enum Handle {
+    /// A regular file, with its stat.
+    File(OwnedFd, fs::Stat),
+    Directory(OwnedFd),
+}
+
+/// Opens the regular file or the directory at `path` to read. The open does not wait
+/// for a writer of a FIFO.
 ///
 /// # Errors
 ///
 /// 22 (`EINVAL`) for a file that is neither a regular file nor a directory, else the
 /// error of the stat or the open.
-pub(crate) fn open(path: &Path) -> Result<(OwnedFd, fs::Stat), Errno> {
+pub(crate) fn open(path: &Path) -> Result<Handle, Errno> {
     // The check before the open keeps the open of a socket from giving `ENXIO`, and
     // that of a device from running its driver. The check after it covers a swap.
-    readable(&fs::stat(path)?)?;
+    kind(&fs::stat(path)?)?;
     let fd = fs::open(path, READ, fs::Mode::empty())?;
     let stat = fs::fstat(&fd)?;
-    readable(&stat)?;
-    Ok((fd, stat))
+    Ok(match kind(&stat)? {
+        FileType::Directory => Handle::Directory(fd),
+        _ => Handle::File(fd, stat),
+    })
 }
 
-fn readable(stat: &fs::Stat) -> Result<(), Errno> {
+/// The kind of a regular file or a directory, or 22 (`EINVAL`) for another kind.
+fn kind(stat: &fs::Stat) -> Result<FileType, Errno> {
     match FileType::from_raw_mode(stat.st_mode) {
-        FileType::RegularFile | FileType::Directory => Ok(()),
+        kind @ (FileType::RegularFile | FileType::Directory) => Ok(kind),
         _ => Err(Errno::INVAL),
     }
 }
