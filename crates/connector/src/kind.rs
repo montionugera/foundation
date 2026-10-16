@@ -68,7 +68,7 @@ pub trait Kind: Send + Sync + 'static {
         ctx: &browse::Context<'_>,
         query: &browse::Query,
     ) -> impl Future<Output = Result<browse::Found, Error>> {
-        let _ = (ctx, query);
+        let _: (&browse::Context<'_>, &browse::Query) = (ctx, query);
         std::future::ready(Err(config_error(
             NO_BROWSE,
             &"this connector kind cannot browse its device",

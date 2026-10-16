@@ -37,12 +37,15 @@ impl Kind for Plant {
         Ok(Channels::default())
     }
 
-    async fn discover(&self, _: &cancel::Token) -> Result<Vec<Document>, Error> {
-        Ok(Vec::new())
+    fn discover(
+        &self,
+        _: &cancel::Token,
+    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+        std::future::ready(Ok(Vec::new()))
     }
 
-    async fn run(&self, _: Context<()>) -> Result<(), Error> {
-        Ok(())
+    fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
+        std::future::ready(Ok(()))
     }
 
     async fn browse(
@@ -76,11 +79,11 @@ struct Session {
 }
 
 impl Device for Session {
-    async fn level(
+    fn level(
         &mut self,
         folder: Option<&Entry>,
         _: Option<&Cursor>,
-    ) -> Result<Option<Page>, Error> {
+    ) -> impl Future<Output = Result<Option<Page>, Error>> {
         let child = |name: &str, shape| Child {
             name: name.into(),
             tag: format!("{}/{name}", self.address),
@@ -90,10 +93,10 @@ impl Device for Session {
             None => vec![child("Line1", Shape::Folder)],
             Some(_) => vec![child("Temp1", Shape::Point(Facts::default()))],
         };
-        Ok(Some(Page {
+        std::future::ready(Ok(Some(Page {
             entries,
             next: None,
-        }))
+        })))
     }
 }
 
@@ -111,12 +114,15 @@ impl Kind for Blind {
         Ok(Channels::default())
     }
 
-    async fn discover(&self, _: &cancel::Token) -> Result<Vec<Document>, Error> {
-        Ok(Vec::new())
+    fn discover(
+        &self,
+        _: &cancel::Token,
+    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+        std::future::ready(Ok(Vec::new()))
     }
 
-    async fn run(&self, _: Context<()>) -> Result<(), Error> {
-        Ok(())
+    fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
+        std::future::ready(Ok(()))
     }
 }
 
@@ -142,12 +148,16 @@ fn block(kind: &str) -> Document {
 }
 
 /// What `Supervisor::browse` gives for `kind` and `query` over [`block`], with the
-/// secret `plant.token` set to `token`.
-fn browse(kind: &str, query: &Query, token: &[u8]) -> Result<browse::Found, Error> {
+/// secret `plant.token` set to `token`, once the run ends.
+fn browse(
+    kind: &str,
+    query: &Query,
+    token: &[u8],
+) -> Result<Result<browse::Found, Error>, sim::Error> {
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let (kind, query, token) = (kind.to_owned(), query.clone(), token.to_vec());
-    let result = sim.run_on(&node, move |node, tasks| async move {
+    sim.run_on(&node, move |node, tasks| async move {
         let env = hub::testing::Env {
             files: node.files(),
             clock: node.clock(),
@@ -160,8 +170,7 @@ fn browse(kind: &str, query: &Query, token: &[u8]) -> Result<browse::Found, Erro
         create_secret(&node.files(), &"plant.token".parse().unwrap(), &token).await;
         let supervisor = Supervisor::new(config);
         supervisor.browse(&kind, &block(&kind), &query).await
-    });
-    result.expect("the run ends")
+    })
 }
 
 fn query(scope: Scope) -> Query {
@@ -185,7 +194,9 @@ fn diagnostic(result: Result<browse::Found, Error>) -> Diagnostic {
 #[test]
 fn browses_a_block_with_only_its_kind_node_and_address() {
     let pattern = "**".parse().expect("a pattern");
-    let found = browse("plant", &query(Scope::Match(pattern)), b"t1").expect("found");
+    let found = browse("plant", &query(Scope::Match(pattern)), b"t1")
+        .expect("the run ends")
+        .expect("found");
     let entries: Vec<_> = (found.entries.iter())
         .map(|entry| (entry.path.to_string(), entry.tag.as_str()))
         .collect();
@@ -198,7 +209,8 @@ fn browses_a_block_with_only_its_kind_node_and_address() {
 
 #[test]
 fn gives_the_error_of_the_kind() {
-    let result = browse("plant", &query(Scope::Level(None)), b"t2");
+    let result =
+        browse("plant", &query(Scope::Level(None)), b"t2").expect("the run ends");
     let Err(Error::Device(error)) = result else {
         panic!("not a device error: {result:?}");
     };
@@ -207,7 +219,8 @@ fn gives_the_error_of_the_kind() {
 
 #[test]
 fn refuses_a_kind_that_cannot_browse() {
-    let result = browse("blind", &query(Scope::Level(None)), b"t1");
+    let result =
+        browse("blind", &query(Scope::Level(None)), b"t1").expect("the run ends");
     let expected = Diagnostic::new(
         Code::new("connector.no-browse"),
         None,
@@ -219,7 +232,8 @@ fn refuses_a_kind_that_cannot_browse() {
 
 #[test]
 fn refuses_a_kind_that_the_build_does_not_have() {
-    let result = browse("modbus", &query(Scope::Level(None)), b"t1");
+    let result =
+        browse("modbus", &query(Scope::Level(None)), b"t1").expect("the run ends");
     let expected = Diagnostic::new(
         Code::new("connector.unknown-kind"),
         None,
