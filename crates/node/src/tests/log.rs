@@ -385,6 +385,37 @@ fn a_long_failure_of_the_roots_warns_with_its_head_and_its_tail() {
 }
 
 #[test]
+fn a_failure_of_the_roots_of_1024_bytes_warns_whole_and_one_of_1025_is_cut() {
+    let whole = long(1024);
+    assert_eq!(
+        warned(failing(vec![whole.clone()])),
+        [format!(
+            "{WARN} a part of the OS roots was not read error={whole}"
+        )]
+    );
+    let failure = long(1025);
+    let (head, tail) = (&failure[..510], &failure[failure.len() - 510..]);
+    assert_eq!(
+        warned(failing(vec![failure.clone()])),
+        [format!(
+            "{WARN} a part of the OS roots was not read error={head}…{tail}"
+        )]
+    );
+}
+
+#[test]
+fn a_long_failure_of_the_roots_is_cut_at_char_boundaries() {
+    let failure = format!("a{}b", "é".repeat(1000));
+    let (head, tail) = (&failure[..509], &failure[failure.len() - 509..]);
+    assert_eq!(
+        warned(failing(vec![failure.clone()])),
+        [format!(
+            "{WARN} a part of the OS roots was not read error={head}…{tail}"
+        )]
+    );
+}
+
+#[test]
 fn a_failure_of_the_roots_larger_than_the_log_queue_keeps_started() {
     let lines = logged(failing(vec![long(1200 * 1024)]), tracing::Level::INFO);
     assert!(started(&lines), "`started` in the log: {lines:?}");
