@@ -1,5 +1,7 @@
 //! The Modbus PDU: requests, and the replies to them read in place.
 
+use std::ops::Range;
+
 use crate::Error;
 
 const READ_COILS: u8 = 1;
@@ -12,8 +14,8 @@ const WRITE_COILS: u8 = 15;
 const WRITE_REGISTERS: u8 = 16;
 const EXCEPTION: u8 = 0x80;
 
-const MAX_READ_BITS: u16 = 2000;
-const MAX_READ_REGISTERS: u16 = 125;
+pub(crate) const MAX_READ_BITS: u16 = 2000;
+pub(crate) const MAX_READ_REGISTERS: u16 = 125;
 const MAX_WRITE_BITS: u16 = 1968;
 const MAX_WRITE_REGISTERS: u16 = 123;
 const ON: u16 = 0xFF00;
@@ -51,7 +53,7 @@ impl Table {
         }
     }
 
-    fn bits(self) -> bool {
+    pub(crate) fn bits(self) -> bool {
         matches!(self, Self::Coils | Self::DiscreteInputs)
     }
 }
@@ -406,6 +408,15 @@ impl<'a> Bits<'a> {
             .flat_map(|&byte| (0..8).map(move |bit| byte >> bit & 1 == 1))
             .take(self.len())
     }
+
+    /// The bit at `index`, or `None` past the last.
+    pub(crate) fn get(&self, index: usize) -> Option<bool> {
+        if index >= self.len() {
+            return None;
+        }
+        let byte = self.bytes.get(index / 8)?;
+        Some(byte >> (index % 8) & 1 == 1)
+    }
 }
 
 /// The registers of a read reply, read in place, in address order.
@@ -432,6 +443,15 @@ impl<'a> Registers<'a> {
             .0
             .iter()
             .map(|&pair| u16::from_be_bytes(pair))
+    }
+
+    /// The registers at `range`, in address order, or `None` when it passes the last.
+    pub(crate) fn get(
+        &self,
+        range: Range<usize>,
+    ) -> Option<impl DoubleEndedIterator<Item = u16>> {
+        let pairs = self.0.as_chunks::<2>().0.get(range)?;
+        Some(pairs.iter().map(|&pair| u16::from_be_bytes(pair)))
     }
 }
 
