@@ -277,7 +277,7 @@
   https://github.com/synnaxlabs/foundation/pull/1919#issuecomment-6065081738).
   Amended (2026-10-16, #1927): `env` owns the whole grammar of a host.
   `Net::resolve` takes an `env::net::host::Host`, which a caller parses at plan for a
-  config. `connector::http` also parses it again on each request, until #2806. An IPv4
+  config. `connector::http` also parses it again on each request, until #1218. An IPv4
   address has four decimal parts with no leading zeros. An IPv6 address is bare or in
   brackets, with an optional zone of a decimal interface number that fits in `u32`,
   which `resolve` gives as the scope with no lookup. Zone 0 is no zone. In an `http`
