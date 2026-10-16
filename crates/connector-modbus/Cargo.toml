@@ -10,8 +10,13 @@ env = { path = "../env" }
 types = { path = "../types" }
 
 [dev-dependencies]
+counting = { path = "../counting" }
 sim = { path = "../sim" }
 proptest.workspace = true
+
+[[test]]
+name = "alloc"
+harness = false
 
 [lints]
 workspace = true

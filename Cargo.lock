@@ -451,6 +451,7 @@ dependencies = [
 name = "connector-modbus"
 version = "0.0.0"
 dependencies = [
+ "counting",
  "env",
  "proptest",
  "sim",
