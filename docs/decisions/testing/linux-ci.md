@@ -3,9 +3,9 @@
   still be a valid build, so OS-specific code goes only in `os` and, outside the
   binary, in `sdk` (`laptop.architect`, 2026-10-16T21:33:33Z,
   https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225122027;
-  `laptop.monitor`, 2026-10-16, under the person's term 2 of C6 (the client does not
-  depend on `os`), relayed to the person with no objection,
-  https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225611780). The
+  `laptop.monitor`, 2026-10-16T22:40:46Z, under the person's term 2 of C6 (the client
+  does not depend on `os`), relayed to the person with no objection,
+  https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6226048578). The
   person said: "As long as our systems are designed to cross compile i'm ok wiht only
   testing against linux for an alpha. as long as the system is designed for cross os
   deployment" (#574).
