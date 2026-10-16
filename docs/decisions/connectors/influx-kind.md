@@ -4,7 +4,11 @@
   refuses before a run. `discover` gives no documents. Decided by `laptop.architect-2`
   on #1153
   (https://github.com/synnaxlabs/foundation/issues/1153#issuecomment-6051297152,
-  2026-10-08 03:02 UTC). The kind also refuses a path other than empty or `/`, and a
+  2026-10-08 03:02 UTC). Until the kind takes a CA (#2702), it also refuses the scheme
+  `https`, with `influx.bad-address` and the text "the scheme of the URI is not http"
+  (`laptop.architect-2`, 2026-10-16T07:51:33Z:
+  https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210764044,
+  item 5). The kind also refuses a path other than empty or `/`, and a
   query, at the value: a path (a proxy prefix) can come later as a compatible change,
   and a refusal cannot. Each diagnostic of a kind names its document
   `connector::kind::NOUN` ("the connector"), as `reader::read` does. Decided by
