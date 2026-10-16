@@ -1,7 +1,8 @@
 //! The answers to the name lookups of a run.
 
-use std::net::{IpAddr, Ipv6Addr};
+use std::net::IpAddr;
 
+use env::net::host::Host;
 use types::time::Span;
 
 /// How a lookup of one name goes. Build it with `..Config::default()`: fields get
@@ -40,20 +41,13 @@ pub enum Answer {
 }
 
 impl Config {
-    /// Panics when the delay is negative, or when `host` is an IP literal, which
-    /// `env::net::Net::resolve` gives with no lookup.
+    /// Panics when the delay is negative.
     pub(crate) fn check(&self, host: &str) {
         let delay = self.delay;
         assert!(
             delay >= Span::ZERO,
             "the lookup of {host} takes a negative delay of {delay}"
         );
-        let bracketed = host.strip_prefix('[').and_then(|h| h.strip_suffix(']'));
-        let literal = match bracketed {
-            Some(v6) => v6.parse::<Ipv6Addr>().is_ok(),
-            None => host.parse::<IpAddr>().is_ok(),
-        };
-        assert!(!literal, "{host} is an IP literal, which no lookup reads");
     }
 }
 
@@ -63,12 +57,21 @@ impl Default for Answer {
     }
 }
 
-/// The key of `host` in the name table: its ASCII lowercase, with no final dot. The
-/// root name `.` keeps its dot, so that it is not the empty host.
-pub(crate) fn key(host: &str) -> String {
-    let host = host
-        .strip_suffix('.')
-        .filter(|h| !h.is_empty())
-        .unwrap_or(host);
-    host.to_ascii_lowercase()
+/// The name of `host`, as [`Host`] parses it.
+///
+/// Panics when `host` is not a name of [`Host`].
+pub(crate) fn parse(host: &str) -> String {
+    let parsed: Host = host
+        .parse()
+        .unwrap_or_else(|e| panic!("{host:?} is not a host: it has {e}"));
+    let name = parsed
+        .name()
+        .unwrap_or_else(|| panic!("{host} is an IP address, which no lookup reads"));
+    name.to_owned()
+}
+
+/// The key of `name`, a name of [`Host`], in the name table: `name` with no final
+/// dot.
+pub(crate) fn key(name: &str) -> &str {
+    name.strip_suffix('.').unwrap_or(name)
 }

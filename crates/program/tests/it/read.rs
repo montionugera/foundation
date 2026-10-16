@@ -634,8 +634,11 @@ fn stops_a_read_at_a_frame_or_a_reply_that_is_not_valid() {
                         send_frame(&mut read, range, &[(0, 8)], &[0; 8], &[8]).await;
                     }
                     Fault::Reopen => {
-                        reply(read.sender.as_mut().expect("two-way"), Reply::Opened)
-                            .await;
+                        reply(
+                            read.sender.as_mut().expect("two-way"),
+                            Reply::Opened { live: 0 },
+                        )
+                        .await;
                     }
                     Fault::Long => {
                         send_frame(&mut read, range, &[(1, 8)], &[0; 16], &[16]).await;

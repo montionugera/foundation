@@ -254,6 +254,10 @@
   host with a NUL byte is `NotFound`, with no lookup. Decided by `laptop.architect-2`
   (2026-10-08 16:52 UTC, #1095,
   https://github.com/synnaxlabs/foundation/issues/1095#issuecomment-6064802287).
+  Changed (2026-10-16, #1927): a NUL byte is `host::Error::Character`, so it never
+  reaches the driver. Decided by `laptop.architect-2` (2026-10-16 02:53 UTC, #1927,
+  https://github.com/synnaxlabs/foundation/issues/1927#issuecomment-6206963417).
+  Supersedes https://github.com/synnaxlabs/foundation/issues/1095#issuecomment-6064802287.
   `EAI_NONAME` with errno `EMFILE` or `ENFILE` is `Io` with that code: the lookup met
   a full descriptor table, so glibc ran it without part of its configuration or
   without its name service modules, and its answer is not final. Lost: `NotFound`
@@ -268,9 +272,41 @@
   name server answers. Add a cap before a caller can start lookups at a rate that
   grows with peers, devices, or data.
   Lost: Tokio's blocking pool, because the drop of a runtime waits for each of its
-  blocking tasks, and `os` drops each runtime it builds. The literal grammar waits on
-  #1927. Decided by `laptop.architect-2` (2026-10-08 17:08 UTC, #1919,
+  blocking tasks, and `os` drops each runtime it builds. #1927 gives the grammar
+  (below). Decided by `laptop.architect-2` (2026-10-08 17:08 UTC, #1919,
   https://github.com/synnaxlabs/foundation/pull/1919#issuecomment-6065081738).
+  Amended (2026-10-16, #1927): `env` owns the whole grammar of a host.
+  `Net::resolve` takes an `env::net::host::Host`, which a caller parses at plan for a
+  config. An IPv4 address has four decimal parts with no leading zeros. An IPv6
+  address is bare or in brackets, with an optional zone of a decimal interface number
+  that fits in `u32`, which `resolve` gives as the scope with no lookup. A name has
+  parts of ASCII letters, digits, `-`, and `_`, each 1 to 63 bytes, none that starts
+  or ends with `-`. It is at most 253 bytes without one optional final dot, its last
+  part is not a number, and its letters go to lowercase. Only a name reaches the
+  driver, so `getaddrinfo` never reads an `inet_aton` form (`127.1`, `0x7f.0.0.1`,
+  `10.0.0.2.`): `Host` refuses each. A NUL byte is `host::Error::Character`, not
+  `NotFound`. A zone by interface name (`%eth0`) is refused, as it needs
+  `if_nametoindex`: a new driver call, and interfaces in `sim`. Trigger: a user needs
+  a link-local device by its interface name. Lost: `resolve(&str)` with a separate
+  check for plan and a new error at run time, because the grammar runs twice and a
+  caller can skip the check. Lost: a `host::Name` type for the driver, a public type
+  for one invariant inside `env`: `Driver::resolve` keeps `&str`, and `os` fails
+  loudly on a NUL. Proposed by `box1.builder-2`
+  (https://github.com/synnaxlabs/foundation/issues/1927#issuecomment-6206949254).
+  Decided by `laptop.architect-2` (2026-10-16 02:53 UTC, #1927,
+  https://github.com/synnaxlabs/foundation/issues/1927#issuecomment-6206963417).
+  Amended in the review of #2804: zone 0 is no zone, so one address has one `Host`.
+  `host::uri` reads the host of a URI: an IPv6 address is in brackets, and its zone
+  follows `%25` (RFC 6874), so `[fe80::1%252]` is zone 2 and another `%` is
+  `Error::Escape`, whose message shows the `%25` form. Each caller that reads a URI uses
+  it (R7 STARTING POINTS for `connector::http`; `connector-opcua` in #2803).
+  `connector::http` parses the host again on each request, until #1218. Approved by
+  `laptop.architect-2` (2026-10-16 04:05 UTC,
+  https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6207830826; the move
+  to `host::uri`, 04:34 UTC,
+  https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6208160301;
+  `Error::Escape`, 2026-10-16 04:58 UTC,
+  https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6208423911).
   From the review of #1018: the bracketed IPv6 literal, and what `NotFound` and `Io`
   mean to a caller. Amended (2026-10-07, #1117): `Mode::Create` makes a missing file
   with `len` zeroed bytes. It treats an empty file that is there as missing and

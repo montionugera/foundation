@@ -1,5 +1,8 @@
 //! One HTTP/1.1 client for every connector, over `env`.
 
+#[cfg(feature = "sim")]
+#[doc(hidden)]
+pub mod bench;
 mod body;
 mod pool;
 #[cfg(feature = "sim")]
@@ -11,7 +14,6 @@ use std::cell::Cell;
 use std::fmt;
 use std::future::poll_fn;
 use std::io;
-use std::net::Ipv6Addr;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -21,6 +23,7 @@ use bytes::Bytes;
 use document::diagnostic::{Code, Diagnostic};
 use document::value::{self, Value};
 use env::clock::Clock;
+use env::net::host::{self, Host};
 use env::net::{self, Net, Tcp, tcp};
 use env::tasks::Tasks;
 use http::uri::Scheme;
@@ -130,8 +133,8 @@ impl Client {
     /// host, and the port, which defaults to 80 for `http` and 443 for `https`. A new
     /// connection looks up the host and tries each
     /// address in order. Each address gets an equal share of the time left, but at
-    /// least 2 s or all that is left. The client sets `Host` when the request has
-    /// none, and sends the path and query only.
+    /// least 2 s or all that is left. The client sets `Host`, with no zone, when the
+    /// request has none, and sends the path and query only.
     ///
     /// # Errors
     ///
@@ -234,7 +237,7 @@ impl Client {
             received: Rc::clone(&received),
         };
         stream.handshake().await.map_err(|cause| Error::Tls {
-            origin: format!("{}:{}", origin.host, origin.port),
+            origin: origin.to_string(),
             cause: Failure(Cause::Io(cause)),
         })?;
         let (sender, connection) = http1::handshake(stream).await?;
@@ -250,9 +253,7 @@ impl Client {
     /// A TLS session for `origin`, which checks the certificate at mesh time now.
     fn tls(&self, origin: &Origin) -> Box<rustls::Connection> {
         let config = tls::client(&self.provider, &self.roots, self.time.now());
-        let name = name(&origin.host)
-            .expect("invariant: origin checked the host as a TLS name");
-        let session = rustls::ClientConnection::new(config, name)
+        let session = rustls::ClientConnection::new(config, name(&origin.host))
             .expect("invariant: a client config with roots makes a session");
         Box::new(session.into())
     }
@@ -340,12 +341,24 @@ fn share(now: Monotonic, deadline: Monotonic, left: usize) -> Option<Monotonic> 
     (share < remaining).then(|| now + Span::from_nanos(share))
 }
 
-/// Where requests go: under TLS or not, a host in ASCII lowercase, and a port.
+/// Where requests go: under TLS or not, a host, and a port.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Origin {
     secure: bool,
-    host: String,
+    host: Host,
     port: u16,
+}
+
+/// Shows the host and the port as a URI writes them, with an IPv6 address in brackets.
+impl fmt::Display for Origin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let host = self.host.to_string();
+        if host.contains(':') {
+            write!(f, "[{host}]:{}", self.port)
+        } else {
+            write!(f, "{host}:{}", self.port)
+        }
+    }
 }
 
 /// A connection to a server.
@@ -378,15 +391,7 @@ fn origin(uri: &Uri) -> Result<Origin, Error> {
         Some(colon) => (&text[..after + colon], &text[after + colon + 1..]),
         None => (text, ""),
     };
-    let valid = match host.strip_prefix('[') {
-        Some(v6) => v6
-            .strip_suffix(']')
-            .is_some_and(|v6| v6.parse::<Ipv6Addr>().is_ok()),
-        None => !host.is_empty() && !host.contains('['),
-    };
-    if !valid || secure && name(host).is_none() {
-        return Err(Error::Host);
-    }
+    let host = host::uri(host).map_err(Error::Host)?;
     // `u16::from_str` takes a leading `+`.
     let port = match port {
         "" if secure => 443,
@@ -397,18 +402,20 @@ fn origin(uri: &Uri) -> Result<Origin, Error> {
             .filter(|&port| port != 0)
             .ok_or(Error::Port)?,
     };
-    Ok(Origin {
-        secure,
-        host: host.to_ascii_lowercase(),
-        port,
-    })
+    Ok(Origin { secure, host, port })
 }
 
-/// The name that a TLS server's certificate must hold for `host`: a DNS name or an IP
-/// address, with no brackets. `None` when the host is neither.
-fn name(host: &str) -> Option<ServerName<'static>> {
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    ServerName::try_from(host.to_owned()).ok()
+/// The name that a TLS server's certificate must hold for `host`: its IP address with
+/// no zone, or its name with no final dot.
+fn name(host: &Host) -> ServerName<'static> {
+    let text = host.to_string();
+    let bare = match host.name() {
+        Some(name) => name.strip_suffix('.').unwrap_or(name),
+        None => text.split_once('%').map_or(text.as_str(), |(ip, _zone)| ip),
+    };
+    // A name of `Host` is at most 253 bytes with no final dot, and its parts follow
+    // the rules of a TLS name.
+    ServerName::try_from(bare.to_owned()).expect("invariant: each host is a TLS name")
 }
 
 /// A copy of `request`, to send again.
@@ -421,14 +428,22 @@ fn copy(request: &Request<Whole>) -> Request<Whole> {
     copy
 }
 
-/// Moves the authority into `Host`, unless the request has one, and leaves the path
-/// and query in the URI.
+/// Moves the authority into `Host`, with no zone, unless the request has one, and
+/// leaves the path and query in the URI.
 fn origin_form(parts: &mut http::request::Parts) {
     if !parts.headers.contains_key(header::HOST)
         && let Some(authority) = parts.uri.authority()
     {
-        let host = HeaderValue::from_str(authority.as_str())
-            .expect("an authority is a valid header value");
+        let text = authority.as_str();
+        // RFC 6874: a client removes the zone. `origin` admits a `%` only in brackets.
+        let host = match text.split_once('%') {
+            Some((ip, rest)) => {
+                let close = rest.find(']').expect("a zone ends at its bracket");
+                HeaderValue::from_str(&format!("{ip}{}", &rest[close..]))
+            }
+            None => HeaderValue::from_str(text),
+        };
+        let host = host.expect("an authority is a valid header value");
         parts.headers.insert(header::HOST, host);
     }
     let mut uri = http::uri::Parts::default();
@@ -449,10 +464,9 @@ pub enum Error {
     Scheme,
     /// The URI holds user info. The error keeps none of it.
     UserInfo,
-    /// The URI has no host, a host in brackets that is not an IPv6 address, a `[` in
-    /// a host that is not in brackets, or, for `https`, a host that is not a DNS name
-    /// or an IP address.
-    Host,
+    /// The URI has no host, or one that [`Host`] refuses, with the reason. A zone
+    /// follows `%25`, as in `http://[fe80::1%252]/`.
+    Host(host::Error),
     /// The port of the URI is not a number from 1 to 65535.
     Port,
     /// The name lookup failed, or no address of the host took the connection. It
@@ -506,7 +520,7 @@ impl fmt::Display for Error {
                 f,
                 "the URI holds user info; give a credential through a secret"
             ),
-            Self::Host => write!(f, "the URI has no valid host"),
+            Self::Host(error) => write!(f, "the URI has {error}"),
             Self::Port => {
                 write!(f, "the port of the URI is not a number from 1 to 65535")
             }
@@ -530,12 +544,12 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Host(error) => Some(error),
             Self::Connect(error) => Some(error),
             Self::Protocol(failure) | Self::Tls { cause: failure, .. } => Some(failure),
             Self::NoRoots
             | Self::Scheme
             | Self::UserInfo
-            | Self::Host
             | Self::Port
             | Self::TimedOut
             | Self::TooLarge { .. } => None,

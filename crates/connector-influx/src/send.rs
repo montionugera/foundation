@@ -13,11 +13,11 @@ use connector::retry::{self, Backoff};
 use connector::secret;
 use http::header::{AUTHORIZATION, HeaderValue};
 use http::{Method, Request, StatusCode, Uri};
-use hub::reader::{Ended, Position, Received};
+use hub::reader::{Ended, Received};
 use types::time::Span;
 
-use crate::batch::{Batch, Taken};
-use crate::{CONFIRMED, Config, Target};
+use crate::batch::{Ack, Batch, Taken};
+use crate::{CONFIRMED, Config, LOST, Target};
 
 /// The longest name of a database, bucket, or org, in bytes.
 pub(crate) const NAME_MAX: usize = 4_096;
@@ -38,15 +38,16 @@ const RETRY: retry::Config = retry::Config {
 
 enum Event<'a> {
     Cancelled,
-    /// The position after the batch that InfluxDB took and its samples, or the error
-    /// of a read of the token.
-    Sent(Result<(Position, u64), Error>),
+    /// What the batch that InfluxDB took acks and counts, or the error of a read of
+    /// the token.
+    Sent(Result<Ack, Error>),
     Frame(Result<Received<'a>, Ended>),
 }
 
 /// Writes the frames of the run's reader to InfluxDB until the cancel, with one
 /// request in flight. While one is in flight it reads the next batch, up to 5,000
-/// lines, and acks a batch and counts its samples only after InfluxDB answers 204.
+/// lines, and acks a batch and counts its samples and lost seqs only after InfluxDB
+/// answers 204.
 pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     let mut reader = ctx.reader().expect("invariant: check gives a reader");
     let ctx = &ctx;
@@ -54,25 +55,21 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     let client = client(ctx).await;
     let uri = write_uri(&config.address, &config.target);
     let token = RefCell::new(Token::read(ctx).await?);
-    let confirmed = ctx.count(CONFIRMED);
-    let mut batch = Batch::new(&config.measurement);
+    let (confirmed, lost) = (ctx.count(CONFIRMED), ctx.count(LOST));
+    let mut batch = Batch::new(&config.measurement, ctx.name());
     let mut cancelled = pin!(ctx.cancel().wait());
     let mut flight = pin!(None);
     loop {
         if flight.is_none()
-            && let Some(Taken {
-                body,
-                position,
-                samples,
-            }) = batch.take()
+            && let Some(Taken { body, ack }) = batch.take()
         {
             if body.is_empty() {
-                reader.ack(position);
+                reader.ack(ack.position);
             } else {
                 let (client, uri, token) = (&client, &uri, &token);
                 flight.set(Some(async move {
                     send(client, ctx, uri, token, body.into()).await?;
-                    Ok((position, samples))
+                    Ok(ack)
                 }));
             }
         }
@@ -101,10 +98,11 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
         match event {
             Event::Cancelled => return Ok(()),
             Event::Sent(Err(error)) => return Err(error),
-            Event::Sent(Ok((position, samples))) => {
+            Event::Sent(Ok(ack)) => {
                 flight.set(None);
-                reader.ack(position);
-                confirmed.add(samples);
+                reader.ack(ack.position);
+                confirmed.add(ack.samples);
+                lost.add(ack.lost);
             }
             Event::Frame(Ok(received)) => batch.add(&received)?,
             Event::Frame(Err(ended)) => return Err(ended.into()),

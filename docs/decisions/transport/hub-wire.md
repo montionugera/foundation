@@ -175,9 +175,9 @@
   (https://github.com/synnaxlabs/foundation/issues/1068#issuecomment-6031655359). The
   byte form, little-endian: `Open` is kind 1 (latest) or 2 (complete, then `limit_bytes`
   `u64`), then `channels` `u32`; `Credit` is kind 3, then `limit_bytes` `u64`; `Reply`
-  is kind 1 (opened), 2 (head: path `u8`, live 0 and backfill 1, seq `u64`, count
-  `u32`, series `u32`), or 3 (behind, no fields, by the Behind rule: the architect,
-  2026-10-07T21:07:50Z,
+  is kind 1 (opened, then `live` `u64`), 2 (head: path `u8`, live 0 and backfill 1,
+  seq `u64`, count `u32`, series `u32`), or 3 (behind, no fields, by the Behind rule:
+  the architect, 2026-10-07T21:07:50Z,
   https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6046877541); a key is
   a `u128`; an end is place and end, each `u32`. Amended (2026-10-07, #1196): the
   message order, the runs, and the head bound move from `hub` to two stateful decoders
@@ -241,6 +241,36 @@
   home's receive half resets with code 0, not the refusal code, until #2031
   (`laptop.architect`, 2026-10-08T23:49:49Z:
   https://github.com/synnaxlabs/foundation/pull/2003#issuecomment-6071319399).
+  Amended (#2553): `Opened` carries `live`, the open position of the session: the
+  first live seq of the index that it can get, in each mode, with no sentinel
+  (`laptop.architect`, 2026-10-15T20:18:28Z:
+  https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6201432448).
+  A latest session opens at the first seq of the newest frame of the index, or at the
+  live tail when there is none (`laptop.architect`, 2026-10-15T22:10:13Z:
+  https://github.com/synnaxlabs/foundation/pull/2765#issuecomment-6203316949). The home
+  reads that seq from the one range of the frame that `delivery::Readers::newest`
+  gives, and keeps no copy of it (`laptop.architect`, 2026-10-15T23:09:09Z:
+  https://github.com/synnaxlabs/foundation/pull/2765#issuecomment-6204168857).
+  `wire::hub::Reader` refuses a first head that starts before `live` with `Seq`, in each
+  mode, as it refuses a head that starts before the end of the head before it. Lost: the
+  live tail as the open position of a latest session, which made the decoder and the
+  fuzz harness check the mode (`laptop.architect`, 2026-10-15T22:10:13Z:
+  https://github.com/synnaxlabs/foundation/pull/2765#issuecomment-6203316949). A
+  complete remote reader gives the seqs from `live` to its first frame with a sample as
+  the gap of that frame (`hub::reader::Received::gap`). A complete client read gets
+  `live`, from which the client finds the seqs before the seq of its first head.
+  `program::Reader` drops `live` until #2829 gives that gap (`laptop.architect`,
+  2026-10-16T05:17:07Z:
+  https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6208645775). Lost:
+  `Opened` with no field, so a loss between the open and the first frame was silent.
+  Decided by `laptop.architect` (2026-10-15T19:40:52Z,
+  https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6200757306).
+  Amended (#2725, with #2723 and #2553): no case gives `Behind` now. A complete session
+  that misses a frame reads it from disk, and a seq lost for no room comes as the gap of
+  the next frame. The variants stay until #2790 removes them (`laptop.architect`,
+  2026-10-16T00:46:53Z:
+  https://github.com/synnaxlabs/foundation/issues/2725#issuecomment-6205434126).
+  Message kind 3 stays retired after #2790: no new reply takes it.
   `wire::hub::Frames` builds the frames of a reader session from its messages, from
   `Opened` on, for the reader's node and for a program, so the reader end of HUB WIRE
   is in one place (`laptop.architect`, 2026-10-15T23:19:38Z,
@@ -249,7 +279,9 @@
   that sees it). It takes no pool, so `wire` takes `block` only in its tests
   (`laptop.architect`, 2026-10-15T23:56:49Z:
   https://github.com/synnaxlabs/foundation/pull/2779#issuecomment-6204779426).
-  `Frames::open` takes the first message of the session, which is `Opened`, so a
+  `Frames::open` takes the first message of the session, which is `Opened`, and gives
+  its `live` with the frames (#2553; `laptop.architect`, 2026-10-16T02:54:38Z:
+  https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206979704), so a
   `Frames` is open from its start, `Step` has no opened, and no caller restates the
   order of the open (`laptop.architect`, 2026-10-16T00:47:46Z:
   https://github.com/synnaxlabs/foundation/pull/2779#issuecomment-6205447213; lost: an

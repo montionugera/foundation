@@ -35,7 +35,8 @@ fn a_dropped_lookup_ends_its_thread_with_no_panic() {
     let mut cx = Context::from_waker(Waker::noop());
     // A lookup that answers before its first poll ends leaves no answer to drop.
     let dropped = (0..100).any(|_| {
-        let mut lookup = Box::pin(net.resolve("localhost", 4433));
+        let host = "localhost".parse().unwrap();
+        let mut lookup = Box::pin(net.resolve(&host, 4433));
         lookup.as_mut().poll(&mut cx).is_pending()
     });
     assert!(dropped, "a lookup is pending at its first poll");
