@@ -913,7 +913,8 @@ impl Readers {
 
     /// Whether a record changed since the last [`Readers::recorded`]. A named open or
     /// close, a takeover, an ack that moves a named position, the end of a hold, and a
-    /// restore of an open session change them.
+    /// restore of an open session change them. Takes time linear in the complete
+    /// readers.
     #[must_use]
     pub fn changed(&self) -> bool {
         let moved = |session: &Session| session.changed && session.named.is_some();

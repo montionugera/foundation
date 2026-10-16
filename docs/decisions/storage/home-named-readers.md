@@ -49,4 +49,6 @@
   of a reader that holds a record opens also when the records pass it, as on a smaller
   pool after a restart. A latest reader adds no record. #2833 holds records past one
   entry. Decided by `laptop.architect` (2026-10-16T05:22:26Z:
-  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6208708096).
+  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6208708096;
+  `Unrecorded` and the trim gap until #406: 2026-10-16T07:08:03Z:
+  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6210093371).
