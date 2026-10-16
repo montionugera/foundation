@@ -10,9 +10,9 @@ use crate::browse::Path;
 /// The name of the reserved call that [`fill`] writes.
 const FILL: &str = "fill";
 
-/// A call `fill`, the reserved call that [`fill`] writes. `config` refuses each one,
-/// in any value at any depth, also in the config of a kind, so no kind may give a
-/// call `fill` a meaning of its own.
+/// A call `fill`, the reserved call that [`fill`] writes. `config` refuses each one
+/// that is not inside another, in any value at any depth, also in the config of a
+/// kind, so no kind may give a call `fill` a meaning of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fill<'a> {
     /// `fill("<what>")`, as [`fill`] writes it.

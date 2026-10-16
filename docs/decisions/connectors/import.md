@@ -89,3 +89,5 @@
   `import::Fill` in place of a public `import::FILL`, and no problem for a `fill`
   inside a `fill`: `laptop.architect-2`, 2026-10-16 16:06 UTC, on the round 2 review
   of #2883 (https://github.com/synnaxlabs/foundation/pull/2883#issuecomment-6219539273).
+  Supersedes https://github.com/synnaxlabs/foundation/pull/2883#issuecomment-6219336388,
+  item 3: a public `import::FILL`.
