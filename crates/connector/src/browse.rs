@@ -415,9 +415,8 @@ const NO_FOLDER: Code = Code::new("connector.no-folder");
 const BROKEN: Code = Code::new("connector.broken-browse");
 
 /// The path of an entry from the root of a device's tree: the name of each entry on
-/// the way, its own last. No name of a path that [`walk`] gives is empty. Its text
-/// joins the names with `/`, with `\` before each `/`, `*`, and `\` in a name. The
-/// root is the empty text.
+/// the way, its own last. No name of a path is empty. Its text joins the names with
+/// `/`, with `\` before each `/`, `*`, and `\` in a name. The root is the empty text.
 #[derive(Clone)]
 pub struct Path(Option<Arc<Link>>);
 
