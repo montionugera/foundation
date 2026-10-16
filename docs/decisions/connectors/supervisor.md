@@ -152,7 +152,8 @@
   samples and checks a certificate: it waits for the node's first mesh time and does
   not watch the cancel, so a run races it with `Context::cancel`. `Context::clock` is
   the clock of deadlines (`laptop.architect-2`, 2026-10-16T03:30:01Z:
-  https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207437988; 2026-10-16T03:30:54Z:
+  https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207437988;
+  2026-10-16T03:30:54Z:
   https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207447936). Only
   a shard that has a hub runs one, so today only shard 0 (`laptop.architect`,
   2026-10-10T14:41:53Z:
