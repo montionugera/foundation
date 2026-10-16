@@ -30,12 +30,20 @@ fn commit_8_records(bencher: Bencher<'_, '_>, blocks: u64) {
 }
 
 fn cycle(bencher: Bencher<'_, '_>, blocks: u64, records: usize) {
-    let mut ring = Ring::new(blocks + PHASE);
-    // Times the steady ring, which trims at each commit, not one still filling.
-    for _ in 0..2 * blocks {
-        ring.commit(records);
-    }
+    let mut ring = steady_ring(blocks, records);
     bencher
         .counter(ItemsCount::new(records))
         .bench_local(|| ring.commit(divan::black_box(records)));
+}
+
+/// The ring of `blocks`, after the warm-up, so a time holds the steady ring, which
+/// trims at each commit, not one still filling. Out of line, so that a change of the
+/// setup does not change the code of the timed loop.
+#[inline(never)]
+fn steady_ring(blocks: u64, records: usize) -> Ring {
+    let mut ring = Ring::new(blocks + PHASE);
+    for _ in 0..2 * blocks {
+        ring.commit(records);
+    }
+    ring
 }
