@@ -34,14 +34,17 @@
   folder's, so an entry holds one link of its own at any depth of the start, and the
   walk holds at most `DEPTH` pages that the device sent. No path that the walk gives has
   an empty name, and the record of each kind says what it gives for an empty name of its
-  device, so the text of each path parses. When a kind breaks one of these rules of
-  `Device`: a page over `LIMIT`, an empty name, a count of values that is not the count
-  of tags, `walk` gives `Error::Config` with `connector.broken-browse`, whose message
-  names the rule, then what broke it, and the browse fails with no retry. It never
-  panics: in release a panic stops the node and each of its connectors. The browse
-  operation of `ops` adds the connector and its kind to each error that it gives from
-  `walk`; `Supervisor::browse` adds neither. `Kind::browse(ctx, query)` connects and
-  gives `walk` over the session, and gives `connector.no-browse` by default.
+  device, so the text of each path parses. `walk` does not check that no two entries of
+  one folder have the same name: one level gives one page, so it never holds each name
+  of a folder. The record of each kind says how it names two entries of one folder that
+  the device gives the same name. When a kind breaks one of these rules of `Device`: a
+  page over `LIMIT`, an empty name, a count of values that is not the count of tags,
+  `walk` gives `Error::Config` with `connector.broken-browse`, whose message names the
+  rule, then what broke it, and the browse fails with no retry. It never panics: in
+  release a panic stops the node and each of its connectors. The browse operation of
+  `ops` adds the connector and its kind to each error of `Supervisor::browse`;
+  `Supervisor::browse` adds neither. `Kind::browse(ctx, query)` connects and gives
+  `walk` over the session, and gives `connector.no-browse` by default.
   `Supervisor::browse(kind, config, query)` runs it apart from any run of the connector,
   with the network, clock, randomness, and secrets of the supervisor; a kind reads only
   what it needs to reach the device, so a block with only `kind`, `node`, and `address`
@@ -106,4 +109,6 @@
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6209047339). The
   operation of `ops`, not `Supervisor::browse`, names the connector and its kind in an
   error: `laptop.architect-2`, 2026-10-16 06:46 UTC
-  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6209790559).
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6209790559). No
+  check of two names of one folder in `walk`: `laptop.architect-2`, 2026-10-16 06:50 UTC
+  (https://github.com/synnaxlabs/foundation/pull/2836#issuecomment-6209844506).

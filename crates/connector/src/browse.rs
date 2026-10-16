@@ -803,7 +803,8 @@ pub struct Entry {
 pub struct Child {
     /// Its name in the folder. It is not empty: the record of the kind says what it
     /// gives for an empty name of the device. No two entries of one folder have the
-    /// same name.
+    /// same name. [`walk`] does not check this: one level gives one page, so it never
+    /// holds each name of a folder.
     pub name: String,
     /// Its address in the device, as [`Entry::tag`].
     pub tag: String,
