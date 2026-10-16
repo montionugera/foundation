@@ -71,8 +71,14 @@ pub fn decode(data: &[u8]) {
 }
 
 /// The text of the read of `value`, a `DataValue`: a `NaN` equals itself.
+///
+/// # Panics
+///
+/// When `value` is not a `DataValue`.
 fn read_of(value: &Value) -> String {
-    // SAFETY: `value` is a live `DataValue`.
+    let data_value = &raw const ffi::types()[DATA_VALUE];
+    assert!(std::ptr::eq(value.data_type, data_value), "a DataValue");
+    // SAFETY: `value` is a live `DataValue`, as the assert checks.
     match unsafe { crate::value::Value::of(value.pointer().cast()) } {
         Ok(read) => format!("{read:?}"),
         Err(Fault::Status(status)) => status.name().to_owned(),
