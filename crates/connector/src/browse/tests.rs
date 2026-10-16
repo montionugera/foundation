@@ -598,7 +598,9 @@ mod walk {
         ] {
             let query = query("", Scope::Match(pattern("*")));
             let found = now(walk(&mut wide(n), &query)).expect("found");
-            assert_eq!(found.entries.len(), n.min(LIMIT), "{n}");
+            let expected: Vec<String> =
+                (0..n.min(LIMIT)).map(|i| format!("p{i}")).collect();
+            assert_eq!(paths(&found), expected, "{n}");
             assert_eq!(found.end, end, "{n}");
         }
     }
