@@ -746,3 +746,24 @@ fn the_debug_of_a_log_hides_its_writer() {
     let debug = format!("{log:?}");
     assert!(debug.contains("parts: Some(Parts { .. })"), "{debug}");
 }
+
+#[test]
+fn the_bench_log_gives_the_dispatch_of_its_level() {
+    let (_, mesh) = clock::Clock::new(os::clock());
+    let lines = Lines::default();
+    let threads = os::threads().expect("threads");
+    let wall = os::wall().expect("a wall clock");
+    let log = crate::bench::log(
+        to(&lines, false, tracing::Level::INFO),
+        &threads,
+        wall,
+        mesh,
+    );
+    let enabled = tracing::dispatcher::with_default(log.dispatch(), || {
+        (
+            tracing::enabled!(tracing::Level::INFO),
+            tracing::enabled!(tracing::Level::DEBUG),
+        )
+    });
+    assert_eq!(enabled, (true, false));
+}
