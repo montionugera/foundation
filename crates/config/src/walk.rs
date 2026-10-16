@@ -13,21 +13,20 @@ pub(crate) enum Part<'a> {
 }
 
 /// Gives `visit` each part of `document` at any depth, each part before what follows
-/// it. When `visit` gives `false`, the walk skips what follows that part.
+/// it. When `visit` gives `false` for a value, the walk skips what is inside that
+/// value. For a block or a key, the walk ignores what `visit` gives.
 pub(crate) fn each(document: &Document, visit: &mut impl FnMut(Part<'_>) -> bool) {
     in_map(&document.attributes, visit);
     for block in &document.blocks {
-        if visit(Part::Block(block)) {
-            each(&block.body, visit);
-        }
+        visit(Part::Block(block));
+        each(&block.body, visit);
     }
 }
 
 fn in_map(map: &Map, visit: &mut impl FnMut(Part<'_>) -> bool) {
     for attribute in map.iter() {
-        if visit(Part::Key(&attribute.key, attribute.key_span)) {
-            in_value(&attribute.value, visit);
-        }
+        visit(Part::Key(&attribute.key, attribute.key_span));
+        in_value(&attribute.value, visit);
     }
 }
 
