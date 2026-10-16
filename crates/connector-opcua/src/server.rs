@@ -315,6 +315,201 @@ impl Server {
         self.add_scalar(&node, Value::U32(most));
     }
 
+    /// Adds the folder `node` with the browse name `name` and the display name
+    /// `display`, under `parent` by the reference type of the number `reference` in
+    /// namespace 0.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node, or the key of `node` is the number 0.
+    #[cfg(test)]
+    pub(crate) fn add_folder(
+        &self,
+        node: &Node,
+        parent: &Node,
+        reference: u32,
+        name: &CStr,
+        display: &CStr,
+    ) {
+        // SAFETY: the server lives, and it copies each name.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_folder(
+                self.raw(),
+                added(node),
+                parent.into(),
+                reference,
+                name.as_ptr(),
+                display.as_ptr(),
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Adds the folder of a GUID in namespace 1 with the browse and display name
+    /// `guid`, under `parent` by `Organizes`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node.
+    #[cfg(test)]
+    pub(crate) fn add_guid(&self, parent: &Node) {
+        // SAFETY: the server lives, and it copies the name of `parent`.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_guid(self.raw(), parent.into())
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Adds the variable `node` with no value, the browse and display name `name`,
+    /// the `DataType` `data_type`, the `ValueRank` `rank`, and the `AccessLevel` and
+    /// `UserAccessLevel` `access`, under `parent` by the reference type of the number
+    /// `reference` in namespace 0.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node, or the key of `node` is the number 0.
+    #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each is an attribute of the node"
+    )]
+    pub(crate) fn add_variable(
+        &self,
+        node: &Node,
+        parent: &Node,
+        reference: u32,
+        name: &CStr,
+        data_type: &Node,
+        rank: i32,
+        access: u8,
+    ) {
+        // SAFETY: the server lives, and it copies each name.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_variable(
+                self.raw(),
+                added(node),
+                parent.into(),
+                reference,
+                name.as_ptr(),
+                data_type.into(),
+                rank,
+                access,
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Adds the data type `node` with the browse name `name`, a subtype of `parent`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node, or the key of `node` is the number 0.
+    #[cfg(test)]
+    pub(crate) fn add_data_type(&self, node: &Node, parent: &Node, name: &CStr) {
+        // SAFETY: the server lives, and it copies each name.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_data_type(
+                self.raw(),
+                added(node),
+                parent.into(),
+                name.as_ptr(),
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Adds the property `0:EngineeringUnits` `node` of `variable`, an
+    /// `EUInformation` of the display name `text` and the `unitId` `code`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node, or the key of `node` is the number 0.
+    #[cfg(test)]
+    pub(crate) fn add_unit(
+        &self,
+        node: &Node,
+        variable: &Node,
+        text: &CStr,
+        code: i32,
+    ) {
+        // SAFETY: the server lives, and it copies each name and the text.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_unit(
+                self.raw(),
+                added(node),
+                variable.into(),
+                text.as_ptr(),
+                code,
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Adds a reference of the type of the number `reference` in namespace 0 from
+    /// `source` to `target`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the reference.
+    #[cfg(test)]
+    pub(crate) fn add_reference(&self, source: &Node, reference: u32, target: &Node) {
+        // SAFETY: the server lives, and it copies each name.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_reference(
+                self.raw(),
+                source.into(),
+                reference,
+                target.into(),
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the reference");
+    }
+
+    /// Adds the view `node` with the browse and display name `name`, under `parent` by
+    /// `Organizes`.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 refuses the node, or the key of `node` is the number 0.
+    #[cfg(test)]
+    pub(crate) fn add_view(&self, node: &Node, parent: &Node, name: &CStr) {
+        // SAFETY: the server lives, and it copies each name.
+        let status = Status(unsafe {
+            ffi::test::shim_server_add_view(
+                self.raw(),
+                added(node),
+                parent.into(),
+                name.as_ptr(),
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the node");
+    }
+
+    /// Deletes the reference of the type of the number `reference` in namespace 0
+    /// from `source` to `target`, in both directions.
+    ///
+    /// # Panics
+    ///
+    /// If the server has no such reference.
+    #[cfg(test)]
+    pub(crate) fn delete_reference(
+        &self,
+        source: &Node,
+        reference: u32,
+        target: &Node,
+    ) {
+        // SAFETY: the server lives, and it copies each name.
+        let status = Status(unsafe {
+            ffi::test::shim_server_delete_reference(
+                self.raw(),
+                source.into(),
+                reference,
+                target.into(),
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the delete");
+    }
+
     /// Gives the server, for a call that reads or changes it.
     pub(crate) fn raw(&self) -> *mut ffi::test::Server {
         self.raw.as_ptr()
