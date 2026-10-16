@@ -94,7 +94,7 @@ fn within_hides_a_folder_that_this_user_cannot_list() {
 }
 
 #[test]
-fn within_refuses_a_hidden_folder_that_this_user_cannot_search() {
+fn within_hides_a_folder_that_this_user_cannot_search() {
     for bits in [0o600, 0o000] {
         let scratch = Scratch::new();
         let base = fs::canonicalize(&scratch.0).unwrap();
@@ -102,14 +102,14 @@ fn within_refuses_a_hidden_folder_that_this_user_cannot_search() {
         fs::create_dir(&data).unwrap();
         fs::set_permissions(&data, Permissions::from_mode(bits)).unwrap();
         let within = os::paths().within(slice::from_ref(&base), slice::from_ref(&data));
-        let error = within.as_ref().err().copied();
+        let read = within.map(|within| within.read(&data, 1));
         fs::set_permissions(&data, Permissions::from_mode(0o700)).unwrap();
-        assert_eq!(error, Some(Error::Io { code: 13 }), "{bits:o}");
+        assert_eq!(read, Ok(Err(Error::Hidden)), "{bits:o}");
     }
 }
 
 #[test]
-fn within_refuses_a_hidden_pipe_and_ends() {
+fn within_hides_a_pipe_and_ends() {
     let scratch = Scratch::new();
     let base = fs::canonicalize(&scratch.0).unwrap();
     let pipe = base.join("pipe");
@@ -118,8 +118,9 @@ fn within_refuses_a_hidden_pipe_and_ends() {
     let hidden = pipe.clone();
     #[expect(clippy::disallowed_methods, reason = "the test bounds the call")]
     let call = thread::spawn(move || {
-        let within = os::paths().within(&[base], &[hidden]);
-        sent.send(within.err()).unwrap();
+        let within = os::paths().within(&[base], slice::from_ref(&hidden));
+        sent.send(within.map(|within| within.read(&hidden, 1)))
+            .unwrap();
     });
     #[expect(clippy::disallowed_methods, reason = "the test bounds the call")]
     let ended = got.recv_timeout(std::time::Duration::from_secs(5));
@@ -128,10 +129,7 @@ fn within_refuses_a_hidden_pipe_and_ends() {
         let _writer = fs::OpenOptions::new().write(true).open(&pipe).unwrap();
     }
     call.join().unwrap();
-    let error = Error::Io {
-        code: cases::NOT_DIRECTORY,
-    };
-    assert_eq!(ended, Ok(Some(error)));
+    assert_eq!(ended, Ok(Ok(Err(Error::Hidden))));
 }
 
 /// APFS ignores the case and the form of a name.
@@ -160,6 +158,27 @@ fn a_hidden_folder_holds_each_case_and_form_of_its_names() {
         assert_eq!(within.make_dir(&upper.join("new")), Err(Error::Hidden));
         assert_eq!(within.write(&upper.join("x"), b"y"), Err(Error::Hidden));
         assert_eq!(within.read(&upper.join("admin.key"), 1), Err(Error::Hidden));
+    });
+}
+
+/// The resolve keeps the prefix of the data volume, so the text of the path is under
+/// no folder.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_folder_holds_its_files_through_the_data_volume() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let volume =
+            Path::new("/System/Volumes/Data").join(base.strip_prefix("/").unwrap());
+        let within = host
+            .paths
+            .within(&[base.join("work")], &[base.join("work/data")])
+            .unwrap();
+        let key = volume.join("work/data/admin.key");
+        assert_eq!(within.read(&key, 1), Err(Error::Hidden));
+        assert_eq!(within.write(&key, b"y"), Err(Error::Hidden));
+        let plan = volume.join("work/a.hcl");
+        assert_eq!(within.read(&plan, 1), Ok(Found::File(b"x".to_vec())));
     });
 }
 

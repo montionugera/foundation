@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
-use env::paths::{Error, Found, names_directory};
+use env::paths::{Error, Found, Key, names_directory};
 
 use crate::{DIRECTORY, EXISTS, LOOP, NOT_DIRECTORY};
 
@@ -22,6 +22,10 @@ pub(crate) struct Paths {
     /// The working directory of each node that set one, else `/`.
     working: BTreeMap<usize, PathBuf>,
     homes: BTreeMap<usize, PathBuf>,
+    /// The inode of each path that a key was taken of, by node, in the order of the
+    /// first key. No file has two paths, so a path names one file, and the device of
+    /// each key is 0.
+    inodes: BTreeMap<(usize, PathBuf), u64>,
 }
 
 enum Entry {
@@ -182,6 +186,20 @@ impl Paths {
             return Err(Error::NotFound);
         }
         Ok(at)
+    }
+
+    /// The key of the file at `path`, after each symbolic link.
+    pub(crate) fn key(&mut self, node: usize, path: &Path) -> Result<Key, Error> {
+        let at = self.resolve(node, path)?;
+        if !self.directory(node, &at) && !self.file(node, &at) {
+            return Err(Error::NotFound);
+        }
+        Ok(Key::new(0, self.inode(node, at)))
+    }
+
+    fn inode(&mut self, node: usize, at: PathBuf) -> u64 {
+        let next = u64::try_from(self.inodes.len()).expect("invariant: usize fits u64");
+        *self.inodes.entry((node, at)).or_insert(next)
     }
 
     pub(crate) fn home(&self, node: usize) -> Option<PathBuf> {
