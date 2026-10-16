@@ -678,6 +678,13 @@ fn names_each_error() {
             "the selector of the read does not read: a selector includes no names",
         ),
         (
+            Error::Places {
+                count: 65_537,
+                cap: 65_536,
+            },
+            "the read has 65537 places, over the cap of 65536",
+        ),
+        (
             Error::Index { index: 3, count: 3 },
             "the places of the read put the index at place 3 of 3",
         ),
