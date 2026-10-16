@@ -27,4 +27,8 @@
   its trigger: #2932 rewrites `host::Clock` for each OS and adds the fence there, so
   no copy of the fences of `os` comes into `sdk` now (`laptop.architect-2`,
   2026-10-16T22:00:13Z,
-  https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225511658).
+  https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225511658). A
+  failure of the session after `connect` stays silent until the next call, and that
+  call gives the cause of the failure, never a generic closed error (`laptop.monitor`,
+  key choice of kind 9, 2026-10-16,
+  https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225611780).
