@@ -466,7 +466,7 @@ impl Table {
             .await
     }
 
-    /// The blocks of `kind` that read the point `tag` as `channel`, as
+    /// The blocks of `kind` that read or write the point `tag` as `channel`, as
     /// [`Kind::block`] gives them.
     ///
     /// # Errors
