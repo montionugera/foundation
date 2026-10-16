@@ -80,10 +80,14 @@
   stream, and ends the handshake before `hyper` gets the stream. The port defaults to
   443. The TLS name is the host of the origin, with the final dot of a name and the
   zone of an IPv6 address dropped, so each host that `uri` takes has a name and
-  `https` adds no `Host` error. It trusts only `http::Config::tls`: a `Tls` with the
-  roots, which `node` reads from the OS, and mesh time. A kind adds a CA with
-  `Roots::with_pem`. A `ca` takes a CA, or a self-signed certificate with `CA:FALSE`;
-  a server certificate with `CA:TRUE` gives `Tls` with a text that names both fixes.
+  `https` adds no `Host` error. Supersedes item 2 of the ruling of
+  2026-10-16T07:51:33Z, which gave `https` one more reason of `host::Error`: no host
+  can give that reason (`laptop.architect-2`, 2026-10-16T09:11:38Z:
+  https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6212137276). It trusts
+  only `http::Config::tls`: a `Tls` with the roots, which `node` reads from the OS, and
+  mesh time. A kind adds a CA with `Roots::with_pem`. A `ca` takes a CA, or a
+  self-signed certificate with `CA:FALSE`; a server certificate with `CA:TRUE` gives
+  `Tls` with a text that names both fixes.
   This narrows design item 4 of #2702, "A self-signed server goes in `ca`"
   (2026-10-16T07:51:33Z:
   https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210764044).
