@@ -94,6 +94,14 @@ impl Paths {
         if self.directory(node, &at) {
             return Ok(());
         }
+        // `os` makes no directory at a path that ends in `.` or `..`.
+        let mut names = path
+            .as_os_str()
+            .as_encoded_bytes()
+            .rsplit(|&byte| byte == b'/');
+        if matches!(names.next(), Some(b"." | b"..")) {
+            return Err(Error::NotFound);
+        }
         match self.entries.entry((node, at)) {
             Vacant(entry) => {
                 entry.insert(Entry::Directory);

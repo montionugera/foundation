@@ -471,6 +471,11 @@ pub(crate) fn within_gives_not_found_for_a_hidden_folder_that_is_not_there(
 
 pub(crate) fn a_directory_made_takes_files(host: &Host<'_>) {
     let (paths, dir) = (host.paths, host.dir);
+    assert_eq!(paths.make_dir(&dir.join("slash/")), Ok(()));
+    assert_eq!(
+        paths.read(&dir.join("slash"), 0),
+        Ok(Found::Directory(Vec::new()))
+    );
     let data = dir.join("data");
     assert_eq!(paths.make_dir(&data), Ok(()));
     assert_eq!(paths.read(&data, ALL), Ok(Found::Directory(Vec::new())));
@@ -495,6 +500,7 @@ pub(crate) fn a_directory_under_one_that_is_not_there_is_not_found(host: &Host<'
     let (paths, dir) = (host.paths, host.dir);
     let made = paths.make_dir(&dir.join("none/data"));
     assert_eq!(made, Err(Error::NotFound));
+    assert_eq!(paths.make_dir(&dir.join("none/.")), Err(Error::NotFound));
     assert_eq!(paths.read(&dir.join("none"), ALL), Err(Error::NotFound));
 }
 
