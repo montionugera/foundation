@@ -74,3 +74,19 @@
   https://github.com/synnaxlabs/foundation/issues/2796#issuecomment-6210474938, with
   the text approved (2026-10-16T07:45:51Z):
   https://github.com/synnaxlabs/foundation/issues/2796#issuecomment-6210673885.
+  `bench` also has `Deadline { new, commit }` over the private `State` of a buffer, from
+  the child module `buffer::bench`, for the cases `deadline` of 1 and 32 indexes and
+  `deadline_carry` of `benches/wal.rs`, on the ring of ID 64. `commit` appends one entry
+  of 100 bytes of each index but the last, which appends one each `period` deadlines.
+  Then it does the work of the commit task at a deadline with `trimmed`, in the order of
+  `run`: the fit and take of the group, `State::deadline` (the take, the checkpoint, and
+  the carry record), `seal`, and `State::synced`, with no file write. So a time holds
+  the cost of the commit path of a buffer that trims for each deadline, and
+  `deadline_carry` that of a carry record of 32 tails. `benches/logs.rs` also gets the
+  case `lap_shrink` of 10000 paths, which times only the commit that ends the lap of
+  each path, with 2756 shrinks. Lost: a sim `Buffer` over a sim file, timed from
+  `append` to the end of the commit, whose file, executor, and clock step cost more than
+  the code under test, while the `wal` benches already time the file write. Lost: a
+  `pub(crate)` `State`, which widens `State` and each method that the bench calls, for
+  one bench. Decided by `laptop.architect` (#2909, 2026-10-16T19:32:27Z):
+  https://github.com/synnaxlabs/foundation/pull/2909#issuecomment-6223169251.
