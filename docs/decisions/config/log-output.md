@@ -67,7 +67,9 @@
   about 425 to 739 ns and 2 to 6 allocations before the write, and at `trace` a span
   at 118 ns and 2 allocations (laptop, M3 Max, load 9, 3 passes). The help of
   `--log-level` says so. #2764 moves each write to the thread `log`, so an event holds
-  the lock of the queue only for its push. #2815 carries the allocations
+  the lock of the queue only for its push. That adds about 0.4 to 0.6 µs to each
+  line, about 26 µs to each start of the thread, and at most 48 KiB idle (laptop, M3
+  Max, load 7 to 23, 5 passes, at `22cae9dcd`), under P1. #2815 carries the allocations
   and the span fields that `Line` never prints. #2807 carries the WARN of `noq-proto`
   for each Initial packet with an invalid retry token. By `laptop.architect-2`
   (2026-10-16T01:49:38Z,
