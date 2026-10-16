@@ -756,8 +756,9 @@ impl Shard {
         let (monotonic, now) = self.clocks().ok_or(reader::Unopened::Unsynced)?;
         self.readers.advance(place, now);
         let live = self.indexes[place].live_tail();
-        // A first open or a reopen records its position before it opens: a restart
-        // before the record would lose the frames that the reader got and did not ack.
+        // An open that changes the records appends them before it opens, and its reader
+        // takes no frame until they commit: a restart before then would lose the frames
+        // that it got and did not ack.
         let limit = named::limit(&self.buffer);
         let records = self.readers.opening(place, &reader, hold, live, limit)?;
         if let Some(records) = &records
@@ -6502,6 +6503,104 @@ mod tests {
                             [seq(1, 1), seq(2, 1)]
                         );
                     });
+                }
+
+                /// Opens the named complete reader `r` of `a` on the index at slot 0,
+                /// with a hold of 2 s.
+                fn open_held(shard: &mut Shard) -> complete::Key {
+                    shard
+                        .open_named_complete(
+                            Slot::new(0),
+                            key("a", "r"),
+                            Span::from_nanos(2_000_000_000),
+                            CREDIT,
+                            Charge::Whole,
+                        )
+                        .expect("opens")
+                        .key
+                }
+
+                #[test]
+                fn takes_no_frame_from_memory_before_the_entry_of_a_reopen_commits() {
+                    let (mut sim, node) = create_node(702);
+                    sim.run_on(&node, move |node, tasks| async move {
+                        let test = Test::new(node, tasks);
+                        let set = two_indexes();
+                        let mut shard = test.shard(AREA).await;
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        let _b = complete(&mut shard, Slot::new(0));
+                        let a = open_held(&mut shard);
+                        committed(&test, &mut shard, w, &[10, 20]).await;
+                        assert_eq!(
+                            taken(&mut shard, a.into(), 0),
+                            [seq(0, 1), seq(1, 1)]
+                        );
+                        shard.ack(a, live(2)).expect("forward");
+                        shard.close_reader(a.into());
+                        shard.committed().await.expect("the commit ends");
+                        test.clock.sleep(Span::from_nanos(1_500_000_000)).await;
+                        write(&test, &mut shard, w, &[30]);
+                        let first = shard.committed();
+                        test.clock.sleep(SYNC).await;
+                        let a = open_held(&mut shard);
+                        first.await.expect("the first commit ends");
+                        woken(&mut shard);
+                        assert_eq!(taken(&mut shard, a.into(), 0), []);
+                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(woken(&mut shard), [a.into()]);
+                        assert_eq!(taken(&mut shard, a.into(), 0), [seq(2, 1)]);
+                    })
+                    .expect("the first run ends");
+                    sim.crash(&node, sim::Crash::Power);
+                    sim.run_on(&node, move |node, tasks| async move {
+                        let test = Test::new(node, tasks);
+                        test.clock.sleep(Span::from_nanos(3_000_000_000)).await;
+                        let mut shard = test.shard(AREA).await;
+                        let a = open_held(&mut shard);
+                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(caught_up(&mut shard, a, 0).await, [seq(2, 1)]);
+                    })
+                    .expect("the run after the cut ends");
+                }
+
+                #[test]
+                fn waits_for_the_entry_of_the_session_that_a_takeover_replaces() {
+                    let (mut sim, node) = create_node(703);
+                    sim.run_on(&node, move |node, tasks| async move {
+                        let test = Test::new(node, tasks);
+                        let set = two_indexes();
+                        let mut shard = test.shard(AREA).await;
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        let a = open_held(&mut shard);
+                        committed(&test, &mut shard, w, &[10, 20]).await;
+                        assert_eq!(
+                            taken(&mut shard, a.into(), 0),
+                            [seq(0, 1), seq(1, 1)]
+                        );
+                        shard.ack(a, live(1)).expect("forward");
+                        shard.close_reader(a.into());
+                        shard.committed().await.expect("the commit ends");
+                        test.clock.sleep(Span::from_nanos(1_500_000_000)).await;
+                        let _reopen = open_held(&mut shard);
+                        let a = open_held(&mut shard);
+                        assert_eq!(caught_up(&mut shard, a, 0).await, []);
+                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(woken(&mut shard), [a.into()]);
+                        assert_eq!(caught_up(&mut shard, a, 0).await, [seq(1, 1)]);
+                    })
+                    .expect("the first run ends");
+                    sim.crash(&node, sim::Crash::Power);
+                    sim.run_on(&node, move |node, tasks| async move {
+                        let test = Test::new(node, tasks);
+                        test.clock.sleep(Span::from_nanos(3_000_000_000)).await;
+                        let mut shard = test.shard(AREA).await;
+                        let a = open_held(&mut shard);
+                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(caught_up(&mut shard, a, 0).await, [seq(1, 1)]);
+                    })
+                    .expect("the run after the cut ends");
                 }
 
                 #[test]

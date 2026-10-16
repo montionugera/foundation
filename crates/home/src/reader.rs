@@ -166,13 +166,14 @@ pub(crate) struct Set {
     /// goes on. A read from `Mark::at(seq)` gives each entry with no samples at `seq`
     /// again, so more of them than one read takes would stop the reader for ever.
     marks: hash::Map<complete::Key, Mark>,
-    /// Each complete reader whose named open appended its record, until the commit
-    /// that holds the entry. It reads from disk only after: a restart before the
-    /// commit would lose the frames that it got and did not ack.
+    /// Each complete reader whose named open appended its record, or took over a
+    /// session that waits, until the commit that holds the entry. It takes no frame
+    /// until then: a restart before the commit would lose the frames that it got and
+    /// did not ack.
     recording: hash::Map<complete::Key, Recording>,
 }
 
-/// The commit that a named complete reader waits for before it reads from disk.
+/// The commit that a named complete reader waits for before it takes a frame.
 #[derive(Clone, Copy, Debug)]
 struct Recording {
     /// The count of [`Buffer::commits`] at which its record is durable.
@@ -408,7 +409,8 @@ impl Set {
     /// Opens `reader`, which is named, on the index at `place` at its held position,
     /// else at seq `live`, as [`open_complete`](Self::open_complete) does. With
     /// `recorded_at`, the count of [`Buffer::commits`] at which the entry that records
-    /// it is durable, it reads from disk only from then on.
+    /// it is durable, it takes no frame until then. A takeover of a session that waits
+    /// so waits too.
     ///
     /// # Panics
     ///
@@ -429,13 +431,23 @@ impl Set {
                 backfill: None,
             },
         };
-        let readers = &mut self.entries[place].readers;
-        let opened = readers.open(reader, start, limit_bytes, charge);
+        let slot = self.entries[place].slot;
+        let opened =
+            self.entries[place]
+                .readers
+                .open(reader, start, limit_bytes, charge);
+        let inherited = match opened.replaced {
+            Some(delivery::Key::Complete(session)) => self
+                .recording
+                .get(&complete::Key { slot, session })
+                .map(|recording| recording.until),
+            _ => None,
+        };
         self.replaced(place, opened.replaced);
         self.note(place);
-        if let Some(until) = recorded_at {
+        if let Some(until) = recorded_at.max(inherited) {
             let key = complete::Key {
-                slot: self.entries[place].slot,
+                slot,
                 session: opened.key,
             };
             let waited = false;
@@ -532,6 +544,21 @@ impl Set {
         buffer: &Buffer,
     ) -> Next {
         let entry = &mut self.entries[place];
+        if !self.recording.is_empty()
+            && let delivery::Key::Complete(session) = session
+        {
+            let key = complete::Key {
+                slot: entry.slot,
+                session,
+            };
+            if let Some(recording) = self.recording.get_mut(&key) {
+                if buffer.commits() < recording.until {
+                    recording.waited = true;
+                    return Next::Empty;
+                }
+                self.recording.remove(&key);
+            }
+        }
         let from = match entry.readers.take(session) {
             delivery::Next::Frame(frame) => return Next::Frame(frame),
             delivery::Next::Empty => return Next::Empty,
@@ -545,13 +572,6 @@ impl Set {
             slot: entry.slot,
             session,
         };
-        if let Some(recording) = self.recording.get_mut(&key) {
-            if buffer.commits() < recording.until {
-                recording.waited = true;
-                return Next::Empty;
-            }
-            self.recording.remove(&key);
-        }
         let mark = self.marks.entry(key).or_insert(Mark::at(from));
         if mark.seq != from {
             *mark = Mark::at(from);
