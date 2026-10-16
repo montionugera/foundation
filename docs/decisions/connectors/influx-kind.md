@@ -11,17 +11,35 @@
   the server's certificate at mesh time (`https` in R7 starting points). A `ca` with an
   `http` address is `influx.ca-with-http`, with "the connector has a `ca`, which only an
   `https` address takes" and the fix "Use an `https` address, or remove `ca`": a `ca`
-  there trusts nothing, and its user likely thinks that the token goes under TLS. `run`
-  reads the `ca` once, at its start. A `ca` that holds no PEM certificate gives
-  `Error::Retry` with "the ca {source} holds no PEM certificate. Write the CA
-  certificate of the server in PEM", and one that does not parse gives "the ca {source}
-  holds a PEM certificate that does not parse. Write the CA certificate of the server in
-  PEM". Over `https`, the token does not cross the network in clear. Planned on #2702
+  there trusts nothing, and its user likely thinks that the token goes under TLS. Each
+  run reads the `ca` at its start, and a TLS failure of a run with a `ca` ends the run
+  with `Error::Retry`, "the write to InfluxDB failed: {error}. Check the ca {source}",
+  so that the next run reads it again. A run with no `ca` retries a TLS failure in the
+  run. Approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2888#issuecomment-6219779608,
+  2026-10-16T16:17:47Z), with the skip of a UTF-8 byte order mark at the start of a
+  PEM text. A `ca` that holds no PEM certificate gives `Error::Retry` with "the ca
+  {source} holds no PEM certificate. Write the CA certificate of the server in PEM", and
+  one that does not parse gives "the ca {source} holds a PEM certificate that does not
+  parse. Write the CA certificate of the server in PEM". Over `https`, the token does
+  not cross the network in clear. Planned on #2702
   (https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6218838848,
   2026-10-16T15:28:25Z), and approved with the refusal of a `ca` with an `http` address
   by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6219190400,
-  2026-10-16T15:47:32Z), which also approved `Error::Retry` for a bad `ca`. The kind
+  2026-10-16T15:47:32Z), which also approved `Error::Retry` for a bad `ca`.
+  Supersedes the refusal of `https` until the kind takes a CA (`laptop.architect-2`,
+  2026-10-16T07:51:33Z:
+  https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210764044, item 5)
+  and its code (`laptop.architect-2`, 2026-10-16T09:11:38Z:
+  https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6212137276), and
+  design item 6 of https://github.com/synnaxlabs/foundation/issues/2702, "A `ca` with
+  no certificate in it is `Error::Config`". Lost: `ca` as a setting of `connector`,
+  read for each HTTP kind, since `influx` is the one HTTP kind. Trigger: a second kind
+  that sends `https` (#2894). Lost: a read of the `ca` in `plan`, which finds a bad
+  file before a run, since `plan` checks only that a source resolves, and the file can
+  change between plan and run. Trigger: a `plan` that reads the value of a secret
+  source. The kind
   also refuses a path other than empty or `/`, and a query, at the value: a path (a
   proxy prefix) can come later as a compatible change, and a refusal cannot. Each
   diagnostic of a kind names its document `connector::kind::NOUN` ("the connector"), as
