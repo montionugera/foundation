@@ -246,7 +246,11 @@ impl Client {
                 .await
                 .map_err(|cause| Error::Tls {
                     origin: origin.to_string(),
-                    cause: Failure(Cause::Io(cause)),
+                    cause: Failure(if tls::ca_as_server(&cause) {
+                        Cause::Ca(cause)
+                    } else {
+                        Cause::Io(cause)
+                    }),
                 })?
         } else {
             Stream::plain(tcp, Rc::clone(&received))
@@ -478,7 +482,8 @@ pub enum Error {
     /// The URI is `https`, and no root is trusted.
     NoRoots,
     /// The TLS handshake failed: the server's certificate is not trusted, is not for
-    /// the host, is expired or not valid yet, or the server broke TLS or closed.
+    /// the host, is expired or not valid yet, or has `CA:TRUE`, or the server broke
+    /// TLS or closed.
     Tls {
         /// The host and port of the URI.
         origin: String,
@@ -507,6 +512,9 @@ enum Cause {
     Hyper(hyper::Error),
     /// A failed handshake: it wraps the rustls or the `env` error.
     Io(io::Error),
+    /// A handshake that failed on a server certificate with `CA:TRUE`, which wraps
+    /// the rustls error.
+    Ca(io::Error),
 }
 
 impl From<hyper::Error> for Error {
@@ -565,6 +573,11 @@ impl fmt::Display for Failure {
         match &self.0 {
             Cause::Hyper(error) => error.fmt(f),
             Cause::Io(error) => error.fmt(f),
+            Cause::Ca(_) => write!(
+                f,
+                "the server's certificate is a CA certificate, with CA:TRUE: give the \
+                 server a certificate with CA:FALSE, or one that this CA signs"
+            ),
         }
     }
 }
@@ -574,7 +587,7 @@ impl std::error::Error for Failure {
         match &self.0 {
             Cause::Hyper(error) => error.source(),
             // The payload, as `io::Error::source` skips it.
-            Cause::Io(error) => {
+            Cause::Io(error) | Cause::Ca(error) => {
                 let payload = error.get_ref()?;
                 Some(payload)
             }

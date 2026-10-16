@@ -243,13 +243,30 @@ fn failed(outcome: Outcome) -> String {
     outcome.expect_err("the send fails").to_string()
 }
 
-/// A server config for the certificate of `server` that takes only `versions`.
-fn server(versions: &[&'static rustls::SupportedProtocolVersion]) -> Arc<ServerConfig> {
-    let pem = include_str!("../sim/tls/server.pem");
+/// The certificate and key of the host `server` that the test CA signs.
+const SIGNED: [&str; 2] = [
+    include_str!("../sim/tls/server.pem"),
+    include_str!("../sim/tls/server.key"),
+];
+/// A self-signed certificate for `server` with `CA:false`, and its key.
+const SELF: [&str; 2] = [
+    include_str!("../sim/tls/self.pem"),
+    include_str!("../sim/tls/self.key"),
+];
+/// A self-signed certificate for `server` with `CA:true`, and its key.
+const SELF_CA: [&str; 2] = [
+    include_str!("../sim/tls/self-ca.pem"),
+    include_str!("../sim/tls/self-ca.key"),
+];
+
+/// A server config for the certificate and key `files` that takes only `versions`.
+fn server(
+    [pem, key]: [&str; 2],
+    versions: &[&'static rustls::SupportedProtocolVersion],
+) -> Arc<ServerConfig> {
     let chain = CertificateDer::pem_slice_iter(pem.as_bytes())
         .collect::<Result<Vec<_>, _>>()
         .expect("the certificate parses");
-    let key = include_str!("../sim/tls/server.key");
     let key = PrivateKeyDer::from_pem_slice(key.as_bytes()).expect("the key parses");
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     #[expect(clippy::disallowed_methods, reason = "a fixed time")]
@@ -707,7 +724,7 @@ fn exchanges_with_a_server_that_takes_only_tls_1_2() {
     let mut network = Network::new(17, Certificate::Valid, JUNE_2026);
     let out = serve_one(
         &mut network,
-        server(&[&rustls::version::TLS12]),
+        server(SIGNED, &[&rustls::version::TLS12]),
         |_| async { String::new() },
     );
     let body = network.send(sim::ca(), "https://server:8087/ping");
@@ -720,7 +737,7 @@ fn sends_close_notify_when_the_client_closes_a_stream() {
     let mut network = Network::new(18, Certificate::Valid, JUNE_2026);
     let out = serve_one(
         &mut network,
-        server(rustls::DEFAULT_VERSIONS),
+        server(SIGNED, rustls::DEFAULT_VERSIONS),
         |mut stream| async move {
             let mut bytes = [0; 64];
             let mut buf = ReadBuf::new(&mut bytes);
@@ -737,5 +754,48 @@ fn sends_close_notify_when_the_client_closes_a_stream() {
     assert_eq!(
         out.lock().expect("no panic").as_deref(),
         Some("read 0 bytes")
+    );
+}
+
+#[test]
+fn trusts_a_self_signed_certificate_with_ca_false_in_the_roots() {
+    let mut network = Network::new(19, Certificate::Valid, JUNE_2026);
+    serve_one(
+        &mut network,
+        server(SELF, rustls::DEFAULT_VERSIONS),
+        |_| async { String::new() },
+    );
+    let roots = Roots::default()
+        .with_pem(SELF[0])
+        .expect("the certificate parses");
+    let body = network.send(roots, "https://server:8087/ping");
+    assert_eq!(body.map_err(|error| chain(&error)).as_deref(), Ok("ok"));
+}
+
+#[test]
+fn tells_how_to_fix_a_self_signed_certificate_with_ca_true() {
+    let mut network = Network::new(20, Certificate::Valid, JUNE_2026);
+    network.listen(8087, |mut listener, _| async move {
+        let tcp = poll_fn(|cx| listener.poll_accept(cx))
+            .await
+            .expect("a stream");
+        let config = server(SELF_CA, rustls::DEFAULT_VERSIONS);
+        drop(Stream::server(tcp, config).await);
+    });
+    let roots =
+        (Roots::default().with_pem(SELF_CA[0])).expect("the certificate parses");
+    assert_eq!(
+        network
+            .send(roots, "https://server:8087/ping")
+            .map_err(|error| chain(&error)),
+        Err(
+            "TLS with server:8087 failed: the server's certificate is a CA \
+             certificate, with CA:TRUE: give the server a certificate with \
+             CA:FALSE, or one that this CA signs <- the server's certificate is a \
+             CA certificate, with CA:TRUE: give the server a certificate with \
+             CA:FALSE, or one that this CA signs <- invalid peer certificate: \
+             Other(OtherError(CaUsedAsEndEntity))"
+                .to_owned()
+        )
     );
 }

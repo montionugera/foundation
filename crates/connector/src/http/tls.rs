@@ -1,6 +1,7 @@
 //! What an `https` connect trusts, and the rustls config of each connect.
 
 use std::fmt;
+use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,7 +10,7 @@ use rustls::crypto::CryptoProvider;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, UnixTime};
 use rustls::time_provider::TimeProvider;
-use rustls::{ClientConfig, RootCertStore};
+use rustls::{CertificateError, ClientConfig, RootCertStore};
 use types::time::Stamp;
 
 /// The certificate authorities that a TLS connect trusts. Clones share one store.
@@ -112,6 +113,20 @@ pub(super) fn client(
 
 /// One stamp of mesh time, as rustls reads the time. A stamp before the Unix epoch
 /// gives no time, which fails the check.
+/// Whether `error` of a handshake is webpki's refusal of a server certificate with
+/// `CA:TRUE`, which a self-signed certificate of `openssl req -x509` has by default.
+pub(super) fn ca_as_server(error: &io::Error) -> bool {
+    let Some(rustls::Error::InvalidCertificate(CertificateError::Other(other))) =
+        error.get_ref().and_then(|error| error.downcast_ref())
+    else {
+        return false;
+    };
+    matches!(
+        other.0.downcast_ref(),
+        Some(webpki::Error::CaUsedAsEndEntity)
+    )
+}
+
 #[derive(Debug)]
 pub(super) struct At(pub(super) Stamp);
 

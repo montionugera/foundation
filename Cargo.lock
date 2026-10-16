@@ -419,6 +419,7 @@ dependencies = [
  "loom",
  "proptest",
  "rustls",
+ "rustls-webpki",
  "secret",
  "sim",
  "spec",
