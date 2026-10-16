@@ -160,9 +160,9 @@ pub(super) struct Queue {
     /// The lines and the run of the thread `log`. Closed while no [`Hold`] is left,
     /// so the thread `log` ends when no line waits.
     lines: Lines,
-    /// The thread `log` that runs or ran last. Held over each start and each join, so
-    /// they go in order. Taken before the lock of `lines`; the thread `log` never
-    /// takes it.
+    /// The thread `log` that runs or ran last. Held over each start and over each
+    /// take of it to join, so a start replaces only a run that has ended. Taken
+    /// before the lock of `lines`; the thread `log` never takes it.
     handle: Mutex<Option<Handle>>,
     threads: env::threads::Threads,
     line: Line,
