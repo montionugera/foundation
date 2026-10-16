@@ -490,15 +490,7 @@ fn list(data: &OwnedFd, dir: &Path) -> io::Result<Vec<PathBuf>> {
 
 /// Makes the directory `dir`, or gives `Ok` when a directory is there.
 fn create_dir(data: &OwnedFd, dir: &Path) -> io::Result<()> {
-    match fs::mkdirat(data, at(dir), DIR) {
-        Err(Errno::EXIST)
-            if fs::statat(data, at(dir), AtFlags::empty())
-                .is_ok_and(|stat| FileType::from_raw_mode(stat.st_mode).is_dir()) =>
-        {
-            Ok(())
-        }
-        made => made,
-    }
+    dir::make(data, at(dir))
 }
 
 /// Writes `parts` back to back at `offset`, in as many calls as the OS needs.
