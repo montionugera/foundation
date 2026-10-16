@@ -410,6 +410,27 @@ fn write_lost(writer: &mut hub::writer::Writer, first: i64) -> std::ops::Range<u
     range.seq..range.end().expect("an end")
 }
 
+/// Writes one frame of only the index `edge.time`, of `count` samples at `first` and
+/// each nanosecond after.
+fn write_times(writer: &mut hub::writer::Writer, first: i64, count: usize) {
+    let time = (writer.set().entries().iter())
+        .position(|entry| entry.key == channel::Key::from_u128(1))
+        .expect("written");
+    let group = writer.set().entries()[time].group;
+    let mut draft = writer
+        .draft(Form::Raw, &[(time, count * 8)])
+        .expect("a frame");
+    let times = (first..).take(count).flat_map(i64::to_le_bytes);
+    fill(draft.series_mut(time).expect("the index"), times);
+    draft.set_count(group, u32::try_from(count).expect("fits"));
+    let outcomes = writer.write(Label::Path(Path::Live), draft);
+    let outcomes = outcomes.expect("the hub takes the frame");
+    let applied = outcomes
+        .iter()
+        .all(|outcome| matches!(outcome, hub::home::Outcome::Applied { .. }));
+    assert!(applied, "the frame applies: {outcomes:?}");
+}
+
 fn fill(series: &mut [u8], bytes: impl Iterator<Item = u8>) {
     for (to, from) in series.iter_mut().zip(bytes) {
         *to = from;
@@ -899,6 +920,98 @@ fn writes_the_gap_line_of_a_run_lost_for_no_room_and_counts_its_seqs_after_a_204
     assert_eq!(counts, (vec![0, 3], vec![0, 2, 4]));
 }
 
+/// The body that InfluxDB gets after a run lost for no room, then `after`, and the
+/// count `lost`, with the stamp of the first sample after the loss.
+fn after_a_loss(after: fn(&mut hub::writer::Writer, i64)) -> (String, Vec<u64>, i64) {
+    run(move |node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let run = plant.start(plant.config());
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write(&mut writer, first, &[(1.0, 2.0)]);
+        plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+        let sent = plant.got().len();
+        write_lost(&mut writer, first + 1);
+        after(&mut writer, first + 4);
+        plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
+        plant.stop(run).await.expect("ok after a cancel");
+        let bodies: String = (plant.got().into_iter().skip(sent))
+            .map(|(_, body)| body)
+            .collect();
+        (bodies, plant.lost.borrow().clone(), first + 4)
+    })
+}
+
+/// INFLUX SEQ AND GAPS reads a gap line at the stamp of a data point, so a gap line
+/// waits for the first line that the run writes, and counts up to its seq.
+#[test]
+fn writes_the_gap_line_at_the_first_sample_time_with_a_value() {
+    let (body, lost, stamp) = after_a_loss(|writer, at| {
+        write(writer, at, &[(f64::NAN, f64::INFINITY), (3.0, 4.0)]);
+    });
+    let gap = "foundation_gaps,connector=influx,index=edge.time,path=live";
+    let line = line("3e0", "4e0", stamp + 1);
+    assert_eq!(body, format!("{gap} count=4i {}\n{line}", stamp + 1));
+    assert_eq!(lost, [0, 4]);
+}
+
+#[test]
+fn writes_the_gap_line_at_the_next_frame_with_a_value() {
+    let (body, lost, stamp) = after_a_loss(|writer, at| {
+        write(writer, at, &[(f64::NAN, f64::NAN)]);
+        write(writer, at + 1, &[(3.0, 4.0)]);
+    });
+    let gap = "foundation_gaps,connector=influx,index=edge.time,path=live";
+    let line = line("3e0", "4e0", stamp + 1);
+    assert_eq!(body, format!("{gap} count=4i {}\n{line}", stamp + 1));
+    assert_eq!(lost, [0, 4]);
+}
+
+#[test]
+fn writes_the_gap_line_after_a_frame_with_no_data_channel() {
+    let (body, lost, stamp) = after_a_loss(|writer, at| {
+        write_times(writer, at, 2);
+        write(writer, at + 2, &[(3.0, 4.0)]);
+    });
+    let gap = "foundation_gaps,connector=influx,index=edge.time,path=live";
+    let line = line("3e0", "4e0", stamp + 2);
+    assert_eq!(body, format!("{gap} count=5i {}\n{line}", stamp + 2));
+    assert_eq!(lost, [0, 5]);
+}
+
+/// A run that stops while its gap waits for a line with a value acks no frame from
+/// the gap on, so the next run gets the gap again and writes its line.
+#[test]
+fn writes_the_gap_line_in_the_next_run_when_a_run_stops_while_it_waits() {
+    let (first, second, stamp) = run(|node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        let run = plant.start(plant.config());
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        write(&mut writer, first, &[(1.0, 2.0)]);
+        plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+        write_lost(&mut writer, first + 1);
+        write(&mut writer, first + 4, &[(f64::NAN, f64::NAN)]);
+        plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
+        plant.stop(run).await.expect("ok after a cancel");
+        let got = std::mem::take(&mut *plant.got.borrow_mut());
+        let run = plant.start(plant.config());
+        plant.clock.sleep(Span::SECOND).await;
+        write(&mut writer, first + 5, &[(3.0, 4.0)]);
+        plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
+        plant.stop(run).await.expect("ok after a cancel");
+        let bodies = |got: Vec<Got>| got.into_iter().map(|(_, body)| body).collect();
+        let second: Vec<String> = bodies(plant.got());
+        (bodies(got), second, first + 5)
+    });
+    let gap = "foundation_gaps,connector=influx,index=edge.time,path=live";
+    assert_eq!(first, [line("1e0", "2e0", stamp - 5)]);
+    let line = line("3e0", "4e0", stamp);
+    assert_eq!(second, [format!("{gap} count=4i {stamp}\n{line}")]);
+}
+
 #[test]
 fn confirms_no_sample_of_a_batch_until_its_204() {
     let (failing, confirmed) = run(|node, tasks| async move {
@@ -1007,6 +1120,12 @@ fn lines_of_each_request(times: &[usize]) -> Vec<usize> {
 /// As [`lines_of_each_request`], with each `(count, value)` of `times` a frame of
 /// `count` sample times at which each channel holds `value`.
 fn lines_of_each_request_of(times: &[(usize, f64)]) -> Vec<usize> {
+    lines_of_each_request_after(false, times)
+}
+
+/// As [`lines_of_each_request_of`], with a frame lost for no room before the frames
+/// of `times` when `lost`.
+fn lines_of_each_request_after(lost: bool, times: &[(usize, f64)]) -> Vec<usize> {
     let times = times.to_vec();
     run(move |node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
@@ -1023,6 +1142,10 @@ fn lines_of_each_request_of(times: &[(usize, f64)]) -> Vec<usize> {
             1,
             "the first request is in flight"
         );
+        if lost {
+            first += 10_000;
+            write_lost(&mut writer, first);
+        }
         for (count, value) in times {
             first += 10_000;
             write(&mut writer, first, &vec![(value, value); count]);
@@ -1044,6 +1167,15 @@ fn reads_no_frame_into_a_batch_of_5000_lines_or_more() {
     assert_eq!(
         lines_of_each_request(&[2_500, 2_499, 1, 3_000, 2_000]),
         [1, 1, 5_000, 5_000]
+    );
+}
+
+/// A gap line counts toward the 5,000 lines of a full batch.
+#[test]
+fn reads_no_frame_into_a_batch_of_4999_lines_and_a_gap_line() {
+    assert_eq!(
+        lines_of_each_request_after(true, &[(2_499, 1.0), (2_500, 1.0), (1, 1.0)]),
+        [1, 1, 5_000, 1]
     );
 }
 

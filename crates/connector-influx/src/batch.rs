@@ -2,7 +2,6 @@
 
 use connector::kind::Error;
 use document::diagnostic::{Code, Diagnostic};
-use std::ops::Range;
 
 use hub::reader::{Position, Received};
 use types::frame::Path;
@@ -28,7 +27,11 @@ pub struct Batch {
     connector: Name,
     /// The gap of the reader's index, made at the first gap.
     gap: Option<Gap>,
+    /// The wait of the gap for a line with a value, while the gap holds seqs.
+    waiting: Option<Waiting>,
     position: Option<Position>,
+    /// The position after the last frame added, also before the last take.
+    last: Option<Position>,
     layout: Option<Layout>,
     body: Body,
 }
@@ -50,6 +53,17 @@ struct Body {
     values: Vec<Option<Value>>,
 }
 
+/// A gap that waits for a line with a value: INFLUX SEQ AND GAPS puts a gap line at
+/// the stamp of a data point.
+#[derive(Clone, Copy, Debug)]
+struct Waiting {
+    /// The seq of the next sample of the reader.
+    seq: u64,
+    /// The position after the last frame before the gap, or `None` when no frame came
+    /// before it.
+    ack: Option<Position>,
+}
+
 /// The lines that [`Batch::take`] gives.
 #[derive(Debug)]
 pub struct Taken {
@@ -62,8 +76,10 @@ pub struct Taken {
 /// What the run acks and counts once InfluxDB takes the lines of a [`Taken`].
 #[derive(Clone, Copy, Debug)]
 pub struct Ack {
-    /// The reader's position after the last frame of the batch.
-    pub position: Position,
+    /// The reader's position after the last frame of the batch, or, while a gap waits
+    /// for a line with a value, after the last frame before that gap. `None` when no
+    /// frame came before that gap. A reader that opens again at it gets the gap again.
+    pub position: Option<Position>,
     /// The samples written as fields: a NaN or infinite sample is not.
     pub samples: u64,
     /// The seqs that the gap lines count.
@@ -103,7 +119,9 @@ impl Batch {
                 .expect("invariant: config checks the measurement name"),
             connector: connector.clone(),
             gap: None,
+            waiting: None,
             position: None,
+            last: None,
             layout: None,
             body: Body::default(),
         }
@@ -111,8 +129,10 @@ impl Batch {
 
     /// Adds one line for each sample time of `received`, with a field for each data
     /// channel of the frame, keyed by the channel's name. A line whose values are each
-    /// NaN or infinite is left out. Before them, it adds the `live` gap line of the
-    /// frame's [`Received::gap`], at the stamp of the frame's first sample.
+    /// NaN or infinite is left out. Before the first line after a [`Received::gap`], it
+    /// adds the `live` gap line, at the stamp of that line. The line counts each seq
+    /// from the gap's first seq up to that line's seq, so also each sample time left
+    /// out between them.
     ///
     /// # Errors
     ///
@@ -120,11 +140,14 @@ impl Batch {
     /// kind does not write, and with `influx.bad-channel` for a channel name that is
     /// not a valid field key.
     pub fn add(&mut self, received: &Received<'_>) -> Result<(), Error> {
-        self.position = Some(received.position());
+        let before = self.last.replace(received.position());
+        self.position = self.last;
         if let Some(seqs) = received.gap() {
             let connector = &self.connector;
             let gap = (self.gap).get_or_insert_with(|| live(connector, received));
-            self.body.gap(gap, received, seqs);
+            let ack = self.waiting.map_or(before, |waiting| waiting.ack);
+            self.waiting = Some(Waiting { seq: seqs.end, ack });
+            gap.add(seqs);
         }
         let (view, set) = (received.view(), received.set());
         let data = || {
@@ -133,6 +156,10 @@ impl Batch {
                 .filter(|&entry| set.index(entry) != entry)
         };
         let Some(first) = data().next() else {
+            if let Some(waiting) = &mut self.waiting {
+                waiting.seq =
+                    (waiting.seq).saturating_add(count(received, index(received)));
+            }
             return Ok(());
         };
         let layout = match &mut self.layout {
@@ -142,7 +169,11 @@ impl Batch {
         for at in data() {
             layout.add(&self.measurement, received, at)?;
         }
-        self.body.write(&self.measurement, layout, received, first);
+        let gap = (self.gap.as_mut()).zip(self.waiting.as_mut());
+        let measurement = &self.measurement;
+        if self.body.write(measurement, layout, received, first, gap) {
+            self.waiting = None;
+        }
         Ok(())
     }
 
@@ -157,6 +188,7 @@ impl Batch {
     /// batch.
     pub fn take(&mut self) -> Option<Taken> {
         let position = self.position.take()?;
+        let position = self.waiting.map_or(Some(position), |waiting| waiting.ack);
         self.body.lines = 0;
         self.body.most = self.body.most.max(self.body.bytes.len());
         let bytes = Vec::with_capacity(self.body.most);
@@ -172,30 +204,12 @@ impl Batch {
 }
 
 impl Body {
-    /// Writes the line of `gap` with the seqs `seqs`, which end at the first sample
-    /// of `received`, at that sample's stamp.
-    fn gap(&mut self, gap: &mut Gap, received: &Received<'_>, seqs: Range<u64>) {
-        let index = index(received);
-        self.times(received, index);
-        let (first, _) = self.times.split_first_chunk::<8>().unwrap_or_else(|| {
-            panic!("invariant: a frame after the gap {seqs:?} holds a sample")
-        });
-        let stamp = Stamp::from_nanos(i64::from_le_bytes(*first));
-        let end = seqs.end;
-        gap.add(seqs);
-        let lost = gap.line(&mut self.bytes, end, stamp);
-        self.lines = self.lines.saturating_add(1);
-        self.lost = self.lost.saturating_add(lost);
-    }
-
     /// Decodes the stamps of the index at `index` of `received` into `times`, and
     /// gives their count.
     fn times(&mut self, received: &Received<'_>, index: usize) -> usize {
         let (view, set) = (received.view(), received.set());
-        let range = view
-            .range(entry(set, index).group)
-            .expect("invariant: a view holds its index");
-        let count = usize::try_from(range.count).expect("invariant: u32 fits usize");
+        let count = count(received, index);
+        let count = usize::try_from(count).expect("invariant: u64 fits usize");
         let (_, bytes) = (view.iter().find(|&(entry, _)| entry == index))
             .expect("invariant: a view holds its index");
         codec::decode(entry(set, index).data_type, count, bytes, &mut self.times)
@@ -204,14 +218,17 @@ impl Body {
     }
 
     /// Writes the lines of `measurement` of `received`, whose first data channel is
-    /// at `first`, with the `layout` of its channels.
+    /// at `first`, with the `layout` of its channels. With a `gap` that waits, writes
+    /// its line before the first line with a value, and gives whether it did. Else the
+    /// wait's seq moves past the frame.
     fn write(
         &mut self,
         measurement: &Measurement,
         layout: &Layout,
         received: &Received<'_>,
         first: usize,
-    ) {
+        mut gap: Option<(&mut Gap, &mut Waiting)>,
+    ) -> bool {
         let (view, set) = (received.view(), received.set());
         let index = set.index(first);
         let count = self.times(received, index);
@@ -243,6 +260,16 @@ impl Body {
                 (self.entries.iter().zip(values)).filter_map(|(&at, value)| {
                     Some((&layout.channel(at).field, (*value)?))
                 });
+            if let Some((held, waiting)) = &mut gap {
+                if values.clone().next().is_none() {
+                    waiting.seq = waiting.seq.saturating_add(1);
+                } else {
+                    let lost = held.line(&mut self.bytes, waiting.seq, time);
+                    self.lines = self.lines.saturating_add(1);
+                    self.lost = self.lost.saturating_add(lost);
+                    gap = None;
+                }
+            }
             let wrote = measurement.line(&mut self.bytes, values, time);
             if wrote > 0 {
                 self.lines = self.lines.saturating_add(1);
@@ -250,6 +277,7 @@ impl Body {
             let wrote = u64::try_from(wrote).expect("invariant: usize fits u64");
             self.samples = self.samples.saturating_add(wrote);
         }
+        gap.is_none()
     }
 }
 
@@ -317,6 +345,13 @@ fn index(received: &Received<'_>) -> usize {
     let mut entries = view.iter().map(|(entry, _)| entry);
     let index = entries.find(|&entry| set.index(entry) == entry);
     index.expect("invariant: a view holds its index")
+}
+
+/// The count of samples of `received` on the index at `index`.
+fn count(received: &Received<'_>, index: usize) -> u64 {
+    let (view, set) = (received.view(), received.set());
+    let range = view.range(entry(set, index).group);
+    u64::from(range.expect("invariant: a view holds its index").count)
 }
 
 fn entry(set: &KeySet, at: usize) -> &key_set::Entry {
