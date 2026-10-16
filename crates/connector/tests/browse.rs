@@ -62,9 +62,11 @@ const START: usize = 200;
 
 /// A device whose root holds a chain of `start` folders, each with the name `s`, then
 /// a chain of [`DEPTH`] folders, each of which holds the folder `f` and then points
-/// to a page of [`LIMIT`] entries. The last holds [`LIMIT`] points.
+/// to a page of [`LIMIT`] entries. The last holds [`LIMIT`] points. A `rooted` device
+/// builds the path of each entry from the root, so it shares no link.
 struct Wide {
     start: usize,
+    rooted: bool,
 }
 
 impl Device for Wide {
@@ -75,13 +77,23 @@ impl Device for Wide {
     ) -> impl Future<Output = Result<Option<Page>, Error>> {
         let at = folder.map_or_else(Path::root, |folder| folder.path.clone());
         let depth = at.names().len();
+        let rooted = self.rooted;
+        let child = |name: String| {
+            if rooted {
+                at.names()
+                    .fold(Path::root(), |path, name| path.child(name))
+                    .child(name)
+            } else {
+                at.child(name)
+            }
+        };
         let point = |i: usize| Entry {
-            path: at.child(format!("p{i}")),
+            path: child(format!("p{i}")),
             tag: format!("{depth}/{i}"),
             shape: Shape::Point(Facts::default()),
         };
         let folder = |name: &str| Entry {
-            path: at.child(name),
+            path: child(name.to_owned()),
             tag: depth.to_string(),
             shape: Shape::Folder,
         };
@@ -132,7 +144,13 @@ fn main() {
         "the walk held {peak} bytes at its peak, over {bound}"
     );
 
-    let (found, root) = walk(&mut Wide { start: 0 }, &query);
+    let (found, root) = walk(
+        &mut Wide {
+            start: 0,
+            rooted: false,
+        },
+        &query,
+    );
     assert_eq!(
         found.end,
         End::Limit,
@@ -143,17 +161,41 @@ fn main() {
         start: vec!["s"; START].join("/").parse().expect("a path"),
         ..query
     };
-    let (found, peak) = walk(&mut Wide { start: START }, &deep);
+    // The links of the start, once: 14 KB more than from the root on box1. A copy of
+    // the start's names in each entry of the open pages is 100 MB more.
+    let (found, peak) = walk(
+        &mut Wide {
+            start: START,
+            rooted: false,
+        },
+        &deep,
+    );
     assert_eq!(
         found.end,
         End::Limit,
         "the walk from the start ends at the limit"
     );
-    // The links of the start, once: 14 KB more than from the root on box1. A copy of
-    // the start's names in each entry of the open pages is 100 MB more.
+    drop(found);
     let bound = root + (1 << 16);
     assert!(
         peak <= bound,
         "the walk from the start held {peak} bytes at its peak, over {bound}"
+    );
+    // Also the links of the one page that the device builds and the walk drops: 8 MB
+    // more on box1. A path from the root in each entry of the open pages is 470 MB
+    // more.
+    let (found, peak) = walk(
+        &mut Wide {
+            start: START,
+            rooted: true,
+        },
+        &deep,
+    );
+    assert_eq!(found.end, End::Limit, "the rooted walk ends at the limit");
+    drop(found);
+    let bound = root + (16 << 20);
+    assert!(
+        peak <= bound,
+        "the walk of rooted paths held {peak} bytes at its peak, over {bound}"
     );
 }

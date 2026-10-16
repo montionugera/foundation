@@ -138,7 +138,7 @@ impl<D: Device> Walker<'_, D> {
     ) -> Result<Page, Error> {
         let root = Path::root();
         let path = folder.map_or(&root, |folder| &folder.path);
-        let page = self
+        let mut page = self
             .device
             .level(folder, cursor)
             .await?
@@ -150,10 +150,13 @@ impl<D: Device> Walker<'_, D> {
             }
             .into());
         }
-        for entry in &page.entries {
+        for entry in &mut page.entries {
             let broken = match &entry.path.0 {
                 Some(link) if link.folder == *path => {
                     if !link.name.is_empty() {
+                        // A kind may build each path from the root: share the
+                        // folder's, so an entry holds one link at any depth.
+                        entry.path = path.child(Arc::clone(&link.name));
                         continue;
                     }
                     Broken::Empty {

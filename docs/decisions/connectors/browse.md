@@ -31,23 +31,24 @@
   space ends, and a path that a pattern names through a loop still matches. A pattern
   ends `Budget` when it holds `DEPTH` (64) folders open, its start with them, and a
   match can be under one more, so a chain of folders that a server makes cannot hold the
-  walk's memory. A `Path` that `child` makes shares the path of its folder, so an entry
-  holds one link of its own at any depth of the start, and the walk holds at most
-  `DEPTH` pages that the device sent. No path that the walk gives has an empty name, and
-  the record of each kind says what it gives for an empty name of its device, so the
-  text of each path parses. When a kind breaks one of these rules of `Device`: a page
-  over `LIMIT`, an entry outside its folder, an empty name, a count of values that is
-  not the count of tags, `walk` gives `Error::Config` with `connector.broken-browse`,
-  whose message names the rule, then what broke it, and the browse fails with no retry.
-  It never panics: in release a panic stops the node and each of its connectors. The
-  browse operation adds the connector and its kind to each error that it gives from
-  `walk`. A kind implements `browse::Device` on its open session, so one walk is one
-  session and can use a continuation point; a `Cursor` that a front end gets holds no
-  session state. `level` takes a folder as the `Entry` that the device gave, never a
-  path, and gives at most `LIMIT` entries a page; `values` gives `types::sample::Value`,
-  so there is one value model. Trigger for a text value: a kind that reads a `string`
-  channel. Lost: a count of matches up to the budget; trigger: the agent test (PR 9)
-  shows a task with two over-limit refusals one after the other.
+  walk's memory. Each entry that the walk keeps shares the `Path` of its folder, also
+  when the kind built its path from the root, so an entry holds one link of its own at
+  any depth of the start, and the walk holds at most `DEPTH` pages that the device sent.
+  No path that the walk gives has an empty name, and the record of each kind says what
+  it gives for an empty name of its device, so the text of each path parses. When a kind
+  breaks one of these rules of `Device`: a page over `LIMIT`, an entry outside its
+  folder, an empty name, a count of values that is not the count of tags, `walk` gives
+  `Error::Config` with `connector.broken-browse`, whose message names the rule, then
+  what broke it, and the browse fails with no retry. It never panics: in release a panic
+  stops the node and each of its connectors. The browse operation adds the connector and
+  its kind to each error that it gives from `walk`. A kind implements `browse::Device`
+  on its open session, so one walk is one session and can use a continuation point; a
+  `Cursor` that a front end gets holds no session state. `level` takes a folder as the
+  `Entry` that the device gave, never a path, and gives at most `LIMIT` entries a page;
+  `values` gives `types::sample::Value`, so there is one value model. Trigger for a text
+  value: a kind that reads a `string` channel. Lost: a count of matches up to the
+  budget; trigger: the agent test (PR 9) shows a task with two over-limit refusals one
+  after the other.
   `import --match` uses the same walk, so the points that `browse --match` shows are the
   points that `import --match` takes.
   The person's words, through `laptop.monitor`: decision 1, 2026-10-15 17:17 UTC, "Ok,
