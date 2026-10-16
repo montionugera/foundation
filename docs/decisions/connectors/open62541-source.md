@@ -515,17 +515,17 @@
   each connection again after each connect, send, or close on it that the `check` or
   such a step asks for, so it can also read and call open62541 back after that `check`,
   except the listen connection after an accept, which moves on only after the next
-  `check`. The run of the loop before each `check`: approval owed by
-  `laptop.architect-2` (https://github.com/synnaxlabs/foundation/pull/2809). It
-  supersedes https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6086043036
-  and https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6086768731 for
-  the order of the run. At most 256 sends wait on one
-  connection: a send past them closes the connection. open62541 allocates each send at
-  most at the send buffer size of its channel, so this bounds the memory of a
-  connection at 256 send buffers. Sends wait from one pass to the next, and longer
-  while a stream is full, so an owner keeps the chunks of its messages in flight at 256
-  or fewer. A client does so with its requests in flight times the chunks of a
-  message. A close reads and drops what the
+  `check`. The run of the loop before each `check`: approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/2809#issuecomment-6207817058,
+  2026-10-16 04:04 UTC). It supersedes
+  https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6086043036 and
+  https://github.com/synnaxlabs/foundation/pull/2159#issuecomment-6086768731 for the
+  order of the run. At most 256 sends wait on one connection: a send past them closes
+  the connection. open62541 allocates each send at most at the send buffer size of its
+  channel, so this bounds the memory of a connection at 256 send buffers. Sends wait
+  from one pass to the next, and longer while a stream is full, so an owner keeps the
+  chunks of its messages in flight at 256 or fewer. A client does so with its requests
+  in flight times the chunks of a message. A close reads and drops what the
   peer sends while it writes what waits, closes its side, then reads until the peer
   closes its side, so that the drop sends no reset. It drops the stream with a warning
   10 s after the first close, so that a peer that reads slowly or never closes cannot
@@ -724,7 +724,9 @@
   start of the last read, so the gap between two requests while it waits is 10 s
   plus at most the request timeout. A check goes through `Client::read`, so it shares
   the bound of 16 requests in flight, and a check that a wait leaves when it ends stays
-  in flight until its answer. Lost: the check of open62541, which drops each status
+  in flight until its answer. Between two checks, `idle` reads the state of the client
+  after each run of the loop, and ends at once when the channel is not open or the
+  session is not active. Lost: the check of open62541, which drops each status
   but `BadTimeout`; a check on each housekeeping run at each rate, which reads at 10 Hz
   for nothing; and no check, which loses an idle session at its timeout.
   Its `close` has a grace of 1 s on the `env` clock, a private const. It first waits
