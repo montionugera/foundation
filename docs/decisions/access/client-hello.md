@@ -63,6 +63,10 @@
   keeps no cap, and the program refuses a `Places` over the cap with `Error::Places`
   (`laptop.architect`, 2026-10-16T06:47:02Z,
   https://github.com/synnaxlabs/foundation/issues/2808#issuecomment-6209795527). The
+  node gives `serve::Error::Places` for a match over the cap. A `Start` at the cap with
+  names of 255 bytes takes at most 26 MB at the program (counting allocator, box1)
+  (`laptop.architect`, 2026-10-16T08:11:58Z,
+  https://github.com/synnaxlabs/foundation/pull/2847#issuecomment-6211097743). The
   node sends `Places` (kind 6: the count of places and the place of the index), a run of
   `Place` (key, sample type as the text that `types::sample::Type` writes and reads,
   name) (`laptop.architect`, 2026-10-10T23:52:16Z,

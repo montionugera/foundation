@@ -8,9 +8,7 @@ use access::proof;
 use transport::Class;
 use transport::stream::{Receiver, Sender};
 use types::name::{Name, Selector};
-use wire::hub::client::{
-    self, Mode, Open, PLACES_MAX, Place, Places, Read, Refusal, place,
-};
+use wire::hub::client::{Mode, Open, PLACES_MAX, Place, Places, Read, Refusal, place};
 
 use super::{Reserved, body, verify};
 use crate::State;
@@ -34,7 +32,7 @@ pub(super) async fn serve(
     let mut program = pin!(async {
         match receiver.recv().await? {
             None => Ok(()),
-            Some(_) => Err(Error::Client(client::Error::Trailing)),
+            Some(_) => Err(Error::Client(wire::hub::client::Error::Trailing)),
         }
     });
     let state = &session.state;
@@ -94,7 +92,7 @@ async fn open(
 /// its open position, the head of its places, its places, and their layout, or `None`
 /// when `program` finishes first. Holds the reservation of `open` until the open
 /// decodes after the wait for the home. Places over [`PLACES_MAX`] give
-/// [`client::Error::Places`], also when the home is another node, and this node then
+/// [`Error::Places`], also when the home is another node, and this node then
 /// carries no index and gives no slot.
 async fn here<F>(
     state: &Rc<RefCell<State>>,
@@ -118,13 +116,9 @@ where
         return Ok(None);
     };
     let (places, home) = found.map_err(refused)?;
-    let count = u32::try_from(places.items.len())
-        .expect("invariant: each place has its own slot, a u32");
-    if count > PLACES_MAX {
-        return Err(Error::Client(client::Error::Places {
-            count,
-            cap: PLACES_MAX,
-        }));
+    let count = places.items.len();
+    if count > usize::try_from(PLACES_MAX).expect("invariant: a usize holds a u32") {
+        return Err(Error::Places { count });
     }
     let keys = match home {
         Home::Here(keys) => keys,
@@ -132,7 +126,7 @@ where
     };
     let channels = Channels::carry(&mut state.borrow_mut(), keys, places.index);
     let head = Places {
-        count,
+        count: u32::try_from(count).expect("invariant: at most PLACES_MAX"),
         index: u32::try_from(places.index)
             .expect("invariant: the index is one of the places"),
     };

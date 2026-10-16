@@ -44,10 +44,8 @@ pub const BODIES_BYTES_MAX: u64 = 2 * BODY_BYTES_MAX;
 pub enum Error {
     /// A message from a reader's node that `wire::hub` refuses. Code `MALFORMED`.
     Message(wire::hub::Error),
-    /// A message from a program that `wire::hub::client` refuses, a body that ended
-    /// early ([`wire::hub::client::Error::Unfinished`]), or a read that matches over
-    /// [`wire::hub::client::PLACES_MAX`] places ([`wire::hub::client::Error::Places`]).
-    /// Code `MALFORMED`.
+    /// A message from a program that `wire::hub::client` refuses, or a body that ended
+    /// early ([`wire::hub::client::Error::Unfinished`]). Code `MALFORMED`.
     Client(wire::hub::client::Error),
     /// The peer opened the stream one way. Code `MALFORMED`.
     OneWay,
@@ -55,6 +53,12 @@ pub enum Error {
     Class(Class),
     /// The keys of the open are on more than one index. Code `MALFORMED`.
     ManyIndexes,
+    /// The selector of a read matches more than [`wire::hub::client::PLACES_MAX`]
+    /// places with their index. Code `MALFORMED`.
+    Places {
+        /// The count of matched places, the index too.
+        count: usize,
+    },
     /// The keys of the open do not hold their index. Code `MALFORMED`.
     NoIndex,
     /// The open names a channel more than once. Code `MALFORMED`.
@@ -129,6 +133,7 @@ impl Error {
             | Self::OneWay
             | Self::Class(_)
             | Self::ManyIndexes
+            | Self::Places { .. }
             | Self::NoIndex
             | Self::Repeated(_)
             | Self::Unadmitted
@@ -165,6 +170,11 @@ impl fmt::Display for Error {
             Self::ManyIndexes => {
                 f.write_str("the open names channels on more than one index")
             }
+            Self::Places { count } => write!(
+                f,
+                "the open matches {count} places, over the cap of {}",
+                wire::hub::client::PLACES_MAX
+            ),
             Self::NoIndex => {
                 f.write_str("the open does not name the index of its channels")
             }

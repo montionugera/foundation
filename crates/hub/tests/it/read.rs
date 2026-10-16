@@ -454,18 +454,16 @@ fn stops_a_read_whose_places_are_over_the_cap_as_malformed() {
         assert_eq!(stream.recv().await, Ok(None));
         finish(&mut agent).await;
     });
-    let over = serve::Error::Client(client::Error::Places {
-        count: PLACES_MAX + 1,
-        cap: PLACES_MAX,
-    });
+    let over = serve::Error::Places {
+        count: usize::try_from(PLACES_MAX).expect("fits") + 1,
+    };
     assert_eq!(
         home.served,
         [Err(over.clone()), Ok(Got::Ended), Ok(Got::Ended)]
     );
     assert_eq!(
         over.to_string(),
-        "a client message is not valid: the read has 65537 places, over the cap of \
-         65536"
+        "the open matches 65537 places, over the cap of 65536"
     );
 }
 
@@ -927,10 +925,9 @@ fn stops_a_read_whose_home_is_another_node_as_not_home() {
     let remote = reader::Error::Remote {
         home: region::OTHER,
     };
-    let over = serve::Error::Client(client::Error::Places {
-        count: PLACES_MAX + 1,
-        cap: PLACES_MAX,
-    });
+    let over = serve::Error::Places {
+        count: usize::try_from(PLACES_MAX).expect("fits") + 1,
+    };
     let served = std::mem::take(&mut *served.lock().expect("not poisoned"));
     assert_eq!(
         served,
