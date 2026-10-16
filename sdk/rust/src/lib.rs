@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 
-use env::tasks::Tasks;
+use env::tasks::{Group, Tasks};
 use host::{Spawned, Spawner};
 use tokio::runtime::{Builder, LocalOptions};
 use tokio::sync::oneshot;
@@ -187,7 +187,8 @@ fn run(
     };
     runtime.block_on(async move {
         let spawned = Rc::new(Spawned::default());
-        let tasks = Tasks::new(Spawner(Rc::clone(&spawned)));
+        let group = Group::new(Tasks::new(Spawner(Rc::clone(&spawned))));
+        let tasks = group.tasks().clone();
         match spawned.guard(connect(node, subject, tasks)).await {
             Ok(session) => {
                 if ready.send(Ok(())).is_ok() {
@@ -197,7 +198,7 @@ fn run(
             }
             Err(error) => drop(ready.send(Err(error))),
         }
-        spawned.drain().await;
+        spawned.guard(group.ended()).await;
     });
 }
 

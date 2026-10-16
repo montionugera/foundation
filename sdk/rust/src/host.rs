@@ -155,19 +155,6 @@ impl Spawned {
         .await
     }
 
-    /// Waits until each task ends, and resumes the first panic of a task.
-    pub(crate) async fn drain(&self) {
-        poll_fn(|cx| {
-            self.check(cx);
-            if self.set.borrow().is_empty() {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
-        })
-        .await;
-    }
-
     /// Joins each ended task, and resumes the panic of one that panicked.
     fn check(&self, cx: &mut Context<'_>) {
         self.waker.set(cx.waker().clone());

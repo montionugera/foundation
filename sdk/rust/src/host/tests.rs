@@ -4,7 +4,7 @@ use std::thread;
 
 use env::clock::Driver as _;
 use env::entropy::Driver as _;
-use env::tasks::Tasks;
+use env::tasks::{Group, Tasks};
 use tokio::sync::oneshot;
 use types::time::Span;
 
@@ -109,32 +109,32 @@ fn a_task_that_ends_leaves_the_body_running() {
 }
 
 #[test]
-fn a_drain_waits_for_each_task() {
+fn the_end_of_a_group_waits_for_each_task() {
     let outcome = local(async {
         let spawned = Rc::new(Spawned::default());
-        let tasks = Tasks::new(Spawner(Rc::clone(&spawned)));
+        let group = Group::new(Tasks::new(Spawner(Rc::clone(&spawned))));
         let ended = Rc::new(Cell::new(false));
         let set = Rc::clone(&ended);
-        tasks.spawn(async move {
+        group.tasks().spawn(async move {
             tokio::time::sleep(Duration::from_millis(5)).await;
             set.set(true);
         });
-        spawned.drain().await;
+        spawned.guard(group.ended()).await;
         ended.get()
     });
     assert!(outcome.unwrap());
 }
 
 #[test]
-fn a_drain_resumes_a_panic_of_a_task() {
+fn a_guard_of_the_end_of_a_group_resumes_a_panic_of_a_task() {
     let outcome = local(async {
         let spawned = Rc::new(Spawned::default());
-        let tasks = Tasks::new(Spawner(Rc::clone(&spawned)));
-        tasks.spawn(async {
+        let group = Group::new(Tasks::new(Spawner(Rc::clone(&spawned))));
+        group.tasks().spawn(async {
             tokio::time::sleep(Duration::from_millis(5)).await;
             panic!("the task failed");
         });
-        spawned.drain().await;
+        spawned.guard(group.ended()).await;
     });
     assert_eq!(message(&*outcome.unwrap_err()), "the task failed");
 }
