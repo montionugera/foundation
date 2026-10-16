@@ -121,12 +121,13 @@ impl<'a> Received<'a> {
     /// The seqs of the index just before this frame that the reader did not get, as
     /// the buffer trimmed them or had no room for them. `None` for each frame of a
     /// latest reader and for most frames of a complete one, and never an empty range.
-    /// Its end is the seq of the frame's first sample.
+    /// Its end is the seq of the frame's first sample. A frame with no sample gives
+    /// `None`, and the next frame with one gives the gap.
     #[must_use]
     pub fn gap(&self) -> Option<Range<u64>> {
-        let start = self.lent.seqs.start;
+        let Range { start, end } = self.lent.seqs;
         let from = self.lent.from;
-        (from < start).then_some(from..start)
+        (from < start && start < end).then_some(from..start)
     }
 }
 
@@ -586,6 +587,7 @@ impl Reader {
             };
             let seqs = lens.seqs(&frame);
             self.lent.from = match self.mode {
+                Mode::Complete if self.lent.seqs.is_empty() => self.lent.from,
                 Mode::Complete => self.lent.seqs.end,
                 Mode::Latest => seqs.start,
             };
