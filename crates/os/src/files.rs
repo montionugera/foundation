@@ -17,7 +17,7 @@ use rustix::fs::{self, AtFlags, FileType, FlockOperation, OFlags, RenameFlags};
 use rustix::io::{self, Errno};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::dir;
+use crate::{dir, host};
 
 /// The most parts that one `pwritev` takes: `IOV_MAX` on Linux and macOS.
 const PARTS: usize = 1_024;
@@ -33,13 +33,6 @@ const FILE: fs::Mode = fs::Mode::from_raw_mode(0o600);
 const READ_DIR: OFlags = OFlags::RDONLY
     .union(OFlags::DIRECTORY)
     .union(OFlags::CLOEXEC);
-
-/// The flags that open a file of the host to read, with no wait for a writer of a FIFO.
-/// `NOCTTY` keeps a terminal from becoming that of a node that leads its session.
-const READ_HOST: OFlags = OFlags::RDONLY
-    .union(OFlags::CLOEXEC)
-    .union(OFlags::NONBLOCK)
-    .union(OFlags::NOCTTY);
 
 /// The real disk under one data directory: the [`env::files::Driver`] that
 /// [`files`](crate::files) gives. It is `Send`, so one thread can make it and another
@@ -426,31 +419,15 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<Found, Error> {
 /// file that is not a regular file.
 fn open_absolute(path: &Path) -> Result<Found, Error> {
     let failed = fail(path, Operation::Open);
-    // The check before the open keeps the open of a socket from giving `ENXIO`, and
-    // that of a device from running its driver. The check after it covers a swap.
-    regular(&fs::stat(path).map_err(&failed)?).map_err(&failed)?;
-    let fd = Opened {
-        fd: fs::open(path, READ_HOST, fs::Mode::empty()).map_err(&failed)?,
-        locked: false,
-    };
-    let stat = fs::fstat(&fd).map_err(&failed)?;
-    let len = regular(&stat).map_err(&failed)?;
-    let exposed = exposed(&stat);
+    let (fd, stat) = host::file(path).map_err(&failed)?;
+    let fd = Opened { fd, locked: false };
+    let (len, exposed) = (stat.st_size.cast_unsigned(), exposed(&stat));
     Ok(Found { fd, len, exposed })
 }
 
 /// Whether the mode of `stat` gives read to other users.
 fn exposed(stat: &fs::Stat) -> bool {
     stat.st_mode & 0o004 != 0
-}
-
-/// The length of the regular file of `stat`, or the error of another kind of file.
-fn regular(stat: &fs::Stat) -> Result<u64, Errno> {
-    match FileType::from_raw_mode(stat.st_mode) {
-        FileType::RegularFile => Ok(stat.st_size.cast_unsigned()),
-        FileType::Directory => Err(Errno::ISDIR),
-        _ => Err(Errno::INVAL),
-    }
 }
 
 /// Opens `dir/data`, and first makes `dir` and `dir/data` when they are not there.

@@ -6,7 +6,9 @@ use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt, chown, syml
 use std::path::{Path, PathBuf};
 use std::slice;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 use env::paths::{Error, Found};
 use rustix::fs::{CWD, RenameFlags, renameat_with};
@@ -578,6 +580,40 @@ fn a_write_on_a_pipe_gives_the_bytes_to_its_reader() {
     );
 }
 
+/// The read of a FIFO with no writer answers in place of a wait.
+#[test]
+fn a_read_of_a_pipe_is_an_invalid_argument() {
+    let scratch = Scratch::new();
+    let pipe = scratch.0.join("pipe");
+    mkfifo(&pipe);
+    let (send, receive) = mpsc::channel();
+    #[expect(clippy::disallowed_methods, reason = "the test bounds a hang")]
+    thread::spawn(move || send.send(os::paths().read(&pipe, 1)).unwrap());
+    #[expect(clippy::disallowed_methods, reason = "the test bounds a hang")]
+    let read = receive.recv_timeout(Duration::from_secs(10));
+    assert_eq!(read, Ok(Err(Error::Io { code: 22 })));
+}
+
+#[test]
+fn a_read_of_a_device_is_an_invalid_argument() {
+    assert_eq!(
+        os::paths().read(Path::new("/dev/null"), 1),
+        Err(Error::Io { code: 22 })
+    );
+}
+
+#[test]
+fn a_read_of_a_socket_is_an_invalid_argument() {
+    // A socket path has a bound of 104 bytes on macOS, which the scratch path can pass.
+    let socket =
+        PathBuf::from(format!("/tmp/foundation-os-r-{}.sock", std::process::id()));
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let read = os::paths().read(&socket, 1);
+    drop(listener);
+    fs::remove_file(&socket).unwrap();
+    assert_eq!(read, Err(Error::Io { code: 22 }));
+}
+
 #[test]
 fn a_write_on_a_link_writes_the_file_it_names() {
     let scratch = Scratch::new();
@@ -658,6 +694,62 @@ fn a_read_of_a_path_that_swaps_a_directory_for_a_file_gives_one_of_them() {
         matches!(read, Ok(Found::File(_) | Found::Directory(_)))
     });
     assert_eq!(other, None);
+}
+
+/// `link` names a file or a FIFO at each instant. A read gives the file or `Io` 22,
+/// never the empty read of the FIFO, and never waits for its writer. On Linux it can
+/// also give a folder on the way to the target.
+#[test]
+fn a_read_of_a_path_that_swaps_a_file_for_a_pipe_gives_the_file_or_an_invalid_argument()
+{
+    let scratch = Scratch::new();
+    let (pipe, file) = (scratch.0.join("pipe"), scratch.0.join("file"));
+    mkfifo(&pipe);
+    fs::write(&file, b"x").unwrap();
+    let (link, next) = (scratch.0.join("link"), scratch.0.join("next"));
+    symlink(&file, &link).unwrap();
+    let swap = || {
+        for target in [&pipe, &file] {
+            symlink(target, &next).unwrap();
+            fs::rename(&next, &link).unwrap();
+        }
+    };
+    let other = race(swap, 5_000, &link, |read| match read {
+        Ok(Found::File(bytes)) => bytes == b"x",
+        Ok(Found::Directory(entries)) => {
+            cfg!(target_os = "linux") && on_the_way(entries, &link, &scratch.0)
+        }
+        read => *read == Err(Error::Io { code: 22 }),
+    });
+    assert_eq!(other, None);
+}
+
+/// Whether `entries`, as a read of `link` gives them, are the names of `scratch` or of
+/// a folder above it, which holds the next folder on the way to `scratch`. Other tests
+/// change the folders above, so only that one name is sure.
+fn on_the_way(entries: &[PathBuf], link: &Path, scratch: &Path) -> bool {
+    let names: Option<Vec<&Path>> = entries
+        .iter()
+        .map(|entry| entry.strip_prefix(link).ok())
+        .collect();
+    let Some(names) = names else {
+        return false;
+    };
+    // `next` is there only during a swap.
+    let here = [
+        ["file", "link", "pipe"].as_slice(),
+        &["file", "link", "next", "pipe"],
+    ];
+    if here
+        .iter()
+        .any(|here| names.iter().copied().eq(here.iter().map(Path::new)))
+    {
+        return true;
+    }
+    scratch.ancestors().skip(1).any(|folder| {
+        let next = scratch.strip_prefix(folder).unwrap().iter().next();
+        next.is_some_and(|next| names.contains(&Path::new(next)))
+    })
 }
 
 /// `plant` and `file` swap a directory and a file in one step.
