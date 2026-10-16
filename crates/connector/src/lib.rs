@@ -9,6 +9,7 @@ pub mod http;
 pub mod import;
 pub mod kind;
 pub mod pace;
+pub mod poll;
 pub mod reader;
 pub mod retry;
 pub mod stamp;
