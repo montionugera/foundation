@@ -31,8 +31,8 @@ impl Key {
 
 /// The channels of the frames of a session, sorted by slot, with each entry's type and
 /// index group. Every frame of the session points at it. An [`Interner`] makes the
-/// key sets of a node's writers, and [`KeySet::ordered`] makes the set of a reader
-/// that is of no node.
+/// key sets of a node, and [`KeySet::ordered`] makes the set of a reader that is of no
+/// node.
 #[derive(Debug)]
 pub struct KeySet {
     key: Key,
