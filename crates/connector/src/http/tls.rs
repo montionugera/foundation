@@ -111,8 +111,6 @@ pub(super) fn client(
     Arc::new(config)
 }
 
-/// One stamp of mesh time, as rustls reads the time. A stamp before the Unix epoch
-/// gives no time, which fails the check.
 /// Whether `error` of a handshake is webpki's refusal of a server certificate with
 /// `CA:TRUE`, which a self-signed certificate of `openssl req -x509` has by default.
 pub(super) fn ca_as_server(error: &io::Error) -> bool {
@@ -127,6 +125,8 @@ pub(super) fn ca_as_server(error: &io::Error) -> bool {
     )
 }
 
+/// One stamp of mesh time, as rustls reads the time. A stamp before the Unix epoch
+/// gives no time, which fails the check.
 #[derive(Debug)]
 pub(super) struct At(pub(super) Stamp);
 

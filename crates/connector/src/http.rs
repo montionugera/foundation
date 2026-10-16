@@ -246,11 +246,7 @@ impl Client {
                 .await
                 .map_err(|cause| Error::Tls {
                     origin: origin.to_string(),
-                    cause: Failure(if tls::ca_as_server(&cause) {
-                        Cause::Ca(cause)
-                    } else {
-                        Cause::Io(cause)
-                    }),
+                    cause: Failure(Cause::Io(cause)),
                 })?
         } else {
             Stream::plain(tcp, Rc::clone(&received))
@@ -359,8 +355,8 @@ struct Origin {
 /// Shows the host and the port as a URI writes them, with an IPv6 address in brackets.
 impl fmt::Display for Origin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let host = self.host.to_string();
-        if host.contains(':') {
+        let host = &self.host;
+        if host.ip().is_some_and(|ip| ip.is_ipv6()) {
             write!(f, "[{host}]:{}", self.port)
         } else {
             write!(f, "{host}:{}", self.port)
@@ -415,13 +411,15 @@ fn origin(uri: &Uri) -> Result<Origin, Error> {
 /// The name that a TLS server's certificate must hold for `host`: its IP address with
 /// no zone, or its name with no final dot.
 fn name(host: &Host) -> ServerName<'static> {
-    let text = host.to_string();
-    let bare = match host.name() {
-        Some(name) => name.strip_suffix('.').unwrap_or(name),
-        None => text.split_once('%').map_or(text.as_str(), |(ip, _zone)| ip),
-    };
-    // A name of `Host` is at most 253 bytes with no final dot, and its parts follow
-    // the rules of a TLS name.
+    if let Some(ip) = host.ip() {
+        return ServerName::IpAddress(ip.into());
+    }
+    let name = host
+        .name()
+        .expect("invariant: a host with no IP address is a name");
+    let bare = name.strip_suffix('.').unwrap_or(name);
+    // `takes_each_name_of_a_host_as_a_tls_name` pins that the grammar of `Host` is
+    // inside the grammar of a TLS name.
     ServerName::try_from(bare.to_owned()).expect("invariant: each host is a TLS name")
 }
 
@@ -512,9 +510,6 @@ enum Cause {
     Hyper(hyper::Error),
     /// A failed handshake: it wraps the rustls or the `env` error.
     Io(io::Error),
-    /// A handshake that failed on a server certificate with `CA:TRUE`, which wraps
-    /// the rustls error.
-    Ca(io::Error),
 }
 
 impl From<hyper::Error> for Error {
@@ -572,12 +567,12 @@ impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
             Cause::Hyper(error) => error.fmt(f),
-            Cause::Io(error) => error.fmt(f),
-            Cause::Ca(_) => write!(
+            Cause::Io(error) if tls::ca_as_server(error) => write!(
                 f,
                 "the server's certificate is a CA certificate, with CA:TRUE: give the \
                  server a certificate with CA:FALSE, or one that this CA signs"
             ),
+            Cause::Io(error) => error.fmt(f),
         }
     }
 }
@@ -585,14 +580,19 @@ impl fmt::Display for Failure {
 impl std::error::Error for Failure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.0 {
-            Cause::Hyper(error) => error.source(),
-            // The payload, as `io::Error::source` skips it.
-            Cause::Io(error) | Cause::Ca(error) => {
-                let payload = error.get_ref()?;
-                Some(payload)
+            Cause::Hyper(error) => {
+                let source = error.source()?;
+                let io = source.downcast_ref::<io::Error>();
+                Some(io.and_then(payload).unwrap_or(source))
             }
+            Cause::Io(error) => payload(error),
         }
     }
+}
+
+/// The error inside `error`, which `io::Error::source` skips.
+fn payload(error: &io::Error) -> Option<&(dyn std::error::Error + 'static)> {
+    Some(error.get_ref()?)
 }
 
 #[cfg(test)]

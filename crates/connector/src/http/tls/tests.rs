@@ -1,25 +1,30 @@
 use std::future::poll_fn;
+use std::io::{self, IoSlice};
 use std::net::SocketAddr;
 use std::num::NonZeroU64;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, ready};
 
+use proptest::prelude::*;
 use rustls::ServerConfig;
-use rustls::pki_types::pem::PemObject as _;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::pki_types::ServerName;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio_rustls::TlsAcceptor;
+use tokio_rustls::server::TlsStream;
 
 use ::sim::{Sim, name, node};
 use bytes::Bytes;
-use env::net::{Listener, tcp};
+use env::net::host::Host;
+use env::net::{Listener, Tcp, tcp};
 use env::tasks::Tasks;
 use env::thread::Handle;
 use http::{Request, Response};
 use types::time::{Span, Stamp};
 
-use hyper::rt::{Read as _, ReadBuf, Write as _};
-
 use super::super::stream::Stream;
+use super::super::tests::stream_error;
 use super::{Pem, Roots};
 use crate::http::sim::{self, Certificate};
 use crate::http::{Client, Config, Error, Tls};
@@ -203,7 +208,7 @@ impl Network {
 
     /// Runs `steps` from a client that trusts the test CA, crashes the server after
     /// `crash`, and gives the outcome of each send as text: an error with each of its
-    /// sources, outermost first.
+    /// sources, outermost first, then the source that is the `env` error.
     fn crash_after(&mut self, steps: Vec<Step>, crash: Span) -> Vec<String> {
         let out = self.start(sim::ca(), steps);
         self.sim.run_for(crash).expect("the run ends");
@@ -213,7 +218,12 @@ impl Network {
         let outcomes = std::mem::take(&mut *out.lock().expect("no panic"));
         outcomes
             .into_iter()
-            .map(|outcome| outcome.unwrap_or_else(|error| chain(&error)))
+            .map(|outcome| {
+                outcome.unwrap_or_else(|error| {
+                    let stream = stream_error(&error);
+                    format!("{}; the `env` error: {stream:?}", chain(&error))
+                })
+            })
             .collect()
     }
 
@@ -259,69 +269,98 @@ const SELF_CA: [&str; 2] = [
     include_str!("../sim/tls/self-ca.key"),
 ];
 
-/// A server config for the certificate and key `files` that takes only `versions`.
-fn server(
-    [pem, key]: [&str; 2],
-    versions: &[&'static rustls::SupportedProtocolVersion],
-) -> Arc<ServerConfig> {
-    let chain = CertificateDer::pem_slice_iter(pem.as_bytes())
-        .collect::<Result<Vec<_>, _>>()
-        .expect("the certificate parses");
-    let key = PrivateKeyDer::from_pem_slice(key.as_bytes()).expect("the key parses");
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    #[expect(clippy::disallowed_methods, reason = "a fixed time")]
-    let builder = ServerConfig::builder_with_details(
-        provider,
-        Arc::new(super::At(Stamp::from_nanos(0))),
-    );
-    let config = builder
-        .with_protocol_versions(versions)
-        .expect("aws-lc-rs has suites of each version")
-        .with_no_client_auth()
-        .with_single_cert(chain, key)
-        .expect("the key matches");
-    Arc::new(config)
+/// Serves `config` on port 8087 with the sim server, which answers "ok".
+fn serve(network: &mut Network, config: Arc<ServerConfig>) {
+    network.listen(8087, move |listener, tasks| async move {
+        let answer = |_: Request<Bytes>| Response::new(Bytes::from_static(b"ok"));
+        drop(sim::run(listener, tasks, Some(config), answer).await);
+    });
 }
 
-/// Serves one stream on port 8087 under `config`. It answers one request with "ok",
-/// then gives the stream to `then`. Gives the text that `then` returns.
-fn serve_one<F>(
-    network: &mut Network,
-    config: Arc<ServerConfig>,
-    then: impl FnOnce(Stream) -> F + Send + 'static,
-) -> Arc<Mutex<Option<String>>>
-where
-    F: Future<Output = String> + 'static,
-{
-    let out = Arc::new(Mutex::new(None));
-    let slot = Arc::clone(&out);
-    network.listen(8087, move |mut listener, _| async move {
-        let tcp = poll_fn(|cx| listener.poll_accept(cx))
+/// The TCP stream of a test server, as Tokio I/O for `tokio-rustls`. A test that
+/// reads or closes the TCP stream under a TLS session uses it, since a hyper server
+/// hides that stream.
+struct Peer(Tcp);
+
+impl AsyncRead for Peer {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let n = ready!(self.get_mut().0.poll_read(cx, buf.initialize_unfilled()))
+            .map_err(io::Error::other)?;
+        buf.advance(n);
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncWrite for Peer {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let bufs = [IoSlice::new(buf)];
+        self.get_mut()
+            .0
+            .poll_write(cx, &bufs)
+            .map_err(io::Error::other)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<io::Result<()>> {
+        self.get_mut().0.poll_close(cx).map_err(io::Error::other)
+    }
+}
+
+/// A server's TLS session over a [`Peer`].
+type Session = TlsStream<Peer>;
+
+/// Accepts one stream on `listener`, runs the server handshake of [`SIGNED`], reads
+/// the head of one request, and sends `answer`.
+async fn accept(mut listener: Listener, answer: &[u8]) -> Session {
+    let tcp = poll_fn(|cx| listener.poll_accept(cx))
+        .await
+        .expect("a stream");
+    let config = sim::config(SIGNED[0], SIGNED[1], rustls::DEFAULT_VERSIONS);
+    let mut session = TlsAcceptor::from(config)
+        .accept(Peer(tcp))
+        .await
+        .expect("the handshake ends");
+    // A close with unread bytes resets the stream, so it reads the whole head.
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        let mut bytes = [0; 1024];
+        let n = read(&mut session, &mut bytes)
             .await
-            .expect("a stream");
-        let mut stream = Stream::server(tcp, config)
-            .await
-            .expect("the handshake ends");
-        let mut head = Vec::new();
-        while !head.ends_with(b"\r\n\r\n") {
-            let mut bytes = [0; 1024];
-            let mut buf = ReadBuf::new(&mut bytes);
-            poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, buf.unfilled()))
-                .await
-                .expect("the head comes");
-            head.extend_from_slice(buf.filled());
-        }
-        let answer = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok";
-        poll_fn(|cx| Pin::new(&mut stream).poll_write(cx, answer))
+            .expect("the head comes");
+        head.extend_from_slice(bytes.get(..n).expect("a read fits its buffer"));
+    }
+    let mut answer = answer;
+    while !answer.is_empty() {
+        let n = poll_fn(|cx| Pin::new(&mut session).poll_write(cx, answer))
             .await
             .expect("the answer goes");
-        poll_fn(|cx| Pin::new(&mut stream).poll_flush(cx))
-            .await
-            .expect("the answer goes");
-        let text = then(stream).await;
-        *slot.lock().expect("no panic under the lock") = Some(text);
-    });
-    out
+        answer = answer.get(n..).expect("a write fits its buffer");
+    }
+    poll_fn(|cx| Pin::new(&mut session).poll_flush(cx))
+        .await
+        .expect("the answer goes");
+    session
+}
+
+/// Reads `session` into `bytes`, and gives the count of bytes read.
+async fn read(session: &mut Session, bytes: &mut [u8]) -> io::Result<usize> {
+    let mut buf = ReadBuf::new(bytes);
+    poll_fn(|cx| Pin::new(&mut *session).poll_read(cx, &mut buf)).await?;
+    Ok(buf.filled().len())
 }
 
 #[test]
@@ -460,15 +499,9 @@ fn fails_the_handshake_with_a_server_that_resets_the_stream() {
         error.to_string(),
         format!("TLS with server:8087 failed: {remote} reset the stream")
     );
-    let mut source = std::error::Error::source(&error);
-    let mut stream = None;
-    while let Some(cause) = source {
-        stream = stream.or(cause.downcast_ref::<env::net::Error>());
-        source = cause.source();
-    }
-    assert!(
-        stream.is_some(),
-        "no source of {error:?} is the `env` error"
+    assert_eq!(
+        stream_error(&error),
+        Some(format!("{remote} reset the stream"))
     );
 }
 
@@ -533,7 +566,8 @@ fn fails_an_upload_when_the_server_crashes() {
         texts,
         [
             "the exchange failed: connection error <- connection error <- \
-          10.0.0.2:8086 reset the stream"
+             10.0.0.2:8086 reset the stream; the `env` error: \
+             Some(\"10.0.0.2:8086 reset the stream\")"
         ]
     );
 }
@@ -548,7 +582,8 @@ fn fails_a_download_when_the_server_crashes() {
         texts,
         [
             "the exchange failed: error reading a body from connection <- error \
-          reading a body from connection <- 10.0.0.2:8086 reset the stream"
+             reading a body from connection <- 10.0.0.2:8086 reset the stream; the \
+             `env` error: Some(\"10.0.0.2:8086 reset the stream\")"
         ]
     );
 }
@@ -556,28 +591,11 @@ fn fails_a_download_when_the_server_crashes() {
 #[test]
 fn fails_a_body_that_ends_with_no_close_notify() {
     let mut network = Network::new(16, Certificate::Valid, JUNE_2026);
-    network.listen(8087, |mut listener, _| async move {
-        let tcp = poll_fn(|cx| listener.poll_accept(cx))
-            .await
-            .expect("a stream");
-        let mut stream = Stream::server(tcp, sim::server(Certificate::Valid))
-            .await
-            .expect("the handshake ends");
-        // A close with unread bytes resets the stream, so it reads the whole head.
-        let mut head = Vec::new();
-        while !head.ends_with(b"\r\n\r\n") {
-            let mut bytes = [0; 1024];
-            let mut buf = ReadBuf::new(&mut bytes);
-            poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, buf.unfilled()))
-                .await
-                .expect("the head comes");
-            head.extend_from_slice(buf.filled());
-        }
+    network.listen(8087, |listener, _| async move {
         let answer = b"HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\nabc";
-        poll_fn(|cx| Pin::new(&mut stream).poll_write(cx, answer))
-            .await
-            .expect("the answer goes");
-        poll_fn(|cx| stream.tcp().poll_close(cx))
+        let mut session = accept(listener, answer).await;
+        let tcp = &mut session.get_mut().0.0;
+        poll_fn(|cx| tcp.poll_close(cx))
             .await
             .expect("the stream closes");
     });
@@ -722,39 +740,33 @@ fn skips_and_counts_der_certificates_that_do_not_parse() {
 #[test]
 fn exchanges_with_a_server_that_takes_only_tls_1_2() {
     let mut network = Network::new(17, Certificate::Valid, JUNE_2026);
-    let out = serve_one(
-        &mut network,
-        server(SIGNED, &[&rustls::version::TLS12]),
-        |_| async { String::new() },
-    );
+    let tls12 = &[&rustls::version::TLS12];
+    serve(&mut network, sim::config(SIGNED[0], SIGNED[1], tls12));
     let body = network.send(sim::ca(), "https://server:8087/ping");
     assert_eq!(body.map_err(|error| chain(&error)).as_deref(), Ok("ok"));
-    assert_eq!(out.lock().expect("no panic").as_deref(), Some(""));
 }
 
 #[test]
 fn sends_close_notify_and_a_close_when_the_client_closes_a_stream() {
     let mut network = Network::new(18, Certificate::Valid, JUNE_2026);
-    let out = serve_one(
-        &mut network,
-        server(SIGNED, rustls::DEFAULT_VERSIONS),
-        |mut stream| async move {
-            let mut bytes = [0; 64];
-            let mut buf = ReadBuf::new(&mut bytes);
-            let read =
-                poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, buf.unfilled())).await;
-            let tls = match read {
-                Ok(()) => format!("read {} bytes", buf.filled().len()),
-                Err(error) => error.to_string(),
-            };
-            // A stream that the client drops with no close is a reset.
-            let tcp = poll_fn(|cx| stream.tcp().poll_read(cx, &mut bytes)).await;
-            match tcp {
-                Ok(n) => format!("{tls}, then TCP read {n} bytes"),
-                Err(error) => format!("{tls}, then {error}"),
-            }
-        },
-    );
+    let out = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&out);
+    network.listen(8087, move |listener, _| async move {
+        let answer = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok";
+        let mut session = accept(listener, answer).await;
+        let mut bytes = [0; 64];
+        let tls = match read(&mut session, &mut bytes).await {
+            Ok(n) => format!("read {n} bytes"),
+            Err(error) => error.to_string(),
+        };
+        // A stream that the client drops with no close is a reset.
+        let tcp = &mut session.get_mut().0.0;
+        let text = match poll_fn(|cx| tcp.poll_read(cx, &mut bytes)).await {
+            Ok(n) => format!("{tls}, then TCP read {n} bytes"),
+            Err(error) => format!("{tls}, then {error}"),
+        };
+        *slot.lock().expect("no panic under the lock") = Some(text);
+    });
     let body = network.send(sim::ca(), "https://server:8087/ping");
     assert_eq!(body.map_err(|error| chain(&error)).as_deref(), Ok("ok"));
     assert_eq!(
@@ -766,10 +778,9 @@ fn sends_close_notify_and_a_close_when_the_client_closes_a_stream() {
 #[test]
 fn trusts_a_self_signed_certificate_with_ca_false_in_the_roots() {
     let mut network = Network::new(19, Certificate::Valid, JUNE_2026);
-    serve_one(
+    serve(
         &mut network,
-        server(SELF, rustls::DEFAULT_VERSIONS),
-        |_| async { String::new() },
+        sim::config(SELF[0], SELF[1], rustls::DEFAULT_VERSIONS),
     );
     let roots = Roots::default()
         .with_pem(SELF[0])
@@ -785,7 +796,7 @@ fn tells_how_to_fix_a_self_signed_certificate_with_ca_true() {
         let tcp = poll_fn(|cx| listener.poll_accept(cx))
             .await
             .expect("a stream");
-        let config = server(SELF_CA, rustls::DEFAULT_VERSIONS);
+        let config = sim::config(SELF_CA[0], SELF_CA[1], rustls::DEFAULT_VERSIONS);
         drop(Stream::server(tcp, config).await);
     });
     let roots =
@@ -802,6 +813,40 @@ fn tells_how_to_fix_a_self_signed_certificate_with_ca_true() {
              CA:FALSE, or one that this CA signs <- invalid peer certificate: \
              Other(OtherError(CaUsedAsEndEntity))"
                 .to_owned()
+        )
+    );
+}
+
+proptest! {
+    /// It calls `name` itself, since a send of each case would build a simulation for
+    /// each.
+    #[test]
+    fn takes_each_name_of_a_host_as_a_tls_name(
+        text in "[a-zA-Z0-9_-]{1,64}(\\.[a-zA-Z0-9_-]{1,64}){0,4}\\.?",
+    ) {
+        if let Ok(host) = text.parse::<Host>() {
+            prop_assert!(matches!(super::super::name(&host), ServerName::DnsName(_)));
+        }
+    }
+}
+
+#[test]
+fn checks_the_longest_name_with_a_final_dot_as_the_name_with_none() {
+    let name = format!("{0}.{0}.{0}.{1}", "a".repeat(63), "b".repeat(61));
+    let mut network = Network::new(21, Certificate::Valid, JUNE_2026);
+    let answer = name::Answer::Addresses(vec![network.server.addresses()[0]]);
+    let config = name::Config {
+        answer,
+        ..name::Config::default()
+    };
+    network.sim.name(&name, config);
+    let uri = format!("https://{name}.:8086/ping").leak();
+    assert_eq!(
+        failed(network.send(sim::ca(), uri)),
+        format!(
+            "TLS with {name}.:8086 failed: invalid peer certificate: certificate not \
+             valid for name \"{name}\"; certificate is only valid for \
+             DnsName(\"server\")"
         )
     );
 }

@@ -107,11 +107,24 @@ pub(super) fn server(certificate: Certificate) -> Arc<ServerConfig> {
             include_str!("sim/tls/ip.key"),
         ),
     };
+    config(pem, key, rustls::DEFAULT_VERSIONS)
+}
+
+/// A server config for the certificate chain `pem` and its `key` that takes only
+/// `versions` and sends no session ticket.
+///
+/// # Panics
+///
+/// If `pem` or `key` does not parse, or the key does not match.
+pub(super) fn config(
+    pem: &str,
+    key: &str,
+    versions: &[&'static rustls::SupportedProtocolVersion],
+) -> Arc<ServerConfig> {
     let chain = CertificateDer::pem_slice_iter(pem.as_bytes())
         .collect::<Result<Vec<_>, _>>()
-        .expect("invariant: the test certificates parse");
-    let key = PrivateKeyDer::from_pem_slice(key.as_bytes())
-        .expect("invariant: the test keys parse");
+        .expect("the certificates parse");
+    let key = PrivateKeyDer::from_pem_slice(key.as_bytes()).expect("the key parses");
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     // The server checks no client certificate, so it reads no time.
     #[expect(clippy::disallowed_methods, reason = "it passes a fixed time")]
@@ -120,16 +133,17 @@ pub(super) fn server(certificate: Certificate) -> Arc<ServerConfig> {
         Arc::new(At(Stamp::from_nanos(0))),
     );
     let mut config = builder
-        .with_safe_default_protocol_versions()
-        .expect("invariant: aws-lc-rs has suites of each default version")
+        .with_protocol_versions(versions)
+        .expect("invariant: aws-lc-rs has suites of each version")
         .with_no_client_auth()
         .with_single_cert(chain, key)
-        .expect("invariant: each test key matches its certificate");
+        .expect("the key matches its certificate");
     config.send_tls13_tickets = 0;
     Arc::new(config)
 }
 
-async fn run(
+/// As [`serve`], under TLS with `tls` when it is `Some`.
+pub(super) async fn run(
     mut listener: Listener,
     tasks: Tasks,
     tls: Option<Arc<ServerConfig>>,

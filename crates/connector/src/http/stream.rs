@@ -80,15 +80,6 @@ impl Stream {
             received: Rc::default(),
         })
     }
-
-    /// The TCP stream under the TLS session, for a test that skips the session.
-    #[cfg(test)]
-    pub(super) fn tcp(&mut self) -> &mut Tcp {
-        match &mut self.io {
-            Io::Plain(tcp) => tcp,
-            Io::Tls(tls) => &mut tls.get_mut().0.0,
-        }
-    }
 }
 
 impl Read for Stream {

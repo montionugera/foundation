@@ -248,6 +248,18 @@ fn chain(error: &Error) -> String {
     messages.join(" <- ")
 }
 
+/// The text of the first source of `error` that is the `env` error.
+pub(super) fn stream_error(error: &Error) -> Option<String> {
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        if let Some(error) = cause.downcast_ref::<env::net::Error>() {
+            return Some(error.to_string());
+        }
+        source = cause.source();
+    }
+    None
+}
+
 fn text(bytes: &[u8]) -> String {
     String::from_utf8(bytes.to_vec()).expect("text")
 }
@@ -499,6 +511,10 @@ fn gives_the_stream_error_when_the_server_drops_the_stream() {
     assert_eq!(
         chain(&error),
         format!("connection error <- {remote} reset the stream")
+    );
+    assert_eq!(
+        stream_error(&error),
+        Some(format!("{remote} reset the stream"))
     );
 }
 
