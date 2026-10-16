@@ -66,7 +66,8 @@
   `debug` and `trace`, `noq-proto` writes a line for each packet and frame of QUIC, at
   about 425 to 739 ns and 2 to 6 allocations before the write, and at `trace` a span
   at 118 ns and 2 allocations (laptop, M3 Max, load 9, 3 passes). The help of
-  `--log-level` says so. #2764 removes the shared lock. #2815 carries the allocations
+  `--log-level` says so. #2764 moves each write to the thread `log`, so an event holds
+  the lock of the queue only for its push. #2815 carries the allocations
   and the span fields that `Line` never prints. #2807 carries the WARN of `noq-proto`
   for each Initial packet with an invalid retry token. By `laptop.architect-2`
   (2026-10-16T01:49:38Z,
