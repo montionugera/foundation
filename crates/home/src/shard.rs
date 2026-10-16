@@ -6276,6 +6276,7 @@ mod tests {
                             [seq(0, 1), seq(1, 1)]
                         );
                         let c = open(shard, "c");
+                        shard.committed().await.expect("the commit ends");
                         assert_eq!(caught_up(shard, c, 0).await, []);
                     });
                 }
@@ -6348,6 +6349,7 @@ mod tests {
                     };
                     restart(195, before, async |_, shard: &mut Shard| {
                         let a = open(shard, "a");
+                        shard.committed().await.expect("the commit ends");
                         assert_eq!(caught_up(shard, a, 0).await, []);
                     });
                 }
