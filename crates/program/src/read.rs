@@ -194,7 +194,10 @@ impl Reader {
             }
             self.gapped = self.given;
         }
-        if frame.range(0).is_none_or(|range| range.count == 0) {
+        let index = frame
+            .range(0)
+            .expect("invariant: a frame of the reader holds the index group");
+        if index.count == 0 {
             return;
         }
         for (entry, _) in frame.iter() {
