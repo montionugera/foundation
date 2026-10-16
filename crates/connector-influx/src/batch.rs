@@ -8,14 +8,16 @@ use hub::reader::{Position, Received};
 use types::frame::Path;
 use types::frame::key_set::{self, KeySet};
 use types::name::Name;
-use types::sample::{Scalar, Type};
+use types::sample::{self, Scalar, Type};
 use types::time::Stamp;
 
+use crate::Target;
 use crate::gap::Gap;
 use crate::line::{self, Float, Measurement, Value};
 
 const SAMPLE_TYPE: Code = Code::new("influx.sample-type");
 const BAD_CHANNEL: Code = Code::new("influx.bad-channel");
+const UNSIGNED: Code = Code::new("influx.unsigned");
 
 /// The most lines that a batch takes before [`Batch::full`].
 const LINES_MAX: usize = 5_000;
@@ -25,6 +27,8 @@ const LINES_MAX: usize = 5_000;
 #[derive(Debug)]
 pub struct Batch {
     measurement: Measurement,
+    /// Whether the target stores a `u` integer.
+    unsigned: bool,
     connector: Name,
     /// The gap of the reader's index, made at the first gap.
     gap: Option<Gap>,
@@ -90,17 +94,18 @@ struct Channel {
 type Convert = fn(&[u8]) -> Option<Value>;
 
 impl Batch {
-    /// An empty batch of lines of the measurement `name`, whose gap lines name
-    /// `connector`.
+    /// An empty batch of lines of the measurement `name` to `target`, whose gap lines
+    /// name `connector`.
     ///
     /// # Panics
     ///
     /// When [`Measurement::new`] refuses `name` with no tags.
     #[must_use]
-    pub fn new(name: &str, connector: &Name) -> Self {
+    pub fn new(name: &str, target: &Target, connector: &Name) -> Self {
         Self {
             measurement: Measurement::new(name, &[])
                 .expect("invariant: config checks the measurement name"),
+            unsigned: matches!(target, Target::Bucket { .. }),
             connector: connector.clone(),
             gap: None,
             position: None,
@@ -118,8 +123,8 @@ impl Batch {
     /// # Errors
     ///
     /// [`Error::Config`] with `influx.sample-type` for a channel of a type that the
-    /// kind does not write, and with `influx.bad-channel` for a channel name that is
-    /// not a valid field key.
+    /// kind does not write, with `influx.unsigned` for a `u64` channel to a database,
+    /// and with `influx.bad-channel` for a channel name that is not a valid field key.
     pub fn add(&mut self, received: &Received<'_>) -> Result<(), Error> {
         self.position = Some(received.position());
         if let Some(seqs) = received.gap() {
@@ -141,7 +146,7 @@ impl Batch {
             slot => slot.insert(Layout::new(set)),
         };
         for at in data() {
-            layout.add(&self.measurement, received, at)?;
+            layout.add(&self.measurement, self.unsigned, received, at)?;
         }
         self.body.write(&self.measurement, layout, received, first);
         Ok(())
@@ -266,17 +271,18 @@ impl Layout {
     }
 
     /// Adds the data channel at `at` of `received`, a field of `measurement`, when
-    /// the layout has none.
+    /// the layout has none. A `u64` channel is a `u` field when `unsigned`.
     fn add(
         &mut self,
         measurement: &Measurement,
+        unsigned: bool,
         received: &Received<'_>,
         at: usize,
     ) -> Result<(), Error> {
         let slot = self.channels.get_mut(at);
         let slot = slot.expect("invariant: a view gives entries of its key set");
         if slot.is_none() {
-            let (width, convert) = conversion(received, at)?;
+            let (width, convert) = conversion(received, at, unsigned)?;
             let field = measurement
                 .field(received.name(at))
                 .map_err(|error| bad_channel(&error))?;
@@ -326,26 +332,93 @@ fn entry(set: &KeySet, at: usize) -> &key_set::Entry {
 }
 
 /// The width and the conversion of a sample of the data channel at `at` of
-/// `received`.
-fn conversion(received: &Received<'_>, at: usize) -> Result<(usize, Convert), Error> {
-    match entry(received.set(), at).data_type {
-        Type::Scalar(Scalar::F64) => Ok((8, float)),
-        data_type => Err(Error::Config(vec![Diagnostic::new(
-            SAMPLE_TYPE,
+/// `received`. A `u64` sample is a `u` integer when `unsigned`.
+fn conversion(
+    received: &Received<'_>,
+    at: usize,
+    unsigned: bool,
+) -> Result<(usize, Convert), Error> {
+    let name = received.name(at);
+    let refused = |code, message: String, fix: &str| {
+        Err(Error::Config(vec![Diagnostic::new(
+            code,
             None,
-            format!(
-                "the channel {:?} holds {data_type} samples, which the influx kind \
-                 does not write",
-                received.name(at)
-            ),
-            "Select only f64 channels".into(),
-        )])),
+            message,
+            fix.into(),
+        )]))
+    };
+    /// The conversion of a sample of `Scalar::$scalar`.
+    macro_rules! read {
+        ($scalar:ident) => {
+            |s| value(sample::Value::read(Scalar::$scalar, s))
+        };
     }
+    let data_type = entry(received.set(), at).data_type;
+    let convert: Convert = match data_type {
+        Type::Scalar(Scalar::Bool) => read!(Bool),
+        Type::Scalar(Scalar::I8) => read!(I8),
+        Type::Scalar(Scalar::I16) => read!(I16),
+        Type::Scalar(Scalar::I32) => read!(I32),
+        Type::Scalar(Scalar::I64) => read!(I64),
+        Type::Scalar(Scalar::U8) => read!(U8),
+        Type::Scalar(Scalar::U16) => read!(U16),
+        Type::Scalar(Scalar::U32) => read!(U32),
+        Type::Scalar(Scalar::U64) if unsigned => read!(U64),
+        Type::Scalar(Scalar::F32) => read!(F32),
+        Type::Scalar(Scalar::F64) => read!(F64),
+        Type::Scalar(Scalar::Stamp) => read!(Stamp),
+        Type::Scalar(Scalar::Span) => read!(Span),
+        Type::Scalar(Scalar::U64) => {
+            return refused(
+                UNSIGNED,
+                format!(
+                    "the channel {name:?} holds u64 samples, which InfluxDB 1 does not \
+                     store"
+                ),
+                "Write to a `bucket` of InfluxDB 2 or 3, or leave the channel out of \
+                 `select`",
+            );
+        }
+        Type::Scalar(Scalar::Uuid)
+        | Type::Array { .. }
+        | Type::List { .. }
+        | Type::String
+        | Type::Bytes
+        | Type::Matrix { .. } => {
+            return refused(
+                SAMPLE_TYPE,
+                format!(
+                    "the channel {name:?} holds {data_type} samples, which the influx \
+                     kind does not write"
+                ),
+                "Leave the channel out of `select`",
+            );
+        }
+    };
+    let width = data_type.width().expect("invariant: a scalar has a width");
+    Ok((width, convert))
 }
 
-fn float(sample: &[u8]) -> Option<Value> {
-    let bytes = sample
-        .try_into()
-        .expect("invariant: an f64 sample has 8 bytes");
-    Float::new(f64::from_le_bytes(bytes)).map(Value::Float)
+/// The field of `sample`, or `None` when InfluxDB cannot store it: a NaN or infinite
+/// float. A `timestamp` is its ns since the Unix epoch, and a `duration` its ns.
+#[inline]
+fn value(sample: sample::Value) -> Option<Value> {
+    Some(match sample {
+        sample::Value::Bool(value) => Value::Boolean(value),
+        sample::Value::I8(value) => Value::Integer(value.into()),
+        sample::Value::I16(value) => Value::Integer(value.into()),
+        sample::Value::I32(value) => Value::Integer(value.into()),
+        sample::Value::I64(value) => Value::Integer(value),
+        sample::Value::U8(value) => Value::Integer(value.into()),
+        sample::Value::U16(value) => Value::Integer(value.into()),
+        sample::Value::U32(value) => Value::Integer(value.into()),
+        sample::Value::U64(value) => Value::Unsigned(value),
+        sample::Value::F32(value) => Value::Float(Float::new(value.into())?),
+        sample::Value::F64(value) => Value::Float(Float::new(value)?),
+        sample::Value::Stamp(value) => Value::Integer(value.nanos()),
+        sample::Value::Span(value) => Value::Integer(value.nanos()),
+        sample::Value::Uuid(_) => {
+            unreachable!("invariant: conversion refuses a uuid channel")
+        }
+    })
 }

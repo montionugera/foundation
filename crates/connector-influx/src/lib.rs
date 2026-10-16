@@ -185,9 +185,10 @@ impl kind::Kind for Kind {
     ///
     /// # Errors
     ///
-    /// [`Error::Config`] with `influx.sample-type` for a channel that does not hold
-    /// `f64` samples, and with `influx.bad-channel` for a channel name that is not a
-    /// valid field key. The error of [`hub::reader::Ended`] when the reader ends.
+    /// [`Error::Config`] with `influx.sample-type` for a channel of a `uuid`, `string`,
+    /// `bytes`, `array`, `list`, or `matrix` type, with `influx.unsigned` for a `u64`
+    /// channel to a [`Target::Database`], and with `influx.bad-channel` for a channel
+    /// name that is not a valid field key. The error of [`hub::reader::Ended`] when the reader ends.
     /// [`Error::Retry`] or [`Error::Config`] from [`Context::secret`] when a read
     /// fails, and [`Error::Retry`] when the token holds a byte that an HTTP header
     /// cannot hold.

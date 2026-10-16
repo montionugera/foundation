@@ -21,6 +21,7 @@ use std::time::Instant;
 
 use connector::kind::Table;
 use connector::testing;
+use connector_influx::Target;
 use connector_influx::bench::Batch;
 use hub::Hub;
 use hub::reader::{Mode, Reader};
@@ -132,7 +133,11 @@ async fn first(
     let received = reader.next().await.expect("a frame");
     let (mut nanos, mut allocations) = (Vec::new(), 0);
     for _ in 0..ROUNDS {
-        let mut batch = Batch::new("telemetry", &"influx".parse().expect("a name"));
+        let mut batch = Batch::new(
+            "telemetry",
+            &Target::Database("plant".into()),
+            &"influx".parse().expect("a name"),
+        );
         let (added, (ns, allocs)) = timed(|| batch.add(&received));
         added.expect("each channel holds f64");
         nanos.push(ns);
@@ -151,7 +156,11 @@ async fn bench(
     present: usize,
 ) -> (u64, Vec<u64>, u64, usize) {
     let (_hub, mut writer, mut reader) = open(&node, tasks, channels).await;
-    let mut batch = Batch::new("telemetry", &"influx".parse().expect("a name"));
+    let mut batch = Batch::new(
+        "telemetry",
+        &Target::Database("plant".into()),
+        &"influx".parse().expect("a name"),
+    );
     let (mut nanos, mut allocations, mut body) = (Vec::new(), 0, 0);
     let groups = channels / present;
     let warmup = groups.div_ceil(FRAMES) + 1;

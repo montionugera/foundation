@@ -62,7 +62,7 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     let uri = write_uri(&config.address, &config.target);
     let token = RefCell::new(Token::read(ctx).await?);
     let (confirmed, lost) = (ctx.count(CONFIRMED), ctx.count(LOST));
-    let mut batch = Batch::new(&config.measurement, ctx.name());
+    let mut batch = Batch::new(&config.measurement, &config.target, ctx.name());
     let mut cancelled = pin!(ctx.cancel().wait());
     let mut flight = pin!(None);
     loop {
