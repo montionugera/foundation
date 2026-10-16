@@ -1,7 +1,8 @@
 use std::fmt;
 use std::io::IoSlice;
+use std::pin::pin;
 
-use env::clock::Clock;
+use env::clock::{Clock, Sleep};
 use env::net::{self, Net, Tcp};
 use types::time::{Monotonic, Span};
 
@@ -15,6 +16,8 @@ use crate::wait::within;
 pub struct Client {
     stream: Tcp,
     clock: Clock,
+    /// The sleep of each wait, made once.
+    sleep: Sleep,
     timeout: Span,
     /// The transaction number of the last request.
     transaction: u16,
@@ -29,23 +32,32 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connects to `config.remote`. Each exchange gives up after `timeout`. A
-    /// timeout below zero acts as zero.
+    /// Connects to `config.remote`. The connect and each exchange give up after
+    /// `timeout`. A timeout below zero acts as zero.
     ///
     /// # Errors
     ///
-    /// The error of [`Net::connect`].
+    /// The error of [`Net::connect`], and [`net::Error::TimedOut`] when the stream
+    /// did not open within the timeout.
     pub async fn connect(
         net: &Net,
         config: &net::tcp::Config,
         clock: Clock,
         timeout: Span,
     ) -> Result<Self, net::Error> {
-        let stream = net.connect(config).await?;
+        let timeout = timeout.max(Span::ZERO);
+        let now = clock.now();
+        let (deadline, mut sleep) = (now.checked_add(timeout), clock.sleep_until(now));
+        let mut connect = pin!(net.connect(config));
+        let connect =
+            within(&mut sleep, deadline, |cx| connect.as_mut().poll(cx)).await;
+        let remote = config.remote;
+        let stream = connect.unwrap_or(Err(net::Error::TimedOut { remote }))?;
         Ok(Self {
             stream,
             clock,
-            timeout: timeout.max(Span::ZERO),
+            sleep,
+            timeout,
             transaction: 0,
             unsent: Vec::new(),
             owed: 0,
@@ -103,7 +115,7 @@ impl Client {
     async fn send(&mut self, deadline: Option<Monotonic>) -> Result<(), Failure> {
         while !self.unsent.is_empty() {
             let parts = [IoSlice::new(&self.unsent)];
-            let write = within(&self.clock, deadline, |cx| {
+            let write = within(&mut self.sleep, deadline, |cx| {
                 self.stream.poll_write(cx, &parts)
             });
             let n = write.await.ok_or(Failure::Timeout)??;
@@ -133,7 +145,7 @@ impl Client {
                     self.received.drain(..len);
                 }
                 None => {
-                    let read = within(&self.clock, deadline, |cx| {
+                    let read = within(&mut self.sleep, deadline, |cx| {
                         self.stream.poll_read(cx, &mut buffer)
                     });
                     let n = read.await.ok_or(Failure::Timeout)??;

@@ -1,5 +1,6 @@
 //! The Modbus PDU: requests, and the replies to them read in place.
 
+use std::fmt;
 use std::ops::Range;
 
 use crate::Error;
@@ -489,6 +490,8 @@ pub enum Exception {
     Acknowledge,
     /// 6: the device is busy with a long request.
     Busy,
+    /// 8: the device found a parity error in the memory of a file record.
+    MemoryParity,
     /// 10: a gateway has no path to the target.
     GatewayPath,
     /// 11: the target behind a gateway did not reply.
@@ -534,10 +537,31 @@ impl Exception {
             Self::DeviceFailure => 4,
             Self::Acknowledge => 5,
             Self::Busy => 6,
+            Self::MemoryParity => 8,
             Self::GatewayPath => 10,
             Self::GatewayTarget => 11,
             Self::Other(code) => code,
         }
+    }
+}
+
+impl fmt::Display for Exception {
+    /// Writes the code and the name that the Modbus specification gives it, such as
+    /// `2 (illegal data address)`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::IllegalFunction => "illegal function",
+            Self::IllegalAddress => "illegal data address",
+            Self::IllegalValue => "illegal data value",
+            Self::DeviceFailure => "server device failure",
+            Self::Acknowledge => "acknowledge",
+            Self::Busy => "server device busy",
+            Self::MemoryParity => "memory parity error",
+            Self::GatewayPath => "gateway path unavailable",
+            Self::GatewayTarget => "gateway target device failed to respond",
+            Self::Other(_) => "a code that the specification does not name",
+        };
+        write!(f, "{} ({name})", self.code())
     }
 }
 
@@ -550,6 +574,7 @@ impl From<u8> for Exception {
             4 => Self::DeviceFailure,
             5 => Self::Acknowledge,
             6 => Self::Busy,
+            8 => Self::MemoryParity,
             10 => Self::GatewayPath,
             11 => Self::GatewayTarget,
             other => Self::Other(other),
@@ -777,7 +802,7 @@ mod tests {
     #[test]
     fn reads_an_exception_reply() {
         let request = read(Table::HoldingRegisters, 0, 1);
-        let codes = [1, 2, 3, 4, 5, 6, 10, 11, 7];
+        let codes = [1, 2, 3, 4, 5, 6, 8, 10, 11, 7];
         let want = [
             Exception::IllegalFunction,
             Exception::IllegalAddress,
@@ -785,6 +810,7 @@ mod tests {
             Exception::DeviceFailure,
             Exception::Acknowledge,
             Exception::Busy,
+            Exception::MemoryParity,
             Exception::GatewayPath,
             Exception::GatewayTarget,
             Exception::Other(7),
@@ -799,6 +825,31 @@ mod tests {
             request.decode_reply(&[0x83]),
             Err(Error::Size { want: 2, got: 1 })
         );
+    }
+
+    #[test]
+    fn writes_the_code_and_the_name_of_each_exception() {
+        let texts = [
+            (Exception::IllegalFunction, "1 (illegal function)"),
+            (Exception::IllegalAddress, "2 (illegal data address)"),
+            (Exception::IllegalValue, "3 (illegal data value)"),
+            (Exception::DeviceFailure, "4 (server device failure)"),
+            (Exception::Acknowledge, "5 (acknowledge)"),
+            (Exception::Busy, "6 (server device busy)"),
+            (Exception::MemoryParity, "8 (memory parity error)"),
+            (Exception::GatewayPath, "10 (gateway path unavailable)"),
+            (
+                Exception::GatewayTarget,
+                "11 (gateway target device failed to respond)",
+            ),
+            (
+                Exception::Other(200),
+                "200 (a code that the specification does not name)",
+            ),
+        ];
+        for (exception, text) in texts {
+            assert_eq!(exception.to_string(), text);
+        }
     }
 
     #[test]
