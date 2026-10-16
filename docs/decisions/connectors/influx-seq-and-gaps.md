@@ -4,9 +4,20 @@
   explicit gaps before a sample is one line,
   `foundation_gaps,connector=<connector>,index=<index>,path=<path> count=<n>i <stamp>`:
   `<path>` is `live` or `backfill` (amendment below), `<stamp>` is the stamp of the
-  first sample after the gaps that InfluxDB stores (#2725: a line of only NaN or
-  infinite values is left out), and `count` is the number of seqs from the first seq
-  that the buffer trimmed or had no room for up to that sample. The gap line goes in the
+  first sample after the gaps, also when the run leaves its line out (only NaN or
+  infinite values, or no data channel of the reader), and `count` is the number of seqs
+  from the first seq that the buffer trimmed or had no room for up to that sample. So a
+  gap line can sit at a stamp with no data point. A frame with no sample gives no gap;
+  the next frame with one gives it. The person chose this ("Ok, this is fine",
+  2026-10-16T02:03Z, through `laptop.monitor`:
+  https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206366130), and
+  `laptop.architect-2` ruled it on 2026-10-16T02:04:28Z
+  (https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206384923), which
+  supersedes ruling 2 of
+  https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206327837. The fold
+  does not change: the lab writes only `k as f64`, and each of its frames holds the data
+  channel, so each gap line of the lab sits at a stored point. The trigger to change the
+  fold is a lab write of a value that the run leaves out. The gap line goes in the
   request of that sample, and the position is acked only after InfluxDB confirms it
   (B3). The count is signed, because InfluxDB 1 OSS refuses `u`. The `connector` tag
   keeps two connectors that write one index to one database from replacing each other's

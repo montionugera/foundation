@@ -168,9 +168,9 @@ plc        opcua   running  opc.tcp://localhost:50000  in=1520 lost=0 missed=0
 
 `in` counts the samples that the connector read from the server and the node stored.
 `confirmed` counts the samples that InfluxDB confirmed, and `lost` the sample times that
-the node lost before InfluxDB got them, one for each sample time from a gap up to the
-next line that InfluxDB stores. A gap that the node reports again after a restart counts
-again. Run `status` again, and `in` and `confirmed` grow.
+the node lost before InfluxDB got them, not the lines of only NaN or infinite values
+that the run leaves out. A gap that the node reports again after a restart counts again.
+Run `status` again, and `in` and `confirmed` grow.
 
 See the samples in InfluxDB:
 

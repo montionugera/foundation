@@ -62,18 +62,24 @@
   no other value. Until #2555, only `f64` channels are written: another type ends the
   run with `Error::Config` and `influx.sample-type`, and a channel name that is not a
   field key with `influx.bad-channel`. After a `Received::gap` that is not `None`, the
-  run writes its gap line with `path=live` before the first line that it writes, at the
-  stamp of that line (INFLUX SEQ AND GAPS), in the same batch. The line's `count` also
-  counts each sample time that the run left out between the gap and that line. While the
-  gap waits for that line, a batch acks only the position before the gap, so a run that
-  stops then gets the gap again at its next open. While each line after a gap is left
-  out, the ack stays before the gap, so the buffer keeps those frames as it does while
-  InfluxDB is down. One request is in flight at a time. While it is, the run reads the
-  next batch, up to 5,000 lines, and a frame goes in whole. The run keeps the field of
-  each channel that it saw in the frames of one key set. A frame of another key set
-  builds them again, as the `hub` reader builds its lens, so frames that alternate key
-  sets build them at each change. The trigger to keep them for each key set is a
-  workload whose frames alternate key sets, as `laptop.architect-2` decided on
+  run writes its gap line with `path=live` before the lines of the frame, at the stamp
+  of the frame's first sample, also when it leaves that line out (INFLUX SEQ AND GAPS),
+  in the same batch. The line's `count` is the seqs of the gap only. Each batch acks the
+  position after its last frame. A frame with no sample gives no gap, and its position
+  stays before the gap that the next frame with one gives (`hub`), so the run needs no
+  wait of its own. The person chose this path ("Ok, this is fine", 2026-10-16T02:03Z,
+  through `laptop.monitor`:
+  https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206366130), and
+  `laptop.architect-2` ruled it on 2026-10-16T02:04:28Z
+  (https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206384923). It
+  supersedes ruling 2 of
+  https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206327837, a gap that
+  waits for a line with a value. One request is in flight at a time. While it is, the
+  run reads the next batch, up to 5,000 lines, and a frame goes in whole. The run keeps
+  the field of each channel that it saw in the frames of one key set. A frame of another
+  key set builds them again, as the `hub` reader builds its lens, so frames that
+  alternate key sets build them at each change. The trigger to keep them for each key
+  set is a workload whose frames alternate key sets, as `laptop.architect-2` decided on
   2026-10-13T07:36:47Z
   (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6140691273). It acks
   a batch only after a 204. Each other answer, and each failed request, keeps the batch,
