@@ -28,7 +28,7 @@ impl env::paths::Driver for Driver {
     }
 
     fn home(&self) -> Option<PathBuf> {
-        fs::canonicalize(std::env::home_dir()?).ok()
+        resolve(&std::env::home_dir()?).ok()
     }
 }
 

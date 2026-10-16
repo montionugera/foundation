@@ -20,7 +20,7 @@ fn run(case: fn(&Host<'_>)) {
     case(&Host {
         paths: &os::paths(),
         dir: &scratch.0,
-        make_dir,
+        make_dir: &make_dir,
         make_link: &|path, target| symlink(target, path).unwrap(),
     });
 }
@@ -566,24 +566,6 @@ fn a_resolve_of_two_dots_after_a_file_follows_the_os() {
 }
 
 #[test]
-fn a_resolve_through_a_directory_that_is_not_there_is_not_found() {
-    let scratch = Scratch::new();
-    let paths = os::paths();
-    for path in ["none/a", "none/x/..", "none/x/a"] {
-        let resolved = paths.resolve(&scratch.0.join(path));
-        assert_eq!(resolved, Err(Error::NotFound), "{path}");
-    }
-}
-
-#[test]
-fn a_resolve_of_a_link_to_nothing_is_not_found() {
-    let scratch = Scratch::new();
-    let link = scratch.0.join("link.plan");
-    symlink(scratch.0.join("plant.plan"), &link).unwrap();
-    assert_eq!(os::paths().resolve(&link), Err(Error::NotFound));
-}
-
-#[test]
 fn a_resolve_of_a_relative_path_is_from_the_working_directory() {
     let working = fs::canonicalize(".").unwrap();
     let paths = os::paths();
@@ -602,4 +584,35 @@ fn a_resolve_of_a_path_with_a_nul_byte_is_an_invalid_argument() {
 fn the_home_is_the_resolved_home_of_the_os() {
     let home = std::env::home_dir().unwrap();
     assert_eq!(os::paths().home(), Some(fs::canonicalize(home).unwrap()));
+}
+
+/// The name of the `HOME` that the child of
+/// `a_home_that_is_not_there_is_as_a_resolve_gives_it` checks.
+const HOME: &str = "FOUNDATION_TEST_HOME";
+
+#[test]
+fn a_home_that_is_not_there_is_as_a_resolve_gives_it() {
+    let paths = os::paths();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the parent sets it for the child"
+    )]
+    if let Some(home) = std::env::var_os(HOME) {
+        assert_eq!(paths.home(), Some(PathBuf::from(home)));
+        return;
+    }
+    let scratch = Scratch::new();
+    let home = fs::canonicalize(&scratch.0).unwrap().join("user");
+    let thread = thread::current();
+    let test = thread.name().expect("invariant: libtest names the thread");
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test])
+        .env(HOME, &home)
+        .env("HOME", &home)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(output.status.success(), "{stderr}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("1 passed"), "{stdout}");
 }

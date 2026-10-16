@@ -15,7 +15,7 @@ fn run(case: fn(&Host<'_>)) {
     case(&Host {
         paths: &node.paths(),
         dir: Path::new("/"),
-        make_dir: |_| {},
+        make_dir: &|path| node.make_dir(path),
         make_link: &|path, target| node.link_path(path, target),
     });
 }
@@ -110,8 +110,9 @@ fn a_relative_path_is_under_the_working_directory_that_a_node_sets() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     let paths = node.paths();
     node.set_working_dir(Path::new("/work"));
-    assert_eq!(paths.resolve(Path::new(".")), Ok(PathBuf::from("/work")));
+    assert_eq!(paths.resolve(Path::new(".")), Err(Error::NotFound));
     paths.write(Path::new("plant.hcl"), b"x").unwrap();
+    assert_eq!(paths.resolve(Path::new(".")), Ok(PathBuf::from("/work")));
     node.fail_path(Path::new("plant.hcl"), 5);
     let file = Ok(Found::File(b"x".to_vec()));
     assert_eq!(
@@ -132,9 +133,9 @@ fn the_home_is_none_until_a_node_sets_it_and_then_resolves() {
     assert_eq!(paths.home(), None);
     node.link_path(Path::new("/home"), Path::new("/users"));
     node.set_home(Path::new("/home/user"));
-    assert_eq!(paths.home(), Some(PathBuf::from("/users/user")));
-    paths.write(Path::new("/users"), b"x").unwrap();
     assert_eq!(paths.home(), None);
+    node.make_dir(Path::new("/users"));
+    assert_eq!(paths.home(), Some(PathBuf::from("/users/user")));
 }
 
 #[test]
@@ -143,8 +144,10 @@ fn a_write_through_a_link_to_nothing_makes_the_file_it_names() {
     let paths = node.paths();
     node.link_path(Path::new("/plans/b.plan"), Path::new("../config/b.plan"));
     let resolved = paths.resolve(Path::new("/plans/b.plan"));
-    assert_eq!(resolved, Ok(PathBuf::from("/config/b.plan")));
+    assert_eq!(resolved, Err(Error::NotFound));
     paths.write(Path::new("/plans/b.plan"), b"x").unwrap();
+    let resolved = paths.resolve(Path::new("/plans/b.plan"));
+    assert_eq!(resolved, Ok(PathBuf::from("/config/b.plan")));
     let file = Ok(Found::File(b"x".to_vec()));
     assert_eq!(paths.read(Path::new("/config/b.plan"), 1), file);
     let entries = ["/config", "/plans"].map(PathBuf::from).to_vec();
@@ -158,12 +161,12 @@ fn a_write_through_a_link_to_nothing_makes_the_file_it_names() {
 fn a_path_through_more_than_40_links_fails_with_a_loop() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     let paths = node.paths();
-    for link in 0..40 {
+    for link in 0..41 {
         let path = PathBuf::from(format!("/{link}"));
         node.link_path(&path, Path::new(&(link + 1).to_string()));
     }
-    assert_eq!(paths.resolve(Path::new("/0")), Ok(PathBuf::from("/40")));
-    node.link_path(Path::new("/40"), Path::new("41"));
+    paths.write(Path::new("/41"), b"x").unwrap();
+    assert_eq!(paths.resolve(Path::new("/1")), Ok(PathBuf::from("/41")));
     let looped = Error::Io { code: 40 };
     assert_eq!(paths.resolve(Path::new("/0")), Err(looped));
     assert_eq!(paths.read(Path::new("/0"), 1), Err(looped));
@@ -173,7 +176,8 @@ fn a_path_through_more_than_40_links_fails_with_a_loop() {
 }
 
 #[test]
-fn two_dots_after_a_file_fail_and_after_a_name_that_is_not_there_take_it_off() {
+fn two_dots_after_a_file_fail_and_in_a_write_after_a_name_that_is_not_there_take_it_off()
+ {
     let node = Sim::new(Config::default()).node(node::Config::default());
     let paths = node.paths();
     paths.write(Path::new("/plant.hcl"), b"x").unwrap();
@@ -182,8 +186,114 @@ fn two_dots_after_a_file_fail_and_after_a_name_that_is_not_there_take_it_off() {
     };
     assert_eq!(paths.resolve(Path::new("/plant.hcl/..")), Err(through));
     assert_eq!(paths.read(Path::new("/plant.hcl/.."), 64), Err(through));
-    let missing = paths.resolve(Path::new("/none/x/../a"));
-    assert_eq!(missing, Ok(PathBuf::from("/none/a")));
+    let missing = Path::new("/none/x/../a");
+    assert_eq!(paths.resolve(missing), Err(Error::NotFound));
+    paths.write(missing, b"x").unwrap();
+    let file = Ok(Found::File(b"x".to_vec()));
+    assert_eq!(paths.read(Path::new("/none/a"), 1), file);
+}
+
+#[test]
+fn a_working_directory_through_a_link_resolves_the_link() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    paths.write(Path::new("/target/a.hcl"), b"x").unwrap();
+    node.link_path(Path::new("/w"), Path::new("/target"));
+    node.set_working_dir(Path::new("/w"));
+    assert_eq!(paths.resolve(Path::new(".")), Ok(PathBuf::from("/target")));
+    let a = paths.resolve(Path::new("a.hcl"));
+    assert_eq!(a, Ok(PathBuf::from("/target/a.hcl")));
+    let file = Ok(Found::File(b"x".to_vec()));
+    assert_eq!(paths.read(Path::new("a.hcl"), 1), file);
+    paths.write(Path::new("b.hcl"), b"y").unwrap();
+    let file = Ok(Found::File(b"y".to_vec()));
+    assert_eq!(paths.read(Path::new("/w/b.hcl"), 1), file);
+    assert_eq!(paths.read(Path::new("/target/b.hcl"), 1), file);
+}
+
+#[test]
+fn a_link_under_a_link_is_reached_through_it() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    paths.write(Path::new("/target/a.hcl"), b"x").unwrap();
+    node.link_path(Path::new("/w"), Path::new("/target"));
+    node.link_path(Path::new("/w/b.hcl"), Path::new("a.hcl"));
+    let file = Ok(Found::File(b"x".to_vec()));
+    assert_eq!(paths.read(Path::new("/w/b.hcl"), 1), file);
+    assert_eq!(paths.read(Path::new("/target/b.hcl"), 1), file);
+}
+
+#[test]
+fn a_directory_that_a_node_makes_is_there_with_no_entry() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.link_path(Path::new("/w"), Path::new("/target"));
+    node.make_dir(Path::new("/w/a"));
+    node.make_dir(Path::new("/w/a"));
+    let empty = Ok(Found::Directory(vec![]));
+    assert_eq!(paths.read(Path::new("/target/a"), 0), empty);
+    let missing = paths.resolve(Path::new("/target/a/none.plan"));
+    assert_eq!(missing, Ok(PathBuf::from("/target/a/none.plan")));
+    let directory = Err(Error::Io {
+        code: cases::DIRECTORY,
+    });
+    assert_eq!(paths.write(Path::new("/target/a"), b"x"), directory);
+    paths.write(Path::new("/target/a/b.hcl"), b"x").unwrap();
+    let entries = Ok(Found::Directory(vec![PathBuf::from("/w/a/b.hcl")]));
+    assert_eq!(paths.read(Path::new("/w/a"), 64), entries);
+}
+
+#[test]
+#[should_panic(expected = "/plant.hcl/a gave Io { code: 20 }")]
+fn a_link_through_a_file_panics() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.paths().write(Path::new("/plant.hcl"), b"x").unwrap();
+    node.link_path(Path::new("/plant.hcl/a"), Path::new("/b"));
+}
+
+#[test]
+#[should_panic(expected = "/plant.hcl/a gave Io { code: 20 }")]
+fn a_directory_through_a_file_panics() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.paths().write(Path::new("/plant.hcl"), b"x").unwrap();
+    node.make_dir(Path::new("/plant.hcl/a"));
+}
+
+#[test]
+#[should_panic(expected = "/plant.hcl is there")]
+fn a_directory_on_a_file_panics() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.paths().write(Path::new("/plant.hcl"), b"x").unwrap();
+    node.make_dir(Path::new("/plant.hcl"));
+}
+
+#[test]
+#[should_panic(expected = "/link is there")]
+fn a_directory_on_a_link_panics() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.link_path(Path::new("/link"), Path::new("/b"));
+    node.make_dir(Path::new("/link"));
+}
+
+#[test]
+#[should_panic(expected = "/ is there")]
+fn a_directory_at_the_root_panics() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/"));
+}
+
+#[test]
+#[should_panic(expected = "dir is relative")]
+fn a_relative_directory_panics() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("dir"));
+}
+
+#[test]
+#[should_panic(expected = "/a/../dir has a `..` segment")]
+fn a_directory_with_two_dots_panics() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/a/../dir"));
 }
 
 #[test]
