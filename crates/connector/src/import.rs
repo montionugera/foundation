@@ -70,13 +70,10 @@ fn default(
     let mut base = connector.as_str().to_owned();
     for name in names {
         base.push('.');
-        base.extend(name.chars().map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        }));
+        base.extend(
+            name.chars()
+                .map(|c| if Name::segment_char(c) { c } else { '_' }),
+        );
     }
     let (mut text, mut suffix) = (base.clone(), 1);
     while used.contains(&text.to_ascii_lowercase()) {
