@@ -122,7 +122,8 @@
   `started`, shard 0 logs a warning "a part of the OS roots was not read" with the
   `error` of each failure, "OS roots that do not parse are skipped" with the count
   `skipped`, and "the OS roots hold no certificate, so an https connect with no CA of
-  its connector fails". It logs them also with `Region::Absent`. This supersedes `node::Config::roots: Vec<Vec<u8>>` of
+  its connector fails". It logs them also with `Region::Absent`. This supersedes
+  `node::Config::roots: Vec<Vec<u8>>` of
   https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207437988, which
   read the OS outside `os`, so its failures did not reach the node log
   (`laptop.architect-2`, 2026-10-16T10:09:09Z:
