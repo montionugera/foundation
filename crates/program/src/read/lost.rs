@@ -17,10 +17,12 @@ pub(super) struct Lost {
 /// The lost seqs of one entry.
 #[derive(Clone, Debug, Default)]
 struct Entry {
-    /// The seqs lost after the series before the one at `at`. Stale once a later
-    /// frame passes.
+    /// While `at` is before the last gap, the seqs lost since the series at `at`,
+    /// which the next series of the entry gets. Else the seqs that the series at `at`
+    /// got, stale once a later frame passes.
     seqs: Range<u64>,
-    /// The frame, of `passed`, of the last series of the entry.
+    /// The frame, of `passed`, of the last series of the entry. While none is pending,
+    /// it may stay at an earlier series at or after the last gap.
     at: u64,
 }
 
