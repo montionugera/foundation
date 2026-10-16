@@ -33,11 +33,12 @@
   name of a path is empty: `walk` refuses an entry that a kind gives with an empty
   name (BROWSE), and `Path::from_str` refuses an empty name. `names` keeps its own
   copy of the characters of a segment (A3), and its `expect` stops the import loudly
-  when `types` allows fewer. The copy goes when `types` gives them (#2868). Lost: a namer with state (`give`, then
-  `next`), where nothing makes the caller give each given name before the first default;
-  a `Document` from `Kind::block`, where an attribute of one pick merges into the one
-  connector body and collides on a second pick; and the run error `Error`, which has
-  variants that a hook with no I/O cannot give. The person's words of decision 5,
+  when `types` allows fewer. The copy goes when `types` gives them (#2868). Lost: a
+  namer with state (`give`, then `next`), where nothing makes the caller give each
+  given name before the first default; a `Document` from `Kind::block`, where an
+  attribute of one pick merges into the one connector body and collides on a second
+  pick; and the run error `Error`, which has variants that a hook with no I/O cannot
+  give. The person's words of decision 5,
   through `laptop.monitor`, 2026-10-15 17:28 UTC: "Yeah, that's fine"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198090285); given
   names first, and one set of name rules in `config`: `laptop.architect-2`, on that
