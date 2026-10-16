@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::future::{self, Future as _, poll_fn};
 use std::pin::pin;
+use std::rc::Rc;
 use std::task::Poll;
 
 use bytes::Bytes;
@@ -38,9 +39,9 @@ const RETRY: retry::Config = retry::Config {
 
 enum Event<'a> {
     Cancelled,
-    /// What the batch that InfluxDB took acks and counts, with the client back, or
-    /// the error of a read of the token or the `ca`.
-    Sent(Result<(Ack, Client), Error>),
+    /// What the batch that InfluxDB took acks and counts, or the error of a read of
+    /// the token.
+    Sent(Result<Ack, Error>),
     Frame(Result<Received<'a>, Ended>),
 }
 
@@ -52,8 +53,7 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     let mut reader = ctx.reader().expect("invariant: check gives a reader");
     let ctx = &ctx;
     let config = ctx.config();
-    // The client while no request is in flight. The request in flight owns it.
-    let mut idle = Some(client(ctx).await?);
+    let client = RefCell::new(Rc::new(client(ctx).await?));
     let uri = write_uri(&config.address, &config.target);
     let token = RefCell::new(Token::read(ctx).await?);
     let (confirmed, lost) = (ctx.count(CONFIRMED), ctx.count(LOST));
@@ -67,11 +67,10 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
             if body.is_empty() {
                 reader.ack(ack.position);
             } else {
-                let mut client = idle.take().expect("invariant: no request in flight");
-                let (uri, token) = (&uri, &token);
+                let (client, uri, token) = (&client, &uri, &token);
                 flight.set(Some(async move {
-                    send(&mut client, ctx, uri, token, body.into()).await?;
-                    Ok((ack, client))
+                    send(client, ctx, uri, token, body.into()).await?;
+                    Ok(ack)
                 }));
             }
         }
@@ -100,9 +99,8 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
         match event {
             Event::Cancelled => return Ok(()),
             Event::Sent(Err(error)) => return Err(error),
-            Event::Sent(Ok((ack, client))) => {
+            Event::Sent(Ok(ack)) => {
                 flight.set(None);
-                idle = Some(client);
                 reader.ack(ack.position);
                 confirmed.add(ack.samples);
                 lost.add(ack.lost);
@@ -172,7 +170,7 @@ enum Read {
 /// The error of [`Token::read`] when a read of the token fails, and that of
 /// [`client`] when a read of the `ca` fails.
 async fn send(
-    client: &mut Client,
+    client: &RefCell<Rc<Client>>,
     ctx: &Context<Config>,
     uri: &Uri,
     token: &RefCell<Option<Token>>,
@@ -181,7 +179,8 @@ async fn send(
     let mut backoff = None;
     loop {
         let request = request(uri, &body, token.borrow().as_ref());
-        let read = match client.send(request).await {
+        let sending = Rc::clone(&client.borrow());
+        let read = match sending.send(request).await {
             Ok(answer) if answer.status() == StatusCode::NO_CONTENT => {
                 ctx.clear_error();
                 return Ok(());
@@ -235,7 +234,10 @@ async fn send(
         match read {
             Read::Nothing => {}
             Read::Token => *token.borrow_mut() = Box::pin(Token::read(ctx)).await?,
-            Read::Ca => *client = Box::pin(self::client(ctx)).await?,
+            Read::Ca => {
+                let fresh = Box::pin(self::client(ctx)).await?;
+                *client.borrow_mut() = Rc::new(fresh);
+            }
         }
     }
 }

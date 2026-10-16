@@ -3,7 +3,7 @@ use super::*;
 /// The size of the future that `send` returns.
 fn size<'a, R>(
     _: impl FnOnce(
-        &'a mut Client,
+        &'a RefCell<Rc<Client>>,
         &'a Context<Config>,
         &'a Uri,
         &'a RefCell<Option<Token>>,
