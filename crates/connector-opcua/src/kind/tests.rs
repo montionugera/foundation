@@ -1135,21 +1135,22 @@ impl kind::Kind for Count {
 #[test]
 #[should_panic(expected = "invariant: a kind gives 0 values for 3 channels")]
 fn panics_at_a_frame_with_no_value_for_each_read() {
-    write_one_frame(Count(|_| 0));
+    write_after_a_full_frame(Count(|_| 0));
 }
 
-/// `Client::read` gives `Error::Device` for an answer with more values than the nodes
-/// of its request, so no run of [`Kind`] writes a long frame. A `zip` over `types` in
-/// `Frames::write` would cut the value and the writer would see the right count, so
-/// only this test sees that loss.
+/// `Client::read` gives `BadUnexpectedError` for an answer with more values than the
+/// nodes of its request, which the run gives as `Error::Device`, so no run of [`Kind`]
+/// writes a long frame. A `zip` over `types` in `Frames::write` would cut the value and
+/// the writer would see the right count, so only this test sees that loss.
 #[test]
 #[should_panic(expected = "index out of bounds: the len is 3 but the index is 3")]
 fn panics_at_a_frame_with_a_value_more_than_its_reads() {
-    write_one_frame(Count(|reads| reads + 1));
+    write_after_a_full_frame(Count(|reads| reads + 1));
 }
 
-/// Runs `kind` as `opcua` on the reads of [`Setup::three`] for 1 s.
-fn write_one_frame(kind: Count) {
+/// Runs `kind` as `opcua` on the reads of [`Setup::three`] for 1 s: a frame of one Good
+/// value for each read, then the frame of the kind.
+fn write_after_a_full_frame(kind: Count) {
     let mut sim = Sim::new(::sim::Config::default());
     let node = sim.node(node::Config::default());
     let run = sim.run_on(&node, |node, tasks| async move {
