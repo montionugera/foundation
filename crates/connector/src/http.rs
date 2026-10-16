@@ -359,14 +359,22 @@ fn copy(request: &Request<Whole>) -> Request<Whole> {
     copy
 }
 
-/// Moves the authority into `Host`, unless the request has one, and leaves the path
-/// and query in the URI.
+/// Moves the authority into `Host`, with no zone, unless the request has one, and
+/// leaves the path and query in the URI.
 fn origin_form(parts: &mut http::request::Parts) {
     if !parts.headers.contains_key(header::HOST)
         && let Some(authority) = parts.uri.authority()
     {
-        let host = HeaderValue::from_str(authority.as_str())
-            .expect("an authority is a valid header value");
+        let text = authority.as_str();
+        // RFC 6874: a client removes the zone. `origin` admits a `%` only in brackets.
+        let host = match text.split_once('%') {
+            Some((ip, rest)) => {
+                let close = rest.find(']').expect("a zone ends at its bracket");
+                HeaderValue::from_str(&format!("{ip}{}", &rest[close..]))
+            }
+            None => HeaderValue::from_str(text),
+        };
+        let host = host.expect("an authority is a valid header value");
         parts.headers.insert(header::HOST, host);
     }
     let mut uri = http::uri::Parts::default();

@@ -2,7 +2,7 @@
 
 use std::future::poll_fn;
 use std::io::IoSlice;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
@@ -75,8 +75,17 @@ impl Network {
         &mut self,
         answer: impl FnOnce(Tcp, Vec<u8>, Clock) -> F + Send + 'static,
     ) -> Arc<Mutex<Vec<u8>>> {
+        self.serve_at(self.remote(), answer)
+    }
+
+    /// As [`Network::serve`], with the listener at `local`.
+    fn serve_at<F: Future<Output = Option<Tcp>> + 'static>(
+        &mut self,
+        local: SocketAddr,
+        answer: impl FnOnce(Tcp, Vec<u8>, Clock) -> F + Send + 'static,
+    ) -> Arc<Mutex<Vec<u8>>> {
         let listen = tcp::Listen {
-            local: self.remote(),
+            local,
             backlog: 4,
             options: super::OPTIONS,
         };
@@ -665,20 +674,52 @@ fn refuses_a_host_that_is_not_valid() {
             "{uri}: {refused:?}"
         );
         assert_eq!(refused.to_string(), format!("the URI has {error}"));
+        assert_eq!(chain(&refused), error.to_string(), "{uri}");
     }
 }
 
-// The sim network has no scopes, so this test reads the private `origin`.
+/// The IPv6 address of the server node.
+fn v6(network: &Network) -> Ipv6Addr {
+    let IpAddr::V6(ip) = network.server.addresses()[1] else {
+        panic!("the second address of a node is IPv6")
+    };
+    ip
+}
+
 #[test]
-fn reads_the_zone_of_a_uri_after_its_escaped_percent() {
-    for (uri, host) in [
-        ("http://[fe80::1%252]:8086/", "fe80::1%2"),
-        ("http://[fe80::1%2500]/", "fe80::1"),
-    ] {
-        let uri = uri.parse().expect("a URI");
-        let origin = super::origin(&uri).expect("an origin");
-        assert_eq!(origin.host.to_string(), host);
+fn dials_the_zone_of_a_uri_after_its_escaped_percent() {
+    for (zone, scope) in [("%252", 2), ("%2500", 0)] {
+        let mut network = Network::new(10);
+        let ip = v6(&network);
+        let error = network
+            .send(get(&format!("http://[{ip}{zone}]:9/")))
+            .expect_err("no listener");
+        let remote = SocketAddr::V6(SocketAddrV6::new(ip, 9, 0, scope));
+        assert!(
+            matches!(
+                error,
+                Error::Connect(net::Error::Refused { remote: r }) if r == remote
+            ),
+            "{zone}: {error:?}"
+        );
     }
+}
+
+#[test]
+fn sends_the_host_of_a_zone_uri_with_no_zone() {
+    let mut network = Network::new(17);
+    let ip = v6(&network);
+    let seen = network.serve_at(
+        SocketAddr::new(IpAddr::V6(ip), PORT),
+        reply("HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok"),
+    );
+    network
+        .send(get(&format!("http://[{ip}%252]:{PORT}/")))
+        .expect("the server answers");
+    assert_eq!(
+        text(&seen.lock().expect("no panic under the lock")),
+        format!("GET / HTTP/1.1\r\nhost: [{ip}]:{PORT}\r\n\r\n"),
+    );
 }
 
 #[test]
