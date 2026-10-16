@@ -67,12 +67,12 @@
   `Error::Config` and `influx.unsigned` (LINE TEXT). Each other type (`uuid`, `string`,
   `bytes`, `array`, `list`, `matrix`) ends the run with `Error::Config` and
   `influx.sample-type`, and a channel name that is not a field key with
-  `influx.bad-channel`. The run picks the conversion of a channel once, at the first
-  frame that holds it. Lost: an `f32` as its shortest text (`1e-1`), as InfluxDB then
-  holds the `f64` 0.1, which is not the value of the sample. The types: the type table
-  of `laptop.architect-2`
+  `influx.bad-channel`. The run picks the conversion of a channel with its field, at the
+  first frame of each key set that holds it. Lost: an `f32` as its shortest text
+  (`1e-1`), as InfluxDB then holds the `f64` 0.1, which is not the value of the sample.
+  The types: the type table of `laptop.architect-2` on 2026-10-15T16:13:56Z
   (https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6196722652),
-  approved by the person without arrays on 2026-10-15
+  approved by the person without arrays on 2026-10-15T16:51:53Z
   (https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6197478869); the
   surface: `laptop.architect-2` on 2026-10-16T09:09:18Z
   (https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6212098264). After

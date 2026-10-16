@@ -29,18 +29,29 @@
   `database`, the kind refuses a `u64` channel with `Error::Config` and
   `influx.unsigned` where the run first learns the type, before it writes a line of that
   frame: InfluxDB 1 OSS refuses `u`, and an `i64` holds no value above `i64::MAX`. The
-  rule depends on the target, never on the value. When `connector::Kind::check` gets the
+  kind does not know the server version, so the target stands for it: a `database` is
+  InfluxDB 1, and a `bucket` is InfluxDB 2 or 3 (INFLUX KIND). So a `database` on
+  InfluxDB 2 or 3 keeps the InfluxDB 1 rule, and the fix of `influx.unsigned` names a
+  `bucket`. A `bucket` on InfluxDB 1.8, which also serves `/api/v2/write`, gets `u`
+  lines that it refuses, and the run sends the batch again until a person acts. The rule
+  depends on the target, never on the value. When `connector::Kind::check` gets the
   types of the channels that a reader selects, the refusal moves to plan. Lost: each
   unsigned value as `i`, with an error at a sample above `i64::MAX`, as one value then
   stops the ack until a person acts, also on InfluxDB 2 and 3; a `u64` as a float or as
   its bits in an `i64`, as each changes the value with no error; a `u64` as a string
-  field, as its queries then differ from each other integer; and an `unsigned` setting
-  for InfluxDB 2 and 3, as it gives one server two rules. Decided by
-  `laptop.architect-2` on 2026-10-08T08:21Z
+  field, as its queries then differ from each other integer; and an `unsigned` setting,
+  as the target already gives the rule. The refusal to a `database` and each Lost item
+  before this sentence: `laptop.architect-2` on 2026-10-08T08:21Z
   (https://github.com/synnaxlabs/foundation/issues/1210#issuecomment-6055802089). The
-  `u` integer to a `bucket`: the type table of `laptop.architect-2`
+  `u` integer to a `bucket`, and the rule by target: the type table of
+  `laptop.architect-2` on 2026-10-15T16:13:56Z
   (https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6196722652),
-  approved by the person without arrays on 2026-10-15
-  (https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6197478869). Lost:
-  the HTTP front of `sim` refusing `u` on `/write` only, as InfluxDB 2 takes `u` on both
-  paths, so the server version, not the path, gives the rule.
+  approved by the person without arrays on 2026-10-15T16:51:53Z
+  (https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6197478869). For a
+  `bucket`, it supersedes three parts of
+  https://github.com/synnaxlabs/foundation/issues/1210#issuecomment-6055802089: "the
+  writer writes no `u` integer", the refusal of `u64` to each target, and the removal of
+  `line::Value::Unsigned`. Lost: the HTTP front of `sim` refusing `u` on `/write` only,
+  as InfluxDB 2 takes `u` on both paths, so the server version, not the path, gives the
+  rule (`laptop.architect-2` on 2026-10-16T09:09:18Z:
+  https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6212098264).
