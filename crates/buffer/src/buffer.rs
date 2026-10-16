@@ -67,7 +67,8 @@ pub struct Config {
     /// queued during a commit longer than `commit` waits until that commit ends.
     pub commit: Span,
     /// Each commit frees the oldest records that no path needs, when the ring needs
-    /// their room. False until the open trims too.
+    /// their room. False until the open trims too. No caller sets it until #2796
+    /// merges.
     pub trimmed: bool,
 }
 
