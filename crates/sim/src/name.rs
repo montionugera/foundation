@@ -57,15 +57,21 @@ impl Default for Answer {
     }
 }
 
-/// The key of `host` in the name table: the name of its [`Host`], with no final dot.
+/// The name of `host`, as [`Host`] parses it.
 ///
 /// Panics when `host` is not a name of [`Host`].
-pub(crate) fn key(host: &str) -> String {
+pub(crate) fn parse(host: &str) -> String {
     let parsed: Host = host
         .parse()
         .unwrap_or_else(|e| panic!("{host:?} is not a host: it has {e}"));
     let name = parsed
         .name()
         .unwrap_or_else(|| panic!("{host} is an IP address, which no lookup reads"));
+    name.to_owned()
+}
+
+/// The key of `name`, a name of [`Host`], in the name table: `name` with no final
+/// dot.
+pub(crate) fn key(name: &str) -> String {
     name.strip_suffix('.').unwrap_or(name).to_owned()
 }
