@@ -247,6 +247,7 @@ fn a_node_warns_of_a_failure_of_its_roots_and_of_a_skipped_one() {
     let roots = os::Roots {
         certificates: vec![super::CA.to_vec(), b"not DER".to_vec()],
         failures: vec!["failed to read PEM from file at '/roots.pem'".into()],
+        ..os::Roots::default()
     };
     assert_eq!(
         warned(roots),
@@ -278,6 +279,7 @@ fn failing(failures: Vec<String>) -> os::Roots {
     os::Roots {
         certificates: vec![super::CA.to_vec()],
         failures,
+        source: os::Source::Store,
     }
 }
 
@@ -299,9 +301,53 @@ fn listed(count: usize) -> Vec<String> {
 fn a_node_warns_of_the_first_16_failures_of_its_roots_and_counts_the_rest() {
     let mut expected = listed(16);
     expected.push(format!(
-        "{WARN} more parts of the OS roots were not read unlisted=1"
+        "{WARN} more parts of the OS roots were not read unlisted=1 source=\"the OS \
+         store\""
     ));
     assert_eq!(warned(failed(17)), expected);
+}
+
+#[test]
+fn the_count_of_the_failures_of_the_roots_gives_the_paths_that_were_read() {
+    let roots = os::Roots {
+        source: os::Source::Paths {
+            file: Some("/roots.pem".into()),
+            dirs: vec!["/a".into(), "/b".into()],
+        },
+        ..failed(17)
+    };
+    let lines = warned(roots);
+    assert_eq!(
+        lines.last().map(String::as_str),
+        Some(
+            format!(
+                "{WARN} more parts of the OS roots were not read unlisted=1 \
+                 source=\"SSL_CERT_FILE=/roots.pem SSL_CERT_DIR=/a:/b\""
+            )
+            .as_str()
+        )
+    );
+}
+
+#[test]
+fn a_long_source_of_the_roots_is_cut_on_the_count_line() {
+    let dir = format!("/{}", long(3000));
+    let roots = os::Roots {
+        source: os::Source::Paths {
+            file: None,
+            dirs: vec![dir.clone().into()],
+        },
+        ..failed(17)
+    };
+    let source = format!("SSL_CERT_DIR={dir}");
+    let (head, tail) = (&source[..510], &source[source.len() - 510..]);
+    assert_eq!(
+        warned(roots).last(),
+        Some(&format!(
+            "{WARN} more parts of the OS roots were not read unlisted=1 \
+             source=\"{head}…{tail}\""
+        ))
+    );
 }
 
 #[test]
@@ -363,7 +409,7 @@ fn a_node_with_no_root_warns_that_an_https_connect_with_no_ca_fails() {
     assert_eq!(warned(os::Roots::default()), [NONE]);
     let roots = os::Roots {
         certificates: vec![b"not DER".to_vec()],
-        failures: Vec::new(),
+        ..os::Roots::default()
     };
     assert_eq!(warned(roots), [SKIPPED, NONE]);
 }
