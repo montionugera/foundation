@@ -363,6 +363,10 @@
   failure of a reach or a request. `node` reads standard input on an I/O thread of
   `os` and gives `ops::cli` an async source of lines, so the shard that serves runs
   while it waits for a line, and a kept session sends its keep-alive.
+  Until #2939 merges, the first call after a stop or a restart of the node can give
+  `node.no-reply` with nothing sent to the node (the deferral, `laptop.architect-2`,
+  2026-10-16T22:15:00Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6225726721).
   Decided by the person, "Yeah that's fine" (2026-10-16T04:45:05Z, relayed by
   `laptop.monitor`,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208278565;
