@@ -186,7 +186,9 @@ impl Paths {
 
     /// Makes the directory at `path`. Gives `Ok` when a directory is there already. It
     /// makes no directory above it, and none through a symbolic link at `path`. A
-    /// directory that it makes gives the group and other users no access.
+    /// directory that it makes gives the group and other users no access. On a handle
+    /// of [`Paths::within`], a path that does not resolve passes the limits by its own
+    /// place.
     ///
     /// # Errors
     ///

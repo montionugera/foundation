@@ -809,7 +809,7 @@
   mode, 0700, so the group and other users get no access. `sim` makes one directory
   only, apart from `sim::Node::make_dir`, which makes each one above. On a handle of
   `within`, a path that does not resolve, such as a link to nothing or a loop, passes
-  the limits by the place of its last name. `within` resolves `<hidden>/..` after the
+  the limits by its own place. `within` resolves `<hidden>/..` after the
   resolve of each hidden folder, which opens no file. It gives `NotFound` when the
   folder is not there, and `Io` 20 (`ENOTDIR`) when it is not a directory, or on `os`
   `Io` 13 (`EACCES`) when this user cannot search it. It skips a hidden folder that the
@@ -833,5 +833,6 @@
   https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6217809418; the
   `EEXIST` rule of `os`, the drop of end slashes, the resolve of `<hidden>/..`, `Io` for
   a hidden folder that is not a directory, the skip of a hidden folder past the limits,
-  and the check of a link by its place, 2026-10-16T15:45:37Z,
-  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219155635).
+  and the check of a link to nothing by its place, 2026-10-16T15:45:37Z,
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219155635; the check of each path that does not resolve by its own place, 2026-10-16T16:02:28Z,
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219471401).
