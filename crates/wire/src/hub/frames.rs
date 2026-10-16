@@ -49,13 +49,15 @@ pub enum Step {
 
 impl Frames {
     /// The frames of the session that `reader` decodes, opened by `message`, the
-    /// first message of the session. The places of the session are the entries of
-    /// `set`, in order. Returns the frames and the open position of `Opened`.
+    /// first message of the session, or `None` when the stream ended before it. The
+    /// places of the session are the entries of `set`, in order. Returns the frames
+    /// and the open position of `Opened`.
     ///
     /// # Errors
     ///
-    /// Each [`Error`] of [`Reader::decode`], and [`Error::Unopened`] for any other
-    /// message. The caller then stops the stream as `MALFORMED`.
+    /// [`Error::Finished`] when `message` is `None`, each [`Error`] of
+    /// [`Reader::decode`], and [`Error::Unopened`] for any other message. The caller
+    /// then stops the stream as `MALFORMED`.
     ///
     /// # Panics
     ///
@@ -64,9 +66,14 @@ impl Frames {
     pub fn open(
         mut reader: Reader,
         set: Arc<KeySet>,
-        message: &[u8],
+        message: Option<&[u8]>,
     ) -> Result<(Self, u64), Error> {
         assert_eq!(set.groups().len(), 1, "a session is on one index");
+        let Some(message) = message else {
+            return Err(reader
+                .end()
+                .expect_err("invariant: a reader before opened may not end"));
+        };
         match reader.decode(message)? {
             FromHome::Opened { live } => {
                 let frames = Self {
@@ -241,7 +248,7 @@ fn last(decoded: Result<FromHome<'_>, Error>) -> Result<bool, Error> {
     }
 }
 
-fn to_usize(n: u32) -> usize {
+pub(super) fn to_usize(n: u32) -> usize {
     usize::try_from(n).expect("invariant: a usize holds a u32")
 }
 
@@ -288,7 +295,8 @@ mod tests {
     fn opened(latest: bool) -> Frames {
         let opened = opened_at(0);
         let (frames, _) =
-            Frames::open(create_reader(latest), create_set(), &opened).expect("opened");
+            Frames::open(create_reader(latest), create_set(), Some(&opened))
+                .expect("opened");
         frames
     }
 
@@ -331,7 +339,8 @@ mod tests {
 
     #[test]
     fn gives_the_open_position_of_opened() {
-        let opened = Frames::open(create_reader(false), create_set(), &opened_at(7));
+        let opened =
+            Frames::open(create_reader(false), create_set(), Some(&opened_at(7)));
         assert!(matches!(opened, Ok((_, 7))));
     }
 
@@ -347,13 +356,15 @@ mod tests {
 
     #[test]
     fn refuses_a_first_message_that_is_not_opened() {
-        let open = |message: &[u8]| {
+        let open = |message: Option<&[u8]>| {
             Frames::open(create_reader(false), create_set(), message).map(drop)
         };
-        assert_eq!(open(&head(4, 2, 2)), Err(Error::Unopened { kind: HEAD }));
+        let head = head(4, 2, 2);
+        assert_eq!(open(Some(&head)), Err(Error::Unopened { kind: HEAD }));
         let behind = encode_reply(Reply::Behind);
-        assert_eq!(open(&behind), Err(Error::Unopened { kind: BEHIND }));
-        assert_eq!(open(&[]), Err(Error::Empty));
+        assert_eq!(open(Some(&behind)), Err(Error::Unopened { kind: BEHIND }));
+        assert_eq!(open(Some(&[])), Err(Error::Empty));
+        assert_eq!(open(None), Err(Error::Finished));
     }
 
     #[test]
@@ -369,7 +380,7 @@ mod tests {
                 data: &[],
             },
         ]);
-        let _frames = Frames::open(create_reader(false), set, &opened_at(0));
+        let _frames = Frames::open(create_reader(false), set, Some(&opened_at(0)));
     }
 
     #[test]
@@ -377,7 +388,7 @@ mod tests {
     fn panics_at_a_reader_past_opened() {
         let mut reader = create_reader(false);
         reader.decode(&opened_at(0)).expect("opened");
-        let _frames = Frames::open(reader, create_set(), &head(4, 2, 2));
+        let _frames = Frames::open(reader, create_set(), Some(&head(4, 2, 2)));
     }
 
     #[test]

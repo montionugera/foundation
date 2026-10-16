@@ -522,9 +522,11 @@ fn stops_a_read_whose_places_are_not_valid() {
         place(10, I64, "again"),
     ];
     let unstamped = vec![place(10, I64, "a"), place(1, I64, "time")];
+    let repeated =
+        |n| Error::Message(wire::hub::client::Error::Repeated { key: key(n) });
     let cases = [
-        (414, twice, 0, Error::Repeated(key(1))),
-        (418, apart, 1, Error::Repeated(key(10))),
+        (414, twice, 0, repeated(1)),
+        (418, apart, 1, repeated(10)),
         (
             419,
             unstamped,

@@ -12,7 +12,7 @@ use crate::hub::{COMPLETE, LATEST};
 
 mod reader;
 
-pub use reader::{FromNode, Reader};
+pub use reader::{Reader, Start};
 
 /// The most bytes of the open of a read: 64 KiB.
 pub const OPEN_BYTES_MAX: u64 = 1 << 16;
@@ -211,7 +211,7 @@ impl Places {
     ///
     /// [`Error::Empty`], [`Error::Kind`] for a message that is not kind 6,
     /// [`Error::Length`], and [`Error::Index`] when `index` is not below `count`.
-    pub(crate) fn decode(message: &[u8]) -> Result<Self, Error> {
+    pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = fields(message, READ)?;
         let count = u32::from_le_bytes(*fields.take()?);
         let index = u32::from_le_bytes(*fields.take()?);
@@ -333,7 +333,7 @@ pub mod place {
     /// a place, [`Error::Sample`] when the sample type of a place does not read, and
     /// [`Error::Name`] when its name does not. The first defect in the order of the
     /// bytes gives the error.
-    pub(crate) fn decode(message: &[u8]) -> Result<Vec<Place>, Error> {
+    pub fn decode(message: &[u8]) -> Result<Vec<Place>, Error> {
         if message.is_empty() {
             return Err(Error::Empty);
         }
