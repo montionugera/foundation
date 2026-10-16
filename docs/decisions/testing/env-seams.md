@@ -802,9 +802,19 @@
   file that is neither a regular file nor a directory, such as a FIFO, a socket, or a
   device, as `os::files` gives. Such a file has no stable content to read, and a tool or
   the check of `--files` must answer, not wait. `os` checks the kind with a stat before
-  the open, so the open of a device that is there at the stat runs no driver, opens with no wait for a writer of a
-  FIFO, and checks the kind again with an fstat after the open. A link that another writer changes between the stat and the open can give the error of the open, such as `Io` 102 on macOS or 6 on Linux for a socket, and the open of a device that the link names runs its driver. That writer can already change what the node reads (`docs/security.md`, "Other local user"). `os::paths`
-  and `os::files` share this one check. `sim` models no such file. `write` keeps its
-  rule: a pipe or a device at `path` takes the bytes in place. Lost: an open with
-  `O_NONBLOCK` that then reads the FIFO, which gives what a writer put there by chance,
-  or nothing, and still runs the driver of a device; an `O_PATH` open on Linux with a reopen through `/proc/self/fd`, since macOS has none and keeps the race; and 22 for each error of the open after a stat that saw a regular file, which hides real errors such as 13. Decided by `laptop.architect-2` (2026-10-16T16:02:30Z, https://github.com/synnaxlabs/foundation/issues/2889#issuecomment-6219471919; the race, 2026-10-16T16:37:23Z, https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6220151438).
+  the open, so the open of a device that is there at the stat runs no driver, opens with
+  no wait for a writer of a FIFO, and checks the kind again with an fstat after the
+  open. A link that another writer changes between the stat and the open can give the
+  error of the open, such as `Io` 102 on macOS or 6 on Linux for a socket, and the open
+  of a device that the link names runs its driver. That writer can already change what
+  the node reads (`docs/security.md`, "Other local user"). `os::paths` and `os::files`
+  share this one check. `sim` models no such file. `write` keeps its rule: a pipe or a
+  device at `path` takes the bytes in place. Lost: an open with `O_NONBLOCK` that then
+  reads the FIFO, which gives what a writer put there by chance, or nothing, and still
+  runs the driver of a device; an `O_PATH` open on Linux with a reopen through
+  `/proc/self/fd`, since macOS has none and keeps the race; and 22 for each error of the
+  open after a stat that saw a regular file, which hides real errors such as 13. Decided
+  by `laptop.architect-2` (2026-10-16T16:02:30Z,
+  https://github.com/synnaxlabs/foundation/issues/2889#issuecomment-6219471919; the
+  race, 2026-10-16T16:37:23Z,
+  https://github.com/synnaxlabs/foundation/pull/2893#issuecomment-6220151438).
