@@ -651,6 +651,9 @@ fn refuses_a_host_that_is_not_valid() {
         "http://a[::1]/",
         "http://a[::1]:80/",
         "http://a:8[0]/",
+        "http://127.1/",
+        "http://influx..local/",
+        "http://influx-/",
     ] {
         let error = refused(uri);
         assert!(matches!(error, Error::Host), "{uri}: {error:?}");

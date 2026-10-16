@@ -37,6 +37,10 @@
   case and with a final dot was confirmed by the architect on #1018, in place of its
   earlier exact match
   (https://github.com/synnaxlabs/foundation/pull/1018#issuecomment-6031438649). Amended
+  (2026-10-16, #1927): `Sim::name` panics when its host is not a name of
+  `env::net::host::Host`: an IP address, also one with a zone, or a text outside the
+  grammar. A lookup reads only a name, so the table has no rule for a literal with a
+  final dot, an IPv4 address in brackets, or the root `.`. Amended
   (2026-10-07, #1255): a receive of a failed UDP socket first gives the datagrams queued
   before the fault, then `EIO`. A broken socket still holds its receive queue, so the
   queue stays readable. A pulled serial adapter takes its buffer with it, so

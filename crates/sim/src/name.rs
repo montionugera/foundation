@@ -1,7 +1,8 @@
 //! The answers to the name lookups of a run.
 
-use std::net::{IpAddr, Ipv6Addr};
+use std::net::IpAddr;
 
+use env::net::host::Host;
 use types::time::Span;
 
 /// How a lookup of one name goes. Build it with `..Config::default()`: fields get
@@ -40,20 +41,20 @@ pub enum Answer {
 }
 
 impl Config {
-    /// Panics when the delay is negative, or when `host` is an IP literal, which
-    /// `env::net::Net::resolve` gives with no lookup.
+    /// Panics when the delay is negative, or when `host` is not a name of [`Host`].
     pub(crate) fn check(&self, host: &str) {
         let delay = self.delay;
         assert!(
             delay >= Span::ZERO,
             "the lookup of {host} takes a negative delay of {delay}"
         );
-        let bracketed = host.strip_prefix('[').and_then(|h| h.strip_suffix(']'));
-        let literal = match bracketed {
-            Some(v6) => v6.parse::<Ipv6Addr>().is_ok(),
-            None => host.parse::<IpAddr>().is_ok(),
-        };
-        assert!(!literal, "{host} is an IP literal, which no lookup reads");
+        match host.parse::<Host>() {
+            Ok(parsed) => assert!(
+                parsed.name().is_some(),
+                "{host} is an IP address, which no lookup reads"
+            ),
+            Err(e) => panic!("{host:?} is not a host: it has {e}"),
+        }
     }
 }
 
@@ -63,12 +64,7 @@ impl Default for Answer {
     }
 }
 
-/// The key of `host` in the name table: its ASCII lowercase, with no final dot. The
-/// root name `.` keeps its dot, so that it is not the empty host.
+/// The key of `host` in the name table: its ASCII lowercase, with no final dot.
 pub(crate) fn key(host: &str) -> String {
-    let host = host
-        .strip_suffix('.')
-        .filter(|h| !h.is_empty())
-        .unwrap_or(host);
-    host.to_ascii_lowercase()
+    host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase()
 }

@@ -184,8 +184,9 @@ impl Sim {
     ///
     /// # Panics
     ///
-    /// When `config.delay` is negative, or when `host` is an IP literal, which
-    /// [`env::net::Net::resolve`] gives with no lookup.
+    /// When `config.delay` is negative, or when `host` is not a name of
+    /// [`env::net::host::Host`]: an IP address, which [`env::net::Net::resolve`]
+    /// gives with no lookup, or a text outside its grammar.
     pub fn name(&mut self, host: &str, config: name::Config) {
         config.check(host);
         lock(&self.shared).net().name(host, config);

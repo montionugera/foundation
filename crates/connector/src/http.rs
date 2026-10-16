@@ -9,7 +9,6 @@ mod stream;
 use std::cell::Cell;
 use std::fmt;
 use std::future::poll_fn;
-use std::net::Ipv6Addr;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -18,6 +17,7 @@ use bytes::Bytes;
 use document::diagnostic::{Code, Diagnostic};
 use document::value::{self, Value};
 use env::clock::Clock;
+use env::net::host::Host;
 use env::net::{self, Net, Tcp, tcp};
 use env::tasks::Tasks;
 use http::uri::Scheme;
@@ -298,10 +298,10 @@ fn share(now: Monotonic, deadline: Monotonic, left: usize) -> Option<Monotonic> 
     (share < remaining).then(|| now + Span::from_nanos(share))
 }
 
-/// Where requests go: a host in ASCII lowercase, and a port.
+/// Where requests go: a host and a port.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Origin {
-    host: String,
+    host: Host,
     port: u16,
 }
 
@@ -333,15 +333,7 @@ fn origin(uri: &Uri) -> Result<Origin, Error> {
         Some(colon) => (&text[..after + colon], &text[after + colon + 1..]),
         None => (text, ""),
     };
-    let valid = match host.strip_prefix('[') {
-        Some(v6) => v6
-            .strip_suffix(']')
-            .is_some_and(|v6| v6.parse::<Ipv6Addr>().is_ok()),
-        None => !host.is_empty() && !host.contains('['),
-    };
-    if !valid {
-        return Err(Error::Host);
-    }
+    let host = host.parse().map_err(|_refused| Error::Host)?;
     // `u16::from_str` takes a leading `+`.
     let port = match port {
         "" => 80,
@@ -351,10 +343,7 @@ fn origin(uri: &Uri) -> Result<Origin, Error> {
             .filter(|&port| port != 0)
             .ok_or(Error::Port)?,
     };
-    Ok(Origin {
-        host: host.to_ascii_lowercase(),
-        port,
-    })
+    Ok(Origin { host, port })
 }
 
 /// A copy of `request`, to send again.
@@ -395,8 +384,7 @@ pub enum Error {
     Scheme,
     /// The URI holds user info. The error keeps none of it.
     UserInfo,
-    /// The URI has no host, a host in brackets that is not an IPv6 address, or a
-    /// `[` in a host that is not in brackets.
+    /// The URI has no host, or one that [`Host`] refuses.
     Host,
     /// The port of the URI is not a number from 1 to 65535.
     Port,

@@ -18,6 +18,7 @@ use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
 use env::clock::{Clock, Sleep};
+use env::net::host::Host;
 use env::net::{self, Listener, Net, Tcp, tcp};
 use env::rng::Rng;
 use types::time::{Monotonic, Span};
@@ -961,7 +962,10 @@ unsafe extern "C" fn open(
     };
     let net = state.net.clone();
     let connect = Box::pin(async move {
-        let addresses = net.resolve(&host, port).await?;
+        let Ok(parsed) = host.parse::<Host>() else {
+            return Err(net::Error::NotFound { host });
+        };
+        let addresses = net.resolve(&parsed, port).await?;
         let remote = addresses[0];
         net.connect(&tcp::Config {
             remote,

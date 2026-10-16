@@ -271,6 +271,22 @@
   blocking tasks, and `os` drops each runtime it builds. The literal grammar waits on
   #1927. Decided by `laptop.architect-2` (2026-10-08 17:08 UTC, #1919,
   https://github.com/synnaxlabs/foundation/pull/1919#issuecomment-6065081738).
+  Amended (2026-10-16, #1927): `env` owns the whole grammar of a host.
+  `Net::resolve` takes an `env::net::host::Host`, which a caller parses once, at plan
+  for a config. An IPv4 address has four decimal parts with no leading zeros. An IPv6
+  address is bare or in brackets, with an optional zone of a decimal interface number
+  that fits in `u32`, which `resolve` gives as the scope with no lookup. A name has
+  parts of ASCII letters, digits, `-`, and `_`, each 1 to 63 bytes, none that starts
+  or ends with `-`. It is at most 253 bytes without one optional final dot, its last
+  part is not a number, and its letters go to lowercase. Only a name reaches the
+  driver, so `getaddrinfo` never reads an `inet_aton` form (`127.1`, `0x7f.0.0.1`,
+  `10.0.0.2.`): `Host` refuses each. A NUL byte is `host::Error::Character`, not
+  `NotFound`. A zone by interface name (`%eth0`) is refused, as it needs
+  `if_nametoindex`: a new driver call, and interfaces in `sim`. Trigger: a user needs
+  a link-local device by its interface name. Lost: `resolve(&str)` with a separate
+  check for plan and a new error at run time, because the grammar runs twice and a
+  caller can skip the check. Proposed by `box1.builder-2`
+  (https://github.com/synnaxlabs/foundation/issues/1927#issuecomment-6206949254).
   From the review of #1018: the bracketed IPv6 literal, and what `NotFound` and `Io`
   mean to a caller. Amended (2026-10-07, #1117): `Mode::Create` makes a missing file
   with `len` zeroed bytes. It treats an empty file that is there as missing and
