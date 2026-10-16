@@ -1,6 +1,6 @@
 use std::cell::Cell;
-use std::ffi::CString;
-use std::future::poll_fn;
+use std::ffi::{CStr, CString};
+use std::future::{self, poll_fn};
 use std::io::IoSlice;
 use std::mem;
 use std::net::SocketAddr;
@@ -17,13 +17,14 @@ use sim::{Sim, node};
 use types::time::Span;
 
 use super::{
-    Client, Large, Nodes, READS, Reads, Request, SPLIT, Slots, UNREAD, answer,
+    Client, GRACE, Large, Nodes, READS, Reads, Request, SPLIT, Slots, UNREAD, answer,
     id_bytes, most,
 };
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
 use crate::event;
 use crate::ffi::{self, Status};
+use crate::gate::Gate;
 use crate::node::{Key, Name, Node};
 use crate::server::{Limits, Server};
 use crate::unwind::caught;
@@ -88,15 +89,15 @@ struct Peer<'s> {
     url: String,
     /// The value of [`VALUE`].
     value: Value,
-    /// The server does not run while it is set.
-    paused: Rc<Cell<bool>>,
+    /// The server does not run while it is closed.
+    gate: Gate,
 }
 
 impl Peer<'_> {
     async fn connect(&mut self, url: &str) -> Result<Client, Status> {
         let url = CString::new(url).expect("the URL holds no NUL");
         let time = event::Time::monotonic(Clock::clone(&self.clock));
-        Client::connect(time, Net::clone(&self.net), &mut self.rng, &url).await
+        open(time, Net::clone(&self.net), &mut self.rng, &url).await
     }
 
     async fn connected(&mut self) -> Client {
@@ -117,9 +118,21 @@ impl Peer<'_> {
         unsafe { ffi::test::shim_client_receive(raw.as_ptr(), receive) };
         let url = CString::new(self.url.clone()).expect("the URL holds no NUL");
         // SAFETY: `raw` is a new client of the loop of `connections`.
-        let client = unsafe { Client::start(clock, connections, raw, &url) }.await;
-        client.expect("the client connects")
+        let mut client = unsafe { Client::of(clock, connections, raw) };
+        client.open(&url).await.expect("the client connects");
+        client
     }
+}
+
+/// Connects a new client to `url`, with no wait that ends it.
+async fn open(
+    time: event::Time,
+    net: Net,
+    rng: &mut Rng,
+    url: &CStr,
+) -> Result<Client, Status> {
+    let connect = Client::connect(time, net, rng, url, future::pending());
+    Ok(connect.await?.expect("a pending wait never ends"))
 }
 
 /// Runs `test` on a node of a run of `seed`, and gives its value and the digest of
@@ -141,7 +154,7 @@ fn run<T: Send + 'static>(
 
 /// Starts a test server on `node`, with room for `sessions` sessions and a Double at
 /// [`VALUE`] from its random values, runs `body` while the server runs, except while
-/// [`Peer::paused`] is set, then closes the server.
+/// [`Peer::gate`] is closed, then closes the server.
 async fn serve<T>(
     node: &node::Node,
     sessions: u16,
@@ -168,19 +181,14 @@ async fn serve<T>(
         rng,
         url: format!("opc.tcp://{local}"),
         value,
-        paused: Rc::default(),
+        gate: Gate::default(),
     };
-    let paused = Rc::clone(&peer.paused);
+    let gate = peer.gate.clone();
     let out = {
-        let mut server_drive = pin!(manager.drive(|_| {
-            manager.events().run();
-            Poll::<()>::Pending
-        }));
+        let mut server_drive = pin!(gate.hold(manager.drive(|_| Poll::<()>::Pending)));
         let mut body = pin!(body(peer));
         poll_fn(|cx| {
-            if !paused.get() {
-                assert!(server_drive.as_mut().poll(cx).is_pending(), "it never ends");
-            }
+            assert!(server_drive.as_mut().poll(cx).is_pending(), "it never ends");
             body.as_mut().poll(cx)
         })
         .await
@@ -452,11 +460,11 @@ fn read_after_late_answer(
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            peer.paused.set(true);
+            peer.gate.close();
             drop_reads(&mut client, dropped).await;
             let late = client.nodes(&[TIME, VALUE]).expect("2 nodes fit");
             assert_eq!(client.read(&late).await, Err(Status::BAD_TIMEOUT));
-            peer.paused.set(false);
+            peer.gate.open();
             let nodes = client.nodes(&[VALUE]).expect("one node fits");
             let values = client.read(&nodes).await.map(<[_]>::to_vec);
             client.close().await;
@@ -624,13 +632,13 @@ fn read_after(dropped: u16) -> (Result<Value, Fault>, Span) {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            peer.paused.set(true);
+            peer.gate.close();
             drop_reads(&mut client, dropped).await;
             peer.clock.sleep(Span::from_nanos(2_000_000_000)).await;
             let start = peer.clock.now();
             let read = client.read_one(&VALUE).await;
             let took = peer.clock.now() - start;
-            peer.paused.set(false);
+            peer.gate.open();
             client.close().await;
             (read, took)
         })
@@ -657,7 +665,7 @@ fn a_read_at_the_bound_fails_when_no_read_ends() {
     assert!(timeout.contains(&at_took), "{at_took:?}");
 }
 
-/// Reads [`VALUE`] while [`Peer::paused`] is set, except for one pass of the server
+/// Reads [`VALUE`] while [`Peer::gate`] is closed, except for one pass of the server
 /// `at` after the read starts. Gives its answer and the time it took.
 async fn read_with_pass(
     client: &mut Client,
@@ -671,13 +679,13 @@ async fn read_with_pass(
     let read = poll_fn(|cx| {
         if !woke && pass.as_mut().poll(cx).is_ready() {
             woke = true;
-            peer.paused.set(false);
+            peer.gate.open();
             cx.waker().wake_by_ref();
             return Poll::Pending;
         }
         if woke && !passed {
             passed = true;
-            peer.paused.set(true);
+            peer.gate.close();
         }
         read.as_mut().poll(cx)
     })
@@ -691,12 +699,12 @@ fn the_timeout_of_a_read_counts_its_wait() {
     let ((read, took), _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            peer.paused.set(true);
+            peer.gate.close();
             drop_reads(&mut client, 16).await;
             let out =
                 read_with_pass(&mut client, &peer, Span::from_nanos(3_000_000_000))
                     .await;
-            peer.paused.set(false);
+            peer.gate.open();
             client.close().await;
             out
         })
@@ -716,12 +724,12 @@ fn the_answers_of_dropped_reads_end_them() {
             let mut client = peer.connected().await;
             drop_reads(&mut client, 16).await;
             peer.clock.sleep(Span::from_nanos(1_000_000_000)).await;
-            peer.paused.set(true);
+            peer.gate.close();
             drop_reads(&mut client, 1).await;
             let (read, _) =
                 read_with_pass(&mut client, &peer, Span::from_nanos(1_000_000_000))
                     .await;
-            peer.paused.set(false);
+            peer.gate.open();
             client.close().await;
             (read, peer.value)
         })
@@ -738,12 +746,12 @@ fn a_read_after_272_dropped_reads_on_a_stalled_server_gives_the_value() {
     let ((read, value), _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            peer.paused.set(true);
+            peer.gate.close();
             for _ in 0..17 {
                 drop_reads(&mut client, 16).await;
                 peer.clock.sleep(Span::from_nanos(6_000_000_000)).await;
             }
-            peer.paused.set(false);
+            peer.gate.open();
             peer.clock.sleep(Span::from_nanos(10_000_000)).await;
             let read = client.read_one(&VALUE).await;
             client.close().await;
@@ -859,7 +867,7 @@ async fn connect_to_listener(
     let start = clock.now();
     let mut rng = node.entropy().rng();
     let url = CString::new(format!("opc.tcp://{local}")).expect("no NUL");
-    let mut connect = pin!(Client::connect(
+    let mut connect = pin!(open(
         event::Time::monotonic(node.clock()),
         node.net(),
         &mut rng,
@@ -911,43 +919,43 @@ fn a_connect_to_a_listener_that_closes_each_stream_ends_after_one_dial() {
 }
 
 /// A close waits for the answer of the server, which a server that stops never gives,
-/// until the request times out after 5 s. open62541 checks the timeouts of requests
-/// once a second.
+/// for [`GRACE`].
 #[test]
-fn a_close_of_a_client_whose_server_stops_ends_at_the_request_timeout() {
+fn a_close_of_a_client_whose_server_stops_ends_after_the_grace() {
     let (took, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let client = peer.connected().await;
-            peer.paused.set(true);
+            peer.gate.close();
             let start = peer.clock.now();
             client.close().await;
-            peer.paused.set(false);
+            peer.gate.open();
             peer.clock.now() - start
         })
         .await
     });
-    let window = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
-    assert!(window.contains(&took), "{took:?}");
+    assert_eq!(took, GRACE);
 }
 
-/// A read restores the request timeout of the client after it sends, so a close after a
-/// read on a server that stops still ends 5 to 6 s after it starts.
+/// A read sends its requests with no timeout of open62541, and restores the request
+/// timeout of the client for each other request, such as the `CloseSession`.
 #[test]
-fn a_close_after_a_read_of_a_client_whose_server_stops_ends_at_the_request_timeout() {
-    let (took, _) = run(0, async |node| {
+fn a_read_restores_the_request_timeout_of_the_client() {
+    let (timeouts, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
+            // SAFETY: the client lives.
+            let timeout = |client: &Client| unsafe {
+                ffi::shim_client_timeout(client.raw.as_ptr())
+            };
+            let before = timeout(&client);
             assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));
-            peer.paused.set(true);
-            let start = peer.clock.now();
+            let after = timeout(&client);
             client.close().await;
-            peer.paused.set(false);
-            peer.clock.now() - start
+            (before, after)
         })
         .await
     });
-    let window = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
-    assert!(window.contains(&took), "{took:?}");
+    assert_eq!(timeouts, (5_000, 5_000));
 }
 
 /// A read that a server that stops never answers ends with `BadTimeout` at the request
@@ -957,11 +965,11 @@ fn a_read_of_a_client_whose_server_stops_times_out() {
     let ((value, took), _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
-            peer.paused.set(true);
+            peer.gate.close();
             let start = peer.clock.now();
             let value = client.read_one(&VALUE).await;
             let took = peer.clock.now() - start;
-            peer.paused.set(false);
+            peer.gate.open();
             client.close().await;
             (value, took)
         })
@@ -974,41 +982,45 @@ fn a_read_of_a_client_whose_server_stops_times_out() {
 
 /// A connect that times out after the server makes its session closes the session, so
 /// a server with room for one session takes the next client. In the run of seed 0, the
-/// server makes the session 3 ms after the connect starts and activates it later.
+/// server makes the session 5.5 ms after the connect starts and activates it later.
 #[test]
 fn a_connect_that_times_out_closes_its_session() {
-    times_out_and_closes(&[Span::from_nanos(3_000_000)]);
+    let (_, closes) = times_out_and_closes(&[Span::from_nanos(6_000_000)]);
+    assert_eq!(closes, 1);
 }
 
 /// A connect that times out before the server answers its `CreateSession` closes the
 /// session that the server makes after the deadline. In the run of seed 0, the server
-/// gets the `CreateSession` before 2.5 ms and answers it 100 us after the deadline.
+/// stops at 5.25 ms, before it gets the `CreateSession`, and answers it 100 us after
+/// the deadline.
 #[test]
 fn a_connect_that_times_out_before_the_server_makes_its_session_closes_it() {
-    times_out_and_closes(&[
-        Span::from_nanos(2_500_000),
+    let (_, closes) = times_out_and_closes(&[
+        Span::from_nanos(5_250_000),
         Span::from_nanos(5_000_100_000),
     ]);
+    assert_eq!(closes, 1);
 }
 
 /// A connect that times out before a server that stops answers its `CreateSession`
-/// ends once that request times out, and leaves no session.
+/// ends one grace after the deadline, sends no `CloseSession`, and leaves no session.
 #[test]
 fn a_connect_whose_create_session_gets_no_answer_ends() {
-    times_out_and_closes(&[Span::from_nanos(2_500_000)]);
+    let took = times_out_and_closes(&[Span::from_nanos(5_250_000)]);
+    assert_eq!(took, (Span::from_nanos(5_000_000_000 + GRACE.nanos()), 0));
 }
 
-/// The close after a connect that times out can take two more request timeouts: one for
-/// the answer to the `CreateSession`, then one for the `CloseSession`. The server gets
-/// the `CreateSession` just before the deadline and answers it at 9 s, or gets it just
-/// after the check of timeouts at 4 s and answers it just before its timeout, and then
-/// stops. open62541 checks the timeouts of requests once a second from the start of the
-/// connect, so the close ends at most 10 s after the deadline.
+/// The close after a connect that times out waits for the answer to the
+/// `CreateSession` and for the `CloseSession` for [`GRACE`] in all. The client sends
+/// the `CreateSession` just before the deadline and the server answers it at 9 s, or
+/// the client sends it just after the check of timeouts at 4 s and the server answers
+/// it just before its timeout, and then stops. The client sends no `CloseSession`, and the second client still connects:
+/// the server drops a session that is not active when its channel closes.
 #[test]
-fn a_connect_whose_create_session_answers_late_ends_two_request_timeouts_later() {
+fn a_connect_whose_create_session_answers_late_ends_one_grace_later() {
     let before_the_deadline = times_out_and_closes(&[
         Span::from_nanos(0),
-        Span::from_nanos(4_998_000_000),
+        Span::from_nanos(4_996_000_000),
         Span::from_nanos(4_999_500_000),
         Span::from_nanos(9_000_000_000),
         Span::from_nanos(9_000_100_000),
@@ -1016,12 +1028,82 @@ fn a_connect_whose_create_session_answers_late_ends_two_request_timeouts_later()
     let after_a_check = times_out_and_closes(&[
         Span::from_nanos(0),
         Span::from_nanos(4_001_000_000),
-        Span::from_nanos(4_002_500_000),
+        Span::from_nanos(4_004_500_000),
         Span::from_nanos(9_999_000_000),
         Span::from_nanos(9_999_100_000),
     ]);
-    let bound = Span::from_nanos(15_000_000_000);
+    let bound = (Span::from_nanos(5_000_000_000 + GRACE.nanos()), 0);
     assert_eq!((before_the_deadline, after_a_check), (bound, bound));
+}
+
+/// A client that waits in [`Client::idle`] for longer than the channel lifetime of the
+/// server (10 minutes) keeps its channel, and reads after it.
+#[test]
+fn a_client_idle_for_eleven_minutes_reads() {
+    let (reads, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            let first = client.read_one(&VALUE).await;
+            let idle = peer
+                .clock
+                .sleep(Span::from_nanos(11 * Span::MINUTE.nanos()));
+            client.idle(idle).await;
+            (first, client.read_one(&VALUE).await, peer.value)
+        })
+        .await
+    });
+    let (first, second, value) = reads;
+    assert_eq!((first, second), (Ok(value), Ok(value)));
+}
+
+/// A client idle for longer than the session timeout that it asks for (20 min) keeps
+/// its session.
+#[test]
+fn a_client_idle_for_twenty_one_minutes_reads() {
+    let (reads, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            let first = client.read_one(&VALUE).await;
+            let idle = peer
+                .clock
+                .sleep(Span::from_nanos(21 * Span::MINUTE.nanos()));
+            client.idle(idle).await;
+            (first, client.read_one(&VALUE).await, peer.value)
+        })
+        .await
+    });
+    let (first, second, value) = reads;
+    assert_eq!((first, second), (Ok(value), Ok(value)));
+}
+
+/// The close of a client idle for 15 min frees its session on a server with room for
+/// one, so the next client connects.
+#[test]
+fn the_close_of_a_client_idle_for_fifteen_minutes_frees_its_session() {
+    let (connect, _) = run(0, async |node| {
+        serve(&node, 1, async |mut peer| {
+            let mut client = peer.connected().await;
+            let idle = peer
+                .clock
+                .sleep(Span::from_nanos(15 * Span::MINUTE.nanos()));
+            client.idle(idle).await;
+            client.close().await;
+            let url = peer.url.clone();
+            let client = peer.connect(&url).await;
+            let read = match client {
+                Ok(mut client) => {
+                    let read = client.read_one(&VALUE).await;
+                    client.close().await;
+                    Ok(read)
+                }
+                Err(status) => Err(status),
+            };
+            (read, peer.value)
+        })
+        .await
+    });
+    let (read, value) = connect;
+    assert_eq!(read, Ok(Ok(value)));
 }
 
 /// A connect to a server that activates the session and then stops fails with
@@ -1052,56 +1134,67 @@ fn a_connect_to_a_server_that_stops_after_the_activation_ends_in_four_request_ti
     assert!(took <= Span::from_nanos(20_000_000_000), "{took:?}");
 }
 
-/// Connects to a server with room for one session that stops at the first time of
-/// `flips` after the connect starts, runs again at the next, and so on, and runs from
-/// the end of the connect. Asserts that the connect fails with `BadTimeout` and that
-/// a second client then connects, so the first left no session. Gives the time that
-/// the first connect took.
-fn times_out_and_closes(flips: &[Span]) -> Span {
+/// Connects through [`RELAY`] to a server with room for one session that stops at the
+/// first time of `flips` after the connect starts, runs again at the next, and so on,
+/// and runs from the end of the connect. Asserts that the connect fails with
+/// `BadTimeout` and that a second client then connects, so the first left no session.
+/// Gives the time that the first connect took, and the `CloseSession` requests that
+/// it sent.
+fn times_out_and_closes(flips: &[Span]) -> (Span, usize) {
     let flips = flips.to_vec();
-    let ((first, took, second), _) = run(0, async move |node| {
+    let ((first, took, second, closes), _) = run(0, async move |node| {
         serve(&node, 1, async |mut peer| {
-            let (url, paused) = (peer.url.clone(), Rc::clone(&peer.paused));
-            let raw = CString::new(url.as_str()).expect("no NUL");
+            let (url, gate) = (peer.url.clone(), peer.gate.clone());
+            let control = Relay::default();
+            let raw = CString::new(relay_url(&node)).expect("no NUL");
             let time = event::Time::monotonic(Clock::clone(&peer.clock));
             let net = Net::clone(&peer.net);
-            let start = peer.clock.now();
-            let first = {
-                let mut connect = pin!(Client::connect(time, net, &mut peer.rng, &raw));
-                let mut flips: Vec<_> = flips
-                    .iter()
-                    .map(|at| Box::pin(peer.clock.sleep(*at)))
-                    .collect();
-                let mut flipped = 0;
-                poll_fn(|cx| {
-                    while flipped < flips.len()
-                        && flips[flipped].as_mut().poll(cx).is_ready()
-                    {
-                        flipped += 1;
-                        paused.set(!paused.get());
-                        // `serve` runs the server before this body.
-                        cx.waker().wake_by_ref();
+            // The relay runs until the second connect ends, so it moves each late
+            // byte of the first client.
+            let body = async {
+                let start = peer.clock.now();
+                let first = {
+                    let mut connect = pin!(open(time, net, &mut peer.rng, &raw));
+                    let mut flips: Vec<_> = flips
+                        .iter()
+                        .map(|at| Box::pin(peer.clock.sleep(*at)))
+                        .collect();
+                    let mut flipped = 0;
+                    let connect = poll_fn(|cx| {
+                        while flipped < flips.len()
+                            && flips[flipped].as_mut().poll(cx).is_ready()
+                        {
+                            flipped += 1;
+                            if flipped % 2 == 1 {
+                                gate.close();
+                            } else {
+                                gate.open();
+                            }
+                            // `serve` runs the server before this body.
+                            cx.waker().wake_by_ref();
+                        }
+                        connect.as_mut().poll(cx)
+                    });
+                    connect.await.err()
+                };
+                let took = peer.clock.now() - start;
+                gate.open();
+                let second = match peer.connect(&url).await {
+                    Ok(client) => {
+                        client.close().await;
+                        None
                     }
-                    connect.as_mut().poll(cx)
-                })
-                .await
-                .err()
+                    Err(status) => Some(status),
+                };
+                (first, took, second)
             };
-            let took = peer.clock.now() - start;
-            paused.set(false);
-            let second = match peer.connect(&url).await {
-                Ok(client) => {
-                    client.close().await;
-                    None
-                }
-                Err(status) => Some(status),
-            };
-            (first, took, second)
+            let (first, took, second) = relayed(&node, &control, |_| {}, body).await;
+            (first, took, second, control.closes.get())
         })
         .await
     });
     assert_eq!((first, second), (Some(Status::BAD_TIMEOUT), None));
-    took
+    (took, closes)
 }
 
 /// A server adds a namespace after a client connects, and a Double in it. The client
@@ -1618,6 +1711,9 @@ const RELAY: u16 = 4841;
 /// The binary encoding of a Read response, a `NodeId` of 4 bytes.
 const READ_RESPONSE: [u8; 4] = [0x01, 0x00, 0x7A, 0x02];
 
+/// The binary encoding of a `CloseSession` request, a `NodeId` of 4 bytes.
+const CLOSE_SESSION: [u8; 4] = [0x01, 0x00, 0xD9, 0x01];
+
 /// Runs `body` while [`relay`] runs on `node` with `control` and `rewrite`.
 async fn relayed<T>(
     node: &node::Node,
@@ -1645,6 +1741,8 @@ struct Relay {
     /// When set, it drops both streams of the relay that runs at its next poll, and
     /// clears it.
     cut: Cell<bool>,
+    /// The `CloseSession` requests that it moved to the server.
+    closes: Cell<usize>,
 }
 
 /// Moves the bytes of each stream to [`RELAY`], one at a time, to the test server and
@@ -1688,7 +1786,13 @@ async fn relay(
             if control.cut.take() {
                 return Poll::Ready(());
             }
-            let ended = up.pump(cx, &mut client, &mut server, |_| {});
+            let ended = up.pump(cx, &mut client, &mut server, |message| {
+                let close =
+                    message.starts_with(b"MSG") && message[24..28] == CLOSE_SESSION;
+                control
+                    .closes
+                    .set(control.closes.get() + usize::from(close));
+            });
             down.pump(cx, &mut server, &mut client, &mut rewrite);
             if ended {
                 Poll::Ready(())

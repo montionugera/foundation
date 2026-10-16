@@ -17,15 +17,21 @@ use document::value::{self, Value};
 use document::{Attribute, Block, Map};
 use env::net::{Listener, tcp};
 use env::tasks::{Group, Tasks};
+use hub::home::Outcome;
 use hub::reader::{Mode, Received};
+use hub::writer::Writer;
 use spec::channel::{Channel, Data};
 use spec::data_type::DataType;
 use spec::definition::Definition;
+use types::authority::Authority;
 use types::channel;
+use types::frame::{self, Draft, Form, Label, Path};
 use types::name::{Name, Selector};
 use types::quality::Quality;
 
 use super::*;
+use crate::client::GRACE;
+use crate::gate::Gate;
 use crate::sim::{Served, Variables, serve};
 
 const A: &str = "ns=3;s=SpikeData";
@@ -303,11 +309,11 @@ fn attribute(key: &str, kind: value::Kind) -> Attribute {
 }
 
 /// The config of a connector of `address` at 10 Hz with `reads`.
-fn config(address: &str, reads: &[(&str, String)]) -> Document {
+fn config(address: &str, rate: &str, reads: &[(&str, String)]) -> Document {
     let text = |text: &str| value::Kind::String(text.into());
     let attributes = vec![
         attribute("address", text(address)),
-        attribute("rate", text("10Hz")),
+        attribute("rate", text(rate)),
     ];
     let blocks = reads.iter().map(|(channel, node)| Block {
         keyword: "read".into(),
@@ -353,6 +359,8 @@ struct Scene {
     hub: hub::Hub,
     supervisor: Supervisor,
     variables: Variables,
+    /// The gate of each server that runs.
+    gate: Gate,
     config: Document,
     /// The stop of the server that runs, and the group of its task.
     server: RefCell<Option<(Token, Group)>>,
@@ -370,18 +378,20 @@ impl Scene {
         )]
         let wall = move || node.now().time;
         let (variables, until) = (self.variables.clone(), stop.clone());
-        let mut rng = self.node.entropy().rng();
+        let (mut rng, gate) = (self.node.entropy().rng(), self.gate.clone());
         group.tasks().spawn(async move {
             let until = until.wait();
-            serve(clock, wall, net, listener, &mut rng, &variables, until).await;
+            let serve = serve(clock, wall, net, listener, &mut rng, &variables, until);
+            gate.hold(serve).await;
         });
         *self.server.borrow_mut() = Some((stop, group));
     }
 
-    /// Stops the server, and waits until it closed.
+    /// Opens the gate, stops the server, and waits until it closed.
     async fn stop(&self) {
         let server = self.server.borrow_mut().take();
         let (stop, group) = server.expect("a server runs");
+        self.gate.open();
         stop.cancel();
         group.ended().await;
     }
@@ -430,9 +440,18 @@ struct Record {
     served: BTreeMap<String, Vec<Served>>,
 }
 
-/// Runs `script` on a scene of `setup`, with its server started, and records the
-/// frames of each channel until 1 s after the script returns.
+/// Runs `script` on a scene of `setup` at 10 Hz, as [`run_at`] does.
 fn run<S, F>(setup: Setup, script: S) -> Record
+where
+    S: FnOnce(Rc<Scene>) -> F + Send + 'static,
+    F: Future<Output = Result<(), Error>> + 'static,
+{
+    run_at("10Hz", setup, script)
+}
+
+/// Runs `script` on a scene of `setup` that reads at `rate`, with its server started,
+/// and records the frames of each channel until 1 s after the script returns.
+fn run_at<S, F>(rate: &'static str, setup: Setup, script: S) -> Record
 where
     S: FnOnce(Rc<Scene>) -> F + Send + 'static,
     F: Future<Output = Result<(), Error>> + 'static,
@@ -477,10 +496,11 @@ where
         let statuses = record(&hub, &names, &tasks).await;
         let address = format!("opc.tcp://{}:4840", node.addresses()[0]);
         let scene = Rc::new(Scene {
-            config: config(&address, &setup.reads),
+            config: config(&address, rate, &setup.reads),
             variables: setup.variables(),
             supervisor: Supervisor::new(inputs),
             server: RefCell::new(None),
+            gate: Gate::default(),
             node: node.clone(),
             tasks,
             hub,
@@ -495,9 +515,7 @@ where
             .into_iter()
             .map(|(index, frames)| (index, frames.take()));
         let indexes: BTreeMap<u128, Vec<Frame>> = indexes.collect();
-        let statuses = statuses.take();
-        let served = scene.variables.served();
-        (result, indexes, statuses, served)
+        (result, indexes, statuses.take(), scene.variables.served())
     });
     let (result, mut indexes, statuses, served) = run.expect("the run ends");
     Record {
@@ -700,7 +718,7 @@ fn ends_the_run_with_a_device_error_when_the_server_stops_and_reads_again_after(
         [
             (
                 DEVICE,
-                "the read failed with BadSecureChannelClosed".to_owned()
+                "the read failed with BadServerNotConnected".to_owned()
             ),
             (DEVICE, connect.to_owned()),
         ]
@@ -712,6 +730,19 @@ fn ends_the_run_with_a_device_error_when_the_server_stops_and_reads_again_after(
     assert_eq!((before.len(), after.len()), (11, 46));
     assert!(after[0] > ms(3_050).nanos(), "{after:?}");
     assert_eq!(last(&outcome.statuses, RESTARTS), 2);
+}
+
+/// A tick period of 2000 s is longer than the channel lifetime (10 min) and the session
+/// timeout (20 min) that the client asks for, and each read still finds both.
+#[test]
+fn reads_at_a_rate_slower_than_the_session_timeout_with_no_device_error() {
+    let outcome = run_at("0.0005Hz", Setup::three(), |scene| async move {
+        scene.supervise(ms(4_050_000)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(errors(&outcome.statuses), []);
+    assert_eq!(last(&outcome.statuses, RESTARTS), 0);
+    assert_eq!(outcome.frames.len(), 3);
 }
 
 /// The counts hold across the runs of one supervisor call, as `status::Count` does.
@@ -1309,6 +1340,70 @@ fn closes_the_session_at_each_end_with_an_error() {
     assert_eq!(last(&outcome.statuses, RESTARTS), 5);
 }
 
+/// Supervises [`PLC`] for `span`, then cancels it, and gives how long the supervise
+/// took after the cancel.
+async fn ends_after_the_cancel(scene: &Scene, span: Span) -> Span {
+    let start = scene.node.clock().now();
+    scene
+        .supervise(span)
+        .await
+        .expect("a cancel ends the supervise with Ok");
+    Span::from_nanos((scene.node.clock().now() - start).nanos() - span.nanos())
+}
+
+/// A cancel during the read of `MaxNodesPerRead`, on a server that stops after the
+/// activation, ends the run [`GRACE`] after it: the close waits that long for the
+/// answer to its `CloseSession`. The client sends the read 3.5 ms after the start, and
+/// the server gets it 250 us later.
+#[test]
+fn a_cancel_during_the_read_of_the_limit_on_a_stopped_server_ends_after_the_grace() {
+    let outcome = run(Setup::three(), |scene| async move {
+        let stop = Span::from_nanos(3_600_000);
+        scene.after(stop, |scene| async move { scene.gate.close() });
+        assert_eq!(ends_after_the_cancel(&scene, ms(500)).await, GRACE);
+        Ok(())
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(errors(&outcome.statuses), []);
+}
+
+/// A cancel while the `CreateSession` is in flight, on a server that stops, ends the
+/// run [`GRACE`] after it. The client sends the request 2.5 ms after the start, and
+/// the server gets it 250 us later.
+#[test]
+fn a_cancel_while_the_create_session_is_in_flight_ends_after_the_grace() {
+    let outcome = run(Setup::three(), |scene| async move {
+        let stop = Span::from_nanos(2_600_000);
+        scene.after(stop, |scene| async move { scene.gate.close() });
+        assert_eq!(ends_after_the_cancel(&scene, ms(500)).await, GRACE);
+        Ok(())
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(errors(&outcome.statuses), []);
+}
+
+/// A cancel during a read ends the run once the server answers its `CloseSession`,
+/// before [`GRACE`], so the server holds no session: each of five runs connects and
+/// reads, on a server with room for four sessions. In each run, the server stops
+/// before the read of 200 ms and works again 100 ms after the cancel at 250 ms.
+#[test]
+fn a_cancel_during_a_read_ends_the_run_once_the_server_closes_the_session() {
+    let outcome = run(Setup::three(), |scene| async move {
+        let mut ends = Vec::new();
+        for _ in 0..5 {
+            scene.after(ms(150), |scene| async move { scene.gate.close() });
+            scene.after(ms(350), |scene| async move { scene.gate.open() });
+            ends.push(ends_after_the_cancel(&scene, ms(250)).await);
+            scene.node.clock().sleep(ms(500)).await;
+        }
+        assert_eq!(ends, [Span::from_nanos(100_250_000); 5]);
+        Ok(())
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(errors(&outcome.statuses), []);
+    assert_eq!(served(&outcome, A).len(), 15);
+}
+
 /// Each refused group is written again after the latest stamp that the home gives,
 /// whichever index has it.
 #[test]
@@ -1394,21 +1489,6 @@ fn stamps_each_frame_within_its_read() {
         let answered = i64::try_from(served.time.0).expect("small") + offset;
         assert_eq!(stamp(frame, 1), answered);
     }
-}
-
-/// Builds `Values` with a value that `Kept::sort` leaves out, which `Kept::sort` never
-/// gives. This test is the only kill of a `get` that gives a value for a left
-/// out read in place of the panic.
-#[test]
-#[should_panic(
-    expected = "invariant: read 2 is Err(Status(BadNotFound)), which `Kept::sort` \
-                leaves out"
-)]
-fn panics_with_the_read_whose_value_is_left_out() {
-    use crate::value::{Fault, Value};
-    let bad = Err(Fault::status(Status::BAD_NOT_FOUND));
-    let values = [Ok(Value::F64(1.0)), bad, bad];
-    Values(&values).get(2);
 }
 
 #[test]

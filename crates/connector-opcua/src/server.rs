@@ -298,10 +298,7 @@ impl Server {
             panic::resume_unwind(panic);
         }
         let out = {
-            let mut drive = pin!(manager.drive(|_| {
-                manager.events().run();
-                Poll::<()>::Pending
-            }));
+            let mut drive = pin!(manager.drive(|_| Poll::<()>::Pending));
             let mut until = pin!(until);
             poll_fn(|cx| {
                 assert!(drive.as_mut().poll(cx).is_pending(), "a drive never ends");
@@ -338,7 +335,6 @@ impl Server {
         let mut runs = 0;
         manager
             .drive(|_| {
-                events.run();
                 runs += 1;
                 if !events.delayed() {
                     return Poll::Ready(());

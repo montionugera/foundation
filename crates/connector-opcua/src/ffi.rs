@@ -512,6 +512,7 @@ unsafe extern "C" {
         limits: *mut [usize; 5],
     ) -> u32;
     pub(crate) fn UA_Client_disconnectAsync(client: *mut Client) -> u32;
+    pub(crate) fn UA_Client_disconnectSecureChannelAsync(client: *mut Client) -> u32;
     pub(crate) fn UA_Client_connectAsync(
         client: *mut Client,
         url: *const c_char,

@@ -4,8 +4,10 @@
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_void};
+use std::future;
 use std::mem;
 use std::num::NonZeroUsize;
+use std::pin::pin;
 use std::ptr::{self, NonNull};
 use std::rc::Rc;
 use std::task::Poll;
@@ -28,6 +30,9 @@ mod tests;
 /// The most requests of a client in flight. A request past it waits until one ends.
 const READS: u16 = 16;
 
+/// The most time that [`Client::close`] waits for the server.
+pub(crate) const GRACE: Span = Span::SECOND;
+
 /// The bytes of the headers of a chunk with the security mode None: the message header
 /// (8), the channel (4), the token (4), and the sequence header (8).
 const HEADER: usize = 24;
@@ -49,10 +54,10 @@ const _: () = assert!(
 
 /// A client of open62541 with an active session, on its own loop and connection
 /// manager, on the thread that made it. Its loop runs only in its calls, so a client
-/// idle for longer than the channel lifetime of its server (often 10 minutes) loses
-/// its connection, and each later read fails. A drop closes its connection and waits
-/// for nothing, but leaves its session on the server until the session times out; a
-/// [`Client::close`] closes the session too.
+/// that waits for longer than the channel lifetime of its server (often 10 minutes)
+/// outside [`Client::idle`] loses its connection, and each later read fails. A drop
+/// closes its connection and waits for nothing, but leaves its session on the server
+/// until the session times out; a [`Client::close`] closes the session too.
 pub(crate) struct Client {
     raw: NonNull<ffi::Client>,
     /// C holds a pointer to it until `raw` is deleted, which calls the callback of each
@@ -111,11 +116,13 @@ struct Slots {
 }
 
 impl Client {
-    /// Makes a client on its own manager over `time`, `net`, and `rng`, connects it to
-    /// the server at the endpoint `url` with the security mode `None` and an anonymous
-    /// session, and gives it once the session is active and it has read the
-    /// `MaxNodesPerRead` of the server. On an error, it closes the session that it made
-    /// with [`Client::close`] first, which can take up to two more request timeouts.
+    /// Makes a client on its own manager over `time`, `net`, and `rng`, and connects
+    /// it to the server at the endpoint `url` with the security mode `None` and an
+    /// anonymous session. It gives the client once the session is active and it has
+    /// read the `MaxNodesPerRead` of the server, or `None` when `until` ends first.
+    /// After an error, or when `until` ends first, it closes the session that the
+    /// connect made, as [`Client::close`] does, so it ends within [`GRACE`] of either.
+    /// A drop of the future drops the client.
     ///
     /// # Errors
     ///
@@ -134,7 +141,39 @@ impl Client {
         net: Net,
         rng: &mut Rng,
         url: &CStr,
-    ) -> Result<Self, Status> {
+        until: impl Future<Output = ()>,
+    ) -> Result<Option<Self>, Status> {
+        let mut client = Self::new(time, net, rng);
+        let opened = {
+            let (mut until, mut open) = (pin!(until), pin!(client.open(url)));
+            future::poll_fn(|cx| {
+                if until.as_mut().poll(cx).is_ready() {
+                    return Poll::Ready(None);
+                }
+                open.as_mut().poll(cx).map(Some)
+            })
+            .await
+        };
+        match opened {
+            Some(Ok(())) => Ok(Some(client)),
+            Some(Err(status)) => {
+                client.close().await;
+                Err(status)
+            }
+            None => {
+                client.close().await;
+                Ok(None)
+            }
+        }
+    }
+
+    /// Makes a client on its own manager over `time`, `net`, and `rng`, with no
+    /// connection.
+    ///
+    /// # Aborts
+    ///
+    /// As [`Client::connect`].
+    fn new(time: Time, net: Net, rng: &mut Rng) -> Self {
         let clock = Clock::clone(&time.clock);
         let connections = Manager::new(time, net, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
@@ -143,46 +182,49 @@ impl Client {
             alloc::exhausted()
         };
         // SAFETY: `raw` is a new client of the loop of `connections`.
-        unsafe { Self::start(clock, connections, raw, url) }.await
+        unsafe { Self::of(clock, connections, raw) }
     }
 
-    /// Connects `raw` as [`Client::connect`] does.
+    /// The client of `raw`, as [`Client::new`] gives it.
     ///
     /// # Safety
     ///
     /// `raw` comes from `shim_client_new` on the loop of `connections`, has not
     /// connected, and nothing else owns it: the client frees it.
-    async unsafe fn start(
+    unsafe fn of(
         clock: Clock,
         connections: Manager,
         raw: NonNull<ffi::Client>,
-        url: &CStr,
-    ) -> Result<Self, Status> {
+    ) -> Self {
         // SAFETY: the client lives.
         let timeout_ms = unsafe { ffi::shim_client_timeout(raw.as_ptr()) };
-        let timeout = Span::from_nanos(i64::from(timeout_ms) * 1_000_000);
-        let mut this = Self {
+        Self {
             raw,
             reads: Box::default(),
             values: Vec::new(),
             clock,
-            timeout,
+            timeout: Span::from_nanos(i64::from(timeout_ms) * 1_000_000),
             sends: 0,
             takes: 0,
             token: 0,
             per_read: None,
             key: Rc::default(),
             connections,
-        };
-        let deadline = this.clock.now() + this.timeout;
+        }
+    }
+
+    /// Connects the new client to `url`, as [`Client::connect`] does. The client holds
+    /// the state of the connect, so the future can drop at any point, and
+    /// [`Client::close`] then closes the session that it made.
+    async fn open(&mut self, url: &CStr) -> Result<(), Status> {
+        let deadline = self.clock.now() + self.timeout;
         // SAFETY: the client lives, and copies the URL. The drive reads the status that
         // it gives from the state of the client.
-        unsafe { ffi::UA_Client_connectAsync(this.raw.as_ptr(), url.as_ptr()) };
-        let connected = this
+        unsafe { ffi::UA_Client_connectAsync(self.raw.as_ptr(), url.as_ptr()) };
+        let connected = self
             .connections
             .drive_until(Some(deadline), |_| {
-                this.connections.events().run();
-                let state = this.state();
+                let state = self.state();
                 if state.status != Status::GOOD {
                     Poll::Ready(Err(state.status))
                 } else if state.session == ffi::Session::ACTIVATED {
@@ -198,27 +240,19 @@ impl Client {
                 let mut limits = [0; 5];
                 // SAFETY: the client lives.
                 let status = Status(unsafe {
-                    ffi::shim_client_limits(this.raw.as_ptr(), &raw mut limits)
+                    ffi::shim_client_limits(self.raw.as_ptr(), &raw mut limits)
                 });
                 assert_eq!(status, Status::GOOD, "open62541 gives the limits");
                 let [send, receive, message, chunks, token] = limits;
-                (this.sends, this.takes) =
+                (self.sends, self.takes) =
                     (most(send, message, chunks), most(receive, message, chunks));
-                this.token = token;
-                this.per_read().await
+                self.token = token;
+                self.per_read().await
             }
             Err(status) => Err(status),
         };
-        match per_read {
-            Ok(per_read) => {
-                this.per_read = per_read;
-                Ok(this)
-            }
-            Err(status) => {
-                this.close().await;
-                Err(status)
-            }
-        }
+        self.per_read = per_read?;
+        Ok(())
     }
 
     /// Reads the `MaxNodesPerRead` of the server: a `UInt32` above 0, else none, also
@@ -349,24 +383,17 @@ impl Client {
         let read = self
             .connections
             .drive_until(Some(deadline), |_| {
-                loop {
-                    if let Err(status) = self.send(nodes, &mut sent) {
-                        return Poll::Ready(Err(status));
-                    }
-                    self.connections.events().run();
-                    if let Some(status) = self.reads.failed.get() {
-                        return Poll::Ready(Err(status));
-                    }
-                    if sent == nodes.parts.len() {
-                        return if self.reads.requests.borrow().is_empty() {
-                            Poll::Ready(Ok(()))
-                        } else {
-                            Poll::Pending
-                        };
-                    }
-                    if self.reads.pending.get() == READS {
-                        return Poll::Pending;
-                    }
+                if let Some(status) = self.reads.failed.get() {
+                    return Poll::Ready(Err(status));
+                }
+                if let Err(status) = self.send(nodes, &mut sent) {
+                    return Poll::Ready(Err(status));
+                }
+                if sent == nodes.parts.len() && self.reads.requests.borrow().is_empty()
+                {
+                    Poll::Ready(Ok(()))
+                } else {
+                    Poll::Pending
                 }
             })
             .await;
@@ -411,17 +438,27 @@ impl Client {
         Ok(())
     }
 
+    /// Drives the client until `until` ends, and gives its value, so the client keeps
+    /// its channel and its session while it waits. A failure while it waits shows in
+    /// the next read.
+    pub(crate) async fn idle<T>(&mut self, until: impl Future<Output = T>) -> T {
+        let mut until = pin!(until);
+        self.connections.drive(|cx| until.as_mut().poll(cx)).await
+    }
+
     /// Closes the session and the connection of the client, and waits until the
-    /// connection is closed. When the server has not answered the request that makes
-    /// the session, it waits for that answer or for its request timeout first. A client
-    /// that lost its connection cannot close its session, which stays on the server
-    /// until it times out.
+    /// connection is closed, at most [`GRACE`] after the call plus the time to close
+    /// the connection. It sends a `CloseSession` and waits for its answer, but first
+    /// waits for the answer to a `CreateSession` in flight. When the server does not
+    /// answer in time, or the client lost its connection, the session stays on the
+    /// server until it times out.
     pub(crate) async fn close(self) {
+        let deadline = self.clock.now() + GRACE;
         // The server refuses a CloseSession sent before the CreateSession answer, and
         // open62541 then activates the session, which the server keeps.
-        self.connections
-            .drive(|_| {
-                self.connections.events().run();
+        let created = self
+            .connections
+            .drive_until(Some(deadline), |_| {
                 if self.state().session == ffi::Session::CREATE_REQUESTED {
                     Poll::Pending
                 } else {
@@ -429,18 +466,25 @@ impl Client {
                 }
             })
             .await;
-        // SAFETY: the client lives. On a failure to send, it closes the connection.
-        unsafe { ffi::UA_Client_disconnectAsync(self.raw.as_ptr()) };
-        self.connections
-            .drive(|_| {
-                self.connections.events().run();
-                if self.state().channel == ffi::Channel::CLOSED {
-                    Poll::Ready(())
-                } else {
-                    Poll::Pending
-                }
-            })
-            .await;
+        if created.is_some() {
+            // SAFETY: the client lives. On a failure to send, it closes the connection.
+            unsafe { ffi::UA_Client_disconnectAsync(self.raw.as_ptr()) };
+            self.connections
+                .drive_until(Some(deadline), |_| self.closed())
+                .await;
+        }
+        // SAFETY: the client lives. A closed channel stays closed.
+        unsafe { ffi::UA_Client_disconnectSecureChannelAsync(self.raw.as_ptr()) };
+        self.connections.drive(|_| self.closed()).await;
+    }
+
+    /// Ready when the channel of the client is closed.
+    fn closed(&self) -> Poll<()> {
+        if self.state().channel == ffi::Channel::CLOSED {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
     }
 
     /// Gives the state of the client.

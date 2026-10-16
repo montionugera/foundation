@@ -504,14 +504,18 @@
   https://github.com/synnaxlabs/foundation/pull/2106#issuecomment-6074900634).
   The TCP connection manager of `connector-opcua` is `connection::Manager`. It owns its
   loop and its connections, on one thread, and takes the clock, network, and randomness
-  of `env` at `new`. `drive(run)` moves each connection on and polls `run` with the
-  context of the drive until `run` gives a value, so `run` can poll its own sources. One
-  drive of a manager runs at a time. A connect, a send, or a close from `run` or from
-  another task on that thread wakes the drive. After each `run`, also the one that gives
-  the value, the drive moves on each connection again after each connect, send, or close
-  on it that the `run` or such a step asks for, so it can also read and call open62541
-  back after that `run`, except the listen connection after an accept, which moves on
-  only after the next `run`. At most 256 sends wait on one connection: a send past them
+  of `env` at `new`. `drive(check)` moves each connection on, runs the loop of
+  open62541 with no wait, and then polls `check` with the context of the drive, until
+  `check` gives a value. So `check` only reads the state that the run left, and can poll
+  its own sources; no caller runs the loop
+  (https://github.com/synnaxlabs/foundation/issues/2415). The step of
+  `bench::Manager::ask` that asks for a read moves from before the run to after it. One
+  drive of a manager runs at a time. A connect, a send, or a close from `check` or from
+  another task on that thread wakes the drive. After each `check`, also the one that
+  gives the value, the drive moves on each connection again after each connect, send,
+  or close on it that the `check` or such a step asks for, so it can also read and call
+  open62541 back after that `check`, except the listen connection after an accept,
+  which moves on only after the next `check`. At most 256 sends wait on one connection: a send past them
   closes the connection. open62541 allocates each send at most at the send buffer size
   of its channel, so this bounds the memory of a connection at 256 send buffers. Sends
   wait from one pass to the next, and longer while a stream is full, so an owner keeps
@@ -710,14 +714,30 @@
   (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6107958993,
   2026-10-11 10:14 UTC).
   A `client::Client` owns its connection manager, and so its loop, and its `UA_Client`.
-  Its `close` first waits for the answer to a CreateSession in flight, or for its
-  request timeout. The server refuses a CloseSession sent before that answer, since it
-  has no session token, and when the answer then comes, open62541 activates the session,
-  which the server keeps after the channel closes. Then `close` sends a CloseSession
-  with `UA_Client_disconnectAsync` and drives its manager until the channel is closed,
-  so a close with a CreateSession in flight can take two request timeouts. A client that
-  lost its channel sends no CloseSession, so its session stays on the server until it
-  times out (https://github.com/synnaxlabs/foundation/issues/2400). The wait works
+  Its `close` has a grace of 1 s on the `env` clock, a private const. It first waits
+  for the answer to a CreateSession in flight. The server refuses a CloseSession sent
+  before that answer, since it has no session token, and when the answer then comes,
+  open62541 activates the session, which the server keeps after the channel closes.
+  Then `close` sends a CloseSession with `UA_Client_disconnectAsync` and drives its
+  manager until the channel is closed. When the grace ends first, it closes the channel
+  with `UA_Client_disconnectSecureChannelAsync` and drives its manager until the
+  channel is closed. So a close ends within the grace plus the time to close the
+  channel, and the CreateSession wait is in the same grace. The close is not raced with
+  a cancel. A client that lost its channel, or whose server does not answer in the
+  grace, leaves its session on the server until it times out
+  (https://github.com/synnaxlabs/foundation/issues/2400). Lost: the request timeout as
+  the bound, which is a stop of up to 10 s for each connector on a server that stops
+  answering. Lost: a close with no wait, which leaves a session on each live server
+  for its session timeout (1 h), so restarts fill a server with few sessions. Lost: no
+  wait after the CloseSession, as a server that reads the request after the channel
+  closes may drop it. A server that answers the CreateSession after the grace can keep
+  that session until it times out, as after a lost channel. The open62541 test server
+  drops it, as the session is not active when the channel closes. Ruled by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6206438915,
+  2026-10-16 02:08 UTC), with the CreateSession wait in the grace as its amendment
+  (https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6206868666,
+  2026-10-16 02:44 UTC). The wait works
   around `src/client/ua_client_connect.c` of open62541: `UA_Client_disconnectAsync`
   (lines 2956 to 2976) sets the state CLOSING and sends a CloseSession with no token,
   and the callback of the CreateSession (line 1734) then writes CREATED over CLOSING.

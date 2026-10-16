@@ -143,6 +143,7 @@ impl Manager {
             waker: RefCell::new(None),
             driving: Cell::new(false),
             held: Cell::new(false),
+            sleep: Cell::new(None),
             ahead: Cell::new(usize::MAX),
             again: RefCell::new(Vec::new()),
             accepted: Cell::new(None),
@@ -188,39 +189,40 @@ impl Manager {
         port
     }
 
-    /// Moves the connections on and calls `run` until `run` gives a value, and gives
-    /// it. `run` runs the loop with a timeout of 0, alone or through its client or
-    /// server, and may poll its own sources with the context it gets. Between calls,
-    /// the drive sleeps until the next timer of the loop or a wake, also from a send or
-    /// a close that `run` or another task asks for. After each call, also the one that
-    /// gives the value, it moves on each connection again after each connect, send, or
-    /// close on it that the call or such a step asks for, so it can also read and call
-    /// open62541 back after that call. It accepts at most one stream between two
-    /// calls: after an accept, the listen connection moves on only after the next call.
+    /// Moves the connections on, runs the loop with no wait, and calls `check` after
+    /// each run until it gives a value, and gives it. `check` reads the state that the
+    /// run left, may ask for a send or a close, and may poll its own sources with the
+    /// context it gets. Between runs, the drive sleeps until the next timer of the
+    /// loop or a wake, also from a send or a close that `check` or another task asks
+    /// for. After each call, also the one that gives the value, it moves on each
+    /// connection again after each connect, send, or close on it that the call or such
+    /// a step asks for, so it can also read and call open62541 back after that call.
+    /// It accepts at most one stream between two calls: after an accept, the listen
+    /// connection moves on only after the next call.
     ///
     /// # Panics
     ///
     /// When another drive of the manager runs, since one would take the wakes of the
-    /// other.
+    /// other. When open62541 fails a run of the loop.
     pub(crate) async fn drive<T>(
         &self,
-        run: impl FnMut(&mut Context<'_>) -> Poll<T>,
+        check: impl FnMut(&mut Context<'_>) -> Poll<T>,
     ) -> T {
-        self.drive_until(None, run)
+        self.drive_until(None, check)
             .await
             .expect("invariant: a drive with no deadline ends only with a value")
     }
 
     /// Drives as [`Manager::drive`] does, but gives `None` when the clock reaches
-    /// `deadline`, if any, before `run` gives a value.
+    /// `deadline`, if any, before `check` gives a value.
     ///
     /// # Panics
     ///
-    /// When another drive of the manager runs.
+    /// As [`Manager::drive`].
     pub(crate) async fn drive_until<T>(
         &self,
         deadline: Option<Monotonic>,
-        mut run: impl FnMut(&mut Context<'_>) -> Poll<T>,
+        mut check: impl FnMut(&mut Context<'_>) -> Poll<T>,
     ) -> Option<T> {
         let state = self.state();
         assert!(
@@ -228,13 +230,14 @@ impl Manager {
             "one drive of a manager at a time"
         );
         let _held = Held(&state.held);
-        let mut sleep: Option<Sleep> = None;
-        poll_fn(|cx| {
+        let mut sleep = state.sleep.take();
+        let out = poll_fn(|cx| {
             state.driving.set(true);
             let _driving = Held(&state.driving);
             self.pass(cx);
             loop {
-                let poll = run(cx);
+                self.events.run();
+                let poll = check(cx);
                 // Before `again`: an accept puts its new connection there.
                 state.resume(cx);
                 let moved = state.move_on_again(cx);
@@ -265,7 +268,9 @@ impl Manager {
                 }
             }
         })
-        .await
+        .await;
+        state.sleep.set(sleep);
+        out
     }
 
     /// Connects, reads, and writes each connection until each waits, and has the task
@@ -336,6 +341,8 @@ struct State {
     driving: Cell<bool>,
     /// Whether a drive exists, from its first poll until its drop.
     held: Cell<bool>,
+    /// The sleep of the drives, kept between them so a drive allocates none.
+    sleep: Cell<Option<Sleep>>,
     /// The first key that the running pass has not reached, or `usize::MAX` outside a
     /// pass.
     ahead: Cell<usize>,
