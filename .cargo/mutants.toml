@@ -116,7 +116,7 @@ exclude_re = [
   'crates/os/src/files\.rs:.*in <impl env::files::Driver for Disk>::free$',
   # macOS only: Linux fails `canonicalize` of a file path that ends in `/` before the
   # guard. `a_resolve_through_a_file_fails` catches it on macOS.
-  'crates/os/src/paths\.rs:.*replace match guard names_directory\(path\) .* with false in resolve$',
+  'crates/os/src/paths\.rs:.*guard names_directory\(path\) .* with false in resolve$',
   # macOS only. CI runs Linux and does not build it; its tests run on macOS.
   'crates/os/src/allocate\.rs:',
   # macOS only, as above. `this_host_has_whole_pages_available` and
