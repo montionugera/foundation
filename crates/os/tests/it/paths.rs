@@ -502,6 +502,30 @@ fn a_read_of_a_path_that_swaps_a_directory_for_a_file_gives_one_of_them() {
     assert_eq!(other, None);
 }
 
+/// `link` names a file or a FIFO at each instant. A read gives the file or `Io` 22,
+/// never the empty read of the FIFO, and never waits for its writer.
+#[test]
+fn a_read_of_a_path_that_swaps_a_file_for_a_pipe_gives_the_file_or_an_invalid_argument()
+{
+    let scratch = Scratch::new();
+    let (pipe, file) = (scratch.0.join("pipe"), scratch.0.join("file"));
+    mkfifo(&pipe);
+    fs::write(&file, b"x").unwrap();
+    let (link, next) = (scratch.0.join("link"), scratch.0.join("next"));
+    symlink(&file, &link).unwrap();
+    let swap = || {
+        for target in [&pipe, &file] {
+            symlink(target, &next).unwrap();
+            fs::rename(&next, &link).unwrap();
+        }
+    };
+    let other = race(swap, 5_000, &link, |read| {
+        matches!(read, Ok(Found::File(bytes)) if bytes == b"x")
+            || *read == Err(Error::Io { code: 22 })
+    });
+    assert_eq!(other, None);
+}
+
 /// `plant` and `file` swap a directory and a file in one step.
 #[test]
 fn a_read_of_a_directory_that_becomes_a_file_gives_no_error() {
