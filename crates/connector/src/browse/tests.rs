@@ -220,6 +220,24 @@ mod text {
     }
 
     #[test]
+    fn compares_paths_by_their_names() {
+        assert_eq!(path("a/b"), Path::root().child("a").child("b"));
+        assert_ne!(path("a/b"), path("b"));
+        assert_ne!(path("b"), path("a/b"));
+        assert_ne!(path("a/b"), path("a/c"));
+        assert_ne!(path("a"), Path::root());
+    }
+
+    #[test]
+    fn drops_a_deep_path() {
+        let mut path = Path::root();
+        for _ in 0..1_000_000 {
+            path = path.child("n");
+        }
+        assert_eq!(path.names().len(), 1_000_000);
+    }
+
+    #[test]
     fn shows_a_path_as_its_text_in_debug() {
         assert_eq!(format!("{:?}", path("a/b")), r#""a/b""#);
     }

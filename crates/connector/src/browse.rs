@@ -151,9 +151,9 @@ impl<D: Device> Walker<'_, D> {
             .into());
         }
         for entry in &page.entries {
-            let broken = match entry.path.names.split_last() {
-                Some((name, parent)) if parent == &path.names[..] => {
-                    if !name.is_empty() {
+            let broken = match &entry.path.0 {
+                Some(link) if link.folder == *path => {
+                    if !link.name.is_empty() {
                         continue;
                     }
                     Broken::Empty {
@@ -200,7 +200,7 @@ impl<D: Device> Walker<'_, D> {
         start: &Path,
     ) -> Result<ControlFlow<End, Option<Entry>>, Error> {
         let mut folder = None;
-        for (i, name) in start.names.iter().enumerate() {
+        for at in start.links() {
             let mut cursor = None;
             let child = 'pages: loop {
                 let ControlFlow::Continue(page) =
@@ -212,7 +212,7 @@ impl<D: Device> Walker<'_, D> {
                     if !self.visit() {
                         return Ok(ControlFlow::Break(End::Budget));
                     }
-                    if entry.path.names.last() == Some(name) {
+                    if entry.path.0.as_ref().is_some_and(|e| e.name == at.name) {
                         break 'pages Some(entry);
                     }
                 }
@@ -224,8 +224,7 @@ impl<D: Device> Walker<'_, D> {
             match child {
                 Some(entry) if entry.shape == Shape::Folder => folder = Some(entry),
                 _ => {
-                    let names = start.names[..=i].to_vec();
-                    return Err(no_folder(&Path { names }));
+                    return Err(no_folder(&Path(Some(Arc::clone(at)))));
                 }
             }
         }
@@ -266,12 +265,9 @@ impl<D: Device> Walker<'_, D> {
             if !self.visit() {
                 return Ok((found, End::Budget));
             }
-            let name = entry
-                .path
-                .names
-                .last()
-                .expect("invariant: an entry has a name");
-            let state = pattern.step(&frame.state, name);
+            let link = entry.path.0.as_ref();
+            let link = link.expect("invariant: an entry has a name");
+            let state = pattern.step(&frame.state, &link.name);
             if entry.shape == Shape::Folder {
                 let looped = stack.iter().any(|frame| {
                     frame.state == state
@@ -363,31 +359,85 @@ const BROKEN: Code = Code::new("connector.broken-browse");
 /// the way, its own last. No name of a path that [`walk`] gives is empty. Its text
 /// joins the names with `/`, with `\` before each `/`, `*`, and `\` in a name. The
 /// root is the empty text.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Path {
-    names: Vec<Arc<str>>,
+#[derive(Clone)]
+pub struct Path(Option<Arc<Link>>);
+
+/// The last name of a path that is not the root, and the path of its folder.
+struct Link {
+    folder: Path,
+    name: Arc<str>,
+    /// The count of names of the path.
+    len: usize,
 }
 
 impl Path {
     /// The root, with no name.
     #[must_use]
     pub fn root() -> Self {
-        Self { names: Vec::new() }
+        Self(None)
     }
 
-    /// The path of the entry `name` in this folder. [`walk`] refuses an entry whose
-    /// name is empty: no text names it.
+    /// The path of the entry `name` in this folder. It shares this path, so it costs
+    /// one link at any depth. [`walk`] refuses an entry whose name is empty: no text
+    /// names it.
     #[must_use]
     pub fn child(&self, name: impl Into<Arc<str>>) -> Self {
-        let mut names = Vec::with_capacity(self.names.len() + 1);
-        names.extend_from_slice(&self.names);
-        names.push(name.into());
-        Self { names }
+        Self(Some(Arc::new(Link {
+            folder: self.clone(),
+            name: name.into(),
+            len: self.len() + 1,
+        })))
     }
 
     /// The name of each entry from the root, in order.
+    #[must_use]
     pub fn names(&self) -> impl ExactSizeIterator<Item = &str> {
-        self.names.iter().map(AsRef::as_ref)
+        self.links().into_iter().map(|link| &*link.name)
+    }
+
+    fn len(&self) -> usize {
+        self.0.as_ref().map_or(0, |link| link.len)
+    }
+
+    /// The link of each name from the root, in order.
+    fn links(&self) -> Vec<&Arc<Link>> {
+        let mut links = Vec::with_capacity(self.len());
+        let mut at = self;
+        while let Some(link) = &at.0 {
+            links.push(link);
+            at = &link.folder;
+        }
+        links.reverse();
+        links
+    }
+}
+
+impl PartialEq for Path {
+    fn eq(&self, other: &Self) -> bool {
+        let (mut a, mut b) = (self, other);
+        loop {
+            match (&a.0, &b.0) {
+                (Some(x), Some(y)) if Arc::ptr_eq(x, y) => return true,
+                (Some(x), Some(y)) if x.name == y.name => {
+                    (a, b) = (&x.folder, &y.folder);
+                }
+                (None, None) => return true,
+                _ => return false,
+            }
+        }
+    }
+}
+
+impl Eq for Path {}
+
+impl Drop for Path {
+    /// Drops the links that only this path holds one at a time, so a deep path does
+    /// not drop by recursion.
+    fn drop(&mut self) {
+        let mut next = self.0.take();
+        while let Some(link) = next {
+            next = Arc::into_inner(link).and_then(|mut link| link.folder.0.take());
+        }
     }
 }
 
@@ -399,18 +449,16 @@ impl FromStr for Path {
         if text.is_empty() {
             return Ok(Self::root());
         }
-        let names = split(text)?
-            .into_iter()
-            .map(|name| name.into_iter().map(Char::char).collect::<String>().into())
-            .collect();
-        Ok(Self { names })
+        Ok(split(text)?.into_iter().fold(Self::root(), |path, name| {
+            path.child(name.into_iter().map(Char::char).collect::<String>())
+        }))
     }
 }
 
 impl fmt::Display for Path {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut separator = "";
-        for name in &self.names {
+        for name in self.names() {
             f.write_str(separator)?;
             name.chars().try_for_each(|c| escape(f, c))?;
             separator = "/";
