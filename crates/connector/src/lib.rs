@@ -1,6 +1,6 @@
 //! Defines the kind contract (parse, check, discover, run, browse, block), the browse
-//! walk, the names of an import, the thin supervisor, `ctx`, the component library,
-//! and the compositions.
+//! walk, the channel names of an import, the thin supervisor, `ctx`, the component
+//! library, and the compositions.
 
 pub mod browse;
 pub mod cancel;
