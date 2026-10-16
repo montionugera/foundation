@@ -26,7 +26,7 @@ use types::sample::Scalar;
 
 use super::*;
 use crate::device::Device;
-use crate::poll::Order;
+use crate::read::Order;
 use crate::tcp::serve;
 
 /// An attribute of `key` with `kind` and no span.

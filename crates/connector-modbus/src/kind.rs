@@ -14,7 +14,7 @@ use types::time::Span;
 
 use crate::config::{self, Config};
 use crate::pdu::{Exception, Request, Table};
-use crate::poll::{self, Group};
+use crate::read::{self, Group};
 use crate::tcp::{Client, Failure};
 
 #[cfg(test)]
@@ -122,20 +122,20 @@ fn groups(
 ) -> Result<Vec<Group>, Error> {
     let (mut reads, mut wrong) = (Vec::with_capacity(config.reads.len()), Vec::new());
     for (read, sample) in config.reads.iter().zip(types) {
-        match poll::Read::new(read.table, read.address, sample) {
+        match read::Read::new(read.table, read.address, sample) {
             Ok(valid) => reads.push(valid),
             Err(error) => {
                 let (code, fix) = match error {
-                    poll::Error::Type { .. } => (
+                    read::Error::Type { .. } => (
                         SAMPLE_TYPE,
                         "Give the channel a sample type that its table holds",
                     ),
-                    poll::Error::Range { .. } => (
+                    read::Error::Range { .. } => (
                         RANGE,
                         "Give the read a lower address, or the channel a type of fewer \
                          registers",
                     ),
-                    poll::Error::ReadOnly { .. } => {
+                    read::Error::ReadOnly { .. } => {
                         unreachable!("invariant: `Read::new` gives no `ReadOnly`")
                     }
                 };
@@ -147,7 +147,7 @@ fn groups(
     if !wrong.is_empty() {
         return Err(Error::Config(wrong));
     }
-    Ok(poll::groups(&reads, config.order))
+    Ok(read::groups(&reads, config.order))
 }
 
 /// The channel, the address, and the table of `read`, for a diagnostic.

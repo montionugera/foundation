@@ -1,9 +1,9 @@
-//! The cost of `poll::Group::values` over one full group, so the time per item is the
+//! The cost of `read::Group::values` over one full group, so the time per item is the
 //! time per sample: 2000 coils, and full groups of holding registers of each width in
-//! each order. Run with `cargo bench -p connector-modbus --bench poll`.
+//! each order. Run with `cargo bench -p connector-modbus --bench read`.
 
 use connector_modbus::pdu::{Request, Table};
-use connector_modbus::poll::{self, Order, Read};
+use connector_modbus::read::{self, Order, Read};
 use divan::counter::ItemsCount;
 use divan::{Bencher, black_box};
 use types::sample::{Scalar, Type};
@@ -31,7 +31,7 @@ fn values(bencher: Bencher<'_, '_>, case: usize) {
             Read::new(table, at * width, Type::Scalar(scalar)).expect("a valid read")
         })
         .collect();
-    let groups = poll::groups(&reads, order);
+    let groups = read::groups(&reads, order);
     let [group] = groups.as_slice() else {
         panic!("{len} reads of {scalar:?} give one group");
     };

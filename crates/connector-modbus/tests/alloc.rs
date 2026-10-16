@@ -6,7 +6,7 @@
 
 use connector_modbus::command::Write;
 use connector_modbus::pdu::Table;
-use connector_modbus::poll::{self, Order, Read};
+use connector_modbus::read::{self, Order, Read};
 use types::sample::{Scalar, Type, Value};
 
 #[global_allocator]
@@ -38,14 +38,14 @@ fn reads() -> Vec<Read> {
 /// The positive control.
 fn the_count_holds_the_allocations_of_groups() {
     let reads = reads();
-    let (groups, allocations) = ALLOCATOR.count(|| poll::groups(&reads, Order::Big));
+    let (groups, allocations) = ALLOCATOR.count(|| read::groups(&reads, Order::Big));
     assert_eq!(groups.len(), 5, "the coils at 0 and 9 do not touch");
     assert!(allocations > 0, "groups allocated nothing");
 }
 
 fn a_decode_of_values_allocates_nothing() {
     for order in [Order::Big, Order::Little] {
-        for group in poll::groups(&reads(), order) {
+        for group in read::groups(&reads(), order) {
             let pdu = reply(group.request());
             let reply = group.request().decode_reply(&pdu).expect("a valid reply");
             let (sum, allocations) = ALLOCATOR.count(|| {

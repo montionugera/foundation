@@ -63,7 +63,7 @@
   5. **Requests.** Each tick reads the reads of one table that touch or overlap as one
      request, at most 125 registers or 2000 bits, one request at a time on one
      connection. Lost: a request across a gap, as an address in the gap that the
-     device does not have fails the whole request. `connector_modbus::poll` holds
+     device does not have fails the whole request. `connector_modbus::read` holds
      items 3, 4, and 5, so the kind never sees an offset into a reply
      (`laptop.architect-2`, 2026-10-15T23:57:47Z:
      https://github.com/synnaxlabs/foundation/issues/432#issuecomment-6204791239).

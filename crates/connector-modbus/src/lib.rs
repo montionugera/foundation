@@ -14,7 +14,7 @@ mod config;
 pub mod device;
 mod kind;
 pub mod pdu;
-pub mod poll;
+pub mod read;
 pub mod rtu;
 pub mod tcp;
 mod wait;
