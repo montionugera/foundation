@@ -448,8 +448,8 @@ impl Scene {
 }
 
 /// Runs `script` on the scene, serves `device` when `script` starts no server or
-/// hold, and runs [`PLC`] with `config` and channels of `items` for `span`. Records the frames and the statuses
-/// until 1 s after the run ends.
+/// hold, and runs [`PLC`] with `config` and channels of `items` for `span`. Records
+/// the frames and the statuses until 1 s after the run ends.
 fn run<F>(
     device: Device,
     items: &'static [Item],
