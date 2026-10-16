@@ -756,6 +756,9 @@ fn a_proposal_whose_write_waits_gives_a_removed_stop() {
     assert_eq!(outcome.lock().unwrap().take(), Some(expected));
 }
 
+/// No caller or peer reaches this panic: `Mesh::open` refuses a pool whose largest
+/// block is below `BYTES_MIN`, `raft` sends no larger message, and `Mesh::start`
+/// sends nothing. So the test calls `send::copy` itself.
 #[test]
 #[should_panic(
     expected = "invariant: each message of the mesh fits a block of its pool"
