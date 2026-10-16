@@ -668,6 +668,7 @@ dependencies = [
  "control",
  "delivery",
  "env",
+ "tracing",
  "types",
 ]
 
