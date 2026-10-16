@@ -54,7 +54,9 @@ impl Paths {
     /// # Errors
     ///
     /// The error of [`Paths::resolve`] for a path of `folders` or `hidden`.
-    /// [`Error::NotFound`] when a folder of `hidden` is not there.
+    /// [`Error::NotFound`] when a folder of `hidden` is not there, else [`Error::Io`]
+    /// when it is not a directory. A folder of `hidden` that the limits of `self`
+    /// refuse needs no check.
     ///
     /// ```
     /// use std::path::PathBuf;
@@ -78,9 +80,16 @@ impl Paths {
             hidden: resolve(hidden)?,
         };
         // A resolve keeps a last name that is not there, as given, and a file system
-        // that ignores case then misses the hidden folder in another case.
+        // that ignores case then misses the hidden folder in another case. Only a
+        // directory at `dir` resolves `dir/..`, and the resolve opens no file.
         for dir in &limit.hidden {
-            self.driver.read(dir, 0)?;
+            match self.check(dir) {
+                Err(Error::Outside | Error::Hidden) => {}
+                checked => {
+                    checked?;
+                    self.driver.resolve(&dir.join(".."))?;
+                }
+            }
         }
         Ok(Self {
             driver: Rc::clone(&self.driver),
@@ -180,8 +189,8 @@ impl Paths {
     }
 
     /// Makes the directory at `path`. Gives `Ok` when a directory is there already. It
-    /// makes no directory above it. The directory gives the group and other users no
-    /// access.
+    /// makes no directory above it, and none through a symbolic link at `path`. A
+    /// directory that it makes gives the group and other users no access.
     ///
     /// # Errors
     ///
@@ -199,7 +208,19 @@ impl Paths {
     /// }
     /// ```
     pub fn make_dir(&self, path: &Path) -> Result<(), Error> {
-        self.check(path)?;
+        match (self.check(path), path.parent(), path.file_name()) {
+            // A link to nothing does not resolve. The call makes nothing through a
+            // link at `path`, so the place of the link is what the limits check.
+            (Err(Error::NotFound), Some(dir), Some(name)) => {
+                let dir = if dir.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    dir
+                };
+                self.allowed(&self.driver.resolve(dir)?.join(name))?;
+            }
+            (checked, ..) => checked?,
+        }
         self.driver.make_dir(path)
     }
 
@@ -209,7 +230,11 @@ impl Paths {
         if self.limits.is_empty() {
             return Ok(());
         }
-        let resolved = self.driver.resolve(path)?;
+        self.allowed(&self.driver.resolve(path)?)
+    }
+
+    /// `Ok` when the resolved path `resolved` passes each limit.
+    fn allowed(&self, resolved: &Path) -> Result<(), Error> {
         let under = |dirs: &[PathBuf]| dirs.iter().any(|dir| resolved.starts_with(dir));
         if self.limits.iter().any(|limit| under(&limit.hidden)) {
             Err(Error::Hidden)
@@ -314,8 +339,9 @@ mod tests {
 
     use super::*;
 
-    /// One file, at any path but one under `/none`. A path is under `/`, and `link`
-    /// names `/out`. A directory that it makes is the file `dir`.
+    /// One file, at any path but one under `/none`, and no resolve of a name in
+    /// `/none`. A path is under `/`, and `link` names `/out`. A directory that it
+    /// makes is the file `dir`.
     #[derive(Debug, Default)]
     struct One(RefCell<Vec<u8>>);
 
@@ -345,7 +371,11 @@ mod tests {
 
         fn resolve(&self, path: &Path) -> Result<PathBuf, Error> {
             match path.strip_prefix("link") {
-                _ if path.as_os_str().is_empty() => Err(Error::NotFound),
+                _ if path.as_os_str().is_empty()
+                    || path.parent() == Some(Path::new("/none")) =>
+                {
+                    Err(Error::NotFound)
+                }
                 Ok(rest) => Ok(Path::new("/out").join(rest)),
                 Err(_) => Ok(Path::new("/").join(path)),
             }
@@ -429,6 +459,15 @@ mod tests {
         assert_eq!(free.within(&empty, &[]).err(), Some(Error::NotFound));
         let folders = ["/work".into()];
         assert_eq!(free.within(&folders, &empty).err(), Some(Error::NotFound));
+    }
+
+    #[test]
+    fn make_dir_checks_a_path_that_does_not_resolve_by_its_place() {
+        let free = Paths::new(One::default());
+        let paths = free.within(&["/none".into()], &[]).unwrap();
+        assert_eq!(paths.make_dir(Path::new("/none/link")), Ok(()));
+        let paths = free.within(&["/work".into()], &[]).unwrap();
+        assert_eq!(paths.make_dir(Path::new("/none/a")), Err(Error::Outside));
     }
 
     #[test]

@@ -69,6 +69,18 @@ fn a_fault_fails_one_call_with_its_code_and_changes_nothing() {
 }
 
 #[test]
+fn a_fault_fails_one_make_of_a_directory_and_makes_nothing() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    let path = Path::new("/data");
+    node.fail_path(path, 13);
+    assert_eq!(paths.make_dir(path), Err(Error::Io { code: 13 }));
+    assert_eq!(paths.read(path, 1), Err(Error::NotFound));
+    assert_eq!(paths.make_dir(path), Ok(()));
+    assert_eq!(paths.read(path, 1), Ok(Found::Directory(Vec::new())));
+}
+
+#[test]
 fn each_host_has_its_own_files_and_a_crash_keeps_them() {
     let mut sim = Sim::new(Config::default());
     let (a, b) = (
