@@ -129,9 +129,9 @@
   https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206327837, a gap that
   waits for a line with a value. One request is in flight at a time. While it is, the
   run reads the next batch, up to 5,000 lines or 4 MiB of them, and a frame goes in
-  whole. The 4 MiB keeps a batch under the body limit of InfluxDB 3 Core (10 MiB) and of
-  InfluxDB 1 (25 MB), with 6 MiB for the last frame, as `laptop.architect-2` decided on
-  2026-10-16T19:34:27Z
+  whole. The 4 MiB leaves 6 MiB for the last frame under the body limit of InfluxDB 3
+  Core (10 MiB), and about 20 MB under that of InfluxDB 1 (25 MB), as
+  `laptop.architect-2` decided on 2026-10-16T19:34:27Z
   (https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223208198). The run
   keeps the field of each channel that it saw in the frames of one key set. A frame of
   another key set builds them again, as the `hub` reader builds its lens, so frames that
@@ -142,17 +142,20 @@
   a batch only after a 204. Each other answer, and each failed request, keeps the batch,
   shows its text with `Context::error`, and sends the batch again after a
   `retry::Backoff` of 1 s to 1 min. No answer ends the run, other than a 401 or a 403
-  after which the read of the token fails: an action in InfluxDB fixes a 400, a 404, or
-  a 422, and the next try after it lands the batch. The reader stays open meanwhile, as
-  in an outage of InfluxDB. The text is `InfluxDB answered {status}: {body}`, and for
-  these four statuses it adds a fix. A 400 and a 422 (InfluxDB 1 gives 400, and InfluxDB
-  2 gives 422, for a field type conflict and for points past retention): "For a field
-  type conflict, write to another `measurement` or delete the old field in InfluxDB. For
-  points older than the retention period, raise it or write to another bucket". A 404:
-  "Create the database, the bucket, or the org in InfluxDB, or name one that exists". A
-  413: "Raise the request size limit of InfluxDB (`--max-http-request-size` of InfluxDB
-  3, `max-body-size` of InfluxDB 1), or write fewer or shorter samples in each frame".
-  An answer whose body is over the cap of 64 KiB has its first 64 KiB as `{body}`, as
+  after which the read of the token fails: an action in InfluxDB fixes a 400, a 404, a
+  413, or a 422, and the next try after it lands the batch. The reader stays open
+  meanwhile, as in an outage of InfluxDB. The text is `InfluxDB answered {status}:
+  {body}`, and for these four statuses it adds a fix. A 400 and a 422 (InfluxDB 1 gives
+  400, and InfluxDB 2 gives 422, for a field type conflict and for points past
+  retention): "For a field type conflict, write to another `measurement` or delete the
+  old field in InfluxDB. For points older than the retention period, raise it or write
+  to another bucket". A 404: "Create the database, the bucket, or the org in InfluxDB,
+  or name one that exists". A 413: "Raise the request size limit of InfluxDB
+  (`--max-http-request-size` of InfluxDB 3, `max-body-size` of InfluxDB 1), or write
+  fewer or shorter samples in each frame" (the condition of `laptop.monitor` on the
+  batch bound, 2026-10-16T19:31:19Z,
+  https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223151793). An answer
+  whose body is over the cap of 64 KiB has its first 64 KiB as `{body}`, as
   `connector::http::Error::TooLarge` holds them, and the fix of its status
   (`laptop.architect-2`, 2026-10-16T07:38:36Z,
   https://github.com/synnaxlabs/foundation/pull/2838#issuecomment-6210559216). Decided
@@ -164,16 +167,19 @@
   (#2841). A 401 and a 403 keep the backoff, since the run reads the token again before
   the next try (#2687). A 413 keeps the backoff too, so a raise of the limit lets the
   held frames go with no sample lost (`laptop.monitor`, 2026-10-16T19:31:19Z,
-  https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223151793). Trigger
-  for a split of a frame across requests: a frame of over 6 MiB of lines, as
-  `laptop.architect-2` decided
+  https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223151793). A frame
+  of over 6 MiB of lines can take a request past the 10 MiB of InfluxDB 3 Core, and its
+  413 repeats until a person acts. Trigger for a split of a frame across requests: a
+  frame of over 6 MiB of lines, as `laptop.architect-2` decided
   (https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223208198). A frame
   of a node meets it now, since a ring record of 1 MiB of `u8` samples is about 13 MiB
   of lines (#2918). #2918 builds the split, and the cut of a batch before such a frame
   lost, since a frame over the whole limit still stops the stream (`laptop.architect-2`,
   2026-10-16T20:16:11Z,
-  https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223891016). A 204
-  clears the error, and adds the fields of the batch to the count `confirmed` with
+  https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223891016). It
+  supersedes the trigger of a split of the batch, a server whose body limit is below one
+  batch, of https://github.com/synnaxlabs/foundation/pull/2838#issuecomment-6210258673.
+  A 204 clears the error, and adds the fields of the batch to the count `confirmed` with
   `Count::add`, and the `count` of each gap line of the batch to the count `lost`: the
   seqs that the gap lines of this connector count, which InfluxDB took with a 204. A
   batch sent again counts once. A gap that the reader reports again after a restart
