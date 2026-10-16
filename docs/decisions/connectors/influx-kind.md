@@ -165,19 +165,26 @@
   the next try (#2687). A 413 keeps the backoff too, so a raise of the limit lets the
   held frames go with no sample lost (`laptop.monitor`, 2026-10-16T19:31:19Z,
   https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223151793). Trigger
-  for a split of a frame across requests: a frame whose lines pass the body limit of its
-  server. A 204 clears the error, and adds the fields of the batch to the count
-  `confirmed` with `Count::add`, and the `count` of each gap line of the batch to the
-  count `lost`: the seqs that the gap lines of this connector count, which InfluxDB took
-  with a 204. A batch sent again counts once. A gap that the reader reports again after
-  a restart counts again, so `lost` is an upper bound, as the sum of `count` in
-  `foundation_gaps` is. Each later out kind names the same count `lost`. It counts
-  sample times of the reader's index. The `lost` of `opcua` counts data samples (OPCUA
-  KIND). The ruling did not take a count of all out kinds in `connector`, as the
-  supervisor does not see the frames of a kind's reader. The trigger to make it is a
-  second out kind (6199058253). Both counts hold across the runs of one call
-  (SUPERVISOR). The person gave the choice of the path to the architects on 2026-10-15
-  ("Best devx possible. You choose the path", through `laptop.monitor`:
+  for a split of a frame across requests: a frame of over 6 MiB of lines, as
+  `laptop.architect-2` decided
+  (https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223208198). A frame
+  of a node meets it now, since a ring record of 1 MiB of `u8` samples is about 13 MiB
+  of lines (#2918). #2918 builds the split, and the cut of a batch before such a frame
+  lost, since a frame over the whole limit still stops the stream (`laptop.architect-2`,
+  2026-10-16T20:16:11Z,
+  https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223891016). A 204
+  clears the error, and adds the fields of the batch to the count `confirmed` with
+  `Count::add`, and the `count` of each gap line of the batch to the count `lost`: the
+  seqs that the gap lines of this connector count, which InfluxDB took with a 204. A
+  batch sent again counts once. A gap that the reader reports again after a restart
+  counts again, so `lost` is an upper bound, as the sum of `count` in `foundation_gaps`
+  is. Each later out kind names the same count `lost`. It counts sample times of the
+  reader's index. The `lost` of `opcua` counts data samples (OPCUA KIND). The ruling did
+  not take a count of all out kinds in `connector`, as the supervisor does not see the
+  frames of a kind's reader. The trigger to make it is a second out kind (6199058253).
+  Both counts hold across the runs of one call (SUPERVISOR). The person gave the choice
+  of the path to the architects on 2026-10-15 ("Best devx possible. You choose the
+  path", through `laptop.monitor`:
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922).
   `laptop.architect` gave the count of lost seqs, and `laptop.architect-2` ruled its
   shape on 2026-10-15T18:13:22Z
