@@ -94,6 +94,8 @@ struct Peer<'s> {
     gate: Gate,
     /// The reads of the state of the server that it answered.
     states: Rc<Cell<u32>>,
+    /// The quality of each answer of the state of the server, at first Good.
+    state: Rc<Cell<Quality>>,
 }
 
 impl Peer<'_> {
@@ -178,10 +180,11 @@ async fn serve<T>(
     let value = Value::F64(f64::from(u32::try_from(rng.below(1 << 20)).expect("fits")));
     server.add_scalar(&VALUE, value);
     let states = Rc::new(Cell::new(0));
-    let count = Rc::clone(&states);
+    let state = Rc::new(Cell::new(Quality::GOOD));
+    let (count, quality) = (Rc::clone(&states), Rc::clone(&state));
     server.set_source(&STATE, move || {
         count.set(count.get() + 1);
-        (Value::I32(0), Quality::GOOD)
+        (Value::I32(0), quality.get())
     });
     let peer = Peer {
         server: &server,
@@ -192,6 +195,7 @@ async fn serve<T>(
         value,
         gate: Gate::default(),
         states,
+        state,
     };
     let gate = peer.gate.clone();
     let out = {
@@ -1129,6 +1133,29 @@ fn a_client_with_no_session_ends_idle_at_once() {
     let lost = Err(Fault::status(Status::BAD_SESSION_ID_INVALID));
     let closed = Err(Status::BAD_SESSION_CLOSED);
     assert_eq!(idle, (lost, closed, Span::ZERO));
+}
+
+/// A check fails only on a Bad state of the server that is not `BadNoData`, the
+/// fault of an empty value too: an Uncertain one keeps the client.
+#[test]
+fn a_check_fails_only_on_a_bad_state() {
+    let idle = |quality: Quality| {
+        run(0, async move |node| {
+            serve(&node, 4, async |mut peer| {
+                peer.state.set(quality);
+                let mut client = peer.connected().await;
+                client
+                    .idle(peer.clock.sleep(Span::from_nanos(15_000_000_000)))
+                    .await
+            })
+            .await
+        })
+        .0
+    };
+    let unknown = Status::BAD_NODE_ID_UNKNOWN;
+    assert_eq!(idle(Quality(0x4000_0000)), Ok(()));
+    assert_eq!(idle(Quality(Status::BAD_NO_DATA.0)), Ok(()));
+    assert_eq!(idle(Quality(unknown.0)), Err(unknown));
 }
 
 /// A connect whose wait has already ended gives no client.

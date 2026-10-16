@@ -463,10 +463,10 @@ impl Client {
     /// # Errors
     ///
     /// The status of the first failed check: the error of [`Client::read`], or the
-    /// status of the value when it is not Good. The value itself is not checked. When
-    /// the client has no open channel or no active session between checks, it gives
-    /// the status of the connect if it is not Good, else `BadConnectionClosed` or
-    /// `BadSessionClosed`, at once.
+    /// status of the value when it is Bad and not `BadNoData`. The value itself is
+    /// not checked. When the client has no open channel or no active session between
+    /// checks, it gives the status of the connect if it is not Good, else
+    /// `BadConnectionClosed` or `BadSessionClosed`, at once.
     pub(crate) async fn idle<T>(
         &mut self,
         until: impl Future<Output = T>,
@@ -494,8 +494,13 @@ impl Client {
                 }
                 check.as_mut().poll(cx).map(|read| match read?[0] {
                     Err(fault) => match fault.cause() {
-                        Cause::Status(status) => Err(status),
-                        Cause::Type(_) => Ok(None),
+                        // `BadNoData` is also the fault of an empty value.
+                        Cause::Status(status)
+                            if !status.uncertain() && status != Status::BAD_NO_DATA =>
+                        {
+                            Err(status)
+                        }
+                        Cause::Status(_) | Cause::Type(_) => Ok(None),
                     },
                     Ok(_) => Ok(None),
                 })
