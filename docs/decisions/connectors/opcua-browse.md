@@ -24,10 +24,12 @@
   `MaxNodesPerTranslateBrowsePathsToNodeIds`), by item (a node and an attribute) for a
   Read, and so that the request and its answer each fit one message of the session. The
   client estimates an answer with each text and byte string at 256 bytes, so a larger
-  text can still make an answer past one message, and then the server closes the
-  channel. A fact whose request alone, or its answer, does not fit is `None`, and the
-  rest of the call goes on. It reads the limits of a Browse and a Translate once, at the
-  first `describe`, not in the connect of a read task. The strategy and the base type:
+  text can still make an answer past one message, and then the server closes the channel
+  (`laptop.architect-2`, 2026-10-16T19:25:06Z:
+  https://github.com/synnaxlabs/foundation/pull/2902#issuecomment-6223049465). A fact
+  whose request alone, or its answer, does not fit is `None`, and the rest of the call
+  goes on. It reads the limits of a Browse and a Translate once, at the first
+  `describe`, not in the connect of a read task. The strategy and the base type:
   approved by `laptop.monitor` (2026-10-16T16:40:53Z:
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6220213470). The
   limit of each service, the batched walk, the reference type, and `None` for a type
@@ -41,4 +43,7 @@
   (`laptop.architect-2`, same link). Later steps, in PR 5 of #2705: the kind shows a
   reference of a GUID or opaque node to the user, and its plan sends that choice to
   `laptop.monitor` as kind e; its plan bounds the continuation points of a walk
-  (`MaxBrowseContinuationPoints`).
+  (`MaxBrowseContinuationPoints`); its plan makes one table of the built-in types for
+  the map from a base to a channel type and for the decode of `value.rs`, so that they
+  cannot disagree (`laptop.architect-2`, 2026-10-16T19:25:06Z:
+  https://github.com/synnaxlabs/foundation/pull/2902#issuecomment-6223049465).
