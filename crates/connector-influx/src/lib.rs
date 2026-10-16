@@ -230,12 +230,14 @@ fn ca(
     };
     let source = secret::Source::read(&ca.value)?;
     match address {
-        Ok(address) if address.scheme() != Some(&Scheme::HTTPS) => Err(Diagnostic::new(
-            CA_WITH_HTTP,
-            ca.key_span,
-            "the connector has a `ca`, which only an `https` address takes".into(),
-            "Use an `https` address, or remove `ca`".into(),
-        )),
+        Ok(address) if address.scheme() != Some(&Scheme::HTTPS) => {
+            Err(Diagnostic::new(
+                CA_WITH_HTTP,
+                ca.key_span,
+                "the connector has a `ca`, which only an `https` address takes".into(),
+                "Use an `https` address, or remove `ca`".into(),
+            ))
+        }
         _ => Ok(Some(source)),
     }
 }

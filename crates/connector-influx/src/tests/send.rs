@@ -1647,7 +1647,8 @@ fn reads_again_a_ca_fixed_while_the_node_runs() {
         paths
             .write(std::path::Path::new(CA_FILE), CA)
             .expect("writes");
-        let plant = Plant::tls(node, tasks, Certificate::OtherCa, Roots::default()).await;
+        let plant =
+            Plant::tls(node, tasks, Certificate::OtherCa, Roots::default()).await;
         let run = plant.start(with_ca(&plant, "file", CA_FILE));
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;

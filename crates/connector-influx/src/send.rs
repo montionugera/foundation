@@ -203,8 +203,10 @@ async fn send(
                     (&error, &ctx.config().ca)
                 {
                     return Err(Error::Retry(
-                        format!("the write to InfluxDB failed: {error}. Check the ca {ca}")
-                            .into(),
+                        format!(
+                            "the write to InfluxDB failed: {error}. Check the ca {ca}"
+                        )
+                        .into(),
                     ));
                 }
                 ctx.error(&format_args!("the write to InfluxDB failed: {error}"));
