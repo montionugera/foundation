@@ -46,6 +46,10 @@
   https://github.com/synnaxlabs/foundation/pull/2766#issuecomment-6203414079).
   Close: after a cancel or an error, the run closes its session. It sends
   CloseSession, waits at most 1 s for the answer, then closes the connection, so a run
-  ends within 1 s of a cancel. The connect races the cancel, and the close does not
-  (`laptop.architect-2`, 2026-10-16T02:08:17Z:
-  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6206438915).
+  ends within 1 s of a cancel. The connect races the cancel, and the close does not.
+  The 1 s also holds the wait for a CreateSession in flight, so a server that answers
+  it later can keep that session until it times out (`laptop.architect-2`,
+  2026-10-16T02:08:17Z:
+  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6206438915, and
+  its amendment at 2026-10-16T02:44:43Z:
+  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6206868666).

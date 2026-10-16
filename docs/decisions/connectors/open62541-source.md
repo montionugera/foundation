@@ -726,9 +726,14 @@
   answering. Lost: a close with no wait, which leaves a session on each live server
   for its session timeout (1 h), so restarts fill a server with few sessions. Lost: no
   wait after the CloseSession, as a server that reads the request after the channel
-  closes may drop it. Ruled by `laptop.architect-2`
+  closes may drop it. A server that answers the CreateSession after the grace can keep
+  that session until it times out, as after a lost channel. The open62541 test server
+  drops it, as the session is not active when the channel closes. Ruled by
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6206438915,
-  2026-10-16 02:08 UTC). The wait works
+  2026-10-16 02:08 UTC), with the CreateSession wait in the grace as its amendment
+  (https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6206868666,
+  2026-10-16 02:44 UTC). The wait works
   around `src/client/ua_client_connect.c` of open62541: `UA_Client_disconnectAsync`
   (lines 2956 to 2976) sets the state CLOSING and sends a CloseSession with no token,
   and the callback of the CreateSession (line 1734) then writes CREATED over CLOSING.
