@@ -85,12 +85,13 @@
   private `Broken` and a `Path::child` that cannot fail: `laptop.architect-2`, 04:57 UTC
   (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208408668). The loop
   check by tag and pattern state, `DEPTH` as the count of open folders (it replaces the
-  meaning of 04:42 UTC), the bound of a deep start, and the four rules that `walk`
-  checks: `laptop.architect-2`, 05:23 UTC
+  meaning of 04:42 UTC), and the four rules that `walk` checks: `laptop.architect-2`,
+  05:23 UTC
   (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208716424). The
   `types::name` sentence: `laptop.architect`, 05:20 UTC
   (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208688678). A `Path`
-  that shares the path of its folder: `laptop.architect-2`, 05:30 UTC
+  that shares the path of its folder (it replaces the bound of a deep start of 05:23
+  UTC): `laptop.architect-2`, 05:30 UTC
   (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208798023). One tag,
   one entry: `laptop.architect-2`, 2026-10-16 05:04 UTC
   (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208496065).

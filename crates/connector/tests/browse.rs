@@ -162,7 +162,7 @@ fn main() {
         ..query
     };
     // The links of the start, once: 14 KB more than from the root on box1. A copy of
-    // the start's names in each entry of the open pages is 100 MB more.
+    // the start's names in each entry of the open pages is 102 MB more.
     let (found, peak) = walk(
         &mut Wide {
             start: START,
@@ -182,7 +182,7 @@ fn main() {
         "the walk from the start held {peak} bytes at its peak, over {bound}"
     );
     // Also the links of the one page that the device builds and the walk drops: 8 MB
-    // more on box1. A path from the root in each entry of the open pages is 470 MB
+    // more on box1. A path from the root in each entry of the open pages is 474 MB
     // more.
     let (found, peak) = walk(
         &mut Wide {
