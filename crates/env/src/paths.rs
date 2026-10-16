@@ -50,21 +50,21 @@ impl Paths {
     /// when the folder is the file at the path or a directory that holds it, by the
     /// file and not by its name: a name in other case on a file system that ignores
     /// case, and a bind mount, reach the same folder. A folder of `folders` holds a
-    /// path only while the file at its resolved path is the file that was there at
-    /// this call, so one that a program renames away, replaces, or makes again holds
-    /// nothing until a new call of `within`. Each call takes the file at each resolved hidden folder again, so a
-    /// hidden file that a write replaces, and a hidden folder made after this call,
-    /// are hidden. A path also fails with [`Error::Hidden`] when a directory on its way
-    /// is the folder that was at a hidden path at this call, so a hidden folder that a
-    /// program renames away stays hidden, but not its own listing, and a directory
-    /// that the host gives the key of a hidden folder that it removed hides what it
-    /// holds. While nothing is at
-    /// a hidden path, a call that makes a new name in the deepest directory on its way
-    /// that is there fails with [`Error::Hidden`], also for a name that does not make
-    /// that path. A folder whose file a call cannot take holds nothing at that call.
-    /// The limits of `self` hold too, so a handle never reaches more than the one it
-    /// came from. The check and the call are two steps: a symbolic link that another
-    /// program makes between them can lead the call out.
+    /// path only while the file at its resolved path is the file that was there at this
+    /// call, so one that a program renames away, replaces, or makes again holds nothing
+    /// until a new call of `within`. Each call takes the file at each resolved hidden
+    /// folder again, so a hidden file that a write replaces, and a hidden folder made
+    /// after this call, are hidden. A path also fails with [`Error::Hidden`] when a
+    /// directory on its way is the folder that was at a hidden path at this call, so a
+    /// hidden folder that a program renames away stays hidden, but not its own listing,
+    /// and a directory that the host gives the key of a hidden folder that it removed
+    /// hides what it holds. While nothing is at a hidden path, a call that makes a new
+    /// name in the deepest directory on its way that is there fails with
+    /// [`Error::Hidden`], also for a name that does not make that path. A folder whose
+    /// file a call cannot take holds nothing at that call. The limits of `self` hold
+    /// too, so a handle never reaches more than the one it came from. The check and the
+    /// call are two steps: a symbolic link that another program makes between them can
+    /// lead the call out.
     ///
     /// # Errors
     ///
@@ -438,10 +438,10 @@ mod tests {
 
     /// One file, at any path but one under `/none`. A path is under `/`, and `link`
     /// names `/out`. A directory that it makes is the file `dir`. A name in `/none`
-    /// resolves only after a directory is made, and `/none/deep`, a link to a
-    /// directory that does not resolve, never. The key of a path ignores case, and a
-    /// last name that starts with `new` resolves but has no key yet. The key of a last
-    /// name that starts with `swap` in any case takes the bytes of the file after the path, so a
+    /// resolves only after a directory is made, and `/none/deep`, a link to a directory
+    /// that does not resolve, never. The key of a path ignores case, and a last name
+    /// that starts with `new` resolves but has no key yet. The key of a last name that
+    /// starts with `swap` in any case takes the bytes of the file after the path, so a
     /// write gives it a new key: after a write of `x`, `/work/swap` has the key that
     /// `/work/swapx` had before it. A last name `io` gives `Io` 5 for its key.
     #[derive(Debug, Default)]
