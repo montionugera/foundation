@@ -18,6 +18,8 @@
 
 use std::io;
 use std::net::SocketAddr;
+use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
 
 use divan::Bencher;
@@ -32,16 +34,36 @@ fn main() {
 }
 
 fn dispatch(json: bool, level: Level) -> node::bench::Log {
+    open(log(json, level))
+}
+
+fn open(log: node::Log) -> node::bench::Log {
     let threads = os::threads().expect("threads");
     let wall = os::wall().expect("a wall clock");
     let (_mesh, reader) = clock::Clock::new(os::clock());
-    node::bench::log(log(json, level), &threads, wall, reader)
+    node::bench::log(log, &threads, wall, reader)
 }
 
 fn log(json: bool, level: Level) -> node::Log {
     node::Log {
         writer: Box::new(io::sink()),
         format: ops::Log { json, level },
+    }
+}
+
+/// A sink that sends once, at its first write.
+struct First(Option<mpsc::SyncSender<()>>);
+
+impl io::Write for First {
+    fn write(&mut self, line: &[u8]) -> io::Result<usize> {
+        if let Some(written) = self.0.take() {
+            written.send(()).unwrap_or_default();
+        }
+        Ok(line.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -60,8 +82,28 @@ fn filtered() {
 }
 
 /// An event under the level allocates nothing, and one at the level allocates its line.
+/// The counts start once the thread `log` has written a line, then 10 ms pass with no
+/// allocation: the allocator counts each thread, and that thread allocates as it starts
+/// and parks.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the check waits for the thread log"
+)]
 fn check() {
-    let d = dispatch(false, Level::INFO);
+    let (written, wrote) = mpsc::sync_channel(1);
+    let d = open(node::Log {
+        writer: Box::new(First(Some(written))),
+        ..log(false, Level::INFO)
+    });
+    tracing::dispatcher::with_default(d.dispatch(), started);
+    wrote.recv().expect("the thread log writes");
+    let idle = (0..100).any(|_| {
+        ALLOCATOR
+            .count(|| thread::sleep(Duration::from_millis(10)))
+            .1
+            == 0
+    });
+    assert!(idle, "allocations while the thread log waits");
     let ((), allocations) =
         tracing::dispatcher::with_default(d.dispatch(), || ALLOCATOR.count(filtered));
     assert_eq!(allocations, 0, "allocations of a filtered event");
