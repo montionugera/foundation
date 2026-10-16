@@ -1546,3 +1546,15 @@ fn the_places_of_one_file_share_its_path() {
     assert_eq!(&*a.file, "site.hcl");
     assert!(std::sync::Arc::ptr_eq(&a.file, &b.file));
 }
+
+#[test]
+fn the_data_directory_of_one_name_is_in_the_working_directory() {
+    let error = Error::Data {
+        path: PathBuf::from("foundation-data"),
+        error: env::paths::Error::NotFound,
+    };
+    assert_eq!(
+        error.to_string(),
+        "the directory . above the data directory `foundation-data` is not there"
+    );
+}
