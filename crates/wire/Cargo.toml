@@ -28,5 +28,9 @@ test = true
 name = "alloc"
 harness = false
 
+[[test]]
+name = "peak"
+harness = false
+
 [lints]
 workspace = true

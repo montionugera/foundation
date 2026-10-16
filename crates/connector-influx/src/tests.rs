@@ -534,7 +534,8 @@ fn discovers_nothing() {
     assert!(matches!(found.as_deref(), Ok([])), "{found:?}");
 }
 
-/// Runs `main` on a shard of one simulated node and returns its output.
+/// Runs `main` on a shard of one simulated node, with a host directory
+/// `/run/secrets`, and returns its output.
 fn run<T, F>(main: impl FnOnce(::sim::node::Node, Tasks) -> F + Send + 'static) -> T
 where
     T: Send + 'static,
@@ -542,5 +543,6 @@ where
 {
     let mut sim = ::sim::Sim::new(::sim::Config::default());
     let node = sim.node(::sim::node::Config::default());
+    node.make_dir(std::path::Path::new("/run/secrets"));
     sim.run_on(&node, main).expect("the run ends")
 }

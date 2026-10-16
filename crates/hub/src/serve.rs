@@ -53,6 +53,12 @@ pub enum Error {
     Class(Class),
     /// The keys of the open are on more than one index. Code `MALFORMED`.
     ManyIndexes,
+    /// The selector of a read matches more than [`wire::hub::client::PLACES_MAX`]
+    /// places with their index. Code `MALFORMED`.
+    Places {
+        /// The count of matched places, the index too.
+        count: usize,
+    },
     /// The keys of the open do not hold their index. Code `MALFORMED`.
     NoIndex,
     /// The open names a channel more than once. Code `MALFORMED`.
@@ -128,6 +134,7 @@ impl Error {
             | Self::OneWay
             | Self::Class(_)
             | Self::ManyIndexes
+            | Self::Places { .. }
             | Self::NoIndex
             | Self::Repeated(_)
             | Self::Unadmitted
@@ -164,6 +171,11 @@ impl fmt::Display for Error {
             Self::ManyIndexes => {
                 f.write_str("the open names channels on more than one index")
             }
+            Self::Places { count } => write!(
+                f,
+                "the open matches {count} places, over the cap of {}",
+                wire::hub::client::PLACES_MAX
+            ),
             Self::NoIndex => {
                 f.write_str("the open does not name the index of its channels")
             }

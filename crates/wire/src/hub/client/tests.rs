@@ -678,6 +678,13 @@ fn names_each_error() {
             "the selector of the read does not read: a selector includes no names",
         ),
         (
+            Error::Places {
+                count: 65_537,
+                cap: 65_536,
+            },
+            "the read has 65537 places, over the cap of 65536",
+        ),
+        (
             Error::Index { index: 3, count: 3 },
             "the places of the read put the index at place 3 of 3",
         ),
@@ -703,6 +710,13 @@ fn names_each_error() {
                 sample: sample::Type::Scalar(sample::Scalar::U8),
             },
             "the index place of the read has sample type u8, not timestamp",
+        ),
+        (
+            Error::Repeated {
+                key: channel::Key::from_u128(2),
+            },
+            "the places of the read name channel 00000000-0000-0000-0000-000000000002 \
+             more than once",
         ),
         (
             Error::Finished,

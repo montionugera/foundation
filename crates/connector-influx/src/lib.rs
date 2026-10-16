@@ -178,9 +178,10 @@ impl kind::Kind for Kind {
     /// ([`gap::MEASUREMENT`]) at the frame's first sample, also when it leaves that
     /// sample's line out. It keeps one request in flight, and acks a batch only after
     /// InfluxDB answers 204, when it adds the batch's fields to the count `confirmed`
-    /// and the seqs of its gap lines to `lost`. It shows each other answer as its error
-    /// and sends the batch again after a backoff. It reads the token at its start, and
-    /// again after a 401 or a 403 before the next attempt.
+    /// and the seqs of its gap lines to `lost`. It shows each other answer as its
+    /// error, with the fix for a 400, a 404, or a 422, and sends the batch again after
+    /// a backoff. It reads the token at its start, and again after a 401 or a 403
+    /// before the next attempt.
     ///
     /// # Errors
     ///

@@ -356,6 +356,7 @@ fn breaker_a_subject_that_may_only_plan_learns_nothing_of_the_files_of_the_node(
         let people = people();
         applied(&node, &[("people.hcl", &people)]).await;
         let paths = fixture.sim.paths();
+        fixture.sim.make_dir(Path::new("/run"));
         paths
             .write(Path::new("/run/there"), b"x")
             .expect("writes it");
@@ -388,6 +389,7 @@ fn breaker_a_subject_that_may_not_apply_a_connector_learns_nothing_of_its_source
         );
         applied(&node, &[("people.hcl", &people)]).await;
         let paths = fixture.sim.paths();
+        fixture.sim.make_dir(Path::new("/run"));
         paths
             .write(Path::new("/run/there"), b"x")
             .expect("writes it");
@@ -423,6 +425,7 @@ fn breaker_a_subject_with_admin_and_no_apply_learns_nothing_of_its_sources() {
         );
         applied(&node, &[("people.hcl", &people)]).await;
         let paths = fixture.sim.paths();
+        fixture.sim.make_dir(Path::new("/run"));
         paths
             .write(Path::new("/run/there"), b"x")
             .expect("writes it");
