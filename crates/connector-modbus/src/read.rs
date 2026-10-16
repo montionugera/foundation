@@ -293,7 +293,7 @@ impl Values {
         Ok(())
     }
 
-    /// The value of each read, in the order of the reads. None is left after the
+    /// The value of each read, in the order of the reads. No value is left after the
     /// iterator drops, also when it drops before its end.
     ///
     /// # Panics
