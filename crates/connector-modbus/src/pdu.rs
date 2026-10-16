@@ -669,6 +669,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn get_gives_none_past_the_count() {
+        let Ok(Reply::Bits(bits)) =
+            read(Table::Coils, 0, 9).decode_reply(&[1, 2, 0xFF, 0x01])
+        else {
+            panic!("bits");
+        };
+        assert_eq!((bits.get(8), bits.get(9)), (Some(true), None));
+        let Ok(Reply::Registers(registers)) =
+            read(Table::HoldingRegisters, 0, 2).decode_reply(&[3, 4, 0, 1, 0, 2])
+        else {
+            panic!("registers");
+        };
+        let got: Option<Vec<u16>> = registers.get(1..2).map(Iterator::collect);
+        assert_eq!(got, Some(vec![2]));
+        assert!(registers.get(1..3).is_none(), "a range past the count");
+    }
+
     /// The examples of the Modbus Application Protocol specification v1.1b3.
     #[test]
     fn matches_the_read_examples_of_the_specification() {
