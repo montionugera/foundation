@@ -113,18 +113,24 @@ impl Reader {
                         sample: index.data_type,
                     });
                 }
+                // Once for the whole run, so `all` never doubles past the cap, and the
+                // last message moves into it before the key set is built.
+                all.reserve_exact(to_usize(*remain));
+                all.extend(run);
                 if rest > 0 {
-                    all.extend(run);
                     *remain = rest;
                     return Ok(None);
                 }
-                let channels = all.iter().chain(&run);
-                let channels = channels.map(|place| (place.key, place.data_type));
-                let set = KeySet::ordered(channels, index_at(*places))
-                    .map_err(|repeated| Error::Repeated { key: repeated.key })?;
+                let channels = all.iter().map(|place| (place.key, place.data_type));
+                let set = match KeySet::ordered(channels, index_at(*places)) {
+                    Ok(set) => set,
+                    Err(repeated) => {
+                        all.truncate(to_usize(first));
+                        return Err(Error::Repeated { key: repeated.key });
+                    }
+                };
                 let home = hub::Reader::of(places.count, self.latest);
-                let mut places = std::mem::take(all);
-                places.extend(run);
+                let places = std::mem::take(all);
                 self.next = Next::Given;
                 Ok(Some(Start {
                     places,
@@ -138,5 +144,9 @@ impl Reader {
 
 /// The place of the index in `places`, as a position in the run.
 fn index_at(places: Places) -> usize {
-    usize::try_from(places.index).expect("invariant: a usize holds a u32")
+    to_usize(places.index)
+}
+
+fn to_usize(n: u32) -> usize {
+    usize::try_from(n).expect("invariant: a usize holds a u32")
 }
