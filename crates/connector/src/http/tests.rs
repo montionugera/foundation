@@ -2,7 +2,7 @@
 
 use std::future::poll_fn;
 use std::io::IoSlice;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
@@ -10,7 +10,7 @@ use document::diagnostic::{Code, Diagnostic};
 use document::value::{self, Value};
 use document::{Position, Source};
 use env::clock::Clock;
-use env::net::{self, Tcp, tcp};
+use env::net::{self, Tcp, host, tcp};
 use env::thread::Handle;
 use http::{Request, Response, StatusCode};
 use sim::{Sim, node};
@@ -75,8 +75,17 @@ impl Network {
         &mut self,
         answer: impl FnOnce(Tcp, Vec<u8>, Clock) -> F + Send + 'static,
     ) -> Arc<Mutex<Vec<u8>>> {
+        self.serve_at(self.remote(), answer)
+    }
+
+    /// As [`Network::serve`], with the listener at `local`.
+    fn serve_at<F: Future<Output = Option<Tcp>> + 'static>(
+        &mut self,
+        local: SocketAddr,
+        answer: impl FnOnce(Tcp, Vec<u8>, Clock) -> F + Send + 'static,
+    ) -> Arc<Mutex<Vec<u8>>> {
         let listen = tcp::Listen {
-            local: self.remote(),
+            local,
             backlog: 4,
             options: super::OPTIONS,
         };
@@ -339,7 +348,14 @@ fn refuses_a_body_over_the_cap() {
         .send(get(&network.url("/")))
         .expect_err("over the cap");
     assert!(
-        matches!(error, Error::TooLarge { max: BODY_MAX }),
+        matches!(
+            error,
+            Error::TooLarge {
+                status: StatusCode::OK,
+                ref body,
+                max: BODY_MAX
+            } if body[..] == *"x".repeat(BODY_MAX).as_bytes()
+        ),
         "{error:?}"
     );
     assert_eq!(
@@ -353,7 +369,7 @@ fn refuses_chunks_that_together_pass_the_cap() {
     let mut network = Network::new(13);
     let chunk = "x".repeat(40);
     let response: &'static str = format!(
-        "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n\
+        "HTTP/1.1 400 Bad Request\r\ntransfer-encoding: chunked\r\n\r\n\
          28\r\n{chunk}\r\n28\r\n{chunk}\r\n0\r\n\r\n"
     )
     .leak();
@@ -362,7 +378,14 @@ fn refuses_chunks_that_together_pass_the_cap() {
         .send(get(&network.url("/")))
         .expect_err("over the cap");
     assert!(
-        matches!(error, Error::TooLarge { max: BODY_MAX }),
+        matches!(
+            error,
+            Error::TooLarge {
+                status: StatusCode::BAD_REQUEST,
+                ref body,
+                max: BODY_MAX
+            } if body[..] == *"x".repeat(BODY_MAX).as_bytes()
+        ),
         "{error:?}"
     );
     assert_eq!(
@@ -640,22 +663,85 @@ fn assert_holds_no_credential(error: &Error) {
 
 #[test]
 fn refuses_a_host_that_is_not_valid() {
-    for uri in [
-        "http://:8086/",
-        "http://[]/",
-        "http://[influx]/",
-        "http://[influx]:99999/",
-        "http://[fd00::2]x/",
-        "http://[fd00::2]8086/",
-        "http://[fd00::2]x:80/",
-        "http://a[::1]/",
-        "http://a[::1]:80/",
-        "http://a:8[0]/",
+    const IPV6: host::Error = host::Error::Ipv6;
+    for (uri, error) in [
+        ("http://:8086/", host::Error::Empty),
+        ("http://[]/", IPV6),
+        ("http://[influx]/", IPV6),
+        ("http://[influx]:99999/", IPV6),
+        ("http://[fd00::2]x/", IPV6),
+        ("http://[fd00::2]8086/", IPV6),
+        ("http://[fd00::2]x:80/", IPV6),
+        ("http://a[::1]/", IPV6),
+        ("http://a[::1]:80/", IPV6),
+        ("http://a:8[0]/", IPV6),
+        ("http://127.1/", host::Error::Number),
+        ("http://influx..local/", host::Error::Part),
+        ("http://influx-/", host::Error::Part),
+        ("http://[fe80::1%25eth0]/", host::Error::Zone),
+        ("http://[fe80::1%2]/", host::Error::Escape),
+        ("http://[fe80::1%]/", host::Error::Escape),
     ] {
-        let error = refused(uri);
-        assert!(matches!(error, Error::Host), "{uri}: {error:?}");
-        assert_eq!(error.to_string(), "the URI has no valid host");
+        let refused = refused(uri);
+        assert!(
+            matches!(refused, Error::Host(e) if e == error),
+            "{uri}: {refused:?}"
+        );
+        assert_eq!(refused.to_string(), format!("the URI has {error}"));
+        assert_eq!(chain(&refused), error.to_string(), "{uri}");
     }
+}
+
+#[test]
+fn tells_a_zone_with_no_escape_how_to_escape_it() {
+    assert_eq!(
+        refused("http://[fe80::1%2]:8086/").to_string(),
+        "the URI has a zone that does not follow `%25`, as `[fe80::1%252]` for zone 2",
+    );
+}
+
+/// The IPv6 address of the server node.
+fn v6(network: &Network) -> Ipv6Addr {
+    let IpAddr::V6(ip) = network.server.addresses()[1] else {
+        panic!("the second address of a node is IPv6")
+    };
+    ip
+}
+
+#[test]
+fn dials_the_zone_of_a_uri_after_its_escaped_percent() {
+    for (zone, scope) in [("%252", 2), ("%2500", 0)] {
+        let mut network = Network::new(10);
+        let ip = v6(&network);
+        let error = network
+            .send(get(&format!("http://[{ip}{zone}]:9/")))
+            .expect_err("no listener");
+        let remote = SocketAddr::V6(SocketAddrV6::new(ip, 9, 0, scope));
+        assert!(
+            matches!(
+                error,
+                Error::Connect(net::Error::Refused { remote: r }) if r == remote
+            ),
+            "{zone}: {error:?}"
+        );
+    }
+}
+
+#[test]
+fn sends_the_host_of_a_zone_uri_with_no_zone() {
+    let mut network = Network::new(17);
+    let ip = v6(&network);
+    let seen = network.serve_at(
+        SocketAddr::new(IpAddr::V6(ip), PORT),
+        reply("HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok"),
+    );
+    network
+        .send(get(&format!("http://[{ip}%252]:{PORT}/")))
+        .expect("the server answers");
+    assert_eq!(
+        text(&seen.lock().expect("no panic under the lock")),
+        format!("GET / HTTP/1.1\r\nhost: [{ip}]:{PORT}\r\n\r\n"),
+    );
 }
 
 #[test]

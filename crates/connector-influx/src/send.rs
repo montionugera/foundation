@@ -13,11 +13,11 @@ use connector::retry::{self, Backoff};
 use connector::secret;
 use http::header::{AUTHORIZATION, HeaderValue};
 use http::{Method, Request, StatusCode, Uri};
-use hub::reader::{Ended, Position, Received};
+use hub::reader::{Ended, Received};
 use types::time::Span;
 
-use crate::batch::{Batch, Taken};
-use crate::{CONFIRMED, Config, Target};
+use crate::batch::{Ack, Batch, Taken};
+use crate::{CONFIRMED, Config, LOST, Target};
 
 /// The longest name of a database, bucket, or org, in bytes.
 pub(crate) const NAME_MAX: usize = 4_096;
@@ -38,15 +38,16 @@ const RETRY: retry::Config = retry::Config {
 
 enum Event<'a> {
     Cancelled,
-    /// The position after the batch that InfluxDB took and its samples, or the error
-    /// of a read of the token.
-    Sent(Result<(Position, u64), Error>),
+    /// What the batch that InfluxDB took acks and counts, or the error of a read of
+    /// the token.
+    Sent(Result<Ack, Error>),
     Frame(Result<Received<'a>, Ended>),
 }
 
 /// Writes the frames of the run's reader to InfluxDB until the cancel, with one
 /// request in flight. While one is in flight it reads the next batch, up to 5,000
-/// lines, and acks a batch and counts its samples only after InfluxDB answers 204.
+/// lines, and acks a batch and counts its samples and lost seqs only after InfluxDB
+/// answers 204.
 pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     let mut reader = ctx.reader().expect("invariant: check gives a reader");
     let ctx = &ctx;
@@ -60,25 +61,21 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     });
     let uri = write_uri(&config.address, &config.target);
     let token = RefCell::new(Token::read(ctx).await?);
-    let confirmed = ctx.count(CONFIRMED);
-    let mut batch = Batch::new(&config.measurement);
+    let (confirmed, lost) = (ctx.count(CONFIRMED), ctx.count(LOST));
+    let mut batch = Batch::new(&config.measurement, &config.target, ctx.name());
     let mut cancelled = pin!(ctx.cancel().wait());
     let mut flight = pin!(None);
     loop {
         if flight.is_none()
-            && let Some(Taken {
-                body,
-                position,
-                samples,
-            }) = batch.take()
+            && let Some(Taken { body, ack }) = batch.take()
         {
             if body.is_empty() {
-                reader.ack(position);
+                reader.ack(ack.position);
             } else {
                 let (client, uri, token) = (&client, &uri, &token);
                 flight.set(Some(async move {
                     send(client, ctx, uri, token, body.into()).await?;
-                    Ok((position, samples))
+                    Ok(ack)
                 }));
             }
         }
@@ -107,10 +104,11 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
         match event {
             Event::Cancelled => return Ok(()),
             Event::Sent(Err(error)) => return Err(error),
-            Event::Sent(Ok((position, samples))) => {
+            Event::Sent(Ok(ack)) => {
                 flight.set(None);
-                reader.ack(position);
-                confirmed.add(samples);
+                reader.ack(ack.position);
+                confirmed.add(ack.samples);
+                lost.add(ack.lost);
             }
             Event::Frame(Ok(received)) => batch.add(&received)?,
             Event::Frame(Err(ended)) => return Err(ended.into()),
@@ -119,9 +117,9 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
 }
 
 /// Sends `body` until InfluxDB answers 204. Shows each other answer as the run's
-/// error and waits a backoff before the next attempt. After a 401 or a 403, it reads
-/// the token again before that attempt. Never ends after the cancel of the run, which
-/// the caller sees first.
+/// error, with the fix for a 400, a 404, or a 422, and waits a backoff before the
+/// next attempt. After a 401 or a 403, it reads the token again before that attempt.
+/// Never ends after the cancel of the run, which the caller sees first.
 ///
 /// # Errors
 ///
@@ -136,37 +134,41 @@ async fn send(
     let mut backoff = None;
     loop {
         let request = request(uri, &body, token.borrow().as_ref());
-        let refused = match client.send(request).await {
-            Ok(answer) if answer.status() == StatusCode::NO_CONTENT => {
-                ctx.clear_error();
-                return Ok(());
-            }
-            Ok(answer) => {
-                let status = answer.status();
-                let text = String::from_utf8_lossy(answer.body());
-                let refused =
-                    matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
-                let source = ctx.config().token.as_ref().filter(|_| refused);
-                match source {
-                    Some(source) => {
-                        ctx.error(&format_args!(
-                            "InfluxDB answered {status}. Check the token {source}: {}",
-                            text.trim()
-                        ));
-                    }
-                    None => {
-                        ctx.error(&format_args!(
-                            "InfluxDB answered {status}: {}",
-                            text.trim()
-                        ));
-                    }
+        // A block, so that `answer` does not grow the future across the backoff.
+        let refused = {
+            let answer = match client.send(request).await {
+                Ok(answer) if answer.status() == StatusCode::NO_CONTENT => {
+                    ctx.clear_error();
+                    return Ok(());
                 }
-                source.is_some()
+                Ok(answer) => Some((answer.status(), answer.into_body())),
+                Err(connector::http::Error::TooLarge { status, body, .. }) => {
+                    Some((status, body))
+                }
+                Err(error) => {
+                    ctx.error(&format_args!("the write to InfluxDB failed: {error}"));
+                    None
+                }
+            };
+            let mut refused = false;
+            if let Some((status, body)) = answer {
+                let text = String::from_utf8_lossy(&body);
+                let text = text.trim();
+                let token =
+                    matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
+                let source = ctx.config().token.as_ref().filter(|_| token);
+                refused = source.is_some();
+                match source {
+                    Some(source) => ctx.error(&format_args!(
+                        "InfluxDB answered {status}. Check the token {source}: {text}"
+                    )),
+                    None => ctx.error(&format_args!(
+                        "InfluxDB answered {status}: {text}{}",
+                        fix(status)
+                    )),
+                }
             }
-            Err(error) => {
-                ctx.error(&format_args!("the write to InfluxDB failed: {error}"));
-                false
-            }
+            refused
         };
         let backoff =
             backoff.get_or_insert_with(|| Backoff::new(ctx.clock(), ctx.rng(), RETRY));
@@ -177,6 +179,22 @@ async fn send(
             // Boxed, so this rare read does not grow the future of `send`.
             *token.borrow_mut() = Box::pin(Token::read(ctx)).await?;
         }
+    }
+}
+
+/// The fix that the error text of an answer of `status` ends with, after its body.
+fn fix(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
+            ". For a field type conflict, write to another `measurement` or delete the \
+             old field in InfluxDB. For points older than the retention period, raise \
+             it or write to another bucket"
+        }
+        StatusCode::NOT_FOUND => {
+            ". Create the database, the bucket, or the org in InfluxDB, or name one \
+             that exists"
+        }
+        _ => "",
     }
 }
 

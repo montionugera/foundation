@@ -125,6 +125,7 @@ fn an_open_gives_whether_the_file_was_exposed_when_it_ended() {
         node.hide_file(Path::new("a"));
         let private = open("a").await;
         let host = Path::new("/run/secrets/token");
+        node.make_dir(Path::new("/run/secrets"));
         node.paths().write(host, b"abc").unwrap();
         let outside = node.files().open_absolute(&absolute(host)).await.unwrap();
         [made, exposed, private, outside].map(|file| file.exposed())
@@ -187,6 +188,7 @@ fn expose_file_panics_on_an_absolute_path() {
 fn open_absolute_reads_the_host_file_at_once_and_keeps_its_bytes() {
     let (bytes, span, later) = run(0, MIB, |node, _| async move {
         let (paths, path) = (node.paths(), Path::new("/run/secrets/token"));
+        node.make_dir(Path::new("/run/secrets"));
         paths.write(path, b"abc").unwrap();
         let start = node.clock().now();
         let file = node.files().open_absolute(&absolute(path)).await.unwrap();
@@ -211,6 +213,7 @@ fn open_absolute_and_its_reads_take_the_time_of_a_call_and_take_faults() {
     let (spans, found) = run(0, MIB, |node, _| async move {
         let (files, clock, pool) = (node.files(), node.clock(), pool());
         let path = Path::new("/run/secrets/a");
+        node.make_dir(Path::new("/run/secrets"));
         node.paths().write(path, b"abc").unwrap();
         let mut spans = Vec::new();
         for _ in 0..16 {
@@ -261,6 +264,7 @@ fn open_absolute_outside_the_sim_panics() {
 fn open_absolute_reports_each_failure() {
     let found = run(0, MIB, |node, _| async move {
         let paths = node.paths();
+        node.make_dir(Path::new("/run/secrets"));
         paths.write(Path::new("/run/secrets/a"), b"abc").unwrap();
         node.fail_path(Path::new("/run/secrets/a"), 13);
         let files = node.files();
@@ -366,6 +370,7 @@ fn the_node_gives_the_absolute_path_of_each_host_file_that_it_closed() {
     });
     sim.run_on(&node, |node, _| async move {
         let files = node.files();
+        node.make_dir(Path::new("/run"));
         node.paths().write(Path::new("/run/a"), b"abc").unwrap();
         let path = absolute(Path::new("/run/a"));
         let host = files.open_absolute(&path).await.unwrap();

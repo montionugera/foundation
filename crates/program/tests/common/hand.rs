@@ -103,7 +103,11 @@ pub(crate) async fn opened(
 ) -> Incoming {
     let mut read = accept_read(session).await;
     start(&mut read, places, index, places.len()).await;
-    reply(read.sender.as_mut().expect("two-way"), Reply::Opened).await;
+    reply(
+        read.sender.as_mut().expect("two-way"),
+        Reply::Opened { live: 0 },
+    )
+    .await;
     read
 }
 

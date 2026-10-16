@@ -53,6 +53,12 @@ pub enum Error {
     Class(Class),
     /// The keys of the open are on more than one index. Code `MALFORMED`.
     ManyIndexes,
+    /// The selector of a read matches more than [`wire::hub::client::PLACES_MAX`]
+    /// places with their index. Code `MALFORMED`.
+    Places {
+        /// The count of matched places, the index too.
+        count: usize,
+    },
     /// The keys of the open do not hold their index. Code `MALFORMED`.
     NoIndex,
     /// The open names a channel more than once. Code `MALFORMED`.
@@ -127,6 +133,7 @@ impl Error {
             | Self::OneWay
             | Self::Class(_)
             | Self::ManyIndexes
+            | Self::Places { .. }
             | Self::NoIndex
             | Self::Repeated(_)
             | Self::Unadmitted
@@ -163,6 +170,11 @@ impl fmt::Display for Error {
             Self::ManyIndexes => {
                 f.write_str("the open names channels on more than one index")
             }
+            Self::Places { count } => write!(
+                f,
+                "the open matches {count} places, over the cap of {}",
+                wire::hub::client::PLACES_MAX
+            ),
             Self::NoIndex => {
                 f.write_str("the open does not name the index of its channels")
             }
@@ -299,12 +311,15 @@ async fn serve(
         mut session,
         complete,
         mut layout,
+        live,
     }) = open(state, class, &mut home, receiver).await?
     else {
         sender.finish()?;
         return Ok(());
     };
-    sender.send(reply(state, wire::hub::Reply::Opened)?).await?;
+    sender
+        .send(reply(state, wire::hub::Reply::Opened { live })?)
+        .await?;
     // `peer` lives across turns, so a frame never drops a read of the peer. `take`
     // gives up a frame only in the poll that returns it.
     let mut peer = pin!(peer(receiver, home, complete.as_ref()));
@@ -377,6 +392,8 @@ struct Opened {
     /// The grant and the ack of a complete session.
     complete: Option<Complete>,
     layout: Layout,
+    /// The open position of the session.
+    live: u64,
 }
 
 /// Reads the open and its keys, checks each key as it arrives, waits until the mesh
@@ -427,14 +444,17 @@ async fn open(
         slots: slots.clone(),
         index,
     };
-    let (session, complete) = match open.mode {
+    let (session, complete, live) = match open.mode {
         Mode::Complete { limit_bytes } => {
             let charge = ::home::reader::complete::Charge::Places(slots.clone());
-            let (session, complete) =
+            let (session, complete, live) =
                 Session::complete(state, channels, limit_bytes, charge);
-            (session, Some(complete))
+            (session, Some(complete), live)
         }
-        Mode::Latest => (Session::latest(state, channels), None),
+        Mode::Latest => {
+            let (session, live) = Session::latest(state, channels);
+            (session, None, live)
+        }
     };
     if let Some(complete) = &complete {
         complete.grant(granted);
@@ -443,6 +463,7 @@ async fn open(
         session,
         complete,
         layout: Layout::new(slots, index),
+        live,
     }))
 }
 

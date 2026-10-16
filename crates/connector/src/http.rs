@@ -1,5 +1,8 @@
 //! One HTTP/1.1 client for every connector, over `env`.
 
+#[cfg(feature = "sim")]
+#[doc(hidden)]
+pub mod bench;
 mod body;
 mod pool;
 #[cfg(feature = "sim")]
@@ -9,7 +12,6 @@ mod stream;
 use std::cell::Cell;
 use std::fmt;
 use std::future::poll_fn;
-use std::net::Ipv6Addr;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -18,10 +20,11 @@ use bytes::Bytes;
 use document::diagnostic::{Code, Diagnostic};
 use document::value::{self, Value};
 use env::clock::Clock;
+use env::net::host::{self, Host};
 use env::net::{self, Net, Tcp, tcp};
 use env::tasks::Tasks;
 use http::uri::Scheme;
-use http::{HeaderValue, Request, Response, Uri, header};
+use http::{HeaderValue, Request, Response, StatusCode, Uri, header};
 use http_body::Body as _;
 use hyper::body::Incoming;
 use hyper::client::conn::http1::{self, SendRequest};
@@ -108,8 +111,8 @@ impl Client {
     /// Sends `request` and reads the whole response. The URI gives the host and the
     /// port, which defaults to 80. A new connection looks up the host and tries each
     /// address in order. Each address gets an equal share of the time left, but at
-    /// least 2 s or all that is left. The client sets `Host` when the request has
-    /// none, and sends the path and query only.
+    /// least 2 s or all that is left. The client sets `Host`, with no zone, when the
+    /// request has none, and sends the path and query only.
     ///
     /// # Errors
     ///
@@ -184,8 +187,14 @@ impl Client {
             poll_fn(|cx| Pin::new(&mut incoming).poll_frame(cx)).await
         {
             if let Ok(data) = frame?.into_data() {
-                if data.len() > self.body_max.saturating_sub(bytes.len()) {
-                    return Err(Error::TooLarge { max: self.body_max });
+                let room = self.body_max.saturating_sub(bytes.len());
+                if data.len() > room {
+                    bytes.extend_from_slice(&data[..room]);
+                    return Err(Error::TooLarge {
+                        status: parts.status,
+                        body: Bytes::from(bytes),
+                        max: self.body_max,
+                    });
                 }
                 bytes.extend_from_slice(&data);
             }
@@ -298,10 +307,10 @@ fn share(now: Monotonic, deadline: Monotonic, left: usize) -> Option<Monotonic> 
     (share < remaining).then(|| now + Span::from_nanos(share))
 }
 
-/// Where requests go: a host in ASCII lowercase, and a port.
+/// Where requests go: a host and a port.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Origin {
-    host: String,
+    host: Host,
     port: u16,
 }
 
@@ -333,15 +342,7 @@ fn origin(uri: &Uri) -> Result<Origin, Error> {
         Some(colon) => (&text[..after + colon], &text[after + colon + 1..]),
         None => (text, ""),
     };
-    let valid = match host.strip_prefix('[') {
-        Some(v6) => v6
-            .strip_suffix(']')
-            .is_some_and(|v6| v6.parse::<Ipv6Addr>().is_ok()),
-        None => !host.is_empty() && !host.contains('['),
-    };
-    if !valid {
-        return Err(Error::Host);
-    }
+    let host = host::uri(host).map_err(Error::Host)?;
     // `u16::from_str` takes a leading `+`.
     let port = match port {
         "" => 80,
@@ -351,10 +352,7 @@ fn origin(uri: &Uri) -> Result<Origin, Error> {
             .filter(|&port| port != 0)
             .ok_or(Error::Port)?,
     };
-    Ok(Origin {
-        host: host.to_ascii_lowercase(),
-        port,
-    })
+    Ok(Origin { host, port })
 }
 
 /// A copy of `request`, to send again.
@@ -367,14 +365,22 @@ fn copy(request: &Request<Whole>) -> Request<Whole> {
     copy
 }
 
-/// Moves the authority into `Host`, unless the request has one, and leaves the path
-/// and query in the URI.
+/// Moves the authority into `Host`, with no zone, unless the request has one, and
+/// leaves the path and query in the URI.
 fn origin_form(parts: &mut http::request::Parts) {
     if !parts.headers.contains_key(header::HOST)
         && let Some(authority) = parts.uri.authority()
     {
-        let host = HeaderValue::from_str(authority.as_str())
-            .expect("an authority is a valid header value");
+        let text = authority.as_str();
+        // RFC 6874: a client removes the zone. `origin` admits a `%` only in brackets.
+        let host = match text.split_once('%') {
+            Some((ip, rest)) => {
+                let close = rest.find(']').expect("a zone ends at its bracket");
+                HeaderValue::from_str(&format!("{ip}{}", &rest[close..]))
+            }
+            None => HeaderValue::from_str(text),
+        };
+        let host = host.expect("an authority is a valid header value");
         parts.headers.insert(header::HOST, host);
     }
     let mut uri = http::uri::Parts::default();
@@ -395,9 +401,9 @@ pub enum Error {
     Scheme,
     /// The URI holds user info. The error keeps none of it.
     UserInfo,
-    /// The URI has no host, a host in brackets that is not an IPv6 address, or a
-    /// `[` in a host that is not in brackets.
-    Host,
+    /// The URI has no host, or one that [`Host`] refuses, with the reason. A zone
+    /// follows `%25`, as in `http://[fe80::1%252]/`.
+    Host(host::Error),
     /// The port of the URI is not a number from 1 to 65535.
     Port,
     /// The name lookup failed, or no address of the host took the connection. It
@@ -405,8 +411,13 @@ pub enum Error {
     Connect(net::Error),
     /// The exchange was not done at the timeout.
     TimedOut,
-    /// The response body is larger than the cap.
+    /// The response body is larger than `max` bytes. `status` is the status of the
+    /// response, and `body` holds its first `max` bytes.
     TooLarge {
+        /// The status of the response.
+        status: StatusCode,
+        /// The first `max` bytes of the body.
+        body: Bytes,
         /// The cap, in bytes.
         max: usize,
     },
@@ -433,13 +444,13 @@ impl fmt::Display for Error {
                 f,
                 "the URI holds user info; give a credential through a secret"
             ),
-            Self::Host => write!(f, "the URI has no valid host"),
+            Self::Host(error) => write!(f, "the URI has {error}"),
             Self::Port => {
                 write!(f, "the port of the URI is not a number from 1 to 65535")
             }
             Self::Connect(error) => write!(f, "the connect failed: {error}"),
             Self::TimedOut => write!(f, "the exchange timed out"),
-            Self::TooLarge { max } => {
+            Self::TooLarge { max, .. } => {
                 write!(f, "the response body is larger than {max} bytes")
             }
             Self::Protocol(failure) => write!(f, "the exchange failed: {failure}"),
@@ -450,11 +461,11 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Host(error) => Some(error),
             Self::Connect(error) => Some(error),
             Self::Protocol(failure) => Some(failure),
             Self::Scheme
             | Self::UserInfo
-            | Self::Host
             | Self::Port
             | Self::TimedOut
             | Self::TooLarge { .. } => None,

@@ -60,9 +60,11 @@ or a line range.
 8. `/review <pr>`. It runs the reviewers by tier and the later rounds, at most 3
    (`/review`, "Round cap"). Fix every finding of a round in one batch of commits, with
    each merge of `main` that the PR needs, then ask for the next round. After round 3,
-   fix only each defect, with a test that fails without the fix, link each approval, OK,
-   and link that "Done" asks for, and defer the rest. A design flaw is deferred only
-   with the OK of its design approver (`/review`, "Round cap").
+   fix only each defect, with a test that fails without the fix, add each input that
+   `docs/claude/testing.md`, "Fuzzing", asks for, in a commit that changes nothing else,
+   apply each `Text fixes:` item of round 3, link each approval, OK, and link that
+   "Done" asks for, and defer the rest. A design flaw is deferred only with the OK of
+   its design approver (`/review`, "Round cap").
 9. If review changed code, run the gate again. When review is done (`/review`,
    "Done"), run `gh pr ready <n>` and `gh pr merge <n> --auto`. The merge queue takes
    it when the checks pass.
@@ -100,7 +102,7 @@ cargo xtask layers && cargo xtask globals && cargo xtask oracles
 cargo test -p <crates> --all-features
 cargo hack check -p <crates> --each-feature --no-dev-deps
 p=$(mktemp) && git diff origin/main...HEAD > "$p"
-cargo mutants --in-diff "$p" --jobs 4
+env -u CARGO_TARGET_DIR cargo mutants --in-diff "$p" --jobs 4
 ```
 
 - Each missed mutant is a missing test. Exit 3 with an empty `mutants.out/missed.txt` is

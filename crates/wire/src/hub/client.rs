@@ -43,6 +43,7 @@
 
 use std::fmt;
 
+use types::channel;
 use types::connection;
 use types::ed25519::PublicKey;
 use types::hello::Hello;
@@ -59,7 +60,7 @@ mod read;
 pub mod text;
 
 pub use read::{
-    FromNode, Mode, OPEN_BYTES_MAX, Open, Place, Places, Read, Reader, place,
+    Mode, OPEN_BYTES_MAX, Open, PLACES_MAX, Place, Places, Read, Reader, Start, place,
 };
 
 const HELLO: u8 = 4;
@@ -241,6 +242,13 @@ pub enum Error {
     /// The open of a read has a pattern that does not read, or none that includes
     /// names.
     Selector(text::Error<Box<name::Error>>),
+    /// The places of a read are over [`PLACES_MAX`].
+    Places {
+        /// The count of places.
+        count: u32,
+        /// The cap.
+        cap: u32,
+    },
     /// The places of a read name an index place that is not below their count.
     Index {
         /// The place of the index.
@@ -264,12 +272,18 @@ pub enum Error {
         /// The sample type of the index place.
         sample: sample::Type,
     },
-    /// The node finished a read stream before its last place. The caller of
-    /// [`Reader`] gives it.
+    /// The places of a read name a channel more than once.
+    Repeated {
+        /// The channel.
+        key: channel::Key,
+    },
+    /// The node finished a read stream before its last place: [`Reader::decode`] got
+    /// `None`.
     Finished,
 }
 
 impl fmt::Display for Error {
+    #[expect(clippy::too_many_lines, reason = "one arm for each error")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => f.write_str("the hub message is empty"),
@@ -310,6 +324,9 @@ impl fmt::Display for Error {
             Self::Selector(cause) => {
                 write!(f, "the selector of the read does not read: {cause}")
             }
+            Self::Places { count, cap } => {
+                write!(f, "the read has {count} places, over the cap of {cap}")
+            }
             Self::Index { index, count } => write!(
                 f,
                 "the places of the read put the index at place {index} of {count}"
@@ -329,6 +346,12 @@ impl fmt::Display for Error {
                 f,
                 "the index place of the read has sample type {sample}, not timestamp"
             ),
+            Self::Repeated { key } => {
+                write!(
+                    f,
+                    "the places of the read name channel {key} more than once"
+                )
+            }
             Self::Finished => {
                 f.write_str("the node finished the read stream before its last place")
             }

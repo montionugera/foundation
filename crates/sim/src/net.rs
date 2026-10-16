@@ -148,14 +148,14 @@ impl Network {
         }
     }
 
-    /// Makes each lookup of `host` from now on go as `config` says.
-    pub(crate) fn name(&mut self, host: &str, config: name::Config) {
-        self.names.insert(key(host), config);
+    /// Makes each lookup of `name`, a name of `Host`, from now on go as `config` says.
+    pub(crate) fn name(&mut self, name: &str, config: name::Config) {
+        self.names.insert(key(name).to_owned(), config);
     }
 
-    /// How a lookup of `host` that starts now goes.
-    pub(crate) fn lookup(&self, host: &str) -> name::Config {
-        self.names.get(&key(host)).cloned().unwrap_or_default()
+    /// How a lookup of `name`, a name of `Host`, that starts now goes.
+    pub(crate) fn lookup(&self, name: &str) -> name::Config {
+        self.names.get(key(name)).cloned().unwrap_or_default()
     }
 
     /// Sets the link from node `from` to node `to`.

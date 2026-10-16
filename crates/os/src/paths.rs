@@ -3,7 +3,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use env::entropy::Driver as _;
 use env::paths::{Error, Found, names_directory};
@@ -22,6 +22,41 @@ impl env::paths::Driver for Driver {
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
         write(path, bytes).map_err(|e| error(&e))
     }
+
+    fn resolve(&self, path: &Path) -> Result<PathBuf, Error> {
+        resolve(path).map_err(|e| error(&e))
+    }
+
+    fn home(&self) -> Option<PathBuf> {
+        resolve(&std::env::home_dir()?).ok()
+    }
+}
+
+fn resolve(path: &Path) -> io::Result<PathBuf> {
+    let missing = match fs::canonicalize(path) {
+        // macOS resolves a file at a path that ends in `/`, `/.`, or `/..`, also
+        // through a link, where the stat fails.
+        Ok(resolved) => return fs::metadata(path).map(|_| resolved),
+        // Only a last name that is not there passes `symlink_metadata` below.
+        Err(e) => e,
+    };
+    // `file_name` is `None` for an end in `..`, whose directory must be there.
+    let (Some(name), Some(dir)) = (path.file_name(), path.parent()) else {
+        return Err(missing);
+    };
+    // Not `path`: an end in `/` or `/.` makes the stat follow a link at `name`.
+    match fs::symlink_metadata(dir.join(name)) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        // A symbolic link to nothing.
+        Ok(_) => return Err(missing),
+        Err(e) => return Err(e),
+    }
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    Ok(fs::canonicalize(dir)?.join(name))
 }
 
 fn read(path: &Path, most: usize) -> io::Result<Found> {

@@ -57,15 +57,22 @@ After round 3, no other round runs. Each round comment numbered 3 gives each fin
 mark of its reviewer: `defect` (wrong behavior, data loss, a crash, or an oracle
 weakening), `design flaw`, or no mark. The author fixes each finding marked `defect` in
 this PR, with a test that fails without the fix, and CI checks it. A defect is never
-deferred. Each other finding of round 3 is a deferral ("Findings" step 3) on the last
-round comment (above). The deferral of a design flaw needs the explicit OK of its design
-approver. Without that OK, the author closes the PR, and the new design starts as a new
-PR at round 1. A missing approval, OK, or link that "Done" asks for is no finding to
-defer.
+deferred. Each other finding of round 3, other than a missing input that
+`docs/claude/testing.md`, "Fuzzing", asks for, is a deferral ("Findings" step 3) on the
+last round comment (above). The deferral of a design flaw needs the explicit OK of its
+design approver. Without that OK, the author closes the PR, and the new design starts as
+a new PR at round 1. A missing approval, OK, or link that "Done" asks for is no finding
+to defer.
 
 The range after round 3 holds only these:
-- merges of `main`, and the commits that fix what a merge broke;
+- merges of `main`, and the commits that fix what a merge broke (a conflict, or code, a
+  build, or a test of the PR that the merge makes fail; a rule that the merge brings in
+  and that only a review checks breaks nothing, so a finding against it is a finding of
+  round 3);
 - the fix of each defect of round 3, with its test;
+- each input that `docs/claude/testing.md`, "Fuzzing", asks for, in a commit that
+  changes nothing else, with the arm that it reaches and how the author checked it in
+  the PR body;
 - the `Text fixes:` items of round 3, applied as "Second round" step 2 says;
 - each change that an approval or OK of "Done" asks for. The PR links the comment that
   asks for it.
@@ -121,7 +128,7 @@ Launch in parallel every reviewer the PR needs:
 | --- | --- |
 | Every PR | `reviewer` |
 | A code PR: it changes a `.rs` file, a `Cargo.toml`, or `Cargo.lock` | add `architecture` and `breaker` |
-| A hot path: it changes code that runs once per sample, series, frame, or data message, or a public item that its caller on record calls at that rate, or code in a crate's `src/` that exists only for tests and benchmarks and that a benchmark runs in its timed loop (such as a counting `GlobalAlloc`), whatever its body says. A change to a bench file alone is not one. A control message whose rate does not grow with the data (raft, membership) is not one. The `Hot path:` line of the `architecture` report decides | add `performance`. It must report measured numbers for `main` and the PR, with the machine, and, for code that exists only for tests and benchmarks, for each benchmark that runs it in its timed loop. For a stub, it states what the surface makes each message and each part cost, read from the code under it, with no numbers. Run it again if it does not |
+| A hot path: it changes code that runs once per sample, series, frame, or data message, or a public item that its caller on record calls at that rate, or code in a crate's `src/` that exists only for tests and benchmarks and that a benchmark runs in its timed loop (such as a counting `GlobalAlloc`), whatever its body says. A change to a bench file alone is not one. A control message whose rate does not grow with the data (raft, membership) is not one. The `Hot path:` line of the `architecture` report decides | add `performance`. It must report measured numbers for the base of the PR and its head (`.claude/agents/performance.md`), with the machine, and, for code that exists only for tests and benchmarks, for each benchmark that runs it in its timed loop. For a stub, it states what the surface makes each message and each part cost, read from the code under it, with no numbers. Run it again if it does not |
 | A flagged oracle weakening | add one `reviewer` per weakening, told to argue for fixing the code instead |
 | A change to a file under `patches/` | give `reviewer` and `breaker` LOCAL PATCHES in `docs/decisions/releases/local-patches.md` and "Local patches" in `docs/dependencies.md` |
 
@@ -329,36 +336,41 @@ nothing checked again. So when round 1 led to fix commits:
    `Public surface:`, `Hot path:`, and `Build or use:` lines for the range. The round
    comment adds each item of the first to its own `Public surface:` line, copies the
    second, and copies the third after its findings. When the `Hot path:` line names a
-   function, run `performance` again on the range, and update the Performance section
-   with its numbers.
+   function, run `performance` again on the functions that the range changes, at the
+   head against the base of the PR, and update the Performance section with its numbers.
+   A run against an earlier commit of the PR shows where a cost came from, and is no
+   finding.
 2. Handle their findings as above. A round that has a finding gets another round, up to
-   round 3 (Round cap). A finding in text only (a `.md` file, a `.rs` comment line that,
-   trimmed, starts with `//` and is not a doctest line, the PR title or body, an end
-   line of a round comment, or the text with which the author states a later step of the
-   PR or a deferral that is not in a risk crate, other than a test in it) is not counted
-   when the `reviewer` gives its fix as the exact new text, at any severity, or when it
-   is Low: the round comment lists it under a line `Text fixes:` after its findings. A
-   Low finding is a problem of a citation (a link, a SHA, a time, an issue number, a
-   name) or of that text of a deferral or a later step, and its fix makes no sentence
-   state another thing about what the code, a test, a decision, a ruling, or a contract
-   does. A problem of wording that leaves each statement true is no finding
-   (`.claude/agents/reviewer.md`). Each other finding
-   is Medium or higher. A missing or stale link to an approval, an OK, or a ruling that
-   Round 1, "Findings" step 3, or "Done" asks for is no Low finding. That text of a
-   deferral or a later step is the body of the issue that the author files for it, or
-   the author's comment on an existing issue, never text that another session wrote. A
-   test in it is the code of the test, and each sentence that states what the test
-   asserts or what must pass. A finding in that body or comment is no `Text fixes:` item
-   when the body or comment states a deferral in a risk crate, also when it states a
-   later step or another deferral. An item that is not Low and that gives only facts and
-   links or asks the author to find a fact, and an item that asks the author to give a
-   reason, is a finding. The author applies each item as given, and a Low item with no
-   new text as it states, by a commit that changes no code (Round comment), in the PR
-   title or body, in that text of a deferral or a later step, or by an edit of the round
-   comment that holds the line and in the same line of the `Text fixes:` round. That
-   needs no further round, and the `reviewer` of the next round, when one runs, checks
-   it where the author applied it. An item still needs each approval that its file needs
-   (Round 1, `docs/factory.md`).
+   round 3 (Round cap). A finding in text only is not counted when the `reviewer` gives
+   its fix as the exact new text, at any severity, or when it is Low: the round comment
+   lists it under a line `Text fixes:` after its findings.
+   - Text only: a `.md` file, a `.rs` comment line that, trimmed, starts with `//` and
+     is not a doctest line, the PR title or body, an end line of a round comment, or the
+     text with which the author states a later step of the PR or a deferral that is not
+     in a risk crate, other than a test in it. That text of a deferral or a later step
+     is the body of the issue that the author files for it, or the author's comment on
+     an existing issue, never text that another session wrote. A test in it is the code
+     of the test, and each sentence that states what the test asserts or what must pass.
+     A finding in that body or comment is no `Text fixes:` item when the body or comment
+     states a deferral in a risk crate, also when it states a later step or another
+     deferral.
+   - Low: a problem of a citation (a link, a SHA, a time, an issue number, a name) or of
+     that text of a deferral or a later step, and its fix makes no sentence state
+     another thing about what the code, a test, a decision, a ruling, or a contract
+     does. Each other finding is Medium or higher. A missing or stale link to an
+     approval, an OK, or a ruling that Round 1, "Findings" step 3, or "Done" asks for is
+     no Low finding.
+   - No finding: a problem of wording that leaves each statement true
+     (`.claude/agents/reviewer.md`).
+   - A finding: an item that is not Low and that gives only facts and links or asks the
+     author to find a fact, and an item that asks the author to give a reason.
+   - How the author applies an item: as given, and a Low item with no new text as it
+     states, by a commit that changes no code (Round comment), in the PR title or body,
+     in that text of a deferral or a later step, or by an edit of the round comment that
+     holds the line and in the same line of the `Text fixes:` round. That needs no
+     further round, and the `reviewer` of the next round, when one runs, checks it where
+     the author applied it. An item still needs each approval that its file needs (Round
+     1, `docs/factory.md`).
 
 After round 1, bring in `main` with a merge, never a rebase. A rebase moves the reviewed
 commits and the fix commits out of every round range. A clean merge needs no round: its

@@ -7,11 +7,11 @@ use std::sync::Arc;
 use transport::Code;
 use transport::stream::{Receiver, Sender};
 use transport::{Class, Error as Stream};
-use types::frame::key_set::{Group, Interner, KeySet};
+use types::frame::key_set::KeySet;
 use types::frame::{Form, Frame};
 use wire::Protocol;
 use wire::header::MALFORMED;
-use wire::hub::client::{self, FromNode, Mode, Open, Place, Read};
+use wire::hub::client::{self, Mode, Open, Place, Read};
 use wire::hub::{Due, Frames, Step};
 
 use crate::{Error, Handle};
@@ -66,8 +66,10 @@ impl Reader {
         &self.places
     }
 
-    /// The key set of each frame. Its entries are the places, in order. Its key and the
-    /// slot of each entry are the reader's own, not the node's.
+    /// The key set of each frame, from [`KeySet::ordered`]. Its entries are the
+    /// places, in order. Its slots are the reader's own, not the node's, and its key is
+    /// the one key of each set from `KeySet::ordered`, so it does not tell two readers
+    /// apart.
     #[must_use]
     pub fn set(&self) -> &Arc<KeySet> {
         self.frames.set()
@@ -166,64 +168,22 @@ async fn start(
     shared.send(sender, &read).await?;
     shared.send_chunks(sender, &body).await?;
     let mut decoder = client::Reader::new(open.mode);
-    let mut places = Vec::new();
-    let mut index = 0;
-    let reader = loop {
-        let message = receiver.recv().await?.ok_or(client::Error::Finished)?;
-        match decoder.decode(&message)? {
-            FromNode::Places(head) => index = to_usize(head.index),
-            FromNode::Run { places: run, home } => {
-                places.extend(run);
-                if let Some(home) = home {
-                    break home;
-                }
-            }
+    let start = loop {
+        let message = receiver.recv().await?;
+        if let Some(start) = decoder.decode(message.as_deref())? {
+            break start;
         }
     };
-    let set = set(&places, index)?;
-    let Some(message) = receiver.recv().await? else {
-        let error = reader
-            .end()
-            .expect_err("a reader before opened may not end");
-        return Err(Error::Reply(error));
-    };
-    let frames = Frames::open(reader, set, &message).map_err(Error::Reply)?;
-    Ok((places, frames))
-}
-
-/// The key set of `places` whose index is at `index`: each place is the entry at its
-/// position.
-fn set(places: &[Place], index: usize) -> Result<Arc<KeySet>, Error> {
-    let mut keys: Vec<_> = places.iter().map(|place| place.key).collect();
-    keys.sort_unstable();
-    if let Some(&[key, _]) = keys.array_windows().find(|[a, b]| a == b) {
-        return Err(Error::Repeated(key));
-    }
-    let mut interner = Interner::new();
-    let slots = interner.slots();
-    let mut data = Vec::with_capacity(places.len());
-    for (at, place) in places.iter().enumerate() {
-        if at == index {
-            slots.index(place.key);
-        } else {
-            slots.data(place.key, place.data_type);
-            data.push((place.key, place.data_type));
-        }
-    }
-    let group = Group {
-        index: places[index].key,
-        data: &data,
-    };
-    Ok(interner.intern(&[group]))
+    let message = receiver.recv().await?;
+    let (frames, _live) = Frames::open(start.home, start.set, message.as_deref())
+        .map_err(Error::Reply)?;
+    Ok((start.places, frames))
 }
 
 /// Ends `stream` after `error`: stops it as `MALFORMED` when the node broke a rule of
 /// the wire, else drops it.
 fn end((sender, receiver): (Sender, Receiver), error: &Error) {
-    if matches!(
-        error,
-        Error::Message(_) | Error::Reply(_) | Error::Frame(_) | Error::Repeated(_)
-    ) {
+    if matches!(error, Error::Message(_) | Error::Reply(_) | Error::Frame(_)) {
         sender.reset(Code(MALFORMED));
         receiver.stop(Code(MALFORMED));
     }
@@ -235,8 +195,4 @@ async fn recv(receiver: &mut Receiver, frames: &Frames) -> Result<block::Block, 
         .recv()
         .await?
         .ok_or_else(|| Error::Reply(frames.finished()))
-}
-
-fn to_usize(n: u32) -> usize {
-    usize::try_from(n).expect("invariant: a u32 fits a usize")
 }

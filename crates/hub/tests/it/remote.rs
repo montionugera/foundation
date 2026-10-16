@@ -827,7 +827,7 @@ async fn fake_accept(transport: &Transport) -> (Session, Sender, Receiver) {
 /// [`fake_accept`], then `Opened` sent.
 async fn fake_open(transport: &Transport) -> (Session, Sender, Receiver) {
     let (session, mut sender, receiver) = fake_accept(transport).await;
-    send(&mut sender, 1, |out| Reply::Opened.encode(out)).await;
+    send(&mut sender, 9, |out| Reply::Opened { live: 0 }.encode(out)).await;
     (session, sender, receiver)
 }
 
@@ -1538,6 +1538,93 @@ fn a_reader_gets_the_seq_and_path_of_each_frame_from_the_home() {
 }
 
 #[test]
+fn a_complete_reader_gets_the_seqs_that_the_home_skipped_as_the_gap_of_the_next_frame()
+{
+    remote(
+        147,
+        sim::link::Config::default(),
+        |node, _, transport, steps| async move {
+            let (_, mut sender, _receiver) = fake_open(&transport).await;
+            let mut seq = 0;
+            for skipped in [0, 3, 0] {
+                seq += skipped;
+                send_frame(&mut sender, &mut seq, 32).await.expect("sends");
+            }
+            until(&node.clock(), &steps.done).await;
+        },
+        |test, _| async move {
+            let mut reader = test.reader(&["value"], Mode::Complete).await;
+            for gap in [None, Some(2..5), None] {
+                let received = reader.next().await.expect("a frame");
+                assert_eq!(received.gap(), gap);
+            }
+        },
+    );
+}
+
+/// A frame with no sample has no first sample to end a gap, so the gap comes on the
+/// next frame with one.
+#[test]
+fn a_complete_reader_gets_the_gap_before_a_frame_with_no_sample_on_the_next_frame() {
+    remote(
+        149,
+        sim::link::Config::default(),
+        |node, _, transport, steps| async move {
+            let (_, mut sender, _receiver) = fake_open(&transport).await;
+            let mut seq = 0;
+            send_frame(&mut sender, &mut seq, 32).await.expect("sends");
+            seq += 3;
+            send_head(&mut sender, &mut seq, 0, &[(0, 0), (1, 0)])
+                .await
+                .expect("sends");
+            send_frame(&mut sender, &mut seq, 32).await.expect("sends");
+            until(&node.clock(), &steps.done).await;
+        },
+        |test, _| async move {
+            let mut reader = test.reader(&["value"], Mode::Complete).await;
+            let mut positions = Vec::new();
+            for (count, gap) in [(2, None), (0, None), (2, Some(2..5))] {
+                let received = reader.next().await.expect("a frame");
+                let range = received.view().range(0).expect("an index");
+                assert_eq!((range.count, received.gap()), (count, gap));
+                positions.push(received.position());
+            }
+            assert_eq!(
+                positions[1], positions[0],
+                "the frame with no sample keeps the position before the gap"
+            );
+            assert_ne!(positions[2], positions[0]);
+        },
+    );
+}
+
+#[test]
+fn a_complete_reader_gets_the_seqs_from_the_open_position_as_the_gap_of_the_first_frame()
+ {
+    remote(
+        148,
+        sim::link::Config::default(),
+        |node, _, transport, steps| async move {
+            let (_, mut sender, _receiver) = fake_accept(&transport).await;
+            let opened = Reply::Opened { live: 5 };
+            send(&mut sender, 9, |out| opened.encode(out)).await;
+            let mut seq = 9;
+            for _ in 0..2 {
+                send_frame(&mut sender, &mut seq, 32).await.expect("sends");
+            }
+            until(&node.clock(), &steps.done).await;
+        },
+        |test, _| async move {
+            let mut reader = test.reader(&["value"], Mode::Complete).await;
+            for gap in [Some(5..9), None] {
+                let received = reader.next().await.expect("a frame");
+                assert_eq!(received.gap(), gap);
+            }
+        },
+    );
+}
+
+#[test]
 fn a_complete_reader_that_the_home_ends_with_behind_gets_behind_at_each_next() {
     remote(
         17,
@@ -1554,10 +1641,7 @@ fn a_complete_reader_that_the_home_ends_with_behind_gets_behind_at_each_next() {
             let mut reader = test.reader(&["value"], Mode::Complete).await;
             let ended = reader.next().await.expect_err("the home ended the session");
             assert_eq!(ended, Ended::Behind);
-            assert_eq!(
-                ended.to_string(),
-                "the reader reached a frame that the buffer lost: open a new reader"
-            );
+            assert_eq!(ended.to_string(), "the home ended the session");
             assert_eq!(reader.next().await.expect_err("ended"), Ended::Behind);
         },
     );
@@ -2734,7 +2818,7 @@ async fn open_a_third(
                 .expect("open");
         }
         let mut opened = third.sender.take().expect("a two-way stream");
-        send(&mut opened, 1, |out| Reply::Opened.encode(out)).await;
+        send(&mut opened, 9, |out| Reply::Opened { live: 0 }.encode(out)).await;
         until(&node.clock(), &steps.done).await;
     };
     race(serve_third, drain)
@@ -3208,7 +3292,8 @@ fn a_reader_stops_the_stream_as_malformed_when_a_head_starts_before_the_last_end
             series: 2,
         }),
         wire::hub::Error::Seq { seq: 3, end: 11 },
-        "the frame head starts at seq 3, before the end 11 of the head before it",
+        "the frame head starts at seq 3, before seq 11, where the head before it ended or \
+         the session opened",
     );
 }
 
@@ -3279,7 +3364,7 @@ fn a_reader_panics_on_an_ack_of_a_position_at_zero_before_it_gave_one() {
                     .expect("a message")
                     .expect("not finished");
             }
-            send(&mut second, 1, |out| Reply::Opened.encode(out)).await;
+            send(&mut second, 9, |out| Reply::Opened { live: 0 }.encode(out)).await;
             until(&node.clock(), &steps.done).await;
         },
         |test, _| async move {

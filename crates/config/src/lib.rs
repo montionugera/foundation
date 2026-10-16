@@ -5,6 +5,7 @@ mod access;
 mod channel;
 mod connector;
 mod duplicate;
+pub mod import;
 mod node_settings;
 pub mod openssh;
 mod placement;
@@ -12,6 +13,8 @@ pub mod plan;
 mod private_key;
 mod retention;
 mod subject;
+mod unfilled;
+mod walk;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -85,6 +88,11 @@ pub struct Entry {
 ///
 /// A private key anywhere in the Documents gives only `config.private-key`, once for
 /// each string that holds one.
+/// Then each call `fill` at any depth gives only problems of `fill`, once for each, in
+/// the order of their [`document::Source`], then in source order: `config.unfilled`
+/// for `fill("<what>")` that an import wrote, and `config.bad-fill` for a call `fill`
+/// of other arguments.
+/// A call `fill` inside a call `fill` gives no problem of its own.
 /// Each other problem in the Documents, in the order of their [`document::Source`],
 /// then in source order.
 /// A problem with no span has no defined place in that order. A value that a reader
@@ -93,7 +101,7 @@ pub struct Entry {
 /// and reads, and the ones it needs are there. A block directly inside a definition
 /// other than a `connector` does not stop that check: only a connector's kind reads
 /// blocks, so each such block is one problem, and nothing inside it but a private key
-/// is checked.
+/// or a `fill` is checked.
 /// A bad `kind` of channel hides the problems of each other attribute that a kind of
 /// channel knows. A `kind` of connector that is missing, is not a name, or is not in
 /// `kinds` hides each problem of the connector's config, and so does a config nested
@@ -121,6 +129,10 @@ fn checked<'a>(
     let alarms = private_key::alarms(documents);
     if !alarms.is_empty() {
         return Err(alarms);
+    }
+    let unfilled = unfilled::problems(documents);
+    if !unfilled.is_empty() {
+        return Err(unfilled);
     }
     let mut blocks: Vec<_> = documents
         .iter()
@@ -3319,6 +3331,165 @@ mod tests {
                     keys.iter().map(|&key| string(&ed25519(key))).collect();
                 let documents = subject(&[("keys", list(&items))]);
                 prop_assert_eq!(check(&documents), Ok(keyed(&sorted)));
+            }
+        }
+    }
+
+    mod unfilled {
+        use document::value::Call;
+
+        use super::*;
+
+        fn value(kind: Kind, span: Option<Span>) -> Value {
+            Value { kind, span }
+        }
+
+        /// `fill("<what>")` with its function at `offset` and its text one byte later.
+        fn fill(what: &str, offset: u32) -> Kind {
+            Kind::Call(Call {
+                function: "fill".into(),
+                function_span: at(0, offset),
+                arguments: vec![value(string(what), at(0, offset + 1))],
+            })
+        }
+
+        fn unfilled(span: Option<Span>, what: &str) -> Diagnostic {
+            refused(
+                "config.unfilled",
+                span,
+                &format!("the import found no value for {what}"),
+                "Write the value in place of `fill`",
+            )
+        }
+
+        fn channel(attributes: &[(&str, Kind)]) -> Block {
+            block(0, 0, "channel", &["edge.temp"], attributes)
+        }
+
+        #[test]
+        fn refuses_a_fill_in_a_channel() {
+            let block = channel(&[
+                ("data_type", fill("the sample type", 50)),
+                ("index", string("edge.time")),
+            ]);
+            assert_eq!(
+                check(&[document(vec![block])]),
+                Err(vec![unfilled(at(0, 11), "the sample type")])
+            );
+        }
+
+        #[test]
+        fn refuses_a_fill_at_any_depth() {
+            let in_list = Kind::List(vec![
+                value(string("a"), at(0, 60)),
+                value(fill("the node", 70), at(0, 61)),
+            ]);
+            let in_call = Kind::Call(Call {
+                function: "secret".into(),
+                function_span: at(0, 60),
+                arguments: vec![value(fill("the node", 70), at(0, 61))],
+            });
+            let in_map = Kind::Map(
+                Map::new(vec![Attribute {
+                    key: "a".into(),
+                    key_span: at(0, 60),
+                    value: value(fill("the node", 70), at(0, 61)),
+                }])
+                .unwrap(),
+            );
+            for kind in [in_list, in_call, in_map] {
+                let block = channel(&[("unit", kind.clone())]);
+                assert_eq!(
+                    check(&[document(vec![block])]),
+                    Err(vec![unfilled(at(0, 61), "the node")]),
+                    "{kind:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn refuses_a_fill_in_a_block_of_a_connector_config() {
+            let mut connector = block(
+                0,
+                0,
+                "connector",
+                &["edge.plc"],
+                &[("kind", string("opcua"))],
+            );
+            let read = block(0, 100, "read", &[], &[("node", fill("the node", 150))]);
+            connector.body.blocks.push(read);
+            assert_eq!(
+                check(&[document(vec![connector])]),
+                Err(vec![unfilled(at(0, 111), "the node")])
+            );
+        }
+
+        #[test]
+        fn gives_each_fill_in_source_order_and_no_other_problem() {
+            let first = channel(&[
+                ("data_type", fill("the sample type", 50)),
+                ("unknown", string("x")),
+            ]);
+            let second =
+                block(1, 0, "channel", &["edge.b"], &[("unit", fill("u", 50))]);
+            let other = block(0, 200, "nonsense", &[], &[]);
+            assert_eq!(
+                check(&[document(vec![second]), document(vec![other, first])]),
+                Err(vec![
+                    unfilled(at(0, 11), "the sample type"),
+                    unfilled(at(1, 11), "u"),
+                ])
+            );
+        }
+
+        #[test]
+        fn gives_only_a_private_key_after_a_fill() {
+            let block = channel(&[
+                ("data_type", fill("the sample type", 50)),
+                ("unit", string("-----BEGIN OPENSSH PRIVATE KEY-----")),
+            ]);
+            assert_eq!(
+                check(&[document(vec![block])]),
+                Err(vec![refused(
+                    "config.private-key",
+                    at(0, 13),
+                    "the value is a private key, which must never be in a file",
+                    "Remove the private key from this file now, and use the one line \
+                     of its `.pub` file",
+                )])
+            );
+        }
+
+        #[test]
+        fn refuses_a_fill_that_is_not_of_one_string_and_not_what_it_holds() {
+            let call = |arguments: Vec<Value>| {
+                Kind::Call(Call {
+                    function: "fill".into(),
+                    function_span: at(0, 50),
+                    arguments,
+                })
+            };
+            let cases = [
+                call(vec![]),
+                call(vec![value(Kind::Integer(1), at(0, 51))]),
+                call(vec![
+                    value(string("a"), at(0, 51)),
+                    value(string("b"), at(0, 53)),
+                ]),
+                call(vec![value(fill("the node", 70), at(0, 51))]),
+            ];
+            for kind in cases {
+                let data = channel(&[("data_type", kind.clone())]);
+                assert_eq!(
+                    check(&[document(vec![data])]),
+                    Err(vec![refused(
+                        "config.bad-fill",
+                        at(0, 11),
+                        "`fill` takes one string",
+                        "Write the value in place of `fill`",
+                    )]),
+                    "{kind:?}"
+                );
             }
         }
     }
