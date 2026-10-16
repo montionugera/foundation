@@ -22,6 +22,9 @@ const PATIENCE: Span = Span::from_nanos(90_000_000_000);
 /// The time between two checks of a wait.
 const POLL: Duration = Duration::from_millis(100);
 
+/// The time between two checks of the exit of a command that closed its pipes.
+const EXITING: Duration = Duration::from_millis(1);
+
 /// The pool budget that [`Rig::new`] keeps.
 pub(crate) const POOL: u64 = 1 << 30;
 
@@ -129,7 +132,8 @@ impl Rig {
         );
         if node.watch.seen().ended() {
             let seen = node.watch.seen().text();
-            panic!("the node exited with {}:\n{seen}", node.output().status)
+            let output = node.exit(&self.clock, PATIENCE, "the node exits");
+            panic!("the node exited with {}:\n{seen}", output.status)
         }
         self.node = Some(node);
     }
@@ -138,15 +142,9 @@ impl Rig {
     /// exits and closes its pipes. Panics when no node runs, or when 90 s pass first.
     #[cfg(unix)]
     pub(crate) fn stop(&mut self) -> Output {
-        let mut node = self.node.take().expect("a node runs");
+        let node = self.node.take().expect("a node runs");
         node.process.term();
-        node.until(
-            &self.clock,
-            PATIENCE,
-            "the node exits at SIGTERM",
-            Seen::ended,
-        );
-        node.output()
+        node.exit(&self.clock, PATIENCE, "the node exits at SIGTERM")
     }
 
     /// Starts `foundation` with `args` in [`Rig::dir`], with `stdout` as its standard
@@ -467,10 +465,8 @@ fn run(clock: &Clock, limit: Span, command: Command, input: &[u8]) -> Output {
 
 /// Gives the output of `running` when it exits and closes its pipes. When `limit`
 /// passes first, kills it and panics with the output so far.
-fn end(clock: &Clock, limit: Span, mut running: Running) -> Output {
-    let what = "the command exits and closes its pipes";
-    running.until(clock, limit, what, Seen::ended);
-    running.output()
+fn end(clock: &Clock, limit: Span, running: Running) -> Output {
+    running.exit(clock, limit, "the command exits and closes its pipes")
 }
 
 /// A command that a test writes to while it runs: [`Rig::talk`].
@@ -554,10 +550,29 @@ impl Running {
         }
     }
 
-    /// The output of a command whose threads [`Seen::ended`]. A command that closed
-    /// its pipes is in its exit, so the wait for its status is short.
-    fn output(mut self) -> Output {
-        let status = self.process.0.wait().expect("wait for the command");
+    /// The output of the command once it exits and its threads [`Seen::ended`]. When
+    /// `limit` passes first, kills the command and panics with `what` and what it
+    /// wrote.
+    fn exit(mut self, clock: &Clock, limit: Span, what: &str) -> Output {
+        let deadline = clock.now() + limit;
+        self.until(clock, limit, what, Seen::ended);
+        // A command with no open pipe gives no event at its exit, but one that closed
+        // its pipes is most often in its exit already.
+        let status = loop {
+            if let Some(status) = self.process.0.try_wait().expect("check the command")
+            {
+                break status;
+            }
+            if clock.now() >= deadline {
+                self.process.end();
+                late(what, limit, &self.watch.seen().text())
+            }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "a process test waits on another process in real time"
+            )]
+            std::thread::sleep(EXITING);
+        };
         for thread in self.threads.drain(..) {
             thread.join().expect("read or write the command");
         }
@@ -1173,6 +1188,23 @@ fn a_run_ends_at_its_limit_when_a_process_of_the_command_keeps_its_input() {
     assert_a_run_ends_at_its_limit(
         "exec 3<&0; sleep 60 <&3 >/dev/null 2>&1 & echo $!",
         &vec![0; 1 << 20],
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_run_ends_at_its_limit_when_the_command_closes_its_pipes_and_runs() {
+    let mut command = Command::new("sh");
+    command.args(["-c", "echo runs; exec sleep 60 <&- >&- 2>&-"]);
+    let limited =
+        std::panic::AssertUnwindSafe(|| run(&os::clock(), Span::SECOND, command, &[]));
+    let panic = std::panic::catch_unwind(limited).expect_err("the run panics");
+    assert_eq!(
+        panic.downcast_ref::<String>().map(String::as_str),
+        Some(
+            "the command exits and closes its pipes: not within 1s. The last check \
+             saw:\nstdout:\nruns\n\nstderr:\n"
+        )
     );
 }
 
