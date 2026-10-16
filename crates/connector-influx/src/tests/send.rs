@@ -571,6 +571,11 @@ const REFUSED: &str = "For a field type conflict, write to another `measurement`
 const UNKNOWN: &str =
     "Create the database, the bucket, or the org in InfluxDB, or name one that exists";
 
+/// The fix in the text of a 413.
+const LARGE: &str = "Raise the request size limit of InfluxDB \
+                     (`--max-http-request-size` of InfluxDB 3, `max-body-size` of \
+                     InfluxDB 1), or write fewer or shorter samples in each frame";
+
 /// An answer of InfluxDB 1 to a batch of bad lines, of 65537 bytes or more.
 fn large() -> String {
     let line = "unable to parse 'telemetry a=': missing field value\n";
@@ -626,7 +631,9 @@ fn sends_a_batch_again_after_each_other_answer_and_shows_the_error_until_a_204()
             "InfluxDB answered 500 Internal Server Error: the disk is full".into(),
             "InfluxDB answered 503 Service Unavailable: starting".into(),
             "InfluxDB answered 401 Unauthorized: unauthorized access".into(),
-            "InfluxDB answered 413 Payload Too Large: request too large".into(),
+            format!(
+                "InfluxDB answered 413 Payload Too Large: request too large. {LARGE}"
+            ),
             "InfluxDB answered 429 Too Many Requests: slow down".into(),
             format!(
                 "InfluxDB answered 400 Bad Request: field type conflict. {REFUSED}"

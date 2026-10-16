@@ -143,13 +143,15 @@
   after which the read of the token fails: an action in InfluxDB fixes a 400, a 404, or
   a 422, and the next try after it lands the batch. The reader stays open meanwhile, as
   in an outage of InfluxDB. The text is `InfluxDB answered {status}: {body}`, and for
-  these three statuses it adds a fix. A 400 and a 422 (InfluxDB 1 gives 400, and
-  InfluxDB 2 gives 422, for a field type conflict and for points past retention): "For a
-  field type conflict, write to another `measurement` or delete the old field in
-  InfluxDB. For points older than the retention period, raise it or write to another
-  bucket". A 404: "Create the database, the bucket, or the org in InfluxDB, or name one
-  that exists". An answer whose body is over the cap of 64 KiB has its first 64 KiB as
-  `{body}`, as `connector::http::Error::TooLarge` holds them, and the fix of its status
+  these four statuses it adds a fix. A 400 and a 422 (InfluxDB 1 gives 400, and InfluxDB
+  2 gives 422, for a field type conflict and for points past retention): "For a field
+  type conflict, write to another `measurement` or delete the old field in InfluxDB. For
+  points older than the retention period, raise it or write to another bucket". A 404:
+  "Create the database, the bucket, or the org in InfluxDB, or name one that exists". A
+  413: "Raise the request size limit of InfluxDB (`--max-http-request-size` of InfluxDB
+  3, `max-body-size` of InfluxDB 1), or write fewer or shorter samples in each frame".
+  An answer whose body is over the cap of 64 KiB has its first 64 KiB as `{body}`, as
+  `connector::http::Error::TooLarge` holds them, and the fix of its status
   (`laptop.architect-2`, 2026-10-16T07:38:36Z,
   https://github.com/synnaxlabs/foundation/pull/2838#issuecomment-6210559216). Decided
   by `laptop.architect-2` on 2026-10-16T07:18:54Z
@@ -158,20 +160,22 @@
   (https://github.com/synnaxlabs/foundation/issues/2607#issuecomment-6158874569).
   QUARANTINE, which lets the connector go on past refused points, is a later step
   (#2841). A 401 and a 403 keep the backoff, since the run reads the token again before
-  the next try (#2687). A 413 keeps the backoff too. Trigger for a split of a frame
-  across requests: a frame whose lines pass the body limit of its server. A 204 clears
-  the error, and adds the fields of the batch to the count `confirmed` with
-  `Count::add`, and the `count` of each gap line of the batch to the count `lost`: the
-  seqs that the gap lines of this connector count, which InfluxDB took with a 204. A
-  batch sent again counts once. A gap that the reader reports again after a restart
-  counts again, so `lost` is an upper bound, as the sum of `count` in `foundation_gaps`
-  is. Each later out kind names the same count `lost`. It counts sample times of the
-  reader's index. The `lost` of `opcua` counts data samples (OPCUA KIND). The ruling did
-  not take a count of all out kinds in `connector`, as the supervisor does not see the
-  frames of a kind's reader. The trigger to make it is a second out kind (6199058253).
-  Both counts hold across the runs of one call (SUPERVISOR). The person gave the choice
-  of the path to the architects on 2026-10-15 ("Best devx possible. You choose the
-  path", through `laptop.monitor`:
+  the next try (#2687). A 413 keeps the backoff too, so a raise of the limit lets the
+  held frames go with no sample lost (`laptop.monitor`, 2026-10-16T19:31:19Z,
+  https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223151793). Trigger
+  for a split of a frame across requests: a frame whose lines pass the body limit of its
+  server. A 204 clears the error, and adds the fields of the batch to the count
+  `confirmed` with `Count::add`, and the `count` of each gap line of the batch to the
+  count `lost`: the seqs that the gap lines of this connector count, which InfluxDB took
+  with a 204. A batch sent again counts once. A gap that the reader reports again after
+  a restart counts again, so `lost` is an upper bound, as the sum of `count` in
+  `foundation_gaps` is. Each later out kind names the same count `lost`. It counts
+  sample times of the reader's index. The `lost` of `opcua` counts data samples (OPCUA
+  KIND). The ruling did not take a count of all out kinds in `connector`, as the
+  supervisor does not see the frames of a kind's reader. The trigger to make it is a
+  second out kind (6199058253). Both counts hold across the runs of one call
+  (SUPERVISOR). The person gave the choice of the path to the architects on 2026-10-15
+  ("Best devx possible. You choose the path", through `laptop.monitor`:
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922).
   `laptop.architect` gave the count of lost seqs, and `laptop.architect-2` ruled its
   shape on 2026-10-15T18:13:22Z

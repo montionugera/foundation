@@ -195,6 +195,11 @@ fn fix(status: StatusCode) -> &'static str {
             ". Create the database, the bucket, or the org in InfluxDB, or name one \
              that exists"
         }
+        StatusCode::PAYLOAD_TOO_LARGE => {
+            ". Raise the request size limit of InfluxDB (`--max-http-request-size` of \
+             InfluxDB 3, `max-body-size` of InfluxDB 1), or write fewer or shorter \
+             samples in each frame"
+        }
         _ => "",
     }
 }
