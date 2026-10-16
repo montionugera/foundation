@@ -77,14 +77,14 @@
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6103306402, approved
   by `laptop.architect` at 2026-10-10T23:31:47Z in the ruling below). At the program,
   `client::Reader` decodes the start of a read stream: `Places`, then the run. With the
-  last place it gives the `hub::Reader` of their count and the read's mode, and the
-  program decodes each reply with it. Only `wire` builds that reader, so the program
+  last place it gives the `Start`: the places, their key set, and the `hub::Reader` of
+  their count and the read's mode, with which the program decodes each reply. Only `wire` builds that reader, so the program
   side builds no `Open` with a grant that it never sends. `client::Reader` refuses an
   index place whose sample type is not `Stamp` with `Error::Unstamped`
   (`laptop.architect`, 2026-10-11T00:45:04Z,
-  https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6103881921). The
-  caller gives `Error::Finished` for a stream that the node finishes before the last
-  place, and a call of `client::Reader` after that place panics. Lost: one decoder for
+  https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6103881921). It
+  gives `Error::Finished` for a stream that the node finishes before the last place
+  (#2839), and a call of `client::Reader` after that place panics. Lost: one decoder for
   the whole stream. Its copy of each reply cost the program 6.9 ns for each message
   (644.7 against 188.6 ns for a frame of 66 messages). `#[inline]` on
   `hub::Reader::decode` removed that cost, and cost the node 0.31 ns for each message
@@ -94,9 +94,12 @@
   https://github.com/synnaxlabs/foundation/pull/2368#issuecomment-6106869729).
   Supersedes `FromNode::Home`, `body`, `end`, and item 1 of
   https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6103881921.
-  `client::Reader` is the one public path that decodes `Places` and the run
-  (`laptop.architect`, 2026-10-11T01:56:00Z,
-  https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6104390669). The
+  `client::Places::decode` and `client::place::decode` are public, beside the public
+  encode of each, so that the fuzz target `wire_hub_client` checks that each message
+  encodes to its bytes. `client::Reader` alone checks the run and builds the key set
+  (`laptop.architect`, 2026-10-16T06:57:29Z,
+  https://github.com/synnaxlabs/foundation/issues/2808#issuecomment-6209940652).
+  Supersedes https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6104390669. The
   program sends no credit: the stream's flow control bounds the frames in flight. The
   program knows the kind of each stream that it opens; the node knows the kind of the
   hello stream only, and decodes the first message of each later stream with
