@@ -197,13 +197,19 @@ impl Mark {
                 .expect("invariant: the tail checked the entry");
             return Self::at(seq);
         }
-        let given = if first == self.seq { self.given } else { 0 };
         Self {
             seq: first,
-            given: given
-                .checked_add(1)
+            given: self
+                .count(first)
                 .expect("invariant: the log checked the entry"),
         }
+    }
+
+    /// The count of an entry with no samples at `first` that comes at this mark on
+    /// its path, or `None` past `u64::MAX`.
+    fn count(self, first: u64) -> Option<u64> {
+        let given = if first == self.seq { self.given } else { 0 };
+        given.checked_add(1)
     }
 }
 
@@ -250,15 +256,17 @@ impl Position {
     /// As [`Tail::advance`], and [`Invalid::Crowded`]. Nothing changes.
     fn advance(&mut self, header: &Header) -> Result<Mark, Invalid> {
         let start = self.mark();
-        if header.len == 0 && header.first == start.seq && start.given == u64::MAX {
-            return Err(Invalid::Crowded {
+        let given = if header.len == 0 {
+            start.count(header.first).ok_or(Invalid::Crowded {
                 index: header.index,
                 path: header.path,
                 seq: header.first,
-            });
-        }
+            })?
+        } else {
+            0
+        };
         self.tail.advance(header)?;
-        self.given = start.after(header.first, header.len).given;
+        self.given = given;
         Ok(start)
     }
 }
@@ -2527,6 +2535,22 @@ mod tests {
             "an entry of index 00000000-0000-0000-0000-000000000001 on path Live with \
              no samples follows u64::MAX of them at seq 3"
         );
+    }
+
+    #[test]
+    fn after_the_largest_count_other_entries_append() {
+        let largest = Header {
+            last: Last::Count(u64::MAX),
+            ..header(1, Path::Live, 3, 0, None)
+        };
+        let logs = walk_from(&[(4096, largest)], 0);
+        let mut later = logs.clone();
+        let mut skip = header(1, Path::Live, 5, 0, None);
+        assert_eq!(later.append(slot(1), &mut skip), Ok(()));
+        assert_eq!(skip.last, Last::Count(1));
+        let mut samples = logs;
+        let mut data = header(1, Path::Live, 3, 2, Some(9));
+        assert_eq!(samples.append(slot(1), &mut data), Ok(()));
     }
 
     /// The bytes that the runs and the items of `logs` hold. No call of `Logs` shows
