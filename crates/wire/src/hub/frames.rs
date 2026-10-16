@@ -93,6 +93,7 @@ impl Frames {
     ///
     /// When a draft is due, each [`types::frame::Error`] of [`Layout::from_ends`]. The
     /// caller then stops the stream as `MALFORMED`.
+    #[inline]
     pub fn due(&mut self) -> Result<Due<'_>, types::frame::Error> {
         if self.drafting {
             return Layout::from_ends(&self.set, &self.ends).map(Due::Draft);
@@ -114,6 +115,7 @@ impl Frames {
     /// # Panics
     ///
     /// When [`Frames::due`] gives [`Due::Draft`].
+    #[inline]
     pub fn decode(&mut self, message: &[u8]) -> Result<Step, Error> {
         assert!(!self.drafting, "a draft is due before the next message");
         if let Some(start) = self.reader.body() {
@@ -151,11 +153,10 @@ impl Frames {
     /// # Panics
     ///
     /// When [`Frames::due`] does not give [`Due::Body`], or `len` is over its slice.
+    #[inline]
     pub fn received(&mut self, len: usize) -> Result<Step, Error> {
         assert!(!self.drafting, "a body is due");
-        let start = self.reader.body().expect("a body is due");
-        let draft = self.draft.as_mut().expect("invariant: a body has a draft");
-        let last = last(self.reader.decode(prefix(rest(draft, start), len)))?;
+        let last = self.reader.received(len)?;
         Ok(self.received_body(last))
     }
 
@@ -165,6 +166,7 @@ impl Frames {
     /// # Panics
     ///
     /// When [`Frames::due`] does not give [`Due::Draft`].
+    #[inline]
     pub fn draft(&mut self, draft: Draft) -> Step {
         assert!(self.drafting, "no draft is due");
         self.drafting = false;
@@ -472,6 +474,15 @@ mod tests {
             frames.decode(&[0; 3]).map(drop),
             Err(Error::Body { len: 3, remain: 2 })
         );
+    }
+
+    #[test]
+    fn refuses_an_empty_body_message_received_in_place() {
+        let (pool, mut frames) = (create_pool(), opened(false));
+        ends(&mut frames);
+        draft(&mut frames, &pool);
+        assert_eq!(frames.received(0).map(drop), Err(Error::Empty));
+        assert!(matches!(frames.due(), Ok(Due::Body(rest)) if rest.len() == 32));
     }
 
     #[test]
