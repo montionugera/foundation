@@ -186,6 +186,8 @@ struct Header {
     /// Bytes from the region to this header.
     offset: usize,
     class: usize,
+    /// Bytes of the whole pages in the payload: what a discard of it gives back.
+    pages: usize,
     payload: Track,
 }
 
@@ -221,6 +223,8 @@ struct Class {
     /// The most bytes `carved` ever was: the range a release purges.
     reached: Cell<usize>,
     free: Cell<usize>,
+    /// Bytes of the whole payload pages of the blocks on `free`.
+    coolable: Cell<usize>,
     cold: Cold,
     /// Blocks that holders have, or that wait in `Region::returned`.
     lent: Cell<usize>,
@@ -420,6 +424,7 @@ impl Pool {
             // SAFETY: as above.
             let free = unsafe { header.as_ref() };
             class.free.set(free.next.load(Relaxed));
+            class.coolable.set(class.coolable.get() - free.pages);
             free.lend();
             header
         } else if class.cold.head.get() != NONE {
@@ -453,8 +458,11 @@ impl Pool {
     /// commit.
     fn thaw(&self, index: usize, len: usize) -> Result<NonNull<Header>, Error> {
         let class = &self.classes[index];
-        let cold = class.cold.head.get();
-        let need = self.pages(cold, index);
+        // SAFETY: a block on a cold list has a header, and only the pool uses it.
+        let header = unsafe { self.header(class.cold.head.get()) };
+        // SAFETY: as above.
+        let block = unsafe { header.as_ref() };
+        let need = block.pages;
         let available = self.press(index, need);
         if need > available {
             return Err(Error::Exhausted {
@@ -463,10 +471,6 @@ impl Pool {
             });
         }
         self.committed.set(self.committed.get() + need);
-        // SAFETY: a block on a cold list has a header, and only the pool uses it.
-        let header = unsafe { self.header(cold) };
-        // SAFETY: as above.
-        let block = unsafe { header.as_ref() };
         class.cold.pop(block, need);
         block.lend();
         Ok(header)
@@ -503,6 +507,7 @@ impl Pool {
             next: AtomicUsize::new(NONE),
             offset: start,
             class: index,
+            pages: self.pages(start, index),
             payload: Track::new(),
         };
         // SAFETY: the block is committed and aligned, and no holder has it.
@@ -564,7 +569,7 @@ impl Pool {
             .map(|other| self.classes[other].held())
             .sum();
         let rest = short.saturating_sub(spare);
-        if rest != 0 && self.coolable(index, rest) < rest {
+        if rest != 0 && self.coolable(index) < rest {
             return available;
         }
         for other in self.idle(index) {
@@ -618,7 +623,7 @@ impl Pool {
                 // SAFETY: as above.
                 let block = unsafe { header.as_ref() };
                 let next = block.next.load(Relaxed);
-                let pages = self.pages(offset, other);
+                let pages = block.pages;
                 if pages == 0 {
                     previous = offset;
                 } else {
@@ -634,6 +639,7 @@ impl Pool {
                     self.shared()
                         .memory
                         .discard(offset + HEADER, class_payload(other));
+                    class.coolable.set(class.coolable.get() - pages);
                     class.cold.push(offset, block, pages);
                     given += pages;
                 }
@@ -644,34 +650,11 @@ impl Pool {
         given
     }
 
-    /// The bytes that [`cool`](Self::cool) can give back for class `index`, counted
-    /// until they reach `need`. It walks no list when a bound shows that they cannot.
-    fn coolable(&self, index: usize, need: usize) -> usize {
-        let most: usize = self
-            .cooling(index)
-            .map(|other| {
-                let class = &self.classes[other];
-                let carved = class.carved.get() / class_footprint(other);
-                let free = carved - class.lent.get() - class.cold.len.get();
-                free * (class_payload(other) / self.page * self.page)
-            })
-            .sum();
-        if need > most {
-            return most;
-        }
-        let mut given = 0;
-        for other in self.cooling(index) {
-            let mut offset = self.classes[other].free.get();
-            while offset != NONE && given < need {
-                given += self.pages(offset, other);
-                // SAFETY: a block on a free list has a header, and only the pool uses
-                // it.
-                let header = unsafe { self.header(offset) };
-                // SAFETY: as above.
-                offset = unsafe { header.as_ref() }.next.load(Relaxed);
-            }
-        }
-        given
+    /// The bytes that [`cool`](Self::cool) can give back for class `index`.
+    fn coolable(&self, index: usize) -> usize {
+        self.cooling(index)
+            .map(|other| self.classes[other].coolable.get())
+            .sum()
     }
 
     /// Bytes of the whole pages in the payload of the block of class `index` at
@@ -698,6 +681,7 @@ impl Pool {
             .purge(self.span_start(index), class.reached.get());
         class.carved.set(0);
         class.free.set(NONE);
+        class.coolable.set(0);
         class.cold.clear();
         self.committed.set(self.committed.get() - held);
         held
@@ -737,6 +721,7 @@ impl Pool {
             let class = &self.classes[header.class];
             header.next.store(class.free.get(), Relaxed);
             class.free.set(offset);
+            class.coolable.set(class.coolable.get() + header.pages);
             class.lent.set(class.lent.get() - 1);
             class.returned_at.set(purges);
             offset = next;
@@ -1744,6 +1729,35 @@ mod tests {
         use super::fixture::{Watch, create_watched_pool_of};
         use super::*;
 
+        /// An idle size whose free block was cold goes back whole, and its blocks do
+        /// not overlap when it carves again.
+        #[test]
+        fn carves_apart_the_blocks_of_a_size_whose_cold_block_went_back() {
+            let config = Config::new(4 * 16_448).expect("the budget fits");
+            let heap = Heap::new(config.reservation());
+            let pool = Pool::new(config, heap);
+            let mut held: Vec<_> = (0..4)
+                .map(|_| pool.alloc(16_384).expect("the budget has room"))
+                .collect();
+            drop(held.remove(2));
+            let small = pool.alloc(8000).expect("the free block gives its pages");
+            drop((held, small));
+            drop(pool.alloc(30_000).expect("the idle sizes go back"));
+            assert_eq!(pool.committed(), 41_088, "committed after the release");
+            let mut blocks: Vec<_> = (0..4)
+                .map(|_| pool.alloc(16_384).expect("the budget has room"))
+                .collect();
+            for (fill, block) in (1_u8..).zip(blocks.iter_mut()) {
+                block.fill(fill);
+            }
+            for (fill, block) in (1_u8..).zip(blocks.iter()) {
+                assert!(
+                    block.iter().all(|&byte| byte == fill),
+                    "block {fill} changed"
+                );
+            }
+        }
+
         #[test]
         fn carves_without_a_purge_when_the_budget_has_the_room() {
             let (pool, watch) = create_watched_pool(320);
@@ -2128,6 +2142,12 @@ mod tests {
                 8,
                 "the blocks at 1408 and 1792 stayed free"
             );
+            let mut offsets: Vec<_> = free
+                .iter()
+                .map(|block| block.as_ptr().addr() - held.as_ptr().addr())
+                .collect();
+            offsets.sort_unstable();
+            assert_eq!(offsets, [1408 - 1024, 1792 - 1024], "only the free blocks");
             drop((held, small, free));
         }
 
@@ -2255,7 +2275,7 @@ mod tests {
         }
 
         #[test]
-        fn counts_the_free_pages_of_large_blocks_without_an_overflow() {
+        fn counts_the_free_pages_of_large_blocks_with_a_large_page() {
             const PAGE: usize = 2 << 20;
             let large = footprint(4 << 20);
             let (pool, _watch) = create_watched_pool_of(8 * large, PAGE);
