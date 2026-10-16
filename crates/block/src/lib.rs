@@ -49,10 +49,11 @@ pub struct Config {
 }
 
 impl Config {
-    /// Settings for a pool that commits at most `budget_bytes` bytes at once. Resident
-    /// memory can pass the budget by up to two partial pages per size class, because a
-    /// purge rounds in to page bounds, and by the pages that a [`Memory::discard`]
-    /// leaves resident until the system takes them, as `os::memory` does on macOS.
+    /// Settings for a pool that keeps [`Pool::committed`] at most `budget_bytes`.
+    /// Resident memory can pass the budget by up to two partial pages per size class,
+    /// because a purge rounds in to page bounds, and by the pages that a
+    /// [`Memory::discard`] leaves resident. The commit charge of the system can pass it
+    /// by the pages that a discard keeps committed.
     ///
     /// # Errors
     ///
