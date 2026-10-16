@@ -222,9 +222,8 @@ impl Logs {
             header.first += 1;
         }
         self.offset += BLOCK;
-        self.carried.clear();
         self.inner
-            .idle(self.offset, self.headers.len(), &mut self.carried);
+            .carry(self.offset, self.headers.len(), &mut self.carried);
         self.inner.hold(&self.carried, self.offset);
         self.offset += BLOCK;
     }
@@ -245,6 +244,20 @@ impl Logs {
     /// holder, or before the record `held` commits back, as a read that holds it,
     /// when that one is older.
     pub fn trim(&mut self, period: u32, held: u64) {
+        self.slow(period, 0, held);
+    }
+
+    /// One commit as `trim(period, 0)`, whose carry takes the idle tails before the
+    /// record `behind` commits back, then fills with the oldest holders in the next
+    /// `4 * indexes` items after it. When `behind` is under `period`, one call in
+    /// `period` takes the tail of the last index, and its fill walks at most
+    /// `4 * indexes` stale items of the records after that record.
+    pub fn fill(&mut self, period: u32, behind: u64) {
+        self.slow(period, behind, 0);
+    }
+
+    /// [`trim`](Self::trim) with the reach of the carry `behind` records back.
+    fn slow(&mut self, period: u32, behind: u64, held: u64) {
         let slow = self.commits.is_multiple_of(period);
         self.commits = self.commits.wrapping_add(1);
         let synced = self.headers.len() - usize::from(!slow);
@@ -255,9 +268,9 @@ impl Logs {
                 .expect("entries in order");
             header.first += 1;
         }
-        self.carried.clear();
+        let reach = self.offset.saturating_sub(behind * BLOCK);
         self.inner
-            .idle(self.offset, self.headers.len(), &mut self.carried);
+            .carry(reach, self.headers.len(), &mut self.carried);
         let kept = self.inner.kept().expect("a path has a synced entry");
         let read = self.offset.saturating_sub(held * BLOCK).max(BLOCK);
         self.inner.hide(kept.min(read));
@@ -283,9 +296,8 @@ impl Logs {
                 .expect("entries in order");
         }
         self.offset += BLOCK;
-        self.carried.clear();
         self.inner
-            .idle(self.offset, self.headers.len(), &mut self.carried);
+            .carry(self.offset, self.headers.len(), &mut self.carried);
         let tails = self.carried.tails();
         assert_eq!(tails.len(), self.headers.len(), "a tail of each index");
         for (tail, (_, header)) in tails.iter().zip(&self.headers) {
@@ -492,18 +504,46 @@ mod tests {
         assert_eq!(logs.inner.durable(Slot::new(1), Path::Live).seq, 3);
     }
 
-    /// Each header of a table decodes, with and without headers with no samples.
+    /// Each header of a table decodes, with and without headers with no samples. No
+    /// call of `Table` gives its headers, only the count of `decode`, so the test
+    /// parses `bytes`.
     #[test]
     fn each_header_of_a_table_decodes() {
         assert_eq!(Table::new(5, 0).decode(), 5);
         assert_eq!(Table::new(5, 2).decode(), 5);
-        let table = Table::new(3, 2);
-        let headers = entry::parse(&table.bytes, table.bytes.len()).expect("a table");
-        let lasts: Vec<Last> = headers
-            .map(|header| header.expect("a header").0.last)
-            .collect();
+        let lasts = |table: Table| -> Vec<Last> {
+            entry::parse(&table.bytes, table.bytes.len())
+                .expect("a table")
+                .map(|header| header.expect("a header").0.last)
+                .collect()
+        };
         let stamp = Last::Stamp(Some(Stamp::from_nanos(9)));
-        assert_eq!(lasts, [Last::Count(1), stamp, Last::Count(1)]);
+        assert_eq!(
+            lasts(Table::new(3, 2)),
+            [Last::Count(1), stamp, Last::Count(1)]
+        );
+        assert_eq!(lasts(Table::new(3, 0)), [stamp; 3]);
+    }
+
+    /// The last index syncs each 8 commits, and the carry reaches 2 records back, so
+    /// one call in 8 takes its tail, and its fill takes a tail of each other index
+    /// from the newest record. No call of `Logs` gives its tails, so the test reads
+    /// `carried`.
+    #[test]
+    fn a_fill_takes_the_slow_tail_once_in_each_period() {
+        let mut logs = Logs::new(4);
+        let mut carried = Vec::new();
+        for call in 0..32 {
+            logs.fill(8, 2);
+            if !logs.carried.tails().is_empty() {
+                let tails = logs.carried.tails().iter();
+                let keys: Vec<u128> = tails.map(|tail| tail.index.as_u128()).collect();
+                carried.push((call, keys));
+            }
+        }
+        let tails = vec![4, 1, 2, 3];
+        let calls: Vec<_> = [3, 11, 19, 27].map(|call| (call, tails.clone())).into();
+        assert_eq!(carried, calls);
     }
 
     /// A read holds the record two commits back, so the runs of the records after it

@@ -22,11 +22,15 @@ const TIMES: std::ops::RangeInclusive<i64> = i64::MIN + 2..=i64::MAX - 1;
 /// It keeps the InfluxDB rules that a writer must keep: the syntax, the time range, the
 /// reserved names, one use of each key, finite floats, and one type for each column,
 /// where a tag is a type. Where InfluxDB versions differ in a rule that it keeps, it
-/// keeps the strictest one, so it refuses a `u` integer, as InfluxDB 1 OSS does. It
-/// keeps no size limit.
+/// keeps the strictest one, so it refuses a `u` integer, as InfluxDB 1 OSS does.
+/// [`Store::unsigned`] relaxes only that rule, as InfluxDB 2 and 3 do. A second rule
+/// that differs by version, which a test needs relaxed, calls for a store by version.
+/// It keeps no size limit.
 #[derive(Debug, Default)]
 pub struct Store {
     measurements: BTreeMap<String, Measurement>,
+    /// Whether it stores a `u` integer.
+    unsigned: bool,
 }
 
 /// The series and field types of one measurement.
@@ -71,9 +75,20 @@ enum Values {
     Integer(Vec<i64>),
     Boolean(Vec<bool>),
     String(Vec<String>),
+    Unsigned(Vec<u64>),
 }
 
 impl Store {
+    /// An empty store that also stores a `u` integer, as InfluxDB 2 and 3 do. The
+    /// default store refuses it with [`Error::Unsigned`], as InfluxDB 1 OSS does.
+    #[must_use]
+    pub fn unsigned() -> Self {
+        Self {
+            unsigned: true,
+            ..Self::default()
+        }
+    }
+
     /// Stores each line of `body`. Like InfluxDB, it stores each valid line, also after
     /// a line that is not valid. It splits lines, and skips blank lines and comments,
     /// as InfluxDB 3 does.
@@ -90,7 +105,8 @@ impl Store {
     /// - [`Error::Duplicate`] for a key that comes more than once, in tags and fields
     ///   together.
     /// - [`Error::Infinite`] for a float that parses to infinity.
-    /// - [`Error::Unsigned`] for a `u` integer.
+    /// - [`Error::Unsigned`] for a `u` integer, unless [`Store::unsigned`] made the
+    ///   store.
     /// - [`Error::Conflict`] for a tag or field whose type differs from the type stored
     ///   for that key in the measurement. A tag is a type.
     ///
@@ -195,7 +211,7 @@ impl Store {
         for (key, value) in &parsed.field_set {
             let key = key.as_str();
             check(key)?;
-            let field = field(text, key, value)?;
+            let field = field(text, key, value, self.unsigned)?;
             conflict(key, field.kind())?;
             fields.insert(key.into(), field);
         }
@@ -341,6 +357,7 @@ impl Column {
             Field::Integer(_) => Values::Integer(Vec::new()),
             Field::Boolean(_) => Values::Boolean(Vec::new()),
             Field::String(_) => Values::String(Vec::new()),
+            Field::Unsigned(_) => Values::Unsigned(Vec::new()),
         };
         Self {
             key,
@@ -400,6 +417,9 @@ impl Values {
             (Self::Integer(values), Field::Integer(value)) => put(values, slot, value),
             (Self::Boolean(values), Field::Boolean(value)) => put(values, slot, value),
             (Self::String(values), Field::String(value)) => put(values, slot, value),
+            (Self::Unsigned(values), Field::Unsigned(value)) => {
+                put(values, slot, value);
+            }
             (values, field) => {
                 unreachable!("the Conflict check refused {field:?} into {values:?}")
             }
@@ -412,6 +432,7 @@ impl Values {
             Self::Integer(values) => values.get(i).copied().map(Field::Integer),
             Self::Boolean(values) => values.get(i).copied().map(Field::Boolean),
             Self::String(values) => values.get(i).cloned().map(Field::String),
+            Self::Unsigned(values) => values.get(i).copied().map(Field::Unsigned),
         };
         field.expect("a column holds a value for each point")
     }
@@ -422,6 +443,7 @@ impl Values {
             Self::Integer(values) => Self::Integer(split(values, from)),
             Self::Boolean(values) => Self::Boolean(split(values, from)),
             Self::String(values) => Self::String(split(values, from)),
+            Self::Unsigned(values) => Self::Unsigned(split(values, from)),
         }
     }
 }
@@ -516,6 +538,8 @@ pub enum Field {
     Boolean(bool),
     /// A string.
     String(String),
+    /// An unsigned 64-bit integer.
+    Unsigned(u64),
 }
 
 impl Field {
@@ -525,12 +549,19 @@ impl Field {
             Self::Integer(_) => Kind::Integer,
             Self::Boolean(_) => Kind::Boolean,
             Self::String(_) => Kind::String,
+            Self::Unsigned(_) => Kind::Unsigned,
         }
     }
 }
 
-/// The field `key` of the line `text`, or the error that refuses its value.
-fn field(text: &str, key: &str, value: &FieldValue<'_>) -> Result<Field, Error> {
+/// The field `key` of the line `text`, or the error that refuses its value. A `u`
+/// integer is refused unless `unsigned`.
+fn field(
+    text: &str,
+    key: &str,
+    value: &FieldValue<'_>,
+    unsigned: bool,
+) -> Result<Field, Error> {
     Ok(match value {
         FieldValue::F64(float) if float.is_infinite() => {
             return Err(Error::Infinite {
@@ -540,6 +571,7 @@ fn field(text: &str, key: &str, value: &FieldValue<'_>) -> Result<Field, Error> 
         }
         FieldValue::F64(float) => Field::Float(*float),
         FieldValue::I64(integer) => Field::Integer(*integer),
+        FieldValue::U64(integer) if unsigned => Field::Unsigned(*integer),
         FieldValue::U64(_) => {
             return Err(Error::Unsigned {
                 line: text.into(),
@@ -564,6 +596,8 @@ pub enum Kind {
     Boolean,
     /// [`Field::String`].
     String,
+    /// [`Field::Unsigned`].
+    Unsigned,
 }
 
 impl fmt::Display for Kind {
@@ -574,6 +608,7 @@ impl fmt::Display for Kind {
             Self::Integer => "integer",
             Self::Boolean => "boolean",
             Self::String => "string",
+            Self::Unsigned => "unsigned",
         })
     }
 }

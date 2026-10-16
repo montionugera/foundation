@@ -831,6 +831,8 @@ pub struct Facts {
     pub data_type: Option<types::sample::Type>,
     /// The unit, as the device gives it.
     pub unit: Option<String>,
+    /// The UN/CEFACT Recommendation 20 common code of the unit, such as `CEL`.
+    pub unit_code: Option<String>,
     /// Whether a connector can read it, write it, or both.
     pub access: Option<Access>,
 }
