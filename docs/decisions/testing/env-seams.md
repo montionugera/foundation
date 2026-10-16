@@ -277,10 +277,9 @@
   https://github.com/synnaxlabs/foundation/pull/1919#issuecomment-6065081738).
   Amended (2026-10-16, #1927): `env` owns the whole grammar of a host.
   `Net::resolve` takes an `env::net::host::Host`, which a caller parses at plan for a
-  config. An IPv4
-  address has four decimal parts with no leading zeros. An IPv6 address is bare or in
-  brackets, with an optional zone of a decimal interface number that fits in `u32`,
-  which `resolve` gives as the scope with no lookup. A name has
+  config. An IPv4 address has four decimal parts with no leading zeros. An IPv6
+  address is bare or in brackets, with an optional zone of a decimal interface number
+  that fits in `u32`, which `resolve` gives as the scope with no lookup. A name has
   parts of ASCII letters, digits, `-`, and `_`, each 1 to 63 bytes, none that starts
   or ends with `-`. It is at most 253 bytes without one optional final dot, its last
   part is not a number, and its letters go to lowercase. Only a name reaches the
@@ -299,12 +298,14 @@
   Amended in the review of #2804: zone 0 is no zone, so one address has one `Host`.
   `host::uri` reads the host of a URI: an IPv6 address is in brackets, and its zone
   follows `%25` (RFC 6874), so `[fe80::1%252]` is zone 2 and another `%` is
-  `Error::Zone`. Each caller that reads a URI uses it (R7 STARTING POINTS for
+  `Error::Escape`, whose message shows the `%25` form. Each caller that reads a URI uses it (R7 STARTING POINTS for
   `connector::http`; `connector-opcua` in #2803). `connector::http` parses the host
-  again on each request, until #1218. Approved by `laptop.architect-2` (2026-10-16,
+  again on each request, until #1218. Approved by `laptop.architect-2` (2026-10-16
+  04:05 UTC,
   https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6207830826; the
-  move to `host::uri`,
-  https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6208160301).
+  move to `host::uri`, 04:34 UTC,
+  https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6208160301;
+  `Error::Escape`, approval owed).
   From the review of #1018: the bracketed IPv6 literal, and what `NotFound` and `Io`
   mean to a caller. Amended (2026-10-07, #1117): `Mode::Create` makes a missing file
   with `len` zeroed bytes. It treats an empty file that is there as missing and

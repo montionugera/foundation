@@ -47,8 +47,8 @@
   (2026-10-16 02:53 UTC, #1927,
   https://github.com/synnaxlabs/foundation/issues/1927#issuecomment-6206963417).
   The reason for no final dot, amended in the review of #2804: approved by
-  `laptop.architect-2`
-  (https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6207830826).
+  `laptop.architect-2` (2026-10-16 04:05 UTC,
+  https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6207830826).
   Amended
   (2026-10-07, #1255): a receive of a failed UDP socket first gives the datagrams queued
   before the fault, then `EIO`. A broken socket still holds its receive queue, so the

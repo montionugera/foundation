@@ -7,7 +7,8 @@ use http::Uri;
 ///
 /// # Errors
 ///
-/// As [`super::uri`] gives for `uri`.
+/// [`super::Error::Scheme`], [`super::Error::UserInfo`], [`super::Error::Host`], or
+/// [`super::Error::Port`], as [`super::Client::send`] checks them.
 pub fn origin(uri: &Uri) -> Result<impl Ord + use<>, super::Error> {
     super::origin(uri)
 }
