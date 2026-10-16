@@ -227,7 +227,8 @@ proptest! {
                     let parsed = default.as_str().parse::<Name>();
                     prop_assert_eq!(parsed, Ok(default.clone()));
                     prop_assert!(!default.reserved());
-                    prop_assert!(used.insert(default.as_str().to_ascii_lowercase()), "{default} is in use");
+                    let folded = default.as_str().to_ascii_lowercase();
+                    prop_assert!(used.insert(folded), "{default} is in use");
                 }
             }
         }
