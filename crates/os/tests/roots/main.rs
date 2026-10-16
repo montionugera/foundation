@@ -1,8 +1,9 @@
 //! `os::roots` reads the CA certificates of the OS store, or of the PEM file that
-//! `SSL_CERT_FILE` names and the directories that `SSL_CERT_DIR` names. This binary has no test harness: each case runs it again as
-//! a child with its own environment, since a set of the environment races the
-//! threads of a harness. With the argument `child`, it writes what `os::roots` gives,
-//! one line for each certificate and for each failure.
+//! `SSL_CERT_FILE` names and the directories that `SSL_CERT_DIR` names. This binary
+//! has no test harness: each case runs it again as a child with its own environment,
+//! since a set of the environment races the threads of a harness. With the argument
+//! `child`, it writes what `os::roots` gives, one line for each certificate and for
+//! each failure.
 
 use std::ffi::OsStr;
 use std::fmt::Write as _;

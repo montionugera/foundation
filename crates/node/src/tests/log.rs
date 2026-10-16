@@ -184,7 +184,7 @@ fn a_node_warns_of_its_roots_before_it_starts() {
 }
 
 #[test]
-fn a_node_with_no_root_warns_that_each_https_connect_fails() {
+fn a_node_with_no_root_warns_that_an_https_connect_with_no_ca_fails() {
     assert_eq!(warned(os::Roots::default()), [NONE]);
     let roots = os::Roots {
         certificates: vec![b"not DER".to_vec()],

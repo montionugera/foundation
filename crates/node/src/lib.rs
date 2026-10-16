@@ -110,8 +110,8 @@ pub struct Config<M> {
     pub vars: BTreeMap<OsString, OsString>,
     /// The CA certificates that each `https` connect of a connector trusts. Main gives
     /// [`os::roots`]. Shard 0 logs a warning for each failure, for the count of
-    /// certificates that do not parse, and when no certificate is left, also with
-    /// [`Region::Absent`], which runs no connector.
+    /// certificates that do not parse, and when no certificate is left. It logs each
+    /// of them also with [`Region::Absent`], which runs no connector.
     pub roots: os::Roots,
     /// Where and how the node writes its log. Each shard writes the events of its
     /// thread there, and [`Node::join`] the event `stopped`.
