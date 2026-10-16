@@ -706,3 +706,25 @@
   https://github.com/synnaxlabs/foundation/pull/2486#issuecomment-6131997012).
   Supersedes "It reads what `path` names at its open" of item 2 of
   https://github.com/synnaxlabs/foundation/issues/2481#issuecomment-6131521237.
+  Amended (2026-10-16T04:52:58Z, #2526): `Paths::within` gives the same files, where
+  a read or a write of a path that does not resolve under one of its folders, or that
+  resolves under one of its hidden folders, fails with `paths::Error::Outside` and
+  reaches no file. A handle from `within` keeps the limits of the handle it came from.
+  A path that does not resolve fails with the error of its resolve. `Paths::resolve`
+  gives the absolute path with each `.`, `..`, and symbolic link resolved, and keeps a
+  last name that is not there on its resolved directory. `Paths::home` gives the home
+  directory of the user, resolved. `os` resolves with `std::fs::canonicalize`. On
+  macOS it takes `..` after a file as the directory above it, as `realpath` does
+  there, and an open of that path fails. A path that ends in `/` or `/.` on a file
+  gives `ENOTDIR` on both OSes. `sim` gives each host symbolic links
+  (`sim::Node::link_path`), a working directory (`sim::Node::set_working_dir`), and a
+  home (`sim::Node::set_home`). The check and the call are two steps: a link that
+  another program makes between them can lead the call out. `foundation mcp` gives its
+  tools the `Paths` of `within`, and the command line the free one. Lost: a check in
+  `ops` at each call site, which each new site must repeat; `cap-std`, which opens
+  through each folder with no gap between the check and the open. Trigger: a tool
+  that can make a link, or a server beside an untrusted writer. Decided by
+  `laptop.architect-2` (2026-10-16T04:52:58Z, items 1 and 8 of
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208362869), after
+  the decision of `laptop.monitor` (2026-10-16T04:51:22Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208345441).

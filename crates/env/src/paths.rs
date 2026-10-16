@@ -9,7 +9,8 @@ use std::rc::Rc;
 /// ends in `/`, `.`, or `..` names a directory, and the empty path names nothing.
 /// Each call blocks its thread until the OS answers, and so delays each task of that
 /// thread: a shard of a node never calls one, and the files of a node are
-/// [`crate::files`].
+/// [`crate::files`]. A handle from [`Paths::within`] reaches only the paths under its
+/// folders.
 ///
 /// ```
 /// use std::path::Path;
@@ -21,7 +22,11 @@ use std::rc::Rc;
 /// }
 /// ```
 #[derive(Clone, Debug)]
-pub struct Paths(Rc<dyn Driver>);
+pub struct Paths {
+    driver: Rc<dyn Driver>,
+    /// The limits of each call of `within` that made this handle: a path passes each.
+    limits: Rc<[Limit]>,
+}
 
 impl Paths {
     /// A handle over `driver`. Only `os` and `sim` call it.
@@ -32,7 +37,73 @@ impl Paths {
     /// }
     /// ```
     pub fn new(driver: impl Driver + 'static) -> Self {
-        Self(Rc::new(driver))
+        Self {
+            driver: Rc::new(driver),
+            limits: Rc::new([]),
+        }
+    }
+
+    /// The same files, where each read and write of a path that does not resolve
+    /// under one of `folders`, or that resolves under one of `hidden`, fails with
+    /// [`Error::Outside`] and reaches no file. A folder is compared as given with the
+    /// path that [`Paths::resolve`] gives, by whole names: give each as `resolve` gives
+    /// it. The limits of `self` hold too, so a handle never reaches more than the one
+    /// it came from. The check and the call are two steps: a symbolic link that
+    /// another program makes between them can lead the call out.
+    ///
+    /// ```
+    /// use std::path::PathBuf;
+    ///
+    /// use env::paths::Paths;
+    ///
+    /// fn tools(paths: &Paths, work: PathBuf, data: PathBuf) -> Paths {
+    ///     paths.within(vec![work], vec![data])
+    /// }
+    /// ```
+    #[must_use]
+    pub fn within(&self, folders: Vec<PathBuf>, hidden: Vec<PathBuf>) -> Self {
+        let limit = Limit { folders, hidden };
+        Self {
+            driver: Rc::clone(&self.driver),
+            limits: self.limits.iter().cloned().chain([limit]).collect(),
+        }
+    }
+
+    /// The absolute path that `path` names, with each `.`, `..`, and symbolic link
+    /// resolved. When nothing is at the last name of `path`, it keeps that name on
+    /// its resolved directory. It reads no file and checks no limit of
+    /// [`Paths::within`].
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotFound`] when `path` is empty, when a directory on the way is not
+    /// there, or when a symbolic link at its last name names nothing, else
+    /// [`Error::Io`].
+    ///
+    /// ```
+    /// use std::path::{Path, PathBuf};
+    ///
+    /// use env::paths::{Error, Paths};
+    ///
+    /// fn working(paths: &Paths) -> Result<PathBuf, Error> {
+    ///     paths.resolve(Path::new("."))
+    /// }
+    /// ```
+    pub fn resolve(&self, path: &Path) -> Result<PathBuf, Error> {
+        self.driver.resolve(path)
+    }
+
+    /// The home directory of the user, resolved as [`Paths::resolve`] gives it, or
+    /// `None` when the host gives none or it does not resolve.
+    ///
+    /// ```
+    /// fn home(paths: &env::paths::Paths) -> Option<std::path::PathBuf> {
+    ///     paths.home()
+    /// }
+    /// ```
+    #[must_use]
+    pub fn home(&self) -> Option<PathBuf> {
+        self.driver.home()
     }
 
     /// What is at `path`: the bytes of a file of at most `most` bytes, or the path of
@@ -42,7 +113,8 @@ impl Paths {
     ///
     /// # Errors
     ///
-    /// [`Error::NotFound`] when nothing is at `path`, else [`Error::Io`].
+    /// [`Error::NotFound`] when nothing is at `path`, [`Error::Outside`] past the
+    /// limits of [`Paths::within`], else [`Error::Io`].
     ///
     /// ```
     /// use std::path::{Path, PathBuf};
@@ -57,7 +129,8 @@ impl Paths {
     /// }
     /// ```
     pub fn read(&self, path: &Path, most: usize) -> Result<Found, Error> {
-        self.0.read(path, most)
+        self.check(path)?;
+        self.driver.read(path, most)
     }
 
     /// Writes `bytes` as the file at `path`, and replaces a file that is there. The
@@ -69,8 +142,8 @@ impl Paths {
     /// # Errors
     ///
     /// [`Error::NotFound`] when the directory of `path`, the directory that it names,
-    /// or the file that a symbolic link at `path` names is not there, else
-    /// [`Error::Io`].
+    /// or the file that a symbolic link at `path` names is not there,
+    /// [`Error::Outside`] past the limits of [`Paths::within`], else [`Error::Io`].
     ///
     /// ```
     /// use std::path::Path;
@@ -82,7 +155,36 @@ impl Paths {
     /// }
     /// ```
     pub fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
-        self.0.write(path, bytes)
+        self.check(path)?;
+        self.driver.write(path, bytes)
+    }
+
+    /// `Ok` when `path` passes each limit. A path that does not resolve fails with the
+    /// error of its resolve, as the call would.
+    fn check(&self, path: &Path) -> Result<(), Error> {
+        if self.limits.is_empty() {
+            return Ok(());
+        }
+        let resolved = self.driver.resolve(path)?;
+        if self.limits.iter().all(|limit| limit.passes(&resolved)) {
+            Ok(())
+        } else {
+            Err(Error::Outside)
+        }
+    }
+}
+
+/// The folders of one call of [`Paths::within`].
+#[derive(Clone, Debug)]
+struct Limit {
+    folders: Vec<PathBuf>,
+    hidden: Vec<PathBuf>,
+}
+
+impl Limit {
+    fn passes(&self, resolved: &Path) -> bool {
+        let under = |dirs: &[PathBuf]| dirs.iter().any(|dir| resolved.starts_with(dir));
+        under(&self.folders) && !under(&self.hidden)
     }
 }
 
@@ -108,6 +210,9 @@ pub enum Error {
         /// The OS error code.
         code: i32,
     },
+    /// The path resolves outside the folders of [`Paths::within`], or under one of
+    /// its hidden folders.
+    Outside,
 }
 
 /// What `os` and `sim` implement: the calls of [`Paths`], with the same contracts.
@@ -131,6 +236,16 @@ pub trait Driver: Debug {
     ///
     /// As [`Paths::write`].
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error>;
+
+    /// [`Paths::resolve`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Paths::resolve`].
+    fn resolve(&self, path: &Path) -> Result<PathBuf, Error>;
+
+    /// [`Paths::home`].
+    fn home(&self) -> Option<PathBuf>;
 }
 
 /// Whether `path` is empty or ends in a separator, `.`, or `..`. By its text, such a
@@ -151,7 +266,7 @@ mod tests {
 
     use super::*;
 
-    /// One file, at any path.
+    /// One file, at any path. A path is under `/`, and `link` names `/out`.
     #[derive(Debug, Default)]
     struct One(RefCell<Vec<u8>>);
 
@@ -172,6 +287,30 @@ mod tests {
             *self.0.borrow_mut() = bytes.to_vec();
             Ok(())
         }
+
+        fn resolve(&self, path: &Path) -> Result<PathBuf, Error> {
+            match path.strip_prefix("link") {
+                _ if path.as_os_str().is_empty() => Err(Error::NotFound),
+                Ok(rest) => Ok(Path::new("/out").join(rest)),
+                Err(_) => Ok(Path::new("/").join(path)),
+            }
+        }
+
+        fn home(&self) -> Option<PathBuf> {
+            Some(PathBuf::from("/home/user"))
+        }
+    }
+
+    fn passes(paths: &Paths, path: &str) -> bool {
+        let path = Path::new(path);
+        let written = paths.write(path, b"x");
+        let read = paths.read(path, 1).map(|_| ());
+        assert_eq!(written, read, "{}", path.display());
+        match written {
+            Ok(()) => true,
+            Err(Error::Outside) => false,
+            Err(other) => panic!("{} gave {other:?}", path.display()),
+        }
     }
 
     #[test]
@@ -191,6 +330,70 @@ mod tests {
             paths.write(Path::new("a"), b""),
             Err(Error::Io { code: 28 })
         );
+    }
+
+    #[test]
+    fn resolve_and_home_reach_the_driver_and_check_no_limit() {
+        let paths = Paths::new(One::default()).within(vec!["/work".into()], vec![]);
+        let resolved = paths.resolve(Path::new("link/a"));
+        assert_eq!(resolved, Ok(PathBuf::from("/out/a")));
+        assert_eq!(paths.resolve(Path::new("")), Err(Error::NotFound));
+        assert_eq!(paths.home(), Some(PathBuf::from("/home/user")));
+    }
+
+    #[test]
+    fn within_reaches_only_paths_that_resolve_under_a_folder_and_no_hidden_one() {
+        let free = Paths::new(One::default());
+        let folders = vec!["/work".into(), "/plans".into()];
+        let paths = free.within(folders, vec!["/work/data".into()]);
+        for path in ["/work", "work/a", "/work/b/c", "/plans/a", "/work/data2"] {
+            assert!(passes(&paths, path), "{path}");
+        }
+        let outside = [
+            "/",
+            "/out",
+            "link",
+            "link/a",
+            "/workshop",
+            "/work/data",
+            "work/data/key",
+        ];
+        for path in outside {
+            assert!(!passes(&paths, path), "{path}");
+            assert!(passes(&free, path), "{path}");
+        }
+        assert!(!passes(&paths.clone(), "/out"));
+        assert_eq!(paths.read(Path::new(""), 1), Err(Error::NotFound));
+        assert_eq!(paths.write(Path::new(""), b"x"), Err(Error::NotFound));
+    }
+
+    #[test]
+    fn a_path_outside_reaches_no_file() {
+        let free = Paths::new(One::default());
+        free.write(Path::new("/out/a"), b"old").unwrap();
+        let paths = free.within(vec!["/work".into()], vec![]);
+        assert_eq!(
+            paths.write(Path::new("/out/a"), b"new"),
+            Err(Error::Outside)
+        );
+        assert_eq!(
+            free.read(Path::new("/out/a"), 3),
+            Ok(Found::File(b"old".to_vec()))
+        );
+    }
+
+    #[test]
+    fn a_handle_within_another_keeps_its_limits() {
+        let free = Paths::new(One::default());
+        let wide = free.within(vec!["/".into()], vec!["/work/data".into()]);
+        let narrow = wide.within(vec!["/work".into()], vec![]);
+        assert!(passes(&narrow, "/work/a"));
+        for path in ["/out", "/work/data"] {
+            assert!(!passes(&narrow, path), "{path}");
+        }
+        let widened = narrow.within(vec!["/".into()], vec![]);
+        assert!(!passes(&widened, "/out"));
+        assert!(passes(&wide, "/out"));
     }
 
     #[test]

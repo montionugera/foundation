@@ -21,6 +21,7 @@ fn run(case: fn(&Host<'_>)) {
         paths: &os::paths(),
         dir: &scratch.0,
         make_dir,
+        make_link: &|path, target| symlink(target, path).unwrap(),
     });
 }
 
@@ -547,4 +548,58 @@ fn race(
         stopped.store(true, Ordering::Relaxed);
         other
     })
+}
+
+/// macOS takes `..` after a file as the directory above it, as its `realpath` does.
+#[test]
+fn a_resolve_of_two_dots_after_a_file_follows_the_os() {
+    let scratch = Scratch::new();
+    let paths = os::paths();
+    paths.write(&scratch.0.join("plant.hcl"), b"x").unwrap();
+    let resolved = paths.resolve(&scratch.0.join("plant.hcl/.."));
+    let expected = if cfg!(target_os = "macos") {
+        Ok(fs::canonicalize(&scratch.0).unwrap())
+    } else {
+        Err(Error::Io { code: 20 })
+    };
+    assert_eq!(resolved, expected);
+}
+
+#[test]
+fn a_resolve_through_a_directory_that_is_not_there_is_not_found() {
+    let scratch = Scratch::new();
+    let paths = os::paths();
+    for path in ["none/a", "none/x/..", "none/x/a"] {
+        let resolved = paths.resolve(&scratch.0.join(path));
+        assert_eq!(resolved, Err(Error::NotFound), "{path}");
+    }
+}
+
+#[test]
+fn a_resolve_of_a_link_to_nothing_is_not_found() {
+    let scratch = Scratch::new();
+    let link = scratch.0.join("link.plan");
+    symlink(scratch.0.join("plant.plan"), &link).unwrap();
+    assert_eq!(os::paths().resolve(&link), Err(Error::NotFound));
+}
+
+#[test]
+fn a_resolve_of_a_relative_path_is_from_the_working_directory() {
+    let working = fs::canonicalize(".").unwrap();
+    let paths = os::paths();
+    assert_eq!(paths.resolve(Path::new(".")), Ok(working.clone()));
+    let none = paths.resolve(Path::new("none.plan"));
+    assert_eq!(none, Ok(working.join("none.plan")));
+}
+
+#[test]
+fn a_resolve_of_a_path_with_a_nul_byte_is_an_invalid_argument() {
+    let resolved = os::paths().resolve(Path::new("a\0b"));
+    assert_eq!(resolved, Err(Error::Io { code: 22 }));
+}
+
+#[test]
+fn the_home_is_the_resolved_home_of_the_os() {
+    let home = std::env::home_dir().unwrap();
+    assert_eq!(os::paths().home(), Some(fs::canonicalize(home).unwrap()));
 }
