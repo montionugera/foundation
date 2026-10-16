@@ -403,12 +403,13 @@ fn references(pages: Vec<Page>) -> Vec<Vec<Reference>> {
 
 #[test]
 fn a_client_browses_the_tree_from_objects() {
-    let (objects, plant, line, types) = with_tree(async |client| {
+    let (objects, plant, line, types, odd) = with_tree(async |client| {
         let objects = pages(client, &ns0(85)).await;
         let plant = pages(client, &named(1, "Plant")).await;
         let line = pages(client, &named(1, "Plant.Line")).await;
         let types = pages(client, &named(1, "Plant.Types")).await;
-        (objects, plant, line, types)
+        let odd = pages(client, &named(1, "Plant.Odd")).await;
+        (objects, plant, line, types, odd)
     });
     let plant_folder = reference("Plant", "Plant", Class::Object, ORGANIZES);
     let objects: Vec<Reference> = objects
@@ -420,6 +421,7 @@ fn a_client_browses_the_tree_from_objects() {
         references(plant),
         [[
             reference("Plant.Types", "Types", Class::Object, ORGANIZES),
+            reference("Plant.Odd", "Odd", Class::Object, ORGANIZES),
             reference("Plant.Line", "Line", Class::Object, HAS_COMPONENT),
         ]]
     );
@@ -449,6 +451,22 @@ fn a_client_browses_the_tree_from_objects() {
     let mut first = expected;
     let second = first.split_off(8);
     assert_eq!(types, [first, second]);
+    let level = |via| reference("Plant.Odd.Level", "Level", Class::Variable, via);
+    assert_eq!(
+        references(odd),
+        [[
+            Reference {
+                node: None,
+                ..reference("Guid", "Guid", Class::Object, ORGANIZES)
+            },
+            level(ORGANIZES),
+            level(HAS_COMPONENT),
+            Reference {
+                node: Some(named(1, "Plant.Odd.Twin")),
+                ..level(HAS_COMPONENT)
+            },
+        ]]
+    );
 }
 
 #[test]
@@ -506,6 +524,7 @@ fn a_read_of_each_variable_of_the_tree_gives_its_value() {
             ]
             .map(|name| format!("Plant.Line.{name}")),
         )
+        .chain(["Plant.Odd.Level".to_owned(), "Plant.Odd.Twin".to_owned()])
         .collect();
     let reads = with_tree(async move |client| {
         let mut reads = Vec::new();
@@ -539,6 +558,8 @@ fn a_read_of_each_variable_of_the_tree_gives_its_value() {
             mistyped("array of Double"),
             Err(Fault::status(BAD_USER_ACCESS_DENIED)),
             mistyped("ExtensionObject"),
+            Ok(Value::F64(2.5)),
+            Ok(Value::F64(3.5)),
         ]
     );
 }
