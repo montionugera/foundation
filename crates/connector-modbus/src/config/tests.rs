@@ -418,6 +418,10 @@ fn refuses_a_host_that_no_resolver_finds() {
         ("0x0a.0.0.2:502", number),
         ("167772162:502", number),
         ("10.0.0.256", number),
+        ("0xa000001:502", number),
+        ("10.0xa", number),
+        ("10.0XA", number),
+        ("plc.0x", number),
     ] {
         let message = format!("the address {address:?} {problem}");
         assert_eq!(
@@ -431,7 +435,7 @@ fn refuses_a_host_that_no_resolver_finds() {
 #[test]
 fn reads_a_part_of_63_characters_and_a_number_that_is_not_last() {
     let long = format!("{}.local", "a".repeat(63));
-    for host in [&*long, "10.0.0.2", "1plc", "2.plc"] {
+    for host in [&*long, "10.0.0.2", "1plc", "2.plc", "plc.0xg", "0x1.plc"] {
         let config = parse(&config(string(host), &[], vec![temp()]));
         assert_eq!(config.map(|config| config.host), Ok(host.into()), "{host}");
     }

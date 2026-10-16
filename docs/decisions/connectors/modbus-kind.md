@@ -23,13 +23,16 @@
      optional zone of letters, digits, `-`, `.`, and `_` (`"[fe80::1%eth0]"`). Each
      other host has only letters, digits, `-`, `.`, and `_`, as Docker Compose names
      such as `plc_1` resolve. No part between dots is empty, longer than 63
-     characters, or starts or ends with `-`. A host with a number last is an IPv4
-     address of four plain parts, as a resolver reads `"10.1"` as 10.0.0.1 and
-     `"010"` as octal. The port is 1 to 65535 (`laptop.architect-2`,
+     characters, or starts or ends with `-`. A host with a number last (digits, or
+     `0x` or `0X` and hex digits) is an IPv4 address of four plain parts, as a
+     resolver reads `"10.1"` as 10.0.0.1, `"010"` as octal, and `"10.0xa"` as
+     10.0.0.10. The port is 1 to 65535 (`laptop.architect-2`,
      2026-10-16T00:25:03Z:
      https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205157567). The
      host rules: `laptop.architect-2`, 2026-10-16T00:41:10Z:
-     https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205359213. The
+     https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205359213, and
+     2026-10-16T00:50:34Z:
+     https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205484684. The
      run resolves the host through `env::net`. `unit` is optional, 0 to 255, default
      1 (C2 item 1). Lost: the host rule of a library
      (`rustls_pki_types::ServerName`), which is a new dependency of the crate for one

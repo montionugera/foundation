@@ -199,11 +199,14 @@ fn host(host: &str) -> Result<(), &'static str> {
         );
     }
     // A resolver reads a host with a number last as an IPv4 address, with parts in
-    // octal or fewer than four parts, so only the plain form is safe.
+    // octal, in hex, or fewer than four parts, so only the plain form is safe.
     let last = host.rsplit('.').next().unwrap_or(host);
-    if last.bytes().all(|byte| byte.is_ascii_digit())
-        && host.parse::<Ipv4Addr>().is_err()
-    {
+    let hex = last.strip_prefix("0x").or_else(|| last.strip_prefix("0X"));
+    let number = match hex {
+        Some(digits) => digits.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        None => last.bytes().all(|byte| byte.is_ascii_digit()),
+    };
+    if number && host.parse::<Ipv4Addr>().is_err() {
         return Err("a host with a number last that is not an IPv4 address");
     }
     Ok(())
