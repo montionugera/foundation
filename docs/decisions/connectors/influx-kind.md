@@ -93,8 +93,8 @@
   "For a field type conflict, write to another `measurement` or delete the old field in
   InfluxDB. For points older than the retention period, raise it or write to another
   bucket". A 404: "Create the database, the bucket, or the org in InfluxDB, or name one
-  that exists". An answer whose body is over the cap of 64 KiB shows the first 64 KiB
-  of it, as `connector::http::Error::TooLarge` holds them, and the fix of its status
+  that exists". An answer whose body is over the cap of 64 KiB has its first 64 KiB as
+  `{body}`, as `connector::http::Error::TooLarge` holds them, and the fix of its status
   (`laptop.architect-2`, 2026-10-16T07:38:36Z,
   https://github.com/synnaxlabs/foundation/pull/2838#issuecomment-6210559216). Decided
   by `laptop.architect-2` on 2026-10-16T07:18:54Z
