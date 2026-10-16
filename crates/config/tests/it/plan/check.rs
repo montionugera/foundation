@@ -418,3 +418,46 @@ fn checks_the_influx_fuzz_inputs_with_a_database_and_a_measurement() {
     );
     assert_eq!(check(text), [no_node, duplicate, unknown_index("a.time")]);
 }
+
+#[test]
+fn refuses_each_fill_of_the_unfilled_fuzz_inputs() {
+    let fix = || "Write the value in place of `fill`".to_owned();
+    let at = |text: &str, part: &str| {
+        let at =
+            u32::try_from(text.find(part).expect("the part")).expect("a short file");
+        Some((document::Source(0), at))
+    };
+    let unfilled = |text: &str, part: &str, what: &str| {
+        let message = format!("the import found no value for {what}");
+        ("config.unfilled", at(text, part), message, fix())
+    };
+    let bad = |text: &str, part: &str| {
+        (
+            "config.bad-fill",
+            at(text, part),
+            "`fill` takes one string".into(),
+            fix(),
+        )
+    };
+    let text = include_str!("../../../../../oracles/fuzz/config_check/unfilled");
+    let found = config::check(&documents(&[text]), &kinds());
+    assert_eq!(
+        problems(found.map(|_| unreachable())),
+        [
+            unfilled(text, "fill(\"the sample type", "the sample type"),
+            unfilled(text, "fill(\"the unit", "the unit"),
+            unfilled(text, "fill(\"c", "c"),
+            bad(text, "fill()"),
+            bad(text, "fill(\"a\""),
+        ]
+    );
+    let text = include_str!("../../../../../oracles/fuzz/config_check/influx_unfilled");
+    let found = config::check(&documents(&[text]), &kinds());
+    assert_eq!(
+        problems(found.map(|_| unreachable())),
+        [
+            unfilled(text, "fill(\"the token", "the token"),
+            bad(text, "fill(1)"),
+        ]
+    );
+}
