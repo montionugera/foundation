@@ -21,6 +21,7 @@ use wire::hub::client::{
 
 use crate::agent::{AGENT, SUBJECT, name};
 use crate::connect::{connect, connect_with};
+use crate::hand::by_hand;
 use crate::home::{accept, serve_session, serve_session_on};
 use crate::net::{HOME, header, own_pool, public_key, transport};
 use crate::sessions::{Got, Home, OTHER, QUIET, rules, run_program, shrink_wall_error};
@@ -232,38 +233,6 @@ fn refuses_a_body_over_the_cap_with_nothing_sent() {
         "only the hello stream: {:?}",
         home.served
     );
-}
-
-/// Runs a program whose session connects to a home that admits its hello on a link,
-/// then gives the transport session of the home to `rest`, which serves what follows
-/// by hand.
-pub(super) fn by_hand<R>(
-    seed: u64,
-    rest: impl FnOnce(transport::Session, sim::node::Node) -> R + Send + 'static,
-    program: impl FnOnce(
-        Session,
-        sim::node::Node,
-    ) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
-    + Send
-    + 'static,
-) where
-    R: Future<Output = ()> + 'static,
-{
-    let home = move |node: sim::node::Node, tasks: env::tasks::Tasks| async move {
-        let (test, session, link) = accept(&node, &tasks, true, Some(rules())).await;
-        let mut hello = session.accept().await.expect("a stream");
-        header(&mut hello).await;
-        let hello = link.serve(hello);
-        tasks.spawn(async move {
-            drop(hello.await);
-        });
-        rest(session, node).await;
-        drop((link, test));
-    };
-    run_program(seed, home, |node, tasks, at| async move {
-        let session = connect(&node, tasks, at, AGENT).await.expect("connects");
-        program(session, node).await;
-    });
 }
 
 /// The next request stream of `session`, read to its finish.

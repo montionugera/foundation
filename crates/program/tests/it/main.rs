@@ -9,6 +9,9 @@
 mod agent;
 #[path = "../common/connect.rs"]
 mod connect;
+#[path = "../common/hand.rs"]
+mod hand;
+#[path = "../common/home.rs"]
 mod home;
 #[path = "../../../hub/tests/common/net.rs"]
 #[expect(dead_code, reason = "the binary uses only some of the helpers")]

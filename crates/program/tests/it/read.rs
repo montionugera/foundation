@@ -16,7 +16,7 @@ use spec::channel::{Channel, Data, Kind};
 use spec::data_type::DataType;
 use spec::definition::Definition;
 use transport::Code;
-use transport::stream::{Incoming, Sender};
+use transport::stream::Incoming;
 use types::authority::Authority;
 use types::channel;
 use types::frame::{Form, Frame, Label, Path, Range};
@@ -24,16 +24,14 @@ use types::name::Selector;
 use types::sample::{Scalar, Type};
 use types::time::Span;
 use wire::header::MALFORMED;
-use wire::hub::client::{
-    Mode, OPEN_BYTES_MAX, Open, Place, Places, Read, Refusal, place,
-};
-use wire::hub::{Head, Reply, ends};
+use wire::hub::Reply;
+use wire::hub::client::{Mode, OPEN_BYTES_MAX, Open, Place, Refusal};
 
 use crate::agent::{AGENT, SUBJECT, name};
 use crate::connect::{connect, connect_with};
-use crate::net::{header, own_pool};
+use crate::hand::{accept_read, by_hand, opened, reply, send, send_frame, start};
 use crate::node::env;
-use crate::session::{admit, by_hand, raw};
+use crate::session::{admit, raw};
 use crate::sessions::{self, Got, Home, QUIET, closed_with, rules};
 
 const STAMP: Type = Type::Scalar(Scalar::Stamp);
@@ -315,90 +313,6 @@ fn runs_a_request_beside_an_open_reader() {
         Ok(Got::Request(name(SUBJECT), b"ab".to_vec()))
     );
     assert_eq!(home.served[1..], [dropped(), closed()]);
-}
-
-/// Sends `bytes` on `sender` as one message.
-async fn send(sender: &mut Sender, bytes: &[u8]) {
-    let message = own_pool().copy(bytes).expect("room");
-    sender.send(message).await.expect("sends");
-}
-
-/// Sends `reply` on `sender`.
-async fn reply(sender: &mut Sender, reply: Reply) {
-    let mut bytes = vec![0; reply.encoded_len()];
-    reply.encode(&mut bytes);
-    send(sender, &bytes).await;
-}
-
-/// Accepts the next read stream of `session` and takes its read and its open. Gives the
-/// stream.
-async fn accept_read(session: &transport::Session) -> Incoming {
-    let mut read = session.accept().await.expect("a stream");
-    header(&mut read).await;
-    let mut next = async || {
-        let message = read.receiver.recv().await.expect("receives");
-        message.expect("a message before the finish")
-    };
-    let mut body = Read::decode(&next().await).expect("a read").body();
-    while body.remain() > 0 {
-        body.take(&next().await).expect("bytes of the open");
-    }
-    read
-}
-
-/// Sends the start of a read on `read`: a places of `places` with its index at
-/// `index`, then the run of the first `sent` of `places`.
-async fn start(read: &mut Incoming, places: &[Place], index: u32, sent: usize) {
-    let sender = read.sender.as_mut().expect("two-way");
-    let mut bytes = [0; Places::LEN];
-    let count = u32::try_from(places.len()).expect("fits");
-    Places { count, index }.encode(&mut bytes);
-    send(sender, &bytes).await;
-    for message in place::messages(&places[..sent], 1 << 10) {
-        let mut bytes = vec![0; message.encoded_len()];
-        message.encode(&mut bytes);
-        send(sender, &bytes).await;
-    }
-}
-
-/// Accepts the next read and opens it with `places` and its index at `index`.
-async fn opened(
-    session: &transport::Session,
-    places: &[Place],
-    index: u32,
-) -> Incoming {
-    let mut read = accept_read(session).await;
-    start(&mut read, places, index, places.len()).await;
-    reply(read.sender.as_mut().expect("two-way"), Reply::Opened).await;
-    read
-}
-
-/// Sends a frame on `read`: a head of `count` samples from `seq`, the run of `ends`,
-/// and `body` in messages of the lengths of `cuts`.
-async fn send_frame(
-    read: &mut Incoming,
-    range: Range,
-    run: &[(u32, u32)],
-    body: &[u8],
-    cuts: &[usize],
-) {
-    let sender = read.sender.as_mut().expect("two-way");
-    let head = Head {
-        path: Path::Live,
-        range,
-        series: u32::try_from(run.len()).expect("fits"),
-    };
-    reply(sender, Reply::Head(head)).await;
-    let mut bytes = vec![0; run.len() * ends::LEN];
-    ends::encode(run.iter().copied(), &mut bytes);
-    send(sender, &bytes).await;
-    let mut rest = body;
-    for &cut in cuts {
-        let (message, after) = rest.split_at(cut);
-        send(sender, message).await;
-        rest = after;
-    }
-    assert!(rest.is_empty(), "the cuts take the whole body");
 }
 
 /// The places of a channel on `time` on each side of `time`.
