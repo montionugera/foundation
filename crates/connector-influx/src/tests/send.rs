@@ -78,6 +78,8 @@ struct Plant {
     errors: Rc<RefCell<Vec<String>>>,
     /// Each value of `influx.status.class`, as [`read_status`] gives them.
     classes: Rc<RefCell<Vec<u8>>>,
+    /// Each value of `influx.status.restarts`.
+    restarts: Rc<RefCell<Vec<u64>>>,
     confirmed: Rc<RefCell<Vec<u64>>>,
     lost: Rc<RefCell<Vec<u64>>>,
     /// The certificate of an InfluxDB that serves TLS.
@@ -135,6 +137,7 @@ impl Plant {
         let errors = read_errors(&inputs.hub, &tasks).await;
         let classes =
             read_status(&inputs.hub, &tasks, "class", |sample| sample[0]).await;
+        let restarts = read_count(&inputs.hub, &tasks, "restarts").await;
         let confirmed = read_confirmed(&inputs.hub, &tasks).await;
         let lost = read_count(&inputs.hub, &tasks, "lost").await;
         Self {
@@ -152,6 +155,7 @@ impl Plant {
             store: Rc::default(),
             errors,
             classes,
+            restarts,
             confirmed,
             lost,
             certificate,
@@ -1520,12 +1524,12 @@ fn with_ca(plant: &Plant, function: &str, argument: &str) -> Document {
 /// Runs [`send_one`] on a plant whose InfluxDB serves `certificate`, whose node
 /// trusts `roots`, and whose config reads `ca` from `file(CA_FILE)` when it holds
 /// bytes. Gives the errors, whether the run went on, the lines stored, and each value
-/// of `class`.
+/// of `class` and of `restarts`.
 fn send_over_tls(
     certificate: Certificate,
     roots: Roots,
     ca: &'static [u8],
-) -> (Vec<String>, bool, usize, Vec<u8>) {
+) -> (Vec<String>, bool, usize, Vec<u8>, Vec<u64>) {
     run_tls(move |node, tasks| async move {
         node.paths()
             .write(std::path::Path::new(CA_FILE), ca)
@@ -1539,7 +1543,8 @@ fn send_over_tls(
         let (_, errors, end) = send_one(&plant, config).await;
         let points = plant.store.borrow().points("telemetry", &[]).count();
         let classes = plant.classes.borrow().clone();
-        (errors, end.is_none(), points, classes)
+        let restarts = plant.restarts.borrow().clone();
+        (errors, end.is_none(), points, classes, restarts)
     })
 }
 
@@ -1575,12 +1580,12 @@ fn writes_over_https_with_the_ca_of_a_file_or_a_store() {
 fn writes_over_https_with_the_roots_of_the_node_and_no_ca() {
     assert_eq!(
         send_over_tls(Certificate::Valid, connector::http::sim::ca(), b""),
-        (vec![String::new()], true, 1, vec![0])
+        (vec![String::new()], true, 1, vec![0], vec![0])
     );
 }
 
 #[test]
-fn shows_why_tls_fails_and_writes_nothing() {
+fn shows_why_tls_fails_and_retries_in_the_run_with_no_ca() {
     let failed = |reasons: Vec<String>| {
         let errors = reasons.into_iter().map(|reason| {
             format!(
@@ -1616,11 +1621,11 @@ fn shows_why_tls_fails_and_writes_nothing() {
             vec!["invalid peer certificate: UnknownIssuer".to_owned()],
         ),
     ] {
-        let (errors, going, points, _) =
+        let (errors, going, points, _, restarts) =
             send_over_tls(certificate, connector::http::sim::ca(), b"");
         assert_eq!(
-            (errors, going, points),
-            (failed(reasons), true, 0),
+            (errors, going, points, restarts),
+            (failed(reasons), true, 0, vec![0]),
             "{certificate:?}"
         );
     }
@@ -1628,7 +1633,7 @@ fn shows_why_tls_fails_and_writes_nothing() {
 
 #[test]
 fn ends_the_run_at_a_tls_failure_with_a_ca() {
-    let (errors, _, points, classes) =
+    let (errors, _, points, classes, restarts) =
         send_over_tls(Certificate::OtherCa, Roots::default(), CA);
     let error = format!(
         "the write to InfluxDB failed: TLS with server:8086 failed: invalid peer \
@@ -1637,6 +1642,11 @@ fn ends_the_run_at_a_tls_failure_with_a_ca() {
     assert_eq!(
         (errors, points, classes),
         (vec![String::new(), error], 0, vec![0, RETRY])
+    );
+    assert_eq!(
+        restarts,
+        (0..=6).collect::<Vec<_>>(),
+        "a new run reads the ca"
     );
 }
 
@@ -1660,16 +1670,18 @@ fn reads_again_a_ca_fixed_while_the_node_runs() {
             .expect("writes");
         plant.clock.sleep(Span::MINUTE).await;
         plant.stop(run).await.expect("ok after a cancel");
-        plant.store.borrow().points("telemetry", &[]).count()
+        let points = plant.store.borrow().points("telemetry", &[]).count();
+        let restarts = plant.restarts.borrow().clone();
+        (points, restarts)
     });
-    assert_eq!(got, 1);
+    assert_eq!(got, (1, (0..=5).collect()), "the run after the fix writes");
 }
 
 #[test]
 fn keeps_the_roots_of_the_node_with_a_ca() {
     assert_eq!(
         send_over_tls(Certificate::Valid, connector::http::sim::ca(), OTHER_CA),
-        (vec![String::new()], true, 1, vec![0])
+        (vec![String::new()], true, 1, vec![0], vec![0])
     );
 }
 
@@ -1684,13 +1696,13 @@ fn reads_a_ca_that_starts_with_a_byte_order_mark() {
     };
     assert_eq!(
         send_over_tls(Certificate::Valid, Roots::default(), MARKED),
-        (vec![String::new()], true, 1, vec![0])
+        (vec![String::new()], true, 1, vec![0], vec![0])
     );
 }
 
 #[test]
 fn shows_that_no_ca_is_trusted_with_no_roots_and_no_ca() {
-    let (errors, going, points, _) =
+    let (errors, going, points, ..) =
         send_over_tls(Certificate::Valid, Roots::default(), b"");
     assert_eq!(
         (errors, going, points),
@@ -1717,7 +1729,7 @@ fn ends_the_run_at_a_ca_that_gives_no_root() {
             "a PEM certificate that does not parse",
         ),
     ] {
-        let (errors, _, points, classes) =
+        let (errors, _, points, classes, _) =
             send_over_tls(Certificate::Valid, connector::http::sim::ca(), ca);
         let error = format!(
             "the ca file(\"{CA_FILE}\") holds {held}. Write the CA certificate of the \
