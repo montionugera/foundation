@@ -203,5 +203,5 @@ fn a_fault_gives_the_status_or_the_type_that_made_it() {
 #[test]
 #[should_panic(expected = "invariant: the status of a fault is not Good")]
 fn a_fault_of_a_good_status_panics() {
-    let _ = Fault::status(Status(0x00A0_0000));
+    let _: Fault = Fault::status(Status(0x00A0_0000));
 }
