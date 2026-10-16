@@ -17,7 +17,7 @@ use rustix::fs::{self, AtFlags, FileType, FlockOperation, OFlags, RenameFlags};
 use rustix::io::{self, Errno};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::dir;
+use crate::{dir, host};
 
 /// The most parts that one `pwritev` takes: `IOV_MAX` on Linux and macOS.
 const PARTS: usize = 1_024;
@@ -36,13 +36,6 @@ const DIR: fs::Mode = fs::Mode::from_raw_mode(0o700);
 const READ_DIR: OFlags = OFlags::RDONLY
     .union(OFlags::DIRECTORY)
     .union(OFlags::CLOEXEC);
-
-/// The flags that open a file of the host to read, with no wait for a writer of a FIFO.
-/// `NOCTTY` keeps a terminal from becoming that of a node that leads its session.
-const READ_HOST: OFlags = OFlags::RDONLY
-    .union(OFlags::CLOEXEC)
-    .union(OFlags::NONBLOCK)
-    .union(OFlags::NOCTTY);
 
 /// The real disk under one data directory: the [`env::files::Driver`] that
 /// [`files`](crate::files) gives. It is `Send`, so one thread can make it and another
@@ -429,14 +422,8 @@ fn open(data: &OwnedFd, path: &Path, mode: Mode) -> Result<Found, Error> {
 /// file that is not a regular file.
 fn open_absolute(path: &Path) -> Result<Found, Error> {
     let failed = fail(path, Operation::Open);
-    // The check before the open keeps the open of a socket from giving `ENXIO`, and
-    // that of a device from running its driver. The check after it covers a swap.
-    regular(&fs::stat(path).map_err(&failed)?).map_err(&failed)?;
-    let fd = Opened {
-        fd: fs::open(path, READ_HOST, fs::Mode::empty()).map_err(&failed)?,
-        locked: false,
-    };
-    let stat = fs::fstat(&fd).map_err(&failed)?;
+    let (fd, stat) = host::open(path).map_err(&failed)?;
+    let fd = Opened { fd, locked: false };
     let len = regular(&stat).map_err(&failed)?;
     let exposed = exposed(&stat);
     Ok(Found { fd, len, exposed })
