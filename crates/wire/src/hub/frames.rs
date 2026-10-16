@@ -42,8 +42,8 @@ pub enum Step {
     More,
     /// A whole frame.
     Frame(Frame),
-    /// The session reached a frame that the buffer lost, so the home ended it. No
-    /// message follows.
+    /// The home ended the session, and no message follows. No case gives it; #2790
+    /// removes it.
     Behind,
 }
 
