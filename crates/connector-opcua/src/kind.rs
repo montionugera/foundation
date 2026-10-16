@@ -29,14 +29,10 @@ const LARGE_READ: Code = Code::new("opcua.large-read");
 /// The counts of the status of each connector: the samples that the home applied,
 /// the ticks that the timer skipped, the samples that a frame lost, and the values
 /// that a frame leaves out as Bad, as Uncertain, and as of another type.
-const COUNTS: [&str; 6] = [
-    poll::COUNTS[0],
-    "missed",
-    poll::COUNTS[1],
-    "bad",
-    "uncertain",
-    "mistyped",
-];
+const COUNTS: [&str; 6] = {
+    let [applied, lost] = poll::COUNTS;
+    [applied, "missed", lost, "bad", "uncertain", "mistyped"]
+};
 
 /// The `opcua` kind: reads the Value of OPC UA nodes at a fixed rate, in Read requests
 /// that each fit one message of the server, and writes at most one frame per tick.
@@ -93,8 +89,9 @@ impl kind::Kind for Kind {
     /// # Errors
     ///
     /// The error of [`Context::writer`] and of each failed write. [`Error::Config`]
-    /// with `opcua.sample-type` for each channel whose sample type is not `bool`, `i8`
-    /// to `u64`, `f32`, or `f64`, and with `opcua.large-read` when the Read of one node
+    /// with `connector.index` for each channel that is an index, with
+    /// `opcua.sample-type` for each channel whose sample type is not `bool`, `i8` to
+    /// `u64`, `f32`, or `f64`, and with `opcua.large-read` when the Read of one node
     /// alone is past one message of the server. [`Error::Device`] when the connect, a
     /// read, or one check fails: a check fails on a status that is not Good or on no
     /// answer in 5 s. Also [`Error::Device`], at once, when the client loses its
