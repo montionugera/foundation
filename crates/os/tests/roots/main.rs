@@ -58,10 +58,16 @@ fn reads_the_certificates_of_the_os_store() {
 }
 
 fn reads_the_os_store_when_ssl_cert_dir_names_no_directory() {
-    let store = child(&[]);
+    // The keychain of macOS gives its certificates in a different order on each read.
+    let sorted = |text: String| {
+        let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+        lines.sort_unstable();
+        lines
+    };
+    let store = sorted(child(&[]));
     for dirs in ["", ":"] {
         assert_eq!(
-            child(&[("SSL_CERT_DIR", OsStr::new(dirs))]),
+            sorted(child(&[("SSL_CERT_DIR", OsStr::new(dirs))])),
             store,
             "the roots with SSL_CERT_DIR={dirs:?}"
         );
