@@ -112,17 +112,16 @@ fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// Makes a directory at `path` whose permission bits give only this user access.
+/// A directory there, also through a link, gives `Ok`, and anything else there gives
+/// `EEXIST`.
 fn make_dir(path: &Path) -> io::Result<()> {
-    match DirBuilder::new().mode(0o700).create(path) {
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            if fs::metadata(path).is_ok_and(|found| found.is_dir()) {
-                Ok(())
-            } else {
-                Err(e)
-            }
+    DirBuilder::new().mode(0o700).create(path).or_else(|e| {
+        if fs::metadata(path).is_ok_and(|found| found.is_dir()) {
+            Ok(())
+        } else {
+            Err(e)
         }
-        made => made,
-    }
+    })
 }
 
 /// Makes a file at `path` whose permission bits give only this user access.
