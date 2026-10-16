@@ -9,7 +9,9 @@ use types::quality::Quality;
 
 use super::{Served, Variables, serve};
 use crate::client::Client;
-use crate::client::browse::{Class, Description, Page, Reference, Unit};
+use crate::client::browse::{
+    Cause, Class, Description, Foreign, Page, Reference, Unit,
+};
 use crate::event;
 use crate::ffi::Status;
 use crate::node::{Key, Node};
@@ -456,13 +458,16 @@ fn a_client_browses_the_tree_from_objects() {
         references(odd),
         [[
             Reference {
-                node: None,
+                node: Err(Foreign {
+                    text: "ns=1;g=00000005-0006-0007-0800-000000000000".to_owned(),
+                    cause: Cause::Key,
+                }),
                 ..reference("Guid", "Guid", Class::Object, ORGANIZES)
             },
             level(ORGANIZES),
             level(HAS_COMPONENT),
             Reference {
-                node: Some(named(1, "Plant.Odd.Twin")),
+                node: Ok(named(1, "Plant.Odd.Twin")),
                 ..level(HAS_COMPONENT)
             },
         ]]
