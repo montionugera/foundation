@@ -170,12 +170,15 @@
   https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223151793). A frame
   of over 6 MiB of lines can take a request past the 10 MiB of InfluxDB 3 Core, and its
   413 repeats until a person acts. Trigger for a split of a frame across requests: a
-  frame of over 6 MiB of lines, as `laptop.architect-2` decided
+  frame of over 6 MiB of lines, as `laptop.architect-2` decided on 2026-10-16T19:34:27Z
   (https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223208198). A frame
-  of a node meets it now, since a ring record of 1 MiB of `u8` samples is about 13 MiB
-  of lines (#2918). #2918 builds the split, and the cut of a batch before such a frame
-  lost, since a frame over the whole limit still stops the stream (`laptop.architect-2`,
-  2026-10-16T20:16:11Z,
+  of a node meets it now, since a ring record of 1 MiB of 64 `u8` channels named as
+  `edge.uNN` is about 13 MiB of lines (#2918). So until #2918 merges, a default node
+  and a default InfluxDB 3 Core can stop the stream, and `laptop.monitor` asked for a
+  cut of a batch before such a frame in this PR (2026-10-16T20:16:04Z,
+  https://github.com/synnaxlabs/foundation/issues/2918#issuecomment-6223888984). #2918
+  builds the split, and the cut lost, since a frame over the whole limit still stops the
+  stream (`laptop.architect-2`, 2026-10-16T20:16:11Z,
   https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223891016). It
   supersedes the trigger of a split of the batch, a server whose body limit is below one
   batch, of https://github.com/synnaxlabs/foundation/pull/2838#issuecomment-6210258673.

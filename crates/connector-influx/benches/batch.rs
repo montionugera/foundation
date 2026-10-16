@@ -343,8 +343,9 @@ fn write(
 /// The raw series of `samples` samples of `data_type` from `first`, of the index when
 /// `index`, each nanosecond after the one before it. A variable sample is a text with
 /// two quotes, which a series of one sample repeats 1 to 64 times by its entry `at`, so
-/// it is 9 to 576 bytes, 11 to 704 as written, and the same in each frame. A longer
-/// series has the text once, so the ring of the sim hub holds it.
+/// it is 9 to 576 bytes and the same in each frame: 11 to 704 bytes as a `string`
+/// field, and 12 to 768 as a `bytes` field. A longer series has the text once, so the
+/// ring of the sim hub holds it.
 fn raw(data_type: Type, at: usize, index: bool, first: i64, samples: usize) -> Vec<u8> {
     let small = |sample: usize| u8::try_from(sample % 200).expect("fits");
     if let Some(form) = codec::Variable::of(data_type) {
