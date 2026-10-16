@@ -35,8 +35,9 @@
      https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205484684. The
      run resolves the host through `env::net`. `unit` is optional, 0 to 255, default
      1 (C2 item 1). Lost: the host rule of a library
-     (`rustls_pki_types::ServerName`), which is a new dependency of the crate for one
-     check (#1218 has the shared host type).
+     (`rustls_pki_types::ServerName`), which takes `"10.0xa"` and `"0xa000001"` as
+     names that a resolver reads as IPv4 addresses, and refuses a zone (#1218 has
+     the shared host type).
   2. **A read.** `table` is `coil`, `discrete`, `holding`, or `input`, as a string or
      a reference (HCL REFERENCES; `laptop.architect-2`, 2026-10-16T00:41:10Z, link
      above), as `order` is. `address` is the address of the protocol, from 0. Lost:
@@ -48,8 +49,7 @@
      `modbus.range` at run. Each has no span and names the channel, the table, and
      the address, as a config that a node gets from the mesh has no spans. Only the
      run has the sample type of each channel. When `check` gets the sample types
-     (#2788), these move to plan with the span of the `read` block. This supersedes
-     note 1 of
+     (#2788), these move to plan. This supersedes note 1 of
      https://github.com/synnaxlabs/foundation/issues/432#issuecomment-6204791239
      (`laptop.architect-2`, 2026-10-16T00:41:10Z:
      https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205359213).
