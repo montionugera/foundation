@@ -12,6 +12,7 @@ pub mod bench;
 mod common;
 mod handoff;
 mod index;
+mod named;
 pub mod order;
 pub mod reader;
 mod shard;
