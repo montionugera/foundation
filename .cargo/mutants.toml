@@ -7,7 +7,7 @@ all_features = true
 exclude_re = [
   # A shortcut: links that are one give equal names. Without it, the page check of
   # `walk` compares each name of the folder's path for each entry.
-  'crates/connector/src/browse\.rs:.*replace match guard Arc::ptr_eq\(x, y\) with false',
+  'crates/connector/src/browse\.rs:.*guard Arc::ptr_eq\(x, y\) with false',
   # A type name shows only in a panic of `connector_opcua::fuzz::decode`, which a
   # correct open62541 never gives. `fuzz::tests` checks the names.
   'crates/connector-opcua/src/ffi\.rs:.*replace DataType::name -> &.static str with',
