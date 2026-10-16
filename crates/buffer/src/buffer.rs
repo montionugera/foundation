@@ -330,7 +330,7 @@ struct State {
     logs: Logs,
     /// The last checkpoint written.
     header: Header,
-    /// Empty, with the capacity of the tails of the last carry record, for the next.
+    /// Empty, with room from open on for the tails of the largest carry record.
     carried: Carried,
     /// Whether an append got [`Rejected::Full`] since the last deadline, with
     /// [`Config::trimmed`]. The task then commits also with no entry, so that its
@@ -666,7 +666,9 @@ impl Buffer {
                 queue: Vec::new(),
                 logs,
                 header,
-                carried: Carried::default(),
+                carried: Carried::with_capacity(
+                    header.layout.tails_max().min(tails_max),
+                ),
                 starved: false,
                 held: Vec::with_capacity(HOLDS),
                 taken: 0,
@@ -2140,6 +2142,60 @@ mod tests {
                 stamp: Some(Stamp::from_nanos(9)),
             };
             assert_eq!(*found, Some(((Some(0..3), vec![], Mark::at(3)), tail)));
+        }
+
+        /// The carry of a buffer has room at open for the tails of the largest carry
+        /// record. Records of one entry of each of more paths than that record holds
+        /// come first, then the commits of index 0 turn the ring of 64 blocks, so
+        /// full carry records take their tails. The room stays.
+        #[test]
+        fn a_carry_has_room_for_the_largest_record_from_open_on() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let found = Arc::new(Mutex::new(Vec::new()));
+            let given = Arc::clone(&found);
+            let logs = with_trims(
+                &mut sim,
+                &node,
+                "write",
+                |buffer, mut slots, pool| async move {
+                    let room = |buffer: &Buffer| {
+                        let state = buffer.shared.state.borrow();
+                        (state.carried.capacity(), state.carried.tails().len())
+                    };
+                    let mut given = given.lock().expect("no panic held the lock");
+                    given.push(room(&buffer));
+                    let byte = pool.alloc(1).expect("a block").freeze();
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    let paths = u32::try_from(carry::count(8000)).expect("fits") + 10;
+                    for first in (1..=paths).step_by(50) {
+                        let batch: Vec<Entry> = (first..(first + 50).min(paths + 1))
+                            .map(|index| {
+                                let key = channel::Key::from_u128(index.into());
+                                entry(index, slots.index(key), Path::Live, 0, &byte)
+                            })
+                            .collect();
+                        buffer.append(batch).expect("the ring has room");
+                        buffer.committed().await.expect("commits");
+                    }
+                    let filler = slots.index(channel::Key::from_u128(0));
+                    commit_each(&buffer, (0, filler), &part, 0..80).await;
+                    given.push(room(&buffer));
+                    let last = slots.index(channel::Key::from_u128(paths.into()));
+                    let seq = buffer.durable(last, Path::Live).seq;
+                    let last = usize::try_from(last.get()).expect("fits");
+                    given.push((usize::try_from(seq).expect("fits"), last));
+                    drop(given);
+                    buffer
+                },
+            );
+            let tails = carry::count(8000);
+            let found = found.lock().expect("no panic held the lock");
+            assert_eq!(found[..2], [(tails, 0), (tails, 0)]);
+            let (seq, last) = found[2];
+            assert_eq!(seq, 3, "a carry record keeps the tail of the last path");
+            let last = Slot::new(u32::try_from(last).expect("fits"));
+            assert_eq!(logs.runs(last, Path::Live).count(), 0, "the trims pass it");
         }
 
         /// One record holds an entry of each of indexes 1 to 100, after 7 records of

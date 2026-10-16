@@ -1017,13 +1017,18 @@ pub(crate) struct Carried {
 impl Carried {
     /// Room for `tails` tails, so that a carry of at most that many allocates
     /// nothing.
-    #[cfg(feature = "sim")]
     pub(crate) fn with_capacity(tails: usize) -> Self {
         Self {
             tails: Vec::with_capacity(tails),
             places: Vec::with_capacity(tails),
             first: 0,
         }
+    }
+
+    /// The tails that a carry may give with no allocation.
+    #[cfg(test)]
+    pub(crate) fn capacity(&self) -> usize {
+        self.tails.capacity().min(self.places.capacity())
     }
 
     /// The tails, in the order of the record body.
