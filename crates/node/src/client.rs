@@ -8,10 +8,16 @@ use wire::hub::client::Refusal;
 
 use crate::{address, admin};
 
-/// The budget of the pool of the transport and the `program::Session`, and of the pool
-/// of its frames. Its largest block holds a datagram, and the session sends a body in
-/// chunks of its largest block.
+/// The budget of the pool of the transport and the `program::Session`. Its largest
+/// block holds a datagram, and the session sends a body in chunks of its largest block.
 const POOL: block::Config = match block::Config::new(1 << 21) {
+    Ok(config) => config,
+    Err(_) => panic!("invariant: the budget fits"),
+};
+
+/// The budget of the pool of the frames of the session's reads. Its largest block is
+/// the largest frame that a read takes: a larger one gives `program::Error::Pool`.
+const FRAMES: block::Config = match block::Config::new(1 << 21) {
     Ok(config) => config,
     Err(_) => panic!("invariant: the budget fits"),
 };
@@ -71,7 +77,7 @@ pub async fn reach(config: Config) -> Result<program::Session, Error> {
         entropy,
         tasks,
         pool,
-        frames: Rc::new(block::Pool::heap(POOL)),
+        frames: Rc::new(block::Pool::heap(FRAMES)),
     };
     program::Session::connect(&transport, config)
         .await
