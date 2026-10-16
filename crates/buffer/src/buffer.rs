@@ -807,7 +807,8 @@ impl Buffer {
     /// # Panics
     ///
     /// When a `first` is below the tail of its path, with the index, the path,
-    /// `first`, and the tail, when `first + len` passes `u64::MAX`, when an entry
+    /// `first`, and the tail, when `first` plus the entry's `samples.len` passes
+    /// `u64::MAX`, when an entry
     /// with no samples follows `u64::MAX` of them at its seq on its path, or when an
     /// entry's slot held another index on its path before.
     pub fn append(
@@ -853,11 +854,11 @@ impl Buffer {
         }
         let state = &mut *state;
         for entry in batch.drain(..) {
-            let header = state
+            let kind = state
                 .logs
-                .append(entry.slot, &entry)
+                .append(entry.slot, &entry.place())
                 .unwrap_or_else(|invalid| panic!("invariant: {invalid}"));
-            state.open.take(entry.slot, header, entry.parts);
+            state.open.take(entry, kind);
         }
         let idle = state.idle();
         drop(guard);
@@ -903,7 +904,7 @@ impl Buffer {
     }
 }
 
-/// The error of a push that a new group refuses too.
+/// The error of a [`Group::fit`](group::Group::fit) that a new group refuses too.
 fn rejected(rejected: group::Rejected) -> Rejected {
     match rejected {
         group::Rejected::Large(limit) => Rejected::Large(limit),
@@ -1143,8 +1144,8 @@ fn small_record(
     Ok(block.freeze().skip(start))
 }
 
-/// The commit task. It parks while the state idles; a push that takes an entry, a
-/// push that the ring refuses, or the drop wakes it. Each deadline takes the closed
+/// The commit task. It parks while the state idles; an append that queues an entry, an
+/// append that the ring refuses, or the drop wakes it. Each deadline takes the closed
 /// groups and the open one with the trim and the carry record of the commit, seals
 /// the records in order from `chain`, the value of the restart record, writes them
 /// and the checkpoint, syncs once, and wakes the waiters. A deadline with none of
@@ -1617,7 +1618,7 @@ mod tests {
     }
 
     /// A batch that the group refuses, after an entry that fits, changes neither
-    /// the open group nor the logs: the record holds only the entries around it.
+    /// the open group nor the tail: the record holds only the entries around it.
     #[test]
     fn a_refused_batch_changes_neither_the_group_nor_the_logs() {
         let mut sim = sim::Sim::new(sim::Config::default());
@@ -1635,7 +1636,7 @@ mod tests {
                 buffer
                     .append([entry(1, one, Path::Live, 0, &part)])
                     .expect("the ring has room");
-                let logs = buffer.shared.state.borrow().logs.clone();
+                let tail = buffer.tail(one, Path::Live);
                 let refused = [
                     entry(1, one, Path::Live, 3, &part),
                     entry(1, one, Path::Live, 6, &big),
@@ -1645,7 +1646,7 @@ mod tests {
                     max: 8000,
                 };
                 assert_eq!(buffer.append(refused), Err(Rejected::Large(body)));
-                assert_eq!(buffer.shared.state.borrow().logs, logs);
+                assert_eq!(buffer.tail(one, Path::Live), tail);
                 buffer
                     .append([entry(1, one, Path::Live, 3, &part)])
                     .expect("the ring has room");

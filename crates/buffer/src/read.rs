@@ -245,7 +245,7 @@ pub(crate) async fn newest(
 fn stored(header: Header, bytes: Block) -> Stored {
     Stored {
         first: header.first,
-        samples: header.place().samples,
+        samples: header.samples(),
         stored_at: header.stored_at,
         tag: header.tag,
         bytes,
@@ -340,6 +340,13 @@ mod tests {
             },
             Stored {
                 samples: None,
+                ..base.clone()
+            },
+            Stored {
+                samples: base.samples.map(|samples| Samples {
+                    last: None,
+                    ..samples
+                }),
                 ..base.clone()
             },
             Stored {

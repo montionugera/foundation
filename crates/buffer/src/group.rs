@@ -8,7 +8,7 @@ use std::slice;
 use block::{Block, Pool, Unique};
 use types::channel::Slot;
 
-use crate::entry::{self, Entry, Header, Parts};
+use crate::entry::{self, Entry, Header, Kind};
 use crate::record;
 use crate::wal::{Ends, Full, Layout, Limit, Plan, Writer};
 
@@ -86,7 +86,7 @@ fn need(starts: &[usize], len: usize) -> usize {
     group.saturating_add(parts)
 }
 
-/// The entries of one group commit, in append order. The first push takes the block
+/// The entries of one group commit, in append order. The first fit takes the block
 /// for the record header and the table and the block for a wrap header, so that
 /// [`close`](Self::close) and [`Closed::seal`] allocate nothing. [`Sealed::clear`]
 /// gives the group back with its capacity, so groups that alternate between the
@@ -138,7 +138,7 @@ impl Group {
 
     /// Checks that the group can take every entry of `batch`: the record with them
     /// fits the layout and the ring of `writer`, and each entry is at most
-    /// `block_max`. The first entry takes the group's blocks from `pool`. The
+    /// `block_max`. When the group has no blocks, it takes them from `pool`. The
     /// caller then gives each entry of `batch` to [`take`](Self::take), in order.
     ///
     /// # Errors
@@ -195,16 +195,17 @@ impl Group {
         Ok(())
     }
 
-    /// Takes the entry of `header` on `slot`, with its `parts`, after a
-    /// [`fit`](Self::fit) of its batch. `header.bytes` is the size of `parts`.
-    pub(crate) fn take(&mut self, slot: Slot, header: Header, parts: Parts) {
+    /// Takes `entry` with its header of `kind`, after a [`fit`](Self::fit) of its
+    /// batch.
+    pub(crate) fn take(&mut self, entry: Entry, kind: Kind) {
+        let header = entry.header(kind);
         self.bytes = self
             .bytes
-            .checked_add(parts.bytes())
+            .checked_add(usize::try_from(header.bytes).expect("a u32 fits usize"))
             .expect("invariant: a body fits in usize");
         self.headers.push(header);
-        self.slots.push(slot);
-        self.writes.extend(parts);
+        self.slots.push(entry.slot);
+        self.writes.extend(entry.parts);
     }
 
     /// Places the record with `writer` and writes the entry table at the end of the
@@ -385,7 +386,7 @@ mod tests {
     use types::hash;
     use types::time::Stamp;
 
-    use crate::entry::{ENTRIES_MAX, Kind, Samples, table_len};
+    use crate::entry::{ENTRIES_MAX, Parts, Samples, table_len};
     use crate::log::Mark;
     use crate::record::HEADER_LEN;
     use crate::wal::{self, Cursor, Position, Step, Window};
@@ -445,7 +446,7 @@ mod tests {
             slot: slot(header.index.as_u128()),
             path: header.path,
             first: header.first,
-            samples: header.place().samples,
+            samples: header.samples(),
             stored_at: header.stored_at,
             tag: header.tag,
             parts,
@@ -468,7 +469,7 @@ mod tests {
             let kind = entry
                 .samples
                 .map_or(Kind::Record(NonZeroU64::MIN), Kind::Samples);
-            group.take(entry.slot, entry.header(kind), entry.parts);
+            group.take(entry, kind);
         }
         Ok(start..group.headers.len())
     }
@@ -658,7 +659,7 @@ mod tests {
                     slice::from_ref(&entry),
                 )
                 .expect("the ring has room");
-            group.take(entry.slot, entry.header(header.kind), entry.parts);
+            group.take(entry, header.kind);
         }
 
         /// The data bodies, as recovery reads them.
@@ -1238,8 +1239,13 @@ mod tests {
                 Ok(0..count)
             };
             let mut group = Group::default();
-            let pushed =
-                push(&mut group, &area.pool, area.block_max(), &area.writer, &mut batch);
+            let pushed = push(
+                &mut group,
+                &area.pool,
+                area.block_max(),
+                &area.writer,
+                &mut batch,
+            );
             prop_assert_eq!(pushed, expected.clone());
             prop_assert_eq!(group.is_empty(), expected.is_err());
             let checked = area.layout.check(count, count_of_parts, len);
@@ -1264,7 +1270,13 @@ mod tests {
                 let parts = parts(&area.pool, &[&bytes]);
                 let mut batch = vec![entry(header(1, Path::Live, 0), parts)];
                 let block_max = area.block_max();
-                push(&mut Group::default(), &area.pool, block_max, &area.writer, &mut batch)
+                push(
+                    &mut Group::default(),
+                    &area.pool,
+                    block_max,
+                    &area.writer,
+                    &mut batch,
+                )
             };
             prop_assert_eq!(push(max), Ok(0..1));
             let limit = Limit::Body { len: body_max + 1, max: body_max };

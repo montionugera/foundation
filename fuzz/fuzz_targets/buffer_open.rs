@@ -34,12 +34,14 @@
 #![expect(clippy::disallowed_methods, reason = "fuzz_target! calls File::create")]
 
 use std::iter;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use block::{Block, Heap, Pool};
 use buffer::{
-    Buffer, Config, Entry, Error, Layout, Limit, Mark, Parts, Rejected, Stored, Tail,
+    Buffer, Config, Entry, Error, Layout, Limit, Mark, Parts, Rejected, Samples,
+    Stored, Tail,
 };
 use env::files::{File, Mode};
 use env::tasks::Tasks;
@@ -408,28 +410,32 @@ fn stored_at(tag: u8) -> Stamp {
 #[derive(Debug, PartialEq, Eq)]
 struct Given {
     first: u64,
-    len: u32,
+    samples: Option<Samples>,
     stored_at: Stamp,
-    last: Option<Stamp>,
     tag: u8,
     bytes: Vec<u8>,
+}
+
+impl Given {
+    /// How many samples: 0 for an entry with no samples.
+    fn len(&self) -> u32 {
+        self.samples.map_or(0, |samples| samples.len.get())
+    }
 }
 
 impl From<&Stored> for Given {
     fn from(entry: &Stored) -> Self {
         let Stored {
             first,
-            len,
+            samples,
             stored_at,
-            last,
             tag,
             bytes,
         } = entry;
         Self {
             first: *first,
-            len: *len,
+            samples: *samples,
             stored_at: *stored_at,
-            last: *last,
             tag: *tag,
             bytes: bytes.to_vec(),
         }
@@ -440,9 +446,8 @@ impl From<&Entry> for Given {
     fn from(entry: &Entry) -> Self {
         Self {
             first: entry.first,
-            len: entry.len,
+            samples: entry.samples,
             stored_at: entry.stored_at,
-            last: entry.last,
             tag: entry.tag,
             bytes: entry
                 .parts
@@ -742,8 +747,10 @@ async fn build(shard: &Shard, input: &Input) -> Built {
             let path = usize::from(append.path == frame::Path::Backfill);
             let first = firsts[append.index][path] + append.skip;
             firsts[append.index][path] = first + u64::from(append.len);
-            let last = (append.len > 0)
-                .then(|| Stamp::from_nanos(i64::try_from(first).expect("small")));
+            let samples = NonZeroU32::new(append.len).map(|len| Samples {
+                len,
+                last: Some(Stamp::from_nanos(i64::try_from(first).expect("small"))),
+            });
             let mut blocks = append.parts.iter().map(|len| shard.block(*len, tag));
             let blocks = match (blocks.next(), blocks.next()) {
                 (Some(one), Some(two)) => Parts::from([one, two]),
@@ -755,9 +762,8 @@ async fn build(shard: &Shard, input: &Input) -> Built {
                 slot: slots[append.index],
                 path: append.path,
                 first,
-                len: append.len,
+                samples,
                 stored_at: stored_at(tag),
-                last,
                 tag,
                 parts: blocks,
             };
@@ -831,10 +837,10 @@ async fn read_paths(buffer: &Buffer, slots: &[Slot], carried: bool) -> Vec<Vec<G
                 if entry.first - at > 1 {
                     read_from(buffer, *slot, path, at + 1, entry).await;
                 }
-                if entry.len > 1 {
+                if entry.len() > 1 {
                     read_from(buffer, *slot, path, entry.first + 1, entry).await;
                 }
-                at = entry.first + u64::from(entry.len);
+                at = entry.first + u64::from(entry.len());
             }
             paths.push(whole);
         }
@@ -895,7 +901,10 @@ async fn read_path(
             }
             assert_eq!(read.next, from, "an empty read moved the mark");
             assert_eq!(from.seq, tail.seq, "the reads did not end at the tail");
-            let stamp = given.iter().rev().find_map(|entry| entry.last);
+            let stamp = given
+                .iter()
+                .rev()
+                .find_map(|entry| entry.samples.and_then(|s| s.last));
             if stamp.is_some() || !carried {
                 assert_eq!(stamp, tail.stamp, "the reads did not give the tail stamp");
             }
@@ -919,7 +928,7 @@ async fn read_path(
             }
             at = entry
                 .first
-                .checked_add(u64::from(entry.len))
+                .checked_add(u64::from(entry.samples.map_or(0, |s| s.len.get())))
                 .expect("an entry ends past the last seq");
             given.push(Given::from(entry));
         }
@@ -1061,9 +1070,11 @@ async fn check(
                 slot: *slot,
                 path,
                 first: tail.seq,
-                len: 1,
+                samples: Some(Samples {
+                    len: NonZeroU32::MIN,
+                    last: Some(CHECK_LAST),
+                }),
                 stored_at: stored_at(tag),
-                last: Some(CHECK_LAST),
                 tag,
                 parts: Parts::from(shard.block(input.check_part, tag)),
             };

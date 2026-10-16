@@ -39,7 +39,8 @@ mod at {
 ///
 /// # Panics
 ///
-/// If `frame` is not encoded, not of `set`, of more than one group, or of no series.
+/// If `frame` is not encoded, not of `set`, of more than one group, of no series, or
+/// of no sample.
 pub(crate) fn entry(
     pool: &block::Pool,
     frame: &Frame,
@@ -205,7 +206,10 @@ impl Decoder {
         set: &Arc<KeySet>,
         stored: &Stored,
     ) -> Result<Option<Frame>, block::Error> {
-        let Some(samples) = stored.samples.filter(|_| stored.tag == TAG) else {
+        if stored.tag != TAG {
+            return Ok(None);
+        }
+        let Some(samples) = stored.samples else {
             return Ok(None);
         };
         let body = &stored.bytes;

@@ -9,7 +9,7 @@ use types::channel::{self, Slot};
 use types::frame::Path;
 use types::time::Stamp;
 
-use crate::entry::{self, Entry, Header, Kind, Parts, Samples};
+use crate::entry::{self, Entry, Header, Kind, Place, Samples};
 use crate::group;
 use crate::log::Carried;
 use crate::record::{ALIGN, BLOCK};
@@ -94,6 +94,9 @@ pub struct Group {
     spare: group::Group,
     batch: Vec<Entry>,
     chain: u32,
+    /// The logs of [`queue`](Self::queue), and the first seq of its next entry.
+    logs: crate::log::Logs,
+    first: u64,
 }
 
 impl Group {
@@ -119,19 +122,63 @@ impl Group {
             spare: group::Group::default(),
             batch: Vec::new(),
             chain: 9,
+            logs: crate::log::Logs::new(area),
+            first: 0,
         }
     }
 
     /// One commit of one group of `entries` entries of 100 bytes each: the fit of
-    /// the entries, which checks that the record fits, their take, then the close, the seal, the
-    /// trim, and the sync of the record. The time also holds the bench's own work to
-    /// make the entries.
+    /// the entries, which checks that the record fits, their take, then the close,
+    /// the seal, the trim, and the sync of the record. The time also holds the bench's
+    /// own work to make the entries.
     ///
     /// # Panics
     ///
     /// When the ring or the pool has no room for the group.
     pub fn commit(&mut self, entries: usize) {
-        let entry = Entry {
+        let entry = self.entry();
+        self.batch.extend(iter::repeat_n(entry, entries));
+        let mut group = mem::take(&mut self.spare);
+        group
+            .fit(&self.pool, self.block_max, &self.writer, &self.batch)
+            .expect("the ring has room");
+        for entry in self.batch.drain(..) {
+            let samples = entry.samples.expect("a data entry");
+            group.take(entry, Kind::Samples(samples));
+        }
+        self.write(group);
+    }
+
+    /// One commit as [`commit`](Self::commit), with the append of each entry to the
+    /// logs between its fit and its take, as the buffer queues a batch. Each entry
+    /// comes after the one before on its path.
+    ///
+    /// # Panics
+    ///
+    /// When the ring or the pool has no room for the group.
+    pub fn queue(&mut self, entries: usize) {
+        let entry = self.entry();
+        let first = self.first;
+        self.batch
+            .extend((first..).take(entries).map(|first| Entry {
+                first,
+                ..entry.clone()
+            }));
+        self.first += u64::try_from(entries).expect("fits");
+        let mut group = mem::take(&mut self.spare);
+        group
+            .fit(&self.pool, self.block_max, &self.writer, &self.batch)
+            .expect("the ring has room");
+        for entry in self.batch.drain(..) {
+            let kind = self.logs.append(entry.slot, &entry.place());
+            group.take(entry, kind.expect("in order"));
+        }
+        self.write(group);
+    }
+
+    /// A data entry of 100 bytes at seq 0.
+    fn entry(&self) -> Entry {
+        Entry {
             index: channel::Key::from_u128(1),
             slot: Slot::new(0),
             path: Path::Live,
@@ -143,17 +190,11 @@ impl Group {
             stored_at: Stamp::from_nanos(7),
             tag: 0,
             parts: self.part.clone().into(),
-        };
-        self.batch.extend(iter::repeat_n(entry, entries));
-        let mut group = mem::take(&mut self.spare);
-        group
-            .fit(&self.pool, self.block_max, &self.writer, &self.batch)
-            .expect("the ring has room");
-        for entry in self.batch.drain(..) {
-            let samples = entry.samples.expect("a data entry");
-            let header = entry.header(Kind::Samples(samples));
-            group.take(entry.slot, header, entry.parts);
         }
+    }
+
+    /// The close, the seal, the trim, and the sync of the record of `group`.
+    fn write(&mut self, group: group::Group) {
         let sealed = group.close(&mut self.writer).seal(self.chain);
         self.chain = sealed.ends().record.chain();
         let tail = self.writer.trimmed(None);
@@ -172,7 +213,7 @@ const SAMPLE: Samples = Samples {
 #[derive(Debug)]
 pub struct Logs {
     inner: crate::log::Logs,
-    entries: Vec<Entry>,
+    headers: Vec<(Slot, Header)>,
     offset: u64,
     commits: u32,
     carried: Carried,
@@ -182,21 +223,23 @@ impl Logs {
     /// The logs of `indexes` indexes on the live path.
     #[must_use]
     pub fn new(indexes: u32) -> Self {
-        let entries = (0..indexes)
-            .map(|n| Entry {
-                index: channel::Key::from_u128(u128::from(n) + 1),
-                slot: Slot::new(n),
-                path: Path::Live,
-                first: 0,
-                samples: Some(SAMPLE),
-                stored_at: Stamp::from_nanos(1),
-                tag: 0,
-                parts: Parts::default(),
+        let headers = (0..indexes)
+            .map(|n| {
+                let header = Header {
+                    index: channel::Key::from_u128(u128::from(n) + 1),
+                    path: Path::Live,
+                    first: 0,
+                    stored_at: Stamp::from_nanos(1),
+                    kind: Kind::Samples(SAMPLE),
+                    tag: 0,
+                    bytes: 8,
+                };
+                (Slot::new(n), header)
             })
             .collect();
         Self {
             inner: crate::log::Logs::new(AREA),
-            entries,
+            headers,
             offset: BLOCK,
             commits: 0,
             carried: Carried::with_capacity(usize::try_from(indexes).expect("fits")),
@@ -208,13 +251,12 @@ impl Logs {
     /// each log holds the run of its holder. Then it syncs each entry.
     pub fn commit(&mut self, entries: u32) {
         self.keep_up();
-        for entry in &mut self.entries {
+        for (slot, header) in &mut self.headers {
             for _ in 0..entries {
-                let header = entry.header(Kind::Samples(SAMPLE));
                 self.inner
-                    .sync(entry.slot, &header, self.offset)
+                    .sync(*slot, header, self.offset)
                     .expect("entries in order");
-                entry.first += 1;
+                header.first += 1;
             }
         }
         self.offset += BLOCK;
@@ -226,27 +268,27 @@ impl Logs {
     /// drops the run of each index.
     pub fn carry(&mut self) {
         self.keep_up();
-        for entry in &mut self.entries {
-            let header = self.inner.append(entry.slot, entry).expect("in order");
+        for (slot, header) in &mut self.headers {
+            header.kind = self.inner.append(*slot, &place(header)).expect("in order");
             self.inner
-                .sync(entry.slot, &header, self.offset)
+                .sync(*slot, header, self.offset)
                 .expect("entries in order");
-            entry.first += 1;
+            header.first += 1;
         }
         self.offset += BLOCK;
         self.inner
-            .carry(self.offset, self.entries.len(), &mut self.carried);
+            .carry(self.offset, self.headers.len(), &mut self.carried);
         self.inner.hold(&self.carried, self.offset);
         self.offset += BLOCK;
     }
 
     /// Moves the appended tail of each index past one data entry, with no sync.
     pub fn append(&mut self) {
-        for entry in &mut self.entries {
+        for (slot, header) in &mut self.headers {
             self.inner
-                .append(entry.slot, entry)
+                .append(*slot, &place(header))
                 .expect("entries in order");
-            entry.first += 1;
+            header.first += 1;
         }
     }
 
@@ -274,17 +316,17 @@ impl Logs {
     fn slow(&mut self, period: u32, behind: u64, held: u64) {
         let slow = self.commits.is_multiple_of(period);
         self.commits = self.commits.wrapping_add(1);
-        let synced = self.entries.len() - usize::from(!slow);
-        for entry in self.entries.iter_mut().take(synced) {
-            let header = self.inner.append(entry.slot, entry).expect("in order");
+        let synced = self.headers.len() - usize::from(!slow);
+        for (slot, header) in self.headers.iter_mut().take(synced) {
+            header.kind = self.inner.append(*slot, &place(header)).expect("in order");
             self.inner
-                .sync(entry.slot, &header, self.offset)
+                .sync(*slot, header, self.offset)
                 .expect("entries in order");
-            entry.first += 1;
+            header.first += 1;
         }
         let reach = self.offset.saturating_sub(behind * BLOCK);
         self.inner
-            .carry(reach, self.entries.len(), &mut self.carried);
+            .carry(reach, self.headers.len(), &mut self.carried);
         let kept = self.inner.kept().expect("a path has a synced entry");
         let read = self.offset.saturating_sub(held * BLOCK).max(BLOCK);
         self.inner.hide(kept.min(read));
@@ -296,24 +338,24 @@ impl Logs {
     /// durable end of each index in the next record.
     pub fn mark(&mut self) {
         self.keep_up();
-        for entry in &self.entries {
-            let empty = Entry {
+        for (slot, header) in &self.headers {
+            let empty = Place {
                 samples: None,
-                parts: Parts::default(),
-                ..*entry
+                ..place(header)
             };
-            let header = self.inner.append(entry.slot, &empty).expect("in order");
+            let kind = self.inner.append(*slot, &empty).expect("in order");
+            let empty = Header { kind, ..*header };
             self.inner
-                .sync(entry.slot, &header, self.offset)
+                .sync(*slot, &empty, self.offset)
                 .expect("entries in order");
         }
         self.offset += BLOCK;
         self.inner
-            .carry(self.offset, self.entries.len(), &mut self.carried);
+            .carry(self.offset, self.headers.len(), &mut self.carried);
         let tails = self.carried.tails();
-        assert_eq!(tails.len(), self.entries.len(), "a tail of each index");
-        for (tail, entry) in tails.iter().zip(&self.entries) {
-            assert_eq!(tail.index, entry.index, "a tail of each index, in order");
+        assert_eq!(tails.len(), self.headers.len(), "a tail of each index");
+        for (tail, (_, header)) in tails.iter().zip(&self.headers) {
+            assert_eq!(tail.index, header.index, "a tail of each index, in order");
         }
         self.inner.hold(&self.carried, self.offset);
         self.offset += BLOCK;
@@ -324,6 +366,16 @@ impl Logs {
         if let Some(kept) = self.inner.kept() {
             self.inner.hide(kept);
         }
+    }
+}
+
+/// Where the entry of `header` goes on its path.
+const fn place(header: &Header) -> Place {
+    Place {
+        index: header.index,
+        path: header.path,
+        first: header.first,
+        samples: header.samples(),
     }
 }
 
@@ -439,6 +491,30 @@ mod tests {
                     "commit {commit} of {entries} entries trims"
                 );
             }
+        }
+    }
+
+    /// Each queue of 1 and of 32 entries trims as a group commit does, and moves the
+    /// appended tail of the index past each entry. It reads the private writer and
+    /// logs: `queue` gives nothing back.
+    #[test]
+    fn each_queue_trims_and_appends_each_entry() {
+        for entries in [1, 32] {
+            let mut ring = Group::new(64 + PHASE);
+            for _ in 0..2 * 64 {
+                ring.queue(entries);
+            }
+            for queue in 0..11 * 64 {
+                let tail = ring.writer.tail();
+                ring.queue(entries);
+                assert!(
+                    ring.writer.tail() > tail,
+                    "queue {queue} of {entries} entries trims"
+                );
+            }
+            let queued = u64::try_from(13 * 64 * entries).expect("fits");
+            let appended = ring.logs.appended(Slot::new(0), Path::Live);
+            assert_eq!(appended.seq, queued);
         }
     }
 
@@ -576,10 +652,7 @@ mod tests {
 
     /// Each call hides the records before the carry record of the call before, so
     /// only the newest data record keeps a run. An entry with no samples moves no
-    /// stamp. It reads the private logs: `mark` gives nothing back, and only the
-    /// `logs` bench and the `alloc` test call it. So only this test kills the
-    /// mutant that deletes `samples: None` in `mark`: it changes only the stamp of a
-    /// bench entry, which no caller reads.
+    /// stamp. It reads the private logs: `mark` gives nothing back.
     #[test]
     fn each_mark_of_the_logs_hides_the_records_before_the_carry_before() {
         let mut logs = Logs::new(2);

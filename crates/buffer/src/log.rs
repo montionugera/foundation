@@ -14,7 +14,7 @@ use types::hash;
 use types::time::Stamp;
 
 use crate::carry;
-use crate::entry::{Entry, Header, Kind, Place};
+use crate::entry::{Header, Kind, Place, Samples};
 
 /// Where one path of an index stands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -132,31 +132,41 @@ impl fmt::Display for Invalid {
 }
 
 impl Tail {
-    /// Moves the tail past the entry: `seq` to `first + len`, and `stamp` to
-    /// `last` when the entry has one. A `first` past the tail is a skip ahead.
+    /// Moves the tail past the entry of `index` on `path` at `first`: `seq` to
+    /// `first` plus the `len` of `samples`, and `stamp` to their `last` when they
+    /// have one. A `first` past the tail is a skip ahead.
     ///
     /// # Errors
     ///
-    /// [`Invalid`] when `first` is below the tail or `first + len` does not fit in
-    /// a `u64`. The tail does not move.
-    pub(crate) fn advance(&mut self, place: &Place) -> Result<(), Invalid> {
-        if place.first < self.seq {
+    /// [`Invalid`] when `first` is below the tail or `first` plus `samples.len` does
+    /// not fit in a `u64`. The tail does not move.
+    pub(crate) fn advance(
+        &mut self,
+        index: channel::Key,
+        path: Path,
+        first: u64,
+        samples: Option<Samples>,
+    ) -> Result<(), Invalid> {
+        if first < self.seq {
             return Err(Invalid::Below {
-                index: place.index,
-                path: place.path,
-                first: place.first,
+                index,
+                path,
+                first,
                 tail: self.seq,
             });
         }
-        let len = place.samples.map_or(0, |samples| samples.len.get());
-        let past = Invalid::Past {
-            index: place.index,
-            path: place.path,
-            first: place.first,
-            len,
+        let Some(samples) = samples else {
+            self.seq = first;
+            return Ok(());
         };
-        self.seq = place.first.checked_add(u64::from(len)).ok_or(past)?;
-        if let Some(last) = place.samples.and_then(|samples| samples.last) {
+        let len = samples.len.get();
+        self.seq = first.checked_add(u64::from(len)).ok_or(Invalid::Past {
+            index,
+            path,
+            first,
+            len,
+        })?;
+        if let Some(last) = samples.last {
             self.stamp = Some(last);
         }
         Ok(())
@@ -254,17 +264,23 @@ impl Position {
     /// # Errors
     ///
     /// As [`Tail::advance`], and [`Invalid::Crowded`]. Nothing changes.
-    fn advance(&mut self, place: &Place) -> Result<(Mark, Kind), Invalid> {
+    fn advance(
+        &mut self,
+        index: channel::Key,
+        path: Path,
+        first: u64,
+        samples: Option<Samples>,
+    ) -> Result<(Mark, Kind), Invalid> {
         let start = self.mark();
-        let kind = match place.samples {
+        let kind = match samples {
             Some(samples) => Kind::Samples(samples),
-            None => Kind::Record(start.count(place.first).ok_or(Invalid::Crowded {
-                index: place.index,
-                path: place.path,
-                seq: place.first,
+            None => Kind::Record(start.count(first).ok_or(Invalid::Crowded {
+                index,
+                path,
+                seq: first,
             })?),
         };
-        self.tail.advance(place)?;
+        self.tail.advance(index, path, first, samples)?;
         self.given = match kind {
             Kind::Samples(_) => 0,
             Kind::Record(given) => given.get(),
@@ -370,7 +386,12 @@ impl Log {
     ///
     /// When `offset` is below the newest record of the path.
     fn sync(&mut self, header: &Header, offset: u64) -> Result<bool, Invalid> {
-        let (start, _) = self.durable.advance(&header.place())?;
+        let (start, _) = self.durable.advance(
+            header.index,
+            header.path,
+            header.first,
+            header.samples(),
+        )?;
         let newest = self.runs.back().map(|run| run.offset).max(self.holder);
         if let Some(newest) = newest {
             assert!(
@@ -866,9 +887,9 @@ impl Logs {
         Ok(())
     }
 
-    /// Moves the appended tail of the entry's path past the entry, as
-    /// [`Tail::advance`], and gives the entry's header. The header of an entry with
-    /// no samples counts the entries with no samples at its seq on the path, it
+    /// Moves the appended tail of the entry's path past the entry at `place`, as
+    /// [`Tail::advance`], and gives the kind of its header. The kind of an entry
+    /// with no samples counts the entries with no samples at its seq on the path, it
     /// included.
     ///
     /// # Errors
@@ -877,12 +898,13 @@ impl Logs {
     pub(crate) fn append(
         &mut self,
         slot: Slot,
-        entry: &Entry,
-    ) -> Result<Header, Invalid> {
-        let place = entry.place();
-        let ((_, kind), _) =
-            self.change(slot, &place, |log| log.appended.advance(&place))?;
-        Ok(entry.header(kind))
+        place: &Place,
+    ) -> Result<Kind, Invalid> {
+        let ((_, kind), _) = self.change(slot, place.index, place.path, |log| {
+            log.appended
+                .advance(place.index, place.path, place.first, place.samples)
+        })?;
+        Ok(kind)
     }
 
     /// Moves the durable tail of the header's path past the entry, as
@@ -905,8 +927,9 @@ impl Logs {
         header: &Header,
         offset: u64,
     ) -> Result<(), Invalid> {
-        let (added, at) =
-            self.change(slot, &header.place(), |log| log.sync(header, offset))?;
+        let (added, at) = self.change(slot, header.index, header.path, |log| {
+            log.sync(header, offset)
+        })?;
         if added {
             self.items.push(offset, at);
         }
@@ -945,15 +968,19 @@ impl Logs {
                     seq: header.first,
                     stamp: None,
                 },
-                given: given.get().saturating_sub(1),
+                given: given.get() - 1,
             };
             log.appended = log.durable;
             self.add(key, log);
         }
-        let place = header.place();
-        self.change(slot, &place, |log| {
+        self.change(slot, header.index, header.path, |log| {
             let mut appended = log.appended;
-            let (_, walked) = appended.advance(&place)?;
+            let (_, walked) = appended.advance(
+                header.index,
+                header.path,
+                header.first,
+                header.samples(),
+            )?;
             if let (Kind::Record(given), Kind::Record(walked)) = (header.kind, walked)
                 && given != walked
             {
@@ -971,33 +998,33 @@ impl Logs {
         self.sync(slot, header, offset)
     }
 
-    /// Applies `change` to the log of the entry's path, which starts empty when
-    /// the path is new, and gives the place of the log. A change that fails on a new
-    /// path adds nothing.
+    /// Applies `change` to the log of `slot` on `path`, which starts empty when the
+    /// path is new, and gives the place of the log. A change that fails on a new path
+    /// adds nothing.
     ///
     /// # Panics
     ///
-    /// When the log of `slot` on the entry's path holds another index than the
-    /// entry's.
+    /// When the log of `slot` on `path` holds another index than `index`.
     fn change<T>(
         &mut self,
         slot: Slot,
-        place: &Place,
+        index: channel::Key,
+        path: Path,
         change: impl FnOnce(&mut Log) -> Result<T, Invalid>,
     ) -> Result<(T, u32), Invalid> {
-        let key = (slot, place.path);
+        let key = (slot, path);
         if let Some(&at) = self.places.get(&key) {
             let log = nth_mut(&mut self.paths, at);
             assert!(
-                log.index == place.index,
+                log.index == index,
                 "invariant: slot {} holds index {} and index {}",
                 slot.get(),
                 log.index,
-                place.index,
+                index,
             );
             return Ok((change(log)?, at));
         }
-        let mut log = Log::new(place.index, place.path);
+        let mut log = Log::new(index, path);
         let changed = change(&mut log)?;
         Ok((changed, self.add(key, log)))
     }
@@ -1121,7 +1148,6 @@ mod tests {
     use std::num::NonZeroU32;
 
     use super::*;
-    use crate::entry::{Parts, Samples};
     use proptest::prelude::*;
 
     /// The area of the logs of each test: 64 records of a block.
@@ -1164,17 +1190,13 @@ mod tests {
     /// Appends the entry of `header` on `slot`, as the buffer does, and gives
     /// `header` the kind that the logs give.
     fn append(logs: &mut Logs, slot: Slot, header: &mut Header) -> Result<(), Invalid> {
-        let entry = Entry {
+        let place = Place {
             index: header.index,
-            slot,
             path: header.path,
             first: header.first,
-            samples: header.place().samples,
-            stored_at: header.stored_at,
-            tag: header.tag,
-            parts: Parts::default(),
+            samples: header.samples(),
         };
-        header.kind = logs.append(slot, &entry)?.kind;
+        header.kind = logs.append(slot, &place)?;
         Ok(())
     }
 
