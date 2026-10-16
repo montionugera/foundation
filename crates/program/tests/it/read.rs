@@ -30,9 +30,10 @@ use wire::hub::client::{
 use wire::hub::{Head, Reply, ends};
 
 use crate::agent::{AGENT, SUBJECT, name};
+use crate::connect::{connect, connect_with};
 use crate::net::{header, own_pool};
 use crate::node::env;
-use crate::session::{admit, by_hand, connect, connect_with, raw};
+use crate::session::{admit, by_hand, raw};
 use crate::sessions::{self, Got, Home, QUIET, closed_with, rules};
 
 const STAMP: Type = Type::Scalar(Scalar::Stamp);

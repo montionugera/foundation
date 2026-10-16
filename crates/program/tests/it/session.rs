@@ -9,10 +9,9 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
 use hub::serve;
-use program::{Config, Error, LIFE, Session};
+use program::{Error, LIFE, Session};
 use transport::stream::Incoming;
 use transport::{Address, Code};
-use types::ed25519::PrivateKey;
 use types::time::{Interval, Span, Stamp};
 use wire::header::MALFORMED;
 use wire::hub::BUSY;
@@ -21,53 +20,10 @@ use wire::hub::client::{
 };
 
 use crate::agent::{AGENT, SUBJECT, name};
+use crate::connect::{connect, connect_with};
 use crate::home::{accept, serve_session, serve_session_on};
-use crate::net::{HOME, NODE, header, own_pool, public_key, transport};
+use crate::net::{HOME, header, own_pool, public_key, transport};
 use crate::sessions::{Got, Home, OTHER, QUIET, rules, run_program, shrink_wall_error};
-
-/// Connects to the home at `at` from `node` as [`SUBJECT`], signing with `key`, with a
-/// session pool that holds a body at the cap while the transport sends it.
-pub(super) async fn connect(
-    node: &sim::node::Node,
-    tasks: env::tasks::Tasks,
-    at: Address,
-    key: PrivateKey,
-) -> Result<Session, Error> {
-    let config = block::Config::new(2 << 24).expect("the budget fits");
-    let pool = block::Pool::new(config.clone(), block::Heap::new(config.reservation()));
-    connect_with(node, tasks, at, key, Rc::new(pool)).await
-}
-
-/// As [`connect`], where the session sends from `pool`, and the transport from a pool
-/// of its own.
-pub(super) async fn connect_with(
-    node: &sim::node::Node,
-    tasks: env::tasks::Tasks,
-    at: Address,
-    key: PrivateKey,
-    pool: Rc<block::Pool>,
-) -> Result<Session, Error> {
-    let config = transport::client::Config {
-        net: node.net(),
-        clock: node.clock(),
-        entropy: node.entropy(),
-        tasks: tasks.clone(),
-        pool: own_pool(),
-    };
-    let transport = transport::Client::new(config).expect("a client");
-    let config = Config {
-        via: NODE,
-        node: public_key(&HOME),
-        addresses: vec![at],
-        subject: name(SUBJECT),
-        key,
-        clock: node.clock(),
-        entropy: node.entropy(),
-        tasks,
-        pool,
-    };
-    Session::connect(&transport, config).await
-}
 
 /// Runs `program` with a session of [`SUBJECT`] on a home with mesh time and the
 /// rules of `rules`, and gives what the home saw.
