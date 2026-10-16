@@ -68,7 +68,7 @@
   to 739 ns and 2 to 6 allocations before the write, and at `trace` a span at 118 ns and
   2 allocations (laptop, M3 Max, load 9, 3 passes). The help of `--log-level` says so.
   #2764 moves each write to the thread `log`, so an event holds the lock of the queue
-  only for its push. That adds about 0.06 to 0.08 µs to each line, about 14 µs to each
+  only for its push. That adds about 0.07 to 0.09 µs to each line, about 14 µs to each
   start of the thread, and at most 48 KiB idle (AWS c7i.metal-24xl, Xeon Platinum 8488C,
   quiet host, 5 runs of each in turns, at `07933ecc7`,
   https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6221594837), under P1.
