@@ -89,6 +89,7 @@ fn reach() {
             writer: Box::new(std::io::sink()),
             format: ops::Log::default(),
         },
+        threads: host.threads(),
     });
     assert_eq!(sim.run_for(Span::SECOND), Ok(()), "the node runs");
     sim.crash(&host, sim::Crash::Process);

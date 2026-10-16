@@ -18,7 +18,7 @@ use std::io;
 use std::net::SocketAddr;
 
 use divan::Bencher;
-use tracing::{Dispatch, Level};
+use tracing::Level;
 
 #[global_allocator]
 static ALLOCATOR: counting::Allocator = counting::Allocator::new();
@@ -28,10 +28,11 @@ fn main() {
     divan::main();
 }
 
-fn dispatch(json: bool, level: Level) -> Dispatch {
+fn dispatch(json: bool, level: Level) -> node::bench::Log {
+    let threads = os::threads().expect("threads");
     let wall = os::wall().expect("a wall clock");
     let (_mesh, reader) = clock::Clock::new(os::clock());
-    node::bench::log(log(json, level), wall, reader)
+    node::bench::log(log(json, level), &threads, wall, reader)
 }
 
 fn log(json: bool, level: Level) -> node::Log {
@@ -59,23 +60,23 @@ fn filtered() {
 fn check() {
     let d = dispatch(false, Level::INFO);
     let ((), allocations) =
-        tracing::dispatcher::with_default(&d, || ALLOCATOR.count(filtered));
+        tracing::dispatcher::with_default(d.dispatch(), || ALLOCATOR.count(filtered));
     assert_eq!(allocations, 0, "allocations of a filtered event");
     let ((), allocations) =
-        tracing::dispatcher::with_default(&d, || ALLOCATOR.count(started));
+        tracing::dispatcher::with_default(d.dispatch(), || ALLOCATOR.count(started));
     assert_ne!(allocations, 0, "allocations of an event at the level");
 }
 
 #[divan::bench(args = [false, true])]
 fn started_line(bencher: Bencher<'_, '_>, json: bool) {
     let d = dispatch(json, Level::INFO);
-    tracing::dispatcher::with_default(&d, || bencher.bench_local(started));
+    tracing::dispatcher::with_default(d.dispatch(), || bencher.bench_local(started));
 }
 
 #[divan::bench]
 fn stopped(bencher: Bencher<'_, '_>) {
     let d = dispatch(false, Level::INFO);
-    tracing::dispatcher::with_default(&d, || {
+    tracing::dispatcher::with_default(d.dispatch(), || {
         bencher.bench_local(|| tracing::info!("stopped"));
     });
 }
@@ -83,13 +84,13 @@ fn stopped(bencher: Bencher<'_, '_>) {
 #[divan::bench]
 fn filtered_event(bencher: Bencher<'_, '_>) {
     let d = dispatch(false, Level::INFO);
-    tracing::dispatcher::with_default(&d, || bencher.bench_local(filtered));
+    tracing::dispatcher::with_default(d.dispatch(), || bencher.bench_local(filtered));
 }
 
 #[divan::bench]
 fn span(bencher: Bencher<'_, '_>) {
     let d = dispatch(false, Level::TRACE);
-    tracing::dispatcher::with_default(&d, || {
+    tracing::dispatcher::with_default(d.dispatch(), || {
         bencher.bench_local(|| {
             let span = tracing::trace_span!("frame", ty = %divan::black_box("STREAM"));
             drop(span.entered());
@@ -99,12 +100,13 @@ fn span(bencher: Bencher<'_, '_>) {
 
 #[divan::bench]
 fn build(bencher: Bencher<'_, '_>) {
+    let threads = os::threads().expect("threads");
     let wall = os::wall().expect("a wall clock");
     let (_mesh, reader) = clock::Clock::new(os::clock());
     bencher
         .with_inputs(|| (wall.clone(), reader.clone()))
         .bench_local_values(|(wall, reader)| {
-            node::bench::log(log(false, Level::INFO), wall, reader)
+            node::bench::log(log(false, Level::INFO), &threads, wall, reader)
         });
 }
 

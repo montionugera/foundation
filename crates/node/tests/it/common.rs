@@ -29,7 +29,7 @@ pub(crate) fn start_node<D: Driver + Send + 'static>(
     wrap: impl Fn(os::Disk) -> D + Send + 'static,
 ) -> node::Node {
     let cores = u64::try_from(shards.cores().get()).unwrap();
-    let (dir, threads, io) = (rig.dir.clone(), threads.clone(), Rc::clone(io));
+    let (dir, files_threads, io) = (rig.dir.clone(), threads.clone(), Rc::clone(io));
     node::Node::start(node::Config {
         shards: shards.clone(),
         clock: os::clock(),
@@ -40,7 +40,7 @@ pub(crate) fn start_node<D: Driver + Send + 'static>(
         },
         memory: Box::new(|len| Ok(block::Heap::new(len))),
         files: Box::new(move || {
-            let disk = wrap(files(&dir, &threads, &io));
+            let disk = wrap(files(&dir, &files_threads, &io));
             Box::new(move || env::files::Files::new(disk))
         }),
         entropy: os::entropy(),
@@ -54,6 +54,7 @@ pub(crate) fn start_node<D: Driver + Send + 'static>(
             writer: Box::new(std::io::sink()),
             format: ops::Log::default(),
         },
+        threads: threads.clone(),
     })
 }
 

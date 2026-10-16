@@ -56,7 +56,7 @@ fn to(lines: &Lines, json: bool, level: tracing::Level) -> Log {
 }
 
 /// Starts a node on `host` with `log`, runs `sim` for a second, then stops the node
-/// and gives its join.
+/// and gives its join, once the log has written `stopped`.
 fn run(sim: &mut sim::Sim, host: &sim::node::Node, log: Log) -> Result<(), Error> {
     let node = Node::start(Config {
         log,
@@ -65,7 +65,9 @@ fn run(sim: &mut sim::Sim, host: &sim::node::Node, log: Log) -> Result<(), Error
     assert_eq!(sim.run_for(Span::SECOND), Ok(()));
     node.stop();
     assert_eq!(sim.run(), Ok(()));
-    node.join()
+    let joined = node.join();
+    assert_eq!(sim.run(), Ok(()));
+    joined
 }
 
 /// A sim of `seed` with one host.
@@ -118,7 +120,7 @@ fn a_node_logs_its_start_and_its_stop_in_json() {
 
 #[test]
 fn a_node_that_fails_at_its_start_logs_the_error_with_no_mesh_time() {
-    let (_sim, host) = host(1);
+    let (mut sim, host) = host(1);
     let error = "the name @edge has a segment that starts with `@`, which is reserved \
                  for Foundation; give another name";
     let text = format!(
@@ -141,6 +143,7 @@ fn a_node_that_fails_at_its_start_logs_the_error_with_no_mesh_time() {
             ..config(&host, Size::MEBIBYTE, Box::new(heap))
         });
         assert!(matches!(node.join(), Err(Error::Reserved { .. })));
+        assert_eq!(sim.run(), Ok(()));
         assert_eq!(lines.read(), [line], "json: {json}");
     }
 }
@@ -177,6 +180,7 @@ fn a_wall_step_shows_mesh_time_beside_the_stamp() {
         node.stop();
         assert_eq!(sim.run(), Ok(()));
         assert_eq!(node.join(), Ok(()));
+        assert_eq!(sim.run(), Ok(()));
         assert_eq!(lines.read(), written, "json: {json}");
     }
 }
@@ -202,6 +206,7 @@ fn each_node_writes_only_its_own_log() {
     for node in nodes {
         assert_eq!(node.join(), Ok(()));
     }
+    assert_eq!(sim.run(), Ok(()));
     let started = |lines: &Lines| {
         let lines = lines.read();
         let line = lines.first().expect("a started line").clone();
@@ -241,12 +246,14 @@ fn a_log_whose_writes_fail_changes_nothing_of_the_node() {
 /// What a log of `json` lines writes for the events of `events`, on a host whose
 /// mesh clock has not synced.
 fn written(json: bool, events: impl FnOnce()) -> String {
-    let (_sim, host) = host(1);
+    let (mut sim, host) = host(1);
     let (_, mesh) = clock::Clock::new(host.clock());
     let lines = Lines::default();
     let log = to(&lines, json, tracing::Level::INFO);
-    let dispatch = log::dispatch(log, host.wall(), mesh);
-    tracing::dispatcher::with_default(&dispatch, events);
+    let log = log::open(log, &host.threads(), host.wall(), mesh);
+    tracing::dispatcher::with_default(&log.log, events);
+    log.resume().expect("the thread log starts");
+    assert_eq!(sim.run(), Ok(()));
     let bytes = lines.0.lock().unwrap_or_else(PoisonError::into_inner);
     String::from_utf8(bytes.clone()).expect("a log writes UTF-8")
 }

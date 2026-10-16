@@ -53,13 +53,35 @@ impl env::tasks::Driver for Spawned {
     }
 }
 
-/// The dispatch that a node sets for `log`: each event of its level or above, stamped
-/// with the time of `wall` and the mesh time of `mesh`.
+/// The log of a node, with its thread `log` running until the drop.
+#[derive(Debug)]
+pub struct Log {
+    flush: crate::Flush,
+    _hold: crate::log::Hold,
+}
+
+impl Log {
+    /// The dispatch that a node sets for each shard.
+    #[must_use]
+    pub fn dispatch(&self) -> &tracing::Dispatch {
+        &self.flush.log
+    }
+}
+
+/// The log that a node opens: each event of its level or above, stamped with the time
+/// of `wall` and the mesh time of `mesh`, and written on a thread of `threads`.
+///
+/// # Panics
+///
+/// When the thread `log` cannot start.
 #[must_use]
 pub fn log(
     log: crate::Log,
+    threads: &env::threads::Threads,
     wall: env::wall::Wall,
     mesh: clock::Reader,
-) -> tracing::Dispatch {
-    crate::log::dispatch(log, wall, mesh)
+) -> Log {
+    let flush = crate::log::open(log, threads, wall, mesh);
+    let hold = flush.hold().expect("the thread log starts");
+    Log { flush, _hold: hold }
 }

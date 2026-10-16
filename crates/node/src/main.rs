@@ -4,9 +4,11 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{self, Write};
+use std::panic;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::mpsc;
+use std::time::Duration;
 
 use document::diagnostic::Code;
 use env::shards::Shards;
@@ -21,6 +23,8 @@ use types::name::Name;
 const POOL_MOST: Size = Size::GIBIBYTE;
 /// The most disk budget that a first start gives.
 const DISK_MOST: Size = Size::from_bytes(8 << 30);
+/// The longest the end of the process waits for the log.
+const FLUSH: Duration = Duration::from_secs(1);
 
 const BUSY: Code = Code::new("node.busy");
 const DATA: Code = Code::new("node.data");
@@ -323,7 +327,18 @@ fn node(
             writer: Box::new(io::stderr()),
             format: start.log,
         },
+        threads: threads.clone(),
     });
+    let flush = node.flush();
+    let hook = flush.clone();
+    let previous = panic::take_hook();
+    // A log that does not take the panic within its bound has a stuck writer, which
+    // would block the default hook's write to stderr too.
+    panic::set_hook(Box::new(move |info| {
+        if hook.panicked(info) {
+            previous(info);
+        }
+    }));
     let stopper = node.stopper();
     let stop = threads.start("stop", move || async move {
         interrupt.await;
@@ -342,6 +357,8 @@ fn node(
     let joined = node
         .join()
         .map_err(|error| stopped(&start.data, &error, &known));
+    // A writer that is stuck past the bound loses the lines that wait.
+    flush.wait(FLUSH);
     let closed = handles.into_iter().try_for_each(env::thread::Handle::join);
     // Each waits only on the process: for a signal, or for a reader of standard output.
     let ended = stop.map(drop).map_err(failed);
