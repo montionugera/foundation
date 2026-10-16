@@ -442,14 +442,8 @@ const UNKNOWN_CHANNEL: Code = Code::new("connector.unknown-channel");
 const NO_CHANNEL: Code = Code::new("connector.no-channel");
 const MANY_INDEXES: Code = Code::new("connector.many-indexes");
 const LEASE: Code = Code::new("connector.lease");
-const MANY_READERS: Code = Code::new("connector.many-readers");
 const LARGE_FRAME: Code = Code::new("connector.large-frame");
 const BAD_SECRET_NAME: Code = Code::new("connector.bad-secret-name");
-/// The fix of [`MANY_READERS`]. A connector's reader is always named, and a latest
-/// one adds no record.
-const FEWER_READERS: &str = "Read the index from fewer connectors in complete \
-                             mode, or set `mode = \"latest\"` on one; a removed reader \
-                             keeps its place until its hold ends";
 /// The fix of [`LARGE_FRAME`].
 const FEWER_CHANNELS: &str = "Give the connector fewer channels";
 
@@ -472,6 +466,26 @@ impl std::error::Error for Unread {
     }
 }
 
+/// The records of the named readers of an index that would pass `limit` bytes. The
+/// hub's text says to open the reader unnamed, which a spec cannot do.
+#[derive(Debug)]
+struct Full {
+    limit: usize,
+}
+
+impl fmt::Display for Full {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "the records of the named readers of the index would pass {} bytes: give \
+             the index fewer named readers, or wait for a hold to end",
+            self.limit
+        )
+    }
+}
+
+impl std::error::Error for Full {}
+
 /// The class of `error` of the open of a named reader.
 ///
 /// # Panics
@@ -483,13 +497,7 @@ pub(crate) fn reader_error(error: hub::reader::Error) -> Error {
     let (code, fix) = match error {
         Hub::Empty => (NO_CHANNEL, "Select a channel that the spec defines"),
         Hub::ManyIndexes { .. } => (MANY_INDEXES, "Select channels of one index"),
-        // The hub's text says to open the reader unnamed, which a spec cannot do.
-        Hub::Full { limit } => {
-            let fact = format!(
-                "the records of the named readers of the index would pass {limit} bytes"
-            );
-            return config_error(MANY_READERS, &fact, FEWER_READERS);
-        }
+        Hub::Full { limit } => return Error::Retry(Box::new(Full { limit })),
         Hub::Remote { .. } | Hub::Mesh(_) | Hub::Unrecorded => {
             return Error::Retry(Box::new(error));
         }
@@ -1195,25 +1203,19 @@ mod tests {
         );
     }
 
-    /// Calls the mapping directly: a run that gives `Full` needs eight named readers
-    /// of names of 255 bytes on one index.
+    /// Calls the mapping directly: on the ring of the test hub, the entries that the
+    /// opens append fill the ring before the records reach the limit, until a trim
+    /// frees the ring (#406).
     #[test]
-    fn ends_with_a_config_error_when_the_named_readers_fill_an_entry() {
-        let full = hub::reader::Error::Full { limit: 4032 };
-        let Error::Config(diagnostics) = reader_error(full) else {
-            panic!("a config error");
-        };
-        let want = Diagnostic::new(
-            Code::new("connector.many-readers"),
-            None,
-            "the records of the named readers of the index would pass 4032 bytes"
-                .into(),
-            "Read the index from fewer connectors in complete mode, or set \
-             `mode = \"latest\"` on one; a removed reader keeps its place until its \
-             hold ends"
-                .into(),
+    fn retries_when_the_named_readers_fill_an_entry() {
+        let full = reader_error(hub::reader::Error::Full { limit: 4032 });
+        assert!(matches!(full, Error::Retry(_)), "{full:?}");
+        assert_eq!(
+            full.to_string(),
+            "an attempt failed: the records of the named readers of the index would \
+             pass 4032 bytes: give the index fewer named readers, or wait for a hold to \
+             end"
         );
-        assert_eq!(diagnostics, [want]);
     }
 
     /// Calls the mapping directly: the supervisor opens a reader only after the status
