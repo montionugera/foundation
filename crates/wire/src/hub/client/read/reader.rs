@@ -4,7 +4,7 @@ use types::frame::key_set::KeySet;
 use types::sample::{Scalar, Type};
 
 use super::{Mode, Place, Places, place};
-use crate::common::{rest_of_run, to_usize};
+use crate::common::rest_of_run;
 use crate::hub::{self, client::Error};
 
 /// A decoder of the start of a read stream at the program: the places and their
@@ -74,15 +74,12 @@ impl Reader {
     ///
     /// When it gave the start before.
     pub fn decode(&mut self, message: Option<&[u8]>) -> Result<Option<Start>, Error> {
-        let message = match (&self.next, message) {
+        match (&mut self.next, message) {
             (Next::Given, _) => {
                 panic!("a read stream is decoded after the decoder gave its start")
             }
-            (_, None) => return Err(Error::Finished),
-            (_, Some(message)) => message,
-        };
-        match &mut self.next {
-            Next::Places => {
+            (_, None) => Err(Error::Finished),
+            (Next::Places, Some(message)) => {
                 let places = Places::decode(message)?;
                 self.next = Next::Run {
                     places,
@@ -91,11 +88,14 @@ impl Reader {
                 };
                 Ok(None)
             }
-            Next::Run {
-                places,
-                remain,
-                run: all,
-            } => {
+            (
+                Next::Run {
+                    places,
+                    remain,
+                    run: all,
+                },
+                Some(message),
+            ) => {
                 let run = place::decode(message)?;
                 let rest = rest_of_run(*remain, run.len())?;
                 let first = places.count.checked_sub(*remain).unwrap_or_else(|| {
@@ -120,7 +120,7 @@ impl Reader {
                 }
                 let channels = all.iter().chain(&run);
                 let channels = channels.map(|place| (place.key, place.data_type));
-                let set = KeySet::ordered(channels, to_usize(places.index))
+                let set = KeySet::ordered(channels, index_at(*places))
                     .map_err(|repeated| Error::Repeated { key: repeated.key })?;
                 let home = hub::Reader::of(places.count, self.latest);
                 let mut places = std::mem::take(all);
@@ -132,7 +132,11 @@ impl Reader {
                     home,
                 }))
             }
-            Next::Given => unreachable!("invariant: checked above"),
         }
     }
+}
+
+/// The place of the index in `places`, as a position in the run.
+fn index_at(places: Places) -> usize {
+    usize::try_from(places.index).expect("invariant: a usize holds a u32")
 }
