@@ -365,23 +365,35 @@ struct Local {
     complete: Option<(Complete, u64)>,
 }
 
+/// What each frame of a complete local session spends of its grant.
+const CHARGE: ::home::reader::complete::Charge =
+    ::home::reader::complete::Charge::Whole;
+
 impl Local {
-    /// Opens a session on `channels` at this node, the home of their index.
-    fn open(
+    /// Opens an unnamed session on `channels` at this node, the home of their index.
+    fn open(state: &Rc<RefCell<State>>, channels: Channels, mode: Mode) -> Self {
+        let (session, complete) = match mode {
+            Mode::Complete => {
+                let (session, complete) =
+                    Session::complete(state, channels, WINDOW, CHARGE);
+                (session, Some(complete))
+            }
+            Mode::Latest => (Session::latest(state, channels), None),
+        };
+        Self::new(session, complete)
+    }
+
+    /// Opens the session of `named` on `channels` at this node, the home of their
+    /// index, which a complete one holds for `hold` after it ends.
+    fn named(
         state: &Rc<RefCell<State>>,
         channels: Channels,
         mode: Mode,
-        named: Option<::home::reader::named::Key>,
+        named: ::home::reader::named::Key,
         hold: Span,
     ) -> Result<Self, Error> {
-        let charge = ::home::reader::complete::Charge::Whole;
-        let (session, complete) = match (mode, named) {
-            (Mode::Complete, None) => {
-                let (session, complete) =
-                    Session::complete(state, channels, WINDOW, charge);
-                (session, Some(complete))
-            }
-            (Mode::Complete, Some(named)) => {
+        let (session, complete) = match mode {
+            Mode::Complete => {
                 let key = {
                     let mut state = state.borrow_mut();
                     let opened = state.home.open_named_complete(
@@ -389,15 +401,14 @@ impl Local {
                         named,
                         hold,
                         WINDOW,
-                        charge,
+                        CHARGE,
                     )?;
                     state.take_over(opened)
                 };
                 let (session, complete) = Session::with_complete(state, key, channels);
                 (session, Some(complete))
             }
-            (Mode::Latest, None) => (Session::latest(state, channels), None),
-            (Mode::Latest, Some(named)) => {
+            Mode::Latest => {
                 let key = {
                     let mut state = state.borrow_mut();
                     let opened = state.home.open_named_latest(channels.index, named)?;
@@ -406,10 +417,14 @@ impl Local {
                 (Session::new(state, key, channels, None), None)
             }
         };
-        Ok(Self {
+        Ok(Self::new(session, complete))
+    }
+
+    fn new(session: Session, complete: Option<Complete>) -> Self {
+        Self {
             session,
             complete: complete.map(|complete| (complete, 0)),
-        })
+        }
     }
 
     /// Raises the grant by the charge of `frame`, which the reader gave back.
@@ -460,7 +475,12 @@ impl Reader {
         let mut reader = match home {
             Home::Here(channels) => {
                 listed.slot(&channels.slots);
-                Self::local(state, channels, mode, named, hold)?
+                let index = channels.index;
+                let local = match named {
+                    None => Local::open(state, channels, mode),
+                    Some(named) => Local::named(state, channels, mode, named, hold)?,
+                };
+                Self::local(local, index)
             }
             Home::Away(home) if named.is_some() => return Err(Error::Remote { home }),
             Home::Away(home) => {
@@ -486,26 +506,19 @@ impl Reader {
         state: &Rc<RefCell<State>>,
         channels: Channels,
         mode: Mode,
-    ) -> Result<Self, Error> {
-        Self::local(state, channels, mode, None, Span::ZERO)
+    ) -> Self {
+        let index = channels.index;
+        Self::local(Local::open(state, channels, mode), index)
     }
 
-    /// Opens a reader on `channels` at this node, the home of their index.
-    fn local(
-        state: &Rc<RefCell<State>>,
-        channels: Channels,
-        mode: Mode,
-        named: Option<::home::reader::named::Key>,
-        hold: Span,
-    ) -> Result<Self, Error> {
-        let slot = channels.index;
-        let local = Local::open(state, channels, mode, named, hold)?;
-        Ok(Self {
+    /// A reader of `local`, whose index is at `index`.
+    fn local(local: Local, index: channel::Slot) -> Self {
+        Self {
             source: Source::Local(local),
-            index: slot,
+            index,
             lent: Lent::default(),
             frame: None,
-        })
+        }
     }
 
     /// The next frame, as a view of the reader's channels. The view borrows the
