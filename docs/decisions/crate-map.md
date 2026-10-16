@@ -125,8 +125,9 @@ pinned nightly, may depend on any crate, and no crate depends on it (#252;
 `laptop.architect`, 2026-10-09T04:18Z,
 https://github.com/synnaxlabs/foundation/pull/2099#issuecomment-6074164278).
 
-Outside the binary: the Rust SDK `sdk` builds on `program`, and the Python SDK wraps
-`sdk` with PyO3 (C6, SDK DATA PATH; the crate, `laptop.architect`,
+Outside the binary: the Rust SDK `sdk` (`sdk/rust`, layer 4, last) builds on `program`,
+`transport`, `env`, `types`, and `block`, with an env of its own on Tokio (#2923), and
+the Python SDK wraps `sdk` with PyO3 (C6, SDK DATA PATH; the crate, `laptop.architect`,
 2026-10-15T17:56:55Z,
 https://github.com/synnaxlabs/foundation/issues/2177#issuecomment-6198730147; its name,
 `laptop.architect`, 2026-10-15T18:23:47Z,

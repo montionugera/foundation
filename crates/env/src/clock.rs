@@ -115,7 +115,7 @@ impl fmt::Debug for Clock {
     }
 }
 
-/// What `os` and `sim` implement to run a [`Clock`]. Only they implement it.
+/// What `os`, `sim`, and `sdk` implement to run a [`Clock`]. Only they implement it.
 ///
 /// ```
 /// fn wrap(driver: impl env::clock::Driver + 'static) -> env::clock::Clock {
@@ -141,8 +141,8 @@ pub trait Driver: Send + Sync {
     fn timer(&self) -> Pin<Box<dyn Timer>>;
 }
 
-/// One reusable timer on one thread, polled through a [`Sleep`]. Only `os` and `sim`
-/// implement it.
+/// One reusable timer on one thread, polled through a [`Sleep`]. Only `os`, `sim`, and
+/// `sdk` implement it.
 ///
 /// ```
 /// use std::pin::Pin;

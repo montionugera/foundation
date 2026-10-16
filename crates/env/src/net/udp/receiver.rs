@@ -6,8 +6,8 @@ use std::task::{Context, Poll};
 use super::Meta;
 use crate::net::Error;
 
-/// What `os` and `sim` implement to run a [`Receiver`](super::Receiver). Only they
-/// implement it.
+/// What `os`, `sim`, and `sdk` implement to run a [`Receiver`](super::Receiver). Only
+/// they implement it.
 ///
 /// It panics on a thread other than the one of the first poll.
 ///

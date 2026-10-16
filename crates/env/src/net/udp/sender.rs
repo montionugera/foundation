@@ -5,8 +5,8 @@ use std::task::{Context, Poll};
 use super::Transmit;
 use crate::net::Error;
 
-/// What `os` and `sim` implement to run one [`Sender`](super::Sender) clone. Only they
-/// implement it.
+/// What `os`, `sim`, and `sdk` implement to run one [`Sender`](super::Sender) clone.
+/// Only they implement it.
 ///
 /// It panics on a thread other than the one of the first poll.
 ///

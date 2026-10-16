@@ -343,7 +343,7 @@ impl Default for Meta {
     }
 }
 
-/// What `os` and `sim` implement to run one UDP socket's [`Sender`] and
+/// What `os`, `sim`, and `sdk` implement to run one UDP socket's [`Sender`] and
 /// [`Receiver`]. Only they implement it.
 ///
 /// It sets don't-fragment on every datagram (`os`: `IP_MTU_DISCOVER` set to probe, and

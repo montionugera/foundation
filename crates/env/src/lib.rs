@@ -5,7 +5,8 @@
 //! Each seam is a concrete handle over a small driver trait. Only `os` and `sim`
 //! implement the drivers: `os` on the real operating system, `sim` in a deterministic
 //! simulation. `node` builds the real handles and passes them down; nothing else
-//! reaches the operating system.
+//! reaches the operating system. Outside the binary, `sdk` implements the drivers
+//! that a client needs.
 
 pub mod clock;
 pub mod entropy;

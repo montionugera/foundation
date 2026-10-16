@@ -474,7 +474,7 @@ pub type Connect<'a> =
 pub type Resolve<'a> =
     Pin<Box<dyn Future<Output = Result<Vec<SocketAddr>, Error>> + 'a>>;
 
-/// What `os` and `sim` implement to run a [`Net`]. Only they implement it.
+/// What `os`, `sim`, and `sdk` implement to run a [`Net`]. Only they implement it.
 ///
 /// Every socket it makes follows the thread rules of its handle: [`udp::Sender`],
 /// [`udp::Receiver`], [`Tcp`], and [`Listener`].
