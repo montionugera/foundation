@@ -74,6 +74,7 @@ const GRACE: Span = Span::from_nanos(10_000_000_000);
 /// #         entropy: node.entropy(),
 /// #         layout: Layout::new(1 << 18, 4087).expect("a ring"),
 /// #         commit: Span::from_nanos(10_000_000),
+/// #         trimmed: false,
 /// #     };
 /// #     let buffer = Buffer::open(config, &mut slots).await?;
 /// #     while clock.now().mesh.is_none() {
@@ -1195,6 +1196,7 @@ mod tests {
                 entropy: self.entropy.clone(),
                 layout: Layout::new(area, body_max).expect("a ring"),
                 commit: COMMIT,
+                trimmed: false,
             };
             let mut assigned = Slots::new();
             for n in 0..slots {
