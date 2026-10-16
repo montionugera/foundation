@@ -525,7 +525,7 @@ pub(crate) struct Logs {
     items: Items,
     /// Each item before this number is stale.
     stale: u64,
-    /// An [`idle`](Self::idle) has passed each item before this number.
+    /// An [`carry`](Self::carry) has passed each item before this number.
     scanned: u64,
 }
 
@@ -690,7 +690,7 @@ impl Logs {
     /// left out. Call it in the borrow that takes the records of a commit: each
     /// appended entry is then in a taken record, so the tail is the end after those
     /// records, and the carry record goes right after them.
-    pub(crate) fn idle(&mut self, reach: u64, limit: usize, carried: &mut Carried) {
+    pub(crate) fn carry(&mut self, reach: u64, limit: usize, carried: &mut Carried) {
         let mut room = limit;
         for (number, offset, at) in self.items.since(self.scanned) {
             if offset >= reach && carried.tails.is_empty() {
@@ -721,7 +721,7 @@ impl Logs {
         self.scanned = self.items.added();
     }
 
-    /// Takes back the [`idle`](Self::idle) call that filled `carried`, whose carry
+    /// Takes back the [`carry`](Self::carry) call that filled `carried`, whose carry
     /// record no commit writes, so that the next call gives its tails again.
     /// Clears `carried`.
     pub(crate) fn dropped(&mut self, carried: &mut Carried) {
@@ -1383,7 +1383,7 @@ mod tests {
                 }
                 let reach = 8192 * *reach.min(&number);
                 let mut carried = Carried::default();
-                logs.idle(reach, *limit, &mut carried);
+                logs.carry(reach, *limit, &mut carried);
                 let holders = model.holders();
                 for (index, header) in &queued {
                     prop_assert_eq!(logs.sync(slot(*index), header, synced_at), Ok(()));
@@ -1413,7 +1413,7 @@ mod tests {
     }
 
     /// What the logs hold for each path, by index and path: the holder, the
-    /// durable end, and the stamp. Also the holders whose tail `idle` gave.
+    /// durable end, and the stamp. Also the holders whose tail `carry` gave.
     #[derive(Default)]
     struct Model {
         paths: hash::Map<(u32, Path), (u64, Mark, Option<Stamp>)>,
@@ -1430,7 +1430,7 @@ mod tests {
                 .collect()
         }
 
-        /// Checks the tails of one call of `idle` up to `reach` with `limit`, made
+        /// Checks the tails of one call of `carry` up to `reach` with `limit`, made
         /// when each path had its holder in `holders`, after the sync of the
         /// entries that it saw appended. Tails past `reach` only fill a call that
         /// gave a tail before it.
@@ -2064,7 +2064,7 @@ mod tests {
             assert_eq!(logs.durable(slot(1), Path::Live), tail);
             assert_eq!(logs.appended(slot(1), Path::Live), tail);
             let mut tails = Carried::default();
-            logs.clone().idle(16384, 2, &mut tails);
+            logs.clone().carry(16384, 2, &mut tails);
             assert_eq!(tails.tails(), [carried(3, 4, Some(20))]);
             assert_eq!(logs.kept(), Some(12288));
         }
@@ -2072,12 +2072,12 @@ mod tests {
         /// The entry at 8192 is in a record that the commit took, so the tail goes
         /// past it.
         #[test]
-        fn idle_gives_the_appended_tail_of_a_taken_record() {
+        fn carry_gives_the_appended_tail_of_a_taken_record() {
             let mut logs = walked(Some(20));
             logs.append(slot(1), &mut header(1, Path::Live, 3, 2, None))
                 .expect("appends");
             let mut tails = Carried::default();
-            logs.idle(8192, 2, &mut tails);
+            logs.carry(8192, 2, &mut tails);
             assert_eq!(tails.tails(), [carried(5, 0, Some(20))]);
         }
 
@@ -2087,7 +2087,7 @@ mod tests {
             let mut header = header(1, Path::Live, 3, 2, None);
             logs.append(slot(1), &mut header).expect("appends");
             let mut tails = Carried::default();
-            logs.idle(8192, 2, &mut tails);
+            logs.carry(8192, 2, &mut tails);
             logs.sync(slot(1), &header, 8192).expect("syncs");
             assert_eq!(logs.kept(), Some(4096));
             logs.hold(&tails, 12288);
@@ -2100,7 +2100,7 @@ mod tests {
             let runs: Vec<Run> = logs.runs(slot(1), Path::Live).collect();
             assert_eq!(runs, [run(0, 0, 4096), run(3, 1, 8192)]);
             tails.clear();
-            logs.idle(16384, 2, &mut tails);
+            logs.carry(16384, 2, &mut tails);
             assert_eq!(tails.tails(), [carried(5, 0, Some(20))]);
             assert_eq!(logs.kept(), Some(12288));
         }
@@ -2109,20 +2109,20 @@ mod tests {
         /// gives the tail again. A scan that is not dropped goes on past it, and a
         /// drop of no tails keeps the scan where it is.
         #[test]
-        fn idle_after_a_dropped_carry_gives_its_tails_again() {
+        fn carry_after_a_dropped_carry_gives_its_tails_again() {
             let mut logs = walked(Some(20));
             let mut tails = Carried::default();
-            logs.idle(8192, 2, &mut tails);
+            logs.carry(8192, 2, &mut tails);
             assert_eq!(tails.tails(), [carried(3, 1, Some(20))]);
             logs.dropped(&mut tails);
             assert_eq!(tails.tails(), []);
-            logs.idle(8192, 2, &mut tails);
+            logs.carry(8192, 2, &mut tails);
             assert_eq!(tails.tails(), [carried(3, 1, Some(20))]);
             tails.clear();
-            logs.idle(8192, 2, &mut tails);
+            logs.carry(8192, 2, &mut tails);
             assert_eq!(tails.tails(), []);
             logs.dropped(&mut tails);
-            logs.idle(8192, 2, &mut tails);
+            logs.carry(8192, 2, &mut tails);
             assert_eq!(tails.tails(), []);
         }
 
@@ -2131,7 +2131,7 @@ mod tests {
         fn hold_keeps_the_appended_tail_of_a_queued_path() {
             let mut logs = walked(Some(20));
             let mut tails = Carried::default();
-            logs.idle(8192, 2, &mut tails);
+            logs.carry(8192, 2, &mut tails);
             logs.append(slot(1), &mut header(1, Path::Live, 3, 2, Some(50)))
                 .expect("appends");
             logs.hold(&tails, 8192);
@@ -2155,7 +2155,7 @@ mod tests {
             logs.append(slot(1), &mut header(1, Path::Live, 3, 2, None))
                 .expect("appends");
             let mut tails = Carried::default();
-            logs.idle(8192, 2, &mut tails);
+            logs.carry(8192, 2, &mut tails);
             logs.hold(&tails, 12288);
         }
 
@@ -2164,7 +2164,7 @@ mod tests {
         fn a_carry_record_at_the_holder_is_a_broken_invariant() {
             let mut logs = walked(Some(20));
             let mut tails = Carried::default();
-            logs.idle(8192, 2, &mut tails);
+            logs.carry(8192, 2, &mut tails);
             logs.hold(&tails, 4096);
         }
 
@@ -2397,7 +2397,7 @@ mod tests {
         let mut logs = walk_from(records, 0);
         assert_eq!(logs.kept(), Some(holder));
         let mut tails = Carried::default();
-        logs.idle(holder, 1023, &mut tails);
+        logs.carry(holder, 1023, &mut tails);
         assert_eq!(tails.tails(), []);
         logs.hide(holder);
         let walked = walk_from(records, holder);
@@ -2649,7 +2649,7 @@ mod tests {
                 }
                 offset += 4096;
                 let mut tails = Carried::default();
-                logs.idle(offset, usize::MAX, &mut tails);
+                logs.carry(offset, usize::MAX, &mut tails);
                 logs.hold(&tails, offset);
                 assert_eq!(logs.kept(), Some(offset));
                 logs.hide(offset);
@@ -3043,7 +3043,7 @@ mod tests {
     /// Gives the tail of each idle path a carry record at `offset`, as a commit does.
     fn carry_idle(logs: &mut Logs, offset: u64) {
         let mut tails = Carried::default();
-        logs.idle(offset, usize::MAX, &mut tails);
+        logs.carry(offset, usize::MAX, &mut tails);
         logs.hold(&tails, offset);
     }
 
@@ -3252,7 +3252,7 @@ mod tests {
                     queued.push((next.index, header));
                 }
                 let mut carried = Carried::default();
-                logs.idle(8192 * *reach.min(&number), *limit, &mut carried);
+                logs.carry(8192 * *reach.min(&number), *limit, &mut carried);
                 for (index, header) in &queued {
                     prop_assert_eq!(logs.sync(slot(*index), header, synced_at), Ok(()));
                 }

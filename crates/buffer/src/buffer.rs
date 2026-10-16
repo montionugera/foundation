@@ -502,7 +502,7 @@ impl State {
         let mut carried = mem::take(&mut self.carried);
         let limit = self.writer.tails().min(most);
         let reach = self.writer.reach();
-        self.logs.idle(reach, limit, &mut carried);
+        self.logs.carry(reach, limit, &mut carried);
         let count = carried.tails().len();
         let len = HEADER_LEN + carry::body_len(count);
         let blocks = (count > 0).then(|| (pool.alloc(len), pool.alloc(ALIGN)));

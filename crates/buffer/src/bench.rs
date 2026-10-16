@@ -224,7 +224,7 @@ impl Logs {
         self.offset += BLOCK;
         self.carried.clear();
         self.inner
-            .idle(self.offset, self.headers.len(), &mut self.carried);
+            .carry(self.offset, self.headers.len(), &mut self.carried);
         self.inner.hold(&self.carried, self.offset);
         self.offset += BLOCK;
     }
@@ -257,7 +257,7 @@ impl Logs {
         }
         self.carried.clear();
         self.inner
-            .idle(self.offset, self.headers.len(), &mut self.carried);
+            .carry(self.offset, self.headers.len(), &mut self.carried);
         let kept = self.inner.kept().expect("a path has a synced entry");
         let read = self.offset.saturating_sub(held * BLOCK).max(BLOCK);
         self.inner.hide(kept.min(read));
@@ -285,7 +285,7 @@ impl Logs {
         self.offset += BLOCK;
         self.carried.clear();
         self.inner
-            .idle(self.offset, self.headers.len(), &mut self.carried);
+            .carry(self.offset, self.headers.len(), &mut self.carried);
         let tails = self.carried.tails();
         assert_eq!(tails.len(), self.headers.len(), "a tail of each index");
         for (tail, (_, header)) in tails.iter().zip(&self.headers) {
