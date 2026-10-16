@@ -16,7 +16,7 @@ use types::name::Name;
 use types::time::Span;
 
 use crate::kind::{self, Context, Error};
-use crate::{cancel, reader, retry, status};
+use crate::{browse, cancel, reader, retry, status};
 
 /// The waits between restarts.
 const RESTART: retry::Config = retry::Config {
@@ -56,6 +56,26 @@ impl Supervisor {
     #[must_use]
     pub fn new(config: Config) -> Self {
         Self(Rc::new(config))
+    }
+
+    /// Browses the device of the connector block `config` of `kind` as `query`
+    /// asks, with the network, clock, randomness, and secrets of the supervisor. It
+    /// connects apart from any run of the connector and keeps no state after it
+    /// returns. A drop of the future ends the browse. The future is not `Send`: call
+    /// it on a shard.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Kind::browse`](kind::Kind::browse), and [`Error::Config`] with
+    /// `connector.unknown-kind`.
+    pub async fn browse(
+        &self,
+        kind: &str,
+        config: &Document,
+        query: &browse::Query,
+    ) -> Result<browse::Found, Error> {
+        let ctx = browse::Context::new(config, &self.0);
+        self.0.kinds.browse(kind, &ctx, query).await
     }
 
     /// Opens the status channels of the connector `name` once the node has mesh
