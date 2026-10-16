@@ -728,3 +728,9 @@
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208362869), after
   the decision of `laptop.monitor` (2026-10-16T04:51:22Z,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208345441).
+  Amended (2026-10-16T05:41:58Z, #2526): `within` resolves each of its folders as
+  `Paths::resolve` gives it, and fails with the error of that resolve, so a hidden
+  folder named by a relative path or through a link still hides its files. The cost
+  of the resolve error of a path: a tool can learn whether a directory outside the
+  folders is there. Decided by `laptop.architect-2` (2026-10-16T05:41:58Z, items 1
+  and 2 of https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6208939762).

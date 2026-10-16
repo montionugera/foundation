@@ -45,28 +45,41 @@ impl Paths {
 
     /// The same files, where each read and write of a path that does not resolve
     /// under one of `folders`, or that resolves under one of `hidden`, fails with
-    /// [`Error::Outside`] and reaches no file. A folder is compared as given with the
-    /// path that [`Paths::resolve`] gives, by whole names: give each as `resolve` gives
-    /// it. The limits of `self` hold too, so a handle never reaches more than the one
+    /// [`Error::Outside`] and reaches no file. Each folder is resolved as
+    /// [`Paths::resolve`] gives it, and a path is under a folder by whole names.
+    /// The limits of `self` hold too, so a handle never reaches more than the one
     /// it came from. The check and the call are two steps: a symbolic link that
     /// another program makes between them can lead the call out.
+    ///
+    /// # Errors
+    ///
+    /// The error of [`Paths::resolve`] for a path of `folders` or `hidden`.
     ///
     /// ```
     /// use std::path::PathBuf;
     ///
-    /// use env::paths::Paths;
+    /// use env::paths::{Error, Paths};
     ///
-    /// fn tools(paths: &Paths, work: PathBuf, data: PathBuf) -> Paths {
-    ///     paths.within(vec![work], vec![data])
+    /// fn tools(paths: &Paths, work: PathBuf, data: PathBuf) -> Result<Paths, Error> {
+    ///     paths.within(&[work], &[data])
     /// }
     /// ```
-    #[must_use]
-    pub fn within(&self, folders: Vec<PathBuf>, hidden: Vec<PathBuf>) -> Self {
-        let limit = Limit { folders, hidden };
-        Self {
+    pub fn within(
+        &self,
+        folders: &[PathBuf],
+        hidden: &[PathBuf],
+    ) -> Result<Self, Error> {
+        let resolve = |dirs: &[PathBuf]| -> Result<Vec<PathBuf>, Error> {
+            dirs.iter().map(|dir| self.driver.resolve(dir)).collect()
+        };
+        let limit = Limit {
+            folders: resolve(folders)?,
+            hidden: resolve(hidden)?,
+        };
+        Ok(Self {
             driver: Rc::clone(&self.driver),
             limits: self.limits.iter().cloned().chain([limit]).collect(),
-        }
+        })
     }
 
     /// The absolute path that `path` names, with each `.`, `..`, and symbolic link
@@ -334,7 +347,9 @@ mod tests {
 
     #[test]
     fn resolve_and_home_reach_the_driver_and_check_no_limit() {
-        let paths = Paths::new(One::default()).within(vec!["/work".into()], vec![]);
+        let paths = Paths::new(One::default())
+            .within(&["/work".into()], &[])
+            .unwrap();
         let resolved = paths.resolve(Path::new("link/a"));
         assert_eq!(resolved, Ok(PathBuf::from("/out/a")));
         assert_eq!(paths.resolve(Path::new("")), Err(Error::NotFound));
@@ -344,8 +359,8 @@ mod tests {
     #[test]
     fn within_reaches_only_paths_that_resolve_under_a_folder_and_no_hidden_one() {
         let free = Paths::new(One::default());
-        let folders = vec!["/work".into(), "/plans".into()];
-        let paths = free.within(folders, vec!["/work/data".into()]);
+        let folders = ["work".into(), "/plans".into()];
+        let paths = free.within(&folders, &["work/data".into()]).unwrap();
         for path in ["/work", "work/a", "/work/b/c", "/plans/a", "/work/data2"] {
             assert!(passes(&paths, path), "{path}");
         }
@@ -368,10 +383,19 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_that_does_not_resolve_gives_its_error() {
+        let free = Paths::new(One::default());
+        let empty = [PathBuf::new()];
+        assert_eq!(free.within(&empty, &[]).err(), Some(Error::NotFound));
+        let folders = ["/work".into()];
+        assert_eq!(free.within(&folders, &empty).err(), Some(Error::NotFound));
+    }
+
+    #[test]
     fn a_path_outside_reaches_no_file() {
         let free = Paths::new(One::default());
         free.write(Path::new("/out/a"), b"old").unwrap();
-        let paths = free.within(vec!["/work".into()], vec![]);
+        let paths = free.within(&["/work".into()], &[]).unwrap();
         assert_eq!(
             paths.write(Path::new("/out/a"), b"new"),
             Err(Error::Outside)
@@ -385,13 +409,13 @@ mod tests {
     #[test]
     fn a_handle_within_another_keeps_its_limits() {
         let free = Paths::new(One::default());
-        let wide = free.within(vec!["/".into()], vec!["/work/data".into()]);
-        let narrow = wide.within(vec!["/work".into()], vec![]);
+        let wide = free.within(&["/".into()], &["/work/data".into()]).unwrap();
+        let narrow = wide.within(&["/work".into()], &[]).unwrap();
         assert!(passes(&narrow, "/work/a"));
         for path in ["/out", "/work/data"] {
             assert!(!passes(&narrow, path), "{path}");
         }
-        let widened = narrow.within(vec!["/".into()], vec![]);
+        let widened = narrow.within(&["/".into()], &[]).unwrap();
         assert!(!passes(&widened, "/out"));
         assert!(passes(&wide, "/out"));
     }

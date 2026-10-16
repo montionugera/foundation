@@ -2,6 +2,7 @@
 //! this file by `#[path]`, so it uses only `env` and `std`.
 
 use std::path::{Path, PathBuf};
+use std::slice;
 
 use env::paths::{Error, Found, Paths};
 
@@ -11,9 +12,8 @@ pub(crate) struct Host<'a> {
     /// A directory that is there and empty. On `sim`, only `/` is there with no file
     /// under it.
     pub(crate) dir: &'a Path,
-    /// Makes a directory in a directory that is there, on a host where a write does
-    /// not.
-    pub(crate) make_dir: fn(&Path),
+    /// Makes a directory in a directory that is there.
+    pub(crate) make_dir: &'a dyn Fn(&Path),
     /// Makes a symbolic link at the first path that names the second.
     pub(crate) make_link: &'a dyn Fn(&Path, &Path),
 }
@@ -44,8 +44,11 @@ macro_rules! tests {
             a_resolve_keeps_a_last_name_that_is_not_there,
             a_resolve_follows_each_link,
             a_resolve_through_a_file_fails,
+            a_resolve_through_a_directory_that_is_not_there_is_not_found,
+            a_resolve_of_a_link_to_nothing_is_not_found,
             within_reaches_only_its_folders,
             within_follows_a_link_out,
+            within_resolves_its_folders,
         );
     };
     (@each $run:ident, $($case:ident),* $(,)?) => {
@@ -250,6 +253,31 @@ pub(crate) fn a_resolve_through_a_file_fails(host: &Host<'_>) {
     assert_eq!(paths.resolve(Path::new("")), Err(Error::NotFound));
 }
 
+pub(crate) fn a_resolve_through_a_directory_that_is_not_there_is_not_found(
+    host: &Host<'_>,
+) {
+    let (paths, dir) = (host.paths, host.dir);
+    for path in ["none/a", "none/x/..", "none/x/a", "none/./a"] {
+        let resolved = paths.resolve(&dir.join(path));
+        assert_eq!(resolved, Err(Error::NotFound), "{path}");
+        assert_eq!(
+            paths.read(&dir.join(path), 1),
+            Err(Error::NotFound),
+            "{path}"
+        );
+    }
+}
+
+pub(crate) fn a_resolve_of_a_link_to_nothing_is_not_found(host: &Host<'_>) {
+    let (paths, dir) = (host.paths, host.dir);
+    (host.make_link)(&dir.join("link.plan"), &dir.join("plant.plan"));
+    (host.make_link)(&dir.join("next.plan"), &dir.join("link.plan"));
+    for name in ["link.plan", "next.plan"] {
+        let resolved = paths.resolve(&dir.join(name));
+        assert_eq!(resolved, Err(Error::NotFound), "{name}");
+    }
+}
+
 /// `work` is the folder, `work/data` is hidden, and `workshop` is beside `work`.
 fn within_work(host: &Host<'_>) -> (Paths, PathBuf) {
     let (paths, dir) = (host.paths, host.dir);
@@ -265,8 +293,8 @@ fn within_work(host: &Host<'_>) -> (Paths, PathBuf) {
         paths.write(&dir.join(name), b"x").unwrap();
     }
     let base = paths.resolve(dir).unwrap();
-    let within = paths.within(vec![base.join("work")], vec![base.join("work/data")]);
-    (within, base)
+    let within = paths.within(&[base.join("work")], &[base.join("work/data")]);
+    (within.unwrap(), base)
 }
 
 pub(crate) fn within_reaches_only_its_folders(host: &Host<'_>) {
@@ -334,4 +362,31 @@ pub(crate) fn within_follows_a_link_out(host: &Host<'_>) {
         host.paths.read(&dir.join("workshop/new.plan"), 1),
         Err(Error::NotFound)
     );
+}
+
+pub(crate) fn within_resolves_its_folders(host: &Host<'_>) {
+    let (paths, dir) = (host.paths, host.dir);
+    let (_, base) = within_work(host);
+    (host.make_link)(&dir.join("alias"), &dir.join("work"));
+    let working = paths.resolve(Path::new(".")).unwrap();
+    let up = working.components().skip(1).map(|_| Path::new(".."));
+    let relative: PathBuf = up.collect();
+    let relative = relative.join(base.strip_prefix("/").unwrap());
+    let key = dir.join("work/data/admin.key");
+    let work = [dir.join("work")];
+    for hidden in [relative.join("work/data"), dir.join("alias/data")] {
+        let within = paths.within(&work, slice::from_ref(&hidden)).unwrap();
+        let read = within.read(&key, 1);
+        assert_eq!(read, Err(Error::Outside), "{}", hidden.display());
+        let written = within.write(&key, b"y");
+        assert_eq!(written, Err(Error::Outside), "{}", hidden.display());
+    }
+    let none = [dir.join("none/work")];
+    assert_eq!(paths.within(&none, &[]).err(), Some(Error::NotFound));
+    assert_eq!(paths.within(&work, &none).err(), Some(Error::NotFound));
+    let file = [dir.join("b.hcl/data")];
+    let through = Some(Error::Io {
+        code: NOT_DIRECTORY,
+    });
+    assert_eq!(paths.within(&work, &file).err(), through);
 }
