@@ -42,7 +42,8 @@
   grammar. A lookup reads only a name, so the table has no rule for a literal with a
   final dot, an IPv4 address in brackets, or the root `.`. The table keys each name
   by the name of its `Host`, with no final dot: `sim` has no search list, and on `os`
-  both forms give the absolute name when it exists. Decided by `laptop.architect-2`
+  a name with a final dot gives only the absolute name, and a name without one may
+  give a name of the search list first. Decided by `laptop.architect-2`
   (2026-10-16 02:53 UTC, #1927,
   https://github.com/synnaxlabs/foundation/issues/1927#issuecomment-6206963417).
   Amended

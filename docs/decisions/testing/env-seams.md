@@ -257,6 +257,7 @@
   Changed (2026-10-16, #1927): a NUL byte is `host::Error::Character`, so it never
   reaches the driver. Decided by `laptop.architect-2` (2026-10-16 02:53 UTC, #1927,
   https://github.com/synnaxlabs/foundation/issues/1927#issuecomment-6206963417).
+  Supersedes https://github.com/synnaxlabs/foundation/issues/1095#issuecomment-6064802287.
   `EAI_NONAME` with errno `EMFILE` or `ENFILE` is `Io` with that code: the lookup met
   a full descriptor table, so glibc ran it without part of its configuration or
   without its name service modules, and its answer is not final. Lost: `NotFound`
@@ -271,8 +272,8 @@
   name server answers. Add a cap before a caller can start lookups at a rate that
   grows with peers, devices, or data.
   Lost: Tokio's blocking pool, because the drop of a runtime waits for each of its
-  blocking tasks, and `os` drops each runtime it builds. The literal grammar waits on
-  #1927. Decided by `laptop.architect-2` (2026-10-08 17:08 UTC, #1919,
+  blocking tasks, and `os` drops each runtime it builds. #1927 gives the grammar
+  (below). Decided by `laptop.architect-2` (2026-10-08 17:08 UTC, #1919,
   https://github.com/synnaxlabs/foundation/pull/1919#issuecomment-6065081738).
   Amended (2026-10-16, #1927): `env` owns the whole grammar of a host.
   `Net::resolve` takes an `env::net::host::Host`, which a caller parses at plan for a
