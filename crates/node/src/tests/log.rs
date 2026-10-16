@@ -722,6 +722,32 @@ fn a_thread_log_that_cannot_start_at_the_join_keeps_its_lines_for_the_wait() {
     );
 }
 
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test bounds a real-time wait"
+)]
+fn a_wait_whose_thread_log_cannot_start_ends_at_once() {
+    let (mut sim, host) = host(1);
+    let lines = Lines::default();
+    let log = opened(&host, false, Box::new(lines.clone()));
+    tracing::dispatcher::with_default(&log.dispatch, numbered(0, 1));
+    host.fail_thread("log");
+    let start = std::time::Instant::now();
+    assert!(
+        !log.wait(Duration::from_secs(30)),
+        "the thread cannot start"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        start.elapsed()
+    );
+    assert!(!log.wait(Duration::ZERO), "the next wait starts the thread");
+    assert_eq!(sim.run(), Ok(()));
+    assert_eq!(lines.read(), [number(0)]);
+}
+
 /// The lines of `lines` with no stamp.
 fn unstamped<'a>(lines: &'a [String]) -> Vec<&'a str> {
     let unstamp = |line: &'a String| line.split_once(' ').expect("a stamp").1;
