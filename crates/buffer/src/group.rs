@@ -293,7 +293,7 @@ impl Closed {
             mut group,
             plan,
             mut meta,
-            mut wrap,
+            wrap,
             start,
         } = self;
         let (_, tail) = meta.split_at_mut(start);
@@ -303,20 +303,9 @@ impl Closed {
         let (sealed, ends) = plan.seal(chain, body);
         header.copy_from_slice(&sealed.record.header);
         group.writes.insert(0, meta.freeze().skip(start));
-        let wrap = sealed.wrap.map(|write| {
-            let start =
-                wrap.len()
-                    .checked_sub(record::HEADER_LEN)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "invariant: a block of {} bytes holds no wrap header",
-                            wrap.len()
-                        )
-                    });
-            let (_, header) = wrap.split_at_mut(start);
-            header.copy_from_slice(&write.header);
-            (write.place, wrap.freeze().skip(start))
-        });
+        let wrap = sealed
+            .wrap
+            .map(|write| (write.place, end_block(wrap, &write.header)));
         Sealed {
             group,
             plan,
@@ -324,6 +313,27 @@ impl Closed {
             ends,
         }
     }
+}
+
+/// `header` at the end of `block`, as a record of no body: the wrap header of a
+/// record that wraps.
+///
+/// # Panics
+///
+/// When `block` is shorter than a record header.
+pub(crate) fn end_block(mut block: Unique, header: &[u8; record::HEADER_LEN]) -> Block {
+    let start = block
+        .len()
+        .checked_sub(record::HEADER_LEN)
+        .unwrap_or_else(|| {
+            panic!(
+                "invariant: a block of {} bytes holds no wrap header",
+                block.len()
+            )
+        });
+    let (_, end) = block.split_at_mut(start);
+    end.copy_from_slice(header);
+    block.freeze().skip(start)
 }
 
 /// A group whose record is complete: each of its [`writes`](Self::writes) goes at

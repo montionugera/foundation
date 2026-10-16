@@ -114,7 +114,6 @@ pub(crate) const fn body_len(count: usize) -> usize {
 /// # Panics
 ///
 /// When there are over [`TAILS_MAX`] tails, or `into` is shorter than the body.
-#[cfg_attr(not(test), expect(dead_code, reason = "a commit writes carry records"))]
 pub(crate) fn write(tails: &[Tail], into: &mut [u8]) -> usize {
     let len = body_len(tails.len());
     let Some((body, _)) = into.split_at_mut_checked(len) else {

@@ -70,8 +70,8 @@ impl Link {
     /// stream, which lives as long as the session and closes it when it ends. Each
     /// later stream is a request stream, which gives [`Served::Request`] once its body
     /// is read and verified, or a read stream, which sends the frames of its reader
-    /// until the program finishes it. A complete read that reaches a frame that the
-    /// buffer lost sends `Behind` and finishes the stream. A program sends the header
+    /// until the program finishes it. A complete read goes on past a frame that the
+    /// buffer lost. A program sends the header
     /// of a later stream only after the challenge after its hello, so the hello stream
     /// comes first in any order of the headers.
     ///

@@ -626,10 +626,11 @@ impl Writer {
             })
             .await;
             if closed {
-                return pending().await;
+                break;
             }
             self.write_staged().await;
         }
+        pending().await
     }
 
     /// Waits until [`PERIOD`] after the last write, or the session closed, then writes

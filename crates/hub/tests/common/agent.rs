@@ -38,6 +38,8 @@ pub(crate) struct Stream {
     pub(crate) receiver: Receiver,
     /// The mode of the read that the stream sent.
     mode: Option<Mode>,
+    /// The open position that `Opened` gave, once [`Stream::opened`] read it.
+    pub(crate) live: Option<u64>,
 }
 
 impl Stream {
@@ -91,7 +93,8 @@ impl Stream {
     }
 
     /// Reads the start of the read that the stream sent: the places, their run, and
-    /// `Opened`. Gives the places, the run, and the decoder of the frames.
+    /// `Opened`, and keeps its open position in `live`. Gives the places, the run, and
+    /// the decoder of the frames.
     ///
     /// # Panics
     ///
@@ -116,10 +119,10 @@ impl Stream {
                 break home;
             }
         };
-        assert!(
-            matches!(reader.decode(&next().await), Ok(FromHome::Opened)),
-            "then `Opened`"
-        );
+        let Ok(FromHome::Opened { live }) = reader.decode(&next().await) else {
+            panic!("then `Opened`");
+        };
+        self.live = Some(live);
         (places, run, reader)
     }
 
@@ -179,6 +182,7 @@ impl Agent {
             sender,
             receiver,
             mode: None,
+            live: None,
         };
         hello.send(&wire::header::encode(Protocol::Hub)).await;
         Self {
@@ -244,6 +248,7 @@ impl Agent {
             sender,
             receiver,
             mode: None,
+            live: None,
         }
     }
 

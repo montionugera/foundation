@@ -5,13 +5,14 @@
 //! `sim` controls it. "A thread" below means a thread that `env` started; under `sim`
 //! it is a simulated thread.
 
+pub mod host;
 pub mod listener;
 pub mod tcp;
 pub mod udp;
 
 use std::fmt;
 use std::io::IoSlice;
-use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::net::{SocketAddr, SocketAddrV6};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -119,10 +120,9 @@ impl Net {
     }
 
     /// Gives one or more addresses of `host`, each with `port`, in the order that the
-    /// resolver gives them. A host that parses as an [`IpAddr`], or an IPv6 address
-    /// in brackets as in a URI, gives that address and does no lookup. Each call
-    /// looks up again: `resolve` keeps no cache. Dropping the future stops the wait,
-    /// not the lookup.
+    /// resolver gives them. An IP host gives its one address, with the scope of its
+    /// zone, and does no lookup. Each call looks up a name again: `resolve` keeps no
+    /// cache. Dropping the future stops the wait, not the lookup.
     ///
     /// # Errors
     ///
@@ -136,23 +136,22 @@ impl Net {
     /// use std::net::SocketAddr;
     ///
     /// async fn find(net: &env::net::Net) -> Result<Vec<SocketAddr>, env::net::Error> {
-    ///     net.resolve("historian.local", 4433).await
+    ///     let host = "historian.local".parse().expect("a name");
+    ///     net.resolve(&host, 4433).await
     /// }
     /// ```
     pub async fn resolve(
         &self,
-        host: &str,
+        host: &host::Host,
         port: u16,
     ) -> Result<Vec<SocketAddr>, Error> {
-        let bracketed = host.strip_prefix('[').and_then(|h| h.strip_suffix(']'));
-        let literal = match bracketed {
-            Some(v6) => v6.parse::<Ipv6Addr>().map(IpAddr::V6),
-            None => host.parse::<IpAddr>(),
-        };
-        if let Ok(ip) = literal {
-            return Ok(vec![SocketAddr::new(ip, port)]);
+        match &host.0 {
+            host::Kind::Ip(ip) => Ok(vec![SocketAddr::new(*ip, port)]),
+            host::Kind::Scoped(ip, zone) => {
+                Ok(vec![SocketAddrV6::new(*ip, port, 0, *zone).into()])
+            }
+            host::Kind::Name(name) => self.0.resolve(name, port).await,
         }
-        self.0.resolve(host, port).await
     }
 }
 
@@ -509,8 +508,9 @@ pub trait Driver: Send + Sync {
     /// As [`Net::listen`].
     fn listen(&self, config: &tcp::Listen) -> Result<Box<dyn listener::Driver>, Error>;
 
-    /// Looks up a host that is not an IP literal, with the rules of [`Net::resolve`].
-    fn resolve<'a>(&'a self, host: &'a str, port: u16) -> Resolve<'a>;
+    /// Looks up `name`, with the rules of [`Net::resolve`]. `name` is the
+    /// [`host::Host::name`] of a host: never an IP address.
+    fn resolve<'a>(&'a self, name: &'a str, port: u16) -> Resolve<'a>;
 }
 
 #[cfg(test)]
@@ -657,9 +657,14 @@ mod tests {
     mod resolve {
         use super::*;
 
-        fn resolve(host: &str) -> Result<Vec<SocketAddr>, Error> {
+        fn parse(text: &str) -> host::Host {
+            text.parse().expect("a host")
+        }
+
+        fn resolve(text: &str) -> Result<Vec<SocketAddr>, Error> {
             let net = Net::new(Network);
-            let mut resolve = std::pin::pin!(net.resolve(host, 4433));
+            let host = parse(text);
+            let mut resolve = std::pin::pin!(net.resolve(&host, 4433));
             let Poll::Ready(result) = resolve.as_mut().poll(&mut cx()) else {
                 panic!("the lookup did not end");
             };
@@ -667,35 +672,31 @@ mod tests {
         }
 
         #[test]
-        fn gives_an_ipv4_literal_with_no_lookup() {
+        fn gives_an_ipv4_address_with_no_lookup() {
             assert_eq!(resolve("10.0.0.2"), Ok(vec![address("10.0.0.2:4433")]));
         }
 
         #[test]
-        fn gives_an_ipv6_literal_with_no_lookup() {
+        fn gives_an_ipv6_address_with_no_lookup() {
             assert_eq!(resolve("fd00::2"), Ok(vec![address("[fd00::2]:4433")]));
         }
 
         #[test]
-        fn gives_an_ipv6_literal_in_brackets_with_no_lookup() {
+        fn gives_an_ipv6_address_in_brackets_with_no_lookup() {
             assert_eq!(resolve("[fd00::2]"), Ok(vec![address("[fd00::2]:4433")]));
         }
 
         #[test]
-        fn looks_up_an_ipv4_literal_in_brackets_as_a_name() {
-            let host = "[10.0.0.2]".to_owned();
-            assert_eq!(resolve("[10.0.0.2]"), Err(Error::NotFound { host }));
-        }
-
-        #[test]
-        fn looks_up_a_literal_with_a_final_dot_as_a_name() {
-            let host = "10.0.0.2.".to_owned();
-            assert_eq!(resolve("10.0.0.2."), Err(Error::NotFound { host }));
+        fn keeps_the_scope_of_an_ipv6_address() {
+            let ip = "fe80::1".parse().unwrap();
+            let scoped = SocketAddr::V6(SocketAddrV6::new(ip, 4433, 0, 1));
+            assert_eq!(resolve("fe80::1%1"), Ok(vec![scoped]));
+            assert_eq!(resolve("[fe80::1%1]"), Ok(vec![scoped]));
         }
 
         #[test]
         fn looks_up_a_name_with_the_port() {
-            let found = resolve("historian.local");
+            let found = resolve("Historian.local");
             assert_eq!(found, Ok(vec![address("10.0.0.9:4433")]));
         }
 

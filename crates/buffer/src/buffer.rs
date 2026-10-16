@@ -7,6 +7,7 @@
 use std::cell::RefCell;
 use std::fmt;
 use std::future::poll_fn;
+use std::iter;
 use std::mem;
 use std::num::NonZeroU8;
 use std::path::{self, PathBuf};
@@ -30,10 +31,12 @@ use crate::carry;
 use crate::entry::{self, ENTRIES_MAX, Entry};
 use crate::group::{self, Closed, Group, Sealed};
 use crate::header::{self, Header};
-use crate::log::{self, Found, Logs, Mark, Tail};
+use crate::log::{self, Carried, Found, Logs, Mark, Tail};
 use crate::read::{self, Read, Reading, Stored};
-use crate::record::{self, ALIGN, AREA_START, Body};
-use crate::wal::{self, Cursor, Layout, Limit, Step, Unfit, Window, Writer};
+use crate::record::{self, ALIGN, AREA_START, Body, HEADER_LEN};
+use crate::wal::{
+    self, Cursor, Ends, Layout, Limit, Plan, Position, Step, Unfit, Window, Writer,
+};
 
 /// How many reads at once hold records with no allocation.
 const HOLDS: usize = 16;
@@ -46,9 +49,9 @@ pub struct Config {
     /// The directory of this shard's ring, relative to the data directory. Its parent
     /// must be there and durable.
     pub dir: PathBuf,
-    /// Blocks for record headers, recovery reads, and the entries a read gives. It
-    /// needs a class of 64 KiB. Its budget bounds an entry, with
-    /// [`Buffer::block_max`].
+    /// Blocks for record headers, recovery reads, the entries a read gives, and,
+    /// with `trimmed`, the checkpoint and the carry record of a commit. It needs a
+    /// class of 64 KiB. Its budget bounds an entry, with [`Buffer::block_max`].
     pub pool: Rc<Pool>,
     /// Deadlines of the group commit.
     pub clock: Clock,
@@ -63,6 +66,10 @@ pub struct Config {
     /// The longest time an entry waits for its group commit to start. An entry
     /// queued during a commit longer than `commit` waits until that commit ends.
     pub commit: Span,
+    /// Each commit frees the oldest records that no path needs, when the ring needs
+    /// their room. False until the open trims too. No caller sets it until #2796
+    /// merges.
+    pub trimmed: bool,
 }
 
 /// Why an open or a read failed.
@@ -178,11 +185,12 @@ pub enum Rejected {
     /// The batch alone is over a [`Limit`], so this buffer never takes it. The
     /// limit is the first one it is over, in the order of [`Limit`].
     Large(Limit),
-    /// The ring has no room for the batch: three blocks stay free, for the restart
-    /// record of the next open, the carry record of the commit after it, and the
-    /// restart record of a later open. Room returns only when records leave the ring
-    /// at its tail, and never when the offsets left before their end are under
-    /// `needed`. Nothing moves records out of the ring yet.
+    /// The ring has no room for the batch, after the trim of the last commit when
+    /// [`Config::trimmed`] is set: three blocks stay free, for the restart record of
+    /// the next open, the carry record of the commit after it, and the restart
+    /// record of a later open. Room returns only when records leave the ring at its
+    /// tail, and never when the offsets left before their end are under `needed`.
+    /// Without [`Config::trimmed`], nothing moves records out of the ring.
     Full {
         /// Bytes of the area that the batch's record needs, with the rest of the
         /// area it must skip.
@@ -258,11 +266,13 @@ impl From<header::Error> for Error {
 }
 
 /// One shard's logs. It lives on its shard: the commit task runs on the shard's
-/// `tasks`. The task idles while nothing is queued and no commit runs. A drop ends
-/// the task at once when it idles, else at the end of its last commit, which writes
-/// each entry queued at the drop, or earlier at the first file call that fails.
-/// Await an [`End`] past the drop, then drop it, before a reopen and before the shard
-/// ends, which cancels the task.
+/// `tasks`. The task idles while nothing is queued and no commit runs. With
+/// [`Config::trimmed`], an append that gets [`Rejected::Full`] also wakes it at the
+/// next deadline, so that its commit can trim. A drop ends the task at once when it
+/// idles, else at the end of its last commit, which writes each entry queued at the
+/// drop, or earlier at the first file call that fails. Await an [`End`] past the
+/// drop, then drop it, before a reopen and before the shard ends, which cancels the
+/// task.
 #[derive(Debug)]
 pub struct Buffer {
     shared: Rc<Shared>,
@@ -278,10 +288,26 @@ struct Shared {
     pool: Rc<Pool>,
     block_max: usize,
     layout: Layout,
+    /// [`Config::trimmed`].
+    trimmed: bool,
+    /// The most tails of a carry record whose body fits the largest block of `pool`.
+    tails_max: usize,
     state: RefCell<State>,
 }
 
 impl Shared {
+    /// Takes the groups of a commit into `taken`, and gives its checkpoint and carry
+    /// record in the same borrow, or neither when [`Config::trimmed`] is false.
+    fn take(&self, taken: &mut Vec<Closed>) -> (Option<Checkpoint>, Option<Carry>) {
+        let mut state = self.state.borrow_mut();
+        state.take(taken);
+        if !self.trimmed {
+            return (None, None);
+        }
+        let checkpoint = state.checkpoint(&self.pool);
+        (checkpoint, state.carry(&self.pool, self.tails_max))
+    }
+
     /// Ends the task's idle span. The caller holds no borrow of `state`.
     fn unpark(&self) {
         let parked = self.state.borrow_mut().parked.0.take();
@@ -302,11 +328,19 @@ struct State {
     queue: Vec<Closed>,
     /// Where each path stands, and the records that hold it.
     logs: Logs,
+    /// The last checkpoint written.
+    header: Header,
+    /// Empty, with the capacity of the tails of the last carry record, for the next.
+    carried: Carried,
+    /// Whether an append got [`Rejected::Full`] since the last deadline, with
+    /// [`Config::trimmed`]. The task then commits also with no entry, so that its
+    /// trim and carry can free room.
+    starved: bool,
     /// The record that each read in progress holds, in no order.
     held: Vec<u64>,
     /// How many deadlines took the groups to write.
     taken: u64,
-    /// How many deadlines ended with no error.
+    /// How many commits with data records ended with no error.
     commits: u64,
     /// The waiting [`Commit`]s, which the end of each commit and of the task wakes.
     committing: wait::Set,
@@ -366,10 +400,20 @@ impl State {
 
     /// The oldest record that a trim must keep: the oldest that holds the durable
     /// tail of a path or that a read in progress holds. `None` when no record does.
-    #[cfg_attr(not(test), expect(dead_code, reason = "a commit calls it"))]
     fn kept(&mut self) -> Option<u64> {
         let held = self.held.iter().min().copied();
         self.logs.kept().into_iter().chain(held).min()
+    }
+
+    /// The tail of the trim due now, as [`Writer::trimmed`] gives it for [`kept`]
+    /// and the marked ranges of the logs.
+    ///
+    /// [`kept`]: Self::kept
+    fn trimmed(&mut self) -> Option<Position> {
+        let kept = self.kept();
+        let logs = &self.logs;
+        self.writer
+            .trimmed(kept, |offset| logs.marked().holding(offset))
     }
 
     /// The key of the next [`Commit`] or [`End`].
@@ -386,12 +430,20 @@ impl State {
         self.queue.push(full.close(&mut self.writer));
     }
 
-    /// Moves the durable tails past the synced `sealed` groups, tells the writer
-    /// that a trim can free them, keeps their records as spares, and counts the
-    /// commit.
-    fn synced(&mut self, sealed: impl Iterator<Item = Sealed>) {
-        for record in sealed {
-            self.writer.synced(record.ends());
+    /// Moves the tail past the trimmed records and the durable tails past the
+    /// synced `sealed` groups and `carrying` record. Keeps the records and the tails
+    /// as spares, and counts a commit with groups.
+    fn synced(
+        &mut self,
+        sealed: &mut Vec<Sealed>,
+        carrying: Option<Carrying>,
+        tail: Option<Position>,
+    ) {
+        let counted = !sealed.is_empty();
+        let ends = sealed.iter().map(Sealed::ends);
+        let carried = carrying.as_ref().map(|carrying| carrying.ends);
+        self.writer.committed(ends.chain(carried), tail);
+        for record in sealed.drain(..) {
             for (&slot, header) in record.slots().iter().zip(record.headers()) {
                 self.logs
                     .sync(slot, header, record.offset())
@@ -399,7 +451,155 @@ impl State {
             }
             self.spares.push(record.clear());
         }
-        self.commits += 1;
+        if let Some(Carrying {
+            mut carried,
+            offset,
+            ..
+        }) = carrying
+        {
+            self.logs.hold(&carried, offset);
+            carried.clear();
+            self.carried = carried;
+        }
+        if counted {
+            self.commits += 1;
+        }
+    }
+
+    /// Takes the groups of a commit into `taken`.
+    fn take(&mut self, taken: &mut Vec<Closed>) {
+        self.starved = false;
+        if !self.open.is_empty() {
+            self.close_open();
+        }
+        mem::swap(&mut self.queue, taken);
+        if !taken.is_empty() {
+            self.taken += 1;
+        }
+    }
+
+    /// The checkpoint of the trim of the commit whose groups the caller just took, in
+    /// a block of `pool`. `None` when the commit does not trim, or the pool has no
+    /// block: the next deadline then tries again.
+    fn checkpoint(&mut self, pool: &Pool) -> Option<Checkpoint> {
+        let tail = self.trimmed()?;
+        let mut block = pool.alloc(ALIGN).ok()?;
+        self.logs.hide(tail.offset());
+        self.header = self.header.next(tail);
+        let bytes = (&mut *block)
+            .try_into()
+            .expect("invariant: the block is of `ALIGN` bytes");
+        self.header.write(bytes);
+        Some(Checkpoint {
+            tail,
+            place: self.header.place(),
+            block: block.freeze(),
+        })
+    }
+
+    /// Plans the carry record of the paths whose holder is before the reach of the
+    /// next trim, filled with the oldest holders after it, as many as one record
+    /// holds, and at most `most`. `None` when no path needs one, or `pool` has no
+    /// blocks for it: the next deadline then scans the same paths.
+    fn carry(&mut self, pool: &Pool, most: usize) -> Option<Carry> {
+        let mut carried = mem::take(&mut self.carried);
+        let limit = self.writer.tails().min(most);
+        let reach = self
+            .writer
+            .reach(|offset| self.logs.marked().holding(offset));
+        self.logs.idle(reach, limit, &mut carried);
+        let count = carried.tails().len();
+        let len = HEADER_LEN + carry::body_len(count);
+        let blocks = (count > 0).then(|| (pool.alloc(len), pool.alloc(ALIGN)));
+        let Some((Ok(mut block), Ok(wrap))) = blocks else {
+            self.logs.dropped(&mut carried);
+            self.carried = carried;
+            return None;
+        };
+        let plan = self
+            .writer
+            .carry(count)
+            .expect("invariant: `carried` gave the room of the record");
+        let (_, body) = block.split_at_mut(HEADER_LEN);
+        carry::write(carried.tails(), body);
+        Some(Carry {
+            plan,
+            block,
+            wrap,
+            carried,
+        })
+    }
+}
+
+/// The checkpoint block of a trim.
+#[derive(Debug)]
+struct Checkpoint {
+    /// The new tail.
+    tail: Position,
+    /// The offset of the block in the ring file.
+    place: u64,
+    block: Block,
+}
+
+/// A planned carry record whose body is in `block`, after room for its header.
+#[derive(Debug)]
+struct Carry {
+    plan: Plan,
+    block: Unique,
+    /// The block for the wrap header, when the record wraps.
+    wrap: Unique,
+    /// The tails in the body.
+    carried: Carried,
+}
+
+impl Carry {
+    /// Makes the headers from `chain`, the chain value of the record before.
+    fn seal(self, chain: u32) -> Carrying {
+        let Self {
+            plan,
+            mut block,
+            wrap,
+            carried,
+        } = self;
+        let (header, body) = block.split_at_mut(HEADER_LEN);
+        let (sealed, ends) = plan.seal(chain, [&*body]);
+        header.copy_from_slice(&sealed.record.header);
+        let wrap = sealed
+            .wrap
+            .map(|write| (write.place, group::end_block(wrap, &write.header)));
+        Carrying {
+            wrap,
+            place: plan.place,
+            block: block.freeze(),
+            offset: plan.offset,
+            ends,
+            carried,
+        }
+    }
+}
+
+/// A sealed carry record.
+#[derive(Debug)]
+struct Carrying {
+    /// The place and block of the wrap record, when the record wraps.
+    wrap: Option<(u64, Block)>,
+    place: u64,
+    block: Block,
+    offset: u64,
+    ends: Ends,
+    /// The tails in the body, which the record holds once it is synced.
+    carried: Carried,
+}
+
+impl Carrying {
+    /// The writes that put the record in the ring, in order, as [`Sealed::writes`].
+    fn writes(&self) -> impl Iterator<Item = (u64, &[Block])> {
+        let wrap = self
+            .wrap
+            .as_ref()
+            .map(|(place, block)| (*place, slice::from_ref(block)));
+        wrap.into_iter()
+            .chain(iter::once((self.place, slice::from_ref(&self.block))))
     }
 }
 
@@ -444,6 +644,7 @@ impl Buffer {
             entropy,
             layout,
             commit,
+            trimmed,
         } = config;
         let block_max = group::block_max(&pool).map_err(|min| Error::Budget {
             budget: pool.budget(),
@@ -455,17 +656,23 @@ impl Buffer {
         let (writer, sealed) = cursor.writer(header.tail.offset(), chain)?;
         write_restart(&file, &pool, sealed, chain).await?;
         file.sync().await?;
+        let tails_max = carry::count(pool.largest().saturating_sub(HEADER_LEN));
         let shared = Rc::new(Shared {
             file,
             pool,
             block_max,
             layout: header.layout,
+            trimmed,
+            tails_max,
             state: RefCell::new(State {
                 writer,
                 open: Group::default(),
                 spares: Vec::new(),
                 queue: Vec::new(),
                 logs,
+                header,
+                carried: Carried::default(),
+                starved: false,
                 held: Vec::with_capacity(HOLDS),
                 taken: 0,
                 commits: 0,
@@ -639,6 +846,14 @@ impl Buffer {
                     .open
                     .push(pool, block_max, &state.writer, batch)
                     .map_err(rejected)?
+            }
+            Err(full @ group::Rejected::Ring(_)) => {
+                if shared.trimmed {
+                    state.starved = true;
+                    drop(guard);
+                    shared.unpark();
+                }
+                return Err(rejected(full));
             }
             Err(other) => return Err(rejected(other)),
         };
@@ -893,7 +1108,7 @@ fn recover_carried(
     for tail in carry::parse(body).map_err(unread)? {
         let tail = tail.map_err(unread)?;
         let slot = slots.index(tail.index);
-        logs.carry(slot, &tail, offset).map_err(misplaced)?;
+        logs.recover(slot, &tail, offset).map_err(misplaced)?;
     }
     Ok(())
 }
@@ -933,11 +1148,13 @@ fn small_record(
     Ok(block.freeze().skip(start))
 }
 
-/// The commit task. It parks while the state idles; a push that takes an entry or
-/// the drop wakes it. Each deadline takes the closed groups and the open one, seals
-/// them in order from `chain`, the value of the restart record, writes them, syncs
-/// once, and wakes the waiters. A failed file call ends the task, and so does the
-/// drop once nothing is queued.
+/// The commit task. It parks while the state idles; a push that takes an entry, a
+/// push that the ring refuses, or the drop wakes it. Each deadline takes the closed
+/// groups and the open one with the trim and the carry record of the commit, seals
+/// the records in order from `chain`, the value of the restart record, writes them
+/// and the checkpoint, syncs once, and wakes the waiters. A deadline with none of
+/// these writes nothing. A failed file call ends the task, and so does the drop
+/// once nothing is queued.
 async fn run(shared: Rc<Shared>, clock: Clock, commit: Span, chain: u32) {
     let mut chain = chain;
     let mut taken: Vec<Closed> = Vec::new();
@@ -948,7 +1165,7 @@ async fn run(shared: Rc<Shared>, clock: Clock, commit: Span, chain: u32) {
         let mut idled = false;
         let ended = poll_fn(|cx| {
             let mut state = shared.state.borrow_mut();
-            if !state.idle() {
+            if !state.idle() || state.starved {
                 return Poll::Ready(false);
             }
             if state.closed {
@@ -975,24 +1192,22 @@ async fn run(shared: Rc<Shared>, clock: Clock, commit: Span, chain: u32) {
         }
         (&mut sleep).await;
         sleep.reset(clock.now() + commit);
-        {
-            let mut state = shared.state.borrow_mut();
-            state.taken += 1;
-            if !state.open.is_empty() {
-                state.close_open();
-            }
-            mem::swap(&mut state.queue, &mut taken);
+        let (checkpoint, carry) = shared.take(&mut taken);
+        if taken.is_empty() && checkpoint.is_none() && carry.is_none() {
+            continue;
         }
-        for closed in taken.drain(..) {
-            let record = closed.seal(chain);
-            chain = record.ends().record.chain();
-            sealed.push(record);
-        }
-        let result = write(&shared, &sealed).await;
+        let carrying;
+        (carrying, chain) = seal(&mut taken, &mut sealed, carry, chain);
+        let result =
+            write(&shared, &sealed, carrying.as_ref(), checkpoint.as_ref()).await;
         let failed = result.is_err();
         let mut state = shared.state.borrow_mut();
         match result {
-            Ok(()) => state.synced(sealed.drain(..)),
+            Ok(()) => state.synced(
+                &mut sealed,
+                carrying,
+                checkpoint.map(|checkpoint| checkpoint.tail),
+            ),
             Err(error) => {
                 state.failed = Some(error);
                 state.end(&mut woken);
@@ -1009,14 +1224,45 @@ async fn run(shared: Rc<Shared>, clock: Clock, commit: Span, chain: u32) {
     }
 }
 
-/// Writes each sealed group's records and syncs once.
-async fn write(shared: &Shared, sealed: &[Sealed]) -> Result<(), files::Error> {
-    for record in sealed {
-        for (place, blocks) in record.writes() {
-            shared.file.write_at(AREA_START + place, blocks).await?;
-        }
+/// Seals the `taken` groups into `sealed`, then `carry`, in order from `chain`, the
+/// chain value of the record before. Gives the sealed carry record and the chain
+/// value after the last record.
+fn seal(
+    taken: &mut Vec<Closed>,
+    sealed: &mut Vec<Sealed>,
+    carry: Option<Carry>,
+    mut chain: u32,
+) -> (Option<Carrying>, u32) {
+    for closed in taken.drain(..) {
+        let record = closed.seal(chain);
+        chain = record.ends().record.chain();
+        sealed.push(record);
     }
-    shared.file.sync().await
+    let carrying = carry.map(|carry| carry.seal(chain));
+    let chain = carrying
+        .as_ref()
+        .map_or(chain, |carrying| carrying.ends.record.chain());
+    (carrying, chain)
+}
+
+/// Writes each sealed group's records, then the carry record and the checkpoint of
+/// the commit, and syncs once.
+async fn write(
+    shared: &Shared,
+    sealed: &[Sealed],
+    carrying: Option<&Carrying>,
+    checkpoint: Option<&Checkpoint>,
+) -> Result<(), files::Error> {
+    let file = &shared.file;
+    let carried = carrying.into_iter().flat_map(Carrying::writes);
+    for (place, blocks) in sealed.iter().flat_map(Sealed::writes).chain(carried) {
+        file.write_at(AREA_START + place, blocks).await?;
+    }
+    if let Some(checkpoint) = checkpoint {
+        file.write_at(checkpoint.place, slice::from_ref(&checkpoint.block))
+            .await?;
+    }
+    file.sync().await
 }
 
 /// The future of [`Buffer::committed`] and [`Buffer::next_commit`]. It does not borrow
@@ -1268,6 +1514,20 @@ mod tests {
     where
         F: Future<Output = Buffer> + 'static,
     {
+        with_ring(sim, node, name, false, main)
+    }
+
+    /// [`with_buffer`] with [`Config::trimmed`] set to `trimmed`.
+    fn with_ring<F>(
+        sim: &mut sim::Sim,
+        node: &sim::node::Node,
+        name: &str,
+        trimmed: bool,
+        main: impl FnOnce(Buffer, Slots, Rc<Pool>) -> F + Send + 'static,
+    ) -> Logs
+    where
+        F: Future<Output = Buffer> + 'static,
+    {
         let logs = Arc::new(Mutex::new(None));
         let ended = Arc::clone(&logs);
         let config = env::shards::Config {
@@ -1291,6 +1551,7 @@ mod tests {
                     layout: Layout::new(64 * 4096, 8000)
                         .expect("the sizes make a ring"),
                     commit: COMMIT,
+                    trimmed,
                 };
                 let mut slots = Slots::new();
                 let buffer = Buffer::open(config, &mut slots).await.expect("opens");
@@ -1356,8 +1617,69 @@ mod tests {
         assert_eq!(walked, written);
     }
 
+    /// With no [`Config::trimmed`], a refused append does not wake the task: an
+    /// append half a commit span after the refusal commits at least one span after
+    /// it, not one span after the refusal.
+    #[test]
+    fn a_refused_append_with_no_trim_leaves_the_commit_deadline() {
+        let mut sim = sim::Sim::new(sim::Config::default());
+        let node = sim.node(sim::node::Config::default());
+        let waited = Arc::new(Mutex::new(None));
+        let found = Arc::clone(&waited);
+        let own = node.clone();
+        with_buffer(
+            &mut sim,
+            &node,
+            "refused",
+            move |buffer, mut slots, pool| async move {
+                let one = slots.index(channel::Key::from_u128(1));
+                let part = pool.alloc(100).expect("a block").freeze();
+                let wide = pool.alloc(5000).expect("a block").freeze();
+                buffer
+                    .append([entry(1, one, Path::Live, 0, &part)])
+                    .expect("room");
+                buffer.committed().await.expect("commits");
+                let mut first = 1;
+                while buffer
+                    .append([entry(1, one, Path::Live, 3 * first, &wide)])
+                    .is_ok()
+                {
+                    buffer.committed().await.expect("commits");
+                    first += 1;
+                }
+                own.clock()
+                    .sleep(Span::from_nanos(2 * COMMIT.nanos()))
+                    .await;
+                let refused =
+                    buffer.append([entry(1, one, Path::Live, 3 * first, &wide)]);
+                own.clock()
+                    .sleep(Span::from_nanos(COMMIT.nanos() / 2))
+                    .await;
+                let appended = own.clock().now();
+                let batch = [entry(1, one, Path::Live, 3 * first, &part)];
+                buffer.append(batch).expect("the ring has room");
+                buffer.committed().await.expect("commits");
+                let span = own.clock().now() - appended;
+                *found.lock().expect("no panic held the lock") = Some((refused, span));
+                buffer
+            },
+        );
+        let found = waited.lock().expect("no panic held the lock").take();
+        let (refused, span) = found.expect("the shard gave the result");
+        assert_eq!(
+            refused,
+            Err(Rejected::Full {
+                needed: 8192,
+                free: 4096
+            })
+        );
+        // The write and sync of the commit add their own time.
+        assert!(span >= COMMIT, "the commit came {span:?} after the append");
+    }
+
     /// A commit gives the writer the boundaries of its records. No public call
-    /// shows them until a commit trims, so the test asks the writer.
+    /// shows them, so the test asks the writer for its trim, or the checkpoint for
+    /// the tail when the commits trimmed.
     #[test]
     fn a_commit_gives_the_writer_the_boundaries_of_its_records() {
         let mut sim = sim::Sim::new(sim::Config::default());
@@ -1376,13 +1698,11 @@ mod tests {
                     buffer.append(batch).expect("the ring has room");
                     buffer.committed().await.expect("commits");
                 }
-                let trimmed = buffer
-                    .shared
-                    .state
-                    .borrow()
-                    .writer
-                    .trimmed(None, |offset| offset);
-                *found.lock().expect("no panic held the lock") = trimmed;
+                let state = buffer.shared.state.borrow();
+                let trimmed = state.writer.trimmed(None, |_| None);
+                *found.lock().expect("no panic held the lock") =
+                    Some(trimmed.unwrap_or(state.header.tail));
+                drop(state);
                 buffer
             },
         );
@@ -1426,7 +1746,7 @@ mod tests {
         (read.gap, firsts, read.next)
     }
 
-    /// No commit trims yet, so the test moves the tail of the logs as a trim will.
+    /// The test hides the records by hand, so that it picks the tail of each read.
     #[test]
     fn a_read_gives_the_seqs_of_the_records_that_a_trim_hid_as_its_gap() {
         let mut sim = sim::Sim::new(sim::Config::default());
@@ -1464,9 +1784,9 @@ mod tests {
         assert_eq!(*reads, expected);
     }
 
-    /// No commit trims yet, so the test hides records as a trim will. `newest` gives
-    /// the tagged entry of the oldest record that is not hidden, and skips it once
-    /// that record is hidden, also when later records of its path are not hidden.
+    /// The test hides the records by hand. `newest` gives the tagged entry of the
+    /// oldest record that is not hidden, and skips it once that record is hidden,
+    /// also when later records of its path are not hidden.
     #[test]
     fn newest_skips_the_records_that_a_trim_hid() {
         let mut sim = sim::Sim::new(sim::Config::default());
@@ -1591,8 +1911,10 @@ mod tests {
 
     /// A read from (0, 1) holds the record at 8192, whose entry with no samples at
     /// seq 0 comes after the one at 4096. A walk from 8192 would count it from
-    /// (0, 0), so the trim lands at 4096, though 57 more records want more room.
-    /// No commit trims yet, so the test asks the writer.
+    /// (0, 0), so the trim lands at 4096, though 58 more records want more room.
+    /// Once the read drops, the trim goes on to the room they want. The test asks
+    /// the writer for its trim, or the checkpoint for the tail when the commits
+    /// trimmed.
     #[test]
     fn a_trim_held_after_entries_with_no_samples_at_a_seq_lands_before_them() {
         let mut sim = sim::Sim::new(sim::Config::default());
@@ -1611,40 +1933,36 @@ mod tests {
                     last: None,
                     ..entry(1, one, Path::Live, 0, &part)
                 };
-                let mut batches = vec![vec![empty.clone()], vec![empty]];
-                let more = (0..58)
-                    .map(|commit| vec![entry(1, one, Path::Live, 3 * commit, &part)]);
-                batches.extend(more);
-                for batch in batches {
-                    buffer.append(batch).expect("the ring has room");
+                for _ in 0..2 {
+                    buffer.append([empty.clone()]).expect("the ring has room");
                     buffer.committed().await.expect("commits");
                 }
                 let trimmed = || {
                     let mut state = buffer.shared.state.borrow_mut();
-                    let kept = state.kept();
-                    let tail = state
-                        .writer
-                        .trimmed(kept, |offset| state.logs.marked().land(offset));
-                    (kept, tail.map(crate::wal::Position::offset))
+                    let tail = state.trimmed().unwrap_or(state.header.tail);
+                    (state.kept(), tail.offset())
                 };
-                let mut tails = vec![trimmed()];
+                let mut tails = Vec::new();
                 {
                     let from = Mark::at(0).after(0, 0);
                     let reader = buffer.reader();
                     let mut read = pin!(reader.read(one, Path::Live, from, usize::MAX));
                     let first = poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
                     assert!(first.is_pending(), "the read waits on a file read");
+                    for commit in 0..58 {
+                        let batch = [entry(1, one, Path::Live, 3 * commit, &part)];
+                        buffer.append(batch).expect("the ring has room");
+                        buffer.committed().await.expect("commits");
+                    }
                     tails.push(trimmed());
                 }
+                tails.push(trimmed());
                 *found.lock().expect("no panic held the lock") = tails;
                 buffer
             },
         );
         let tails = tails.lock().expect("no panic held the lock");
-        assert_eq!(
-            *tails,
-            [(Some(60 * 4096), Some(6 * 4096)), (Some(8192), Some(4096))]
-        );
+        assert_eq!(*tails, [(Some(8192), 4096), (Some(60 * 4096), 6 * 4096)]);
     }
 
     /// The durable end counts the entries with no samples at its seq. A read that
@@ -1685,39 +2003,1045 @@ mod tests {
         assert_eq!(*reads, expected);
     }
 
-    /// The test hides the later records, as a trim will, while a read waits on its
-    /// first record. The read gives the entry it holds, and the next read gives the
-    /// gap.
+    /// The test hides the later records while a read waits on its first record,
+    /// which no trim does: the hold of the read keeps them.
     #[test]
-    fn a_read_that_holds_entries_stops_before_the_seqs_that_a_trim_hid() {
+    #[should_panic(
+        expected = "invariant: a read's hold keeps a trim from hiding the records after \
+                    its entries"
+    )]
+    fn a_gap_after_held_entries_is_a_broken_invariant() {
         let mut sim = sim::Sim::new(sim::Config::default());
         let node = sim.node(sim::node::Config::default());
-        let reads = Arc::new(Mutex::new(Vec::new()));
-        let found = Arc::clone(&reads);
         with_buffer(
             &mut sim,
             &node,
             "write",
             |buffer, mut slots, pool| async move {
                 let one = create_three_records(&buffer, &mut slots, &pool).await;
-                let mut reads = Vec::new();
                 {
                     let mut read = pin!(read_from(&buffer, one, 0));
                     let first = poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
                     assert!(first.is_pending(), "the read waits on a file read");
                     buffer.shared.state.borrow_mut().logs.hide(16384);
-                    reads.push(read.await);
+                    read.await;
                 }
-                reads.push(read_from(&buffer, one, 3).await);
-                *found.lock().expect("no panic held the lock") = reads;
                 buffer
             },
         );
-        let reads = reads.lock().expect("no panic held the lock");
-        let expected = [
-            (None, vec![0], Mark::at(3)),
-            (Some(3..9), vec![], Mark::at(9)),
-        ];
-        assert_eq!(*reads, expected);
+    }
+
+    /// The tests of the trim and the carry of each commit.
+    mod trims {
+        use super::*;
+
+        /// The refusal of an append when the ring has no free block for its record.
+        const FULL: Rejected = Rejected::Full {
+            needed: 4096,
+            free: 0,
+        };
+
+        /// [`with_buffer`] with commits that trim.
+        fn with_trims<F>(
+            sim: &mut sim::Sim,
+            node: &sim::node::Node,
+            name: &str,
+            main: impl FnOnce(Buffer, Slots, Rc<Pool>) -> F + Send + 'static,
+        ) -> Logs
+        where
+            F: Future<Output = Buffer> + 'static,
+        {
+            with_ring(sim, node, name, true, main)
+        }
+
+        /// Commits one entry of 3 seqs of `index` on the live path at `slot` for each
+        /// `n` of `firsts`, at seq `3 * n`, one commit each.
+        async fn commit_each(
+            buffer: &Buffer,
+            (index, slot): (u32, Slot),
+            part: &Block,
+            firsts: Range<u64>,
+        ) {
+            for first in firsts {
+                let batch = [entry(index, slot, Path::Live, 3 * first, part)];
+                buffer.append(batch).expect("the ring has room");
+                buffer.committed().await.expect("commits");
+            }
+        }
+
+        /// A read waits on the file read of the record at 4096 while 56 commits of
+        /// another path want the room of the ring of 64 blocks. The trims stop before
+        /// that record, and the read gives its entries. Once the read drops, the trims
+        /// go on, so 100 more commits fit.
+        #[test]
+        fn a_read_holds_back_the_trim_of_the_record_it_waits_on() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            with_trims(
+                &mut sim,
+                &node,
+                "write",
+                |buffer, mut slots, pool| async move {
+                    let one = create_three_records(&buffer, &mut slots, &pool).await;
+                    let two = slots.index(channel::Key::from_u128(2));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    let read = {
+                        let mut read = pin!(read_from(&buffer, one, 0));
+                        let first =
+                            poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
+                        assert!(first.is_pending(), "the read waits on a file read");
+                        commit_each(&buffer, (2, two), &part, 0..56).await;
+                        read.await
+                    };
+                    commit_each(&buffer, (2, two), &part, 56..156).await;
+                    *given.lock().expect("no panic held the lock") = Some(read);
+                    buffer
+                },
+            );
+            let found = found.lock().expect("no panic held the lock");
+            assert_eq!(*found, Some((None, vec![0, 3, 6], Mark::at(9))));
+        }
+
+        /// The live path of index 1 writes [0, 3) once, then 100 commits of index 2
+        /// turn the ring of 64 blocks. A carry record keeps the tail of index 1, and
+        /// the trims pass its record, so its log keeps no run, and a read gives the
+        /// seqs as a gap and no entry.
+        #[test]
+        fn a_trim_past_the_newest_record_of_a_path_drops_its_runs() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            let logs = with_trims(
+                &mut sim,
+                &node,
+                "write",
+                |buffer, mut slots, pool| async move {
+                    let one = slots.index(channel::Key::from_u128(1));
+                    let two = slots.index(channel::Key::from_u128(2));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    commit_each(&buffer, (1, one), &part, 0..1).await;
+                    commit_each(&buffer, (2, two), &part, 0..100).await;
+                    let read = read_from(&buffer, one, 0).await;
+                    *given.lock().expect("no panic held the lock") =
+                        Some((read, buffer.durable(one, Path::Live)));
+                    buffer
+                },
+            );
+            assert_eq!(
+                logs.runs(Slot::new(0), Path::Live).count(),
+                0,
+                "a log keeps no run of the records that a trim passed"
+            );
+            let found = found.lock().expect("no panic held the lock");
+            let tail = Tail {
+                seq: 3,
+                stamp: Some(Stamp::from_nanos(9)),
+            };
+            assert_eq!(*found, Some(((Some(0..3), vec![], Mark::at(3)), tail)));
+        }
+
+        /// One record holds an entry of each of indexes 1 to 100, after 7 records of
+        /// index 101. The commits of index 101 turn the ring of 64 blocks, and the
+        /// carry record of the 100 tails takes 2 blocks where the area has one left,
+        /// so it wraps, and later trims pass the record of the 100 entries. After a
+        /// cut of the power, the open walks past the wrap and finds each tail.
+        #[test]
+        fn a_carry_record_that_wraps_gives_its_tails_after_a_reopen() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let skipped = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&skipped);
+            with_trims(
+                &mut sim,
+                &node,
+                "write",
+                |buffer, mut slots, pool| async move {
+                    let byte = pool.alloc(1).expect("a block").freeze();
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    let filler = slots.index(channel::Key::from_u128(101));
+                    commit_each(&buffer, (101, filler), &part, 0..7).await;
+                    let batch: Vec<Entry> = (1..=100)
+                        .map(|index| {
+                            let slot =
+                                slots.index(channel::Key::from_u128(index.into()));
+                            entry(index, slot, Path::Live, 0, &byte)
+                        })
+                        .collect();
+                    buffer.append(batch).expect("the ring has room");
+                    buffer.committed().await.expect("commits");
+                    commit_each(&buffer, (101, filler), &part, 7..71).await;
+                    let skip = buffer.shared.state.borrow().writer.skip();
+                    *given.lock().expect("no panic held the lock") = Some(skip);
+                    buffer
+                },
+            );
+            let skip = skipped.lock().expect("no panic held the lock").clone();
+            assert_eq!(skip, Some(63 * 4096..64 * 4096), "the carry record wraps");
+            sim.crash(&node, sim::Crash::Power);
+            let found = Arc::new(Mutex::new(Vec::new()));
+            let given = Arc::clone(&found);
+            with_trims(
+                &mut sim,
+                &node,
+                "reopen",
+                |buffer, mut slots, _| async move {
+                    let tails = (1..=101)
+                        .map(|index| {
+                            let slot = slots.index(channel::Key::from_u128(index));
+                            buffer.durable(slot, Path::Live).seq
+                        })
+                        .collect();
+                    *given.lock().expect("no panic held the lock") = tails;
+                    buffer
+                },
+            );
+            let mut seqs = vec![3; 100];
+            seqs.push(213);
+            assert_eq!(*found.lock().expect("no panic held the lock"), seqs);
+        }
+
+        /// The live path of index 1 writes [0, 3) once, then 100 commits of index 2
+        /// turn the ring of 64 blocks, and the power cuts. The open finds the seq and
+        /// stamp of index 1 in a carry record, and the path goes on from there.
+        #[test]
+        fn an_index_that_writes_once_continues_after_the_ring_turns() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            with_trims(
+                &mut sim,
+                &node,
+                "write",
+                |buffer, mut slots, pool| async move {
+                    let one = slots.index(channel::Key::from_u128(1));
+                    let two = slots.index(channel::Key::from_u128(2));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    commit_each(&buffer, (1, one), &part, 0..1).await;
+                    commit_each(&buffer, (2, two), &part, 0..100).await;
+                    buffer
+                },
+            );
+            sim.crash(&node, sim::Crash::Power);
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            with_trims(
+                &mut sim,
+                &node,
+                "reopen",
+                |buffer, mut slots, pool| async move {
+                    let one = slots.index(channel::Key::from_u128(1));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    let tail = buffer.durable(one, Path::Live);
+                    commit_each(&buffer, (1, one), &part, 1..2).await;
+                    let read = read_from(&buffer, one, 0).await;
+                    *given.lock().expect("no panic held the lock") = Some((tail, read));
+                    buffer
+                },
+            );
+            let found = found.lock().expect("no panic held the lock");
+            let tail = Tail {
+                seq: 3,
+                stamp: Some(Stamp::from_nanos(9)),
+            };
+            let read = (Some(0..3), vec![3], Mark::at(6));
+            assert_eq!(*found, Some((tail, read)));
+        }
+
+        /// Records 1 and 2 hold an entry with no samples at seq 0, and record 3 holds
+        /// [0, 3). 53 more records want the room of record 1. A walk from record 2
+        /// would count its entry from (0, 0), and the trim may pass record 2, so it
+        /// lands at record 3. After a cut of the power, the open walks from there, and
+        /// a read from (0, 1) gives the entries from 0 with no gap.
+        #[test]
+        fn a_trim_into_entries_with_no_samples_at_a_seq_passes_them() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let wanted = Arc::new(Mutex::new(None));
+            let found = Arc::clone(&wanted);
+            with_trims(
+                &mut sim,
+                &node,
+                "write",
+                |buffer, mut slots, pool| async move {
+                    let one = slots.index(channel::Key::from_u128(1));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    let empty = Entry {
+                        len: 0,
+                        last: None,
+                        ..entry(1, one, Path::Live, 0, &part)
+                    };
+                    for _ in 0..2 {
+                        buffer.append([empty.clone()]).expect("the ring has room");
+                        buffer.committed().await.expect("commits");
+                    }
+                    commit_each(&buffer, (1, one), &part, 0..54).await;
+                    let mut state = buffer.shared.state.borrow_mut();
+                    let kept = state.kept();
+                    let want = state.writer.trimmed(kept, |_| None);
+                    *found.lock().expect("no panic held the lock") = Some((
+                        want.map(crate::wal::Position::offset),
+                        state.header.tail.offset(),
+                    ));
+                    drop(state);
+                    buffer
+                },
+            );
+            sim.crash(&node, sim::Crash::Power);
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            with_trims(
+                &mut sim,
+                &node,
+                "reopen",
+                |buffer, mut slots, _| async move {
+                    let one = slots.index(channel::Key::from_u128(1));
+                    let from = Mark::at(0).after(0, 0);
+                    let read = buffer
+                        .reader()
+                        .read(one, Path::Live, from, usize::MAX)
+                        .await
+                        .expect("reads");
+                    let lens: Vec<(u64, u32)> = read
+                        .entries
+                        .iter()
+                        .take(2)
+                        .map(|entry| (entry.first, entry.len))
+                        .collect();
+                    *given.lock().expect("no panic held the lock") =
+                        Some((read.gap, lens));
+                    buffer
+                },
+            );
+            let wanted = wanted.lock().expect("no panic held the lock");
+            assert_eq!(
+                *wanted,
+                Some((None, 3 * 4096)),
+                "the trim landed at the end of record 3, and no trim is due"
+            );
+            let found = found.lock().expect("no panic held the lock");
+            assert_eq!(*found, Some((None, vec![(0, 3), (3, 3)])));
+        }
+
+        /// While a read holds the record at 4096, appends of index 2 fill the ring
+        /// until it refuses one. After the read drops, nothing is queued, so only the
+        /// next refused append wakes the commit task. That commit has no data record,
+        /// and its trim gives the room for the append after it.
+        #[test]
+        fn a_push_that_the_ring_refuses_wakes_a_commit_that_trims() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let own = node.clone();
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            with_trims(
+                &mut sim,
+                &node,
+                "write",
+                |buffer, mut slots, pool| async move {
+                    let one = create_three_records(&buffer, &mut slots, &pool).await;
+                    let two = slots.index(channel::Key::from_u128(2));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    let next =
+                        |first: u64| [entry(2, two, Path::Live, 3 * first, &part)];
+                    let mut first = 0;
+                    {
+                        let mut read = pin!(read_from(&buffer, one, 0));
+                        let polled =
+                            poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
+                        assert!(polled.is_pending(), "the read waits on a file read");
+                        while buffer.append(next(first)).is_ok() {
+                            buffer.committed().await.expect("commits");
+                            first += 1;
+                        }
+                        read.await;
+                    }
+                    let commits = buffer.commits();
+                    let refused = buffer.append(next(first));
+                    own.clock().sleep(Span::from_nanos(3_000_000)).await;
+                    let fits = buffer.append(next(first)).is_ok();
+                    let taken = (commits, buffer.commits());
+                    *given.lock().expect("no panic held the lock") =
+                        Some((refused, taken, fits));
+                    buffer
+                },
+            );
+            let found = found.lock().expect("no panic held the lock").take();
+            let (refused, (before, after), fits) =
+                found.expect("the shard gave the result");
+            assert_eq!(refused, Err(FULL), "the ring refuses the append");
+            assert_eq!(before, after, "the commit of the trim has no data record");
+            assert!(fits, "the commit that the refusal woke trims");
+        }
+
+        /// While a read holds the record at 4096, appends of index 2 fill the ring
+        /// until it refuses one, twice, with a commit between. The refusal after that
+        /// wakes a commit with no group, no trim, and no carry record, which writes
+        /// and syncs nothing: the failures armed on the ring file stay unused, and the
+        /// next append gets the same refusal.
+        #[test]
+        fn a_wake_with_nothing_to_write_writes_and_syncs_nothing() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let own = node.clone();
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            with_trims(
+                &mut sim,
+                &node,
+                "write",
+                |buffer, mut slots, pool| async move {
+                    let one = create_three_records(&buffer, &mut slots, &pool).await;
+                    let two = slots.index(channel::Key::from_u128(2));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    let next =
+                        |first: u64| [entry(2, two, Path::Live, 3 * first, &part)];
+                    let mut first = 0;
+                    let result = {
+                        let mut read = pin!(read_from(&buffer, one, 0));
+                        let polled =
+                            poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
+                        assert!(polled.is_pending(), "the read waits on a file read");
+                        for _ in 0..2 {
+                            while buffer.append(next(first)).is_ok() {
+                                buffer.committed().await.expect("commits");
+                                first += 1;
+                            }
+                            own.clock().sleep(Span::from_nanos(3_000_000)).await;
+                        }
+                        let ring = PathBuf::from("ring/ring");
+                        own.fail_file(&ring, files::Operation::WriteAt);
+                        own.fail_file(&ring, files::Operation::Sync);
+                        let commits = buffer.commits();
+                        let refused = buffer.append(next(first));
+                        own.clock().sleep(Span::from_nanos(3_000_000)).await;
+                        let again = buffer.append(next(first));
+                        (refused, again, commits, buffer.commits())
+                    };
+                    *given.lock().expect("no panic held the lock") = Some(result);
+                    buffer
+                },
+            );
+            let found = found.lock().expect("no panic held the lock").take();
+            let (refused, again, before, after) =
+                found.expect("the shard gave the result");
+            assert_eq!(refused, Err(FULL));
+            assert_eq!(again, Err(FULL));
+            assert_eq!(before, after);
+        }
+
+        /// Fills a new ring on `node` with no trim: the records of
+        /// [`create_three_records`], then one commit of path 2 each until the ring
+        /// refuses one. Gives the count of commits of path 2.
+        fn fill(sim: &mut sim::Sim, node: &sim::node::Node) -> u64 {
+            let next = Arc::new(Mutex::new(0));
+            let filled = Arc::clone(&next);
+            with_buffer(sim, node, "fill", |buffer, mut slots, pool| async move {
+                create_three_records(&buffer, &mut slots, &pool).await;
+                let two = slots.index(channel::Key::from_u128(2));
+                let part = pool.alloc(100).expect("a block").freeze();
+                let mut first = 0;
+                while buffer
+                    .append([entry(2, two, Path::Live, 3 * first, &part)])
+                    .is_ok()
+                {
+                    buffer.committed().await.expect("commits");
+                    first += 1;
+                }
+                *filled.lock().expect("no panic held the lock") = first;
+                buffer
+            });
+            *next.lock().expect("no panic held the lock")
+        }
+
+        /// The tails that a carry record planned now holds, the tail, the head, and
+        /// the oldest record that a path holds. Through [`Buffer`], a carry record
+        /// or a trim shows only as room for later appends, so the tests read it here.
+        type Room = (usize, u64, u64, Option<u64>);
+
+        /// The [`Room`] of `buffer`.
+        fn room(buffer: &Buffer) -> Room {
+            let mut state = buffer.shared.state.borrow_mut();
+            let tail = state.header.tail.offset();
+            (
+                state.writer.tails(),
+                tail,
+                state.writer.head(),
+                state.logs.kept(),
+            )
+        }
+
+        /// Opens the ring on `node` with commits that trim, holds a read of path 1
+        /// from seq 0, and appends entry `first` of path 2. Gives what the append
+        /// gave, and the [`room`] before the append and after its commit.
+        fn carry_while_held(
+            sim: &mut sim::Sim,
+            node: &sim::node::Node,
+            first: u64,
+        ) -> (Result<(), Rejected>, Room, Room) {
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            let own = node.clone();
+            with_trims(
+                sim,
+                node,
+                "carry",
+                move |buffer, mut slots, pool| async move {
+                    let one = slots.index(channel::Key::from_u128(1));
+                    let two = slots.index(channel::Key::from_u128(2));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    let before = room(&buffer);
+                    let (refused, after) = {
+                        let mut read = pin!(read_from(&buffer, one, 0));
+                        let polled =
+                            poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
+                        assert!(polled.is_pending(), "the read waits on a file read");
+                        let batch = [entry(2, two, Path::Live, 3 * first, &part)];
+                        let refused = buffer.append(batch);
+                        own.clock().sleep(Span::from_nanos(3_000_000)).await;
+                        let after = room(&buffer);
+                        read.await;
+                        (refused, after)
+                    };
+                    *given.lock().expect("no panic held the lock") =
+                        Some((refused, before, after));
+                    buffer
+                },
+            );
+            let found = found.lock().expect("no panic held the lock").take();
+            found.expect("the shard gave the result")
+        }
+
+        /// The durable seq of path 1 after an open of the ring on `node`.
+        fn durable_after_open(sim: &mut sim::Sim, node: &sim::node::Node) -> u64 {
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            with_trims(
+                sim,
+                node,
+                "reopen",
+                move |buffer, mut slots, _| async move {
+                    let one = slots.index(channel::Key::from_u128(1));
+                    let seq = buffer.durable(one, Path::Live).seq;
+                    *given.lock().expect("no panic held the lock") = Some(seq);
+                    buffer
+                },
+            );
+            let found = found.lock().expect("no panic held the lock").take();
+            found.expect("the shard gave the result")
+        }
+
+        /// The first session fills the ring with no trim. In the second, a read holds
+        /// the record at 4096, and a refused append wakes a commit that writes a
+        /// carry record of path 1 into the owed block and frees only block 0. The
+        /// third open puts its restart record in the last block that a carry record
+        /// may take. Its commit needs no carry, since the walk read the first, so the
+        /// head stays, and it trims past the old holder of path 1.
+        #[test]
+        fn a_commit_after_a_carry_and_an_open_of_a_full_ring_trims_with_no_carry() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let first = fill(&mut sim, &node);
+            let (refused, before, after) = carry_while_held(&mut sim, &node, first);
+            assert_eq!(refused, Err(FULL));
+            assert_eq!(
+                before,
+                (97, 0, 62 * 4096, Some(3 * 4096)),
+                "the ring is full, and path 1 holds the record at 12288"
+            );
+            assert_eq!(
+                after,
+                (97, 4096, 63 * 4096, Some(62 * 4096)),
+                "the carry takes the owed block, and holds paths 1 and 2"
+            );
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            let own = node.clone();
+            with_trims(
+                &mut sim,
+                &node,
+                "trim",
+                move |buffer, mut slots, pool| async move {
+                    let one = slots.index(channel::Key::from_u128(1));
+                    let two = slots.index(channel::Key::from_u128(2));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    let next = || [entry(2, two, Path::Live, 3 * first, &part)];
+                    let opened = room(&buffer);
+                    let commits = buffer.commits();
+                    let refused = buffer.append(next());
+                    own.clock().sleep(Span::from_nanos(3_000_000)).await;
+                    let trimmed = room(&buffer);
+                    let fits = buffer.append(next()).is_ok();
+                    buffer.committed().await.expect("commits");
+                    let tail = buffer.shared.state.borrow().header.tail.offset();
+                    *given.lock().expect("no panic held the lock") = Some((
+                        (opened, trimmed),
+                        refused,
+                        commits + 1 == buffer.commits(),
+                        (fits, tail),
+                        buffer.durable(one, Path::Live).seq,
+                    ));
+                    buffer
+                },
+            );
+            let trimmed = found.lock().expect("no panic held the lock").take();
+            let ((opened, trimmed), refused, one_commit, fits, durable) =
+                trimmed.expect("the shard gave the result");
+            assert_eq!(
+                opened,
+                (0, 4096, 64 * 4096, Some(62 * 4096)),
+                "the restart record took the last free block"
+            );
+            assert_eq!(
+                trimmed,
+                (190, 9 * 4096, 64 * 4096, Some(62 * 4096)),
+                "no carry record, and the trim passes the old holder of path 1"
+            );
+            assert_eq!(refused, Err(FULL), "the trim comes after the refusal");
+            assert!(one_commit, "the commit of the trim has no data record");
+            assert_eq!(
+                fits,
+                (true, 10 * 4096),
+                "the commit that the refusal woke trims"
+            );
+            assert_eq!(
+                durable, 9,
+                "the walk read the tail of path 1 from the carry"
+            );
+            assert_eq!(durable_after_open(&mut sim, &node), 9);
+        }
+
+        /// The first session fills the ring with no trim. In the second, the write of
+        /// the carry record that a refused append wakes fails, so no carry record is
+        /// durable. The third open writes over the restart record of the second, so
+        /// its commit has the owed block, and carries.
+        #[test]
+        fn a_commit_after_an_open_past_a_carry_that_was_not_durable_carries() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let first = fill(&mut sim, &node);
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            let own = node.clone();
+            with_trims(
+                &mut sim,
+                &node,
+                "lost",
+                move |buffer, mut slots, pool| async move {
+                    let two = slots.index(channel::Key::from_u128(2));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    let next = || [entry(2, two, Path::Live, 3 * first, &part)];
+                    let opened = room(&buffer);
+                    own.fail_file(
+                        &PathBuf::from("ring/ring"),
+                        files::Operation::WriteAt,
+                    );
+                    let refused = buffer.append(next());
+                    own.clock().sleep(Span::from_nanos(3_000_000)).await;
+                    let failed = buffer.append(next());
+                    *given.lock().expect("no panic held the lock") =
+                        Some((opened, refused, failed));
+                    buffer
+                },
+            );
+            let lost = found.lock().expect("no panic held the lock").take();
+            let (opened, refused, failed) = lost.expect("the shard gave the result");
+            assert_eq!(
+                opened,
+                (97, 0, 62 * 4096, Some(3 * 4096)),
+                "the ring is full, and path 1 holds the record at 12288"
+            );
+            assert_eq!(refused, Err(FULL));
+            let failed_write = files::Error::Io {
+                path: PathBuf::from("ring/ring"),
+                operation: files::Operation::WriteAt,
+                code: 5,
+            };
+            assert_eq!(
+                failed,
+                Err(Rejected::Files(failed_write)),
+                "the failed write of the carry record ends the task"
+            );
+            let (refused, before, after) = carry_while_held(&mut sim, &node, first);
+            assert_eq!(refused, Err(FULL));
+            assert_eq!(before, opened, "the open wrote over the restart record");
+            assert_eq!(
+                after,
+                (97, 4096, 63 * 4096, Some(62 * 4096)),
+                "the carry takes the owed block, and holds paths 1 and 2"
+            );
+        }
+
+        /// The first session fills the ring with no trim. In the second, the pool has
+        /// no block when a refused append wakes a commit, so it trims nothing and
+        /// carries nothing. Once the blocks are back, the next refused append wakes a
+        /// commit that carries path 1 and trims, and the one after it trims past the
+        /// old holder of path 1.
+        #[test]
+        fn a_commit_with_no_pool_block_trims_and_carries_at_a_later_commit() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let first = fill(&mut sim, &node);
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            let own = node.clone();
+            with_trims(
+                &mut sim,
+                &node,
+                "starved",
+                move |buffer, mut slots, pool| async move {
+                    let two = slots.index(channel::Key::from_u128(2));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    let next =
+                        |n: u64| [entry(2, two, Path::Live, 3 * (first + n), &part)];
+                    let mut rooms = vec![room(&buffer)];
+                    // Once the blocks of 1 byte drop, their class has none in use, so
+                    // the pool gives its room to a block of any size.
+                    let mut held = Vec::new();
+                    while let Ok(block) = pool.alloc(1) {
+                        held.push(block);
+                    }
+                    let starved = buffer.append(next(0));
+                    own.clock().sleep(Span::from_nanos(3_000_000)).await;
+                    rooms.push(room(&buffer));
+                    held.clear();
+                    let refused = buffer.append(next(0));
+                    own.clock().sleep(Span::from_nanos(3_000_000)).await;
+                    rooms.push(room(&buffer));
+                    buffer.append(next(0)).expect("the trim gave room");
+                    buffer.committed().await.expect("commits");
+                    rooms.push(room(&buffer));
+                    *given.lock().expect("no panic held the lock") =
+                        Some((starved, refused, rooms));
+                    buffer
+                },
+            );
+            let found = found.lock().expect("no panic held the lock").take();
+            let (starved, refused, rooms) = found.expect("the shard gave the result");
+            assert_eq!((starved, refused), (Err(FULL), Err(FULL)));
+            let opened = (97, 0, 62 * 4096, Some(3 * 4096));
+            assert_eq!(rooms[..2], [opened, opened], "no block, no trim, no carry");
+            assert_eq!(
+                rooms[2],
+                (190, 3 * 4096, 63 * 4096, Some(62 * 4096)),
+                "the carry takes the owed block and holds paths 1 and 2, and the trim \
+                 stops at path 1"
+            );
+            assert_eq!(
+                rooms[3],
+                (190, 9 * 4096, 64 * 4096, Some(62 * 4096)),
+                "the trim passes the old holder of path 1"
+            );
+        }
+
+        /// A commit with no pool block for its checkpoint hides no record: a read of
+        /// path 1 from seq 0 then gives each entry of the three records.
+        #[test]
+        fn a_checkpoint_with_no_pool_block_hides_no_record() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let first = fill(&mut sim, &node);
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            let own = node.clone();
+            with_trims(
+                &mut sim,
+                &node,
+                "starved",
+                move |buffer, mut slots, pool| async move {
+                    let one = slots.index(channel::Key::from_u128(1));
+                    let two = slots.index(channel::Key::from_u128(2));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    let mut held = Vec::new();
+                    while let Ok(block) = pool.alloc(1) {
+                        held.push(block);
+                    }
+                    let starved =
+                        buffer.append([entry(2, two, Path::Live, 3 * first, &part)]);
+                    own.clock().sleep(Span::from_nanos(3_000_000)).await;
+                    held.clear();
+                    let read = read_from(&buffer, one, 0).await;
+                    *given.lock().expect("no panic held the lock") =
+                        Some((starved, read));
+                    buffer
+                },
+            );
+            let found = found.lock().expect("no panic held the lock").take();
+            let (starved, (gap, firsts, _)) = found.expect("the shard gave the result");
+            assert_eq!(starved, Err(FULL));
+            assert_eq!((gap, firsts), (None, vec![0, 3, 6]));
+        }
+
+        /// Runs a trims session in which the pool has one block of 4096 bytes when an
+        /// append of index 2 at seq `3 * first` is refused, and gives the refusal and
+        /// the room after its commit.
+        fn carry_with_one_block(
+            sim: &mut sim::Sim,
+            node: &sim::node::Node,
+            first: u64,
+        ) -> (Result<(), Rejected>, Room) {
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            let own = node.clone();
+            with_trims(
+                sim,
+                node,
+                "dropped",
+                move |buffer, mut slots, pool| async move {
+                    let two = slots.index(channel::Key::from_u128(2));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    let next = || [entry(2, two, Path::Live, 3 * first, &part)];
+                    let mut held = Vec::new();
+                    while let Ok(block) = pool.alloc(ALIGN) {
+                        held.push(block);
+                    }
+                    held.pop();
+                    let refused = buffer.append(next());
+                    own.clock().sleep(Span::from_nanos(3_000_000)).await;
+                    *given.lock().expect("no panic held the lock") =
+                        Some((refused, room(&buffer)));
+                    buffer
+                },
+            );
+            let dropped = found.lock().expect("no panic held the lock").take();
+            dropped.expect("the shard gave the result")
+        }
+
+        /// The first session fills the ring with no trim. In the second, the pool has
+        /// one block of 4096 bytes when a refused append wakes a commit: the
+        /// checkpoint takes it, so the commit trims up to path 1, but the carry
+        /// record of path 1 gets no block. The power cuts. The open walks the old
+        /// holder of path 1 and gives its tail. Its first commit carries path 1, and
+        /// the commit after it trims past the old holder.
+        #[test]
+        fn a_crash_after_a_carry_with_no_pool_block_opens_and_carries_at_the_next_two_commits()
+         {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let first = fill(&mut sim, &node);
+            let (refused, dropped) = carry_with_one_block(&mut sim, &node, first);
+            assert_eq!(refused, Err(FULL));
+            assert_eq!(
+                dropped,
+                (190, 3 * 4096, 62 * 4096, Some(3 * 4096)),
+                "the trim stops at path 1, and no carry record takes a block"
+            );
+            sim.crash(&node, sim::Crash::Power);
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            let own = node.clone();
+            with_trims(
+                &mut sim,
+                &node,
+                "reopen",
+                move |buffer, mut slots, pool| async move {
+                    let one = slots.index(channel::Key::from_u128(1));
+                    let two = slots.index(channel::Key::from_u128(2));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    let tail = buffer.durable(one, Path::Live);
+                    let mut rooms = vec![room(&buffer)];
+                    let mut refused = Vec::new();
+                    for n in first..first + 2 {
+                        let next = || [entry(2, two, Path::Live, 3 * n, &part)];
+                        while let Err(full) = buffer.append(next()) {
+                            refused.push(full);
+                            own.clock().sleep(Span::from_nanos(3_000_000)).await;
+                            rooms.push(room(&buffer));
+                        }
+                        buffer.committed().await.expect("commits");
+                        rooms.push(room(&buffer));
+                    }
+                    *given.lock().expect("no panic held the lock") =
+                        Some((tail, refused, rooms));
+                    buffer
+                },
+            );
+            let reopened = found.lock().expect("no panic held the lock").take();
+            let (tail, refused, rooms) = reopened.expect("the shard gave the result");
+            let walked = Tail {
+                seq: 9,
+                stamp: Some(Stamp::from_nanos(9)),
+            };
+            assert_eq!(tail, walked, "the walk reads the old holder of path 1");
+            assert_eq!(refused, vec![FULL]);
+            assert_eq!(rooms[0], dropped, "the open walks from the trimmed tail");
+            assert_eq!(
+                rooms[1],
+                (190, 3 * 4096, 64 * 4096, Some(63 * 4096)),
+                "the first commit carries paths 1 and 2 after its data record"
+            );
+            assert_eq!(
+                rooms[2],
+                (190, 9 * 4096, 64 * 4096, Some(63 * 4096)),
+                "the commit after it trims past the old holder of path 1"
+            );
+            assert_eq!(durable_after_open(&mut sim, &node), 9);
+        }
+
+        /// After one commit, the test takes each free block of 4096 bytes and one
+        /// more, so the next block of that size grows what the pool commits. Two
+        /// commits that trim nothing then take no block of the pool.
+        #[test]
+        fn a_commit_with_no_trim_due_takes_no_pool_block() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            with_trims(
+                &mut sim,
+                &node,
+                "write",
+                |buffer, mut slots, pool| async move {
+                    let one = slots.index(channel::Key::from_u128(1));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    commit_each(&buffer, (1, one), &part, 0..1).await;
+                    let mut held = Vec::new();
+                    let start = pool.committed();
+                    while pool.committed() == start {
+                        held.push(pool.alloc(ALIGN).expect("the budget has room"));
+                    }
+                    let before = pool.committed();
+                    commit_each(&buffer, (1, one), &part, 1..3).await;
+                    *given.lock().expect("no panic held the lock") =
+                        Some((before, pool.committed(), room(&buffer).1));
+                    buffer
+                },
+            );
+            let found = found.lock().expect("no panic held the lock").take();
+            let (before, after, tail) = found.expect("the shard gave the result");
+            assert_eq!(tail, 0, "no commit trims");
+            assert_eq!(before, after);
+        }
+
+        /// 100 commits of one path in the ring of 64 blocks each fit, since each
+        /// commit trims the oldest records. A read from seq 0 gives the trimmed seqs
+        /// as its gap, then the entries that the ring holds.
+        #[test]
+        fn a_full_ring_frees_its_oldest_records_at_the_commit() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            with_trims(
+                &mut sim,
+                &node,
+                "write",
+                |buffer, mut slots, pool| async move {
+                    let one = slots.index(channel::Key::from_u128(1));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    commit_each(&buffer, (1, one), &part, 0..100).await;
+                    let read = read_from(&buffer, one, 0).await;
+                    *given.lock().expect("no panic held the lock") =
+                        Some((read, room(&buffer)));
+                    buffer
+                },
+            );
+            let found = found.lock().expect("no panic held the lock").take();
+            let ((gap, firsts, next), room) = found.expect("the shard gave the result");
+            assert_eq!(room, (190, 46 * 4096, 101 * 4096, Some(100 * 4096)));
+            assert_eq!(gap, Some(0..135));
+            assert_eq!(firsts, (45..100).map(|n| 3 * n).collect::<Vec<_>>());
+            assert_eq!(next, Mark::at(300));
+        }
+
+        /// 70 commits of one path turn the ring of 64 blocks. Appends of 100 bytes
+        /// then queue with no commit until the ring refuses one: the refusal comes
+        /// only when the queued records fill the ring after the trim of the last
+        /// commit, but the three blocks that stay free. After the next commit, the
+        /// refused append fits.
+        #[test]
+        fn full_comes_only_when_the_queued_records_do_not_fit_after_the_trim() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let own = node.clone();
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            with_trims(
+                &mut sim,
+                &node,
+                "write",
+                |buffer, mut slots, pool| async move {
+                    let one = slots.index(channel::Key::from_u128(1));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    commit_each(&buffer, (1, one), &part, 0..70).await;
+                    let next =
+                        |first: u64| [entry(1, one, Path::Live, 3 * first, &part)];
+                    let before = room(&buffer);
+                    let mut first = 70;
+                    let refused = loop {
+                        match buffer.append(next(first)) {
+                            Ok(()) => first += 1,
+                            Err(full) => break full,
+                        }
+                    };
+                    let queued = room(&buffer);
+                    own.clock().sleep(Span::from_nanos(3_000_000)).await;
+                    let fits = buffer.append(next(first));
+                    *given.lock().expect("no panic held the lock") =
+                        Some((before, (first, refused), queued, fits));
+                    buffer
+                },
+            );
+            let found = found.lock().expect("no panic held the lock").take();
+            let (before, refused, queued, fits) =
+                found.expect("the shard gave the result");
+            assert_eq!(before, (190, 16 * 4096, 71 * 4096, Some(70 * 4096)));
+            assert_eq!(refused, (226, FULL));
+            assert_eq!(
+                queued,
+                (190, 16 * 4096, 77 * 4096, Some(70 * 4096)),
+                "the queued records fill the ring but the three blocks that stay free"
+            );
+            assert_eq!(fits, Ok(()));
+        }
+
+        /// 70 commits of one path trim the ring of 64 blocks, and the power cuts after
+        /// the last. The open walks from the tail that the last commit synced, so a
+        /// read gives the same gap and entries as before the cut. The test does not pin
+        /// the tail, which the room that each record keeps free sets.
+        #[test]
+        fn the_new_tail_is_durable_in_the_sync_of_its_commit() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let reads = Arc::new(Mutex::new(Vec::new()));
+            let before = Arc::clone(&reads);
+            with_trims(
+                &mut sim,
+                &node,
+                "write",
+                |buffer, mut slots, pool| async move {
+                    let one = slots.index(channel::Key::from_u128(1));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    commit_each(&buffer, (1, one), &part, 0..70).await;
+                    let read = read_from(&buffer, one, 0).await;
+                    before.lock().expect("no panic held the lock").push(read);
+                    buffer
+                },
+            );
+            sim.crash(&node, sim::Crash::Power);
+            let after = Arc::clone(&reads);
+            with_trims(
+                &mut sim,
+                &node,
+                "reopen",
+                |buffer, mut slots, _| async move {
+                    let one = slots.index(channel::Key::from_u128(1));
+                    let read = read_from(&buffer, one, 0).await;
+                    after.lock().expect("no panic held the lock").push(read);
+                    buffer
+                },
+            );
+            let reads = reads.lock().expect("no panic held the lock");
+            let [before, after] = &reads[..] else {
+                panic!("two reads, not {}", reads.len());
+            };
+            assert_eq!(before, after);
+            let (gap, firsts, next) = before;
+            let trimmed = firsts.first().copied().expect("the read gives entries");
+            assert!(trimmed > 0, "the commits trim");
+            assert_eq!(gap.clone(), Some(0..trimmed));
+            assert_eq!(*next, Mark::at(210));
+        }
     }
 }

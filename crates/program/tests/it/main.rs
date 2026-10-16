@@ -7,12 +7,18 @@
 #[path = "../../../hub/tests/common/agent.rs"]
 #[expect(dead_code, reason = "the binary uses only some of the helpers")]
 mod agent;
+#[path = "../common/connect.rs"]
+mod connect;
+#[path = "../common/hand.rs"]
+mod hand;
+#[path = "../common/home.rs"]
 mod home;
 #[path = "../../../hub/tests/common/net.rs"]
 #[expect(dead_code, reason = "the binary uses only some of the helpers")]
 mod net;
 #[path = "../../../hub/tests/common/node.rs"]
 mod node;
+mod read;
 mod session;
 #[path = "../../../hub/tests/common/sessions.rs"]
 #[expect(dead_code, reason = "the binary uses only some of the helpers")]
