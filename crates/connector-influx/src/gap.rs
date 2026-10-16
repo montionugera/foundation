@@ -78,7 +78,8 @@ impl Gap {
 
     /// Appends the gap's line to `out`, empties the gap, and gives the line's count.
     /// The line counts each seq from the gap's first seq up to `seq`, the seq of the
-    /// first sample after the gap, and has that sample's `stamp`. An empty gap appends
+    /// first sample after the gap, and has that sample's `stamp`, but counts at most
+    /// `i64::MAX` seqs, the most that an InfluxDB integer holds. An empty gap appends
     /// nothing and gives 0.
     ///
     /// Only `out` then holds the gap: a request built again from the samples holds
@@ -86,8 +87,7 @@ impl Gap {
     ///
     /// # Panics
     ///
-    /// When `seq` is below the end of a range the gap holds, or the line counts
-    /// 2^63 seqs or more.
+    /// When `seq` is below the end of a range the gap holds.
     pub fn line(&mut self, out: &mut Vec<u8>, seq: u64, stamp: Stamp) -> u64 {
         let Some(seqs) = self.seqs.take() else {
             return 0;
@@ -96,15 +96,8 @@ impl Gap {
             seqs.end <= seq,
             "invariant: the sample after the gap {seqs:?} has seq {seq}"
         );
-        let count = seq
-            .checked_sub(seqs.start)
-            .and_then(|count| i64::try_from(count).ok())
-            .unwrap_or_else(|| {
-                panic!(
-                    "invariant: a gap counts fewer than 2^63 seqs, from {} to {seq}",
-                    seqs.start
-                )
-            });
+        let count = seq.abs_diff(seqs.start);
+        let count = i64::try_from(count).unwrap_or(i64::MAX);
         let values = [(&self.count, Value::Integer(count))];
         self.measurement.line(out, values, stamp);
         count.unsigned_abs()
