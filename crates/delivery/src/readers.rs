@@ -53,8 +53,7 @@ pub enum Next {
         /// The session's next seq.
         from: u64,
     },
-    /// No case gives it: a session goes on past live samples lost for no room. #2790
-    /// removes it.
+    /// No case gives it; #2790 removes it.
     Behind,
 }
 

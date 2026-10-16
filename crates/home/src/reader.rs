@@ -31,8 +31,7 @@ pub enum Next {
     /// of the shard, give the result to [`Shard::fill`](crate::Shard::fill), then
     /// take again.
     Disk(disk::Read),
-    /// No case gives it: a complete reader goes on past live samples lost for no
-    /// room. #2790 removes it.
+    /// No case gives it; #2790 removes it.
     Behind,
 }
 

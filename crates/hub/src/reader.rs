@@ -188,8 +188,7 @@ impl Lens {
 pub enum Ended {
     /// The shard's buffer failed, or a read from disk of the reader failed.
     Buffer(env::files::Error),
-    /// No case gives it: a complete reader goes on past a frame that the buffer lost,
-    /// and the next frame gives the gap. #2790 removes it.
+    /// No case gives it; #2790 removes it.
     Behind,
     /// A channel of the reader was removed from the definitions.
     Removed(channel::Key),
@@ -642,7 +641,7 @@ impl Reader {
 pub(crate) enum Stop {
     /// The shard's buffer failed, or a read from disk of the session failed.
     Buffer(env::files::Error),
-    /// No case gives it. #2790 removes it.
+    /// No case gives it; #2790 removes it.
     Behind,
     /// The shard's pool had no block for a read from disk or its frames.
     Pool(block::Error),

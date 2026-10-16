@@ -252,8 +252,7 @@ pub enum Reply {
     /// The head of one frame. The run of its [`ends`] follows, then its body.
     Head(Head),
     /// The home ends the session. No message follows it: the home then finishes its
-    /// stream. No home sends it now: a session goes on past a frame that the buffer
-    /// lost. #2790 removes it.
+    /// stream. No case gives it; #2790 removes it.
     Behind,
 }
 

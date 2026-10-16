@@ -53,8 +53,7 @@ pub enum FromHome<'m> {
         /// The body ends with this message.
         last: bool,
     },
-    /// The home ended the session, and no message follows. No home sends it now: a
-    /// session goes on past a frame that the buffer lost. #2790 removes it.
+    /// The home ended the session, and no message follows. No case gives it; #2790 removes it.
     Behind,
 }
 
