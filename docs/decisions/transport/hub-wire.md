@@ -262,7 +262,13 @@
   `wire::hub::Frames::lost` gives the gap of each frame by the same rule, from `live`
   on, and `program::Reader::lost` reads it (#2829; `laptop.architect`,
   2026-10-16T05:26:47Z:
-  https://github.com/synnaxlabs/foundation/issues/2829#issuecomment-6208760389). Lost:
+  https://github.com/synnaxlabs/foundation/issues/2829#issuecomment-6208760389). The
+  rule has two copies: `Received::gap` in `hub`, which also serves local sessions, and
+  `Frames::gap` in `wire`. The `hub` test
+  `a_complete_reader_gets_the_gap_of_each_frame_that_frames_gives_as_lost` asserts
+  that the two give the same gap at each frame (`laptop.architect`,
+  2026-10-16T09:38:25Z:
+  https://github.com/synnaxlabs/foundation/pull/2856#issuecomment-6212634009). Lost:
   `Opened` with no field, so a loss between the open and the first frame was silent.
   Decided by `laptop.architect` (2026-10-15T19:40:52Z,
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6200757306).
