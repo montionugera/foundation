@@ -63,16 +63,31 @@
   and no written channel. `run` writes each frame of the reader to the write path of its
   target: one line for each sample time, with a field for each channel of the frame,
   keyed by the channel name. A NaN or infinite value is left out, and so is a line with
-  no other value. Until #2555, only `f64` channels are written: another type ends the
-  run with `Error::Config` and `influx.sample-type`, and a channel name that is not a
-  field key with `influx.bad-channel`. After a `Received::gap` that is not `None`, the
-  run writes its gap line with `path=live` before the lines of the frame, at the stamp
-  of the frame's first sample, also when it leaves that line out (INFLUX SEQ AND GAPS),
-  in the same batch. The line's `count` is the seqs of the gap only. Each batch acks the
-  position after its last frame. A frame with no sample gives no gap, and its position
-  stays before the gap that the next frame with one gives (`hub`), so the run needs no
-  wait of its own. The person chose this path ("Ok, this is fine", 2026-10-16T02:03Z,
-  through `laptop.monitor`:
+  no other value. A `bool` channel is a boolean field. An `i8` to `i64`, `u8` to `u32`,
+  `timestamp` (ns since the Unix epoch), or `duration` (ns) channel is an `i` integer.
+  So is a quality channel (`DataType::Quality`), a choice that the person has (LINE
+  TEXT). An `f32` or `f64` channel is a float, where an `f32` is the `f64` of the same
+  value (0.1 as 1.0000000149011612e-1), so a reader that narrows it gets back the same
+  bits. A `u64` channel is a `u` integer to a `bucket`, and to a `database` it ends the
+  run with `Error::Config` and `influx.unsigned` (LINE TEXT). Each other type (`uuid`,
+  `string`, `bytes`, `array`, `list`, `matrix`) ends the run with `Error::Config` and
+  `influx.sample-type`, and a channel name that is not a field key with
+  `influx.bad-channel`. The run picks the conversion of a channel with its field, at the
+  first frame of each key set that holds it. Lost: an `f32` as its shortest text
+  (`1e-1`), as InfluxDB then holds the `f64` 0.1, which is not the value of the sample.
+  The types: the type table of `laptop.architect-2` on 2026-10-15T16:13:56Z
+  (https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6196722652),
+  approved by the person without arrays on 2026-10-15T16:51:53Z
+  (https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6197478869); the
+  surface: `laptop.architect-2` on 2026-10-16T09:09:18Z
+  (https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6212098264). After
+  a `Received::gap` that is not `None`, the run writes its gap line with `path=live`
+  before the lines of the frame, at the stamp of the frame's first sample, also when it
+  leaves that line out (INFLUX SEQ AND GAPS), in the same batch. The line's `count` is
+  the seqs of the gap only. Each batch acks the position after its last frame. A frame
+  with no sample gives no gap, and its position stays before the gap that the next frame
+  with one gives (`hub`), so the run needs no wait of its own. The person chose this
+  path ("Ok, this is fine", 2026-10-16T02:03Z, through `laptop.monitor`:
   https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206366130), and
   `laptop.architect-2` ruled it on 2026-10-16T02:04:28Z
   (https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206384923). It
@@ -86,8 +101,8 @@
   set is a workload whose frames alternate key sets, as `laptop.architect-2` decided on
   2026-10-13T07:36:47Z
   (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6140691273). It acks
-  a batch only after a 204. Each other answer, and each failed request, keeps the
-  batch, shows its text with `Context::error`, and sends the batch again after a
+  a batch only after a 204. Each other answer, and each failed request, keeps the batch,
+  shows its text with `Context::error`, and sends the batch again after a
   `retry::Backoff` of 1 s to 1 min. No answer ends the run, other than a 401 or a 403
   after which the read of the token fails: an action in InfluxDB fixes a 400, a 404, or
   a 422, and the next try after it lands the batch. The reader stays open meanwhile, as

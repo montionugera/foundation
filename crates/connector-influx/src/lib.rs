@@ -96,6 +96,17 @@ pub enum Target {
     },
 }
 
+impl Target {
+    /// Whether the run writes a `u` integer: to a `bucket`, which stands for InfluxDB 2
+    /// or 3, and not to a `database`, which stands for InfluxDB 1 (LINE TEXT).
+    pub(crate) const fn unsigned(&self) -> bool {
+        match self {
+            Self::Database(_) => false,
+            Self::Bucket { .. } => true,
+        }
+    }
+}
+
 impl kind::Kind for Kind {
     type Config = Config;
 
@@ -175,12 +186,13 @@ impl kind::Kind for Kind {
     ///
     /// # Errors
     ///
-    /// [`Error::Config`] with `influx.sample-type` for a channel that does not hold
-    /// `f64` samples, and with `influx.bad-channel` for a channel name that is not a
-    /// valid field key. The error of [`hub::reader::Ended`] when the reader ends.
-    /// [`Error::Retry`] or [`Error::Config`] from [`Context::secret`] when a read
-    /// fails, and [`Error::Retry`] when the token holds a byte that an HTTP header
-    /// cannot hold.
+    /// [`Error::Config`] with `influx.sample-type` for a channel of a `uuid`, `string`,
+    /// `bytes`, `array`, `list`, or `matrix` type, with `influx.unsigned` for a `u64`
+    /// channel to a [`Target::Database`], and with `influx.bad-channel` for a channel
+    /// name that is not a valid field key. The error of [`hub::reader::Ended`] when the
+    /// reader ends. [`Error::Retry`] or [`Error::Config`] from [`Context::secret`] when
+    /// a read fails, and [`Error::Retry`] when the token holds a byte that an HTTP
+    /// header cannot hold.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         send::run(ctx)
     }

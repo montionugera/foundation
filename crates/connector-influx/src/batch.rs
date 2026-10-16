@@ -2,20 +2,23 @@
 
 use connector::kind::Error;
 use document::diagnostic::{Code, Diagnostic};
+use std::iter;
 use std::ops::Range;
 
 use hub::reader::{Position, Received};
 use types::frame::Path;
 use types::frame::key_set::{self, KeySet};
 use types::name::Name;
-use types::sample::{Scalar, Type};
+use types::sample::{self, Scalar, Type};
 use types::time::Stamp;
 
+use crate::Target;
 use crate::gap::Gap;
-use crate::line::{self, Float, Measurement, Value};
+use crate::line::{self, Measurement};
 
 const SAMPLE_TYPE: Code = Code::new("influx.sample-type");
 const BAD_CHANNEL: Code = Code::new("influx.bad-channel");
+const UNSIGNED: Code = Code::new("influx.unsigned");
 
 /// The most lines that a batch takes before [`Batch::full`].
 const LINES_MAX: usize = 5_000;
@@ -25,6 +28,8 @@ const LINES_MAX: usize = 5_000;
 #[derive(Debug)]
 pub struct Batch {
     measurement: Measurement,
+    /// Whether the run writes a `u` integer, as [`Target::unsigned`] gives.
+    unsigned: bool,
     connector: Name,
     /// The gap of the reader's index, made at the first gap.
     gap: Option<Gap>,
@@ -43,11 +48,10 @@ struct Body {
     samples: u64,
     lost: u64,
     times: Vec<u8>,
-    raw: Vec<u8>,
+    /// The samples of each data channel of the frame, by the order of `entries`.
+    raw: Vec<Vec<u8>>,
     /// The entry of each data channel of the frame, in view order.
     entries: Vec<usize>,
-    /// The values of each sample time of the frame, by the order of `entries`.
-    values: Vec<Option<Value>>,
 }
 
 /// The lines that [`Batch::take`] gives.
@@ -82,25 +86,25 @@ struct Layout {
 #[derive(Debug)]
 struct Channel {
     field: line::Field,
-    width: usize,
     convert: Convert,
 }
 
-/// The value of one raw sample, or `None` when InfluxDB cannot store it.
-type Convert = fn(&[u8]) -> Option<Value>;
+/// Appends to a line the field of the sample at a given index of a raw series.
+type Convert = fn(&[u8], usize, &line::Field, &mut line::Line<'_>);
 
 impl Batch {
-    /// An empty batch of lines of the measurement `name`, whose gap lines name
-    /// `connector`.
+    /// An empty batch of lines of the measurement `name` to `target`, whose gap lines
+    /// name `connector`.
     ///
     /// # Panics
     ///
     /// When [`Measurement::new`] refuses `name` with no tags.
     #[must_use]
-    pub fn new(name: &str, connector: &Name) -> Self {
+    pub fn new(name: &str, target: &Target, connector: &Name) -> Self {
         Self {
             measurement: Measurement::new(name, &[])
                 .expect("invariant: config checks the measurement name"),
+            unsigned: target.unsigned(),
             connector: connector.clone(),
             gap: None,
             position: None,
@@ -118,8 +122,8 @@ impl Batch {
     /// # Errors
     ///
     /// [`Error::Config`] with `influx.sample-type` for a channel of a type that the
-    /// kind does not write, and with `influx.bad-channel` for a channel name that is
-    /// not a valid field key.
+    /// kind does not write, with `influx.unsigned` for a `u64` channel to a database,
+    /// and with `influx.bad-channel` for a channel name that is not a valid field key.
     pub fn add(&mut self, received: &Received<'_>) -> Result<(), Error> {
         self.position = Some(received.position());
         if let Some(seqs) = received.gap() {
@@ -141,7 +145,7 @@ impl Batch {
             slot => slot.insert(Layout::new(set)),
         };
         for at in data() {
-            layout.add(&self.measurement, received, at)?;
+            layout.add(&self.measurement, self.unsigned, received, at)?;
         }
         self.body.write(&self.measurement, layout, received, first);
         Ok(())
@@ -217,34 +221,21 @@ impl Body {
         let index = set.index(first);
         let count = self.times(received, index);
         let series = || view.iter().filter(|&(entry, _)| entry != index);
-        let fields = series().count();
         self.entries.clear();
-        self.values.clear();
-        let cells = count
-            .checked_mul(fields)
-            .expect("invariant: a frame fits memory");
-        self.values.resize(cells, None);
-        for (column, (at, bytes)) in series().enumerate() {
-            let channel = layout.channel(at);
-            self.entries.push(at);
-            codec::decode(entry(set, at).data_type, count, bytes, &mut self.raw)
+        self.entries.extend(series().map(|(at, _)| at));
+        let more = self.entries.len().saturating_sub(self.raw.len());
+        self.raw.extend(iter::repeat_with(Vec::new).take(more));
+        for ((at, bytes), raw) in series().zip(&mut self.raw) {
+            codec::decode(entry(set, at).data_type, count, bytes, raw)
                 .expect("invariant: the hub gives valid series");
-            let samples = self.raw.chunks_exact(channel.width);
-            for (line, sample) in self.values.chunks_exact_mut(fields).zip(samples) {
-                let value = line
-                    .get_mut(column)
-                    .expect("invariant: a line has each field");
-                *value = (channel.convert)(sample);
-            }
         }
-        let lines = self.values.chunks_exact(fields);
-        for (values, &time) in lines.zip(self.times.as_chunks::<8>().0) {
-            let time = Stamp::from_nanos(i64::from_le_bytes(time));
-            let values =
-                (self.entries.iter().zip(values)).filter_map(|(&at, value)| {
-                    Some((&layout.channel(at).field, (*value)?))
-                });
-            let wrote = measurement.line(&mut self.bytes, values, time);
+        for (line, &time) in self.times.as_chunks::<8>().0.iter().enumerate() {
+            let mut text = measurement.begin(&mut self.bytes);
+            for (&at, raw) in self.entries.iter().zip(&self.raw) {
+                let channel = layout.channel(at);
+                (channel.convert)(raw, line, &channel.field, &mut text);
+            }
+            let wrote = text.end(Stamp::from_nanos(i64::from_le_bytes(time)));
             if wrote > 0 {
                 self.lines = self.lines.saturating_add(1);
             }
@@ -266,25 +257,22 @@ impl Layout {
     }
 
     /// Adds the data channel at `at` of `received`, a field of `measurement`, when
-    /// the layout has none.
+    /// the layout has none. A `u64` channel is a `u` field when `unsigned`.
     fn add(
         &mut self,
         measurement: &Measurement,
+        unsigned: bool,
         received: &Received<'_>,
         at: usize,
     ) -> Result<(), Error> {
         let slot = self.channels.get_mut(at);
         let slot = slot.expect("invariant: a view gives entries of its key set");
         if slot.is_none() {
-            let (width, convert) = conversion(received, at)?;
+            let convert = conversion(received, at, unsigned)?;
             let field = measurement
                 .field(received.name(at))
                 .map_err(|error| bad_channel(&error))?;
-            *slot = Some(Channel {
-                field,
-                width,
-                convert,
-            });
+            *slot = Some(Channel { field, convert });
         }
         Ok(())
     }
@@ -325,27 +313,81 @@ fn entry(set: &KeySet, at: usize) -> &key_set::Entry {
     entry.expect("invariant: a view gives entries of its key set")
 }
 
-/// The width and the conversion of a sample of the data channel at `at` of
-/// `received`.
-fn conversion(received: &Received<'_>, at: usize) -> Result<(usize, Convert), Error> {
-    match entry(received.set(), at).data_type {
-        Type::Scalar(Scalar::F64) => Ok((8, float)),
-        data_type => Err(Error::Config(vec![Diagnostic::new(
-            SAMPLE_TYPE,
-            None,
-            format!(
-                "the channel {:?} holds {data_type} samples, which the influx kind \
-                 does not write",
-                received.name(at)
-            ),
-            "Select only f64 channels".into(),
-        )])),
-    }
+/// The conversion of a sample of `Scalar::$scalar`, which gives `$value` to the
+/// `Line` method `$write`.
+macro_rules! read {
+    ($scalar:ident, $write:ident, |$value:ident| $field:expr) => {
+        |series: &[u8], index: usize, field: &line::Field, text: &mut line::Line<'_>| {
+            const WIDTH: usize = Scalar::$scalar.width();
+            let sample = series.as_chunks::<WIDTH>().0.get(index);
+            let sample =
+                sample.expect("invariant: a series has the count of its index");
+            let sample::Value::$scalar($value) =
+                sample::Value::read(Scalar::$scalar, sample)
+            else {
+                unreachable!("invariant: a read gives its scalar")
+            };
+            text.$write(field, $field);
+        }
+    };
 }
 
-fn float(sample: &[u8]) -> Option<Value> {
-    let bytes = sample
-        .try_into()
-        .expect("invariant: an f64 sample has 8 bytes");
-    Float::new(f64::from_le_bytes(bytes)).map(Value::Float)
+/// The conversion of a sample of the data channel at `at` of `received`. A `u64` is
+/// a `u` integer, refused unless `unsigned`; a `timestamp` is its ns since the Unix
+/// epoch, and a `duration` its ns. A NaN or infinite float is left out.
+fn conversion(
+    received: &Received<'_>,
+    at: usize,
+    unsigned: bool,
+) -> Result<Convert, Error> {
+    let name = received.name(at);
+    let refused = |code, message: String, fix: &str| {
+        Err(Error::Config(vec![Diagnostic::new(
+            code,
+            None,
+            message,
+            fix.into(),
+        )]))
+    };
+    let data_type = entry(received.set(), at).data_type;
+    let unwritten = || {
+        refused(
+            SAMPLE_TYPE,
+            format!(
+                "the channel {name:?} holds {data_type} samples, which the influx kind \
+                 does not write"
+            ),
+            "Leave the channel out of `select`",
+        )
+    };
+    let Type::Scalar(scalar) = data_type else {
+        return unwritten();
+    };
+    Ok(match scalar {
+        Scalar::Bool => read!(Bool, boolean, |value| value),
+        Scalar::I8 => read!(I8, integer, |value| value.into()),
+        Scalar::I16 => read!(I16, integer, |value| value.into()),
+        Scalar::I32 => read!(I32, integer, |value| value.into()),
+        Scalar::I64 => read!(I64, integer, |value| value),
+        Scalar::U8 => read!(U8, integer, |value| value.into()),
+        Scalar::U16 => read!(U16, integer, |value| value.into()),
+        Scalar::U32 => read!(U32, integer, |value| value.into()),
+        Scalar::U64 if unsigned => read!(U64, unsigned, |value| value),
+        Scalar::U64 => {
+            return refused(
+                UNSIGNED,
+                format!(
+                    "the channel {name:?} holds u64 samples, which InfluxDB 1 does not \
+                     store"
+                ),
+                "Write to a `bucket` of InfluxDB 2 or 3, or leave the channel out of \
+                 `select`",
+            );
+        }
+        Scalar::F32 => read!(F32, float, |value| value.into()),
+        Scalar::F64 => read!(F64, float, |value| value),
+        Scalar::Stamp => read!(Stamp, integer, |value| value.nanos()),
+        Scalar::Span => read!(Span, integer, |value| value.nanos()),
+        Scalar::Uuid => return unwritten(),
+    })
 }
