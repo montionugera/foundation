@@ -8,7 +8,7 @@ use document::diagnostic::Diagnostic;
 use env::clock::Clock;
 use hub::Hub;
 use hub::home::Outcome;
-use hub::reader::{Ended, Mode, Received};
+use hub::reader::{Mode, Received};
 use spec::channel::{Channel, Data, Kind as ChannelKind};
 use spec::data_type::DataType;
 use spec::definition::Definition;
@@ -187,20 +187,12 @@ async fn record<const N: usize>(
         name: None,
         hold: Span::ZERO,
     };
-    let mut reader = hub.reader(config.clone()).await.expect("the reader opens");
+    let mut reader = hub.reader(config).await.expect("the reader opens");
     let frames = Rc::new(RefCell::new(Vec::new()));
     let into = Rc::clone(&frames);
-    let hub = hub.clone();
     tasks.spawn(async move {
-        loop {
-            match reader.next().await {
-                Ok(received) => into.borrow_mut().push(decode(&received)),
-                Err(Ended::Behind) => {
-                    let again = hub.reader(config.clone()).await;
-                    reader = again.expect("the reader opens again");
-                }
-                Err(_) => break,
-            }
+        while let Ok(received) = reader.next().await {
+            into.borrow_mut().push(decode(&received));
         }
     });
     frames
