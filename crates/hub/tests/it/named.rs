@@ -901,6 +901,23 @@ fn opens_no_named_complete_reader_past_the_records_of_one_entry() {
 }
 
 #[test]
+fn opens_no_named_complete_reader_whose_record_finds_no_block() {
+    run(26, |test| async move {
+        let open = || named("a", "r", Mode::Complete, Span::ZERO);
+        let blocks = super::fill(&test.pool);
+        let error = test.hub.reader(open()).await.expect_err("no block");
+        assert_eq!(error, reader::Error::Unrecorded);
+        assert_eq!(
+            error.to_string(),
+            "the home had no room to record the position of the named reader: open it \
+             again later"
+        );
+        drop(blocks);
+        assert!(test.hub.reader(open()).await.is_ok(), "a block is free");
+    });
+}
+
+#[test]
 fn opens_no_named_reader_before_mesh_time() {
     unsynced(6, |test| async move {
         for mode in [Mode::Complete, Mode::Latest] {

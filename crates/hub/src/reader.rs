@@ -489,7 +489,6 @@ impl Local {
                 let (key, live) = {
                     let mut state = state.borrow_mut();
                     let opened = state.home.open_named_latest(channels.index, named)?;
-                    state.gate.wake();
                     let live = opened.live;
                     (state.take_over(opened), live)
                 };

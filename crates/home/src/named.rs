@@ -34,6 +34,12 @@ const _: () = assert!(
     "7 records fit one entry of any ring"
 );
 
+/// The most bytes of the body of a named entry in `buffer`: of one block, and of one
+/// entry of its ring.
+pub(crate) fn limit(buffer: &Buffer) -> usize {
+    buffer.block_max().min(buffer.layout().entry_max())
+}
+
 /// The bytes of the body that holds `records`.
 pub(crate) fn len<'a>(records: impl IntoIterator<Item = &'a Record>) -> usize {
     let records = records.into_iter().map(|record| record_len(&record.reader));

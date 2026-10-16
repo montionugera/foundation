@@ -124,8 +124,9 @@ struct State {
     /// The readers that [`::home::Shard::woken`] gave last.
     woken: Vec<::home::reader::Key>,
     commit: commit::Task,
-    /// The gate task, woken at each new carry, each writer open and close, each named
-    /// open, and each reader close.
+    /// The gate task, woken at each new carry, each writer open and close, and each
+    /// named complete open: the calls that make the home's deadline earlier by one
+    /// second or more.
     gate: task::Waiter,
     /// The error that ended the home's buffer.
     failed: Option<env::files::Error>,
@@ -508,13 +509,11 @@ impl State {
     }
 
     /// Closes the reader session `key` at the home, unless a removal or a takeover
-    /// closed it, and wakes the gate task: a named close can make the home's deadline
-    /// earlier. Returns its waker, when it waits for a frame.
+    /// closed it. Returns its waker, when it waits for a frame.
     fn close_reader(&mut self, key: ::home::reader::Key) -> Option<Waker> {
         let waker = self.wakers.remove(&key);
         if self.readers.remove(key) {
             self.home.close_reader(key);
-            self.gate.wake();
         }
         waker
     }
