@@ -71,12 +71,10 @@
   read, as `ssh` does not. On Linux the ACL mask is in the group bits, so a named entry
   that grants read shows as exposed. It does not check group or other write bits. Add
   that check when a secret whose change by another user is a threat comes, such as a
-  key that signs. `os::files` builds only on Linux and macOS. A Windows driver of files
-  gives `exposed` from the DACL of the file: true when an entry grants read to a SID
-  other than the owner, SYSTEM, and Administrators. The `sim` disk makes each file not
-  exposed, as `os` makes a file with mode 0600, and `sim::Node::set_file_exposed` sets
-  it, as a `chmod` from outside the node does (`laptop.architect-2`,
-  2026-10-15T23:58:31Z:
+  key that signs. `os::files` builds only on Linux and macOS. A driver for another OS
+  states what `exposed` means there. The `sim` disk makes each file not exposed, as
+  `os` makes a file with mode 0600, and `sim::Node::set_file_exposed` sets it, as a
+  `chmod` from outside the node does (`laptop.architect-2`, 2026-10-15T23:58:31Z:
   https://github.com/synnaxlabs/foundation/issues/2596#issuecomment-6204800336). The
   refusal of capitals and what a file holds are architect calls (`laptop.architect-2`,
   2026-10-13T16:54:37Z:
