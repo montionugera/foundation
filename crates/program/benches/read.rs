@@ -13,8 +13,9 @@
 //! - `wide`: an index and one data channel of `SAMPLES` samples per frame: 4096 bytes
 //!   of body.
 //!
-//! Judge a change by `net`, and compare two builds on one pinned core whose SMT
-//! sibling is idle.
+//! A second table gives the p99 of the single calls of each line, ns per frame, for
+//! the limit of a latest-mode hop. Judge a change by `net`, and compare two builds on
+//! one pinned core whose SMT sibling is idle.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -94,6 +95,16 @@ impl Shape {
             .collect()
     }
 
+    /// The selector of the places.
+    fn select(self) -> Selector {
+        let names: Vec<_> = self
+            .places()
+            .iter()
+            .map(|place| place.name.to_string())
+            .collect();
+        Selector::new(names.iter().map(String::as_str)).expect("a selector")
+    }
+
     /// The samples of each series of a frame.
     fn samples(self) -> u32 {
         match self {
@@ -147,17 +158,12 @@ fn main() {
             Box::pin(async move {
                 let mut timer = Line::new("timer", FRAMES);
                 let mut lines = Vec::new();
+                let mut calls = Vec::new();
                 for (name, shape) in LINES {
-                    let names: Vec<_> = shape
-                        .places()
-                        .iter()
-                        .map(|place| place.name.to_string())
-                        .collect();
-                    let select = Selector::new(names.iter().map(String::as_str))
-                        .expect("a selector");
-                    let mut reader =
-                        session.reader(select, Mode::Complete).await.expect("opens");
+                    let reader = session.reader(shape.select(), Mode::Complete).await;
+                    let mut reader = reader.expect("opens");
                     let mut line = Line::new(name, FRAMES);
+                    let mut each = Vec::with_capacity(ROUNDS * FRAMES);
                     for round in 0..WARMUP + ROUNDS {
                         node.clock().sleep(SENT).await;
                         let mut context = Context::from_waker(Waker::noop());
@@ -168,6 +174,9 @@ fn main() {
                                 matches!(next, Poll::Ready(Ok(_)))
                             });
                             assert!(ready, "each frame of {name} is in the transport");
+                            if round >= WARMUP {
+                                each.push(figures.0);
+                            }
                             line.add(figures);
                         }
                         taken.fetch_add(FRAMES, Ordering::Relaxed);
@@ -175,11 +184,26 @@ fn main() {
                         line.close(round >= WARMUP);
                     }
                     lines.push(line);
+                    calls.push((name, each));
                 }
                 let title =
                     format!("ns per frame over {ROUNDS} rounds of {FRAMES} frames");
                 table::print(&title, &timer, &lines);
+                print_p99(&mut calls);
             })
         },
     );
+}
+
+/// Prints the p99 of the ns of each single call of each line.
+#[expect(clippy::print_stdout, reason = "a benchmark prints its results")]
+fn print_p99(lines: &mut [(&str, Vec<u64>)]) {
+    println!("ns per single call");
+    println!("{:<18} {:>9} {:>9}", "line", "p99", "max");
+    for (name, nanos) in lines {
+        nanos.sort_unstable();
+        let p99 = nanos[nanos.len() * 99 / 100];
+        let max = nanos[nanos.len() - 1];
+        println!("{name:<18} {p99:>9} {max:>9}");
+    }
 }
