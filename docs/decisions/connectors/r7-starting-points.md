@@ -122,14 +122,18 @@
   https://github.com/synnaxlabs/foundation/pull/2862#issuecomment-6218554197). Main
   reads the store once, so a change to it takes effect at the next start. Before
   `started`, shard 0 logs a warning "a part of the OS roots was not read" with the
-  `error` of each of the first 16 failures, "more parts of the OS roots were not
-  read" with the count `unlisted` of the rest, so the warnings cannot fill the log
-  queue and drop `started` (`laptop.architect-2`, 2026-10-16T20:40:05Z, #2920:
-  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6224274551), "OS
-  roots that do not parse are skipped" with the count
-  `skipped`, and "the OS roots hold no certificate, so an https connect with no CA of
-  its connector fails". It logs them also with `Region::Absent`. This supersedes
-  `node::Config::roots: Vec<Vec<u8>>` of
+  `error` of each of the first 16 failures, "more parts of the OS roots were not read"
+  with the count `unlisted` of the rest, "OS roots that do not parse are skipped" with
+  the count `skipped`, and "the OS roots hold no certificate, so an https connect with
+  no CA of its connector fails". It logs them also with `Region::Absent`. The cap of 16
+  failures keeps the warnings from filling the log queue and dropping `started`
+  (`laptop.architect-2`, 2026-10-16T20:40:05Z, #2920:
+  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6224274551). For the
+  same reason, an `error` of more than 1024 bytes keeps only its first and last 510
+  bytes, joined by `…`, as a line of a PEM file can be of any length (#2941). This
+  supersedes the warning for each failure that
+  https://github.com/synnaxlabs/foundation/pull/2862#issuecomment-6213377062 approved,
+  and `node::Config::roots: Vec<Vec<u8>>` of
   https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207437988, which
   read the OS outside `os`, so its failures did not reach the node log
   (`laptop.architect-2`, 2026-10-16T10:09:09Z:
