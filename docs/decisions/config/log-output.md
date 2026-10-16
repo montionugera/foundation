@@ -105,9 +105,9 @@
   only when the log wrote each line within that bound. When no thread `log` runs, as
   after each shard has ended and the thread wrote each line, it calls the hook before
   it at once, and the line waits for the next `Flush::wait` (laptop.architect-2,
-  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209084526). A panic of
-  the writer, on the thread `log`, also calls it at once, since only that thread
-  writes the line. Decision by
+  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209084526).
+  A panic of the writer, on the thread `log`, also calls it at once, since only that
+  thread writes the line. Decision by
   `laptop.monitor` (2026-10-15T21:39:25Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202838819). The
   plan by `laptop.architect-2` (2026-10-15T21:43:54Z,
