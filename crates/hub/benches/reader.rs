@@ -9,11 +9,14 @@
 //! - `first write`: the first `Writer::write` of a round, after the round before it
 //!   committed.
 //! - `write`, the control: each later `Writer::write` of a round but the last. The
-//!   draft of each write is ready before it is timed.
+//!   draft of each write is ready before it is timed, and each timed write is a call
+//!   out of line, so the layout of the bench does not move its figure.
 //! - `write wake`: the last `Writer::write` of a round. The latest reader waits for it
 //!   with a counting waker, which the write wakes.
 //! - `latest next`: one poll of a latest reader's `next` right after each write, which
 //!   gives that frame before its commit.
+//! - `latest ack`: for each frame that `latest next` gives, its `Received::position`
+//!   and the `Reader::ack` of it, timed as two calls.
 //! - `complete next`: one poll of a complete reader's `next` after the round's commit,
 //!   which gives a frame. Each but the first of a round also grants the credit of the
 //!   frame before it.
@@ -61,7 +64,7 @@ use hub::reader::{Mode, Position, Reader, Received};
 use hub::writer::{self, Writer};
 use table::Line;
 use types::authority::Authority;
-use types::frame::{Label, Path, View};
+use types::frame::{Draft, Label, Path, View};
 
 #[global_allocator]
 static ALLOCATOR: counting::Allocator = counting::Allocator::new();
@@ -135,6 +138,7 @@ async fn bench(node: sim::node::Node, tasks: env::tasks::Tasks) -> (Line, Vec<Li
         Line::new("write", FRAMES - 2),
         Line::new("write wake", 1),
         Line::new("latest next", FRAMES),
+        Line::new("latest ack", FRAMES),
         Line::new("complete next", FRAMES),
         Line::new("complete gap", FRAMES),
         Line::new("complete ack", FRAMES),
@@ -142,7 +146,7 @@ async fn bench(node: sim::node::Node, tasks: env::tasks::Tasks) -> (Line, Vec<Li
         Line::new("complete wait", FRAMES - 1),
     ];
     for round in 0..WARMUP + ROUNDS {
-        let [now, first, write, wake, latest, complete @ ..] = &mut lines;
+        let [now, first, control, wake, latest, latest_ack, complete @ ..] = &mut lines;
         for frame in 0..FRAMES {
             let draft = common::draft(&writer, stamp);
             stamp += 1;
@@ -156,10 +160,13 @@ async fn bench(node: sim::node::Node, tasks: env::tasks::Tasks) -> (Line, Vec<Li
             let line = match frame {
                 0 => &mut *first,
                 _ if frame == FRAMES - 1 => &mut *wake,
-                _ => &mut *write,
+                _ => &mut *control,
             };
-            line.add(table::timed(&ALLOCATOR, || common::write(&mut writer, draft)).1);
-            latest.add(take(&mut latest_reader, |_| ()).0);
+            let (lost, figures) =
+                table::timed(&ALLOCATOR, || write(&mut writer, draft));
+            assert!(!lost, "the home applies the frame");
+            line.add(figures);
+            take_and_ack(&mut latest_reader, [latest, latest_ack], |_| ());
         }
         let woken = count.wakes();
         assert_eq!(woken, round + 1, "each round's last write wakes the reader");
@@ -180,7 +187,11 @@ async fn bench(node: sim::node::Node, tasks: env::tasks::Tasks) -> (Line, Vec<Li
 /// `complete gap`, `complete ack`, `complete grant`, and `complete wait`.
 fn drain(reader: &mut Reader, [next, gap, ack, grant, wait]: &mut [Line; 5]) {
     for _ in 0..FRAMES {
-        take_and_ack(reader, [next, gap, ack]);
+        take_and_ack(reader, [next, ack], |received| {
+            let (lost, figures) = table::timed(&ALLOCATOR, || received.gap());
+            assert_eq!(lost, None, "no seq was lost");
+            gap.add(figures);
+        });
     }
     grant.add(table::timed(&ALLOCATOR, || pending(reader)).1);
     for _ in 1..FRAMES {
@@ -195,10 +206,7 @@ fn lose(writer: &mut Writer, latest: &mut Reader, mut stamp: i64) -> Line {
         for _ in 0..FRAMES {
             let draft = common::draft(writer, stamp);
             stamp += 1;
-            let (lost, figures) = table::timed(&ALLOCATOR, || {
-                let written = writer.write(Label::Path(Path::Live), draft);
-                matches!(written, Ok([Outcome::Lost { .. }]))
-            });
+            let (lost, figures) = table::timed(&ALLOCATOR, || write(writer, draft));
             assert!(lost, "the ring has no room for the frame");
             line.add(figures);
             take(latest, |_| ());
@@ -223,8 +231,7 @@ async fn fill(
         for _ in 0..FRAMES {
             let draft = common::draft(writer, *stamp);
             *stamp += 1;
-            let written = writer.write(Label::Path(Path::Live), draft);
-            if matches!(written, Ok([Outcome::Lost { .. }])) {
+            if write(writer, draft) {
                 return;
             }
         }
@@ -257,24 +264,37 @@ fn take<T>(
     panic!("a frame waits for the reader");
 }
 
-/// Takes the frame that waits for `reader` as [`take`] does, adds the figures of its
-/// poll to `next`, those of its gap to `gap`, and to `ack` those of its position and
-/// of the ack of it.
-///
-/// # Panics
-///
-/// When the frame has a gap.
-fn take_and_ack(reader: &mut Reader, [next, gap, ack]: [&mut Line; 3]) {
+/// Takes the frame that waits for `reader` as [`take`] does, gives it to `then`, adds
+/// the figures of its poll to `next`, and to `ack` those of its position and of the
+/// ack of it.
+fn take_and_ack(
+    reader: &mut Reader,
+    [next, ack]: [&mut Line; 2],
+    then: impl FnOnce(&Received<'_>),
+) {
     let (figures, position) = take(reader, |received| {
-        let (lost, figures) = table::timed(&ALLOCATOR, || received.gap());
-        assert_eq!(lost, None, "no seq was lost");
-        gap.add(figures);
+        then(&received);
         let (position, figures) = table::timed(&ALLOCATOR, || received.position());
         ack.add(figures);
         position
     });
     next.add(figures);
     ack.add(table::timed(&ALLOCATOR, || reader.ack(position)).1);
+}
+
+/// Writes `draft` as a live frame, and gives whether the ring had no room for it. It is
+/// out of line, so the layout of the async `bench` does not move the figure of a write.
+///
+/// # Panics
+///
+/// When the home neither applies nor loses the frame.
+#[inline(never)]
+fn write(writer: &mut Writer, draft: Draft) -> bool {
+    match writer.write(Label::Path(Path::Live), draft) {
+        Ok([Outcome::Applied { .. }]) => false,
+        Ok([Outcome::Lost { .. }]) => true,
+        written => panic!("the home applies or loses the frame: {written:?}"),
+    }
 }
 
 /// Polls `reader`, which has no frame waiting.
