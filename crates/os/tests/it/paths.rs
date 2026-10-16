@@ -534,7 +534,9 @@ fn a_read_of_a_path_that_swaps_a_file_for_a_pipe_gives_the_file_or_an_invalid_ar
     };
     let other = race(swap, 5_000, &link, |read| match read {
         Ok(Found::File(bytes)) => bytes == b"x",
-        Ok(Found::Directory(entries)) => on_the_way(entries, &link, &scratch.0),
+        Ok(Found::Directory(entries)) => {
+            cfg!(target_os = "linux") && on_the_way(entries, &link, &scratch.0)
+        }
         read => *read == Err(Error::Io { code: 22 }),
     });
     assert_eq!(other, None);
