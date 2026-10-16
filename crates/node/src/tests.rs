@@ -715,9 +715,10 @@ fn unnamed(channel: &str, mode: ::hub::reader::Mode) -> ::hub::reader::Config {
 
 mod buffer {
     use std::cell::RefCell;
+    use std::num::NonZeroU32;
     use std::rc::Rc;
 
-    use ::buffer::{Buffer, Entry};
+    use ::buffer::{Buffer, Entry, Samples};
     use types::channel::{Key, Slots};
     use types::frame::Path as Stream;
     use types::time::Stamp;
@@ -750,9 +751,11 @@ mod buffer {
                 slot: slots.index(index),
                 path: Stream::Live,
                 first: 0,
-                len: 1,
+                samples: Some(Samples {
+                    len: NonZeroU32::MIN,
+                    last: Some(Stamp::from_nanos(1)),
+                }),
                 stored_at: Stamp::from_nanos(1),
-                last: Some(Stamp::from_nanos(1)),
                 tag: 0,
                 parts: pool.alloc(8).expect("a block").freeze().into(),
             };
