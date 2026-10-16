@@ -2,40 +2,48 @@
 
 use std::path::{Path, PathBuf};
 
-use wire::hub::client::BODY_BYTES_MAX;
-
 use crate::Failure;
 use crate::apply::Applied;
 use crate::error::{self, Error, Unread};
 use crate::front_end::{self, File};
 use crate::plan::Output;
-use crate::scope::Scope;
+use crate::scope::{Scope, most};
 use crate::{serve, status};
 
 #[cfg(test)]
 mod tests;
 
-/// The link to one node: what reaches it.
-pub(crate) struct Link<R> {
+/// The link to one node: what reaches it, and the session of its last reach.
+pub(crate) struct Link<R, C> {
     reach: R,
+    session: Option<C>,
 }
 
-impl<R> Link<R> {
-    /// A link that calls `reach` at each send.
+impl<R, C> Link<R, C>
+where
+    R: AsyncFnMut() -> Result<C, Failure>,
+    C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
+{
+    /// A link that calls `reach` at its first send.
     pub(crate) fn new(reach: R) -> Self {
-        Self { reach }
+        Self {
+            reach,
+            session: None,
+        }
     }
 
-    /// The reply of the node to `body`, through what a new call of `reach` gives,
-    /// which it then drops. A session kept between sends would end while its thread
-    /// blocks on the next line of MCP input.
-    async fn send<C>(&mut self, body: &[u8]) -> Result<Vec<u8>, Failure>
-    where
-        R: AsyncFnMut() -> Result<C, Failure>,
-        C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
-    {
-        let send = (self.reach)().await?;
-        send(body).await
+    /// The reply of the node to `body`. It calls `reach` when it has no session, and
+    /// keeps the session until a send through it fails.
+    async fn send(&mut self, body: &[u8]) -> Result<Vec<u8>, Failure> {
+        let send = match &self.session {
+            Some(send) => send,
+            None => self.session.insert((self.reach)().await?),
+        };
+        let reply = send(body).await;
+        if reply.is_err() {
+            self.session = None;
+        }
+        reply
     }
 }
 
@@ -57,7 +65,7 @@ pub(crate) async fn plan<R, C>(
     files: &[PathBuf],
     out: Option<&Path>,
     scope: &Scope,
-    link: &mut Link<R>,
+    link: &mut Link<R, C>,
 ) -> Result<Output, Error>
 where
     R: AsyncFnMut() -> Result<C, Failure>,
@@ -77,7 +85,7 @@ where
     let mut total = 0;
     let mut read = Vec::with_capacity(files.len());
     for path in files {
-        let bytes = scope.read(path, most())?;
+        let bytes = scope.read(path)?;
         total += bytes.len();
         if total > most() {
             return Err(Error::LargeRequest);
@@ -112,7 +120,7 @@ where
 pub(crate) async fn apply<R, C>(
     plan: &Path,
     scope: &Scope,
-    link: &mut Link<R>,
+    link: &mut Link<R, C>,
 ) -> Result<Applied, Error>
 where
     R: AsyncFnMut() -> Result<C, Failure>,
@@ -122,7 +130,7 @@ where
         let not_utf8 = vec![front_end::not_utf8(plan)];
         return Err(Error::config(not_utf8, &error::Sources::default()));
     };
-    let bytes = scope.read(plan, most())?;
+    let bytes = scope.read(plan)?;
     let reply = request(&serve::apply_request(&bytes)?, link).await?;
     let effect = serve::reply(&reply, "apply")?;
     Ok(Applied {
@@ -137,7 +145,7 @@ where
 ///
 /// - [`Error::Node`] with the failure of the reach or of the request.
 /// - Each error of [`serve::reply`].
-pub(crate) async fn status<R, C>(link: &mut Link<R>) -> Result<status::Output, Error>
+pub(crate) async fn status<R, C>(link: &mut Link<R, C>) -> Result<status::Output, Error>
 where
     R: AsyncFnMut() -> Result<C, Failure>,
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
@@ -146,14 +154,8 @@ where
     serve::reply(&reply, "status")
 }
 
-/// The most bytes that one request holds.
-fn most() -> usize {
-    usize::try_from(BODY_BYTES_MAX)
-        .expect("invariant: the bound of a body fits a usize")
-}
-
 /// The reply of the node of `link` to `body`.
-async fn request<R, C>(body: &[u8], link: &mut Link<R>) -> Result<Vec<u8>, Error>
+async fn request<R, C>(body: &[u8], link: &mut Link<R, C>) -> Result<Vec<u8>, Error>
 where
     R: AsyncFnMut() -> Result<C, Failure>,
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,

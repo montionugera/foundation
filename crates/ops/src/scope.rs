@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use env::paths::{self, Found, Paths};
+use wire::hub::client::BODY_BYTES_MAX;
 
 use crate::error::{Error, Unread, Unusable, Unwritten};
 
@@ -156,19 +157,19 @@ impl Scope {
         Ok(())
     }
 
-    /// The bytes of the file at `path`, of at most `most` bytes.
+    /// The bytes of the file at `path`, of at most the bytes of one request.
     ///
     /// # Errors
     ///
-    /// - [`Error::LargeRequest`] when it has more than `most` bytes.
+    /// - [`Error::LargeRequest`] when it has more.
     /// - [`Error::Read`] when it is a directory, is not there, or does not read.
     /// - [`Error::Outside`] or [`Error::Hidden`] when the limits refuse it.
-    pub(crate) fn read(&self, path: &Path, most: usize) -> Result<Vec<u8>, Error> {
+    pub(crate) fn read(&self, path: &Path) -> Result<Vec<u8>, Error> {
         let unread = |cause| Error::Read {
             path: path.to_owned(),
             cause,
         };
-        match self.paths.read(path, most) {
+        match self.paths.read(path, most()) {
             Ok(Found::File(bytes)) => Ok(bytes),
             Ok(Found::Large) => Err(Error::LargeRequest),
             Ok(Found::Directory(_)) => Err(unread(Unread::Directory)),
@@ -190,4 +191,10 @@ impl Scope {
             .write(out, bytes)
             .map_err(|error| self.unwritten(out, error))
     }
+}
+
+/// The most bytes that one request holds.
+pub(crate) fn most() -> usize {
+    usize::try_from(BODY_BYTES_MAX)
+        .expect("invariant: the bound of a body fits a usize")
 }

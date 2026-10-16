@@ -485,6 +485,17 @@ impl Talk {
         (self.running).until(&self.clock, PATIENCE, "the command answers", answered);
     }
 
+    /// Gives the command no input for `span`.
+    pub(crate) fn idle(&self, span: Span) {
+        let waited = self.running.watch.until(&self.clock, span, |_| false);
+        waited.expect_err("a wait for nothing ends at its limit");
+    }
+
+    /// The process ID of the command.
+    pub(crate) fn pid(&self) -> u32 {
+        self.running.process.0.id()
+    }
+
     /// Closes the standard input of the command, and gives its output when it exits
     /// and closes its pipes. When 90 s pass first, kills it and panics with the output
     /// so far.

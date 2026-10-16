@@ -29,9 +29,10 @@ fuzz_target!(|input: &[u8]| {
         })
     };
     let reach = async |_: &Path| Ok(request);
+    let mut lines = input;
     let cli = ops::cli(
         ["foundation", "mcp"].map(Into::into),
-        input,
+        async || ops::line(&mut lines),
         &mut output,
         &mut errors,
         &paths,

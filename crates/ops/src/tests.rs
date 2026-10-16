@@ -29,7 +29,7 @@ struct Exit {
 /// host that holds no file. Such a command does not wait, so one poll ends it.
 fn offline(
     args: impl IntoIterator<Item = OsString>,
-    input: impl io::BufRead,
+    mut input: impl io::BufRead,
     output: impl io::Write,
     errors: impl io::Write,
 ) -> crate::Run {
@@ -46,6 +46,7 @@ fn offline(
         reached.set(reached.get() + 1);
         Ok(request)
     };
+    let input = async || crate::line(&mut input);
     let cli = crate::cli(args, input, output, errors, &paths, reach);
     let Poll::Ready(run) = pin!(cli).poll(&mut Context::from_waker(Waker::noop()))
     else {

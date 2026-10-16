@@ -150,9 +150,10 @@ impl Remote {
         let input: String = messages.iter().map(|m| m.to_string() + "\n").collect();
         let args = ["foundation", "mcp"].iter().chain(args).map(Into::into);
         let (mut output, mut errors) = (Vec::new(), Vec::new());
+        let mut input = input.as_bytes();
         let run = crate::cli(
             args,
-            input.as_bytes(),
+            async || crate::line(&mut input),
             &mut output,
             &mut errors,
             paths,
@@ -731,10 +732,10 @@ fn failed(error: &Error) -> Value {
     })
 }
 
-/// `foundation mcp` reaches the node of its `--data` at each call that needs it, and
-/// each output parses back to the typed output.
+/// `foundation mcp` reaches the node of its `--data` once, at the first call that
+/// needs it, and each output parses back to the typed output.
 #[test]
-fn mcp_plans_applies_and_shows_status_with_a_reach_of_the_node_of_data_at_each_call() {
+fn mcp_plans_applies_and_shows_status_on_one_reach_of_the_node_of_data() {
     solo(|fixture, mesh| async move {
         let paths = with_site(&fixture.sim);
         let remote = Remote::new(create_node(&fixture, mesh.clone()));
@@ -768,8 +769,8 @@ fn mcp_plans_applies_and_shows_status_with_a_reach_of_the_node_of_data_at_each_c
             "site.plan"
         );
         assert_eq!(mesh.pointer().version, 1);
-        assert_eq!(remote.calls(), (3, 3));
-        assert_eq!(*remote.data.borrow(), vec![PathBuf::from("other"); 3]);
+        assert_eq!(remote.calls(), (1, 3));
+        assert_eq!(*remote.data.borrow(), [PathBuf::from("other")]);
     });
 }
 
@@ -827,9 +828,9 @@ fn mcp_of_a_file_that_does_not_read_reaches_no_node() {
     });
 }
 
-/// A reply that holds problems is the error result of its call, each time.
+/// A reply that holds problems is a reply: the next call sends on the same session.
 #[test]
-fn mcp_gives_the_problems_of_a_reply_at_each_call() {
+fn mcp_keeps_the_session_after_a_reply_with_problems() {
     solo(|fixture, mesh| async move {
         let paths = with_site(&fixture.sim);
         paths.write(Path::new("bad.hcl"), b"{").expect("a write");
@@ -841,7 +842,7 @@ fn mcp_gives_the_problems_of_a_reply_at_each_call() {
             assert_eq!(reply["result"]["isError"], true, "{reply}");
         }
         assert_eq!(replies[0]["result"], replies[1]["result"]);
-        assert_eq!(remote.calls(), (2, 2));
+        assert_eq!(remote.calls(), (1, 2));
     });
 }
 
@@ -973,39 +974,8 @@ fn mcp_writes_a_plan_file_only_under_its_folders_and_with_its_end() {
 /// directory is `working`, with the home `home`, and a file `/work/f`: its status and
 /// standard error. With one ping on its input, a start that serves gives its pong.
 fn start(working: &str, home: &str, args: &[&str]) -> (Run, String, String) {
-    let mut sim = sim::Sim::new(sim::Config::default());
-    let host = sim.node(sim::node::Config::default());
-    for folder in [working, home] {
-        if folder != "/" && folder != "/work" {
-            host.make_dir(Path::new(folder));
-        }
-    }
-    host.make_dir(Path::new("/work"));
-    host.set_working_dir(Path::new(working));
-    host.set_home(Path::new(home));
-    let request = async |_: &[u8]| -> Result<Vec<u8>, Failure> {
-        panic!("a start sent a request")
-    };
-    let reach = async |_: &Path| Ok(request);
-    let args = ["foundation", "mcp"].iter().chain(args).map(Into::into);
-    let ping = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n";
-    let (mut output, mut errors) = (Vec::new(), Vec::new());
-    let paths = host.paths();
-    paths.write(Path::new("/work/f"), b"f").expect("a write");
-    let cli = crate::cli(
-        args,
-        ping.as_bytes(),
-        &mut output,
-        &mut errors,
-        &paths,
-        reach,
-    );
-    let Poll::Ready(run) = pin!(cli).poll(&mut Context::from_waker(Waker::noop()))
-    else {
-        panic!("a start waited");
-    };
-    let text = |bytes| String::from_utf8(bytes).expect("UTF-8");
-    (run, text(output), text(errors))
+    let (run, output, errors, _) = start_with(working, home, args, None);
+    (run, output, errors)
 }
 
 /// `foundation mcp` with no `--files` refuses a working directory of `/` or the home
@@ -1067,6 +1037,9 @@ fn mcp_starts_only_on_a_folder_that_is_not_too_wide() {
     );
 }
 
+/// The run, output, and errors of `foundation mcp <args>` that reads one ping, at
+/// `working` with home folder `home`, and the data directory that it leaves there.
+/// `/work` holds the file `f`, and `fault` fails a path with an OS error code.
 fn start_with(
     working: &str,
     home: &str,
@@ -1083,6 +1056,8 @@ fn start_with(
     host.make_dir(Path::new("/work"));
     host.set_working_dir(Path::new(working));
     host.set_home(Path::new(home));
+    let paths = host.paths();
+    paths.write(Path::new("/work/f"), b"f").expect("a write");
     if let Some((path, code)) = fault {
         host.fail_path(Path::new(path), code);
     }
@@ -1093,10 +1068,10 @@ fn start_with(
     let args = ["foundation", "mcp"].iter().chain(args).map(Into::into);
     let ping = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n";
     let (mut output, mut errors) = (Vec::new(), Vec::new());
-    let paths = host.paths();
+    let mut input = ping.as_bytes();
     let cli = crate::cli(
         args,
-        ping.as_bytes(),
+        async || crate::line(&mut input),
         &mut output,
         &mut errors,
         &paths,
@@ -1132,6 +1107,17 @@ fn mcp_at_the_root_that_cannot_make_data_is_too_wide() {
 fn mcp_refused_at_home_makes_no_data_directory() {
     let (run, _, _, left) = start_with("/home", "/home", &[], None);
     assert_eq!((run, left), (Run::Exit(2), None));
+}
+
+/// A folder of `--files` that is not there, or that is a file, makes no data
+/// directory.
+#[test]
+fn mcp_refused_for_a_folder_makes_no_data_directory() {
+    for folder in ["/work/missing", "/work/f"] {
+        let (run, _, _, left) =
+            start_with("/work", "/home", &["--files", folder], None);
+        assert_eq!((run, left), (Run::Exit(2), None), "{folder}");
+    }
 }
 
 /// `foundation mcp` makes its data directory, and refuses one whose directory above

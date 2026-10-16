@@ -73,7 +73,7 @@ fn run(args: &[OsString], vars: BTreeMap<OsString, OsString>) -> Result<u8, Fail
 }
 
 /// Runs the command line `args` on a shard of its own. The shard and each I/O thread
-/// of a reach end before this returns, so a node that `foundation start` runs gets
+/// of a reach or of standard input end before this returns, so a node that `foundation start` runs gets
 /// every shard, and its first thread takes the signals.
 ///
 /// # Panics
@@ -91,9 +91,18 @@ fn command_line(shards: &Shards, args: Vec<OsString>) -> Result<Run, Failure> {
         core: None,
     };
     let shard = shards.start(config, move |tasks| async move {
+        // Only `foundation mcp` reads, so the thread starts at the first read.
+        let mut stdin = None;
+        let input = async || {
+            let input = match &stdin {
+                Some(input) => input,
+                None => stdin.insert(input(&started)?),
+            };
+            input.read(ops::line).await
+        };
         let run = ops::cli(
             args,
-            io::stdin().lock(),
+            input,
             io::stdout().lock(),
             io::stderr().lock(),
             &os::paths(),
@@ -113,6 +122,22 @@ fn command_line(shards: &Shards, args: Vec<OsString>) -> Result<Run, Failure> {
     Ok(run
         .try_recv()
         .expect("invariant: the shard sends its run before it ends"))
+}
+
+/// The standard input of the process, read on an I/O thread whose handle goes to
+/// `started`. `cli` reads only after each read before it ends, so the thread ends
+/// once the input drops.
+#[expect(
+    clippy::unwrap_in_result,
+    reason = "`main` keeps the receiver until the shard ends"
+)]
+fn input(started: &mpsc::Sender<env::thread::Handle>) -> io::Result<os::Input> {
+    let threads = os::threads().map_err(io::Error::other)?;
+    let (input, handle) = os::input(&threads, "stdin").map_err(io::Error::other)?;
+    started
+        .send(handle)
+        .expect("invariant: `main` keeps the receiver");
+    Ok(input)
 }
 
 /// The client of the node that runs on the data directory `dir`. It sends the handle

@@ -447,6 +447,18 @@ fn status_reply(
     format!("{reply}\n")
 }
 
+/// The MCP error of a call whose kept session the node closed.
+fn lost() -> serde_json::Value {
+    serde_json::json!({
+        "code": "node.no-reply",
+        "message": "the node gave no reply: the session failed: the peer closed the \
+                    session (0)",
+        "fix": "See that the node runs, then run the command again. After `apply`, plan \
+                again to see whether the change applied",
+        "notes": [],
+    })
+}
+
 /// The MCP error of a call that finds no node on `plant`.
 fn unreached() -> serde_json::Value {
     let fix = "Run `foundation start --data=plant`, with `--name <name>` on its first \
@@ -472,7 +484,8 @@ fn mcp_shows_status_of_the_node_of_data_across_a_restart() {
     let mut replies = status_reply(1, Ok(empty.clone()));
     mcp.ask(&status(1), &replies);
     rig.stop();
-    replies.push_str(&status_reply(2, Err(unreached())));
+    // The kept session fails first, and the next call reaches again.
+    replies.push_str(&status_reply(2, Err(lost())));
     mcp.ask(&status(2), &replies);
     rig.start_with(&["--data", "plant"]);
     replies.push_str(&status_reply(3, Ok(empty)));
@@ -517,8 +530,68 @@ fn start_runs_on_the_data_directory_that_mcp_made() {
     );
 }
 
+/// `foundation mcp` keeps its session through a pause past the idle timeout of the
+/// node, 30 s: its shard sends the keep-alive while it waits for a line.
+#[test]
+fn mcp_keeps_its_session_through_a_pause() {
+    let mut rig = Rig::new();
+    rig.start_with(&["--name", "edge", "--data", "plant"]);
+    let mut mcp = rig.talk(&["mcp", "--data", "plant"]);
+    let status = |id| {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\
+             \"params\":{{\"name\":\"status\"}}}}\n"
+        )
+    };
+    let empty = serde_json::json!({ "connectors": [] });
+    let mut replies = status_reply(1, Ok(empty.clone()));
+    mcp.ask(&status(1), &replies);
+    mcp.idle(types::time::Span::from_nanos(
+        45 * types::time::Span::SECOND.nanos(),
+    ));
+    replies.push_str(&status_reply(2, Ok(empty)));
+    mcp.ask(&status(2), &replies);
+    assert_eq!(mcp.close().status.code(), Some(0));
+}
+
+/// An idle `foundation mcp` holds the UDP sockets of one session after many calls, not
+/// one for each call.
+#[test]
+fn mcp_holds_the_sockets_of_one_session_after_many_calls() {
+    let mut rig = Rig::new();
+    rig.start_with(&["--name", "edge", "--data", "plant"]);
+    let mut mcp = rig.talk(&["mcp", "--data", "plant"]);
+    let status = |id| {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\
+             \"params\":{{\"name\":\"status\"}}}}\n"
+        )
+    };
+    let empty = serde_json::json!({ "connectors": [] });
+    let sockets = |pid: u32| {
+        let output = std::process::Command::new("lsof")
+            .args(["-a", "-p", &pid.to_string(), "-i", "UDP", "-F", "f"])
+            .output()
+            .expect("run lsof");
+        text(&output.stdout)
+            .lines()
+            .filter(|l| l.starts_with('f'))
+            .count()
+    };
+    let mut replies = status_reply(1, Ok(empty.clone()));
+    mcp.ask(&status(1), &replies);
+    let one = sockets(mcp.pid());
+    for id in 2..=20 {
+        replies.push_str(&status_reply(id, Ok(empty.clone())));
+        mcp.ask(&status(id), &replies);
+    }
+    assert_eq!(sockets(mcp.pid()), one);
+    assert_eq!(mcp.close().status.code(), Some(0));
+}
+
 /// The user removes the data directory and starts a new node on it while one
-/// `foundation mcp` runs.
+/// `foundation mcp` runs. The kept session fails first, and the next call reaches the
+/// new node.
 #[test]
 fn mcp_reaches_a_node_on_a_data_directory_made_again() {
     let mut rig = Rig::new();
@@ -536,8 +609,10 @@ fn mcp_reaches_a_node_on_a_data_directory_made_again() {
     rig.stop();
     std::fs::remove_dir_all(rig.dir.join("plant")).expect("a remove");
     rig.start_with(&["--name", "edge", "--data", "plant"]);
-    replies.push_str(&status_reply(2, Ok(empty)));
+    replies.push_str(&status_reply(2, Err(lost())));
     mcp.ask(&status(2), &replies);
+    replies.push_str(&status_reply(3, Ok(empty)));
+    mcp.ask(&status(3), &replies);
     let output = mcp.close();
     assert_eq!(output.status.code(), Some(0));
 }

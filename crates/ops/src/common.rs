@@ -214,7 +214,7 @@ where
 {
     let args = ["foundation"].iter().chain(args).map(Into::into);
     let (mut output, mut errors) = (Vec::new(), Vec::new());
-    let input = std::io::empty();
+    let input = async || crate::line(&mut std::io::empty());
     let run = crate::cli(args, input, &mut output, &mut errors, paths, reach).await;
     let text = |bytes| String::from_utf8(bytes).expect("UTF-8");
     (run, text(output), text(errors))

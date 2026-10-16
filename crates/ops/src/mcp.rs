@@ -17,40 +17,63 @@ const REQUEST: (i64, &str) = (-32600, "Invalid Request");
 const METHOD: (i64, &str) = (-32601, "Method not found");
 const PARAMS: (i64, &str) = (-32602, "Invalid params");
 
-/// The longest line, with its newline, that `serve` reads into memory.
+/// The longest line, with its newline, that [`line`] reads into memory.
 pub(crate) const LIMIT: usize = 1 << 20;
 
-/// Answers each line of `input` with at most one line on `output`, until `input` ends
-/// or the reader closes `output`. A tool call reads and writes its files through
-/// `scope`, and sends its request to the node through `link`.
+/// One line of the input of `foundation mcp`, as [`line`] reads it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Line {
+    /// A line, with its `\n` when it has one. Only the last line of the input can
+    /// have none.
+    Bytes(Vec<u8>),
+    /// A line longer than 1 MiB with its `\n`. The read skips it up to its `\n`.
+    Long,
+    /// The input ended.
+    End,
+}
+
+/// Reads the next line of `input`. It holds at most 1 MiB of it in memory.
+///
+/// # Errors
+///
+/// The first error of a read of `input`.
+pub fn line(input: &mut impl BufRead) -> io::Result<Line> {
+    let mut bytes = Vec::new();
+    let read = input.take(LIMIT as u64).read_until(b'\n', &mut bytes)?;
+    if read == 0 {
+        Ok(Line::End)
+    } else if read == LIMIT && !bytes.ends_with(b"\n") {
+        input.skip_until(b'\n')?;
+        Ok(Line::Long)
+    } else {
+        Ok(Line::Bytes(bytes))
+    }
+}
+
+/// Answers each line that `input` gives with at most one line on `output`, until
+/// `input` ends or the reader closes `output`. A tool call reads and writes its files
+/// through `scope`, and sends its request to the node through `link`.
 pub(crate) async fn serve<R, C>(
-    mut input: impl BufRead,
+    mut input: impl AsyncFnMut() -> io::Result<Line>,
     output: &mut impl Write,
     scope: &Scope,
-    link: &mut Link<R>,
+    link: &mut Link<R, C>,
 ) -> Result<(), Stop>
 where
     R: AsyncFnMut() -> Result<C, Failure>,
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
 {
-    let failed = |e: io::Error| Error::Input {
-        message: e.to_string(),
-    };
-    let mut bytes = Vec::new();
     loop {
-        bytes.clear();
-        let read = (&mut input)
-            .take(LIMIT as u64)
-            .read_until(b'\n', &mut bytes)
-            .map_err(failed)?;
-        let reply = if read == 0 {
-            return Ok(());
-        } else if read == LIMIT && !bytes.ends_with(b"\n") {
-            input.skip_until(b'\n').map_err(failed)?;
-            Some(reply(&Value::Null, Err(fault(REQUEST))).to_string())
-        } else {
+        let read = input().await.map_err(|e| Error::Input {
+            message: e.to_string(),
+        })?;
+        let reply = match read {
+            Line::End => return Ok(()),
+            Line::Long => Some(reply(&Value::Null, Err(fault(REQUEST))).to_string()),
             // A line that is not UTF-8 is not JSON either, so "" gets the parse error.
-            respond(std::str::from_utf8(&bytes).unwrap_or(""), scope, link).await
+            Line::Bytes(bytes) => {
+                respond(std::str::from_utf8(&bytes).unwrap_or(""), scope, link).await
+            }
         };
         if let Some(reply) = reply {
             crate::write(output, &format!("{reply}\n"))?;
@@ -69,7 +92,7 @@ where
 pub(crate) async fn respond<R, C>(
     message: &str,
     scope: &Scope,
-    link: &mut Link<R>,
+    link: &mut Link<R, C>,
 ) -> Option<String>
 where
     R: AsyncFnMut() -> Result<C, Failure>,
@@ -86,7 +109,7 @@ where
 async fn answer<R, C>(
     mut message: Map<String, Value>,
     scope: &Scope,
-    link: &mut Link<R>,
+    link: &mut Link<R, C>,
 ) -> Option<Value>
 where
     R: AsyncFnMut() -> Result<C, Failure>,
@@ -181,7 +204,7 @@ fn tools() -> Value {
 async fn call<R, C>(
     mut params: Map<String, Value>,
     scope: &Scope,
-    link: &mut Link<R>,
+    link: &mut Link<R, C>,
 ) -> Result<Value, Value>
 where
     R: AsyncFnMut() -> Result<C, Failure>,

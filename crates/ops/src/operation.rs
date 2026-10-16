@@ -484,7 +484,7 @@ impl Request {
     pub(crate) async fn run<R, C>(
         self,
         scope: &Scope,
-        link: &mut Link<R>,
+        link: &mut Link<R, C>,
     ) -> Result<Response, Error>
     where
         R: AsyncFnMut() -> Result<C, Failure>,
