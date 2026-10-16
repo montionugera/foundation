@@ -434,6 +434,11 @@ state on `main`.
   the time until the allocator gives that memory again. Trigger for a request path
   that clears them: an attacker who reads freed heap of the node and not its live
   heap.
+- Whoever can write the `ca` source of an `influx` connector can make the node trust
+  a server of their own, so they can stand in for the InfluxDB server and get the
+  token. A `ca` adds to the roots of the node and never replaces them, so it cannot
+  make a node trust fewer servers. Over `http`, the token crosses the network in clear,
+  so `plan` refuses a `ca` with an `http` address (INFLUX KIND).
 - A join ticket is a secret (BQ11a).
 - Rule for every crate: no secret value in a log, a status channel, an error, or
   plan output.
