@@ -5,8 +5,9 @@
   write records a gap and backfill waits. The current value of B4 pins one block per
   index that had a live frame, with no reader open and no cap. A smaller copy is a
   tunable of `docs/decisions/open/parameters.md`. The person decided on 2026-10-05:
-  "Accept it" (#139). The budget counts what stays resident. A purge of a block smaller
-  than a page gives no page back, so it frees no budget. When an allocation finds no
+  "Accept it" (#139). The budget counts what stays resident (on macOS, what the pool
+  holds: see below). A purge of a block smaller than a page gives no page back, so it
+  frees no budget. When an allocation finds no
   room, the pool gives back the whole carved range and budget of size classes whose
   carved blocks are all free, until the allocation fits. Under this pressure, at most
   two partial pages per class stay resident, and `Config::budget` states that slack. An
@@ -21,12 +22,19 @@
   Each such block keeps its header and the partial pages at the ends of its payload,
   with their budget. It gives back its pages with a discard, which keeps their
   protection and their commit charge, so it splits no mapping. An allocation of its
-  size takes back its budget before it carves a new block, and makes no commit, so that
-  step cannot fail. Under strict overcommit (`vm.overcommit_memory=2`), the charge of
-  such a block stays until its size goes idle, and a carve past the limit of the system
-  then gets `Error::Refused`. With the default overcommit, its pages leave the resident
-  set at once. A free block whose payload holds no whole page keeps its budget, so a
-  waiter of another size can wait until the last block of that size frees. Decided by
+  size takes back its budget before it carves a new block, and makes no commit, so the
+  system cannot refuse it. Under strict overcommit (`vm.overcommit_memory=2`), the
+  charge of such a block stays until its size goes idle, and a carve past the limit of
+  the system then gets `Error::Refused`. On Linux with the default overcommit, its
+  pages leave the resident set at once. On macOS they stay resident, and in the
+  footprint of the task, until the system needs memory (BLOCK MEMORY), so there the
+  budget bounds the memory that the pool holds, not its footprint. `MADV_FREE_REUSABLE`
+  drops the footprint at once, but lost: it needs a second `Memory` call before the
+  pool writes the block again, and with no such call the footprint shows less than the
+  task holds (`laptop.architect-2`, 2026-10-16T19:41:36Z:
+  https://github.com/synnaxlabs/foundation/pull/2907#issuecomment-6223324987). A free
+  block whose payload holds no whole page keeps its budget, so a waiter of another size
+  can wait until the last block of that size frees. Decided by
   `laptop.architect` (2026-10-16T17:05:20Z):
   https://github.com/synnaxlabs/foundation/issues/2810#issuecomment-6220640348; the
   discard by `laptop.architect` (2026-10-16T19:37:29Z), after the objection of
