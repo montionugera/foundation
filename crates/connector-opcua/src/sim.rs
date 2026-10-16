@@ -42,6 +42,9 @@ struct State {
     /// The reads of the state of the server (`ns=0;i=2259`) that a server answered.
     #[cfg(test)]
     states: u32,
+    /// The status of each answer of the state of the server, at first Good.
+    #[cfg(test)]
+    answer: Quality,
 }
 
 #[derive(Debug)]
@@ -111,6 +114,8 @@ impl Variables {
             session: None,
             #[cfg(test)]
             states: 0,
+            #[cfg(test)]
+            answer: Quality::GOOD,
         })))
     }
 
@@ -174,6 +179,12 @@ impl Variables {
     #[cfg(test)]
     pub(crate) fn time_out_sessions(&self, most: Span) {
         self.state().session = Some(most);
+    }
+
+    /// Gives each later answer of the state of the server the status `quality`.
+    #[cfg(test)]
+    pub(crate) fn answer_states(&self, quality: Quality) {
+        self.state().answer = quality;
     }
 
     /// The reads of the state of the server (`ns=0;i=2259`) that a server answered.
@@ -294,8 +305,9 @@ pub async fn serve(
         {
             let variables = Variables::clone(variables);
             server.set_source(&state_node(), move || {
-                variables.state().states += 1;
-                (Value::I32(0), Quality::GOOD)
+                let mut state = variables.state();
+                state.states += 1;
+                (Value::I32(0), state.answer)
             });
         }
         let top = nodes.iter().map(|node| node.namespace).max().unwrap_or(0);
@@ -322,7 +334,8 @@ pub async fn serve(
     Server::serve(manager, SESSIONS, add, until).await;
 }
 
-/// The state of a server, whose reads a test server answers with `Running` and counts.
+/// The state of a server, whose reads a test server answers with `Running`, with the
+/// status of [`Variables::answer_states`], and counts.
 #[cfg(test)]
 fn state_node() -> Node {
     Node {
