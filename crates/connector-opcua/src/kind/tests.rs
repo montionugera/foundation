@@ -1406,7 +1406,7 @@ fn stamps_each_frame_within_its_read() {
 )]
 fn panics_with_the_read_whose_value_is_left_out() {
     use crate::value::{Fault, Value};
-    let bad = Err(Fault::Status(Status::BAD_NOT_FOUND));
+    let bad = Err(Fault::status(Status::BAD_NOT_FOUND));
     let values = [Ok(Value::F64(1.0)), bad, bad];
     Values(&values).get(2);
 }
@@ -1430,13 +1430,13 @@ fn leaves_out_each_value_of_another_type_than_its_channel() {
 #[test]
 fn leaves_out_each_value_that_is_not_good() {
     use crate::value::Fault;
-    let leave = |status: u32| Why::of(&Err(Fault::Status(Status(status))), Scalar::F64);
+    let leave = |status: u32| Why::of(&Err(Fault::status(Status(status))), Scalar::F64);
     assert_eq!(leave(0x4000_0000), Some(Why::Uncertain));
     assert_eq!(leave(0x7FFF_FFFF), Some(Why::Uncertain));
     assert_eq!(leave(Status::BAD_NOT_FOUND.0), Some(Why::Bad));
     assert_eq!(leave(0xC000_0000), Some(Why::Bad));
     assert_eq!(leave(0x8000_0000), Some(Why::Bad));
     let string = crate::value::Type::named("String");
-    let left = Why::of(&Err(Fault::Type(string)), Scalar::F64);
+    let left = Why::of(&Err(Fault::of_type(string)), Scalar::F64);
     assert_eq!(left, Some(Why::Mistyped(string)));
 }

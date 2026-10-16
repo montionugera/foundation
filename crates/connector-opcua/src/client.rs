@@ -40,7 +40,7 @@ const SPLIT: usize = 7;
 
 /// The value of a slot that no read has written yet. No read gives it: a read ends only
 /// when each of its requests has its answer, which writes each of its values.
-const UNREAD: Result<Value, Fault> = Err(Fault::Status(Status::BAD_UNEXPECTED_ERROR));
+const UNREAD: Result<Value, Fault> = Err(Fault::status(Status::BAD_UNEXPECTED_ERROR));
 
 const _: () = assert!(
     READS as usize * CHUNKS as usize <= SENDS / 2,

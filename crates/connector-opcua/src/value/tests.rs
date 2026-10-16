@@ -1,6 +1,6 @@
 use types::sample::{self, Scalar};
 
-use super::{Fault, SCALARS, Type, Value};
+use super::{Cause, Fault, SCALARS, Type, Value};
 use crate::ffi::{self, Status};
 use crate::fuzz;
 
@@ -21,7 +21,7 @@ fn an_answer_with_a_good_status_and_no_value_fails_with_no_data() {
     let reads = answers
         .each_ref()
         .map(|answer| unsafe { Value::of(answer.pointer().cast()) });
-    assert_eq!(reads, [Err(Fault::Status(Status::BAD_NO_DATA)); 2]);
+    assert_eq!(reads, [Err(Fault::status(Status::BAD_NO_DATA)); 2]);
 }
 
 /// The text of the fault of the answer `bytes`, an encoded `DataValue`.
@@ -29,8 +29,11 @@ fn fault(bytes: &[u8]) -> String {
     let answer = decoded(bytes);
     // SAFETY: the answer is a decoded `UA_DataValue` that lives to the end.
     match unsafe { Value::of(answer.pointer().cast()) } {
-        Err(Fault::Type(opc_type)) => opc_type.to_string(),
-        other => panic!("not a value of another type: {other:?}"),
+        Err(fault) => match fault.cause() {
+            Cause::Type(opc_type) => opc_type.to_string(),
+            Cause::Status(status) => panic!("not a value of another type: {status:?}"),
+        },
+        Ok(value) => panic!("not a value of another type: {value:?}"),
     }
 }
 
@@ -70,7 +73,7 @@ fn an_answer_with_an_empty_value_fails_with_no_data() {
     let answer = decoded(&[0x01, 0x00]);
     // SAFETY: the answer is a decoded `UA_DataValue` that lives to the end.
     let read = unsafe { Value::of(answer.pointer().cast()) };
-    assert_eq!(read, Err(Fault::Status(Status::BAD_NO_DATA)));
+    assert_eq!(read, Err(Fault::status(Status::BAD_NO_DATA)));
 }
 
 #[test]
@@ -82,7 +85,7 @@ fn an_answer_with_the_status_bad_type_mismatch_gives_that_status() {
     let answer = decoded(&bytes);
     // SAFETY: the answer is a decoded `UA_DataValue` that lives to the end.
     let read = unsafe { Value::of(answer.pointer().cast()) };
-    assert_eq!(read, Err(Fault::Status(Status::BAD_TYPE_MISMATCH)));
+    assert_eq!(read, Err(Fault::status(Status::BAD_TYPE_MISMATCH)));
 }
 
 #[test]
@@ -172,4 +175,33 @@ fn one_is_1_of_each_scalar_and_panics_for_another_type() {
         payload.downcast_ref::<String>().map(String::as_str),
         Some("invariant: Stamp is not one of `SCALARS`")
     );
+}
+
+#[test]
+fn a_fault_gives_the_status_or_the_type_that_made_it() {
+    let last = Type {
+        at: u16::try_from(ffi::types().len() - 1).expect("a u16"),
+        array: true,
+    };
+    let string = Type::named("String");
+    let statuses = [
+        Status(0x4000_0000),
+        Status::BAD_NO_DATA,
+        Status(0xFFFF_FFFF),
+    ];
+    let causes: Vec<_> = statuses
+        .iter()
+        .map(|&status| Fault::status(status).cause())
+        .chain([last, string].map(|of| Fault::of_type(of).cause()))
+        .collect();
+    let mut expected: Vec<_> = statuses.map(Cause::Status).to_vec();
+    expected.extend([Cause::Type(last), Cause::Type(string)]);
+    assert_eq!(causes, expected);
+    assert_eq!(size_of::<Fault>(), 4);
+}
+
+#[test]
+#[should_panic(expected = "invariant: the status of a fault is not Good")]
+fn a_fault_of_a_good_status_panics() {
+    let _ = Fault::status(Status(0x00A0_0000));
 }

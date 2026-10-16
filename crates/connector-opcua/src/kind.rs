@@ -22,7 +22,7 @@ use crate::config::{self, Config, Read};
 use crate::event;
 use crate::ffi::Status;
 use crate::node::Node;
-use crate::value::{self, Fault, SCALARS, Value};
+use crate::value::{self, Cause, Fault, SCALARS, Value};
 
 #[cfg(test)]
 #[cfg(feature = "sim")]
@@ -175,7 +175,7 @@ pub async fn writes(
         let values: Vec<_> = types
             .map(|(at, &scalar)| {
                 if at < bad {
-                    Err(Fault::Status(Status::BAD_NOT_FOUND))
+                    Err(Fault::status(Status::BAD_NOT_FOUND))
                 } else {
                     Ok(Value::one(scalar))
                 }
@@ -558,9 +558,11 @@ impl Why {
         match value {
             Ok(value) if value.scalar() == sample => None,
             Ok(value) => Some(Self::Mistyped(value.type_of())),
-            Err(Fault::Type(opc_type)) => Some(Self::Mistyped(*opc_type)),
-            Err(Fault::Status(status)) if status.uncertain() => Some(Self::Uncertain),
-            Err(Fault::Status(_)) => Some(Self::Bad),
+            Err(fault) => match fault.cause() {
+                Cause::Type(opc_type) => Some(Self::Mistyped(opc_type)),
+                Cause::Status(status) if status.uncertain() => Some(Self::Uncertain),
+                Cause::Status(_) => Some(Self::Bad),
+            },
         }
     }
 }

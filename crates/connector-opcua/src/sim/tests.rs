@@ -23,8 +23,8 @@ const QUALITIES: [Quality; 4] = [Quality::GOOD, CLAMPED, UNCERTAIN, BAD];
 const READS: [Result<Value, Fault>; 4] = [
     Ok(Value::F64(1.0)),
     Ok(Value::F64(2.0)),
-    Err(Fault::Status(Status(UNCERTAIN.0))),
-    Err(Fault::Status(Status(BAD.0))),
+    Err(Fault::status(Status(UNCERTAIN.0))),
+    Err(Fault::status(Status(BAD.0))),
 ];
 
 /// Binds a listener of `node` on its port 4840.

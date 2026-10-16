@@ -7,7 +7,7 @@ use std::ffi::c_void;
 
 use crate::ffi::{self, BYTE_STRING, Bytes, DATA_VALUE, DataType, DecodeOptions};
 use crate::ffi::{Status, TYPES};
-use crate::value::Fault;
+use crate::value::Cause;
 
 /// Decodes `data[2..]` as the type of `UA_TYPES` that the little-endian `u16` of
 /// `data[..2]` picks, by its remainder by the table length. When the decode gives
@@ -81,8 +81,10 @@ fn read_of(value: &Value) -> String {
     // SAFETY: `value` is a live `DataValue`, as the assert checks.
     match unsafe { crate::value::Value::of(value.pointer().cast()) } {
         Ok(read) => format!("{read:?}"),
-        Err(Fault::Status(status)) => status.name().to_owned(),
-        Err(Fault::Type(opc_type)) => opc_type.to_string(),
+        Err(fault) => match fault.cause() {
+            Cause::Status(status) => status.name().to_owned(),
+            Cause::Type(opc_type) => opc_type.to_string(),
+        },
     }
 }
 

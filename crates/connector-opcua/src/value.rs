@@ -70,7 +70,7 @@ impl Value {
             ffi::shim_value_scalar(value, &raw mut scalar, &raw mut kind)
         });
         if status != Status::GOOD {
-            return Err(Fault::Status(status));
+            return Err(Fault::status(status));
         }
         Ok(match kind {
             // SAFETY: `shim_value_scalar` wrote the field of `kind`.
@@ -187,21 +187,65 @@ fn mistyped(kind: u16, data_type: *const ffi::DataType) -> Fault {
         types.get(at).is_some_and(|of| std::ptr::eq(of, data_type)),
         "invariant: each type of a decoded value is of `UA_TYPES`"
     );
-    Fault::Type(Type {
+    Fault::of_type(Type {
         at: u16::try_from(at).expect("invariant: `UA_TYPES` fits a u16"),
         array: kind & ffi::ARRAY != 0,
     })
 }
 
-/// Why an answer of a read gives no [`Value`].
+/// Why an answer of a read gives no [`Value`], in 4 bytes: [`Fault::cause`] gives it.
+// A status that is not Good, or a type with the severity bits of Good: the index in
+// bits 0 to 15, and the array flag in bit 16. An enum puts the fault at offset 4, over
+// the payload of a `Value`, and `client::answer` then stalls on each read.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct Fault(u32);
+
+/// What a [`Fault`] holds.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Fault {
+pub(crate) enum Cause {
     /// The status of the answer, which is not Good, or `BadNoData` when it holds no
     /// value.
     Status(Status),
     /// The type of a Good answer that is an array, or a scalar of another type than
     /// those of [`Value`].
     Type(Type),
+}
+
+impl Fault {
+    /// The fault of `status`.
+    ///
+    /// # Panics
+    ///
+    /// If `status` is Good.
+    pub(crate) const fn status(status: Status) -> Self {
+        assert!(
+            status.0 >> 30 != 0,
+            "invariant: the status of a fault is not Good"
+        );
+        Self(status.0)
+    }
+
+    /// The fault of a Good answer of the type `of`.
+    pub(crate) fn of_type(of: Type) -> Self {
+        Self(u32::from(of.at) | u32::from(of.array) << 16)
+    }
+
+    /// What the fault holds.
+    pub(crate) fn cause(self) -> Cause {
+        if self.0 >> 30 == 0 {
+            let at = u16::try_from(self.0 & 0xFFFF).expect("16 bits");
+            let array = self.0 >> 16 & 1 != 0;
+            Cause::Type(Type { at, array })
+        } else {
+            Cause::Status(Status(self.0))
+        }
+    }
+}
+
+impl fmt::Debug for Fault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.cause(), f)
+    }
 }
 
 /// The OPC UA type of a value: a type of `UA_TYPES`, or an array of one. Its text is
