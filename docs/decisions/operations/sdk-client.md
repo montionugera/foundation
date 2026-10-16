@@ -35,5 +35,5 @@
   key choice of kind 9, 2026-10-16T22:40:46Z,
   https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6226048578). The
   next call, `close` too, gives the cause: `close` gives `Error::Session` with it
-  when the session ended before the close (`laptop.architect-2`, 2026-10-16,
+  when the session ended before the close (`laptop.architect-2`, 2026-10-16T22:20:16Z,
   https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225794091).
