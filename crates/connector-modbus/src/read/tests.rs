@@ -595,7 +595,7 @@ mod values {
             read(Table::HoldingRegisters, 1, Scalar::U16),
         ];
         let [group] = groups(&reads, Order::Big).try_into().expect("one group");
-        let _ = put(&mut device(), &group, &mut Values::new(1));
+        put(&mut device(), &group, &mut Values::new(1)).expect("no exception");
     }
 }
 
