@@ -4,9 +4,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::{NonZeroU32, NonZeroUsize};
 
-use super::service::{self, Answer, Request, Sizes};
+use super::service::{self, Answer, Item, Request, Sizes};
 use super::{Client, id_bytes, limit};
-use crate::ffi::{self, Item, Status};
+use crate::ffi::{self, Service, Status};
 use crate::node::{Key, Node};
 use crate::value::Value;
 
@@ -41,8 +41,8 @@ const ENUMERATION: u32 = 29;
 /// The id of `Int32`.
 const INT32: u32 = 6;
 
-/// The most supertypes that a client keeps past a call of [`Client::describe`]: the
-/// next call clears them first.
+/// The most supertypes that a client keeps past a call of [`Client::describe`]: a call
+/// that ends with more clears them.
 const SUPERTYPES: usize = 1024;
 
 /// One page of the references of a node.
@@ -127,11 +127,13 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// `BadTimeout` when the answer does not come in the request timeout of the
-    /// client (5 s), `BadTooManyOperations` when the client cannot send in that time,
-    /// as [`Client::read`] says, else the status of open62541 when it refuses the
-    /// request, the service result, or the status of the result of `node` when it is
-    /// not Good and not `BadNodeIdUnknown`, such as `BadNoContinuationPoints`.
+    /// `BadRequestTooLarge`, with nothing sent, when the request does not fit one
+    /// message that the client sends, `BadTimeout` when the answer does not come in
+    /// the request timeout of the client (5 s), `BadTooManyOperations` when the client
+    /// cannot send in that time, as [`Client::read`] says, else the status of
+    /// open62541 when it refuses the request, the service result, or the status of
+    /// the result of `node` when it is not Good and not `BadNodeIdUnknown`, such as
+    /// `BadNoContinuationPoints`.
     pub(crate) async fn browse(
         &mut self,
         node: &Node,
@@ -140,12 +142,8 @@ impl Client {
         let build = |raw: &[ffi::Node<'_>], most| {
             Request::browse(raw, HIERARCHICAL, false, CLASSES, most)
         };
-        let [_, empty] =
-            Sizes::nodes(|raw| build(raw, NonZeroU32::MIN), self.token).empty();
-        let fits = self
-            .takes
-            .saturating_sub(empty + service::result(Item::RESULT))
-            / service::result(Item::REFERENCE);
+        let fixed = service::answer_bytes(Service::BROWSE) + Item::Result.bytes();
+        let fits = self.takes.saturating_sub(fixed) / Item::Reference.bytes();
         let fits = NonZeroU32::new(u32::try_from(fits).unwrap_or(u32::MAX))
             .unwrap_or(NonZeroU32::MIN);
         let answer = self.serve(&build(&[node.into()], most.min(fits))).await?;
@@ -175,9 +173,9 @@ impl Client {
     /// `MaxNodesPerTranslateBrowsePathsToNodeIds`) and so that it and its answer, with
     /// each text at 256 bytes, fit one message of the session, and sends one at a
     /// time. A fact whose request alone, or its answer, does not fit is `None`. At its
-    /// first call, it reads the limits of a Browse and a Translate. It browses each data
-    /// type once per client, with one Browse request for each step of the walk of the
-    /// types of a call, and keeps at most 1024 supertypes past a call.
+    /// first call, it reads the limits of a Browse and a Translate. It browses each
+    /// data type once per client, with one Browse request for each step of the walk of
+    /// the types of a call, and keeps at most 1024 supertypes past a call.
     ///
     /// # Errors
     ///
@@ -191,13 +189,14 @@ impl Client {
         let mut descriptions: Vec<Description> =
             nodes.iter().map(|_| Description::default()).collect();
         let bounds = self.bounds().await?;
-        if self.supertypes.len() > SUPERTYPES {
-            self.supertypes.clear();
-        }
         let types = self.facts(nodes, &mut descriptions).await?;
         self.units(nodes, bounds.translate, &mut descriptions)
             .await?;
-        let bases = self.walk(&types, bounds.browse).await?;
+        let bases = self.walk(&types, bounds.browse).await;
+        if self.supertypes.len() > SUPERTYPES {
+            self.supertypes.clear();
+        }
+        let bases = bases?;
         for (description, base) in descriptions.iter_mut().zip(bases) {
             description.base = base;
         }
@@ -238,13 +237,11 @@ impl Client {
     ) -> Result<Vec<Option<Node>>, Status> {
         let per = FACTS.len();
         let mut types = vec![None; nodes.len()];
-        let sizes = Sizes::nodes(Request::values, self.token);
         // Each fact is sized as the largest, the data type.
-        let fact = service::result(Item::FACT);
-        let split =
-            self.split(nodes.len() * per, self.per_read, sizes.empty(), |index| {
-                sizes.item(id_bytes(&nodes[index / per]), fact)
-            });
+        let sizes = self.sizes(Request::values, Item::Fact.bytes());
+        let split = self.split(nodes.len() * per, self.per_read, &sizes, |index| {
+            id_bytes(&nodes[index / per])
+        });
         for range in split.ranges {
             let raw: Vec<ffi::Node<'_>> = range
                 .clone()
@@ -285,11 +282,9 @@ impl Client {
         most: Option<NonZeroUsize>,
         descriptions: &mut [Description],
     ) -> Result<(), Status> {
-        let sizes = Sizes::nodes(Request::units, self.token);
-        let path = service::result(Item::PATH);
-        let split = self.split(nodes.len(), most, sizes.empty(), |index| {
-            sizes.item(id_bytes(&nodes[index]), path)
-        });
+        let sizes = self.sizes(Request::units, Item::Path.bytes());
+        let split =
+            self.split(nodes.len(), most, &sizes, |index| id_bytes(&nodes[index]));
         let (mut found, mut units) = (Vec::new(), Vec::new());
         for range in split.ranges {
             let answer = self
@@ -303,10 +298,9 @@ impl Client {
                 }
             }
         }
-        let sizes = Sizes::nodes(Request::values, self.token);
-        let unit = service::result(Item::UNIT);
-        let split = self.split(units.len(), self.per_read, sizes.empty(), |index| {
-            sizes.item(id_bytes(&units[index]), unit)
+        let sizes = self.sizes(Request::values, Item::Unit.bytes());
+        let split = self.split(units.len(), self.per_read, &sizes, |index| {
+            id_bytes(&units[index])
         });
         for range in split.ranges {
             let answer = self
@@ -335,8 +329,7 @@ impl Client {
         let build = |raw: &[ffi::Node<'_>]| {
             Request::browse(raw, HAS_SUBTYPE, true, DATA_TYPE, NonZeroU32::MIN)
         };
-        let sizes = Sizes::nodes(build, self.token);
-        let answer = service::result(Item::RESULT) + service::result(Item::REFERENCE);
+        let sizes = self.sizes(build, Item::Result.bytes() + Item::Reference.bytes());
         let mut failed = BTreeSet::new();
         loop {
             let mut missing = BTreeSet::new();
@@ -357,10 +350,10 @@ impl Client {
                 return Ok(bases);
             }
             let missing: Vec<Node> = missing.into_iter().collect();
-            let split = self.split(missing.len(), most, sizes.empty(), |index| {
-                sizes.item(id_bytes(&missing[index]), answer)
+            let split = self.split(missing.len(), most, &sizes, |index| {
+                id_bytes(&missing[index])
             });
-            failed.extend(split.large.iter().map(|large| missing[large.node].clone()));
+            failed.extend(split.large.iter().map(|large| missing[large.index].clone()));
             let mut points = Vec::new();
             for range in split.ranges {
                 let answer = self
@@ -392,10 +385,7 @@ impl Client {
         most: Option<NonZeroUsize>,
     ) -> Result<(), Status> {
         let sizes = Sizes::points(self.token);
-        let result = service::result(Item::RESULT);
-        let split = self.split(points.len(), most, sizes.empty(), |index| {
-            sizes.item(points[index].len(), result)
-        });
+        let split = self.split(points.len(), most, &sizes, |index| points[index].len());
         for range in split.ranges {
             let points: Vec<&[u8]> = points[range].iter().map(Vec::as_slice).collect();
             self.serve(&Request::browse_next(&points, true)).await?;

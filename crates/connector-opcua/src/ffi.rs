@@ -98,6 +98,7 @@ impl Status {
     #[cfg(test)]
     pub(crate) const BAD_TCP_ENDPOINT_URL_INVALID: Self = Self(0x8083_0000);
     pub(crate) const BAD_TIMEOUT: Self = Self(0x800A_0000);
+    pub(crate) const BAD_REQUEST_TOO_LARGE: Self = Self(0x80B8_0000);
     pub(crate) const BAD_TOO_MANY_OPERATIONS: Self = Self(0x8010_0000);
     pub(crate) const BAD_UNEXPECTED_ERROR: Self = Self(0x8001_0000);
     #[cfg(test)]
@@ -565,26 +566,6 @@ impl Service {
     pub(crate) const READ: Self = Self(3);
 }
 
-/// A kind of result of `shim_answer_item`: an index of its enum in `shim.c`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(transparent)]
-pub(crate) struct Item(usize);
-
-impl Item {
-    /// A Read result of a Double.
-    pub(crate) const VALUE: Self = Self(0);
-    /// A Read result of a `NodeId` by a name.
-    pub(crate) const FACT: Self = Self(1);
-    /// A Read result of an `EUInformation`.
-    pub(crate) const UNIT: Self = Self(2);
-    /// A Translate result of one target.
-    pub(crate) const PATH: Self = Self(3);
-    /// A Browse result with a continuation point and no references.
-    pub(crate) const RESULT: Self = Self(4);
-    /// One reference of a Browse result.
-    pub(crate) const REFERENCE: Self = Self(5);
-}
-
 /// `UA_ClientAsyncServiceCallback`.
 pub(crate) type Served = unsafe extern "C" fn(
     client: *mut Client,
@@ -735,7 +716,13 @@ unsafe extern "C" {
         token: usize,
     ) -> usize;
     pub(crate) fn shim_answer_bytes(service: Service) -> usize;
-    pub(crate) fn shim_answer_item(kind: Item) -> usize;
+    // Each `shim_item_*` takes nothing and reads no state.
+    pub(crate) safe fn shim_item_value() -> usize;
+    pub(crate) safe fn shim_item_fact() -> usize;
+    pub(crate) safe fn shim_item_unit() -> usize;
+    pub(crate) safe fn shim_item_path() -> usize;
+    pub(crate) safe fn shim_item_result() -> usize;
+    pub(crate) safe fn shim_item_reference() -> usize;
     #[cfg(test)]
     pub(crate) fn shim_service_type(service: Service, answer: bool) -> *const DataType;
     pub(crate) fn shim_browse_new(

@@ -35,7 +35,7 @@ mod service;
 #[cfg(test)]
 mod tests;
 
-use service::{Request, Sizes};
+use service::{Bytes, Item, Request, Sizes};
 
 /// The most requests of a client in flight. A request past it waits until one ends.
 const READS: u16 = 16;
@@ -336,12 +336,10 @@ impl Client {
     ///
     /// If open62541 cannot allocate a request, as [`alloc::exhausted`] says.
     pub(crate) fn nodes(&self, nodes: &[Node]) -> Result<Nodes, Large> {
-        let sizes = Sizes::nodes(Request::values, self.token);
-        let value = service::result(ffi::Item::VALUE);
-        let mut split =
-            self.split(nodes.len(), self.per_read, sizes.empty(), |index| {
-                sizes.item(id_bytes(&nodes[index]), value)
-            });
+        let sizes = self.sizes(Request::values, Item::Value.bytes());
+        let mut split = self.split(nodes.len(), self.per_read, &sizes, |index| {
+            id_bytes(&nodes[index])
+        });
         if !split.large.is_empty() {
             return Err(split.large.swap_remove(0));
         }
@@ -353,45 +351,40 @@ impl Client {
     /// Splits the `count` items of a list into requests, in order. Each request takes
     /// the next items while it has at most `most` items, and while it and its answer
     /// each fit one message of the session, the request in [`Client::sends`] and the
-    /// answer in [`Client::takes`]. `empty` gives the bytes of a request of no items and
-    /// of its answer, and `item` the bytes that item `index` adds to each.
+    /// answer in [`Client::takes`]. `sizes` gives the bytes of each, and `variable` the
+    /// bytes of the variable part of item `index`, such as its node id.
     fn split(
         &self,
         count: usize,
         most: Option<NonZeroUsize>,
-        empty: [usize; 2],
-        item: impl Fn(usize) -> [usize; 2],
+        sizes: &Sizes,
+        variable: impl Fn(usize) -> usize,
     ) -> Split {
-        let past = |[ask, answer]: [usize; 2]| {
-            [(ask, self.sends), (answer, self.takes)]
+        let past = |bytes: Bytes| {
+            [(bytes.ask, self.sends), (bytes.answer, self.takes)]
                 .into_iter()
                 .find(|&(bytes, most)| bytes > most)
         };
-        let add = |[a, b]: [usize; 2], [c, d]: [usize; 2]| [a + c, b + d];
         let mut split = Split {
             ranges: Vec::new(),
             large: Vec::new(),
         };
-        let mut open: Option<(Range<usize>, [usize; 2])> = None;
+        let mut open: Option<(Range<usize>, Bytes)> = None;
         for index in 0..count {
-            let item = item(index);
+            let item = sizes.item(variable(index));
             if let Some((range, bytes)) = &mut open {
                 let full = most.is_some_and(|most| range.len() == most.get());
-                if !full && past(add(*bytes, item)).is_none() {
-                    *bytes = add(*bytes, item);
+                if !full && past(*bytes + item).is_none() {
+                    *bytes = *bytes + item;
                     range.end += 1;
                     continue;
                 }
                 split.ranges.push(range.clone());
             }
-            let bytes = add(empty, item);
+            let bytes = sizes.empty + item;
             open = match past(bytes) {
                 Some((bytes, most)) => {
-                    split.large.push(Large {
-                        node: index,
-                        bytes,
-                        most,
-                    });
+                    split.large.push(Large { index, bytes, most });
                     None
                 }
                 None => Some((index..index + 1, bytes)),
@@ -660,7 +653,7 @@ struct Split {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Large {
     /// The index of the item in its list.
-    pub(crate) node: usize,
+    pub(crate) index: usize,
     /// The bytes of the body of its message, the request when it is past, else the
     /// answer.
     pub(crate) bytes: usize,

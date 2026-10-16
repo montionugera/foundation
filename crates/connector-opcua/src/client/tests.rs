@@ -1408,7 +1408,7 @@ fn a_request_takes_the_chunks_of_one_message() {
     );
     let most = 8 * (65_536 - 24) - 7 * 7;
     let large = Large {
-        node: 1,
+        index: 1,
         bytes: most + 1,
         most,
     };
@@ -1450,7 +1450,7 @@ fn a_read_takes_the_max_message_size_of_the_server() {
     let (read, past, values, counts, split, sent, value) = reads;
     assert_eq!(read, Ok(vec![Ok(Value::F64(2.5))]));
     let large = Large {
-        node: 0,
+        index: 0,
         bytes: 8193,
         most: 8192,
     };
@@ -1503,7 +1503,7 @@ fn a_request_and_an_answer_each_take_the_buffer_of_their_side() {
     let (request, counts, values, value) = reads;
     let most = 8 * (65_536 - 24) - 7 * 7;
     let large = Large {
-        node: 0,
+        index: 0,
         bytes: most + 1,
         most,
     };

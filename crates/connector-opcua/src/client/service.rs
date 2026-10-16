@@ -1,5 +1,5 @@
-//! The services of a client other than the Read of values: one request at a time, with
-//! the drive of [`Client::read`].
+//! The requests and answers of each service, and the sizes of their messages, for
+//! [`Client::read`] and the browse.
 
 use std::cell::Cell;
 use std::ffi::c_void;
@@ -9,11 +9,8 @@ use std::task::Poll;
 
 use super::{Calls, Client, READS, id_bytes};
 use crate::alloc;
-use crate::ffi::{self, Item, Service, Status};
+use crate::ffi::{self, Service, Status};
 use crate::node::{Key, Node};
-
-/// The attribute `Value`.
-const VALUE: u32 = 13;
 
 /// A request of a service, which C owns until the drop.
 pub(super) struct Request {
@@ -116,7 +113,9 @@ impl Request {
     ///
     /// As [`Request::browse`].
     pub(super) fn values(nodes: &[ffi::Node<'_>]) -> Self {
-        Self::attributes(nodes, &vec![VALUE; nodes.len()])
+        // SAFETY: `nodes` holds its count, and C copies each name.
+        let raw = unsafe { ffi::shim_read_new(nodes.as_ptr(), nodes.len()) };
+        Self::new(raw.cast(), Service::READ)
     }
 
     /// Takes `raw`, a request of `service` from C, or NULL when C could not allocate
@@ -143,70 +142,131 @@ impl Drop for Request {
     }
 }
 
+/// The bytes of the body of a request message and of its answer.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Bytes {
+    pub(super) ask: usize,
+    pub(super) answer: usize,
+}
+
+impl std::ops::Add for Bytes {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            ask: self.ask + other.ask,
+            answer: self.answer + other.answer,
+        }
+    }
+}
+
 /// The bytes of the messages of the requests of one service and of their good answers,
 /// for [`Client::split`].
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Sizes {
-    /// A request of no items, with the session token.
-    ask: usize,
-    /// An item of a request, less its node or point.
-    rest: usize,
-    /// An answer of no results.
-    answer: usize,
+    /// A request of no items, with the session token, and its answer.
+    pub(super) empty: Bytes,
+    /// An item of a request, less its node or point, and its result.
+    item: Bytes,
 }
 
 impl Sizes {
-    /// The sizes of the requests that `build` gives for a list of nodes, with a session
-    /// token of `token` encoded bytes.
-    pub(super) fn nodes(
-        build: impl Fn(&[ffi::Node<'_>]) -> Request,
+    /// The sizes of the `BrowseNext` requests that release their points, with a session
+    /// token of `token` encoded bytes, and of their answers.
+    pub(super) fn points(token: usize) -> Self {
+        let one = Request::browse_next(&[&[]], true);
+        let empty = Request::browse_next(&[], true);
+        Self::of(&empty, &one, 0, token, Item::Result.bytes())
+    }
+
+    /// The sizes of the requests of `empty`, with no items, and `one`, with one item of
+    /// `variable` bytes of its node or point, with a session token of `token` encoded
+    /// bytes, and of their answers, with `result` bytes for each item.
+    fn of(
+        empty: &Request,
+        one: &Request,
+        variable: usize,
         token: usize,
+        result: usize,
     ) -> Self {
+        let ask = empty.bytes(token);
+        Self {
+            empty: Bytes {
+                ask,
+                answer: answer_bytes(empty.service),
+            },
+            item: Bytes {
+                ask: one.bytes(token) - ask - variable,
+                answer: result,
+            },
+        }
+    }
+
+    /// The bytes that an item adds to a request, with `variable` bytes of its node or
+    /// point, and to its answer.
+    pub(super) fn item(&self, variable: usize) -> Bytes {
+        Bytes {
+            ask: self.item.ask + variable,
+            answer: self.item.answer,
+        }
+    }
+}
+
+impl Client {
+    /// The sizes of the requests that `build` gives for a list of nodes, on this
+    /// client's session, and of their answers, with `result` bytes for each node.
+    pub(super) fn sizes(
+        &self,
+        build: impl Fn(&[ffi::Node<'_>]) -> Request,
+        result: usize,
+    ) -> Sizes {
         let zero = Node {
             namespace: 0,
             key: Key::Number(0),
         };
         let one = build(&[(&zero).into()]);
-        Self::of(&build(&[]), &one, id_bytes(&zero), token)
-    }
-
-    /// The sizes of the `BrowseNext` requests that release their points, with a session
-    /// token of `token` encoded bytes.
-    pub(super) fn points(token: usize) -> Self {
-        let one = Request::browse_next(&[&[]], true);
-        Self::of(&Request::browse_next(&[], true), &one, 0, token)
-    }
-
-    /// The sizes of the requests of `empty`, with no items, and `one`, with one item of
-    /// `variable` bytes of its node or point.
-    fn of(empty: &Request, one: &Request, variable: usize, token: usize) -> Self {
-        let ask = empty.bytes(token);
-        Self {
-            ask,
-            rest: one.bytes(token) - ask - variable,
-            // SAFETY: it reads nothing.
-            answer: unsafe { ffi::shim_answer_bytes(empty.service) },
-        }
-    }
-
-    /// The bytes of a request of no items and of its answer.
-    pub(super) fn empty(&self) -> [usize; 2] {
-        [self.ask, self.answer]
-    }
-
-    /// The bytes that an item adds to a request, with `variable` bytes of its node or
-    /// point, and to its answer, with `answer` bytes of its result.
-    pub(super) fn item(&self, variable: usize, answer: usize) -> [usize; 2] {
-        [self.rest + variable, answer]
+        Sizes::of(&build(&[]), &one, id_bytes(&zero), self.token, result)
     }
 }
 
-/// Gives the bytes of one result of `kind` in a good answer, with each text and byte
-/// string at the cap of `shim_answer_item` (256 bytes). A larger text can make an answer
-/// past one message, and then the server closes the channel.
-pub(super) fn result(kind: Item) -> usize {
+/// Gives the bytes of the body of the message of a good answer of `service` with no
+/// results.
+pub(super) fn answer_bytes(service: Service) -> usize {
     // SAFETY: it reads nothing.
-    unsafe { ffi::shim_answer_item(kind) }
+    unsafe { ffi::shim_answer_bytes(service) }
+}
+
+/// A kind of result of a good answer.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Item {
+    /// A Read result of a Double, the largest scalar of a value.
+    Value,
+    /// A Read result of a `NodeId` by a name.
+    Fact,
+    /// A Read result of an `EUInformation`.
+    Unit,
+    /// A Translate result of one target.
+    Path,
+    /// A Browse or `BrowseNext` result with a continuation point and no references.
+    Result,
+    /// One reference of a Browse result.
+    Reference,
+}
+
+impl Item {
+    /// Gives the most bytes of one result of the kind, with each text and byte string
+    /// at 256 bytes. A larger text can make an answer past one message, and then the
+    /// server closes the channel.
+    pub(super) fn bytes(self) -> usize {
+        match self {
+            Self::Value => ffi::shim_item_value(),
+            Self::Fact => ffi::shim_item_fact(),
+            Self::Unit => ffi::shim_item_unit(),
+            Self::Path => ffi::shim_item_path(),
+            Self::Result => ffi::shim_item_result(),
+            Self::Reference => ffi::shim_item_reference(),
+        }
+    }
 }
 
 /// The answer of a service, moved out of open62541.
@@ -365,10 +425,14 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// `BadTimeout` and `BadTooManyOperations` as [`Client::read`] gives them, else the
-    /// status of open62541 when it refuses the request, or the service result when it
-    /// is not Good.
+    /// `BadRequestTooLarge`, with nothing sent, when `request` does not fit one message
+    /// that the client sends, `BadTimeout` and `BadTooManyOperations` as
+    /// [`Client::read`] gives them, else the status of open62541 when it refuses the
+    /// request, or the service result when it is not Good.
     pub(super) async fn serve(&mut self, request: &Request) -> Result<Answer, Status> {
+        if request.bytes(self.token) > self.sends {
+            return Err(Status::BAD_REQUEST_TOO_LARGE);
+        }
         let slot = &self.calls.service;
         slot.awaited.set(None);
         drop(slot.answer.take());

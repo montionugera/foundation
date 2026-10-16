@@ -9,8 +9,8 @@ use super::{
     relayed, run, serve,
 };
 use crate::client::browse::{Class, Description, Page, Reference, Unit};
-use crate::client::service::{self, Request, Sizes};
-use crate::ffi::{self, Item, Service, Status};
+use crate::client::service::{self, Item, Request};
+use crate::ffi::{self, Service, Status};
 use crate::node::{Key, Name, Node};
 use crate::server::{Limits, Server};
 
@@ -853,7 +853,7 @@ fn describe_of_an_abstract_type_gives_no_base_and_browses_nothing() {
 
 /// The client keeps at most 1024 supertypes past a call: the 1024 types of 512
 /// variables stay, so their next describe sends no Browse, and the 1026 types of 513
-/// do not, so their next describe sends each Browse again.
+/// go at the end of the call, so their next describe sends each Browse again.
 #[test]
 fn describe_keeps_at_most_1024_supertypes_past_a_call() {
     let browses = |count| {
@@ -863,17 +863,18 @@ fn describe_keeps_at_most_1024_supertypes_past_a_call() {
                 let browses = peer.server.count_browses();
                 let mut client = peer.connected().await;
                 let first = client.describe(&nodes).await.map(|_| browses.get());
+                let kept = client.supertypes.len();
                 let again = client.describe(&nodes).await.map(|_| browses.get());
-                (first, again)
+                (first, kept, again)
             })
             .await
         });
         out
     };
-    let (first, again) = browses(512);
-    assert_eq!(again, first);
-    let (first, again) = browses(513);
-    assert_eq!(again, first.map(|first| first * 2));
+    let (first, kept, again) = browses(512);
+    assert_eq!((kept, again), (1024, first));
+    let (first, kept, again) = browses(513);
+    assert_eq!((kept, again), (0, first.map(|first| first * 2)));
 }
 
 /// Gives the unit code of a variable whose unit has the `unitId` `id` under
@@ -980,12 +981,8 @@ fn a_page_asks_for_the_references_that_fit_one_message() {
             folders(peer.server, 400);
             let mut client = peer.connected().await;
             let page = client.browse(&ROOT, ALL).await;
-            let build = |raw: &[ffi::Node<'_>]| {
-                Request::browse(raw, 0, false, 0, NonZeroU32::MIN)
-            };
-            let [_, empty] = Sizes::nodes(build, client.token).empty();
-            let fixed = empty + service::result(Item::RESULT);
-            let fits = (client.takes - fixed) / service::result(Item::REFERENCE);
+            let fixed = service::answer_bytes(Service::BROWSE) + Item::Result.bytes();
+            let fits = (client.takes - fixed) / Item::Reference.bytes();
             client.close().await;
             (
                 page.map(|page| page.map(|page| page.references.len())),
@@ -1154,4 +1151,31 @@ proptest! {
         let id = code.bytes().fold(0, |id, byte| id << 8 | i32::from(byte));
         prop_assert_eq!(codes(vec![id]), Ok(vec![Some(code)]));
     }
+}
+
+/// A browse whose request does not fit one message sends nothing and gives
+/// `BadRequestTooLarge`, so the session stays and the next browse and read work.
+#[test]
+fn a_browse_past_one_message_keeps_the_session() {
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            peer.server.set_limits(Limits {
+                message: 8192,
+                ..Limits::default()
+            });
+            folders(peer.server, 1);
+            let mut client = peer.connected().await;
+            let large = client.browse(&long(9000), ALL).await.map(|_| ());
+            let next = client.browse(&ROOT, ALL).await;
+            let next = next.map(|page| page.map(|page| page.references.len()));
+            let read = client.read_one(&VALUE).await.map(|_| ());
+            client.close().await;
+            (large, next, read)
+        })
+        .await
+    });
+    assert_eq!(
+        out,
+        (Err(Status::BAD_REQUEST_TOO_LARGE), Ok(Some(1)), Ok(()))
+    );
 }
