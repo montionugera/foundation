@@ -43,7 +43,9 @@
   `Malformed`, and "more than `<limit>`" in place of the count of decision 6:
   `laptop.architect-2`, 2026-10-16 04:00 UTC, on the plan of `box1.builder-3`
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6207771367). One
-  session for the whole browse: the person approved it, on the condition that it is
-  industry practice, which OPC UA Part 4 makes a rule.
+  session for the whole browse: the person, through `laptop.monitor`, 2026-10-16
+  03:54:58 UTC, "As long as thats the industry standard browsing practice I approve"
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6207717907). It
+  is: OPC UA Part 4 requires BrowseNext on the session of the Browse that it continues.
   `VISITS`: the walk's own time over a tree of 10 000 entries is 1.8 ms (median of
   100, box1, release); PR 5 of the PR list measures the cost of the OPC UA sim server.
