@@ -78,14 +78,17 @@
   6. **Time and frames.** One frame per tick, stamped at the midpoint of the mesh times
      before the first request and after the last reply, with half that span as its
      error (STAMP). The error reaches the index when #2627 writes the error of each
-     stamp. One index for the connector. Counts `in`, `missed`, and `lost`.
+     stamp (`laptop.architect-2`, 2026-10-16T14:54:11Z:
+     https://github.com/synnaxlabs/foundation/pull/2860#issuecomment-6218179453). One
+     index for the connector. Counts `in`, `missed`, and `lost`.
   7. **Errors.** An exception of a read of `IllegalFunction`, `IllegalAddress`, or
      `IllegalValue` is `Error::Config` with `modbus.exception`, and the text names
      the channel, the table, the address, and the exception: only a spec change fixes
-     it. Each other exception, a connect or an exchange that takes more than 1 s,
-     and a cut link are `Error::Device`, so the supervisor connects again with
-     backoff. On a write, each exception reply is
-     `refused` (#2711,
+     it. Each other exception, a connect or an exchange that takes more than 1 s
+     (`laptop.architect-2`, 2026-10-16T14:33:20Z, item 3:
+     https://github.com/synnaxlabs/foundation/pull/2860#issuecomment-6217778354), and
+     a cut link are `Error::Device`, so the supervisor connects again with backoff. On
+     a write, each exception reply is `refused` (#2711,
      https://github.com/synnaxlabs/foundation/issues/2711#issuecomment-6204912305).
   8. **Samples.** The decode writes each value through `types::sample::Value`.
 
