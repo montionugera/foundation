@@ -502,9 +502,10 @@ fn gives_a_frame_whose_draft_waited_at_a_call_that_dropped() {
     );
 }
 
-/// `Behind` ends the reader, and each later call gives it again.
+/// `Behind`, kind 3, which no case gives, ends the reader with the error of an
+/// unknown kind, and each later call gives it again.
 #[test]
-fn gives_behind_at_each_call_after_the_node_sent_it() {
+fn refuses_a_behind_at_each_call_after_the_node_sent_it() {
     by_hand(
         411,
         |session, node| async move {
@@ -520,8 +521,9 @@ fn gives_behind_at_each_call_after_the_node_sent_it() {
                     .reader(select(&["a", "b"]), Mode::Complete)
                     .await
                     .expect("opens");
-                assert_eq!(reader.next().await.map(drop), Err(Error::Behind));
-                assert_eq!(reader.next().await.map(drop), Err(Error::Behind));
+                let behind = Error::Reply(wire::hub::Error::Kind { kind: 3 });
+                assert_eq!(reader.next().await.map(drop), Err(behind.clone()));
+                assert_eq!(reader.next().await.map(drop), Err(behind));
             })
         },
     );

@@ -79,12 +79,11 @@ impl Reader {
     ///
     /// # Errors
     ///
-    /// The error that ended the renewal, when it ended. Else [`Error::Behind`] when a
-    /// complete reader missed a frame, [`Error::Refused`] when the node stopped the
-    /// stream (`UNKNOWN` when a channel was removed), and [`Error::Transport`],
-    /// [`Error::Reply`] for a reply that `wire` refuses or a stream that ends without
-    /// `Behind`, [`Error::Frame`], or [`Error::Pool`]. After an error, each call gives
-    /// the same error.
+    /// The error that ended the renewal, when it ended. Else [`Error::Refused`] when
+    /// the node stopped the stream (`UNKNOWN` when a channel was removed), and
+    /// [`Error::Transport`], [`Error::Reply`] for a reply that `wire` refuses or a
+    /// stream that ends early, [`Error::Frame`], or [`Error::Pool`]. After an error,
+    /// each call gives the same error.
     pub async fn next(&mut self) -> Result<Frame, Error> {
         if let Some(error) = &self.ended {
             return Err(error.clone());
@@ -132,7 +131,10 @@ impl Reader {
             match step {
                 Step::Head(_) | Step::More => {}
                 Step::Frame(frame) => return Ok(frame),
-                Step::Behind => return Err(Error::Behind),
+                // #2790 removes this arm.
+                Step::Behind => {
+                    return Err(Error::Reply(wire::hub::Error::Kind { kind: 3 }));
+                }
             }
         }
     }

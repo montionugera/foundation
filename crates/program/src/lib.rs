@@ -436,8 +436,6 @@ pub enum Error {
     Reply(wire::hub::Error),
     /// The ends of a frame of a read break a rule of the frame layout.
     Frame(types::frame::Error),
-    /// A complete reader reached a frame that the buffer lost. Open a new reader.
-    Behind,
 }
 
 impl fmt::Display for Error {
@@ -476,9 +474,6 @@ impl fmt::Display for Error {
             Self::Frame(error) => {
                 write!(f, "the node sent a frame that is not valid: {error}")
             }
-            Self::Behind => f.write_str(
-                "the reader reached a frame that the buffer lost: open a new reader",
-            ),
         }
     }
 }

@@ -1169,10 +1169,6 @@ fn names_each_error() {
             "the node sent a frame that is not valid: entry 0 is present but its \
              index, entry 1, is absent",
         ),
-        (
-            Error::Behind,
-            "the reader reached a frame that the buffer lost: open a new reader",
-        ),
     ];
     for (error, text) in cases {
         assert_eq!(error.to_string(), text);
