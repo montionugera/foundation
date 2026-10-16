@@ -277,6 +277,20 @@ pub enum Error {
     },
     /// The reader is named and the node has no mesh time yet. Open it again later.
     Unsynced,
+    /// The reader is named and complete, holds no record, and the records of the
+    /// named readers of the index would pass `limit` bytes, the most that one entry of
+    /// the home's buffer holds. Close a named reader of the index whose hold is zero,
+    /// wait for a hold to end, or open this one unnamed. A reader that holds a record
+    /// opens over the limit, records nothing, and the home writes a warning event: a
+    /// restart of the home after its old hold ends resumes it at the live tail, until
+    /// #2833.
+    Full {
+        /// The most bytes of one entry.
+        limit: usize,
+    },
+    /// The reader is named and complete, and the home had no room to record its
+    /// position, so a restart would not resume it. Open it again later.
+    Unrecorded,
     /// The home of the index is `home`, another node, and this reader opens only at the
     /// home of its index: a named reader, or the reader of a program's read.
     Remote {
@@ -309,6 +323,14 @@ impl fmt::Display for Error {
             Self::Unsynced => f.write_str(
                 "the node has no mesh time yet: open the named reader again later",
             ),
+            Self::Full { limit } => write!(
+                f,
+                "the records of the named readers of the index would pass {limit} bytes"
+            ),
+            Self::Unrecorded => f.write_str(
+                "the home had no room to record the position of the named reader: \
+                 open it again later",
+            ),
             Self::Remote { home } => write!(
                 f,
                 "the home of the index of the reader is node {home}, and this reader \
@@ -338,6 +360,16 @@ impl std::error::Error for Error {}
 impl From<::home::reader::Unsynced> for Error {
     fn from(::home::reader::Unsynced: ::home::reader::Unsynced) -> Self {
         Self::Unsynced
+    }
+}
+
+impl From<::home::reader::Unopened> for Error {
+    fn from(unopened: ::home::reader::Unopened) -> Self {
+        match unopened {
+            ::home::reader::Unopened::Unsynced => Self::Unsynced,
+            ::home::reader::Unopened::Full { limit } => Self::Full { limit },
+            ::home::reader::Unopened::Unrecorded => Self::Unrecorded,
+        }
     }
 }
 
@@ -440,6 +472,7 @@ impl Local {
                         WINDOW,
                         CHARGE,
                     )?;
+                    state.gate.wake();
                     let live = opened.live;
                     (state.take_over(opened), live)
                 };

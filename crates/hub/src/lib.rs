@@ -126,7 +126,9 @@ struct State {
     /// The readers that [`::home::Shard::woken`] gave last.
     woken: Vec<::home::reader::Key>,
     commit: commit::Task,
-    /// The gate task, woken at each new carry and each writer open and close.
+    /// The gate task, woken at each new carry, each writer open and close, and each
+    /// named complete open: the calls that make the home's deadline earlier by one
+    /// second or more.
     gate: task::Waiter,
     /// The error that ended the home's buffer.
     failed: Option<env::files::Error>,
@@ -278,9 +280,13 @@ impl Hub {
     /// [`reader::Error::Empty`] when the selector matches no channel, and
     /// [`reader::Error::ManyIndexes`] when the channels are on more than one index.
     /// Then [`reader::Error::Mesh`] when the mesh stopped. A named reader:
-    /// [`reader::Error::Remote`] when the home is another node, and
-    /// [`reader::Error::Unsynced`] before the node has mesh time. At the home of
-    /// another node: [`reader::Error::Transport`] when the dial or the stream fails,
+    /// [`reader::Error::Remote`] when the home is another node,
+    /// [`reader::Error::Unsynced`] before the node has mesh time, and, when complete,
+    /// [`reader::Error::Full`] when it holds no record and the records of the named
+    /// readers of the index would pass one entry of the buffer, and
+    /// [`reader::Error::Unrecorded`] when the home had no room to record the reader's
+    /// position. At the home of another node:
+    /// [`reader::Error::Transport`] when the dial or the stream fails,
     /// [`reader::Error::Refused`] when the home refuses the session,
     /// [`reader::Error::Message`] for a reply that breaks the hub protocol, and
     /// [`reader::Error::Pool`] when the shard's pool has no block for the open.

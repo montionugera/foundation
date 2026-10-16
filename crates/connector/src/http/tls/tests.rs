@@ -385,12 +385,26 @@ fn exchanges_with_an_ip_host_whose_certificate_names_the_ip() {
 
 #[test]
 fn refuses_an_ip_host_whose_certificate_names_only_a_dns_name() {
-    let mut network = Network::new(1, Certificate::Valid, JUNE_2026);
-    assert_eq!(
-        failed(network.send(sim::ca(), "https://[fd00::2]:8086/ping")),
-        "TLS with [fd00::2]:8086 failed: invalid peer certificate: certificate not \
-         valid for name \"fd00::2\"; certificate is only valid for DnsName(\"server\")"
-    );
+    for (uri, origin, ip) in [
+        ("https://10.0.0.2:8086/ping", "10.0.0.2:8086", "10.0.0.2"),
+        ("https://[fd00::2]:8086/ping", "[fd00::2]:8086", "fd00::2"),
+        (
+            "https://[fd00::2%252]:8086/ping",
+            "[fd00::2%2]:8086",
+            "fd00::2",
+        ),
+    ] {
+        let mut network = Network::new(1, Certificate::Valid, JUNE_2026);
+        assert_eq!(
+            failed(network.send(sim::ca(), uri)),
+            format!(
+                "TLS with {origin} failed: invalid peer certificate: certificate not \
+                 valid for name \"{ip}\"; certificate is only valid for \
+                 DnsName(\"server\")"
+            ),
+            "{uri}"
+        );
+    }
 }
 
 #[test]
@@ -671,11 +685,9 @@ fn gives_the_same_run_for_the_same_seed() {
 
 #[test]
 fn adds_the_certificates_of_a_pem_text_to_the_roots() {
-    let ca = include_str!("../sim/tls/ca.pem");
-    let other = include_str!("../sim/tls/other-ca.pem");
-    let roots = Roots::default().with_pem(ca).expect("the CA parses");
+    let roots = Roots::default().with_pem(sim::CA).expect("the CA parses");
     let both = roots
-        .with_pem(&format!("text before\n{other}"))
+        .with_pem(&format!("text before\n{}", sim::OTHER_CA))
         .expect("the CA parses");
     for certificate in [Certificate::Valid, Certificate::OtherCa] {
         let mut network = Network::new(9, certificate, JUNE_2026);
@@ -695,6 +707,20 @@ fn adds_the_certificates_of_a_pem_text_to_the_roots() {
 }
 
 #[test]
+fn skips_a_byte_order_mark_at_the_start_of_a_pem_text() {
+    let roots = Roots::default().with_pem(&format!("\u{feff}{}", sim::CA));
+    let plain = Roots::default().with_pem(sim::CA).expect("the CA parses");
+    let marked = roots.clone().expect("the CA parses");
+    // A private read: no public call shows that two stores hold the same anchors.
+    assert_eq!(marked.0.roots, plain.0.roots);
+    let mut network = Network::new(9, Certificate::Valid, JUNE_2026);
+    let body = network.send(roots.expect("the CA parses"), "https://server:8086/ping");
+    assert_eq!(body.expect("the server answers"), "/ping");
+    let late = Roots::default().with_pem(&format!("\n\u{feff}{}", sim::CA));
+    assert_eq!(late.expect_err("a mark not at the start"), Pem::Empty);
+}
+
+#[test]
 fn gives_empty_for_a_pem_text_with_no_certificate() {
     let key = include_str!("../sim/tls/server.key");
     for text in ["", "no PEM here", key] {
@@ -708,8 +734,7 @@ fn gives_empty_for_a_pem_text_with_no_certificate() {
 fn gives_invalid_for_a_pem_certificate_that_does_not_parse() {
     let broken = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
     let bad_base64 = "-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n";
-    let ca = include_str!("../sim/tls/ca.pem");
-    for text in [broken, bad_base64, &format!("{ca}{broken}")] {
+    for text in [broken, bad_base64, &format!("{}{broken}", sim::CA)] {
         let error = Roots::default().with_pem(text).expect_err("a broken one");
         assert_eq!(error, Pem::Invalid, "{text}");
         assert_eq!(
@@ -721,8 +746,7 @@ fn gives_invalid_for_a_pem_certificate_that_does_not_parse() {
 
 #[test]
 fn skips_and_counts_der_certificates_that_do_not_parse() {
-    let ca = include_str!("../sim/tls/ca.pem");
-    let der = rustls::pki_types::pem::PemObject::from_pem_slice(ca.as_bytes())
+    let der = rustls::pki_types::pem::PemObject::from_pem_slice(sim::CA.as_bytes())
         .map(|der: rustls::pki_types::CertificateDer<'_>| der.to_vec())
         .expect("the CA parses");
     let (roots, skipped) = Roots::from_der([der.as_slice(), b"not DER".as_slice()]);
@@ -843,13 +867,14 @@ proptest! {
     /// each.
     #[test]
     fn takes_each_name_of_a_host_as_a_tls_name(text in host_name()) {
-        if let Ok(host) = text.parse::<Host>() {
-            let shown = host.name().expect("a name").trim_end_matches('.').to_owned();
-            prop_assert_eq!(
-                super::super::name(&host),
-                ServerName::try_from(shown).expect("a TLS name")
-            );
-        }
+        let host = text.parse::<Host>();
+        prop_assume!(host.is_ok(), "`Host` refuses {:?}", text);
+        let host = host.expect("a host");
+        let shown = host.name().expect("a name").trim_end_matches('.').to_owned();
+        prop_assert_eq!(
+            super::super::name(&host),
+            ServerName::try_from(shown).expect("a TLS name")
+        );
     }
 }
 

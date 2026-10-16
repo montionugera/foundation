@@ -31,22 +31,25 @@ use document::diagnostic::{Code, Diagnostic};
 use document::value::{self, Value};
 use document::{Document, read};
 use http::Uri;
+use http::uri::Scheme;
 
 const BAD_ADDRESS: Code = Code::new("influx.bad-address");
 const BAD_BUCKET: Code = Code::new("influx.bad-bucket");
 const BAD_DATABASE: Code = Code::new("influx.bad-database");
 const BAD_MEASUREMENT: Code = Code::new("influx.bad-measurement");
 const BAD_ORG: Code = Code::new("influx.bad-org");
+const CA_WITH_HTTP: Code = Code::new("influx.ca-with-http");
 const ORG_WITH_DATABASE: Code = Code::new("influx.org-with-database");
 const TWO_TARGETS: Code = Code::new("influx.two-targets");
 /// The keys of the config, other than the reader settings.
-const KEYS: [&str; 6] = [
+const KEYS: [&str; 7] = [
     "address",
     "database",
     "bucket",
     "org",
     "measurement",
     "token",
+    "ca",
 ];
 /// The count of the samples that InfluxDB confirmed with a 204, across the runs of
 /// one supervisor call.
@@ -65,7 +68,7 @@ pub struct Kind;
 #[non_exhaustive]
 pub struct Config {
     /// The InfluxDB endpoint: a URI that [`connector::http::uri`] takes, with the
-    /// scheme `http`, a path of `/` or none, and no query.
+    /// scheme `http` or `https`, a path of `/` or none, and no query.
     pub address: Uri,
     /// Where it writes.
     pub target: Target,
@@ -73,9 +76,14 @@ pub struct Config {
     /// other than [`gap::MEASUREMENT`].
     pub measurement: String,
     /// Where the InfluxDB token comes from, sent as `Authorization: Token <value>`
-    /// on each request. `None` sends no `Authorization` header. `http` sends it in
-    /// clear until TLS.
+    /// on each request. `None` sends no `Authorization` header. An `http` address
+    /// sends it in clear, and an `https` one keeps it from the network.
     pub token: Option<secret::Source>,
+    /// Where the PEM certificates come from that an `https` connect trusts in
+    /// addition to the roots of the node, such as a private CA, or the certificate of
+    /// a self-signed server with `CA:FALSE`. `None` trusts only the roots of the node.
+    /// An `http` address with a `ca` is refused.
+    pub ca: Option<secret::Source>,
     /// The reader whose samples it writes.
     pub reader: reader::Settings,
 }
@@ -111,8 +119,9 @@ impl kind::Kind for Kind {
     type Config = Config;
 
     /// Reads `address`, `database` or `bucket` and `org`, `measurement`, an optional
-    /// `token` that [`secret::Source::read`] takes, the settings of
-    /// [`reader::read`], and no other key.
+    /// `token` and an optional `ca` that [`secret::Source::read`] takes, the settings
+    /// of [`reader::read`], and no other key. It refuses a `ca` with an `http`
+    /// address.
     fn parse(&self, config: &Document) -> Result<Config, Vec<Diagnostic>> {
         let reader = reader::read(config, &KEYS, &[]);
         let address = read::required(
@@ -136,26 +145,31 @@ impl kind::Kind for Kind {
              \"telemetry\""
                 .into(),
         );
-        let token = config.attributes.get("token");
-        let token = token
-            .map(|token| secret::Source::read(&token.value))
-            .transpose();
-        match (reader, address, target, measurement, token) {
-            (Ok(reader), Ok(address), Ok(target), Ok(measurement), Ok(token)) => {
-                Ok(Config {
-                    address,
-                    target,
-                    measurement,
-                    token,
-                    reader,
-                })
-            }
-            (reader, address, target, measurement, token) => {
+        let token = source(config, "token");
+        let ca = ca(config, &address);
+        match (reader, address, target, measurement, token, ca) {
+            (
+                Ok(reader),
+                Ok(address),
+                Ok(target),
+                Ok(measurement),
+                Ok(token),
+                Ok(ca),
+            ) => Ok(Config {
+                address,
+                target,
+                measurement,
+                token,
+                ca,
+                reader,
+            }),
+            (reader, address, target, measurement, token, ca) => {
                 let mut diagnostics = reader.err().unwrap_or_default();
                 diagnostics.extend(address.err());
                 diagnostics.extend(target.err().into_iter().flatten());
                 diagnostics.extend(measurement.err());
                 diagnostics.extend(token.err());
+                diagnostics.extend(ca.err());
                 Err(diagnostics)
             }
         }
@@ -182,7 +196,8 @@ impl kind::Kind for Kind {
     /// and the seqs of its gap lines to `lost`. It shows each other answer as its
     /// error, with the fix for a 400, a 404, or a 422, and sends the batch again after
     /// a backoff. It reads the token at its start, and again after a 401 or a 403
-    /// before the next attempt.
+    /// before the next attempt. It reads the `ca` at its start, and again after a TLS
+    /// failure before the next attempt.
     ///
     /// # Errors
     ///
@@ -192,25 +207,47 @@ impl kind::Kind for Kind {
     /// name that is not a valid field key. The error of [`hub::reader::Ended`] when the
     /// reader ends. [`Error::Retry`] or [`Error::Config`] from [`Context::secret`] when
     /// a read fails, and [`Error::Retry`] when the token holds a byte that an HTTP
-    /// header cannot hold.
+    /// header cannot hold, and when the `ca` holds no PEM certificate or one that does
+    /// not parse.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         send::run(ctx)
     }
 }
 
-/// Reads an address: a URI that [`connector::http::uri`] takes, with the scheme
-/// `http`, a path of `/` or none, and no query.
+/// Reads the source of the secret at `key`, when there is one.
+fn source(config: &Document, key: &str) -> Result<Option<secret::Source>, Diagnostic> {
+    let attribute = config.attributes.get(key);
+    attribute
+        .map(|attribute| secret::Source::read(&attribute.value))
+        .transpose()
+}
+
+/// Reads the `ca`, which only an `https` address takes.
+fn ca(
+    config: &Document,
+    address: &Result<Uri, Diagnostic>,
+) -> Result<Option<secret::Source>, Diagnostic> {
+    let Some(ca) = config.attributes.get("ca") else {
+        return Ok(None);
+    };
+    let source = secret::Source::read(&ca.value)?;
+    match address {
+        Ok(address) if address.scheme() != Some(&Scheme::HTTPS) => {
+            Err(Diagnostic::new(
+                CA_WITH_HTTP,
+                ca.key_span,
+                "the connector has a `ca`, which only an `https` address takes".into(),
+                "Use an `https` address, or remove `ca`".into(),
+            ))
+        }
+        _ => Ok(Some(source)),
+    }
+}
+
+/// Reads an address: a URI that [`connector::http::uri`] takes, with a path of `/`
+/// or none, and no query.
 fn address(value: &Value) -> Result<Uri, Diagnostic> {
     let uri = connector::http::uri(value)?;
-    // `https` ships dark until the kind takes a CA (#2702).
-    if uri.scheme() == Some(&http::uri::Scheme::HTTPS) {
-        return Err(Diagnostic::new(
-            BAD_ADDRESS,
-            value.span,
-            "the scheme of the URI is not http".into(),
-            "Write an `http` URI such as \"http://10.0.0.2:8086\"".into(),
-        ));
-    }
     let part = match (uri.path(), uri.query()) {
         (_, Some(_)) => "a query",
         ("/", None) => return Ok(uri),

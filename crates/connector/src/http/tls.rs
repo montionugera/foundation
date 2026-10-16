@@ -31,7 +31,7 @@ impl Roots {
     }
 
     /// These roots plus each certificate of the PEM text `pem`. It skips each PEM
-    /// section that is not a certificate.
+    /// section that is not a certificate, and a UTF-8 byte order mark at the start.
     ///
     /// # Errors
     ///
@@ -40,6 +40,7 @@ impl Roots {
     pub fn with_pem(&self, pem: &str) -> Result<Self, Pem> {
         let mut store = (*self.0).clone();
         let mut added = false;
+        let pem = pem.strip_prefix('\u{feff}').unwrap_or(pem);
         for certificate in CertificateDer::pem_slice_iter(pem.as_bytes()) {
             let certificate = certificate.map_err(|_pem| Pem::Invalid)?;
             store.add(certificate).map_err(|_der| Pem::Invalid)?;

@@ -104,6 +104,7 @@ fn config<M>(
             writer: Box::new(std::io::sink()),
             format: ops::Log::default(),
         },
+        threads: host.threads(),
     }
 }
 
@@ -436,6 +437,7 @@ fn a_config_shows_its_budget_entropy_settings_and_log_but_not_its_memory_or_file
              budget: Budget {{ pool: Size(4096), disk: {DISK:?} }}, entropy: {entropy:?}, \
              listen: {listen:?}, region: Absent, name: Name(\"edge\"), \
              settings: {settings:?}, log: Log {{ format: Log {{ json: false, level: Level(Info) }}, .. }}, \
+             threads: Threads {{ .. }}, \
              .. }}",
             listen = config.listen,
             settings = config.settings,
@@ -5918,7 +5920,7 @@ pub(crate) mod port {
         }
 
         /// A task that panics after the group stops, before the node sees the stop:
-        /// `join` gives the panic. At [`WRITE`], eight idle tasks that wake at that
+        /// `join` gives the panic. At [`WRITE`], seven idle tasks that wake at that
         /// instant make the sim run the group's stop, then this task, before the node
         /// sees the stop. The task asserts that the group stopped before it panics.
         #[test]
@@ -5929,7 +5931,7 @@ pub(crate) mod port {
             fail_write_at_open(&node, &host);
             let at =
                 sim::node::Config::default().monotonic + OPEN + Span::from_nanos(WRITE);
-            for _ in 0..8 {
+            for _ in 0..7 {
                 let own = host.clone();
                 node.spawn(move |_| async move {
                     own.clock().sleep_until(at).await;
@@ -6302,7 +6304,7 @@ pub(crate) mod port {
         #[test]
         fn the_log_of_the_mesh_is_free_once_the_lock_is() {
             let (mut held, mut logged, mut ordered) = (false, false, false);
-            // The probe finds the lock free and the log made, from about 4.1 ms.
+            // The probe finds the lock free and the log made at about 4.08 ms only.
             let mut freed = false;
             // Three orders of the last closes of the log, `shard-1/ring`, and
             // `address` that the stops in a write give at seed 0: the log first, the
@@ -6315,7 +6317,7 @@ pub(crate) mod port {
             // before the write of one home, through its write and its sync, to after
             // them.
             let starts = (0..200).map(|step| step * 13_000);
-            let opens = starts.chain((0..42).map(|step| 2_600_000 + step * 52_000));
+            let opens = starts.chain((0..42).map(|step| 2_626_000 + step * 52_000));
             let opens = opens.map(|after| (after, false));
             let writes = (0..13).map(|step| (1_700_553_000 + step * 7_000, true));
             for (after, write) in opens.chain(writes) {
@@ -6997,7 +6999,16 @@ pub(crate) mod port {
             founding: Founding,
             text: String,
         ) -> (Node, BTreeMap<Name, Definition>) {
-            let node = start(host, founding);
+            applied_on(sim, start(host, founding), text)
+        }
+
+        /// Applies `text` through the operations of the started `node`, then gives
+        /// the node and the definitions after the apply.
+        fn applied_on(
+            sim: &mut sim::Sim,
+            node: Node,
+            text: String,
+        ) -> (Node, BTreeMap<Name, Definition>) {
             let applied = Arc::new(Mutex::new(None));
             let out = Arc::clone(&applied);
             node.operate(move |ops| async move {
@@ -7489,6 +7500,103 @@ pub(crate) mod port {
             let host = keyed(&mut sim, 2);
             let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
             node.operate(|_| async {});
+        }
+
+        /// Starts an InfluxDB sim named `server` that serves `https` on port 8086 with
+        /// the valid certificate of the test CA, and gives its store and its shard.
+        fn influx_tls(
+            sim: &mut sim::Sim,
+        ) -> (
+            Arc<Mutex<connector_influx::sim::Store>>,
+            env::thread::Handle,
+        ) {
+            let influx = sim.node(sim::node::Config::default());
+            let answer = sim::name::Answer::Addresses(vec![influx.addresses()[0]]);
+            let name = sim::name::Config {
+                answer,
+                ..sim::name::Config::default()
+            };
+            sim.name("server", name);
+            let listen = env::net::tcp::Listen {
+                local: SocketAddr::new(influx.addresses()[0], 8086),
+                backlog: 4,
+                options: env::net::tcp::Options {
+                    send_buffer_bytes: 1 << 16,
+                    recv_buffer_bytes: 1 << 16,
+                    unsent_bytes_max: NonZeroUsize::new(1 << 14).unwrap(),
+                    delayed: false,
+                },
+            };
+            let listener = influx.net().listen(&listen).expect("the port is free");
+            let store = Arc::new(Mutex::new(connector_influx::sim::Store::default()));
+            let into = Arc::clone(&store);
+            let shard = env::shards::Config {
+                name: "influx".into(),
+                core: Some(0),
+            };
+            let server = influx
+                .shards()
+                .start(shard, move |tasks| async move {
+                    let certificate = connector::http::sim::Certificate::Valid;
+                    let served = connector_influx::sim::serve_tls(
+                        listener,
+                        tasks,
+                        into,
+                        "plant".into(),
+                        None,
+                        certificate,
+                    );
+                    panic!("the listener failed: {}", served.await);
+                })
+                .expect("the shard starts");
+            (store, server)
+        }
+
+        /// The roots of `Config::roots` reach the supervisor: a node whose roots hold
+        /// a root that does not parse and the test CA writes a sample to an InfluxDB
+        /// that serves `https` with a certificate that this CA signs, and the connector
+        /// has no `ca`.
+        #[test]
+        fn a_node_writes_over_https_with_the_ca_of_its_roots() {
+            use super::super::hub::{WALL, write_at, writer};
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let host = keyed(&mut sim, 2);
+            let (store, _server) = influx_tls(&mut sim);
+            let text = format!(
+                "{}channel \"plant.value\" {{\n  data_type = \"f64\"\n  \
+                 index = \"plant.time\"\n}}\n{}",
+                text("time", &[]),
+                connector("influx")
+                    .replace("http://influx:8086", "https://server:8086")
+                    .replace("plant.*", "plant.value"),
+            );
+            let node = Node::start(Config {
+                region: Region::Given(region(&[member(OWN, &KEY, &host)])),
+                roots: os::Roots {
+                    certificates: vec![b"not DER".to_vec(), CA.to_vec()],
+                    failures: Vec::new(),
+                },
+                ..config(&host, Size::MEBIBYTE, Box::new(heap))
+            });
+            let (node, definitions) = applied_on(&mut sim, node, text);
+            let keys =
+                ["time", "value"].map(|name| key_of(&definitions, name).as_u128());
+            node.spawn(move |hub| async move {
+                let mut writer = writer(&hub, &["plant.value"]).await;
+                let value = i64::from_le_bytes(7.0_f64.to_le_bytes());
+                write_at(&mut writer, keys, WALL, value);
+                std::future::pending::<()>().await;
+            });
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            node.stop();
+            assert_eq!(sim.run_for(HALF_MINUTE), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let store = store.lock().unwrap();
+            let times: Vec<_> = store
+                .points("telemetry", &[])
+                .map(|point| point.time.nanos())
+                .collect();
+            assert_eq!(times, [WALL]);
         }
     }
 }

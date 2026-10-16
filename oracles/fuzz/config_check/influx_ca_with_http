@@ -1,0 +1,13 @@
+connector "influx" {
+  kind = "influx"
+  node = "cloud"
+  address = "http://influx:8086"
+  database = "edge"
+  measurement = "telemetry"
+  ca = secret("plant.influx_ca")
+  select = "edge.*"
+  reader {
+    mode = "complete"
+    hold = "2h"
+  }
+}

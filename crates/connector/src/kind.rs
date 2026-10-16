@@ -578,6 +578,23 @@ impl std::error::Error for Unread {
     }
 }
 
+/// The hub's `Full`, with the fixes that a spec can make.
+#[derive(Debug)]
+struct Full(hub::reader::Error);
+
+impl fmt::Display for Full {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}: read the index from fewer connectors in complete mode, set `mode = \
+             \"latest\"` on one, or wait for the hold of a removed reader to end",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for Full {}
+
 /// The class of `error` of the open of a named reader.
 ///
 /// # Panics
@@ -589,7 +606,10 @@ pub(crate) fn reader_error(error: hub::reader::Error) -> Error {
     let (code, fix) = match error {
         Hub::Empty => (NO_CHANNEL, "Select a channel that the spec defines"),
         Hub::ManyIndexes { .. } => (MANY_INDEXES, "Select channels of one index"),
-        Hub::Remote { .. } | Hub::Mesh(_) => return Error::Retry(Box::new(error)),
+        Hub::Full { .. } => return Error::Retry(Box::new(Full(error))),
+        Hub::Remote { .. } | Hub::Mesh(_) | Hub::Unrecorded => {
+            return Error::Retry(Box::new(error));
+        }
         Hub::Unsynced => panic!("invariant: a reader opened before mesh time: {error}"),
         Hub::Transport(_) | Hub::Refused(_) | Hub::Message(_) | Hub::Pool(_) => {
             panic!("invariant: a named reader away from its home gave: {error}")
@@ -1328,6 +1348,27 @@ mod tests {
             "an attempt failed: the mesh stopped: each mesh of the group dropped";
         assert_eq!(reader(hub::reader::Error::Mesh(stopped())), mesh);
         assert_eq!(writer(hub::writer::Error::Mesh(stopped())), mesh);
+        assert_eq!(
+            reader(hub::reader::Error::Unrecorded),
+            "an attempt failed: the home had no room to record the position of the \
+             named reader: open it again later"
+        );
+    }
+
+    /// Calls the mapping directly: on the ring of the test hub, the entries that the
+    /// opens append fill the ring before the records reach the limit, until a trim
+    /// frees the ring (#406).
+    #[test]
+    fn retries_when_the_named_readers_fill_an_entry() {
+        let full = reader_error(hub::reader::Error::Full { limit: 4032 });
+        assert!(matches!(full, Error::Retry(_)), "{full:?}");
+        assert_eq!(
+            full.to_string(),
+            "an attempt failed: the records of the named readers of the index would \
+             pass 4032 bytes: read the index from fewer connectors in complete mode, \
+             set `mode = \"latest\"` on one, or wait for the hold of a removed reader \
+             to end"
+        );
     }
 
     /// Calls the mapping directly: the supervisor opens a reader only after the status

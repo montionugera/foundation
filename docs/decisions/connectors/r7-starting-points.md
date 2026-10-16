@@ -86,9 +86,11 @@
   can give that reason (`laptop.architect-2`, 2026-10-16T09:11:38Z:
   https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6212137276). It trusts
   only `http::Config::tls`: a `Tls` with the roots, which `node` reads from the OS, and
-  mesh time. A kind adds a CA with `Roots::with_pem`. A `ca` takes a CA, or a
-  self-signed certificate with `CA:FALSE`; a server certificate with `CA:TRUE` gives
-  `Tls` with a text that names both fixes.
+  mesh time. A kind adds a CA with `Roots::with_pem`, which skips a UTF-8 byte order
+  mark at the start (`laptop.architect-2`, 2026-10-16T16:17:47Z:
+  https://github.com/synnaxlabs/foundation/pull/2888#issuecomment-6219779608, item 2).
+  A `ca` takes a CA, or a self-signed certificate with `CA:FALSE`; a server certificate
+  with `CA:TRUE` gives `Tls` with a text that names both fixes.
   This narrows design item 4 of #2702, "A self-signed server goes in `ca`"
   (2026-10-16T07:51:33Z:
   https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210764044).
@@ -103,8 +105,8 @@
   existence; a `hub::Time` in each `http::Config`, which makes each plain client open
   a hub; a TLS driver by hand inside the stream, which repeats what `tokio-rustls`
   does and which #1248 needs again in another layer; and trust of an end certificate
-  that is equal to a root, which is a later step on #2702 when a user's server cannot
-  get a new certificate. Until the influx kind takes a `ca`, its plan refuses `https`.
+  that is equal to a root, which is a later step on #2894 when a user's server cannot
+  get a new certificate. The influx kind reads its CA from `ca` (INFLUX KIND).
   The roots are `node::Config::roots`, an `os::Roots`, and main gives `os::roots()`:
   the certificate files on Linux and the keychain on macOS. When `SSL_CERT_FILE` is
   set, or `SSL_CERT_DIR` holds a path that is not empty, it reads only that file and

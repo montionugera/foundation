@@ -25,12 +25,35 @@
   (`connector.no-channel`), and `Home` with a lease that is not longer than zero
   (`connector.lease`). `Retry`, with the hub error: `Remote` and `Mesh` of each, since
   the home can move back, and a mesh that stops ends the run at the cancel after at most
-  one backoff. `Device` is for the device or the endpoint, never the hub. An error that
-  the open never gives panics with `invariant:`: writer `Home` `Unsynced`, because
-  `Hub::writer` waits for mesh time; reader `Unsynced`, because the supervisor opens a
-  reader only after the status channels, which wait for mesh time, and mesh time stays
-  once known; and reader `Transport`, `Refused`, `Message`, and `Pool`, because a named
-  reader opens only at its home (`laptop.architect-2`, 2026-10-10T22:38:41Z:
+  one backoff; and reader `Unrecorded`, since a later open can find room. `Retry` for
+  reader `Full`, with the hub error's text, which states the fact alone, then ": read
+  the index from fewer connectors in complete mode, set `mode = "latest"` on one, or
+  wait for the hold of a removed reader to end", the fixes that a spec can make
+  (`laptop.architect-2`, 2026-10-16T09:20:31Z:
+  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6212311485; the hub
+  text: `laptop.architect`, 2026-10-16T09:21:04Z:
+  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6212322447). A
+  hold that ends frees room, and a `Full` that stays costs one open for each backoff,
+  with the cause in the status at each try. Only an open that adds a record gives
+  `Full`: a held reader opens over the limit and records nothing, the home writes a
+  warning event, and a restart of its home after its old hold ends resumes it at the
+  live tail, until #2833 (`laptop.architect`, 2026-10-16T15:47:15Z:
+  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6219185219). Lost:
+  `Config` (`connector.many-readers`), which stops the connector and its data for good
+  on a cause that clears itself (`laptop.architect-2`, 2026-10-16T07:08:14Z:
+  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6210095932; the text:
+  2026-10-16T07:44:03Z:
+  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6210644375.
+  Supersedes the `Config` of 2026-10-16T05:24:48Z:
+  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6208736533, and
+  2026-10-16T06:45:15Z:
+  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6209768377).
+  `Device` is for the device or the endpoint, never the hub. An error that the open
+  never gives panics with `invariant:`: writer `Home` `Unsynced`, because `Hub::writer`
+  waits for mesh time; reader `Unsynced`, because the supervisor opens a reader only
+  after the status channels, which wait for mesh time, and mesh time stays once known;
+  and reader `Transport`, `Refused`, `Message`, and `Pool`, because a named reader opens
+  only at its home (`laptop.architect-2`, 2026-10-10T22:38:41Z:
   https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6102937379). The
   writer `Home` list and the codes: proposed in the plan on #1734
   (https://github.com/synnaxlabs/foundation/issues/1734#issuecomment-6104945733),

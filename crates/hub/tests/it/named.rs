@@ -202,6 +202,8 @@ fn gives_a_held_named_reader_the_frame_after_a_run_lost_while_held_with_its_gap(
         let mut writer = test.writer("w", &["value"]).await;
         test.clock.sleep(SETTLE).await;
         drop(first);
+        // The commit of the named entry of the close frees its block.
+        test.clock.sleep(SETTLE).await;
         // Frees one block at a time until a write freezes the frame and still loses
         // it, which the latest reader shows.
         let mut blocks = super::fill(&test.pool);
@@ -838,6 +840,97 @@ fn leaves_the_session_and_position_of_a_named_reader_to_its_own_subject() {
             let received = reader.next().await.expect("a frame");
             assert_eq!(samples(&received, 2), [value]);
         }
+    });
+}
+
+/// The writer opens and the gate task runs first, so it sleeps with no deadline when
+/// the reader opens. The ack reaches the log only at the home's interval, which the
+/// gate task sees only by the wake at the named open. The reader is open at the power
+/// cut.
+#[test]
+fn resumes_a_named_complete_reader_at_its_ack_after_a_power_cut() {
+    let (mut sim, node) = super::create_sim(24);
+    super::cut_after(
+        &mut sim,
+        &node,
+        Span::from_nanos(10_000_000_000),
+        |test| async move {
+            let mut writer = test.writer("w", &["value"]).await;
+            test.clock.sleep(SETTLE).await;
+            let open =
+                named("a", "r", Mode::Complete, Span::from_nanos(60_000_000_000));
+            let mut reader = test.hub.reader(open).await.expect("opens");
+            let now = test.now();
+            let mut acked = None;
+            for n in 0..10 {
+                write(&mut writer, &[now + n], &[n]);
+                let received = reader.next().await.expect("a frame");
+                if n == 4 {
+                    acked = Some(received.position());
+                }
+            }
+            reader.ack(acked.expect("a fifth frame"));
+            test.clock.sleep(Span::from_nanos(3_000_000_000)).await;
+            std::future::pending::<()>().await;
+        },
+    );
+    let first = sim
+        .run_on(&node, |node, tasks| async move {
+            let test = super::started(node, tasks).await;
+            let open =
+                named("a", "r", Mode::Complete, Span::from_nanos(60_000_000_000));
+            let mut reader = test.hub.reader(open).await.expect("opens");
+            samples(&reader.next().await.expect("a frame"), 2)
+        })
+        .expect("the run after the cut ends");
+    assert_eq!(first, [5]);
+}
+
+/// An entry of a ring of records of 4087 bytes holds 4032 bytes: 7 records of 546
+/// bytes, with the head of 5. Each first open appends an entry, so a ring of larger
+/// entries fills before its last open.
+#[test]
+fn opens_no_named_complete_reader_past_the_records_of_one_entry() {
+    super::run_on(25, (super::AREA, 4087), |test| async move {
+        let long = |n: usize| format!("{n:03}{}", "s".repeat(252));
+        let open = |n| named(&long(n), &"r".repeat(255), Mode::Complete, Span::ZERO);
+        let mut opened = Vec::new();
+        for n in 0..7 {
+            opened.push(test.hub.reader(open(n)).await.expect("the records fit"));
+        }
+        let error = test.hub.reader(open(7)).await.expect_err("one more passes");
+        assert_eq!(error, reader::Error::Full { limit: 4032 });
+        assert_eq!(
+            error.to_string(),
+            "the records of the named readers of the index would pass 4032 bytes"
+        );
+        let latest = named(&long(7), &"r".repeat(255), Mode::Latest, Span::ZERO);
+        assert!(
+            test.hub.reader(latest).await.is_ok(),
+            "a latest reader opens"
+        );
+        drop(opened.pop());
+        assert!(
+            test.hub.reader(open(7)).await.is_ok(),
+            "a closed record is gone"
+        );
+    });
+}
+
+#[test]
+fn opens_no_named_complete_reader_whose_record_finds_no_block() {
+    run(26, |test| async move {
+        let open = || named("a", "r", Mode::Complete, Span::ZERO);
+        let blocks = super::fill(&test.pool);
+        let error = test.hub.reader(open()).await.expect_err("no block");
+        assert_eq!(error, reader::Error::Unrecorded);
+        assert_eq!(
+            error.to_string(),
+            "the home had no room to record the position of the named reader: open it \
+             again later"
+        );
+        drop(blocks);
+        assert!(test.hub.reader(open()).await.is_ok(), "a block is free");
     });
 }
 

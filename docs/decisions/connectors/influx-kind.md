@@ -8,17 +8,53 @@
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6207771367; it
   supersedes
   https://github.com/synnaxlabs/foundation/issues/1153#issuecomment-6051297152, where
-  `discover` gave no documents). Until the kind takes a CA (#2702), it also refuses the
-  scheme `https`, with `influx.bad-address` and the text "the scheme of the URI is not
-  http" (`laptop.architect-2`, 2026-10-16T07:51:33Z:
-  https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210764044,
-  item 5). The scheme is a rule of the influx address, not of the shared `uri`, so
-  the code is not `connector.bad-uri` (`laptop.architect-2`, 2026-10-16T09:11:38Z:
-  https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6212137276). The kind
-  also refuses a path other than empty or `/`, and a query, at the value: a path (a
-  proxy prefix) can come later as a compatible change, and a refusal cannot. Each
-  diagnostic of a kind names its document `connector::kind::NOUN` ("the connector"), as
-  `reader::read` does. Decided by
+  `discover` gave no documents). The address takes the scheme `http` or `https` (#2702).
+  An optional `ca` is a source of a secret (SECRET SOURCES) that holds PEM certificates,
+  so `plan` refuses a `ca` with no value (`secret.unresolved`), as it does a `token`. An
+  `https` run trusts the roots of the node and each certificate of the `ca`, and checks
+  the server's certificate at mesh time (`https` in R7 starting points). A `ca` with an
+  `http` address is `influx.ca-with-http`, with "the connector has a `ca`, which only an
+  `https` address takes" and the fix "Use an `https` address, or remove `ca`": a `ca`
+  there trusts nothing, and its user likely thinks that the token goes under TLS. A run
+  reads the `ca` at its start. A TLS failure of a run with a `ca` shows "the write to
+  InfluxDB failed: {error}. Check the ca {source}", and the run reads the `ca` again,
+  with a new client, before the next attempt of the same batch, as it reads the token
+  again after a 401. A run with no `ca` retries a TLS failure in the run. `Error::Tls`
+  also covers a server that closes in the handshake, so such a fault shows "Check the
+  ca" too. The rule is one rule: a fault retries in the run, and a config that cannot
+  work ends it. So a `ca` that gives no root when read again ends the run with
+  `Error::Retry`, and with no `hold` that end loses the batch in flight. A read after
+  the start that fails is to keep the batch (#2899). Approved by `laptop.architect-2`
+  (2026-10-16T16:46:18Z:
+  https://github.com/synnaxlabs/foundation/pull/2888#issuecomment-6220307355).
+  Supersedes item 1 of 6219779608: the end of the run at a TLS failure with a `ca`
+  (`laptop.architect-2`, 2026-10-16T16:17:47Z:
+  https://github.com/synnaxlabs/foundation/pull/2888#issuecomment-6219779608). A `ca`
+  that holds no PEM certificate gives `Error::Retry` with "the ca {source} holds no PEM
+  certificate. Write the CA certificate of the server in PEM", and one that does not
+  parse gives "the ca {source} holds a PEM certificate that does not parse. Write the
+  CA certificate of the server in PEM". Over `https`, the token does not cross the
+  network in clear. Planned on #2702
+  (https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6218838848,
+  2026-10-16T15:28:25Z), and approved with the refusal of a `ca` with an `http` address
+  by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6219190400,
+  2026-10-16T15:47:32Z), which also approved `Error::Retry` for a bad `ca`.
+  Supersedes the refusal of `https` until the kind takes a CA (`laptop.architect-2`,
+  2026-10-16T07:51:33Z:
+  https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210764044, item 5)
+  and its code (`laptop.architect-2`, 2026-10-16T09:11:38Z:
+  https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6212137276), and
+  design item 6 of https://github.com/synnaxlabs/foundation/issues/2702, "A `ca` with
+  no certificate in it is `Error::Config`". Lost: `ca` as a setting of `connector`,
+  read for each HTTP kind, with the read again at a TLS failure, since `influx` is the
+  one HTTP kind. Trigger: a second kind that sends `https` (#2894). Lost: a read of the
+  `ca` in `plan`, which finds a bad file before a run, since `plan` checks only that a
+  source resolves, and the file can change between plan and run. Trigger: a `plan` that
+  reads the value of a secret source. The kind also refuses a path other than empty or
+  `/`, and a query, at the value: a path (a proxy prefix) can come later as a compatible
+  change, and a refusal cannot. Each diagnostic of a kind names its document
+  `connector::kind::NOUN` ("the connector"), as `reader::read` does. Decided by
   `laptop.architect-2` on #1794
   (https://github.com/synnaxlabs/foundation/pull/1794#issuecomment-6052684931,
   2026-10-08 05:03 UTC). The code of that refusal is `influx.bad-address`. Proposed by
@@ -110,10 +146,12 @@
   (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6140691273). It acks
   a batch only after a 204. Each other answer, and each failed request, keeps the batch,
   shows its text with `Context::error`, and sends the batch again after a
-  `retry::Backoff` of 1 s to 1 min. No answer ends the run, other than a 401 or a 403
-  after which the read of the token fails: an action in InfluxDB fixes a 400, a 404, or
-  a 422, and the next try after it lands the batch. The reader stays open meanwhile, as
-  in an outage of InfluxDB. The text is `InfluxDB answered {status}: {body}`, and for
+  `retry::Backoff` of 1 s to 1 min. No answer or failed request ends the run, other than
+  a 401 or a 403 after which the read of the token fails, and a TLS failure of a run
+  with a `ca` after which the read of the `ca` fails (#2899): an action in InfluxDB
+  fixes a 400, a 404, or a 422, and the next try after it lands the batch. The reader
+  stays open meanwhile, as in an outage of InfluxDB. The text is
+  `InfluxDB answered {status}: {body}`, and for
   these three statuses it adds a fix. A 400 and a 422 (InfluxDB 1 gives 400, and
   InfluxDB 2 gives 422, for a field type conflict and for points past retention): "For a
   field type conflict, write to another `measurement` or delete the old field in
