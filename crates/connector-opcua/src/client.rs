@@ -6,6 +6,7 @@ use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_void};
 use std::mem;
 use std::num::NonZeroUsize;
+use std::pin::pin;
 use std::ptr::{self, NonNull};
 use std::rc::Rc;
 use std::task::Poll;
@@ -49,8 +50,8 @@ const _: () = assert!(
 
 /// A client of open62541 with an active session, on its own loop and connection
 /// manager, on the thread that made it. Its loop runs only in its calls, so a client
-/// idle for longer than the channel lifetime of its server (often 10 minutes) loses
-/// its connection, and each later read fails. A drop closes its connection and waits
+/// that waits for longer than the channel lifetime of its server (often 10 minutes)
+/// outside [`Client::idle`] loses its connection, and each later read fails. A drop closes its connection and waits
 /// for nothing, but leaves its session on the server until the session times out; a
 /// [`Client::close`] closes the session too.
 pub(crate) struct Client {
@@ -401,6 +402,14 @@ impl Client {
             *sent += 1;
         }
         Ok(())
+    }
+
+    /// Drives the client until `until` ends, and gives its value, so the client keeps
+    /// its channel and its session while it waits. A failure while it waits shows in
+    /// the next read.
+    pub(crate) async fn idle<T>(&mut self, until: impl Future<Output = T>) -> T {
+        let mut until = pin!(until);
+        self.connections.drive(|cx| until.as_mut().poll(cx)).await
     }
 
     /// Closes the session and the connection of the client, and waits until the

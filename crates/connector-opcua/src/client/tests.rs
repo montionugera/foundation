@@ -1021,6 +1021,26 @@ fn a_connect_whose_create_session_answers_late_ends_two_request_timeouts_later()
     assert_eq!((before_the_deadline, after_a_check), (bound, bound));
 }
 
+/// A client that waits in [`Client::idle`] for longer than the channel lifetime of the
+/// server (10 minutes) keeps its channel, and reads after it.
+#[test]
+fn a_client_idle_for_eleven_minutes_reads() {
+    let (reads, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            let first = client.read_one(&VALUE).await;
+            let idle = peer
+                .clock
+                .sleep(Span::from_nanos(11 * Span::MINUTE.nanos()));
+            client.idle(idle).await;
+            (first, client.read_one(&VALUE).await, peer.value)
+        })
+        .await
+    });
+    let (first, second, value) = reads;
+    assert_eq!((first, second), (Ok(value), Ok(value)));
+}
+
 /// A connect to a server that activates the session and then stops fails with
 /// `BadTimeout` within four request timeouts: the read of its `MaxNodesPerRead` times
 /// out, then the close. The relay drops each message of the server from the first Read

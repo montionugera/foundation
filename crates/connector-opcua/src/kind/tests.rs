@@ -700,7 +700,7 @@ fn ends_the_run_with_a_device_error_when_the_server_stops_and_reads_again_after(
         [
             (
                 DEVICE,
-                "the read failed with BadSecureChannelClosed".to_owned()
+                "the read failed with BadServerNotConnected".to_owned()
             ),
             (DEVICE, connect.to_owned()),
         ]

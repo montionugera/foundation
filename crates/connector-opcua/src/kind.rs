@@ -133,7 +133,7 @@ async fn read(
         .map_err(|large| large_read(reads, large))?;
     let missed = ctx.count("missed");
     let mut timer = pace::Timer::new(ctx.clock(), ctx.config().rate);
-    while let Some(tick) = timer.tick(ctx.cancel()).await {
+    while let Some(tick) = client.idle(timer.tick(ctx.cancel())).await {
         missed.add(tick.missed);
         let Some((read, stamp)) =
             ctx.cancel().race(frames.request(client.read(&nodes))).await
