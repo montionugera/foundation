@@ -876,11 +876,10 @@ fn acks_no_batch_before_a_204() {
         sent.starts_with("telemetry edge.a=1e0,edge.b=1e0 "),
         "{sent}"
     );
-    // Known bug #2553: each open after a lost batch ends `Behind`, so the second run
-    // sends nothing.
-    assert_eq!(second, Vec::<String>::new());
-    let missed = "the reader missed a frame and gets no later one: open a new reader";
-    assert!(errors.iter().any(|error| error == missed), "{errors:?}");
+    assert_eq!(second.len(), 2, "{second:?}");
+    assert_eq!(&second[0], sent);
+    assert!(second[1].starts_with("telemetry edge.a=2e0,edge.b=2e0 "));
+    assert_eq!(errors, [""]);
 }
 
 #[test]

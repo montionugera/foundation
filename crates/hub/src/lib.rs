@@ -258,8 +258,8 @@ impl Hub {
     /// this node no more streams, until another reader there drops. It gets each frame
     /// of the index, as a view of only its channels and their index. An unnamed
     /// complete reader gets each live frame written after the returned future resolves,
-    /// until it misses one ([`reader::Mode::Complete`]). A named reader takes over the
-    /// open session of its subject and name, which ends with
+    /// until it reaches one that the buffer lost ([`reader::Mode::Complete`]). A named
+    /// reader takes over the open session of its subject and name, which ends with
     /// [`reader::Ended::Replaced`], and a named complete one resumes as
     /// [`reader::Config::name`] says.
     ///
@@ -576,8 +576,8 @@ impl State {
             .collect()
     }
 
-    /// Wakes each reader that the home names as having a frame to take or a miss to
-    /// report.
+    /// Wakes each reader that the home names as having a frame to take, a read from
+    /// disk to run, or a lost frame to report.
     fn wake(&mut self) {
         self.home.woken(&mut self.woken);
         for key in &self.woken {

@@ -1436,36 +1436,30 @@ fn gives_each_reader_the_error_of_a_failed_sync_on_each_later_call() {
     });
 }
 
+/// A reader that falls three windows behind gets its frames past the window from
+/// disk, in order, and then the live ones.
 #[test]
-fn gives_a_complete_reader_frames_past_its_window_only_as_it_takes_them() {
+fn slow_reader_gets_every_frame_from_disk() {
     run(10, |test| async move {
         let mut taker = test.reader(&["value"], Mode::Complete).await;
         let mut lagger = test.reader(&["value"], Mode::Complete).await;
         let mut writer = test.writer("a", &["value"]).await;
         let now = test.now();
-        let (mut bytes, mut spent, mut first) = (0, 0, 0);
+        let mut bytes = 0;
         for n in 0..400 {
             write_wide(&mut writer, now, n);
             bytes += charge(&taker.next().await.expect("a frame").view());
-            // The call that takes the second frame grants credit for the first.
             if n < 2 {
-                let charge = charge(&lagger.next().await.expect("a frame").view());
-                if n == 0 {
-                    first = charge;
-                }
-                spent += charge;
+                lagger.next().await.expect("a frame");
             }
         }
         assert!(bytes > 3 * WINDOW, "{bytes} bytes are past three windows");
-        let (charges, ended) = take_all(&mut lagger).await;
-        assert_behind(&ended);
-        let last = charges.last().copied().unwrap_or(0);
-        spent += charges.iter().sum::<u64>();
-        let limit = first + WINDOW;
-        assert!(
-            spent - last < limit && limit <= spent,
-            "{spent} bytes end at the first frame past {limit}"
-        );
+        let caught = take_waiting(&test.clock, &mut lagger).await;
+        let ranges: Vec<_> = caught.iter().map(|&(range, _)| range).collect();
+        assert_eq!(ranges, wide(2, 398));
+        write_wide(&mut writer, now, 400);
+        let received = lagger.next().await.expect("a live frame");
+        assert_eq!(received.view().range(0), wide(400, 1).first().copied());
     });
 }
 
@@ -1915,9 +1909,10 @@ fn waits_for_no_commit_in_a_loop_while_the_only_complete_reader_is_out_of_credit
             write_wide(&mut writer, now, n);
             test.clock.sleep(SETTLE).await;
         }
-        let (charges, ended) = take_all(&mut lagger).await;
-        assert_behind(&ended);
-        let spent: u64 = charges.iter().sum();
+        let taken = take_waiting(&test.clock, &mut lagger).await;
+        let ranges: Vec<_> = taken.iter().map(|&(range, _)| range).collect();
+        assert_eq!(ranges, wide(0, 200));
+        let spent: u64 = taken.iter().map(|&(_, charge)| charge).sum();
         assert!(WINDOW <= spent, "{spent} bytes reach the window");
         let mut reader = test.reader(&["value"], Mode::Complete).await;
         write_wide(&mut writer, now, frames);
@@ -1954,11 +1949,33 @@ async fn take_all(reader: &mut Reader) -> (Vec<u64>, Ended) {
     }
 }
 
+/// Takes each frame of `reader` until none comes within [`SETTLE`] of `clock`: the
+/// range of each, and its charge.
+async fn take_waiting(clock: &Clock, reader: &mut Reader) -> Vec<(Range, u64)> {
+    let mut taken = Vec::new();
+    while let Some(next) = within(clock, SETTLE, reader.next()).await {
+        let received = next.expect("a frame");
+        let range = received.view().range(0).expect("the index is present");
+        taken.push((range, charge(&received.view())));
+    }
+    taken
+}
+
+/// The ranges of `count` frames of 1000 samples from frame `first`.
+fn wide(first: u64, count: u64) -> Vec<Range> {
+    (first..first + count)
+        .map(|n| Range {
+            seq: n * 1000,
+            count: 1000,
+        })
+        .collect()
+}
+
 fn assert_behind(ended: &Ended) {
     assert_eq!(*ended, Ended::Behind);
     assert_eq!(
         ended.to_string(),
-        "the reader missed a frame and gets no later one: open a new reader"
+        "the reader reached a frame that the buffer lost: open a new reader"
     );
 }
 
@@ -1970,7 +1987,7 @@ fn poll_flagged<F: Future>(next: Pin<&mut F>) -> (Poll<F::Output>, Arc<Flag>) {
 }
 
 #[test]
-fn ends_a_complete_reader_that_holds_a_frame_past_its_window_at_the_next_commit() {
+fn gives_a_complete_reader_that_holds_a_frame_past_its_window_each_later_frame() {
     races(32, (WIDE_AREA, WIDE_BODY_MAX), |seed, test| async move {
         let commits = (seed % 2 + 1).cast_signed();
         let mut reader = test.reader(&["value"], Mode::Complete).await;
@@ -1986,14 +2003,15 @@ fn ends_a_complete_reader_that_holds_a_frame_past_its_window_at_the_next_commit(
             write_samples(&mut writer, now + PAST_WINDOW + n, 1);
             test.clock.sleep(SETTLE).await;
         }
-        let next = reader.next().await;
-        if commits == 1 {
-            let range = next.expect("the call gives credit").view().range(0);
-            let seq = PAST_WINDOW.cast_unsigned();
-            assert_eq!(range, Some(Range { seq, count: 1 }));
-        } else {
-            assert_behind(&next.expect_err("the reader missed a frame"));
-        }
+        // With two commits, the reader missed the frame of the first and reads it from
+        // disk.
+        let ranges = take_waiting(&test.clock, &mut reader).await;
+        let seq = PAST_WINDOW.cast_unsigned();
+        let expected: Vec<_> = (seq..seq + commits.cast_unsigned())
+            .map(|seq| Range { seq, count: 1 })
+            .collect();
+        let ranges: Vec<_> = ranges.into_iter().map(|(range, _)| range).collect();
+        assert_eq!(ranges, expected);
         first
     });
 }
@@ -2032,7 +2050,7 @@ fn gives_a_waiting_complete_reader_each_frame_of_a_commit_past_its_window() {
 }
 
 #[test]
-fn ends_a_complete_reader_after_its_waiting_frames_when_it_misses_a_frame() {
+fn gives_a_complete_reader_its_waiting_frames_then_the_missed_ones_from_disk() {
     races(32, (AREA, BODY_MAX), |_, test| async move {
         let mut reader = test.reader(&["value"], Mode::Complete).await;
         let mut writer = test.writer("a", &["value"]).await;
@@ -2060,20 +2078,18 @@ fn ends_a_complete_reader_after_its_waiting_frames_when_it_misses_a_frame() {
         // The frames past the window miss at this commit.
         write_wide(&mut writer, now, 200);
         test.clock.sleep(SETTLE).await;
-        let (charges, ended) = take_all(&mut reader).await;
-        assert_behind(&ended);
-        let taken = 1 + charges.len();
-        assert!(20 < taken && taken < 200, "{taken}");
+        let taken = take_waiting(&test.clock, &mut reader).await;
+        let ranges: Vec<_> = taken.into_iter().map(|(range, _)| range).collect();
+        assert_eq!(ranges, wide(1, 200));
         first
     });
 }
 
-/// A reader that sleeps while a writer writes one frame each second gets the frames
-/// before its miss, then `Behind`: frames of 128 samples pass the window before they
-/// fill the ring, and frames of 1 sample fill the ring first, so the reader gets each
-/// frame that the hub applied.
+/// A reader that sleeps while a writer writes one frame each second ends `Behind`
+/// once the ring drops a frame that it did not take. Frames of 1 sample fill the ring
+/// before the window, so the reader first gets each frame that the hub applied.
 #[test]
-fn ends_a_complete_reader_that_sleeps_past_its_window_or_its_ring_as_behind() {
+fn ends_a_complete_reader_that_sleeps_past_its_ring_as_behind() {
     for samples in [128, 1] {
         run(21, move |test| async move {
             let mut reader = test.reader(&["value"], Mode::Complete).await;
@@ -2125,7 +2141,7 @@ async fn within<F: Future>(clock: &Clock, span: Span, future: F) -> Option<F::Ou
 }
 
 #[test]
-fn ends_a_complete_reader_that_missed_a_frame_as_behind_after_a_failed_sync() {
+fn ends_a_complete_reader_that_missed_a_frame_with_the_error_of_a_failed_sync() {
     run(20, |test| async move {
         let mut reader = test.reader(&["value"], Mode::Complete).await;
         let mut writer = test.writer("a", &["value"]).await;
@@ -2141,11 +2157,122 @@ fn ends_a_complete_reader_that_missed_a_frame_as_behind_after_a_failed_sync() {
         test.node.fail_file(FilePath::new(RING), Operation::Sync);
         write_wide(&mut writer, now, 201);
         test.clock.sleep(SETTLE).await;
+        let failed = Ended::Buffer(env::files::Error::Io {
+            path: PathBuf::from(RING),
+            operation: Operation::Sync,
+            code: 5,
+        });
         let (_, ended) = take_all(&mut latest).await;
-        assert!(matches!(ended, Ended::Buffer(_)), "the sync failed");
-        let (_, ended) = take_all(&mut reader).await;
-        assert_behind(&ended);
-        assert_behind(&reader.next().await.expect_err("the reader ended"));
+        assert_eq!(ended, failed);
+        let (charges, ended) = take_all(&mut reader).await;
+        assert_eq!(ended, failed);
+        assert!(
+            charges.len() < 200,
+            "{} frames before the read",
+            charges.len()
+        );
+        assert_eq!(reader.next().await.err(), Some(failed));
+    });
+}
+
+/// Writes 201 wide frames, so the frames past the window of `reader`, which takes
+/// none, miss at the commit of frame 200 and wait on disk.
+async fn write_past_the_window(test: &Test, writer: &mut Writer) {
+    let now = test.now();
+    for n in 0..201 {
+        write_wide(writer, now, n);
+        if n >= 199 {
+            test.clock.sleep(SETTLE).await;
+        }
+    }
+}
+
+/// A read from disk that fails ends the complete reader with its error, on each later
+/// call too. The shard goes on.
+#[test]
+fn ends_a_complete_reader_whose_read_from_disk_fails_with_its_error() {
+    run(62, |test| async move {
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value"]).await;
+        write_past_the_window(&test, &mut writer).await;
+        test.node.fail_file(FilePath::new(RING), Operation::ReadAt);
+        let (charges, ended) = take_all(&mut reader).await;
+        let failed = Ended::Buffer(env::files::Error::Io {
+            path: PathBuf::from(RING),
+            operation: Operation::ReadAt,
+            code: 5,
+        });
+        assert_eq!(ended, failed);
+        assert!(charges.len() < 200, "{} frames", charges.len());
+        assert_eq!(reader.next().await.err(), Some(failed));
+        let mut latest = test.reader(&["value"], Mode::Latest).await;
+        write_wide(&mut writer, test.now(), 0);
+        latest.next().await.expect("a frame");
+    });
+}
+
+/// A read from disk that finds no block in the pool ends the complete reader with
+/// the pool's error, on each later call too.
+#[test]
+fn ends_a_complete_reader_whose_read_from_disk_finds_no_block_with_the_pool_error() {
+    run(63, |test| async move {
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value"]).await;
+        write_past_the_window(&test, &mut writer).await;
+        let mut blocks = Vec::new();
+        let ended = loop {
+            let next = reader.next();
+            blocks.extend(fill(&test.pool));
+            if let Err(ended) = next.await {
+                break ended;
+            }
+        };
+        let exhausted = Ended::Pool(block::Error::Exhausted {
+            requested: 4096,
+            available: 0,
+        });
+        assert_eq!(ended, exhausted);
+        drop(blocks);
+        assert_eq!(reader.next().await.err(), Some(exhausted));
+    });
+}
+
+/// A read from disk that gets its entry but finds no block for the frame of the
+/// entry ends the complete reader with the pool's error, on each later call too.
+#[test]
+fn ends_a_complete_reader_whose_frame_from_disk_finds_no_block_with_the_pool_error() {
+    run(64, |test| async move {
+        // The bytes of one entry. The frame of the entry needs 8080 more.
+        const ENTRY: usize = 8088;
+        let mut reader = test.reader(&["value"], Mode::Complete).await;
+        let mut writer = test.writer("a", &["value"]).await;
+        write_past_the_window(&test, &mut writer).await;
+        let flag = Arc::new(Flag::default());
+        let waker = Waker::from(Arc::clone(&flag));
+        let mut next = Box::pin(reader.next());
+        loop {
+            flag.0.store(false, Ordering::Relaxed);
+            match next.as_mut().poll(&mut Context::from_waker(&waker)) {
+                Poll::Ready(received) => {
+                    received.expect("a frame");
+                    drop(next);
+                    next = Box::pin(reader.next());
+                }
+                Poll::Pending if flag.0.load(Ordering::Relaxed) => {}
+                // No wake yet: the read from disk holds its table and waits on it.
+                Poll::Pending => break,
+            }
+        }
+        let room = test.pool.alloc(ENTRY).expect("a block");
+        let blocks = fill(&test.pool);
+        drop(room);
+        let exhausted = Ended::Pool(block::Error::Exhausted {
+            requested: 8080,
+            available: 0,
+        });
+        assert_eq!(next.await.err().as_ref(), Some(&exhausted));
+        drop(blocks);
+        assert_eq!(reader.next().await.err(), Some(exhausted));
     });
 }
 
@@ -2374,7 +2501,8 @@ fn keeps_no_waker_of_a_dropped_reader() {
     });
 }
 
-/// A local complete reader spends the whole frame, not only its channels.
+/// A local complete reader spends the whole frame, not only its channels: it misses
+/// live frames that fit its window by its own channels, and reads them from disk.
 #[test]
 fn charges_a_local_complete_reader_on_some_channels_for_the_whole_frame() {
     const SAMPLES: i64 = 1000;
@@ -2395,17 +2523,15 @@ fn charges_a_local_complete_reader_on_some_channels_for_the_whole_frame() {
             write_series(&mut writer, &[(1, &stamps), (2, &values), (5, &values)]);
             test.clock.sleep(SETTLE).await;
         }
-        let mut got = 0;
-        loop {
-            match poll_once(reader.next()) {
-                Poll::Ready(Ok(_)) => got += 1,
-                Poll::Ready(Err(ended)) => {
-                    assert_behind(&ended);
-                    assert!(got < frames, "{got} frames before the end");
-                    break;
-                }
-                Poll::Pending => panic!("the reader took all {got} frames and waits"),
-            }
+        let mut live = 0;
+        while let Poll::Ready(next) = poll_once(reader.next()) {
+            next.expect("a frame");
+            live += 1;
         }
+        assert!(live < frames, "{live} live frames, then a read from disk");
+        let taken = take_waiting(&test.clock, &mut reader).await;
+        let ranges: Vec<_> = taken.into_iter().map(|(range, _)| range.seq).collect();
+        let seqs: Vec<_> = (live..frames).map(|n| n.cast_unsigned() * 1000).collect();
+        assert_eq!(ranges, seqs);
     });
 }

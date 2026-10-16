@@ -76,8 +76,9 @@ fn batches(commit: u64, parts: &Parts, half: &Parts) -> [Vec<Entry>; 6] {
 /// Reads the whole log of `slot` in one poll, with the allocations the read
 /// made.
 fn read_once(buffer: &Buffer, slot: channel::Slot) -> (Read, u64) {
+    let reader = buffer.reader();
     let (read, allocations) = ALLOCATOR.count(|| {
-        let mut read = pin!(buffer.read(slot, Path::Live, Mark::at(0), usize::MAX));
+        let mut read = pin!(reader.read(slot, Path::Live, Mark::at(0), usize::MAX));
         match read.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
             Poll::Ready(read) => read,
             Poll::Pending => panic!("a read of the memory driver is ready at once"),

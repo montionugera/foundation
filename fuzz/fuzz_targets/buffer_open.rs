@@ -1,7 +1,7 @@
 //! `Buffer::open` never panics on a ring file that a local writer changed, and what
 //! `committed` reported durable is what a reopen gives.
 //!
-//! `Buffer::read` gives each path of a ring that opens as its doc says: every entry
+//! `Reader::read` gives each path of a ring that opens as its doc says: every entry
 //! up to the tail, a gap only for seqs that no entry holds, each entry that its
 //! budget takes, and the same entries in one read, in reads of a small budget, from
 //! inside an entry or a gap, and after a reopen. A carry record can give a path a
@@ -852,6 +852,7 @@ async fn read_from(
     entry: &Given,
 ) {
     let read = buffer
+        .reader()
         .read(slot, path, Mark::at(from), 1)
         .await
         .expect("a read of an open ring");
@@ -865,7 +866,7 @@ async fn read_from(
 ///
 /// # Panics
 ///
-/// When a read breaks the doc of `Buffer::read`.
+/// When a read breaks the doc of `Reader::read`.
 async fn read_path(
     buffer: &Buffer,
     slot: Slot,
@@ -879,6 +880,7 @@ async fn read_path(
     let mut under = false;
     loop {
         let read = buffer
+            .reader()
             .read(slot, path, from, budget)
             .await
             .expect("a read of an open ring");
