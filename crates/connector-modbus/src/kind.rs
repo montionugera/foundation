@@ -5,17 +5,12 @@ use std::net::SocketAddr;
 use std::{fmt, future};
 
 use connector::kind::{self, Channels, Context, Error};
-use connector::stamp::Stamps;
-use connector::{cancel, pace, status};
+use connector::{cancel, pace, poll as polls};
 use document::Document;
 use document::diagnostic::{Code, Diagnostic};
 use env::net::{self, tcp};
-use hub::home::{Outcome, Refusal, order};
-use hub::writer::Writer;
-use types::authority::Authority;
-use types::frame::{self, Draft, Form, Label, Path};
-use types::sample::Value;
-use types::time::{Span, Stamp};
+use types::sample::{Type, Value};
+use types::time::Span;
 
 use crate::config::{self, Config};
 use crate::pdu::{Exception, Request, Table};
@@ -85,27 +80,24 @@ impl kind::Kind for Kind {
     async fn run(&self, ctx: Context<Config>) -> Result<(), Error> {
         let config = ctx.config();
         let channels = config.reads.iter().map(|read| read.channel.clone());
-        let writer = ctx
-            .writer(channels.collect(), Authority::ABSOLUTE, None)
-            .await?;
-        let groups = groups(config, &writer)?;
+        let mut writer = polls::Writer::open(&ctx, channels.collect()).await?;
+        let groups = groups(config, writer.types())?;
         let Some(client) = ctx.cancel().race(connect(&ctx)).await else {
             return Ok(());
         };
         let mut client = client?;
-        let mut frames = Frames::new(&ctx, writer);
-        let mut values = vec![Value::Bool(false); config.reads.len()];
+        let mut values = vec![None; config.reads.len()];
         let missed = ctx.count("missed");
         let mut timer = pace::Timer::new(ctx.clock(), config.rate);
         while let Some(tick) = timer.tick(ctx.cancel()).await {
             missed.add(tick.missed);
             let read = read(config, &mut client, &groups, &mut values);
-            let Some((read, stamp)) = ctx.cancel().race(frames.request(read)).await
+            let Some((read, stamp)) = ctx.cancel().race(writer.request(read)).await
             else {
                 break;
             };
             read?;
-            frames.write(&values, stamp)?;
+            writer.write(&values, stamp)?;
         }
         Ok(())
     }
@@ -118,17 +110,18 @@ const SAMPLE_TYPE: Code = Code::new("modbus.sample-type");
 const RANGE: Code = Code::new("modbus.range");
 const EXCEPTION: Code = Code::new("modbus.exception");
 
-/// The requests of the reads of `config`, whose channels have the sample types of
-/// `writer`.
+/// The requests of the reads of `config`, whose channels have the sample types
+/// `types`, in order.
 ///
 /// # Errors
 ///
 /// [`Error::Config`] with a diagnostic of each read that is not valid.
-fn groups(config: &Config, writer: &Writer) -> Result<Vec<Group>, Error> {
-    let entries = writer.set().entries();
+fn groups(
+    config: &Config,
+    types: impl Iterator<Item = Type>,
+) -> Result<Vec<Group>, Error> {
     let (mut reads, mut wrong) = (Vec::with_capacity(config.reads.len()), Vec::new());
-    for (read, &entry) in config.reads.iter().zip(writer.entries()) {
-        let sample = entries[entry].data_type;
+    for (read, sample) in config.reads.iter().zip(types) {
         match poll::Read::new(read.table, read.address, sample) {
             Ok(valid) => reads.push(valid),
             Err(error) => {
@@ -142,6 +135,9 @@ fn groups(config: &Config, writer: &Writer) -> Result<Vec<Group>, Error> {
                         "Give the read a lower address, or the channel a type of fewer \
                          registers",
                     ),
+                    poll::Error::ReadOnly { .. } => {
+                        unreachable!("invariant: `Read::new` gives no `ReadOnly`")
+                    }
                 };
                 let message = format!("{}: {error}", at(read));
                 wrong.push(Diagnostic::new(code, None, message, fix.into()));
@@ -215,7 +211,7 @@ async fn read(
     config: &Config,
     client: &mut Client,
     groups: &[Group],
-    values: &mut [Value],
+    values: &mut [Option<Value>],
 ) -> Result<(), Error> {
     for group in groups {
         let reply = client.exchange(config.unit, group.request()).await;
@@ -225,7 +221,9 @@ async fn read(
             .values(reply)
             .map_err(|exception| refused(config, group, exception))?;
         for (at, value) in read {
-            values[at] = value;
+            let slot = values.get_mut(at);
+            *slot.expect("invariant: a group reads only the reads of `config`") =
+                Some(value);
         }
     }
     Ok(())
@@ -240,9 +238,12 @@ fn refused(config: &Config, group: &Group, exception: Exception) -> Error {
             group
                 .reads()
                 .map(|read| {
+                    let read = config.reads.get(read);
+                    let read = read
+                        .expect("invariant: a group reads only the reads of `config`");
                     let message = format!(
                         "the device refused the read of {} with exception {exception}",
-                        at(&config.reads[read])
+                        at(read)
                     );
                     let fix = "Read a table and addresses that the device has";
                     Diagnostic::new(EXCEPTION, None, message, fix.into())
@@ -314,194 +315,4 @@ impl std::error::Error for Fault {}
 
 fn device(fault: Fault) -> Error {
     Error::Device(Box::new(fault))
-}
-
-/// The frames of a run: one sample in each series of the key set of its writer, the
-/// stamp in each index and the value of a read in each other.
-struct Frames {
-    writer: Writer,
-    stamps: Stamps,
-    /// The read of each entry of the key set, or `None` for an index.
-    reads: Vec<Option<usize>>,
-    /// Each entry of the key set and the bytes of its sample.
-    series: Vec<(usize, usize)>,
-    /// The number of reads of each group, by its number.
-    samples: Vec<u64>,
-    /// The groups of the frame to write: each group, or those that the home refused
-    /// as `Backwards`.
-    groups: Vec<u32>,
-    /// The series of `groups`.
-    again: Vec<(usize, usize)>,
-    applied: status::Count,
-    lost: status::Count,
-}
-
-impl Frames {
-    /// The frames of `writer`, whose channels are those of the reads of `ctx`, each of
-    /// a type that its table holds.
-    fn new(ctx: &Context<Config>, writer: Writer) -> Self {
-        let set = writer.set();
-        let entries = set.entries();
-        let mut reads = vec![None; entries.len()];
-        let mut samples = vec![0; set.groups().len()];
-        for (read, &entry) in writer.entries().iter().enumerate() {
-            reads[entry] = Some(read);
-            samples[to_usize(entries[entry].group)] += 1;
-        }
-        let width = |entry: &frame::key_set::Entry| {
-            (entry.data_type.width())
-                .expect("invariant: an index or a read is a scalar")
-        };
-        let series: Vec<_> = entries.iter().map(width).enumerate().collect();
-        let groups = set.groups().iter().map(|&index| entries[index].group);
-        Self {
-            again: Vec::with_capacity(series.len()),
-            groups: groups.collect(),
-            reads,
-            series,
-            samples,
-            stamps: Stamps::default(),
-            applied: ctx.count("in"),
-            lost: ctx.count("lost"),
-            writer,
-        }
-    }
-
-    /// Runs `request`, and gives its output with the stamp of its frame.
-    async fn request<T>(&mut self, request: impl Future<Output = T>) -> (T, Stamp) {
-        self.stamps.request(&self.writer, request).await
-    }
-
-    /// Writes one frame of `values`, the values of the reads in order, at `stamp`. A
-    /// group that the home refuses as `Backwards` is written again once, after the
-    /// stamp that the refusal gives.
-    ///
-    /// # Errors
-    ///
-    /// As [`Frames::send`].
-    ///
-    /// # Panics
-    ///
-    /// When the home refuses a group as `Backwards` again.
-    fn write(&mut self, values: &[Value], stamp: Stamp) -> Result<(), Error> {
-        let set = self.writer.set();
-        let all = set.groups().iter().map(|&index| set.entries()[index].group);
-        self.groups.clear();
-        self.groups.extend(all);
-        self.again.clear();
-        self.again.extend_from_slice(&self.series);
-        let Some(before) = self.send(values, stamp)? else {
-            return Ok(());
-        };
-        let stamp = self.stamps.after(before);
-        let entries = self.writer.set().entries();
-        let groups = &self.groups;
-        let refused =
-            |&&(entry, _): &&(usize, usize)| groups.contains(&entries[entry].group);
-        let series = self.series.iter().filter(refused);
-        self.again.clear();
-        self.again.extend(series);
-        if let Some(again) = self.send(values, stamp)? {
-            panic!(
-                "invariant: a frame stamped after {before}, the last stamp of its \
-                 index, is not backwards, but the home gives {again} as last"
-            );
-        }
-        Ok(())
-    }
-
-    /// Writes the series `again` of the groups `groups` at `stamp`, and counts the
-    /// samples of each group as applied or lost. A frame for which the pool has no
-    /// block now loses its samples. Leaves in `groups` each group that the home
-    /// refused as `Backwards`, and gives the latest last stamp of one, or `None`.
-    ///
-    /// # Errors
-    ///
-    /// The error of a write, and [`Error::Config`] with `connector.large-frame` when
-    /// the frame is larger than the largest block of the pool.
-    ///
-    /// # Panics
-    ///
-    /// When the home refuses a group as `Expired` or `Codec`, which a writer with no
-    /// lease and a raw frame never gets.
-    fn send(&mut self, values: &[Value], stamp: Stamp) -> Result<Option<Stamp>, Error> {
-        let mut draft = match self.writer.draft(Form::Raw, &self.again) {
-            Ok(draft) => draft,
-            Err(frame::Error::Pool(
-                block::Error::Exhausted { .. } | block::Error::Refused { .. },
-            )) => {
-                let lost = self.groups.iter().map(|&group| self.count(group)).sum();
-                self.lost.add(lost);
-                self.groups.clear();
-                return Ok(None);
-            }
-            Err(error) => return Err(error.into()),
-        };
-        fill(&mut draft, &self.reads, values, stamp, &self.groups);
-        let outcomes = self.writer.write(Label::Path(Path::Live), draft)?;
-        let mut latest = None;
-        let (mut wrote, mut gone) = (0, 0);
-        let mut backwards = 0;
-        for (at, outcome) in outcomes.iter().enumerate() {
-            let group = self.groups[at];
-            let n = self.samples[to_usize(group)];
-            match outcome {
-                Outcome::Applied { .. } => wrote += n,
-                Outcome::Refused {
-                    refusal: Refusal::Order(order::Error::Backwards { before, .. }),
-                    ..
-                } => {
-                    self.groups[backwards] = group;
-                    backwards += 1;
-                    latest = latest.max(Some(*before));
-                }
-                Outcome::Lost { .. }
-                | Outcome::Refused {
-                    refusal: Refusal::Waiting | Refusal::Reserved | Refusal::Order(_),
-                    ..
-                } => gone += n,
-                Outcome::Refused {
-                    refusal: refusal @ (Refusal::Expired | Refusal::Codec { .. }),
-                    ..
-                } => panic!(
-                    "invariant: the home refuses no frame with no lease in raw form, \
-                     but gives {refusal}"
-                ),
-            }
-        }
-        self.groups.truncate(backwards);
-        self.applied.add(wrote);
-        self.lost.add(gone);
-        Ok(latest)
-    }
-
-    /// The number of reads of `group`.
-    fn count(&self, group: u32) -> u64 {
-        self.samples[to_usize(group)]
-    }
-}
-
-/// Fills each series of `draft` with one sample: `stamp` in each index, and the value
-/// of its read in each other, and gives each of `groups` one sample.
-fn fill(
-    draft: &mut Draft,
-    reads: &[Option<usize>],
-    values: &[Value],
-    stamp: Stamp,
-    groups: &[u32],
-) {
-    for (entry, bytes) in draft.iter_mut() {
-        match reads[entry] {
-            None => Value::Stamp(stamp).write(bytes),
-            Some(read) => values[read].write(bytes),
-        }
-    }
-    for &group in groups {
-        draft.set_count(group, 1);
-    }
-}
-
-/// `group` as a position.
-fn to_usize(group: u32) -> usize {
-    usize::try_from(group).expect("invariant: a usize holds a group")
 }

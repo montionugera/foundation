@@ -1,9 +1,4 @@
 #![expect(clippy::arithmetic_side_effects, reason = "a test may panic")]
-#![expect(clippy::indexing_slicing, reason = "a test may panic")]
-#![expect(
-    clippy::as_conversions,
-    reason = "a test takes words of its own values"
-)]
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -27,7 +22,7 @@ use spec::data_type::DataType;
 use spec::definition::Definition;
 use types::channel;
 use types::name::{Name, Selector};
-use types::sample::{Scalar, Type};
+use types::sample::Scalar;
 
 use super::*;
 use crate::device::Device;
@@ -211,7 +206,8 @@ fn device(items: &[Item], order: Order) -> Device {
                 Order::Big => 16 * (count - 1 - word),
                 Order::Little => 16 * word,
             };
-            registers[at + word] = (item.bits >> shift) as u16;
+            registers[at + word] =
+                u16::try_from(item.bits >> shift & 0xffff).expect("a word");
         }
     }
     device
