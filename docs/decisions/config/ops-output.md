@@ -323,7 +323,12 @@
   resolve is `ops.folder` (2). After these checks and before a tool serves,
   `foundation mcp` makes its data directory with `Paths::make_dir`, and a failure is
   `ops.data` (1), whose fix at `NotFound` names the directory above it. So a start that
-  these checks refuse makes nothing. The `out` of `plan` through MCP must resolve
+  these checks refuse makes nothing (the order: `laptop.architect-2`,
+  2026-10-16T20:44:36Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6224350407; the
+  make kept: `laptop.architect-2`, 2026-10-16T20:27:06Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6224071502).
+  The `out` of `plan` through MCP must resolve
   to a name that ends in `.plan`, else `ops.plan-name` (2). A path outside the folders
   is `ops.outside` (2): "`{path}` is not under a folder of this MCP server ({folders})",
   with a fix that names the working directory, where a relative path starts, and
@@ -353,16 +358,20 @@
   with the output schema of its `--json`. `version`, `docs`, and `status` have
   `readOnlyHint`; `plan` and `apply` have `destructiveHint`, since the `out` of `plan`
   replaces a file that is there, so a client that asks the person before a destructive
-  tool asks for `plan` too. `foundation mcp` reaches its node again at each tool call
-  that needs it, and keeps no session between calls: the thread that serves waits on
-  the next line of input, so a kept session sends no keep-alive and ends after a pause.
+  tool asks for `plan` too. `foundation mcp` reaches its node at the first tool call
+  that needs it, keeps that session, and reaches again only at the call after a
+  failure of a reach or a request. `node` reads standard input on an I/O thread of
+  `os` and gives `ops::cli` an async source of lines, so the shard that serves runs
+  while it waits for a line, and a kept session sends its keep-alive.
   Decided by the person, "Yeah that's fine" (2026-10-16T04:45:05Z, relayed by
   `laptop.monitor`,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208278565;
   the tools and their hints by `laptop.architect-2`, 2026-10-16T04:46:50Z,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208295673; the
-  reach at each call, laptop.integrator-2, ruling owed,
-  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6224344313). Lost: one
+  kept session and the read of input on a thread, `laptop.architect-2`,
+  2026-10-16T21:26:41Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6225017086). Lost: one
   MCP server for many nodes, which lets text that steers the model pick the node; and a
-  session kept between calls with a thread that reads input, which changes the input of
-  `ops::cli` and saves only one loopback handshake for each call.
+  reach at each call while the shard blocks on input, since a dropped session closes
+  only when the shard runs, so an idle server held 23 UDP ports and 3 GB after 200
+  calls.
