@@ -489,6 +489,23 @@ fn changes_nothing_on_the_ack_of_a_latest_reader() {
     });
 }
 
+/// A latest reader gives the position after its frame, as a complete reader does.
+#[test]
+fn gives_a_latest_reader_the_position_after_its_frame() {
+    run(46, |test| async move {
+        let open = named("a", "l", Mode::Latest, Span::ZERO);
+        let mut latest = test.hub.reader(open).await.expect("opens");
+        let open = named("a", "c", Mode::Complete, Span::SECOND);
+        let mut complete = test.hub.reader(open).await.expect("opens");
+        let mut writer = test.writer("w", &["value"]).await;
+        let now = test.now();
+        write(&mut writer, &[now, now + 1], &[7, 8]);
+        let position = latest.next().await.expect("a frame").position();
+        let received = complete.next().await.expect("a frame");
+        assert_eq!(received.position(), position);
+    });
+}
+
 #[test]
 fn ends_each_open_again_of_a_reader_that_acked_after_a_failed_sync_with_its_error() {
     run(42, |test| async move {

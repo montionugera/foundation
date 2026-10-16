@@ -1,6 +1,7 @@
 //! The reads of a session: one read stream each, whose frames arrive as the node
 //! sends them.
 
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -16,9 +17,14 @@ use wire::hub::{Due, Frames, Step};
 
 use crate::{Error, Handle};
 
+mod lost;
+
 /// A read of a [`Session`](crate::Session): one read stream. It gives the frames of
-/// its channels that the node sends, in order, from the open on. It holds a clone of
-/// its session. Dropping it stops the stream, and the node ends the read.
+/// its channels that the node sends, in order, from the open on. A complete reader
+/// goes on past seqs that the node's buffer lost: [`Reader::lost`] gives the seqs that
+/// each channel lost, and the reader writes a warning for each gap. A latest
+/// reader skips frames by design and gives no gap. It holds a clone of its session.
+/// Dropping it stops the stream, and the node ends the read.
 #[derive(Debug)]
 pub struct Reader {
     session: Rc<Handle>,
@@ -26,6 +32,7 @@ pub struct Reader {
     stream: Option<(Sender, Receiver)>,
     places: Vec<Place>,
     frames: Frames,
+    lost: lost::Lost,
     /// The error that ended the read.
     ended: Option<Error>,
 }
@@ -53,6 +60,7 @@ impl Reader {
         Ok(Self {
             session,
             stream: Some((sender, receiver)),
+            lost: lost::Lost::new(places.len()),
             places,
             frames,
             ended: None,
@@ -75,10 +83,25 @@ impl Reader {
         self.frames.set()
     }
 
+    /// The seqs of the index lost after the last series of `entry` with a sample, an
+    /// entry of [`Reader::set`], up to the frame that the last [`Reader::next`] gave:
+    /// one range from the first lost seq to the last. A seq in it that the reader got
+    /// held no sample of `entry`. Empty when that frame holds no sample of `entry`,
+    /// when none was lost, before the first frame, and for a latest reader.
+    ///
+    /// # Panics
+    ///
+    /// When `entry` is not below the count of entries of [`Reader::set`].
+    #[must_use]
+    pub fn lost(&self, entry: usize) -> Range<u64> {
+        self.lost.get(entry)
+    }
+
     /// The next frame. Its series are encoded, and its entries index
     /// [`Reader::set`]. It holds a block of [`Config::frames`](crate::Config::frames)
     /// until it drops, and a frame that finds the pool full waits for a block. A frame
-    /// whose call drops goes on at the next call.
+    /// whose call drops goes on at the next call. After a gap, [`Reader::lost`] gives
+    /// it.
     ///
     /// # Errors
     ///
@@ -133,13 +156,44 @@ impl Reader {
             };
             match step {
                 Step::Head(_) | Step::More => {}
-                Step::Frame(frame) => return Ok(frame),
+                Step::Frame(frame) => {
+                    self.note(&frame);
+                    self.warn();
+                    return Ok(frame);
+                }
                 // #2790 removes this arm.
                 Step::Behind => {
                     return Err(Error::Reply(wire::hub::Error::Kind { kind: 3 }));
                 }
             }
         }
+    }
+
+    /// Moves the lost seqs of each entry past `frame`.
+    fn note(&mut self, frame: &Frame) {
+        let index = frame
+            .range(0)
+            .expect("invariant: a frame of the reader holds the index group");
+        let sampled = index.count > 0;
+        let held = frame.iter().map(|(entry, _)| entry).filter(|_| sampled);
+        self.lost.pass(self.frames.lost(), held);
+    }
+
+    /// Writes a warning when the last frame lost seqs.
+    fn warn(&self) {
+        let lost = self.frames.lost();
+        if lost.is_empty() {
+            return;
+        }
+        let index = &self.places[self.set().groups()[0]].name;
+        let (start, end) = (lost.start, lost.end);
+        tracing::warn!(
+            %index,
+            start,
+            end,
+            "the reader lost seqs {start}..{end} of index {index}: the node's buffer did \
+             not keep them"
+        );
     }
 }
 
@@ -175,7 +229,7 @@ async fn start(
         }
     };
     let message = receiver.recv().await?;
-    let (frames, _live) = Frames::open(start.home, start.set, message.as_deref())
+    let (frames, _) = Frames::open(start.home, start.set, message.as_deref())
         .map_err(Error::Reply)?;
     Ok((start.places, frames))
 }

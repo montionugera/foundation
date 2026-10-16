@@ -52,13 +52,7 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
     let mut reader = ctx.reader().expect("invariant: check gives a reader");
     let ctx = &ctx;
     let config = ctx.config();
-    let client = Client::new(connector::http::Config {
-        net: ctx.net().clone(),
-        clock: ctx.clock().clone(),
-        tasks: ctx.tasks().clone(),
-        timeout: TIMEOUT,
-        body_max: BODY_MAX,
-    });
+    let client = client(ctx).await;
     let uri = write_uri(&config.address, &config.target);
     let token = RefCell::new(Token::read(ctx).await?);
     let (confirmed, lost) = (ctx.count(CONFIRMED), ctx.count(LOST));
@@ -114,6 +108,23 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
             Event::Frame(Err(ended)) => return Err(ended.into()),
         }
     }
+}
+
+/// The client of a run, which checks a certificate at the mesh time of its hub.
+async fn client(ctx: &Context<Config>) -> Client {
+    // The reader opened, so the node has mesh time and this gives at once.
+    let time = ctx.time().await;
+    Client::new(connector::http::Config {
+        net: ctx.net().clone(),
+        clock: ctx.clock().clone(),
+        tasks: ctx.tasks().clone(),
+        timeout: TIMEOUT,
+        body_max: BODY_MAX,
+        tls: Some(connector::http::Tls {
+            roots: ctx.roots().clone(),
+            time,
+        }),
+    })
 }
 
 /// Sends `body` until InfluxDB answers 204. Shows each other answer as the run's

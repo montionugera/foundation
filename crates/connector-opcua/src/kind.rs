@@ -1,7 +1,7 @@
 //! The `opcua` kind: reads OPC UA nodes at a fixed rate, and writes at most one frame
 //! per tick.
 
-use std::{fmt, future};
+use std::fmt;
 
 use connector::kind::{self, Channels, Context, Error};
 use connector::{pace, poll, status};
@@ -186,7 +186,7 @@ pub async fn writes(
             })
             .collect();
         ctx.clock().sleep(Span::from_nanos(1_000_000)).await;
-        let ((), stamp) = frames.writer.request(future::ready(())).await;
+        let ((), stamp) = frames.writer.request(std::future::ready(())).await;
         let mut written = Ok(());
         measures.push(measure(&mut || {
             written = frames.write(&values, stamp);

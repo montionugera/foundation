@@ -3,8 +3,8 @@
 use std::mem;
 
 use document::diagnostic::{Code, Diagnostic};
+use hub::Time;
 use hub::home::{Outcome, Refusal, order};
-use hub::writer::Time;
 use types::authority::Authority;
 use types::frame::{self, Draft, Form, Label, Path, key_set};
 use types::name::Name;

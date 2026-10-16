@@ -110,7 +110,10 @@ exclude_re = [
   'crates/os/src/clock\.rs:.*replace > with >= in combine',
   # A `Tcp` has no write buffer, so a flush is ready at once. `Poll::Ready(Ok(()))` is
   # what the body returns.
-  'crates/connector/src/http/stream\.rs:.*<impl Write for Stream>::poll_flush',
+  'crates/connector/src/http/stream\.rs:.*<impl AsyncWrite for Adapter>::poll_flush',
+  # rustls writes TLS records only with `write_vectored` (rustls 0.23.46, `vecbuf.rs`),
+  # which `tokio-rustls` maps to `poll_write_vectored`, so no path calls `poll_write`.
+  'crates/connector/src/http/stream\.rs:.*<impl AsyncWrite for Adapter>::poll_write ->',
   # An out connector has no device channel. `Ok(Channels::default())` is what the body
   # returns.
   'crates/connector-influx/src/lib\.rs:.*replace <impl kind::Kind for Kind>::check ->',
@@ -195,4 +198,8 @@ exclude_re = [
   'crates/node/src/status\.rs:.*replace < with (==|>)$',
   # A stub that panics until PR B2 of #432 fills it; B2 removes this line.
   'crates/connector-modbus/src/kind\.rs:.*replace <impl kind::Kind for Kind>::run ->',
+  # A count of pending entries that never reaches 0 only stops the skip of the held
+  # entries, and `get` gives the same. The `narrow` line of the `program` read bench
+  # shows the work.
+  'crates/program/src/read/lost\.rs:.*replace -= with (\+=|/=) in Lost::pass$',
 ]
