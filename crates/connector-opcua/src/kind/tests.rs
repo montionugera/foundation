@@ -1107,7 +1107,10 @@ impl kind::Kind for Short {
         Kind::default().check(config)
     }
 
-    fn discover(&self, _: &Token) -> impl Future<Output = Result<Vec<Document>, Error>> {
+    fn discover(
+        &self,
+        _: &Token,
+    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
         future::ready(Ok(Vec::new()))
     }
 
@@ -1137,7 +1140,8 @@ fn panics_at_a_frame_with_no_value_for_each_read() {
         let mut rig = testing::Rig::open(env, node.net(), kinds).await;
         let setup = Setup::three();
         let channels = setup.channels.iter();
-        rig.define(channels.map(|(text, def)| (name(text), def.clone())).collect());
+        let channels = channels.map(|(text, def)| (name(text), def.clone()));
+        rig.define(channels.collect());
         let config = config("opc.tcp://plc:4840", "10Hz", &setup.reads);
         rig.supervise("opcua", name(PLC), config).await.stop().await
     });

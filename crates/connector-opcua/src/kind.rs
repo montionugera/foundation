@@ -279,8 +279,8 @@ impl<'a> Frames<'a> {
         values: &[Result<Value, Fault>],
         stamp: Stamp,
     ) -> Result<(), Error> {
-        let reads = self.kept.len();
-        assert_eq!(values.len(), reads, "invariant: a frame has one value for each read");
+        let invariant = "invariant: a frame has one value for each read";
+        assert_eq!(values.len(), self.kept.len(), "{invariant}");
         let (mut bad, mut uncertain, mut mistyped) = (0, 0, 0);
         let mut first = None;
         let reads = values.iter().zip(&self.types).zip(&mut self.kept);
