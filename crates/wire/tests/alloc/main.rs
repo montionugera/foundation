@@ -1,16 +1,21 @@
-//! The hub messages on a frame's path, the blob heads, and the body counters of client
-//! requests and blob chunks, make no heap allocation, and the place messages of a read
-//! make a known count. This binary has no test harness: the count covers each thread,
+//! The hub messages on a frame's path, the frames of a warm reader session, the blob
+//! heads, and the body counters of client requests and blob chunks, make no heap
+//! allocation, and the place messages of a read make a known count. This binary has no test harness: the count covers each thread,
 //! and a harness allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
 use types::{
     channel,
-    frame::{self, Path, Range},
+    frame::{
+        self, Form, Path, Range,
+        key_set::{Group, Interner},
+    },
+    sample::{Scalar, Type},
 };
 use wire::hub::{
-    Credit, FromHome, FromReader, Head, Home, Mode, Open, Reader, Reply, ends, keys,
+    Credit, Due, Frames, FromHome, FromReader, Head, Home, Mode, Open, Reader, Reply,
+    Step, ends, keys,
 };
 
 #[global_allocator]
@@ -33,6 +38,7 @@ fn main() {
         ends(series);
     }
     ends_by_place();
+    frames();
     client_body();
     blob_body();
     blob_heads();
@@ -125,6 +131,71 @@ fn ends(series: u32) {
         assert_eq!(at, Some(index * body.len().div_ceil(2)), "the body moved");
         let end = at.map(|at| at + message.len());
         assert_eq!(last, end == Some(body.len()), "the body ends at {end:?}");
+    }
+}
+
+/// Each input of a frame of a warm session, after the first frame. The draft comes
+/// from the caller's pool outside the count.
+fn frames() {
+    let set = Interner::new().intern(&[Group {
+        index: channel::Key::from_u128(1),
+        data: &[(channel::Key::from_u128(2), Type::Scalar(Scalar::I64))],
+    }]);
+    let config = block::Config::new(1 << 16).expect("the budget fits");
+    let memory = block::Heap::new(config.reservation());
+    let pool = block::Pool::new(config, memory);
+    let open = Open {
+        mode: Mode::Latest,
+        channels: 2,
+    };
+    let mut frames = Frames::new(Reader::new(&open), set);
+    let mut run = [0; 2 * ends::LEN];
+    ends::encode([(0, 16), (1, 32)], &mut run);
+    let body = [7; 32];
+    assert!(
+        matches!(frames.decode(&[1]), Ok(Step::Opened)),
+        "the session opens"
+    );
+    for round in 0..2 {
+        let mut head = [0; 18];
+        Reply::Head(Head {
+            path: Path::Live,
+            range: Range {
+                seq: 2 * round,
+                count: 2,
+            },
+            series: 2,
+        })
+        .encode(&mut head);
+        let (steps, allocations) = ALLOCATOR.count(|| {
+            let head = frames.decode(&head);
+            let ends = frames.decode(&run);
+            (head, ends, matches!(frames.due(), Ok(Due::Draft(_))))
+        });
+        assert!(
+            matches!(steps, (Ok(Step::Head(_)), Ok(Step::More), true)),
+            "the head and ends did not decode: {steps:?}"
+        );
+        if round == 1 {
+            assert_eq!(allocations, 0, "the head and ends of a frame allocated");
+        }
+        let Ok(Due::Draft(layout)) = frames.due() else {
+            panic!("a draft is due");
+        };
+        let draft = layout.draft(&pool, Form::Encoded).expect("a block");
+        let (step, allocations) = ALLOCATOR.count(|| {
+            let step = frames.draft(draft);
+            let Ok(Due::Body(rest)) = frames.due() else {
+                panic!("a body is due");
+            };
+            rest[..20].copy_from_slice(&body[..20]);
+            (step, frames.received(20), frames.decode(&body[20..]))
+        });
+        assert_eq!(allocations, 0, "the draft and body of a frame allocated");
+        let (Step::More, Ok(Step::More), Ok(Step::Frame(frame))) = step else {
+            panic!("the body did not give a frame: {step:?}");
+        };
+        assert_eq!(frame.series(1), Some(&body[16..]), "the body round trips");
     }
 }
 
