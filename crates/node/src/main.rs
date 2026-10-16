@@ -79,8 +79,8 @@ fn run(args: &[OsString], vars: BTreeMap<OsString, OsString>) -> Result<u8, Fail
 }
 
 /// Runs the command line `args` on a shard of its own. The shard and each I/O thread
-/// of a reach or of standard input end before this returns, so a node that `foundation start` runs gets
-/// every shard, and its first thread takes the signals.
+/// of a reach or of standard input end before this returns, so a node that
+/// `foundation start` runs gets every shard, and its first thread takes the signals.
 ///
 /// # Panics
 ///
