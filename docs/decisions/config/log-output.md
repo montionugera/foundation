@@ -79,19 +79,24 @@
   came before the first of them. A write that fails or panics drops its line. The thread
   starts with the node, which fails with `Error::Start` when it cannot. It ends once
   each shard has ended and the queue is empty, so a sim run ends. A line after that
-  waits in the queue for `Node::join` (after `stopped`), `Flush::wait`, or
-  `Flush::panicked`. Each starts the thread again through one private resume, which
-  starts it only when none runs and a line waits, so at most one thread `log` runs and
-  the lines keep their order. An OS thread cannot start inside a `tracing` event. A line
-  from another thread after the last `Flush::wait` of `main` is lost. `main` waits up to
-  1 s for the log at its end. Its panic hook logs ERROR `panicked` with the field
-  `panic` as the last line, waits up to 1 s, and calls the hook before it only when the
-  log wrote each line within that bound. Decision by `laptop.monitor`
+  waits in the queue for `Node::join` (after `stopped`) or `Flush::wait`. Each starts
+  the thread again through one private resume, which starts it only when none runs and
+  a line waits, so at most one thread `log` runs and the lines keep their order. Inside
+  a `tracing` event, no OS thread can start and no dispatch can be set. A line from
+  another thread after the last `Flush::wait` of `main` is lost. `main` waits up to 1 s
+  for the log at its end. Its panic hook puts ERROR `panicked` with the field `panic`
+  in the queue as the last line, with no dispatch and no thread start, since a panic
+  can come from inside an event. While a shard runs, the hook waits up to 1 s and calls
+  the hook before it only when the log wrote each line within that bound. After each
+  shard has ended, it calls the hook before it at once, and the line waits for the next
+  `Flush::wait`. Decision by `laptop.monitor`
   (2026-10-15T21:39:25Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202838819). The
   plan by `laptop.architect-2` (2026-10-15T21:43:54Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202910326), and its
   change (2026-10-16T03:22:23Z,
-  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207344849). Lost:
+  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207344849), and
+  the panic hook with no thread start (2026-10-16T03:48:16Z,
+  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207638284). Lost:
   one thread for the life of the log, which makes each sim run end as `Stuck`; a write
   on the thread of `join`, which loses the bound of `main` on a stuck writer.
