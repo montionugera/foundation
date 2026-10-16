@@ -107,15 +107,19 @@
   get a new certificate. Until the influx kind takes a `ca`, its plan refuses `https`.
   The roots are `node::Config::roots`, an `os::Roots`, and main gives `os::roots()`:
   the certificate files on Linux and the keychain on macOS. When `SSL_CERT_FILE` is
-  set, or `SSL_CERT_DIR` names a directory, it reads only that file and the files in
-  those directories, on each OS. This override waits on the person
-  (https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6213282778). Main
-  reads the store once, so a change to it takes effect at the next start. Before
-  `started`, shard 0 logs a warning "a part of the OS roots was not read" with the
-  `error` of each failure, "OS roots that do not parse are skipped" with the count
-  `skipped`, and "the OS roots hold no certificate, so an https connect with no CA of
-  its connector fails". It logs them also with `Region::Absent`. This supersedes
-  `node::Config::roots: Vec<Vec<u8>>` of
+  set, or `SSL_CERT_DIR` holds a path that is not empty, it reads only that file and
+  those paths, on each OS. A path that is not there, or a `SSL_CERT_DIR` path that is
+  not a directory, gives a failure and no root of the OS store. The person approved
+  this override (2026-10-16T14:53:55Z:
+  https://github.com/synnaxlabs/foundation/pull/2862#issuecomment-6218177938). An
+  empty `SSL_CERT_DIR` names no directory, so the node reads the OS store. An empty
+  `SSL_CERT_FILE` names a file that is not there, so the node trusts no OS root and
+  logs the failure. Main reads the store once, so a change to it takes effect at the
+  next start. Before `started`, shard 0 logs a warning "a part of the OS roots was
+  not read" with the `error` of each failure, "OS roots that do not parse are
+  skipped" with the count `skipped`, and "the OS roots hold no certificate, so an
+  https connect with no CA of its connector fails". It logs them also with
+  `Region::Absent`. This supersedes `node::Config::roots: Vec<Vec<u8>>` of
   https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207437988, which
   read the OS outside `os`, so its failures did not reach the node log
   (`laptop.architect-2`, 2026-10-16T10:09:09Z:
