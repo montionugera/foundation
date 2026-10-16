@@ -21,6 +21,9 @@ use super::Line;
 /// The lines that the queue holds. A line that finds it full drops.
 const LINES: usize = 1024;
 
+/// The bytes of the lines that the queue holds. A line that does not fit drops.
+const BYTES: usize = 1 << 20;
+
 /// A panic hook of the process, as [`std::panic::set_hook`] takes it.
 type Hook = Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync>;
 
@@ -44,7 +47,7 @@ impl Flush {
         threads: &env::threads::Threads,
     ) -> Self {
         let queue = Arc::new(Queue {
-            lines: Lines::new(LINES),
+            lines: Lines::new(LINES, BYTES),
             state: Mutex::new(State {
                 writer: Some(Writer(writer)),
                 running: false,

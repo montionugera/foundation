@@ -12,6 +12,9 @@ use types::time::Span;
 use super::{config, heap};
 use crate::{Config, Error, Flush, Log, Node, log};
 
+/// The stamp of a line at the start of the sim.
+const START: &str = "2026-01-01T00:00:00.000000Z";
+
 /// The variable that marks a child process of a test.
 const CHILD: &str = "NODE_LOG_CHILD";
 
@@ -394,9 +397,91 @@ fn a_write_that_panics_ends_the_thread_log_after_the_lines_before() {
         })
     );
     assert!(log.resume(), "no thread log starts, and none fails to");
+    assert_eq!(sim.run(), Ok(()));
     assert_eq!(
         lines.read(),
         ["2026-01-01T00:00:00.000000Z INFO test: a mesh_time=none"]
+    );
+}
+
+#[test]
+fn a_line_that_does_not_fit_in_the_bytes_of_the_queue_drops_with_each_line_after_it() {
+    let (mut sim, host) = host(1);
+    let lines = Lines::default();
+    let log = opened(&host, false, Box::new(lines.clone()));
+    let text = "x".repeat(600 << 10);
+    write(&mut sim, &log, || {
+        tracing::info!(target: "test", text);
+        tracing::info!(target: "test", text);
+        tracing::info!(target: "test", n = 2);
+    });
+    write(&mut sim, &log, numbered(3, 4));
+    assert_eq!(
+        lines.read(),
+        [
+            format!("{START} INFO test: text={text} mesh_time=none"),
+            "2026-01-01T00:00:00.000000Z WARN node::log: dropped lines=2 mesh_time=none"
+                .to_owned(),
+            number(3),
+        ]
+    );
+}
+
+#[test]
+fn a_line_too_large_for_the_queue_wakes_the_thread_log_for_its_count_line() {
+    let (mut sim, host) = host(1);
+    let lines = Lines::default();
+    let log = opened(&host, false, Box::new(lines.clone()));
+    let hold = log.hold().expect("the thread log starts");
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    let text = "x".repeat(1 << 20);
+    let large = || tracing::info!(target: "test", text);
+    tracing::dispatcher::with_default(&log.dispatch, large);
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    assert_eq!(
+        unstamped(&lines.read()),
+        ["WARN node::log: dropped lines=1 mesh_time=none"]
+    );
+    drop(hold);
+    assert_eq!(sim.run(), Ok(()));
+}
+
+#[test]
+fn a_resume_while_the_thread_log_runs_starts_no_other() {
+    let (mut sim, host) = host(1);
+    let lines = Lines::default();
+    let log = opened(&host, false, Box::new(lines.clone()));
+    let hold = log.hold().expect("the thread log starts");
+    assert!(log.resume(), "the thread log runs");
+    tracing::dispatcher::with_default(&log.dispatch, numbered(0, 1));
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    tracing::dispatcher::with_default(&log.dispatch, numbered(1, 2));
+    drop(hold);
+    assert_eq!(sim.run(), Ok(()));
+    assert_eq!(
+        unstamped(&lines.read()),
+        [
+            "INFO test: n=0 mesh_time=none",
+            "INFO test: n=1 mesh_time=none"
+        ]
+    );
+}
+
+#[test]
+fn a_wait_after_the_hold_drops_waits_for_the_thread_log_to_end_then_joins_it() {
+    let (mut sim, host) = host(1);
+    let log = opened(&host, false, Box::new(Lines::default()));
+    let hold = log.hold().expect("the thread log starts");
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    drop(hold);
+    assert!(!log.wait(Duration::ZERO), "the thread log runs");
+    assert_eq!(sim.run(), Ok(()));
+    assert!(log.wait(Duration::ZERO), "the thread log has ended");
+    let debug = format!("{log:?}");
+    assert!(debug.contains("running: false, thread: None"), "{debug}");
+    assert!(
+        debug.contains("handle: None"),
+        "the wait joins the thread: {debug}"
     );
 }
 
@@ -511,7 +596,8 @@ fn an_event_never_waits_on_a_stuck_writer() {
 const PANICS: &str = "tests::log::a_panic_writes_the_queued_lines_then_the_panic";
 
 /// Runs [`panics`] in a child process with `CHILD` set to `case`, and gives its
-/// stderr. Unless `case` is `abort`, asserts that the child panics with no abort.
+/// stderr. Asserts that the child aborts when `case` is `abort`, and panics with no
+/// abort otherwise.
 fn child(case: &str) -> String {
     let output = Command::new(std::env::current_exe().expect("the test binary"))
         .args(["--exact", PANICS, "--nocapture"])
@@ -520,6 +606,17 @@ fn child(case: &str) -> String {
         .expect("the child runs");
     let ended = if case == "abort" { None } else { Some(101) };
     assert_eq!(output.status.code(), ended, "the end of the child");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        const SIGABRT: i32 = 6;
+        let signal = (case == "abort").then_some(SIGABRT);
+        assert_eq!(
+            output.status.signal(),
+            signal,
+            "the signal that ends the child"
+        );
+    }
     String::from_utf8(output.stderr).expect("UTF-8")
 }
 

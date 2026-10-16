@@ -26,9 +26,10 @@ use self::queue::Pipe;
 pub struct Log {
     /// Where each line goes, with one write for each line. `main` gives stderr. The
     /// thread `log` writes each line, so no event waits on a write. A write that fails
-    /// drops its line, and one that panics ends the log. While 1024 lines wait, each
-    /// new line drops, and WARN `dropped` with the field `lines`, their count, comes
-    /// after the lines before them.
+    /// drops its line, and one that panics ends the log. A line drops when 1024 lines
+    /// wait or when it does not fit in 1 MiB with the lines that wait. WARN `dropped`
+    /// with the field `lines`, the count of these lines, comes after the lines before
+    /// them.
     pub writer: Box<dyn io::Write + Send>,
     /// The form of each line, text or JSON, and the least level of an event that the
     /// log holds.

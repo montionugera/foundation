@@ -17,11 +17,15 @@ pub(super) struct Lines {
     inner: Mutex<Inner>,
     /// The lines that can wait. A line that finds this many drops.
     bound: usize,
+    /// The bytes that the lines that wait can hold. A line that does not fit drops.
+    bytes: usize,
 }
 
 #[derive(Debug)]
 struct Inner {
     lines: VecDeque<Vec<u8>>,
+    /// The bytes of `lines`.
+    bytes: usize,
     /// The panic lines, which never drop.
     panics: Vec<Vec<u8>>,
     /// The lines that dropped since the last take.
@@ -53,19 +57,23 @@ impl Batch {
 /// What a take gives.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Taken {
-    /// The batch holds lines.
+    /// The batch holds lines or a count of lines that dropped.
     Lines,
-    /// No line waits. The next line or close wakes the waker of the take.
+    /// No line waits and none dropped. The next line, drop, or close wakes the waker
+    /// of the take.
     Empty,
-    /// No line waits, and [`Lines::close`] came after the last [`Lines::open`].
+    /// No line waits, none dropped, and [`Lines::close`] came after the last
+    /// [`Lines::open`].
     Closed,
 }
 
 impl Lines {
-    /// Lines with no line, which hold up to `bound` lines, and closed.
-    pub(super) fn new(bound: usize) -> Self {
+    /// Lines with no line, which hold up to `bound` lines and `bytes` bytes of lines,
+    /// and closed.
+    pub(super) fn new(bound: usize, bytes: usize) -> Self {
         let inner = Inner {
             lines: VecDeque::with_capacity(bound),
+            bytes: 0,
             panics: Vec::new(),
             dropped: 0,
             sent: 0,
@@ -75,17 +83,23 @@ impl Lines {
         Self {
             inner: Mutex::new(inner),
             bound,
+            bytes,
         }
     }
 
     /// Puts `line` after the lines that wait, or counts it as dropped when `bound`
-    /// lines wait.
+    /// lines wait or it does not fit in `bytes`. After a drop, each line drops until
+    /// the next take, so the count line of the take marks one gap.
     pub(super) fn push(&self, line: Vec<u8>) {
         let mut inner = self.lock();
-        if inner.lines.len() == self.bound {
+        let full =
+            inner.lines.len() == self.bound || line.len() > self.bytes - inner.bytes;
+        if full || inner.dropped > 0 {
             inner.dropped += 1;
+            wake(inner);
             return;
         }
+        inner.bytes += line.len();
         inner.lines.push_back(line);
         inner.sent += 1;
         wake(inner);
@@ -123,12 +137,12 @@ impl Lines {
         self.lock().sent
     }
 
-    /// Moves each line that waits into `batch`, whose lines must be empty. When none
-    /// waits and the lines are not closed, keeps `waker` to wake at the next line or
-    /// close.
+    /// Moves each line that waits and the count of the lines that dropped into
+    /// `batch`, whose lines must be empty. When neither is there and the lines are not
+    /// closed, keeps `waker` to wake at the next line, drop, or close.
     pub(super) fn take(&self, batch: &mut Batch, waker: &Waker) -> Taken {
         let mut inner = self.lock();
-        if inner.lines.is_empty() && inner.panics.is_empty() {
+        if inner.lines.is_empty() && inner.panics.is_empty() && inner.dropped == 0 {
             if inner.closed {
                 return Taken::Closed;
             }
@@ -136,6 +150,7 @@ impl Lines {
             return Taken::Empty;
         }
         mem::swap(&mut inner.lines, &mut batch.lines);
+        inner.bytes = 0;
         mem::swap(&mut inner.panics, &mut batch.panics);
         batch.dropped = mem::take(&mut inner.dropped);
         Taken::Lines
@@ -154,6 +169,41 @@ fn wake(mut inner: MutexGuard<'_, Inner>) {
     drop(inner);
     if let Some(waker) = waker {
         waker.wake();
+    }
+}
+
+#[cfg(test)]
+#[cfg(not(loom))]
+mod tests {
+    use std::task::Waker;
+
+    use super::{Batch, Lines, Taken};
+
+    #[test]
+    fn a_panic_line_counts_among_the_lines_sent() {
+        let lines = Lines::new(1, 1);
+        lines.push(b"a".to_vec());
+        lines.push(b"b".to_vec());
+        assert_eq!((lines.panic(b"p".to_vec()), lines.sent()), (2, 2));
+        let mut batch = Batch::default();
+        assert_eq!(lines.take(&mut batch, Waker::noop()), Taken::Lines);
+        assert_eq!((batch.sent(), batch.dropped), (2, 1));
+    }
+
+    #[test]
+    fn a_line_too_large_for_the_bytes_drops_with_each_line_until_the_take() {
+        let lines = Lines::new(4, 2);
+        lines.push(b"aaa".to_vec());
+        lines.push(b"b".to_vec());
+        let mut batch = Batch::default();
+        assert_eq!(lines.take(&mut batch, Waker::noop()), Taken::Lines);
+        assert_eq!((batch.sent(), batch.dropped), (0, 2));
+        for line in [b"cc", b"dd"] {
+            lines.push(line.to_vec());
+            assert_eq!(lines.take(&mut batch, Waker::noop()), Taken::Lines);
+            assert_eq!(batch.lines.drain(..).collect::<Vec<_>>(), [line.to_vec()]);
+            assert_eq!(batch.dropped, 0);
+        }
     }
 }
 
@@ -195,7 +245,7 @@ mod model {
     #[test]
     fn each_line_before_the_close_reaches_a_take_that_waits() {
         loom::model(|| {
-            let lines = Arc::new(Lines::new(4));
+            let lines = Arc::new(Lines::new(4, 4));
             lines.open();
             let push = |line: &'static [u8]| {
                 let lines = Arc::clone(&lines);
@@ -221,7 +271,7 @@ mod model {
     #[test]
     fn a_full_queue_drops_a_line_but_never_a_panic_line() {
         loom::model(|| {
-            let lines = Arc::new(Lines::new(1));
+            let lines = Arc::new(Lines::new(1, 1));
             lines.open();
             let taker = {
                 let lines = Arc::clone(&lines);
