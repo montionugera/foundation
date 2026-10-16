@@ -351,8 +351,8 @@ impl Log {
         !self.due && offset >= self.lap.saturating_add(area)
     }
 
-    /// Whether the room is over four times the most runs that a trim of the lap
-    /// met, or over four with none.
+    /// Whether the room is over four times the larger of the runs that the path
+    /// holds and the most runs that a trim of the lap met, or over four with none.
     fn oversized(&self) -> bool {
         self.runs.capacity() > self.keep() << 2
     }
@@ -360,11 +360,12 @@ impl Log {
     fn keep(&self) -> usize {
         usize::try_from(self.peak)
             .expect("invariant: u32 fits usize")
+            .max(self.runs.len())
             .max(1)
     }
 
-    /// Shrinks the room to twice the most runs that a trim of the lap met, or to two
-    /// with none.
+    /// Shrinks the room to twice the larger of the runs that the path holds and the
+    /// most runs that a trim of the lap met, or to two with none.
     #[cold]
     fn shrink(&mut self) {
         // No deque holds more than `isize::MAX` bytes, so no shift overflows.
@@ -2899,6 +2900,36 @@ mod tests {
     /// A trim in the wait meets 8 runs, so the end needs no shrink. Only this test,
     /// through `Laps::due`, kills a drain that takes a shrink for a path that needs
     /// none. #2774 moves the kill to `tests/memory`.
+    #[test]
+    fn a_drain_keeps_room_for_the_runs_synced_in_the_wait() {
+        let mut logs = Logs::new(4 * 4096);
+        logs.laps.most = 0;
+        let mut seq = 0;
+        let mut sync = |logs: &mut Logs, offset: u64| {
+            let mut entry = header(1, Path::Live, seq, 1, Some(1));
+            append(logs, slot(1), &mut entry).expect("appends");
+            logs.sync(slot(1), &entry, offset).expect("syncs");
+            seq += 1;
+        };
+        for record in 1..=13 {
+            sync(&mut logs, 4096 * record);
+            if record > 8 {
+                logs.hide(4096 * record);
+            }
+        }
+        assert!(logs.paths[0].due, "the lap end waits");
+        assert_eq!(room(&logs), (16, 1));
+        for n in 1..=14 {
+            sync(&mut logs, 4096 * 13 + 100 * n);
+        }
+        assert_eq!(room(&logs), (16, 15));
+        logs.laps.most = 1;
+        logs.hide(logs.hidden);
+        assert!(!logs.paths[0].due, "the drain ends the lap");
+        sync(&mut logs, 4096 * 13 + 100 * 15);
+        assert_eq!(room(&logs), (16, 16));
+    }
+
     #[test]
     fn a_lap_that_waits_and_needs_no_shrink_at_its_close_ends_with_none_left() {
         let (mut laps, mut budget) = (Laps::new(), budget(0));
