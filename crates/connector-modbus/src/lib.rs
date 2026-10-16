@@ -9,12 +9,17 @@
 
 use std::fmt;
 
+mod config;
 pub mod device;
+mod kind;
 pub mod pdu;
 pub mod poll;
 pub mod rtu;
 pub mod tcp;
 mod wait;
+
+pub use config::Config;
+pub use kind::Kind;
 
 /// Why a Modbus frame or PDU is not valid.
 #[derive(Clone, Debug, PartialEq, Eq)]

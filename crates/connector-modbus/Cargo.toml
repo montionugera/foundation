@@ -6,6 +6,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+connector = { path = "../connector" }
+document = { path = "../document" }
 env = { path = "../env" }
 types = { path = "../types" }
 
