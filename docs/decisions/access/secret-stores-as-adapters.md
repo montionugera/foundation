@@ -59,22 +59,32 @@
   resolver, held 81,070, 312,988, and 5,474,548 bytes, with no future counted. A dropped
   get gives the turn on at its drop, and its pool stays until its read ends. The value
   is at most 64 KiB while a kind holds it. Both are outside the pool budget of the node.
-  The store refuses a file that the group or other users can read, and reads no byte of
-  it. `env::files::File::exposed` gives the fact from the `fstat` of the open, on the
-  descriptor that the store reads, so no swap of the file between the check and the
-  read passes it. On Unix, a file is exposed when its mode gives read to its group or
-  to other users (`0o044`). The get gives `Unavailable`, so `ctx.secret` gives
-  `Error::Retry` and a fixed mode heals the run at its next restart, with the text
-  `the group or other users can read the file <path>. Make it readable only by the user
-  that runs the node: chmod 600 <path>`. The check covers only the store: a `file()`
-  source is never checked (#2583). It does not see an ACL entry on macOS that grants
-  read, as `ssh` does not. On Linux the ACL mask is in the group bits, so a named entry
-  that grants read shows as exposed. It does not check group or other write bits. Add
-  that check when a secret whose change by another user is a threat comes, such as a
-  key that signs. `os::files` builds only on Linux and macOS. A driver for another OS
-  states what `exposed` means there. The `sim` disk makes each file not exposed, as
-  `os` makes a file with mode 0600, and `sim::Node::set_file_exposed` sets it, as a
-  `chmod` from outside the node does (`laptop.architect-2`, 2026-10-15T23:58:31Z:
+  The store refuses a file that other users can read, and reads no byte of it. It is
+  option B of
+  https://github.com/synnaxlabs/foundation/issues/2583#issuecomment-6150297190, built
+  after exit test 1 (`laptop.architect-2`, 2026-10-13T19:53:57Z:
+  https://github.com/synnaxlabs/foundation/pull/2588#issuecomment-6153933564, under the
+  person's rule of 2026-10-13T19:52:40Z:
+  https://github.com/synnaxlabs/foundation/issues/1737#issuecomment-6153919476).
+  `env::files::File::exposed` gives the fact from the `fstat` of the open, on the
+  descriptor that the store reads, so no swap of the file between the check and the read
+  passes it. On Unix, a file is exposed when its mode gives read to other users
+  (`0o004`). Group read is allowed: with `fsGroup`, Kubernetes adds group read to each
+  file of a volume at each pod start, so a `chmod` would not last (the person,
+  2026-10-16T01:24Z, to "refuse only when every account on the machine can read the
+  file": "Ok, that sounds like a plan", relayed by `laptop.monitor`:
+  https://github.com/synnaxlabs/foundation/issues/2596#issuecomment-6205893055). The get
+  gives `Unavailable`, so `ctx.secret` gives `Error::Retry` and a fixed mode heals the
+  run at its next restart, with the text `other users can read the file <path>. Make it
+  unreadable by other users: chmod o-r <path>`. The check covers only the store: a
+  `file()` source is never checked (#2583). It does not see group read, or an ACL entry
+  that grants read: on Linux the mask of a named entry is in the group bits, and `ssh`
+  does not see a macOS entry either. It does not check write bits. Add that check when a
+  secret whose change by another user is a threat comes, such as a key that signs.
+  `os::files` builds only on Linux and macOS. A driver for another OS states what
+  `exposed` means there. The `sim` disk makes each file not exposed, as `os` makes a
+  file with mode 0600, and `sim::node::Node::set_file_exposed` sets it, as a `chmod`
+  from outside the node does (`laptop.architect-2`, 2026-10-15T23:58:31Z:
   https://github.com/synnaxlabs/foundation/issues/2596#issuecomment-6204800336). The
   refusal of capitals and what a file holds are architect calls (`laptop.architect-2`,
   2026-10-13T16:54:37Z:
