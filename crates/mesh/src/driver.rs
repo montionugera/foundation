@@ -221,12 +221,7 @@ impl Mesh {
             definitions,
             homes,
         } = config.founding.clone();
-        if voters.len() > message::VOTERS_MAX {
-            return Err(Error::Voters {
-                voters: voters.len(),
-                most: message::VOTERS_MAX,
-            });
-        }
+        check_voters(voters.len())?;
         let tree = spec::region::tree(&mut chunks, &definitions);
         let state =
             region::State::new(prefix, members, tree.root, voters.clone(), homes)
@@ -425,12 +420,7 @@ impl Mesh {
         &self,
         voters: BTreeSet<node::Key>,
     ) -> Result<Position, Error> {
-        if voters.len() > message::VOTERS_MAX {
-            return Err(Error::Voters {
-                voters: voters.len(),
-                most: message::VOTERS_MAX,
-            });
-        }
+        check_voters(voters.len())?;
         self.proposed(|group| {
             let mut members = voters.iter();
             if let Some(&key) = members.find(|&&key| group.state.member(key).is_none())
@@ -1120,6 +1110,17 @@ fn request(body: &Body) -> bool {
     }
 }
 
+// Checks that a set of `voters` voters fits one message with its proof.
+fn check_voters(voters: usize) -> Result<(), Error> {
+    if voters > message::VOTERS_MAX {
+        return Err(Error::Voters {
+            voters,
+            most: message::VOTERS_MAX,
+        });
+    }
+    Ok(())
+}
+
 // Checks that `own`, each of `voters`, and the node of each home are members of
 // `state`, and that `private_key` is the key of `own`.
 fn check_members(
@@ -1591,7 +1592,7 @@ mod tests {
         pool_of(4096)
     }
 
-    /// The smallest pool that `Mesh::open` takes.
+    /// A pool whose largest block takes an append of the largest record.
     fn open_pool() -> Rc<Pool> {
         let pool = pool_of(1 << 16);
         assert!(pool.largest() >= message::BYTES_MIN);
