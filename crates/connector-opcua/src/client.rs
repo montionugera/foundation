@@ -464,10 +464,9 @@ impl Client {
     ///
     /// The status of the first failed check: the error of [`Client::read`], or the
     /// status of the value when it is Bad and not `BadNoData`. The value itself is
-    /// not checked. When
-    /// the client has no open channel or no active session between checks, it gives
-    /// the status of the connect if it is not Good, else `BadConnectionClosed` or
-    /// `BadSessionClosed`, at once.
+    /// not checked. When the client has no open channel or no active session between
+    /// checks, it gives the status of the connect if it is not Good, else
+    /// `BadConnectionClosed` or `BadSessionClosed`, at once.
     pub(crate) async fn idle<T>(
         &mut self,
         until: impl Future<Output = T>,
