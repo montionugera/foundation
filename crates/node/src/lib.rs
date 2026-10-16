@@ -434,8 +434,9 @@ impl Node {
 
     /// Blocks until every shard has ended, then writes the event `stopped` to the log:
     /// INFO, or ERROR with the field `error`. Does not wait for the log to write it:
-    /// call [`Flush::wait`], or under `sim`, run the sim again. Call it on a thread
-    /// that `env` did not start. Under `sim`, run the sim to its end first.
+    /// call [`Flush::wait`], or under `sim`, run the sim again. When the thread `log`
+    /// cannot start here, the line waits for [`Flush::wait`]. Call it on a thread that
+    /// `env` did not start. Under `sim`, run the sim to its end first.
     ///
     /// # Errors
     ///

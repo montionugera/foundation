@@ -650,6 +650,104 @@ fn a_line_after_the_shards_end_comes_before_stopped() {
     );
 }
 
+#[test]
+fn a_node_whose_thread_log_cannot_start_fails_its_start() {
+    let (mut sim, host) = host(1);
+    host.fail_thread("log");
+    let lines = Lines::default();
+    let node = Node::start(Config {
+        log: to(&lines, false, tracing::Level::INFO),
+        ..config(&host, Size::MEBIBYTE, Box::new(heap))
+    });
+    let e = node.join().unwrap_err();
+    assert_eq!(
+        e,
+        Error::Start(env::thread::Error::Start {
+            name: "log".into(),
+            reason: "injected".into()
+        })
+    );
+    assert_eq!(e.to_string(), "cannot start thread log: injected");
+    assert_eq!(sim.run(), Ok(()));
+    assert!(host.shard_starts().is_empty(), "no shard starts");
+    assert_eq!(
+        lines.read(),
+        [
+            "2026-01-01T00:00:00.000000Z ERROR node: stopped error=\"cannot start \
+             thread log: injected\" mesh_time=none"
+        ]
+    );
+}
+
+#[test]
+fn a_wait_after_the_log_has_ended_with_no_line_starts_no_thread_log() {
+    let (mut sim, host) = host(1);
+    let node = Node::start(config(&host, Size::MEBIBYTE, Box::new(heap)));
+    let log = node.flush();
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    node.stop();
+    assert_eq!(sim.run(), Ok(()));
+    assert_eq!(node.join(), Ok(()));
+    assert_eq!(sim.run(), Ok(()));
+    host.fail_thread("log");
+    assert!(log.wait(Duration::ZERO), "the wait starts no thread log");
+}
+
+#[test]
+fn a_thread_log_that_cannot_start_at_the_join_keeps_its_lines_for_the_wait() {
+    let (mut sim, host) = host(1);
+    let lines = Lines::default();
+    let node = Node::start(Config {
+        log: to(&lines, false, tracing::Level::INFO),
+        ..config(&host, Size::MEBIBYTE, Box::new(heap))
+    });
+    let log = node.flush();
+    assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+    node.stop();
+    assert_eq!(sim.run(), Ok(()));
+    host.fail_thread("log");
+    assert_eq!(node.join(), Ok(()));
+    assert_eq!(sim.run(), Ok(()));
+    assert_eq!(lines.read().len(), 1, "`stopped` waits for the wait");
+    assert!(!log.wait(Duration::ZERO), "the thread log runs");
+    assert_eq!(sim.run(), Ok(()));
+    assert!(log.wait(Duration::ZERO), "the thread log wrote `stopped`");
+    assert_eq!(
+        lines.read(),
+        [
+            "2026-01-01T00:00:00.004198Z INFO node: started name=edge \
+             address=10.0.0.1:7000 shards=4",
+            "2026-01-01T00:00:01.000004Z INFO node: stopped",
+        ]
+    );
+}
+
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test bounds a real-time wait"
+)]
+fn a_wait_whose_thread_log_cannot_start_ends_at_once() {
+    let (mut sim, host) = host(1);
+    let lines = Lines::default();
+    let log = opened(&host, false, Box::new(lines.clone()));
+    tracing::dispatcher::with_default(&log.dispatch, numbered(0, 1));
+    host.fail_thread("log");
+    let start = std::time::Instant::now();
+    assert!(
+        !log.wait(Duration::from_secs(30)),
+        "the thread cannot start"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        start.elapsed()
+    );
+    assert!(!log.wait(Duration::ZERO), "the next wait starts the thread");
+    assert_eq!(sim.run(), Ok(()));
+    assert_eq!(lines.read(), [number(0)]);
+}
+
 /// The lines of `lines` with no stamp.
 fn unstamped<'a>(lines: &'a [String]) -> Vec<&'a str> {
     let unstamp = |line: &'a String| line.split_once(' ').expect("a stamp").1;
