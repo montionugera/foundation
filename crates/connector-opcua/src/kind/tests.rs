@@ -1494,14 +1494,19 @@ fn stamps_each_frame_within_its_read() {
 #[test]
 fn leaves_out_each_value_of_another_type_than_its_channel() {
     let [_, _, values] = extremes();
+    let bytes = |value: types::sample::Value| {
+        let mut bytes = [0; 8];
+        value.write(&mut bytes[..value.scalar().width()]);
+        bytes
+    };
     for value in values {
         for sample in SCALARS {
-            let left = Why::of(&Ok(value), sample);
+            let left = Why::of(&Ok(value), sample).map(bytes);
             if value.scalar() == sample {
-                assert_eq!(left, None);
+                assert_eq!(left, Ok(bytes(value.into())));
             } else {
                 let mistyped = Why::Mistyped(value.type_of());
-                assert_eq!(left, Some(mistyped), "{value:?} into {sample:?}");
+                assert_eq!(left, Err(mistyped), "{value:?} into {sample:?}");
             }
         }
     }
@@ -1511,12 +1516,12 @@ fn leaves_out_each_value_of_another_type_than_its_channel() {
 fn leaves_out_each_value_that_is_not_good() {
     use crate::value::Fault;
     let leave = |status: u32| Why::of(&Err(Fault::status(Status(status))), Scalar::F64);
-    assert_eq!(leave(0x4000_0000), Some(Why::Uncertain));
-    assert_eq!(leave(0x7FFF_FFFF), Some(Why::Uncertain));
-    assert_eq!(leave(Status::BAD_NOT_FOUND.0), Some(Why::Bad));
-    assert_eq!(leave(0xC000_0000), Some(Why::Bad));
-    assert_eq!(leave(0x8000_0000), Some(Why::Bad));
+    assert_eq!(leave(0x4000_0000), Err(Why::Uncertain));
+    assert_eq!(leave(0x7FFF_FFFF), Err(Why::Uncertain));
+    assert_eq!(leave(Status::BAD_NOT_FOUND.0), Err(Why::Bad));
+    assert_eq!(leave(0xC000_0000), Err(Why::Bad));
+    assert_eq!(leave(0x8000_0000), Err(Why::Bad));
     let string = crate::value::Type::named("String");
     let left = Why::of(&Err(Fault::of_type(string)), Scalar::F64);
-    assert_eq!(left, Some(Why::Mistyped(string)));
+    assert_eq!(left, Err(Why::Mistyped(string)));
 }

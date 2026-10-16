@@ -70,7 +70,7 @@ fn definitions() -> Vec<(Name, Definition)> {
 /// `writes` one [`TICK`] after the last, until the cancel.
 struct Polls {
     channels: [&'static str; 3],
-    writes: Vec<[Option<Value>; 3]>,
+    writes: Vec<Vec<Option<Value>>>,
     types: Arc<Mutex<Vec<Type>>>,
 }
 
@@ -136,13 +136,14 @@ fn run<F: Future<Output = ()> + 'static>(
     counts: (u64, u64),
     script: impl FnOnce(Hub, Clock, Tasks) -> F + Send + 'static,
 ) -> Record {
+    let writes = writes.into_iter().map(Vec::from).collect();
     run_of(CHANNELS, writes, counts, script)
 }
 
 /// As [`run`], with [`Polls`] of `channels`.
 fn run_of<F: Future<Output = ()> + 'static>(
     channels: [&'static str; 3],
-    writes: Vec<[Option<Value>; 3]>,
+    writes: Vec<Vec<Option<Value>>>,
     counts: (u64, u64),
     script: impl FnOnce(Hub, Clock, Tasks) -> F + Send + 'static,
 ) -> Record {
@@ -325,7 +326,8 @@ fn writes_a_group_refused_as_backwards_again_after_the_stamp_of_the_refusal() {
     let ahead = Arc::new(Mutex::new(0));
     let into = Arc::clone(&ahead);
     let record = run(writes.clone(), (6, 0), |hub, _, _| async move {
-        *into.lock().expect("no panic") = write_ahead(&hub, "plant.a", F64(0.0)).await;
+        *into.lock().expect("no panic") =
+            write_ahead(&hub, "plant.a", F64(0.0), Span::SECOND).await;
     });
     assert_eq!(record.result.as_ref().map_err(ToString::to_string), Ok(&()));
     let ahead = *ahead.lock().expect("no panic");
@@ -357,7 +359,8 @@ fn writes_again_only_the_series_of_the_group_refused_as_backwards() {
     let ahead = Arc::new(Mutex::new(0));
     let into = Arc::clone(&ahead);
     let record = run(writes.clone(), (6, 0), |hub, _, _| async move {
-        *into.lock().expect("no panic") = write_ahead(&hub, "plant.c", U16(0)).await;
+        *into.lock().expect("no panic") =
+            write_ahead(&hub, "plant.c", U16(0), Span::SECOND).await;
     });
     assert_eq!(record.result.as_ref().map_err(ToString::to_string), Ok(&()));
     let ahead = *ahead.lock().expect("no panic");
@@ -378,9 +381,40 @@ fn writes_again_only_the_series_of_the_group_refused_as_backwards() {
     assert_eq!(record.counts, (6, 0));
 }
 
-/// Writes `value` to `channel` as `plant.rival`, 1 s after the mesh time, and gives
+/// The home refuses both groups as `Backwards`, the first with the later stamp, so
+/// the write again of both is after that stamp.
+#[test]
+fn writes_groups_refused_as_backwards_again_after_the_latest_stamp() {
+    let all = [true; 3];
+    let writes = vec![values(1.5, 7, -3, all), values(2.5, 8, -4, all)];
+    let ahead = Arc::new(Mutex::new((0, 0)));
+    let into = Arc::clone(&ahead);
+    let record = run(writes.clone(), (6, 0), |hub, _, _| async move {
+        let a = write_ahead(&hub, "plant.a", F64(0.0), Span::SECOND).await;
+        let half = Span::from_nanos(500_000_000);
+        let c = write_ahead(&hub, "plant.c", U16(0), half).await;
+        *into.lock().expect("no panic") = (a, c);
+    });
+    assert_eq!(record.result.as_ref().map_err(ToString::to_string), Ok(&()));
+    let (a, c) = *ahead.lock().expect("no panic");
+    assert!(c < a, "{c} < {a}");
+    let (mut time, mut clock) = (
+        vec![Frame::from([(1, a.cast_unsigned()), (2, 0)])],
+        vec![Frame::from([(4, c.cast_unsigned()), (5, 0)])],
+    );
+    for (at, values) in (1..).zip(writes) {
+        let (a, c) = frames(values, a + at);
+        time.extend(a);
+        clock.extend(c);
+    }
+    assert_eq!(record.time, time);
+    assert_eq!(record.clock, clock);
+    assert_eq!(record.counts, (6, 0));
+}
+
+/// Writes `value` to `channel` as `plant.rival`, `ahead` after the mesh time, and gives
 /// that stamp.
-async fn write_ahead(hub: &Hub, channel: &str, value: Value) -> i64 {
+async fn write_ahead(hub: &Hub, channel: &str, value: Value, ahead: Span) -> i64 {
     let mut rival = rival(hub, Authority::ABSOLUTE, &[channel]).await;
     let set = Arc::clone(rival.set());
     let data = rival.entries()[0];
@@ -388,7 +422,7 @@ async fn write_ahead(hub: &Hub, channel: &str, value: Value) -> i64 {
         |entry: &key_set::Entry| entry.data_type.width().expect("a fixed width");
     let series: Vec<_> = set.entries().iter().map(width).enumerate().collect();
     let mut draft = rival.draft(Form::Raw, &series).expect("a frame");
-    let time = rival.now() + Span::SECOND;
+    let time = rival.now() + ahead;
     for (entry, bytes) in draft.iter_mut() {
         if entry == data {
             value.write(bytes);
@@ -446,6 +480,33 @@ fn loses_the_samples_of_a_frame_for_which_the_pool_has_no_block() {
     assert_eq!(record.counts, (3, 6));
 }
 
+/// The pool has one block free for the draft of each write, and none for the home,
+/// which loses each group of the first two writes.
+#[test]
+fn loses_the_samples_of_a_frame_that_the_home_loses() {
+    let all = [true; 3];
+    let writes = vec![
+        values(1.5, 7, -3, all),
+        values(2.5, 8, -4, all),
+        values(3.5, 9, -5, all),
+    ];
+    let record = run(writes.clone(), (3, 6), |hub, clock, tasks| async move {
+        let rival = rival(&hub, Authority(1), &["plant.a"]).await;
+        let mut held = fill(&rival);
+        drop(held.pop());
+        tasks.spawn(async move {
+            clock.sleep(Span::from_nanos(250_000_000)).await;
+            drop(held);
+            drop(rival);
+        });
+    });
+    assert_eq!(record.result.as_ref().map_err(ToString::to_string), Ok(&()));
+    let (time, clock) = frames(writes[2], stamp(&record.time[0], 1));
+    assert_eq!(record.time, Vec::from_iter(time));
+    assert_eq!(record.clock, Vec::from_iter(clock));
+    assert_eq!(record.counts, (3, 6));
+}
+
 /// Drafts frames of `writer` until the pool has no block, and gives them.
 fn fill(writer: &hub::writer::Writer) -> Vec<Draft> {
     let mut held = Vec::new();
@@ -460,19 +521,106 @@ fn fill(writer: &hub::writer::Writer) -> Vec<Draft> {
     held
 }
 
-/// `plant.s` is a `string`, so the `u16` value of its place panics.
 #[test]
-#[should_panic(expected = "a sample of 2 bytes, not 0")]
-fn panics_at_a_value_of_a_channel_of_no_fixed_width() {
-    let channels = ["plant.a", "plant.s", "plant.b"];
-    let writes = vec![values(1.5, 7, -3, [true; 3])];
+fn loses_the_samples_of_a_group_that_another_writer_controls() {
+    let all = [true; 3];
+    let writes = vec![values(1.5, 7, -3, all), values(2.5, 8, -4, all)];
+    let record = run(writes.clone(), (2, 4), |hub, clock, tasks| async move {
+        let rival = rival(&hub, Authority::ABSOLUTE, &["plant.a"]).await;
+        tasks.spawn(async move {
+            clock.sleep(Span::from_nanos(10_000_000_000)).await;
+            drop(rival);
+        });
+    });
+    assert_eq!(record.result.as_ref().map_err(ToString::to_string), Ok(&()));
+    assert_eq!(record.time, []);
+    let start = stamp(&record.clock[0], 4);
+    let clock: Vec<_> = (0..)
+        .zip(writes)
+        .filter_map(|(at, values)| frames(values, start + at * TICK.nanos()).1)
+        .collect();
+    assert_eq!(record.clock, clock);
+    assert_eq!(record.counts, (2, 4));
+}
+
+/// The diagnostics of `record`, which ends with [`Error::Config`].
+fn diagnostics(record: &Record) -> Vec<(String, String, String)> {
+    let Err(Error::Config(diagnostics)) = &record.result else {
+        panic!("a config error, not {:?}", record.result)
+    };
+    (diagnostics.iter())
+        .map(|diagnostic| {
+            let code = diagnostic.code.to_string();
+            (code, diagnostic.message.clone(), diagnostic.fix.clone())
+        })
+        .collect()
+}
+
+#[test]
+fn refuses_a_channel_that_is_an_index() {
+    let channels = ["plant.time", "plant.a", "plant.b"];
+    let writes = vec![vec![Some(F64(1.5)), Some(F64(1.5)), Some(Value::I32(-3))]];
+    let record = run_of(channels, writes, (0, 0), |_, _, _| async {});
+    let message = "the channel `plant.time` is an index, which holds the stamp of each \
+                   request";
+    let want = (
+        "connector.index",
+        message,
+        "Write the value to a data channel",
+    );
+    let want =
+        [want].map(|(code, message, fix)| (code.into(), message.into(), fix.into()));
+    assert_eq!(diagnostics(&record), want);
+    assert_eq!((record.time, record.counts), (Vec::new(), (0, 0)));
+}
+
+#[test]
+#[should_panic(
+    expected = "invariant: the parse of the kind refuses the channel `plant.a` again"
+)]
+fn panics_at_a_channel_named_again() {
+    let channels = ["plant.a", "plant.a", "plant.b"];
+    let writes = vec![vec![Some(F64(1.5)), None, Some(Value::I32(-3))]];
     run_of(channels, writes, (0, 0), |_, _, _| async {});
 }
 
+/// `plant.a` is an `f64`, so an `i64` of the same width panics.
+#[test]
+#[should_panic(
+    expected = "invariant: the value of channel 0 is i64, and its samples are f64"
+)]
+fn panics_at_a_value_of_another_type() {
+    let writes = vec![[Some(Value::I64(1)), Some(U16(7)), Some(Value::I32(-3))]];
+    run(writes, (0, 0), |_, _, _| async {});
+}
+
+/// `plant.s` is a `string`, so the `u16` value of its place panics.
+#[test]
+#[should_panic(
+    expected = "invariant: the value of channel 1 is u16, and its samples are string"
+)]
+fn panics_at_a_value_of_a_channel_of_no_fixed_width() {
+    let channels = ["plant.a", "plant.s", "plant.b"];
+    let writes = vec![Vec::from(values(1.5, 7, -3, [true; 3]))];
+    run_of(channels, writes, (0, 0), |_, _, _| async {});
+}
+
+/// Calls the private `value` with a `None` that `Kept::sort` never keeps, so no
+/// write reaches it. It is the only kill of a `value` that gives a value for a left
+/// out channel in place of the panic.
 #[test]
 #[should_panic(
     expected = "invariant: a frame keeps no value of channel 1, which is `None`"
 )]
 fn panics_with_the_channel_whose_value_is_left_out() {
-    super::value(&[Some(Value::F64(1.0)), None], 1);
+    super::value(&[Some(Value::F64(1.0)), None], 1, Type::Scalar(Scalar::F64));
+}
+
+/// One value more than the channels.
+#[test]
+#[should_panic(expected = "a value of each channel")]
+fn panics_at_values_of_another_length() {
+    let mut values = Vec::from(values(1.5, 7, -3, [true; 3]));
+    values.push(Some(U16(8)));
+    run_of(CHANNELS, vec![values], (0, 0), |_, _, _| async {});
 }

@@ -29,7 +29,14 @@ const LARGE_READ: Code = Code::new("opcua.large-read");
 /// The counts of the status of each connector: the samples that the home applied,
 /// the ticks that the timer skipped, the samples that a frame lost, and the values
 /// that a frame leaves out as Bad, as Uncertain, and as of another type.
-const COUNTS: [&str; 6] = ["in", "missed", "lost", "bad", "uncertain", "mistyped"];
+const COUNTS: [&str; 6] = [
+    poll::COUNTS[0],
+    "missed",
+    poll::COUNTS[1],
+    "bad",
+    "uncertain",
+    "mistyped",
+];
 
 /// The `opcua` kind: reads the Value of OPC UA nodes at a fixed rate, in Read requests
 /// that each fit one message of the server, and writes at most one frame per tick.
@@ -133,8 +140,10 @@ async fn read(
     let mut timer = pace::Timer::new(ctx.clock(), ctx.config().rate);
     while let Some(tick) = client.idle(timer.tick(ctx.cancel())).await {
         missed.add(tick.missed);
-        let Some((read, stamp)) =
-            ctx.cancel().race(frames.request(client.read(&nodes))).await
+        let Some((read, stamp)) = ctx
+            .cancel()
+            .race(frames.writer.request(client.read(&nodes)))
+            .await
         else {
             break;
         };
@@ -180,7 +189,7 @@ pub async fn writes(
             })
             .collect();
         ctx.clock().sleep(Span::from_nanos(1_000_000)).await;
-        let ((), stamp) = frames.request(future::ready(())).await;
+        let ((), stamp) = frames.writer.request(future::ready(())).await;
         let mut written = Ok(());
         measures.push(measure(&mut || {
             written = frames.write(&values, stamp);
@@ -248,11 +257,6 @@ impl<'a> Frames<'a> {
         })
     }
 
-    /// Runs `request`, and gives its output with the stamp of its frame.
-    async fn request<T>(&mut self, request: impl Future<Output = T>) -> (T, Stamp) {
-        self.writer.request(request).await
-    }
-
     /// Writes one frame of `values`, the values of the reads in order, at `stamp`,
     /// with each value that is Good and of the sample type of its channel. It counts
     /// each other value in [`Left`], and the note of the context names the first node
@@ -271,16 +275,16 @@ impl<'a> Frames<'a> {
         self.kept.clear();
         for (at, (value, &sample)) in values.iter().zip(&self.types).enumerate() {
             let kept = match Why::of(value, sample) {
-                None => value.as_ref().ok().map(|&value| sample::Value::from(value)),
-                Some(Why::Bad) => {
+                Ok(value) => Some(value),
+                Err(Why::Bad) => {
                     bad += 1;
                     None
                 }
-                Some(Why::Uncertain) => {
+                Err(Why::Uncertain) => {
                     uncertain += 1;
                     None
                 }
-                Some(Why::Mistyped(value)) => {
+                Err(Why::Mistyped(value)) => {
                     mistyped += 1;
                     first = first.or(Some((at, value, sample)));
                     None
@@ -348,17 +352,17 @@ enum Why {
 }
 
 impl Why {
-    /// Why a frame leaves out `value`, whose channel has samples of type `sample`,
-    /// or `None` when it keeps it.
-    fn of(value: &Result<Value, Fault>, sample: Scalar) -> Option<Self> {
+    /// The sample that a frame keeps of `value`, whose channel has samples of type
+    /// `sample`, or why the frame leaves it out.
+    fn of(value: &Result<Value, Fault>, sample: Scalar) -> Result<sample::Value, Self> {
         match value {
-            Ok(value) if value.scalar() == sample => None,
-            Ok(value) => Some(Self::Mistyped(value.type_of())),
-            Err(fault) => match fault.cause() {
-                Cause::Type(opc_type) => Some(Self::Mistyped(opc_type)),
-                Cause::Status(status) if status.uncertain() => Some(Self::Uncertain),
-                Cause::Status(_) => Some(Self::Bad),
-            },
+            Ok(value) if value.scalar() == sample => Ok(sample::Value::from(*value)),
+            Ok(value) => Err(Self::Mistyped(value.type_of())),
+            Err(fault) => Err(match fault.cause() {
+                Cause::Type(opc_type) => Self::Mistyped(opc_type),
+                Cause::Status(status) if status.uncertain() => Self::Uncertain,
+                Cause::Status(_) => Self::Bad,
+            }),
         }
     }
 }
