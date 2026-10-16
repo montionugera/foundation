@@ -18,8 +18,8 @@ impl Gaps {
 
     /// The seqs lost just before the next frame, whose index has `range`, and moves
     /// past the frame. `0..0` when none. A frame with no sample gives `0..0` and moves
-    /// nothing, so the next frame with one gives the whole gap. The frames come in
-    /// order: a frame that starts before [`Gaps::live`] gives `0..0`.
+    /// nothing, so the next frame with one gives the whole gap. The caller gives the
+    /// frames in order, each with a sample at or after [`Gaps::live`].
     ///
     /// # Panics
     ///
