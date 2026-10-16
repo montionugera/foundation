@@ -560,6 +560,7 @@ fn a_call_with_no_arguments_runs() {
 }
 
 /// One error of each variant but `Config`, `Node`, and `Remote`.
+#[expect(clippy::too_many_lines, reason = "one value of each variant")]
 fn every() -> Vec<Error> {
     let pointer = spec::Pointer {
         version: 0,

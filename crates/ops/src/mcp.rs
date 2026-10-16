@@ -35,21 +35,21 @@ where
     let failed = |e: io::Error| Error::Input {
         message: e.to_string(),
     };
-    let mut line = Vec::new();
+    let mut bytes = Vec::new();
     loop {
-        line.clear();
+        bytes.clear();
         let read = (&mut input)
             .take(LIMIT as u64)
-            .read_until(b'\n', &mut line)
+            .read_until(b'\n', &mut bytes)
             .map_err(failed)?;
         let reply = if read == 0 {
             return Ok(());
-        } else if read == LIMIT && !line.ends_with(b"\n") {
+        } else if read == LIMIT && !bytes.ends_with(b"\n") {
             input.skip_until(b'\n').map_err(failed)?;
             Some(reply(&Value::Null, Err(fault(REQUEST))).to_string())
         } else {
             // A line that is not UTF-8 is not JSON either, so "" gets the parse error.
-            respond(std::str::from_utf8(&line).unwrap_or(""), scope, link).await
+            respond(std::str::from_utf8(&bytes).unwrap_or(""), scope, link).await
         };
         if let Some(reply) = reply {
             crate::write(output, &format!("{reply}\n"))?;

@@ -147,7 +147,7 @@ impl Remote {
             self.reached()?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
-        let input: String = messages.iter().map(|m| format!("{m}\n")).collect();
+        let input: String = messages.iter().map(|m| m.to_string() + "\n").collect();
         let args = ["foundation", "mcp"].iter().chain(args).map(Into::into);
         let (mut output, mut errors) = (Vec::new(), Vec::new());
         let run = crate::cli(
@@ -714,7 +714,7 @@ fn the_command_line_reaches_the_node_of_data() {
 }
 
 /// A `tools/call` message of `name` with `arguments`.
-fn call(id: u64, name: &str, arguments: Value) -> Value {
+fn call(id: u64, name: &str, arguments: &Value) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -739,14 +739,14 @@ fn mcp_plans_applies_and_shows_status_on_one_reach_of_the_node_of_data() {
         let paths = with_site(&fixture.sim);
         let remote = Remote::new(create_node(&fixture, mesh.clone()));
         let messages = [
-            call(1, "version", json!({})),
+            call(1, "version", &json!({})),
             call(
                 2,
                 "plan",
-                json!({ "files": ["site.hcl"], "out": "site.plan" }),
+                &json!({ "files": ["site.hcl"], "out": "site.plan" }),
             ),
-            call(3, "apply", json!({ "plan": "site.plan" })),
-            call(4, "status", json!({})),
+            call(3, "apply", &json!({ "plan": "site.plan" })),
+            call(4, "status", &json!({})),
         ];
         let (run, replies) = remote.mcp(&paths, &["--data", "other"], &messages).await;
         assert_eq!(run, Run::Exit(0));
@@ -781,7 +781,8 @@ fn mcp_reaches_again_after_a_failure() {
         let paths = with_site(&fixture.sim);
         for (mode, calls) in [(Mode::Unreached, (2, 0)), (Mode::Unsent, (2, 2))] {
             let remote = Remote::with(create_node(&fixture, mesh.clone()), mode);
-            let messages = [call(1, "status", json!({})), call(2, "status", json!({}))];
+            let messages =
+                [call(1, "status", &json!({})), call(2, "status", &json!({}))];
             let (run, replies) = remote.mcp(&paths, &[], &messages).await;
             assert_eq!(run, Run::Exit(0));
             let result = failed(&Error::Node(lost()));
@@ -801,9 +802,9 @@ fn mcp_of_a_file_that_does_not_read_reaches_no_node() {
         let paths = with_site(&fixture.sim);
         let remote = Remote::new(create_node(&fixture, mesh));
         let messages = [
-            call(1, "plan", json!({ "files": ["gone.hcl"] })),
-            call(2, "apply", json!({ "plan": "gone.plan" })),
-            call(3, "plan", json!({ "files": [] })),
+            call(1, "plan", &json!({ "files": ["gone.hcl"] })),
+            call(2, "apply", &json!({ "plan": "gone.plan" })),
+            call(3, "plan", &json!({ "files": [] })),
         ];
         let (run, replies) = remote.mcp(&paths, &[], &messages).await;
         assert_eq!(run, Run::Exit(0));
@@ -833,7 +834,7 @@ fn mcp_keeps_the_session_after_a_reply_with_problems() {
         let paths = with_site(&fixture.sim);
         paths.write(Path::new("bad.hcl"), b"{").expect("a write");
         let remote = Remote::new(create_node(&fixture, mesh));
-        let plan = |id| call(id, "plan", json!({ "files": ["bad.hcl"] }));
+        let plan = |id| call(id, "plan", &json!({ "files": ["bad.hcl"] }));
         let (run, replies) = remote.mcp(&paths, &[], &[plan(1), plan(2)]).await;
         assert_eq!(run, Run::Exit(0));
         for reply in &replies {
@@ -866,10 +867,10 @@ fn mcp_refuses_each_path_outside_its_folders() {
             .link_path(Path::new("/work/link"), Path::new("/out"));
         let remote = Remote::new(create_node(&fixture, mesh));
         let messages = [
-            call(1, "plan", json!({ "files": ["../out/x.hcl"] })),
-            call(2, "plan", json!({ "files": ["/out/x.hcl"] })),
-            call(3, "plan", json!({ "files": ["link/x.hcl"] })),
-            call(4, "apply", json!({ "plan": "foundation-data/admin.key" })),
+            call(1, "plan", &json!({ "files": ["../out/x.hcl"] })),
+            call(2, "plan", &json!({ "files": ["/out/x.hcl"] })),
+            call(3, "plan", &json!({ "files": ["link/x.hcl"] })),
+            call(4, "apply", &json!({ "plan": "foundation-data/admin.key" })),
         ];
         let (run, replies) = remote.mcp(&paths, &[], &messages).await;
         assert_eq!(run, Run::Exit(0));
@@ -929,7 +930,7 @@ fn mcp_writes_a_plan_file_only_under_its_folders_and_with_its_end() {
             .link_path(Path::new("/work/x.plan"), Path::new("/out/x.plan"));
         let remote = Remote::new(create_node(&fixture, mesh));
         let plan =
-            |id, out| call(id, "plan", json!({ "files": ["gone.hcl"], "out": out }));
+            |id, out| call(id, "plan", &json!({ "files": ["gone.hcl"], "out": out }));
         let messages = [plan(1, "site.txt"), plan(2, "key.plan")];
         let (_, replies) = remote.mcp(&paths, &[], &messages).await;
         let name = |path: &str, resolved: &str| Error::PlanName {
@@ -952,7 +953,11 @@ fn mcp_writes_a_plan_file_only_under_its_folders_and_with_its_end() {
             )
         );
         assert_eq!(remote.calls(), (0, 0));
-        let out = call(3, "plan", json!({ "files": ["site.hcl"], "out": "x.plan" }));
+        let out = call(
+            3,
+            "plan",
+            &json!({ "files": ["site.hcl"], "out": "x.plan" }),
+        );
         let (_, replies) = remote.mcp(&paths, &[], &[out]).await;
         let outside = Error::Outside {
             path: PathBuf::from("x.plan"),
