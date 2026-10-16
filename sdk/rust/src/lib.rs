@@ -2,20 +2,17 @@
 
 mod host;
 
-use std::cell::{Cell, RefCell};
 use std::fmt;
-use std::future::poll_fn;
 use std::net::SocketAddr;
 use std::panic;
-use std::pin::pin;
 use std::rc::Rc;
-use std::task::{Context, Poll, Waker};
+use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 
-use env::tasks::{Task, Tasks};
+use env::tasks::Tasks;
+use host::{Spawned, Spawner};
 use tokio::runtime::{Builder, LocalOptions};
 use tokio::sync::oneshot;
-use tokio::task::JoinSet;
 use types::ed25519::{PrivateKey, PublicKey};
 use types::name::Name;
 
@@ -32,22 +29,29 @@ const FRAMES: block::Config = match block::Config::new(64 << 10) {
     Err(_) => panic!("invariant: the budget fits"),
 };
 
-/// What a program needs to reach one node as one subject.
+/// The node that a program reaches: where it listens, and the keys that name it.
 #[derive(Clone, Debug)]
-pub struct Credentials {
+pub struct Node {
+    /// The UDP addresses where the node listens, dialed in this order with a stagger.
+    pub addresses: Vec<SocketAddr>,
     /// The key of the node, which each hello names as the node it goes through.
-    pub node: types::node::Key,
+    pub key: types::node::Key,
     /// The public key that the node proves in the handshake.
     pub public_key: PublicKey,
-    /// The subject that the program acts as.
-    pub subject: Name,
-    /// A private key that the spec lists for `subject`.
+}
+
+/// What a program acts as on a node.
+#[derive(Clone, Debug)]
+pub struct Subject {
+    /// The name of the subject.
+    pub name: Name,
+    /// A private key that the spec lists for the subject.
     pub private_key: PrivateKey,
 }
 
 /// A program's session with one node. It can move to and be shared between threads:
-/// a thread of its own holds the session. Drop closes the session, and blocks until
-/// that thread ends.
+/// a thread of its own holds the session. Drop ends the session and does not wait:
+/// that thread then sends the close and ends. [`Client::close`] waits for both.
 #[derive(Debug)]
 pub struct Client(Option<Thread>);
 
@@ -59,24 +63,22 @@ struct Thread {
 }
 
 impl Client {
-    /// Dials the node at `address` over UDP, and blocks until the node admits the
-    /// first hello of `credentials.subject`. The client then renews the hello until it
-    /// drops.
+    /// Dials `node` over UDP, and blocks until it admits the first hello of
+    /// `subject`. The client then renews the hello until it closes or drops.
     ///
     /// # Errors
     ///
     /// [`Error::Thread`] when the OS cannot start the client's thread,
     /// [`Error::Bind`] when the local UDP socket cannot bind, and [`Error::Session`]
-    /// when the dial, the handshake, or the hello fails.
+    /// when the dial, the handshake, or the hello fails. A `node` with no address is
+    /// unreachable with no attempt.
     ///
     /// # Panics
     ///
     /// Resumes a panic of the client's thread.
-    pub fn connect(
-        address: SocketAddr,
-        credentials: Credentials,
-    ) -> Result<Self, Error> {
-        let (ready, connected) = oneshot::channel();
+    pub fn connect(node: &Node, subject: Subject) -> Result<Self, Error> {
+        let node = node.clone();
+        let (ready, connected) = mpsc::channel();
         let (end, ended) = oneshot::channel();
         #[expect(
             clippy::disallowed_methods,
@@ -84,12 +86,17 @@ impl Client {
         )]
         let handle = thread::Builder::new()
             .name("foundation-sdk".into())
-            .spawn(move || run(address, credentials, ready, ended))
+            .spawn(move || run(node, subject, ready, ended))
             .map_err(|e| Error::Thread {
                 reason: e.to_string(),
             })?;
         let thread = Thread { end, handle };
-        match connected.blocking_recv() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "connect blocks its caller, which may run a Tokio runtime"
+        )]
+        let outcome = connected.recv();
+        match outcome {
             Ok(Ok(())) => Ok(Self(Some(thread))),
             Ok(Err(error)) => {
                 thread.end();
@@ -103,10 +110,24 @@ impl Client {
     }
 }
 
+impl Client {
+    /// Closes the session, and blocks until the close goes out and the client's
+    /// thread ends.
+    ///
+    /// # Panics
+    ///
+    /// Resumes a panic of the client's thread.
+    pub fn close(mut self) {
+        if let Some(thread) = self.0.take() {
+            thread.end();
+        }
+    }
+}
+
 impl Drop for Client {
     fn drop(&mut self) {
         if let Some(thread) = self.0.take() {
-            thread.end();
+            drop(thread.end);
         }
     }
 }
@@ -126,9 +147,9 @@ impl Thread {
 /// Why [`Client::connect`] gave no client.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// The OS cannot start the client's thread.
+    /// The OS cannot start the client's thread, or the Tokio runtime of that thread.
     Thread {
-        /// The OS error.
+        /// The error of the OS or of Tokio.
         reason: String,
     },
     /// The local UDP socket cannot bind.
@@ -152,11 +173,12 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// The body of the client's thread: connects, sends the outcome on `ready`, and holds
-/// the session until `ended` completes.
+/// the session until `ended` completes. It then waits for each task, so that the
+/// close of the session goes out.
 fn run(
-    address: SocketAddr,
-    credentials: Credentials,
-    ready: oneshot::Sender<Result<(), Error>>,
+    node: Node,
+    subject: Subject,
+    ready: mpsc::Sender<Result<(), Error>>,
     ended: oneshot::Receiver<()>,
 ) {
     let runtime = Builder::new_current_thread()
@@ -174,7 +196,7 @@ fn run(
     runtime.block_on(async move {
         let spawned = Rc::new(Spawned::default());
         let tasks = Tasks::new(Spawner(Rc::clone(&spawned)));
-        match spawned.guard(connect(address, credentials, tasks)).await {
+        match spawned.guard(connect(node, subject, tasks)).await {
             Ok(session) => {
                 if ready.send(Ok(())).is_ok() {
                     drop(spawned.guard(ended).await);
@@ -183,13 +205,14 @@ fn run(
             }
             Err(error) => drop(ready.send(Err(error))),
         }
+        spawned.drain().await;
     });
 }
 
-/// A session with the node at `address`, on the env of the calling thread.
+/// A session with `node` as `subject`, on the env of the calling thread.
 async fn connect(
-    address: SocketAddr,
-    credentials: Credentials,
+    node: Node,
+    subject: Subject,
     tasks: Tasks,
 ) -> Result<program::Session, Error> {
     let clock = env::clock::Clock::new(host::Clock::new());
@@ -203,18 +226,16 @@ async fn connect(
         pool: Rc::clone(&pool),
     })
     .map_err(Error::Bind)?;
-    let Credentials {
-        node,
-        public_key,
-        subject,
-        private_key,
-    } = credentials;
     let config = program::Config {
-        via: node,
-        node: public_key,
-        addresses: vec![transport::Address::Udp(address)],
-        subject,
-        key: private_key,
+        via: node.key,
+        node: node.public_key,
+        addresses: node
+            .addresses
+            .into_iter()
+            .map(transport::Address::Udp)
+            .collect(),
+        subject: subject.name,
+        key: subject.private_key,
         clock,
         entropy,
         tasks,
@@ -224,57 +245,6 @@ async fn connect(
     program::Session::connect(&transport, config)
         .await
         .map_err(Error::Session)
-}
-
-/// The tasks of the client's thread. A panic in one ends the thread, as the contract
-/// of `env::tasks` asks: Tokio would keep the panic in its join handle.
-struct Spawned {
-    set: RefCell<JoinSet<()>>,
-    /// Wakes the future of [`Spawned::guard`] when a task starts.
-    waker: Cell<Waker>,
-}
-
-impl Default for Spawned {
-    fn default() -> Self {
-        Self {
-            set: RefCell::default(),
-            waker: Cell::new(Waker::noop().clone()),
-        }
-    }
-}
-
-impl Spawned {
-    /// Runs `body`, and resumes the first panic of a task while it runs.
-    async fn guard<T>(&self, body: impl Future<Output = T>) -> T {
-        let mut body = pin!(body);
-        poll_fn(|cx| {
-            self.check(cx);
-            body.as_mut().poll(cx)
-        })
-        .await
-    }
-
-    /// Joins each ended task, and resumes the panic of one that panicked.
-    fn check(&self, cx: &mut Context<'_>) {
-        self.waker.set(cx.waker().clone());
-        while let Poll::Ready(Some(joined)) = self.set.borrow_mut().poll_join_next(cx) {
-            if let Err(error) = joined
-                && error.is_panic()
-            {
-                panic::resume_unwind(error.into_panic());
-            }
-        }
-    }
-}
-
-/// Spawns the tasks of the client's thread.
-struct Spawner(Rc<Spawned>);
-
-impl env::tasks::Driver for Spawner {
-    fn spawn(&self, task: Task) {
-        self.0.set.borrow_mut().spawn_local(task);
-        self.0.waker.replace(Waker::noop().clone()).wake();
-    }
 }
 
 #[cfg(test)]

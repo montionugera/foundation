@@ -1,9 +1,11 @@
 //! The Rust SDK against a node process.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use sdk::{Client, Credentials, Error};
+use sdk::{Client, Error, Node, Subject};
 use types::ed25519::PrivateKey;
 use wire::hub::client::Refusal;
 
@@ -37,9 +39,9 @@ fn held<const LEN: usize>(path: &Path, tag: &[u8]) -> Result<[u8; LEN], String> 
     }
 }
 
-/// Where the node of `rig` serves its port, with an unspecified IP as loopback, and
-/// the credentials of its admin, from the files `address` and `admin.key`.
-fn admin(rig: &Rig) -> (SocketAddr, Credentials) {
+/// The node of `rig`, with an unspecified IP as loopback, and its admin, from the
+/// files `address` and `admin.key`.
+fn admin(rig: &Rig) -> (Node, Subject) {
     let address: [u8; 99] = read(rig, "address", b"foundation/address/1");
     let key: [u8; 54] = read(rig, "admin.key", b"foundation/admin/1");
     let port = u16::from_be_bytes([address[85], address[86]]);
@@ -55,24 +57,104 @@ fn admin(rig: &Rig) -> (SocketAddr, Credentials) {
     };
     let node = u128::from_be_bytes(address[20..36].try_into().unwrap());
     let public_key = <[u8; 32]>::try_from(&address[36..68]).unwrap();
-    let credentials = Credentials {
-        node: types::node::Key::from_u128(node),
+    let node = Node {
+        addresses: vec![SocketAddr::new(ip, port)],
+        key: types::node::Key::from_u128(node),
         public_key: types::ed25519::PublicKey::new(public_key).unwrap(),
-        subject: spec::founding::admin(),
+    };
+    let subject = Subject {
+        name: spec::founding::admin(),
         private_key: PrivateKey(key[18..50].try_into().unwrap()),
     };
-    (SocketAddr::new(ip, port), credentials)
+    (node, subject)
 }
 
 #[test]
-fn a_client_connects_to_a_node_and_connects_again_after_its_drop() {
+fn a_client_connects_to_a_node_and_connects_again_after_its_close() {
     let mut rig = Rig::new();
     rig.start();
-    let (address, credentials) = admin(&rig);
-    let client = Client::connect(address, credentials.clone()).unwrap();
+    let (node, subject) = admin(&rig);
+    let client = Client::connect(&node, subject.clone()).unwrap();
+    client.close();
+    let client = Client::connect(&node, subject).unwrap();
     drop(client);
-    let client = Client::connect(address, credentials).unwrap();
-    drop(client);
+    rig.stop();
+}
+
+/// A UDP relay to `node` for one client. Gives its address and the count of the
+/// datagrams that the client sent through it.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a relay between a client and a node"
+)]
+fn relay(node: SocketAddr) -> (SocketAddr, Arc<AtomicUsize>) {
+    let front = UdpSocket::bind((node.ip(), 0)).unwrap();
+    let back = UdpSocket::bind((node.ip(), 0)).unwrap();
+    back.connect(node).unwrap();
+    let address = front.local_addr().unwrap();
+    let count = Arc::new(AtomicUsize::new(0));
+    let (to_client, from_node) =
+        (front.try_clone().unwrap(), back.try_clone().unwrap());
+    let (client, counted) = std::sync::mpsc::channel();
+    let sent = Arc::clone(&count);
+    std::thread::spawn(move || {
+        let mut buffer = vec![0; 1 << 16];
+        while let Ok((len, from)) = front.recv_from(&mut buffer) {
+            if sent.fetch_add(1, Ordering::SeqCst) == 0 {
+                client.send(from).unwrap();
+            }
+            back.send(&buffer[..len]).unwrap();
+        }
+    });
+    std::thread::spawn(move || {
+        let client = counted.recv().unwrap();
+        let mut buffer = vec![0; 1 << 16];
+        while let Ok(len) = from_node.recv(&mut buffer) {
+            to_client.send_to(&buffer[..len], client).unwrap();
+        }
+    });
+    (address, count)
+}
+
+#[test]
+fn the_close_of_a_client_sends_the_close_to_the_node() {
+    let mut rig = Rig::new();
+    rig.start();
+    let (node, subject) = admin(&rig);
+    let (front, count) = relay(node.addresses[0]);
+    let node = Node {
+        addresses: vec![front],
+        ..node
+    };
+    let client = Client::connect(&node, subject).unwrap();
+    let before = count.load(Ordering::SeqCst);
+    client.close();
+    rig.wait("a datagram after the drop", || {
+        let after = count.load(Ordering::SeqCst);
+        if after > before {
+            Ok(())
+        } else {
+            Err(format!("{after} datagrams"))
+        }
+    });
+    rig.stop();
+}
+
+#[test]
+fn a_client_dials_the_next_address_when_the_first_does_not_answer() {
+    let mut rig = Rig::new();
+    rig.start();
+    let (node, subject) = admin(&rig);
+    #[expect(clippy::disallowed_methods, reason = "a socket that never reads")]
+    let silent = std::net::UdpSocket::bind((node.addresses[0].ip(), 0)).unwrap();
+    let (front, count) = relay(node.addresses[0]);
+    let node = Node {
+        addresses: vec![silent.local_addr().unwrap(), front],
+        ..node
+    };
+    let client = Client::connect(&node, subject).unwrap();
+    assert_ne!(count.load(Ordering::SeqCst), 0);
+    client.close();
     rig.stop();
 }
 
@@ -80,17 +162,17 @@ fn a_client_connects_to_a_node_and_connects_again_after_its_drop() {
 fn a_client_with_a_wrong_public_key_gets_the_error_of_the_handshake() {
     let mut rig = Rig::new();
     rig.start();
-    let (address, credentials) = admin(&rig);
+    let (node, subject) = admin(&rig);
     let peer = PrivateKey([7; 32]).public();
-    let credentials = Credentials {
+    let node = Node {
         public_key: peer,
-        ..credentials
+        ..node
     };
-    let error = Client::connect(address, credentials).unwrap_err();
+    let error = Client::connect(&node, subject).unwrap_err();
     let unreachable = transport::Error::Unreachable {
         peer,
         attempts: vec![(
-            transport::Address::Udp(address),
+            transport::Address::Udp(node.addresses[0]),
             transport::Error::Authentication { expected: peer },
         )],
     };
@@ -105,12 +187,12 @@ fn a_client_with_a_wrong_public_key_gets_the_error_of_the_handshake() {
 fn a_client_of_a_subject_that_the_spec_does_not_list_is_refused() {
     let mut rig = Rig::new();
     rig.start();
-    let (address, credentials) = admin(&rig);
-    let credentials = Credentials {
-        subject: "plant.operator".parse().unwrap(),
-        ..credentials
+    let (node, subject) = admin(&rig);
+    let subject = Subject {
+        name: "plant.operator".parse().unwrap(),
+        ..subject
     };
-    let error = Client::connect(address, credentials).unwrap_err();
+    let error = Client::connect(&node, subject).unwrap_err();
     assert_eq!(
         error,
         Error::Session(program::Error::Refused(Refusal::Refused))
@@ -125,13 +207,16 @@ fn a_client_of_an_address_that_no_node_reads_is_unreachable() {
     let silent = std::net::UdpSocket::bind((Ipv6Addr::LOCALHOST, 0)).unwrap();
     let address = silent.local_addr().unwrap();
     let peer = PrivateKey([7; 32]).public();
-    let credentials = Credentials {
-        node: types::node::Key::from_u128(1),
+    let node = Node {
+        addresses: vec![address],
+        key: types::node::Key::from_u128(1),
         public_key: peer,
-        subject: spec::founding::admin(),
+    };
+    let subject = Subject {
+        name: spec::founding::admin(),
         private_key: PrivateKey([8; 32]),
     };
-    let error = Client::connect(address, credentials).unwrap_err();
+    let error = Client::connect(&node, subject).unwrap_err();
     let unreachable = transport::Error::Unreachable {
         peer,
         attempts: vec![(transport::Address::Udp(address), transport::Error::TimedOut)],

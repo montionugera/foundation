@@ -1,27 +1,7 @@
-use std::any::Any;
 use std::net::Ipv6Addr;
-use std::panic::AssertUnwindSafe;
-use std::sync::mpsc;
 use std::time::Duration;
 
 use super::*;
-
-/// Runs `body` on a local runtime, and gives its panic.
-fn local<T>(body: impl Future<Output = T>) -> thread::Result<T> {
-    let runtime = runtime();
-    panic::catch_unwind(AssertUnwindSafe(|| runtime.block_on(body)))
-}
-
-fn runtime() -> tokio::runtime::LocalRuntime {
-    Builder::new_current_thread()
-        .enable_time()
-        .build_local(LocalOptions::default())
-        .unwrap()
-}
-
-fn message(payload: &(dyn Any + Send)) -> &str {
-    payload.downcast_ref::<&str>().copied().unwrap_or_default()
-}
 
 #[test]
 fn a_client_moves_to_and_is_shared_between_threads() {
@@ -30,35 +10,15 @@ fn a_client_moves_to_and_is_shared_between_threads() {
 }
 
 #[test]
-fn a_panic_in_a_task_ends_the_guarded_body() {
-    let outcome = local(async {
-        let spawned = Rc::new(Spawned::default());
-        let tasks = Tasks::new(Spawner(Rc::clone(&spawned)));
-        spawned
-            .guard(async {
-                tasks.spawn(async { panic!("the task failed") });
-                tokio::time::sleep(Duration::from_secs(10)).await;
-            })
-            .await;
-    });
-    assert_eq!(message(&*outcome.unwrap_err()), "the task failed");
+fn the_pool_holds_a_datagram() {
+    let pool = block::Pool::heap(POOL);
+    assert!(pool.largest() >= 1472, "{}", pool.largest());
 }
 
 #[test]
-fn a_task_that_ends_leaves_the_body_running() {
-    let outcome = local(async {
-        let spawned = Rc::new(Spawned::default());
-        let tasks = Tasks::new(Spawner(Rc::clone(&spawned)));
-        let (done, ended) = oneshot::channel();
-        tasks.spawn(async {});
-        spawned
-            .guard(async {
-                tasks.spawn(async { done.send(7).unwrap() });
-                ended.await
-            })
-            .await
-    });
-    assert_eq!(outcome.unwrap(), Ok(7));
+fn the_frames_pool_holds_a_frame_of_32_kib() {
+    let pool = block::Pool::heap(FRAMES);
+    assert!(pool.largest() >= 32 << 10, "{}", pool.largest());
 }
 
 #[test]
@@ -87,41 +47,85 @@ fn thread(body: impl FnOnce(oneshot::Receiver<()>) + Send + 'static) -> Thread {
 }
 
 #[test]
-fn a_drop_ends_the_thread_and_waits_for_it() {
+fn a_close_ends_the_thread_and_waits_for_it() {
     let (ended, end) = mpsc::channel();
     let client = Client(Some(thread(move |receiver| {
         drop(receiver.blocking_recv());
         ended.send(()).unwrap();
     })));
-    drop(client);
+    client.close();
     assert_eq!(end.try_recv(), Ok(()));
 }
 
 #[test]
 #[should_panic(expected = "the session failed")]
-fn a_drop_resumes_a_panic_of_the_thread() {
-    drop(Client(Some(thread(|_| panic!("the session failed")))));
+fn a_close_resumes_a_panic_of_the_thread() {
+    Client(Some(thread(|_| panic!("the session failed")))).close();
+}
+
+#[test]
+fn a_drop_ends_the_thread_and_does_not_wait() {
+    let (go, wait) = mpsc::channel::<()>();
+    let (ended, end) = mpsc::channel();
+    let client = Client(Some(thread(move |receiver| {
+        drop(receiver.blocking_recv());
+        #[expect(clippy::disallowed_methods, reason = "the thread waits for the test")]
+        wait.recv().unwrap();
+        ended.send(()).unwrap();
+    })));
+    drop(client);
+    go.send(()).unwrap();
+    #[expect(clippy::disallowed_methods, reason = "the test waits for the thread")]
+    let outcome = end.recv_timeout(Duration::from_secs(10));
+    assert_eq!(outcome, Ok(()));
+}
+
+/// Connects to a node at `addresses`, and checks that the error names each one with
+/// `cause`.
+fn unreachable(addresses: Vec<SocketAddr>, cause: &transport::Error) {
+    let peer = PrivateKey([7; 32]).public();
+    let node = Node {
+        addresses: addresses.clone(),
+        key: types::node::Key::from_u128(1),
+        public_key: peer,
+    };
+    let subject = Subject {
+        name: "plant.operator".parse().unwrap(),
+        private_key: PrivateKey([8; 32]),
+    };
+    let attempts = addresses
+        .into_iter()
+        .map(|address| (transport::Address::Udp(address), cause.clone()))
+        .collect();
+    let Err(error) = Client::connect(&node, subject) else {
+        panic!("a client of an unreachable node connected");
+    };
+    let unreachable = transport::Error::Unreachable { peer, attempts };
+    assert_eq!(
+        error,
+        Error::Session(program::Error::Transport(unreachable))
+    );
+}
+
+/// Port 0 of IPv6 loopback.
+fn port_0() -> SocketAddr {
+    SocketAddr::from((Ipv6Addr::LOCALHOST, 0))
 }
 
 #[test]
 fn a_client_of_port_0_is_unroutable() {
-    let address = SocketAddr::from((Ipv6Addr::LOCALHOST, 0));
-    let peer = PrivateKey([7; 32]).public();
-    let credentials = Credentials {
-        node: types::node::Key::from_u128(1),
-        public_key: peer,
-        subject: "plant.operator".parse().unwrap(),
-        private_key: PrivateKey([8; 32]),
-    };
-    let unreachable = transport::Error::Unreachable {
-        peer,
-        attempts: vec![(
-            transport::Address::Udp(address),
-            transport::Error::Unroutable,
-        )],
-    };
-    assert_eq!(
-        Client::connect(address, credentials).unwrap_err(),
-        Error::Session(program::Error::Transport(unreachable))
-    );
+    unreachable(vec![port_0()], &transport::Error::Unroutable);
+}
+
+#[test]
+fn a_client_of_a_node_with_no_address_is_unreachable_with_no_attempt() {
+    unreachable(vec![], &transport::Error::Unroutable);
+}
+
+#[test]
+fn a_connect_inside_a_tokio_runtime_blocks_and_gives_its_error() {
+    let runtime = Builder::new_current_thread().build().unwrap();
+    runtime.block_on(async {
+        unreachable(vec![port_0()], &transport::Error::Unroutable);
+    });
 }
