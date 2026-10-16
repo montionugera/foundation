@@ -189,7 +189,8 @@ impl Sim {
     /// gives with no lookup, or a text outside its grammar.
     pub fn name(&mut self, host: &str, config: name::Config) {
         config.check(host);
-        lock(&self.shared).net().name(host, config);
+        let key = name::key(host);
+        lock(&self.shared).net().name(key, config);
     }
 
     /// Sets the line that joins port `a_path` of `a` and port `b_path` of `b`, for the

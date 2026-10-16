@@ -41,20 +41,13 @@ pub enum Answer {
 }
 
 impl Config {
-    /// Panics when the delay is negative, or when `host` is not a name of [`Host`].
+    /// Panics when the delay is negative.
     pub(crate) fn check(&self, host: &str) {
         let delay = self.delay;
         assert!(
             delay >= Span::ZERO,
             "the lookup of {host} takes a negative delay of {delay}"
         );
-        match host.parse::<Host>() {
-            Ok(parsed) => assert!(
-                parsed.name().is_some(),
-                "{host} is an IP address, which no lookup reads"
-            ),
-            Err(e) => panic!("{host:?} is not a host: it has {e}"),
-        }
     }
 }
 
@@ -64,7 +57,15 @@ impl Default for Answer {
     }
 }
 
-/// The key of `host` in the name table: its ASCII lowercase, with no final dot.
+/// The key of `host` in the name table: the name of its [`Host`], with no final dot.
+///
+/// Panics when `host` is not a name of [`Host`].
 pub(crate) fn key(host: &str) -> String {
-    host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase()
+    let parsed: Host = host
+        .parse()
+        .unwrap_or_else(|e| panic!("{host:?} is not a host: it has {e}"));
+    let name = parsed
+        .name()
+        .unwrap_or_else(|| panic!("{host} is an IP address, which no lookup reads"));
+    name.strip_suffix('.').unwrap_or(name).to_owned()
 }

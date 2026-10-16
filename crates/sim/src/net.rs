@@ -148,9 +148,9 @@ impl Network {
         }
     }
 
-    /// Makes each lookup of `host` from now on go as `config` says.
-    pub(crate) fn name(&mut self, host: &str, config: name::Config) {
-        self.names.insert(key(host), config);
+    /// Makes each lookup of the name with `key` from now on go as `config` says.
+    pub(crate) fn name(&mut self, key: String, config: name::Config) {
+        self.names.insert(key, config);
     }
 
     /// How a lookup of `host` that starts now goes.

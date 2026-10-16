@@ -254,6 +254,9 @@
   host with a NUL byte is `NotFound`, with no lookup. Decided by `laptop.architect-2`
   (2026-10-08 16:52 UTC, #1095,
   https://github.com/synnaxlabs/foundation/issues/1095#issuecomment-6064802287).
+  Changed (2026-10-16, #1927): a NUL byte is `host::Error::Character`, so it never
+  reaches the driver. Decided by `laptop.architect-2` (2026-10-16 02:53 UTC, #1927,
+  https://github.com/synnaxlabs/foundation/issues/1927#issuecomment-6206963417).
   `EAI_NONAME` with errno `EMFILE` or `ENFILE` is `Io` with that code: the lookup met
   a full descriptor table, so glibc ran it without part of its configuration or
   without its name service modules, and its answer is not final. Lost: `NotFound`
@@ -285,8 +288,12 @@
   `if_nametoindex`: a new driver call, and interfaces in `sim`. Trigger: a user needs
   a link-local device by its interface name. Lost: `resolve(&str)` with a separate
   check for plan and a new error at run time, because the grammar runs twice and a
-  caller can skip the check. Proposed by `box1.builder-2`
+  caller can skip the check. Lost: a `host::Name` type for the driver, a public type
+  for one invariant inside `env`: `Driver::resolve` keeps `&str`, and `os` fails
+  loudly on a NUL. Proposed by `box1.builder-2`
   (https://github.com/synnaxlabs/foundation/issues/1927#issuecomment-6206949254).
+  Decided by `laptop.architect-2` (2026-10-16 02:53 UTC, #1927,
+  https://github.com/synnaxlabs/foundation/issues/1927#issuecomment-6206963417).
   From the review of #1018: the bracketed IPv6 literal, and what `NotFound` and `Io`
   mean to a caller. Amended (2026-10-07, #1117): `Mode::Create` makes a missing file
   with `len` zeroed bytes. It treats an empty file that is there as missing and
