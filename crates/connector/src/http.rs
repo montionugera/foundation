@@ -24,7 +24,7 @@ use env::net::host::{self, Host};
 use env::net::{self, Net, Tcp, tcp};
 use env::tasks::Tasks;
 use http::uri::Scheme;
-use http::{HeaderValue, Request, Response, Uri, header};
+use http::{HeaderValue, Request, Response, StatusCode, Uri, header};
 use http_body::Body as _;
 use hyper::body::Incoming;
 use hyper::client::conn::http1::{self, SendRequest};
@@ -188,7 +188,10 @@ impl Client {
         {
             if let Ok(data) = frame?.into_data() {
                 if data.len() > self.body_max.saturating_sub(bytes.len()) {
-                    return Err(Error::TooLarge { max: self.body_max });
+                    return Err(Error::TooLarge {
+                        status: parts.status,
+                        max: self.body_max,
+                    });
                 }
                 bytes.extend_from_slice(&data);
             }
@@ -407,6 +410,8 @@ pub enum Error {
     TimedOut,
     /// The response body is larger than the cap.
     TooLarge {
+        /// The status of the response.
+        status: StatusCode,
         /// The cap, in bytes.
         max: usize,
     },
@@ -439,7 +444,7 @@ impl fmt::Display for Error {
             }
             Self::Connect(error) => write!(f, "the connect failed: {error}"),
             Self::TimedOut => write!(f, "the exchange timed out"),
-            Self::TooLarge { max } => {
+            Self::TooLarge { max, .. } => {
                 write!(f, "the response body is larger than {max} bytes")
             }
             Self::Protocol(failure) => write!(f, "the exchange failed: {failure}"),
