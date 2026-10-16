@@ -130,11 +130,13 @@
   waits for a line with a value. One request is in flight at a time. While it is, the
   run reads the next batch, up to 5,000 lines or 4 MiB of them, and a frame goes in
   whole. The 4 MiB keeps a batch under the body limit of InfluxDB 3 Core (10 MiB) and of
-  InfluxDB 1 (25 MB), with 6 MiB for the last frame. The run keeps the field of each
-  channel that it saw in the frames of one key set. A frame of another key set builds
-  them again, as the `hub` reader builds its lens, so frames that alternate key sets
-  build them at each change. The trigger to keep them for each key set is a workload
-  whose frames alternate key sets, as `laptop.architect-2` decided on
+  InfluxDB 1 (25 MB), with 6 MiB for the last frame, as `laptop.architect-2` decided on
+  2026-10-16T19:34:27Z
+  (https://github.com/synnaxlabs/foundation/pull/2906#issuecomment-6223208198). The run
+  keeps the field of each channel that it saw in the frames of one key set. A frame of
+  another key set builds them again, as the `hub` reader builds its lens, so frames that
+  alternate key sets build them at each change. The trigger to keep them for each key
+  set is a workload whose frames alternate key sets, as `laptop.architect-2` decided on
   2026-10-13T07:36:47Z
   (https://github.com/synnaxlabs/foundation/pull/2552#issuecomment-6140691273). It acks
   a batch only after a 204. Each other answer, and each failed request, keeps the batch,
