@@ -299,6 +299,28 @@ fn a_socket_sends_from_an_ipv4_source_on_either_family() {
     });
 }
 
+/// Linux takes an IPv4 address on an IPv6 socket, and refuses an IPv6 source to IPv4
+/// in the kernel, so only macOS shows these rules through a send.
+#[test]
+fn routes_ipv4_as_mapped_only_on_an_ipv6_socket() {
+    let from = |source: IpAddr| Transmit {
+        source: Some(source),
+        ..transmit(v4(2), b"")
+    };
+    let mapped_v4 = IpAddr::V6(V4.to_ipv6_mapped());
+    let invalid = Err(Error::Io { code: INVAL });
+    assert_eq!(
+        route(any_v6(), &transmit(v4(2), b"")),
+        Ok((mapped(2), None))
+    );
+    assert_eq!(
+        route(any_v6(), &from(V4.into())),
+        Ok((mapped(2), Some(mapped_v4)))
+    );
+    assert_eq!(route(any_v6(), &from(Ipv6Addr::LOCALHOST.into())), invalid);
+    assert_eq!(route(v4(0), &from(V4.into())), Ok((v4(2), Some(V4.into()))));
+}
+
 /// Polls `receiver` once, with a waker that does nothing.
 fn poll_once(receiver: &mut Receiver) {
     let mut buffer = [0; 8];
