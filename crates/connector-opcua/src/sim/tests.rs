@@ -1,4 +1,5 @@
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
+use std::future;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 
@@ -57,9 +58,7 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
         let mut times = Vec::new();
         let mut reads = Vec::new();
         let until = async {
-            let mut client =
-                Client::new(event::Time::monotonic(node.clock()), node.net(), &mut rng);
-            client.connect(&url).await.expect("connect");
+            let mut client = connect(&node, &mut rng, &url).await.expect("connect");
             for quality in QUALITIES {
                 variables.change(quality);
                 let before = clock.now();
@@ -142,9 +141,7 @@ fn a_server_answers_a_value_of_each_type_and_records_only_a_double() {
         variables.change(Quality::GOOD);
         let mut reads = Vec::new();
         let until = async {
-            let mut client =
-                Client::new(event::Time::monotonic(node.clock()), node.net(), &mut rng);
-            client.connect(&url).await.expect("connect");
+            let mut client = connect(&node, &mut rng, &url).await.expect("connect");
             for text in &texts {
                 let node = text.parse::<Node>().expect("a node");
                 reads.push(client.read_one(&node).await);
@@ -194,21 +191,12 @@ fn a_server_has_room_for_4_sessions() {
         let until = async {
             let mut clients = Vec::new();
             for _ in 0..4 {
-                let mut client = Client::new(
-                    event::Time::monotonic(node.clock()),
-                    node.net(),
-                    &mut rng,
-                );
-                client.connect(&url).await.expect("connect");
-                clients.push(client);
+                clients.push(connect(&node, &mut rng, &url).await.expect("connect"));
             }
             for client in &mut clients {
                 reads.push(client.read_one(&spike).await);
             }
-            let mut client =
-                Client::new(event::Time::monotonic(node.clock()), node.net(), &mut rng);
-            fifth = client.connect(&url).await.err();
-            client.close().await;
+            fifth = connect(&node, &mut rng, &url).await.err();
             for client in clients {
                 client.close().await;
             }
@@ -306,4 +294,15 @@ fn a_panic_in_the_wall_of_a_server_aborts() {
         stderr.contains("panic in a function that cannot unwind"),
         "{stderr}"
     );
+}
+
+/// Connects a client of `node` to `url`.
+async fn connect(
+    node: &node::Node,
+    rng: &mut env::rng::Rng,
+    url: &CStr,
+) -> Result<Client, Status> {
+    let time = event::Time::monotonic(node.clock());
+    let connect = Client::connect(time, node.net(), rng, url, future::pending());
+    Ok(connect.await?.expect("a pending wait never ends"))
 }

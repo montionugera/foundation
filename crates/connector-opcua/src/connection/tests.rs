@@ -3001,8 +3001,7 @@ fn a_session_that_its_client_closes_is_removed_after_the_service() {
             assert_eq!(status, Status::GOOD);
             side.drive(Span::SECOND).await;
             // SAFETY: the client lives.
-            let status =
-                Status(unsafe { ffi::test::UA_Client_disconnectAsync(client) });
+            let status = Status(unsafe { ffi::UA_Client_disconnectAsync(client) });
             assert_eq!(status, Status::GOOD);
             side.drive(Span::SECOND).await;
             server.close(&side.manager).await;

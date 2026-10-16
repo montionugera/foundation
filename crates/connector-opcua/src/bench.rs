@@ -276,7 +276,7 @@ impl Manager {
 
     /// Drives the manager once: a pass, one run of the loop, and the moves after it.
     pub fn drive(&self) {
-        self.drive_after(|| ());
+        self.drive_then(|| ());
     }
 
     /// Drives the manager once, as `drive` does, and asks the first client after the
@@ -286,7 +286,7 @@ impl Manager {
     ///
     /// If open62541 refuses the read.
     pub fn ask(&self) {
-        self.drive_after(|| self.read(&self.time));
+        self.drive_then(|| self.read(&self.time));
     }
 
     /// Asks the first client for the read of `nodes`, which holds one node.
@@ -347,11 +347,12 @@ impl Manager {
         unsafe { ManuallyDrop::drop(&mut self.connections) };
     }
 
-    fn drive_after(&self, first: impl FnOnce()) {
-        let mut first = Some(first);
+    /// Drives the manager once, and calls `then` after the run of the loop.
+    fn drive_then(&self, then: impl FnOnce()) {
+        let mut then = Some(then);
         let drive = pin!(self.connections.drive(|_| {
-            if let Some(first) = first.take() {
-                first();
+            if let Some(then) = then.take() {
+                then();
             }
             Poll::Ready(())
         }));
@@ -766,7 +767,7 @@ mod tests {
                 namespace: 0,
                 key: Key::Number(999_999),
             }]);
-            manager.drive_after(|| manager.read(&unknown));
+            manager.drive_then(|| manager.read(&unknown));
             clock.sleep(delay()).await;
             manager.drive();
             clock.sleep(delay()).await;

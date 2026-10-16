@@ -212,7 +212,9 @@ fn a_read_of_a_client_allocates_a_fixed_count() {
 /// Ticks 3 to 100 of a run of the `opcua` kind allocate what a read of a client
 /// allocates for its count of nodes, and nothing more: the frame and its write
 /// allocate nothing, also when values of another type are left out and named in the
-/// note. Tick 1 connects, and tick 2 fills the second buffer of values.
+/// note. Tick 1 connects, and tick 2 fills the second buffer of values. The client
+/// reads the state of the server each 10 s, which allocates 6 in the one tick of the
+/// 98 that it falls in.
 fn a_tick_of_the_kind_allocates_what_its_read_allocates() {
     let runs: [(usize, &[Scalar], u64); 4] = [
         (1, &[Scalar::F64], 5),
@@ -224,7 +226,11 @@ fn a_tick_of_the_kind_allocates_what_its_read_allocates() {
         let count = |poll: &mut dyn FnMut()| ALLOCATOR.count(poll).1;
         let ticks = kind::run(nodes, scalars, 100, count).ticks;
         let of = format!("ticks 3 to 100 of {nodes} nodes of {scalars:?}");
-        assert_eq!(ticks[2..], [read; 98], "{of}");
+        let mut sorted = ticks[2..].to_vec();
+        sorted.sort_unstable();
+        let mut each = vec![read; 97];
+        each.push(read + 6);
+        assert_eq!(sorted, each, "{of}");
     }
 }
 
