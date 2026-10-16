@@ -351,6 +351,34 @@ mod tests {
         let mut data = vec![u8::try_from(DATA_VALUE).unwrap(), 0];
         data.extend(double);
         decode(&data);
+        let scalars = [1, 1, 1, 2, 2, 4, 4, 8, 8].into_iter().zip(1..);
+        let ones = scalars.map(|(width, kind)| {
+            let mut bytes = vec![0x01, kind, 1];
+            bytes.resize(2 + width, 0);
+            read(&bytes)
+        });
+        assert_eq!(
+            ones.collect::<Vec<_>>(),
+            [
+                "Bool(true)",
+                "I8(1)",
+                "U8(1)",
+                "I16(1)",
+                "U16(1)",
+                "I32(1)",
+                "U32(1)",
+                "I64(1)",
+                "U64(1)"
+            ]
+        );
+        let mut float = vec![0x01, 0x0a];
+        float.extend(1.5_f32.to_le_bytes());
+        let mut range = vec![0x01, 0x16, 0x01, 0, 0x76, 0x03, 0x01, 16, 0, 0, 0];
+        range.extend([0; 16]);
+        assert_eq!(
+            [&float[..], &range, &[0x01, 0]].map(read),
+            ["F32(1.5)", "Range", "BadNoData"]
+        );
     }
 
     #[test]
