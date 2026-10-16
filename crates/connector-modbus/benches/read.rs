@@ -1,6 +1,7 @@
-//! The cost of `read::Group::values`, and of `read::Values::put` and `take`,
-//! over one full group, so the time per item is the time per sample: 2000 coils, and
-//! full groups of holding registers of each width in each order. Run with `cargo bench -p connector-modbus --bench read`.
+//! The cost of `read::Group::values`, and of `read::Values::put` and `take`, over
+//! one full group, so the time per item is the time per sample: 2000 coils, and full
+//! groups of holding registers of each width in each order. Run with
+//! `cargo bench -p connector-modbus --bench read`.
 
 use connector_modbus::pdu::{Request, Table};
 use connector_modbus::read::{self, Order, Read, Values};
