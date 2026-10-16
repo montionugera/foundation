@@ -769,14 +769,15 @@ impl Shard {
             reader::Opening::Kept => None,
             reader::Opening::Records(records) => Some(records),
             reader::Opening::Over { bytes } => {
+                let index = self.indexes[place].key;
+                let key = format!("{}/{}", reader.subject, reader.name);
                 tracing::warn!(
-                    index = %self.indexes[place].key,
-                    subject = %reader.subject,
-                    name = %reader.name,
+                    %index,
+                    reader = %key,
                     over_bytes = bytes,
-                    "the records of the named readers of the index pass one entry, so \
-                     the reader opens and records nothing: a restart after its old \
-                     hold ends resumes it at the live tail"
+                    "the records of the named readers of index {index} pass {limit} \
+                     bytes, so this open is not recorded: a restart after the old hold \
+                     ends resumes reader {key} at the live tail"
                 );
                 None
             }
@@ -6185,16 +6186,15 @@ mod tests {
                 }
 
                 /// The warning event of an open of `reader` on the index at slot 0
-                /// whose records pass one entry by `bytes`.
-                fn over(reader: &named::Key, bytes: usize) -> String {
+                /// whose records pass `limit` by `bytes`.
+                fn over(reader: &named::Key, limit: usize, bytes: usize) -> String {
+                    let index = common::key(Slot::new(0));
+                    let key = format!("{}/{}", reader.subject, reader.name);
                     format!(
-                        "WARN the records of the named readers of the index pass one \
-                         entry, so the reader opens and records nothing: a restart \
-                         after its old hold ends resumes it at the live tail index={} \
-                         subject={} name={} over_bytes={bytes}",
-                        common::key(Slot::new(0)),
-                        reader.subject,
-                        reader.name,
+                        "WARN the records of the named readers of index {index} pass \
+                         {limit} bytes, so this open is not recorded: a restart after \
+                         the old hold ends resumes reader {key} at the live tail \
+                         index={index} reader={key} over_bytes={bytes}",
                     )
                 }
 
@@ -6861,7 +6861,7 @@ mod tests {
                         let a = sink.during(|| open(&mut shard, 0));
                         let a = a.expect("it adds no record").key;
                         // Eight records of 546 bytes, and an entry head of 5 bytes.
-                        let warning = over(&long(0), 8 * 546 + 5 - limit);
+                        let warning = over(&long(0), limit, 8 * 546 + 5 - limit);
                         assert_eq!(sink.events(), [warning]);
                         let read = caught_up(&mut shard, a, 0).await;
                         assert_eq!(read, [seq(0, 1), seq(1, 1)]);
