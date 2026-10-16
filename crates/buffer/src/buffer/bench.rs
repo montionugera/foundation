@@ -7,13 +7,16 @@ use types::channel::{self, Slot};
 use types::frame::Path;
 use types::time::Stamp;
 
-use super::{State, seal, tails_max, take};
+use super::{State, tails_max, take};
 use crate::entry::{Entry, Samples};
-use crate::group::{self, Closed, Sealed};
+use crate::group::{self, Sealed};
 use crate::header::Header;
 use crate::log::Logs;
 use crate::record::{ALIGN, BLOCK};
 use crate::wal::{Layout, Writer};
+
+/// The bytes of the one part of each data entry.
+const PART: usize = 100;
 
 /// The commit task of a buffer with [`Config::trimmed`](super::Config::trimmed), with
 /// no file, over a ring that opened empty.
@@ -27,9 +30,7 @@ pub struct Deadline {
     /// The next seq of each index.
     firsts: Vec<u64>,
     batch: Vec<Entry>,
-    taken: Vec<Closed>,
     sealed: Vec<Sealed>,
-    chain: u32,
     deadlines: u32,
 }
 
@@ -40,21 +41,27 @@ impl Deadline {
     ///
     /// # Panics
     ///
-    /// When `blocks` makes no valid layout.
+    /// When `blocks` makes no valid layout, or `indexes` is over 54, so that a group
+    /// of one entry of each index is over a body of two blocks.
     #[must_use]
     pub fn new(indexes: u32, blocks: u64) -> Self {
         let area = blocks.checked_mul(BLOCK).expect("a valid layout");
         let layout = Layout::new(area, 2 * ALIGN).expect("a valid layout");
+        let count = usize::try_from(indexes).expect("fits");
+        layout
+            .check(count, count, count * PART)
+            .expect("a group of one entry of each index fits a body of two blocks");
         let config = block::Config::new(1 << 21).expect("the budget fits");
         let pool = Pool::new(config.clone(), Heap::new(config.reservation()));
         let block_max = group::block_max(&pool).expect("the budget holds an entry");
         let tails_max = tails_max(&pool);
-        let part = pool.alloc(100).expect("the pool has room").freeze();
+        let part = pool.alloc(PART).expect("the pool has room").freeze();
         let chain = 9;
         let state = State::new(
             Writer::empty(layout, 0),
             Logs::new(area),
             Header::new(layout, chain),
+            chain,
         );
         Self {
             state,
@@ -62,11 +69,9 @@ impl Deadline {
             block_max,
             tails_max,
             part,
-            firsts: vec![0; usize::try_from(indexes).expect("fits")],
+            firsts: vec![0; count],
             batch: Vec::new(),
-            taken: Vec::new(),
             sealed: Vec::new(),
-            chain,
             deadlines: 0,
         }
     }
@@ -79,8 +84,7 @@ impl Deadline {
     ///
     /// # Panics
     ///
-    /// When the group is over a body of two blocks, as one of 64 indexes is, or the
-    /// ring or the pool has no room for it.
+    /// When the ring or the pool has no room for the group.
     pub fn commit(&mut self, period: u32) -> usize {
         let slow = self.deadlines.is_multiple_of(period);
         self.deadlines = self.deadlines.wrapping_add(1);
@@ -108,13 +112,10 @@ impl Deadline {
         state
             .open
             .fit(&self.pool, self.block_max, &state.writer, &self.batch)
-            .expect("the group fits a body of two blocks and the ring has room");
+            .expect("the ring and the pool have room for the group");
         take(&mut state.open, &mut state.logs, &mut self.batch);
-        let (checkpoint, carry) =
-            state.deadline(&self.pool, Some(self.tails_max), &mut self.taken);
-        let carrying;
-        (carrying, self.chain) =
-            seal(&mut self.taken, &mut self.sealed, carry, self.chain);
+        let (checkpoint, carrying) =
+            state.deadline(&self.pool, Some(self.tails_max), &mut self.sealed);
         let tails = carrying
             .as_ref()
             .map_or(0, |carrying| carrying.carried.tails().len());
@@ -152,8 +153,16 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "the group fits a body of two blocks")]
-    fn a_deadline_of_a_group_over_two_blocks_panics() {
-        Deadline::new(64, 64 + PHASE).commit(1);
+    fn a_deadline_of_54_indexes_takes_each() {
+        let mut deadline = Deadline::new(54, 64 + PHASE);
+        deadline.commit(1);
+        assert_eq!(deadline.state.taken, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "a group of one entry of each index fits a body of two \
+                               blocks: Body { len: 8309, max: 8192 }")]
+    fn a_task_of_55_indexes_panics() {
+        let _deadline = Deadline::new(55, 64 + PHASE);
     }
 }
