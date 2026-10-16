@@ -30,8 +30,8 @@
   each path below its start, so it is a defect of the caller. The fix of a refused given
   name, "Give another name, or leave it out for `<default>`", needs no other item: `ops`
   calls `names` again with the refused names as `None`, on the failure path only. No
-  name of a path is empty: `walk` refuses an empty device name (BROWSE), and
-  `Path::from_str` refuses an empty name. `names` keeps its own copy of the characters
+  name of a path is empty: `walk` refuses an entry that a kind gives with an empty
+  name (BROWSE), and `Path::from_str` refuses an empty name. `names` keeps its own copy of the characters
   of a segment (A3), and its `expect` stops the import loudly when `types` allows fewer.
   The copy goes when `types` gives them (#2868). Lost: a namer with state (`give`, then
   `next`), where nothing makes the caller give each given name before the first default;
