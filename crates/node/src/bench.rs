@@ -1,4 +1,4 @@
-//! `Scope`, for the bench target only. Not a stable surface.
+//! `Scope` and the log dispatch, for the bench targets only. Not a stable surface.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -51,4 +51,15 @@ impl env::tasks::Driver for Spawned {
     fn spawn(&self, task: Task) {
         self.0.set(Some(task));
     }
+}
+
+/// The dispatch that a node sets for `log`: each event of its level or above, stamped
+/// with the time of `wall` and the mesh time of `mesh`.
+#[must_use]
+pub fn log(
+    log: crate::Log,
+    wall: env::wall::Wall,
+    mesh: clock::Reader,
+) -> tracing::Dispatch {
+    crate::log::dispatch(log, wall, mesh)
 }

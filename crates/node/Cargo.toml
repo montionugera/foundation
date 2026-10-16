@@ -72,6 +72,11 @@ name = "scope"
 harness = false
 test = true
 
+[[bench]]
+name = "log"
+harness = false
+test = true
+
 [target.'cfg(loom)'.dependencies]
 loom = { workspace = true }
 
