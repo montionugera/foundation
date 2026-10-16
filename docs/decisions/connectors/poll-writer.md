@@ -20,6 +20,15 @@
   the kind maps each value by `Writer::types`, so a wrong type is a defect of the kind
   (`laptop.architect-2`, 2026-10-16T04:17:23Z, items 1 and 2:
   https://github.com/synnaxlabs/foundation/pull/2817#issuecomment-6207963206).
+  The writer owns one value slot for each channel, and `write` takes the values of a
+  frame as an iterator, which fills each slot again: no kind keeps slots, and no value
+  of a frame before can stay. `write` panics when the iterator gives fewer or more
+  values than the channels. A kind maps its reads by position, so a read past its
+  channels panics in the kind and is never lost with no count
+  (`laptop.architect-2`, 2026-10-16T05:23:34Z:
+  https://github.com/synnaxlabs/foundation/pull/2817#issuecomment-6208721580;
+  2026-10-16T06:44:07Z:
+  https://github.com/synnaxlabs/foundation/issues/2830#issuecomment-6209753061).
   `status::Writer` keeps its own write again: it writes string series, stages its values
   again when the pool has no block, and closes on `Removed`, where `poll::Writer` writes
   fixed-width samples, loses the frame, and gives the error to the run. One writer for
@@ -28,5 +37,8 @@
   channel, which reads each value up to three times and makes the kind count `bad` and
   `uncertain` in another pass (`laptop.architect-2`, 2026-10-16T04:07:48Z:
   https://github.com/synnaxlabs/foundation/pull/2817#issuecomment-6207854657); a bit set
-  of the kept channels beside the values, which each caller keeps in step; and an error
-  at the open for a channel named again, which the parse refuses first.
+  of the kept channels beside the values, which each caller keeps in step; an error
+  at the open for a channel named again, which the parse refuses first; and slots that
+  the kind fills through `Writer::values`, which live across frames, so a short fill
+  writes the values of the frame before, and a clear of each slot after the send loses
+  them with no count.
