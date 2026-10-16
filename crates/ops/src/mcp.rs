@@ -26,7 +26,7 @@ pub(crate) async fn serve<R, C>(
     mut input: impl BufRead,
     output: &mut impl Write,
     scope: &Scope,
-    link: &mut Link<R, C>,
+    link: &mut Link<R>,
 ) -> Result<(), Stop>
 where
     R: AsyncFnMut() -> Result<C, Failure>,
@@ -68,7 +68,7 @@ where
 pub(crate) async fn respond<R, C>(
     message: &str,
     scope: &Scope,
-    link: &mut Link<R, C>,
+    link: &mut Link<R>,
 ) -> Option<String>
 where
     R: AsyncFnMut() -> Result<C, Failure>,
@@ -85,7 +85,7 @@ where
 async fn answer<R, C>(
     mut message: Map<String, Value>,
     scope: &Scope,
-    link: &mut Link<R, C>,
+    link: &mut Link<R>,
 ) -> Option<Value>
 where
     R: AsyncFnMut() -> Result<C, Failure>,
@@ -180,7 +180,7 @@ fn tools() -> Value {
 async fn call<R, C>(
     mut params: Map<String, Value>,
     scope: &Scope,
-    link: &mut Link<R, C>,
+    link: &mut Link<R>,
 ) -> Result<Value, Value>
 where
     R: AsyncFnMut() -> Result<C, Failure>,

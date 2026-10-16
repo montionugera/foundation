@@ -42,14 +42,15 @@ impl Scope {
 
     /// The files of `foundation mcp` in `paths`: those under the folders `files`, else
     /// under the working directory, and none under the data directory `data`, which it
-    /// makes when it is not there.
+    /// makes after it checks the folders, when it is not there.
     ///
     /// # Errors
     ///
-    /// - [`Error::Data`] when `data` is not made, or does not resolve.
-    /// - [`Error::Folder`] for the first folder that does not resolve.
     /// - [`Error::WideFolder`] with no `files`, when the working directory is `/` or
     ///   the home folder.
+    /// - [`Error::Folder`] for the first folder of `files` that does not resolve, does
+    ///   not read, or is a file.
+    /// - [`Error::Data`] when `data` is not made, or does not resolve.
     pub(crate) fn mcp(
         paths: &Paths,
         files: &[PathBuf],
@@ -59,7 +60,6 @@ impl Scope {
             path: data.to_owned(),
             error,
         };
-        paths.make_dir(data).map_err(unmade)?;
         let folder = |path: &Path, error| Error::Folder {
             path: path.to_owned(),
             error,
@@ -93,6 +93,7 @@ impl Scope {
             }
             folders
         };
+        paths.make_dir(data).map_err(unmade)?;
         let data = paths.resolve(data).map_err(unmade)?;
         let within = paths
             .within(&folders, std::slice::from_ref(&data))
@@ -139,37 +140,27 @@ impl Scope {
     }
 }
 
-/// The link to one node: what reaches it, and the session that the last reach gave.
-pub(crate) struct Link<R, C> {
+/// The link to one node: what reaches it.
+pub(crate) struct Link<R> {
     reach: R,
-    session: Option<C>,
 }
 
-impl<R, C> Link<R, C>
-where
-    R: AsyncFnMut() -> Result<C, Failure>,
-    C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
-{
-    /// A link that calls `reach` at its first send, and gives what it gives each request.
+impl<R> Link<R> {
+    /// A link that calls `reach` at each send.
     pub(crate) fn new(reach: R) -> Self {
-        Self {
-            reach,
-            session: None,
-        }
+        Self { reach }
     }
 
-    /// The reply of the node to `body`. It calls `reach` when it has no session, and
-    /// keeps the session until a send through it fails.
-    async fn send(&mut self, body: &[u8]) -> Result<Vec<u8>, Failure> {
-        let send = match &self.session {
-            Some(send) => send,
-            None => self.session.insert((self.reach)().await?),
-        };
-        let reply = send(body).await;
-        if reply.is_err() {
-            self.session = None;
-        }
-        reply
+    /// The reply of the node to `body`, through what a new call of `reach` gives,
+    /// which it then drops. A session kept between sends would end while its thread
+    /// blocks on the next line of MCP input.
+    async fn send<C>(&mut self, body: &[u8]) -> Result<Vec<u8>, Failure>
+    where
+        R: AsyncFnMut() -> Result<C, Failure>,
+        C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
+    {
+        let send = (self.reach)().await?;
+        send(body).await
     }
 }
 
@@ -191,7 +182,7 @@ pub(crate) async fn plan<R, C>(
     files: &[PathBuf],
     out: Option<&Path>,
     scope: &Scope,
-    link: &mut Link<R, C>,
+    link: &mut Link<R>,
 ) -> Result<Output, Error>
 where
     R: AsyncFnMut() -> Result<C, Failure>,
@@ -258,7 +249,7 @@ where
 pub(crate) async fn apply<R, C>(
     plan: &Path,
     scope: &Scope,
-    link: &mut Link<R, C>,
+    link: &mut Link<R>,
 ) -> Result<Applied, Error>
 where
     R: AsyncFnMut() -> Result<C, Failure>,
@@ -283,7 +274,7 @@ where
 ///
 /// - [`Error::Node`] with the failure of the reach or of the request.
 /// - Each error of [`serve::reply`].
-pub(crate) async fn status<R, C>(link: &mut Link<R, C>) -> Result<status::Output, Error>
+pub(crate) async fn status<R, C>(link: &mut Link<R>) -> Result<status::Output, Error>
 where
     R: AsyncFnMut() -> Result<C, Failure>,
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,
@@ -317,7 +308,7 @@ fn file(scope: &Scope, path: &Path) -> Result<Vec<u8>, Error> {
 }
 
 /// The reply of the node of `link` to `body`.
-async fn request<R, C>(body: &[u8], link: &mut Link<R, C>) -> Result<Vec<u8>, Error>
+async fn request<R, C>(body: &[u8], link: &mut Link<R>) -> Result<Vec<u8>, Error>
 where
     R: AsyncFnMut() -> Result<C, Failure>,
     C: AsyncFn(&[u8]) -> Result<Vec<u8>, Failure>,

@@ -62,14 +62,15 @@ pub enum Run {
 /// that data directory once, and calls what it gives with the body of one request. A
 /// [`Failure`] of either is the error of the command, with status 1. `foundation mcp`
 /// runs each tool call of `plan`, `apply`, and `status` on the node of its own
-/// `--data`. It calls `reach` at the first such call, keeps what it gives, and calls
-/// `reach` again at the next call after what it gave fails with a [`Failure`]. `start`
-/// and the other operations call neither.
+/// `--data`. It calls `reach` at each such call, calls what it gives once, and drops
+/// it, since no session lives while the thread waits for the next line of `input`.
+/// `start` and the other operations call neither.
 ///
-/// `foundation mcp` first makes its data directory when it is not there, and its
-/// tools then read and write only under each `--files` folder, else under the working
-/// directory, and never in the data directory. With no `--files` and a working
-/// directory of `/` or the home folder, it serves nothing and gives status 2.
+/// The tools of `foundation mcp` read and write only under each `--files` folder,
+/// else under the working directory, and never in the data directory. With no
+/// `--files` and a working directory of `/` or the home folder, it serves nothing,
+/// makes nothing, and gives status 2. After it checks its folders, `foundation mcp`
+/// makes its data directory when it is not there.
 ///
 /// Blocks its thread at each read or write of a path, each read of `input`, and each
 /// write of `output` or `errors`, and makes none while a request to the node waits.

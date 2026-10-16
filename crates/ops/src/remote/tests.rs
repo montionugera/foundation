@@ -731,10 +731,10 @@ fn failed(error: &Error) -> Value {
     })
 }
 
-/// `foundation mcp` reaches the node of its `--data` once, at the first call that
-/// needs it, and each output parses back to the typed output.
+/// `foundation mcp` reaches the node of its `--data` at each call that needs it, and
+/// each output parses back to the typed output.
 #[test]
-fn mcp_plans_applies_and_shows_status_on_one_reach_of_the_node_of_data() {
+fn mcp_plans_applies_and_shows_status_with_a_reach_of_the_node_of_data_at_each_call() {
     solo(|fixture, mesh| async move {
         let paths = with_site(&fixture.sim);
         let remote = Remote::new(create_node(&fixture, mesh.clone()));
@@ -768,8 +768,8 @@ fn mcp_plans_applies_and_shows_status_on_one_reach_of_the_node_of_data() {
             "site.plan"
         );
         assert_eq!(mesh.pointer().version, 1);
-        assert_eq!(remote.calls(), (1, 3));
-        assert_eq!(*remote.data.borrow(), [PathBuf::from("other")]);
+        assert_eq!(remote.calls(), (3, 3));
+        assert_eq!(*remote.data.borrow(), vec![PathBuf::from("other"); 3]);
     });
 }
 
@@ -827,9 +827,9 @@ fn mcp_of_a_file_that_does_not_read_reaches_no_node() {
     });
 }
 
-/// A reply that holds problems is a reply: the next call sends on the same session.
+/// A reply that holds problems is the error result of its call, each time.
 #[test]
-fn mcp_keeps_the_session_after_a_reply_with_problems() {
+fn mcp_gives_the_problems_of_a_reply_at_each_call() {
     solo(|fixture, mesh| async move {
         let paths = with_site(&fixture.sim);
         paths.write(Path::new("bad.hcl"), b"{").expect("a write");
@@ -841,7 +841,7 @@ fn mcp_keeps_the_session_after_a_reply_with_problems() {
             assert_eq!(reply["result"]["isError"], true, "{reply}");
         }
         assert_eq!(replies[0]["result"], replies[1]["result"]);
-        assert_eq!(remote.calls(), (1, 2));
+        assert_eq!(remote.calls(), (2, 2));
     });
 }
 
@@ -1065,6 +1065,73 @@ fn mcp_starts_only_on_a_folder_that_is_not_too_wide() {
             2
         )
     );
+}
+
+fn breaker_start(
+    working: &str,
+    home: &str,
+    args: &[&str],
+    fault: Option<(&str, i32)>,
+) -> (Run, String, String, Option<Found>) {
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let host = sim.node(sim::node::Config::default());
+    for folder in [working, home] {
+        if folder != "/" && folder != "/work" {
+            host.make_dir(Path::new(folder));
+        }
+    }
+    host.make_dir(Path::new("/work"));
+    host.set_working_dir(Path::new(working));
+    host.set_home(Path::new(home));
+    if let Some((path, code)) = fault {
+        host.fail_path(Path::new(path), code);
+    }
+    let request = async |_: &[u8]| -> Result<Vec<u8>, Failure> {
+        panic!("a start sent a request")
+    };
+    let reach = async |_: &Path| Ok(request);
+    let args = ["foundation", "mcp"].iter().chain(args).map(Into::into);
+    let ping = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n";
+    let (mut output, mut errors) = (Vec::new(), Vec::new());
+    let paths = host.paths();
+    let cli = crate::cli(
+        args,
+        ping.as_bytes(),
+        &mut output,
+        &mut errors,
+        &paths,
+        reach,
+    );
+    let Poll::Ready(run) = pin!(cli).poll(&mut Context::from_waker(Waker::noop()))
+    else {
+        panic!("a start waited");
+    };
+    let text = |bytes| String::from_utf8(bytes).expect("UTF-8");
+    let data = Path::new(working).join(DATA);
+    let left = paths.read(&data, 1 << 10).ok();
+    (run, text(output), text(errors), left)
+}
+
+/// A user who cannot write `/` starts `foundation mcp` at `/` with no `--files`, as a
+/// client may. The decision says it refuses with the fix that names `--files`.
+#[test]
+fn breaker_a_start_at_the_root_that_cannot_make_data_is_too_wide() {
+    let wide = Error::WideFolder {
+        working: PathBuf::from("/"),
+    };
+    let (run, output, errors, _) =
+        breaker_start("/", "/home", &[], Some(("/foundation-data", 13)));
+    assert_eq!(
+        (run, output, errors),
+        (Run::Exit(2), String::new(), wide.text())
+    );
+}
+
+/// A refused start at the home folder makes nothing there.
+#[test]
+fn breaker_a_refused_start_at_home_makes_no_data_directory() {
+    let (run, _, _, left) = breaker_start("/home", "/home", &[], None);
+    assert_eq!((run, left), (Run::Exit(2), None));
 }
 
 /// `foundation mcp` makes its data directory, and refuses one whose directory above
