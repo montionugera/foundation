@@ -23,8 +23,9 @@ pub const VISITS: usize = 10_000;
 pub const DEPTH: usize = 64;
 
 /// A device open for one browse. A kind implements it on its session, so one walk
-/// connects once. [`walk`] gives `connector.broken-browse` when the kind breaks a rule
-/// of this trait.
+/// connects once. [`walk`] gives `connector.broken-browse` when the kind gives a page
+/// over [`LIMIT`], an entry outside its folder or with an empty name, or a count of
+/// values that is not the count of tags.
 pub trait Device {
     /// Gives one page of the entries of `folder`, or of the root when `None`, in
     /// device order, from `cursor`, or from the first entry when `None`. A page holds
@@ -73,7 +74,8 @@ pub trait Device {
 ///
 /// [`Error::Config`] with `connector.no-folder` when no folder is at a name of the
 /// start, or at a folder that the device gave and then did not have, and with
-/// `connector.broken-browse` when `device` breaks a rule of [`Device`].
+/// `connector.broken-browse` when `device` breaks a rule of [`Device`] that its doc says
+/// [`walk`] checks.
 /// The errors of `device`.
 pub async fn walk(device: &mut impl Device, query: &Query) -> Result<Found, Error> {
     walk_within(device, query, LIMIT, VISITS).await
@@ -377,7 +379,8 @@ impl Path {
     /// name is empty: no text names it.
     #[must_use]
     pub fn child(&self, name: impl Into<Arc<str>>) -> Self {
-        let mut names = self.names.clone();
+        let mut names = Vec::with_capacity(self.names.len() + 1);
+        names.extend_from_slice(&self.names);
         names.push(name.into());
         Self { names }
     }

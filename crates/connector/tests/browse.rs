@@ -78,9 +78,9 @@ fn main() {
         (LIMIT, End::Done),
         "the walk finds each point"
     );
-    // The names of the chain, once, and a pointer to each name of each point: 1.3 MB
+    // The names of the chain, once, and a pointer to each name of each point: 0.7 MB
     // on box1. A copy of the chain's text in each point is 37 MB.
-    let bound = 2 << 20;
+    let bound = 1 << 20;
     assert!(
         peak <= bound,
         "the walk held {peak} bytes at its peak, over {bound}"
