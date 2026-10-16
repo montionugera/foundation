@@ -213,13 +213,15 @@ fn name(text: &str) -> Name {
 
 fn define(inputs: &supervisor::Config) {
     let time = channel::Key::from_u128(1);
-    let data = |key, scalar| {
+    let on = |index, key, scalar| {
         let data_type = DataType::Sample(Type::Scalar(scalar));
-        let data = Data::new(time, None, data_type, None).expect("no unit");
+        let data = Data::new(index, None, data_type, None).expect("no unit");
         let key = channel::Key::from_u128(key);
         let kind = spec::channel::Kind::Data(data);
         Definition::Channel(Channel { key, kind })
     };
+    let data = |key, scalar| on(time, key, scalar);
+    let site = |key| on(channel::Key::from_u128(6), key, Scalar::F64);
     let index = spec::channel::Kind::Index {
         error: None,
         control: None,
@@ -234,13 +236,21 @@ fn define(inputs: &supervisor::Config) {
             name("edge.time"),
             Definition::Channel(Channel {
                 key: time,
-                kind: index,
+                kind: index.clone(),
             }),
         ),
         (name("edge.a"), data(2, Scalar::F64)),
         (name("edge.b"), data(3, Scalar::F64)),
         (name("edge.count"), data(4, Scalar::I64)),
         (name("time"), data(5, Scalar::F64)),
+        (
+            name("site.time"),
+            Definition::Channel(Channel {
+                key: channel::Key::from_u128(6),
+                kind: index,
+            }),
+        ),
+        (name("site.c"), site(7)),
     ]);
     inputs
         .hub
@@ -853,7 +863,12 @@ fn writes_the_gap_line_of_a_run_lost_for_no_room_and_counts_its_seqs_after_a_204
     let (lost, stamp, bodies, counts) = run(|node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
         let run = plant.start(plant.config());
-        let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
+        drop(plant.writer(&["site.time", "site.c"]).await);
+        let channels = ["site.time", "site.c", "edge.time", "edge.a", "edge.b"];
+        let mut writer = plant.writer(&channels).await;
+        let index = (writer.set().entries().iter())
+            .position(|entry| entry.key == channel::Key::from_u128(1));
+        assert_eq!(index, Some(2), "the group of `site.time` comes first");
         plant.clock.sleep(Span::SECOND).await;
         let first = writer.now().nanos();
         write(&mut writer, first, &[(1.0, 2.0)]);
