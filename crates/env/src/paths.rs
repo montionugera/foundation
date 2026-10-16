@@ -55,8 +55,8 @@ impl Paths {
     ///
     /// The error of [`Paths::resolve`] for a path of `folders` or `hidden`.
     /// [`Error::NotFound`] when a folder of `hidden` is not there, else [`Error::Io`]
-    /// when it is not a directory. A folder of `hidden` that the limits of `self`
-    /// refuse needs no check.
+    /// when it is not a directory, or when this process cannot search it. A folder of
+    /// `hidden` that the limits of `self` refuse needs no check.
     ///
     /// ```
     /// use std::path::PathBuf;

@@ -303,9 +303,9 @@ impl Node {
     /// [`Node::set_home`], else `None`. A call takes no time, may come from any
     /// thread, and acts at once. A crash of the node keeps the tree, the working
     /// directory, and the home. A failure gives the code that Linux gives: 17
-    /// (`EEXIST`) for a directory made on a file, 20 (`ENOTDIR`) for a path through a
-    /// file, 21 (`EISDIR`) for a write on a directory, and 40 (`ELOOP`) for a path
-    /// through too many links.
+    /// (`EEXIST`) for a directory made on a file or a link, 20 (`ENOTDIR`) for a path
+    /// through a file, 21 (`EISDIR`) for a write on a directory, and 40 (`ELOOP`) for a
+    /// path through too many links.
     #[must_use]
     pub fn paths(&self) -> env::paths::Paths {
         env::paths::Paths::new(self.0.clone())
