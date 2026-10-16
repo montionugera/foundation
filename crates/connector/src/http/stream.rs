@@ -67,11 +67,6 @@ impl Stream {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
                 read => return Poll::Ready(read),
             }
-            // A reply that rustls owes, such as a key update, goes out first. A
-            // stream that cannot take it now gets it at the next write or flush.
-            if let Poll::Ready(Err(error)) = flush(&mut self.tcp, tls, cx) {
-                return Poll::Ready(Err(error));
-            }
             ready!(fill(&mut self.tcp, tls, cx))?;
         }
     }
@@ -188,7 +183,8 @@ impl Write for Stream {
         let Some(tls) = stream.tls.as_deref_mut() else {
             return stream.tcp.poll_write(cx, bufs).map_err(io::Error::other);
         };
-        // rustls takes all it is given, so only an empty buffer bounds it.
+        // rustls takes at most its buffer limit, 64 KiB, and none while the buffer is
+        // full, so the records it holds go out first.
         ready!(flush(&mut stream.tcp, tls, cx))?;
         let n = tls.writer().write_vectored(bufs)?;
         if let Poll::Ready(Err(error)) = flush(&mut stream.tcp, tls, cx) {
