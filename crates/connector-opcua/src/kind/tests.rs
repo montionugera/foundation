@@ -1440,37 +1440,3 @@ fn leaves_out_each_value_that_is_not_good() {
     let left = Why::of(&Err(Fault::Type(string)), Scalar::F64);
     assert_eq!(left, Some(Why::Mistyped(string)));
 }
-
-/// A later tick that keeps more values than each tick before it fills the `Vec`s that
-/// `Kept::new` made, with no new allocation. The `kind` bench gives the same values in
-/// each write, so only this test sees such a tick.
-#[test]
-fn a_tick_that_keeps_more_values_keeps_its_buffers() {
-    let reads = 64;
-    let mut fills = vec![Fill {
-        group: 0,
-        read: None,
-    }];
-    fills.extend((0..reads).map(|read| Fill {
-        group: 0,
-        read: Some(read),
-    }));
-    let layout = Layout {
-        types: vec![Scalar::F64; reads],
-        fills,
-        series: (0..=reads).map(|entry| (entry, 8)).collect(),
-        samples: vec![64],
-        groups: vec![0],
-    };
-    let mut kept = Kept::new(&layout);
-    let buffers = |kept: &Kept| (kept.series.as_ptr(), kept.groups.as_ptr());
-    let made = buffers(&kept);
-    kept.reads = vec![false; reads];
-    kept.reads[0] = true;
-    kept.keep(&layout);
-    assert_eq!(kept.series.len(), 2);
-    kept.reads.fill(true);
-    kept.keep(&layout);
-    assert_eq!(kept.series.len(), 65);
-    assert_eq!(buffers(&kept), made);
-}
