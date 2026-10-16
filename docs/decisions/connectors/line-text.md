@@ -73,4 +73,7 @@
   of `GET /ping`, and the rule follows the server, as it adds a request and a failure
   before the first write, and a proxy can leave out the header, so the target still
   gives the rule then. It comes back when a user writes to a `bucket` on InfluxDB 1.8,
-  or a `u64` channel to a `database` on InfluxDB 2 or 3.
+  or a `u64` channel to a `database` on InfluxDB 2 or 3. This Lost item and its trigger,
+  the text on a `bucket` on InfluxDB 1.8, and the two rules of one InfluxDB 2 or 3
+  server: `laptop.architect-2` on 2026-10-16T10:18:37Z
+  (https://github.com/synnaxlabs/foundation/pull/2855#issuecomment-6213313128).
