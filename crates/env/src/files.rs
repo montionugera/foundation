@@ -128,9 +128,12 @@ impl Files {
     ///
     /// # Errors
     ///
-    /// As [`Files::open`], and [`Error::Io`] with code 22 (`EINVAL`) for a file that is
+    /// As [`Files::open`], [`Error::Io`] with code 21 (`EISDIR`) for a directory, also
+    /// one that this user cannot read, and code 22 (`EINVAL`) for a file that is
     /// neither a regular file nor a directory, such as a FIFO or a device. The open
-    /// does not wait for a writer of a FIFO.
+    /// does not wait for a writer of a FIFO. When another writer changes a link in
+    /// `path` during the call, it gives the error of the open of the file that the link
+    /// then names, and opens that file, also a device.
     ///
     /// ```
     /// use env::files::Absolute;
