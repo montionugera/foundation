@@ -249,7 +249,6 @@ impl Class {
 #[derive(Default)]
 struct Cold {
     head: Cell<usize>,
-    len: Cell<usize>,
     /// Bytes of the budget that the blocks gave back.
     credit: Cell<usize>,
 }
@@ -259,20 +258,17 @@ impl Cold {
     fn push(&self, offset: usize, block: &Header, pages: usize) {
         block.next.store(self.head.get(), Relaxed);
         self.head.set(offset);
-        self.len.set(self.len.get() + 1);
         self.credit.set(self.credit.get() + pages);
     }
 
     /// Removes `block`, the head, which gave back `pages` bytes.
     fn pop(&self, block: &Header, pages: usize) {
         self.head.set(block.next.load(Relaxed));
-        self.len.set(self.len.get() - 1);
         self.credit.set(self.credit.get() - pages);
     }
 
     fn clear(&self) {
         self.head.set(NONE);
-        self.len.set(0);
         self.credit.set(0);
     }
 }
@@ -2552,9 +2548,9 @@ mod tests {
             (need, pool.budget - kept)
         }
 
-        /// Checks the count and the credit of each cold list against its blocks,
-        /// and `committed` against the carved ranges less those credits. Only the
-        /// lists show which blocks are cold.
+        /// Checks the credit of each cold list and the coolable bytes of each free
+        /// list against their blocks, and `committed` against the carved ranges less
+        /// those credits. Only the lists show which blocks are cold.
         fn check_cold(pool: &Pool, page: usize) -> Result<(), TestCaseError> {
             let mut held = 0;
             for (index, class) in pool.classes.iter().enumerate() {
@@ -2563,7 +2559,11 @@ mod tests {
                     .iter()
                     .map(|&offset| whole_pages(offset, index, page))
                     .sum();
-                prop_assert_eq!(class.cold.len.get(), cold.len());
+                let coolable: usize = list(pool, class.free.get())
+                    .into_iter()
+                    .map(|offset| whole_pages(offset, index, page))
+                    .sum();
+                prop_assert_eq!(class.coolable.get(), coolable);
                 prop_assert_eq!(class.cold.credit.get(), credit);
                 held += class.carved.get() - credit;
             }
