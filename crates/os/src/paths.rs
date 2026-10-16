@@ -34,8 +34,8 @@ impl env::paths::Driver for Driver {
 
 fn resolve(path: &Path) -> io::Result<PathBuf> {
     let missing = match fs::canonicalize(path) {
-        // macOS resolves a file at a path that ends in `/` or `/.`, also through a
-        // link, where the stat fails.
+        // macOS resolves a file at a path that ends in `/`, `/.`, or `/..`, also
+        // through a link, where the stat fails.
         Ok(resolved) => return fs::metadata(path).map(|_| resolved),
         // Only a last name that is not there passes `symlink_metadata` below.
         Err(e) => e,

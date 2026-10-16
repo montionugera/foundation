@@ -750,11 +750,15 @@
   Amended (2026-10-16T07:06:00Z, #2526): `sim` keeps each directory as an entry. A
   directory is there once `sim::Node::make_dir` makes it, and `sim::Node::link_path`
   makes each directory above its link. A call through `Paths` on `sim` through a
-  directory that is not there, or of a link to nothing, gives `NotFound`, also a
-  write, as `os` and `Paths::write` give. On macOS, `os` gives `ENOTDIR` for a resolve
-  that ends in `/`, `/.`, or `/..` after a file, also through a link, as Linux does,
-  because it stats the path after `canonicalize`. Supersedes "a directory is there
-  while a file is under it" of the `sim` tree above. Lost: that rule, since with it a
-  write on `sim` made its directories and gave `Ok` where `os` and `within` give
-  `NotFound`. Decided by `laptop.architect-2` (2026-10-16T07:06:00Z,
-  https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6210062728).
+  directory that is not there, or of a link to nothing, gives `NotFound`, also a write,
+  as `os` and `Paths::write` give. On macOS, `os` gives `ENOTDIR` for a resolve that
+  ends in `/`, `/.`, or `/..` after a file, also through a link, as Linux does, because
+  it stats the path after `canonicalize`. Supersedes "a directory is there while a file
+  is under it" of the `sim` tree above, and "On macOS it takes `..` after a file as the
+  directory above it, as `realpath` does there, and an open of that path fails" of the
+  amendment of 2026-10-16T04:52:58Z. Lost: the `sim` rule, since with it a write on
+  `sim` made its directories and gave `Ok` where `os` and `within` give `NotFound`.
+  Decided by `laptop.architect-2` (2026-10-16T07:06:00Z,
+  https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6210062728; the `os`
+  stat, 2026-10-16T07:39:36Z,
+  https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6210574391).
