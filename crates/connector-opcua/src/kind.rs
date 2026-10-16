@@ -82,9 +82,9 @@ impl kind::Kind for Kind {
     /// `uncertain`, another one that is not Good adds 1 to `bad`, and one of another
     /// type adds 1 to `mistyped`. The note names the first node of another type of
     /// the latest tick that has one, and a tick with none clears it. A tick that
-    /// leaves out each value writes no frame. The connect is not raced with the
-    /// cancel: with the close after a failed connect, it ends within four request
-    /// timeouts of the client (20 s). Each end closes the session.
+    /// leaves out each value writes no frame. After a cancel or an error, the run
+    /// closes its session: it sends `CloseSession`, waits at most 1 s for the answer,
+    /// then closes the connection. So a run ends within 1 s of a cancel.
     ///
     /// # Errors
     ///
@@ -108,14 +108,15 @@ async fn run(ctx: Context<Config>) -> Result<(), Error> {
     };
     let rng = &mut ctx.rng();
     let net = ctx.net().clone();
-    let connect = Client::connect(time, net, rng, &config.address).await;
-    let mut client = connect.map_err(|status| {
-        device(Failure::Connect {
+    let mut client = Client::new(time, net, rng);
+    let result = match ctx.cancel().race(client.connect(&config.address)).await {
+        None => Ok(()),
+        Some(Err(status)) => Err(device(Failure::Connect {
             address: config.address.to_string_lossy().into_owned(),
             status,
-        })
-    })?;
-    let result = read(&ctx, &mut client, &mut frames).await;
+        })),
+        Some(Ok(())) => read(&ctx, &mut client, &mut frames).await,
+    };
     client.close().await;
     result
 }

@@ -710,14 +710,25 @@
   (https://github.com/synnaxlabs/foundation/pull/2372#issuecomment-6107958993,
   2026-10-11 10:14 UTC).
   A `client::Client` owns its connection manager, and so its loop, and its `UA_Client`.
-  Its `close` first waits for the answer to a CreateSession in flight, or for its
-  request timeout. The server refuses a CloseSession sent before that answer, since it
-  has no session token, and when the answer then comes, open62541 activates the session,
-  which the server keeps after the channel closes. Then `close` sends a CloseSession
-  with `UA_Client_disconnectAsync` and drives its manager until the channel is closed,
-  so a close with a CreateSession in flight can take two request timeouts. A client that
-  lost its channel sends no CloseSession, so its session stays on the server until it
-  times out (https://github.com/synnaxlabs/foundation/issues/2400). The wait works
+  Its `close` has a grace of 1 s on the `env` clock, a private const. It first waits
+  for the answer to a CreateSession in flight. The server refuses a CloseSession sent
+  before that answer, since it has no session token, and when the answer then comes,
+  open62541 activates the session, which the server keeps after the channel closes.
+  Then `close` sends a CloseSession with `UA_Client_disconnectAsync` and drives its
+  manager until the channel is closed. When the grace ends first, it closes the channel
+  with `UA_Client_disconnectSecureChannelAsync` and drives its manager until the
+  channel is closed. So a close ends within the grace plus the time to close the
+  channel, and the CreateSession wait is in the same grace. The close is not raced with
+  a cancel. A client that lost its channel, or whose server does not answer in the
+  grace, leaves its session on the server until it times out
+  (https://github.com/synnaxlabs/foundation/issues/2400). Lost: the request timeout as
+  the bound, which is a stop of up to 10 s for each connector on a server that stops
+  answering. Lost: a close with no wait, which leaves a session on each live server
+  for its session timeout (1 h), so restarts fill a server with few sessions. Lost: no
+  wait after the CloseSession, as a server that reads the request after the channel
+  closes may drop it. Ruled by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6206438915,
+  2026-10-16 02:08 UTC). The wait works
   around `src/client/ua_client_connect.c` of open62541: `UA_Client_disconnectAsync`
   (lines 2956 to 2976) sets the state CLOSING and sends a CloseSession with no token,
   and the callback of the CreateSession (line 1734) then writes CREATED over CLOSING.

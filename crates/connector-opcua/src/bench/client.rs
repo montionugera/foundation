@@ -131,11 +131,10 @@ impl Server {
         let rng = &mut Rng::from_seed(self.rng.borrow_mut().next_u64());
         let time = event::Time::monotonic(Clock::clone(&self.clock));
         let net = Net::clone(&self.net);
-        let connect = crate::client::Client::connect(time, net, rng, &self.url);
-        let session = match connect.await {
-            Ok(session) => session,
-            Err(status) => panic!("a connect failed: {status:?}"),
-        };
+        let mut session = crate::client::Client::new(time, net, rng);
+        if let Err(status) = session.connect(&self.url).await {
+            panic!("a connect failed: {status:?}");
+        }
         let nodes = |node: Node| {
             let nodes: Vec<Node> = std::iter::repeat_n(node, count).collect();
             session.nodes(&nodes).expect("one copy fits one message")

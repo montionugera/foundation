@@ -328,7 +328,7 @@ impl Manager {
         for client in &self.clients {
             // SAFETY: the client lives.
             let status = Status(unsafe {
-                ffi::test::UA_Client_disconnectSecureChannelAsync(client.as_ptr())
+                ffi::UA_Client_disconnectSecureChannelAsync(client.as_ptr())
             });
             assert_eq!(status, Status::GOOD, "open62541 refused a disconnect");
         }

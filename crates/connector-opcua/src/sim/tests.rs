@@ -57,14 +57,9 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
         let mut times = Vec::new();
         let mut reads = Vec::new();
         let until = async {
-            let mut client = (Client::connect(
-                event::Time::monotonic(node.clock()),
-                node.net(),
-                &mut rng,
-                &url,
-            ))
-            .await
-            .expect("connect");
+            let mut client =
+                Client::new(event::Time::monotonic(node.clock()), node.net(), &mut rng);
+            client.connect(&url).await.expect("connect");
             for quality in QUALITIES {
                 variables.change(quality);
                 let before = clock.now();
@@ -147,14 +142,9 @@ fn a_server_answers_a_value_of_each_type_and_records_only_a_double() {
         variables.change(Quality::GOOD);
         let mut reads = Vec::new();
         let until = async {
-            let mut client = (Client::connect(
-                event::Time::monotonic(node.clock()),
-                node.net(),
-                &mut rng,
-                &url,
-            ))
-            .await
-            .expect("connect");
+            let mut client =
+                Client::new(event::Time::monotonic(node.clock()), node.net(), &mut rng);
+            client.connect(&url).await.expect("connect");
             for text in &texts {
                 let node = text.parse::<Node>().expect("a node");
                 reads.push(client.read_one(&node).await);
@@ -204,24 +194,21 @@ fn a_server_has_room_for_4_sessions() {
         let until = async {
             let mut clients = Vec::new();
             for _ in 0..4 {
-                let connect = Client::connect(
+                let mut client = Client::new(
                     event::Time::monotonic(node.clock()),
                     node.net(),
                     &mut rng,
-                    &url,
                 );
-                clients.push(connect.await.expect("connect"));
+                client.connect(&url).await.expect("connect");
+                clients.push(client);
             }
             for client in &mut clients {
                 reads.push(client.read_one(&spike).await);
             }
-            let connect = Client::connect(
-                event::Time::monotonic(node.clock()),
-                node.net(),
-                &mut rng,
-                &url,
-            );
-            fifth = connect.await.err();
+            let mut client =
+                Client::new(event::Time::monotonic(node.clock()), node.net(), &mut rng);
+            fifth = client.connect(&url).await.err();
+            client.close().await;
             for client in clients {
                 client.close().await;
             }

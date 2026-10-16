@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::future::poll_fn;
 use std::io::IoSlice;
 use std::mem;
@@ -17,7 +17,7 @@ use sim::{Sim, node};
 use types::time::Span;
 
 use super::{
-    Client, Large, Nodes, READS, Reads, Request, SPLIT, Slots, UNREAD, answer,
+    Client, GRACE, Large, Nodes, READS, Reads, Request, SPLIT, Slots, UNREAD, answer,
     id_bytes, most,
 };
 use crate::connection::CHUNKS;
@@ -96,7 +96,7 @@ impl Peer<'_> {
     async fn connect(&mut self, url: &str) -> Result<Client, Status> {
         let url = CString::new(url).expect("the URL holds no NUL");
         let time = event::Time::monotonic(Clock::clone(&self.clock));
-        Client::connect(time, Net::clone(&self.net), &mut self.rng, &url).await
+        open(time, Net::clone(&self.net), &mut self.rng, &url).await
     }
 
     async fn connected(&mut self) -> Client {
@@ -117,8 +117,26 @@ impl Peer<'_> {
         unsafe { ffi::test::shim_client_receive(raw.as_ptr(), receive) };
         let url = CString::new(self.url.clone()).expect("the URL holds no NUL");
         // SAFETY: `raw` is a new client of the loop of `connections`.
-        let client = unsafe { Client::start(clock, connections, raw, &url) }.await;
-        client.expect("the client connects")
+        let mut client = unsafe { Client::of(clock, connections, raw) };
+        client.connect(&url).await.expect("the client connects");
+        client
+    }
+}
+
+/// Connects a new client to `url`, and closes it after an error, as the kind does.
+async fn open(
+    time: event::Time,
+    net: Net,
+    rng: &mut Rng,
+    url: &CStr,
+) -> Result<Client, Status> {
+    let mut client = Client::new(time, net, rng);
+    match client.connect(url).await {
+        Ok(()) => Ok(client),
+        Err(status) => {
+            client.close().await;
+            Err(status)
+        }
     }
 }
 
@@ -856,7 +874,7 @@ async fn connect_to_listener(
     let start = clock.now();
     let mut rng = node.entropy().rng();
     let url = CString::new(format!("opc.tcp://{local}")).expect("no NUL");
-    let mut connect = pin!(Client::connect(
+    let mut connect = pin!(open(
         event::Time::monotonic(node.clock()),
         node.net(),
         &mut rng,
@@ -908,10 +926,9 @@ fn a_connect_to_a_listener_that_closes_each_stream_ends_after_one_dial() {
 }
 
 /// A close waits for the answer of the server, which a server that stops never gives,
-/// until the request times out after 5 s. open62541 checks the timeouts of requests
-/// once a second.
+/// for [`GRACE`].
 #[test]
-fn a_close_of_a_client_whose_server_stops_ends_at_the_request_timeout() {
+fn a_close_of_a_client_whose_server_stops_ends_after_the_grace() {
     let (took, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let client = peer.connected().await;
@@ -923,28 +940,29 @@ fn a_close_of_a_client_whose_server_stops_ends_at_the_request_timeout() {
         })
         .await
     });
-    let window = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
-    assert!(window.contains(&took), "{took:?}");
+    assert_eq!(took, GRACE);
 }
 
-/// A read restores the request timeout of the client after it sends, so a close after a
-/// read on a server that stops still ends 5 to 6 s after it starts.
+/// A read sends its requests with no timeout of open62541, and restores the request
+/// timeout of the client for each other request, such as the `CloseSession`.
 #[test]
-fn a_close_after_a_read_of_a_client_whose_server_stops_ends_at_the_request_timeout() {
-    let (took, _) = run(0, async |node| {
+fn a_read_restores_the_request_timeout_of_the_client() {
+    let (timeouts, _) = run(0, async |node| {
         serve(&node, 4, async |mut peer| {
             let mut client = peer.connected().await;
+            // SAFETY: the client lives.
+            let timeout = |client: &Client| unsafe {
+                ffi::shim_client_timeout(client.raw.as_ptr())
+            };
+            let before = timeout(&client);
             assert_eq!(client.read_one(&VALUE).await, Ok(peer.value));
-            peer.paused.set(true);
-            let start = peer.clock.now();
+            let after = timeout(&client);
             client.close().await;
-            peer.paused.set(false);
-            peer.clock.now() - start
+            (before, after)
         })
         .await
     });
-    let window = Span::from_nanos(5_000_000_000)..=Span::from_nanos(6_000_000_000);
-    assert!(window.contains(&took), "{took:?}");
+    assert_eq!(timeouts, (5_000, 5_000));
 }
 
 /// A read that a server that stops never answers ends with `BadTimeout` at the request
@@ -995,14 +1013,14 @@ fn a_connect_whose_create_session_gets_no_answer_ends() {
     times_out_and_closes(&[Span::from_nanos(2_500_000)]);
 }
 
-/// The close after a connect that times out can take two more request timeouts: one for
-/// the answer to the `CreateSession`, then one for the `CloseSession`. The server gets
-/// the `CreateSession` just before the deadline and answers it at 9 s, or gets it just
+/// The close after a connect that times out waits for the answer to the
+/// `CreateSession` and for the `CloseSession` for [`GRACE`] in all. The server gets the
+/// `CreateSession` just before the deadline and answers it at 9 s, or gets it just
 /// after the check of timeouts at 4 s and answers it just before its timeout, and then
-/// stops. open62541 checks the timeouts of requests once a second from the start of the
-/// connect, so the close ends at most 10 s after the deadline.
+/// stops. The second client still connects: the server drops a session that is not
+/// active when its channel closes.
 #[test]
-fn a_connect_whose_create_session_answers_late_ends_two_request_timeouts_later() {
+fn a_connect_whose_create_session_answers_late_ends_one_grace_later() {
     let before_the_deadline = times_out_and_closes(&[
         Span::from_nanos(0),
         Span::from_nanos(4_998_000_000),
@@ -1017,7 +1035,7 @@ fn a_connect_whose_create_session_answers_late_ends_two_request_timeouts_later()
         Span::from_nanos(9_999_000_000),
         Span::from_nanos(9_999_100_000),
     ]);
-    let bound = Span::from_nanos(15_000_000_000);
+    let bound = Span::from_nanos(5_000_000_000 + GRACE.nanos());
     assert_eq!((before_the_deadline, after_a_check), (bound, bound));
 }
 
@@ -1084,7 +1102,7 @@ fn times_out_and_closes(flips: &[Span]) -> Span {
             let net = Net::clone(&peer.net);
             let start = peer.clock.now();
             let first = {
-                let mut connect = pin!(Client::connect(time, net, &mut peer.rng, &raw));
+                let mut connect = pin!(open(time, net, &mut peer.rng, &raw));
                 let mut flips: Vec<_> = flips
                     .iter()
                     .map(|at| Box::pin(peer.clock.sleep(*at)))

@@ -44,3 +44,8 @@
   the `BadTypeMismatch` of the server, the note of the latest tick, and the name of
   the type at 2026-10-15T22:16:48Z:
   https://github.com/synnaxlabs/foundation/pull/2766#issuecomment-6203414079).
+  Close: after a cancel or an error, the run closes its session. It sends
+  CloseSession, waits at most 1 s for the answer, then closes the connection, so a run
+  ends within 1 s of a cancel. The connect races the cancel, and the close does not
+  (`laptop.architect-2`, 2026-10-16T02:08:17Z:
+  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6206438915).
