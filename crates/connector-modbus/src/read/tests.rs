@@ -588,6 +588,30 @@ mod values {
     }
 
     #[test]
+    #[should_panic(expected = "no reply put a value of read 1 since the last take")]
+    fn a_take_that_unwinds_in_its_consumer_leaves_no_value_for_the_next_take() {
+        let reads = [
+            read(Table::Coils, 0, Scalar::Bool),
+            read(Table::HoldingRegisters, 0, Scalar::U16),
+        ];
+        let (groups, mut device) = (groups(&reads, Order::Big), device());
+        let mut values = Values::new(reads.len());
+        for group in &groups {
+            put(&mut device, group, &mut values).expect("no exception");
+        }
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            #[expect(
+                clippy::never_loop,
+                reason = "the consumer unwinds at the first value"
+            )]
+            values.take().for_each(|_| panic!("the consumer fails"));
+        }));
+        assert!(unwound.is_err(), "the consumer panics");
+        put(&mut device, &groups[0], &mut values).expect("no exception");
+        values.take().for_each(drop);
+    }
+
+    #[test]
     #[should_panic(expected = "the group has read 1, past the 1 reads of `new`")]
     fn put_panics_on_a_group_with_more_reads_than_new() {
         let reads = [

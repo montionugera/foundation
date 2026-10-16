@@ -312,12 +312,25 @@ impl Iterator for Take<'_> {
     type Item = Value;
 
     fn next(&mut self) -> Option<Value> {
-        let (at, slot) = self.0.next()?;
-        let Some(value) = slot.take() else {
-            panic!("no reply put a value of read {at} since the last take");
-        };
-        Some(value)
+        self.0.next().map(taken)
     }
+
+    // The default `fold` calls `next` out of line for each value.
+    fn fold<B, G: FnMut(B, Value) -> B>(mut self, init: B, mut g: G) -> B {
+        self.0.by_ref().fold(init, |acc, read| g(acc, taken(read)))
+    }
+}
+
+/// The value in the slot of read `at`, which the slot no longer holds.
+///
+/// # Panics
+///
+/// When no reply put a value in the slot since the last take.
+fn taken((at, slot): (usize, &mut Option<Value>)) -> Value {
+    let Some(value) = slot.take() else {
+        panic!("no reply put a value of read {at} since the last take");
+    };
+    value
 }
 
 impl Drop for Take<'_> {
