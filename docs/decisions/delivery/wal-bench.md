@@ -50,3 +50,11 @@
   https://github.com/synnaxlabs/foundation/pull/2236#issuecomment-6094318889. The
   time with no tag is decided by `laptop.architect` (#2236, 2026-10-10T05:58:44Z):
   https://github.com/synnaxlabs/foundation/pull/2236#issuecomment-6094432871.
+  `bench` also has `Table { new, decode }`, for the bench `benches/decode.rs`
+  (`test = true`). `new` writes a table of headers with the encoder of the crate, each
+  of its own index, with every `empty`-th header with no samples. `decode` parses each
+  header, as the scan of a read and the walk of an open do. Cases: 1023 headers with
+  samples, and 1023 of which every second has no samples. Lost: a time of the whole
+  read scan, whose waits and copies hide the decode. Asked by the round 2
+  `performance` report of #2816, which found scratch numbers of the decode that
+  differed by 4 to 5 times with the form of the bench.

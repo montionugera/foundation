@@ -42,5 +42,10 @@ name = "logs"
 harness = false
 test = true
 
+[[bench]]
+name = "decode"
+harness = false
+test = true
+
 [lints]
 workspace = true

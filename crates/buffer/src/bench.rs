@@ -1,14 +1,14 @@
 //! `wal::Writer` and `log::Logs`, for the bench targets and the `alloc` test only. Not
 //! a stable surface.
 
-use std::{iter, mem};
+use std::{hint, iter, mem};
 
 use block::{Block, Heap, Pool};
 use types::channel::{self, Slot};
 use types::frame::Path;
 use types::time::Stamp;
 
-use crate::entry::{Entry, Header, Last};
+use crate::entry::{self, Entry, Header, Last};
 use crate::group;
 use crate::log::Carried;
 use crate::record::{ALIGN, BLOCK};
@@ -303,6 +303,59 @@ impl Logs {
     }
 }
 
+/// The header table of one record, as a read or an open finds it.
+#[derive(Debug)]
+pub struct Table {
+    bytes: Vec<u8>,
+}
+
+impl Table {
+    /// A table of `headers` headers, each of its own index. Each `empty`-th header
+    /// has no samples; none has when `empty` is 0.
+    #[must_use]
+    pub fn new(headers: u32, empty: u32) -> Self {
+        let headers: Vec<Header> = (0..headers)
+            .map(|n| {
+                let none = empty != 0 && n.is_multiple_of(empty);
+                Header {
+                    index: channel::Key::from_u128(u128::from(n) + 1),
+                    path: Path::Live,
+                    first: u64::from(n),
+                    len: u32::from(!none),
+                    stored_at: Stamp::from_nanos(7),
+                    last: if none {
+                        Last::Count(1)
+                    } else {
+                        Last::Stamp(Some(Stamp::from_nanos(9)))
+                    },
+                    tag: 0,
+                    bytes: 0,
+                }
+            })
+            .collect();
+        let mut bytes = vec![0; entry::table_len(headers.len())];
+        entry::write_table(&headers, &mut bytes);
+        Self { bytes }
+    }
+
+    /// Decodes each header, as the scan of a read and the walk of an open do, and
+    /// gives how many.
+    ///
+    /// # Panics
+    ///
+    /// When a header does not decode.
+    #[must_use]
+    pub fn decode(&self) -> usize {
+        let headers = entry::parse(&self.bytes, self.bytes.len()).expect("a table");
+        let mut decoded = 0;
+        for header in headers {
+            hint::black_box(header.expect("a header"));
+            decoded += 1;
+        }
+        decoded
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,6 +490,20 @@ mod tests {
         );
         assert_eq!(second, 1);
         assert_eq!(logs.inner.durable(Slot::new(1), Path::Live).seq, 3);
+    }
+
+    /// Each header of a table decodes, with and without headers with no samples.
+    #[test]
+    fn each_header_of_a_table_decodes() {
+        assert_eq!(Table::new(5, 0).decode(), 5);
+        assert_eq!(Table::new(5, 2).decode(), 5);
+        let table = Table::new(3, 2);
+        let headers = entry::parse(&table.bytes, table.bytes.len()).expect("a table");
+        let lasts: Vec<Last> = headers
+            .map(|header| header.expect("a header").0.last)
+            .collect();
+        let stamp = Last::Stamp(Some(Stamp::from_nanos(9)));
+        assert_eq!(lasts, [Last::Count(1), stamp, Last::Count(1)]);
     }
 
     /// A read holds the record two commits back, so the runs of the records after it
