@@ -333,19 +333,7 @@ fn origin(uri: &Uri) -> Result<Origin, Error> {
         Some(colon) => (&text[..after + colon], &text[after + colon + 1..]),
         None => (text, ""),
     };
-    // RFC 6874: a zone in a URI follows `%25`, the escape of `%`.
-    let decoded;
-    let host = match host.split_once('%') {
-        Some((ip, zone)) => {
-            let zone = zone
-                .strip_prefix("25")
-                .ok_or(Error::Host(host::Error::Zone))?;
-            decoded = format!("{ip}%{zone}");
-            &decoded
-        }
-        None => host,
-    };
-    let host = host.parse().map_err(Error::Host)?;
+    let host = host::uri(host).map_err(Error::Host)?;
     // `u16::from_str` takes a leading `+`.
     let port = match port {
         "" => 80,

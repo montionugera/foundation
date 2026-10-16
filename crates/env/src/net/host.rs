@@ -130,12 +130,46 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// Reads the host of a URI, as RFC 3986 writes it: an IPv6 address is in brackets,
+/// and its zone follows `%25`, the escape of `%` (RFC 6874), as `[fe80::1%252]` for
+/// zone 2. Each other host is as [`Host`] reads it.
+///
+/// ```
+/// use env::net::host::{self, Error};
+///
+/// let zoned = host::uri("[fe80::1%252]").expect("an address with zone 2");
+/// assert_eq!(zoned.to_string(), "fe80::1%2");
+/// assert_eq!(host::uri("[fe80::1%2]"), Err(Error::Zone));
+/// ```
+///
+/// # Errors
+///
+/// [`Error::Ipv6`] for a `:` outside brackets, [`Error::Zone`] for a `%` that `25`
+/// does not follow, and each error of [`Host`] for the text it reads.
+pub fn uri(text: &str) -> Result<Host, Error> {
+    let Some(inner) = text.strip_prefix('[').and_then(|t| t.strip_suffix(']')) else {
+        if text.contains(':') {
+            return Err(Error::Ipv6);
+        }
+        return text.parse();
+    };
+    let kind = match inner.split_once('%') {
+        Some((ip, zone)) => v6(ip, Some(zone.strip_prefix("25").ok_or(Error::Zone)?)),
+        None => v6(inner, None),
+    };
+    kind.map(Host)
+}
+
 /// An IPv6 address with an optional zone, as `fe80::1%2`.
 fn ipv6(text: &str) -> Result<Kind, Error> {
-    let (ip, zone) = match text.split_once('%') {
-        Some((ip, zone)) => (ip, Some(zone)),
-        None => (text, None),
-    };
+    match text.split_once('%') {
+        Some((ip, zone)) => v6(ip, Some(zone)),
+        None => v6(text, None),
+    }
+}
+
+/// The IPv6 address `ip` with the decimal zone `zone`.
+fn v6(ip: &str, zone: Option<&str>) -> Result<Kind, Error> {
     let ip = ip.parse::<Ipv6Addr>().map_err(|_invalid| Error::Ipv6)?;
     let Some(zone) = zone else {
         return Ok(Kind::Ip(ip.into()));
@@ -230,6 +264,30 @@ mod tests {
     fn zone_0_is_no_zone() {
         assert_eq!(parse("fe80::1%0"), parse("fe80::1"));
         assert_eq!(parse("[fe80::1%000]"), parse("fe80::1"));
+    }
+
+    #[test]
+    fn reads_the_host_of_a_uri() {
+        for (text, read) in [
+            ("[fe80::1%252]", parse("fe80::1%2")),
+            ("[fe80::1%2500]", parse("fe80::1")),
+            ("[fd00::2]", parse("fd00::2")),
+            ("10.0.0.2", parse("10.0.0.2")),
+            ("Influx", parse("influx")),
+            ("[fe80::1%2]", Err(Error::Zone)),
+            ("[fe80::1%25]", Err(Error::Zone)),
+            ("[fe80::1%25eth0]", Err(Error::Zone)),
+            ("[fe80::1%25+2]", Err(Error::Zone)),
+            ("fe80::1", Err(Error::Ipv6)),
+            ("fe80::1%252", Err(Error::Ipv6)),
+            ("[fd00::2]8086", Err(Error::Ipv6)),
+            ("[]", Err(Error::Ipv6)),
+            ("plc%2502", Err(Error::Character)),
+            ("127.1", Err(Error::Number)),
+            ("", Err(Error::Empty)),
+        ] {
+            assert_eq!(uri(text), read, "{text:?}");
+        }
     }
 
     #[test]
