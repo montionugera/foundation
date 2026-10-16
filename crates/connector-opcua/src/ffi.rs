@@ -67,6 +67,8 @@ impl Status {
     pub(crate) const BAD_NO_DATA: Self = Self(0x809B_0000);
     pub(crate) const BAD_SESSION_CLOSED: Self = Self(0x8026_0000);
     #[cfg(test)]
+    pub(crate) const BAD_SESSION_ID_INVALID: Self = Self(0x8025_0000);
+    #[cfg(test)]
     pub(crate) const BAD_SECURE_CHANNEL_CLOSED: Self = Self(0x8086_0000);
     #[cfg(test)]
     pub(crate) const BAD_RESPONSE_TOO_LARGE: Self = Self(0x80B9_0000);

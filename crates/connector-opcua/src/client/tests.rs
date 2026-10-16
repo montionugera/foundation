@@ -1109,6 +1109,28 @@ fn a_server_that_closes_ends_idle_at_once() {
     assert_eq!(idle, (closed, Span::from_nanos(250_000)));
 }
 
+/// A client whose session the server dropped ends [`Client::idle`] at once with
+/// `BadSessionClosed`: the read that finds the drop leaves the channel open.
+#[test]
+fn a_client_with_no_session_ends_idle_at_once() {
+    let (idle, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            peer.server
+                .set_session_timeout(Span::from_nanos(5_000_000_000));
+            let mut client = peer.connected().await;
+            peer.clock.sleep(Span::from_nanos(6_000_000_000)).await;
+            let read = client.read_one(&VALUE).await;
+            let start = peer.clock.now();
+            let idle = client.idle(peer.clock.sleep(Span::MINUTE)).await;
+            (read, idle, peer.clock.now() - start)
+        })
+        .await
+    });
+    let lost = Err(Fault::status(Status::BAD_SESSION_ID_INVALID));
+    let closed = Err(Status::BAD_SESSION_CLOSED);
+    assert_eq!(idle, (lost, closed, Span::ZERO));
+}
+
 /// A connect whose wait has already ended gives no client.
 #[test]
 fn a_connect_whose_wait_has_ended_gives_none() {
