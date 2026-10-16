@@ -59,7 +59,10 @@
   approval of the bound of 4,096 bytes on 2026-10-13T21:36:41Z
   (https://github.com/synnaxlabs/foundation/pull/2610#issuecomment-6155716038). The kind
   also reads `measurement`, a name that `line::Measurement::new` takes other than
-  `foundation_gaps` (`influx.bad-measurement`). `check` gives the reader of its settings
+  `foundation_gaps` (`influx.bad-measurement`). `parse` builds the
+  `line::Measurement` once, and the run takes it. `Config` is opaque, as in `opcua`
+  and `modbus`: only `parse` makes one, so each `Config` holds checked names (#2555,
+  item 2). `check` gives the reader of its settings
   and no written channel. `run` writes each frame of the reader to the write path of its
   target: one line for each sample time, with a field for each channel of the frame,
   keyed by the channel name. A NaN or infinite value is left out, and so is a line with

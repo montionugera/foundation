@@ -9,6 +9,7 @@ use document::{Attribute, Block, Map, Position, Source, Span};
 use env::tasks::Tasks;
 
 use super::*;
+use crate::line::Measurement;
 
 mod send;
 
@@ -97,7 +98,7 @@ fn reads_the_address_and_the_reader() {
     let expected = Config {
         address: "http://influx:8086".parse().expect("a URI"),
         target: Target::Database("plant".into()),
-        measurement: "telemetry".into(),
+        measurement: Measurement::new("telemetry", &[]).expect("a name"),
         token: None,
         reader: reader::read(&config, &KEYS, &[]).expect("the reader settings"),
     };

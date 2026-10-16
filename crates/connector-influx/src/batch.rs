@@ -93,17 +93,12 @@ struct Channel {
 type Convert = fn(&[u8], usize, &line::Field, &mut line::Line<'_>);
 
 impl Batch {
-    /// An empty batch of lines of the measurement `name` to `target`, whose gap lines
-    /// name `connector`.
-    ///
-    /// # Panics
-    ///
-    /// When [`Measurement::new`] refuses `name` with no tags.
+    /// An empty batch of lines of `measurement` to `target`, whose gap lines name
+    /// `connector`.
     #[must_use]
-    pub fn new(name: &str, target: &Target, connector: &Name) -> Self {
+    pub fn new(measurement: Measurement, target: &Target, connector: &Name) -> Self {
         Self {
-            measurement: Measurement::new(name, &[])
-                .expect("invariant: config checks the measurement name"),
+            measurement,
             unsigned: target.unsigned(),
             connector: connector.clone(),
             gap: None,

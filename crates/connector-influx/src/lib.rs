@@ -60,24 +60,23 @@ const LOST: &str = "lost";
 #[non_exhaustive]
 pub struct Kind;
 
-/// One influx connector's config.
+/// One influx connector's config. Only
+/// [`Kind::parse`](connector::kind::Kind::parse) of [`Kind`] makes one.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct Config {
     /// The InfluxDB endpoint: a URI that [`connector::http::uri`] takes, with a path
     /// of `/` or none, and no query.
-    pub address: Uri,
+    pub(crate) address: Uri,
     /// Where it writes.
-    pub target: Target,
-    /// The measurement of each line: a name that [`line::Measurement::new`] takes,
-    /// other than [`gap::MEASUREMENT`].
-    pub measurement: String,
+    pub(crate) target: Target,
+    /// The measurement of each line, other than [`gap::MEASUREMENT`].
+    pub(crate) measurement: line::Measurement,
     /// Where the InfluxDB token comes from, sent as `Authorization: Token <value>`
     /// on each request. `None` sends no `Authorization` header. `http` sends it in
     /// clear until TLS.
-    pub token: Option<secret::Source>,
+    pub(crate) token: Option<secret::Source>,
     /// The reader whose samples it writes.
-    pub reader: reader::Settings,
+    pub(crate) reader: reader::Settings,
 }
 
 /// Where a connector writes. Each name has 1 to 4,096 bytes.
@@ -291,9 +290,9 @@ fn name(value: &Value, code: Code, noun: &str) -> Result<String, Diagnostic> {
     }
 }
 
-/// Reads a measurement name: a string that [`line::Measurement::new`] takes, other
-/// than [`gap::MEASUREMENT`].
-fn measurement(value: &Value) -> Result<String, Diagnostic> {
+/// Reads a measurement name: a string that [`line::Measurement::new`] takes with no
+/// tags, other than [`gap::MEASUREMENT`].
+fn measurement(value: &Value) -> Result<line::Measurement, Diagnostic> {
     let bad = |message: String| {
         Diagnostic::new(
             BAD_MEASUREMENT,
@@ -311,8 +310,7 @@ fn measurement(value: &Value) -> Result<String, Diagnostic> {
     if **text == *gap::MEASUREMENT {
         return Err(bad(format!("{text:?} is the measurement of the gap lines")));
     }
-    line::Measurement::new(text, &[]).map_err(|error| bad(error.to_string()))?;
-    Ok(text.to_string())
+    line::Measurement::new(text, &[]).map_err(|error| bad(error.to_string()))
 }
 
 #[cfg(test)]

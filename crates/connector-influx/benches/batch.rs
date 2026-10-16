@@ -24,6 +24,7 @@ use connector::kind::Table;
 use connector::testing;
 use connector_influx::Target;
 use connector_influx::bench::Batch;
+use connector_influx::line::Measurement;
 use hub::Hub;
 use hub::reader::{Mode, Reader};
 use hub::writer::Writer;
@@ -152,7 +153,7 @@ async fn first(
     let (mut nanos, mut allocations) = (Vec::new(), 0);
     for _ in 0..ROUNDS {
         let mut batch =
-            Batch::new("telemetry", &bucket(), &"influx".parse().expect("a name"));
+            Batch::new(telemetry(), &bucket(), &"influx".parse().expect("a name"));
         let (added, (ns, allocs)) = timed(|| batch.add(&received));
         added.expect("each channel holds a type that a bucket stores");
         nanos.push(ns);
@@ -171,7 +172,7 @@ async fn bench(
 ) -> (u64, Vec<u64>, u64, usize) {
     let (_hub, mut writer, mut reader) = open(&node, tasks, channels, types).await;
     let mut batch =
-        Batch::new("telemetry", &bucket(), &"influx".parse().expect("a name"));
+        Batch::new(telemetry(), &bucket(), &"influx".parse().expect("a name"));
     let (mut nanos, mut allocations, mut body) = (Vec::new(), 0, 0);
     let groups = channels / present;
     let warmup = groups.div_ceil(FRAMES) + 1;
@@ -346,6 +347,10 @@ fn timed<T>(f: impl FnOnce() -> T) -> (T, (u64, u64)) {
 /// The bytes of one sample of the fixed-width `data_type`.
 fn width(data_type: Type) -> usize {
     data_type.width().expect("a fixed-width type")
+}
+
+fn telemetry() -> Measurement {
+    Measurement::new("telemetry", &[]).expect("a valid measurement")
 }
 
 /// A bucket, so a `u64` channel is a `u` field.
