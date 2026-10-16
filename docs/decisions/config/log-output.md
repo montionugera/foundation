@@ -91,7 +91,8 @@
   each shard has ended and the queue is empty, so a sim run ends. A line after that
   waits in the queue for `Node::join` (after `stopped`) or `Flush::wait`. Each starts
   the thread again through one private resume, which starts it only when none runs and
-  a line waits, so at most one thread `log` runs and the lines keep their order. Inside
+  a line or the count of a drop waits, so at most one thread `log` runs and the lines
+  keep their order. Inside
   a `tracing` event, no OS thread can start and no dispatch can be set. A line from
   another thread after the last `Flush::wait` of `main` is lost. `main` waits up to 1 s
   for the log at its end. `main` alone sets the panic hook, to `Flush::hook` over the
