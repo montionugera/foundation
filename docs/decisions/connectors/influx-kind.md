@@ -8,17 +8,22 @@
   optional `ca` is a source of a secret (SECRET SOURCES) that holds PEM certificates, so
   `plan` refuses a `ca` with no value (`secret.unresolved`), as it does a `token`. An
   `https` run trusts the roots of the node and each certificate of the `ca`, and checks
-  the server's certificate at mesh time (`https` in R7 starting points). `run` reads the
-  `ca` once, at its start, and only for an `https` address. A `ca` that holds no PEM
-  certificate gives `Error::Retry` with "the ca {source} holds no PEM certificate. Write
-  the CA certificate of the server in PEM", and one that does not parse gives "the ca
-  {source} holds a PEM certificate that does not parse. Write the CA certificate of the
-  server in PEM". Over `https`, the token does not cross the network in clear. Planned
-  on #2702
+  the server's certificate at mesh time (`https` in R7 starting points). A `ca` with an
+  `http` address is `influx.ca-with-http`, with "the connector has a `ca`, which only an
+  `https` address takes" and the fix "Use an `https` address, or remove `ca`": a `ca`
+  there trusts nothing, and its user likely thinks that the token goes under TLS. `run`
+  reads the `ca` once, at its start. A `ca` that holds no PEM certificate gives
+  `Error::Retry` with "the ca {source} holds no PEM certificate. Write the CA
+  certificate of the server in PEM", and one that does not parse gives "the ca {source}
+  holds a PEM certificate that does not parse. Write the CA certificate of the server in
+  PEM". Over `https`, the token does not cross the network in clear. Planned on #2702
   (https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6218838848,
-  2026-10-16T15:28:25Z). The kind also refuses a path other than empty or `/`, and a
-  query, at the value: a path (a proxy prefix) can come later as a compatible change,
-  and a refusal cannot. Each
+  2026-10-16T15:28:25Z), and approved with the refusal of a `ca` with an `http` address
+  by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6219190400,
+  2026-10-16T15:47:32Z), which also approved `Error::Retry` for a bad `ca`. The kind
+  also refuses a path other than empty or `/`, and a query, at the value: a path (a
+  proxy prefix) can come later as a compatible change, and a refusal cannot. Each
   diagnostic of a kind names its document `connector::kind::NOUN` ("the connector"), as
   `reader::read` does. Decided by
   `laptop.architect-2` on #1794
