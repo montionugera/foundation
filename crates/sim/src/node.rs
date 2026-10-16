@@ -293,9 +293,9 @@ impl Node {
     }
 
     /// The files of the node's host by path: a tree in memory, apart from the node's
-    /// disk, with no file at first. A directory is there once [`Node::make_dir`] or
-    /// [`Node::link_path`] makes it. A relative path is under the working directory,
-    /// `/` until [`Node::set_working_dir`] sets it. A call follows each symbolic link
+    /// disk, with no file at first. A directory is there once [`Node::make_dir`] makes
+    /// it, as [`Node::link_path`] does above its link. A relative path is under the
+    /// working directory, `/` until [`Node::set_working_dir`] sets it. A call follows each symbolic link
     /// of [`Node::link_path`], and a `..` after a link goes above what the link names.
     /// A call through a directory that is not there, or of a link to nothing, fails
     /// with `NotFound`. The home directory is the one of [`Node::set_home`], else
