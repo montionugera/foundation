@@ -560,7 +560,8 @@ mod tests {
         let memory = Memory::new(config.reservation()).unwrap();
         let reserve = reserve(&memory);
         let pool = Pool::new(config, memory);
-        let mut small: Vec<_> = (0..=count).map(|_| pool.alloc(size).unwrap()).collect();
+        let mut small: Vec<_> =
+            (0..=count).map(|_| pool.alloc(size).unwrap()).collect();
         let held = small.pop();
         drop(small);
         let first = pool.alloc(LARGE).unwrap();
