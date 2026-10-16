@@ -161,6 +161,90 @@ fn a_hidden_folder_holds_each_case_and_form_of_its_names() {
     });
 }
 
+/// A link in `work` that leads, through a chain of short links, to a directory whose
+/// resolved path is longer than the OS takes, in the hidden folder or outside.
+#[test]
+fn within_gives_no_directory_through_a_link_that_is_too_long_to_resolve() {
+    run(|host| {
+        use rustix::fs::{Mode, OFlags, mkdirat, openat, symlinkat};
+        let (within, base) = cases::within_work(host);
+        let name = "d".repeat(200);
+        let next = format!("{name}/n");
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY;
+        let too_long = Err(Error::Io {
+            code: Errno::NAMETOOLONG.raw_os_error(),
+        });
+        let mut found = Vec::new();
+        for (top, target) in [("work/data", "data/n"), ("workshop", "../workshop/n")] {
+            let mut at = openat(CWD, base.join(top), flags, Mode::empty()).unwrap();
+            // 22 names of 201 bytes pass the 4 096 bytes of a path on Linux.
+            for _ in 0..22 {
+                symlinkat(next.as_str(), &at, "n").unwrap();
+                mkdirat(&at, name.as_str(), Mode::from_raw_mode(0o700)).unwrap();
+                at = openat(&at, name.as_str(), flags, Mode::empty()).unwrap();
+            }
+            symlinkat(".", &at, "n").unwrap();
+            let link = base.join("work").join(top.replace('/', "-"));
+            symlink(target, &link).unwrap();
+            let free = host.paths.make_dir(&link);
+            let read = within.read(&link, 1 << 12).map(|_| ());
+            found.push((top, free, read, within.make_dir(&link)));
+        }
+        assert_eq!(
+            found,
+            [
+                ("work/data", Ok(()), too_long, too_long),
+                ("workshop", Ok(()), too_long, too_long),
+            ]
+        );
+    });
+}
+
+#[test]
+fn within_makes_a_directory_on_each_end_of_a_link_that_does_not_resolve_as_free() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        let work = base.join("work");
+        symlink(work.join("loop"), work.join("loop")).unwrap();
+        symlink(work.join("a.hcl/x"), work.join("to-bad")).unwrap();
+        symlink(work.join("a.hcl/"), work.join("to-file-slash")).unwrap();
+        symlink(base.join("workshop/loop"), base.join("workshop/loop")).unwrap();
+        symlink(base.join("workshop"), work.join("out")).unwrap();
+        symlink(work.join("data/loop"), work.join("data/loop")).unwrap();
+        for name in [
+            "loop",
+            "loop/",
+            "loop/.",
+            "loop//",
+            "loop/x",
+            "to-bad",
+            "to-bad/",
+            "to-bad/.",
+            "to-file-slash",
+            "to-file-slash/",
+            "a.hcl/",
+            "a.hcl/.",
+            "a.hcl/x",
+        ] {
+            let path = PathBuf::from(format!("{}/{name}", work.display()));
+            let free = host.paths.make_dir(&path);
+            assert_eq!(within.make_dir(&path), free, "{name}");
+        }
+        for (name, error) in [
+            ("out/loop", Error::Outside),
+            ("out/loop/", Error::Outside),
+            ("data/loop", Error::Hidden),
+            ("DATA/loop", Error::Hidden),
+            ("data/loop/.", Error::Hidden),
+        ] {
+            let path = PathBuf::from(format!("{}/{name}", work.display()));
+            assert_eq!(within.make_dir(&path), Err(error), "{name}");
+        }
+        let long = work.join("a".repeat(256));
+        assert_eq!(within.make_dir(&long), host.paths.make_dir(&long));
+    });
+}
+
 #[test]
 fn a_write_of_a_name_of_the_longest_length_succeeds() {
     let scratch = Scratch::new();

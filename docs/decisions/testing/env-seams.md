@@ -809,7 +809,9 @@
   mode, 0700, so the group and other users get no access. `sim` makes one directory
   only, apart from `sim::Node::make_dir`, which makes each one above. On a handle of
   `within`, a path that does not resolve, such as a link to nothing or a loop, passes
-  the limits by its own place. `within` resolves `<hidden>/..` after the resolve of each
+  the limits by its own place. When it still does not resolve after the make, such as
+  a link to a directory whose resolved path is longer than the OS takes, it gives the
+  error of its resolve, as `read` gives. `within` resolves `<hidden>/..` after the resolve of each
   hidden folder, which opens no file. It gives `NotFound` when the folder is not there,
   and `Io` 20 (`ENOTDIR`) when it is not a directory, or on `os` `Io` 13 (`EACCES`) when
   this user cannot search it. It skips a hidden folder that the limits of its handle
