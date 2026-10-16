@@ -76,7 +76,12 @@ impl Flush {
         self.queue.resume().is_ok()
     }
 
-    /// Starts the thread `log` as [`Flush::resume`] does, then blocks until the writer has written each line that was in the queue at the call, and the count line of each line that had dropped, or until `bound` passes or the writer panics. Once each shard has ended, also blocks until the thread `log` has ended, and joins it. Returns `false` when `bound` passed first, the thread could not start, or the writer panicked. Blocks on real time: for `main` only, never in sim.
+    /// Starts the thread `log` as [`Flush::resume`] does, then blocks until the writer
+    /// has written each line that was in the queue at the call, and the count line of
+    /// each line that had dropped, or until `bound` passes or the writer panics. Once
+    /// each shard has ended, also blocks until the thread `log` has ended, and joins
+    /// it. Returns `false` when `bound` passed first, the thread could not start, or
+    /// the writer panicked. Blocks on real time: for `main` only, never in sim.
     ///
     /// # Panics
     ///
