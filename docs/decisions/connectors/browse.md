@@ -13,10 +13,11 @@
   paged by a `Cursor` of the kind, or each entry that is not a folder whose path from
   the start matches a `Pattern` (`/` splits names, `**` alone matches any number of
   names, `*` any text in one name, and `\` takes the next character as it is). It is not
-  a `types::name` selector, where `*` is one whole name: a device's names hold any
-  character, a glob looks inside one name, and the walk asks at each folder whether a
-  longer path can match. Values are read only when the `Query` asks, in one call for the
-  points that it gives. A new filter is a new field of `Query`.
+  a `types::name` selector, where `*` matches one whole segment of a dot-separated name:
+  a device's names hold any character, a glob looks inside one name, and the walk asks
+  at each folder whether a longer path can match. Values are read only when the `Query`
+  asks, in one call for the points that it gives. A new filter is a new field of
+  `Query`.
   The walk lives once in `connector` (`browse::walk`). It finds the start from the root,
   one name at a time; a name that is not there or not a folder gives
   `connector.no-folder`. A pattern walks depth first in device order, browses no folder
