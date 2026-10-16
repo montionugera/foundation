@@ -219,7 +219,7 @@ impl Node {
     ///   call, and [`Node::fail_file`] fails them. It gives `NotFound` when no file
     ///   is there, and the error of a read of the tree, such as one of
     ///   [`Node::fail_path`], as `Error::Io` with operation `Open`. A later write of
-    ///   the tree does not change the open file.
+    ///   the tree does not change the open file. Its file is never exposed.
     #[must_use]
     pub fn files(&self) -> env::files::Files {
         env::files::Files::new(self.0.clone())
@@ -258,6 +258,22 @@ impl Node {
         lock(&self.0.shared)
             .files()
             .fail(self.0.node, path, operation);
+    }
+
+    /// Sets whether users other than the owner can read the file at `path`, relative to
+    /// the data directory, at once, as a `chmod` from outside the node does. A file
+    /// that an open makes is not exposed, as on `os`. A descriptor keeps what its open
+    /// found, and a crash keeps the setting.
+    ///
+    /// # Panics
+    ///
+    /// When `path` is absolute or no file is at `path`.
+    pub fn set_file_exposed(&self, path: &Path, exposed: bool) {
+        assert!(path.is_relative(), "{} is absolute", path.display());
+        let found = lock(&self.0.shared)
+            .files()
+            .expose(self.0.node, path, exposed);
+        assert!(found, "no file is at {}", path.display());
     }
 
     /// The files of the node's host by path: a tree in memory, apart from the node's

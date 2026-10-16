@@ -371,6 +371,20 @@ impl File {
         self.descriptor.len()
     }
 
+    /// Whether users other than the owner of the file can read it: on Unix, its mode
+    /// gives read to its group or to other users. The driver reads it at the open, so
+    /// a later change of the mode does not change it.
+    ///
+    /// ```
+    /// fn private(file: &env::files::File) -> bool {
+    ///     !file.exposed()
+    /// }
+    /// ```
+    #[must_use]
+    pub fn exposed(&self) -> bool {
+        self.descriptor.exposed()
+    }
+
     /// Writes `parts` back to back at `offset`, as one vectored write. A read after
     /// the write ends sees the bytes. They are not durable until a later
     /// [`File::sync`] ends. A crash before then keeps any subset of the
@@ -934,6 +948,10 @@ pub trait Descriptor {
     /// The length of the file in bytes. It does not change.
     fn len(&self) -> u64;
 
+    /// Whether users other than the owner of the file could read it at the open, as
+    /// [`File::exposed`] states it.
+    fn exposed(&self) -> bool;
+
     /// Writes `parts` back to back at `offset`, which [`File`] has checked.
     fn write_at<'a>(&'a self, offset: u64, parts: &'a [Block]) -> Request<'a, ()>;
 
@@ -975,6 +993,8 @@ mod tests {
     /// Answers every call at once. Files have `len` bytes, and syncs give `sync`.
     struct Fixed {
         len: u64,
+        /// Its file is named `exposed`.
+        exposed: bool,
         sync: Result<(), Error>,
         names: Vec<PathBuf>,
         calls: Rc<RefCell<Vec<String>>>,
@@ -992,6 +1012,7 @@ mod tests {
             let calls = Rc::default();
             let driver = Self {
                 len,
+                exposed: false,
                 sync,
                 names: vec!["b".into(), "c".into(), "a".into()],
                 calls: Rc::clone(&calls),
@@ -1016,6 +1037,7 @@ mod tests {
             }
             let descriptor: Box<dyn Descriptor> = Box::new(Fixed {
                 len: self.len,
+                exposed: path.file_name() == Some(OsStr::new("exposed")),
                 sync: self.sync.clone(),
                 names: Vec::new(),
                 calls: Rc::clone(&self.calls),
@@ -1079,6 +1101,10 @@ mod tests {
     impl Descriptor for Fixed {
         fn len(&self) -> u64 {
             self.len
+        }
+
+        fn exposed(&self) -> bool {
+            self.exposed
         }
 
         fn write_at<'a>(&'a self, offset: u64, parts: &'a [Block]) -> Request<'a, ()> {
@@ -1165,6 +1191,10 @@ mod tests {
     impl Descriptor for Stuck {
         fn len(&self) -> u64 {
             0
+        }
+
+        fn exposed(&self) -> bool {
+            false
         }
 
         fn write_at<'a>(&'a self, _: u64, _: &'a [Block]) -> Request<'a, ()> {
@@ -1415,6 +1445,18 @@ mod tests {
                     found: 512,
                 }
             );
+        }
+
+        #[test]
+        fn gives_whether_the_driver_found_the_file_exposed() {
+            let (files, _) = Fixed::files(512);
+            let exposed = |path| {
+                ready(files.open(Path::new(path), Mode::Read))
+                    .expect("the driver opens")
+                    .exposed()
+            };
+            assert!(exposed("secrets/exposed"));
+            assert!(!exposed("secrets/private"));
         }
 
         #[test]
@@ -1921,6 +1963,7 @@ mod tests {
             File {
                 descriptor: Box::new(Fixed {
                     len,
+                    exposed: false,
                     sync: Ok(()),
                     names: Vec::new(),
                     calls: Rc::default(),
