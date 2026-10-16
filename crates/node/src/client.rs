@@ -154,6 +154,13 @@ mod tests {
         assert!(pool.largest() >= 1472, "{}", pool.largest());
     }
 
+    #[test]
+    #[cfg(not(loom))]
+    fn the_frames_pool_holds_a_frame_of_32_kib() {
+        let pool = block::Pool::heap(FRAMES);
+        assert!(pool.largest() >= 32 << 10, "{}", pool.largest());
+    }
+
     proptest! {
         #[test]
         fn dialed_keeps_each_specified_ip(
