@@ -30,7 +30,7 @@ const OPTIONS: tcp::Options = tcp::Options {
     delayed: false,
 };
 /// The name, key, and type of each channel of another sample type, on `edge.time`.
-const TYPED: [(&str, u128, Type); 13] = [
+const TYPED: [(&str, u128, Type); 15] = [
     ("edge.bool", 10, Type::Scalar(Scalar::Bool)),
     ("edge.i8", 11, Type::Scalar(Scalar::I8)),
     ("edge.i16", 12, Type::Scalar(Scalar::I16)),
@@ -51,6 +51,8 @@ const TYPED: [(&str, u128, Type); 13] = [
             len: 3,
         },
     ),
+    ("edge.text", 23, Type::String),
+    ("edge.blob", 24, Type::Bytes),
 ];
 /// The key of the first status channel of `influx`.
 const STATUS: u128 = 100;
@@ -68,10 +70,9 @@ type End = Rc<RefCell<Option<Result<(), Error>>>>;
 /// A node with a hub that defines `edge.time` (key 1), the `f64` channels `edge.a`
 /// (2) and `edge.b` (3), the `i64` channel `edge.count` (4), the `f64` channel `time`
 /// (5), a channel of each type of [`TYPED`], and the status channels of `influx`, and
-/// an InfluxDB that answers each
-/// request with the next answer of its list. After the last, it writes the body to its
-/// store, and answers 204, or 400 when the store refuses a line. Its store holds the
-/// secret `plant.influx_token` (`s3cret`).
+/// an InfluxDB that answers each request with the next answer of its list. After the
+/// last, it writes the body to its store, and answers 204, or 400 when the store
+/// refuses a line. Its store holds the secret `plant.influx_token` (`s3cret`).
 struct Plant {
     hub: hub::Hub,
     supervisor: Supervisor,
@@ -1438,6 +1439,7 @@ fn writes_a_u64_to_a_bucket_as_an_unsigned_integer() {
 fn stops_with_a_config_error_at_a_u64_channel_to_a_database() {
     let frame = one_frame("edge.*", false, 1, vec![("edge.u64", 17, bytes![1_u64])]);
     assert_eq!(frame.got, []);
+    assert!(frame.points.is_empty());
     let Some(Err(Error::Config(diagnostics))) = frame.end else {
         panic!("a config error, not {:?}", frame.end);
     };
@@ -1460,7 +1462,15 @@ fn stops_with_a_config_error_at_a_u64_channel_to_a_database() {
 fn stops_with_a_config_error_at_a_channel_of_a_type_it_does_not_write() {
     let uuid = ("edge.uuid", 21, vec![7; 16], "uuid");
     let xyz = ("edge.xyz", 22, bytes![1.0_f32, 2.0_f32, 3.0_f32], "f32[3]");
-    for (channel, key, bytes, data_type) in [uuid, xyz] {
+    let variable = |data_type, sample: &[u8]| {
+        let form = codec::Variable::of(data_type).expect("a variable type");
+        let mut bytes = vec![0; form.len(&[sample]).expect("fits")];
+        form.write(&[sample], &mut bytes);
+        bytes
+    };
+    let text = ("edge.text", 23, variable(Type::String, b"hi"), "string");
+    let blob = ("edge.blob", 24, variable(Type::Bytes, &[0, 255]), "bytes");
+    for (channel, key, bytes, data_type) in [uuid, xyz, text, blob] {
         let frame = one_frame("edge.*", true, 1, vec![(channel, key, bytes)]);
         assert_eq!(frame.got, []);
         let Some(Err(Error::Config(diagnostics))) = frame.end else {

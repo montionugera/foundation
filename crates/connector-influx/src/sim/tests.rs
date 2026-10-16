@@ -631,7 +631,7 @@ fn run() -> impl Strategy<Value = Run> {
         1..4_i64,
         1..6_000_i64,
         prop_oneof![Just(None), Just(Some("a")), Just(Some("b"))],
-        1..16_u8,
+        1..32_u8,
     )
         .prop_map(|(start, step, count, tag, fields)| Run {
             start,
@@ -654,6 +654,7 @@ fn fields_of(run: usize, time: i64, mask: u8) -> Vec<(&'static str, Field)> {
         ),
         ("i", Field::Integer(time * 10 + run)),
         ("s", Field::String(format!("r{run}"))),
+        ("u", Field::Unsigned(u64::try_from(time).unwrap())),
     ]
     .into_iter()
     .enumerate()
@@ -680,7 +681,7 @@ proptest! {
         runs in proptest::collection::vec(run(), 1..6),
     ) {
         type Model = BTreeMap<(Stamp, Tags), BTreeMap<String, Field>>;
-        let mut store = Store::default();
+        let mut store = Store::unsigned();
         let mut model = Model::new();
         for (at, run) in runs.iter().enumerate() {
             let mut body = String::new();
