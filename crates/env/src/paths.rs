@@ -49,14 +49,20 @@ impl Paths {
     /// folder is resolved as [`Paths::resolve`] gives it, and a path is under a folder
     /// when the folder is the file at the path or a directory that holds it, by the
     /// file and not by its name: a name in other case on a file system that ignores
-    /// case, and a bind mount, reach the same folder. Each call takes the file at each
-    /// resolved folder again, so a folder that a program removes holds nothing, and a
-    /// hidden file that a write replaces stays hidden. A path also fails with
-    /// [`Error::Hidden`] when it resolves under the resolved path of a hidden folder,
-    /// also when nothing is there, or under the file that was there at this call. The
-    /// limits of `self` hold too, so a handle never reaches more than the one it came
-    /// from. The check and the call are two steps: a symbolic link that another program
-    /// makes between them can lead the call out.
+    /// case, and a bind mount, reach the same folder. A folder of `folders` holds a
+    /// path only while the file at its resolved path is the file that was there at
+    /// this call, so one that a program renames away, replaces, or makes again holds
+    /// nothing. Each call takes the file at each resolved hidden folder again, so a
+    /// hidden file that a write replaces, and a hidden folder made after this call,
+    /// are hidden. A path also fails with [`Error::Hidden`] when a directory on its way
+    /// is the folder that was at a hidden path at this call, so a hidden folder that a
+    /// program renames away stays hidden, but not its own listing. While nothing is at
+    /// a hidden path, a call that makes a new name in the deepest directory on its way
+    /// that is there fails with [`Error::Hidden`], also for a name that does not make
+    /// that path. A folder whose file a call cannot take holds nothing at that call.
+    /// The limits of `self` hold too, so a handle never reaches more than the one it
+    /// came from. The check and the call are two steps: a symbolic link that another
+    /// program makes between them can lead the call out.
     ///
     /// # Errors
     ///
@@ -85,8 +91,8 @@ impl Paths {
         };
         for dir in folders {
             let dir = self.driver.resolve(dir)?;
-            self.driver.key(&dir)?;
-            limit.folders.push(dir);
+            let key = self.driver.key(&dir)?;
+            limit.folders.push((dir, key));
         }
         for dir in hidden {
             let dir = self.driver.resolve(dir)?;
@@ -258,30 +264,40 @@ impl Paths {
     fn allowed(&self, path: &Path, resolved: &Path) -> Result<(), Error> {
         // The key of the file itself comes from `path`, as the call reaches it: the
         // resolved path of a new name can be longer than the host takes.
-        let mut keys: Vec<_> = self.key(path)?.into_iter().collect();
+        let own = self.key(path)?;
+        let mut dirs = Vec::new();
         for dir in resolved.ancestors().skip(1) {
-            keys.push(self.driver.key(dir)?);
+            dirs.push(self.driver.key(dir)?);
         }
-        let holds =
-            |dir: &Path| Ok(self.key(dir)?.is_some_and(|key| keys.contains(&key)));
+        let keys: Vec<_> = own.into_iter().chain(dirs.iter().copied()).collect();
         for limit in self.limits.iter() {
             for (dir, was) in &limit.hidden {
-                let named = resolved.starts_with(dir);
-                if named || was.is_some_and(|key| keys.contains(&key)) || holds(dir)? {
+                let moved = was.is_some_and(|key| dirs.contains(&key));
+                let hidden = match self.driver.key(dir) {
+                    Ok(key) => keys.contains(&key),
+                    Err(_) => own.is_none() && dirs.first() == self.above(dir).as_ref(),
+                };
+                if moved || hidden {
                     return Err(Error::Hidden);
                 }
             }
         }
         for limit in self.limits.iter() {
-            let mut inside = false;
-            for dir in &limit.folders {
-                inside = inside || holds(dir)?;
-            }
-            if !inside {
+            let held = |(dir, was): &(PathBuf, Key)| {
+                keys.contains(was) && self.driver.key(dir).ok() == Some(*was)
+            };
+            if !limit.folders.iter().any(held) {
                 return Err(Error::Outside);
             }
         }
         Ok(())
+    }
+
+    /// The key of the deepest directory above `dir` that is there.
+    fn above(&self, dir: &Path) -> Option<Key> {
+        dir.ancestors()
+            .skip(1)
+            .find_map(|dir| self.driver.key(dir).ok())
     }
 
     /// The key of the file at `dir`, or `None` when nothing is there.
@@ -297,8 +313,8 @@ impl Paths {
 /// The folders of one call of [`Paths::within`].
 #[derive(Clone, Debug)]
 struct Limit {
-    /// The resolved path of each folder.
-    folders: Vec<PathBuf>,
+    /// The resolved path of each folder, with the key of what was there.
+    folders: Vec<(PathBuf, Key)>,
     /// The resolved path of each hidden folder, with the key of what was there.
     hidden: Vec<(PathBuf, Option<Key>)>,
 }
@@ -421,7 +437,10 @@ mod tests {
     /// names `/out`. A directory that it makes is the file `dir`. A name in `/none`
     /// resolves only after a directory is made, and `/none/deep`, a link to a
     /// directory that does not resolve, never. The key of a path ignores case, and a
-    /// last name that starts with `new` resolves but has no key yet.
+    /// last name that starts with `new` resolves but has no key yet. The key of a last
+    /// name that starts with `swap` in any case takes the bytes of the file after the path, so a
+    /// write gives it a new key: after a write of `x`, `/work/swap` has the key that
+    /// `/work/swapx` had before it.
     #[derive(Debug, Default)]
     struct One(RefCell<Vec<u8>>);
 
@@ -473,7 +492,10 @@ mod tests {
             }
             let at = self.resolve(path)?;
             // FNV-1a.
-            let folded = at.as_os_str().as_encoded_bytes().to_ascii_lowercase();
+            let mut folded = at.as_os_str().as_encoded_bytes().to_ascii_lowercase();
+            if name.to_ascii_lowercase().starts_with(b"swap") {
+                folded.extend_from_slice(&self.0.borrow());
+            }
             let hash = folded
                 .iter()
                 .fold(0xcbf2_9ce4_8422_2325_u64, |hash, &byte| {
@@ -584,8 +606,11 @@ mod tests {
         assert_eq!(free.within(&new, &[]).err(), Some(Error::NotFound));
         let work = ["/work".into()];
         let paths = free.within(&work, &new).unwrap();
-        assert_eq!(reached(&paths, "/work/new"), Err(Error::Hidden));
-        assert_eq!(reached(&paths, "/work/new2"), Ok(()));
+        for path in ["/work/new", "/work/new2"] {
+            assert_eq!(reached(&paths, path), Err(Error::Hidden), "{path}");
+        }
+        assert_eq!(reached(&paths, "/work/a"), Ok(()));
+        assert_eq!(reached(&paths, "/work/b/new"), Ok(()));
         let limited = free.within(&work, &[]).unwrap();
         let refused = ["/other/new".into()];
         assert_eq!(limited.within(&work, &refused).err(), None);
@@ -593,6 +618,39 @@ mod tests {
             .within(&["/none".into()], &["/work/data".into()])
             .unwrap();
         assert_eq!(paths.read(Path::new("/none/a"), 1), Err(Error::NotFound));
+    }
+
+    #[test]
+    fn a_hidden_file_that_a_write_replaces_hides_by_its_new_key() {
+        let free = Paths::new(One::default());
+        let paths = free
+            .within(&["/work".into()], &["/work/swap".into()])
+            .unwrap();
+        free.write(Path::new("/work/a"), b"y").unwrap();
+        assert_eq!(reached(&paths, "/WORK/SWAP"), Err(Error::Hidden));
+    }
+
+    #[test]
+    fn a_hidden_folder_that_moves_hides_the_files_under_it_but_not_itself() {
+        let free = Paths::new(One::default());
+        let paths = free
+            .within(&["/work".into()], &["/work/swapx".into()])
+            .unwrap();
+        free.write(Path::new("/work/a"), b"x").unwrap();
+        assert_eq!(reached(&paths, "/work/swap/a"), Err(Error::Hidden));
+        assert_eq!(
+            paths.read(Path::new("/work/swap"), 1),
+            Ok(Found::File(b"x".into()))
+        );
+    }
+
+    #[test]
+    fn a_folder_that_is_replaced_holds_nothing() {
+        let free = Paths::new(One::default());
+        let paths = free.within(&["/work/swapx".into()], &[]).unwrap();
+        free.write(Path::new("/work/a"), b"x").unwrap();
+        assert_eq!(reached(&paths, "/work/swap/a"), Err(Error::Outside));
+        assert_eq!(reached(&paths, "/work/swapx/a"), Err(Error::Outside));
     }
 
     #[test]
