@@ -61,9 +61,8 @@ pub(crate) struct Point(Vec<u8>);
 /// A reference to a node.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Reference {
-    /// The node, or `None` when its key is a GUID or opaque, or a name that is empty
-    /// or not UTF-8, or it is a node of another server.
-    pub(crate) node: Option<Node>,
+    /// The node, or its text when [`Node`] cannot hold it.
+    pub(crate) node: Result<Node, Foreign>,
     /// The text of its browse name.
     pub(crate) name: String,
     /// The text of its display name.
@@ -72,6 +71,25 @@ pub(crate) struct Reference {
     /// Its reference type, such as `Organizes` (`i=35`), or `None` when the id of the
     /// type is not a number or a name.
     pub(crate) via: Option<Node>,
+}
+
+/// A node of a [`Reference`] that [`Node`] cannot hold.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Foreign {
+    /// Its text in the form of OPC 10000-6, 5.3.1.10, such as `ns=1;g=<guid>`.
+    pub(crate) text: String,
+    pub(crate) cause: Cause,
+}
+
+/// Why [`Node`] cannot hold a node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cause {
+    /// Its key is a GUID or opaque.
+    Key,
+    /// Its key is a name that is empty or not UTF-8.
+    Name,
+    /// It is a node of another server, or of a namespace by its URI.
+    Remote,
 }
 
 /// The node class of a [`Reference`].
@@ -362,8 +380,9 @@ impl Client {
                 answer.has(range.len())?;
                 for (offset, index) in range.enumerate() {
                     let mut first = None;
-                    let browsed = answer
-                        .browsed(offset, |found| first = first.take().or(found.node));
+                    let browsed = answer.browsed(offset, |found| {
+                        first = first.take().or(found.node.ok());
+                    });
                     if let Ok(point) = browsed {
                         self.supertypes.insert(missing[index].clone(), first);
                         points.extend(point);

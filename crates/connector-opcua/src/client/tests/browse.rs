@@ -8,7 +8,9 @@ use super::{
     Client, READ_RESPONSE, READS, RELAY, Relay, VALUE, drop_reads, long, recount_of,
     relayed, run, serve,
 };
-use crate::client::browse::{Class, Description, Page, Reference, Unit};
+use crate::client::browse::{
+    Cause, Class, Description, Foreign, Page, Reference, Unit,
+};
 use crate::client::service::{self, Item, Request};
 use crate::ffi::{self, Service, Status};
 use crate::node::{Key, Name, Node};
@@ -68,7 +70,7 @@ fn named(name: &str) -> Node {
 }
 
 fn reference(
-    node: Option<Node>,
+    node: Result<Node, Foreign>,
     via: u32,
     name: &str,
     display: &str,
@@ -125,7 +127,7 @@ fn pages(
 
 /// A browse gives each forward hierarchical reference of an Object, a Variable, or a
 /// View, with its type, names, and class, and no reference of another kind or
-/// direction. A GUID node gives no node.
+/// direction. A GUID node gives its text.
 #[test]
 fn a_browse_gives_each_hierarchical_reference_with_its_names_and_class() {
     let pages = pages(ALL, |server| {
@@ -152,23 +154,26 @@ fn a_browse_gives_each_hierarchical_reference_with_its_names_and_class() {
     assert_eq!(
         references,
         [
-            reference(Some(ns1(7001)), ORGANIZES, "a", "The A", Class::Object),
-            reference(None, ORGANIZES, "guid", "guid", Class::Object),
+            reference(Ok(ns1(7001)), ORGANIZES, "a", "The A", Class::Object),
             reference(
-                Some(ns1(7003)),
-                HAS_PROPERTY,
-                "prop",
-                "prop",
-                Class::Variable
+                Err(Foreign {
+                    text: "ns=1;g=00000001-0002-0003-0400-000000000000".to_owned(),
+                    cause: Cause::Key,
+                }),
+                ORGANIZES,
+                "guid",
+                "guid",
+                Class::Object
             ),
+            reference(Ok(ns1(7003)), HAS_PROPERTY, "prop", "prop", Class::Variable),
             reference(
-                Some(named("s;=\u{e9}")),
+                Ok(named("s;=\u{e9}")),
                 HAS_COMPONENT,
                 "speed",
                 "speed",
                 Class::Variable
             ),
-            reference(Some(ns1(7002)), ORGANIZES, "view", "view", Class::View),
+            reference(Ok(ns1(7002)), ORGANIZES, "view", "view", Class::View),
         ]
     );
 }

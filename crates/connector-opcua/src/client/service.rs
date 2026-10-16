@@ -7,6 +7,7 @@ use std::num::NonZeroU32;
 use std::ptr::{self, NonNull};
 use std::task::Poll;
 
+use super::browse::{Cause, Foreign};
 use super::{Calls, Client, READS, id_bytes};
 use crate::alloc;
 use crate::ffi::{self, Service, Status};
@@ -277,8 +278,8 @@ pub(super) struct Answer {
 
 /// A reference of a browse, copied out of its answer.
 pub(super) struct Found {
-    /// The node, or `None` when its id is not a number or a name of this server.
-    pub(super) node: Option<Node>,
+    /// The node, or its text when [`Node`] cannot hold it.
+    pub(super) node: Result<Node, Foreign>,
     /// The reference type, or `None` when its id is not a number or a name.
     pub(super) via: Option<Node>,
     pub(super) name: String,
@@ -380,9 +381,18 @@ impl Answer {
             // SAFETY: the result has `count` references, and `out` is a place to
             // write.
             unsafe { ffi::shim_browse_reference(raw, index, reference, &raw mut out) };
-            // SAFETY: each text and the name of the node borrow from the answer, which
-            // lives through the copies.
-            let node = unsafe { out.node.owned() }.filter(|_| out.local);
+            let node = match out.held {
+                // SAFETY: each text and the name of the node borrow from the answer,
+                // which lives through the copies.
+                0 => unsafe { out.node.owned() }.ok_or(Cause::Name),
+                1 => Err(Cause::Key),
+                2 => Err(Cause::Remote),
+                held => unreachable!("invariant: the shim gives no `held` of {held}"),
+            }
+            .map_err(|cause| Foreign {
+                text: text(raw, index, reference),
+                cause,
+            });
             // SAFETY: as above.
             let via = unsafe { out.via.owned() }.filter(|_| out.typed);
             // SAFETY: as above.
@@ -401,6 +411,28 @@ impl Answer {
         let point = unsafe { point.to_vec() };
         Ok((!point.is_empty()).then_some(point))
     }
+}
+
+/// Gives the text of the node of reference `reference` of result `index` of `raw`, a
+/// Browse or `BrowseNext` answer, such as `ns=1;g=<guid>`.
+///
+/// # Aborts
+///
+/// If open62541 cannot allocate it, as [`alloc::exhausted`] says.
+fn text(raw: *const c_void, index: usize, reference: usize) -> String {
+    let mut out = ffi::Bytes::default();
+    // SAFETY: the caller gives a live answer with the reference, and `out` is a place
+    // to write.
+    let status =
+        Status(unsafe { ffi::shim_browse_text(raw, index, reference, &raw mut out) });
+    if status != Status::GOOD {
+        alloc::exhausted()
+    }
+    // SAFETY: open62541 wrote `out`, which holds `length` bytes.
+    let text = unsafe { out.lossy() };
+    // SAFETY: open62541 allocated `out`, and nothing else holds it.
+    unsafe { ffi::shim_buffer_free(&raw mut out) };
+    text
 }
 
 impl Drop for Answer {

@@ -350,7 +350,7 @@ fn ns0(number: u32) -> Node {
 /// with the browse and display name `text`.
 fn reference(name: &str, text: &str, class: Class, via: u32) -> Reference {
     Reference {
-        node: Some(named(1, name)),
+        node: Ok(named(1, name)),
         name: text.to_owned(),
         display: text.to_owned(),
         class,

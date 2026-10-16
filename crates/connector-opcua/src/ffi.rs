@@ -288,8 +288,8 @@ const _: () = {
         "shim_reference.class moved"
     );
     assert!(
-        offset_of!(Reference, local) == 84,
-        "shim_reference.local moved"
+        offset_of!(Reference, held) == 84,
+        "shim_reference.held moved"
     );
     assert!(
         offset_of!(Reference, typed) == 85,
@@ -578,7 +578,7 @@ pub(crate) type Served = unsafe extern "C" fn(
 #[repr(C)]
 #[derive(Default)]
 pub(crate) struct Reference {
-    /// The node, valid only when `local`.
+    /// The node, valid only when `held` is 0.
     pub(crate) node: Node<'static>,
     /// The reference type, valid only when `typed`.
     pub(crate) via: Node<'static>,
@@ -588,8 +588,10 @@ pub(crate) struct Reference {
     pub(crate) display: Bytes,
     /// The `UA_NodeClass`.
     pub(crate) class: u32,
-    /// Whether the node is in this server, by a number or a name.
-    pub(crate) local: bool,
+    /// 0 for a node of this server by a number or a name, 1 for a node of this
+    /// server by a GUID or opaque key, and 2 for a node of another server or of a
+    /// namespace by its URI.
+    pub(crate) held: u8,
     /// Whether the reference type is by a number or a name.
     pub(crate) typed: bool,
 }
@@ -750,6 +752,12 @@ unsafe extern "C" {
         index: usize,
         out: *mut Reference,
     );
+    pub(crate) fn shim_browse_text(
+        answer: *const c_void,
+        result: usize,
+        index: usize,
+        out: *mut Bytes,
+    ) -> u32;
     pub(crate) fn shim_units_new(nodes: *const Node<'_>, count: usize) -> *mut c_void;
     pub(crate) fn shim_units_target(
         answer: *const c_void,
