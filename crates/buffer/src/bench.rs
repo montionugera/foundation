@@ -1,5 +1,5 @@
 //! `wal::Writer`, `log::Logs`, the commit task, and a header table, for the bench
-//! targets and the `alloc` test only. Not a stable surface.
+//! targets and the `alloc` and `memory` tests only. Not a stable surface.
 
 use std::num::{NonZeroU32, NonZeroU64};
 use std::{hint, iter, mem};
