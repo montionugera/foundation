@@ -55,10 +55,11 @@
   (2026-10-15T22:05:27Z,
   https://github.com/synnaxlabs/foundation/pull/2762#issuecomment-6203245390).
   (7) The thread `log` (item 9) starts from `node::Config::threads` with
-  `Threads::logged` and no dispatch, so the events of that thread go nowhere.
-  No other thread starts from `Config::threads` yet; the first one gets the dispatch
-  of the node with `Threads::logged`. The threads of `main` (`show`, `stop`, the I/O thread of each disk) get the dispatch with the
-  first event one of them writes. By `laptop.architect-2` (2026-10-15T20:38:04Z,
+  `Threads::logged` and no dispatch, so the events of that thread go nowhere. No other
+  thread starts from `Config::threads` yet; the first one gets the dispatch of the node
+  with `Threads::logged`. The threads of `main` (`show`, `stop`, the I/O thread of each
+  disk) get the dispatch with the first event one of them writes. By
+  `laptop.architect-2` (2026-10-15T20:38:04Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6201785053), with
   the thread of #2764.
   (8) P1 holds at `info`: about 1.1 µs for each run of a node and 33 KB idle. A level
