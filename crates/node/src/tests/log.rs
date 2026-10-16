@@ -73,14 +73,17 @@ impl io::Write for Panics {
     }
 }
 
-/// A writer to stderr whose first write waits 50 ms, while `slow`.
-/// A writer to stderr whose first write blocks until its receiver gets a message or
-/// drops.
-struct Gated(Option<mpsc::Receiver<()>>);
+/// A writer to stderr whose first write blocks until `free` gets a message or drops.
+/// It sends on `entered` when it blocks.
+struct Gated {
+    entered: mpsc::Sender<()>,
+    free: Option<mpsc::Receiver<()>>,
+}
 
 impl io::Write for Gated {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if let Some(free) = self.0.take() {
+        if let Some(free) = self.free.take() {
+            self.entered.send(()).unwrap_or_default();
             #[expect(
                 clippy::disallowed_methods,
                 reason = "a writer blocks the thread log"
@@ -703,7 +706,7 @@ enum Case {
 fn panics(case: Case) -> ! {
     let (_, mesh) = clock::Clock::new(os::clock());
     let (free, freed) = mpsc::channel();
-    let (entered, _blocked) = mpsc::channel();
+    let (entered, blocked) = mpsc::channel();
     let writer: Box<dyn io::Write + Send> = match case {
         Case::Stuck => Box::new(Stuck {
             lines: Lines::default(),
@@ -711,7 +714,10 @@ fn panics(case: Case) -> ! {
             free: freed,
         }),
         Case::Writes => Box::new(Panics(Lines::default())),
-        Case::Full => Box::new(Gated(Some(freed))),
+        Case::Full => Box::new(Gated {
+            entered,
+            free: Some(freed),
+        }),
         Case::Free | Case::Late | Case::Abort | Case::Json | Case::Hang => {
             Box::new(io::stderr())
         }
@@ -760,6 +766,8 @@ fn panics(case: Case) -> ! {
             drop(hold);
         }
         Case::Full => {
+            #[expect(clippy::disallowed_methods, reason = "the writer blocks first")]
+            blocked.recv().expect("the writer blocks");
             tracing::dispatcher::with_default(&log.dispatch, numbered(3, 1100));
             free.send(()).expect("the writer waits");
         }
