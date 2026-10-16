@@ -107,7 +107,7 @@
   `parse` makes one, so each `Config` holds checked names (`laptop.architect-2`,
   2026-10-16T17:27:53Z:
   https://github.com/synnaxlabs/foundation/issues/2555#issuecomment-6221027616).
-  #2888 merged first, so this change makes `Config::ca` `pub(crate)` too. `check`
+  #2888 merged first, so #2906 makes `Config::ca` `pub(crate)` too. `check`
   gives the reader of its settings and no written channel.
   `run` writes each frame of the reader to the write path of its target: one line for
   each sample time, with a field for each channel of the frame, keyed by the channel
@@ -219,7 +219,7 @@
   of a node meets it now, since a ring record of 1 MiB of 64 `u8` channels named as
   `edge.uNN` is about 13 MiB of lines (#2918). So until #2918 merges, a default node
   and a default InfluxDB 3 Core can stop the stream, and `laptop.monitor` asked for a
-  cut of a batch before such a frame in this PR (2026-10-16T20:16:04Z,
+  cut of a batch before such a frame in #2906 (2026-10-16T20:16:04Z,
   https://github.com/synnaxlabs/foundation/issues/2918#issuecomment-6223888984). #2918
   builds the split, and the cut lost, since a frame over the whole limit still stops the
   stream (`laptop.architect-2`, 2026-10-16T20:16:11Z,
