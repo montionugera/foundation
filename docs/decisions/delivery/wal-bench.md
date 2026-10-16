@@ -22,7 +22,8 @@
   closes and seals the group, with the CRC of the body, then trims and syncs as
   `Ring` does, so a time holds the cost of the group commit path for each commit
   (#2699). Lost: a second job for `Ring`, which then holds a pool that its `commit`
-  does not use.
+  does not use. Decided by `laptop.architect` (#2688, 2026-10-15T20:11:59Z):
+  https://github.com/synnaxlabs/foundation/pull/2688#issuecomment-6201316088.
   Lost: a copy of `wal.rs` in the bench through `#[path]`, which needs `entry`,
   `record`, and `crc32c` copied too and the workspace lints off; a time of
   `Buffer::append` and `committed` on a simulated file system, whose file writes hide
