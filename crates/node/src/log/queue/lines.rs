@@ -30,7 +30,7 @@ struct Inner {
     panics: Vec<Vec<u8>>,
     /// The lines that dropped since the last take.
     dropped: u64,
-    /// The lines that went into `lines` or `panics`.
+    /// The lines that came, dropped ones too.
     sent: u64,
     closed: bool,
     /// The waker of the take that waits.
@@ -48,9 +48,9 @@ pub(super) struct Batch {
 }
 
 impl Batch {
-    /// The lines of the take that came into `sent`.
+    /// The lines of the take that came into `sent`, dropped ones too.
     pub(super) fn sent(&self) -> u64 {
-        (self.lines.len() + self.panics.len()) as u64
+        (self.lines.len() + self.panics.len()) as u64 + self.dropped
     }
 }
 
@@ -94,6 +94,7 @@ impl Lines {
         let mut inner = self.lock();
         let full =
             inner.lines.len() == self.bound || line.len() > self.bytes - inner.bytes;
+        inner.sent += 1;
         if full || inner.dropped > 0 {
             inner.dropped += 1;
             wake(inner);
@@ -101,7 +102,6 @@ impl Lines {
         }
         inner.bytes += line.len();
         inner.lines.push_back(line);
-        inner.sent += 1;
         wake(inner);
     }
 
@@ -132,7 +132,7 @@ impl Lines {
         self.lock().closed
     }
 
-    /// The lines that went in, other than each line that dropped.
+    /// The lines that came, dropped ones too.
     pub(super) fn sent(&self) -> u64 {
         self.lock().sent
     }
@@ -184,10 +184,10 @@ mod tests {
         let lines = Lines::new(1, 1);
         lines.push(b"a".to_vec());
         lines.push(b"b".to_vec());
-        assert_eq!((lines.panic(b"p".to_vec()), lines.sent()), (2, 2));
+        assert_eq!((lines.panic(b"p".to_vec()), lines.sent()), (3, 3));
         let mut batch = Batch::default();
         assert_eq!(lines.take(&mut batch, Waker::noop()), Taken::Lines);
-        assert_eq!((batch.sent(), batch.dropped), (2, 1));
+        assert_eq!((batch.sent(), batch.dropped), (3, 1));
     }
 
     #[test]
@@ -197,7 +197,7 @@ mod tests {
         lines.push(b"b".to_vec());
         let mut batch = Batch::default();
         assert_eq!(lines.take(&mut batch, Waker::noop()), Taken::Lines);
-        assert_eq!((batch.sent(), batch.dropped), (0, 2));
+        assert_eq!((batch.sent(), batch.dropped), (2, 2));
         for line in [b"cc", b"dd"] {
             lines.push(line.to_vec());
             assert_eq!(lines.take(&mut batch, Waker::noop()), Taken::Lines);

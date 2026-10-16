@@ -85,10 +85,11 @@ impl Flush {
     }
 
     /// Starts the thread `log` as [`Flush::resume`] does, then blocks until the writer
-    /// has written each line that was in the queue at the call, or until `bound`
-    /// passes. Once each shard has ended, also blocks until the thread `log` has
-    /// ended, and joins it. Returns `false` when `bound` passed first or the thread
-    /// could not start. Blocks on real time: for `main` only, never in sim.
+    /// has written each line that was in the queue at the call, and the count line of
+    /// each line that had dropped, or until `bound` passes. Once each shard has ended,
+    /// also blocks until the thread `log` has ended, and joins it. Returns `false` when
+    /// `bound` passed first or the thread could not start. Blocks on real time: for
+    /// `main` only, never in sim.
     ///
     /// # Panics
     ///
@@ -197,7 +198,7 @@ struct State {
     running: bool,
     /// The thread `log` that holds `writer`.
     thread: Option<ThreadId>,
-    /// The lines of the queue that the thread `log` has written.
+    /// The lines of the queue that the thread `log` has written or counted as dropped.
     written: u64,
     /// The thread `log` that runs or ran last.
     handle: Option<Handle>,

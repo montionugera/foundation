@@ -428,6 +428,31 @@ fn a_line_that_does_not_fit_in_the_bytes_of_the_queue_drops_with_each_line_after
 }
 
 #[test]
+fn a_drop_with_no_thread_log_starts_one_for_its_count_line() {
+    let (mut sim, host) = host(1);
+    let lines = Lines::default();
+    let log = opened(&host, false, Box::new(lines.clone()));
+    let text = "x".repeat(1 << 20);
+    tracing::dispatcher::with_default(&log.dispatch, || {
+        tracing::info!(target: "test", text);
+        tracing::info!(target: "test", n = 1);
+    });
+    assert!(
+        !log.wait(Duration::ZERO),
+        "the count line waits for the thread log"
+    );
+    assert_eq!(sim.run(), Ok(()));
+    assert!(
+        log.wait(Duration::ZERO),
+        "the thread log wrote the count line"
+    );
+    assert_eq!(
+        lines.read(),
+        ["2026-01-01T00:00:00.000000Z WARN node::log: dropped lines=2 mesh_time=none"]
+    );
+}
+
+#[test]
 fn a_line_too_large_for_the_queue_wakes_the_thread_log_for_its_count_line() {
     let (mut sim, host) = host(1);
     let lines = Lines::default();
