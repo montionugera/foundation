@@ -725,7 +725,10 @@
   through each folder with no gap between the check and the open. Trigger: a tool
   that can make a link, or a server beside an untrusted writer. Decided by
   `laptop.architect-2` (2026-10-16T04:52:58Z, items 1 and 8 of
-  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208362869), after
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208362869; the
+  limits that a handle keeps and the error of a path that does not resolve,
+  2026-10-16T05:41:58Z, item 2 of
+  https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6208939762), after
   the decision of `laptop.monitor` (2026-10-16T04:51:22Z,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208345441).
   Amended (2026-10-16T05:41:58Z, #2526): `within` resolves each of its folders as

@@ -49,6 +49,7 @@ macro_rules! tests {
             within_reaches_only_its_folders,
             within_follows_a_link_out,
             within_resolves_its_folders,
+            within_gives_not_found_through_a_directory_that_is_not_there,
         );
     };
     (@each $run:ident, $($case:ident),* $(,)?) => {
@@ -295,6 +296,18 @@ fn within_work(host: &Host<'_>) -> (Paths, PathBuf) {
     let base = paths.resolve(dir).unwrap();
     let within = paths.within(&[base.join("work")], &[base.join("work/data")]);
     (within.unwrap(), base)
+}
+
+pub(crate) fn within_gives_not_found_through_a_directory_that_is_not_there(
+    host: &Host<'_>,
+) {
+    let (within, base) = within_work(host);
+    for name in ["none/x", "work/none/x", "work/data/none/x", "none/x/../.."] {
+        let path = base.join(name);
+        assert_eq!(within.read(&path, 1), Err(Error::NotFound), "{name}");
+        assert_eq!(within.write(&path, b"x"), Err(Error::NotFound), "{name}");
+        assert_eq!(host.paths.read(&path, 1), Err(Error::NotFound), "{name}");
+    }
 }
 
 pub(crate) fn within_reaches_only_its_folders(host: &Host<'_>) {

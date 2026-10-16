@@ -586,12 +586,12 @@ fn the_home_is_the_resolved_home_of_the_os() {
     assert_eq!(os::paths().home(), Some(fs::canonicalize(home).unwrap()));
 }
 
-/// The name of the `HOME` that the child of
-/// `a_home_that_is_not_there_is_as_a_resolve_gives_it` checks.
+/// The resolved home that the child of
+/// `a_home_through_a_link_that_is_not_there_is_as_a_resolve_gives_it` checks.
 const HOME: &str = "FOUNDATION_TEST_HOME";
 
 #[test]
-fn a_home_that_is_not_there_is_as_a_resolve_gives_it() {
+fn a_home_through_a_link_that_is_not_there_is_as_a_resolve_gives_it() {
     let paths = os::paths();
     #[expect(
         clippy::disallowed_methods,
@@ -602,13 +602,15 @@ fn a_home_that_is_not_there_is_as_a_resolve_gives_it() {
         return;
     }
     let scratch = Scratch::new();
-    let home = fs::canonicalize(&scratch.0).unwrap().join("user");
+    fs::create_dir(scratch.0.join("users")).unwrap();
+    symlink(scratch.0.join("users"), scratch.0.join("home")).unwrap();
+    let home = fs::canonicalize(&scratch.0).unwrap().join("users/user");
     let thread = thread::current();
     let test = thread.name().expect("invariant: libtest names the thread");
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", test])
         .env(HOME, &home)
-        .env("HOME", &home)
+        .env("HOME", scratch.0.join("home/user"))
         .output()
         .unwrap();
     let stderr = String::from_utf8(output.stderr).unwrap();
