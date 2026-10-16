@@ -89,13 +89,13 @@
   entry `n` is place `n`, its slots are not the node's, and places that name a channel
   twice give `client::Error::Repeated` (`laptop.architect`, 2026-10-16T03:12:49Z, item
   1 of https://github.com/synnaxlabs/foundation/pull/2802#issuecomment-6207214002;
-  #2808). Its key
-  is `u32::MAX`, and `Interner::intern` panics before it gives that key, so a lens that
-  `hub` matches by `set.key()` never takes it for a node's set (`laptop.architect`,
-  2026-10-16T06:47:02Z,
+  #2808). Its key is `u32::MAX`, and `Interner::intern` panics before it gives that
+  key, so a lens that `hub` matches by `set.key()` never takes it for a node's set
+  (`laptop.architect`, 2026-10-16T06:47:02Z,
   https://github.com/synnaxlabs/foundation/issues/2808#issuecomment-6209795527). The
   decoder and `Frames::open` take the end of the stream as `None`, and a message that
-  the decoder refuses leaves it as it was (round 1 of #2839). The plan
+  the decoder refuses leaves it as it was (`laptop.architect`, 2026-10-16T07:19:58Z,
+  https://github.com/synnaxlabs/foundation/pull/2839#issuecomment-6210275086). The plan
   (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204280445) was
   approved by `laptop.architect` at 2026-10-15T23:19:38Z
   (https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6204306531).
