@@ -89,7 +89,8 @@
   can come from inside an event. While a shard runs, the hook waits up to 1 s and calls
   the hook before it only when the log wrote each line within that bound. After each
   shard has ended, it calls the hook before it at once, and the line waits for the next
-  `Flush::wait`. Decision by `laptop.monitor`
+  `Flush::wait`. A panic of the writer, on the thread `log`, also calls it at once,
+  since only that thread writes the line. Decision by `laptop.monitor`
   (2026-10-15T21:39:25Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202838819). The
   plan by `laptop.architect-2` (2026-10-15T21:43:54Z,
@@ -97,6 +98,8 @@
   change (2026-10-16T03:22:23Z,
   https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207344849), and
   the panic hook with no thread start (2026-10-16T03:48:16Z,
-  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207638284). Lost:
+  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207638284), and
+  no wait on the thread `log` (2026-10-16T04:04:09Z,
+  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207813688). Lost:
   one thread for the life of the log, which makes each sim run end as `Stuck`; a write
   on the thread of `join`, which loses the bound of `main` on a stuck writer.
