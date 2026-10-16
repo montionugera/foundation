@@ -19,28 +19,31 @@
   ```
 
   1. **Endpoint.** `address` is a host and a port, such as `"plc:502"`, port 502 when it
-     has none. A host in brackets is an IPv6 address (`"[fd00::1]:502"`), with an
-     optional zone of letters, digits, `-`, `.`, and `_` (`"[fe80::1%eth0]"`; #1927).
-     When #1927 lands, this grammar comes from the host and port type of `connector`
-     (#1218), and the copy here goes (`laptop.architect-2`, 2026-10-16T00:58:00Z:
-     https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205573301; the
-     zone cases, 2026-10-16T00:58:33Z:
-     https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205579706). Each
-     other host has only letters, digits, `-`, `.`, and `_`, as Docker Compose names
-     such as `plc_1` resolve. No part between dots is empty, longer than 63 characters,
-     or starts or ends with `-`. A host with a number last (digits, or `0x` or `0X` and
-     hex digits) is an IPv4 address of four plain parts, as a resolver reads `"10.1"` as
-     10.0.0.1, `"010"` as octal, and `"10.0xa"` as 10.0.0.10. The port is 1 to 65535
-     (`laptop.architect-2`, 2026-10-16T00:25:03Z:
+     has none. The port is 1 to 65535 (`laptop.architect-2`, 2026-10-16T00:25:03Z:
      https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205157567). The
-     host rules: `laptop.architect-2`, 2026-10-16T00:41:10Z:
+     host is an `env::net::host::Host`, parsed at plan, and an IPv6 host is in
+     brackets (`"[fd00::1]:502"`, `"[fe80::1%2]"`). ENV SEAMS gives its grammar: a zone
+     is an interface number, a name is at most 253 bytes, keeps a final dot, and goes
+     to lowercase, and a host with a number last is a plain IPv4 address
+     (`box1.builder-2`, 2026-10-16T03:24:43Z, ruling
+     https://github.com/synnaxlabs/foundation/issues/1927#issuecomment-6206963417; the
+     modbus copy goes:
+     https://github.com/synnaxlabs/foundation/issues/1218#issuecomment-6207374015). The
+     split of the host and the port stays here until the host and port type of
+     `connector` (#1218) takes it (`laptop.architect-2`, 2026-10-16T00:58:00Z:
+     https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205573301). Before
+     #1927, the kind had its own host rules (`laptop.architect-2`,
+     2026-10-16T00:41:10Z:
      https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205359213, and
      2026-10-16T00:50:34Z:
-     https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205484684. The run
-     resolves the host through `env::net`. `unit` is optional, 0 to 255, default 1 (C2
-     item 1). Lost: the host rule of a library (`rustls_pki_types::ServerName`), which
-     takes `"10.0xa"` and `"0xa000001"` as names that a resolver reads as IPv4
-     addresses, and refuses a zone (#1218 has the shared host type).
+     https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205484684; the
+     zone cases, 2026-10-16T00:58:33Z:
+     https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205579706). The
+     run resolves the host through `env::net`. `unit` is optional, 0 to 255, default 1
+     (C2 item 1). Lost: the host rule of a library (`rustls_pki_types::ServerName`),
+     which takes `"10.0xa"` and `"0xa000001"` as names that a resolver reads as IPv4
+     addresses, and refuses a zone; and a zone by interface name (`"%eth0"`), which
+     ENV SEAMS refuses until a user needs it.
   2. **A read.** `table` is `coil`, `discrete`, `holding`, or `input`, as a string or
      a reference (HCL REFERENCES; `laptop.architect-2`, 2026-10-16T00:41:10Z, link
      above), as `order` is. `address` is the address of the protocol, from 0. Lost:

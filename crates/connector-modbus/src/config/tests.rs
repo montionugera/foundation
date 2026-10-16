@@ -122,7 +122,7 @@ fn reads_each_attribute_and_each_read() {
     assert_eq!(
         parse(&config(string("10.0.0.7:1502"), &others, reads)),
         Ok(Config {
-            host: "10.0.0.7".into(),
+            host: "10.0.0.7".parse().expect("a host"),
             port: 1502,
             unit: 17,
             rate: Rate::new(10, 1).expect("a rate"),
@@ -158,7 +158,7 @@ fn reads_the_example_of_the_record() {
     assert_eq!(
         parse(&example),
         Ok(Config {
-            host: "plc".into(),
+            host: "plc".parse().expect("a host"),
             port: 502,
             unit: 1,
             rate: Rate::new(10, 1).expect("a rate"),
@@ -246,35 +246,31 @@ fn gives_another_config_for_each_other_value() {
 fn gives_port_502_unit_1_and_the_big_order_by_default() {
     let config = parse(&config(string("plc"), &[], vec![temp()])).expect("a config");
     assert_eq!(
-        (&*config.host, config.port, config.unit, config.order),
+        (
+            &*config.host.to_string(),
+            config.port,
+            config.unit,
+            config.order
+        ),
         ("plc", 502, 1, Order::Big)
     );
 }
 
 #[test]
-fn reads_a_host_of_letters_digits_dashes_dots_and_underscores() {
-    for (address, host) in [
-        ("plc_1:502", "plc_1"),
-        ("Line-2.site.local:502", "Line-2.site.local"),
-        ("10.0.0.2:502", "10.0.0.2"),
-    ] {
-        let config = parse(&config(string(address), &[], vec![temp()]));
-        let config = config.expect("a config");
-        assert_eq!((&*config.host, config.port), (host, 502), "{address}");
-    }
-}
-
-#[test]
-fn reads_an_ipv6_host_in_brackets() {
+fn reads_each_form_of_a_host() {
     for (address, host, port) in [
+        ("plc_1:502", "plc_1", 502),
+        ("Line-2.site.local:1502", "line-2.site.local", 1502),
+        ("plc.local.", "plc.local.", 502),
+        ("10.0.0.2:502", "10.0.0.2", 502),
         ("[fd00::1]:1502", "fd00::1", 1502),
         ("[fd00::1]", "fd00::1", 502),
-        ("[fe80::1%eth0.100]:502", "fe80::1%eth0.100", 502),
-        ("[fe80::1%2]", "fe80::1%2", 502),
+        ("[fe80::1%2]:502", "fe80::1%2", 502),
     ] {
         let config = parse(&config(string(address), &[], vec![temp()]));
         let config = config.expect("a config");
-        assert_eq!((&*config.host, config.port), (host, port), "{address}");
+        let read = (config.host.to_string(), config.port);
+        assert_eq!(read, (host.into(), port), "{address}");
     }
 }
 
@@ -295,10 +291,6 @@ fn refuses_a_bad_address() {
         ),
         (string(""), "the address \"\" has no host".into()),
         (string(":502"), "the address \":502\" has no host".into()),
-        (
-            string("[]:502"),
-            "the address \"[]:502\" has no host".into(),
-        ),
         (string("plc:"), port("plc:")),
         (string("plc:65536"), port("plc:65536")),
         (string("plc:0"), port("plc:0")),
@@ -336,92 +328,34 @@ fn refuses_a_bad_address() {
     }
 }
 
+/// One host of each problem that `env::net::host::Host` gives, and each form in
+/// brackets that is not an IPv6 address.
 #[test]
 fn refuses_a_host_that_is_not_a_name_or_an_ip_address() {
     let fix = "Write a host and a port, such as \"plc:502\" or \"[fd00::1]:502\"";
-    let host = |address: &str| {
-        format!(
-            "the address {address:?} has a host with a character other than a letter, \
-             a digit, `-`, `.`, or `_`"
-        )
-    };
-    for (address, message) in [
-        (
-            string("[plc]:502"),
-            "the address \"[plc]:502\" has \"plc\" in brackets, which is not an IPv6 \
-             address"
-                .into(),
-        ),
-        (
-            string("[10.0.0.2]:502"),
-            "the address \"[10.0.0.2]:502\" has \"10.0.0.2\" in brackets, which is \
-             not an IPv6 address"
-                .into(),
-        ),
-        (
-            string("[fe80::1%]:502"),
-            "the address \"[fe80::1%]:502\" has the zone \"\", which is not an \
-             interface name or number"
-                .into(),
-        ),
-        (
-            string("[fe80::1%eth 0]"),
-            "the address \"[fe80::1%eth 0]\" has the zone \"eth 0\", which is not an \
-             interface name or number"
-                .into(),
-        ),
-        (
-            string("[plc%eth0]"),
-            "the address \"[plc%eth0]\" has \"plc%eth0\" in brackets, which is not \
-             an IPv6 address"
-                .into(),
-        ),
-        (
-            string("[[fd00::1]:502"),
-            "the address \"[[fd00::1]:502\" has \"[fd00::1\" in brackets, which is \
-             not an IPv6 address"
-                .into(),
-        ),
-        (string("plc :502"), host("plc :502")),
-        (string("pl c"), host("pl c")),
-        (string("plc/x:502"), host("plc/x:502")),
-        (string("plc]:502"), host("plc]:502")),
-        (string("p[lc:502"), host("p[lc:502")),
-    ] {
-        assert_eq!(
-            parse(&config(address.clone(), &[], vec![temp()])),
-            Err(vec![refused("modbus.bad-address", 1, &message, fix)]),
-            "{address:?}"
-        );
-    }
-}
-
-#[test]
-fn refuses_a_host_that_no_resolver_finds() {
-    let fix = "Write a host and a port, such as \"plc:502\" or \"[fd00::1]:502\"";
+    let ipv6 = "has a host with `:` or brackets that is not an IPv6 address";
+    let zone = "has a zone that is not an interface number from 0 to 4294967295";
+    let character =
+        "has a host with a character other than a letter, a digit, `-`, `.`, or `_`";
     let part = "has a host with a part between dots that is empty, longer than 63 \
                 characters, or starts or ends with `-`";
     let number = "has a host with a number last that is not an IPv4 address";
-    let long = format!("{}.local:502", "a".repeat(64));
+    let long = format!("{}local:502", "a.".repeat(125));
     for (address, problem) in [
-        (".:502", part),
-        ("..", part),
+        ("[]:502", ipv6),
+        ("[plc]:502", ipv6),
+        ("[10.0.0.2]:502", ipv6),
+        ("[plc%2]", ipv6),
+        ("[[fd00::1]:502", ipv6),
+        ("[fe80::1%]:502", zone),
+        ("[fe80::1%eth0]", zone),
+        ("pl c", character),
+        ("plc]:502", character),
         ("a..b:502", part),
-        (".plc", part),
-        ("plc.", part),
         ("-plc:502", part),
-        ("plc-", part),
-        (&long, part),
-        ("192.168.001.010:502", number),
-        ("010.000.000.002", number),
+        (&long, "has a host longer than 253 characters"),
         ("10.1:502", number),
-        ("0x0a.0.0.2:502", number),
-        ("167772162:502", number),
-        ("10.0.0.256", number),
         ("0xa000001:502", number),
-        ("10.0xa", number),
-        ("10.0XA", number),
-        ("plc.0x", number),
     ] {
         let message = format!("the address {address:?} {problem}");
         assert_eq!(
@@ -429,15 +363,6 @@ fn refuses_a_host_that_no_resolver_finds() {
             Err(vec![refused("modbus.bad-address", 1, &message, fix)]),
             "{address:?}"
         );
-    }
-}
-
-#[test]
-fn reads_a_part_of_63_characters_and_a_number_that_is_not_last() {
-    let long = format!("{}.local", "a".repeat(63));
-    for host in [&*long, "10.0.0.2", "1plc", "2.plc", "plc.0xg", "0x1.plc"] {
-        let config = parse(&config(string(host), &[], vec![temp()]));
-        assert_eq!(config.map(|config| config.host), Ok(host.into()), "{host}");
     }
 }
 
@@ -726,15 +651,16 @@ proptest! {
         port in 1..=u16::MAX,
     ) {
         let (ipv4, ipv6) = (ipv4.to_string(), ipv6.to_string());
+        let lower = name.to_ascii_lowercase();
         for (address, want) in [
-            (format!("{name}:{port}"), (&*name, port)),
-            (name.clone(), (&*name, 502)),
+            (format!("{name}:{port}"), (&*lower, port)),
+            (name.clone(), (&*lower, 502)),
             (format!("{ipv4}:{port}"), (&*ipv4, port)),
             (format!("[{ipv6}]:{port}"), (&*ipv6, port)),
         ] {
             let config = parse(&config(string(&address), &[], vec![temp()]));
             let config = config.expect("a config");
-            prop_assert_eq!((&*config.host, config.port), want);
+            prop_assert_eq!((&*config.host.to_string(), config.port), want);
         }
     }
 }
