@@ -48,6 +48,23 @@ impl Host {
             Kind::Ip(_) | Kind::Scoped(..) => None,
         }
     }
+
+    /// The IP address, with no zone, or `None` for a name.
+    ///
+    /// ```
+    /// let ip: env::net::host::Host = "fe80::1%2".parse().expect("an address");
+    /// assert_eq!(ip.ip(), Some("fe80::1".parse().expect("an address")));
+    /// let name: env::net::host::Host = "plc".parse().expect("a name");
+    /// assert_eq!(name.ip(), None);
+    /// ```
+    #[must_use]
+    pub fn ip(&self) -> Option<IpAddr> {
+        match &self.0 {
+            Kind::Ip(ip) => Some(*ip),
+            Kind::Scoped(ip, _) => Some((*ip).into()),
+            Kind::Name(_) => None,
+        }
+    }
 }
 
 impl FromStr for Host {
