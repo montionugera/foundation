@@ -316,7 +316,9 @@
   `home::reader::Next::Behind`, and `hub::reader::Ended::Behind`. Reply kind 3 stays
   retired: where a reply is due, a message of kind 3 gives `Error::Kind { kind: 3 }`,
   so a reader stops the stream as `MALFORMED` and a program's reader gives
-  `Error::Reply` of it. The home never finishes a reader session, so
+  `Error::Reply` of it. Kind 3 stays reserved: no new reply takes it, so a peer of
+  another version never reads a new reply as `Behind` (`laptop.monitor` for the
+  person, 2026-10-16T21:05Z). The home never finishes a reader session, so
   `wire::hub::Reader::finished` gives the error of each finish, `Unfinished` inside a
   body and `Finished` at each other point, in place of `Reader::end`
   (`laptop.architect`,
