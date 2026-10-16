@@ -2,16 +2,17 @@
 //! of a sim node. Run with `cargo bench -p connector-influx --bench batch`.
 //!
 //! For each shape, a writer writes frames of an index and `channels` channels of the
-//! shape's types in turn (`f64` only, `MIXED`, or `TEXT`), with `samples` sample times
-//! each, and a complete reader reads them. Each frame holds `present` of the channels,
-//! a different `present` in turn, so the frames hold each channel once before they
-//! hold one again. The batch writes to a bucket, so a `u64` channel is a `u` field. Each
-//! round adds `FRAMES` frames to one batch with `Batch::add`, then takes its body with
-//! `Batch::take`, as the send loop does for one request. Only these two calls are
-//! timed. The figures are per frame: the ns of the warm-up rounds, in which the batch
-//! first sees each channel; the ns of each later round, at percentiles over the rounds;
-//! the ns for each sample of a channel in the frame at p50; and the allocations. It
-//! checks that `Batch::add` makes no allocation after the warm-up rounds.
+//! shape's types in turn (`f64` only, `MIXED`, `STRING`, `UUID`, `BYTES`, or `TEXT`),
+//! with `samples` sample times each, and a complete reader reads them. Each frame holds
+//! `present` of the channels, a different `present` in turn, so the frames hold each
+//! channel once before they hold one again. The batch writes to a bucket, so a `u64`
+//! channel is a `u` field. Each round adds `FRAMES` frames to one batch with
+//! `Batch::add`, then takes its body with `Batch::take`, as the send loop does for one
+//! request. Only these two calls are timed. The figures are per frame: the ns of the
+//! warm-up rounds, in which the batch first sees each channel; the ns of each later
+//! round, at percentiles over the rounds; the ns for each sample of a channel in the
+//! frame at p50; and the allocations. It checks that `Batch::add` makes no allocation
+//! after the warm-up rounds.
 //!
 //! Then, for each count in `NEW`, it times `Batch::add` of one frame of that many
 //! channels, one sample time each, on a new batch, so each channel is new to it.
@@ -342,8 +343,8 @@ fn write(
 /// The raw series of `samples` samples of `data_type` from `first`, of the index when
 /// `index`, each nanosecond after the one before it. A variable sample is a text with
 /// two quotes, which a series of one sample repeats 1 to 64 times by its entry `at`, so
-/// it is 9 to 704 bytes and the same in each frame. A longer series has the text once,
-/// so the ring of the sim hub holds it.
+/// it is 9 to 576 bytes, 11 to 704 as written, and the same in each frame. A longer
+/// series has the text once, so the ring of the sim hub holds it.
 fn raw(data_type: Type, at: usize, index: bool, first: i64, samples: usize) -> Vec<u8> {
     let small = |sample: usize| u8::try_from(sample % 200).expect("fits");
     if let Some(form) = codec::Variable::of(data_type) {
