@@ -243,19 +243,14 @@ fn gives_another_config_for_each_other_value() {
 }
 
 #[test]
-fn gives_another_config_for_the_case_of_a_host_and_for_a_zone() {
-    for (address, other) in [
-        ("Line-2.site.local:502", "line-2.site.local:502"),
-        ("[fe80::1%eth0]", "[fe80::1]"),
-    ] {
-        let parse = |address| parse(&config(string(address), &[], vec![temp()]));
-        let (parsed, other) = (parse(address), parse(other));
-        assert_ne!(
-            parsed.expect("a config"),
-            other.expect("a config"),
-            "{address}"
-        );
-    }
+fn gives_another_config_for_a_zone_and_the_same_for_the_case_of_a_name() {
+    let parse =
+        |address| parse(&config(string(address), &[], vec![temp()])).expect("a config");
+    assert_ne!(parse("[fe80::1%2]"), parse("[fe80::1]"));
+    assert_eq!(
+        parse("Line-2.site.local:502"),
+        parse("line-2.site.local:502")
+    );
 }
 
 #[test]
