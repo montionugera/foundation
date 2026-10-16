@@ -55,8 +55,8 @@ impl Paths {
     ///
     /// The error of [`Paths::resolve`] for a path of `folders` or `hidden`.
     /// [`Error::NotFound`] when a folder of `hidden` is not there, else [`Error::Io`]
-    /// when it is not a directory. A folder of `hidden` that the limits of `self`
-    /// refuse needs no check.
+    /// when it is not a directory, or when this process cannot search it. A folder of
+    /// `hidden` that the limits of `self` refuse needs no check.
     ///
     /// ```
     /// use std::path::PathBuf;
@@ -83,12 +83,8 @@ impl Paths {
         // that ignores case then misses the hidden folder in another case. Only a
         // directory at `dir` resolves `dir/..`, and the resolve opens no file.
         for dir in &limit.hidden {
-            match self.check(dir) {
-                Err(Error::Outside | Error::Hidden) => {}
-                checked => {
-                    checked?;
-                    self.driver.resolve(&dir.join(".."))?;
-                }
+            if self.allowed(dir).is_ok() {
+                self.driver.resolve(&dir.join(".."))?;
             }
         }
         Ok(Self {
@@ -190,7 +186,9 @@ impl Paths {
 
     /// Makes the directory at `path`. Gives `Ok` when a directory is there already. It
     /// makes no directory above it, and none through a symbolic link at `path`. A
-    /// directory that it makes gives the group and other users no access.
+    /// directory that it makes gives the group and other users no access. On a handle
+    /// of [`Paths::within`], a path that does not resolve passes the limits by its own
+    /// place.
     ///
     /// # Errors
     ///
@@ -209,9 +207,10 @@ impl Paths {
     /// ```
     pub fn make_dir(&self, path: &Path) -> Result<(), Error> {
         match (self.check(path), path.parent(), path.file_name()) {
-            // A link to nothing does not resolve. The call makes nothing through a
-            // link at `path`, so the place of the link is what the limits check.
-            (Err(Error::NotFound), Some(dir), Some(name)) => {
+            // A link to nothing or a loop does not resolve. The call makes nothing
+            // through a link at `path`, so the place of the link is what the limits
+            // check.
+            (Err(Error::NotFound | Error::Io { .. }), Some(dir), Some(name)) => {
                 let dir = if dir.as_os_str().is_empty() {
                     Path::new(".")
                 } else {

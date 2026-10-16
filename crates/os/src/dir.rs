@@ -8,8 +8,8 @@ use std::path::Path;
 use rustix::fs::{self, AtFlags, Dir, FileType};
 use rustix::io::{self, Errno};
 
-/// Only this user has access to a directory that [`make`] makes.
-const MODE: fs::Mode = fs::Mode::from_raw_mode(0o700);
+/// The mode of a new directory: it gives the group and other users no access.
+pub(crate) const MODE: fs::Mode = fs::Mode::from_raw_mode(0o700);
 
 /// Makes directory `path` of `at`. A directory there, also through a link, gives
 /// `Ok`, and anything else there gives `EXIST`.

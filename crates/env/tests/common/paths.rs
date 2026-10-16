@@ -60,7 +60,7 @@ macro_rules! tests {
             a_directory_under_one_that_is_not_there_is_not_found,
             a_directory_on_a_file_or_a_link_to_nothing_fails,
             a_directory_outside_is_not_made,
-            within_makes_no_directory_on_a_link_to_nothing,
+            within_makes_no_directory_on_a_link_that_does_not_resolve,
             a_directory_on_a_link_to_nothing_and_a_dot_is_not_found,
             a_directory_on_a_link_to_nothing_and_a_slash_fails,
             a_directory_on_a_file_and_a_slash_fails,
@@ -69,6 +69,8 @@ macro_rules! tests {
             a_directory_of_a_dot_and_a_slash_is_not_made,
             within_refuses_a_hidden_folder_that_is_a_file,
             within_checks_no_hidden_folder_past_its_limits,
+            a_directory_through_a_file_fails,
+            a_directory_of_the_root_is_ok,
         );
     };
     (@each $run:ident, $($case:ident),* $(,)?) => {
@@ -539,13 +541,39 @@ pub(crate) fn a_directory_outside_is_not_made(host: &Host<'_>) {
     assert_eq!(within.make_dir(&dir.join("work/new")), Ok(()));
 }
 
-pub(crate) fn within_makes_no_directory_on_a_link_to_nothing(host: &Host<'_>) {
+pub(crate) fn within_makes_no_directory_on_a_link_that_does_not_resolve(
+    host: &Host<'_>,
+) {
     let (within, base) = within_work(host);
-    let link = base.join("work/to-none");
-    (host.make_link)(&link, &base.join("work/none"));
-    let free = host.paths.make_dir(&link);
-    assert_eq!(free, Err(Error::Io { code: EXISTS }), "free");
-    assert_eq!(within.make_dir(&link), free, "within");
+    for (name, target) in [
+        ("to-none", "work/none"),
+        ("loop", "work/loop"),
+        ("to-bad", "work/a.hcl/x"),
+    ] {
+        let link = base.join("work").join(name);
+        (host.make_link)(&link, &base.join(target));
+        let free = host.paths.make_dir(&link);
+        assert_eq!(free, Err(Error::Io { code: EXISTS }), "free {name}");
+        assert_eq!(within.make_dir(&link), free, "within {name}");
+    }
+}
+
+pub(crate) fn a_directory_through_a_file_fails(host: &Host<'_>) {
+    let (paths, dir) = (host.paths, host.dir);
+    paths.write(&dir.join("data"), b"x").unwrap();
+    let made = paths.make_dir(&dir.join("data/new"));
+    assert_eq!(
+        made,
+        Err(Error::Io {
+            code: NOT_DIRECTORY
+        })
+    );
+}
+
+pub(crate) fn a_directory_of_the_root_is_ok(host: &Host<'_>) {
+    for root in ["/", "//"] {
+        assert_eq!(host.paths.make_dir(Path::new(root)), Ok(()), "{root}");
+    }
 }
 
 pub(crate) fn a_directory_on_a_link_to_nothing_and_a_dot_is_not_found(host: &Host<'_>) {

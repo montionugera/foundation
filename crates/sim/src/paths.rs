@@ -321,12 +321,12 @@ impl Paths {
 }
 
 /// The directory and the last name of `path`, or `None` when that name, with no end
-/// in `/`, is `.` or `..`, which `Path` drops or gives no name for.
+/// in `/`, is `.`, which `Path` drops, or `..`, for which `Path` gives no name.
 fn last(path: &Path) -> Option<(&Path, &OsStr)> {
     let bytes = path.as_os_str().as_encoded_bytes();
     let end = bytes.iter().rposition(|&byte| byte != b'/')?;
     let name = bytes[..=end].rsplit(|&byte| byte == b'/').next();
-    if matches!(name, Some(b"." | b"..")) {
+    if name == Some(b".") {
         return None;
     }
     let dir = path.parent()?;

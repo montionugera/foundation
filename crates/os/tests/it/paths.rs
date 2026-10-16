@@ -92,6 +92,21 @@ fn within_hides_a_folder_that_this_user_cannot_list() {
 }
 
 #[test]
+fn within_refuses_a_hidden_folder_that_this_user_cannot_search() {
+    for bits in [0o600, 0o000] {
+        let scratch = Scratch::new();
+        let base = fs::canonicalize(&scratch.0).unwrap();
+        let data = base.join("data");
+        fs::create_dir(&data).unwrap();
+        fs::set_permissions(&data, Permissions::from_mode(bits)).unwrap();
+        let within = os::paths().within(slice::from_ref(&base), slice::from_ref(&data));
+        let error = within.as_ref().err().copied();
+        fs::set_permissions(&data, Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(error, Some(Error::Io { code: 13 }), "{bits:o}");
+    }
+}
+
+#[test]
 fn within_refuses_a_hidden_pipe_and_ends() {
     let scratch = Scratch::new();
     let base = fs::canonicalize(&scratch.0).unwrap();
