@@ -13,13 +13,15 @@
   https://github.com/synnaxlabs/foundation/issues/2932#issuecomment-6224964525).
   `laptop.architect` approved the boundary (2026-10-16T21:33:33Z,
   https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225122027).
-  Until #2923 adds a CI run on Windows, `sdk` builds only on Linux and macOS.
+  Until #2923 adds a CI run on Windows, `sdk` builds only on Linux and macOS
+  (https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6226045539).
   `Client::connect(&Node, Subject)` takes the node (its UDP addresses, its key, and
   its public key) apart from the subject (its name and private key): one node serves
   many subjects, and a node can listen on more than one address. `laptop.architect-2`
   decided on 2026-10-16 at 21:39 UTC
   (https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225208118).
-  `Client::close` blocks until the close of the session goes out and the thread ends.
+  `Client::close` blocks until the close of the session goes out and the thread ends,
+  then up to 3 s more while the transport drains each close.
   Drop only signals the end, and a panic of the thread after a drop goes to the panic
   hook of the process (`laptop.architect-2`, 2026-10-16T21:46:22Z,
   https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225303374). A read

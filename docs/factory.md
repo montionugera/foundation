@@ -77,8 +77,8 @@ map needs `laptop.architect`.
 `program` comes out of `hub` and speaks its wire contract, so it has the architect of
 `hub` (`laptop.director`, 2026-10-15T18:26:51Z,
 https://github.com/synnaxlabs/foundation/pull/2724#issuecomment-6199316359).
-`laptop.architect-2` is the architect of `sdk` (`laptop.architect-2`, 2026-10-16T21:06Z,
-https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6224695365).
+`laptop.architect-2` is the architect of `sdk` (`laptop.architect`, 2026-10-16 22:08
+UTC, https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225642605).
 
 ## Milestones
 
