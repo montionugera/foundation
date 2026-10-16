@@ -839,4 +839,6 @@
   2026-10-16T15:45:37Z,
   https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219155635; the check
   of each path that does not resolve by its own place, 2026-10-16T16:02:28Z,
-  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219471401).
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219471401; the error
+  of its resolve after the make, 2026-10-16T16:26:58Z,
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219956876).
