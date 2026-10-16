@@ -493,13 +493,13 @@ pub(crate) struct Writer {
 
 impl Writer {
     /// The offset where the next record starts.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "sim"))]
     pub(crate) fn head(&self) -> u64 {
         self.head
     }
 
     /// The offset of the tail.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "sim"))]
     pub(crate) fn tail(&self) -> u64 {
         self.tail
     }
@@ -571,8 +571,9 @@ impl Writer {
 
     /// The high mark of the trim of the next commit, when that commit is as large
     /// as the records not yet synced. A path whose holder is before it needs a
-    /// carry now. So a path is carried once each lead less step bytes: up to twice
-    /// each lap on a ring whose step is half its lead.
+    /// carry now. So a path is carried once each lead less step bytes, where a reach
+    /// at the low mark carried it once each lead bytes: up to twice as often on a
+    /// ring whose step is half its lead.
     pub(crate) fn reach(&self) -> u64 {
         let queued = self.queued();
         let (_, high) = self.marks(self.head.saturating_add(queued), queued);
@@ -2065,8 +2066,9 @@ mod tests {
             assert_eq!(writer.trimmed(None), None);
         }
 
-        /// Once the records of the test before sync, the headroom is 15 blocks
-        /// again, so the low mark is at 20 blocks and the high mark at 28.5.
+        /// A ring of 32 blocks: once a record of 4 blocks queued after a skip of 3
+        /// blocks and a record of 1 block sync, the headroom is 15 blocks again, so
+        /// the low mark is at 20 blocks and the high mark at 28.5.
         #[test]
         fn trimmed_gives_back_the_headroom_of_a_queued_wrap_once_it_syncs() {
             let mut writer = Writer::empty(wide(), 0);
@@ -2184,30 +2186,30 @@ mod tests {
             assert_eq!(turns(256, [20, 28], 8), None);
         }
 
-        /// Fills a ring of 1024 blocks with 398 commits of 50 records of one block,
-        /// then runs the two commits of `then`. Each record comes while the commit
-        /// before it syncs. A step of 100 blocks is two commits, so the tail is at
-        /// the low mark after one commit in three: after the trim of the first
-        /// commit of `then`.
-        fn stepped(then: [usize; 2]) -> Option<(usize, Full)> {
+        /// Fills a ring of 1024 blocks with `fill` commits of 50 records of one
+        /// block, then runs the commits of `then`. Each record comes while the
+        /// commit before it syncs. A step of 100 blocks is two commits, so the tail
+        /// is at the low mark before each commit whose number is a multiple of three.
+        fn stepped(fill: usize, then: [usize; 2]) -> Option<(usize, Full)> {
             let layout = Layout::new(1024 * 4096, BODY_MAX).expect("a ring");
-            let counts = iter::repeat_n(50, 398).chain(then);
+            let counts = iter::repeat_n(50, fill).chain(then);
             steady(layout, counts.map(|count| (vec![8; count], vec![])))
         }
 
-        /// The headroom of a tail at the low mark is free at the release of the
-        /// next trim, after the next commit is in the ring and before the one after
-        /// it.
+        /// With the tail at the low mark, the headroom is free at the release of
+        /// the next trim, after the next commit is in the ring and before the one
+        /// after it. So that commit fits in twice the commit before it, and it and
+        /// the next fit in three times it.
         #[test]
         fn the_two_commits_after_a_trim_fit_in_three_times_its_commit() {
-            assert_eq!(stepped([100, 50]), None);
-            assert_eq!(stepped([75, 75]), None);
+            assert_eq!(stepped(396, [100, 50]), None);
+            assert_eq!(stepped(398, [75, 75]), None);
             let full = Full {
                 needed: 4096,
                 free: 0,
             };
-            assert_eq!(stepped([101, 50]), Some((399, full)));
-            assert_eq!(stepped([75, 76]), Some((399, full)));
+            assert_eq!(stepped(396, [101, 50]), Some((396, full)));
+            assert_eq!(stepped(398, [75, 76]), Some((399, full)));
         }
 
         /// Fills a ring of 1024 blocks with `fill` commits of 50 records of one

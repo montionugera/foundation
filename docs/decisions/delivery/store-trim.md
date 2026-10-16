@@ -62,31 +62,30 @@
   at each wrap), and twice those records plus one largest record (it refused each commit
   that was more than one largest record over the commit before it). Each figure that
   follows is measured with each commit placed while the one before it syncs. On a full
-  ring of 1024 blocks after commits of 50 records of one block, with the tail at the
-  low mark, a commit of 100 records is not refused and a commit of 101 is, and two
-  commits of 75 records are not refused and commits of 75 and 76 are. After 57 such
-  commits, a commit of 25 records of four blocks is not refused and one of 26 is.
-  After 60, the commit wraps and the wrap skips 3 blocks, so 24 are not refused and 25
-  are. On a new ring of
-  1024 blocks, with records of one block, a steady load of 340 records in each commit is
-  not refused and one of 341 is, at its third commit. A commit of twice the commits
-  before it is not refused after commits of 255 records of one block, and is refused
-  after commits of 256. Each of these two figures is one record less than before #160,
-  because of the blocks that stay free. On a ring of 1028 blocks, after commits of
-  64 records of four blocks, which are a quarter of the area less one block, a commit
-  of 128 and the commit of 64 after it are not refused when no record from the commit
-  two before the 128 to the commit after it must skip a block at a wrap. When a record
-  must skip 3 blocks at a wrap in one of those four, the 128 or the commit after it is
-  refused. With one record in each commit, three records, the blocks of one wrap skip,
-  and the three blocks that stay free must fit in the area. Four of the largest record
-  and two blocks always hold them, and a smaller ring can refuse a live write under a
-  steady load: with a largest record of four blocks, commits of 4 blocks after one of 1
-  block get `Full` on a ring of 17 blocks. So `Layout::new` refuses an area under four
-  of the largest record (#1276) and three blocks (#160), and a ring file with a smaller
-  area does not open. That minimum is for one record in each commit: on a ring of 19
-  blocks, a steady load of one
-  record of four blocks and one of two in each commit is refused at its third commit. A
-  trim moves the tail to the boundary after a record of any kind: a wrap record and a
+  ring of 1024 blocks after 396 commits of 50 records of one block, with the tail at the
+  low mark, a commit of 100 records is not refused and a commit of 101 is. After 398
+  such commits, two commits of 75 records are not refused and commits of 75 and 76 are.
+  After 57 such commits, a commit of 25 records of four blocks is not refused and one of
+  26 is. After 60, the commit wraps and the wrap skips 3 blocks, so 24 are not refused
+  and 25 are. On a new ring of 1024 blocks, with records of one block, a steady load of
+  340 records in each commit is not refused and one of 341 is, at its third commit. A
+  commit of twice the commits before it is not refused after commits of 255 records of
+  one block, and is refused after commits of 256. Each of these two figures is one
+  record less than before #160, because of the blocks that stay free. On a ring of 1028
+  blocks, after commits of 64 records of four blocks, which are a quarter of the area
+  less one block, a commit of 128 and the commit of 64 after it are not refused when no
+  record from the commit two before the 128 to the commit after it must skip a block at
+  a wrap. When a record must skip 3 blocks at a wrap in one of those four, the 128 or
+  the commit after it is refused. With one record in each commit, three records, the
+  blocks of one wrap skip, and the three blocks that stay free must fit in the area.
+  Four of the largest record and two blocks always hold them, and a smaller ring can
+  refuse a live write under a steady load: with a largest record of four blocks, commits
+  of 4 blocks after one of 1 block get `Full` on a ring of 17 blocks. So `Layout::new`
+  refuses an area under four of the largest record (#1276) and three blocks (#160), and
+  a ring file with a smaller area does not open. That minimum is for one record in each
+  commit: on a ring of 19 blocks, a steady load of one record of four blocks and one of
+  two in each commit is refused at its third commit. A trim moves the tail to the
+  boundary after a record of any kind: a wrap record and a
   restart record also end where a tail can go. Steady pressure in the ruling means a
   load whose commits fit the area. The ring size for a real load is the sizing of `node`
   (SHARD DISK), not the minimum of `Layout::new`. Decided by the architect: the headroom
@@ -122,12 +121,15 @@
   step: the smaller of 100 blocks and half the lead. So a full ring writes one
   checkpoint for each step, not one for each commit. The high mark is the head and the
   step less the lead, and 0 while that is negative, so that it grows from 0 while the
-  ring fills. The reach of a carry is the high mark of the next trim. The tail still
+  ring fills. This high mark is approved by `laptop.architect` (#2943,
+  2026-10-16T22:49:36Z):
+  https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6226155380. The reach
+  of a carry is the high mark of the next trim. The tail still
   never passes `kept`, a read hold, or the last synced record. A trim that a hold stops
   at or past the low mark waits for the next low mark, and a trim that a hold stops
   short of it trims again at the next commit. On a small ring, where the step is half
-  the lead, each path is carried about twice each lap (S4). Decided by
-  `laptop.architect` (#160, 2026-10-16T03:13:34Z):
+  the lead, each path is carried about twice as often as with a reach at the low mark
+  (S4). Decided by `laptop.architect` (#160, 2026-10-16T03:13:34Z):
   https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6207224353, which
   approves addendum
   https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6207213605, and

@@ -1,5 +1,6 @@
 //! The deadlines of a commit task with no file, for [`crate::bench`].
 
+use std::iter;
 use std::num::NonZeroU32;
 
 use block::{Block, Heap, Pool};
@@ -123,6 +124,33 @@ impl Deadline {
         state.synced(&mut self.sealed, carrying, tail);
         tails
     }
+
+    /// A [`Deadline::new(indexes, 4096 + PHASE)`](Self::new), after the deadlines of
+    /// `commit(1)` past two laps and up to the one before a trim: the next deadline
+    /// trims a step and writes a checkpoint.
+    ///
+    /// # Panics
+    ///
+    /// As [`new`](Self::new) does.
+    #[must_use]
+    pub fn trimming(indexes: u32) -> Self {
+        let blocks = 4096 + crate::bench::PHASE;
+        let mut deadline = Self::new(indexes, blocks);
+        while deadline.state.writer.head() <= 2 * blocks * BLOCK {
+            deadline.commit(1);
+        }
+        let mut trimmed = || {
+            let tail = deadline.state.writer.tail();
+            deadline.commit(1);
+            deadline.state.writer.tail() != tail
+        };
+        while !trimmed() {}
+        let period = iter::repeat_with(trimmed).position(|trimmed| trimmed);
+        for _ in 0..period.expect("a full ring trims") {
+            deadline.commit(1);
+        }
+        deadline
+    }
 }
 
 #[cfg(test)]
@@ -155,19 +183,17 @@ mod tests {
         }
     }
 
-    /// The warm-ups of the `deadline_trim` bench, of 1 and of 32 indexes, end
-    /// past two laps of the ring of 4100 blocks, at the deadline before a trim of a
-    /// step, which carries no tail and writes a checkpoint.
+    /// The deadline after `trimming` of 1 and of 32 indexes, as the `deadline_trim`
+    /// bench times it, trims a step, carries no tail, and writes a checkpoint. It reads
+    /// the private `state`: `commit` gives only the tails of the carry record.
     #[test]
-    fn the_deadline_after_each_warm_up_of_the_trim_bench_trims_a_step() {
-        for (indexes, warm, freed) in [(1, 8228, 101 * BLOCK), (32, 4133, 102 * BLOCK)]
-        {
-            let mut deadline = Deadline::new(indexes, 4096 + PHASE);
-            for _ in 0..warm {
-                deadline.commit(1);
-            }
+    fn the_deadline_after_trimming_trims_a_step() {
+        for (indexes, freed) in [(1, 101 * BLOCK), (32, 102 * BLOCK)] {
+            let mut deadline = Deadline::trimming(indexes);
             let (tail, header) = (deadline.state.writer.tail(), deadline.state.header);
-            assert!(deadline.state.writer.head() > 2 * 4100 * BLOCK, "{indexes}");
+            let area = (4096 + PHASE) * BLOCK;
+            assert_eq!(deadline.state.writer.layout().area(), area, "{indexes}");
+            assert!(deadline.state.writer.head() > 2 * area, "{indexes}");
             assert_eq!(deadline.commit(1), 0, "{indexes}");
             assert_eq!(deadline.state.writer.tail() - tail, freed, "{indexes}");
             assert_ne!(deadline.state.header, header, "{indexes}");

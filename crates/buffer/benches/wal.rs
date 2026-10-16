@@ -5,15 +5,16 @@
 //! also holds the bench's own work to make the ends of each record, so a change of the
 //! writer shows smaller than it is. Each ring has [`PHASE`] blocks more than its
 //! argument. A commit trims only once the tail is behind the low mark, so each sample
-//! holds [`SAMPLE_SIZE`] commits and at least 10 trims. `commit_group` times one group
-//! commit of 1 or 32 entries on the ring of ID 64: the fit, which checks that the
-//! record fits, the take, the close, the seal with the CRC of the body, and the same
-//! trim and sync. `queue_group` adds the append of each entry to the logs, as the
-//! buffer queues a batch. `deadline` times a deadline of the commit task that trims,
-//! with an entry of each of 1 or 32 indexes: the work of `queue_group` with the
-//! checkpoint of the trim and the sync of the logs. `deadline_carry` times one that
-//! also writes a carry record of 32 tails. `deadline_trim` times only the deadline
-//! that trims a step of 100 blocks on the ring of ID 4096.
+//! of each bench but `deadline_carry` and `deadline_trim` holds [`SAMPLE_SIZE`] commits
+//! and at least 10 trims. `commit_group` times one group commit of 1 or 32 entries on
+//! the ring of ID 64: the fit, which checks that the record fits, the take, the close,
+//! the seal with the CRC of the body, and the same trim and sync. `queue_group` adds
+//! the append of each entry to the logs, as the buffer queues a batch. `deadline` times
+//! a deadline of the commit task that trims, with an entry of each of 1 or 32 indexes:
+//! the work of `queue_group` with the checkpoint of the trim and the sync of the logs.
+//! `deadline_carry` times one that also writes a carry record of 32 tails.
+//! `deadline_trim` times only the deadline that trims a step of 100 blocks on the ring
+//! of ID 4096.
 
 use buffer::bench::{Deadline, Group, PHASE, Ring, SAMPLE_SIZE};
 use divan::Bencher;
@@ -98,21 +99,12 @@ fn deadline_carry(bencher: Bencher<'_, '_>) {
         });
 }
 
-/// The deadline of 1 or 32 indexes after the warm-up of 8228 or 4133 deadlines,
-/// past two laps, trims 101 or 102 blocks and writes a checkpoint. A test of
-/// `bench::Deadline` pins the warm-ups.
+/// The deadline of 1 or 32 indexes after [`Deadline::trimming`], which trims a step.
 #[divan::bench(args = [1, 32], sample_size = 1)]
 fn deadline_trim(bencher: Bencher<'_, '_>, indexes: u32) {
-    let warm = if indexes == 1 { 8228 } else { 4133 };
     bencher
         .counter(ItemsCount::new(usize::try_from(indexes).expect("fits")))
-        .with_inputs(|| {
-            let mut deadline = Deadline::new(indexes, 4096 + PHASE);
-            for _ in 0..warm {
-                deadline.commit(1);
-            }
-            deadline
-        })
+        .with_inputs(|| Deadline::trimming(indexes))
         .bench_local_values(|mut deadline| {
             deadline.commit(divan::black_box(1));
             deadline
