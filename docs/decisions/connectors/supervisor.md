@@ -22,7 +22,9 @@
   NAMED READERS). Each close starts the hold again, so a hold longer than the longest
   wait of the backoff never ends while the node runs with that spec. A held reader whose
   next frame the buffer lost for no room reads the frame after the gap at the next open
-  (#2553; the text before #2553: `laptop.architect-2`, 2026-10-15T18:05:36Z:
+  (#2553, `laptop.architect-2`, 2026-10-15T20:47:58Z:
+  https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6201957801; the text
+  before #2553: `laptop.architect-2`, 2026-10-15T18:05:36Z:
   https://github.com/synnaxlabs/foundation/pull/2723#issuecomment-6198895692, finding
   4). The wait for a home, and that the supervisor does no more for a held reader, are
   decided by `laptop.architect-2` (2026-10-11T07:34:44Z:

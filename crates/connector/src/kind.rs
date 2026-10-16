@@ -233,9 +233,8 @@ impl<C> Context<C> {
     /// new key is read, and the open gives `Config` when the selector matches nothing.
     /// A reader with a hold opens again at its held position while its index keeps its
     /// key, and reads the frames after it from disk. Past a frame that the buffer lost
-    /// for no room, the next run reads the frame after it. Each close
-    /// starts the hold again, so a hold longer than the wait between two runs never
-    /// ends.
+    /// for no room, the next run reads the frame after it. Each close starts the hold
+    /// again, so a hold longer than the wait between two runs never ends.
     pub fn reader(&mut self) -> Option<hub::reader::Reader> {
         self.reader.take()
     }
