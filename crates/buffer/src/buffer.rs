@@ -2298,6 +2298,7 @@ mod tests {
                     let one = slots.index(channel::Key::from_u128(1));
                     let from = Mark::at(0).after(0, 0);
                     let read = buffer
+                        .reader()
                         .read(one, Path::Live, from, usize::MAX)
                         .await
                         .expect("reads");
