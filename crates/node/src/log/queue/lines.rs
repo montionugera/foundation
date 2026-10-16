@@ -384,20 +384,22 @@ mod model {
     use loom::sync::Arc;
     use loom::thread;
 
-    use super::{Batch, Lines, Taken, sink};
+    use super::{Batch, Lines, Taken, Writer, sink};
 
-    /// Takes until the lines close, and gives each line and the count of each line
-    /// that dropped.
-    fn drain(lines: &Lines) -> (Vec<Vec<u8>>, u64) {
+    /// Takes with `writer` until the lines close, as the thread `log` does, and gives
+    /// each line and the count of each line that dropped.
+    fn drain(lines: &Lines, writer: &mut Option<Writer>) -> (Vec<Vec<u8>>, u64) {
         let mut batch = Batch::default();
         let (mut written, mut dropped) = (Vec::new(), 0);
         block_on(poll_fn(|cx| {
             loop {
-                match lines.take(&mut batch, cx.waker(), &mut None) {
+                match lines.take(&mut batch, cx.waker(), writer) {
                     Taken::Lines => {
+                        let sent = batch.sent();
                         written.extend(batch.lines.drain(..));
                         dropped += batch.dropped;
                         written.append(&mut batch.panics);
+                        lines.wrote(sent);
                     }
                     Taken::Empty => return Poll::Pending,
                     Taken::Closed => return Poll::Ready(()),
@@ -421,7 +423,7 @@ mod model {
             let pushes = [push(b"a"), push(b"b")];
             let taker = {
                 let lines = Arc::clone(&lines);
-                thread::spawn(move || drain(&lines))
+                thread::spawn(move || drain(&lines, &mut None))
             };
             for push in pushes {
                 push.join().unwrap();
@@ -442,7 +444,7 @@ mod model {
             lines.open();
             let taker = {
                 let lines = Arc::clone(&lines);
-                thread::spawn(move || drain(&lines))
+                thread::spawn(move || drain(&lines, &mut None))
             };
             lines.push(b"a".to_vec());
             lines.push(b"b".to_vec());
@@ -452,6 +454,38 @@ mod model {
             assert_eq!(written.len() as u64 + dropped, 3);
             assert_eq!(written.first(), Some(&b"a".to_vec()));
             assert_eq!(written.last(), Some(&b"p".to_vec()));
+        });
+    }
+
+    /// A line that comes as the run of the thread `log` ends gets a run that writes
+    /// it: the run that ends takes it, or the start after the line finds that run
+    /// ended.
+    #[test]
+    fn a_line_as_the_run_ends_gets_a_run_that_writes_it() {
+        loom::model(|| {
+            let lines = Arc::new(Lines::new(4, 4, sink()));
+            lines.open();
+            assert!(lines.start());
+            let run = {
+                let lines = Arc::clone(&lines);
+                thread::spawn(move || drain(&lines, &mut lines.begin()).0)
+            };
+            let late = {
+                let lines = Arc::clone(&lines);
+                thread::spawn(move || {
+                    lines.push(b"a".to_vec());
+                    if lines.start() {
+                        drain(&lines, &mut lines.begin()).0
+                    } else {
+                        Vec::new()
+                    }
+                })
+            };
+            lines.close();
+            let mut written = run.join().unwrap();
+            written.extend(late.join().unwrap());
+            assert_eq!(written, [b"a".to_vec()]);
+            assert!(lines.idle());
         });
     }
 }
