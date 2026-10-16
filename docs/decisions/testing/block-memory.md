@@ -13,7 +13,12 @@
   memory the system can commit. On Linux with strict overcommit, `madvise` and
   `mprotect` keep that charge, so `os` purges with a `MAP_FIXED` remap (#475). A
   discard gives back the memory of pages and keeps their protection and their commit
-  charge, so a free block between blocks in use splits no mapping (#2907).
+  charge, so a free block between blocks in use splits no mapping (#2907). `os`
+  discards with `MADV_DONTNEED` on Linux (the POSIX advice of rustix is a no-op there)
+  and `MADV_FREE` on macOS, where the OS takes the pages when it needs memory, so the
+  footprint of the task can count them until then. A failed discard panics and leaks
+  nothing (`laptop.architect-2`, 2026-10-16T19:41:36Z:
+  https://github.com/synnaxlabs/foundation/pull/2907#issuecomment-6223324987).
   `os::memory::Memory` reserves `PROT_NONE` pages, which take no charge, and commits
   with `mprotect`; `ENOMEM` gives `Refused`, and a refused commit can leave part of its
   range committed and charged until a purge or the drop. A failed purge remap panics,

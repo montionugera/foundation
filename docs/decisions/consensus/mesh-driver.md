@@ -171,7 +171,8 @@
   https://github.com/synnaxlabs/foundation/pull/1284#issuecomment-6034282653). A free
   block of a size with a block in use keeps the budget of its header and of the partial
   pages at the ends of its payload, and all of it when its payload holds no whole page
-  (MEMORY BOUNDS, #2810, #291), so a write can wait while the budget has room for its
+  (MEMORY BOUNDS, #2810, #291; `laptop.architect`, 2026-10-16T19:23:50Z:
+  https://github.com/synnaxlabs/foundation/pull/2907#issuecomment-6223028676), so a write can wait while the budget has room for its
   block, until the other user of the pool drops its block (#1134). A pool whose largest
   block is less than one sector does not open (MESH LOG), so no write gives `TooLarge`
   and the group does not stop for it (decided by the architect, 2026-10-07T06:32:47Z:
