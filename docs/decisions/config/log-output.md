@@ -56,8 +56,8 @@
   https://github.com/synnaxlabs/foundation/pull/2762#issuecomment-6203245390).
   (7) The thread `log` (item 9) starts from `node::Config::threads` with
   `Threads::logged` and no dispatch, so the events of that thread go nowhere.
-  `Config::threads` keeps the dispatch of the node for each other thread. The threads
-  of `main` (`show`, `stop`, the I/O thread of each disk) get the dispatch with the
+  No other thread starts from `Config::threads` yet; the first one gets the dispatch
+  of the node with `Threads::logged`. The threads of `main` (`show`, `stop`, the I/O thread of each disk) get the dispatch with the
   first event one of them writes. By `laptop.architect-2` (2026-10-15T20:38:04Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6201785053), with
   the thread of #2764.
