@@ -13,14 +13,13 @@
   `#[doc(hidden)] pub const PHASE` of `bench` holds the 4 blocks, and the bench and a
   test of `bench` read it. The test checks 10 laps of each ring after the warm-up.
   Both benches use the same rings.
-  Since a commit trims only once for each step (STORE TRIM), each sample of the `wal`
+  A commit trims only once for each step (STORE TRIM), so each sample of the `wal`
   benches holds `bench::SAMPLE_SIZE` (1000) commits, so at least 10 trims, and the
   `bench` tests check the most commits between trims. `deadline_trim` times only the
-  deadline of 1 or 32 indexes that trims a step on the ring of ID 4096, after a
-  warm-up past two laps that a test of `bench::Deadline` pins. Lost: the default
-  sample, which holds 0 to 2 trims, so that its median moves with the phase of the
-  trims. `SAMPLE_SIZE` is decided by `laptop.architect` (#2943,
-  2026-10-16T22:20:35Z):
+  deadline of 1 or 32 indexes that trims a step on the ring of ID 4096, after a warm-up
+  past two laps that a test of `bench::Deadline` pins. Lost: the default sample, which
+  holds 0 to 2 trims, so that its median moves with the phase of the trims.
+  `SAMPLE_SIZE` is approved by `laptop.architect` (#2943, 2026-10-16T22:20:35Z):
   https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6225798040.
   Decided by `laptop.architect` (#2683, 2026-10-14T19:58:01Z):
   https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6177122793.
