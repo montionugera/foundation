@@ -3,6 +3,8 @@
 //!
 //! - `started`: the event `started`, with three fields, as text and as JSON.
 //! - `stopped`: the event `stopped`, with no field.
+//! - `parked`: the event `started` as text, 1 ms after the line before, so it also
+//!   wakes the thread `log`.
 //! - `filtered`: a `debug` event under the level `info`, as noq-proto writes for each
 //!   packet.
 //! - `undispatched`: the control, the same event with no dispatch, as before a node
@@ -16,6 +18,7 @@
 
 use std::io;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use divan::Bencher;
 use tracing::Level;
@@ -78,6 +81,16 @@ fn stopped(bencher: Bencher<'_, '_>) {
     let d = dispatch(false, Level::INFO);
     tracing::dispatcher::with_default(d.dispatch(), || {
         bencher.bench_local(|| tracing::info!("stopped"));
+    });
+}
+
+#[divan::bench(sample_count = 200, sample_size = 1)]
+fn parked(bencher: Bencher<'_, '_>) {
+    let d = dispatch(false, Level::INFO);
+    #[expect(clippy::disallowed_methods, reason = "the thread log parks")]
+    let idle = || std::thread::sleep(Duration::from_millis(1));
+    tracing::dispatcher::with_default(d.dispatch(), || {
+        bencher.with_inputs(idle).bench_local_values(|()| started());
     });
 }
 
