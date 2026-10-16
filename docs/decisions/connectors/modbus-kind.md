@@ -84,10 +84,9 @@
   `modbus.repeated-channel`. `check` gives the channel of each `read` as a write, in
   order, no reader, and the counts. `discover` gives the default `connector.no-discover`
   (`laptop.architect-2`, 2026-10-16 04:00 UTC:
-  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6207771367;
-  Supersedes
-  https://github.com/synnaxlabs/foundation/issues/432#issuecomment-6205044071,
-  `discover` finds nothing).
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6207771367; it
+  replaces https://github.com/synnaxlabs/foundation/issues/432#issuecomment-6205044071,
+  where `discover` found nothing).
 
   Deferred: one connection that two connectors share through `endpoint::Registry`.
   Trigger: a gateway with two units, or a device that takes one connection (#2712).
