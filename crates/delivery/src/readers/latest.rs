@@ -155,7 +155,7 @@ mod tests {
     use super::*;
     use crate::complete::Charge;
     use crate::readers::tests::{
-        Frames, dropped, number, read, reader, taken as complete_taken,
+        Frames, drained, dropped, number, read, reader, taken as complete_taken,
     };
     use crate::{Next, Position, Reader, Record, Start, complete};
 
@@ -261,7 +261,7 @@ mod tests {
         fn closes_the_complete_session_it_takes_over() {
             let mut readers = Readers::new(0);
             let old = complete(&mut readers, "a", live(5));
-            assert_eq!(readers.records().count(), 1, "the open record");
+            assert_eq!(drained(&mut readers).len(), 1, "the open record");
             let new = readers.open_named_latest(reader("s", "a"), at(3));
             assert_eq!(new.replaced, Some(old.into()));
             let closed = Record {
@@ -270,7 +270,7 @@ mod tests {
                 hold: Span::from_nanos(10),
                 closed: Some(at(3)),
             };
-            assert_eq!(readers.records().collect::<Vec<_>>(), [closed]);
+            assert_eq!(drained(&mut readers), [closed]);
             assert_eq!(readers.floor(), Some(live(5)));
             assert_eq!(readers.deadline(), Some(at(13)));
         }
@@ -302,7 +302,7 @@ mod tests {
             let key = readers.open_named_latest(reader("s", "a"), at(0)).key;
             assert_eq!(put(&mut readers, frames.frame(1)), [key]);
             readers.close(key.into(), None);
-            readers.flush();
+            assert!(!readers.changed(), "a latest session changed the records");
             assert_eq!(readers.records().count(), 0);
             assert_eq!(readers.floor(), None);
             assert_eq!(readers.deadline(), None);
@@ -327,7 +327,7 @@ mod tests {
                 hold: Span::from_nanos(10),
                 closed: None,
             };
-            assert_eq!(readers.records().collect::<Vec<_>>(), [open]);
+            assert_eq!(drained(&mut readers), [open]);
             assert_eq!(readers.ack(new, live(1)), Ok(()));
         }
 
@@ -344,12 +344,11 @@ mod tests {
             let new = readers
                 .open(named, Start::At(live(0)), first.charge(), Charge::Whole)
                 .key;
-            assert_eq!(readers.records().count(), 1);
+            assert_eq!(drained(&mut readers).len(), 1);
             readers.queue(&first, &frames.set, 0..1);
             readers.queue(&frames.frame(2), &frames.set, 1..2);
             dropped(&mut readers, old.into());
-            readers.flush();
-            assert_eq!(readers.records().count(), 0);
+            assert_eq!(drained(&mut readers), []);
             assert_eq!(readers.release(2), [new]);
             dropped(&mut readers, old.into());
             assert_eq!(complete_taken(&mut readers, new), [1]);
@@ -373,17 +372,22 @@ mod tests {
                 .key;
             readers.queue(&first, &frames.set, 0..1);
             assert_eq!(readers.release(1), [new]);
-            readers.records().for_each(drop);
+            drained(&mut readers);
             assert_eq!(readers.ack(new, live(1)), Ok(()));
             dropped(&mut readers, old.into());
-            readers.flush();
             let acked = Record {
                 reader: reader("s", "a"),
                 position: live(1),
                 hold: Span::from_nanos(10),
                 closed: None,
             };
-            assert_eq!(readers.records().collect::<Vec<_>>(), [acked]);
+            let gone = Record {
+                reader: reader("s", "b"),
+                position: live(0),
+                closed: Some(at(0)),
+                ..acked.clone()
+            };
+            assert_eq!(drained(&mut readers), [acked, gone]);
             readers.queue(&frames.frame(2), &frames.set, 1..2);
             readers.queue(&frames.frame(3), &frames.set, 2..3);
             assert_eq!(readers.release(3), []);
