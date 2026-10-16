@@ -229,6 +229,8 @@ fn a_hidden_folder_that_a_program_moves_and_makes_again_stays_hidden() {
         assert_eq!(within.read(&data.join("admin.key"), 1), Err(Error::Hidden));
         let old = base.join("work/old/admin.key");
         assert_eq!(within.read(&old, 1), Err(Error::Hidden));
+        let listed = within.read(&base.join("work/old"), usize::MAX);
+        assert!(matches!(listed, Ok(Found::Directory(_))), "{listed:?}");
     });
 }
 
@@ -989,4 +991,65 @@ fn a_home_through_a_link_that_is_not_there_is_as_a_resolve_gives_it() {
     assert!(output.status.success(), "{stderr}");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("1 passed"), "{stdout}");
+}
+
+/// A hidden file that is not there yet, written by a name in other case.
+#[cfg(target_os = "macos")]
+#[test]
+fn within_makes_no_file_at_a_hidden_name_in_other_case() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let key = base.join("work/secret.key");
+        let dir = base.join("work/vault");
+        let within = host
+            .paths
+            .within(&[base.join("work")], &[key.clone(), dir.clone()])
+            .unwrap();
+        let wrote = within.write(&base.join("work/SECRET.KEY"), b"planted");
+        let made = within.make_dir(&base.join("work/VAULT"));
+        let there = (fs::metadata(&key).is_ok(), fs::metadata(&dir).is_ok());
+        assert_eq!(
+            (wrote, made, there),
+            (Err(Error::Hidden), Err(Error::Hidden), (false, false))
+        );
+    });
+}
+
+/// A program replaces the folder with a link to a directory outside it.
+#[test]
+fn a_folder_that_a_link_replaces_holds_nothing_outside() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let work = base.join("work");
+        let within = host.paths.within(slice::from_ref(&work), &[]).unwrap();
+        fs::rename(&work, base.join("old")).unwrap();
+        symlink(base.join("workshop"), &work).unwrap();
+        let read = within.read(&work.join("a.hcl"), 1);
+        let direct = within.read(&base.join("workshop/a.hcl"), 1);
+        assert_eq!((read, direct), (Err(Error::Outside), Err(Error::Outside)));
+    });
+}
+
+/// A program replaces the directory above a hidden file with a file, or
+/// takes search from it. A path in the folder that is not hidden still reads.
+#[test]
+fn a_hidden_path_that_fails_its_key_fails_no_other_call() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let data = base.join("work/data");
+        let key = data.join("admin.key");
+        let within = host
+            .paths
+            .within(&[base.join("work")], slice::from_ref(&key))
+            .unwrap();
+        let plan = base.join("work/a.hcl");
+        fs::set_permissions(&data, Permissions::from_mode(0o000)).unwrap();
+        let unsearchable = within.read(&plan, 1);
+        fs::set_permissions(&data, Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(&data).unwrap();
+        fs::write(&data, b"file").unwrap();
+        let through_file = within.read(&plan, 1);
+        let ok = Ok(Found::File(b"x".to_vec()));
+        assert_eq!((unsearchable, through_file), (ok.clone(), ok));
+    });
 }

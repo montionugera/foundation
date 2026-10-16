@@ -477,6 +477,7 @@ pub(crate) fn a_resolve_of_a_link_to_nothing_with_a_slash_is_not_found(
 pub(crate) fn within_hides_a_hidden_folder_that_is_not_there(host: &Host<'_>) {
     let (paths, dir) = (host.paths, host.dir);
     (host.make_dir)(&dir.join("work"));
+    (host.make_dir)(&dir.join("work/sub"));
     let base = paths.resolve(dir).unwrap();
     let data = base.join("work/data");
     let within = paths
@@ -484,6 +485,13 @@ pub(crate) fn within_hides_a_hidden_folder_that_is_not_there(host: &Host<'_>) {
         .unwrap();
     assert_eq!(within.make_dir(&data), Err(Error::Hidden));
     assert_eq!(within.write(&data, b"x"), Err(Error::Hidden));
+    // Each new name beside it, so no name in other case or other form makes it.
+    assert_eq!(within.make_dir(&base.join("work/DATA")), Err(Error::Hidden));
+    assert_eq!(
+        within.write(&base.join("work/b.hcl"), b"x"),
+        Err(Error::Hidden)
+    );
+    assert_eq!(within.write(&base.join("work/sub/b.hcl"), b"x"), Ok(()));
     assert_eq!(paths.read(&data, ALL), Err(Error::NotFound));
     paths.make_dir(&data).unwrap();
     paths.write(&data.join("admin.key"), b"x").unwrap();
