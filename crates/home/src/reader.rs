@@ -85,9 +85,7 @@ impl fmt::Display for Unopened {
             Self::Unsynced => Unsynced.fmt(f),
             Self::Full { limit } => write!(
                 f,
-                "the records of the named readers of the index would pass {limit} \
-                 bytes: close a named reader of the index whose hold is zero, wait for \
-                 a hold to end, or open this one unnamed"
+                "the records of the named readers of the index would pass {limit} bytes"
             ),
             Self::Unrecorded => write!(
                 f,
@@ -1246,9 +1244,7 @@ mod tests {
             );
             assert_eq!(
                 Unopened::Full { limit: 4032 }.to_string(),
-                "the records of the named readers of the index would pass 4032 bytes: \
-                 close a named reader of the index whose hold is zero, wait for a hold \
-                 to end, or open this one unnamed"
+                "the records of the named readers of the index would pass 4032 bytes"
             );
         }
     }

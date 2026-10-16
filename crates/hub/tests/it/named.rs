@@ -885,9 +885,7 @@ fn opens_no_named_complete_reader_past_the_records_of_one_entry() {
         assert_eq!(error, reader::Error::Full { limit: 4032 });
         assert_eq!(
             error.to_string(),
-            "the records of the named readers of the index would pass 4032 bytes: \
-             close a named reader of the index whose hold is zero, wait for a hold to \
-             end, or open this one unnamed"
+            "the records of the named readers of the index would pass 4032 bytes"
         );
         let latest = named(&long(7), &"r".repeat(255), Mode::Latest, Span::ZERO);
         assert!(

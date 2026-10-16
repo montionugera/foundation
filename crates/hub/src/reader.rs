@@ -323,9 +323,7 @@ impl fmt::Display for Error {
             ),
             Self::Full { limit } => write!(
                 f,
-                "the records of the named readers of the index would pass {limit} \
-                 bytes: close a named reader of the index whose hold is zero, wait for \
-                 a hold to end, or open this one unnamed"
+                "the records of the named readers of the index would pass {limit} bytes"
             ),
             Self::Unrecorded => f.write_str(
                 "the home had no room to record the position of the named reader: \

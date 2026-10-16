@@ -506,21 +506,17 @@ impl std::error::Error for Unread {
     }
 }
 
-/// The records of the named readers of an index that would pass `limit` bytes. The
-/// hub's text says to open the reader unnamed, which a spec cannot do.
+/// The hub's `Full`, with the fixes that a spec can make.
 #[derive(Debug)]
-struct Full {
-    limit: usize,
-}
+struct Full(hub::reader::Error);
 
 impl fmt::Display for Full {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "the records of the named readers of the index would pass {} bytes: read \
-             the index from fewer connectors in complete mode, set `mode = \"latest\"` \
-             on one, or wait for the hold of a removed reader to end",
-            self.limit
+            "{}: read the index from fewer connectors in complete mode, set `mode = \
+             \"latest\"` on one, or wait for the hold of a removed reader to end",
+            self.0
         )
     }
 }
@@ -538,7 +534,7 @@ pub(crate) fn reader_error(error: hub::reader::Error) -> Error {
     let (code, fix) = match error {
         Hub::Empty => (NO_CHANNEL, "Select a channel that the spec defines"),
         Hub::ManyIndexes { .. } => (MANY_INDEXES, "Select channels of one index"),
-        Hub::Full { limit } => return Error::Retry(Box::new(Full { limit })),
+        Hub::Full { .. } => return Error::Retry(Box::new(Full(error))),
         Hub::Remote { .. } | Hub::Mesh(_) | Hub::Unrecorded => {
             return Error::Retry(Box::new(error));
         }
