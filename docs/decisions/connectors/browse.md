@@ -46,12 +46,11 @@
   `Supervisor::browse` adds neither. `Kind::browse(ctx, query)` connects and gives
   `walk` over the session, and gives `connector.no-browse` by default. `Kind::discover`
   gives `connector.no-discover` by default, not an empty list, which says that the kind
-  looked and found none. Its signature is deferred to #2851: the first kind that finds
-  devices gives `discover` a context with the inputs of the supervisor, as
-  `browse::Context` gives `Kind::browse`, and the credentials of BQ16 for one call.
-  `discover` for OPC UA is not in C1; trigger: the person asks, or a kind that can find
-  its devices (NI cards) is built (`laptop.architect-2`, 2026-10-15 17:32 UTC, parameter
-  5 of https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198270136).
+  looked and found none. Only the default is decided. Its signature is deferred to
+  #2851; trigger: the first kind that finds devices. `discover` for OPC UA is not in C1;
+  trigger: the person asks, or a kind that can find its devices (NI cards) is built
+  (`laptop.architect-2`, 2026-10-15 17:32 UTC, parameter 5 of
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198270136).
   `Supervisor::browse(kind, config, query)` runs `Kind::browse` apart from any run of
   the connector, with the network, clock, randomness, and secrets of the supervisor; a
   kind reads only what it needs to reach the device, so a block with only `kind`,
