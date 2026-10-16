@@ -660,7 +660,7 @@ mod start {
     use serde_json::json;
 
     use super::{Exit, call, cli, failed, offline};
-    use crate::{Failure, Run, Start};
+    use crate::{Failure, Log, Run, Start};
 
     fn start(args: &[&str]) -> Run {
         let args = ["foundation", "start"]
@@ -700,6 +700,7 @@ mod start {
                 json: false,
                 name: None,
                 listen: local(),
+                log: Log::default(),
             })
         );
     }
@@ -714,14 +715,90 @@ mod start {
                 "site_a.edge",
                 "--listen",
                 "[::1]:7000",
-                "--json",
+                "--log-level",
+                "debug",
+                "--log-format",
+                "json",
             ]),
             Run::Start(Start {
                 data: PathBuf::from("/srv/a"),
-                json: true,
+                json: false,
                 name: Some("site_a.edge".parse().unwrap()),
                 listen: "[::1]:7000".parse().unwrap(),
+                log: Log {
+                    json: true,
+                    level: tracing::Level::DEBUG,
+                },
             })
+        );
+    }
+
+    #[test]
+    fn the_default_log_is_text_at_info() {
+        let text = Log {
+            json: false,
+            level: tracing::Level::INFO,
+        };
+        assert_eq!(Log::default(), text);
+    }
+
+    /// The log of `start` with `args`.
+    fn log(args: &[&str]) -> Log {
+        match start(args) {
+            Run::Start(start) => start.log,
+            Run::Exit(status) => panic!("start exited with {status}"),
+        }
+    }
+
+    #[test]
+    fn log_level_gives_each_of_its_five_levels() {
+        for (arg, level) in [
+            ("error", tracing::Level::ERROR),
+            ("warn", tracing::Level::WARN),
+            ("info", tracing::Level::INFO),
+            ("debug", tracing::Level::DEBUG),
+            ("trace", tracing::Level::TRACE),
+        ] {
+            assert_eq!(log(&["--log-level", arg]).level, level, "{arg}");
+        }
+    }
+
+    #[test]
+    fn the_log_format_follows_json_unless_given() {
+        let format = |args: &[&str]| log(args).json;
+        assert!(!format(&[]));
+        assert!(format(&["--json"]));
+        assert!(!format(&["--json", "--log-format", "text"]));
+        assert!(format(&["--log-format", "json"]));
+        assert!(!format(&["--log-format", "text"]));
+    }
+
+    #[test]
+    fn a_log_level_out_of_the_five_is_an_argument_error_that_lists_them() {
+        for value in ["INFO", "off"] {
+            assert_eq!(
+                cli(&["start", "--log-level", value]),
+                failed(&format!(
+                    "error[ops.argument]: one of the values isn't valid for an \
+                     argument: `--log-level <LOG_LEVEL>`: `{value}` is not one of \
+                     error, warn, info, debug, trace\n\
+                     fix: Match the arguments to `foundation --help` or \
+                     `foundation <operation> --help`\n"
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn a_log_format_out_of_the_two_is_an_argument_error_that_lists_them() {
+        assert_eq!(
+            cli(&["start", "--log-format", "logfmt"]),
+            failed(
+                "error[ops.argument]: one of the values isn't valid for an argument: \
+                 `--log-format <LOG_FORMAT>`: `logfmt` is not one of text, json\n\
+                 fix: Match the arguments to `foundation --help` or \
+                 `foundation <operation> --help`\n"
+            )
         );
     }
 
@@ -760,10 +837,18 @@ mod start {
             "--name <NAME>",
             "--listen <LISTEN>",
             "--json",
+            "--log-level <LOG_LEVEL>",
+            "--log-format <LOG_FORMAT>",
             "[default: foundation-data]",
             "[default: 127.0.0.1:0]",
+            "[default: info]",
+            "[possible values: error, warn, info, debug, trace]",
+            "[possible values: text, json]",
+            "`debug` and `trace` write lines for each packet and slow the node",
         ] {
-            assert!(exit.stdout.contains(flag), "{flag}: {}", exit.stdout);
+            // clap wraps the help to the width of the terminal.
+            let help = exit.stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(help.contains(flag), "{flag}: {}", exit.stdout);
         }
     }
 
@@ -798,6 +883,7 @@ mod start {
             json: false,
             name: None,
             listen: local(),
+            log: Log::default(),
         };
         assert_eq!(
             start.line(&edge()),
@@ -817,6 +903,7 @@ mod start {
             json: false,
             name: None,
             listen: local(),
+            log: Log::default(),
         };
         assert_eq!(
             start.line(&edge()),
@@ -833,6 +920,7 @@ mod start {
             json: false,
             name: None,
             listen: local(),
+            log: Log::default(),
         };
         let shown = "it's \"b\\\\c\"\\ne\\u{301}";
         assert_eq!(
@@ -864,6 +952,7 @@ mod start {
             json: true,
             name: None,
             listen: local(),
+            log: Log::default(),
         };
         assert_eq!(
             start.line(&edge()),

@@ -9,6 +9,7 @@
 
 use std::fmt;
 
+pub mod command;
 mod config;
 pub mod device;
 mod kind;

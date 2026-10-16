@@ -1,5 +1,6 @@
 //! The reads of one connector: the requests that read them, and the value of each
-//! read in their replies.
+//! read in their replies. A write of `command` takes its checks and its codec from
+//! [`Read`].
 
 use std::fmt;
 
@@ -52,6 +53,41 @@ impl Read {
 
     fn end(self) -> u32 {
         u32::from(self.address).saturating_add(u32::from(self.count))
+    }
+
+    /// The number of items of the read.
+    pub(crate) fn count(self) -> u16 {
+        self.count
+    }
+
+    /// Puts the registers of `value` in `order` into `out`, the [`Read::count`]
+    /// registers of the read in address order: the inverse of the decode of
+    /// [`Group::values`].
+    ///
+    /// # Panics
+    ///
+    /// When `value` is not of the type of the read.
+    pub(crate) fn words(self, value: Value, order: Order, out: &mut [u16]) {
+        assert_eq!(
+            value.scalar(),
+            self.scalar,
+            "{value:?} is not a value of the write of {self:?}"
+        );
+        let mut sample = [0; 8];
+        let sample = sample.get_mut(..self.scalar.width()).unwrap_or_else(|| {
+            panic!("invariant: `Read::new` gives no register read of {self:?}")
+        });
+        value.write(sample);
+        let words = sample
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&pair| u16::from_le_bytes(pair));
+        let put = |(slot, word): (&mut u16, u16)| *slot = word;
+        match order {
+            Order::Big => out.iter_mut().rev().zip(words).for_each(put),
+            Order::Little => out.iter_mut().zip(words).for_each(put),
+        }
     }
 }
 
@@ -226,9 +262,15 @@ fn value(
     Value::read(scalar, sample)
 }
 
-/// Why a read is not valid.
+/// Why a read or a write is not valid.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
+    /// A write to a table that the protocol does not write. [`Read::new`] never
+    /// gives it.
+    ReadOnly {
+        /// The table.
+        table: Table,
+    },
     /// A type that the table does not hold.
     Type {
         /// The table.
@@ -248,6 +290,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ReadOnly { table } => write!(f, "the {} are read-only", table.name()),
             Self::Type { table, sample } => {
                 write!(f, "the {} hold no {sample} values", table.name())
             }

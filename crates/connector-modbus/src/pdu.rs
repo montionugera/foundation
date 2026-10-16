@@ -58,6 +58,10 @@ impl Table {
         matches!(self, Self::Coils | Self::DiscreteInputs)
     }
 
+    pub(crate) fn read_only(self) -> bool {
+        matches!(self, Self::DiscreteInputs | Self::InputRegisters)
+    }
+
     /// The most items that one request reads.
     pub(crate) fn max_read(self) -> u16 {
         if self.bits() {
