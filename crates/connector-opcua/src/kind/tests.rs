@@ -1093,7 +1093,8 @@ const TYPED_CHANNELS: [&str; 11] = [
     "plant.f64",
 ];
 
-/// The `opcua` kind, whose run writes one frame of `count(reads)` values, each Bad.
+/// The `opcua` kind, whose run writes a frame of one Good value for each read, then a
+/// frame of `count(reads)` values, each Bad.
 struct Count(fn(usize) -> usize);
 
 impl kind::Kind for Count {
@@ -1116,6 +1117,10 @@ impl kind::Kind for Count {
 
     async fn run(&self, ctx: Context<Config>) -> Result<(), Error> {
         let mut frames = Frames::open(&ctx).await?;
+        let one = |&scalar| Ok(crate::value::Value::one(scalar));
+        let good: Vec<_> = frames.types.iter().map(one).collect();
+        let ((), stamp) = frames.writer.request(future::ready(())).await;
+        frames.write(&good, stamp)?;
         let ((), stamp) = frames.writer.request(future::ready(())).await;
         let count = (self.0)(ctx.config().reads.len());
         let bad = || Err(Fault::status(Status::BAD_NOT_FOUND));
@@ -1128,13 +1133,15 @@ impl kind::Kind for Count {
 /// run of [`Kind`] writes a short frame: only a kind that calls `Frames::write`
 /// itself reaches the check.
 #[test]
-#[should_panic(expected = "a value of each channel")]
+#[should_panic(expected = "invariant: a kind gives 0 values for 3 channels")]
 fn panics_at_a_frame_with_no_value_for_each_read() {
     write_one_frame(Count(|_| 0));
 }
 
-/// As [`panics_at_a_frame_with_no_value_for_each_read`]. A frame with one more
-/// value must not lose it with no count.
+/// `Client::read` gives `Error::Device` for an answer with more values than the nodes
+/// of its request, so no run of [`Kind`] writes a long frame. A `zip` over `types` in
+/// `Frames::write` would cut the value and the writer would see the right count, so
+/// only this test sees that loss.
 #[test]
 #[should_panic(expected = "index out of bounds: the len is 3 but the index is 3")]
 fn panics_at_a_frame_with_a_value_more_than_its_reads() {
