@@ -1,7 +1,9 @@
 //! The ns of the `opcua` kind against the sim server over the sim net: the polls of
 //! its run for one tick (the read of 1 or of 256 nodes, its frame, and the write of
-//! the frame, with no time of the server), the check of the values of one read and
-//! the write of its frame alone, into channels of one type or of each type in turn,
+//! the frame, with no time of the server), also with every second value of another
+//! type than its channel, the check of the values of one read and
+//! the write of its frame alone, into channels of one type or of each type in turn
+//! and with no Bad value or one,
 //! the polls of its run start, and its parse. Run with
 //! `cargo bench -p connector-opcua --bench kind`.
 
@@ -16,16 +18,22 @@ use types::sample::{Scalar, Type};
 #[path = "../tests/common/kind.rs"]
 mod kind;
 
-/// The node counts of the reads of a tick.
-const COUNTS: [usize; 2] = [1, 256];
-/// The node counts and the sample types, in turn, of the channels of the writes of a
-/// frame.
-const WRITES: [(usize, &[Scalar]); 5] = [
+/// The node counts of the reads of a tick, and the sample types, in turn, of the
+/// channels. Each node of the sim server has an f64 value.
+const COUNTS: [(usize, &[Scalar]); 3] = [
     (1, &[Scalar::F64]),
     (256, &[Scalar::F64]),
-    (256, &[Scalar::I16]),
-    (256, &[Scalar::Bool]),
-    (256, SCALARS),
+    (256, &[Scalar::F64, Scalar::F32]),
+];
+/// The node counts, the sample types, in turn, of the channels, and the Bad values of
+/// the writes of a frame.
+const WRITES: [(usize, &[Scalar], usize); 6] = [
+    (1, &[Scalar::F64], 0),
+    (256, &[Scalar::F64], 0),
+    (256, &[Scalar::F64], 1),
+    (256, &[Scalar::I16], 0),
+    (256, &[Scalar::Bool], 0),
+    (256, SCALARS, 0),
 ];
 /// The ticks or writes before the timed ones. Tick 1 connects. The test home grows the
 /// `Vec`s of its groups in its first two commits, then reuses each group. 20 covers two
@@ -45,25 +53,38 @@ const PARSES: usize = 20;
 #[expect(clippy::print_stdout, reason = "a benchmark prints its results")]
 fn main() {
     println!("ns per tick over {TICKS} ticks");
-    println!("{:<10} {:>7} {:>7} {:>7}", "nodes", "p10", "p50", "p90");
-    for nodes in COUNTS {
-        let mut ticks = kind::run(nodes, WARMUP + TICKS, time)
+    println!(
+        "{:<10} {:<7} {:>7} {:>7} {:>7}",
+        "nodes", "types", "p10", "p50", "p90"
+    );
+    for (nodes, scalars) in COUNTS {
+        let mut ticks = kind::run(nodes, scalars, WARMUP + TICKS, time)
             .ticks
             .split_off(WARMUP);
         ticks.sort_unstable();
         let at = |percent: usize| ticks[ticks.len() * percent / 100];
-        println!("{nodes:<10} {:>7} {:>7} {:>7}", at(10), at(50), at(90));
+        let names: Vec<_> = scalars
+            .iter()
+            .map(|s| Type::Scalar(*s).to_string())
+            .collect();
+        let name = names.join(",");
+        println!(
+            "{nodes:<10} {name:<7} {:>7} {:>7} {:>7}",
+            at(10),
+            at(50),
+            at(90)
+        );
     }
     println!("ns per write of a frame over {TICKS} writes");
     println!(
-        "{:<10} {:<6} {:>7} {:>7} {:>7}",
-        "nodes", "type", "p10", "p50", "p90"
+        "{:<10} {:<6} {:>4} {:>7} {:>7} {:>7}",
+        "nodes", "type", "bad", "p10", "p50", "p90"
     );
-    for (nodes, scalars) in WRITES {
+    for (nodes, scalars, bad) in WRITES {
         let count = WARMUP + TICKS / WRITE_RUNS;
         let mut writes: Vec<_> = (0..WRITE_RUNS)
             .flat_map(|_| {
-                kind::writes(nodes, scalars, count, time)
+                kind::writes(nodes, scalars, count, move |_| bad, time)
                     .0
                     .split_off(WARMUP)
             })
@@ -75,7 +96,7 @@ fn main() {
             _ => "mixed".to_owned(),
         };
         println!(
-            "{nodes:<10} {name:<6} {:>7} {:>7} {:>7}",
+            "{nodes:<10} {name:<6} {bad:>4} {:>7} {:>7} {:>7}",
             at(10),
             at(50),
             at(90)
@@ -84,7 +105,7 @@ fn main() {
     println!("ns per run start over {RUNS} runs, and per parse over {PARSES} parses");
     println!("{:<10} {:>10} {:>10}", "nodes", "start p50", "parse p50");
     for nodes in STARTS {
-        let starts = (0..RUNS).map(|_| kind::run(nodes, 1, time).start);
+        let starts = (0..RUNS).map(|_| kind::run(nodes, &[Scalar::F64], 1, time).start);
         let config = kind::config("opc.tcp://plc:4840", nodes);
         let parses = (0..PARSES).map(|_| {
             let mut parsed = None;

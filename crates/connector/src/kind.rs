@@ -272,8 +272,8 @@ impl<C> Context<C> {
     /// next call: a short text of how the run works other than its spec asks, such as
     /// a mode that the device forces. The status gives it within one second. A note of
     /// more than 1024 bytes keeps its first and last 510 bytes or less at char
-    /// boundaries, joined by `…`. The end of the run clears it, and a call after the
-    /// run returned shows nothing.
+    /// boundaries, joined by `…`. An empty `note` shows none. The end of the run
+    /// clears it, and a call after the run returned shows nothing.
     pub fn note(&self, note: &dyn fmt::Display) {
         self.status.note(note);
     }

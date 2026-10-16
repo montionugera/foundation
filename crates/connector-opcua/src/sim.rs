@@ -31,6 +31,9 @@ struct State {
     variables: Vec<Variable>,
     /// The status of each later read.
     quality: Quality,
+    /// The most nodes of a Read that a server answers, set before it starts.
+    #[cfg(test)]
+    most: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -40,6 +43,29 @@ struct Variable {
     node: Node,
     value: Value,
     served: Vec<Served>,
+    #[cfg(test)]
+    hooks: Hooks,
+}
+
+/// What a test sets on a variable.
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct Hooks {
+    /// The status of each later read, in place of the status of all.
+    quality: Option<Quality>,
+    /// The value that a server holds in place of `value`, set before it starts.
+    fixed: Option<Fixed>,
+}
+
+/// A value of a variable that is not a scalar of [`Value`], which a server holds
+/// with no change and the status Good, and does not record.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Fixed {
+    /// The String `text`.
+    String,
+    /// An array of two Doubles.
+    Doubles,
 }
 
 impl Variables {
@@ -64,11 +90,15 @@ impl Variables {
                 node,
                 value: Value::F64(0.0),
                 served: Vec::new(),
+                #[cfg(test)]
+                hooks: Hooks::default(),
             });
         }
         Self(Arc::new(Mutex::new(State {
             variables,
             quality: Quality::GOOD,
+            #[cfg(test)]
+            most: None,
         })))
     }
 
@@ -100,6 +130,51 @@ impl Variables {
             .value = value;
     }
 
+    /// Gives each later read of the variable of `text` the status `quality`, in place
+    /// of the status of [`Variables::change`].
+    ///
+    /// # Panics
+    ///
+    /// If no variable has `text`.
+    #[cfg(test)]
+    pub(crate) fn set_quality(&self, text: &str, quality: Quality) {
+        self.variable(text, |variable| variable.hooks.quality = Some(quality));
+    }
+
+    /// Makes a server that starts later hold `fixed` at the variable of `text`.
+    ///
+    /// # Panics
+    ///
+    /// If no variable has `text`.
+    #[cfg(test)]
+    pub(crate) fn fix(&self, text: &str, fixed: Fixed) {
+        self.variable(text, |variable| variable.hooks.fixed = Some(fixed));
+    }
+
+    /// Makes a server refuse each Read of more than `most` nodes, and not tell the
+    /// client the limit.
+    #[cfg(test)]
+    pub(crate) fn refuse_reads_past(&self, most: u32) {
+        self.state().most = Some(most);
+    }
+
+    /// The most nodes of a Read of [`Variables::refuse_reads_past`], and the value of
+    /// [`Variables::fix`] of each variable.
+    #[cfg(test)]
+    fn hooks(&self) -> (Option<u32>, Vec<Option<Fixed>>) {
+        let state = self.state();
+        let fixed = state.variables.iter().map(|v| v.hooks.fixed).collect();
+        (state.most, fixed)
+    }
+
+    /// Calls `change` on the variable of `text`.
+    #[cfg(test)]
+    fn variable(&self, text: &str, change: impl FnOnce(&mut Variable)) {
+        let mut state = self.state();
+        let variable = state.variables.iter_mut().find(|v| v.text == text);
+        change(variable.unwrap_or_else(|| panic!("no variable {text:?}")));
+    }
+
     /// Each read that a server answered, by the text of its node in
     /// [`Variables::new`], in the order of the answers.
     #[must_use]
@@ -115,6 +190,8 @@ impl Variables {
         let mut state = self.state();
         let quality = state.quality;
         let variable = &mut state.variables[index];
+        #[cfg(test)]
+        let quality = variable.hooks.quality.unwrap_or(quality);
         if let Value::F64(value) = variable.value {
             let served = Served {
                 time,
@@ -177,7 +254,13 @@ pub async fn serve(
     let nodes: Vec<Node> = (variables.state().variables.iter())
         .map(|variable| variable.node.clone())
         .collect();
+    #[cfg(test)]
+    let (most, fixed) = variables.hooks();
     let add = |server: &mut Server| {
+        #[cfg(test)]
+        if let Some(most) = most {
+            server.refuse_reads_past(most);
+        }
         let top = nodes.iter().map(|node| node.namespace).max().unwrap_or(0);
         for namespace in 2..=top {
             let uri = CString::new(format!("urn:foundation:sim:{namespace}"))
@@ -186,6 +269,14 @@ pub async fn serve(
             assert_eq!(added, namespace, "open62541 refused a namespace");
         }
         for (index, node) in nodes.iter().enumerate() {
+            #[cfg(test)]
+            if let Some(fixed) = fixed[index] {
+                match fixed {
+                    Fixed::String => server.add_string(node),
+                    Fixed::Doubles => server.add_doubles(node),
+                }
+                continue;
+            }
             let (variables, clock) =
                 (Variables::clone(variables), Clock::clone(&clock));
             server.add_source(node, move || variables.read(index, clock.now()));
