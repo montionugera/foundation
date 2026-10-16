@@ -113,7 +113,7 @@
   line waits for the next `Flush::wait` (laptop.architect-2,
   https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209084526). A panic
   of the writer, on the thread `log`, also calls it at once, since only that thread
-  writes the line. Decision by `laptop.monitor` (2026-10-15T21:39:25Z,
+  writes the line, and a hook that waits as the writer panics then calls it too. Decision by `laptop.monitor` (2026-10-15T21:39:25Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202838819). The
   plan by `laptop.architect-2` (2026-10-15T21:43:54Z,
   https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6202910326), and its

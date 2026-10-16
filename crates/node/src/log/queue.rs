@@ -105,7 +105,8 @@ impl Flush {
     /// a thread `log` runs, it first waits up to `bound` for the log to write each
     /// line, and when `bound` passes, it does not call `previous`: the writer may block
     /// that write too. When no thread `log` runs, as after each shard has ended, and
-    /// for a panic of the writer, it calls `previous` at once.
+    /// for a panic of the writer, it calls `previous` at once, and also once the
+    /// writer panics in the wait.
     #[must_use]
     pub fn hook(&self, previous: Hook, bound: Duration) -> Hook {
         let flush = self.clone();
@@ -117,12 +118,13 @@ impl Flush {
     }
 
     /// Logs the panic line of `info`, then gives whether the hook before may write:
-    /// after a wait of up to `bound` while another thread `log` runs, and at once
-    /// otherwise.
+    /// after a wait of up to `bound` while another thread `log` runs, at once
+    /// otherwise, and when that thread ends with the writer's panic in the wait.
     fn panicked(&self, info: &PanicHookInfo<'_>, bound: Duration) -> bool {
         let queue = &self.queue;
         let sent = queue.lines.panic(queue.line.panicked(info).into_bytes());
-        !queue.lines.runs_elsewhere() || self.written(sent, bound)
+        let free = || !queue.lines.runs_elsewhere();
+        free() || self.written(sent, bound) || free()
     }
 
     /// The wait of [`Flush::wait`] for the first `sent` lines, with no start.

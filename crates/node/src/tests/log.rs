@@ -73,6 +73,27 @@ impl io::Write for Panics {
     }
 }
 
+/// A writer to stderr that waits 300 ms at the line `n=2`, then panics.
+struct Ends;
+
+impl io::Write for Ends {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.windows(3).any(|word| word == b"n=2") {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "a hook waits on the writer"
+            )]
+            std::thread::sleep(Duration::from_millis(300));
+            panic!("the writer panics");
+        }
+        io::stderr().write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// A writer to stderr whose first write blocks until `free` gets a message or drops.
 /// It sends on `entered` when it blocks.
 struct Gated {
@@ -718,6 +739,8 @@ enum Case {
     Late,
     /// The writer panics at one line, and the log waits for the next.
     Writes,
+    /// The writer panics while the hook waits for it.
+    Ends,
     /// The log writes to stderr once the queue is full.
     Full,
     /// The log writes to stderr, and the hook before aborts, as in a release build.
@@ -742,6 +765,7 @@ fn writer(
             free,
         }),
         Case::Writes => Box::new(Panics(Lines::default())),
+        Case::Ends => Box::new(Ends),
         Case::Full => Box::new(Gated {
             entered,
             free: Some(free),
@@ -809,7 +833,7 @@ fn panics(case: Case) -> ! {
             tracing::dispatcher::with_default(&log.dispatch, numbered(3, 1100));
             free.send(()).expect("the writer waits");
         }
-        Case::Free | Case::Stuck | Case::Abort | Case::Json => {}
+        Case::Free | Case::Stuck | Case::Abort | Case::Json | Case::Ends => {}
     }
     panic!("the test panics");
 }
@@ -822,6 +846,7 @@ fn a_panic_writes_the_queued_lines_then_the_panic() {
         Ok("stuck") => panics(Case::Stuck),
         Ok("late") => panics(Case::Late),
         Ok("writes") => panics(Case::Writes),
+        Ok("ends") => panics(Case::Ends),
         Ok("full") => panics(Case::Full),
         Ok("abort") => panics(Case::Abort),
         Ok("json") => panics(Case::Json),
@@ -953,6 +978,13 @@ fn a_panic_of_the_writer_ends_the_log_and_runs_the_hook_before_at_once() {
     let stderr = child("writes");
     assert!(stderr.contains("the writer panics"), "{stderr}");
     assert!(stderr.contains("the test panics"), "{stderr}");
+}
+
+#[test]
+fn a_panic_that_waits_as_the_writer_panics_runs_the_hook_before() {
+    let stderr = child("ends");
+    assert!(stderr.contains("the writer panics"), "{stderr}");
+    assert!(stderr.contains(":\nthe test panics\n"), "{stderr}");
 }
 
 /// The line of an event with `field` and other fields.
