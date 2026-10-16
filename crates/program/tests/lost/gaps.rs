@@ -210,6 +210,16 @@ fn gives_each_channel_the_seqs_lost_since_its_last_series() {
     assert_eq!(log.events(), [warning(1, 3), warning(5, 6)]);
 }
 
+/// A gap right after a gap gives a channel that both frames hold only the second.
+#[test]
+fn gives_a_gap_right_after_a_gap_alone() {
+    const SENT: &[Sent] = &[(2, 1, &[0, 1]), (4, 1, &[0, 1])];
+    let (lost, log) = lost(416, Mode::Complete, 0, SENT);
+    let expected = [[0..0, 0..0, 0..0], [0..2, 0..2, 0..0], [3..4, 3..4, 0..0]];
+    assert_eq!(lost, expected);
+    assert_eq!(log.events(), [warning(0, 2), warning(3, 4)]);
+}
+
 /// A latest reader skips seqs by design: it gives no gap and writes no warning.
 #[test]
 fn gives_no_gap_to_a_latest_reader() {

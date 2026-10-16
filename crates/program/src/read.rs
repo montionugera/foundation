@@ -186,7 +186,7 @@ impl Reader {
         let gap = self.frames.lost();
         if !gap.is_empty() {
             for lost in &mut self.lost {
-                lost.seqs = if lost.at >= self.gapped || lost.seqs.is_empty() {
+                lost.seqs = if lost.at >= self.gapped {
                     gap.clone()
                 } else {
                     lost.seqs.start..gap.end
