@@ -421,6 +421,21 @@ mod pattern {
     }
 
     #[test]
+    fn matches_each_middle_piece_after_the_one_before() {
+        assert!(!steps(&pattern("*ab*ab*"), &["abxx"]));
+        assert!(steps(&pattern("*ab*ab*"), &["xabab"]));
+    }
+
+    #[test]
+    fn reaches_each_position_once_and_in_order() {
+        let read = pattern("**/a/**");
+        let state = ["a", "a"]
+            .iter()
+            .fold(read.start(), |state, name| read.step(&state, name));
+        assert_eq!(state, State(vec![0, 1, 2, 3]));
+    }
+
+    #[test]
     fn matches_no_long_name_that_one_late_byte_breaks() {
         let glob = format!("*{}b", "a".repeat(800));
         assert!(!steps(&pattern(&glob), &["a".repeat(1_000).as_str()]));
@@ -463,6 +478,7 @@ mod pattern {
                 .iter()
                 .fold(read.start(), |state, name| read.step(&state, name));
             prop_assert_eq!(read.open(&state), extends(&segments, &names));
+            prop_assert!(state.0.is_sorted_by(|a, b| a < b));
         }
     }
 }
