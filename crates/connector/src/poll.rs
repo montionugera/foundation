@@ -106,7 +106,7 @@ impl Writer {
         for ((channel, &entry), name) in
             writer.entries().iter().enumerate().zip(&channels)
         {
-            if set.groups().contains(&entry) {
+            if set.index(entry) == entry {
                 wrong.push(index(name));
             } else if channel_of[entry].replace(channel).is_some() {
                 panic!(
