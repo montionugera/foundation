@@ -75,16 +75,18 @@
   split to #2807 (2026-10-16T03:22:23Z,
   https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6207344849).
   (9) The thread `log` writes each line, so no event waits on the writer. An event puts
-  its line in a queue of 1024 lines and wakes the thread. The lines, the count of
-  dropped lines, the panic lines, and the waker are under one lock, so each line and
-  each close wakes the thread; a loom model checks it. A line that finds the queue
-  full drops, and the thread writes WARN `dropped` (target `node::log`) with the field
-  `lines`, their count, after the last line that came before the first of them. At
-  λ lines a second, 1024 lines hold a stall of the writer of 1024/λ s: 10 ms at
-  100,000 lines a second, a rate only `debug` and `trace` reach (item 8). The count
-  line reports each loss. A write that
-  fails drops its line. A write that panics ends the thread `log`, and no later line
-  reaches the writer; a release build, with `panic = "abort"`, ends there. The thread
+  its line in a queue of 1024 lines and 1 MiB, and wakes the thread. The lines, the
+  count of dropped lines, the panic lines, and the waker are under one lock, so each
+  line, each drop, and each close wakes the thread; a loom model checks it. A line
+  drops when 1024 lines wait or when it does not fit in 1 MiB with them, and each line
+  after it drops until the thread takes the queue. The thread writes WARN `dropped`
+  (target `node::log`) with the field `lines`, their count, after the last line that
+  came before the first of them. At λ lines a second, 1024 lines hold a stall of the
+  writer of 1024/λ s: 10 ms at 100,000 lines a second, a rate only `debug` and `trace`
+  reach (item 8). The count line reports each loss. The depth of the queue gets a
+  gauge when the node has metrics. A write that fails drops its line. A write that
+  panics ends the thread `log`, and no later line reaches the writer; a release
+  build, with `panic = "abort"`, ends there. The thread
   starts with the node, which fails with `Error::Start` when it cannot. It ends once
   each shard has ended and the queue is empty, so a sim run ends. A line after that
   waits in the queue for `Node::join` (after `stopped`) or `Flush::wait`. Each starts
@@ -114,8 +116,16 @@
   `Flush::hook` (2026-10-16T04:37:28Z,
   https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6208190479). The
   hook in `main` only, by `laptop.director` (2026-10-15T21:38:54Z,
-  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6202830785). Lost:
+  https://github.com/synnaxlabs/foundation/issues/2764#issuecomment-6202830785), and a
+  child test whose hook before it aborts in place of a test of the release binary
+  (2026-10-16T05:53:41Z,
+  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209079754). The
+  1 MiB cap, the gauge when the node has metrics, the count under the one lock, the
+  thread that ends and starts again, and the name `Flush`, by `laptop.architect-2`
+  (2026-10-16T05:54:05Z,
+  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209084526). Lost:
   one thread for the life of the log, which makes each sim run end as `Stuck`; a write
   on the thread of `join`, which loses the bound of `main` on a stuck writer;
   `tracing-appender::non_blocking`, which starts its own OS thread, so no sim run
-  drives it, and counts a dropped line with no line in the log.
+  drives it, and counts a dropped line with no line in the log; an atomic count, a
+  second sync point beside the lock that each push takes.
