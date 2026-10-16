@@ -106,14 +106,22 @@
   that is equal to a root, which is a later step on #2702 when a user's server cannot
   get a new certificate. Until the influx kind takes a `ca`, its plan refuses `https`.
   The roots are `node::Config::roots`, an `os::Roots`, and main gives `os::roots()`:
-  the certificate files on Linux and the keychain on macOS. When `SSL_CERT_FILE` or
-  `SSL_CERT_DIR` is set, it reads only the files that they name, on each OS. Before
+  the certificate files on Linux and the keychain on macOS. When `SSL_CERT_FILE` is
+  set, or `SSL_CERT_DIR` names a directory, it reads only that file and the files in
+  those directories, on each OS. This override waits on the person
+  (https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6213282778). Main
+  reads the store once, so a change to it takes effect at the next start. Before
   `started`, shard 0 logs a warning "a part of the OS roots was not read" with the
   `error` of each failure, "OS roots that do not parse are skipped" with the count
-  `skipped`, and "the OS roots hold no certificate, so each https connect fails". This
-  supersedes `node::Config::roots: Vec<Vec<u8>>` of 6207437988 (`laptop.architect-2`,
-  2026-10-16T10:09:09Z:
-  https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6213160739).
+  `skipped`, and "the OS roots hold no certificate, so an https connect with no CA of
+  its connector fails". It logs them also with `Region::Absent`. This supersedes
+  `node::Config::roots: Vec<Vec<u8>>` of
+  https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6207437988, which
+  read the OS outside `os`, so its failures did not reach the node log
+  (`laptop.architect-2`, 2026-10-16T10:09:09Z:
+  https://github.com/synnaxlabs/foundation/issues/2702#issuecomment-6213160739; the
+  order before `started`, 2026-10-16T10:22:32Z:
+  https://github.com/synnaxlabs/foundation/pull/2862#issuecomment-6213377062).
   `laptop.architect-2` ruled `Tls`, `tokio-rustls`, the name `server` of the test
   host, the `CA:TRUE` text, and the refusal (2026-10-16T07:51:33Z:
   https://github.com/synnaxlabs/foundation/pull/2844#issuecomment-6210764044).
