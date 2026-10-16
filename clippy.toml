@@ -7,7 +7,8 @@ too-many-lines-threshold = 70
 stack-size-threshold = 65536
 
 # Clock, randomness, threads, disk, network, and the environment come from `env`.
-# Only `os` implements them. Hash order comes from `types::hash`.
+# Only `os` and, outside the binary, `sdk` implement them. Hash order comes from
+# `types::hash`.
 disallowed-methods = [
   { path = "std::time::SystemTime::now", reason = "use the injected clock" },
   { path = "std::time::Instant::now", reason = "use the injected clock" },

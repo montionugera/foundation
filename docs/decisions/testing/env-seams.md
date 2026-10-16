@@ -1,5 +1,8 @@
 - **ENV SEAMS (2026-10-04)** Each `env` seam is a concrete handle over a small driver
-  trait that only `os` and `sim` implement. Amended (2026-10-09, #2063): a driver of
+  trait that `os` and `sim` implement, and, outside the binary, `sdk` (SDK CLIENT,
+  `laptop.architect-2`, 2026-10-16T21:06Z,
+  https://github.com/synnaxlabs/foundation/issues/2923#issuecomment-6224695365).
+  Amended (2026-10-09, #2063): a driver of
   `tasks` that counts tasks passes each task to one of theirs, and a driver of a test or
   a benchmark may keep each task for its caller to poll (`laptop.architect-2`,
   2026-10-09T03:42:09Z:

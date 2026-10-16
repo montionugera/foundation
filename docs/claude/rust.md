@@ -53,9 +53,10 @@ true`. CI denies warnings. r16 gives the reason for each lint.
 - `clippy.toml` forbids calls to the OS (clock, sleep, threads, environment, arguments,
   files, sockets, `process::exit`), the std blocking waits (`park`, `Condvar`,
   `Barrier`, `mpsc` receive), std `HashMap`, `HashSet`, `RandomState`, `thread_local!`,
-  and `env::wall::Wall::now` outside `clock`. Only `os` implements the `env` seams and
-  calls the OS clock, files, sockets, randomness, and threads. Only `node` reads
-  arguments and exits. Each such call carries one `#[expect]`.
+  and `env::wall::Wall::now` outside `clock`. Only `os` and, outside the binary, `sdk`
+  implement the `env` seams and call the OS clock, files, sockets, randomness, and
+  threads. Only `node` reads arguments and exits. Each such call carries one
+  `#[expect]`.
 - `clippy.toml` also forbids the rustls calls that read the OS clock, a key log file,
   or the process-wide provider. Only `transport::tls` and `connector::http` build
   rustls configs, with `builder_with_details` and their own provider. The time of a

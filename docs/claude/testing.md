@@ -8,11 +8,11 @@ names rule N in `docs/research/r16-rust-guides.md`.
 Every component gets clock, network, disk, and randomness as inputs (`env`). Production
 passes the real ones. Tests pass the simulated ones from `sim`. Nothing reads the OS
 clock, the network, the disk, or a random source directly. Clippy's `disallowed-methods`
-list in `clippy.toml` enforces this. Only `os` implements the `env` seams and calls the
-OS, sockets included. Some tests must reach the OS, such as a test of `os`, a process
-test (Process tests), and a test that bounds its own run time or reads a file of the
-repository. Each call of such a test that the list bans carries
-`#[expect(clippy::disallowed_methods, reason = "...")]` with its reason.
+list in `clippy.toml` enforces this. Only `os` and, outside the binary, `sdk` implement
+the `env` seams and call the OS, sockets included. Some tests must reach the OS, such
+as a test of `os`, a process test (Process tests), and a test that bounds its own run
+time or reads a file of the repository. Each call of such a test that the list bans
+carries `#[expect(clippy::disallowed_methods, reason = "...")]` with its reason.
 
 A simulated run never reads OS randomness, OS time, or a random hash order (r16
 43-46). Use `types::hash::Map` and `Set`. Never let hash iteration order decide

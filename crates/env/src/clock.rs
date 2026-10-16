@@ -123,9 +123,10 @@ impl fmt::Debug for Clock {
 /// }
 /// ```
 pub trait Driver: Send + Sync {
-    /// Reads the clock. Reads on any thread never go backwards, and the clock
-    /// counts time while the machine sleeps. A read is ordered against the loads and
-    /// stores before and after it on its thread.
+    /// Reads the clock. Reads on any thread never go backwards. Under `os` and `sim`,
+    /// the clock counts time while the machine sleeps, and a read is ordered against
+    /// the loads and stores before and after it on its thread. `sdk` keeps neither
+    /// rule (#2932).
     fn now(&self) -> Monotonic;
 
     /// The std [`Instant`] at `Monotonic(0)`. It never changes.

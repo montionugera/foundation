@@ -10,10 +10,12 @@ Rules:
 6. Upward flow goes only through values the upper crate pulls (watches, streams).
    Seams that lower crates define and upper crates implement (`env` traits) are
    injected downward.
-7. Only `os` touches the real clock, files, network, serial ports, randomness, and
-   threads, through the `env` seams it implements. Only `clock` reads wall time
-   through `env`; everyone else asks `clock`. Only `node` builds real seams, and only
-   `sim` builds simulated ones. Below `hub`, only `home` writes channels, and only its
+7. Only `os` and, outside the binary, `sdk` touch the real clock, files, network,
+   serial ports, randomness, and threads, through the `env` seams they implement. Only
+   `clock` reads wall time through `env`; everyone else asks `clock`. Only `node`
+   builds real seams in the binary, and `sdk` builds its own (SDK CLIENT;
+   `laptop.architect`, 2026-10-16T21:33:33Z,
+   https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225122027). Only `sim` builds simulated ones. Below `hub`, only `home` writes channels, and only its
    companion samples.
 8. Tests follow the same rules, with these extra dev-dependencies only: any crate may
    take `sim`, `counting`, and `waker` (`laptop.architect`, 2026-10-10 06:25 UTC,
