@@ -89,10 +89,11 @@ impl kind::Kind for Kind {
     /// # Errors
     ///
     /// The error of [`Context::writer`] and of each failed write. [`Error::Config`]
-    /// with `connector.index` for each channel that is an index, with
-    /// `opcua.sample-type` for each channel whose sample type is not `bool`, `i8` to
-    /// `u64`, `f32`, or `f64`, and with `opcua.large-read` when the Read of one node
-    /// alone is past one message of the server. [`Error::Device`] when the connect, a
+    /// with `connector.index` for each channel that is an index; that error comes
+    /// alone. Else [`Error::Config`] with `opcua.sample-type` for each channel whose
+    /// sample type is not `bool`, `i8` to `u64`, `f32`, or `f64`, and with
+    /// `opcua.large-read` when the Read of one node alone is past one message of the
+    /// server. [`Error::Device`] when the connect, a
     /// read, or one check fails: a check fails on a status that is not Good or on no
     /// answer in 5 s. Also [`Error::Device`], at once, when the client loses its
     /// channel or its session between two ticks.
@@ -231,8 +232,8 @@ impl<'a> Frames<'a> {
     ///
     /// # Errors
     ///
-    /// The error of [`poll::Writer::open`]. [`Error::Config`] with
-    /// `opcua.sample-type` for each channel whose sample type is not one of
+    /// The error of [`poll::Writer::open`], which comes alone. Else [`Error::Config`]
+    /// with `opcua.sample-type` for each channel whose sample type is not one of
     /// [`SCALARS`].
     async fn open(ctx: &'a Context<Config>) -> Result<Self, Error> {
         let reads = &ctx.config().reads;

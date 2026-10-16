@@ -1023,6 +1023,28 @@ fn refuses_each_channel_whose_samples_are_not_a_scalar_of_a_value() {
     assert_eq!(outcome.frames, []);
 }
 
+/// A read into an index gives `connector.index` alone, with no diagnostic of the
+/// sample types of the other channels.
+#[test]
+fn refuses_a_read_into_an_index_alone() {
+    let mut setup = Setup::three();
+    setup.channels[3] = ("plant.c", data(4, 1, Type::String));
+    setup.reads[0].0 = "plant.time";
+    let outcome = run(
+        setup,
+        |scene| async move { scene.supervise(ms(1_050)).await },
+    );
+    let index = Diagnostic::new(
+        Code::new("connector.index"),
+        None,
+        "the channel `plant.time` is an index, which holds the stamp of each request"
+            .into(),
+        "Write the value to a data channel".into(),
+    );
+    assert_eq!(diagnostics(outcome.result), [index]);
+    assert_eq!(outcome.frames, []);
+}
+
 /// The nodes of [`TYPED`], one for each type of a value.
 const TYPED_NODES: &[&str] = &[
     "ns=2;i=1",
