@@ -234,11 +234,15 @@ fn within_makes_a_directory_on_each_end_of_a_link_that_does_not_resolve_as_free(
             ("out/loop", Error::Outside),
             ("out/loop/", Error::Outside),
             ("data/loop", Error::Hidden),
-            ("DATA/loop", Error::Hidden),
             ("data/loop/.", Error::Hidden),
         ] {
             let path = PathBuf::from(format!("{}/{name}", work.display()));
             assert_eq!(within.make_dir(&path), Err(error), "{name}");
+        }
+        // Only APFS folds case: on Linux, `work/DATA` is not the hidden folder.
+        if cfg!(target_os = "macos") {
+            let path = work.join("DATA/loop");
+            assert_eq!(within.make_dir(&path), Err(Error::Hidden));
         }
         let long = work.join("a".repeat(256));
         assert_eq!(within.make_dir(&long), host.paths.make_dir(&long));
