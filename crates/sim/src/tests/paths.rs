@@ -44,6 +44,22 @@ fn a_relative_path_is_under_the_root() {
 }
 
 #[test]
+fn within_checks_a_relative_link_by_its_place() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/w"));
+    node.set_working_dir(Path::new("/w"));
+    node.link_path(Path::new("/w/to-none"), Path::new("/w/none"));
+    let within = node.paths().within(&["/w".into()], &[]).unwrap();
+    let made = within.make_dir(Path::new("to-none"));
+    assert_eq!(
+        made,
+        Err(Error::Io {
+            code: cases::EXISTS
+        })
+    );
+}
+
+#[test]
 fn a_write_on_the_root_is_on_a_directory() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     let on_dir = node.paths().write(Path::new("/"), b"x");
