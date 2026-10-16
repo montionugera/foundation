@@ -662,11 +662,6 @@ pub(crate) struct Limits {
     pub(crate) chunks: u32,
 }
 
-/// `node` for an add.
-///
-/// # Panics
-///
-/// If its key is the number 0, since open62541 then adds the node at a free number.
 /// The count of the Browse requests of a [`Server`], from [`Server::count_browses`].
 #[cfg(test)]
 pub(crate) struct Browses<'s> {
@@ -684,6 +679,11 @@ impl Browses<'_> {
     }
 }
 
+/// `node` for an add.
+///
+/// # Panics
+///
+/// If its key is the number 0, since open62541 then adds the node at a free number.
 fn added(node: &Node) -> ffi::Node<'_> {
     assert!(
         node.key != Key::Number(0),

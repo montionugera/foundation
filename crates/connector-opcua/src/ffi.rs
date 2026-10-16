@@ -98,7 +98,6 @@ impl Status {
     #[cfg(test)]
     pub(crate) const BAD_TCP_ENDPOINT_URL_INVALID: Self = Self(0x8083_0000);
     pub(crate) const BAD_TIMEOUT: Self = Self(0x800A_0000);
-    pub(crate) const BAD_REQUEST_TOO_LARGE: Self = Self(0x80B8_0000);
     pub(crate) const BAD_TOO_MANY_OPERATIONS: Self = Self(0x8010_0000);
     pub(crate) const BAD_UNEXPECTED_ERROR: Self = Self(0x8001_0000);
     #[cfg(test)]
@@ -566,6 +565,26 @@ impl Service {
     pub(crate) const READ: Self = Self(3);
 }
 
+/// A kind of result of `shim_answer_item`: an index of its enum in `shim.c`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
+pub(crate) struct Item(usize);
+
+impl Item {
+    /// A Read result of a Double.
+    pub(crate) const VALUE: Self = Self(0);
+    /// A Read result of a `NodeId` by a name.
+    pub(crate) const FACT: Self = Self(1);
+    /// A Read result of an `EUInformation`.
+    pub(crate) const UNIT: Self = Self(2);
+    /// A Translate result of one target.
+    pub(crate) const PATH: Self = Self(3);
+    /// A Browse result with a continuation point and no references.
+    pub(crate) const RESULT: Self = Self(4);
+    /// One reference of a Browse result.
+    pub(crate) const REFERENCE: Self = Self(5);
+}
+
 /// `UA_ClientAsyncServiceCallback`.
 pub(crate) type Served = unsafe extern "C" fn(
     client: *mut Client,
@@ -581,7 +600,7 @@ pub(crate) struct Reference {
     /// The node, valid only when `local`.
     pub(crate) node: Node<'static>,
     /// The reference type, valid only when `typed`.
-    pub(crate) kind: Node<'static>,
+    pub(crate) via: Node<'static>,
     /// The text of the browse name.
     pub(crate) name: Bytes,
     /// The text of the display name.
@@ -676,10 +695,6 @@ unsafe extern "C" {
         count: usize,
     ) -> *mut ReadRequest;
     pub(crate) fn shim_read_free(request: *mut ReadRequest);
-    pub(crate) fn shim_read_ask(token: usize) -> usize;
-    pub(crate) fn shim_read_item(node: Node<'_>) -> usize;
-    pub(crate) fn shim_read_answer() -> usize;
-    pub(crate) fn shim_read_answer_item() -> usize;
     pub(crate) fn shim_client_read(
         client: *mut Client,
         request: *mut ReadRequest,
@@ -719,6 +734,10 @@ unsafe extern "C" {
         service: Service,
         token: usize,
     ) -> usize;
+    pub(crate) fn shim_answer_bytes(service: Service) -> usize;
+    pub(crate) fn shim_answer_item(kind: Item) -> usize;
+    #[cfg(test)]
+    pub(crate) fn shim_service_type(service: Service, answer: bool) -> *const DataType;
     pub(crate) fn shim_browse_new(
         nodes: *const Node<'_>,
         count: usize,
@@ -727,7 +746,11 @@ unsafe extern "C" {
         classes: u32,
         most: u32,
     ) -> *mut c_void;
-    pub(crate) fn shim_browse_next_new(point: *const u8, length: usize) -> *mut c_void;
+    pub(crate) fn shim_browse_next_new(
+        points: *const Bytes,
+        count: usize,
+        release: bool,
+    ) -> *mut c_void;
     pub(crate) fn shim_browse_result(
         answer: *const c_void,
         index: usize,
@@ -748,9 +771,8 @@ unsafe extern "C" {
     ) -> bool;
     pub(crate) fn shim_read_attributes_new(
         nodes: *const Node<'_>,
-        count: usize,
         attributes: *const u32,
-        per: usize,
+        count: usize,
     ) -> *mut c_void;
     pub(crate) fn shim_value_node(value: *const DataValue, out: *mut Node<'_>) -> u32;
     pub(crate) fn shim_value_unit(

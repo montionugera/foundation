@@ -736,14 +736,14 @@ UA_StatusCode shim_response_result(const void *response) {
 }
 
 /* Sets `request` to a Read request of no nodes with no timestamps. `shim_read_new` and
- * `shim_read_ask` both build from it, so the size check sees each field. */
+ * `shim_read_attributes_new` both build from it, so a size check of one sees each field
+ * of the other. */
 static void read_request_init(UA_ReadRequest *request) {
     UA_ReadRequest_init(request);
     request->timestampsToReturn = UA_TIMESTAMPSTORETURN_NEITHER;
 }
 
-/* Sets `read` to the read of the Value of `node`, which it borrows the name of.
- * `shim_read_new` and `shim_read_item` both build from it. */
+/* Sets `read` to the read of the Value of `node`, which it borrows the name of. */
 static void read_value_init(UA_ReadValueId *read, shim_node node) {
     UA_ReadValueId_init(read);
     read->attributeId = UA_ATTRIBUTEID_VALUE;
@@ -780,70 +780,34 @@ UA_ReadRequest *shim_read_new(const shim_node *nodes, size_t count) {
 
 void shim_read_free(UA_ReadRequest *request) { UA_ReadRequest_delete(request); }
 
-/* Sends `request` on `client`, and has `callback` called with `data` and the answer.
- * Writes the id of the request to `id`. The request times out only after 2^32 - 1 ms
- * (49.7 days), so in practice it ends at its answer or at the close of the channel. */
-UA_StatusCode shim_client_read(UA_Client *client, UA_ReadRequest *request,
-                               UA_ClientAsyncReadCallback callback, void *data,
-                               UA_UInt32 *id) {
+/* Sends `request`, of the type `request_type`, on `client`, and has `callback` called
+ * with `data` and the answer, of the type `answer_type`. Writes the id of the request to
+ * `id`. The request times out only after 2^32 - 1 ms (49.7 days), so in practice it
+ * ends at its answer or at the close of the channel. */
+static UA_StatusCode send(UA_Client *client, void *request,
+                          const UA_DataType *request_type,
+                          UA_ClientAsyncServiceCallback callback,
+                          const UA_DataType *answer_type, void *data, UA_UInt32 *id) {
     /* open62541 takes the timeout hint of a request from the config, and makes 0
      * 2^32 - 1 ms (`src/client/ua_client.c`, lines 460 and 915). The server gets the
      * hint 0. A send keeps the handle that it gives a request with handle 0. */
     UA_ClientConfig *config = UA_Client_getConfig(client);
     UA_UInt32 timeout = config->timeout;
     config->timeout = 0;
-    request->requestHeader.requestHandle = 0;
-    UA_StatusCode status =
-        UA_Client_sendAsyncReadRequest(client, request, callback, data, id);
+    ((UA_RequestHeader *)request)->requestHandle = 0;
+    UA_StatusCode status = __UA_Client_AsyncService(client, request, request_type,
+                                                    callback, answer_type, data, id);
     config->timeout = timeout;
     return status;
 }
 
-/* Gives the bytes of the body of the message of a Read request of no nodes sent with a
- * session token of `token` encoded bytes. A request of nodes adds `shim_read_item` of
- * each. */
-size_t shim_read_ask(size_t token) {
-    const UA_DataType *type = &UA_TYPES[UA_TYPES_READREQUEST];
-    UA_ReadRequest request;
-    read_request_init(&request);
-    return UA_calcSizeBinary(&type->binaryEncodingId, &UA_TYPES[UA_TYPES_NODEID], NULL) +
-           UA_calcSizeBinary(&request, type, NULL) -
-           UA_calcSizeBinary(&request.requestHeader.authenticationToken,
-                             &UA_TYPES[UA_TYPES_NODEID], NULL) +
-           token;
-}
-
-/* Gives the bytes of the read of the Value of `node` in a Read request. */
-size_t shim_read_item(shim_node node) {
-    UA_ReadValueId read;
-    read_value_init(&read, node);
-    return UA_calcSizeBinary(&read, &UA_TYPES[UA_TYPES_READVALUEID], NULL);
-}
-
-/* Gives the bytes of the body of the message of a good answer of a read of no nodes. A
- * good answer of nodes adds `shim_read_answer_item` of each. */
-size_t shim_read_answer(void) {
-    const UA_DataType *type = &UA_TYPES[UA_TYPES_READRESPONSE];
-    UA_ReadResponse response;
-    UA_ReadResponse_init(&response);
-    return UA_calcSizeBinary(&type->binaryEncodingId, &UA_TYPES[UA_TYPES_NODEID], NULL) +
-           UA_calcSizeBinary(&response, type, NULL);
-}
-
-/* Gives the most bytes of the value of one node in a good answer: a Double, the largest
- * scalar of `shim_value_scalar`, with each field of the value. */
-size_t shim_read_answer_item(void) {
-    UA_Double value = 0;
-    UA_DataValue result;
-    UA_DataValue_init(&result);
-    UA_Variant_setScalar(&result.value, &value, &UA_TYPES[UA_TYPES_DOUBLE]);
-    result.hasValue = true;
-    result.hasStatus = true;
-    result.hasSourceTimestamp = true;
-    result.hasServerTimestamp = true;
-    result.hasSourcePicoseconds = true;
-    result.hasServerPicoseconds = true;
-    return UA_calcSizeBinary(&result, &UA_TYPES[UA_TYPES_DATAVALUE], NULL);
+/* Sends `request` on `client` as `send` does, with `callback` for the answer. */
+UA_StatusCode shim_client_read(UA_Client *client, UA_ReadRequest *request,
+                               UA_ClientAsyncReadCallback callback, void *data,
+                               UA_UInt32 *id) {
+    return send(client, request, &UA_TYPES[UA_TYPES_READREQUEST],
+                (UA_ClientAsyncServiceCallback)callback,
+                &UA_TYPES[UA_TYPES_READRESPONSE], data, id);
 }
 
 /* Gives the count of results of `response`, a Read response. */
@@ -935,21 +899,19 @@ static const UA_DataType *answer_type(size_t service) {
     return &UA_TYPES[SERVICES[service].answer];
 }
 
-/* Sends `request`, a request of `service`, on `client`, as `shim_client_read` does, and
- * has `callback` called with `data` and the answer. Writes the id of the request to
- * `id`. */
+/* Sends `request`, a request of `service`, on `client` as `send` does, with `callback`
+ * for the answer. */
 UA_StatusCode shim_client_service(UA_Client *client, void *request, size_t service,
                                   UA_ClientAsyncServiceCallback callback, void *data,
                                   UA_UInt32 *id) {
-    UA_ClientConfig *config = UA_Client_getConfig(client);
-    UA_UInt32 timeout = config->timeout;
-    config->timeout = 0;
-    ((UA_RequestHeader *)request)->requestHandle = 0;
-    UA_StatusCode status =
-        __UA_Client_AsyncService(client, request, request_type(service), callback,
-                                 answer_type(service), data, id);
-    config->timeout = timeout;
-    return status;
+    return send(client, request, request_type(service), callback, answer_type(service),
+                data, id);
+}
+
+/* Gives the request type of `service` when not `answer`, else its answer type, for the
+ * test of the order of `SERVICES`. */
+const UA_DataType *shim_service_type(size_t service, UA_Boolean answer) {
+    return answer ? answer_type(service) : request_type(service);
 }
 
 /* Moves `answer`, an answer of `service` that a callback gets, to new memory that
@@ -1003,11 +965,131 @@ size_t shim_request_bytes(const void *request, size_t service, size_t token) {
            UA_calcSizeBinary(&header->authenticationToken, node, NULL) + token;
 }
 
+/* Gives the bytes of the body of the message of a good answer of `service` with no
+ * results. Each result adds its `shim_answer_item`. */
+size_t shim_answer_bytes(size_t service) {
+    const UA_DataType *type = answer_type(service);
+    /* The largest answer of `SERVICES`, so `UA_init` writes in bounds. */
+    UA_TranslateBrowsePathsToNodeIdsResponse answer;
+    UA_init(&answer, type);
+    return UA_calcSizeBinary(&type->binaryEncodingId, &UA_TYPES[UA_TYPES_NODEID], NULL) +
+           UA_calcSizeBinary(&answer, type, NULL);
+}
+
+_Static_assert(sizeof(UA_TranslateBrowsePathsToNodeIdsResponse) >=
+                       sizeof(UA_BrowseResponse) &&
+                   sizeof(UA_TranslateBrowsePathsToNodeIdsResponse) >=
+                       sizeof(UA_BrowseNextResponse) &&
+                   sizeof(UA_TranslateBrowsePathsToNodeIdsResponse) >=
+                       sizeof(UA_ReadResponse),
+               "a response of SERVICES grew");
+
+/* The most bytes of each text and byte string of the answers that `shim_answer_item`
+ * sizes. */
+#define TEXT_BYTES 256
+
+static const UA_Byte TEXT[TEXT_BYTES] = {0};
+
+/* A text of `TEXT_BYTES` bytes, which only a size reads. */
+static UA_String text(void) {
+    return (UA_String){TEXT_BYTES, (UA_Byte *)(uintptr_t)TEXT};
+}
+
+/* The kinds of `shim_answer_item`. `src/ffi.rs` mirrors them. */
+enum {
+    ITEM_VALUE,
+    ITEM_FACT,
+    ITEM_UNIT,
+    ITEM_PATH,
+    ITEM_RESULT,
+    ITEM_REFERENCE,
+};
+
+/* Sets `id` to the largest `ExpandedNodeId` with each text at `TEXT_BYTES`. */
+static void wide_id(UA_ExpandedNodeId *id) {
+    UA_ExpandedNodeId_init(id);
+    id->nodeId = UA_NODEID_STRING(UINT16_MAX, "");
+    id->nodeId.identifier.string = text();
+    id->namespaceUri = text();
+    id->serverIndex = UINT32_MAX;
+}
+
+/* Gives the bytes of `value` in a `DataValue` with each field. */
+static size_t value_bytes(void *value, const UA_DataType *type) {
+    UA_DataValue result;
+    UA_DataValue_init(&result);
+    UA_Variant_setScalar(&result.value, value, type);
+    result.hasValue = true;
+    result.hasStatus = true;
+    result.hasSourceTimestamp = true;
+    result.hasServerTimestamp = true;
+    result.hasSourcePicoseconds = true;
+    result.hasServerPicoseconds = true;
+    return UA_calcSizeBinary(&result, &UA_TYPES[UA_TYPES_DATAVALUE], NULL);
+}
+
+/* Gives the most bytes of one result of the `kind` in a good answer, with each text and
+ * byte string at `TEXT_BYTES`:
+ * - `ITEM_VALUE`: a Read result of a Double, the largest scalar of `shim_value_scalar`;
+ * - `ITEM_FACT`: a Read result of a `NodeId` by a name;
+ * - `ITEM_UNIT`: a Read result of an `EUInformation`;
+ * - `ITEM_PATH`: a Translate result of one target;
+ * - `ITEM_RESULT`: a Browse or BrowseNext result with a continuation point and no
+ *   references;
+ * - `ITEM_REFERENCE`: one reference of a Browse result, with each field of the result
+ *   mask of `shim_browse_new`. */
+size_t shim_answer_item(size_t kind) {
+    switch(kind) {
+    case ITEM_VALUE: {
+        UA_Double value = 0;
+        return value_bytes(&value, &UA_TYPES[UA_TYPES_DOUBLE]);
+    }
+    case ITEM_FACT: {
+        UA_NodeId id = UA_NODEID_STRING(UINT16_MAX, "");
+        id.identifier.string = text();
+        return value_bytes(&id, &UA_TYPES[UA_TYPES_NODEID]);
+    }
+    case ITEM_UNIT: {
+        UA_EUInformation unit;
+        UA_EUInformation_init(&unit);
+        unit.namespaceUri = text();
+        unit.displayName = (UA_LocalizedText){text(), text()};
+        unit.description = (UA_LocalizedText){text(), text()};
+        return value_bytes(&unit, &UA_TYPES[UA_TYPES_EUINFORMATION]);
+    }
+    case ITEM_PATH: {
+        UA_BrowsePathTarget target;
+        wide_id(&target.targetId);
+        target.remainingPathIndex = UA_UINT32_MAX;
+        UA_BrowsePathResult result = {UA_STATUSCODE_GOOD, 1, &target};
+        return UA_calcSizeBinary(&result, &UA_TYPES[UA_TYPES_BROWSEPATHRESULT], NULL);
+    }
+    case ITEM_RESULT: {
+        UA_BrowseResult result;
+        UA_BrowseResult_init(&result);
+        result.continuationPoint = text();
+        return UA_calcSizeBinary(&result, &UA_TYPES[UA_TYPES_BROWSERESULT], NULL);
+    }
+    case ITEM_REFERENCE: {
+        UA_ReferenceDescription reference;
+        UA_ReferenceDescription_init(&reference);
+        reference.referenceTypeId = UA_NODEID_STRING(UINT16_MAX, "");
+        reference.referenceTypeId.identifier.string = text();
+        wide_id(&reference.nodeId);
+        reference.browseName.name = text();
+        reference.displayName = (UA_LocalizedText){text(), text()};
+        return UA_calcSizeBinary(&reference, &UA_TYPES[UA_TYPES_REFERENCEDESCRIPTION],
+                                 NULL);
+    }
+    default: die("no answer item of the kind %zu", kind); return 0;
+    }
+}
+
 /* Gives a Browse request of the references of each of the `count` nodes at `nodes`,
  * which copies their names: the inverse references when `inverse`, else the forward,
  * of the type `reference` and its subtypes, to the node classes of the mask `classes`,
- * at most `most` per node, 0 for no limit, each with its reference type, node class,
- * browse name, and display name. NULL when an allocation fails. */
+ * at most `most` per node, each with its reference type, node class, browse name, and
+ * display name. NULL when an allocation fails. */
 UA_BrowseRequest *shim_browse_new(const shim_node *nodes, size_t count,
                                   UA_UInt32 reference, UA_Boolean inverse,
                                   UA_UInt32 classes, UA_UInt32 most) {
@@ -1041,25 +1123,20 @@ UA_BrowseRequest *shim_browse_new(const shim_node *nodes, size_t count,
     return request;
 }
 
-/* Gives a BrowseNext request of the continuation point of `length` bytes at `point`,
- * which it copies, or NULL when an allocation fails. */
-UA_BrowseNextRequest *shim_browse_next_new(const UA_Byte *point, size_t length) {
+/* Gives a BrowseNext request of each of the `count` continuation points at `points`,
+ * which it copies, that releases them when `release`. NULL when an allocation fails. */
+UA_BrowseNextRequest *shim_browse_next_new(const UA_ByteString *points, size_t count,
+                                           UA_Boolean release) {
     UA_BrowseNextRequest *request = UA_BrowseNextRequest_new();
     if(!request)
         return NULL;
-    request->continuationPoints =
-        (UA_ByteString *)UA_Array_new(1, &UA_TYPES[UA_TYPES_BYTESTRING]);
-    if(!request->continuationPoints) {
+    request->releaseContinuationPoints = release;
+    if(UA_Array_copy(points, count, (void **)&request->continuationPoints,
+                     &UA_TYPES[UA_TYPES_BYTESTRING]) != UA_STATUSCODE_GOOD) {
         UA_BrowseNextRequest_delete(request);
         return NULL;
     }
-    request->continuationPointsSize = 1;
-    UA_ByteString given = {length, (UA_Byte *)(uintptr_t)point};
-    if(UA_ByteString_copy(&given, &request->continuationPoints[0]) !=
-       UA_STATUSCODE_GOOD) {
-        UA_BrowseNextRequest_delete(request);
-        return NULL;
-    }
+    request->continuationPointsSize = count;
     return request;
 }
 
@@ -1100,7 +1177,7 @@ typedef struct {
     /* The node, valid only when `local`. */
     shim_node node;
     /* The reference type, valid only when `typed`. */
-    shim_node kind;
+    shim_node via;
     UA_String name;
     UA_String display;
     UA_UInt32 class;
@@ -1124,7 +1201,7 @@ void shim_browse_reference(const UA_BrowseResponse *answer, size_t result, size_
     const UA_ExpandedNodeId *node = &reference->nodeId;
     out->local = id_of(&node->nodeId, &out->node) && node->serverIndex == 0 &&
                  node->namespaceUri.length == 0;
-    out->typed = id_of(&reference->referenceTypeId, &out->kind);
+    out->typed = id_of(&reference->referenceTypeId, &out->via);
     out->name = reference->browseName.name;
     out->display = reference->displayName.text;
     out->class = (UA_UInt32)reference->nodeClass;
@@ -1180,26 +1257,25 @@ UA_Boolean shim_units_target(const UA_TranslateBrowsePathsToNodeIdsResponse *ans
            id_of(&target->targetId.nodeId, out);
 }
 
-/* Gives a Read request of each of the `per` attributes at `attributes` of each of the
- * `count` nodes at `nodes`, node by node, which copies their names, or NULL when an
- * allocation fails. */
-UA_ReadRequest *shim_read_attributes_new(const shim_node *nodes, size_t count,
-                                         const UA_UInt32 *attributes, size_t per) {
+/* Gives a Read request of the attribute `attributes[i]` of the node `nodes[i]` for each
+ * `i` below `count`, which copies their names, or NULL when an allocation fails. */
+UA_ReadRequest *shim_read_attributes_new(const shim_node *nodes,
+                                         const UA_UInt32 *attributes, size_t count) {
     UA_ReadRequest *request = UA_ReadRequest_new();
     if(!request)
         return NULL;
     read_request_init(request);
     request->nodesToRead =
-        (UA_ReadValueId *)UA_Array_new(count * per, &UA_TYPES[UA_TYPES_READVALUEID]);
+        (UA_ReadValueId *)UA_Array_new(count, &UA_TYPES[UA_TYPES_READVALUEID]);
     if(!request->nodesToRead) {
         UA_ReadRequest_delete(request);
         return NULL;
     }
-    request->nodesToReadSize = count * per;
-    for(size_t i = 0; i < count * per; i++) {
+    request->nodesToReadSize = count;
+    for(size_t i = 0; i < count; i++) {
         UA_ReadValueId *read = &request->nodesToRead[i];
-        read->attributeId = attributes[i % per];
-        UA_NodeId id = shim_node_id(nodes[i / per]);
+        read->attributeId = attributes[i];
+        UA_NodeId id = shim_node_id(nodes[i]);
         if(UA_NodeId_copy(&id, &read->nodeId) != UA_STATUSCODE_GOOD) {
             UA_ReadRequest_delete(request);
             return NULL;

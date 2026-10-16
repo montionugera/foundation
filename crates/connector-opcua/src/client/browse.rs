@@ -1,17 +1,12 @@
 //! The browse of a server: the references of a node, and what a server says of each
 //! variable.
 
-use std::ffi::c_void;
-use std::num::NonZeroUsize;
-use std::ops::Range;
-use std::ptr::{self, NonNull};
-use std::task::Poll;
+use std::collections::{BTreeMap, BTreeSet};
+use std::num::{NonZeroU32, NonZeroUsize};
 
-use types::hash::{Map, Set};
-
-use super::{Client, READS, Reads, limit};
-use crate::alloc;
-use crate::ffi::{self, Service, Status};
+use super::service::{self, Answer, Request, Sizes};
+use super::{Client, id_bytes, limit};
+use crate::ffi::{self, Item, Status};
 use crate::node::{Key, Node};
 use crate::value::Value;
 
@@ -30,11 +25,8 @@ const DATA_TYPE: u32 = 64;
 /// The attributes `DataType`, `ValueRank`, and `UserAccessLevel`.
 const FACTS: [u32; 3] = [14, 15, 18];
 
-/// The attribute `Value`.
-const VALUE: [u32; 1] = [13];
-
 /// The variables `MaxNodesPerBrowse` and `MaxNodesPerTranslateBrowsePathsToNodeIds`.
-const LIMITS: [u32; 2] = [11710, 11712];
+const BOUNDS: [u32; 2] = [11710, 11712];
 
 /// The `namespaceUri` of an `EUInformation` whose `unitId` is a code of UN/CEFACT
 /// Recommendation 20.
@@ -48,6 +40,10 @@ const ENUMERATION: u32 = 29;
 
 /// The id of `Int32`.
 const INT32: u32 = 6;
+
+/// The most supertypes that a client keeps past a call of [`Client::describe`]: the
+/// next call clears them first.
+const SUPERTYPES: usize = 1024;
 
 /// One page of the references of a node.
 #[derive(Debug, PartialEq, Eq)]
@@ -65,8 +61,8 @@ pub(crate) struct Point(Vec<u8>);
 /// A reference to a node.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Reference {
-    /// The node, or `None` when its id is not a number or a name of this server (a
-    /// GUID, an opaque key, or a node of another server).
+    /// The node, or `None` when its key is a GUID or opaque, or a name that is empty
+    /// or not UTF-8, or it is a node of another server.
     pub(crate) node: Option<Node>,
     /// The text of its browse name.
     pub(crate) name: String,
@@ -75,7 +71,7 @@ pub(crate) struct Reference {
     pub(crate) class: Class,
     /// Its reference type, such as `Organizes` (`i=35`), or `None` when the id of the
     /// type is not a number or a name.
-    pub(crate) kind: Option<Node>,
+    pub(crate) via: Option<Node>,
 }
 
 /// The node class of a [`Reference`].
@@ -112,9 +108,9 @@ pub(crate) struct Unit {
     pub(crate) code: Option<String>,
 }
 
-/// The limits of a server on the nodes of one request of a service, other than Read.
+/// The bounds of a server on the nodes of one request of a service, other than Read.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Limits {
+pub(super) struct Bounds {
     /// Its `MaxNodesPerBrowse`.
     browse: Option<NonZeroUsize>,
     /// Its `MaxNodesPerTranslateBrowsePathsToNodeIds`.
@@ -124,8 +120,10 @@ pub(super) struct Limits {
 impl Client {
     /// Browses the forward hierarchical references of `node` and their subtypes, to
     /// the node classes Object, Variable, and View, and gives the first page of at
-    /// most `most` references, in server order, 0 for no limit. `None` when the server
-    /// does not have `node`.
+    /// most `most` references, in server order. It asks for fewer when an answer of
+    /// `most` references, each with its texts at 256 bytes, would be past one message
+    /// that the client takes, but for at least 1. `None` when the server does not have
+    /// `node`.
     ///
     /// # Errors
     ///
@@ -137,25 +135,21 @@ impl Client {
     pub(crate) async fn browse(
         &mut self,
         node: &Node,
-        most: u32,
+        most: NonZeroU32,
     ) -> Result<Option<Page>, Status> {
-        let raw = [ffi::Node::from(node)];
-        // SAFETY: `raw` holds one node, and C copies its name.
-        let request = Request::new(
-            unsafe {
-                ffi::shim_browse_new(
-                    raw.as_ptr(),
-                    1,
-                    HIERARCHICAL,
-                    false,
-                    CLASSES,
-                    most,
-                )
-            },
-            Service::BROWSE,
-        );
-        let answer = self.serve(&request).await?;
-        match answer.page() {
+        let build = |raw: &[ffi::Node<'_>], most| {
+            Request::browse(raw, HIERARCHICAL, false, CLASSES, most)
+        };
+        let [_, empty] =
+            Sizes::nodes(|raw| build(raw, NonZeroU32::MIN), self.token).empty();
+        let fits = self
+            .takes
+            .saturating_sub(empty + service::result(Item::RESULT))
+            / service::result(Item::REFERENCE);
+        let fits = NonZeroU32::new(u32::try_from(fits).unwrap_or(u32::MAX))
+            .unwrap_or(NonZeroU32::MIN);
+        let answer = self.serve(&build(&[node.into()], most.min(fits))).await?;
+        match page(&answer) {
             Err(Status::BAD_NODE_ID_UNKNOWN) => Ok(None),
             page => page.map(Some),
         }
@@ -168,28 +162,27 @@ impl Client {
     /// As [`Client::browse`], and `BadContinuationPointInvalid` when the server no
     /// longer holds `point`.
     pub(crate) async fn browse_next(&mut self, point: Point) -> Result<Page, Status> {
-        // SAFETY: `point` holds its bytes, and C copies them.
-        let request = Request::new(
-            unsafe { ffi::shim_browse_next_new(point.0.as_ptr(), point.0.len()) },
-            Service::BROWSE_NEXT,
-        );
-        self.serve(&request).await?.page()
+        let answer = self
+            .serve(&Request::browse_next(&[&point.0], false))
+            .await?;
+        page(&answer)
     }
 
     /// Gives the description of each variable of `nodes`, in order. A fact that the
     /// server does not give, or gives with a status that is not Good, is `None`. It
     /// splits each request by the limit of the server for its service
     /// (`MaxNodesPerRead`, `MaxNodesPerBrowse`, or
-    /// `MaxNodesPerTranslateBrowsePathsToNodeIds`) and by the size of a message that
-    /// the client sends, and sends one at a time. At its first call, it reads the
-    /// limits of a Browse and a Translate. It browses each data type once per client,
-    /// with one Browse request for each step of the walk of the types of a call.
+    /// `MaxNodesPerTranslateBrowsePathsToNodeIds`) and so that it and its answer, with
+    /// each text at 256 bytes, fit one message of the session, and sends one at a
+    /// time. A fact whose request alone, or its answer, does not fit is `None`. At its
+    /// first call, it reads the limits of a Browse and a Translate. It browses each data
+    /// type once per client, with one Browse request for each step of the walk of the
+    /// types of a call, and keeps at most 1024 supertypes past a call.
     ///
     /// # Errors
     ///
     /// As [`Client::browse`], for each request that it sends, else
-    /// `BadRequestTooLarge` when the request of one node does not fit one message, and
-    /// `BadUnexpectedError` when an answer has a result for more or fewer nodes than
+    /// `BadUnexpectedError` when an answer has a result for more or fewer items than
     /// its request.
     pub(crate) async fn describe(
         &mut self,
@@ -197,51 +190,26 @@ impl Client {
     ) -> Result<Vec<Description>, Status> {
         let mut descriptions: Vec<Description> =
             nodes.iter().map(|_| Description::default()).collect();
-        let mut types = vec![None; nodes.len()];
-        let limits = self.limits().await?;
-        let facts =
-            self.split(nodes, self.per_read, FACTS.len(), Service::READ, |raw| {
-                // SAFETY: `raw` and `FACTS` hold their counts, and C copies each name.
-                unsafe {
-                    ffi::shim_read_attributes_new(
-                        raw.as_ptr(),
-                        raw.len(),
-                        FACTS.as_ptr(),
-                        FACTS.len(),
-                    )
-                }
-            })?;
-        for (range, request) in facts {
-            let answer = self.serve(&request).await?;
-            answer.has(range.len() * FACTS.len())?;
-            for (offset, index) in range.enumerate() {
-                let fact = |attribute| answer.value(offset * FACTS.len() + attribute);
-                types[index] = node_of(fact(0));
-                // SAFETY: the value lives with the answer.
-                if let Ok(Value::I32(rank)) = unsafe { Value::of(fact(1)) } {
-                    descriptions[index].rank = Some(rank);
-                }
-                // SAFETY: the value lives with the answer.
-                if let Ok(Value::U8(access)) = unsafe { Value::of(fact(2)) } {
-                    descriptions[index].access = Some(access);
-                }
-            }
+        let bounds = self.bounds().await?;
+        if self.supertypes.len() > SUPERTYPES {
+            self.supertypes.clear();
         }
-        self.units(nodes, limits.translate, &mut descriptions)
+        let types = self.facts(nodes, &mut descriptions).await?;
+        self.units(nodes, bounds.translate, &mut descriptions)
             .await?;
-        let bases = self.walk(&types, limits.browse).await?;
+        let bases = self.walk(&types, bounds.browse).await?;
         for (description, base) in descriptions.iter_mut().zip(bases) {
             description.base = base;
         }
         Ok(descriptions)
     }
 
-    /// Reads the [`Limits`] of the server at the first call, as [`limit`] gives each.
-    async fn limits(&mut self) -> Result<Limits, Status> {
-        if let Some(limits) = self.limits {
-            return Ok(limits);
+    /// Reads the [`Bounds`] of the server at the first call, as [`limit`] gives each.
+    async fn bounds(&mut self) -> Result<Bounds, Status> {
+        if let Some(bounds) = self.bounds {
+            return Ok(bounds);
         }
-        let nodes = LIMITS.map(|number| Node {
+        let nodes = BOUNDS.map(|number| Node {
             namespace: 0,
             key: Key::Number(number),
         });
@@ -252,12 +220,61 @@ impl Client {
         let [browse, translate] = values else {
             panic!("invariant: a read gives one value for each node");
         };
-        let limits = Limits {
+        let bounds = Bounds {
             browse: limit(browse),
             translate: limit(translate),
         };
-        self.limits = Some(limits);
-        Ok(limits)
+        self.bounds = Some(bounds);
+        Ok(bounds)
+    }
+
+    /// Writes the `ValueRank` and the `UserAccessLevel` of each node of `nodes` to its
+    /// description, and gives the data type of each, with Reads of the [`FACTS`] of
+    /// each node.
+    async fn facts(
+        &mut self,
+        nodes: &[Node],
+        descriptions: &mut [Description],
+    ) -> Result<Vec<Option<Node>>, Status> {
+        let per = FACTS.len();
+        let mut types = vec![None; nodes.len()];
+        let sizes = Sizes::nodes(Request::values, self.token);
+        let [fact, value] = [Item::FACT, Item::VALUE].map(service::result);
+        let split =
+            self.split(nodes.len() * per, self.per_read, sizes.empty(), |index| {
+                let answer = if index % per == 0 { fact } else { value };
+                sizes.item(id_bytes(&nodes[index / per]), answer)
+            });
+        for range in split.ranges {
+            let raw: Vec<ffi::Node<'_>> = range
+                .clone()
+                .map(|index| (&nodes[index / per]).into())
+                .collect();
+            let attributes: Vec<u32> =
+                range.clone().map(|index| FACTS[index % per]).collect();
+            let answer = self.serve(&Request::attributes(&raw, &attributes)).await?;
+            answer.has(range.len())?;
+            for (offset, index) in range.enumerate() {
+                let (node, fact) = (index / per, answer.value(offset));
+                let description = &mut descriptions[node];
+                match index % per {
+                    0 => types[node] = node_of(fact),
+                    1 => {
+                        // SAFETY: the value lives with the answer.
+                        if let Ok(Value::I32(rank)) = unsafe { Value::of(fact) } {
+                            description.rank = Some(rank);
+                        }
+                    }
+                    _ => {
+                        // SAFETY: the value lives with the answer.
+                        if let Ok(Value::U8(access)) = unsafe { Value::of(fact) } {
+                            description.access = Some(access);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(types)
     }
 
     /// Writes the unit of each node of `nodes` to its description, with Translate
@@ -268,13 +285,16 @@ impl Client {
         most: Option<NonZeroUsize>,
         descriptions: &mut [Description],
     ) -> Result<(), Status> {
-        let paths = self.split(nodes, most, 1, Service::TRANSLATE, |raw| {
-            // SAFETY: `raw` holds its count, and C copies each name.
-            unsafe { ffi::shim_units_new(raw.as_ptr(), raw.len()) }
-        })?;
+        let sizes = Sizes::nodes(Request::units, self.token);
+        let path = service::result(Item::PATH);
+        let split = self.split(nodes.len(), most, sizes.empty(), |index| {
+            sizes.item(id_bytes(&nodes[index]), path)
+        });
         let (mut found, mut units) = (Vec::new(), Vec::new());
-        for (range, request) in paths {
-            let answer = self.serve(&request).await?;
+        for range in split.ranges {
+            let answer = self
+                .serve(&Request::units(&borrowed(&nodes[range.clone()])))
+                .await?;
             answer.has(range.len())?;
             for (offset, index) in range.enumerate() {
                 if let Some(unit) = answer.target(offset) {
@@ -283,19 +303,15 @@ impl Client {
                 }
             }
         }
-        let reads = self.split(&units, self.per_read, 1, Service::READ, |raw| {
-            // SAFETY: `raw` and `VALUE` hold their counts, and C copies each name.
-            unsafe {
-                ffi::shim_read_attributes_new(
-                    raw.as_ptr(),
-                    raw.len(),
-                    VALUE.as_ptr(),
-                    1,
-                )
-            }
-        })?;
-        for (range, request) in reads {
-            let answer = self.serve(&request).await?;
+        let sizes = Sizes::nodes(Request::values, self.token);
+        let unit = service::result(Item::UNIT);
+        let split = self.split(units.len(), self.per_read, sizes.empty(), |index| {
+            sizes.item(id_bytes(&units[index]), unit)
+        });
+        for range in split.ranges {
+            let answer = self
+                .serve(&Request::values(&borrowed(&units[range.clone()])))
+                .await?;
             answer.has(range.len())?;
             for (offset, index) in range.enumerate() {
                 descriptions[found[index]].unit = unit_of(answer.value(offset));
@@ -307,171 +323,122 @@ impl Client {
     /// Browses the supertype of each data type that a walk from `types` needs and the
     /// client has not browsed, until [`base`] knows each of `types`, with Browse
     /// requests of at most `most` nodes, and gives the base of each. The client keeps
-    /// each supertype of a Good result. A result that is not Good gives no base in
-    /// this call, and the next call browses that type again.
+    /// the first supertype of each Good result, and releases the continuation point of
+    /// a type with more. A result that is not Good, or a type whose request or answer
+    /// does not fit one message, gives no base in this call, and the next call browses
+    /// that type again.
     async fn walk(
         &mut self,
         types: &[Option<Node>],
         most: Option<NonZeroUsize>,
     ) -> Result<Vec<Option<u32>>, Status> {
-        let mut failed = Set::default();
+        let build = |raw: &[ffi::Node<'_>]| {
+            Request::browse(raw, HAS_SUBTYPE, true, DATA_TYPE, NonZeroU32::MIN)
+        };
+        let sizes = Sizes::nodes(build, self.token);
+        let answer = service::result(Item::RESULT) + service::result(Item::REFERENCE);
+        let mut failed = BTreeSet::new();
         loop {
-            let mut missing: Vec<Node> = Vec::new();
+            let mut missing = BTreeSet::new();
             let mut bases = Vec::with_capacity(types.len());
             for data_type in types {
-                let Some(data_type) = data_type else {
-                    bases.push(None);
-                    continue;
-                };
-                match base(&self.supertypes, &failed, data_type) {
-                    Ok(base) => bases.push(base),
-                    Err(step) => {
-                        if !missing.contains(&step) {
-                            missing.push(step);
-                        }
+                match data_type
+                    .as_ref()
+                    .map(|data_type| base(&self.supertypes, &failed, data_type))
+                {
+                    None => bases.push(None),
+                    Some(Ok(base)) => bases.push(base),
+                    Some(Err(step)) => {
+                        missing.insert(step);
                     }
                 }
             }
             if missing.is_empty() {
                 return Ok(bases);
             }
-            let browses = self.split(&missing, most, 1, Service::BROWSE, |raw| {
-                // SAFETY: `raw` holds its count, and C copies each name.
-                unsafe {
-                    ffi::shim_browse_new(
-                        raw.as_ptr(),
-                        raw.len(),
-                        HAS_SUBTYPE,
-                        true,
-                        DATA_TYPE,
-                        0,
-                    )
-                }
-            })?;
-            for (range, request) in browses {
-                let answer = self.serve(&request).await?;
+            let missing: Vec<Node> = missing.into_iter().collect();
+            let split = self.split(missing.len(), most, sizes.empty(), |index| {
+                sizes.item(id_bytes(&missing[index]), answer)
+            });
+            failed.extend(split.large.iter().map(|large| missing[large.node].clone()));
+            let mut points = Vec::new();
+            for range in split.ranges {
+                let answer = self
+                    .serve(&build(&borrowed(&missing[range.clone()])))
+                    .await?;
                 answer.has(range.len())?;
                 for (offset, index) in range.enumerate() {
                     let mut first = None;
-                    // A type has one supertype.
-                    let result = answer
+                    let browsed = answer
                         .browsed(offset, |found| first = first.take().or(found.node));
-                    if result.is_ok() {
+                    if let Ok(point) = browsed {
                         self.supertypes.insert(missing[index].clone(), first);
+                        points.extend(point);
                     } else {
                         failed.insert(missing[index].clone());
                     }
                 }
             }
+            self.release(&points, most).await?;
         }
     }
 
-    /// Builds the requests of `service` that `build` gives for `nodes`, in order, each
-    /// for at most `most` over `items` nodes, at least 1, and in one message that the
-    /// client sends.
-    ///
-    /// # Errors
-    ///
-    /// `BadRequestTooLarge` when the request of one node does not fit one message.
-    ///
-    /// # Aborts
-    ///
-    /// If open62541 cannot allocate a request, as [`alloc::exhausted`] says.
-    fn split(
-        &self,
-        nodes: &[Node],
+    /// Releases each continuation point of `points`, with `BrowseNext` requests of at
+    /// most `most` points. A point whose request alone does not fit one message stays
+    /// until the session ends.
+    async fn release(
+        &mut self,
+        points: &[Vec<u8>],
         most: Option<NonZeroUsize>,
-        items: usize,
-        service: Service,
-        build: impl Fn(&[ffi::Node<'_>]) -> *mut c_void,
-    ) -> Result<Vec<(Range<usize>, Request)>, Status> {
-        let raw: Vec<ffi::Node<'_>> = nodes.iter().map(Into::into).collect();
-        let most = most.map_or(nodes.len(), |most| (most.get() / items).max(1));
-        let mut requests = Vec::new();
-        let mut first = 0;
-        while first < nodes.len() {
-            let mut count = most.min(nodes.len() - first);
-            loop {
-                let range = first..first + count;
-                let request = Request::new(build(&raw[range.clone()]), service);
-                if request.bytes(self.token) <= self.sends {
-                    requests.push((range, request));
-                    break;
-                }
-                if count == 1 {
-                    return Err(Status::BAD_REQUEST_TOO_LARGE);
-                }
-                count /= 2;
-            }
-            first += count;
-        }
-        Ok(requests)
-    }
-
-    /// Sends `request` and drives the client until its answer, as [`Client::read`]
-    /// does with one request.
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::browse`], but for the status of a result.
-    async fn serve(&mut self, request: &Request) -> Result<Answer, Status> {
-        self.asked = self.clock.now();
-        let deadline = self.asked + self.timeout;
-        self.reads.awaited.set(None);
-        drop(self.reads.answer.take());
-        let mut sent = false;
-        self.ask(request, &mut sent)?;
-        let served = self
-            .connections
-            .drive_until(Some(deadline), |_| {
-                if let Err(status) = self.ask(request, &mut sent) {
-                    return Poll::Ready(Err(status));
-                }
-                self.reads
-                    .answer
-                    .take()
-                    .map_or(Poll::Pending, |answer| Poll::Ready(Ok(answer)))
-            })
-            .await;
-        let answer = match served {
-            Some(answer) => answer?,
-            None if !sent => return Err(Status::BAD_TOO_MANY_OPERATIONS),
-            None => return Err(Status::BAD_TIMEOUT),
-        };
-        // SAFETY: the answer lives.
-        let status = Status(unsafe { ffi::shim_response_result(answer.raw.as_ptr()) });
-        if status != Status::GOOD {
-            return Err(status);
-        }
-        Ok(answer)
-    }
-
-    /// Sends `request` unless `sent`, or [`READS`] are in flight, and then sets
-    /// `sent`.
-    fn ask(&self, request: &Request, sent: &mut bool) -> Result<(), Status> {
-        if *sent || self.reads.pending.get() == READS {
-            return Ok(());
-        }
-        let mut key = 0;
-        // SAFETY: the client and the request live, and `reads` outlives the client.
-        let status = Status(unsafe {
-            ffi::shim_client_service(
-                self.raw.as_ptr(),
-                request.raw.as_ptr(),
-                request.service,
-                served,
-                ptr::from_ref::<Reads>(&self.reads).cast_mut().cast(),
-                &raw mut key,
-            )
+    ) -> Result<(), Status> {
+        let sizes = Sizes::points(self.token);
+        let result = service::result(Item::RESULT);
+        let split = self.split(points.len(), most, sizes.empty(), |index| {
+            sizes.item(points[index].len(), result)
         });
-        if status != Status::GOOD {
-            return Err(status);
+        for range in split.ranges {
+            let points: Vec<&[u8]> = points[range].iter().map(Vec::as_slice).collect();
+            self.serve(&Request::browse_next(&points, true)).await?;
         }
-        self.reads.pending.set(self.reads.pending.get() + 1);
-        self.reads.awaited.set(Some((key, request.service)));
-        *sent = true;
         Ok(())
     }
+}
+
+/// Gives the page of the one result of `answer`, a Browse or `BrowseNext` answer, with
+/// each reference of the classes of [`CLASSES`].
+///
+/// # Errors
+///
+/// The status of the result when it is not Good, or `BadUnexpectedError` when the
+/// answer has no result or more than one.
+fn page(answer: &Answer) -> Result<Page, Status> {
+    answer.has(1)?;
+    let mut references = Vec::new();
+    let next = answer.browsed(0, |found| {
+        let class = match found.class {
+            1 => Class::Object,
+            2 => Class::Variable,
+            128 => Class::View,
+            // A server that does not filter by the class of the request.
+            _ => return,
+        };
+        references.push(Reference {
+            node: found.node,
+            name: found.name,
+            display: found.display,
+            class,
+            via: found.via,
+        });
+    })?;
+    Ok(Page {
+        references,
+        next: next.map(Point),
+    })
+}
+
+/// The nodes of `nodes`, which borrow their names.
+fn borrowed(nodes: &[Node]) -> Vec<ffi::Node<'_>> {
+    nodes.iter().map(Into::into).collect()
 }
 
 /// Gives the base of `data_type` from the supertype of each data type that a client
@@ -485,9 +452,9 @@ impl Client {
 ///
 /// The first type of the walk that the client has not browsed and that is not of
 /// `failed`.
-pub(super) fn base(
-    supertypes: &Map<Node, Option<Node>>,
-    failed: &Set<Node>,
+fn base(
+    supertypes: &BTreeMap<Node, Option<Node>>,
+    failed: &BTreeSet<Node>,
     data_type: &Node,
 ) -> Result<Option<u32>, Node> {
     let mut at = data_type;
@@ -546,7 +513,7 @@ fn unit_of(value: *const ffi::DataValue) -> Option<Unit> {
 /// Gives the UN/CEFACT Recommendation 20 code of the `unitId` `id`: its bytes from
 /// the most significant, after the zero bytes, when they are 2 or 3 ASCII capital
 /// letters or digits.
-pub(super) fn code_of(id: i32) -> Option<String> {
+fn code_of(id: i32) -> Option<String> {
     let bytes = id.to_be_bytes();
     let first = bytes.iter().position(|&byte| byte != 0)?;
     let code = &bytes[first..];
@@ -555,204 +522,4 @@ pub(super) fn code_of(id: i32) -> Option<String> {
             .iter()
             .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit());
     read.then(|| code.iter().map(|&byte| char::from(byte)).collect())
-}
-
-/// A request of a service, which C owns until the drop.
-struct Request {
-    raw: NonNull<c_void>,
-    service: Service,
-}
-
-impl Request {
-    /// Takes `raw`, a request of `service` from C, or NULL when C could not allocate
-    /// it.
-    ///
-    /// # Aborts
-    ///
-    /// On NULL, as [`alloc::exhausted`] says.
-    fn new(raw: *mut c_void, service: Service) -> Self {
-        let Some(raw) = NonNull::new(raw) else {
-            alloc::exhausted()
-        };
-        Self { raw, service }
-    }
-
-    /// Gives the bytes of the body of its message with a session token of `token`
-    /// encoded bytes.
-    fn bytes(&self, token: usize) -> usize {
-        // SAFETY: the request lives.
-        unsafe { ffi::shim_request_bytes(self.raw.as_ptr(), self.service, token) }
-    }
-}
-
-impl Drop for Request {
-    fn drop(&mut self) {
-        // SAFETY: the request lives, and nothing else holds it.
-        unsafe { ffi::shim_request_free(self.raw.as_ptr(), self.service) };
-    }
-}
-
-/// The answer of a service, moved out of open62541.
-pub(super) struct Answer {
-    raw: NonNull<c_void>,
-    service: Service,
-}
-
-/// A reference of a browse, copied out of its answer.
-struct Found {
-    node: Option<Node>,
-    kind: Option<Node>,
-    name: String,
-    display: String,
-    class: u32,
-}
-
-impl Answer {
-    /// Checks that the answer has `count` results.
-    ///
-    /// # Errors
-    ///
-    /// `BadUnexpectedError` when it has more or fewer.
-    fn has(&self, count: usize) -> Result<(), Status> {
-        // SAFETY: the answer lives.
-        if unsafe { ffi::shim_answer_count(self.raw.as_ptr()) } == count {
-            Ok(())
-        } else {
-            Err(Status::BAD_UNEXPECTED_ERROR)
-        }
-    }
-
-    /// Gives the node of the unit of result `index` of a Translate answer with more
-    /// results than `index`, or `None` when the result has none in this server by a
-    /// number or a name.
-    fn target(&self, index: usize) -> Option<Node> {
-        let mut node = ffi::Node::default();
-        // SAFETY: the answer lives and has more results than `index`, and `node` is a
-        // place to write.
-        let found =
-            unsafe { ffi::shim_units_target(self.raw.as_ptr(), index, &raw mut node) };
-        // SAFETY: when found, the name of `node` borrows from the answer.
-        found.then(|| unsafe { node.owned() })?
-    }
-
-    /// Gives the value of result `index` of a Read answer with more results than
-    /// `index`, which lives with the answer.
-    fn value(&self, index: usize) -> *const ffi::DataValue {
-        // SAFETY: the answer lives, and has more results than `index`.
-        unsafe { ffi::shim_read_result(self.raw.as_ptr().cast(), index) }
-    }
-
-    /// Gives the page of the one result of a Browse or `BrowseNext` answer, with each
-    /// reference of the classes of [`CLASSES`].
-    ///
-    /// # Errors
-    ///
-    /// The status of the result when it is not Good, or `BadUnexpectedError` when
-    /// the answer has no result or more than one.
-    fn page(&self) -> Result<Page, Status> {
-        self.has(1)?;
-        let mut references = Vec::new();
-        let next = self.browsed(0, |found| {
-            let class = match found.class {
-                1 => Class::Object,
-                2 => Class::Variable,
-                128 => Class::View,
-                // A server that does not filter by the class of the request.
-                _ => return,
-            };
-            references.push(Reference {
-                node: found.node,
-                name: found.name,
-                display: found.display,
-                class,
-                kind: found.kind,
-            });
-        })?;
-        Ok(Page { references, next })
-    }
-
-    /// Gives each reference of result `index` of a Browse or `BrowseNext` answer with
-    /// more results than `index` to `each`, in order, and gives its continuation
-    /// point.
-    ///
-    /// # Errors
-    ///
-    /// The status of the result when it is not Good.
-    fn browsed(
-        &self,
-        index: usize,
-        mut each: impl FnMut(Found),
-    ) -> Result<Option<Point>, Status> {
-        let raw = self.raw.as_ptr();
-        let (mut count, mut point) = (0, ffi::Bytes::default());
-        // SAFETY: the answer lives and has more results than `index`.
-        let status = Status(unsafe {
-            ffi::shim_browse_result(raw, index, &raw mut count, &raw mut point)
-        });
-        if status != Status::GOOD {
-            return Err(status);
-        }
-        for reference in 0..count {
-            let mut out = ffi::Reference::default();
-            // SAFETY: the result has `count` references, and `out` is a place to
-            // write.
-            unsafe { ffi::shim_browse_reference(raw, index, reference, &raw mut out) };
-            // SAFETY: each text and the name of the node borrow from the answer, which
-            // lives through the copies.
-            let node = unsafe { out.node.owned() }.filter(|_| out.local);
-            // SAFETY: as above.
-            let kind = unsafe { out.kind.owned() }.filter(|_| out.typed);
-            // SAFETY: as above.
-            let name = unsafe { out.name.lossy() };
-            // SAFETY: as above.
-            let display = unsafe { out.display.lossy() };
-            each(Found {
-                node,
-                kind,
-                name,
-                display,
-                class: out.class,
-            });
-        }
-        // SAFETY: the point borrows from the answer.
-        let point = unsafe { point.to_vec() };
-        Ok((!point.is_empty()).then_some(Point(point)))
-    }
-}
-
-impl Drop for Answer {
-    fn drop(&mut self) {
-        // SAFETY: the answer lives, and nothing else holds it.
-        unsafe { ffi::shim_answer_free(self.raw.as_ptr(), self.service) };
-    }
-}
-
-/// Ends one request of the [`Reads`] at `data`. When it is the request that the
-/// client waits for, moves its answer there.
-///
-/// # Safety
-///
-/// `data` points at live [`Reads`], and `response` at the answer.
-unsafe extern "C" fn served(
-    _: *mut ffi::Client,
-    data: *mut c_void,
-    request: u32,
-    response: *mut c_void,
-) {
-    // SAFETY: the client that holds the reads lives.
-    let reads = unsafe { &*data.cast_const().cast::<Reads>() };
-    reads.pending.set(reads.pending.get() - 1);
-    let Some((key, service)) = reads.awaited.get() else {
-        return;
-    };
-    if key != request {
-        return;
-    }
-    reads.awaited.set(None);
-    // SAFETY: open62541 gives a live answer of the service of the request.
-    let raw = unsafe { ffi::shim_answer_move(response, service) };
-    let Some(raw) = NonNull::new(raw) else {
-        alloc::exhausted()
-    };
-    reads.answer.set(Some(Answer { raw, service }));
 }
