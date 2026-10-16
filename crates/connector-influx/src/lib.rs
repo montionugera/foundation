@@ -99,8 +99,8 @@ pub enum Target {
 }
 
 impl Target {
-    /// Whether the server stores a `u` integer: InfluxDB 2 and 3 do, InfluxDB 1 OSS
-    /// does not.
+    /// Whether the run writes a `u` integer: to a `bucket`, which stands for InfluxDB 2
+    /// or 3, and not to a `database`, which stands for InfluxDB 1 (LINE TEXT).
     pub(crate) const fn unsigned(&self) -> bool {
         match self {
             Self::Database(_) => false,

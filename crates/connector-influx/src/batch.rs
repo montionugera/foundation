@@ -27,7 +27,7 @@ const LINES_MAX: usize = 5_000;
 #[derive(Debug)]
 pub struct Batch {
     measurement: Measurement,
-    /// Whether the target stores a `u` integer.
+    /// Whether the run writes a `u` integer, as [`Target::unsigned`] gives.
     unsigned: bool,
     connector: Name,
     /// The gap of the reader's index, made at the first gap.
