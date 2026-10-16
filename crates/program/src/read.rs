@@ -19,8 +19,8 @@ use crate::{Error, Handle};
 
 /// A read of a [`Session`](crate::Session): one read stream. It gives the frames of
 /// its channels that the node sends, in order, from the open on. A complete reader
-/// goes on past seqs that the node's buffer lost: [`Reader::lost`] gives the seqs lost
-/// just before each frame, and the reader writes a warning for each gap. A latest
+/// goes on past seqs that the node's buffer lost: [`Reader::lost`] gives the seqs that
+/// each channel lost, and the reader writes a warning for each gap. A latest
 /// reader skips frames by design and gives no gap. It holds a clone of its session.
 /// Dropping it stops the stream, and the node ends the read.
 #[derive(Debug)]
@@ -30,6 +30,12 @@ pub struct Reader {
     stream: Option<(Sender, Receiver)>,
     places: Vec<Place>,
     frames: Frames,
+    /// The lost seqs of each entry of the key set.
+    lost: Vec<Lost>,
+    /// The count of frames that [`Reader::next`] gave.
+    given: u64,
+    /// The frame, of `given`, of the last gap.
+    gapped: u64,
     /// The error that ended the read.
     ended: Option<Error>,
 }
@@ -57,8 +63,11 @@ impl Reader {
         Ok(Self {
             session,
             stream: Some((sender, receiver)),
+            lost: vec![Lost::default(); places.len()],
             places,
             frames,
+            given: 0,
+            gapped: 0,
             ended: None,
         })
     }
@@ -79,13 +88,23 @@ impl Reader {
         self.frames.set()
     }
 
-    /// The seqs of the index lost just before the frame that the last
-    /// [`Reader::next`] gave, as the node's buffer did not keep them. Each channel of
-    /// that frame lost these seqs. `0..0` when none, before the first frame, and for a
-    /// latest reader.
+    /// The seqs of the index lost after the last series of `entry`, an entry of
+    /// [`Reader::set`], up to the frame that the last [`Reader::next`] gave: one range
+    /// from the first lost seq to the last. A seq in it that the reader got held no
+    /// series of `entry`. Empty when that frame holds no series of `entry`, when none
+    /// was lost, before the first frame, and for a latest reader.
+    ///
+    /// # Panics
+    ///
+    /// When `entry` is not below the count of entries of [`Reader::set`].
     #[must_use]
-    pub fn lost(&self) -> Range<u64> {
-        self.frames.lost()
+    pub fn lost(&self, entry: usize) -> Range<u64> {
+        let lost = &self.lost[entry];
+        if lost.at == self.given {
+            lost.seqs.clone()
+        } else {
+            0..0
+        }
     }
 
     /// The next frame. Its series are encoded, and its entries index
@@ -148,6 +167,7 @@ impl Reader {
             match step {
                 Step::Head(_) | Step::More => {}
                 Step::Frame(frame) => {
+                    self.note(&frame);
                     self.warn();
                     return Ok(frame);
                 }
@@ -156,6 +176,33 @@ impl Reader {
                     return Err(Error::Reply(wire::hub::Error::Kind { kind: 3 }));
                 }
             }
+        }
+    }
+
+    /// Moves the lost seqs of each entry past `frame`: each entry at a gap, else only
+    /// the entries of `frame`.
+    fn note(&mut self, frame: &Frame) {
+        self.given += 1;
+        let gap = self.frames.lost();
+        if !gap.is_empty() {
+            for lost in &mut self.lost {
+                lost.seqs = if lost.at >= self.gapped || lost.seqs.is_empty() {
+                    gap.clone()
+                } else {
+                    lost.seqs.start..gap.end
+                };
+            }
+            self.gapped = self.given;
+        }
+        if frame.range(0).is_none_or(|range| range.count == 0) {
+            return;
+        }
+        for (entry, _) in frame.iter() {
+            let lost = &mut self.lost[entry];
+            if lost.at >= self.gapped {
+                lost.seqs = 0..0;
+            }
+            lost.at = self.given;
         }
     }
 
@@ -175,6 +222,16 @@ impl Reader {
              not keep them"
         );
     }
+}
+
+/// The lost seqs of one entry of a reader.
+#[derive(Clone, Debug, Default)]
+struct Lost {
+    /// The seqs lost after the series before the one at `at`. Given, and so stale,
+    /// once `at` is at or after the last gap.
+    seqs: Range<u64>,
+    /// The frame, of the count of frames given, of the last series of the entry.
+    at: u64,
 }
 
 /// Sends the header, the read of `open`, and `open`, then takes the places and

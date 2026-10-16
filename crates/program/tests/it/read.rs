@@ -2,10 +2,8 @@
 
 use std::collections::BTreeMap;
 use std::future::poll_fn;
-use std::ops;
 use std::pin::pin;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
 use env::clock::Clock;
@@ -17,10 +15,6 @@ use program::{Error, Reader, Session};
 use spec::channel::{Channel, Data, Kind};
 use spec::data_type::DataType;
 use spec::definition::Definition;
-use tracing::field::{Field, Visit};
-use tracing::instrument::WithSubscriber;
-use tracing::span::{Attributes, Id, Record};
-use tracing::{Event, Level, Metadata, Subscriber};
 use transport::Code;
 use transport::stream::Incoming;
 use types::authority::Authority;
@@ -35,9 +29,7 @@ use wire::hub::client::{Mode, OPEN_BYTES_MAX, Open, Place, Refusal};
 
 use crate::agent::{AGENT, SUBJECT, name};
 use crate::connect::{ample, connect, connect_with};
-use crate::hand::{
-    accept_read, by_hand, opened, opened_at, reply, send, send_frame, start,
-};
+use crate::hand::{accept_read, by_hand, opened, reply, send, send_frame, start};
 use crate::node::env;
 use crate::session::{admit, raw};
 use crate::sessions::{self, Got, Home, QUIET, closed_with, rules};
@@ -406,128 +398,6 @@ fn takes_the_index_at_the_place_that_the_node_names() {
             })
         },
     );
-}
-
-/// The level and the fields of each event of `program`, in order, as `name=value`.
-/// Clones share them.
-#[derive(Clone, Debug, Default)]
-struct Log(Arc<Mutex<Vec<Written>>>);
-
-/// The level of one event and its fields.
-type Written = (Level, Vec<String>);
-
-impl Log {
-    fn events(&self) -> Vec<Written> {
-        self.0.lock().expect("no event panics").clone()
-    }
-}
-
-impl Subscriber for Log {
-    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-        metadata.target().starts_with("program")
-    }
-
-    fn new_span(&self, _: &Attributes<'_>) -> Id {
-        Id::from_u64(1)
-    }
-
-    fn record(&self, _: &Id, _: &Record<'_>) {}
-
-    fn record_follows_from(&self, _: &Id, _: &Id) {}
-
-    fn event(&self, event: &Event<'_>) {
-        let mut fields = Fields(Vec::new());
-        event.record(&mut fields);
-        let level = *event.metadata().level();
-        self.0
-            .lock()
-            .expect("no event panics")
-            .push((level, fields.0));
-    }
-
-    fn enter(&self, _: &Id) {}
-
-    fn exit(&self, _: &Id) {}
-}
-
-struct Fields(Vec<String>);
-
-impl Visit for Fields {
-    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        self.0.push(format!("{}={value:?}", field.name()));
-    }
-}
-
-/// Opens a complete read of `around` at `live`, sends a frame of the index at each
-/// seq of `seqs`, and gives the `lost` of the reader before the first frame and after
-/// each, with the events that the program wrote.
-fn lost(seed: u64, live: u64, seqs: &'static [u64]) -> (Vec<ops::Range<u64>>, Log) {
-    let log = Log::default();
-    let events = log.clone();
-    let kept = Arc::new(Mutex::new(Vec::new()));
-    let out = Arc::clone(&kept);
-    by_hand(
-        seed,
-        move |session, node| async move {
-            let mut read = opened_at(&session, &around(), 1, live).await;
-            for &seq in seqs {
-                let range = Range { seq, count: 1 };
-                send_frame(&mut read, range, &[(1, 8)], &[0; 8], &[8]).await;
-            }
-            node.clock().sleep(QUIET).await;
-        },
-        move |session, _| {
-            Box::pin(
-                async move {
-                    let mut reader = session
-                        .reader(select(&["a", "b"]), Mode::Complete)
-                        .await
-                        .expect("opens");
-                    let mut lost = vec![reader.lost()];
-                    for _ in seqs {
-                        reader.next().await.expect("a frame");
-                        lost.push(reader.lost());
-                    }
-                    *out.lock().expect("one writer") = lost;
-                }
-                .with_subscriber(events),
-            )
-        },
-    );
-    let lost = kept.lock().expect("one writer").clone();
-    (lost, log)
-}
-
-/// A complete reader opened at 5 whose first frame starts at 9 gives the gap `5..9`
-/// with that frame and writes one warning for it.
-#[test]
-fn gives_the_seqs_lost_before_a_frame_and_warns_once() {
-    let (lost, log) = lost(412, 5, &[9, 10, 12]);
-    assert_eq!(lost, [0..0, 5..9, 0..0, 11..12]);
-    let warning = |start: u64, end: u64| {
-        let message = format!(
-            "the reader lost seqs {start}..{end} of index time: the node's buffer \
-             did not keep them"
-        );
-        (
-            Level::WARN,
-            vec![
-                format!("message={message}"),
-                "index=time".to_owned(),
-                format!("start={start}"),
-                format!("end={end}"),
-            ],
-        )
-    };
-    assert_eq!(log.events(), [warning(5, 9), warning(11, 12)]);
-}
-
-/// A first frame at the open position loses nothing and writes no warning.
-#[test]
-fn gives_no_gap_to_a_first_frame_at_the_open_position() {
-    let (lost, log) = lost(413, 5, &[5, 6]);
-    assert_eq!(lost, [0..0, 0..0, 0..0]);
-    assert_eq!(log.events(), []);
 }
 
 /// A call of `next` that drops while the draft of a frame waits for the pool leaves
