@@ -81,8 +81,10 @@
   count of dropped lines, the panic lines, the waker, and the run of the thread are
   under one lock, so each line, each drop, and each close wakes the thread, and a
   line that comes as the thread ends gets a thread that writes it; loom models check
-  both. A line
-  drops when 1024 lines wait or when it does not fit in 1 MiB with them, and each line
+  both. The thread takes the lines out under the lock and writes them with the lock
+  free, and each line is formatted before its push, so a writer that never returns
+  holds no lock. Nothing that can panic runs under the lock: the panic hook takes the
+  same lock. A line drops when 1024 lines wait or when it does not fit in 1 MiB with them, and each line
   after it drops until the thread takes the queue. The thread writes WARN `dropped`
   (target `node::log`) with the field `lines`, their count, after the last line that
   came before the first of them. At λ lines a second, 1024 lines hold a stall of the
@@ -138,9 +140,16 @@
   https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6209868324). The
   bound of 2048 lines and 2 MiB with the batch, the loom model of the handoff, and one
   end of a run (2026-10-16T07:05:11Z,
-  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6210050516). Lost:
+  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6210050516). The
+  lock queue as the mechanism of the queue, with its two rules, by `laptop.architect-2`
+  (2026-10-16T17:46:37Z,
+  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6221353661). Lost:
   one thread for the life of the log, which makes each sim run end as `Stuck`; a write
   on the thread of `join`, which loses the bound of `main` on a stuck writer;
   `tracing-appender::non_blocking`, which starts its own OS thread, so no sim run
   drives it, and counts a dropped line with no line in the log; an atomic count, a
-  second sync point beside the lock that each push takes.
+  second sync point beside the lock that each push takes; a bounded `sync_channel`
+  with an atomic count of drops: the byte cap, the panic line past the bound, the drop
+  until the take, and the end of a run in the take each need one step over the queue
+  and the counts, which a second lock beside the channel would give, at the cost of
+  two locks to order.
