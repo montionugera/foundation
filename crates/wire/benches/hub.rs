@@ -185,11 +185,8 @@ fn frames_of(places: u32, body: u32) -> (Frames, block::Pool) {
         mode: Mode::Latest,
         channels: places,
     };
-    let mut frames = Frames::new(Reader::new(&open), set_of(places));
-    assert!(
-        matches!(frames.decode(&[1]), Ok(Step::Opened)),
-        "the session opens"
-    );
+    let frames =
+        Frames::open(Reader::new(&open), set_of(places), &[1]).expect("opened");
     let bytes = (u64::from(body) + (1 << 20)).next_power_of_two();
     let config = block::Config::new(bytes).expect("the budget fits");
     let memory = block::Heap::new(config.reservation());

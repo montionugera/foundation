@@ -1,7 +1,8 @@
 //! The hub messages on a frame's path, the frames of a warm reader session, the blob
 //! heads, and the body counters of client requests and blob chunks, make no heap
-//! allocation, and the place messages of a read make a known count. This binary has no test harness: the count covers each thread,
-//! and a harness allocates on its own thread at any time.
+//! allocation, and the place messages of a read make a known count. This binary has no
+//! test harness: the count covers each thread, and a harness allocates on its own
+//! thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -148,14 +149,10 @@ fn frames() {
         mode: Mode::Latest,
         channels: 2,
     };
-    let mut frames = Frames::new(Reader::new(&open), set);
+    let mut frames = Frames::open(Reader::new(&open), set, &[1]).expect("opened");
     let mut run = [0; 2 * ends::LEN];
     ends::encode([(0, 16), (1, 32)], &mut run);
     let body = [7; 32];
-    assert!(
-        matches!(frames.decode(&[1]), Ok(Step::Opened)),
-        "the session opens"
-    );
     for round in 0..2 {
         let mut head = [0; 18];
         Reply::Head(Head {

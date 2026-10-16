@@ -1,7 +1,7 @@
-//! `wire::hub::Frames`, driven as a caller drives it by `Frames::due`, never panics.
-//! The home opens the session once and first, each frame has the path and range of its
-//! head, and a run that receives each body message in place gives the same steps as a
-//! run that gives it whole to `decode`.
+//! `wire::hub::Frames`, opened by the first message and driven as a caller drives it by
+//! `Frames::due`, never panics. Each frame has the path and range of its head, and a
+//! run that receives each body message in place gives the same steps as a run that
+//! gives it whole to `decode`.
 //!
 //! Input: one byte, whose low 3 bits are the places of the session less 1 and whose
 //! bit 3 makes the session latest, then the messages from the home (`fuzz::messages`).
@@ -21,7 +21,6 @@ use wire::hub::{Due, Error, Frames, Head, Mode, Open, Reader, Step};
 /// What one step gave, with a frame's series copied out.
 #[derive(Debug, PartialEq)]
 enum Seen {
-    Opened,
     Head(Head),
     More,
     Frame {
@@ -30,7 +29,7 @@ enum Seen {
         series: Vec<Option<Vec<u8>>>,
     },
     Behind,
-    /// The error of `decode` or `received`, which stops the stream.
+    /// The error of `Frames::open`, `decode`, or `received`, which stops the stream.
     Message(Error),
     /// The error of a draft's layout, which stops the stream.
     Layout(types::frame::Error),
@@ -63,7 +62,6 @@ fn pool() -> block::Pool {
 impl Seen {
     fn of(step: Step, places: u8) -> Self {
         match step {
-            Step::Opened => Self::Opened,
             Step::Head(head) => Self::Head(head),
             Step::More => Self::More,
             Step::Frame(frame) => Self::Frame {
@@ -86,9 +84,18 @@ fn run(places: u8, mode: Mode, bytes: &[u8], in_place: bool) -> Vec<Seen> {
         mode,
         channels: u32::from(places),
     };
-    let mut frames = Frames::new(Reader::new(&open), set(places));
     let mut messages = fuzz::messages(bytes);
     let mut seen = Vec::new();
+    let Some(first) = messages.next() else {
+        return seen;
+    };
+    let mut frames = match Frames::open(Reader::new(&open), set(places), first) {
+        Ok(frames) => frames,
+        Err(error) => {
+            seen.push(Seen::Message(error));
+            return seen;
+        }
+    };
     loop {
         let step = match frames.due() {
             Err(error) => {
@@ -142,15 +149,11 @@ fn run(places: u8, mode: Mode, bytes: &[u8], in_place: bool) -> Vec<Seen> {
     seen
 }
 
-/// Checks the order of `seen`: one opened, first, and each frame with the path and
-/// range of the head before it.
+/// Checks that each frame of `seen` has the path and range of the head before it.
 fn check(seen: &[Seen]) {
     let mut head = None;
-    for (at, step) in seen.iter().enumerate() {
+    for step in seen {
         match step {
-            Seen::Opened => assert_eq!(at, 0, "the session opened twice"),
-            Seen::Message(_) | Seen::Finished(_) => {}
-            _ if at == 0 => panic!("{step:?} came before opened"),
             Seen::Head(next) => head = Some(*next),
             Seen::Frame { path, range, .. } => {
                 let head = head.take().expect("a frame came with no head");

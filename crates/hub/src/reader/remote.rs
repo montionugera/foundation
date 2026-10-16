@@ -314,9 +314,8 @@ async fn session(
         channels: u32::try_from(set.entries().len())
             .expect("invariant: a key set holds at most 2^32 entries"),
     };
-    let mut frames = Frames::new(wire::hub::Reader::new(&open), set);
     let opened = {
-        let mut opening = pin!(connect(&state, home, class, &mut frames, &open));
+        let mut opening = pin!(connect(&state, home, class, &set, &open));
         poll_fn(|cx| match poll_end(&queue, cx) {
             Poll::Ready(_) => Poll::Ready(None),
             Poll::Pending => opening.as_mut().poll(cx).map(Some),
@@ -326,7 +325,7 @@ async fn session(
     let (Some(opened), Some(waiting)) = (opened, queue.upgrade()) else {
         return;
     };
-    let (sender, receiver) = match opened {
+    let (sender, receiver, frames) = match opened {
         Ok(streams) => {
             waiting.borrow_mut().open(Ok(()));
             streams
@@ -480,9 +479,6 @@ impl Inbound {
                 Step::More => {}
                 Step::Frame(frame) => return Ok(self.arrived(frame)),
                 Step::Behind => return Err(Ended::Behind),
-                Step::Opened => {
-                    unreachable!("invariant: the decoder gives opened once")
-                }
             }
         }
     }
@@ -595,8 +591,8 @@ async fn dial(
         .map_err(Error::Transport)
 }
 
-/// Opens a stream of `class` to `home`, and opens the session of `open` on the key set
-/// of `frames`. A reply that breaks HUB WIRE, or a pool with no block for a message,
+/// Opens a stream of `class` to `home`, and opens the session of `open` on `set`, whose
+/// frames it gives. A reply that breaks HUB WIRE, or a pool with no block for a message,
 /// stops the stream with its refusal. A session that closes with `Code(0)` before
 /// `Opened`, as one that loses the tie-break of ONE SESSION PER PEER does, gets
 /// another open on the session that the next dial gives, at most `TRIES` in all.
@@ -604,12 +600,12 @@ async fn connect(
     state: &Rc<RefCell<State>>,
     home: types::node::Key,
     class: Class,
-    frames: &mut Frames,
+    set: &Arc<KeySet>,
     open: &Open,
-) -> Result<(Sender, Receiver), Error> {
+) -> Result<(Sender, Receiver, Frames), Error> {
     let mut tries = 1;
     loop {
-        match attempt(state, home, class, frames, open).await {
+        match attempt(state, home, class, set, open).await {
             Err(Error::Transport(
                 transport::Error::Closed { code: Code(0) }
                 | transport::Error::PeerClosed { code: Code(0) },
@@ -624,38 +620,40 @@ async fn attempt(
     state: &Rc<RefCell<State>>,
     home: types::node::Key,
     class: Class,
-    frames: &mut Frames,
+    set: &Arc<KeySet>,
     open: &Open,
-) -> Result<(Sender, Receiver), Error> {
+) -> Result<(Sender, Receiver, Frames), Error> {
     let (mut sender, mut receiver) = dial(state, home)
         .await?
         .open(class)
         .await
         .map_err(Error::Transport)?;
-    let opened = handshake(state, (&mut sender, &mut receiver), frames, open).await;
-    if let Err(error) = opened {
-        let refusal = match error {
-            Error::Message(_) => Some(Refusal::Malformed),
-            Error::Pool(_) => Some(Refusal::Busy),
-            _ => None,
-        };
-        if let Some(refusal) = refusal {
-            receiver.stop(Code(refusal.code()));
-            sender.reset(Code(refusal.code()));
+    let opened = handshake(state, (&mut sender, &mut receiver), set, open).await;
+    match opened {
+        Ok(frames) => Ok((sender, receiver, frames)),
+        Err(error) => {
+            let refusal = match error {
+                Error::Message(_) => Some(Refusal::Malformed),
+                Error::Pool(_) => Some(Refusal::Busy),
+                _ => None,
+            };
+            if let Some(refusal) = refusal {
+                receiver.stop(Code(refusal.code()));
+                sender.reset(Code(refusal.code()));
+            }
+            Err(error)
         }
-        return Err(error);
     }
-    Ok((sender, receiver))
 }
 
-/// Sends the header, `open`, and the keys of the key set of `frames` on `sender`, and
-/// waits for the home's `Opened`.
+/// Sends the header, `open`, and the keys of `set` on `sender`, and gives the frames
+/// that the home's `Opened` opens.
 async fn handshake(
     state: &RefCell<State>,
     (sender, receiver): (&mut Sender, &mut Receiver),
-    frames: &mut Frames,
+    set: &Arc<KeySet>,
     open: &Open,
-) -> Result<(), Error> {
+) -> Result<Frames, Error> {
     let header = wire::header::encode(Protocol::Hub);
     send(state, sender, header.len(), |out| {
         out.copy_from_slice(&header);
@@ -665,12 +663,7 @@ async fn handshake(
         open.encode(out);
     })
     .await?;
-    let keys: Vec<_> = frames
-        .set()
-        .entries()
-        .iter()
-        .map(|entry| entry.key)
-        .collect();
+    let keys: Vec<_> = set.entries().iter().map(|entry| entry.key).collect();
     let most = sender.bytes_max().min(state.borrow().home.pool().largest());
     for run in keys.chunks(most / keys::LEN) {
         send(state, sender, run.len() * keys::LEN, |out| {
@@ -679,12 +672,11 @@ async fn handshake(
         .await?;
     }
     match receiver.recv().await {
-        Ok(Some(message)) => match frames.decode(&message) {
-            Ok(Step::Opened) => Ok(()),
-            Ok(_) => unreachable!("invariant: the decoder gives opened first"),
-            Err(error) => Err(Error::Message(error)),
-        },
-        Ok(None) => Err(Error::Message(frames.finished())),
+        Ok(Some(message)) => {
+            Frames::open(wire::hub::Reader::new(open), Arc::clone(set), &message)
+                .map_err(Error::Message)
+        }
+        Ok(None) => Err(Error::Message(wire::hub::Error::Finished)),
         Err(error) => Err(refused(error).map_or_else(Error::Transport, Error::Refused)),
     }
 }
