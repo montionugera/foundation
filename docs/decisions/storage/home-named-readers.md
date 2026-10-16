@@ -22,3 +22,9 @@
   subject in the key and the order of the PRs: `laptop.architect`
   (2026-10-08T10:15:04Z:
   https://github.com/synnaxlabs/foundation/issues/1851#issuecomment-6057659053).
+  Amended (#274 B1): a named complete reader that opens within its hold reads the
+  frames after its position from disk, then the live ones. It ends `Behind` only when
+  it reaches a seq that the buffer lost for no room, also at each later open within its
+  hold. The position records and `Readers::deadline` stay as above until later parts
+  of #274 (`laptop.architect`, 2026-10-15T16:29:36Z:
+  https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6197039098).

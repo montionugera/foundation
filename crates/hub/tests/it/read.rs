@@ -621,10 +621,10 @@ fn stops_a_read_whose_channel_is_removed_while_its_places_wait_as_unknown() {
     );
 }
 
-/// A complete read whose program does not take its frames misses one, so the node
-/// sends `Behind` after the frames before it, and finishes the stream.
+/// A complete read whose program does not take its frames misses them live, so the
+/// node sends each of them from disk, in order.
 #[test]
-fn sends_behind_and_finishes_a_complete_read_that_misses_a_frame() {
+fn sends_a_complete_read_that_misses_a_frame_each_frame_from_disk() {
     const FRAMES: i64 = 400;
     let ready = async |test: &Test| writes_wide(test, FRAMES).await;
     let home = read_session(308, ready, |mut agent| async move {
@@ -632,14 +632,17 @@ fn sends_behind_and_finishes_a_complete_read_that_misses_a_frame() {
         let mut stream = agent.read(Mode::Complete, &["value"]).await;
         let (_, _, mut reader) = stream.opened().await;
         agent.sleep(Span::SECOND).await;
-        let mut frames = 0;
-        while got(&mut stream.receiver, &mut reader).await.is_some() {
-            frames += 1;
+        let mut firsts = Vec::new();
+        for _ in 0..FRAMES {
+            let got = got(&mut stream.receiver, &mut reader)
+                .await
+                .expect("a frame");
+            firsts.push(decoded(&got, &[I64, STAMP])[1][0]);
         }
-        assert!(
-            frames > 0 && frames < FRAMES,
-            "{frames} frames before behind"
-        );
+        let expected: Vec<_> = (0..FRAMES).map(|n| firsts[0] + n * 1000).collect();
+        assert_eq!(firsts, expected);
+        stream.sender.finish().expect("finishes");
+        assert_eq!(stream.recv().await, Ok(None));
         finish(&mut agent).await;
     });
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);

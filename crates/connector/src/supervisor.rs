@@ -4316,11 +4316,8 @@ mod tests {
     #[test]
     fn holds_the_reader_of_a_kind_for_the_hold_of_its_settings() {
         for (hold, want) in [
-            (Span::SECOND, Err(hub::reader::Ended::Behind)),
-            (
-                Span::from_nanos(ms(100).nanos() + 1),
-                Err(hub::reader::Ended::Behind),
-            ),
+            (Span::SECOND, Ok(vec![7])),
+            (Span::from_nanos(ms(100).nanos() + 1), Ok(vec![7])),
             (ms(100), Ok(vec![8])),
             (ms(99), Ok(vec![8])),
             (Span::ZERO, Ok(vec![8])),
@@ -4330,8 +4327,7 @@ mod tests {
     }
 
     /// The reader of each restart keeps the hold of its settings: a run within the hold
-    /// opens at the held position and gets `Behind`, while the home keeps no frame
-    /// there. #274 makes each run after the first read from the held position.
+    /// opens at the held position, which no run acked, and reads its frame from disk.
     #[test]
     fn opens_the_reader_of_a_restart_with_the_hold_of_its_settings() {
         let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);
@@ -4356,8 +4352,113 @@ mod tests {
             },
         );
         read.end.expect("ok");
-        let behind = Err(hub::reader::Ended::Behind);
-        assert_eq!(read.got, [Ok(vec![1]), behind.clone(), behind]);
+        assert_eq!(read.got, [Ok(vec![1]), Ok(vec![1]), Ok(vec![1])]);
+    }
+
+    /// A run whose held reader reads from disk while the pool has no block gets
+    /// `Retry` from the end of its reader, and the next run reads the frame.
+    #[test]
+    fn retries_a_read_from_disk_while_the_pool_is_full() {
+        let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);
+        let read = read_through(
+            Some(settings(hour)),
+            |mut ctx, got| async move {
+                let runs = got.lock().expect("no panic").len();
+                let mut reader = ctx.reader().expect("a reader");
+                let held = if runs == 1 {
+                    let channels = status_names("plant.write", &[]);
+                    let writer = ctx.writer(channels, Authority(1), None).await;
+                    let writer = writer.expect("the writer opens");
+                    Some((fill(&writer), writer))
+                } else {
+                    None
+                };
+                let next = reader.next().await.map(|received| values(&received));
+                drop(held);
+                got.lock().expect("no panic").push(next.clone());
+                next?;
+                if runs == 0 {
+                    return Err(Error::Retry("again".into()));
+                }
+                Ok(())
+            },
+            |hub, clock| write_at(hub, clock, vec![(ms(100), 1)]),
+        );
+        read.end.expect("ok");
+        assert!(
+            matches!(
+                read.got[..],
+                [
+                    Ok(_),
+                    Err(hub::reader::Ended::Pool(block::Error::Exhausted { .. })),
+                    Ok(_)
+                ]
+            ),
+            "{:?}",
+            read.got
+        );
+        assert_eq!(read.got[2], Ok(vec![1]));
+    }
+
+    /// The first run acks the frame at 100 ms. The frame at 1 s finds no room, so the
+    /// held position of the next run is at a lost seq: it reads the frame at 1.5 s, with
+    /// the lost seq as its gap.
+    #[test]
+    fn opens_a_held_reader_at_a_lost_frame_at_the_frame_after_it() {
+        let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);
+        let read = read_through(
+            Some(settings(hour)),
+            |mut ctx, got| async move {
+                let runs = got.lock().expect("no panic").len();
+                let mut reader = ctx.reader().expect("a reader");
+                let next = match reader.next().await {
+                    Ok(received) => {
+                        let position = received.position();
+                        let read = (values(&received), received.gap().is_some());
+                        reader.ack(position);
+                        Ok(read)
+                    }
+                    Err(ended) => Err(ended),
+                };
+                got.lock().expect("no panic").push(next.clone());
+                if runs == 0 {
+                    ctx.clock().sleep(ms(2_000)).await;
+                }
+                if runs == 1 {
+                    return Ok(());
+                }
+                next?;
+                Err(Error::Retry("again".into()))
+            },
+            |hub, clock| async move {
+                let channels = vec![name("plant.value")];
+                let mut writer =
+                    open_writer(&hub, "plant.other", Authority(1), channels).await;
+                let start = clock.now();
+                clock.sleep_until(start + ms(100)).await;
+                let stamp = writer.now().nanos();
+                let outcomes = write_value(&mut writer, stamp, 1);
+                assert!(
+                    matches!(outcomes[..], [hub::home::Outcome::Applied { .. }]),
+                    "{outcomes:?}"
+                );
+                clock.sleep_until(start + ms(1_000)).await;
+                let mut held = fill(&writer);
+                drop(held.pop());
+                let stamp = writer.now().nanos();
+                let outcomes = write_value(&mut writer, stamp, 2);
+                assert!(
+                    matches!(outcomes[..], [hub::home::Outcome::Lost { .. }]),
+                    "{outcomes:?}"
+                );
+                drop(held);
+                clock.sleep_until(start + ms(1_500)).await;
+                let stamp = writer.now().nanos();
+                write_value(&mut writer, stamp, 3);
+            },
+        );
+        read.end.expect("ok");
+        assert_eq!(read.got, [Ok((vec![1], false)), Ok((vec![3], true))]);
     }
 
     /// A held reader whose next seq the home lost for no room reads the frame after

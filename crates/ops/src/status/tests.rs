@@ -457,7 +457,7 @@ fn gives_the_state_counts_and_error_of_each_connector_on_the_node() {
                 "kind": "failing",
                 "state": "restarting",
                 "address": "opc.tcp://site.b:4840",
-                "restarts": 3,
+                "restarts": 2,
                 "counts": { "confirmed": 0, "in": 0 },
                 "error": { "class": "device", "text": "no route to the device" },
                 "note": null,

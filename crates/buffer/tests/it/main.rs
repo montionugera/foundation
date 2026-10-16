@@ -431,6 +431,7 @@ async fn read_all(
     let mut from = from;
     loop {
         let read = buffer
+            .reader()
             .read(slot, path, from, budget)
             .await
             .expect("the read passes");
@@ -755,6 +756,7 @@ fn a_read_gives_each_entry_its_own_stored_at() {
             .expect("queues");
         buffer.committed().await.expect("commits");
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
@@ -764,6 +766,45 @@ fn a_read_gives_each_entry_its_own_stored_at() {
             .map(|entry| entry.stored_at.nanos())
             .collect();
         assert_eq!(stamps, [7, 8]);
+    });
+}
+
+/// A `Reader` taken before the buffer drops gives the entries made durable before the
+/// drop, as before it, and keeps the ring file open until it drops.
+#[test]
+fn reader_reads_after_the_buffer_drops() {
+    run_on_memory(28, |shard| async move {
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("opens");
+        let a = slots.index(key(1));
+        let parts = Parts::from(shard.block(100));
+        buffer
+            .append([
+                entry(1, a, Path::Live, 0, 3, Some(30), parts.clone()),
+                entry(1, a, Path::Live, 3, 2, Some(31), parts),
+            ])
+            .expect("queues");
+        buffer.committed().await.expect("commits");
+        let reader = buffer.reader();
+        let before = reader
+            .read(a, Path::Live, Mark::at(1), usize::MAX)
+            .await
+            .expect("reads");
+        assert_eq!(before.entries.len(), 2);
+        let ended = buffer.ended();
+        drop(buffer);
+        ended.await.expect("ends");
+        let after = reader
+            .read(a, Path::Live, Mark::at(1), usize::MAX)
+            .await
+            .expect("reads");
+        assert_eq!(after, before);
+        assert_eq!(shard.memory().open_files(), 1, "the reader holds the ring");
+        drop(reader);
+        assert_eq!(shard.memory().open_files(), 0);
     });
 }
 
@@ -3575,9 +3616,15 @@ fn an_open_gives_the_carried_tail_of_a_path_with_no_record() {
             let (a, b) = (slots.index(key(1)), slots.index(key(2)));
             assert_eq!(buffer.tail(a, Path::Live), tail(3, Some(30)), "{open}");
             assert_eq!(buffer.durable(a, Path::Live), tail(3, Some(30)), "{open}");
-            let read = buffer.read(a, Path::Live, mark(0, 0), usize::MAX).await;
+            let read = buffer
+                .reader()
+                .read(a, Path::Live, mark(0, 0), usize::MAX)
+                .await;
             assert_eq!(read, Ok(hidden.clone()), "{open}");
-            let read = buffer.read(b, Path::Live, mark(0, 0), usize::MAX).await;
+            let read = buffer
+                .reader()
+                .read(b, Path::Live, mark(0, 0), usize::MAX)
+                .await;
             let entries = vec![stored(0, 2, Some(40), shard.block(20))];
             assert_eq!(read, Ok(whole(entries, mark(2, 0))), "{open}");
         }
@@ -3592,7 +3639,10 @@ fn an_open_gives_the_carried_tail_of_a_path_with_no_record() {
         let buffer = shard.open(ring, &mut slots).await.expect("opens");
         let a = slots.index(key(1));
         assert_eq!(buffer.durable(a, Path::Live), tail(6, Some(30)));
-        let read = buffer.read(a, Path::Live, mark(0, 0), usize::MAX).await;
+        let read = buffer
+            .reader()
+            .read(a, Path::Live, mark(0, 0), usize::MAX)
+            .await;
         let expected = Read {
             gap: Some(0..3),
             entries: vec![stored(3, 3, None, shard.block(10))],
@@ -3628,7 +3678,10 @@ fn an_open_refuses_a_carried_tail_that_is_not_the_tail_of_the_records() {
             let buffer = shard.open(ring, &mut slots).await.expect("opens");
             let a = slots.index(key(1));
             assert_eq!(buffer.durable(a, Path::Live), tail(6, Some(60)));
-            let read = buffer.read(a, Path::Live, mark(0, 0), usize::MAX).await;
+            let read = buffer
+                .reader()
+                .read(a, Path::Live, mark(0, 0), usize::MAX)
+                .await;
             let entries = vec![
                 stored(0, 3, Some(30), shard.block(0)),
                 stored(3, 3, Some(60), shard.block(0)),
@@ -3825,23 +3878,24 @@ fn an_open_counts_the_entries_with_no_samples_that_a_trim_passed() {
             }
             let mut slots = Slots::new();
             let buffer = shard.open(ring, &mut slots).await.expect("opens");
+            let reader = buffer.reader();
             let a = slots.index(key(1));
             assert_eq!(buffer.durable(a, Path::Live), tail(3, Some(30)));
             let stored = || stored(3, 0, None, shard.block(0));
-            let read = buffer.read(a, Path::Live, mark(0, 0), usize::MAX).await;
+            let read = reader.read(a, Path::Live, mark(0, 0), usize::MAX).await;
             let expected = Read {
                 gap: Some(0..3),
                 entries: vec![stored(), stored()],
                 next: mark(3, 3),
             };
             assert_eq!(read, Ok(expected));
-            let read = buffer.read(a, Path::Live, mark(3, 2), usize::MAX).await;
+            let read = reader.read(a, Path::Live, mark(3, 2), usize::MAX).await;
             assert_eq!(read, Ok(whole(vec![stored()], mark(3, 3))));
-            let read = buffer.read(a, Path::Live, mark(3, 3), usize::MAX).await;
+            let read = reader.read(a, Path::Live, mark(3, 3), usize::MAX).await;
             assert_eq!(read, Ok(whole(vec![], mark(3, 3))));
             buffer.append([empty(3)]).expect("queues");
             buffer.committed().await.expect("commits");
-            let read = buffer.read(a, Path::Live, mark(3, 3), usize::MAX).await;
+            let read = reader.read(a, Path::Live, mark(3, 3), usize::MAX).await;
             assert_eq!(read, Ok(whole(vec![stored()], mark(3, 4))));
         });
     }
@@ -5111,7 +5165,10 @@ fn an_entry_over_block_max_is_large() {
             .expect("queues");
         buffer.committed().await.expect("commits");
         assert_eq!(buffer.durable(a, Path::Live), tail(1, Some(1)));
-        let read = buffer.read(a, Path::Live, Mark::at(0), usize::MAX).await;
+        let read = buffer
+            .reader()
+            .read(a, Path::Live, Mark::at(0), usize::MAX)
+            .await;
         let lens =
             read.map(|read| read.entries.iter().map(|e| e.bytes.len()).collect());
         assert_eq!(lens, Ok(vec![max]));
@@ -5877,6 +5934,7 @@ fn a_read_gives_the_entries_of_one_path_in_order() {
             .open(layout(AREA, BODY_MAX), &mut slots)
             .await
             .expect("opens");
+        let reader = buffer.reader();
         let a = slots.index(key(1));
         let b = slots.index(key(2));
         let live = |first, len, last, bytes| {
@@ -5907,7 +5965,7 @@ fn a_read_gives_the_entries_of_one_path_in_order() {
             buffer.append(batch).expect("queues");
             buffer.committed().await.expect("commits");
         }
-        let read = buffer
+        let read = reader
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
@@ -5917,13 +5975,13 @@ fn a_read_gives_the_entries_of_one_path_in_order() {
             stored(4, 2, Some(60), shard.block(0)),
         ];
         assert_eq!(read, whole(expected, mark(6, 0)));
-        let read = buffer
+        let read = reader
             .read(a, Path::Backfill, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
         let expected = vec![stored(0, 1, Some(1), shard.block(7))];
         assert_eq!(read, whole(expected, mark(1, 0)));
-        let read = buffer
+        let read = reader
             .read(b, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
@@ -5932,7 +5990,7 @@ fn a_read_gives_the_entries_of_one_path_in_order() {
             stored(2, 2, Some(4), shard.block(21)),
         ];
         assert_eq!(read, whole(expected, mark(4, 0)));
-        let read = buffer
+        let read = reader
             .read(b, Path::Backfill, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
@@ -5999,6 +6057,7 @@ fn a_budget_splits_the_log_over_reads_that_follow_next() {
         let expected = vec![whole(all, mark(5, 1)), whole(Vec::new(), mark(5, 1))];
         assert_eq!(reads, expected, "no budget");
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), 0)
             .await
             .expect("reads");
@@ -6034,11 +6093,13 @@ fn a_handoff_at_the_tail_is_given_once() {
             },
         ];
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
         assert_eq!(read, whole(expected, mark(3, 1)));
         let read = buffer
+            .reader()
             .read(a, Path::Live, mark(3, 1), usize::MAX)
             .await
             .expect("reads");
@@ -6046,6 +6107,7 @@ fn a_handoff_at_the_tail_is_given_once() {
         let frame = entry(1, a, Path::Live, 3, 2, Some(50), shard.block(11).into());
         buffer.append([frame]).expect("queues");
         let read = buffer
+            .reader()
             .read(a, Path::Live, mark(3, 1), usize::MAX)
             .await
             .expect("reads");
@@ -6056,6 +6118,7 @@ fn a_handoff_at_the_tail_is_given_once() {
         );
         buffer.committed().await.expect("commits");
         let read = buffer
+            .reader()
             .read(a, Path::Live, mark(3, 1), usize::MAX)
             .await
             .expect("reads");
@@ -6099,11 +6162,13 @@ fn a_read_stops_before_a_skip_and_the_next_reports_the_gap() {
             stored(7, 1, None, shard.block(80)),
         ];
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
         assert_eq!(read, whole(before, mark(3, 0)), "stops before the skip");
         let read = buffer
+            .reader()
             .read(a, Path::Live, mark(3, 0), usize::MAX)
             .await
             .expect("reads");
@@ -6114,6 +6179,7 @@ fn a_read_stops_before_a_skip_and_the_next_reports_the_gap() {
         };
         assert_eq!(read, expected, "reports the gap");
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(4), usize::MAX)
             .await
             .expect("reads");
@@ -6139,6 +6205,7 @@ fn a_read_gives_only_durable_entries() {
         let frame = entry(1, a, Path::Live, 0, 3, Some(30), shard.block(10).into());
         buffer.append([frame]).expect("queues");
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
@@ -6147,6 +6214,7 @@ fn a_read_gives_only_durable_entries() {
         let frame = entry(1, a, Path::Live, 3, 1, Some(40), shard.block(11).into());
         buffer.append([frame]).expect("queues");
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("reads");
@@ -6154,6 +6222,7 @@ fn a_read_gives_only_durable_entries() {
         assert_eq!(read, whole(expected, mark(3, 0)), "after the first commit");
         buffer.committed().await.expect("commits");
         let read = buffer
+            .reader()
             .read(a, Path::Live, mark(3, 0), usize::MAX)
             .await
             .expect("reads");
@@ -6194,18 +6263,21 @@ fn a_mark_inside_an_entry_gives_it_whole_and_one_past_the_tail_gives_nothing() {
         ];
         for seq in [1, 2] {
             let read = buffer
+                .reader()
                 .read(a, Path::Live, Mark::at(seq), usize::MAX)
                 .await
                 .expect("reads");
             assert_eq!(read, whole(all.clone(), mark(7, 0)), "from {seq}");
         }
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(5), usize::MAX)
             .await
             .expect("reads");
         assert_eq!(read, whole(all[1..].to_vec(), mark(7, 0)), "from 5");
         for from in [mark(7, 0), mark(7, 5), mark(9, 0)] {
             let read = buffer
+                .reader()
                 .read(a, Path::Live, from, usize::MAX)
                 .await
                 .expect("reads");
@@ -6233,9 +6305,13 @@ fn a_failed_ring_read_gives_its_error_and_a_later_read_passes() {
             operation: Operation::ReadAt,
             code: 5,
         };
-        let read = buffer.read(a, Path::Live, Mark::at(0), usize::MAX).await;
+        let read = buffer
+            .reader()
+            .read(a, Path::Live, Mark::at(0), usize::MAX)
+            .await;
         assert_eq!(read, Err(Error::Files(failed)));
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("the next read passes");
@@ -6271,17 +6347,21 @@ fn a_read_with_no_block_for_the_table_gives_the_pool_error() {
             }
             len -= len.div_ceil(16);
         }
-        let read = buffer.read(a, Path::Live, Mark::at(0), usize::MAX).await;
+        let read = buffer
+            .reader()
+            .read(a, Path::Live, Mark::at(0), usize::MAX)
+            .await;
         let exhausted = block::Error::Exhausted {
             requested: 4096,
             available: 0,
         };
         assert_eq!(read, Err(Error::Pool(exhausted)));
-        let read = buffer.read(a, Path::Live, Mark::at(0), 0).await;
+        let read = buffer.reader().read(a, Path::Live, Mark::at(0), 0).await;
         let empty = whole(Vec::new(), mark(0, 0));
         assert_eq!(read, Ok(empty), "a budget of zero takes no block");
         drop(held);
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("the next read passes");
@@ -6313,7 +6393,10 @@ fn a_read_after_a_failed_sync_gives_the_error_that_ended_the_buffer() {
             code: 5,
         };
         assert_eq!(buffer.committed().await, Err(failed.clone()));
-        let read = buffer.read(a, Path::Live, Mark::at(0), usize::MAX).await;
+        let read = buffer
+            .reader()
+            .read(a, Path::Live, Mark::at(0), usize::MAX)
+            .await;
         assert_eq!(read, Err(Error::Files(failed)));
     });
 }
@@ -6344,7 +6427,11 @@ fn a_read_across_a_failed_sync_gives_the_error_that_ended_the_buffer() {
             .expect("queues");
         let mut errors = Vec::new();
         while errors.len() < 2 {
-            match buffer.read(a, Path::Live, Mark::at(0), usize::MAX).await {
+            match buffer
+                .reader()
+                .read(a, Path::Live, Mark::at(0), usize::MAX)
+                .await
+            {
                 Ok(read) => assert_eq!(read.entries.len(), 20),
                 Err(error) => errors.push(error),
             }
@@ -6390,6 +6477,7 @@ fn a_read_ends_at_a_pool_shortage_and_keeps_what_it_holds() {
         }
         drop(one);
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("the read keeps the first entry");
@@ -6397,6 +6485,7 @@ fn a_read_ends_at_a_pool_shortage_and_keeps_what_it_holds() {
         assert_eq!(read, whole(expected, mark(3, 0)));
         drop(held);
         let read = buffer
+            .reader()
             .read(a, Path::Live, read.next, usize::MAX)
             .await
             .expect("the next read passes");
@@ -6421,6 +6510,7 @@ fn a_record_with_a_table_over_one_block_is_read() {
         buffer.append(batch).expect("queues");
         buffer.committed().await.expect("commits");
         let read = buffer
+            .reader()
             .read(a, Path::Live, Mark::at(0), usize::MAX)
             .await
             .expect("reads");

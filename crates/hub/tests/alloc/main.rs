@@ -7,8 +7,9 @@
 //! a depth it reached before. An open of a reader of many channels makes no
 //! allocation for each channel. The names of a reader make no allocation at a change
 //! to a key set no larger than one before. A client read makes as many allocations for
-//! each frame it relays as a HUB WIRE session. This binary has no test harness: the
-//! count covers each thread, and a harness allocates on its own thread at any time.
+//! each frame it relays as a HUB WIRE session. A complete reader that catches up from
+//! disk allocates only at each read. This binary has no test harness: the count covers
+//! each thread, and a harness allocates on its own thread at any time.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
 
@@ -44,6 +45,7 @@ use hub::Hub;
 use hub::reader::{self, Mode, Reader};
 use hub::writer::{self, Writer};
 use types::authority::Authority;
+use types::frame::{Draft, Form};
 use types::time::Span;
 use wire::hub::client;
 use woken::Woken;
@@ -325,7 +327,7 @@ fn woken_of_a_reader_that_falls_behind_again() {
             let taken = std::iter::from_fn(|| match woken.shard.take(reader) {
                 Next::Frame(frame) => Some(frame),
                 Next::Empty => None,
-                Next::Behind => panic!("lag {lag}: the reader is behind"),
+                Next::Disk(_) | Next::Behind => panic!("lag {lag}: the reader missed"),
             })
             .count();
             assert_eq!(taken, DEPTH, "lag {lag}");
@@ -382,16 +384,104 @@ fn woken_of_a_reader_whose_frame_waits_for_credit() {
     .expect("the run ends");
 }
 
+/// Takes the next frame of `reader`, as [`read`] does, also when it waits for a read
+/// from disk, with the allocations of its polls.
+async fn take(reader: &mut Reader, node: &sim::node::Node) -> u64 {
+    let mut next = pin!(reader.next());
+    let mut context = Context::from_waker(Waker::noop());
+    let mut allocations = 0;
+    loop {
+        let (poll, made) = ALLOCATOR.count(|| next.as_mut().poll(&mut context));
+        allocations += made;
+        if let Poll::Ready(received) = poll {
+            assert!(received.is_ok(), "the reader takes a frame");
+            return allocations;
+        }
+        node.clock().sleep(Span::MILLISECOND).await;
+    }
+}
+
+/// A frame of `WIDE` samples from `stamp` on `time` and `value`, with values that do
+/// not compress.
+fn wide(writer: &Writer, stamp: i64) -> Draft {
+    const WIDE: u32 = 1000;
+    let set = writer.set();
+    let bytes = usize::try_from(WIDE).expect("a count fits") * 8;
+    let mut series: Vec<_> = (0..set.entries().len()).map(|n| (n, bytes)).collect();
+    series.sort_unstable();
+    let mut draft = writer.draft(Form::Raw, &series).expect("a frame");
+    for (entry, _) in series {
+        let bytes = draft.series_mut(entry).expect("the series is present");
+        for (n, sample) in bytes.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+            let n = stamp + i64::try_from(n).expect("a sample index fits");
+            let scrambled = n.wrapping_mul(6_364_136_223_846_793_005);
+            let value = if entry == 0 {
+                n
+            } else {
+                scrambled ^ (scrambled >> 29)
+            };
+            *sample = value.to_le_bytes();
+        }
+    }
+    draft.set_count(set.entries()[0].group, WIDE);
+    draft
+}
+
+/// A complete reader that takes no frame until frames pass its window, then takes
+/// each, twice. In the second catch-up, only a take that reads from disk allocates,
+/// for its file calls, and each read gives 8 frames or more.
+fn catch_up_from_disk() {
+    const FRAMES: i64 = 201;
+    let mut sim = sim::Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    sim.run_on(&node, |node, tasks| async move {
+        let (hub, now) = hub(&node, tasks).await;
+        let mut reader = hub
+            .reader(unnamed(&["value"], Mode::Complete))
+            .await
+            .expect("opens");
+        let config = writer::Config {
+            subject: name("a"),
+            authority: Authority(1),
+            lease: None,
+            channels: vec![name("time"), name("value")],
+        };
+        let mut writer = hub.writer(config).await.expect("opens");
+        let mut laps = Vec::new();
+        for lap in 0..2 {
+            for n in 0..FRAMES {
+                let draft = wide(&writer, now + (lap * FRAMES + n) * 1000);
+                common::write(&mut writer, draft);
+                if n >= FRAMES - 2 {
+                    node.clock().sleep(SETTLE).await;
+                }
+            }
+            let mut counts = Vec::new();
+            for _ in 0..FRAMES {
+                counts.push(take(&mut reader, &node).await);
+            }
+            laps.push(counts);
+        }
+        let reads: Vec<_> = (0..laps[1].len()).filter(|&n| laps[1][n] > 0).collect();
+        assert!(!reads.is_empty(), "the reader reads from disk: {laps:?}");
+        assert!(
+            reads.windows(2).all(|pair| pair[1] - pair[0] >= 8),
+            "allocations of each take: {laps:?}"
+        );
+    })
+    .expect("the run ends");
+}
+
 fn main() {
     assert_eq!(
         ALLOCATOR.count(|| drop(Box::new(1_u8))).1,
         1,
         "the allocator counts"
     );
-    relay::relays_a_frame_with_the_allocations_of_a_wire_session(client::Mode::Latest);
-    relay::relays_a_frame_with_the_allocations_of_a_wire_session(
-        client::Mode::Complete,
-    );
+    for mode in [client::Mode::Latest, client::Mode::Complete] {
+        relay::relays_a_frame_with_the_allocations_of_a_wire_session(mode);
+    }
+    catch_up_from_disk();
     woken_of_a_reader_that_takes_each_frame();
     woken_of_a_reader_that_falls_behind_again();
     woken_of_a_reader_whose_frame_waits_for_credit();

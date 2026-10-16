@@ -236,16 +236,19 @@ fn missed(frame: &impl Fn() -> Frame, set: &Arc<KeySet>) {
         "the warm session takes two frames, and the release wakes it and each \
          session of credit 0"
     );
-    let drained_behind = |readers: &mut Readers, key: complete::Key| loop {
-        match readers.take(key.into()) {
-            Next::Frame(_) => {}
-            Next::Behind => break true,
-            Next::Empty => break false,
+    let on_disk = |readers: &mut Readers, key: complete::Key| {
+        readers.grant(key, u64::MAX);
+        loop {
+            match readers.take(key.into()) {
+                Next::Frame(_) => {}
+                Next::Disk { .. } => break true,
+                Next::Empty | Next::Behind => break false,
+            }
         }
     };
     assert!(
-        keys.iter().all(|&key| drained_behind(&mut readers, key)),
-        "each session missed"
+        keys.iter().all(|&key| on_disk(&mut readers, key)),
+        "each session missed and reads from disk"
     );
 }
 
@@ -278,6 +281,7 @@ fn taken(readers: &mut Readers, key: complete::Key) -> usize {
         match readers.take(key.into()) {
             Next::Frame(_) => count += 1,
             Next::Empty => return count,
+            Next::Disk { .. } => panic!("the session reads from disk"),
             Next::Behind => panic!("the session is behind"),
         }
     }

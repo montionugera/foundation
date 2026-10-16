@@ -26,7 +26,7 @@ pub(crate) fn start_node<D: Driver + Send + 'static>(
     io: &Rc<RefCell<Vec<env::thread::Handle>>>,
     listen: SocketAddr,
     region: node::Region,
-    wrap: fn(os::Disk) -> D,
+    wrap: impl Fn(os::Disk) -> D + Send + 'static,
 ) -> node::Node {
     let cores = u64::try_from(shards.cores().get()).unwrap();
     let (dir, threads, io) = (rig.dir.clone(), threads.clone(), Rc::clone(io));
