@@ -13,12 +13,15 @@
   it, and the restart record of a later open. Each carry record leaves one block, for
   the restart record. A restart record leaves none, and an open writes over a restart
   record that no data or carry record follows. So an open of a full ring has its
-  block, and the commit after it has a block for its carry record, after any count of
-  opens (#160,
+  block, and the commit after it has a block for its carry record, or needs none,
+  because a durable carry record before the open holds the tails. This holds after any
+  count of opens (#160,
   https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6177122793,
   2026-10-14T19:58:01Z, which supersedes the two blocks of
   https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6158992463,
-  2026-10-14T01:42:08Z).
+  2026-10-14T01:42:08Z; text of
+  https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6196998191,
+  2026-10-15T16:27:31Z).
   `set_floor` and `usage` wait for their first effect, the B1 warning (#1080). Lost: a
   `trim` call from the home (it needs the commit rate, a late trim gives a second gap,
   and the edge cases of the ring move up into `home`). Decided by the architect (#160,
@@ -28,9 +31,15 @@
   restart continues from the disk (A8). That record syncs before the checkpoint, in a
   sync of its own: a crash can keep the checkpoint and lose a record of the same sync.
   The cost of a trim grows with the paths that lose their newest record, not with all
-  paths. A carried tail is no sample: a read gives no entry for it, only the gap up to
-  it. The trim does not turn on without the carried tail, and the PR that builds it
-  records its form on disk here. Decided by the architect (#160,
+  paths. A carry record that holds one such path also takes the paths with the oldest
+  holders after the reach, up to the tails that one record may hold, so that the tails
+  of many paths do not each take a record (`laptop.architect`, 2026-10-16T01:50:57Z:
+  https://github.com/synnaxlabs/foundation/pull/2688#issuecomment-6206211723, item 2,
+  which amends the carry plan of
+  https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6158967741). A
+  carried tail is no sample: a read gives no entry for it, only the gap up to it. The
+  trim does not turn on without the carried tail, and the PR that builds it records its
+  form on disk here. Decided by the architect (#160,
   https://github.com/synnaxlabs/foundation/issues/160#issuecomment-6032697113).
   As built (#1222): the headroom is three times the larger of the largest record and the
   records of the commit that trims, which are the records not yet synced, and the three

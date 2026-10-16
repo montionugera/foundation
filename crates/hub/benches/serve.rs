@@ -657,6 +657,7 @@ async fn create_shard(
         entropy: node.entropy(),
         layout: buffer::Layout::new(AREA, 1 << 16).expect("a ring"),
         commit: Span::from_nanos(10_000_000),
+        trimmed: false,
     };
     let buffer = buffer::Buffer::open(config, interner.slots())
         .await
