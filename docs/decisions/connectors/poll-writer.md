@@ -26,11 +26,14 @@
   keeps only the values of the tick, in a buffer that `take` drains and that panics on
   a slot that no reply filled (MODBUS KIND, `connector_modbus::read::Values`;
   `laptop.architect-2`, 2026-10-16T14:33:20Z:
-  https://github.com/synnaxlabs/foundation/pull/2860#issuecomment-6217778354, and the
+  https://github.com/synnaxlabs/foundation/pull/2860#issuecomment-6217778354, the
   name, 2026-10-16T14:42:11Z:
-  https://github.com/synnaxlabs/foundation/pull/2860#issuecomment-6217947516). `write` panics when the iterator gives fewer or more
-  values than the channels. `connector-opcua` maps its reads by position, with no `zip`
-  over its channels, so a read past its channels panics in the kind and is never lost
+  https://github.com/synnaxlabs/foundation/pull/2860#issuecomment-6217947516, and
+  final, 2026-10-16T14:48:11Z:
+  https://github.com/synnaxlabs/foundation/pull/2860#issuecomment-6218066529).
+  `write` panics when the iterator gives fewer or more values than the channels.
+  `connector-opcua` maps its reads by position, with no `zip` over its channels, so a
+  read past its channels panics in the kind and is never lost
   with no count, and the Modbus kind of PR B2 of #432 will map its reads the same way
   (the plan, 2026-10-16T06:42:57Z:
   https://github.com/synnaxlabs/foundation/issues/2830#issuecomment-6209736752;
