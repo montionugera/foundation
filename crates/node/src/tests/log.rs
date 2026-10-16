@@ -269,6 +269,51 @@ fn a_node_warns_of_its_roots_before_it_starts() {
     );
 }
 
+/// The roots with only the CA and `count` failures.
+fn failed(count: usize) -> os::Roots {
+    os::Roots {
+        certificates: vec![super::CA.to_vec()],
+        failures: (0..count).map(|n| format!("failure {n}")).collect(),
+    }
+}
+
+/// The warnings of the first `count` failures of `failed`.
+fn listed(count: usize) -> Vec<String> {
+    (0..count)
+        .map(|n| {
+            format!(
+                "2026-01-01T00:00:00.004198Z WARN node: a part of the OS roots was not \
+                 read error=\"failure {n}\""
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_node_warns_of_the_first_16_failures_of_its_roots_and_counts_the_rest() {
+    let mut expected = listed(16);
+    expected.push(
+        "2026-01-01T00:00:00.004198Z WARN node: more parts of the OS roots were not \
+         read unlisted=1"
+            .into(),
+    );
+    assert_eq!(warned(failed(17)), expected);
+}
+
+#[test]
+fn a_node_with_16_failures_of_its_roots_warns_of_each_with_no_count() {
+    assert_eq!(warned(failed(16)), listed(16));
+}
+
+#[test]
+fn many_roots_failures_keep_started() {
+    let lines = logged(failed(1100), tracing::Level::INFO);
+    assert!(
+        lines.iter().any(|line| line.contains(" node: started ")),
+        "`started` in the log: {lines:?}"
+    );
+}
+
 #[test]
 fn a_node_with_no_root_warns_that_an_https_connect_with_no_ca_fails() {
     assert_eq!(warned(os::Roots::default()), [NONE]);
