@@ -63,14 +63,15 @@
   (`laptop.architect-2`,
   https://github.com/synnaxlabs/foundation/pull/2809#issuecomment-6208511068). The
   value of the server state is not judged. The first failed check ends the run with
-  `Error::Device` and the text "the connectivity check failed with <status>", so the supervisor connects again with its backoff. A channel or a
-  session that the client loses between two checks ends the run at once with the same
-  text, from the state of the client: the status of the connect, else
-  `BadConnectionClosed` or `BadSessionClosed`. The check is in Rust: open62541 calls its
-  inactivity callback only for `BadTimeout` and drops each other status of its own
-  check, such as the `BadSessionIdInvalid` of a lost session, so
-  `connectivityCheckInterval` stays 0. The retry of a failed read stays. Approved by the
-  person (2026-10-16T03:44:54Z, "Yes, approved", on "Keep the 10-second keep-alive, and
+  `Error::Device` and the text "the connectivity check failed with <status>", so the
+  supervisor connects again with its backoff. A channel or a session that the client
+  loses between two checks ends the run at once with the same text, from the state of
+  the client: the status of the connect, else `BadConnectionClosed` or
+  `BadSessionClosed`. The check is in Rust: open62541 calls its inactivity callback only
+  for `BadTimeout` and drops each other status of its own check, such as the
+  `BadSessionIdInvalid` of a lost session, so `connectivityCheckInterval` stays 0. The
+  retry of a failed read stays. Approved by the person (2026-10-16T03:44:54Z, "Yes,
+  approved", on "Keep the 10-second keep-alive, and
   add one rule: if a keep-alive fails, reconnect right away instead of waiting for the
   next read":
   https://github.com/synnaxlabs/foundation/pull/2809#issuecomment-6207602232). The count
