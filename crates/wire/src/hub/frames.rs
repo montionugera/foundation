@@ -2,9 +2,9 @@ use std::ops;
 use std::sync::Arc;
 
 use types::frame::key_set::KeySet;
-use types::frame::{Draft, Frame, Layout, Range};
+use types::frame::{Draft, Frame, Layout};
 
-use super::{Error, FromHome, Head, Reader};
+use super::{Error, FromHome, Gaps, Head, Reader};
 
 /// The frames of a reader session, built from its replies from `Opened` on, at the
 /// reader's node and at the program. The caller receives each message and makes each
@@ -19,9 +19,8 @@ pub struct Frames {
     /// The ends are whole and the draft is not given.
     drafting: bool,
     draft: Option<Draft>,
-    /// The first seq of the index that the session did not get before the frame
-    /// that arrives: the start of its gap. `None` in a latest session.
-    from: Option<u64>,
+    /// `None` in a latest session.
+    gaps: Option<Gaps>,
     lost: ops::Range<u64>,
 }
 
@@ -82,7 +81,7 @@ impl Frames {
         match reader.decode(message)? {
             FromHome::Opened { live } => {
                 let frames = Self {
-                    from: (!reader.latest()).then_some(live),
+                    gaps: (!reader.latest()).then(|| Gaps::new(live)),
                     lost: 0..0,
                     reader,
                     set,
@@ -231,27 +230,13 @@ impl Frames {
     fn freeze(&mut self) -> Frame {
         let head = self.head.take().expect("invariant: a frame has a head");
         let mut draft = self.draft.take().expect("invariant: a frame has a draft");
-        self.lost = self.gap(head.range);
+        self.lost = self
+            .gaps
+            .as_mut()
+            .map_or(0..0, |gaps| gaps.before(head.range));
         draft.set_count(0, head.range.count);
         draft.set_seq(0, head.range.seq);
         draft.freeze(head.path)
-    }
-
-    /// The gap before a frame of `range`. A frame with a sample moves the start of
-    /// the next gap to its end.
-    fn gap(&mut self, range: Range) -> ops::Range<u64> {
-        let Some(from) = self.from.as_mut().filter(|_| range.count > 0) else {
-            return 0..0;
-        };
-        let lost = if *from < range.seq {
-            *from..range.seq
-        } else {
-            0..0
-        };
-        *from = range
-            .end()
-            .expect("invariant: the reader refuses a head past u64::MAX");
-        lost
     }
 }
 

@@ -30,12 +30,14 @@
 
 pub mod client;
 mod frames;
+mod gaps;
 mod home;
 mod reader;
 
 use std::fmt;
 
 pub use frames::{Due, Frames, Step};
+pub use gaps::Gaps;
 pub use home::{FromReader, Home};
 pub use reader::{FromHome, Reader};
 use types::frame::{Path, Range};
