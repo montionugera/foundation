@@ -5,6 +5,7 @@ mod access;
 mod channel;
 mod connector;
 mod duplicate;
+pub mod import;
 mod node_settings;
 pub mod openssh;
 mod placement;
