@@ -521,7 +521,9 @@ impl Reader {
         let mut listed =
             listed.expect("invariant: `find` calls `items` before it returns");
         let mut reader = match home {
-            Home::Here(channels) => {
+            Home::Here(keys) => {
+                let channels =
+                    Channels::carry(&mut state.borrow_mut(), keys, matched.index);
                 listed.slot(&channels.slots);
                 let index = channels.index;
                 let (local, live) = match named {
@@ -549,8 +551,8 @@ impl Reader {
         Ok(reader)
     }
 
-    /// Opens an unnamed reader on `channels` from [`Home::Here`], with no wait since
-    /// [`find`] gave them. It holds no names: the places of a served read carry them,
+    /// Opens an unnamed reader on `channels` from [`Channels::carry`], with no wait
+    /// since [`find`] gave them. It holds no names: the places of a served read carry them,
     /// so [`Received::name`] panics. Returns the reader and its open position: the
     /// first live seq of the index that the session can get.
     pub(crate) fn here(
@@ -822,9 +824,9 @@ pub(crate) struct Matched<T> {
 /// The home of the index of what a selector matched.
 #[derive(Debug)]
 pub(crate) enum Home {
-    /// This node, which carries the index, with the channels as the frames of a reader
-    /// hold them.
-    Here(Channels),
+    /// This node, with the key of each channel in the order of the matched items.
+    /// [`Channels::carry`] gives their slots.
+    Here(Box<[channel::Key]>),
     /// Another node.
     Away(types::node::Key),
 }
@@ -865,17 +867,7 @@ pub(crate) async fn find<S: std::borrow::Borrow<Selector>, T>(
         keys[found.index], index,
         "invariant: no registered channel changed, so the index stays"
     );
-    let home = if let Some(home) = away {
-        Home::Away(home)
-    } else {
-        // With no wait since `matched`, so each of `keys` is defined.
-        let slots = state.borrow_mut().slots(index, &keys);
-        Home::Here(Channels {
-            index: slots[found.index],
-            keys,
-            slots,
-        })
-    };
+    let home = away.map_or(Home::Here(keys), Home::Away);
     Ok((found, home))
 }
 
@@ -968,6 +960,23 @@ pub(crate) struct Channels {
     pub(crate) keys: Box<[channel::Key]>,
     pub(crate) slots: Box<[channel::Slot]>,
     pub(crate) index: channel::Slot,
+}
+
+impl Channels {
+    /// The channels of `keys` from [`Home::Here`], with their index at `at`, with no
+    /// wait since [`find`] gave them. This node carries the index from then on.
+    pub(crate) fn carry(
+        state: &mut State,
+        keys: Box<[channel::Key]>,
+        at: usize,
+    ) -> Self {
+        let slots = state.slots(keys[at], &keys);
+        Self {
+            index: slots[at],
+            keys,
+            slots,
+        }
+    }
 }
 
 impl Session {

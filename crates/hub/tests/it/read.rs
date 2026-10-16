@@ -872,7 +872,8 @@ fn holds_the_share_of_the_open_of_a_read_while_it_waits_for_a_home() {
 }
 
 /// A node serves a read only of an index whose home it is: a read whose home is
-/// another node stops with `NOT_HOME` and interns no key set.
+/// another node stops with `NOT_HOME` and interns no key set. One over `PLACES_MAX`
+/// stops with `MALFORMED` before its home.
 #[test]
 fn stops_a_read_whose_home_is_another_node_as_not_home() {
     let (served, sets) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(None)));
@@ -889,6 +890,13 @@ fn stops_a_read_whose_home_is_another_node_as_not_home() {
         test.set_home(TIME, region::OTHER).await;
         test.set_home(TIME_B, NODE).await;
         test.hub.set_rules(rules());
+        let names: Vec<String> = (1..PLACES_MAX).map(|n| format!("w.{n}")).collect();
+        test.define(
+            names.iter().zip(100..).map(|(channel, key)| {
+                (key, channel.as_str(), DataType::Sample(I64), 1)
+            }),
+        )
+        .await;
         let before = test.writer("a", &["value-b"]).await.set().key().get();
         let session = transport.accept().await.expect("a session");
         let link = test.hub.link(session.clone());
@@ -909,6 +917,8 @@ fn stops_a_read_whose_home_is_another_node_as_not_home() {
     run_program(314, home, |node, tasks, at| {
         as_agent(node, tasks, at, |mut agent| async move {
             agent.admit().await;
+            let mut over = agent.read(Mode::Latest, &["w.**", "value"]).await;
+            assert_eq!(over.recv().await, reset_with(MALFORMED));
             let mut stream = agent.read(Mode::Latest, &["value"]).await;
             assert_eq!(stream.recv().await, reset_with(NOT_HOME));
             finish(&mut agent).await;
@@ -917,10 +927,18 @@ fn stops_a_read_whose_home_is_another_node_as_not_home() {
     let remote = reader::Error::Remote {
         home: region::OTHER,
     };
+    let over = serve::Error::Client(client::Error::Places {
+        count: PLACES_MAX + 1,
+        cap: PLACES_MAX,
+    });
     let served = std::mem::take(&mut *served.lock().expect("not poisoned"));
     assert_eq!(
         served,
-        [Err(serve::Error::Reader(Box::new(remote))), Ok(Got::Ended)]
+        [
+            Err(over),
+            Err(serve::Error::Reader(Box::new(remote))),
+            Ok(Got::Ended)
+        ]
     );
     let (before, after) = sets.lock().expect("not poisoned").take().expect("counted");
     assert_eq!(after, before + 1);

@@ -16,7 +16,7 @@ use super::{Reserved, body, verify};
 use crate::State;
 use crate::channel::Channel;
 use crate::link::Session;
-use crate::reader::{self, Home, Matched, Reader};
+use crate::reader::{self, Channels, Home, Reader};
 use crate::serve::{Error, Layout, alloc, reply, unless};
 
 /// Serves the read of `subject` that `read` starts: verifies its open, opens its
@@ -38,13 +38,13 @@ pub(super) async fn serve(
         }
     });
     let state = &session.state;
-    let Some((reader, live, places, layout)) =
+    let Some((reader, live, head, places, layout)) =
         here(state, open, mode, program.as_mut()).await?
     else {
         sender.finish()?;
         return Ok(());
     };
-    start(state, sender, places, live).await?;
+    start(state, sender, head, places, live).await?;
     relay(state, reader, layout, program, sender).await
 }
 
@@ -91,16 +91,17 @@ async fn open(
 }
 
 /// Opens the reader of `open` at this node, the home of its index, and gives it with
-/// its open position, its places, and their layout, or `None` when `program` finishes
-/// first. Holds the reservation of `open` until the open decodes after the wait for the
-/// home. Places over [`PLACES_MAX`] give [`client::Error::Places`], before the reader
-/// opens.
+/// its open position, the head of its places, its places, and their layout, or `None`
+/// when `program` finishes first. Holds the reservation of `open` until the open
+/// decodes after the wait for the home. Places over [`PLACES_MAX`] give
+/// [`client::Error::Places`], also when the home is another node, and this node then
+/// carries no index and gives no slot.
 async fn here<F>(
     state: &Rc<RefCell<State>>,
     open: Held,
     mode: reader::Mode,
     program: Pin<&mut F>,
-) -> Result<Option<(Reader, u64, Matched<Place>, Layout)>, Error>
+) -> Result<Option<(Reader, u64, Places, Vec<Place>, Layout)>, Error>
 where
     F: Future<Output = Result<(), Error>>,
 {
@@ -125,34 +126,35 @@ where
             cap: PLACES_MAX,
         }));
     }
-    let channels = match home {
-        Home::Here(channels) => channels,
+    let keys = match home {
+        Home::Here(keys) => keys,
         Home::Away(home) => return Err(refused(reader::Error::Remote { home })),
+    };
+    let channels = Channels::carry(&mut state.borrow_mut(), keys, places.index);
+    let head = Places {
+        count,
+        index: u32::try_from(places.index)
+            .expect("invariant: the index is one of the places"),
     };
     let layout = Layout::new(channels.slots.clone(), channels.index);
     let (reader, live) = Reader::here(state, channels, mode);
-    Ok(Some((reader, live, places, layout)))
+    Ok(Some((reader, live, head, places.items, layout)))
 }
 
-/// Sends `places`, their run, and `Opened` with `live`, the open position, and drops
-/// the places.
+/// Sends `head`, the run of `places`, and `Opened` with `live`, the open position, and
+/// drops the places.
 async fn start(
     state: &RefCell<State>,
     sender: &mut Sender,
-    places: Matched<Place>,
+    head: Places,
+    places: Vec<Place>,
     live: u64,
 ) -> Result<(), Error> {
     let mut block = alloc(state, Places::LEN)?;
-    Places {
-        count: u32::try_from(places.items.len())
-            .expect("invariant: each place has its own slot, a u32"),
-        index: u32::try_from(places.index)
-            .expect("invariant: the index is one of the places"),
-    }
-    .encode(&mut block);
+    head.encode(&mut block);
     sender.send(block.freeze()).await?;
     let most = sender.bytes_max().min(state.borrow().home.pool().largest());
-    for message in place::messages(&places.items, most) {
+    for message in place::messages(&places, most) {
         let mut block = alloc(state, message.encoded_len())?;
         message.encode(&mut block);
         sender.send(block.freeze()).await?;
