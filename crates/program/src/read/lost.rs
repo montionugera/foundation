@@ -10,6 +10,8 @@ pub(super) struct Lost {
     passed: u64,
     /// The frame, of `passed`, of the last gap.
     gapped: u64,
+    /// The count of entries with no series since the last gap.
+    pending: usize,
 }
 
 /// The lost seqs of one entry.
@@ -29,12 +31,13 @@ impl Lost {
             entries: vec![Entry::default(); entries],
             passed: 0,
             gapped: 0,
+            pending: 0,
         }
     }
 
     /// Moves past the next frame, which lost `gap` and holds a series with a sample
     /// of each entry of `held`. Touches each entry at a gap, else only those of
-    /// `held`.
+    /// `held`, and none while each entry got a series since the last gap.
     ///
     /// # Panics
     ///
@@ -54,11 +57,19 @@ impl Lost {
                 };
             }
             self.gapped = self.passed;
+            self.pending = self.entries.len();
+        }
+        // With none pending, each `at` is at or after `gapped` and stays so, and
+        // `get` gives `0..0`, so a stale `at` changes no result.
+        if self.pending == 0 {
+            return;
         }
         for entry in held {
             let entry = &mut self.entries[entry];
             if entry.at >= self.gapped {
                 entry.seqs = 0..0;
+            } else {
+                self.pending -= 1;
             }
             entry.at = self.passed;
         }
@@ -123,6 +134,18 @@ mod tests {
         assert_eq!([lost.get(0), lost.get(1)], [4..6, 0..0]);
         lost.pass(0..0, [0, 1]);
         assert_eq!([lost.get(0), lost.get(1)], [0..0, 1..6]);
+    }
+
+    #[test]
+    fn stops_touching_entries_once_each_got_a_series_after_the_gap() {
+        let mut lost = Lost::new(3);
+        lost.pass(1..3, [0]);
+        assert_eq!(lost.pending, 2);
+        lost.pass(0..0, [0, 1]);
+        assert_eq!(lost.pending, 1);
+        lost.pass(0..0, [2]);
+        assert_eq!(lost.pending, 0);
+        assert_eq!(lost.get(2), 1..3);
     }
 
     #[test]
