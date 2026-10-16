@@ -282,37 +282,36 @@ impl Lines {
 }
 
 /// Waits on `written` while `busy`, up to `bound`. Gives whether `bound` passed.
-#[cfg(not(loom))]
+/// Under loom, which has no time, it waits with no bound.
 fn wait_while<'a>(
     written: &Condvar,
     inner: MutexGuard<'a, Inner>,
     bound: Duration,
     busy: impl FnMut(&mut Inner) -> bool,
 ) -> (MutexGuard<'a, Inner>, bool) {
+    #[cfg(not(loom))]
     #[expect(
         clippy::disallowed_methods,
         reason = "a stop and a panic hook cannot await"
     )]
-    let (inner, waited) = written
-        .wait_timeout_while(inner, bound, busy)
-        .expect("invariant: nothing panics while it holds the lines lock");
-    (inner, waited.timed_out())
-}
-
-/// As `Condvar::wait_timeout_while` of `std`, with no bound: loom has no time.
-#[cfg(loom)]
-fn wait_while<'a>(
-    written: &Condvar,
-    mut inner: MutexGuard<'a, Inner>,
-    _bound: Duration,
-    mut busy: impl FnMut(&mut Inner) -> bool,
-) -> (MutexGuard<'a, Inner>, bool) {
-    while busy(&mut inner) {
-        inner = written
-            .wait(inner)
+    let (inner, late) = {
+        let (inner, waited) = written
+            .wait_timeout_while(inner, bound, busy)
             .expect("invariant: nothing panics while it holds the lines lock");
-    }
-    (inner, false)
+        (inner, waited.timed_out())
+    };
+    #[cfg(loom)]
+    let (inner, late) = {
+        let _ = bound;
+        let (mut inner, mut busy) = (inner, busy);
+        while busy(&mut inner) {
+            inner = written
+                .wait(inner)
+                .expect("invariant: nothing panics while it holds the lines lock");
+        }
+        (inner, false)
+    };
+    (inner, late)
 }
 
 /// Wakes the take that waits, after the lock of `inner` drops.
