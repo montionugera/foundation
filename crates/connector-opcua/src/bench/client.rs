@@ -205,6 +205,19 @@ impl Client {
         }
     }
 
+    /// Describes the variable of [`Variable::Number`], and gives the id in namespace 0
+    /// of its base type.
+    ///
+    /// # Panics
+    ///
+    /// If the describe fails, with its status.
+    pub async fn describe(&mut self) -> Option<u32> {
+        match self.session.describe(&[VALUE]).await {
+            Ok(descriptions) => descriptions.first().and_then(|found| found.base),
+            Err(status) => panic!("a describe failed: {status:?}"),
+        }
+    }
+
     /// Closes the session and the connection of the client. A client that drops with no
     /// close holds one of the 4 sessions of its server until the session times out.
     pub async fn close(self) {

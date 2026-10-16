@@ -48,6 +48,7 @@ fn main() {
     each_function_writes_the_size_into_the_header();
     the_fuzz_round_trip_frees_each_value();
     a_client_frees_what_it_holds();
+    a_describe_frees_its_requests_and_answers();
 }
 
 fn c_allocates_through_the_global_allocator() {
@@ -155,6 +156,34 @@ fn a_client_frees_what_it_holds() {
         client::Server::scope(node.clock(), node.net(), address, rng, body).await
     };
     let held = sim.run_on(&node, run).expect("the run ends");
+    assert_eq!(
+        held[2..],
+        [held[1]; 2],
+        "each held byte count after the first"
+    );
+}
+
+fn a_describe_frees_its_requests_and_answers() {
+    let mut sim = Sim::new(sim::Config::default());
+    let node = sim.node(sim::node::Config::default());
+    let run = move |node: sim::node::Node, _| async move {
+        let address = node.addresses()[0];
+        let body = async |server: &client::Server| {
+            let mut client = server.connect(1).await;
+            let mut held = Vec::new();
+            let mut bases = Vec::new();
+            for _ in 0..4 {
+                bases.push(client.describe().await);
+                held.push(ALLOCATOR.held());
+            }
+            client.close().await;
+            (bases, held)
+        };
+        let rng = node.entropy().rng();
+        client::Server::scope(node.clock(), node.net(), address, rng, body).await
+    };
+    let (bases, held) = sim.run_on(&node, run).expect("the run ends");
+    assert_eq!(bases, [Some(11); 4], "each base is Double");
     assert_eq!(
         held[2..],
         [held[1]; 2],

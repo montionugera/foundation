@@ -137,6 +137,52 @@ void shim_server_reads(UA_Server *server, UA_UInt32 most) {
     UA_Server_getConfig(server)->maxNodesPerRead = most;
 }
 
+/* Sets the MaxNodesPerBrowse and the MaxNodesPerTranslateBrowsePathsToNodeIds of
+ * `server`, each 0 for none. */
+void shim_server_browses(UA_Server *server, UA_UInt32 browse, UA_UInt32 translate) {
+    UA_ServerConfig *config = UA_Server_getConfig(server);
+    config->maxNodesPerBrowse = browse;
+    config->maxNodesPerTranslateBrowsePathsToNodeIds = translate;
+}
+
+/* A logger that counts the Browse requests of its server, and passes each message to
+ * the logger before it. */
+typedef struct {
+    UA_Logger logger;
+    const UA_Logger *next;
+    size_t browses;
+} shim_counter;
+
+static void count_message(void *context, UA_LogLevel level, UA_LogCategory category,
+                          const char *msg, va_list args) {
+    shim_counter *counter = (shim_counter *)context;
+    /* The end of the format of the debug message of open62541 for each Browse
+     * request, from UA_LOG_SESSION_INTERNAL. */
+    static const char browse[] = "| Processing BrowseRequest%.0s";
+    size_t length = strlen(msg);
+    if(length >= sizeof(browse) - 1 &&
+       strcmp(msg + length - (sizeof(browse) - 1), browse) == 0)
+        counter->browses++;
+    counter->next->log(counter->next->context, level, category, msg, args);
+}
+
+static void count_clear(UA_Logger *logger) { UA_free(logger->context); }
+
+/* Counts each Browse request that `server` processes from now, and gives the count,
+ * which lives until the delete of `server`, or NULL when out of memory. */
+const size_t *shim_server_count_browses(UA_Server *server) {
+    shim_counter *counter = (shim_counter *)UA_calloc(1, sizeof(*counter));
+    if(!counter)
+        return NULL;
+    UA_ServerConfig *config = UA_Server_getConfig(server);
+    counter->next = config->logging;
+    counter->logger.log = count_message;
+    counter->logger.context = counter;
+    counter->logger.clear = count_clear;
+    config->logging = &counter->logger;
+    return &counter->browses;
+}
+
 /* Sets the receive buffer size that `client` gives in its next HEL. */
 void shim_client_receive(UA_Client *client, UA_UInt32 size) {
     UA_Client_getConfig(client)->localConnectionConfig.recvBufferSize = size;
@@ -226,4 +272,125 @@ UA_StatusCode shim_server_data_type(UA_Server *server, shim_node node, UA_UInt32
         *id = type.identifier.numeric;
     UA_NodeId_clear(&type);
     return status;
+}
+
+/* Gives the text `name` in the namespace of `node`, which borrows `name`. */
+static UA_QualifiedName name_of(shim_node node, const char *name) {
+    return UA_QUALIFIEDNAME(node.namespace, (char *)(uintptr_t)name);
+}
+
+/* Adds to `server` the folder `node` with the browse name `name` and the display name
+ * `display`, under `parent` by the reference of the number `reference`. */
+UA_StatusCode shim_server_add_folder(UA_Server *server, shim_node node,
+                                     shim_node parent, UA_UInt32 reference,
+                                     const char *name, const char *display) {
+    UA_ObjectAttributes attributes = UA_ObjectAttributes_default;
+    attributes.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)display);
+    return UA_Server_addObjectNode(
+        server, shim_node_id(node), shim_node_id(parent),
+        UA_NODEID_NUMERIC(0, reference), name_of(node, name),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_FOLDERTYPE), attributes, NULL, NULL);
+}
+
+/* Adds to `server` the folder of the GUID 1-2-3-4 in namespace 1, with the browse name
+ * `guid`, under `parent`. */
+UA_StatusCode shim_server_add_guid(UA_Server *server, shim_node parent) {
+    UA_Guid guid = {1, 2, 3, {4, 0, 0, 0, 0, 0, 0, 0}};
+    UA_ObjectAttributes attributes = UA_ObjectAttributes_default;
+    attributes.displayName = UA_LOCALIZEDTEXT("", "guid");
+    return UA_Server_addObjectNode(
+        server, UA_NODEID_GUID(1, guid), shim_node_id(parent),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES), UA_QUALIFIEDNAME(1, "guid"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_FOLDERTYPE), attributes, NULL, NULL);
+}
+
+/* Adds to `server` the variable `node` with no value, or two Doubles for the rank 1,
+ * the browse and display name `name`, the DataType `type`, the ValueRank `rank`, and
+ * the AccessLevel and UserAccessLevel `access`, under `parent` by the reference of the
+ * number `reference`. */
+UA_StatusCode shim_server_add_variable(UA_Server *server, shim_node node,
+                                       shim_node parent, UA_UInt32 reference,
+                                       const char *name, shim_node type, UA_Int32 rank,
+                                       UA_Byte access) {
+    UA_VariableAttributes attributes = UA_VariableAttributes_default;
+    attributes.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)name);
+    attributes.dataType = shim_node_id(type);
+    attributes.valueRank = rank;
+    UA_Double doubles[2] = {1.5, 2.5};
+    UA_UInt32 dimensions[1] = {0};
+    if(rank == 1) {
+        UA_Variant_setArray(&attributes.value, doubles, 2, &UA_TYPES[UA_TYPES_DOUBLE]);
+        attributes.arrayDimensions = dimensions;
+        attributes.arrayDimensionsSize = 1;
+    }
+    attributes.accessLevel = access;
+    attributes.userAccessLevel = access;
+    return UA_Server_addVariableNode(
+        server, shim_node_id(node), shim_node_id(parent),
+        UA_NODEID_NUMERIC(0, reference), name_of(node, name),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attributes, NULL, NULL);
+}
+
+/* Adds to `server` the data type `node` with the browse name `name`, a subtype of
+ * `parent`. */
+UA_StatusCode shim_server_add_data_type(UA_Server *server, shim_node node,
+                                        shim_node parent, const char *name) {
+    UA_DataTypeAttributes attributes = UA_DataTypeAttributes_default;
+    attributes.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)name);
+    return UA_Server_addDataTypeNode(server, shim_node_id(node), shim_node_id(parent),
+                                     UA_NODEID_NUMERIC(0, UA_NS0ID_HASSUBTYPE),
+                                     name_of(node, name), attributes, NULL, NULL);
+}
+
+/* Adds to `server` the property `0:EngineeringUnits` `node` of the variable
+ * `variable`, whose value is the EUInformation of the namespaceUri `uri`, the display
+ * name `text`, and the unitId `code`. */
+UA_StatusCode shim_server_add_unit(UA_Server *server, shim_node node,
+                                   shim_node variable, const char *uri,
+                                   const char *text, UA_Int32 code) {
+    UA_EUInformation unit;
+    UA_EUInformation_init(&unit);
+    unit.namespaceUri = UA_STRING((char *)(uintptr_t)uri);
+    unit.unitId = code;
+    unit.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)text);
+    UA_VariableAttributes attributes = UA_VariableAttributes_default;
+    attributes.displayName = UA_LOCALIZEDTEXT("", "EngineeringUnits");
+    attributes.dataType = UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATATYPE);
+    attributes.accessLevel = UA_ACCESSLEVELMASK_READ;
+    UA_Variant_setScalar(&attributes.value, &unit, &UA_TYPES[UA_TYPES_EUINFORMATION]);
+    return UA_Server_addVariableNode(
+        server, shim_node_id(node), shim_node_id(variable),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY),
+        UA_QUALIFIEDNAME(0, "EngineeringUnits"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_PROPERTYTYPE), attributes, NULL, NULL);
+}
+
+/* Adds to `server` a reference of the number `reference` from `source` to `target`. */
+UA_StatusCode shim_server_add_reference(UA_Server *server, shim_node source,
+                                        UA_UInt32 reference, shim_node target) {
+    UA_ExpandedNodeId to = UA_EXPANDEDNODEID_NULL;
+    to.nodeId = shim_node_id(target);
+    return UA_Server_addReference(server, shim_node_id(source),
+                                  UA_NODEID_NUMERIC(0, reference), to, true);
+}
+
+/* Deletes from `server` the reference of the number `reference` from `source` to
+ * `target`, in both directions. */
+UA_StatusCode shim_server_delete_reference(UA_Server *server, shim_node source,
+                                           UA_UInt32 reference, shim_node target) {
+    UA_ExpandedNodeId to = UA_EXPANDEDNODEID_NULL;
+    to.nodeId = shim_node_id(target);
+    return UA_Server_deleteReference(server, shim_node_id(source),
+                                     UA_NODEID_NUMERIC(0, reference), true, to, true);
+}
+
+/* Adds to `server` the view `node` with the browse and display name `name`, under
+ * `parent` by Organizes. */
+UA_StatusCode shim_server_add_view(UA_Server *server, shim_node node, shim_node parent,
+                                   const char *name) {
+    UA_ViewAttributes attributes = UA_ViewAttributes_default;
+    attributes.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)name);
+    return UA_Server_addViewNode(server, shim_node_id(node), shim_node_id(parent),
+                                 UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+                                 name_of(node, name), attributes, NULL, NULL);
 }

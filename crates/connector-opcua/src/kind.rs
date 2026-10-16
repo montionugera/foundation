@@ -386,8 +386,8 @@ fn sample_type(read: &Read, data_type: Type) -> Diagnostic {
 
 /// The error of a read of `reads` whose node alone needs a Read past one message of the
 /// server.
-fn large_read(reads: &[Read], Large { node, bytes, most }: Large) -> Error {
-    let read = &reads[node];
+fn large_read(reads: &[Read], Large { index, bytes, most }: Large) -> Error {
+    let read = &reads[index];
     Error::Config(vec![Diagnostic::new(
         LARGE_READ,
         None,
