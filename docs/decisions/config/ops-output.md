@@ -313,3 +313,30 @@
   `vergen`, a new dependency for about 30 lines; a variable that the release sets, as
   each local build must say what it is; and a watch of `packed-refs` (git writes the
   file of a ref at each change of it).
+  Amended (2026-10-16T04:51:22Z, #2526): the tools of `foundation mcp` read and write
+  files only under their folders, each `--files <DIR>` (repeatable), else the working
+  directory, and never in the data directory. Each path, also each link in it, is
+  resolved before the check (`Paths::within` of ENV SEAMS). With no `--files`, a start
+  whose working directory resolves to the root or the home directory fails with
+  `ops.wide-folder` (2). A `--files` that is not there, that is a file, or that fails to
+  resolve is `ops.folder` (2). `foundation mcp` makes its data directory with
+  `Paths::make_dir` before a tool serves, and a failure is `ops.data` (1), whose fix at
+  `NotFound` names the directory above it. The `out` of `plan` through MCP must resolve
+  to a name that ends in `.plan`, else `ops.plan-name` (2). A path outside the folders
+  is `ops.outside` (2): "`{path}` is not under a folder of this MCP server ({folders})",
+  with a fix that names `--files`. A path in the data directory is `ops.hidden` (2):
+  "`{path}` is in the data directory {data} of this MCP server, which no tool reads or
+  writes", with the fix "Give a path outside {data}". Each is a tool error (`isError`).
+  The command line keeps free paths, since a person types them. Decided by
+  `laptop.monitor` for the person, who delegated it at 2026-10-16T04:51:01Z with "I'll
+  let you choose the right path" (2026-10-16T04:51:22Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208345441; the
+  details by `laptop.architect-2`, 2026-10-16T04:52:58Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6208362869; the
+  plan, approved by `laptop.architect-2` with conditions 1 to 5, 2026-10-16T08:08:47Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6211047580;
+  `ops.hidden`, 2026-10-16T08:13:29Z,
+  https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6211121615). Lost:
+  free paths for the tools, with which a model that text steers quotes or replaces any
+  file of the user; MCP roots, which the 2026-07-28 revision of the specification
+  deprecates; and `ops.outside` with no folders, which shows the agent no way out.
