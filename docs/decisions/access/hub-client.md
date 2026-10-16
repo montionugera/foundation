@@ -131,8 +131,13 @@
   `wire`, are by `laptop.architect` (2026-10-16T09:44:59Z,
   https://github.com/synnaxlabs/foundation/pull/2856#issuecomment-6212746993). Lost:
   one gap for each frame, which a channel that the gap's frame does not hold never
-  sees, and two copies of the rule with a test that pins them to each other. The
-  Python SDK, when the `sdk` crate exists, gives `frame["tc1"].lost` from `lost` of the
-  entry of `tc1`, built only when the caller reads it, and logs one WARNING for each
-  gap on its own logger with no setup. It installs no `tracing` subscriber (the person
-  and `laptop.architect`, the same comments).
+  sees, and two copies of the rule with a test that pins them to each other. `Gaps`
+  keeps the gap of the last frame, and the lost seqs of each entry stay in a private
+  pure type of `program` until a second crate needs them (#2865; `laptop.architect`,
+  2026-10-16T10:25:00Z,
+  https://github.com/synnaxlabs/foundation/pull/2856#issuecomment-6213418531). Lost: a
+  copy of the gap in each caller of `Gaps`, and a public type in `wire` with one
+  caller. The Python SDK, when the `sdk` crate exists, gives `frame["tc1"].lost` from
+  `lost` of the entry of `tc1`, built only when the caller reads it, and logs one
+  WARNING for each gap on its own logger with no setup. It installs no `tracing`
+  subscriber (the person and `laptop.architect`, the same comments).
