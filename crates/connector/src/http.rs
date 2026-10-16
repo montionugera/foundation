@@ -1,5 +1,8 @@
 //! One HTTP/1.1 client for every connector, over `env`.
 
+#[cfg(feature = "sim")]
+#[doc(hidden)]
+pub mod bench;
 mod body;
 mod pool;
 #[cfg(feature = "sim")]

@@ -10,11 +10,12 @@ use env::net::host::Host;
 #[global_allocator]
 static ALLOCATOR: counting::Allocator = counting::Allocator::new();
 
-const HOSTS: [&str; 4] = [
+const HOSTS: [&str; 5] = [
     "influx",
     "historian.plant-a.example.com",
     "10.0.0.2",
     "[fd00::2]",
+    "fe80::1%2",
 ];
 
 #[expect(clippy::print_stdout, reason = "a benchmark prints its results")]
