@@ -293,15 +293,13 @@ impl Node {
     }
 
     /// The files of the node's host by path: a tree in memory, apart from the node's
-    /// disk, with no file at first. A directory is there once [`Node::make_dir`] makes
-    /// it or while an entry is under it, so a write makes each directory above its
-    /// file. A relative path is under the working directory, `/` until
-    /// [`Node::set_working_dir`] sets it. A call follows each symbolic link of
-    /// [`Node::link_path`], and a `..` after a link goes above what the link names. A
-    /// resolve and a read of a path through a directory that is not there, or of a
-    /// link to nothing, fail with `NotFound`. A write there makes the file: after a
-    /// name that is not there, a `..` takes that name off. The home directory is the
-    /// one of [`Node::set_home`], else `None`. A call takes no time, may come from any
+    /// disk, with no file at first. A directory is there once [`Node::make_dir`] or
+    /// [`Node::link_path`] makes it. A relative path is under the working directory,
+    /// `/` until [`Node::set_working_dir`] sets it. A call follows each symbolic link
+    /// of [`Node::link_path`], and a `..` after a link goes above what the link names.
+    /// A call through a directory that is not there, or of a link to nothing, fails
+    /// with `NotFound`. The home directory is the one of [`Node::set_home`], else
+    /// `None`. A call takes no time, may come from any
     /// thread, and acts at once. A crash of the node keeps the tree, the working
     /// directory, and the home. A failure gives the code that Linux gives: 20
     /// (`ENOTDIR`) for a path through a file, 21 (`EISDIR`) for a write on a
@@ -318,14 +316,14 @@ impl Node {
         lock(&self.0.shared).paths().fail(self.0.node, path, code);
     }
 
-    /// Makes a symbolic link at `path` on the node's host that names `target`. A
-    /// relative `target` is from the directory of the link, and a link on the way to
-    /// `path` is followed.
+    /// Makes a symbolic link at `path` on the node's host that names `target`, and so
+    /// each directory above it. A relative `target` is from the directory of the link,
+    /// and a link on the way to `path` is followed.
     ///
     /// # Panics
     ///
-    /// When `path` is relative or `/`, has a `..` segment, goes through a file or
-    /// more than 40 links, or a file, a link, or a directory is at it.
+    /// When `path` is relative or `/`, has a `..` segment, goes through a file, a link
+    /// to nothing, or more than 40 links, or a file, a link, or a directory is at it.
     pub fn link_path(&self, path: &Path, target: &Path) {
         assert!(path.is_absolute(), "{} is relative", path.display());
         let parent = path.components().any(|part| part == Component::ParentDir);
@@ -338,8 +336,8 @@ impl Node {
     ///
     /// # Panics
     ///
-    /// When `path` is relative or `/`, has a `..` segment, goes through a file or
-    /// more than 40 links, or a file or a link is at it.
+    /// When `path` is relative or `/`, has a `..` segment, goes through a file, a link
+    /// to nothing, or more than 40 links, or a file or a link is at it.
     pub fn make_dir(&self, path: &Path) {
         assert!(path.is_absolute(), "{} is relative", path.display());
         let parent = path.components().any(|part| part == Component::ParentDir);

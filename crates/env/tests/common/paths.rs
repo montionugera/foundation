@@ -50,6 +50,8 @@ macro_rules! tests {
             within_follows_a_link_out,
             within_resolves_its_folders,
             within_gives_not_found_through_a_directory_that_is_not_there,
+            a_last_link_to_nothing_through_a_link_is_not_found,
+            a_link_to_a_file_with_a_slash_fails,
         );
     };
     (@each $run:ident, $($case:ident),* $(,)?) => {
@@ -248,7 +250,13 @@ pub(crate) fn a_resolve_through_a_file_fails(host: &Host<'_>) {
     let through = Err(Error::Io {
         code: NOT_DIRECTORY,
     });
-    for path in ["plant.hcl/a", "plant.hcl/a/b", "plant.hcl/", "plant.hcl/."] {
+    for path in [
+        "plant.hcl/a",
+        "plant.hcl/a/b",
+        "plant.hcl/",
+        "plant.hcl/.",
+        "plant.hcl/..",
+    ] {
         assert_eq!(paths.resolve(&dir.join(path)), through, "{path}");
     }
     assert_eq!(paths.resolve(Path::new("")), Err(Error::NotFound));
@@ -261,11 +269,10 @@ pub(crate) fn a_resolve_through_a_directory_that_is_not_there_is_not_found(
     for path in ["none/a", "none/x/..", "none/x/a", "none/./a"] {
         let resolved = paths.resolve(&dir.join(path));
         assert_eq!(resolved, Err(Error::NotFound), "{path}");
-        assert_eq!(
-            paths.read(&dir.join(path), 1),
-            Err(Error::NotFound),
-            "{path}"
-        );
+        let read = paths.read(&dir.join(path), 1);
+        assert_eq!(read, Err(Error::NotFound), "{path}");
+        let written = paths.write(&dir.join(path), b"x");
+        assert_eq!(written, Err(Error::NotFound), "{path}");
     }
 }
 
@@ -276,6 +283,8 @@ pub(crate) fn a_resolve_of_a_link_to_nothing_is_not_found(host: &Host<'_>) {
     for name in ["link.plan", "next.plan"] {
         let resolved = paths.resolve(&dir.join(name));
         assert_eq!(resolved, Err(Error::NotFound), "{name}");
+        let written = paths.write(&dir.join(name), b"x");
+        assert_eq!(written, Err(Error::NotFound), "{name}");
     }
 }
 
@@ -402,4 +411,33 @@ pub(crate) fn within_resolves_its_folders(host: &Host<'_>) {
         code: NOT_DIRECTORY,
     });
     assert_eq!(paths.within(&work, &file).err(), through);
+}
+
+pub(crate) fn a_last_link_to_nothing_through_a_link_is_not_found(host: &Host<'_>) {
+    let (paths, dir) = (host.paths, host.dir);
+    (host.make_dir)(&dir.join("real"));
+    (host.make_dir)(&dir.join("work"));
+    (host.make_link)(&dir.join("d"), &dir.join("real"));
+    (host.make_link)(&dir.join("work/l"), &dir.join("d/none.plan"));
+    let (base, link) = (paths.resolve(dir).unwrap(), dir.join("work/l"));
+    assert_eq!(paths.resolve(&dir.join("d")), Ok(base.join("real")));
+    let within = paths.within(&[dir.join("work")], &[]).unwrap();
+    assert_eq!(within.read(&link, 1), Err(Error::NotFound));
+    assert_eq!(within.write(&link, b"x"), Err(Error::NotFound));
+    assert_eq!(paths.resolve(&link), Err(Error::NotFound));
+    let made = paths.read(&dir.join("real/none.plan"), 1);
+    assert_eq!(made, Err(Error::NotFound));
+}
+
+pub(crate) fn a_link_to_a_file_with_a_slash_fails(host: &Host<'_>) {
+    let (paths, dir) = (host.paths, host.dir);
+    paths.write(&dir.join("plant.hcl"), b"x").unwrap();
+    let mut target = dir.join("plant.hcl").into_os_string();
+    target.push("/");
+    (host.make_link)(&dir.join("l"), Path::new(&target));
+    let through = Error::Io {
+        code: NOT_DIRECTORY,
+    };
+    assert_eq!(paths.read(&dir.join("l"), 1), Err(through));
+    assert_eq!(paths.resolve(&dir.join("l")), Err(through));
 }

@@ -550,21 +550,6 @@ fn race(
     })
 }
 
-/// macOS takes `..` after a file as the directory above it, as its `realpath` does.
-#[test]
-fn a_resolve_of_two_dots_after_a_file_follows_the_os() {
-    let scratch = Scratch::new();
-    let paths = os::paths();
-    paths.write(&scratch.0.join("plant.hcl"), b"x").unwrap();
-    let resolved = paths.resolve(&scratch.0.join("plant.hcl/.."));
-    let expected = if cfg!(target_os = "macos") {
-        Ok(fs::canonicalize(&scratch.0).unwrap())
-    } else {
-        Err(Error::Io { code: 20 })
-    };
-    assert_eq!(resolved, expected);
-}
-
 #[test]
 fn a_resolve_of_a_relative_path_is_from_the_working_directory() {
     let working = fs::canonicalize(".").unwrap();
