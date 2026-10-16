@@ -200,14 +200,18 @@ fn route(
     }) {
         return Err(Error::Io { code: INVAL });
     }
+    if local.is_ipv4() {
+        return Ok((remote, transmit.source));
+    }
     let mapped = |ip: IpAddr| match ip {
-        IpAddr::V4(v4) if local.is_ipv6() => IpAddr::V6(v4.to_ipv6_mapped()),
-        _ => ip,
+        IpAddr::V4(v4) => IpAddr::V6(v4.to_ipv6_mapped()),
+        IpAddr::V6(_) => ip,
     };
-    Ok((
-        SocketAddr::new(mapped(destination.ip()), destination.port()),
-        transmit.source.map(mapped),
-    ))
+    let destination = match destination {
+        SocketAddr::V4(v4) => SocketAddr::new(mapped(IpAddr::V4(*v4.ip())), v4.port()),
+        SocketAddr::V6(_) => destination,
+    };
+    Ok((destination, transmit.source.map(mapped)))
 }
 
 /// The driver of the `Receiver`.
@@ -288,9 +292,16 @@ fn on_thread(kind: &str, thread: &mut Option<ThreadId>) {
     );
 }
 
-/// `address`, with an IPv4 address mapped in IPv6 given as IPv4.
+/// `address`, with an IPv4 address mapped in IPv6 given as IPv4. An IPv6 address keeps
+/// its scope and flow label, so a reply matches its dial.
 fn canonical(address: SocketAddr) -> SocketAddr {
-    SocketAddr::new(address.ip().to_canonical(), address.port())
+    match address {
+        SocketAddr::V6(v6) => match v6.ip().to_ipv4_mapped() {
+            Some(v4) => SocketAddr::new(v4.into(), v6.port()),
+            None => address,
+        },
+        SocketAddr::V4(_) => address,
+    }
 }
 
 /// The error of a socket call that failed with `error`.

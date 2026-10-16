@@ -1,5 +1,5 @@
 use std::future::poll_fn;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddrV6};
 
 use env::net::Net;
 use env::net::udp::{Receiver, Sender};
@@ -319,6 +319,19 @@ fn routes_ipv4_as_mapped_only_on_an_ipv6_socket() {
     );
     assert_eq!(route(any_v6(), &from(Ipv6Addr::LOCALHOST.into())), invalid);
     assert_eq!(route(v4(0), &from(V4.into())), Ok((v4(2), Some(V4.into()))));
+}
+
+/// Loopback has no link-local address, so these tests call `route` and `canonical`
+/// themselves.
+#[test]
+fn keeps_the_scope_of_an_ipv6_address() {
+    let link_local =
+        SocketAddr::from(SocketAddrV6::new("fe80::1".parse().unwrap(), 9, 3, 7));
+    assert_eq!(
+        route(any_v6(), &transmit(link_local, b"")),
+        Ok((link_local, None))
+    );
+    assert_eq!(canonical(link_local), link_local);
 }
 
 /// Polls `receiver` once, with a waker that does nothing.
