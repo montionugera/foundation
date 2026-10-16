@@ -175,12 +175,12 @@ impl kind::Kind for Kind {
     /// Writes the samples of its reader to InfluxDB, one line for each sample time with
     /// a field for each channel, keyed by the channel's name. Before the lines of a
     /// frame after seqs that the reader did not get, it writes their `live` gap line
-    /// ([`gap::MEASUREMENT`]) at the stamp of the frame's first sample, also when it
-    /// leaves that line out. It keeps one request in flight, and acks a batch only
-    /// after InfluxDB answers 204, when it adds the batch's fields to the count
-    /// `confirmed` and the seqs of its gap lines to `lost`. It shows each other answer
-    /// as its error and sends the batch again after a backoff. It reads the token at
-    /// its start, and again after a 401 or a 403 before the next attempt.
+    /// ([`gap::MEASUREMENT`]) at the frame's first sample, also when it leaves that
+    /// sample's line out. It keeps one request in flight, and acks a batch only after
+    /// InfluxDB answers 204, when it adds the batch's fields to the count `confirmed`
+    /// and the seqs of its gap lines to `lost`. It shows each other answer as its error
+    /// and sends the batch again after a backoff. It reads the token at its start, and
+    /// again after a 401 or a 403 before the next attempt.
     ///
     /// # Errors
     ///
