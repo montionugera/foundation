@@ -97,10 +97,12 @@ impl Paths {
             limit.folders.push((dir, key));
         }
         for given in hidden {
-            // From `given`, as the call reaches it: the resolved path of a new name can
-            // be longer than the host takes.
             let key = self.key(given)?;
-            limit.hidden.push((self.driver.resolve(given)?, key));
+            limit.hidden.push(Hidden {
+                given: given.clone(),
+                resolved: self.driver.resolve(given)?,
+                was: key,
+            });
         }
         Ok(Self {
             driver: Rc::clone(&self.driver),
@@ -274,11 +276,19 @@ impl Paths {
         }
         let keys: Vec<_> = own.into_iter().chain(dirs.iter().copied()).collect();
         for limit in self.limits.iter() {
-            for (dir, was) in &limit.hidden {
+            for Hidden {
+                given,
+                resolved,
+                was,
+            } in &limit.hidden
+            {
                 let moved = was.is_some_and(|key| dirs.contains(&key));
-                let hidden = match self.driver.key(dir) {
-                    Ok(key) => keys.contains(&key),
-                    Err(_) => own.is_none() && dirs.first() == self.above(dir).as_ref(),
+                let hidden = match self.key(given) {
+                    Ok(Some(key)) => keys.contains(&key),
+                    Ok(None) => {
+                        own.is_none() && dirs.first() == self.above(resolved).as_ref()
+                    }
+                    Err(_) => false,
                 };
                 if moved || hidden {
                     return Err(Error::Hidden);
@@ -313,13 +323,23 @@ impl Paths {
     }
 }
 
+/// A hidden folder of one call of [`Paths::within`].
+#[derive(Clone, Debug)]
+struct Hidden {
+    /// The path that the caller gave. Each call takes its key from it, as the call
+    /// reaches it: the resolved path of a new name can be longer than the host takes.
+    given: PathBuf,
+    resolved: PathBuf,
+    /// The key of what was there at `within`.
+    was: Option<Key>,
+}
+
 /// The folders of one call of [`Paths::within`].
 #[derive(Clone, Debug)]
 struct Limit {
     /// The resolved path of each folder, with the key of what was there.
     folders: Vec<(PathBuf, Key)>,
-    /// The resolved path of each hidden folder, with the key of what was there.
-    hidden: Vec<(PathBuf, Option<Key>)>,
+    hidden: Vec<Hidden>,
 }
 
 /// The key of a file of the host: two paths that name the same file have the same

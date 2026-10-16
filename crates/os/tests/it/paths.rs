@@ -324,6 +324,60 @@ fn within_hides_a_hidden_name_whose_resolved_path_is_too_long() {
     });
 }
 
+/// A hidden file whose resolved path is longer than the OS takes, made after
+/// `within`, does not read at its path, and is hidden through a hard link.
+#[test]
+fn within_hides_a_hard_link_to_a_long_hidden_file_made_after_within() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let most: usize = if cfg!(target_os = "macos") {
+            1023
+        } else {
+            4095
+        };
+        let top = base.join("work");
+        let (mut deep, mut relative) = (top.clone(), PathBuf::new());
+        while deep.as_os_str().len() + 201 < most - 50 {
+            deep.push("d".repeat(200));
+            relative.push("d".repeat(200));
+            fs::create_dir(&deep).unwrap();
+        }
+        symlink(&relative, top.join("s")).unwrap();
+        let name = "f".repeat(most - deep.as_os_str().len());
+        let key = top.join("s").join(&name);
+        let within = host
+            .paths
+            .within(slice::from_ref(&top), slice::from_ref(&key))
+            .unwrap();
+        fs::write(&key, b"secret").unwrap();
+        let link = top.join("link.key");
+        fs::hard_link(&key, &link).unwrap();
+        let too_long = if cfg!(target_os = "macos") { 63 } else { 36 };
+        assert_eq!(
+            (within.read(&key, 64), within.read(&link, 64)),
+            (Err(Error::Io { code: too_long }), Err(Error::Hidden))
+        );
+    });
+}
+
+/// A hidden folder that a link loop replaces after `within` holds nothing, so a new
+/// name beside it passes.
+#[test]
+fn within_passes_a_new_name_beside_a_hidden_folder_that_a_loop_replaces() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let vault = base.join("work/vault");
+        fs::create_dir(&vault).unwrap();
+        let within = host
+            .paths
+            .within(&[base.join("work")], slice::from_ref(&vault))
+            .unwrap();
+        fs::remove_dir(&vault).unwrap();
+        symlink(&vault, &vault).unwrap();
+        assert_eq!(within.write(&base.join("work/b.hcl"), b"x"), Ok(()));
+    });
+}
+
 /// A link in `work` that leads, through a chain of short links, to a directory whose
 /// resolved path is longer than the OS takes, in the hidden folder or outside.
 #[test]
