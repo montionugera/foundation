@@ -115,14 +115,16 @@ fn name(text: &str) -> Name {
 /// Runs a connector at 10 Hz that reads `nodes` variables of the sim server, each with
 /// a Double value, for `count` ticks and two more, and gives what `measure` gives for
 /// its polls: for the run start (the open of its writer, its frames, its connect, and
-/// its first request), and for each of the first `count` reads. `measure` calls the
-/// poll that it gets once.
+/// its first request), and for each of the first `count` reads. Read `i` goes into a
+/// channel of the type `scalars[i % scalars.len()]`. `measure` calls the poll that it
+/// gets once.
 ///
 /// # Panics
 ///
 /// If the run ends with an error, or the server answered fewer than `count` reads.
 pub(crate) fn run(
     nodes: usize,
+    scalars: &[Scalar],
     count: usize,
     measure: impl Fn(&mut dyn FnMut()) -> u64 + Send + Sync + 'static,
 ) -> Measures {
@@ -132,10 +134,11 @@ pub(crate) fn run(
         of: Of::Polls(Arc::clone(&polls)),
     };
     let texts: Vec<String> = (2..).take(nodes).map(|key| read(key).1).collect();
+    let scalars = scalars.to_vec();
     let mut sim = sim::Sim::new(sim::Config::default());
     let node = sim.node(sim::node::Config::default());
     let run = sim.run_on(&node, move |node, tasks| async move {
-        let inputs = inputs(&node, &tasks, kind, nodes, &[Scalar::F64]).await;
+        let inputs = inputs(&node, &tasks, kind, nodes, &scalars).await;
         let variables =
             Variables::new(&texts.iter().map(String::as_str).collect::<Vec<_>>());
         let (stop, serving) = (Token::new(), Group::new(tasks.clone()));

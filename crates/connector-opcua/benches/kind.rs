@@ -49,7 +49,7 @@ fn main() {
     println!("ns per tick over {TICKS} ticks");
     println!("{:<10} {:>7} {:>7} {:>7}", "nodes", "p10", "p50", "p90");
     for nodes in COUNTS {
-        let mut ticks = kind::run(nodes, WARMUP + TICKS, time)
+        let mut ticks = kind::run(nodes, &[Scalar::F64], WARMUP + TICKS, time)
             .ticks
             .split_off(WARMUP);
         ticks.sort_unstable();
@@ -86,7 +86,7 @@ fn main() {
     println!("ns per run start over {RUNS} runs, and per parse over {PARSES} parses");
     println!("{:<10} {:>10} {:>10}", "nodes", "start p50", "parse p50");
     for nodes in STARTS {
-        let starts = (0..RUNS).map(|_| kind::run(nodes, 1, time).start);
+        let starts = (0..RUNS).map(|_| kind::run(nodes, &[Scalar::F64], 1, time).start);
         let config = kind::config("opc.tcp://plc:4840", nodes);
         let parses = (0..PARSES).map(|_| {
             let mut parsed = None;

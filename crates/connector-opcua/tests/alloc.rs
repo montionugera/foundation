@@ -211,11 +211,20 @@ fn a_read_of_a_client_allocates_a_fixed_count() {
 
 /// Ticks 3 to 100 of a run of the `opcua` kind allocate what a read of a client
 /// allocates for its count of nodes, and nothing more: the frame and its write
-/// allocate nothing. Tick 1 connects, and tick 2 fills the second buffer of values.
+/// allocate nothing, also when values of another type are left out and named in the
+/// note. Tick 1 connects, and tick 2 fills the second buffer of values.
 fn a_tick_of_the_kind_allocates_what_its_read_allocates() {
-    for (nodes, read) in [(1, 6), (64, 69)] {
-        let ticks = kind::run(nodes, 100, |poll| ALLOCATOR.count(poll).1).ticks;
-        assert_eq!(ticks[2..], [read; 98], "ticks 3 to 100 of {nodes} nodes");
+    let runs: [(usize, &[Scalar], u64); 4] = [
+        (1, &[Scalar::F64], 6),
+        (64, &[Scalar::F64], 69),
+        (1, &[Scalar::F32], 6),
+        (64, &[Scalar::F64, Scalar::F32], 69),
+    ];
+    for (nodes, scalars, read) in runs {
+        let count = |poll: &mut dyn FnMut()| ALLOCATOR.count(poll).1;
+        let ticks = kind::run(nodes, scalars, 100, count).ticks;
+        let of = format!("ticks 3 to 100 of {nodes} nodes of {scalars:?}");
+        assert_eq!(ticks[2..], [read; 98], "{of}");
     }
 }
 
