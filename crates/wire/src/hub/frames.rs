@@ -1,7 +1,8 @@
+use std::ops;
 use std::sync::Arc;
 
 use types::frame::key_set::KeySet;
-use types::frame::{Draft, Frame, Layout};
+use types::frame::{Draft, Frame, Layout, Range};
 
 use super::{Error, FromHome, Head, Reader};
 
@@ -18,6 +19,10 @@ pub struct Frames {
     /// The ends are whole and the draft is not given.
     drafting: bool,
     draft: Option<Draft>,
+    /// The first seq of the index that the session did not get before the frame
+    /// that arrives: the start of its gap. `None` in a latest session.
+    from: Option<u64>,
+    lost: ops::Range<u64>,
 }
 
 /// What [`Frames`] waits for next.
@@ -77,6 +82,8 @@ impl Frames {
         match reader.decode(message)? {
             FromHome::Opened { live } => {
                 let frames = Self {
+                    from: (!reader.latest()).then_some(live),
+                    lost: 0..0,
                     reader,
                     set,
                     head: None,
@@ -94,6 +101,17 @@ impl Frames {
     #[must_use]
     pub fn set(&self) -> &Arc<KeySet> {
         &self.set
+    }
+
+    /// The seqs of the index lost just before the last frame that
+    /// [`Frames::decode`], [`Frames::received`], or [`Frames::draft`] gave: from the
+    /// end of the last frame with a sample, or the open position, to the frame's first
+    /// seq. `0..0` when none, before the first frame, for a frame with no sample, and
+    /// in a latest session.
+    #[must_use]
+    #[inline]
+    pub fn lost(&self) -> ops::Range<u64> {
+        self.lost.clone()
     }
 
     /// What the frames wait for. Ask it before each input: a call that dropped
@@ -213,9 +231,27 @@ impl Frames {
     fn freeze(&mut self) -> Frame {
         let head = self.head.take().expect("invariant: a frame has a head");
         let mut draft = self.draft.take().expect("invariant: a frame has a draft");
+        self.lost = self.gap(head.range);
         draft.set_count(0, head.range.count);
         draft.set_seq(0, head.range.seq);
         draft.freeze(head.path)
+    }
+
+    /// The gap before a frame of `range`. A frame with a sample moves the start of
+    /// the next gap to its end.
+    fn gap(&mut self, range: Range) -> ops::Range<u64> {
+        let Some(from) = self.from.as_mut().filter(|_| range.count > 0) else {
+            return 0..0;
+        };
+        let lost = if *from < range.seq {
+            *from..range.seq
+        } else {
+            0..0
+        };
+        *from = range
+            .end()
+            .expect("invariant: the reader refuses a head past u64::MAX");
+        lost
     }
 }
 
@@ -583,5 +619,121 @@ mod tests {
         let mut frames = opened(false);
         frames.decode(&encode_reply(Reply::Behind)).expect("behind");
         let _error = frames.finished();
+    }
+
+    mod lost {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        /// The frames of a session of 2 places opened at `live`, latest when `latest`.
+        fn opened_at_live(latest: bool, live: u64) -> Frames {
+            let opened = opened_at(live);
+            let (frames, _) =
+                Frames::open(create_reader(latest), create_set(), Some(&opened))
+                    .expect("opened");
+            frames
+        }
+
+        /// Gives `frames` a frame of `count` samples from `seq` with no body, and
+        /// gives what `lost` is then.
+        fn lost_at(frames: &mut Frames, seq: u64, count: u32) -> ops::Range<u64> {
+            frames.decode(&head(seq, count, 1)).expect("a head");
+            frames.decode(&encode_ends(&[(0, 0)])).expect("ends");
+            let Step::Frame(frame) = draft(frames, &create_pool()) else {
+                panic!("a frame");
+            };
+            assert_eq!(frame.range(0), Some(Range { seq, count }));
+            frames.lost()
+        }
+
+        #[test]
+        fn is_empty_before_the_first_frame() {
+            assert_eq!(opened_at_live(false, 5).lost(), 0..0);
+        }
+
+        #[test]
+        fn gives_the_seqs_from_the_open_position_to_the_first_frame() {
+            let mut frames = opened_at_live(false, 5);
+            assert_eq!(lost_at(&mut frames, 9, 2), 5..9);
+            assert_eq!(lost_at(&mut frames, 11, 1), 0..0);
+        }
+
+        #[test]
+        fn gives_no_gap_to_a_first_frame_at_the_open_position() {
+            let mut frames = opened_at_live(false, 5);
+            assert_eq!(lost_at(&mut frames, 5, 2), 0..0);
+        }
+
+        #[test]
+        fn gives_a_jump_after_a_frame() {
+            let mut frames = opened_at_live(false, 0);
+            assert_eq!(lost_at(&mut frames, 0, 3), 0..0);
+            assert_eq!(lost_at(&mut frames, 4, 1), 3..4);
+        }
+
+        /// A frame with no sample gives no gap and keeps its start, so the next
+        /// frame with a sample gives the whole gap.
+        #[test]
+        fn gives_the_gap_of_a_frame_with_no_sample_at_the_next_frame() {
+            let mut frames = opened_at_live(false, 2);
+            assert_eq!(lost_at(&mut frames, 6, 0), 0..0);
+            assert_eq!(lost_at(&mut frames, 8, 1), 2..8);
+        }
+
+        #[test]
+        fn gives_no_gap_in_a_latest_session() {
+            let mut frames = opened_at_live(true, 5);
+            assert_eq!(lost_at(&mut frames, 9, 2), 0..0);
+            assert_eq!(lost_at(&mut frames, 20, 1), 0..0);
+        }
+
+        /// A random `live` and the seq and count of each frame of a session from
+        /// it, of random jumps and counts, 0 too.
+        fn jumps() -> impl Strategy<Value = (u64, Vec<(u64, u32)>)> {
+            let jumps = prop::collection::vec((0..4u64, 0..4u32), 1..32);
+            (0..1_000u64, jumps).prop_map(|(live, jumps)| {
+                let mut end = live;
+                let frames = jumps.into_iter().map(|(jump, count)| {
+                    let seq = end.checked_add(jump).expect("small");
+                    end = seq.checked_add(u64::from(count)).expect("small");
+                    (seq, count)
+                });
+                (live, frames.collect())
+            })
+        }
+
+        proptest! {
+            /// Each gap and the range of each frame with a sample tile the seqs from
+            /// `live` to the end of the last such frame, with no overlap and no hole.
+            #[test]
+            fn tiles_the_seqs_with_the_frames((live, sent) in jumps()) {
+                let mut frames = opened_at_live(false, live);
+                let mut covered = live;
+                for (seq, count) in sent {
+                    let lost = lost_at(&mut frames, seq, count);
+                    if count == 0 {
+                        prop_assert_eq!(lost, 0..0);
+                        continue;
+                    }
+                    if !lost.is_empty() {
+                        prop_assert_eq!(lost.start, covered);
+                        covered = lost.end;
+                    }
+                    prop_assert_eq!(covered, seq);
+                    covered = seq.checked_add(u64::from(count)).expect("small");
+                }
+            }
+
+            #[test]
+            fn gives_no_gap_at_any_frame_of_a_latest_session(
+                (live, sent) in jumps(),
+            ) {
+                let mut frames = opened_at_live(true, live);
+                for (seq, count) in sent {
+                    prop_assert_eq!(lost_at(&mut frames, seq, count), 0..0);
+                }
+            }
+        }
     }
 }

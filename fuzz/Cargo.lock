@@ -1059,6 +1059,7 @@ dependencies = [
  "access",
  "block",
  "env",
+ "tracing",
  "transport",
  "types",
  "wire",
