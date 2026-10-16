@@ -180,13 +180,20 @@ fn sets_the_buffer_sizes_and_takes_ipv4_on_an_ipv6_socket() {
     let _entered = runtime.enter();
     let config = udp::Config {
         local: any_v6(),
-        send_buffer_bytes: 1 << 17,
-        recv_buffer_bytes: 1 << 18,
+        send_buffer_bytes: 1 << 12,
+        recv_buffer_bytes: 1 << 13,
     };
     let (udp, _receiver) = super::bind(&config).unwrap();
     let socket = socket2::SockRef::from(&udp.0.socket);
-    assert!(socket.send_buffer_size().unwrap() >= 1 << 17);
-    assert!(socket.recv_buffer_size().unwrap() >= 1 << 18);
+    let kept = |bytes: usize| {
+        if cfg!(target_os = "linux") {
+            bytes * 2
+        } else {
+            bytes
+        }
+    };
+    assert_eq!(socket.send_buffer_size().unwrap(), kept(1 << 12));
+    assert_eq!(socket.recv_buffer_size().unwrap(), kept(1 << 13));
     assert!(!socket.only_v6().unwrap());
 }
 
