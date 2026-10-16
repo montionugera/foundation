@@ -29,6 +29,7 @@ enum Next {
 }
 
 /// The start of a read: its places, their key set, and the decoder of the replies.
+/// Only [`Reader::decode`] makes one that holds together, and no call takes one.
 #[derive(Debug)]
 pub struct Start {
     /// The places, in place order.
