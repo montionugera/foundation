@@ -543,8 +543,8 @@ impl Exception {
 }
 
 impl fmt::Display for Exception {
-    /// The code and the name of the specification, such as `2 (illegal data
-    /// address)`.
+    /// Writes the code and the name that the Modbus specification gives it, such as
+    /// `2 (illegal data address)`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
             Self::IllegalFunction => "illegal function",
@@ -555,7 +555,7 @@ impl fmt::Display for Exception {
             Self::Busy => "server device busy",
             Self::GatewayPath => "gateway path unavailable",
             Self::GatewayTarget => "gateway target device failed to respond",
-            Self::Other(_) => return write!(f, "{}", self.code()),
+            Self::Other(_) => "a code that the specification does not name",
         };
         write!(f, "{} ({name})", self.code())
     }
@@ -819,6 +819,30 @@ mod tests {
             request.decode_reply(&[0x83]),
             Err(Error::Size { want: 2, got: 1 })
         );
+    }
+
+    #[test]
+    fn writes_the_code_and_the_name_of_each_exception() {
+        let texts = [
+            (Exception::IllegalFunction, "1 (illegal function)"),
+            (Exception::IllegalAddress, "2 (illegal data address)"),
+            (Exception::IllegalValue, "3 (illegal data value)"),
+            (Exception::DeviceFailure, "4 (server device failure)"),
+            (Exception::Acknowledge, "5 (acknowledge)"),
+            (Exception::Busy, "6 (server device busy)"),
+            (Exception::GatewayPath, "10 (gateway path unavailable)"),
+            (
+                Exception::GatewayTarget,
+                "11 (gateway target device failed to respond)",
+            ),
+            (
+                Exception::Other(200),
+                "200 (a code that the specification does not name)",
+            ),
+        ];
+        for (exception, text) in texts {
+            assert_eq!(exception.to_string(), text);
+        }
     }
 
     #[test]
