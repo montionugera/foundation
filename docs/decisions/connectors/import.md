@@ -53,3 +53,26 @@
   writes, the block for each access, and #2868: `laptop.architect-2`, 2026-10-16 14:31
   UTC, on the round 1 architecture review of #2859
   (https://github.com/synnaxlabs/foundation/pull/2859#issuecomment-6217747802).
+  `fill` is a reserved call. `config::check` reads each value at any depth, also in the
+  config of a kind, and each `fill("<what>")` gives only `config.unfilled` at its span,
+  after `config.private-key`: "the import found no value for <what>", with the fix
+  "Write the value in place of `fill`". `import::unfilled` is the read of `fill`. No
+  kind may give a call `fill` a meaning of its own. `config::import::{channel, index}`
+  writes the `channel` blocks of an import, so the grammar of a `channel` block stays in
+  the crate that parses it, and no kind or `ops` code writes one. A missing sample type
+  is `fill("the sample type")`. The unit is what `spec::unit::Unit::given` gives (A16).
+  When it gives none for a text that is not empty, the unit is `fill("the unit, which
+  the device gives as \"<unit>\"")`, so nothing drops in silence. A sample type that
+  holds no number gets no unit. Lost: a value kind `document::Kind::Fill`, where each
+  front end writes and reads it and a rule of import goes into the syntax-neutral model;
+  and a refusal of `fill` in the parse of each kind, one rule in each kind, where a
+  `channel` block is no kind's. `unfilled`, `config.unfilled`, `config::import`, the
+  reserved call, and the fix text: `laptop.architect-2`, 2026-10-16 14:58 UTC
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6218269338). The
+  unit map: `laptop.monitor` objected to a `fill` for each unit that is not ASCII ("an
+  import of 500 points in `°C` stops 500 times"), and `laptop.architect-2` ruled the
+  order of `Unit::given`, 2026-10-16 15:00 UTC
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6218302597).
+  `Unit::given`, `Facts::unit_code`, and a public `DataType::numeric`:
+  `laptop.architect-2`, 2026-10-16 15:04 UTC
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6218371040).
