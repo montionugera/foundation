@@ -372,6 +372,22 @@ mod tests {
             assert_eq!(batch.dropped, 0);
         }
     }
+
+    #[test]
+    fn a_batch_has_room_for_the_bound() {
+        assert!(Lines::new(4, 4, sink()).batch().lines.capacity() >= 4);
+    }
+
+    #[test]
+    fn a_run_whose_thread_did_not_start_leaves_the_lines_idle_for_the_next_start() {
+        let lines = Lines::new(4, 4, sink());
+        lines.open();
+        assert!(lines.start());
+        assert!(!lines.idle());
+        lines.failed();
+        assert!(lines.idle());
+        assert!(lines.start());
+    }
 }
 
 #[cfg(test)]
