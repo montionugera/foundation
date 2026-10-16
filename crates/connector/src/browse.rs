@@ -618,26 +618,21 @@ impl Pattern {
         state.0.first().is_some_and(|&at| at < self.segments.len())
     }
 
-    /// `positions` and each one after an `Any` in it, since `Any` matches no name too,
-    /// in time linear in the count of segments.
+    /// `positions` and each one after an `Any` in it, since `Any` matches no name too.
+    /// `positions` is in order, so the state is too, in time linear in its count. No
+    /// two `Any` segments are next to each other, so `at + 1` is the only position
+    /// that `at` adds.
     fn close(&self, positions: impl IntoIterator<Item = usize>) -> State {
-        let mut reached = vec![false; self.segments.len() + 1];
+        let mut reached: Vec<usize> = Vec::new();
         for at in positions {
-            reached[at] = true;
-        }
-        for (at, segment) in self.segments.iter().enumerate() {
-            if reached[at] && *segment == Segment::Any {
-                reached[at + 1] = true;
+            let any = self.segments.get(at) == Some(&Segment::Any);
+            for at in [Some(at), any.then_some(at + 1)].into_iter().flatten() {
+                if reached.last().is_none_or(|&last| last < at) {
+                    reached.push(at);
+                }
             }
         }
-        State(
-            reached
-                .iter()
-                .enumerate()
-                .filter(|(_, r)| **r)
-                .map(|(at, _)| at)
-                .collect(),
-        )
+        State(reached)
     }
 }
 
