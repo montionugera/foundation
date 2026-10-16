@@ -108,7 +108,8 @@ pub struct Channels {
 /// Why a run or a discovery stopped. One handler for each variant.
 #[derive(Debug)]
 pub enum Error {
-    /// A retry gives the same error. A run stops until the next spec change.
+    /// Not retried: a browse or a discover fails, and a run stops until the next spec
+    /// change.
     Config(Vec<Diagnostic>),
     /// The device or endpoint is in a bad state. Restarted with backoff.
     Device(Box<dyn std::error::Error + Send + Sync>),
