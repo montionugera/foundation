@@ -3,13 +3,22 @@ use std::ffi::CStr;
 use proptest::prelude::*;
 use types::hash::Map;
 
-use super::{VALUE, long, run, serve};
+use super::{
+    Client, READS, RELAY, Relay, VALUE, drop_reads, long, recount_of, relayed, run,
+    serve,
+};
 use crate::client::browse::{Class, Description, Page, Reference, Unit, base, code_of};
 use crate::ffi::Status;
 use crate::node::{Key, Name, Node};
 use crate::server::{Limits, Server};
 
 const BAD_CONTINUATION_POINT_INVALID: Status = Status(0x804A_0000);
+
+/// The binary encoding of a Browse response, a `NodeId` of 4 bytes.
+const BROWSE_RESPONSE: [u8; 4] = [0x01, 0x00, 0x12, 0x02];
+
+/// The binary encoding of a `TranslateBrowsePathsToNodeIds` response.
+const TRANSLATE_RESPONSE: [u8; 4] = [0x01, 0x00, 0x2D, 0x02];
 
 const OBJECTS: Node = ns0(85);
 const ORGANIZES: u32 = 35;
@@ -504,6 +513,67 @@ fn a_call_after_the_server_closes_fails_with_its_status() {
             Err(Status::BAD_SERVER_NOT_CONNECTED)
         )
     );
+}
+
+/// While [`READS`] dropped reads stay in flight, each call fails
+/// at the end of its wait and sends nothing.
+#[test]
+fn each_call_at_the_bound_of_reads_in_flight_fails_with_too_many_operations() {
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            peer.gate.close();
+            drop_reads(&mut client, READS).await;
+            let browse = client.browse(&ROOT, 0).await.map(|_| ());
+            let describe = client.describe(&[VALUE]).await.map(|_| ());
+            peer.gate.open();
+            (browse, describe)
+        })
+        .await
+    });
+    let full = Err(Status::BAD_TOO_MANY_OPERATIONS);
+    assert_eq!(out, (full, full));
+}
+
+/// Gives the answer of `call` through a relay that gives each response of the type
+/// `kind` no results.
+fn emptied<T: Send + 'static>(
+    kind: [u8; 4],
+    call: impl AsyncFnOnce(&mut Client) -> T + Send + 'static,
+) -> T {
+    let (out, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            folders(peer.server, 2);
+            let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
+            let rewrite = |message: &mut Vec<u8>| {
+                if message.starts_with(b"MSG") && message[24..28] == kind {
+                    recount_of(message, 0);
+                }
+            };
+            relayed(&node, &Relay::default(), rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                let out = call(&mut client).await;
+                client.close().await;
+                out
+            })
+            .await
+        })
+        .await
+    });
+    out
+}
+
+/// An answer with more or fewer results than the request asked for fails the call.
+#[test]
+fn an_answer_with_the_wrong_count_of_results_fails_the_call() {
+    let browse = emptied(BROWSE_RESPONSE, async |client| {
+        client.browse(&ROOT, 0).await.map(|_| ())
+    });
+    let describe = emptied(TRANSLATE_RESPONSE, async |client| {
+        client.describe(&[VALUE]).await.map(|_| ())
+    });
+    let wrong = Err(Status::BAD_UNEXPECTED_ERROR);
+    assert_eq!((browse, describe), (wrong, wrong));
 }
 
 #[test]

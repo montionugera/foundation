@@ -103,14 +103,14 @@ pub(crate) struct Client {
     /// The supertype of each data type that the client browsed, or `None` when it has
     /// none.
     #[cfg_attr(
-        not(test),
+        not(any(test, feature = "sim")),
         expect(dead_code, reason = "the opcua kind of #2705 is the first user")
     )]
     supertypes: Map<Node, Option<Node>>,
     /// The limits of the server on a Browse and a Translate, once
     /// [`Client::describe`] reads them.
     #[cfg_attr(
-        not(test),
+        not(any(test, feature = "sim")),
         expect(dead_code, reason = "the opcua kind of #2705 is the first user")
     )]
     limits: Option<browse::Limits>,
@@ -134,13 +134,13 @@ struct Reads {
     pending: Cell<u16>,
     /// The service request that the client waits for: its number and service.
     #[cfg_attr(
-        not(test),
+        not(any(test, feature = "sim")),
         expect(dead_code, reason = "the opcua kind of #2705 is the first user")
     )]
     awaited: Cell<Option<(u32, ffi::Service)>>,
     /// The answer of the awaited request.
     #[cfg_attr(
-        not(test),
+        not(any(test, feature = "sim")),
         expect(dead_code, reason = "the opcua kind of #2705 is the first user")
     )]
     answer: Cell<Option<Answer>>,
