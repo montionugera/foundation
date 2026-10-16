@@ -490,6 +490,8 @@ pub enum Exception {
     Acknowledge,
     /// 6: the device is busy with a long request.
     Busy,
+    /// 8: the device found a parity error in the memory of a file record.
+    MemoryParity,
     /// 10: a gateway has no path to the target.
     GatewayPath,
     /// 11: the target behind a gateway did not reply.
@@ -535,6 +537,7 @@ impl Exception {
             Self::DeviceFailure => 4,
             Self::Acknowledge => 5,
             Self::Busy => 6,
+            Self::MemoryParity => 8,
             Self::GatewayPath => 10,
             Self::GatewayTarget => 11,
             Self::Other(code) => code,
@@ -553,6 +556,7 @@ impl fmt::Display for Exception {
             Self::DeviceFailure => "server device failure",
             Self::Acknowledge => "acknowledge",
             Self::Busy => "server device busy",
+            Self::MemoryParity => "memory parity error",
             Self::GatewayPath => "gateway path unavailable",
             Self::GatewayTarget => "gateway target device failed to respond",
             Self::Other(_) => "a code that the specification does not name",
@@ -570,6 +574,7 @@ impl From<u8> for Exception {
             4 => Self::DeviceFailure,
             5 => Self::Acknowledge,
             6 => Self::Busy,
+            8 => Self::MemoryParity,
             10 => Self::GatewayPath,
             11 => Self::GatewayTarget,
             other => Self::Other(other),
@@ -797,7 +802,7 @@ mod tests {
     #[test]
     fn reads_an_exception_reply() {
         let request = read(Table::HoldingRegisters, 0, 1);
-        let codes = [1, 2, 3, 4, 5, 6, 10, 11, 7];
+        let codes = [1, 2, 3, 4, 5, 6, 8, 10, 11, 7];
         let want = [
             Exception::IllegalFunction,
             Exception::IllegalAddress,
@@ -805,6 +810,7 @@ mod tests {
             Exception::DeviceFailure,
             Exception::Acknowledge,
             Exception::Busy,
+            Exception::MemoryParity,
             Exception::GatewayPath,
             Exception::GatewayTarget,
             Exception::Other(7),
@@ -830,6 +836,7 @@ mod tests {
             (Exception::DeviceFailure, "4 (server device failure)"),
             (Exception::Acknowledge, "5 (acknowledge)"),
             (Exception::Busy, "6 (server device busy)"),
+            (Exception::MemoryParity, "8 (memory parity error)"),
             (Exception::GatewayPath, "10 (gateway path unavailable)"),
             (
                 Exception::GatewayTarget,
