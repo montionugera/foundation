@@ -760,5 +760,5 @@
   `sim` made its directories and gave `Ok` where `os` and `within` give `NotFound`.
   Decided by `laptop.architect-2` (2026-10-16T07:06:00Z,
   https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6210062728; the `os`
-  stat, 2026-10-16T07:39:36Z,
-  https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6210574391).
+  stat, 2026-10-16T08:00:56Z,
+  https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6210913415).
