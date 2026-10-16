@@ -548,7 +548,11 @@ mod walk {
 
     #[test]
     fn refuses_a_start_with_no_folder() {
-        for (start, shown) in [("Line9", r#""Line9""#), ("Clock", r#""Clock""#)] {
+        for (start, shown) in [
+            ("Line9", r#""Line9""#),
+            ("Clock", r#""Clock""#),
+            (r"Line\/1", r#""Line\/1""#),
+        ] {
             let query = query(start, Scope::Match(pattern("**")));
             let found = now(walk(&mut Tree::new(&plant(), 2), &query));
             assert_eq!(

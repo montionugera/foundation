@@ -176,7 +176,7 @@ async fn level(
     device.level(at, cursor).await?.ok_or_else(|| {
         config_error(
             NO_FOLDER,
-            &format_args!("the device has no folder at {at:?}"),
+            &format_args!("the device has no folder at \"{at}\""),
             "Browse the folder above it to see the names in it",
         )
     })
@@ -310,11 +310,12 @@ impl Pattern {
 
     /// The state after `name` from `state`.
     fn step(&self, state: &State, name: &str) -> State {
+        let name: Vec<char> = name.chars().collect();
         let mut next = Vec::new();
         for &at in &state.0 {
             match self.segments.get(at) {
                 Some(Segment::Any) => next.push(at),
-                Some(Segment::Name(glob)) if glob_matches(glob, name) => {
+                Some(Segment::Name(glob)) if glob_matches(glob, &name) => {
                     next.push(at + 1);
                 }
                 Some(Segment::Name(_)) | None => {}
@@ -353,8 +354,7 @@ impl Pattern {
 }
 
 /// Whether `name` matches `glob`, in which `None` is any text.
-fn glob_matches(glob: &[Option<char>], name: &str) -> bool {
-    let name: Vec<char> = name.chars().collect();
+fn glob_matches(glob: &[Option<char>], name: &[char]) -> bool {
     let (mut g, mut n) = (0, 0);
     // Where the last `None` was, and where in `name` its text ends now.
     let mut star = None;
