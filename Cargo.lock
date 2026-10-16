@@ -456,13 +456,16 @@ dependencies = [
 name = "connector-modbus"
 version = "0.0.0"
 dependencies = [
+ "codec",
  "connector",
  "counting",
  "divan",
  "document",
  "env",
+ "hub",
  "proptest",
  "sim",
+ "spec",
  "types",
 ]
 
@@ -1212,6 +1215,7 @@ dependencies = [
  "config-hcl",
  "connector",
  "connector-influx",
+ "connector-modbus",
  "connector-opcua",
  "counting",
  "crc32c",
@@ -1511,8 +1515,10 @@ dependencies = [
  "counting",
  "env",
  "hub",
+ "proptest",
  "sim",
  "spec",
+ "tracing",
  "transport",
  "types",
  "wire",

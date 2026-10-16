@@ -6,7 +6,7 @@ use types::sample::{Scalar, Type, Value};
 use super::*;
 use crate::device::Device;
 use crate::pdu::Reply;
-use crate::poll::{Error, groups};
+use crate::read::{Error, groups};
 
 fn write(table: Table, address: u16, scalar: Scalar, order: Order) -> Write {
     Write::new(table, address, Type::Scalar(scalar), order).expect("a valid write")

@@ -522,8 +522,12 @@ fn drop_each<T>(items: impl IntoIterator<Item = (T, Dispatch)>) -> Vec<String> {
 const EIO: i32 = 5;
 /// The Linux code for a path through a file (`ENOTDIR`).
 const NOT_DIRECTORY: i32 = 20;
+/// The Linux code for a path that is there (`EEXIST`).
+const EXISTS: i32 = 17;
 /// The Linux code for a file call on a directory (`EISDIR`).
 const DIRECTORY: i32 = 21;
+/// The Linux code for a path through too many symbolic links (`ELOOP`).
+const LOOP: i32 = 40;
 
 /// The Linux code for a failure that may pass (`EAGAIN`).
 const EAGAIN: i32 = 11;

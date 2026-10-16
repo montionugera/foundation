@@ -1,9 +1,11 @@
 //! The files of the host by the paths that a user gave.
 
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use env::entropy::Driver as _;
 use env::paths::{Error, Found, names_directory};
@@ -22,6 +24,45 @@ impl env::paths::Driver for Driver {
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
         write(path, bytes).map_err(|e| error(&e))
     }
+
+    fn make_dir(&self, path: &Path) -> Result<(), Error> {
+        make_dir(path).map_err(|e| error(&e))
+    }
+
+    fn resolve(&self, path: &Path) -> Result<PathBuf, Error> {
+        resolve(path).map_err(|e| error(&e))
+    }
+
+    fn home(&self) -> Option<PathBuf> {
+        resolve(&std::env::home_dir()?).ok()
+    }
+}
+
+fn resolve(path: &Path) -> io::Result<PathBuf> {
+    let missing = match fs::canonicalize(path) {
+        // macOS resolves a file at a path that ends in `/`, `/.`, or `/..`, also
+        // through a link, where the stat fails.
+        Ok(resolved) => return fs::metadata(path).map(|_| resolved),
+        // Only a last name that is not there passes `symlink_metadata` below.
+        Err(e) => e,
+    };
+    // `file_name` is `None` for an end in `..`, whose directory must be there.
+    let (Some(name), Some(dir)) = (path.file_name(), path.parent()) else {
+        return Err(missing);
+    };
+    // Not `path`: an end in `/` or `/.` makes the stat follow a link at `name`.
+    match fs::symlink_metadata(dir.join(name)) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        // A symbolic link to nothing.
+        Ok(_) => return Err(missing),
+        Err(e) => return Err(e),
+    }
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    Ok(fs::canonicalize(dir)?.join(name))
 }
 
 fn read(path: &Path, most: usize) -> io::Result<Found> {
@@ -70,6 +111,19 @@ fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     fill(open(&new)?, bytes)
         .and_then(|()| fs::rename(&new, path))
         .or_else(|e| fs::remove_file(&new).and(Err(e)))
+}
+
+/// Makes a directory at `path` as [`dir::make`] does.
+fn make_dir(path: &Path) -> io::Result<()> {
+    // macOS makes the target of a link to nothing at a path that ends in `/`, and
+    // Linux gives `EEXIST`.
+    let bytes = path.as_os_str().as_bytes();
+    let end = bytes
+        .iter()
+        .rposition(|&byte| byte != b'/')
+        .map_or(1, |at| at + 1);
+    let path = Path::new(OsStr::from_bytes(bytes.get(..end).unwrap_or(bytes)));
+    dir::make(rustix::fs::CWD, path).map_err(io::Error::from)
 }
 
 /// Makes a file at `path` whose permission bits give only this user access.

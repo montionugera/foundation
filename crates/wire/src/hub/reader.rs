@@ -85,6 +85,11 @@ impl Reader {
         }
     }
 
+    /// Whether the session is latest.
+    pub(in crate::hub) fn latest(&self) -> bool {
+        self.latest
+    }
+
     /// Decodes the next message from the home.
     ///
     /// # Errors

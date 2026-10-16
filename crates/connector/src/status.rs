@@ -339,10 +339,8 @@ impl Class {
     fn with_text(end: &Result<(), kind::Error>) -> (Option<Self>, String) {
         let (class, text) = match end {
             Ok(()) => (None, String::new()),
-            Err(kind::Error::Config(diagnostics)) => {
-                let texts: Vec<_> =
-                    diagnostics.iter().map(ToString::to_string).collect();
-                (Some(Self::Config), texts.join("; "))
+            Err(error @ kind::Error::Config(_)) => {
+                (Some(Self::Config), error.to_string())
             }
             Err(kind::Error::Device(source)) => {
                 (Some(Self::Device), source.to_string())

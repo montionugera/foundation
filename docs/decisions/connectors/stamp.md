@@ -1,6 +1,9 @@
-- **STAMP (#435)** `connector::stamp::Stamps` stamps the frames of one index of a
-  kind that reads by request. The stamp of a frame is the midpoint of the mesh times
-  before and after the requests that read its samples (`laptop.architect-2`,
+- **STAMP (#435)** `connector::stamp::Stamps` stamps the frames of one writer of a kind
+  that reads by request: one stamp goes into each index of the writer
+  (`laptop.architect-2`, 2026-10-16T04:32:46Z, item 3:
+  https://github.com/synnaxlabs/foundation/pull/2817#issuecomment-6208137622). The
+  stamp of a frame is the midpoint of the mesh times before and after the requests that
+  read its samples (`laptop.architect-2`,
   2026-10-14T01:37:20Z,
   https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6158936229), or
   1 ns after the stamp before it when that is later, so no stamp is at or before the
@@ -19,9 +22,11 @@
   2026-10-13T02:18:10Z, item 5:
   https://github.com/synnaxlabs/foundation/pull/2518#issuecomment-6136764966).
   `after` panics for a stamp under the last stamp, since a refusal of the frame of the
-  last stamp never gives one. One `connector` writer that writes a refused frame again
-  inside is deferred to #2527. The status writer of the supervisor stamps its frames
-  with `Stamps::next` of its one read of mesh time, so one module holds the stamp rule
+  last stamp never gives one. `connector::poll::Writer` (POLL WRITER) is the one
+  writer that writes a refused frame again inside for each kind that polls. The status
+  writer still writes a refused frame again itself; one writer for it is deferred to
+  #2527. The status writer of the supervisor stamps its frames with `Stamps::next`
+  of its one read of mesh time, so one module holds the stamp rule
   (`laptop.architect-2`, 2026-10-13T01:38:13Z, item 2:
   https://github.com/synnaxlabs/foundation/pull/2518#issuecomment-6136191164, approved
   2026-10-13T02:04:57Z, item 3:

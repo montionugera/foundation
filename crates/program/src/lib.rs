@@ -194,7 +194,7 @@ impl Session {
     /// (`UNKNOWN` for a selector that matches no channel, `MALFORMED` for channels of
     /// more than one index), [`Error::Transport`], [`Error::Message`] for places that
     /// `wire` refuses or a stream that ends before the last place,
-    /// [`Error::Repeated`], [`Error::Reply`] for a reply that `wire` refuses or a
+    /// [`Error::Reply`] for a reply that `wire` refuses or a
     /// stream that ends before `Opened`, and [`Error::Pool`].
     pub async fn reader(&self, select: Selector, mode: Mode) -> Result<Reader, Error> {
         let shared = &self.0.0;
@@ -437,8 +437,6 @@ pub enum Error {
         /// The bytes of the open.
         length: usize,
     },
-    /// The node listed one channel in two places of a read.
-    Repeated(types::channel::Key),
     /// The node sent a reply of a read that `wire` refuses, or finished the stream
     /// where a reply must come.
     Reply(wire::hub::Error),
@@ -473,9 +471,6 @@ impl fmt::Display for Error {
                 "the open of the read has {length} bytes, over the {OPEN_BYTES_MAX} \
                  that a read holds"
             ),
-            Self::Repeated(key) => {
-                write!(f, "the node listed channel {key} in two places of a read")
-            }
             Self::Reply(error) => {
                 write!(f, "the node sent a reply that is not valid: {error}")
             }

@@ -4,6 +4,7 @@
 use std::cell::Cell;
 use std::path::{Path as FilePath, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use access::proof::{Error as Refusal, Kind};
@@ -14,7 +15,9 @@ use types::channel;
 use types::sample::Type;
 use types::time::Span;
 use wire::header::MALFORMED;
-use wire::hub::client::{self, BODY_BYTES_MAX, Mode, Open, Place, Places, REFUSED};
+use wire::hub::client::{
+    self, BODY_BYTES_MAX, Mode, Open, PLACES_MAX, Place, Places, REFUSED,
+};
 use wire::hub::{BUSY, FAILED, FromHome, NOT_HOME, UNKNOWN};
 
 use super::link::{as_agent, serve_session_on};
@@ -422,6 +425,77 @@ fn opens_a_read_whose_places_pass_the_share() {
     assert_eq!(home.served, [Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
+/// The node caps the places of a read at `PLACES_MAX`: the `MANY` channels of `w` and
+/// their index are at the cap, and `value` takes them over it. The read over the cap
+/// does not carry the index, so only the read after it polls the hub's tasks, at its
+/// new carry.
+#[test]
+fn stops_a_read_whose_places_are_over_the_cap_as_malformed() {
+    const MANY: u32 = PLACES_MAX - 1;
+    let (polls, ended) = (
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let (counted, ending) = (Arc::clone(&polls), Arc::clone(&ended));
+    let ready = async move |test: &Test| {
+        let names: Vec<String> = (0..MANY).map(|n| format!("w.{n}")).collect();
+        test.define(names.iter().enumerate().map(|(n, channel)| {
+            let key = 100 + u128::try_from(n).expect("fits");
+            (key, channel.as_str(), DataType::Sample(I64), 1)
+        }))
+        .await;
+        let (pause, clock) = (Rc::clone(&test.pause), test.clock.clone());
+        let before = pause.polls.get();
+        test.tasks.spawn(async move {
+            while !ending.load(Ordering::Relaxed) {
+                counted.store(pause.polls.get() - before, Ordering::Relaxed);
+                clock.sleep(Span::MILLISECOND).await;
+            }
+        });
+    };
+    let home = read_session(322, ready, |mut agent| async move {
+        agent.admit().await;
+        let mut over = agent.read(Mode::Complete, &["w.**", "value"]).await;
+        assert_eq!(over.recv().await, reset_with(MALFORMED));
+        agent.sleep(QUIET).await;
+        assert_eq!(
+            polls.load(Ordering::Relaxed),
+            0,
+            "the read over the cap polled"
+        );
+        let mut stream = agent.read(Mode::Complete, &["w.**"]).await;
+        let (places, _, _) = stream.opened().await;
+        agent.sleep(QUIET).await;
+        assert_eq!(
+            polls.load(Ordering::Relaxed),
+            1,
+            "the new carry polled once"
+        );
+        ended.store(true, Ordering::Relaxed);
+        assert_eq!(
+            places,
+            Places {
+                count: PLACES_MAX,
+                index: MANY
+            }
+        );
+        stream.sender.finish().expect("finishes");
+        assert_eq!(stream.recv().await, Ok(None));
+        finish(&mut agent).await;
+    });
+    let over = serve::Error::Places {
+        count: usize::try_from(PLACES_MAX).expect("fits") + 1,
+    };
+    assert_eq!(
+        home.served,
+        [Err(over.clone()), Ok(Got::Ended), Ok(Got::Ended)]
+    );
+    assert_eq!(
+        over.to_string(),
+        "the open matches 65537 places, over the cap of 65536"
+    );
+}
+
 #[test]
 fn stops_a_read_whose_channel_is_removed_as_unknown() {
     let ready = async |test: &Test| {
@@ -825,7 +899,8 @@ fn holds_the_share_of_the_open_of_a_read_while_it_waits_for_a_home() {
 }
 
 /// A node serves a read only of an index whose home it is: a read whose home is
-/// another node stops with `NOT_HOME` and interns no key set.
+/// another node stops with `NOT_HOME` and interns no key set. One over `PLACES_MAX`
+/// stops with `MALFORMED` before its home.
 #[test]
 fn stops_a_read_whose_home_is_another_node_as_not_home() {
     let (served, sets) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(None)));
@@ -842,6 +917,13 @@ fn stops_a_read_whose_home_is_another_node_as_not_home() {
         test.set_home(TIME, region::OTHER).await;
         test.set_home(TIME_B, NODE).await;
         test.hub.set_rules(rules());
+        let names: Vec<String> = (1..PLACES_MAX).map(|n| format!("w.{n}")).collect();
+        test.define(
+            names.iter().zip(100..).map(|(channel, key)| {
+                (key, channel.as_str(), DataType::Sample(I64), 1)
+            }),
+        )
+        .await;
         let before = test.writer("a", &["value-b"]).await.set().key().get();
         let session = transport.accept().await.expect("a session");
         let link = test.hub.link(session.clone());
@@ -862,6 +944,8 @@ fn stops_a_read_whose_home_is_another_node_as_not_home() {
     run_program(314, home, |node, tasks, at| {
         as_agent(node, tasks, at, |mut agent| async move {
             agent.admit().await;
+            let mut over = agent.read(Mode::Latest, &["w.**", "value"]).await;
+            assert_eq!(over.recv().await, reset_with(MALFORMED));
             let mut stream = agent.read(Mode::Latest, &["value"]).await;
             assert_eq!(stream.recv().await, reset_with(NOT_HOME));
             finish(&mut agent).await;
@@ -870,10 +954,17 @@ fn stops_a_read_whose_home_is_another_node_as_not_home() {
     let remote = reader::Error::Remote {
         home: region::OTHER,
     };
+    let over = serve::Error::Places {
+        count: usize::try_from(PLACES_MAX).expect("fits") + 1,
+    };
     let served = std::mem::take(&mut *served.lock().expect("not poisoned"));
     assert_eq!(
         served,
-        [Err(serve::Error::Reader(Box::new(remote))), Ok(Got::Ended)]
+        [
+            Err(over),
+            Err(serve::Error::Reader(Box::new(remote))),
+            Ok(Got::Ended)
+        ]
     );
     let (before, after) = sets.lock().expect("not poisoned").take().expect("counted");
     assert_eq!(after, before + 1);

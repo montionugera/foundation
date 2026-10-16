@@ -13,9 +13,10 @@ use std::task::{Context, Poll, ready};
 use ::home::reader::{Next, disk};
 use types::channel;
 use types::frame::key_set::{Group, KeySet};
-use types::frame::{Frame, Mask, View};
+use types::frame::{self, Frame, Mask, View};
 use types::name::{Name, Selector};
 use types::time::Span;
+use wire::hub::Gaps;
 
 use crate::channel::Channel;
 use crate::pending::Pending;
@@ -111,13 +112,9 @@ impl<'a> Received<'a> {
     /// the gap that a later frame gives.
     #[must_use]
     pub fn position(&self) -> Position {
-        let Lent {
-            mode, seqs, from, ..
-        } = self.lent;
-        let live = match mode {
-            Mode::Complete if seqs.is_empty() => *from,
-            Mode::Complete => seqs.end,
-            Mode::Latest => self.lens.seqs(self.view.frame()).end,
+        let live = match &self.lent.gaps {
+            Some(gaps) => gaps.live(),
+            None => self.lens.end(self.view.frame()),
         };
         let position = Position {
             index: self.lens.index,
@@ -134,9 +131,8 @@ impl<'a> Received<'a> {
     /// `None`, and the next frame with one gives the gap.
     #[must_use]
     pub fn gap(&self) -> Option<Range<u64>> {
-        let Range { start, end } = self.lent.seqs;
-        let from = self.lent.from;
-        (from < start && start < end).then_some(from..start)
+        let gap = self.lent.gaps.as_ref()?.last();
+        (!gap.is_empty()).then_some(gap)
     }
 }
 
@@ -181,16 +177,19 @@ impl Lens {
         }
     }
 
-    /// The seqs of the index's samples in `frame`, a frame of this lens's key set. The
-    /// mask holds the index, so the frame's range of its group is the view's.
-    fn seqs(&self, frame: &Frame) -> Range<u64> {
-        let range = frame
+    /// The range of the index in `frame`, a frame of this lens's key set. The mask
+    /// holds the index, so the frame's range of its group is the view's.
+    fn range(&self, frame: &Frame) -> frame::Range {
+        frame
             .range(self.group)
-            .expect("invariant: a frame holds the range of each group");
-        let end = range
+            .expect("invariant: a frame holds the range of each group")
+    }
+
+    /// The seq after the last sample of the index of `frame`.
+    fn end(&self, frame: &Frame) -> u64 {
+        self.range(frame)
             .end()
-            .expect("invariant: the home gives no range past u64::MAX");
-        range.seq..end
+            .expect("invariant: the home gives no range past u64::MAX")
     }
 }
 
@@ -358,30 +357,22 @@ pub struct Reader {
 /// stays as small as with no names.
 #[derive(Debug)]
 struct Lent {
-    mode: Mode,
     /// `None` for a reader of a client read. A box keeps the reader small.
     names: Option<Box<Names>>,
     /// The `live` of the last position that [`Received::position`] gave, or `None`
     /// before it gave one. The positions of a reader rise, so it is the highest.
     given: Cell<Option<u64>>,
-    /// For a complete reader, the seqs of the index in the frame that the last
-    /// [`Received`] lends, or the empty range at the open position before the first
-    /// frame. A latest reader keeps the empty range, as it gets no gap.
-    seqs: Range<u64>,
-    /// The first live seq that the reader had not got before that frame: the start of
-    /// its gap.
-    from: u64,
+    /// The gaps of a complete reader, `None` for a latest reader, which gets no gap.
+    gaps: Option<Gaps>,
 }
 
 impl Lent {
     /// What a reader in `mode` that opened at `live` lends before its first frame.
     fn at(mode: Mode, live: u64) -> Self {
         Self {
-            mode,
             names: None,
             given: Cell::new(None),
-            seqs: live..live,
-            from: live,
+            gaps: (mode == Mode::Complete).then(|| Gaps::new(live)),
         }
     }
 }
@@ -521,7 +512,8 @@ impl Reader {
         let mut listed =
             listed.expect("invariant: `find` calls `items` before it returns");
         let mut reader = match home {
-            Home::Here(channels) => {
+            Home::Here(here) => {
+                let channels = here.carry(&mut state.borrow_mut());
                 listed.slot(&channels.slots);
                 let index = channels.index;
                 let (local, live) = match named {
@@ -549,7 +541,7 @@ impl Reader {
         Ok(reader)
     }
 
-    /// Opens an unnamed reader on `channels` from [`Home::Here`], with no wait since
+    /// Opens an unnamed reader on `channels` from [`Here::carry`], with no wait since
     /// [`find`] gave them. It holds no names: the places of a served read carry them,
     /// so [`Received::name`] panics. Returns the reader and its open position: the
     /// first live seq of the index that the session can get.
@@ -606,11 +598,8 @@ impl Reader {
                 },
                 Source::Remote(remote) => remote.take().await?,
             };
-            if self.lent.mode == Mode::Complete {
-                if !self.lent.seqs.is_empty() {
-                    self.lent.from = self.lent.seqs.end;
-                }
-                self.lent.seqs = lens.seqs(&frame);
+            if let Some(gaps) = &mut self.lent.gaps {
+                gaps.pass(lens.range(&frame));
             }
             let frame = self.frame.insert(frame);
             Ok(Received {
@@ -822,9 +811,8 @@ pub(crate) struct Matched<T> {
 /// The home of the index of what a selector matched.
 #[derive(Debug)]
 pub(crate) enum Home {
-    /// This node, which carries the index, with the channels as the frames of a reader
-    /// hold them.
-    Here(Channels),
+    /// This node, which carries the index once [`Here::carry`] runs.
+    Here(Here),
     /// Another node.
     Away(types::node::Key),
 }
@@ -865,17 +853,11 @@ pub(crate) async fn find<S: std::borrow::Borrow<Selector>, T>(
         keys[found.index], index,
         "invariant: no registered channel changed, so the index stays"
     );
-    let home = if let Some(home) = away {
-        Home::Away(home)
-    } else {
-        // With no wait since `matched`, so each of `keys` is defined.
-        let slots = state.borrow_mut().slots(index, &keys);
-        Home::Here(Channels {
-            index: slots[found.index],
-            keys,
-            slots,
-        })
+    let here = Here {
+        keys,
+        at: found.index,
     };
+    let home = away.map_or(Home::Here(here), Home::Away);
     Ok((found, home))
 }
 
@@ -968,6 +950,28 @@ pub(crate) struct Channels {
     pub(crate) keys: Box<[channel::Key]>,
     pub(crate) slots: Box<[channel::Slot]>,
     pub(crate) index: channel::Slot,
+}
+
+/// The channels of a match whose index has its home at this node, with no slots yet.
+#[derive(Debug)]
+pub(crate) struct Here {
+    /// The key of each channel, in the order of the matched items.
+    keys: Box<[channel::Key]>,
+    /// The position of the index in `keys`.
+    at: usize,
+}
+
+impl Here {
+    /// The channels with their slots, with no wait since [`find`] gave them. This node
+    /// carries the index from then on.
+    pub(crate) fn carry(self, state: &mut State) -> Channels {
+        let slots = state.slots(self.keys[self.at], &self.keys);
+        Channels {
+            index: slots[self.at],
+            keys: self.keys,
+            slots,
+        }
+    }
 }
 
 impl Session {

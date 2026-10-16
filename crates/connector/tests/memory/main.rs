@@ -107,13 +107,6 @@ impl Kind for Large {
         Ok(Channels::default())
     }
 
-    fn discover(
-        &self,
-        _: &Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        std::future::ready(Ok(Vec::new()))
-    }
-
     fn run(&self, ctx: Context<()>) -> impl Future<Output = Result<(), Error>> {
         let run = self.runs.fetch_add(1, Relaxed);
         self.peaks[run].fetch_max(ALLOCATOR.held(), Relaxed);

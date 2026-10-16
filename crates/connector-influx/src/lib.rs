@@ -25,10 +25,8 @@ mod send;
 #[cfg(feature = "sim")]
 pub mod sim;
 
-use std::future;
-
 use connector::kind::{self, Channels, Context, Error};
-use connector::{cancel, reader, secret};
+use connector::{reader, secret};
 use document::diagnostic::{Code, Diagnostic};
 use document::value::{self, Value};
 use document::{Document, read};
@@ -106,6 +104,17 @@ pub enum Target {
     },
 }
 
+impl Target {
+    /// Whether the run writes a `u` integer: to a `bucket`, which stands for InfluxDB 2
+    /// or 3, and not to a `database`, which stands for InfluxDB 1 (LINE TEXT).
+    pub(crate) const fn unsigned(&self) -> bool {
+        match self {
+            Self::Database(_) => false,
+            Self::Bucket { .. } => true,
+        }
+    }
+}
+
 impl kind::Kind for Kind {
     type Config = Config;
 
@@ -178,34 +187,28 @@ impl kind::Kind for Kind {
         })
     }
 
-    /// An InfluxDB has no devices to find.
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        future::ready(Ok(Vec::new()))
-    }
-
     /// Writes the samples of its reader to InfluxDB, one line for each sample time with
     /// a field for each channel, keyed by the channel's name. Before the lines of a
     /// frame after seqs that the reader did not get, it writes their `live` gap line
     /// ([`gap::MEASUREMENT`]) at the frame's first sample, also when it leaves that
     /// sample's line out. It keeps one request in flight, and acks a batch only after
     /// InfluxDB answers 204, when it adds the batch's fields to the count `confirmed`
-    /// and the seqs of its gap lines to `lost`. It shows each other answer as its error
-    /// and sends the batch again after a backoff. It reads the token at its start, and
-    /// again after a 401 or a 403 before the next attempt. It reads the `ca` at its
-    /// start, and again after a TLS failure before the next attempt.
+    /// and the seqs of its gap lines to `lost`. It shows each other answer as its
+    /// error, with the fix for a 400, a 404, or a 422, and sends the batch again after
+    /// a backoff. It reads the token at its start, and again after a 401 or a 403
+    /// before the next attempt. It reads the `ca` at its start, and again after a TLS
+    /// failure before the next attempt.
     ///
     /// # Errors
     ///
-    /// [`Error::Config`] with `influx.sample-type` for a channel that does not hold
-    /// `f64` samples, and with `influx.bad-channel` for a channel name that is not a
-    /// valid field key. The error of [`hub::reader::Ended`] when the reader ends.
-    /// [`Error::Retry`] or [`Error::Config`] from [`Context::secret`] when a read
-    /// fails, and [`Error::Retry`] when the token holds a byte that an HTTP header
-    /// cannot hold, and when the `ca` holds no PEM certificate or one that does not
-    /// parse.
+    /// [`Error::Config`] with `influx.sample-type` for a channel of a `uuid`, `string`,
+    /// `bytes`, `array`, `list`, or `matrix` type, with `influx.unsigned` for a `u64`
+    /// channel to a [`Target::Database`], and with `influx.bad-channel` for a channel
+    /// name that is not a valid field key. The error of [`hub::reader::Ended`] when the
+    /// reader ends. [`Error::Retry`] or [`Error::Config`] from [`Context::secret`] when
+    /// a read fails, and [`Error::Retry`] when the token holds a byte that an HTTP
+    /// header cannot hold, and when the `ca` holds no PEM certificate or one that does
+    /// not parse.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         send::run(ctx)
     }
