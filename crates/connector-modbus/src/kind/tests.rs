@@ -720,12 +720,12 @@ fn ends_the_run_with_a_device_error_when_no_lookup_finds_the_host() {
         |_| async {},
     );
     assert_eq!(record.result.as_ref().map_err(ToString::to_string), Ok(&()));
-    let errors = record.errors();
-    assert_eq!(errors.len(), 1, "{errors:?}");
-    assert_eq!(errors[0].0, Class::Device);
-    assert!(
-        errors[0].1.starts_with("the lookup of nowhere failed: "),
-        "{errors:?}"
+    assert_eq!(
+        record.errors(),
+        [(
+            Class::Device,
+            "the lookup of nowhere failed: name nowhere has no address".to_owned()
+        )]
     );
 }
 
@@ -776,12 +776,13 @@ fn reads_again_in_order_after_the_device_resets_its_stream() {
                 .to_owned()
         )
     );
-    assert_eq!(errors[1].0, Class::Device);
-    assert!(
-        errors[1]
-            .1
-            .starts_with("the connect to 10.0.0.1:502 failed: "),
-        "{errors:?}"
+    assert_eq!(
+        errors[1],
+        (
+            Class::Device,
+            "the connect to 10.0.0.1:502 failed: 10.0.0.1:502 refused the connection"
+                .to_owned()
+        )
     );
     let start = record.stamps()[0];
     let stamps: Vec<_> = record.stamps().iter().map(|at| at - start).collect();
