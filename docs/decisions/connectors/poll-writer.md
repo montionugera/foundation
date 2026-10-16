@@ -3,8 +3,8 @@
   a frame that leaves out each `None`, one write again of a group that the home refuses
   as `Backwards`, the samples lost when the pool has no block, and the counts of
   `poll::COUNTS` (`in` and `lost`). The kind keeps its loop and its errors, and calls
-  the writer as a library. `connector-opcua` writes through it, and `connector-modbus`
-  will in PR B2 of #432 (`laptop.architect-2`, 2026-10-16T03:23:05Z:
+  the writer as a library. `connector-opcua` and `connector-modbus` write through it
+  (`laptop.architect-2`, 2026-10-16T03:23:05Z:
   https://github.com/synnaxlabs/foundation/issues/432#issuecomment-6207353409). `open`
   takes a channel of no fixed width, since the kind learns the sample type only after
   the open, and `write` panics on a value of it (`laptop.architect-2`,
@@ -34,7 +34,7 @@
   `write` panics when the iterator gives fewer or more values than the channels.
   `connector-opcua` maps its reads by position, with no `zip` over its channels, so a
   read past its channels panics in the kind and is never lost
-  with no count, and the Modbus kind of PR B2 of #432 will map its reads the same way
+  with no count, and the Modbus kind maps its reads the same way
   (the plan, 2026-10-16T06:42:57Z:
   https://github.com/synnaxlabs/foundation/issues/2830#issuecomment-6209736752;
   `laptop.architect-2`, 2026-10-16T05:23:34Z:
