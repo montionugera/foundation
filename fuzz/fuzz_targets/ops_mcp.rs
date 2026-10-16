@@ -15,7 +15,11 @@ fuzz_target!(|input: &[u8]| {
     let mut output = Vec::new();
     let mut errors = Vec::new();
     let mut sim = sim::Sim::new(sim::Config::default());
-    let paths = sim.node(sim::node::Config::default()).paths();
+    let host = sim.node(sim::node::Config::default());
+    // `foundation mcp` refuses to start at `/` with no `--files`.
+    host.make_dir(Path::new("/work"));
+    host.set_working_dir(Path::new("/work"));
+    let paths = host.paths();
     // Each request fails at once, as when no node runs.
     let request = async |_: &[u8]| -> Result<Vec<u8>, ops::Failure> {
         Err(ops::Failure {
