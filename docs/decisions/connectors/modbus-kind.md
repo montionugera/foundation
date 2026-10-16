@@ -20,12 +20,12 @@
 
   1. **Endpoint.** `address` is a host and a port, such as `"plc:502"`, port 502 when
      it has none. A host in brackets is an IPv6 address (`"[fd00::1]:502"`), with an
-     optional zone of letters, digits, `-`, `.`, and `_` (`"[fe80::1%eth0]"`). Each
-     other host has only letters, digits, `-`, `.`, and `_`, as Docker Compose names
-     such as `plc_1` resolve. No part between dots is empty, longer than 63
-     characters, or starts or ends with `-`. A host with a number last (digits, or
-     `0x` or `0X` and hex digits) is an IPv4 address of four plain parts, as a
-     resolver reads `"10.1"` as 10.0.0.1, `"010"` as octal, and `"10.0xa"` as
+     optional zone of letters, digits, `-`, `.`, and `_` (`"[fe80::1%eth0]"`;
+     #1927). Each other host has only letters, digits, `-`, `.`, and `_`, as Docker
+     Compose names such as `plc_1` resolve. No part between dots is empty, longer
+     than 63 characters, or starts or ends with `-`. A host with a number last
+     (digits, or `0x` or `0X` and hex digits) is an IPv4 address of four plain parts,
+     as a resolver reads `"10.1"` as 10.0.0.1, `"010"` as octal, and `"10.0xa"` as
      10.0.0.10. The port is 1 to 65535 (`laptop.architect-2`,
      2026-10-16T00:25:03Z:
      https://github.com/synnaxlabs/foundation/pull/2785#issuecomment-6205157567). The
