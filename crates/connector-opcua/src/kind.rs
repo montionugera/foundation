@@ -252,7 +252,7 @@ impl<'a> Frames<'a> {
         Ok(Self {
             ctx,
             writer,
-            kept: Vec::with_capacity(types.len()),
+            kept: vec![None; types.len()],
             types,
             left: Left {
                 bad: ctx.count("bad"),
@@ -278,9 +278,9 @@ impl<'a> Frames<'a> {
     ) -> Result<(), Error> {
         let (mut bad, mut uncertain, mut mistyped) = (0, 0, 0);
         let mut first = None;
-        self.kept.clear();
-        for (at, (value, &sample)) in values.iter().zip(&self.types).enumerate() {
-            let kept = match Why::of(value, sample) {
+        let reads = values.iter().zip(&self.types).zip(&mut self.kept);
+        for (at, ((value, &sample), kept)) in reads.enumerate() {
+            *kept = match Why::of(value, sample) {
                 Ok(value) => Some(value),
                 Err(Why::Bad) => {
                     bad += 1;
@@ -296,7 +296,6 @@ impl<'a> Frames<'a> {
                     None
                 }
             };
-            self.kept.push(kept);
         }
         self.left.add(bad, uncertain, mistyped);
         self.left.note(self.ctx, first);
