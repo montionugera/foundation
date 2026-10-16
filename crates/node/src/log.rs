@@ -207,6 +207,8 @@ impl Entry<'_> {
         reason = "only a defect of `Serialize` fails, and `fmt` drops it with no word"
     )]
     fn json(&self, w: &mut Writer<'_>) -> fmt::Result {
+        // `serde_json` writes bytes and `Writer` takes `str`. An adapter checks the UTF-8
+        // of each piece; `to_string` builds the line with no check, for one copy.
         let line = serde_json::to_string(self)
             .expect("invariant: a map with string keys serializes to a String");
         w.write_str(&line)?;
