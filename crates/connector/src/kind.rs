@@ -284,7 +284,8 @@ impl<C> Context<C> {
         &self.inputs.net
     }
 
-    /// The roots that an `https` connect trusts: the CA certificates of the OS.
+    /// The roots that an `https` connect trusts, as `supervisor::Config::roots`
+    /// gives them.
     #[must_use]
     pub fn roots(&self) -> &http::Roots {
         &self.inputs.roots
