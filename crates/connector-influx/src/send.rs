@@ -118,8 +118,8 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
 }
 
 /// Sends `body` until InfluxDB answers 204. Shows each other answer as the run's
-/// error, with the fix for a 400, a 404, or a 422, and waits a backoff before the
-/// next attempt. After a 401 or a 403, it reads the token again before that attempt.
+/// error, with the fix for a 400, a 404, a 413, or a 422, and waits a backoff before
+/// the next attempt. After a 401 or a 403, it reads the token again before that attempt.
 /// Never ends after the cancel of the run, which the caller sees first.
 ///
 /// # Errors

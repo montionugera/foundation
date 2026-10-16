@@ -187,8 +187,8 @@ impl kind::Kind for Kind {
     /// ack it adds the batch's fields to the count `confirmed`, the seqs of its gap
     /// lines to `lost`, and the samples it left out as over 65,536 bytes to
     /// `oversized`. It shows each other answer as its error, with the fix for a 400, a
-    /// 404, or a 422, and sends the batch again after a backoff. It reads the token at
-    /// its start, and again after a 401 or a 403 before the next attempt.
+    /// 404, a 413, or a 422, and sends the batch again after a backoff. It reads the
+    /// token at its start, and again after a 401 or a 403 before the next attempt.
     ///
     /// # Errors
     ///
