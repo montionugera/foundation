@@ -31,7 +31,8 @@
   (`connector.no-channel`), and `Home` with a lease that is not longer than zero
   (`connector.lease`). `Retry`, with the hub error: `Remote` and `Mesh` of each, since
   the home can move back, and a mesh that stops ends the run at the cancel after at most
-  one backoff. `Device` is for the device or the endpoint, never the hub. An error that
+  one backoff; and reader `Unrecorded`, since a later open can find room. `Device` is
+  for the device or the endpoint, never the hub. An error that
   the open never gives panics with `invariant:`: writer `Home` `Unsynced`, because
   `Hub::writer` waits for mesh time; reader `Unsynced`, because the supervisor opens a
   reader only after the status channels, which wait for mesh time, and mesh time stays

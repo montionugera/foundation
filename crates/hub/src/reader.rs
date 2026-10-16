@@ -267,6 +267,9 @@ pub enum Error {
         /// The most bytes of one entry.
         limit: usize,
     },
+    /// The reader is named and complete, and the home had no room to record its
+    /// position, so a restart would not resume it. Open it again later.
+    Unrecorded,
     /// The home of the index is `home`, another node, and this reader opens only at the
     /// home of its index: a named reader, or the reader of a program's read.
     Remote {
@@ -305,6 +308,10 @@ impl fmt::Display for Error {
                  bytes: close a named reader of the index whose hold is zero, wait for \
                  a hold to end, or open this one unnamed"
             ),
+            Self::Unrecorded => f.write_str(
+                "the home had no room to record the position of the named reader: \
+                 open it again later",
+            ),
             Self::Remote { home } => write!(
                 f,
                 "the home of the index of the reader is node {home}, and this reader \
@@ -342,6 +349,7 @@ impl From<::home::reader::Unopened> for Error {
         match unopened {
             ::home::reader::Unopened::Unsynced => Self::Unsynced,
             ::home::reader::Unopened::Full { limit } => Self::Full { limit },
+            ::home::reader::Unopened::Unrecorded => Self::Unrecorded,
         }
     }
 }
@@ -426,6 +434,7 @@ impl Local {
                         WINDOW,
                         CHARGE,
                     )?;
+                    state.gate.wake();
                     state.take_over(opened)
                 };
                 let (session, complete) = Session::with_complete(state, key, channels);
@@ -435,6 +444,7 @@ impl Local {
                 let key = {
                     let mut state = state.borrow_mut();
                     let opened = state.home.open_named_latest(channels.index, named)?;
+                    state.gate.wake();
                     state.take_over(opened)
                 };
                 (Session::new(state, key, channels, None), None)

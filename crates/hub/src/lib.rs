@@ -124,7 +124,8 @@ struct State {
     /// The readers that [`::home::Shard::woken`] gave last.
     woken: Vec<::home::reader::Key>,
     commit: commit::Task,
-    /// The gate task, woken at each new carry and each writer open and close.
+    /// The gate task, woken at each new carry, each writer open and close, each named
+    /// open, and each reader close.
     gate: task::Waiter,
     /// The error that ended the home's buffer.
     failed: Option<env::files::Error>,
@@ -271,7 +272,8 @@ impl Hub {
     /// [`reader::Error::Remote`] when the home is another node,
     /// [`reader::Error::Unsynced`] before the node has mesh time, and, when complete,
     /// [`reader::Error::Full`] when the records of the named readers of the index
-    /// would pass one entry of the buffer. At the home of another node:
+    /// would pass one entry of the buffer, and [`reader::Error::Unrecorded`] when the
+    /// home had no room to record the reader's position. At the home of another node:
     /// [`reader::Error::Transport`] when the dial or the stream fails,
     /// [`reader::Error::Refused`] when the home refuses the session,
     /// [`reader::Error::Message`] for a reply that breaks the hub protocol, and
@@ -506,20 +508,20 @@ impl State {
     }
 
     /// Closes the reader session `key` at the home, unless a removal or a takeover
-    /// closed it. Returns its waker, when it waits for a frame.
+    /// closed it, and wakes the gate task: a named close can make the home's deadline
+    /// earlier. Returns its waker, when it waits for a frame.
     fn close_reader(&mut self, key: ::home::reader::Key) -> Option<Waker> {
         let waker = self.wakers.remove(&key);
         if self.readers.remove(key) {
             self.home.close_reader(key);
+            self.gate.wake();
         }
         waker
     }
 
     /// Ends the session that `opened` took over, which the home closed, with
-    /// [`reader::Ended::Replaced`], and wakes the gate task: a named open can make the
-    /// home's deadline earlier. Returns the key of the new session.
+    /// [`reader::Ended::Replaced`]. Returns the key of the new session.
     fn take_over<K>(&mut self, opened: ::home::reader::Opened<K>) -> K {
-        self.gate.wake();
         if let Some(key) = opened.replaced {
             self.readers.replace(key);
             if let Some(waker) = self.wakers.remove(&key) {

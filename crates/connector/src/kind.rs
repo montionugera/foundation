@@ -490,7 +490,9 @@ pub(crate) fn reader_error(error: hub::reader::Error) -> Error {
             );
             return config_error(MANY_READERS, &fact, FEWER_READERS);
         }
-        Hub::Remote { .. } | Hub::Mesh(_) => return Error::Retry(Box::new(error)),
+        Hub::Remote { .. } | Hub::Mesh(_) | Hub::Unrecorded => {
+            return Error::Retry(Box::new(error));
+        }
         Hub::Unsynced => panic!("invariant: a reader opened before mesh time: {error}"),
         Hub::Transport(_) | Hub::Refused(_) | Hub::Message(_) | Hub::Pool(_) => {
             panic!("invariant: a named reader away from its home gave: {error}")
@@ -1186,6 +1188,11 @@ mod tests {
             "an attempt failed: the mesh stopped: each mesh of the group dropped";
         assert_eq!(reader(hub::reader::Error::Mesh(stopped())), mesh);
         assert_eq!(writer(hub::writer::Error::Mesh(stopped())), mesh);
+        assert_eq!(
+            reader(hub::reader::Error::Unrecorded),
+            "an attempt failed: the home had no room to record the position of the \
+             named reader: open it again later"
+        );
     }
 
     /// Calls the mapping directly: a run that gives `Full` needs eight named readers
