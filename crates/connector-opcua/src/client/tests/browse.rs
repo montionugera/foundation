@@ -9,7 +9,8 @@ use super::{
     relayed, run, serve,
 };
 use crate::client::browse::{Class, Description, Page, Reference, Unit};
-use crate::ffi::{self, Service, Status};
+use crate::client::service::{self, Request, Sizes};
+use crate::ffi::{self, Item, Service, Status};
 use crate::node::{Key, Name, Node};
 use crate::server::{Limits, Server};
 
@@ -963,6 +964,70 @@ fn each_answer_fits_one_message_of_the_session() {
         (sizes.len() > 1, sizes.iter().sum::<usize>())
     });
     assert_eq!(references, Ok((true, 400)));
+}
+
+/// A page asks for as many references as fit one message that the client takes,
+/// with each text at 256 bytes: on a server with a `MaxMessageSize` of 8192 bytes, a
+/// browse of 400 folders gives pages of that count.
+#[test]
+fn a_page_asks_for_the_references_that_fit_one_message() {
+    let (out, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            peer.server.set_limits(Limits {
+                message: 8192,
+                ..Limits::default()
+            });
+            folders(peer.server, 400);
+            let mut client = peer.connected().await;
+            let page = client.browse(&ROOT, ALL).await;
+            let build = |raw: &[ffi::Node<'_>]| {
+                Request::browse(raw, 0, false, 0, NonZeroU32::MIN)
+            };
+            let [_, empty] = Sizes::nodes(build, client.token).empty();
+            let fixed = empty + service::result(Item::RESULT);
+            let fits = (client.takes - fixed) / service::result(Item::REFERENCE);
+            client.close().await;
+            (
+                page.map(|page| page.map(|page| page.references.len())),
+                fits,
+            )
+        })
+        .await
+    });
+    let (page, fits) = out;
+    assert!(fits > 1 && fits < 400, "{fits}");
+    assert_eq!(page, Ok(Some(fits)));
+}
+
+/// Gives the answer of a Read of the Value of [`VALUE`] to `read`.
+fn read_answer(read: impl FnOnce(&service::Answer) + Send + 'static) {
+    let ((), _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            let mut client = peer.connected().await;
+            let answer = client.serve(&Request::values(&[(&VALUE).into()])).await;
+            read(&answer.expect("the read works"));
+            client.close().await;
+        })
+        .await;
+    });
+}
+
+#[test]
+#[should_panic(
+    expected = "invariant: a reader of [Service(2)] reads no answer of Service(3)"
+)]
+fn a_reader_of_an_answer_of_another_service_panics() {
+    read_answer(|answer| {
+        answer.target(0);
+    });
+}
+
+#[test]
+#[should_panic(expected = "invariant: a reader reads result 1 of 1 results")]
+fn a_reader_of_a_result_past_the_count_panics() {
+    read_answer(|answer| {
+        answer.value(1);
+    });
 }
 
 /// A late answer of a describe that timed out changes no later call.

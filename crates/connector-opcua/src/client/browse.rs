@@ -239,11 +239,11 @@ impl Client {
         let per = FACTS.len();
         let mut types = vec![None; nodes.len()];
         let sizes = Sizes::nodes(Request::values, self.token);
-        let [fact, value] = [Item::FACT, Item::VALUE].map(service::result);
+        // Each fact is sized as the largest, the data type.
+        let fact = service::result(Item::FACT);
         let split =
             self.split(nodes.len() * per, self.per_read, sizes.empty(), |index| {
-                let answer = if index % per == 0 { fact } else { value };
-                sizes.item(id_bytes(&nodes[index / per]), answer)
+                sizes.item(id_bytes(&nodes[index / per]), fact)
             });
         for range in split.ranges {
             let raw: Vec<ffi::Node<'_>> = range
