@@ -477,8 +477,9 @@ impl fmt::Display for Full {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "the records of the named readers of the index would pass {} bytes: give \
-             the index fewer named readers, or wait for a hold to end",
+            "the records of the named readers of the index would pass {} bytes: read \
+             the index from fewer connectors in complete mode, set `mode = \"latest\"` \
+             on one, or wait for the hold of a removed reader to end",
             self.limit
         )
     }
@@ -1213,8 +1214,9 @@ mod tests {
         assert_eq!(
             full.to_string(),
             "an attempt failed: the records of the named readers of the index would \
-             pass 4032 bytes: give the index fewer named readers, or wait for a hold to \
-             end"
+             pass 4032 bytes: read the index from fewer connectors in complete mode, \
+             set `mode = \"latest\"` on one, or wait for the hold of a removed reader \
+             to end"
         );
     }
 

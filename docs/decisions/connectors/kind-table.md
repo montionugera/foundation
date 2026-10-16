@@ -27,18 +27,21 @@
   the home can move back, and a mesh that stops ends the run at the cancel after at most
   one backoff; and reader `Unrecorded`, since a later open can find room. `Retry` for
   reader `Full`, with the connector's own text "the records of the named readers of
-  the index would pass {limit} bytes: give the index fewer named readers, or wait for a
-  hold to end", because the hub's text says to open the reader unnamed, which a spec
-  cannot do. A hold that ends frees room, and a `Full` that stays costs one open for
-  each backoff, with the cause in the status at each try. Lost: `Config`
-  (`connector.many-readers`), which stops the connector and its data for good on a
-  cause that clears itself (`laptop.architect-2`, 2026-10-16T07:08:14Z:
-  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6210095932, which
+  the index would pass {limit} bytes: read the index from fewer connectors in complete
+  mode, set `mode = "latest"` on one, or wait for the hold of a removed reader to end",
+  because the hub's text says to open the reader unnamed, which a spec cannot do. A
+  hold that ends frees room, and a `Full` that stays costs one open for each backoff,
+  with the cause in the status at each try. Lost: `Config` (`connector.many-readers`),
+  which stops the connector and its data for good on a cause that clears itself
+  (`laptop.architect-2`, 2026-10-16T07:08:14Z:
+  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6210095932; the text:
+  2026-10-16T07:44:03Z:
+  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6210644375; which
   replaces the `Config` of 2026-10-16T05:24:48Z:
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6208736533, and
   2026-10-16T06:45:15Z:
-  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6209768377). `Device` is
-  for the device or the endpoint, never the hub. An error that
+  https://github.com/synnaxlabs/foundation/pull/2835#issuecomment-6209768377).
+  `Device` is for the device or the endpoint, never the hub. An error that
   the open never gives panics with `invariant:`: writer `Home` `Unsynced`, because
   `Hub::writer` waits for mesh time; reader `Unsynced`, because the supervisor opens a
   reader only after the status channels, which wait for mesh time, and mesh time stays
