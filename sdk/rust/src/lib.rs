@@ -54,9 +54,10 @@ pub struct Subject {
 /// that thread then sends the close and ends. [`Client::close`] waits for both. A
 /// panic of the thread after a drop goes to the panic hook of the process.
 #[derive(Debug)]
-pub struct Client(Option<Thread>);
+pub struct Client(Thread);
 
-/// The thread that holds the session, and the sender whose drop ends it.
+/// The thread that holds the session, and the sender whose drop ends it. A drop
+/// detaches the thread.
 #[derive(Debug)]
 struct Thread {
     end: oneshot::Sender<()>,
@@ -98,7 +99,7 @@ impl Client {
         )]
         let outcome = connected.recv();
         match outcome {
-            Ok(Ok(())) => Ok(Self(Some(thread))),
+            Ok(Ok(())) => Ok(Self(thread)),
             Ok(Err(error)) => {
                 thread.end();
                 Err(error)
@@ -118,18 +119,8 @@ impl Client {
     /// # Panics
     ///
     /// Resumes a panic of the client's thread.
-    pub fn close(mut self) {
-        if let Some(thread) = self.0.take() {
-            thread.end();
-        }
-    }
-}
-
-impl Drop for Client {
-    fn drop(&mut self) {
-        if let Some(thread) = self.0.take() {
-            drop(thread.end);
-        }
+    pub fn close(self) {
+        self.0.end();
     }
 }
 

@@ -49,10 +49,10 @@ fn thread(body: impl FnOnce(oneshot::Receiver<()>) + Send + 'static) -> Thread {
 #[test]
 fn a_close_ends_the_thread_and_waits_for_it() {
     let (ended, end) = mpsc::channel();
-    let client = Client(Some(thread(move |receiver| {
+    let client = Client(thread(move |receiver| {
         drop(receiver.blocking_recv());
         ended.send(()).unwrap();
-    })));
+    }));
     client.close();
     assert_eq!(end.try_recv(), Ok(()));
 }
@@ -60,19 +60,19 @@ fn a_close_ends_the_thread_and_waits_for_it() {
 #[test]
 #[should_panic(expected = "the session failed")]
 fn a_close_resumes_a_panic_of_the_thread() {
-    Client(Some(thread(|_| panic!("the session failed")))).close();
+    Client(thread(|_| panic!("the session failed"))).close();
 }
 
 #[test]
 fn a_drop_ends_the_thread_and_does_not_wait() {
     let (go, wait) = mpsc::channel::<()>();
     let (ended, end) = mpsc::channel();
-    let client = Client(Some(thread(move |receiver| {
+    let client = Client(thread(move |receiver| {
         drop(receiver.blocking_recv());
         #[expect(clippy::disallowed_methods, reason = "the thread waits for the test")]
         wait.recv().unwrap();
         ended.send(()).unwrap();
-    })));
+    }));
     drop(client);
     go.send(()).unwrap();
     #[expect(clippy::disallowed_methods, reason = "the test waits for the thread")]
