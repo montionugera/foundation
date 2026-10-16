@@ -182,8 +182,7 @@ fn run_of<F: Future<Output = ()> + 'static>(
     record
 }
 
-/// Records each frame of the channels `select` of one index. A frame that the home
-/// loses ends the reader `Behind`, so the task opens it again.
+/// Records each frame of the channels `select` of one index.
 async fn record<const N: usize>(
     hub: &Hub,
     tasks: &Tasks,
