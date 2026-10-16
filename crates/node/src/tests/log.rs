@@ -118,9 +118,14 @@ fn a_node_logs_its_start_and_its_stop_in_json() {
 
 /// The warnings that a node on `roots` logs in a run of a second.
 fn warned(roots: os::Roots) -> Vec<String> {
+    logged(roots, tracing::Level::WARN)
+}
+
+/// The lines at `level` or above that a node on `roots` logs in a run of a second.
+fn logged(roots: os::Roots, level: tracing::Level) -> Vec<String> {
     let (mut sim, host) = host(1);
     let lines = Lines::default();
-    let log = to(&lines, false, tracing::Level::WARN);
+    let log = to(&lines, false, level);
     let node = Node::start(Config {
         roots,
         log,
@@ -136,7 +141,7 @@ fn warned(roots: os::Roots) -> Vec<String> {
 const SKIPPED: &str = "2026-01-01T00:00:00.004198Z WARN node: OS roots that do not parse are skipped \
      skipped=1";
 const NONE: &str = "2026-01-01T00:00:00.004198Z WARN node: the OS roots hold no \
-                    certificate, so each https connect fails";
+                    certificate, so an https connect with no CA of its connector fails";
 
 #[test]
 fn a_node_warns_of_each_failure_of_its_roots_and_of_each_skipped_one() {
@@ -154,6 +159,8 @@ fn a_node_warns_of_each_failure_of_its_roots_and_of_each_skipped_one() {
     );
 }
 
+/// A private call: no caller sees the roots of the supervisor until the influx kind
+/// sends `https` (PR 3 of #2702), and this test kills `trust` giving no roots.
 #[test]
 fn a_node_trusts_each_root_that_parses() {
     let roots = os::Roots {
@@ -161,6 +168,19 @@ fn a_node_trusts_each_root_that_parses() {
         failures: Vec::new(),
     };
     assert_eq!(format!("{:?}", crate::trust(&roots)), "Roots { count: 1 }");
+}
+
+#[test]
+fn a_node_warns_of_its_roots_before_it_starts() {
+    let lines = logged(os::Roots::default(), tracing::Level::INFO);
+    let warned = lines.iter().position(|line| line == NONE);
+    let started = lines
+        .iter()
+        .position(|line| line.contains(" node: started "));
+    assert!(
+        warned.is_some() && warned < started,
+        "the warning before `started`: {lines:?}"
+    );
 }
 
 #[test]

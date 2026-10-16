@@ -110,7 +110,8 @@ pub struct Config<M> {
     pub vars: BTreeMap<OsString, OsString>,
     /// The CA certificates that each `https` connect of a connector trusts. Main gives
     /// [`os::roots`]. Shard 0 logs a warning for each failure, for the count of
-    /// certificates that do not parse, and when no certificate is left.
+    /// certificates that do not parse, and when no certificate is left, also with
+    /// [`Region::Absent`], which runs no connector.
     pub roots: os::Roots,
     /// Where and how the node writes its log. Each shard writes the events of its
     /// thread there, and [`Node::join`] the event `stopped`.
@@ -876,8 +877,11 @@ fn trust(roots: &os::Roots) -> connector::http::Roots {
     if skipped > 0 {
         tracing::warn!(skipped, "OS roots that do not parse are skipped");
     }
-    if skipped == roots.certificates.len() {
-        tracing::warn!("the OS roots hold no certificate, so each https connect fails");
+    if trusted.empty() {
+        tracing::warn!(
+            "the OS roots hold no certificate, so an https connect with no CA of its \
+             connector fails"
+        );
     }
     trusted
 }
@@ -1186,7 +1190,8 @@ impl Serve {
                 secret::Resolver::new(vars, files.clone(), &directory::secrets());
             let serve = pin!(async move {
                 // `hold` polls `serve` only once the file `address` holds the address.
-                let roots = trust(&roots);
+                let trusted = trust(&roots);
+                drop(roots);
                 tracing::info!(%name, address = %address.bound, shards, "started");
                 let region = mesh.clone().map(|mesh| hub::Region {
                     mesh,
@@ -1223,7 +1228,7 @@ impl Serve {
                             clock: clock.clone(),
                             entropy,
                             net,
-                            roots,
+                            roots: trusted,
                             tasks: tasks.clone(),
                             hub: hub.clone(),
                             secrets,
