@@ -206,6 +206,32 @@ fn writes_each_field_in_the_order_given_and_twice() {
 }
 
 #[test]
+fn leaves_out_a_field_whose_value_writes_nothing() {
+    let measurement = Measurement::new("m", &[("t", "v")]).unwrap();
+    let (a, b) = (
+        measurement.field("a").unwrap(),
+        measurement.field("b").unwrap(),
+    );
+    let mut out = b"x".to_vec();
+    let mut line = measurement.begin(&mut out);
+    line.field(&a, |_| false);
+    line.field(&b, |out| {
+        out.push(b'1');
+        true
+    });
+    line.field(&a, |_| false);
+    line.field(&a, |out| {
+        out.push(b'2');
+        true
+    });
+    assert_eq!(line.end(Stamp::from_nanos(5)), 2);
+    let mut line = measurement.begin(&mut out);
+    line.field(&a, |_| false);
+    assert_eq!(line.end(Stamp::EPOCH), 0, "no field, so no line");
+    assert_eq!(text(&out), "xm,t=v b=1,a=2 5\n");
+}
+
+#[test]
 fn writes_a_field_of_another_measurement_at_a_tag_key_of_this_one() {
     let measurement = Measurement::new("m", &[("t", "v")]).unwrap();
     let other = Measurement::new("n", &[]).unwrap();

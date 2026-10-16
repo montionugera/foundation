@@ -79,41 +79,72 @@ impl Measurement {
     /// measurement: a field of another one can repeat a tag key of this one. With no
     /// value, nothing is written. A field that comes twice is written twice. Gives
     /// the number of fields written.
-    #[expect(clippy::missing_panics_doc, reason = "a write to a Vec never fails")]
     pub fn line<'a>(
         &self,
         out: &mut Vec<u8>,
         values: impl IntoIterator<Item = (&'a Field, Value)>,
         time: Stamp,
     ) -> usize {
+        let mut line = self.begin(out);
+        for (field, value) in values {
+            line.field(field, |out| {
+                value.write(out);
+                true
+            });
+        }
+        line.end(time)
+    }
+
+    /// Appends the prefix of a line to `out`, and gives the line to fill.
+    pub(crate) fn begin<'a>(&self, out: &'a mut Vec<u8>) -> Line<'a> {
         let start = out.len();
         out.extend_from_slice(&self.prefix);
-        let mut separator = b' ';
-        let mut fields = 0_usize;
-        for (Field(key), value) in values {
-            out.push(separator);
-            separator = b',';
-            fields = fields.saturating_add(1);
-            out.extend_from_slice(key);
-            out.push(b'=');
-            let wrote = match value {
-                Value::Float(Float(float)) => write!(out, "{float:e}"),
-                Value::Integer(integer) => write!(out, "{integer}i"),
-                Value::Unsigned(unsigned) => write!(out, "{unsigned}u"),
-                Value::Boolean(boolean) => {
-                    out.push(if boolean { b't' } else { b'f' });
-                    Ok(())
-                }
-            };
-            wrote.expect("invariant: a write to a Vec never fails");
+        Line {
+            out,
+            start,
+            fields: 0,
         }
-        if separator == b' ' {
-            out.truncate(start);
+    }
+}
+
+/// One line that [`Measurement::begin`] started, as [`Measurement::line`] writes it.
+pub(crate) struct Line<'a> {
+    out: &'a mut Vec<u8>,
+    /// The length of `out` before the line.
+    start: usize,
+    fields: usize,
+}
+
+impl Line<'_> {
+    /// Appends `field` with the value that `value` appends. When `value` gives
+    /// `false`, it must append nothing, and the line leaves the field out.
+    #[inline]
+    pub(crate) fn field(
+        &mut self,
+        Field(key): &Field,
+        value: impl FnOnce(&mut Vec<u8>) -> bool,
+    ) {
+        let mark = self.out.len();
+        self.out.push(if self.fields == 0 { b' ' } else { b',' });
+        self.out.extend_from_slice(key);
+        self.out.push(b'=');
+        if value(self.out) {
+            self.fields = self.fields.saturating_add(1);
+        } else {
+            self.out.truncate(mark);
+        }
+    }
+
+    /// Ends the line at `time`, or removes it when it has no field. Gives the
+    /// number of fields written.
+    pub(crate) fn end(self, time: Stamp) -> usize {
+        if self.fields == 0 {
+            self.out.truncate(self.start);
             return 0;
         }
-        writeln!(out, " {}", time.nanos())
+        writeln!(self.out, " {}", time.nanos())
             .expect("invariant: a write to a Vec never fails");
-        fields
+        self.fields
     }
 }
 
@@ -129,6 +160,23 @@ pub enum Value {
     /// An unsigned 64-bit integer (`u`), which InfluxDB 2 and 3 store, and InfluxDB 1
     /// refuses.
     Unsigned(u64),
+}
+
+impl Value {
+    /// Appends the text of the value to `out`.
+    #[inline]
+    pub(crate) fn write(self, out: &mut Vec<u8>) {
+        let wrote = match self {
+            Self::Float(Float(float)) => write!(out, "{float:e}"),
+            Self::Integer(integer) => write!(out, "{integer}i"),
+            Self::Unsigned(unsigned) => write!(out, "{unsigned}u"),
+            Self::Boolean(boolean) => {
+                out.push(if boolean { b't' } else { b'f' });
+                Ok(())
+            }
+        };
+        wrote.expect("invariant: a write to a Vec never fails");
+    }
 }
 
 /// A finite 64-bit float. InfluxDB cannot store NaN or infinity.

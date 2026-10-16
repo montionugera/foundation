@@ -47,11 +47,10 @@ struct Body {
     samples: u64,
     lost: u64,
     times: Vec<u8>,
-    raw: Vec<u8>,
+    /// The samples of each data channel of the frame, by the order of `entries`.
+    raw: Vec<Vec<u8>>,
     /// The entry of each data channel of the frame, in view order.
     entries: Vec<usize>,
-    /// The values of each sample time of the frame, by the order of `entries`.
-    values: Vec<Option<Value>>,
 }
 
 /// The lines that [`Batch::take`] gives.
@@ -90,8 +89,9 @@ struct Channel {
     convert: Convert,
 }
 
-/// The value of one raw sample, or `None` when InfluxDB cannot store it.
-type Convert = fn(&[u8]) -> Option<Value>;
+/// Appends the field value of one raw sample, or gives `false` with nothing
+/// appended when InfluxDB cannot store it.
+type Convert = fn(&[u8], &mut Vec<u8>) -> bool;
 
 impl Batch {
     /// An empty batch of lines of the measurement `name` to `target`, whose gap lines
@@ -222,34 +222,25 @@ impl Body {
         let index = set.index(first);
         let count = self.times(received, index);
         let series = || view.iter().filter(|&(entry, _)| entry != index);
-        let fields = series().count();
         self.entries.clear();
-        self.values.clear();
-        let cells = count
-            .checked_mul(fields)
-            .expect("invariant: a frame fits memory");
-        self.values.resize(cells, None);
-        for (column, (at, bytes)) in series().enumerate() {
-            let channel = layout.channel(at);
-            self.entries.push(at);
-            codec::decode(entry(set, at).data_type, count, bytes, &mut self.raw)
-                .expect("invariant: the hub gives valid series");
-            let samples = self.raw.chunks_exact(channel.width);
-            for (line, sample) in self.values.chunks_exact_mut(fields).zip(samples) {
-                let value = line
-                    .get_mut(column)
-                    .expect("invariant: a line has each field");
-                *value = (channel.convert)(sample);
-            }
+        self.entries.extend(series().map(|(at, _)| at));
+        if self.raw.len() < self.entries.len() {
+            self.raw.resize_with(self.entries.len(), Vec::new);
         }
-        let lines = self.values.chunks_exact(fields);
-        for (values, &time) in lines.zip(self.times.as_chunks::<8>().0) {
-            let time = Stamp::from_nanos(i64::from_le_bytes(time));
-            let values =
-                (self.entries.iter().zip(values)).filter_map(|(&at, value)| {
-                    Some((&layout.channel(at).field, (*value)?))
-                });
-            let wrote = measurement.line(&mut self.bytes, values, time);
+        for ((at, bytes), raw) in series().zip(&mut self.raw) {
+            codec::decode(entry(set, at).data_type, count, bytes, raw)
+                .expect("invariant: the hub gives valid series");
+        }
+        for (line, &time) in self.times.as_chunks::<8>().0.iter().enumerate() {
+            let mut text = measurement.begin(&mut self.bytes);
+            for (&at, raw) in self.entries.iter().zip(&self.raw) {
+                let channel = layout.channel(at);
+                let sample = raw.chunks_exact(channel.width).nth(line);
+                let sample =
+                    sample.expect("invariant: a series has the count of its index");
+                text.field(&channel.field, |out| (channel.convert)(sample, out));
+            }
+            let wrote = text.end(Stamp::from_nanos(i64::from_le_bytes(time)));
             if wrote > 0 {
                 self.lines = self.lines.saturating_add(1);
             }
@@ -350,7 +341,7 @@ fn conversion(
     /// The conversion of a sample of `Scalar::$scalar`.
     macro_rules! read {
         ($scalar:ident) => {
-            |s| value(sample::Value::read(Scalar::$scalar, s))
+            |s, out| write(sample::Value::read(Scalar::$scalar, s), out)
         };
     }
     let data_type = entry(received.set(), at).data_type;
@@ -397,6 +388,13 @@ fn conversion(
     };
     let width = data_type.width().expect("invariant: a scalar has a width");
     Ok((width, convert))
+}
+
+/// Appends the field value of `sample`, or gives `false` with nothing appended when
+/// InfluxDB cannot store it.
+#[inline]
+fn write(sample: sample::Value, out: &mut Vec<u8>) -> bool {
+    value(sample).map(|value| value.write(out)).is_some()
 }
 
 /// The field of `sample`, or `None` when InfluxDB cannot store it: a NaN or infinite
