@@ -4,6 +4,7 @@
 use std::fmt;
 use std::ops::ControlFlow;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use document::diagnostic::Code;
 use types::sample::Value;
@@ -27,8 +28,8 @@ pub trait Device {
     /// Gives one page of the entries of `folder`, or of the root when `None`, in
     /// device order, from `cursor`, or from the first entry when `None`. A page holds
     /// at most [`LIMIT`] entries. The path of each entry is the path of `folder` and
-    /// its name, which is not empty: a kind names an entry whose name in the device
-    /// is empty, such as by its tag. No two entries of one folder have the same name.
+    /// its name, which is not empty: the record of the kind says what it gives for an
+    /// empty name of the device. No two entries of one folder have the same name.
     /// `None` when the device no longer has `folder` as a folder.
     ///
     /// # Errors
@@ -347,7 +348,7 @@ const NO_FOLDER: Code = Code::new("connector.no-folder");
 /// with `\` before each `/`, `*`, and `\` in a name. The root is the empty text.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Path {
-    names: Vec<String>,
+    names: Vec<Arc<str>>,
 }
 
 impl Path {
@@ -363,7 +364,7 @@ impl Path {
     ///
     /// When `name` is empty: no text names it.
     #[must_use]
-    pub fn child(&self, name: impl Into<String>) -> Self {
+    pub fn child(&self, name: impl Into<Arc<str>>) -> Self {
         let name = name.into();
         assert!(!name.is_empty(), "invariant: a name is not empty");
         let mut names = self.names.clone();
@@ -371,9 +372,10 @@ impl Path {
         Self { names }
     }
 
-    /// The name of each entry from the root, in order.
+    /// The name of each entry from the root, in order. A child shares the names of
+    /// its folder's path, so a path copies no text.
     #[must_use]
-    pub fn names(&self) -> &[String] {
+    pub fn names(&self) -> &[Arc<str>] {
         &self.names
     }
 }
@@ -388,7 +390,7 @@ impl FromStr for Path {
         }
         let names = split(text)?
             .into_iter()
-            .map(|name| name.into_iter().map(Char::char).collect())
+            .map(|name| name.into_iter().map(Char::char).collect::<String>().into())
             .collect();
         Ok(Self { names })
     }

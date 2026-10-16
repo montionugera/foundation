@@ -201,7 +201,7 @@ mod text {
     fn reads_the_names_of_a_path() {
         let read = path(r"Line\/3/Temp*/a\\b");
         let names = ["Line/3", "Temp*", r"a\b"];
-        assert_eq!(read.names(), names);
+        assert_eq!(read.names(), names.map(Arc::<str>::from));
         assert_eq!(
             read,
             Path::root().child(names[0]).child(names[1]).child(names[2])
@@ -244,7 +244,7 @@ mod text {
     proptest! {
         #[test]
         fn round_trips_a_path(names in prop::collection::vec("\\PC{1,4}", 0..4)) {
-            let built = names.iter().fold(Path::root(), |path, name| path.child(name));
+            let built = names.iter().fold(Path::root(), |path, name| path.child(name.as_str()));
             prop_assert_eq!(built.to_string().parse::<Path>(), Ok(built));
         }
 
@@ -494,7 +494,7 @@ mod walk {
             prop_assert!(found.values.is_empty());
             for browsed in &tree.browsed[1..] {
                 let names: Vec<&str> =
-                    browsed.names().iter().map(String::as_str).collect();
+                    browsed.names().iter().map(AsRef::as_ref).collect();
                 prop_assert!(extends(&segments, &names), "browsed {browsed:?}");
             }
         }

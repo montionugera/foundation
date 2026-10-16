@@ -28,15 +28,17 @@
   pattern, or import in parts", not a count. It browses no folder whose tag is the tag
   of a folder above it, so a loop in a graph such as an OPC UA address space ends. A
   pattern ends `Budget` at a folder deeper than `DEPTH` (64) names, so a chain of
-  folders that a server makes cannot hold the walk's memory. No name is empty:
-  `Path::child` panics on one, and a kind names an entry whose device name is empty,
-  such as by its tag, so the text of each path parses. A kind implements
-  `browse::Device` on its open session, so one walk is one session and can use a
-  continuation point; a `Cursor` that a front end gets holds no session state. `level`
-  takes a folder as the `Entry` that the device gave, never a path, and gives at most
-  `LIMIT` entries a page; `values` gives `types::sample::Value`, so there is one value
-  model. `import --match` uses the same walk, so the points that `browse --match` shows
-  are the points that `import --match` takes.
+  folders that a server makes cannot hold the walk's memory. A `Path` shares the names
+  of its folder's path, so an entry copies pointers and no text, and the walk holds at
+  most `DEPTH` pages that the device sent. No name is empty: `Path::child` panics on
+  one, and the record of each kind says what it gives for an empty name of its device,
+  so the text of each path parses. A kind implements `browse::Device` on its open
+  session, so one walk is one session and can use a continuation point; a `Cursor` that
+  a front end gets holds no session state. `level` takes a folder as the `Entry` that
+  the device gave, never a path, and gives at most `LIMIT` entries a page; `values`
+  gives `types::sample::Value`, so there is one value model. `import --match` uses the
+  same walk, so the points that `browse --match` shows are the points that `import
+  --match` takes.
   The person's words, through `laptop.monitor`: decision 1, 2026-10-15 17:17 UTC, "Ok,
   this is fine. I approve"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6197989240);
@@ -60,5 +62,7 @@
   A page with no entries counts as one visit, not a panic: `laptop.architect-2`,
   2026-10-16
   (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208174481).
+  `DEPTH`, the shared names, and the empty name: `laptop.architect-2`, 2026-10-16
+  (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208244581).
   `VISITS`: the walk's own time over a tree of 10 000 entries is 1.8 ms (median of
   100, box1, release); PR 5 of the PR list measures the cost of the OPC UA sim server.
