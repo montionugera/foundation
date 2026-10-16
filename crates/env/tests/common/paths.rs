@@ -52,6 +52,7 @@ macro_rules! tests {
             within_gives_not_found_through_a_directory_that_is_not_there,
             a_last_link_to_nothing_through_a_link_is_not_found,
             a_link_to_a_file_with_a_slash_fails,
+            a_resolve_of_a_link_to_nothing_with_a_slash_is_not_found,
         );
     };
     (@each $run:ident, $($case:ident),* $(,)?) => {
@@ -440,4 +441,22 @@ pub(crate) fn a_link_to_a_file_with_a_slash_fails(host: &Host<'_>) {
     };
     assert_eq!(paths.read(&dir.join("l"), 1), Err(through));
     assert_eq!(paths.resolve(&dir.join("l")), Err(through));
+}
+
+pub(crate) fn a_resolve_of_a_link_to_nothing_with_a_slash_is_not_found(
+    host: &Host<'_>,
+) {
+    let (paths, dir) = (host.paths, host.dir);
+    (host.make_link)(&dir.join("link.plan"), &dir.join("plant.plan"));
+    (host.make_link)(&dir.join("data"), Path::new("store/"));
+    for name in ["link.plan/", "link.plan/.", "data", "data/"] {
+        assert_eq!(
+            paths.resolve(&dir.join(name)),
+            Err(Error::NotFound),
+            "{name}"
+        );
+        let hidden = [dir.join(name)];
+        let within = paths.within(slice::from_ref(&dir.to_path_buf()), &hidden);
+        assert_eq!(within.err(), Some(Error::NotFound), "{name}");
+    }
 }

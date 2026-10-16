@@ -44,7 +44,8 @@ fn resolve(path: &Path) -> io::Result<PathBuf> {
     let (Some(name), Some(dir)) = (path.file_name(), path.parent()) else {
         return Err(missing);
     };
-    match fs::symlink_metadata(path) {
+    // Not `path`: an end in `/` or `/.` makes the stat follow a link at `name`.
+    match fs::symlink_metadata(dir.join(name)) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         // A symbolic link to nothing.
         Ok(_) => return Err(missing),
