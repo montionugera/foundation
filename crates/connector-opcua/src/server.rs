@@ -14,6 +14,8 @@ use crate::connection::Manager;
 use crate::ffi::{self, Status};
 use crate::node::{Key, Node};
 use crate::value::Value;
+#[cfg(test)]
+use types::time::Span;
 
 /// A started test server of open62541 on the loop of a connection manager.
 /// [`Server::close`] deletes it, and a drop leaks it.
@@ -163,12 +165,7 @@ impl Server {
         node: &Node,
         answer: impl FnMut() -> (Value, types::quality::Quality) + 'static,
     ) {
-        let source = NonNull::from(Box::leak(Box::new(Source {
-            read,
-            answer: Box::new(answer),
-            added: false,
-        })));
-        self.sources.push(source);
+        let source = self.source(Box::new(answer), false);
         // SAFETY: the server lives, it copies the name of `node`, and the close frees
         // `source` after the delete.
         let status = Status(unsafe {
@@ -181,6 +178,59 @@ impl Server {
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
         // SAFETY: it lives, and the server reads it only while the loop runs.
         unsafe { (*source.as_ptr()).added = true };
+    }
+
+    /// Makes `answer` answer each later read of the variable `node`, which open62541
+    /// adds, such as the state of the server, as [`Server::add_source`] does.
+    ///
+    /// # Panics
+    ///
+    /// If open62541 has no variable `node`, or its key is the number 0.
+    #[cfg(test)]
+    pub(crate) fn set_source(
+        &mut self,
+        node: &Node,
+        answer: impl FnMut() -> (Value, types::quality::Quality) + 'static,
+    ) {
+        let source = self.source(Box::new(answer), true);
+        // SAFETY: the server lives, and the close frees `source` after the delete.
+        let status = Status(unsafe {
+            ffi::test::shim_server_set_source(
+                self.raw(),
+                added(node),
+                source.as_ptr().cast(),
+            )
+        });
+        assert_eq!(status, Status::GOOD, "open62541 refused the source");
+    }
+
+    /// Makes a [`Source`] of `answer` that the close frees.
+    #[cfg(feature = "sim")]
+    fn source(
+        &mut self,
+        answer: Box<dyn FnMut() -> (Value, types::quality::Quality)>,
+        added: bool,
+    ) -> NonNull<Source> {
+        let source = NonNull::from(Box::leak(Box::new(Source {
+            read,
+            answer,
+            added,
+        })));
+        self.sources.push(source);
+        source
+    }
+
+    /// Sets the most session timeout that the server gives a later session, in whole
+    /// ms.
+    ///
+    /// # Panics
+    ///
+    /// If `most` is past `u32::MAX` ms.
+    #[cfg(test)]
+    pub(crate) fn set_session_timeout(&self, most: Span) {
+        let ms = u32::try_from(most.nanos() / 1_000_000).expect("a timeout of u32 ms");
+        // SAFETY: the server lives.
+        unsafe { ffi::test::shim_server_session_timeout(self.raw(), ms) };
     }
 
     /// The number of the `DataType` of the variable `node`, in namespace 0.

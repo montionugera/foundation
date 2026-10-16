@@ -14,11 +14,12 @@ use env::clock::Clock;
 use env::net::{Net, Tcp, tcp};
 use env::rng::Rng;
 use sim::{Sim, node};
+use types::quality::Quality;
 use types::time::Span;
 
 use super::{
-    Client, GRACE, Large, Nodes, READS, Reads, Request, SPLIT, Slots, UNREAD, answer,
-    id_bytes, most,
+    Client, GRACE, Large, Nodes, READS, Reads, Request, SPLIT, STATE, Slots, UNREAD,
+    answer, id_bytes, most,
 };
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
@@ -91,6 +92,8 @@ struct Peer<'s> {
     value: Value,
     /// The server does not run while it is closed.
     gate: Gate,
+    /// The reads of the state of the server that it answered.
+    states: Rc<Cell<u32>>,
 }
 
 impl Peer<'_> {
@@ -171,9 +174,15 @@ async fn serve<T>(
     )
     .expect("the port is free");
     // SAFETY: the close below deletes the server before the manager drops.
-    let server = unsafe { Server::start(&manager, c"", sessions) };
+    let mut server = unsafe { Server::start(&manager, c"", sessions) };
     let value = Value::F64(f64::from(u32::try_from(rng.below(1 << 20)).expect("fits")));
     server.add_scalar(&VALUE, value);
+    let states = Rc::new(Cell::new(0));
+    let count = Rc::clone(&states);
+    server.set_source(&STATE, move || {
+        count.set(count.get() + 1);
+        (Value::I32(0), Quality::GOOD)
+    });
     let peer = Peer {
         server: &server,
         clock: node.clock(),
@@ -182,6 +191,7 @@ async fn serve<T>(
         url: format!("opc.tcp://{local}"),
         value,
         gate: Gate::default(),
+        states,
     };
     let gate = peer.gate.clone();
     let out = {
@@ -1048,7 +1058,10 @@ fn a_client_idle_for_eleven_minutes_reads() {
             let idle = peer
                 .clock
                 .sleep(Span::from_nanos(11 * Span::MINUTE.nanos()));
-            client.idle(idle).await;
+            client
+                .idle(idle)
+                .await
+                .expect("the client keeps its session");
             (first, client.read_one(&VALUE).await, peer.value)
         })
         .await
@@ -1058,7 +1071,7 @@ fn a_client_idle_for_eleven_minutes_reads() {
 }
 
 /// A client idle for longer than the session timeout that it asks for (20 min) keeps
-/// its session.
+/// its session, as it reads the state of the server once per 10 s of the idle.
 #[test]
 fn a_client_idle_for_twenty_one_minutes_reads() {
     let (reads, _) = run(0, async |node| {
@@ -1068,13 +1081,17 @@ fn a_client_idle_for_twenty_one_minutes_reads() {
             let idle = peer
                 .clock
                 .sleep(Span::from_nanos(21 * Span::MINUTE.nanos()));
-            client.idle(idle).await;
-            (first, client.read_one(&VALUE).await, peer.value)
+            client
+                .idle(idle)
+                .await
+                .expect("the client keeps its session");
+            let states = peer.states.get();
+            (first, client.read_one(&VALUE).await, peer.value, states)
         })
         .await
     });
-    let (first, second, value) = reads;
-    assert_eq!((first, second), (Ok(value), Ok(value)));
+    let (first, second, value, states) = reads;
+    assert_eq!((first, second, states), (Ok(value), Ok(value), 21 * 6));
 }
 
 /// A connect whose wait has already ended gives no client.
@@ -1104,7 +1121,10 @@ fn the_close_of_a_client_idle_for_fifteen_minutes_frees_its_session() {
             let idle = peer
                 .clock
                 .sleep(Span::from_nanos(15 * Span::MINUTE.nanos()));
-            client.idle(idle).await;
+            client
+                .idle(idle)
+                .await
+                .expect("the client keeps its session");
             client.close().await;
             let url = peer.url.clone();
             let client = peer.connect(&url).await;

@@ -205,6 +205,10 @@ pub(crate) fn types() -> &'static [DataType; TYPES] {
 /// the most nodes of one Read request of a server, a `UInt32`. `shim.c` asserts it.
 pub(crate) const MAX_NODES_PER_READ: u32 = 11705;
 
+/// `UA_NS0ID_SERVER_SERVERSTATUS_STATE`, the node of the state of a server. `shim.c`
+/// asserts it.
+pub(crate) const SERVER_STATE: u32 = 2259;
+
 /// `UA_Callback`.
 pub(crate) type Callback =
     unsafe extern "C" fn(application: *mut c_void, data: *mut c_void);

@@ -15,20 +15,30 @@ use std::task::Poll;
 use env::clock::Clock;
 use env::net::Net;
 use env::rng::Rng;
-use types::time::Span;
+use types::time::{Monotonic, Span};
 
 use crate::alloc;
 use crate::connection::{CHUNKS, Manager, SENDS};
 use crate::event::Time;
 use crate::ffi::{self, Status};
 use crate::node::{Key, Node};
-use crate::value::{Fault, Value};
+use crate::value::{Cause, Fault, Value};
 
 #[cfg(test)]
 mod tests;
 
 /// The most requests of a client in flight. A request past it waits until one ends.
 const READS: u16 = 16;
+
+/// The most time with no read that [`Client::idle`] waits before it checks the
+/// connection.
+pub(crate) const CHECK: Span = Span::from_nanos(10 * Span::SECOND.nanos());
+
+/// The state of the server, which [`Client::idle`] reads as its check.
+const STATE: Node = Node {
+    namespace: 0,
+    key: Key::Number(ffi::SERVER_STATE),
+};
 
 /// The most time that [`Client::close`] waits for the server.
 pub(crate) const GRACE: Span = Span::SECOND;
@@ -54,10 +64,11 @@ const _: () = assert!(
 
 /// A client of open62541 with an active session, on its own loop and connection
 /// manager, on the thread that made it. Its loop runs only in its calls, so a client
-/// that waits for longer than the channel lifetime of its server (often 10 minutes)
-/// outside [`Client::idle`] loses its connection, and each later read fails. A drop
-/// closes its connection and waits for nothing, but leaves its session on the server
-/// until the session times out; a [`Client::close`] closes the session too.
+/// that waits outside [`Client::idle`] for longer than the channel lifetime (often 10
+/// minutes) or the session timeout of its server loses its connection or its session,
+/// and each later read fails. A drop closes its connection and waits for nothing, but
+/// leaves its session on the server until the session times out; a [`Client::close`]
+/// closes the session too.
 pub(crate) struct Client {
     raw: NonNull<ffi::Client>,
     /// C holds a pointer to it until `raw` is deleted, which calls the callback of each
@@ -69,6 +80,8 @@ pub(crate) struct Client {
     clock: Clock,
     /// The request timeout of the client.
     timeout: Span,
+    /// When the last read of the client started.
+    asked: Monotonic,
     /// The most bytes of the body of a message that the client sends.
     sends: usize,
     /// The most bytes of the body of a message that the client takes.
@@ -203,6 +216,7 @@ impl Client {
             raw,
             reads: Box::default(),
             values: Vec::new(),
+            asked: clock.now(),
             clock,
             timeout: Span::from_nanos(i64::from(timeout_ms) * 1_000_000),
             sends: 0,
@@ -369,7 +383,8 @@ impl Client {
         if nodes.count == 0 {
             return Ok(&[]);
         }
-        let deadline = self.clock.now() + self.timeout;
+        self.asked = self.clock.now();
+        let deadline = self.asked + self.timeout;
         // They can hold the requests and the values of a read that did not end.
         self.reads.requests.borrow_mut().clear();
         self.reads.failed.set(None);
@@ -440,11 +455,50 @@ impl Client {
     }
 
     /// Drives the client until `until` ends, and gives its value, so the client keeps
-    /// its channel and its session while it waits. A failure while it waits shows in
-    /// the next read.
-    pub(crate) async fn idle<T>(&mut self, until: impl Future<Output = T>) -> T {
+    /// its channel and its session while it waits. When [`CHECK`] passes with no read,
+    /// it reads the state of the server (`ns=0;i=2259`) to check the connection, and
+    /// the next check waits [`CHECK`] from the start of that read. A check that is in
+    /// flight when `until` ends stays in flight, as [`Client::read`] says.
+    ///
+    /// # Errors
+    ///
+    /// The status of the first failed check: the error of [`Client::read`], or the
+    /// status of the value when it is not Good. The value itself is not checked.
+    pub(crate) async fn idle<T>(
+        &mut self,
+        until: impl Future<Output = T>,
+    ) -> Result<T, Status> {
         let mut until = pin!(until);
-        self.connections.drive(|cx| until.as_mut().poll(cx)).await
+        loop {
+            let deadline = self.asked + CHECK;
+            let waited = self
+                .connections
+                .drive_until(Some(deadline), |cx| until.as_mut().poll(cx))
+                .await;
+            if let Some(value) = waited {
+                return Ok(value);
+            }
+            let nodes = self
+                .nodes(&[STATE])
+                .expect("invariant: a read of one node by number fits one message");
+            let mut check = pin!(self.read(&nodes));
+            let checked = future::poll_fn(|cx| {
+                if let Poll::Ready(value) = until.as_mut().poll(cx) {
+                    return Poll::Ready(Ok(Some(value)));
+                }
+                check.as_mut().poll(cx).map(|read| match read?[0] {
+                    Err(fault) => match fault.cause() {
+                        Cause::Status(status) => Err(status),
+                        Cause::Type(_) => Ok(None),
+                    },
+                    Ok(_) => Ok(None),
+                })
+            })
+            .await;
+            if let Some(value) = checked? {
+                return Ok(value);
+            }
+        }
     }
 
     /// Closes the session and the connection of the client, and waits until the

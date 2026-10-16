@@ -208,6 +208,12 @@ unsafe extern "C" {
         node: Node<'_>,
         source: *mut c_void,
     ) -> u32;
+    pub(crate) fn shim_server_set_source(
+        server: *mut Server,
+        node: Node<'_>,
+        source: *mut c_void,
+    ) -> u32;
+    pub(crate) fn shim_server_session_timeout(server: *mut Server, ms: u32);
     pub(crate) fn shim_server_data_type(
         server: *mut Server,
         node: Node<'_>,
