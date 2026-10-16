@@ -170,15 +170,13 @@ fn diagnostic(result: Result<Found, Error>) -> Diagnostic {
     }
 }
 
-/// The diagnostic of a break of the `Device` contract.
-fn broken(message: &str) -> Diagnostic {
+/// The diagnostic of a break of the rule `rule` of the `Device` contract.
+fn broken(rule: &str) -> Diagnostic {
     Diagnostic::new(
         BROKEN,
         None,
-        message.into(),
-        "This is a defect of the connector kind, not of the config or the device; \
-         report it with this message"
-            .into(),
+        format!("the connector kind broke a rule of a browse: {rule}"),
+        "Report this defect of the connector kind with this message".into(),
     )
 }
 
@@ -693,7 +691,7 @@ mod walk {
         let found = now(walk(&mut tree, &query("", Scope::Level(None))));
         assert_eq!(
             diagnostic(found),
-            broken(r#"the kind gave 501 entries in a page of "", over 500"#),
+            broken(r#"a page holds at most 500 entries, and a page of "" held 501"#),
         );
     }
 
@@ -781,9 +779,7 @@ mod walk {
         let found = now(walk(&mut tree, &query("", Scope::Match(pattern("**")))));
         assert_eq!(
             diagnostic(found),
-            broken(
-                r#"the kind gave an entry with an empty name in the folder "Line1""#
-            ),
+            broken(r#"an entry has a name, and an entry of "Line1" has an empty name"#),
         );
     }
 
@@ -818,23 +814,15 @@ mod walk {
 
     #[test]
     fn refuses_an_entry_that_is_not_in_its_folder() {
-        for (at, message) in [
-            (
-                "Line9/Temp1",
-                r#"the kind gave "Line9/Temp1" in the folder "Line1""#,
-            ),
-            ("Temp1", r#"the kind gave "Temp1" in the folder "Line1""#),
-            (
-                "Line1/a/Temp1",
-                r#"the kind gave "Line1/a/Temp1" in the folder "Line1""#,
-            ),
-            ("", r#"the kind gave "" in the folder "Line1""#),
-        ] {
+        for at in ["Line9/Temp1", "Temp1", "Line1/a/Temp1", ""] {
             let mut tree = Tree::new(&plant(), 10);
             let entries = tree.folders.get_mut("Line1").expect("Line1");
             entries[0].path = path(at);
             let found = now(walk(&mut tree, &query("", Scope::Match(pattern("**")))));
-            assert_eq!(diagnostic(found), broken(message), "{at}");
+            let rule = format!(
+                r#"an entry is in the folder of its page, and "{at}" is not in "Line1""#
+            );
+            assert_eq!(diagnostic(found), broken(&rule), "{at}");
         }
     }
 
@@ -986,7 +974,7 @@ mod values {
         let found = now(walk(&mut short, &read("Line1", Scope::Level(None))));
         assert_eq!(
             diagnostic(found),
-            broken("the kind gave 2 values for 3 tags"),
+            broken("one value comes for each tag, and 2 came for 3 tags"),
         );
     }
 }

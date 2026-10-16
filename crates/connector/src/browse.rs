@@ -23,7 +23,8 @@ pub const VISITS: usize = 10_000;
 pub const DEPTH: usize = 64;
 
 /// A device open for one browse. A kind implements it on its session, so one walk
-/// connects once. [`walk`] gives [`Broken`] when the kind breaks a rule of this trait.
+/// connects once. [`walk`] gives `connector.broken-browse` when the kind breaks a rule
+/// of this trait.
 pub trait Device {
     /// Gives one page of the entries of `folder`, or of the root when `None`, in
     /// device order, from `cursor`, or from the first entry when `None`. A page holds
@@ -71,7 +72,7 @@ pub trait Device {
 ///
 /// [`Error::Config`] with `connector.no-folder` when no folder is at a name of the
 /// start, or at a folder that the device gave and then did not have, and with
-/// `connector.broken-browse` ([`Broken`]) when `device` breaks a rule of [`Device`].
+/// `connector.broken-browse` when `device` breaks a rule of [`Device`].
 /// The errors of `device`.
 pub async fn walk(device: &mut impl Device, query: &Query) -> Result<Found, Error> {
     walk_within(device, query, LIMIT, VISITS).await
@@ -372,7 +373,7 @@ impl Path {
     }
 
     /// The path of the entry `name` in this folder. [`walk`] refuses an entry whose
-    /// name is empty ([`Broken::Empty`]): no text names it.
+    /// name is empty: no text names it.
     #[must_use]
     pub fn child(&self, name: impl Into<Arc<str>>) -> Self {
         let mut names = self.names.clone();
@@ -643,69 +644,51 @@ impl fmt::Display for Malformed {
 
 impl std::error::Error for Malformed {}
 
-/// A break of a rule of [`Device`] by the code of a kind: a defect of the kind, not of
-/// the config or the device. It becomes [`Error::Config`] with
-/// `connector.broken-browse`, since a retry gets the same answer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Broken {
+/// A break of a rule of [`Device`] by the code of a kind.
+#[derive(Debug)]
+enum Broken {
     /// A page of `folder` held `count` entries, over [`LIMIT`].
-    Large {
-        /// The folder of the page.
-        folder: Path,
-        /// The count of entries in the page.
-        count: usize,
-    },
+    Large { folder: Path, count: usize },
     /// A page of `folder` held `entry`, which is not in it.
-    Outside {
-        /// The folder of the page.
-        folder: Path,
-        /// The path of the entry.
-        entry: Path,
-    },
+    Outside { folder: Path, entry: Path },
     /// A page of `folder` held an entry whose name is empty.
-    Empty {
-        /// The folder of the page.
-        folder: Path,
-    },
+    Empty { folder: Path },
     /// The device gave `given` values for `asked` tags.
-    Values {
-        /// The count of tags.
-        asked: usize,
-        /// The count of values.
-        given: usize,
-    },
+    Values { asked: usize, given: usize },
 }
 
 impl fmt::Display for Broken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the connector kind broke a rule of a browse: ")?;
         match self {
             Self::Large { folder, count } => write!(
                 f,
-                "the kind gave {count} entries in a page of \"{folder}\", over {LIMIT}",
+                "a page holds at most {LIMIT} entries, and a page of \"{folder}\" held \
+                 {count}",
             ),
-            Self::Outside { folder, entry } => {
-                write!(f, "the kind gave \"{entry}\" in the folder \"{folder}\"")
-            }
+            Self::Outside { folder, entry } => write!(
+                f,
+                "an entry is in the folder of its page, and \"{entry}\" is not in \
+                 \"{folder}\"",
+            ),
             Self::Empty { folder } => write!(
                 f,
-                "the kind gave an entry with an empty name in the folder \"{folder}\"",
+                "an entry has a name, and an entry of \"{folder}\" has an empty name",
             ),
-            Self::Values { asked, given } => {
-                write!(f, "the kind gave {given} values for {asked} tags")
-            }
+            Self::Values { asked, given } => write!(
+                f,
+                "one value comes for each tag, and {given} came for {asked} tags",
+            ),
         }
     }
 }
-
-impl std::error::Error for Broken {}
 
 impl From<Broken> for Error {
     fn from(broken: Broken) -> Self {
         config_error(
             BROKEN,
             &broken,
-            "This is a defect of the connector kind, not of the config or the \
-             device; report it with this message",
+            "Report this defect of the connector kind with this message",
         )
     }
 }

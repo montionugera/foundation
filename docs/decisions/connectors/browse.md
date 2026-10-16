@@ -34,15 +34,17 @@
   record of each kind says what it gives for an empty name of its device, so the text of
   each path parses. When a kind breaks a rule of `Device` (a page over `LIMIT`, an entry
   outside its folder, an empty name, a count of values that is not the count of tags),
-  `walk` gives `connector.broken-browse` with a message that names the rule, and the
-  browse fails. It never panics: in release a panic stops the node and each of its
-  connectors. A kind implements `browse::Device` on its open session, so one walk
-  is one session and can use a continuation point; a `Cursor` that a front end gets
-  holds no session state. `level` takes a folder as the `Entry` that the device gave,
-  never a path, and gives at most `LIMIT` entries a page; `values` gives
-  `types::sample::Value`, so there is one value model. Trigger for a text value: a kind
-  that reads a `string` channel. Lost: a count of matches up to the budget; trigger: the
-  agent test (PR 9) shows a task with two over-limit refusals one after the other.
+  `walk` gives `Error::Config` with `connector.broken-browse`, whose message names the
+  rule, then what broke it, and the browse fails with no retry. It never panics: in
+  release a panic stops the node and each of its connectors. The browse operation adds
+  the connector and its kind to each error that it gives from `walk`. A kind implements
+  `browse::Device` on its open session, so one walk is one session and can use a
+  continuation point; a `Cursor` that a front end gets holds no session state. `level`
+  takes a folder as the `Entry` that the device gave, never a path, and gives at most
+  `LIMIT` entries a page; `values` gives `types::sample::Value`, so there is one value
+  model. Trigger for a text value: a kind that reads a `string` channel. Lost: a count
+  of matches up to the budget; trigger: the agent test (PR 9) shows a task with two
+  over-limit refusals one after the other.
   `import --match` uses the same walk, so the points that `browse --match` shows are the
   points that `import --match` takes.
   The person's words, through `laptop.monitor`: decision 1, 2026-10-15 17:17 UTC, "Ok,
@@ -74,7 +76,9 @@
   error, not a panic, for a break of `Device`: the person, through `laptop.monitor`,
   2026-10-16 04:54:26 UTC, "Yes", on "Should a browse bug return an error instead of
   crashing the node?"
-  (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208381924).
+  (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208381924). The
+  shape of the error: `laptop.architect-2`, 2026-10-16 04:56 UTC
+  (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208402982).
   `VISITS`: the walk's own time, median of 100 on box1 in release, is 1.4 ms over a
   flat tree of 9 999 points and 4.7 ms over a chain of 63 folders of 150 points each;
   PR 5 of the PR list measures the cost of the OPC UA sim server. The two triggers
