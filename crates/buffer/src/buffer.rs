@@ -38,6 +38,9 @@ use crate::wal::{
     self, Cursor, Ends, Layout, Limit, Plan, Position, Step, Unfit, Window, Writer,
 };
 
+#[cfg(feature = "sim")]
+pub(crate) mod bench;
+
 /// How many reads at once hold records with no allocation.
 const HOLDS: usize = 16;
 
@@ -370,6 +373,31 @@ impl fmt::Debug for Parked {
 }
 
 impl State {
+    /// The state of a ring that `writer`, `logs`, and the last checkpoint `header`
+    /// give, with nothing queued.
+    fn new(writer: Writer, logs: Logs, header: Header) -> Self {
+        Self {
+            writer,
+            open: Group::default(),
+            spares: Vec::new(),
+            queue: Vec::new(),
+            logs,
+            header,
+            carried: Carried::default(),
+            starved: false,
+            held: Vec::with_capacity(HOLDS),
+            taken: 0,
+            commits: 0,
+            committing: wait::Set::new(),
+            ending: wait::Set::new(),
+            next_key: 0,
+            parked: Parked(None),
+            closed: false,
+            ended: false,
+            failed: None,
+        }
+    }
+
     /// How the task ended, once it ended: with the error of a failed file call, else
     /// with `Ok`.
     fn outcome(&self) -> Option<Result<(), files::Error>> {
@@ -657,26 +685,7 @@ impl Buffer {
             layout: header.layout,
             trimmed,
             tails_max,
-            state: RefCell::new(State {
-                writer,
-                open: Group::default(),
-                spares: Vec::new(),
-                queue: Vec::new(),
-                logs,
-                header,
-                carried: Carried::default(),
-                starved: false,
-                held: Vec::with_capacity(HOLDS),
-                taken: 0,
-                commits: 0,
-                committing: wait::Set::new(),
-                ending: wait::Set::new(),
-                next_key: 0,
-                parked: Parked(None),
-                closed: false,
-                ended: false,
-                failed: None,
-            }),
+            state: RefCell::new(State::new(writer, logs, header)),
         });
         tasks.spawn(run(Rc::clone(&shared), clock, commit, chain));
         Ok(Self {
