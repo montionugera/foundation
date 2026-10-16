@@ -1,11 +1,12 @@
 //! A UDP socket: a Tokio socket, with the calls of `noq-udp`.
 
 use std::io::{self, IoSliceMut};
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroUsize;
+use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll, ready};
+use std::thread::{self, ThreadId};
 
 use env::net::udp::{self, Meta, Transmit, receiver, sender};
 use env::net::{Ecn, Error};
@@ -19,16 +20,18 @@ use tokio::net::UdpSocket;
 const MSGSIZE: i32 = 90;
 #[cfg(target_vendor = "apple")]
 const MSGSIZE: i32 = 40;
-#[cfg(windows)]
-const MSGSIZE: i32 = 10_040;
 
 /// The OS code of a socket option that the OS does not have.
 #[cfg(target_os = "linux")]
 const NOPROTOOPT: i32 = 92;
 #[cfg(target_vendor = "apple")]
 const NOPROTOOPT: i32 = 42;
-#[cfg(windows)]
-const NOPROTOOPT: i32 = 10_042;
+
+/// The OS code of an invalid argument.
+const INVAL: i32 = 22;
+
+#[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+compile_error!("the sdk runs only on Linux and macOS until #2923 adds Windows");
 
 /// A bound UDP socket.
 pub(super) struct Udp(Arc<Bound>);
@@ -38,9 +41,6 @@ struct Bound {
     socket: UdpSocket,
     state: UdpSocketState,
     local: SocketAddr,
-    /// Set while a sender lives that polled. Tokio wakes only the last waker that
-    /// waits for writable, so a second sender could wait forever.
-    claimed: AtomicBool,
 }
 
 /// Binds a socket to `config.local`, with don't-fragment set, and gives it with the
@@ -77,9 +77,12 @@ pub(super) fn bind(config: &udp::Config) -> Result<(Udp, Receiver), Error> {
         socket,
         state,
         local,
-        claimed: AtomicBool::new(false),
     });
-    Ok((Udp(Arc::clone(&bound)), Receiver(bound)))
+    let receiver = Receiver {
+        bound: Arc::clone(&bound),
+        thread: None,
+    };
+    Ok((Udp(bound), receiver))
 }
 
 impl udp::Driver for Udp {
@@ -98,16 +101,23 @@ impl udp::Driver for Udp {
     fn sender(&self) -> Box<dyn sender::Driver> {
         Box::new(Sender {
             bound: Arc::clone(&self.0),
-            claimed: false,
+            writable: None,
+            thread: None,
         })
     }
 }
 
+/// A wait until the socket is writable.
+type Writable = Pin<Box<dyn Future<Output = io::Result<()>> + Send>>;
+
 /// The driver of one `Sender` clone.
 struct Sender {
     bound: Arc<Bound>,
-    /// Whether this clone holds the claim of the socket.
-    claimed: bool,
+    /// The wait of this clone after the send buffer was full. Each clone waits on its
+    /// own: Tokio wakes only the last waker of `poll_send_ready`.
+    writable: Option<Writable>,
+    /// The thread of the first poll.
+    thread: Option<ThreadId>,
 }
 
 impl sender::Driver for Sender {
@@ -116,14 +126,10 @@ impl sender::Driver for Sender {
         cx: &mut Context<'_>,
         transmit: &Transmit<'_>,
     ) -> Poll<Result<(), Error>> {
+        on_thread("UDP sender", &mut self.thread);
         let bound = &*self.bound;
-        if !self.claimed {
-            let held = bound.claimed.swap(true, Ordering::Relaxed);
-            assert!(!held, "the sdk sends from one sender");
-            self.claimed = true;
-        }
         let remote = transmit.destination;
-        let (destination, src_ip) = route(bound.local, transmit);
+        let (destination, src_ip) = route(bound.local, transmit)?;
         let datagram = noq_udp::Transmit {
             destination,
             ecn: transmit.ecn.map(to_codepoint),
@@ -132,21 +138,19 @@ impl sender::Driver for Sender {
             src_ip,
         };
         loop {
-            ready!(bound.socket.poll_send_ready(cx)).map_err(|e| from_io(&e))?;
+            if let Some(writable) = &mut self.writable {
+                ready!(writable.as_mut().poll(cx)).map_err(|e| from_io(&e))?;
+                self.writable = None;
+            }
             let outcome = bound.socket.try_io(Interest::WRITABLE, || {
                 bound.state.try_send((&bound.socket).into(), &datagram)
             });
             if let Poll::Ready(sent) = sent(outcome, remote) {
                 return Poll::Ready(sent);
             }
-        }
-    }
-}
-
-impl Drop for Sender {
-    fn drop(&mut self) {
-        if self.claimed {
-            self.bound.claimed.store(false, Ordering::Relaxed);
+            let owned = Arc::clone(&self.bound);
+            self.writable =
+                Some(Box::pin(async move { owned.socket.writable().await }));
         }
     }
 }
@@ -169,20 +173,49 @@ fn sent(outcome: io::Result<()>, remote: SocketAddr) -> Poll<Result<(), Error>> 
 
 /// The destination and source of `transmit` as the socket bound to `local` takes
 /// them: an IPv4 address mapped on an IPv6 socket.
-fn route(local: SocketAddr, transmit: &Transmit<'_>) -> (SocketAddr, Option<IpAddr>) {
+///
+/// # Errors
+///
+/// [`Error::Unreachable`] when the socket is bound to an address of the other family,
+/// and the error of `EINVAL` for a source that the socket cannot send from.
+fn route(
+    local: SocketAddr,
+    transmit: &Transmit<'_>,
+) -> Result<(SocketAddr, Option<IpAddr>), Error> {
+    let remote = transmit.destination;
+    let destination = if local.is_ipv6() {
+        canonical(remote)
+    } else {
+        remote
+    };
+    let any = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
+    if local.ip() != any && local.is_ipv4() != destination.is_ipv4() {
+        return Err(Error::Unreachable { remote });
+    }
+    if transmit.source.is_some_and(|source| {
+        let canonical = source.to_canonical();
+        canonical.is_unspecified()
+            || local.is_ipv4() && source.is_ipv6()
+            || destination.is_ipv4() && canonical.is_ipv6()
+    }) {
+        return Err(Error::Io { code: INVAL });
+    }
     let mapped = |ip: IpAddr| match ip {
         IpAddr::V4(v4) if local.is_ipv6() => IpAddr::V6(v4.to_ipv6_mapped()),
         _ => ip,
     };
-    let destination = transmit.destination;
-    (
+    Ok((
         SocketAddr::new(mapped(destination.ip()), destination.port()),
         transmit.source.map(mapped),
-    )
+    ))
 }
 
 /// The driver of the `Receiver`.
-pub(super) struct Receiver(Arc<Bound>);
+pub(super) struct Receiver {
+    bound: Arc<Bound>,
+    /// The thread of the first poll.
+    thread: Option<ThreadId>,
+}
 
 impl receiver::Driver for Receiver {
     fn poll_recv(
@@ -191,7 +224,8 @@ impl receiver::Driver for Receiver {
         buffers: &mut [IoSliceMut<'_>],
         meta: &mut [Meta],
     ) -> Poll<Result<usize, Error>> {
-        let bound = &*self.0;
+        on_thread("UDP receiver", &mut self.thread);
+        let bound = &*self.bound;
         loop {
             ready!(bound.socket.poll_recv_ready(cx)).map_err(|e| from_io(&e))?;
             let outcome = bound
@@ -237,6 +271,21 @@ impl Bound {
         }
         Ok(count)
     }
+}
+
+/// Records the thread of the first poll of a `kind` in `thread`.
+///
+/// # Panics
+///
+/// On a thread other than that of the first poll, as the contract of `env::net::udp`
+/// asks.
+fn on_thread(kind: &str, thread: &mut Option<ThreadId>) {
+    let first = *thread.get_or_insert_with(|| thread::current().id());
+    assert_eq!(
+        first,
+        thread::current().id(),
+        "a {kind} polls only on the thread of its first poll"
+    );
 }
 
 /// `address`, with an IPv4 address mapped in IPv6 given as IPv4.

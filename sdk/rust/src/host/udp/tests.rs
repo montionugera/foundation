@@ -1,5 +1,5 @@
 use std::future::poll_fn;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::Ipv4Addr;
 
 use env::net::Net;
 use env::net::udp::{Receiver, Sender};
@@ -102,31 +102,38 @@ fn sends_one_datagram_per_send_and_receives_a_batch_of_the_gro_size() {
 }
 
 #[test]
-#[should_panic(expected = "the sdk sends from one sender")]
-fn a_second_sender_panics_while_the_first_lives() {
-    runtime().block_on(async {
-        let (mut first, _receiver) = bind((V4, 0).into());
-        let mut second = first.clone();
-        let destination = first.local();
-        send(&mut first, &transmit(destination, b"a")).await;
-        send(&mut second, &transmit(destination, b"b")).await;
-    });
-}
-
-#[test]
-fn a_sender_sends_after_the_sender_before_it_drops() {
+fn two_senders_that_wait_together_each_send() {
     runtime().block_on(async {
         let (mut first, mut receiver) = bind((V4, 0).into());
         let mut second = first.clone();
         let destination = first.local();
-        send(&mut first, &transmit(destination, b"a")).await;
-        drop(first);
-        send(&mut second, &transmit(destination, b"b")).await;
-        assert_eq!(receive(&mut receiver).await.0, b"a");
-        assert_eq!(receive(&mut receiver).await.0, b"b");
+        let (a, b) = (transmit(destination, b"a"), transmit(destination, b"b"));
+        let mut pending = [true; 2];
+        poll_fn(|cx| {
+            if pending[0] {
+                pending[0] = first.poll_send(cx, &a).map(Result::unwrap).is_pending();
+            }
+            if pending[1] {
+                pending[1] = second.poll_send(cx, &b).map(Result::unwrap).is_pending();
+            }
+            if pending == [false; 2] {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+        let mut contents = [
+            receive(&mut receiver).await.0,
+            receive(&mut receiver).await.0,
+        ];
+        contents.sort();
+        assert_eq!(contents, [b"a", b"b"]);
     });
 }
 
+/// No portable send fills the OS send buffer or finds no route, so this test calls
+/// `sent` itself.
 #[test]
 fn maps_each_outcome_of_a_send() {
     let remote = SocketAddr::from((V4, 9));
@@ -143,6 +150,8 @@ fn maps_each_outcome_of_a_send() {
     assert_eq!(code(NOPROTOOPT), io);
 }
 
+/// An unconnected socket gets no ICMP error, so no portable receive fails, and this
+/// test calls `received` itself.
 #[test]
 fn maps_each_outcome_of_a_receive() {
     let refused = io::Error::from_raw_os_error(111);
@@ -157,31 +166,177 @@ fn maps_each_outcome_of_a_receive() {
     );
 }
 
+/// Each socket call gives an OS code, so no public call reaches this panic.
 #[test]
 #[should_panic(expected = "a socket call failed with no OS code: invalid data")]
 fn an_error_with_no_os_code_panics() {
     drop(from_io(&io::Error::from(io::ErrorKind::InvalidData)));
 }
 
+/// The sizes show only through the socket, a private field.
 #[test]
-fn each_ecn_codepoint_round_trips() {
-    for ecn in [Ecn::Ect0, Ecn::Ect1, Ecn::Ce] {
-        assert_eq!(from_codepoint(to_codepoint(ecn)), ecn);
+fn sets_the_buffer_sizes_and_takes_ipv4_on_an_ipv6_socket() {
+    let runtime = runtime();
+    let _entered = runtime.enter();
+    let config = udp::Config {
+        local: any_v6(),
+        send_buffer_bytes: 1 << 17,
+        recv_buffer_bytes: 1 << 18,
+    };
+    let (udp, _receiver) = super::bind(&config).unwrap();
+    let socket = socket2::SockRef::from(&udp.0.socket);
+    assert!(socket.send_buffer_size().unwrap() >= 1 << 17);
+    assert!(socket.recv_buffer_size().unwrap() >= 1 << 18);
+    assert!(!socket.only_v6().unwrap());
+}
+
+#[test]
+fn each_ecn_codepoint_arrives() {
+    runtime().block_on(async {
+        let (mut sender, mut receiver) = bind((V4, 0).into());
+        let destination = sender.local();
+        for ecn in [Some(Ecn::Ect0), Some(Ecn::Ect1), Some(Ecn::Ce), None] {
+            let to = Transmit {
+                ecn,
+                ..transmit(destination, b"a")
+            };
+            send(&mut sender, &to).await;
+            assert_eq!(receive(&mut receiver).await.1.ecn, ecn);
+        }
+    });
+}
+
+/// TEST-NET-1 has no host. The route out leaves loopback, whose MTU is larger.
+#[test]
+fn a_datagram_over_the_path_mtu_is_lost_not_an_error() {
+    runtime().block_on(async {
+        let (mut sender, _receiver) = bind((Ipv4Addr::UNSPECIFIED, 0).into());
+        let remote = SocketAddr::from(([192, 0, 2, 1], 9));
+        let contents = [0; 9_500];
+        let to = transmit(remote, &contents);
+        assert_eq!(poll_fn(|cx| sender.poll_send(cx, &to)).await, Ok(()));
+    });
+}
+
+fn v4(port: u16) -> SocketAddr {
+    SocketAddr::from((V4, port))
+}
+
+fn mapped(port: u16) -> SocketAddr {
+    SocketAddr::from((V4.to_ipv6_mapped(), port))
+}
+
+fn v6(port: u16) -> SocketAddr {
+    SocketAddr::from((Ipv6Addr::LOCALHOST, port))
+}
+
+fn any_v6() -> SocketAddr {
+    SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0))
+}
+
+/// The outcome of one send of `transmit` from a socket bound to `local`.
+fn sent_from(local: SocketAddr, transmit: &Transmit<'_>) -> Result<(), Error> {
+    runtime().block_on(async {
+        let (mut sender, _receiver) = bind(local);
+        poll_fn(|cx| sender.poll_send(cx, transmit)).await
+    })
+}
+
+#[test]
+fn a_socket_on_an_address_reaches_only_its_family() {
+    for (local, remote) in [
+        (v4(0), mapped(9)),
+        (v4(0), v6(9)),
+        (v6(0), mapped(9)),
+        (v6(0), v4(9)),
+    ] {
+        let unreachable = Err(Error::Unreachable { remote });
+        assert_eq!(sent_from(local, &transmit(remote, b"a")), unreachable);
     }
 }
 
 #[test]
-fn an_ipv4_address_maps_only_on_an_ipv6_socket() {
-    let v4 = SocketAddr::from((V4, 9));
-    let mapped = SocketAddr::from((V4.to_ipv6_mapped(), 9));
-    let transmit = Transmit {
-        source: Some(V4.into()),
-        ..transmit(v4, b"")
-    };
-    let any = SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0));
-    assert_eq!(
-        route(any, &transmit),
-        (mapped, Some(V4.to_ipv6_mapped().into()))
-    );
-    assert_eq!(route((V4, 0).into(), &transmit), (v4, Some(V4.into())));
+fn a_source_that_the_socket_cannot_send_from_is_invalid() {
+    let invalid = Err(Error::Io { code: INVAL });
+    for (local, source, remote) in [
+        (any_v6(), Ipv6Addr::LOCALHOST.into(), v4(9)),
+        (any_v6(), Ipv6Addr::LOCALHOST.into(), mapped(9)),
+        (any_v6(), Ipv6Addr::UNSPECIFIED.into(), v6(9)),
+        (v4(0), Ipv6Addr::LOCALHOST.into(), v4(9)),
+    ] {
+        let from = Transmit {
+            source: Some(source),
+            ..transmit(remote, b"a")
+        };
+        assert_eq!(
+            sent_from(local, &from),
+            invalid,
+            "{local} {source} {remote}"
+        );
+    }
+}
+
+#[test]
+fn a_socket_sends_from_an_ipv4_source_on_either_family() {
+    runtime().block_on(async {
+        let (held, mut receiver) = bind(v4(0));
+        let destination = held.local();
+        for local in [any_v6(), v4(0)] {
+            let (mut sender, _receiver) = bind(local);
+            for source in [IpAddr::V4(V4), IpAddr::V6(V4.to_ipv6_mapped())] {
+                if local.is_ipv4() && source.is_ipv6() {
+                    continue;
+                }
+                let from = Transmit {
+                    source: Some(source),
+                    ..transmit(destination, b"a")
+                };
+                send(&mut sender, &from).await;
+                let (_, meta) = receive(&mut receiver).await;
+                assert_eq!(meta.source.ip(), IpAddr::V4(V4), "{local} {source}");
+            }
+        }
+    });
+}
+
+/// Polls `receiver` once, with a waker that does nothing.
+fn poll_once(receiver: &mut Receiver) {
+    let mut buffer = [0; 8];
+    let mut meta = [Meta::default()];
+    let mut cx = Context::from_waker(std::task::Waker::noop());
+    let buffers = &mut [IoSliceMut::new(&mut buffer)];
+    drop(receiver.poll_recv(&mut cx, buffers, &mut meta));
+}
+
+#[test]
+#[should_panic(expected = "a UDP receiver polls only on the thread of its first poll")]
+fn a_receiver_that_polls_on_a_second_thread_panics() {
+    let runtime = runtime();
+    let _entered = runtime.enter();
+    let (_sender, mut receiver) = bind(v4(0));
+    poll_once(&mut receiver);
+    #[expect(clippy::disallowed_methods, reason = "a poll on a second thread")]
+    let second = std::thread::spawn(move || poll_once(&mut receiver));
+    if let Err(payload) = second.join() {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+#[should_panic(expected = "a UDP sender polls only on the thread of its first poll")]
+fn a_sender_that_polls_on_a_second_thread_panics() {
+    let runtime = runtime();
+    let _entered = runtime.enter();
+    let (mut sender, _receiver) = bind(v4(0));
+    let to = sender.local();
+    let mut cx = Context::from_waker(std::task::Waker::noop());
+    drop(sender.poll_send(&mut cx, &transmit(to, b"a")));
+    #[expect(clippy::disallowed_methods, reason = "a poll on a second thread")]
+    let second = std::thread::spawn(move || {
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        drop(sender.poll_send(&mut cx, &transmit(to, b"b")));
+    });
+    if let Err(payload) = second.join() {
+        std::panic::resume_unwind(payload);
+    }
 }
