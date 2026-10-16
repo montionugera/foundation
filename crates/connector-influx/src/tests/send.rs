@@ -19,7 +19,7 @@ use types::authority::Authority;
 use types::channel;
 use types::frame::{Form, Label, Path};
 use types::name::{Name, Selector};
-use types::sample::{Scalar, Type};
+use types::sample::{Scalar, Sides, Type};
 use types::time::{Span, Stamp};
 
 use super::*;
@@ -32,7 +32,7 @@ const OPTIONS: tcp::Options = tcp::Options {
     delayed: false,
 };
 /// The name, key, and type of each channel of another sample type, on `edge.time`.
-const TYPED: [(&str, u128, Type); 15] = [
+const TYPED: [(&str, u128, Type); 17] = [
     ("edge.bool", 10, Type::Scalar(Scalar::Bool)),
     ("edge.i8", 11, Type::Scalar(Scalar::I8)),
     ("edge.i16", 12, Type::Scalar(Scalar::I16)),
@@ -55,6 +55,25 @@ const TYPED: [(&str, u128, Type); 15] = [
     ),
     ("edge.text", 23, Type::String),
     ("edge.blob", 24, Type::Bytes),
+    (
+        "edge.list",
+        25,
+        Type::List {
+            element: Scalar::F32,
+            max: 4,
+        },
+    ),
+    (
+        "edge.grid",
+        26,
+        Type::Matrix {
+            element: Scalar::F32,
+            sides: Sides {
+                rows: 2,
+                columns: 2,
+            },
+        },
+    ),
 ];
 /// The key of the first status channel of `influx`.
 const STATUS: u128 = 100;
@@ -107,6 +126,7 @@ struct Plant {
     restarts: Rc<RefCell<Vec<u64>>>,
     confirmed: Rc<RefCell<Vec<u64>>>,
     lost: Rc<RefCell<Vec<u64>>>,
+    oversized: Rc<RefCell<Vec<u64>>>,
     /// The certificate of an InfluxDB that serves TLS.
     certificate: Option<Certificate>,
 }
@@ -165,6 +185,7 @@ impl Plant {
         let restarts = read_count(&inputs.hub, &tasks, "restarts").await;
         let confirmed = read_confirmed(&inputs.hub, &tasks).await;
         let lost = read_count(&inputs.hub, &tasks, "lost").await;
+        let oversized = read_count(&inputs.hub, &tasks, "oversized").await;
         Self {
             hub: inputs.hub.clone(),
             supervisor: Supervisor::new(inputs),
@@ -183,6 +204,7 @@ impl Plant {
             restarts,
             confirmed,
             lost,
+            oversized,
             certificate,
         }
     }
@@ -311,7 +333,7 @@ fn define(inputs: &supervisor::Config) {
     };
     let mut definitions = testing::create_status(
         &name("influx"),
-        &[name(CONFIRMED), name(LOST)],
+        &[name(CONFIRMED), name(LOST), name(OVERSIZED)],
         channel::Key::from_u128(STATUS),
     );
     definitions.extend([
@@ -626,6 +648,11 @@ const REFUSED: &str = "For a field type conflict, write to another `measurement`
 const UNKNOWN: &str =
     "Create the database, the bucket, or the org in InfluxDB, or name one that exists";
 
+/// The fix in the text of a 413.
+const LARGE: &str = "Raise the request size limit of InfluxDB \
+                     (`--max-http-request-size` of InfluxDB 3, `max-body-size` of \
+                     InfluxDB 1), or write fewer or shorter samples in each frame";
+
 /// An answer of InfluxDB 1 to a batch of bad lines, of 65537 bytes or more.
 fn large() -> String {
     let line = "unable to parse 'telemetry a=': missing field value\n";
@@ -681,7 +708,9 @@ fn sends_a_batch_again_after_each_other_answer_and_shows_the_error_until_a_204()
             "InfluxDB answered 500 Internal Server Error: the disk is full".into(),
             "InfluxDB answered 503 Service Unavailable: starting".into(),
             "InfluxDB answered 401 Unauthorized: unauthorized access".into(),
-            "InfluxDB answered 413 Payload Too Large: request too large".into(),
+            format!(
+                "InfluxDB answered 413 Payload Too Large: request too large. {LARGE}"
+            ),
             "InfluxDB answered 429 Too Many Requests: slow down".into(),
             format!(
                 "InfluxDB answered 400 Bad Request: field type conflict. {REFUSED}"
@@ -1357,6 +1386,41 @@ fn counts_no_line_toward_a_full_batch_for_a_sample_time_of_only_nan() {
     );
 }
 
+/// A batch of 63 lines of 64 KiB takes one more frame, and a batch of 64 lines, 4 MiB,
+/// takes none, so it stays under the body limit of InfluxDB 3.
+#[test]
+fn reads_no_frame_into_a_batch_of_4_mib_or_more() {
+    let bytes = run(|node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let failed = (StatusCode::INTERNAL_SERVER_ERROR, "");
+        plant.answers.borrow_mut().push_back(failed);
+        let run = plant.start(with(plant.config(), "select", &string("edge.*")));
+        let mut writer = plant.writer(&["edge.time", "edge.text"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        let stamp = first.to_string().len();
+        let text = "x".repeat((1 << 16) - "telemetry edge.text=\"\" \n".len() - stamp);
+        let column = variable(Type::String, &[text.as_bytes()]);
+        for n in 0..=100 {
+            let outcomes =
+                write_raw(&mut writer, first + n * 10_000, 1, &[(23, &column)]);
+            let applied = (outcomes.iter())
+                .all(|outcome| matches!(outcome, hub::home::Outcome::Applied { .. }));
+            assert!(applied, "the frame applies: {outcomes:?}");
+            if n == 0 {
+                plant.clock.sleep(Span::from_nanos(100_000_000)).await;
+                let sent = plant.got.borrow().len();
+                assert_eq!(sent, 1, "the first request is in flight");
+            }
+        }
+        plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
+        plant.stop(run).await.expect("ok after a cancel");
+        let got = plant.got();
+        (got.iter()).map(|(_, body)| body.len()).collect::<Vec<_>>()
+    });
+    assert_eq!(bytes, [1 << 16, 1 << 16, 64 << 16, 36 << 16]);
+}
+
 /// What one frame gave: the end of the run once it returned, each request, the stamp
 /// of the frame's first sample, and the fields of each point of the store.
 struct Frame {
@@ -1364,6 +1428,8 @@ struct Frame {
     got: Vec<Got>,
     first: i64,
     points: Vec<BTreeMap<String, crate::sim::Field>>,
+    /// Each value of `influx.status.oversized`.
+    oversized: Vec<u64>,
 }
 
 /// Writes one frame of `count` sample times, with the raw samples of each channel of
@@ -1411,6 +1477,7 @@ fn one_frame(
             got: plant.got(),
             first,
             points,
+            oversized: plant.oversized.borrow().clone(),
         }
     })
 }
@@ -1516,19 +1583,172 @@ fn stops_with_a_config_error_at_a_u64_channel_to_a_database() {
     );
 }
 
+/// The raw series of `samples` of the variable `data_type`.
+fn variable(data_type: Type, samples: &[&[u8]]) -> Vec<u8> {
+    let form = codec::Variable::of(data_type).expect("a variable type");
+    let mut bytes = vec![0; form.len(samples).expect("fits")];
+    form.write(samples, &mut bytes);
+    bytes
+}
+
+#[test]
+fn writes_a_string_with_each_quote_and_backslash_escaped_and_each_newline_kept() {
+    let samples: [&[u8]; 3] = [b"a\"b\\c", b"two\nlines", b""];
+    let columns = vec![("edge.text", 23, variable(Type::String, &samples))];
+    let frame = one_frame("edge.*", false, 3, columns);
+    assert!(frame.end.is_none(), "the run goes on: {:?}", frame.end);
+    let first = frame.first;
+    let body = format!(
+        "telemetry edge.text=\"a\\\"b\\\\c\" {first}\n\
+         telemetry edge.text=\"two\nlines\" {}\n\
+         telemetry edge.text=\"\" {}\n",
+        first + 1,
+        first + 2
+    );
+    assert_eq!(frame.got, vec![(WRITE.into(), body)]);
+    let field = |text: &str| {
+        BTreeMap::from([("edge.text".into(), crate::sim::Field::String(text.into()))])
+    };
+    assert_eq!(
+        frame.points,
+        [field("a\"b\\c"), field("two\nlines"), field("")]
+    );
+}
+
+#[test]
+fn leaves_out_and_counts_a_string_over_65536_bytes_after_its_escapes() {
+    let kept = ["é".repeat(32_768), format!("\"{}", "x".repeat(65_534))];
+    let long = ["x".repeat(65_537), format!("\"{}", "x".repeat(65_535))];
+    let samples = [&kept[0], &long[0], &kept[1], &long[1]].map(String::as_bytes);
+    let columns = vec![
+        ("edge.text", 23, variable(Type::String, &samples)),
+        ("edge.count", 4, bytes![1_i64, 2_i64, 3_i64, 4_i64]),
+    ];
+    let frame = one_frame("edge.*", false, 4, columns);
+    assert!(frame.end.is_none(), "the run goes on: {:?}", frame.end);
+    let first = frame.first;
+    let body = format!(
+        "telemetry edge.text=\"{}\",edge.count=1i {first}\n\
+         telemetry edge.count=2i {}\n\
+         telemetry edge.text=\"\\{}\",edge.count=3i {}\n\
+         telemetry edge.count=4i {}\n",
+        kept[0],
+        first + 1,
+        kept[1],
+        first + 2,
+        first + 3
+    );
+    assert_eq!(frame.got, vec![(WRITE.into(), body)]);
+    assert_eq!(frame.points.len(), 4);
+    assert_eq!(frame.oversized, [0, 2]);
+}
+
+#[test]
+fn writes_a_uuid_as_its_lowercase_text() {
+    let uuid = 0x0011_2233_4455_6677_8899_aabb_ccdd_eeff_u128.to_be_bytes();
+    let columns = vec![("edge.uuid", 21, uuid.to_vec())];
+    let frame = one_frame("edge.*", false, 1, columns);
+    assert!(frame.end.is_none(), "the run goes on: {:?}", frame.end);
+    let body = format!(
+        "telemetry edge.uuid=\"00112233-4455-6677-8899-aabbccddeeff\" {}\n",
+        frame.first
+    );
+    assert_eq!(frame.got, vec![(WRITE.into(), body)]);
+}
+
+#[test]
+fn writes_bytes_as_base64_with_padding_and_leaves_out_and_counts_over_49152() {
+    let (kept, long) = (vec![0xfb_u8; 49_152], vec![0_u8; 49_153]);
+    let samples: [&[u8]; 4] = [&[0, 255, 1], &[0xfb], &kept, &long];
+    let columns = vec![
+        ("edge.blob", 24, variable(Type::Bytes, &samples)),
+        ("edge.count", 4, bytes![1_i64, 2_i64, 3_i64, 4_i64]),
+    ];
+    let frame = one_frame("edge.*", false, 4, columns);
+    assert!(frame.end.is_none(), "the run goes on: {:?}", frame.end);
+    let first = frame.first;
+    let body = format!(
+        "telemetry edge.blob=\"AP8B\",edge.count=1i {first}\n\
+         telemetry edge.blob=\"+w==\",edge.count=2i {}\n\
+         telemetry edge.blob=\"{}\",edge.count=3i {}\n\
+         telemetry edge.count=4i {}\n",
+        first + 1,
+        "+/v7".repeat(16_384),
+        first + 2,
+        first + 3
+    );
+    assert_eq!(frame.got, vec![(WRITE.into(), body)]);
+    assert_eq!(frame.points.len(), 4);
+    assert_eq!(frame.oversized, [0, 1]);
+}
+
+#[test]
+fn writes_empty_bytes_as_an_empty_string() {
+    let columns = vec![("edge.blob", 24, variable(Type::Bytes, &[&[]]))];
+    let frame = one_frame("edge.*", false, 1, columns);
+    let body = format!("telemetry edge.blob=\"\" {}\n", frame.first);
+    assert_eq!(frame.got, vec![(WRITE.into(), body)]);
+}
+
+#[test]
+fn counts_an_oversized_string_whose_line_is_left_out() {
+    let long = "x".repeat(65_537);
+    let columns = vec![("edge.text", 23, variable(Type::String, &[long.as_bytes()]))];
+    let frame = one_frame("edge.*", false, 1, columns);
+    assert!(frame.end.is_none(), "the run goes on: {:?}", frame.end);
+    assert_eq!(frame.got, []);
+    assert_eq!(frame.oversized.last(), Some(&1), "{:?}", frame.oversized);
+}
+
+#[test]
+fn counts_oversized_bytes_whose_line_is_left_out() {
+    let long = vec![0_u8; 49_153];
+    let columns = vec![("edge.blob", 24, variable(Type::Bytes, &[&long]))];
+    let frame = one_frame("edge.*", false, 1, columns);
+    assert!(frame.end.is_none(), "the run goes on: {:?}", frame.end);
+    assert_eq!(frame.got, []);
+    assert_eq!(frame.oversized.last(), Some(&1), "{:?}", frame.oversized);
+}
+
+/// A batch adds only the samples that it left out, so a later batch with none leaves
+/// the count as it is.
+#[test]
+fn counts_each_oversized_sample_in_the_batch_that_left_it_out() {
+    let oversized = run(|node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let run = plant.start(with(plant.config(), "select", &string("edge.*")));
+        let mut writer = plant.writer(&["edge.time", "edge.text"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        let long = "x".repeat(65_537);
+        let frames: [[&[u8]; 2]; 2] =
+            [[long.as_bytes(), long.as_bytes()], [b"a", b"b"]];
+        for (at, samples) in [first, first + 10].into_iter().zip(frames) {
+            let column = variable(Type::String, &samples);
+            write_raw(&mut writer, at, 2, &[(23, &column)]);
+            plant.clock.sleep(Span::SECOND).await;
+        }
+        plant.stop(run).await.expect("ok after a cancel");
+        assert_eq!(plant.got().len(), 1, "the second batch is sent");
+        plant.oversized.borrow().clone()
+    });
+    assert_eq!(oversized, [0, 2]);
+}
+
 #[test]
 fn stops_with_a_config_error_at_a_channel_of_a_type_it_does_not_write() {
-    let uuid = ("edge.uuid", 21, vec![7; 16], "uuid");
     let xyz = ("edge.xyz", 22, bytes![1.0_f32, 2.0_f32, 3.0_f32], "f32[3]");
-    let variable = |data_type, sample: &[u8]| {
-        let form = codec::Variable::of(data_type).expect("a variable type");
-        let mut bytes = vec![0; form.len(&[sample]).expect("fits")];
-        form.write(&[sample], &mut bytes);
-        bytes
-    };
-    let text = ("edge.text", 23, variable(Type::String, b"hi"), "string");
-    let blob = ("edge.blob", 24, variable(Type::Bytes, &[0, 255]), "bytes");
-    for (channel, key, bytes, data_type) in [uuid, xyz, text, blob] {
+    let list = variable(
+        Type::List {
+            element: Scalar::F32,
+            max: 4,
+        },
+        &[&bytes![1.0_f32]],
+    );
+    let list = ("edge.list", 25, list, "list<f32, 4>");
+    let grid = bytes![1.0_f32, 2.0_f32, 3.0_f32, 4.0_f32];
+    let grid = ("edge.grid", 26, grid, "f32[2][2]");
+    for (channel, key, bytes, data_type) in [xyz, list, grid] {
         let frame = one_frame("edge.*", true, 1, vec![(channel, key, bytes)]);
         assert_eq!(frame.got, []);
         let Some(Err(Error::Config(diagnostics))) = frame.end else {

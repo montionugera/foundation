@@ -98,10 +98,11 @@ fn shows_each_definition_in_file_order_then_the_counts() {
 + channel influx.status.error
 + channel influx.status.lost
 + channel influx.status.note
++ channel influx.status.oversized
 + channel influx.status.restarts
 + channel influx.status.state
 + channel influx.status.time
-28 to add, 0 to change, 0 to remove.
+29 to add, 0 to change, 0 to remove.
 "
     );
 }
@@ -707,11 +708,12 @@ fn shows_a_kind_change_as_an_add_and_a_removal() {
 + channel influx.status.error
 + channel influx.status.lost
 + channel influx.status.note
++ channel influx.status.oversized
 + channel influx.status.restarts
 + channel influx.status.state
 + channel influx.status.time
 - channel plc
-28 to add, 0 to change, 1 to remove.
+29 to add, 0 to change, 1 to remove.
 "
     );
 }
@@ -751,11 +753,12 @@ fn shows_a_channel_that_replaces_a_connector_as_an_add_and_a_removal() {
 + channel influx.status.error
 + channel influx.status.lost
 + channel influx.status.note
++ channel influx.status.oversized
 + channel influx.status.restarts
 + channel influx.status.state
 + channel influx.status.time
 - connector plant.time
-28 to add, 0 to change, 1 to remove.
+29 to add, 0 to change, 1 to remove.
 "
     );
 }
