@@ -88,8 +88,8 @@ impl kind::Kind for Kind {
         let mut timer = pace::Timer::new(ctx.clock(), config.rate);
         while let Some(tick) = timer.tick(ctx.cancel()).await {
             missed.add(tick.missed);
-            let exchange = exchange(config, &mut client, &groups, &mut values);
-            let Some((done, stamp)) = ctx.cancel().race(writer.request(exchange)).await
+            let scan = scan(config, &mut client, &groups, &mut values);
+            let Some((done, stamp)) = ctx.cancel().race(writer.request(scan)).await
             else {
                 break;
             };
@@ -204,8 +204,8 @@ const OPTIONS: tcp::Options = tcp::Options {
 ///
 /// # Errors
 ///
-/// As [`Kind::run`](kind::Kind::run), for an exchange.
-async fn exchange(
+/// As [`Kind::run`](kind::Kind::run), for the exchanges of one tick.
+async fn scan(
     config: &Config,
     client: &mut Client,
     groups: &[Group],
