@@ -319,6 +319,10 @@ fn node(
         name: known.name.clone(),
         settings: node::Settings::default(),
         vars,
+        log: node::Log {
+            writer: Box::new(io::stderr()),
+            format: start.log,
+        },
     });
     let stopper = node.stopper();
     let stop = threads.start("stop", move || async move {
