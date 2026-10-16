@@ -42,11 +42,20 @@ pub trait Kind: Send + Sync + 'static {
     /// One diagnostic for each thing the device cannot do.
     fn check(&self, config: &Self::Config) -> Result<Channels, Vec<Diagnostic>>;
 
-    /// Finds connectors this node can run, as config documents.
+    /// Finds connectors this node can run, as config documents. The default gives
+    /// [`Error::Config`] with `connector.no-discover`: the kind cannot look, which an
+    /// empty list must not say.
     fn discover(
         &self,
         cancel: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>>;
+    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+        let _: &cancel::Token = cancel;
+        std::future::ready(Err(config_error(
+            NO_DISCOVER,
+            &"this connector kind cannot find its devices",
+            "Write the connector block by hand",
+        )))
+    }
 
     /// Runs one connector until `ctx.cancel()` is cancelled or an error leaves it.
     fn run(
@@ -478,6 +487,7 @@ impl fmt::Debug for Table {
 
 const UNKNOWN_KIND: Code = Code::new("connector.unknown-kind");
 const NO_BROWSE: Code = Code::new("connector.no-browse");
+const NO_DISCOVER: Code = Code::new("connector.no-discover");
 const UNKNOWN_CHANNEL: Code = Code::new("connector.unknown-channel");
 const NO_CHANNEL: Code = Code::new("connector.no-channel");
 const MANY_INDEXES: Code = Code::new("connector.many-indexes");
@@ -921,13 +931,6 @@ mod tests {
             })
         }
 
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
-        }
-
         fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
             std::future::ready(Ok(()))
         }
@@ -1041,6 +1044,23 @@ mod tests {
             panic!("a config error: {found:?}");
         };
         assert_eq!(diagnostics, [unknown("modbus", "[\"counter\"]")]);
+    }
+
+    #[test]
+    fn refuses_to_discover_with_a_kind_that_cannot_look() {
+        let table = Table::new().with("counts", Counts(&[]));
+        let found =
+            run(|_, _, _| async move { table.discover("counts", &Token::new()).await });
+        let Err(Error::Config(diagnostics)) = found else {
+            panic!("a config error: {found:?}");
+        };
+        let expected = Diagnostic::new(
+            NO_DISCOVER,
+            None,
+            "this connector kind cannot find its devices".into(),
+            "Write the connector block by hand".into(),
+        );
+        assert_eq!(diagnostics, [expected]);
     }
 
     #[test]
