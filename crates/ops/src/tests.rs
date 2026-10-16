@@ -1355,6 +1355,16 @@ mod serve {
         }
     }
 
+    /// A last line of exactly 1 MiB with no `\n` is not longer than 1 MiB.
+    #[test]
+    fn a_last_line_of_the_limit_with_no_newline_runs() {
+        let ping = PING.trim_end();
+        let last = format!("{}{ping}", " ".repeat(crate::mcp::LIMIT - ping.len()));
+        let line = crate::line(&mut last.as_bytes()).unwrap();
+        assert_eq!(line, crate::Line::Bytes(last.clone().into_bytes()));
+        assert_eq!(run(&["mcp"], last.as_bytes()).stdout, PONG);
+    }
+
     #[test]
     fn mcp_answers_each_line_until_input_ends() {
         let note = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n";

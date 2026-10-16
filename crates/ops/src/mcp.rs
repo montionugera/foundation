@@ -42,7 +42,8 @@ pub fn line(input: &mut impl BufRead) -> io::Result<Line> {
     let read = input.take(LIMIT as u64).read_until(b'\n', &mut bytes)?;
     if read == 0 {
         Ok(Line::End)
-    } else if read == LIMIT && !bytes.ends_with(b"\n") {
+    } else if read == LIMIT && !bytes.ends_with(b"\n") && !input.fill_buf()?.is_empty()
+    {
         input.skip_until(b'\n')?;
         Ok(Line::Long)
     } else {
