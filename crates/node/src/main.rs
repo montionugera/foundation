@@ -98,9 +98,7 @@ fn command_line(shards: &Shards, args: Vec<OsString>) -> Result<Run, Failure> {
             io::stdout().lock(),
             io::stderr().lock(),
             &os::paths(),
-            async |dir: &Path| {
-                reach(dir, &mut files, &tasks, &started).await.map(send)
-            },
+            async |dir: &Path| reach(dir, &mut files, &tasks, &started).await.map(send),
         )
         .await;
         ran.send(run).expect("invariant: `main` keeps the receiver");
