@@ -1143,9 +1143,10 @@ fn panics_at_a_frame_with_no_value_for_each_read() {
         let channels = channels.map(|(text, def)| (name(text), def.clone()));
         rig.define(channels.collect());
         let config = config("opc.tcp://plc:4840", "10Hz", &setup.reads);
-        rig.supervise("opcua", name(PLC), config).await.stop().await
+        let _connector = rig.supervise("opcua", name(PLC), config).await;
+        node.clock().sleep(Span::SECOND).await;
     });
-    let _ = run.expect("the run ends");
+    run.expect("the run ends");
 }
 
 /// One channel of each type of a value (keys 2 to 12) on `plant.time` (key 1), each
