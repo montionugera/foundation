@@ -22,7 +22,10 @@ mod tests;
 
 /// The counts of the status of each connector: the samples that the home applied,
 /// the ticks that the timer skipped, and the samples that a frame lost.
-const COUNTS: [&str; 3] = [poll::COUNTS[0], "missed", poll::COUNTS[1]];
+const COUNTS: [&str; 3] = {
+    let [applied, lost] = poll::COUNTS;
+    [applied, "missed", lost]
+};
 
 /// The `modbus` kind: reads the tables of a Modbus TCP device at a fixed rate, and
 /// writes one frame per tick.
