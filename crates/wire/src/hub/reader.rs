@@ -147,7 +147,7 @@ impl Reader {
     #[inline]
     pub(in crate::hub) fn received(&mut self, len: usize) -> Result<bool, Error> {
         let Next::Body(body) = self.next else {
-            panic!("a body is due")
+            panic!("a body is due, not {:?}", self.next)
         };
         let remain = body.remain();
         assert!(

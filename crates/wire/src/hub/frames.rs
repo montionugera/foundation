@@ -85,7 +85,9 @@ impl Frames {
                 };
                 Ok((frames, live))
             }
-            _ => panic!("a reader before opened gives only opened"),
+            other => {
+                panic!("a reader before opened gave {other:?} for its first message")
+            }
         }
     }
 
@@ -156,8 +158,8 @@ impl Frames {
                 self.drafting = last;
                 Ok(Step::More)
             }
-            FromHome::Opened { .. } | FromHome::Body { .. } => {
-                unreachable!("invariant: an open decoder gives no opened or body here")
+            other @ (FromHome::Opened { .. } | FromHome::Body { .. }) => {
+                unreachable!("invariant: an open decoder outside a body gave {other:?}")
             }
         }
     }
@@ -390,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "a reader before opened gives only opened")]
+    #[should_panic(expected = "a reader before opened gave")]
     fn panics_at_a_reader_past_opened() {
         let mut reader = create_reader(false);
         reader.decode(&opened_at(0)).expect("opened");
