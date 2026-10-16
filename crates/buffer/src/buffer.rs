@@ -808,9 +808,8 @@ impl Buffer {
     ///
     /// When a `first` is below the tail of its path, with the index, the path,
     /// `first`, and the tail, when `first` plus the entry's `samples.len` passes
-    /// `u64::MAX`, when an entry
-    /// with no samples follows `u64::MAX` of them at its seq on its path, or when an
-    /// entry's slot held another index on its path before.
+    /// `u64::MAX`, when an entry with no samples follows `u64::MAX` of them at its seq
+    /// on its path, or when an entry's slot held another index on its path before.
     pub fn append(
         &self,
         entries: impl IntoIterator<Item = Entry>,
