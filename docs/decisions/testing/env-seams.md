@@ -809,21 +809,21 @@
   mode, 0700, so the group and other users get no access. `sim` makes one directory
   only, apart from `sim::Node::make_dir`, which makes each one above. On a handle of
   `within`, a path that does not resolve, such as a link to nothing or a loop, passes
-  the limits by its own place. `within` resolves `<hidden>/..` after the
-  resolve of each hidden folder, which opens no file. It gives `NotFound` when the
-  folder is not there, and `Io` 20 (`ENOTDIR`) when it is not a directory, or on `os`
-  `Io` 13 (`EACCES`) when this user cannot search it. It skips a hidden folder that the
-  limits of its handle refuse, since a path under that folder fails by those limits. A
-  path under a hidden folder of a limit fails with the new `paths::Error::Hidden`, also
-  when it is not under the folders of another limit, and `Outside` is only for a path
-  not under the folders. This amendment gives the hidden check that the amendment of
-  2026-10-16T06:56:55Z defers, and the call with which `foundation mcp` makes its data
-  directory in PR 1 of #2526. Supersedes "or that resolves under one of its hidden
-  folders, fails with `paths::Error::Outside`" of the amendment of 2026-10-16T04:52:58Z.
-  Lost: a check that `within` makes the hidden folder, which writes in a call that only
-  limits; a resolve of `<hidden>/.` as the check, which `os` resolves to `Ok` when the
-  folder is not there; and a read of the folder, which blocks on a pipe and fails on a
-  folder with no read bit. Decided by `laptop.architect-2` (item B of
+  the limits by its own place. `within` resolves `<hidden>/..` after the resolve of each
+  hidden folder, which opens no file. It gives `NotFound` when the folder is not there,
+  and `Io` 20 (`ENOTDIR`) when it is not a directory, or on `os` `Io` 13 (`EACCES`) when
+  this user cannot search it. It skips a hidden folder that the limits of its handle
+  refuse, since a path under that folder fails by those limits. A path under a hidden
+  folder of a limit fails with the new `paths::Error::Hidden`, also when it is not under
+  the folders of another limit, and `Outside` is only for a path not under the folders.
+  This amendment gives the hidden check that the amendment of 2026-10-16T06:56:55Z
+  defers, and the call with which `foundation mcp` makes its data directory in PR 1 of
+  #2526. Supersedes "or that resolves under one of its hidden folders, fails with
+  `paths::Error::Outside`" of the amendment of 2026-10-16T04:52:58Z. Lost: a check that
+  `within` makes the hidden folder, which writes in a call that only limits; a resolve
+  of `<hidden>/.` as the check, which `os` resolves to `Ok` when the folder is not
+  there; and a read of the folder, which blocks on a pipe and fails on a folder with no
+  read bit. Decided by `laptop.architect-2` (item B of
   https://github.com/synnaxlabs/foundation/pull/2831#issuecomment-6209932709; the plan
   of `laptop.integrator-2`, 2026-10-16T08:06:32Z,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6211011171, approved
@@ -834,5 +834,6 @@
   `EEXIST` rule of `os`, the drop of end slashes, the resolve of `<hidden>/..`, `Io` for
   a hidden folder that is not a directory, the skip of a hidden folder past the limits,
   and the check of a link to nothing by its place, 2026-10-16T15:45:37Z,
-  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219155635; the check of each path that does not resolve by its own place, 2026-10-16T16:02:28Z,
+  https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219155635; the check
+  of each path that does not resolve by its own place, 2026-10-16T16:02:28Z,
   https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219471401).
