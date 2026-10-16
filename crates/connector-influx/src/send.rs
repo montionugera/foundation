@@ -12,7 +12,6 @@ use connector::kind::{Context, Error};
 use connector::retry::{self, Backoff};
 use connector::secret;
 use http::header::{AUTHORIZATION, HeaderValue};
-use http::uri::Scheme;
 use http::{Method, Request, StatusCode, Uri};
 use hub::reader::{Ended, Received};
 use types::time::Span;
@@ -112,7 +111,7 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
 }
 
 /// The client of a run, which checks a certificate at the mesh time of its hub. It
-/// trusts the roots of the node, and with an `https` address also the `ca`.
+/// trusts the roots of the node and the `ca`.
 ///
 /// # Errors
 ///
@@ -121,7 +120,7 @@ pub(crate) async fn run(mut ctx: Context<Config>) -> Result<(), Error> {
 async fn client(ctx: &Context<Config>) -> Result<Client, Error> {
     let config = ctx.config();
     let roots = match &config.ca {
-        Some(source) if config.address.scheme() == Some(&Scheme::HTTPS) => {
+        Some(source) => {
             let pem = ctx.secret(source).await?;
             let roots = ctx.roots().with_pem(&String::from_utf8_lossy(pem.expose()));
             roots.map_err(|error| {
@@ -138,7 +137,7 @@ async fn client(ctx: &Context<Config>) -> Result<Client, Error> {
                 )
             })?
         }
-        _ => ctx.roots().clone(),
+        None => ctx.roots().clone(),
     };
     // The reader opened, so the node has mesh time and this gives at once.
     let time = ctx.time().await;

@@ -33,12 +33,14 @@ use document::diagnostic::{Code, Diagnostic};
 use document::value::{self, Value};
 use document::{Document, read};
 use http::Uri;
+use http::uri::Scheme;
 
 const BAD_ADDRESS: Code = Code::new("influx.bad-address");
 const BAD_BUCKET: Code = Code::new("influx.bad-bucket");
 const BAD_DATABASE: Code = Code::new("influx.bad-database");
 const BAD_MEASUREMENT: Code = Code::new("influx.bad-measurement");
 const BAD_ORG: Code = Code::new("influx.bad-org");
+const CA_WITH_HTTP: Code = Code::new("influx.ca-with-http");
 const ORG_WITH_DATABASE: Code = Code::new("influx.org-with-database");
 const TWO_TARGETS: Code = Code::new("influx.two-targets");
 /// The keys of the config, other than the reader settings.
@@ -81,8 +83,8 @@ pub struct Config {
     pub token: Option<secret::Source>,
     /// Where the PEM certificates come from that an `https` connect trusts in
     /// addition to the roots of the node, such as a private CA or a self-signed
-    /// server. `None` trusts only the roots of the node. An `http` address does not
-    /// read it.
+    /// server. `None` trusts only the roots of the node. An `http` address with a `ca`
+    /// is refused.
     pub ca: Option<secret::Source>,
     /// The reader whose samples it writes.
     pub reader: reader::Settings,
@@ -109,7 +111,8 @@ impl kind::Kind for Kind {
 
     /// Reads `address`, `database` or `bucket` and `org`, `measurement`, an optional
     /// `token` and an optional `ca` that [`secret::Source::read`] takes, the settings
-    /// of [`reader::read`], and no other key.
+    /// of [`reader::read`], and no other key. It refuses a `ca` with an `http`
+    /// address.
     fn parse(&self, config: &Document) -> Result<Config, Vec<Diagnostic>> {
         let reader = reader::read(config, &KEYS, &[]);
         let address = read::required(
@@ -133,13 +136,8 @@ impl kind::Kind for Kind {
              \"telemetry\""
                 .into(),
         );
-        let source = |key| {
-            let attribute = config.attributes.get(key);
-            attribute
-                .map(|attribute| secret::Source::read(&attribute.value))
-                .transpose()
-        };
-        let (token, ca) = (source("token"), source("ca"));
+        let token = source(config, "token");
+        let ca = ca(config, &address);
         match (reader, address, target, measurement, token, ca) {
             (
                 Ok(reader),
@@ -196,8 +194,8 @@ impl kind::Kind for Kind {
     /// InfluxDB answers 204, when it adds the batch's fields to the count `confirmed`
     /// and the seqs of its gap lines to `lost`. It shows each other answer as its error
     /// and sends the batch again after a backoff. It reads the token at its start, and
-    /// again after a 401 or a 403 before the next attempt. With an `https` address, it
-    /// reads the `ca` at its start.
+    /// again after a 401 or a 403 before the next attempt. It reads the `ca` at its
+    /// start.
     ///
     /// # Errors
     ///
@@ -210,6 +208,36 @@ impl kind::Kind for Kind {
     /// parse.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         send::run(ctx)
+    }
+}
+
+/// Reads the source of the secret at `key`, when there is one.
+fn source(config: &Document, key: &str) -> Result<Option<secret::Source>, Diagnostic> {
+    let attribute = config.attributes.get(key);
+    attribute
+        .map(|attribute| secret::Source::read(&attribute.value))
+        .transpose()
+}
+
+/// Reads the `ca`, which only an `https` address takes.
+fn ca(
+    config: &Document,
+    address: &Result<Uri, Diagnostic>,
+) -> Result<Option<secret::Source>, Diagnostic> {
+    match (source(config, "ca"), address) {
+        (Ok(Some(_)), Ok(address)) if address.scheme() != Some(&Scheme::HTTPS) => {
+            let ca = config
+                .attributes
+                .get("ca")
+                .expect("invariant: a `ca` is read");
+            Err(Diagnostic::new(
+                CA_WITH_HTTP,
+                ca.key_span,
+                "the connector has a `ca`, which only an `https` address takes".into(),
+                "Use an `https` address, or remove `ca`".into(),
+            ))
+        }
+        (ca, _) => ca,
     }
 }
 

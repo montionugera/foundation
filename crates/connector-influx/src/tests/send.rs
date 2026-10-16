@@ -1666,15 +1666,3 @@ fn ends_the_run_at_a_ca_that_gives_no_root() {
         );
     }
 }
-
-#[test]
-fn reads_no_ca_with_an_http_address() {
-    let got = run(|node, tasks| async move {
-        let plant = Plant::new(node, tasks).await;
-        let config = with_ca(&plant, "secret", "plant.none");
-        let (_, errors, end) = send_one(&plant, config).await;
-        let points = plant.store.borrow().points("telemetry", &[]).count();
-        (errors, end.is_none(), points)
-    });
-    assert_eq!(got, (vec![String::new()], true, 1));
-}

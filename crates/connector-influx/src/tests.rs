@@ -129,7 +129,8 @@ fn reads_the_source_of_a_token_and_a_ca() {
         ),
     ] {
         for key in ["token", "ca"] {
-            let config = plus(influx(), &[(60, key, value.clone())]);
+            let https = config(string("https://influx:8086"));
+            let config = plus(https, &[(60, key, value.clone())]);
             let parsed = Kind.parse(&config).expect("parses");
             let read = if key == "token" {
                 parsed.token
@@ -192,6 +193,20 @@ fn reads_an_https_address() {
     assert_eq!(
         Kind.parse(&config).map(|config| config.address),
         Ok("https://influx:8086".parse().expect("a URI"))
+    );
+}
+
+#[test]
+fn refuses_a_ca_with_an_http_address() {
+    let config = plus(influx(), &[(60, "ca", call("secret", "plant.ca"))]);
+    assert_eq!(
+        Kind.parse(&config),
+        Err(vec![refused(
+            "influx.ca-with-http",
+            60,
+            "the connector has a `ca`, which only an `https` address takes",
+            "Use an `https` address, or remove `ca`",
+        )])
     );
 }
 

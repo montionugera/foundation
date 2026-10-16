@@ -220,7 +220,7 @@ fn places_the_problems_of_the_kind_in_source_order() {
                 "port",
                 "`port` is not an attribute of the connector",
                 "Use `select`, `address`, `database`, `bucket`, `org`, `measurement`, \
-                 or `token`, or remove it",
+                 `token`, or `ca`, or remove it",
             ),
         ]
     );
