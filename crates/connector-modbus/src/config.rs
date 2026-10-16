@@ -157,7 +157,7 @@ fn address(text: &str) -> Result<(Host, u16), String> {
 }
 
 /// The host of the address `text`, with no brackets, and the text of its port when it
-/// has one.
+/// has one. A host in brackets must hold a `:`.
 fn split(text: &str) -> Result<(&str, Option<&str>), String> {
     let Some(rest) = text.strip_prefix('[') else {
         return match text.split_once(':') {
