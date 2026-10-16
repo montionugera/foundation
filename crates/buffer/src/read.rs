@@ -35,6 +35,20 @@ pub struct Stored {
     pub bytes: Block,
 }
 
+impl Stored {
+    /// The seqs of the samples, from `first`: none for a caller record.
+    ///
+    /// # Panics
+    ///
+    /// When the samples end past `u64::MAX`, which no read gives.
+    #[must_use]
+    pub fn seqs(&self) -> Range<u64> {
+        let len = self.samples.map_or(0, |samples| samples.len.get());
+        let end = self.first.checked_add(u64::from(len));
+        self.first..end.expect("the samples end past u64::MAX")
+    }
+}
+
 impl PartialEq for Stored {
     fn eq(&self, other: &Self) -> bool {
         self.first == other.first
@@ -312,6 +326,43 @@ mod tests {
 
     fn block(pool: &Pool, bytes: &[u8]) -> Block {
         pool.copy(bytes).expect("the pool has room")
+    }
+
+    fn stored(pool: &Pool, first: u64, samples: Option<Samples>) -> Stored {
+        Stored {
+            first,
+            samples,
+            stored_at: Stamp::from_nanos(0),
+            tag: 0,
+            bytes: block(pool, &[]),
+        }
+    }
+
+    fn pool() -> Pool {
+        let config = Config::new(1 << 20).expect("the budget fits");
+        Pool::new(config.clone(), Heap::new(config.reservation()))
+    }
+
+    #[test]
+    fn the_seqs_of_an_entry_start_at_its_first_and_count_its_samples() {
+        let pool = pool();
+        let samples = Samples {
+            len: NonZeroU32::new(3).expect("not 0"),
+            last: None,
+        };
+        assert_eq!(stored(&pool, 4, Some(samples)).seqs(), 4..7);
+        assert_eq!(stored(&pool, 4, None).seqs(), 4..4);
+        assert_eq!(stored(&pool, u64::MAX, None).seqs(), u64::MAX..u64::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "the samples end past u64::MAX")]
+    fn the_seqs_of_samples_past_the_last_seq_panic() {
+        let samples = Samples {
+            len: NonZeroU32::MIN,
+            last: None,
+        };
+        drop(stored(&pool(), u64::MAX, Some(samples)).seqs());
     }
 
     #[test]

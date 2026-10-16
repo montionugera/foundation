@@ -926,10 +926,7 @@ async fn read_path(
             } else {
                 assert_eq!(entry.first, at, "a gap before entry {number}");
             }
-            at = entry
-                .first
-                .checked_add(u64::from(entry.samples.map_or(0, |s| s.len.get())))
-                .expect("an entry ends past the last seq");
+            at = entry.seqs().end;
             given.push(Given::from(entry));
         }
         assert_eq!(read.next.seq, at, "next is not after the last entry");

@@ -372,11 +372,6 @@ fn samples(len: u32, last: Option<i64>) -> Option<Samples> {
     Some(Samples { len, last })
 }
 
-/// How many samples a read gives in `stored`.
-fn len(stored: &Stored) -> u32 {
-    stored.samples.map_or(0, |samples| samples.len.get())
-}
-
 fn tail(seq: u64, stamp: Option<i64>) -> Tail {
     Tail {
         seq,
@@ -461,7 +456,7 @@ async fn read_all(
             } else {
                 assert_eq!(entry.first, at, "a gap before entry {number}");
             }
-            at = entry.first + u64::from(len(entry));
+            at = entry.seqs().end;
         }
         if read.entries.is_empty() {
             assert_eq!(read.gap, None, "a gap with no entry");
@@ -6615,17 +6610,11 @@ fn a_read_after_a_power_cut_gives_the_entries_the_tail_reports() {
             (tail, reads)
         });
         let (tail, reads) = read.unwrap_or_else(|e| panic!("cut at {cut} ns: {e}"));
-        let firsts: Vec<(u64, u32)> = entries(&reads)
-            .iter()
-            .map(|entry| (entry.first, len(entry)))
-            .collect();
-        let expected = if tail.seq == 5 {
-            vec![(0, 3), (3, 2)]
-        } else {
-            vec![(0, 3)]
-        };
+        let seqs: Vec<Range<u64>> = entries(&reads).iter().map(Stored::seqs).collect();
+        let entries = if tail.seq == 5 { 2 } else { 1 };
         assert_eq!(
-            firsts, expected,
+            seqs,
+            &[0..3, 3..5][..entries],
             "seed {seed}, cut at {cut} ns, tail {tail:?}"
         );
         assert!(cut != 0 || !ended, "seed {seed}: the cut missed the commit");

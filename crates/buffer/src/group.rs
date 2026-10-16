@@ -138,8 +138,9 @@ impl Group {
 
     /// Checks that the group can take every entry of `batch`: the record with them
     /// fits the layout and the ring of `writer`, and each entry is at most
-    /// `block_max`. When the group has no blocks, it takes them from `pool`. The
-    /// caller then gives each entry of `batch` to [`take`](Self::take), in order.
+    /// `block_max`. When the group has no blocks, it takes them from `pool`. Counts
+    /// the bytes of the batch in the group, so the caller then gives each entry of
+    /// `batch` to [`take`](Self::take), in order.
     ///
     /// # Errors
     ///
@@ -192,18 +193,17 @@ impl Group {
             self.meta = Some(meta);
             self.wrap = Some(wrap);
         }
+        self.bytes = self
+            .bytes
+            .checked_add(len)
+            .expect("invariant: a body fits in usize");
         Ok(())
     }
 
     /// Takes `entry` with its header of `kind`, after a [`fit`](Self::fit) of its
     /// batch.
     pub(crate) fn take(&mut self, entry: Entry, kind: Kind) {
-        let header = entry.header(kind);
-        self.bytes = self
-            .bytes
-            .checked_add(usize::try_from(header.bytes).expect("a u32 fits usize"))
-            .expect("invariant: a body fits in usize");
-        self.headers.push(header);
+        self.headers.push(entry.header(kind));
         self.slots.push(entry.slot);
         self.writes.extend(entry.parts);
     }

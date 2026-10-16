@@ -162,7 +162,7 @@ impl Entry {
     }
 }
 
-/// What a log needs of an entry: its path, its first seq, and its samples.
+/// What a log needs of an entry: its index and path, its first seq, and its samples.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Place {
     pub(crate) index: channel::Key,
@@ -203,14 +203,6 @@ impl Header {
         match self.kind {
             Kind::Samples(samples) => samples.len.get(),
             Kind::Record(_) => 0,
-        }
-    }
-
-    /// The newest stamp of the entry's samples: none for an entry with no samples.
-    pub(crate) const fn stamp(&self) -> Option<Stamp> {
-        match self.kind {
-            Kind::Samples(samples) => samples.last,
-            Kind::Record(_) => None,
         }
     }
 

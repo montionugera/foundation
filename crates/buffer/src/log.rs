@@ -67,6 +67,44 @@ pub(crate) enum Invalid {
     },
 }
 
+/// An [`Invalid`] of one path, without the index and the path, which
+/// [`Logs::change`] adds.
+#[derive(Clone, Copy, Debug)]
+enum Fault {
+    Below { first: u64, tail: u64 },
+    Past { first: u64, len: u32 },
+    Crowded { seq: u64 },
+    Counted { seq: u64, given: u64, walked: u64 },
+}
+
+impl Fault {
+    /// The error of the fault on `path` of `index`.
+    const fn on(self, index: channel::Key, path: Path) -> Invalid {
+        match self {
+            Self::Below { first, tail } => Invalid::Below {
+                index,
+                path,
+                first,
+                tail,
+            },
+            Self::Past { first, len } => Invalid::Past {
+                index,
+                path,
+                first,
+                len,
+            },
+            Self::Crowded { seq } => Invalid::Crowded { index, path, seq },
+            Self::Counted { seq, given, walked } => Invalid::Counted {
+                index,
+                path,
+                seq,
+                given,
+                walked,
+            },
+        }
+    }
+}
+
 impl fmt::Display for Invalid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -132,25 +170,17 @@ impl fmt::Display for Invalid {
 }
 
 impl Tail {
-    /// Moves the tail past the entry of `index` on `path` at `first`: `seq` to
-    /// `first` plus the `len` of `samples`, and `stamp` to their `last` when they
-    /// have one. A `first` past the tail is a skip ahead.
+    /// Moves the tail past the entry at `first`: `seq` to `first` plus the `len` of
+    /// `samples`, and `stamp` to their `last` when they have one. A `first` past the
+    /// tail is a skip ahead.
     ///
     /// # Errors
     ///
-    /// [`Invalid`] when `first` is below the tail or `first` plus `samples.len` does
-    /// not fit in a `u64`. The tail does not move.
-    pub(crate) fn advance(
-        &mut self,
-        index: channel::Key,
-        path: Path,
-        first: u64,
-        samples: Option<Samples>,
-    ) -> Result<(), Invalid> {
+    /// [`Fault::Below`] when `first` is below the tail, and [`Fault::Past`] when
+    /// `first` plus `samples.len` does not fit in a `u64`. The tail does not move.
+    fn advance(&mut self, first: u64, samples: Option<Samples>) -> Result<(), Fault> {
         if first < self.seq {
-            return Err(Invalid::Below {
-                index,
-                path,
+            return Err(Fault::Below {
                 first,
                 tail: self.seq,
             });
@@ -160,12 +190,9 @@ impl Tail {
             return Ok(());
         };
         let len = samples.len.get();
-        self.seq = first.checked_add(u64::from(len)).ok_or(Invalid::Past {
-            index,
-            path,
-            first,
-            len,
-        })?;
+        self.seq = first
+            .checked_add(u64::from(len))
+            .ok_or(Fault::Past { first, len })?;
         if let Some(last) = samples.last {
             self.stamp = Some(last);
         }
@@ -263,28 +290,21 @@ impl Position {
     ///
     /// # Errors
     ///
-    /// As [`Tail::advance`], and [`Invalid::Crowded`]. Nothing changes.
+    /// As [`Tail::advance`], and [`Fault::Crowded`]. Nothing changes.
     fn advance(
         &mut self,
-        index: channel::Key,
-        path: Path,
         first: u64,
         samples: Option<Samples>,
-    ) -> Result<(Mark, Kind), Invalid> {
+    ) -> Result<(Mark, Kind), Fault> {
         let start = self.mark();
-        let kind = match samples {
-            Some(samples) => Kind::Samples(samples),
-            None => Kind::Record(start.count(first).ok_or(Invalid::Crowded {
-                index,
-                path,
-                seq: first,
-            })?),
+        let (kind, given) = if let Some(samples) = samples {
+            (Kind::Samples(samples), 0)
+        } else {
+            let given = start.count(first).ok_or(Fault::Crowded { seq: first })?;
+            (Kind::Record(given), given.get())
         };
-        self.tail.advance(index, path, first, samples)?;
-        self.given = match kind {
-            Kind::Samples(_) => 0,
-            Kind::Record(given) => given.get(),
-        };
+        self.tail.advance(first, samples)?;
+        self.given = given;
         Ok((start, kind))
     }
 }
@@ -385,13 +405,9 @@ impl Log {
     /// # Panics
     ///
     /// When `offset` is below the newest record of the path.
-    fn sync(&mut self, header: &Header, offset: u64) -> Result<bool, Invalid> {
-        let (start, _) = self.durable.advance(
-            header.index,
-            header.path,
-            header.first,
-            header.samples(),
-        )?;
+    fn sync(&mut self, header: &Header, offset: u64) -> Result<bool, Fault> {
+        let samples = header.samples();
+        let (start, _) = self.durable.advance(header.first, samples)?;
         let newest = self.runs.back().map(|run| run.offset).max(self.holder);
         if let Some(newest) = newest {
             assert!(
@@ -399,7 +415,7 @@ impl Log {
                 "invariant: record {offset} comes after record {newest}"
             );
         }
-        if header.stamp() == self.durable.tail.stamp {
+        if samples.and_then(|samples| samples.last) == self.durable.tail.stamp {
             self.holder = Some(offset);
         }
         if self.runs.back().is_some_and(|run| run.offset == offset) {
@@ -901,8 +917,7 @@ impl Logs {
         place: &Place,
     ) -> Result<Kind, Invalid> {
         let ((_, kind), _) = self.change(slot, place.index, place.path, |log| {
-            log.appended
-                .advance(place.index, place.path, place.first, place.samples)
+            log.appended.advance(place.first, place.samples)
         })?;
         Ok(kind)
     }
@@ -975,18 +990,11 @@ impl Logs {
         }
         self.change(slot, header.index, header.path, |log| {
             let mut appended = log.appended;
-            let (_, walked) = appended.advance(
-                header.index,
-                header.path,
-                header.first,
-                header.samples(),
-            )?;
+            let (_, walked) = appended.advance(header.first, header.samples())?;
             if let (Kind::Record(given), Kind::Record(walked)) = (header.kind, walked)
                 && given != walked
             {
-                return Err(Invalid::Counted {
-                    index: header.index,
-                    path: header.path,
+                return Err(Fault::Counted {
                     seq: header.first,
                     given: given.get(),
                     walked: walked.get(),
@@ -1002,6 +1010,10 @@ impl Logs {
     /// path is new, and gives the place of the log. A change that fails on a new path
     /// adds nothing.
     ///
+    /// # Errors
+    ///
+    /// The [`Invalid`] of the [`Fault`] that `change` gives, on `path` of `index`.
+    ///
     /// # Panics
     ///
     /// When the log of `slot` on `path` holds another index than `index`.
@@ -1010,8 +1022,9 @@ impl Logs {
         slot: Slot,
         index: channel::Key,
         path: Path,
-        change: impl FnOnce(&mut Log) -> Result<T, Invalid>,
+        change: impl FnOnce(&mut Log) -> Result<T, Fault>,
     ) -> Result<(T, u32), Invalid> {
+        let invalid = |fault: Fault| fault.on(index, path);
         let key = (slot, path);
         if let Some(&at) = self.places.get(&key) {
             let log = nth_mut(&mut self.paths, at);
@@ -1022,10 +1035,10 @@ impl Logs {
                 log.index,
                 index,
             );
-            return Ok((change(log)?, at));
+            return Ok((change(log).map_err(invalid)?, at));
         }
         let mut log = Log::new(index, path);
-        let changed = change(&mut log)?;
+        let changed = change(&mut log).map_err(invalid)?;
         Ok((changed, self.add(key, log)))
     }
 }
@@ -1265,7 +1278,9 @@ mod tests {
                 .map(|header| header.first + u64::from(header.len()))
                 .max()
                 .unwrap_or(0),
-            stamp: on(fed, slot, path).filter_map(Header::stamp).last(),
+            stamp: on(fed, slot, path)
+                .filter_map(|header| header.samples()?.last)
+                .last(),
         }
     }
 
@@ -1544,12 +1559,9 @@ mod tests {
                     .copied()
                     .unwrap_or((offset, Mark::at(0), None));
             let end = end.after(header.first, header.len());
-            let stamp = header.stamp().or(stamp);
-            let holder = if header.stamp() == stamp {
-                offset
-            } else {
-                holder
-            };
+            let last = header.samples().and_then(|samples| samples.last);
+            let stamp = last.or(stamp);
+            let holder = if last == stamp { offset } else { holder };
             self.paths.insert(key, (holder, end, stamp));
         }
 

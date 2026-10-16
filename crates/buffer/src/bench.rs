@@ -169,10 +169,7 @@ impl Group {
         group
             .fit(&self.pool, self.block_max, &self.writer, &self.batch)
             .expect("the ring has room");
-        for entry in self.batch.drain(..) {
-            let kind = self.logs.append(entry.slot, &entry.place());
-            group.take(entry, kind.expect("in order"));
-        }
+        crate::buffer::take(&mut group, &mut self.logs, &mut self.batch);
         self.write(group);
     }
 

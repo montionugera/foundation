@@ -350,8 +350,7 @@ impl Set {
                 Err(_) => return Ok(()),
             };
             given = true;
-            let len = stored.samples.map_or(0, |samples| samples.len.get());
-            let seq = stored.first..stored.first + u64::from(len);
+            let seq = stored.seqs();
             if !entry.readers.fill(key.session, frame, set, seq) {
                 return Ok(());
             }

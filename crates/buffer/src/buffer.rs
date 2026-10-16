@@ -851,14 +851,7 @@ impl Buffer {
             }
             Err(other) => return Err(rejected(other)),
         }
-        let state = &mut *state;
-        for entry in batch.drain(..) {
-            let kind = state
-                .logs
-                .append(entry.slot, &entry.place())
-                .unwrap_or_else(|invalid| panic!("invariant: {invalid}"));
-            state.open.take(entry, kind);
-        }
+        take(&mut state.open, &mut state.logs, batch);
         let idle = state.idle();
         drop(guard);
         if !idle {
@@ -900,6 +893,21 @@ impl Buffer {
         End {
             waiter: Waiter::new(&self.shared, Event::End),
         }
+    }
+}
+
+/// Appends each entry of `batch` to `logs`, in order, and takes it into `open` with
+/// the kind that the append gives. `open` has fit the batch. Leaves `batch` empty.
+///
+/// # Panics
+///
+/// When an entry does not go on its path in `logs`.
+pub(crate) fn take(open: &mut Group, logs: &mut Logs, batch: &mut Vec<Entry>) {
+    for entry in batch.drain(..) {
+        let kind = logs
+            .append(entry.slot, &entry.place())
+            .unwrap_or_else(|invalid| panic!("invariant: {invalid}"));
+        open.take(entry, kind);
     }
 }
 
@@ -2355,19 +2363,10 @@ mod tests {
                         .read(one, Path::Live, from, usize::MAX)
                         .await
                         .expect("reads");
-                    let lens: Vec<(u64, u32)> = read
-                        .entries
-                        .iter()
-                        .take(2)
-                        .map(|entry| {
-                            (
-                                entry.first,
-                                entry.samples.map_or(0, |samples| samples.len.get()),
-                            )
-                        })
-                        .collect();
+                    let seqs: Vec<Range<u64>> =
+                        read.entries.iter().take(2).map(Stored::seqs).collect();
                     *given.lock().expect("no panic held the lock") =
-                        Some((read.gap, lens));
+                        Some((read.gap, seqs));
                     buffer
                 },
             );
@@ -2378,7 +2377,7 @@ mod tests {
                 "the trim landed at record 2, and no trim is due"
             );
             let found = found.lock().expect("no panic held the lock");
-            assert_eq!(*found, Some((None, vec![(0, 0), (0, 3)])));
+            assert_eq!(*found, Some((None, vec![0..0, 0..3])));
         }
 
         /// While a read holds the record at 4096, appends of index 2 fill the ring

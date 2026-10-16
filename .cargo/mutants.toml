@@ -147,6 +147,12 @@ exclude_re = [
   'crates/hub/src/reader/remote\.rs:.*replace > with >= in Sessions::add',
   # Equal keys get no rule (ONE SESSION PER PEER, rule 4), so no test can pin `<`.
   'crates/transport/src/table\.rs:.*replace < with <= in Table::arrive',
+  # Only the `wal` bench calls `buffer::bench::Group::commit`, and it gives nothing
+  # back. Its test kills the mutant through the private writer.
+  'crates/buffer/src/bench\.rs:.*replace Group::commit with \(\)$',
+  # Only the `wal` bench calls `buffer::bench::Group::queue`, and it gives nothing
+  # back. Its test kills the mutant through the private writer and logs.
+  'crates/buffer/src/bench\.rs:.*replace Group::queue with \(\)$',
   # Only the `logs` bench calls `buffer::bench::Logs::commit`, and it gives nothing
   # back. Its test kills the mutants through the private logs.
   'crates/buffer/src/bench\.rs:.*replace Logs::commit with \(\)$',

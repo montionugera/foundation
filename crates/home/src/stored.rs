@@ -56,7 +56,7 @@ pub(crate) fn entry(
         unreachable!("invariant: a frame holds the index of each series");
     };
     let Some(len) = NonZeroU32::new(range.count) else {
-        unreachable!("invariant: an index frame holds a sample");
+        panic!("the frame has no sample");
     };
     let parts = body(pool, frame, set)?;
     Ok(Entry {
@@ -495,6 +495,26 @@ mod tests {
             }
             drop(entry(
                 &heads,
+                &frame,
+                &set,
+                Stamp::from_nanos(0),
+                Stamp::from_nanos(0),
+            ));
+        }
+
+        #[test]
+        #[should_panic(expected = "the frame has no sample")]
+        fn panics_on_a_frame_of_no_sample() {
+            let set = intern(&[Group {
+                index: key(Slot::new(1)),
+                data: &[],
+            }]);
+            let pool = create_pool(4096);
+            let draft = Draft::new(&pool, &set, Form::Encoded, &[(0, 8)])
+                .expect("a valid frame");
+            let frame = draft.freeze(Path::Live);
+            drop(entry(
+                &pool,
                 &frame,
                 &set,
                 Stamp::from_nanos(0),
