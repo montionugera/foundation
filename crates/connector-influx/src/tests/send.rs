@@ -1758,7 +1758,8 @@ fn loses_the_batch_in_flight_at_a_restart_with_no_hold() {
     assert_eq!(second[0].lines().count(), 1, "{second:?}");
 }
 
-/// As [`run`], on a node at the name `server` whose wall starts at [`JUNE_2026`].
+/// As [`run`], on a node at the name `server` whose wall starts at [`JUNE_2026`], with
+/// a host directory `/etc/influx` too.
 fn run_tls<T, F>(main: impl FnOnce(::sim::node::Node, Tasks) -> F + Send + 'static) -> T
 where
     T: Send + 'static,
@@ -1775,6 +1776,8 @@ where
         ..::sim::name::Config::default()
     };
     sim.name("server", name);
+    node.make_dir(std::path::Path::new("/run/secrets"));
+    node.make_dir(std::path::Path::new("/etc/influx"));
     sim.run_on(&node, main).expect("the run ends")
 }
 
