@@ -95,7 +95,7 @@ fn respond(message: &str) -> Option<String> {
         reached.set(reached.get() + 1);
         Ok(request)
     });
-    let scope = crate::remote::Scope::free(&paths);
+    let scope = crate::scope::Scope::free(&paths);
     let respond = crate::mcp::respond(message, &scope, &mut link);
     let Poll::Ready(reply) =
         pin!(respond).poll(&mut Context::from_waker(Waker::noop()))
@@ -619,7 +619,7 @@ fn every() -> Vec<Error> {
         },
         Error::Outside {
             path: PathBuf::new(),
-            limits: crate::remote::Limits {
+            limits: crate::scope::Limits {
                 folders: vec![PathBuf::from("/work")],
                 data: PathBuf::from("/work/foundation-data"),
                 working: PathBuf::from("/work"),

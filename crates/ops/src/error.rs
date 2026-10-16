@@ -14,7 +14,7 @@ use types::name::Name;
 use wire::hub::client::BODY_BYTES_MAX;
 
 use crate::front_end::File;
-use crate::remote::Limits;
+use crate::scope::Limits;
 
 const ARGUMENT: Code = Code::new("ops.argument");
 const UNKNOWN: Code = Code::new("ops.unknown-operation");

@@ -7,14 +7,14 @@ use document::diagnostic::Code;
 use env::paths::{self, Found, Paths};
 use serde_json::{Value, json};
 
-use super::Limits;
-use super::{Link, Scope, apply, most, plan, status};
+use super::{Link, apply, most, plan, status};
 use crate::apply::Applied;
 use crate::common::{self, create_node, name, placed_site, solo};
 use crate::error::{Error, Problem, Unread, Unusable, Unwritten};
 use crate::front_end::File;
 use crate::operation::{DATA, Response};
 use crate::plan::Output;
+use crate::scope::{Limits, Scope};
 use crate::{Failure, Node, Run, serve};
 
 /// A failure of `reach`, or of a request.

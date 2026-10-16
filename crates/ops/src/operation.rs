@@ -12,7 +12,8 @@ use types::name::Name;
 
 use crate::apply::Applied;
 use crate::error::{Among, Error};
-use crate::remote::{self, Link, Scope};
+use crate::remote::{self, Link};
+use crate::scope::Scope;
 use crate::{Failure, Log, Start, plan, status};
 
 /// The data directory of a command that names none.
@@ -474,7 +475,7 @@ pub(crate) fn docs() -> String {
 }
 
 impl Request {
-    /// Runs the operation, with the files it names read and written through `paths`,
+    /// Runs the operation, with the files it names read and written through `scope`,
     /// and its request to the node sent through `link`.
     ///
     /// # Errors

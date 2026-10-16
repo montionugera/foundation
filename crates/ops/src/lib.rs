@@ -20,6 +20,7 @@ mod node;
 mod operation;
 mod plan;
 mod remote;
+mod scope;
 mod serve;
 mod start;
 mod status;
@@ -32,7 +33,8 @@ pub use error::Failure;
 pub use front_end::{FrontEnd, FrontEnds};
 pub use node::{Config, Node};
 use operation::Parsed;
-use remote::{Link, Scope};
+use remote::Link;
+use scope::Scope;
 pub use serve::serve;
 pub use start::{Log, Start};
 

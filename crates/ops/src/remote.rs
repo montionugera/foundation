@@ -2,146 +2,18 @@
 
 use std::path::{Path, PathBuf};
 
-use env::paths::{self, Found, Paths};
 use wire::hub::client::BODY_BYTES_MAX;
 
 use crate::Failure;
 use crate::apply::Applied;
-use crate::error::{self, Error, Unread, Unusable, Unwritten};
+use crate::error::{self, Error, Unread};
 use crate::front_end::{self, File};
 use crate::plan::Output;
+use crate::scope::Scope;
 use crate::{serve, status};
 
 #[cfg(test)]
 mod tests;
-
-/// The files that a run reaches: each one for a command line, and for `foundation mcp`
-/// only those under its folders, with its data directory hidden.
-pub(crate) struct Scope {
-    paths: Paths,
-    limits: Option<Limits>,
-}
-
-/// The resolved folders of `foundation mcp`, its resolved data directory, and the
-/// resolved working directory, where a relative path starts.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Limits {
-    pub(crate) folders: Vec<PathBuf>,
-    pub(crate) data: PathBuf,
-    pub(crate) working: PathBuf,
-}
-
-impl Scope {
-    /// Each file of `paths`, for a command line.
-    pub(crate) fn free(paths: &Paths) -> Self {
-        Self {
-            paths: paths.clone(),
-            limits: None,
-        }
-    }
-
-    /// The files of `foundation mcp` in `paths`: those under the folders `files`, else
-    /// under the working directory, and none under the data directory `data`, which it
-    /// makes after it checks the folders, when it is not there.
-    ///
-    /// # Errors
-    ///
-    /// - [`Error::WideFolder`] with no `files`, when the working directory is `/` or
-    ///   the home folder.
-    /// - [`Error::Folder`] for the first folder of `files` that does not resolve, does
-    ///   not read, or is a file.
-    /// - [`Error::Data`] when `data` is not made, or does not resolve.
-    pub(crate) fn mcp(
-        paths: &Paths,
-        files: &[PathBuf],
-        data: &Path,
-    ) -> Result<Self, Error> {
-        let unmade = |error| Error::Data {
-            path: data.to_owned(),
-            error,
-        };
-        let folder = |path: &Path, cause| Error::Folder {
-            path: path.to_owned(),
-            cause,
-        };
-        let resolve = |path: &Path| {
-            let failed = |error| folder(path, Unusable::Failed(error));
-            paths.resolve(path).map_err(failed)
-        };
-        let working = resolve(Path::new("."))?;
-        let folders = if files.is_empty() {
-            if working.parent().is_none() || paths.home().as_ref() == Some(&working) {
-                return Err(Error::WideFolder { working });
-            }
-            vec![working.clone()]
-        } else {
-            let mut folders = Vec::with_capacity(files.len());
-            for file in files {
-                let resolved = resolve(file)?;
-                // A directory with entries is `Large` too, and only it reads with an
-                // end in `/`.
-                match paths.read(&resolved, 0) {
-                    Ok(paths::Found::Directory(_)) => folders.push(resolved),
-                    Ok(paths::Found::Large)
-                        if paths.read(&resolved.join(""), 0).is_ok() =>
-                    {
-                        folders.push(resolved);
-                    }
-                    Ok(paths::Found::File(_) | paths::Found::Large) => {
-                        return Err(folder(file, Unusable::File));
-                    }
-                    Err(error) => return Err(folder(file, Unusable::Failed(error))),
-                }
-            }
-            folders
-        };
-        paths.make_dir(data).map_err(unmade)?;
-        let data = paths.resolve(data).map_err(unmade)?;
-        let within = paths
-            .within(&folders, std::slice::from_ref(&data))
-            .map_err(unmade)?;
-        Ok(Self {
-            paths: within,
-            limits: Some(Limits {
-                folders,
-                data,
-                working,
-            }),
-        })
-    }
-
-    /// The error of a call at `path` that its limits refused with `error`, `Outside`
-    /// or `Hidden`.
-    fn refused(&self, path: &Path, error: paths::Error) -> Error {
-        let path = path.to_owned();
-        let limits = self
-            .limits
-            .clone()
-            .expect("invariant: only the paths of a scope with limits refuse a path");
-        match error {
-            paths::Error::Hidden => Error::Hidden {
-                path,
-                data: limits.data,
-            },
-            _ => Error::Outside { path, limits },
-        }
-    }
-
-    /// The error of a resolve or a write of the plan file `out` that failed.
-    fn unwritten(&self, out: &Path, error: paths::Error) -> Error {
-        let cause = match error {
-            paths::Error::Outside | paths::Error::Hidden => {
-                return self.refused(out, error);
-            }
-            paths::Error::NotFound => Unwritten::NotFound,
-            paths::Error::Io { code } => Unwritten::Io { code },
-        };
-        Error::Write {
-            path: out.to_owned(),
-            cause,
-        }
-    }
-}
 
 /// The link to one node: what reaches it.
 pub(crate) struct Link<R> {
@@ -199,22 +71,13 @@ where
     if !not_utf8.is_empty() {
         return Err(Error::config(not_utf8, &error::Sources::default()));
     }
-    if let (Some(out), Some(_)) = (out, &scope.limits) {
-        let resolved = scope
-            .paths
-            .resolve(out)
-            .map_err(|error| scope.unwritten(out, error))?;
-        if resolved.extension() != Some("plan".as_ref()) {
-            return Err(Error::PlanName {
-                path: out.to_owned(),
-                resolved,
-            });
-        }
+    if let Some(out) = out {
+        scope.out(out)?;
     }
     let mut total = 0;
     let mut read = Vec::with_capacity(files.len());
     for path in files {
-        let bytes = file(scope, path)?;
+        let bytes = scope.read(path, most())?;
         total += bytes.len();
         if total > most() {
             return Err(Error::LargeRequest);
@@ -231,10 +94,7 @@ where
     let reply = request(&serve::plan_request(&read)?, link).await?;
     let (output, plan) = serve::plan_reply(&reply)?;
     if let Some(out) = out {
-        scope
-            .paths
-            .write(out, plan)
-            .map_err(|error| scope.unwritten(out, error))?;
+        scope.write(out, plan)?;
     }
     Ok(output)
 }
@@ -262,7 +122,7 @@ where
         let not_utf8 = vec![front_end::not_utf8(plan)];
         return Err(Error::config(not_utf8, &error::Sources::default()));
     };
-    let bytes = file(scope, plan)?;
+    let bytes = scope.read(plan, most())?;
     let reply = request(&serve::apply_request(&bytes)?, link).await?;
     let effect = serve::reply(&reply, "apply")?;
     Ok(Applied {
@@ -290,24 +150,6 @@ where
 fn most() -> usize {
     usize::try_from(BODY_BYTES_MAX)
         .expect("invariant: the bound of a body fits a usize")
-}
-
-/// The bytes of the file at `path`, of at most the bytes of one request.
-fn file(scope: &Scope, path: &Path) -> Result<Vec<u8>, Error> {
-    let unread = |cause| Error::Read {
-        path: path.to_owned(),
-        cause,
-    };
-    match scope.paths.read(path, most()) {
-        Ok(Found::File(bytes)) => Ok(bytes),
-        Ok(Found::Large) => Err(Error::LargeRequest),
-        Ok(Found::Directory(_)) => Err(unread(Unread::Directory)),
-        Err(paths::Error::NotFound) => Err(unread(Unread::NotFound)),
-        Err(paths::Error::Io { code }) => Err(unread(Unread::Io { code })),
-        Err(error @ (paths::Error::Outside | paths::Error::Hidden)) => {
-            Err(scope.refused(path, error))
-        }
-    }
 }
 
 /// The reply of the node of `link` to `body`.

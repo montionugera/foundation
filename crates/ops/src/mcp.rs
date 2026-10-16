@@ -4,7 +4,8 @@ use serde_json::{Map, Value, json};
 
 use crate::error::Error;
 use crate::operation::{self, TABLE};
-use crate::remote::{Link, Scope};
+use crate::remote::Link;
+use crate::scope::Scope;
 use crate::{Failure, Stop};
 
 /// The one protocol version this server speaks. A client that asks for another gets
