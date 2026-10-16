@@ -25,8 +25,7 @@
   also refuses a path other than empty or `/`, and a query, at the value: a path (a
   proxy prefix) can come later as a compatible change, and a refusal cannot. Each
   diagnostic of a kind names its document `connector::kind::NOUN` ("the connector"), as
-  `reader::read` does. Decided by
-  `laptop.architect-2` on #1794
+  `reader::read` does. Decided by `laptop.architect-2` on #1794
   (https://github.com/synnaxlabs/foundation/pull/1794#issuecomment-6052684931,
   2026-10-08 05:03 UTC). The code of that refusal is `influx.bad-address`. Proposed by
   `connector` as its address code
