@@ -117,7 +117,7 @@ pub(crate) struct Line<'a> {
 
 impl Line<'_> {
     /// Appends `field` with the value that `value` appends. When `value` gives
-    /// `false`, it must append nothing, and the line leaves the field out.
+    /// `false`, the line leaves out the field and each byte that `value` appended.
     #[inline]
     pub(crate) fn field(
         &mut self,
@@ -164,19 +164,38 @@ pub enum Value {
 
 impl Value {
     /// Appends the text of the value to `out`.
-    #[inline]
-    pub(crate) fn write(self, out: &mut Vec<u8>) {
-        let wrote = match self {
-            Self::Float(Float(float)) => write!(out, "{float:e}"),
-            Self::Integer(integer) => write!(out, "{integer}i"),
-            Self::Unsigned(unsigned) => write!(out, "{unsigned}u"),
-            Self::Boolean(boolean) => {
-                out.push(if boolean { b't' } else { b'f' });
-                Ok(())
-            }
-        };
-        wrote.expect("invariant: a write to a Vec never fails");
+    fn write(self, out: &mut Vec<u8>) {
+        match self {
+            Self::Float(float) => self::float(out, float),
+            Self::Integer(value) => integer(out, value),
+            Self::Unsigned(value) => unsigned(out, value),
+            Self::Boolean(value) => boolean(out, value),
+        }
     }
+}
+
+/// Appends the text of the float field value `value` to `out`.
+#[inline]
+pub(crate) fn float(out: &mut Vec<u8>, Float(value): Float) {
+    write!(out, "{value:e}").expect("invariant: a write to a Vec never fails");
+}
+
+/// Appends the text of the integer field value `value` to `out`.
+#[inline]
+pub(crate) fn integer(out: &mut Vec<u8>, value: i64) {
+    write!(out, "{value}i").expect("invariant: a write to a Vec never fails");
+}
+
+/// Appends the text of the unsigned field value `value` to `out`.
+#[inline]
+pub(crate) fn unsigned(out: &mut Vec<u8>, value: u64) {
+    write!(out, "{value}u").expect("invariant: a write to a Vec never fails");
+}
+
+/// Appends the text of the boolean field value `value` to `out`.
+#[inline]
+pub(crate) fn boolean(out: &mut Vec<u8>, value: bool) {
+    out.push(if value { b't' } else { b'f' });
 }
 
 /// A finite 64-bit float. InfluxDB cannot store NaN or infinity.

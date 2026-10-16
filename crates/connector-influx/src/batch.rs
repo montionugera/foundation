@@ -13,7 +13,7 @@ use types::time::Stamp;
 
 use crate::Target;
 use crate::gap::Gap;
-use crate::line::{self, Float, Measurement, Value};
+use crate::line::{self, Float, Measurement};
 
 const SAMPLE_TYPE: Code = Code::new("influx.sample-type");
 const BAD_CHANNEL: Code = Code::new("influx.bad-channel");
@@ -85,13 +85,12 @@ struct Layout {
 #[derive(Debug)]
 struct Channel {
     field: line::Field,
-    width: usize,
     convert: Convert,
 }
 
-/// Appends the field value of one raw sample, or gives `false` with nothing
-/// appended when InfluxDB cannot store it.
-type Convert = fn(&[u8], &mut Vec<u8>) -> bool;
+/// Appends the field value of the sample at a given index of a raw series, or gives
+/// `false` when InfluxDB cannot store it.
+type Convert = fn(&[u8], usize, &mut Vec<u8>) -> bool;
 
 impl Batch {
     /// An empty batch of lines of the measurement `name` to `target`, whose gap lines
@@ -235,10 +234,7 @@ impl Body {
             let mut text = measurement.begin(&mut self.bytes);
             for (&at, raw) in self.entries.iter().zip(&self.raw) {
                 let channel = layout.channel(at);
-                let sample = raw.chunks_exact(channel.width).nth(line);
-                let sample =
-                    sample.expect("invariant: a series has the count of its index");
-                text.field(&channel.field, |out| (channel.convert)(sample, out));
+                text.field(&channel.field, |out| (channel.convert)(raw, line, out));
             }
             let wrote = text.end(Stamp::from_nanos(i64::from_le_bytes(time)));
             if wrote > 0 {
@@ -273,15 +269,11 @@ impl Layout {
         let slot = self.channels.get_mut(at);
         let slot = slot.expect("invariant: a view gives entries of its key set");
         if slot.is_none() {
-            let (width, convert) = conversion(received, at, unsigned)?;
+            let convert = conversion(received, at, unsigned)?;
             let field = measurement
                 .field(received.name(at))
                 .map_err(|error| bad_channel(&error))?;
-            *slot = Some(Channel {
-                field,
-                width,
-                convert,
-            });
+            *slot = Some(Channel { field, convert });
         }
         Ok(())
     }
@@ -322,13 +314,13 @@ fn entry(set: &KeySet, at: usize) -> &key_set::Entry {
     entry.expect("invariant: a view gives entries of its key set")
 }
 
-/// The width and the conversion of a sample of the data channel at `at` of
-/// `received`. A `u64` sample is a `u` integer when `unsigned`.
+/// The conversion of a sample of the data channel at `at` of `received`. A `u64`
+/// channel is refused unless `unsigned`.
 fn conversion(
     received: &Received<'_>,
     at: usize,
     unsigned: bool,
-) -> Result<(usize, Convert), Error> {
+) -> Result<Convert, Error> {
     let name = received.name(at);
     let refused = |code, message: String, fix: &str| {
         Err(Error::Config(vec![Diagnostic::new(
@@ -338,28 +330,9 @@ fn conversion(
             fix.into(),
         )]))
     };
-    /// The conversion of a sample of `Scalar::$scalar`.
-    macro_rules! read {
-        ($scalar:ident) => {
-            |s, out| write(sample::Value::read(Scalar::$scalar, s), out)
-        };
-    }
     let data_type = entry(received.set(), at).data_type;
-    let convert: Convert = match data_type {
-        Type::Scalar(Scalar::Bool) => read!(Bool),
-        Type::Scalar(Scalar::I8) => read!(I8),
-        Type::Scalar(Scalar::I16) => read!(I16),
-        Type::Scalar(Scalar::I32) => read!(I32),
-        Type::Scalar(Scalar::I64) => read!(I64),
-        Type::Scalar(Scalar::U8) => read!(U8),
-        Type::Scalar(Scalar::U16) => read!(U16),
-        Type::Scalar(Scalar::U32) => read!(U32),
-        Type::Scalar(Scalar::U64) if unsigned => read!(U64),
-        Type::Scalar(Scalar::F32) => read!(F32),
-        Type::Scalar(Scalar::F64) => read!(F64),
-        Type::Scalar(Scalar::Stamp) => read!(Stamp),
-        Type::Scalar(Scalar::Span) => read!(Span),
-        Type::Scalar(Scalar::U64) => {
+    let convert = match data_type {
+        Type::Scalar(Scalar::U64) if !unsigned => {
             return refused(
                 UNSIGNED,
                 format!(
@@ -370,53 +343,87 @@ fn conversion(
                  `select`",
             );
         }
-        Type::Scalar(Scalar::Uuid)
-        | Type::Array { .. }
+        Type::Scalar(scalar) => convert(scalar),
+        Type::Array { .. }
         | Type::List { .. }
         | Type::String
         | Type::Bytes
-        | Type::Matrix { .. } => {
-            return refused(
+        | Type::Matrix { .. } => None,
+    };
+    convert.map_or_else(
+        || {
+            refused(
                 SAMPLE_TYPE,
                 format!(
                     "the channel {name:?} holds {data_type} samples, which the influx \
                      kind does not write"
                 ),
                 "Leave the channel out of `select`",
-            );
-        }
-    };
-    let width = data_type.width().expect("invariant: a scalar has a width");
-    Ok((width, convert))
+            )
+        },
+        Ok,
+    )
 }
 
-/// Appends the field value of `sample`, or gives `false` with nothing appended when
-/// InfluxDB cannot store it.
-#[inline]
-fn write(sample: sample::Value, out: &mut Vec<u8>) -> bool {
-    value(sample).map(|value| value.write(out)).is_some()
-}
-
-/// The field of `sample`, or `None` when InfluxDB cannot store it: a NaN or infinite
-/// float. A `timestamp` is its ns since the Unix epoch, and a `duration` its ns.
-#[inline]
-fn value(sample: sample::Value) -> Option<Value> {
-    Some(match sample {
-        sample::Value::Bool(value) => Value::Boolean(value),
-        sample::Value::I8(value) => Value::Integer(value.into()),
-        sample::Value::I16(value) => Value::Integer(value.into()),
-        sample::Value::I32(value) => Value::Integer(value.into()),
-        sample::Value::I64(value) => Value::Integer(value),
-        sample::Value::U8(value) => Value::Integer(value.into()),
-        sample::Value::U16(value) => Value::Integer(value.into()),
-        sample::Value::U32(value) => Value::Integer(value.into()),
-        sample::Value::U64(value) => Value::Unsigned(value),
-        sample::Value::F32(value) => Value::Float(Float::new(value.into())?),
-        sample::Value::F64(value) => Value::Float(Float::new(value)?),
-        sample::Value::Stamp(value) => Value::Integer(value.nanos()),
-        sample::Value::Span(value) => Value::Integer(value.nanos()),
-        sample::Value::Uuid(_) => {
-            unreachable!("invariant: conversion refuses a uuid channel")
-        }
+/// The conversion of a sample of `scalar`, or `None` for a `uuid`. A `u64` is a `u`
+/// integer, a `timestamp` its ns since the Unix epoch, and a `duration` its ns. A NaN
+/// or infinite float is left out.
+fn convert(scalar: Scalar) -> Option<Convert> {
+    /// The conversion of a sample of `Scalar::$scalar`, which writes `$value` with
+    /// `$write`.
+    macro_rules! read {
+        ($scalar:ident, |$value:ident, $out:ident| $write:expr) => {
+            |series: &[u8], line: usize, $out: &mut Vec<u8>| {
+                const WIDTH: usize = Scalar::$scalar.width();
+                let sample = series.as_chunks::<WIDTH>().0.get(line);
+                let sample =
+                    sample.expect("invariant: a series has the count of its index");
+                let sample::Value::$scalar($value) =
+                    sample::Value::read(Scalar::$scalar, sample)
+                else {
+                    unreachable!("invariant: a read gives its scalar")
+                };
+                $write
+            }
+        };
+    }
+    /// The conversion of a sample whose value `line::integer` writes.
+    macro_rules! integer {
+        ($scalar:ident, |$value:ident| $integer:expr) => {
+            read!($scalar, |$value, out| {
+                line::integer(out, $integer);
+                true
+            })
+        };
+    }
+    Some(match scalar {
+        Scalar::Bool => read!(Bool, |value, out| {
+            line::boolean(out, value);
+            true
+        }),
+        Scalar::I8 => integer!(I8, |value| value.into()),
+        Scalar::I16 => integer!(I16, |value| value.into()),
+        Scalar::I32 => integer!(I32, |value| value.into()),
+        Scalar::I64 => integer!(I64, |value| value),
+        Scalar::U8 => integer!(U8, |value| value.into()),
+        Scalar::U16 => integer!(U16, |value| value.into()),
+        Scalar::U32 => integer!(U32, |value| value.into()),
+        Scalar::U64 => read!(U64, |value, out| {
+            line::unsigned(out, value);
+            true
+        }),
+        Scalar::F32 => read!(F32, |value, out| {
+            Float::new(value.into())
+                .map(|value| line::float(out, value))
+                .is_some()
+        }),
+        Scalar::F64 => read!(F64, |value, out| {
+            Float::new(value)
+                .map(|value| line::float(out, value))
+                .is_some()
+        }),
+        Scalar::Stamp => integer!(Stamp, |value| value.nanos()),
+        Scalar::Span => integer!(Span, |value| value.nanos()),
+        Scalar::Uuid => return None,
     })
 }
