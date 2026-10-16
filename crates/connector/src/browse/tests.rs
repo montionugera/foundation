@@ -684,6 +684,49 @@ mod walk {
         assert_eq!(found.end, End::Done);
     }
 
+    /// A device whose each folder holds the point `p` and then the folder `f`, each
+    /// with its path as its tag.
+    struct Chain;
+
+    impl Device for Chain {
+        fn level(
+            &mut self,
+            folder: Option<&Entry>,
+            _: Option<&Cursor>,
+        ) -> impl Future<Output = Result<Option<Page>, Error>> {
+            let at = folder.map_or_else(Path::root, |folder| folder.path.clone());
+            let entry = |name: &str, shape| Entry {
+                path: at.child(name),
+                tag: at.child(name).to_string(),
+                shape,
+            };
+            let entries = vec![
+                entry("p", Shape::Point(Facts::default())),
+                entry("f", Shape::Folder),
+            ];
+            std::future::ready(Ok(Some(Page {
+                entries,
+                next: None,
+            })))
+        }
+    }
+
+    #[test]
+    fn ends_at_a_folder_deeper_than_the_depth() {
+        let found = now(walk(&mut Chain, &query("", Scope::Match(pattern("**/p")))));
+        let found = found.expect("found");
+        let deepest = found.entries.last().expect("a point").path.names().len();
+        assert_eq!(found.entries.len(), DEPTH + 1);
+        assert_eq!(deepest, DEPTH + 1);
+        assert_eq!(found.end, End::Budget);
+    }
+
+    #[test]
+    #[should_panic(expected = "invariant: a name is not empty")]
+    fn panics_on_an_empty_name() {
+        drop(Path::root().child("a").child(""));
+    }
+
     /// A device whose each page is empty, with a next one.
     struct Empty;
 

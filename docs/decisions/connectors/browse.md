@@ -27,12 +27,16 @@
   `import` says "More than `<limit>` points match, the most for one import; narrow the
   pattern, or import in parts", not a count. It browses no folder whose tag is the tag
   of a folder above it, so a loop in a graph such as an OPC UA address space ends. A
-  kind implements `browse::Device` on its open session, so one walk is one session and
-  can use a continuation point; a `Cursor` that a front end gets holds no session state.
-  `level` takes a folder as the `Entry` that the device gave, never a path, and gives at
-  most `LIMIT` entries a page; `values` gives `types::sample::Value`, so there is one
-  value model. `import --match` uses the same walk, so the points that `browse --match`
-  shows are the points that `import --match` takes.
+  pattern ends `Budget` at a folder deeper than `DEPTH` (64) names, so a chain of
+  folders that a server makes cannot hold the walk's memory. No name is empty:
+  `Path::child` panics on one, and a kind names an entry whose device name is empty,
+  such as by its tag, so the text of each path parses. A kind implements
+  `browse::Device` on its open session, so one walk is one session and can use a
+  continuation point; a `Cursor` that a front end gets holds no session state. `level`
+  takes a folder as the `Entry` that the device gave, never a path, and gives at most
+  `LIMIT` entries a page; `values` gives `types::sample::Value`, so there is one value
+  model. `import --match` uses the same walk, so the points that `browse --match` shows
+  are the points that `import --match` takes.
   The person's words, through `laptop.monitor`: decision 1, 2026-10-15 17:17 UTC, "Ok,
   this is fine. I approve"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6197989240);

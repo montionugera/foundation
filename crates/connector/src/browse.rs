@@ -18,14 +18,18 @@ pub const LIMIT: usize = 500;
 /// counts as one.
 pub const VISITS: usize = 10_000;
 
+/// The most names in the path of a folder that a pattern opens.
+pub const DEPTH: usize = 64;
+
 /// A device open for one browse. A kind implements it on its session, so one walk
 /// connects once.
 pub trait Device {
     /// Gives one page of the entries of `folder`, or of the root when `None`, in
     /// device order, from `cursor`, or from the first entry when `None`. A page holds
     /// at most [`LIMIT`] entries. The path of each entry is the path of `folder` and
-    /// its name. No two entries of one folder have the same name. `None` when the
-    /// device no longer has `folder` as a folder.
+    /// its name, which is not empty: a kind names an entry whose name in the device
+    /// is empty, such as by its tag. No two entries of one folder have the same name.
+    /// `None` when the device no longer has `folder` as a folder.
     ///
     /// # Errors
     ///
@@ -60,7 +64,7 @@ pub trait Device {
 /// Runs `query` over `device`. It finds the start from the root, one name at a time.
 /// A pattern walks depth first, in device order. It browses no folder that no match
 /// can be under, and no folder whose tag is the tag of a folder above it, so a loop
-/// in the device's graph ends.
+/// in the device's graph ends. It ends at a folder deeper than [`DEPTH`].
 ///
 /// # Errors
 ///
@@ -258,6 +262,9 @@ impl<D: Device> Walker<'_, D> {
                     .filter_map(|frame| frame.folder.as_ref())
                     .any(|folder| folder.tag == entry.tag);
                 if pattern.open(&state) && !looped {
+                    if entry.path.names.len() > DEPTH {
+                        return Ok((found, End::Budget));
+                    }
                     match self.open(Some(entry), state).await? {
                         ControlFlow::Continue(frame) => stack.push(frame),
                         ControlFlow::Break(end) => return Ok((found, end)),
@@ -336,8 +343,8 @@ const NO_VALUES: Code = Code::new("connector.no-values");
 const NO_FOLDER: Code = Code::new("connector.no-folder");
 
 /// The path of an entry from the root of a device's tree: the name of each entry on
-/// the way, its own last. Its text joins the names with `/`, with `\` before each `/`,
-/// `*`, and `\` in a name. The root is the empty text.
+/// the way, its own last, and no name is empty. Its text joins the names with `/`,
+/// with `\` before each `/`, `*`, and `\` in a name. The root is the empty text.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Path {
     names: Vec<String>,
@@ -351,10 +358,16 @@ impl Path {
     }
 
     /// The path of the entry `name` in this folder.
+    ///
+    /// # Panics
+    ///
+    /// When `name` is empty: no text names it.
     #[must_use]
     pub fn child(&self, name: impl Into<String>) -> Self {
+        let name = name.into();
+        assert!(!name.is_empty(), "invariant: a name is not empty");
         let mut names = self.names.clone();
-        names.push(name.into());
+        names.push(name);
         Self { names }
     }
 
@@ -748,7 +761,8 @@ pub enum End {
     /// More than [`LIMIT`] points match.
     Limit,
     /// It took [`VISITS`] entries from the device before it found its start or saw
-    /// each entry under it, so more may match.
+    /// each entry under it, or met a folder deeper than [`DEPTH`] that a match can be
+    /// under, so more may match.
     Budget,
 }
 
