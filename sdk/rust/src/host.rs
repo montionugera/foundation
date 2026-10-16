@@ -20,9 +20,8 @@ use types::time::Monotonic;
 ///
 /// It keeps two rules of `env::clock::Driver` only in part. On Linux and macOS,
 /// `Instant` stops while the host sleeps, so a timer fires late by the time asleep. A
-/// read has no fence, so the CPU can move it past a nearby load or store. The clock
-/// times only the renewal of the hello and the timers of the transport, and no
-/// interval of these is short enough for a moved read to matter.
+/// read has no fence, so the CPU can move it past a nearby load or store. #2932 closes
+/// both gaps.
 #[derive(Clone, Copy)]
 pub(crate) struct Clock {
     epoch: Instant,

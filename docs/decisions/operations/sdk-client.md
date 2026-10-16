@@ -16,9 +16,15 @@
   Until #2923 adds a CI run on Windows, `sdk` builds only on Linux and macOS.
   `Client::connect(&Node, Subject)` takes the node (its UDP addresses, its key, and
   its public key) apart from the subject (its name and private key): one node serves
-  many subjects, and a node can listen on more than one address. A read of the clock
-  has no fence, unlike `env::clock::Driver::now`: the clock times only the renewal of
-  the hello and the timers of the transport, and no interval of these is short enough
-  for a moved read to matter. `laptop.architect-2` decided both on 2026-10-16 at
-  21:39 UTC
+  many subjects, and a node can listen on more than one address. `laptop.architect-2`
+  decided on 2026-10-16 at 21:39 UTC
   (https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225208118).
+  `Client::close` blocks until the close of the session goes out and the thread ends.
+  Drop only signals the end, and a panic of the thread after a drop goes to the panic
+  hook of the process (`laptop.architect-2`, 2026-10-16T21:46:22Z,
+  https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225303374). A read
+  of the clock has no fence, unlike `env::clock::Driver::now`. This gap has #2932 as
+  its trigger: #2932 rewrites `host::Clock` for each OS and adds the fence there, so
+  no copy of the fences of `os` comes into `sdk` now (`laptop.architect-2`,
+  2026-10-16T22:00:13Z,
+  https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225511658).

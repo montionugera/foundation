@@ -51,7 +51,8 @@ pub struct Subject {
 
 /// A program's session with one node. It can move to and be shared between threads:
 /// a thread of its own holds the session. Drop ends the session and does not wait:
-/// that thread then sends the close and ends. [`Client::close`] waits for both.
+/// that thread then sends the close and ends. [`Client::close`] waits for both. A
+/// panic of the thread after a drop goes to the panic hook of the process.
 #[derive(Debug)]
 pub struct Client(Option<Thread>);
 
