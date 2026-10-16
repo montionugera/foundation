@@ -159,8 +159,6 @@ fn a_node_warns_of_each_failure_of_its_roots_and_of_each_skipped_one() {
     );
 }
 
-/// A private call: no caller sees the roots of the supervisor until the influx kind
-/// sends `https` (PR 3 of #2702), and this test kills `trust` giving no roots.
 #[test]
 fn a_node_trusts_each_root_that_parses() {
     let roots = os::Roots {
