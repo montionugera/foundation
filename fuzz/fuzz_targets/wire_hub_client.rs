@@ -1,11 +1,12 @@
 //! The decoders of `wire::hub::client` never panic, each but `Open::decode` and
 //! `Reader::decode` refuses a message of another kind with `Error::Kind`,
 //! `Reader::decode` refuses a first message of another kind with it, each message that
-//! decodes encodes to its bytes, each body ends at its length and nowhere else, each
-//! refusal of a body is the one that its rest gives, a read stream gives with its last
-//! place the places of its run, their key set, and the decoder of a session of their
-//! count and the mode, a refused message of a read stream leaves its decoder as it
-//! was, and each valid message made from the input reads back.
+//! decodes encodes to its bytes, a `Places` over `PLACES_MAX` gives `Error::Places`,
+//! each body ends at its length and nowhere else, each refusal of a body is the one
+//! that its rest gives, a read stream gives with its last place the places of its run,
+//! their key set, and the decoder of a session of their count and the mode, a refused
+//! message of a read stream leaves its decoder as it was, and each valid message made
+//! from the input reads back.
 //!
 //! Input: the messages of one stream (`fuzz::messages`). Each decoder reads each
 //! message, an open among them; the body of the first message, when it is a request, a
@@ -29,9 +30,8 @@ use types::sample::{Scalar, Type};
 use types::time::{Interval, Stamp};
 use wire::hub;
 use wire::hub::client::{
-    BODY_BYTES_MAX, Body, Challenge, Error, First, Mode, OPEN_BYTES_MAX, Open, PLACES_MAX,
-    Place,
-    Places, Read, Reader, Request, Response, Signed, place,
+    BODY_BYTES_MAX, Body, Challenge, Error, First, Mode, OPEN_BYTES_MAX, Open,
+    PLACES_MAX, Place, Places, Read, Reader, Request, Response, Signed, place,
 };
 
 /// Checks one decoder of kind `kind` on `message`: a decoded message encodes to it,
@@ -251,6 +251,16 @@ fn fixed(message: &[u8]) -> Option<(Body, u64)> {
     decode(message, 4, Challenge::decode, challenge);
     decode(message, 4, Signed::decode, signed);
     decode(message, 6, Places::decode, places);
+    if let [6, a, b, c, d, _, _, _, _] = *message {
+        let count = u32::from_le_bytes([a, b, c, d]);
+        if count > PLACES_MAX {
+            let over = Err(Error::Places {
+                count,
+                cap: PLACES_MAX,
+            });
+            assert_eq!(Places::decode(message), over, "{message:?}");
+        }
+    }
     let sent = decode(message, 5, Request::decode, request);
     let answered = decode(message, 5, Response::decode, response);
     let opened = decode(message, 6, Read::decode, read_message);

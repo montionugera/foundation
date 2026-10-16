@@ -863,11 +863,18 @@ mod reader {
         );
     }
 
-    /// Each other input `reader_*` of the fuzz target gives the step of each of its
-    /// messages, the last a refusal.
+    /// Each other input `reader_*` of the fuzz target, and `places_over`, gives the step
+    /// of each of its messages, the last a refusal.
     #[test]
     fn refuses_each_other_run_input_of_the_fuzz_target() {
-        let cases: [(&[u8], Vec<Step>); 9] = [
+        let cases: [(&[u8], Vec<Step>); 10] = [
+            (
+                corpus!("places_over"),
+                vec![refused(Error::Places {
+                    count: PLACES_MAX + 1,
+                    cap: PLACES_MAX,
+                })],
+            ),
             (
                 corpus!("reader_place_cut"),
                 vec![more(), refused(Error::Length { len: 21 })],
