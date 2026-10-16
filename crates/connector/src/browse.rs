@@ -14,9 +14,9 @@ use crate::kind::{Error, config_error};
 /// The most points that one browse of a pattern gives.
 pub const LIMIT: usize = 500;
 
-/// The most entries that one browse takes from the device: the entries that find its
-/// start, and for a pattern each entry that it walks, where a page with no entries
-/// counts as one.
+/// The most entries that one browse looks at: the entries that find its start, and
+/// for a pattern each entry that it walks, where a page with no entries counts as
+/// one.
 pub const VISITS: usize = 10_000;
 
 /// The most names in the path of a folder that a pattern opens.
@@ -160,12 +160,16 @@ impl<D: Device> Walker<'_, D> {
     }
 
     /// The page of `folder` in a walk, where a page with no entries counts as one
-    /// visit, so pages with no entries and a next one end at the budget.
+    /// visit, so pages with no entries and a next one end at the budget. It asks the
+    /// device for no page past the budget.
     async fn take(
         &mut self,
         folder: Option<&Entry>,
         cursor: Option<&Cursor>,
     ) -> Result<ControlFlow<End, Page>, Error> {
+        if self.seen >= self.visits {
+            return Ok(ControlFlow::Break(End::Budget));
+        }
         let page = self.page(folder, cursor).await?;
         if page.entries.is_empty() && !self.visit() {
             return Ok(ControlFlow::Break(End::Budget));

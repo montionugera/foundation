@@ -21,24 +21,26 @@
   one name at a time; a name that is not there or not a folder gives
   `connector.no-folder`. A pattern walks depth first in device order, browses no folder
   that no match can be under, gives at most `LIMIT` (500) points and ends `Limit` when
-  one more matches, and takes at most `VISITS` (10 000) entries from the device, also
-  the entries that find the start, where a page with no entries counts as one (a server
-  may give a continuation point with no references), then ends `Budget`. With `Limit`,
-  `import` says "More than `<limit>` points match, the most for one import; narrow the
-  pattern, or import in parts", not a count. It browses no folder whose tag is the tag
-  of a folder above it, so a loop in a graph such as an OPC UA address space ends. A
-  pattern ends `Budget` at a folder deeper than `DEPTH` (64) names, so a chain of
-  folders that a server makes cannot hold the walk's memory. A `Path` shares the names
-  of its folder's path, so an entry copies pointers and no text, and the walk holds at
-  most `DEPTH` pages that the device sent. No name is empty: `Path::child` panics on
-  one, and the record of each kind says what it gives for an empty name of its device,
-  so the text of each path parses. A kind implements `browse::Device` on its open
-  session, so one walk is one session and can use a continuation point; a `Cursor` that
-  a front end gets holds no session state. `level` takes a folder as the `Entry` that
-  the device gave, never a path, and gives at most `LIMIT` entries a page; `values`
-  gives `types::sample::Value`, so there is one value model. `import --match` uses the
-  same walk, so the points that `browse --match` shows are the points that `import
-  --match` takes.
+  one more matches, and looks at most at `VISITS` (10 000) entries, also the entries
+  that find the start, where a page with no entries counts as one (a server may give a
+  continuation point with no references), then ends `Budget`. With `Limit`, `import`
+  says "More than `<limit>` points match, the most for one import; narrow the pattern,
+  or import in parts", not a count. It browses no folder whose tag is the tag of a
+  folder above it, so a loop in a graph such as an OPC UA address space ends. A pattern
+  ends `Budget` at a folder deeper than `DEPTH` (64) names, so a chain of folders that a
+  server makes cannot hold the walk's memory. A `Path` shares the names of its folder's
+  path, so an entry copies pointers and no text, and the walk holds at most `DEPTH`
+  pages that the device sent. No name is empty: `Path::child` panics on one, and the
+  record of each kind says what it gives for an empty name of its device, so the text of
+  each path parses. A kind implements `browse::Device` on its open session, so one walk
+  is one session and can use a continuation point; a `Cursor` that a front end gets
+  holds no session state. `level` takes a folder as the `Entry` that the device gave,
+  never a path, and gives at most `LIMIT` entries a page; `values` gives
+  `types::sample::Value`, so there is one value model. Trigger for a text value: a kind
+  that reads a `string` channel. Lost: a count of matches up to the budget; trigger: the
+  agent test (PR 9) shows a task with two over-limit refusals one after the other.
+  `import --match` uses the same walk, so the points that `browse --match` shows are the
+  points that `import --match` takes.
   The person's words, through `laptop.monitor`: decision 1, 2026-10-15 17:17 UTC, "Ok,
   this is fine. I approve"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6197989240);
@@ -64,5 +66,7 @@
   (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208174481).
   `DEPTH`, the shared names, and the empty name: `laptop.architect-2`, 2026-10-16
   (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208244581).
-  `VISITS`: the walk's own time over a tree of 10 000 entries is 1.8 ms (median of
-  100, box1, release); PR 5 of the PR list measures the cost of the OPC UA sim server.
+  `VISITS`: the walk's own time, median of 100 on box1 in release, is 1.4 ms over a
+  flat tree of 9 999 points and 4.7 ms over a chain of 63 folders of 150 points each;
+  PR 5 of the PR list measures the cost of the OPC UA sim server. The two triggers
+  come from the ruling of 2026-10-16 04:00 UTC.

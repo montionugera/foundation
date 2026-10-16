@@ -341,7 +341,9 @@ fn extends(segments: &[Reference], names: &[&str]) -> bool {
     }
 }
 
-/// Whether `pattern` matches `names`, through the steps that the walk takes.
+/// Whether `pattern` matches `names`, through the steps that the walk takes. Through
+/// private calls: a `Pattern` has no public match, and a walk shows one only over a
+/// whole device.
 fn steps(pattern: &Pattern, names: &[&str]) -> bool {
     let state = names
         .iter()
@@ -476,6 +478,8 @@ mod walk {
     use super::*;
 
     proptest! {
+        /// Through `walk_within`: bounds as small as the trees that a property test
+        /// makes.
         #[test]
         fn gives_each_match_in_device_order_within_the_bounds(
             nodes in nodes(),
@@ -492,7 +496,7 @@ mod walk {
             prop_assert_eq!(paths(&found), expected);
             prop_assert_eq!(found.end, end);
             prop_assert!(found.values.is_empty());
-            for browsed in &tree.browsed[1..] {
+            for browsed in tree.browsed.iter().skip(1) {
                 let names: Vec<&str> =
                     browsed.names().iter().map(AsRef::as_ref).collect();
                 prop_assert!(extends(&segments, &names), "browsed {browsed:?}");
@@ -522,6 +526,38 @@ mod walk {
         let found = now(walk(&mut tree, &query)).expect("found");
         assert_eq!(paths(&found), ["Line1/Temp1", "Line1/Temp2"]);
         assert_eq!(tree.browsed, [path(""), path("Line1"), path("Line2")]);
+    }
+
+    #[test]
+    fn browses_no_folder_that_a_pattern_names_as_a_point() {
+        let mut tree = Tree::new(&plant(), 10);
+        let found = now(walk(
+            &mut tree,
+            &query("", Scope::Match(pattern("Line2/Oven"))),
+        ));
+        assert_eq!(found.expect("found").entries, []);
+        assert_eq!(tree.browsed, [path(""), path("Line2")]);
+    }
+
+    #[test]
+    fn ends_at_the_budget_before_its_start() {
+        let mut nodes: Vec<Node> =
+            (0..VISITS).map(|i| point(&format!("p{i}"))).collect();
+        nodes.push(folder("start", vec![point("a")]));
+        let mut tree = Tree::new(&nodes, LIMIT);
+        let found = now(walk(&mut tree, &query("start", Scope::Match(pattern("*")))));
+        let found = found.expect("found");
+        assert_eq!(found.entries, []);
+        assert_eq!(found.end, End::Budget);
+    }
+
+    #[test]
+    fn asks_for_no_page_past_the_budget() {
+        let mut tree = Tree::new(&[folder("a", vec![point("x"), point("y")])], 10);
+        let query = query("", Scope::Match(pattern("**")));
+        let found = now(walk_within(&mut tree, &query, LIMIT, 1)).expect("found");
+        assert_eq!(found.end, End::Budget);
+        assert_eq!(tree.browsed, [path("")]);
     }
 
     /// A tree of one folder that holds `n` points.
@@ -612,6 +648,7 @@ mod walk {
         assert_eq!(found.end, End::Done);
     }
 
+    /// Through `walk_within`: a budget as small as the tree.
     #[test]
     fn counts_the_entries_before_its_start_toward_the_budget() {
         // Line1 and Line2 of the root, and Oven of Line2, find the start.
