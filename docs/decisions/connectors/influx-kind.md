@@ -65,9 +65,12 @@
   value is left out, and so is a line with no other value. Until #2555, only `f64`
   channels are written: another type ends the run with `Error::Config` and
   `influx.sample-type`, and a channel name that is not a field key with
-  `influx.bad-channel`. Before the lines of a frame whose `Received::gap` is not
-  `None`, the run writes its gap line with `path=live` at the stamp of the frame's
-  first sample (INFLUX SEQ AND GAPS), in the same batch. One request is in flight
+  `influx.bad-channel`. After a `Received::gap` that is not `None`, the run writes its
+  gap line with `path=live` before the first line that it writes, at the stamp of that
+  line (INFLUX SEQ AND GAPS), in the same batch. The line's `count` also counts each
+  sample time that the run left out between the gap and that line. While the gap waits
+  for that line, a batch acks only the position before the gap, so a run that stops
+  then gets the gap again at its next open. One request is in flight
   at a time. While it is, the run reads the next batch, up to 5,000 lines, and a frame
   goes in whole. The run keeps the field of each channel that it saw in the frames of
   one key set. A frame of another key set builds them again, as the `hub` reader builds
@@ -83,9 +86,11 @@
   count, which InfluxDB took with a 204. A batch sent again counts once. A gap that the
   reader reports again after a restart counts again, so `lost` is an upper bound, as
   the sum of `count` in `foundation_gaps` is. Each later out kind names the same count
-  `lost`. Both counts hold across the runs of one call (SUPERVISOR). The person gave
-  the choice of the path to the architects on 2026-10-15 ("Best devx possible. You
-  choose the path", through `laptop.monitor`:
+  `lost`. The ruling did not take a count of all out kinds in `connector`, as the
+  supervisor does not see the frames of a kind's reader. The trigger to make it is a
+  second out kind (6199058253). Both counts hold across the runs of one call
+  (SUPERVISOR). The person gave the choice of the path to the architects on 2026-10-15
+  ("Best devx possible. You choose the path", through `laptop.monitor`:
   https://github.com/synnaxlabs/foundation/issues/2553#issuecomment-6199035922).
   `laptop.architect` gave the count of lost seqs, and `laptop.architect-2` ruled its
   shape on

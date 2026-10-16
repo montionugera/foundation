@@ -4,15 +4,16 @@
   explicit gaps before a sample is one line,
   `foundation_gaps,connector=<connector>,index=<index>,path=<path> count=<n>i <stamp>`:
   `<path>` is `live` or `backfill` (amendment below), `<stamp>` is the stamp of the
-  first sample after the gaps, and `count` is the number of seqs from the first trimmed
-  seq up to that sample. The gap line goes in the request of that sample, and the
-  position is acked only after InfluxDB confirms it (B3). The count is signed, because
-  InfluxDB 1 OSS refuses `u`. The `connector` tag keeps two connectors that write one
-  index to one database from replacing each other's gap lines. Until a later sample
-  comes, the connector keeps one gap per index, and from #1270 one per index and path.
-  After a restart the buffer reports the gap again (READER RULES), so a lost gap line is
-  sent again. The measurement name is fixed. #1734 names the data measurement, and its
-  kind check refuses `foundation_gaps` as one (`laptop.architect-2`,
+  first sample after the gaps that InfluxDB stores (#2725: a line of only NaN or
+  infinite values is left out), and `count` is the number of seqs from the first
+  trimmed seq up to that sample. The gap line goes in the request of that sample, and
+  the position is acked only after InfluxDB confirms it (B3). The count is signed,
+  because InfluxDB 1 OSS refuses `u`. The `connector` tag keeps two connectors that
+  write one index to one database from replacing each other's gap lines. Until a later
+  sample comes, the connector keeps one gap per index, and from #1270 one per index and
+  path. After a restart the buffer reports the gap again (READER RULES), so a lost gap
+  line is sent again. The measurement name is fixed. #1734 names the data measurement,
+  and its kind check refuses `foundation_gaps` as one (`laptop.architect-2`,
   https://github.com/synnaxlabs/foundation/issues/1153#issuecomment-6051297152,
   2026-10-08 03:02 UTC). Supersedes the clause of
   https://github.com/synnaxlabs/foundation/issues/1151#issuecomment-6032215953 that the

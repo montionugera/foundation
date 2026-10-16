@@ -1219,7 +1219,8 @@ proptest! {
         prop_assert!(stamped);
         prop_assert_eq!(&decoded, &places);
         let mut home = last.expect("the last place gives the replies");
-        let opened = crate::hub::tests::encode_reply(crate::hub::Reply::Opened { live: 7 });
+        let opened = crate::hub::Reply::Opened { live: 7 };
+        let opened = crate::hub::tests::encode_reply(opened);
         let opened = home.decode(&opened);
         let live = match opened {
             Ok(crate::hub::FromHome::Opened { live }) => Some(live),
