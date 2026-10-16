@@ -88,7 +88,6 @@ impl Header {
     }
 
     /// The checkpoint after this one, with the tail moved to `tail`.
-    #[cfg_attr(not(test), expect(dead_code, reason = "trimming moves the tail"))]
     pub(crate) fn next(self, tail: Position) -> Self {
         Self {
             tail,
@@ -99,16 +98,22 @@ impl Header {
 
     /// The byte offset in the ring file of the block that holds this checkpoint:
     /// the two checkpoints alternate between the first two blocks.
-    #[cfg_attr(not(test), expect(dead_code, reason = "trimming moves the tail"))]
     pub(crate) fn place(&self) -> u64 {
         if self.seq.is_multiple_of(2) { 0 } else { BLOCK }
     }
 
     /// Encodes this checkpoint as one block.
     pub(crate) fn encode(&self) -> [u8; ALIGN] {
+        let mut block = [0; ALIGN];
+        self.write(&mut block);
+        block
+    }
+
+    /// Encodes this checkpoint into `block`, over all of its bytes.
+    pub(crate) fn write(&self, block: &mut [u8; ALIGN]) {
         let body_max = u32::try_from(self.layout.body_max())
             .expect("invariant: a layout holds a body of at most u32::MAX bytes");
-        let mut block = [0; ALIGN];
+        block.fill(0);
         let mut rest = block.as_mut_slice();
         for field in [
             &MAGIC[..],
@@ -123,13 +128,12 @@ impl Header {
             slot.copy_from_slice(field);
             rest = after;
         }
-        let crc = crc(&block).to_le_bytes();
+        let crc = crc(block).to_le_bytes();
         let (_, rest) = block.split_at_mut(CRC_AT);
         let (slot, _) = rest
             .split_first_chunk_mut::<4>()
             .expect("invariant: the CRC is in the block");
         *slot = crc;
-        block
     }
 
     /// Reads the newer whole one of the two header blocks: the one whose seq comes
@@ -282,6 +286,15 @@ mod tests {
         assert_eq!(CRC_AT, 42);
         assert_eq!(block[CRC_AT..CRC_AT + 4], [0x5A, 0xC4, 0x81, 0x8A]);
         assert!(block[CRC_AT + 4..].iter().all(|byte| *byte == 0));
+    }
+
+    /// A block from the pool holds old bytes, and the write clears each of them.
+    #[test]
+    fn write_clears_the_old_bytes_of_the_block() {
+        let checkpoint = header(19 * 4096, 3 * 4096, 2 * 4096, 0x0102_0304, 7);
+        let mut block = [0xFF; ALIGN];
+        checkpoint.write(&mut block);
+        assert_eq!(block, checkpoint.encode());
     }
 
     /// A crash keeps a sector whole or old, so a checkpoint in one sector is never

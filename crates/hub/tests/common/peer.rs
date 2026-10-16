@@ -37,7 +37,7 @@ pub(crate) async fn open(
     let mut reader = Reader::new(&open);
     let opened = receiver.recv().await.expect("receives").expect("a reply");
     assert!(
-        matches!(reader.decode(&opened), Ok(FromHome::Opened)),
+        matches!(reader.decode(&opened), Ok(FromHome::Opened { .. })),
         "the home opens the session"
     );
     (sender, receiver, reader)

@@ -8,10 +8,22 @@
   for each commit (`trimmed`, `release`), 8 the cost for each record (`append`,
   `synced`). Each ring has 4 blocks more than its bench ID (68 and 4100 blocks): with
   the three blocks that each record keeps free (#160), each commit of 1 record trims
-  at those sizes, as at 64 and 4096 before, and a test of `bench` checks it. Both
-  benches use the same rings. The IDs stay, so the baseline compares the same work.
+  at those sizes, as at 64 and 4096 before. One `#[doc(hidden)] pub const PHASE` of
+  `bench` holds the 4 blocks, and the bench and a test of `bench` read it. The test
+  checks 10 laps of each ring after the warm-up. Both benches use the same rings.
+  The IDs stay, so the baseline compares the same work.
   Decided by `laptop.architect` (#2683, 2026-10-14T19:58:01Z):
   https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6177122793.
+  `PHASE` is decided by `laptop.architect` (#2683, 2026-10-15T13:17:53Z):
+  https://github.com/synnaxlabs/foundation/pull/2683#issuecomment-6193008995.
+  `bench` also has `Group { new, commit }` over the groups of a buffer and
+  `wal::Writer`, for the case `commit_group` of 1 and 32 entries of 100 bytes on the
+  ring of ID 64. `commit` pushes the entries, which checks that the record fits,
+  closes and seals the group, with the CRC of the body, then trims and syncs as
+  `Ring` does, so a time holds the cost of the group commit path for each commit
+  (#2699). Lost: a second job for `Ring`, which then holds a pool that its `commit`
+  does not use. Decided by `laptop.architect` (#2688, 2026-10-15T20:11:59Z):
+  https://github.com/synnaxlabs/foundation/pull/2688#issuecomment-6201316088.
   Lost: a copy of `wal.rs` in the bench through `#[path]`, which needs `entry`,
   `record`, and `crc32c` copied too and the workspace lints off; a time of
   `Buffer::append` and `committed` on a simulated file system, whose file writes hide

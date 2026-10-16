@@ -194,6 +194,24 @@ UA_StatusCode shim_server_add_source(UA_Server *server, shim_node node,
         source, NULL);
 }
 
+/* Makes `source` answer each later read of the variable `node` of `server`, which
+ * open62541 adds, as `shim_server_add_source` does. `source` lives until the server
+ * is deleted. */
+UA_StatusCode shim_server_set_source(UA_Server *server, shim_node node,
+                                     shim_source *source) {
+    UA_NodeId id = shim_node_id(node);
+    UA_StatusCode status = UA_Server_setNodeContext(server, id, source);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    UA_CallbackValueSource callbacks = {.read = shim_source_read, .write = NULL};
+    return UA_Server_setVariableNode_callbackValueSource(server, id, callbacks);
+}
+
+/* Sets the most session timeout of `server`, in ms. */
+void shim_server_session_timeout(UA_Server *server, UA_UInt32 ms) {
+    UA_Server_getConfig(server)->maxSessionTimeout = ms;
+}
+
 /* Gives in `id` the number of the DataType of the variable `node` of `server`.
  * Returns `UA_STATUSCODE_BADTYPEMISMATCH` when the DataType is not a number of
  * namespace 0. */

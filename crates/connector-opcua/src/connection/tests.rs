@@ -303,7 +303,6 @@ impl Side {
         let mut end = self.clock.sleep(span);
         let mut drive = pin!(self.manager.drive(|_| {
             runs.set(runs.get() + 1);
-            self.events().run();
             Poll::<Infallible>::Pending
         }));
         poll_fn(|cx| {
@@ -780,6 +779,42 @@ fn a_connect_with_no_listener_gives_closing_a_warning_and_no_established() {
     );
 }
 
+/// Connects to a host that `env` refuses, when `child::running()`.
+#[test]
+fn not_a_host() {
+    if !child::running() {
+        return;
+    }
+    let mut network = Network::new();
+    let calls = network
+        .sim
+        .run_on(&network.local.clone(), move |node, _| async move {
+            let side = Side::new(&node);
+            let open = side.open(&[
+                ("address", Value::String("127.1")),
+                ("port", Value::UInt16(4840)),
+            ]);
+            assert_eq!(open, Status::GOOD);
+            side.drive(Span::SECOND).await;
+            assert_eq!(side.close(1), Status::BAD_NOT_FOUND);
+            side.calls()
+        })
+        .expect("the run ends");
+    assert_eq!(
+        calls,
+        [(1, ffi::OPENING, vec![]), (1, ffi::CLOSING, vec![])]
+    );
+}
+
+#[test]
+fn a_connect_to_a_host_that_env_refuses_has_no_address() {
+    assert_eq!(
+        stderr("not_a_host"),
+        "connector-opcua: open62541 warning: connection 1: the connect failed: name \
+         127.1 has no address\n"
+    );
+}
+
 #[test]
 fn a_close_of_the_peer_gives_its_bytes_then_closing_once() {
     let mut network = Network::new();
@@ -1060,7 +1095,6 @@ fn a_drive_ends_with_the_first_value_of_run() {
             let at = side
                 .manager
                 .drive(|_| {
-                    side.events().run();
                     if side.calls().len() == 2 {
                         Poll::Ready(side.clock.now())
                     } else {
@@ -1151,7 +1185,6 @@ fn a_send_from_the_run_that_ends_a_drive_goes_out() {
             side.add_timer(act, 10.0, ptr::from_ref(&later).cast_mut().cast());
             side.manager
                 .drive(|_| {
-                    side.events().run();
                     if side.clock.now() >= due {
                         Poll::Ready(())
                     } else {
@@ -1269,10 +1302,7 @@ fn a_source_that_run_polls_wakes_the_drive() {
             let mut source = side.clock.sleep(Span::SECOND);
             let at = side
                 .manager
-                .drive(|cx| {
-                    side.events().run();
-                    Pin::new(&mut source).poll(cx).map(|()| side.clock.now())
-                })
+                .drive(|cx| Pin::new(&mut source).poll(cx).map(|()| side.clock.now()))
                 .await;
             assert_eq!(at, start + Span::SECOND);
         })
@@ -1403,7 +1433,6 @@ fn a_closing_with_no_stream_drops_the_connection_at_once() {
             assert_eq!(side.close(1), Status::GOOD);
             let mut end = side.clock.sleep(Span::SECOND);
             let mut drive = pin!(side.manager.drive(|_| {
-                side.events().run();
                 if side.connections() == 0 {
                     Poll::Ready(side.clock.now())
                 } else {
@@ -1526,7 +1555,6 @@ fn a_close_drops_the_connection_when_the_peer_closes_its_side() {
             let dropped = side
                 .manager
                 .drive(|cx| {
-                    side.events().run();
                     if side.connections() == 0 {
                         Poll::Ready(Some(side.clock.now()))
                     } else {
@@ -3009,8 +3037,7 @@ fn a_session_that_its_client_closes_is_removed_after_the_service() {
             assert_eq!(status, Status::GOOD);
             side.drive(Span::SECOND).await;
             // SAFETY: the client lives.
-            let status =
-                Status(unsafe { ffi::test::UA_Client_disconnectAsync(client) });
+            let status = Status(unsafe { ffi::UA_Client_disconnectAsync(client) });
             assert_eq!(status, Status::GOOD);
             side.drive(Span::SECOND).await;
             server.close(&side.manager).await;

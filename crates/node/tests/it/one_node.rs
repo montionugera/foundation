@@ -566,7 +566,10 @@ fn a_wrong_endpoint_shows_in_status_and_heals() {
             state: "running".into(),
             address: Some(format!("http://{influx_address}")),
             restarts: Some(0),
-            counts: Some(BTreeMap::from([("confirmed".into(), 0)])),
+            counts: Some(BTreeMap::from([
+                ("confirmed".into(), 0),
+                ("lost".into(), 0),
+            ])),
             error: Some(Error {
                 class: "retry".into(),
                 text: format!(

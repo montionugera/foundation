@@ -16,7 +16,7 @@ use types::name::Name;
 use types::time::Span;
 
 use crate::kind::{self, Context, Error};
-use crate::{cancel, reader, retry, status};
+use crate::{browse, cancel, reader, retry, status};
 
 /// The waits between restarts.
 const RESTART: retry::Config = retry::Config {
@@ -56,6 +56,26 @@ impl Supervisor {
     #[must_use]
     pub fn new(config: Config) -> Self {
         Self(Rc::new(config))
+    }
+
+    /// Browses the device of the connector block `config` of `kind` as `query`
+    /// asks, with the network, clock, randomness, and secrets of the supervisor. It
+    /// connects apart from any run of the connector and keeps no state after it
+    /// returns. A drop of the future ends the browse. The future is not `Send`: call
+    /// it on a shard.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Kind::browse`](kind::Kind::browse), and [`Error::Config`] with
+    /// `connector.unknown-kind`.
+    pub async fn browse(
+        &self,
+        kind: &str,
+        config: &Document,
+        query: &browse::Query,
+    ) -> Result<browse::Found, Error> {
+        let ctx = browse::Context::new(config, &self.0);
+        self.0.kinds.browse(kind, &ctx, query).await
     }
 
     /// Opens the status channels of the connector `name` once the node has mesh
@@ -194,6 +214,10 @@ struct Ready {
 }
 
 /// The reader open of one run.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one for each run, which the run loop unpacks at once"
+)]
 enum Opening {
     /// `cancel` is cancelled, so no run starts.
     Cancelled,
@@ -785,9 +809,7 @@ mod tests {
 
     /// Reads the status frames of `connector` with `counts`, whose status channels
     /// have keys from [`STATUS`] on, into the vector it gives, in a task on `tasks`.
-    /// Panics on a frame that lacks one of [`status::channels`]. A status frame that
-    /// the home loses ends the reader `Behind`, so the task opens it again at the live
-    /// tail.
+    /// Panics on a frame that lacks one of [`status::channels`].
     async fn read_status(
         hub: &hub::Hub,
         connector: &str,
@@ -815,24 +837,12 @@ mod tests {
             name: None,
             hold: Span::ZERO,
         };
-        let reader = hub.reader(open.clone()).await;
-        let mut reader = reader.expect("the reader opens");
+        let mut reader = hub.reader(open).await.expect("the reader opens");
         let statuses = Rc::new(RefCell::new(Vec::new()));
         let into = Rc::clone(&statuses);
-        let hub = hub.clone();
         tasks.spawn(async move {
             let mut first = None;
-            loop {
-                let received = match reader.next().await {
-                    Ok(received) => received,
-                    // A status frame lost for no room ends the reader `Behind`.
-                    Err(hub::reader::Ended::Behind) => {
-                        let again = hub.reader(open.clone()).await;
-                        reader = again.expect("the reader opens again");
-                        continue;
-                    }
-                    Err(_) => break,
-                };
+            while let Ok(received) = reader.next().await {
                 let held: Vec<_> = (received.view().iter())
                     .map(|(entry, _)| received.name(entry))
                     .collect();
@@ -4412,9 +4422,10 @@ mod tests {
     }
 
     /// The first run acks the frame at 100 ms. The frame at 1 s finds no room, so the
-    /// held position of each later run is at a lost seq.
+    /// held position of the next run is at a lost seq: it reads the frame at 1.5 s,
+    /// with the lost seq as its gap.
     #[test]
-    fn opens_a_held_reader_at_a_lost_frame_behind_each_time() {
+    fn opens_a_held_reader_at_a_lost_frame_at_the_frame_after_it() {
         let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);
         let read = read_through(
             Some(settings(hour)),
@@ -4424,9 +4435,9 @@ mod tests {
                 let next = match reader.next().await {
                     Ok(received) => {
                         let position = received.position();
-                        let value = values(&received);
+                        let read = (values(&received), received.gap().is_some());
                         reader.ack(position);
-                        Ok(value)
+                        Ok(read)
                     }
                     Err(ended) => Err(ended),
                 };
@@ -4434,7 +4445,7 @@ mod tests {
                 if runs == 0 {
                     ctx.clock().sleep(ms(2_000)).await;
                 }
-                if runs == 2 {
+                if runs == 1 {
                     return Ok(());
                 }
                 next?;
@@ -4462,12 +4473,59 @@ mod tests {
                     "{outcomes:?}"
                 );
                 drop(held);
+                clock.sleep_until(start + ms(1_500)).await;
+                let stamp = writer.now().nanos();
+                write_value(&mut writer, stamp, 3);
             },
         );
         read.end.expect("ok");
-        // Known bug #2553: each open within the hold lands on the lost seq.
-        let behind = Err(hub::reader::Ended::Behind);
-        assert_eq!(read.got, [Ok(vec![1]), behind.clone(), behind]);
+        assert_eq!(read.got, [Ok((vec![1], false)), Ok((vec![3], true))]);
+    }
+
+    /// A held reader whose next seq the home lost for no room reads the frame after
+    /// it in the same run, with the lost seq as its gap.
+    #[test]
+    fn reads_the_frame_after_one_lost_for_no_room_with_its_gap_in_the_same_run() {
+        let hour = Span::from_nanos(Span::MINUTE.nanos() * 60);
+        let read = read_through(
+            Some(settings(hour)),
+            |mut ctx, got| async move {
+                let mut reader = ctx.reader().expect("a reader");
+                for _ in 0..2 {
+                    let received = reader.next().await.expect("a frame");
+                    let read = (values(&received), received.gap());
+                    got.lock().expect("no panic").push(read);
+                }
+                Ok(())
+            },
+            |hub, clock| async move {
+                let channels = vec![name("plant.value")];
+                let mut writer =
+                    open_writer(&hub, "plant.other", Authority(1), channels).await;
+                for value in 1..=3 {
+                    clock.sleep(ms(100)).await;
+                    let draft = draft_value(&writer, writer.now().nanos(), value, 2);
+                    let held = if value == 2 {
+                        fill(&writer)
+                    } else {
+                        Vec::new()
+                    };
+                    let outcomes = writer.write(Label::Path(Path::Live), draft);
+                    let outcomes = outcomes.expect("the home takes it").to_vec();
+                    let want = frame::Range { seq: 1, count: 1 };
+                    match (value, &outcomes[..]) {
+                        (2, [hub::home::Outcome::Lost { range, .. }]) => {
+                            assert_eq!(*range, want);
+                        }
+                        (1 | 3, [hub::home::Outcome::Applied { .. }]) => {}
+                        _ => panic!("{value}: {outcomes:?}"),
+                    }
+                    drop(held);
+                }
+            },
+        );
+        read.end.expect("ok");
+        assert_eq!(read.got, [(vec![1], None), (vec![3], Some(1..2))]);
     }
 
     /// The reader of a restart opens before the start status, as the first reader
