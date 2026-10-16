@@ -15,6 +15,7 @@ use std::task::Poll;
 use env::clock::Clock;
 use env::net::Net;
 use env::rng::Rng;
+use types::hash::Map;
 use types::time::{Monotonic, Span};
 
 use crate::alloc;
@@ -24,8 +25,15 @@ use crate::ffi::{self, Status};
 use crate::node::{Key, Node};
 use crate::value::{Fault, Value};
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the opcua kind of #2705 is the first user")
+)]
+mod browse;
 #[cfg(test)]
 mod tests;
+
+use browse::Answer;
 
 /// The most requests of a client in flight. A request past it waits until one ends.
 const READS: u16 = 16;
@@ -92,11 +100,18 @@ pub(crate) struct Client {
     per_read: Option<NonZeroUsize>,
     /// Tells the [`Nodes`] that this client checked from those of another.
     key: Rc<()>,
+    /// The supertype of each data type that the client browsed, or `None` when it has
+    /// none.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the opcua kind of #2705 is the first user")
+    )]
+    supertypes: Map<Node, Option<Node>>,
     /// Drops after `raw` is deleted, as it holds the loop of the client.
     connections: Manager,
 }
 
-/// The reads of a client in flight, shared with the callback.
+/// The requests of a client in flight, shared with the callbacks.
 #[derive(Default)]
 struct Reads {
     /// The requests of the last read that open62541 took and has not answered. The
@@ -107,9 +122,21 @@ struct Reads {
     failed: Cell<Option<Status>>,
     /// The values of the last read, in node order.
     values: Cell<Vec<Result<Value, Fault>>>,
-    /// The requests that open62541 took and has not called back, of each read, at most
-    /// [`READS`].
+    /// The requests that open62541 took and has not called back, of each read and
+    /// service, at most [`READS`].
     pending: Cell<u16>,
+    /// The service request that the client waits for: its number and service.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the opcua kind of #2705 is the first user")
+    )]
+    awaited: Cell<Option<(u32, ffi::Service)>>,
+    /// The answer of the awaited request.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the opcua kind of #2705 is the first user")
+    )]
+    answer: Cell<Option<Answer>>,
 }
 
 /// A request of a read in flight.
@@ -224,6 +251,7 @@ impl Client {
             token: 0,
             per_read: None,
             key: Rc::default(),
+            supertypes: Map::default(),
             connections,
         }
     }

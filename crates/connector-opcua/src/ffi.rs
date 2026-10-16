@@ -38,6 +38,53 @@ impl<'a> From<&'a crate::node::Node> for Node<'a> {
     }
 }
 
+impl Node<'_> {
+    /// Gives the node, or `None` for a name that is empty or not UTF-8.
+    ///
+    /// # Safety
+    ///
+    /// The name of `self`, if any, points at its `length` live bytes.
+    pub(crate) unsafe fn owned(&self) -> Option<crate::node::Node> {
+        let key = if self.name.is_null() {
+            crate::node::Key::Number(self.number)
+        } else {
+            // SAFETY: the caller ensures it.
+            let name = unsafe { text(self.name, self.length) }?;
+            crate::node::Key::Name(crate::node::Name::new(name)?)
+        };
+        Some(crate::node::Node {
+            namespace: self.namespace,
+            key,
+        })
+    }
+}
+
+impl Default for Node<'_> {
+    /// The node `i=0`.
+    fn default() -> Self {
+        Self {
+            namespace: 0,
+            number: 0,
+            name: ptr::null(),
+            length: 0,
+            borrowed: PhantomData,
+        }
+    }
+}
+
+/// Gives the `length` bytes at `data` as text, or `None` when they are not UTF-8.
+///
+/// # Safety
+///
+/// `data` points at `length` live bytes, or `length` is 0.
+unsafe fn text<'a>(data: *const u8, length: usize) -> Option<&'a str> {
+    if length == 0 {
+        return Some("");
+    }
+    // SAFETY: the caller ensures it.
+    std::str::from_utf8(unsafe { std::slice::from_raw_parts(data, length) }).ok()
+}
+
 /// An open62541 status code.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Status(pub(crate) u32);
@@ -51,6 +98,7 @@ impl Status {
     #[cfg(test)]
     pub(crate) const BAD_TCP_ENDPOINT_URL_INVALID: Self = Self(0x8083_0000);
     pub(crate) const BAD_TIMEOUT: Self = Self(0x800A_0000);
+    pub(crate) const BAD_REQUEST_TOO_LARGE: Self = Self(0x80B8_0000);
     pub(crate) const BAD_TOO_MANY_OPERATIONS: Self = Self(0x8010_0000);
     pub(crate) const BAD_UNEXPECTED_ERROR: Self = Self(0x8001_0000);
     #[cfg(test)]
@@ -59,7 +107,6 @@ impl Status {
     pub(crate) const BAD_OUT_OF_RANGE: Self = Self(0x803C_0000);
     #[cfg(test)]
     pub(crate) const BAD_NOT_SUPPORTED: Self = Self(0x803D_0000);
-    #[cfg(test)]
     pub(crate) const BAD_NODE_ID_UNKNOWN: Self = Self(0x8034_0000);
     #[cfg(test)]
     pub(crate) const BAD_USER_ACCESS_DENIED: Self = Self(0x801F_0000);
@@ -109,6 +156,45 @@ impl std::fmt::Debug for Status {
 pub(crate) struct Bytes {
     pub(crate) length: usize,
     pub(crate) data: *mut u8,
+}
+
+impl Bytes {
+    /// Gives the bytes as text, with each sequence that is not UTF-8 as U+FFFD.
+    ///
+    /// # Safety
+    ///
+    /// `data` points at `length` live bytes, or `length` is 0.
+    pub(crate) unsafe fn lossy(&self) -> String {
+        if self.length == 0 {
+            return String::new();
+        }
+        // SAFETY: the caller ensures it.
+        let bytes = unsafe { std::slice::from_raw_parts(self.data, self.length) };
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+
+    /// Gives a copy of the bytes.
+    ///
+    /// # Safety
+    ///
+    /// As [`Bytes::lossy`].
+    pub(crate) unsafe fn to_vec(&self) -> Vec<u8> {
+        if self.length == 0 {
+            return Vec::new();
+        }
+        // SAFETY: the caller ensures it.
+        unsafe { std::slice::from_raw_parts(self.data, self.length) }.to_vec()
+    }
+}
+
+impl Default for Bytes {
+    /// No bytes.
+    fn default() -> Self {
+        Self {
+            length: 0,
+            data: ptr::null_mut(),
+        }
+    }
 }
 
 /// `UA_NodeId`.
@@ -196,6 +282,15 @@ const _: () = {
     assert!(size_of::<Node<'_>>() == 24, "shim_node changed");
     assert!(offset_of!(Node<'_>, name) == 8, "shim_node.name moved");
     assert!(size_of::<Scalar>() == 8, "shim_scalar changed");
+    assert!(size_of::<Reference>() == 64, "shim_reference changed");
+    assert!(
+        offset_of!(Reference, class) == 56,
+        "shim_reference.class moved"
+    );
+    assert!(
+        offset_of!(Reference, local) == 60,
+        "shim_reference.local moved"
+    );
 };
 
 /// Gives `UA_TYPES`, the table of built-in types.
@@ -455,6 +550,42 @@ impl Session {
     pub(crate) const ACTIVATED: Self = Self(4);
 }
 
+/// A service of `shim_client_service`: an index of `SERVICES` in `shim.c`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
+pub(crate) struct Service(usize);
+
+impl Service {
+    pub(crate) const BROWSE: Self = Self(0);
+    pub(crate) const BROWSE_NEXT: Self = Self(1);
+    pub(crate) const TRANSLATE: Self = Self(2);
+    pub(crate) const READ: Self = Self(3);
+}
+
+/// `UA_ClientAsyncServiceCallback`.
+pub(crate) type Served = unsafe extern "C" fn(
+    client: *mut Client,
+    data: *mut c_void,
+    request: u32,
+    response: *mut c_void,
+);
+
+/// `shim_reference`: a reference of a browse, which borrows from its answer.
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct Reference {
+    /// The node, valid only when `local`.
+    pub(crate) node: Node<'static>,
+    /// The text of the browse name.
+    pub(crate) name: Bytes,
+    /// The text of the display name.
+    pub(crate) display: Bytes,
+    /// The `UA_NodeClass`.
+    pub(crate) class: u32,
+    /// Whether the node is in this server, by a number or a name.
+    pub(crate) local: bool,
+}
+
 /// `UA_ClientAsyncReadCallback`.
 pub(crate) type Read = unsafe extern "C" fn(
     client: *mut Client,
@@ -558,6 +689,64 @@ unsafe extern "C" {
         value: *const DataValue,
         out: *mut Scalar,
         kind: *mut u16,
+    ) -> u32;
+
+    pub(crate) fn shim_client_service(
+        client: *mut Client,
+        request: *mut c_void,
+        service: Service,
+        callback: Served,
+        data: *mut c_void,
+        id: *mut u32,
+    ) -> u32;
+    pub(crate) fn shim_answer_move(
+        answer: *mut c_void,
+        service: Service,
+    ) -> *mut c_void;
+    pub(crate) fn shim_answer_free(answer: *mut c_void, service: Service);
+    pub(crate) fn shim_request_free(request: *mut c_void, service: Service);
+    pub(crate) fn shim_request_bytes(
+        request: *const c_void,
+        service: Service,
+        token: usize,
+    ) -> usize;
+    pub(crate) fn shim_browse_new(
+        nodes: *const Node<'_>,
+        count: usize,
+        reference: u32,
+        inverse: bool,
+        classes: u32,
+        most: u32,
+    ) -> *mut c_void;
+    pub(crate) fn shim_browse_next_new(point: *const u8, length: usize) -> *mut c_void;
+    pub(crate) fn shim_browse_count(answer: *const c_void) -> usize;
+    pub(crate) fn shim_browse_result(
+        answer: *const c_void,
+        index: usize,
+        references: *mut usize,
+        point: *mut Bytes,
+    ) -> u32;
+    pub(crate) fn shim_browse_reference(
+        answer: *const c_void,
+        result: usize,
+        index: usize,
+        out: *mut Reference,
+    );
+    pub(crate) fn shim_units_new(nodes: *const Node<'_>, count: usize) -> *mut c_void;
+    pub(crate) fn shim_units_count(answer: *const c_void) -> usize;
+    pub(crate) fn shim_units_found(answer: *const c_void, index: usize) -> bool;
+    pub(crate) fn shim_units_read(answer: *const c_void) -> *mut c_void;
+    pub(crate) fn shim_read_attributes_new(
+        nodes: *const Node<'_>,
+        count: usize,
+        attributes: *const u32,
+        per: usize,
+    ) -> *mut c_void;
+    pub(crate) fn shim_value_node(value: *const DataValue, out: *mut Node<'_>) -> u32;
+    pub(crate) fn shim_value_unit(
+        value: *const DataValue,
+        code: *mut i32,
+        text: *mut Bytes,
     ) -> u32;
 
     pub(crate) fn shim_cm_new(

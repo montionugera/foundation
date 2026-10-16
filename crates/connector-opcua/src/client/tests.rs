@@ -2518,3 +2518,5 @@ fn a_connect_whose_read_of_the_max_nodes_per_read_fails_closes_its_session() {
     });
     assert_eq!(connect, (Some(Status::BAD_UNEXPECTED_ERROR), 1));
 }
+
+mod browse;

@@ -904,3 +904,368 @@ UA_StatusCode shim_value_scalar(const void *value, shim_scalar *out, UA_UInt16 *
     }
     return UA_STATUSCODE_GOOD;
 }
+
+/* The services that `shim_client_service` sends, by the index of their request and
+ * answer types in `UA_TYPES`. `src/ffi.rs` mirrors the order. */
+static const struct {
+    UA_UInt16 request;
+    UA_UInt16 answer;
+} SERVICES[] = {
+    {UA_TYPES_BROWSEREQUEST, UA_TYPES_BROWSERESPONSE},
+    {UA_TYPES_BROWSENEXTREQUEST, UA_TYPES_BROWSENEXTRESPONSE},
+    {UA_TYPES_TRANSLATEBROWSEPATHSTONODEIDSREQUEST,
+     UA_TYPES_TRANSLATEBROWSEPATHSTONODEIDSRESPONSE},
+    {UA_TYPES_READREQUEST, UA_TYPES_READRESPONSE},
+};
+
+/* `shim_browse_*` read a BrowseNext answer as a Browse answer. */
+_Static_assert(sizeof(UA_BrowseResponse) == sizeof(UA_BrowseNextResponse),
+               "UA_BrowseNextResponse changed");
+_Static_assert(offsetof(UA_BrowseResponse, results) ==
+                   offsetof(UA_BrowseNextResponse, results),
+               "UA_BrowseNextResponse.results moved");
+
+/* The request type of `service`, an index of `SERVICES`. */
+static const UA_DataType *request_type(size_t service) {
+    return &UA_TYPES[SERVICES[service].request];
+}
+
+/* The answer type of `service`, an index of `SERVICES`. */
+static const UA_DataType *answer_type(size_t service) {
+    return &UA_TYPES[SERVICES[service].answer];
+}
+
+/* Sends `request`, a request of `service`, on `client`, as `shim_client_read` does, and
+ * has `callback` called with `data` and the answer. Writes the id of the request to
+ * `id`. */
+UA_StatusCode shim_client_service(UA_Client *client, void *request, size_t service,
+                                  UA_ClientAsyncServiceCallback callback, void *data,
+                                  UA_UInt32 *id) {
+    UA_ClientConfig *config = UA_Client_getConfig(client);
+    UA_UInt32 timeout = config->timeout;
+    config->timeout = 0;
+    ((UA_RequestHeader *)request)->requestHandle = 0;
+    UA_StatusCode status =
+        __UA_Client_AsyncService(client, request, request_type(service), callback,
+                                 answer_type(service), data, id);
+    config->timeout = timeout;
+    return status;
+}
+
+/* Moves `answer`, an answer of `service` that a callback gets, to new memory that
+ * `shim_answer_free` frees, and leaves `answer` empty for open62541 to clear. Gives
+ * NULL, with `answer` as it was, when an allocation fails. */
+void *shim_answer_move(void *answer, size_t service) {
+    const UA_DataType *type = answer_type(service);
+    void *moved = UA_malloc(type->memSize);
+    if(!moved)
+        return NULL;
+    memcpy(moved, answer, type->memSize);
+    UA_init(answer, type);
+    return moved;
+}
+
+/* Frees `answer`, an answer of `service` from `shim_answer_move`. */
+void shim_answer_free(void *answer, size_t service) {
+    UA_delete(answer, answer_type(service));
+}
+
+/* Frees `request`, a request of `service`. */
+void shim_request_free(void *request, size_t service) {
+    UA_delete(request, request_type(service));
+}
+
+/* Gives the bytes of the body of the message of `request`, a request of `service`,
+ * sent with a session token of `token` encoded bytes. */
+size_t shim_request_bytes(const void *request, size_t service, size_t token) {
+    const UA_DataType *type = request_type(service);
+    const UA_RequestHeader *header = (const UA_RequestHeader *)request;
+    const UA_DataType *node = &UA_TYPES[UA_TYPES_NODEID];
+    return UA_calcSizeBinary(&type->binaryEncodingId, node, NULL) +
+           UA_calcSizeBinary(request, type, NULL) -
+           UA_calcSizeBinary(&header->authenticationToken, node, NULL) + token;
+}
+
+/* Gives a Browse request of the references of each of the `count` nodes at `nodes`,
+ * which copies their names: the inverse references when `inverse`, else the forward,
+ * of the type `reference` and its subtypes, to the node classes of the mask `classes`,
+ * at most `most` per node, 0 for no limit, each with its node class, browse name, and
+ * display name. NULL when an allocation fails. */
+UA_BrowseRequest *shim_browse_new(const shim_node *nodes, size_t count,
+                                  UA_UInt32 reference, UA_Boolean inverse,
+                                  UA_UInt32 classes, UA_UInt32 most) {
+    UA_BrowseRequest *request = UA_BrowseRequest_new();
+    if(!request)
+        return NULL;
+    request->requestedMaxReferencesPerNode = most;
+    request->nodesToBrowse = (UA_BrowseDescription *)UA_Array_new(
+        count, &UA_TYPES[UA_TYPES_BROWSEDESCRIPTION]);
+    if(!request->nodesToBrowse) {
+        UA_BrowseRequest_delete(request);
+        return NULL;
+    }
+    request->nodesToBrowseSize = count;
+    for(size_t i = 0; i < count; i++) {
+        UA_BrowseDescription *browse = &request->nodesToBrowse[i];
+        browse->browseDirection =
+            inverse ? UA_BROWSEDIRECTION_INVERSE : UA_BROWSEDIRECTION_FORWARD;
+        browse->referenceTypeId = UA_NODEID_NUMERIC(0, reference);
+        browse->includeSubtypes = true;
+        browse->nodeClassMask = classes;
+        browse->resultMask = UA_BROWSERESULTMASK_NODECLASS |
+                             UA_BROWSERESULTMASK_BROWSENAME |
+                             UA_BROWSERESULTMASK_DISPLAYNAME;
+        UA_NodeId id = shim_node_id(nodes[i]);
+        if(UA_NodeId_copy(&id, &browse->nodeId) != UA_STATUSCODE_GOOD) {
+            UA_BrowseRequest_delete(request);
+            return NULL;
+        }
+    }
+    return request;
+}
+
+/* Gives a BrowseNext request of the continuation point of `length` bytes at `point`,
+ * which it copies, or NULL when an allocation fails. */
+UA_BrowseNextRequest *shim_browse_next_new(const UA_Byte *point, size_t length) {
+    UA_BrowseNextRequest *request = UA_BrowseNextRequest_new();
+    if(!request)
+        return NULL;
+    request->continuationPoints =
+        (UA_ByteString *)UA_Array_new(1, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    if(!request->continuationPoints) {
+        UA_BrowseNextRequest_delete(request);
+        return NULL;
+    }
+    request->continuationPointsSize = 1;
+    UA_ByteString given = {length, (UA_Byte *)(uintptr_t)point};
+    if(UA_ByteString_copy(&given, &request->continuationPoints[0]) !=
+       UA_STATUSCODE_GOOD) {
+        UA_BrowseNextRequest_delete(request);
+        return NULL;
+    }
+    return request;
+}
+
+/* Gives the count of results of `answer`, a Browse or BrowseNext answer. */
+size_t shim_browse_count(const UA_BrowseResponse *answer) {
+    return answer->resultsSize;
+}
+
+/* Gives the status of result `index` of `answer`, a Browse or BrowseNext answer with
+ * more results than `index`, and writes the count of its references to `references`
+ * and its continuation point, which borrows from `answer`, to `point`. */
+UA_StatusCode shim_browse_result(const UA_BrowseResponse *answer, size_t index,
+                                 size_t *references, UA_ByteString *point) {
+    const UA_BrowseResult *result = &answer->results[index];
+    *references = result->referencesSize;
+    *point = result->continuationPoint;
+    return result->statusCode;
+}
+
+/* A reference of a browse, as `ffi::Reference` gives it. Each text borrows from the
+ * answer. */
+typedef struct {
+    /* The node, valid only when `local`. */
+    shim_node node;
+    UA_String name;
+    UA_String display;
+    UA_UInt32 class;
+    /* Whether the node is in this server, by a number or a name. */
+    UA_Boolean local;
+} shim_reference;
+
+_Static_assert(sizeof(shim_reference) == 64, "shim_reference changed");
+_Static_assert(offsetof(shim_reference, class) == 56, "shim_reference.class moved");
+_Static_assert(offsetof(shim_reference, local) == 60, "shim_reference.local moved");
+
+/* Writes reference `index` of result `result` of `answer`, a Browse or BrowseNext
+ * answer with more of each, to `out`, which borrows from `answer`. */
+void shim_browse_reference(const UA_BrowseResponse *answer, size_t result, size_t index,
+                           shim_reference *out) {
+    const UA_ReferenceDescription *reference =
+        &answer->results[result].references[index];
+    const UA_ExpandedNodeId *node = &reference->nodeId;
+    const UA_NodeId *id = &node->nodeId;
+    out->local = node->serverIndex == 0 && node->namespaceUri.length == 0 &&
+                 (id->identifierType == UA_NODEIDTYPE_NUMERIC ||
+                  id->identifierType == UA_NODEIDTYPE_STRING);
+    out->node.namespace = id->namespaceIndex;
+    out->node.number = 0;
+    out->node.name = NULL;
+    out->node.length = 0;
+    if(id->identifierType == UA_NODEIDTYPE_NUMERIC) {
+        out->node.number = id->identifier.numeric;
+    } else if(id->identifierType == UA_NODEIDTYPE_STRING) {
+        /* A name is never NULL in a `shim_node`, also an empty one. */
+        out->node.name = id->identifier.string.data ? id->identifier.string.data
+                                                    : (const UA_Byte *)"";
+        out->node.length = id->identifier.string.length;
+    }
+    out->name = reference->browseName.name;
+    out->display = reference->displayName.text;
+    out->class = (UA_UInt32)reference->nodeClass;
+}
+
+/* Gives a TranslateBrowsePathsToNodeIds request of the path `HasProperty` to
+ * `0:EngineeringUnits` from each of the `count` nodes at `nodes`, which copies their
+ * names, or NULL when an allocation fails. */
+UA_TranslateBrowsePathsToNodeIdsRequest *shim_units_new(const shim_node *nodes,
+                                                        size_t count) {
+    UA_TranslateBrowsePathsToNodeIdsRequest *request =
+        UA_TranslateBrowsePathsToNodeIdsRequest_new();
+    if(!request)
+        return NULL;
+    request->browsePaths =
+        (UA_BrowsePath *)UA_Array_new(count, &UA_TYPES[UA_TYPES_BROWSEPATH]);
+    if(!request->browsePaths) {
+        UA_TranslateBrowsePathsToNodeIdsRequest_delete(request);
+        return NULL;
+    }
+    request->browsePathsSize = count;
+    for(size_t i = 0; i < count; i++) {
+        UA_BrowsePath *path = &request->browsePaths[i];
+        UA_RelativePathElement step;
+        UA_RelativePathElement_init(&step);
+        step.referenceTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY);
+        step.targetName = UA_QUALIFIEDNAME(0, "EngineeringUnits");
+        UA_NodeId id = shim_node_id(nodes[i]);
+        UA_RelativePath relative = {1, &step};
+        if(UA_NodeId_copy(&id, &path->startingNode) != UA_STATUSCODE_GOOD ||
+           UA_RelativePath_copy(&relative, &path->relativePath) != UA_STATUSCODE_GOOD) {
+            UA_TranslateBrowsePathsToNodeIdsRequest_delete(request);
+            return NULL;
+        }
+    }
+    return request;
+}
+
+/* Gives the count of results of `answer`, a TranslateBrowsePathsToNodeIds answer. */
+size_t shim_units_count(const UA_TranslateBrowsePathsToNodeIdsResponse *answer) {
+    return answer->resultsSize;
+}
+
+/* Gives the node of the first target of result `index` of `answer`, a
+ * TranslateBrowsePathsToNodeIds answer with more results than `index`, or NULL when the
+ * result is not Good, has no target in this server, or ends before the path does. */
+static const UA_NodeId *unit_of(const UA_TranslateBrowsePathsToNodeIdsResponse *answer,
+                                size_t index) {
+    const UA_BrowsePathResult *result = &answer->results[index];
+    if(result->statusCode != UA_STATUSCODE_GOOD || result->targetsSize == 0)
+        return NULL;
+    const UA_BrowsePathTarget *target = &result->targets[0];
+    if(target->remainingPathIndex != UA_UINT32_MAX ||
+       target->targetId.serverIndex != 0 || target->targetId.namespaceUri.length != 0)
+        return NULL;
+    return &target->targetId.nodeId;
+}
+
+/* Whether result `index` of `answer`, as `unit_of` takes, has a unit. */
+UA_Boolean shim_units_found(const UA_TranslateBrowsePathsToNodeIdsResponse *answer,
+                            size_t index) {
+    return unit_of(answer, index) != NULL;
+}
+
+/* Gives a Read request of the Value of the unit of each result of `answer`, a
+ * TranslateBrowsePathsToNodeIds answer, that `shim_units_found` finds, in order, or
+ * NULL when an allocation fails. */
+UA_ReadRequest *
+shim_units_read(const UA_TranslateBrowsePathsToNodeIdsResponse *answer) {
+    size_t count = 0;
+    for(size_t i = 0; i < answer->resultsSize; i++)
+        count += unit_of(answer, i) != NULL;
+    UA_ReadRequest *request = UA_ReadRequest_new();
+    if(!request)
+        return NULL;
+    read_request_init(request);
+    request->nodesToRead =
+        (UA_ReadValueId *)UA_Array_new(count, &UA_TYPES[UA_TYPES_READVALUEID]);
+    if(!request->nodesToRead) {
+        UA_ReadRequest_delete(request);
+        return NULL;
+    }
+    request->nodesToReadSize = count;
+    size_t next = 0;
+    for(size_t i = 0; i < answer->resultsSize; i++) {
+        const UA_NodeId *unit = unit_of(answer, i);
+        if(!unit)
+            continue;
+        UA_ReadValueId *read = &request->nodesToRead[next++];
+        read->attributeId = UA_ATTRIBUTEID_VALUE;
+        if(UA_NodeId_copy(unit, &read->nodeId) != UA_STATUSCODE_GOOD) {
+            UA_ReadRequest_delete(request);
+            return NULL;
+        }
+    }
+    return request;
+}
+
+/* Gives a Read request of each of the `per` attributes at `attributes` of each of the
+ * `count` nodes at `nodes`, node by node, which copies their names, or NULL when an
+ * allocation fails. */
+UA_ReadRequest *shim_read_attributes_new(const shim_node *nodes, size_t count,
+                                         const UA_UInt32 *attributes, size_t per) {
+    UA_ReadRequest *request = UA_ReadRequest_new();
+    if(!request)
+        return NULL;
+    read_request_init(request);
+    request->nodesToRead =
+        (UA_ReadValueId *)UA_Array_new(count * per, &UA_TYPES[UA_TYPES_READVALUEID]);
+    if(!request->nodesToRead) {
+        UA_ReadRequest_delete(request);
+        return NULL;
+    }
+    request->nodesToReadSize = count * per;
+    for(size_t i = 0; i < count * per; i++) {
+        UA_ReadValueId *read = &request->nodesToRead[i];
+        read->attributeId = attributes[i % per];
+        UA_NodeId id = shim_node_id(nodes[i / per]);
+        if(UA_NodeId_copy(&id, &read->nodeId) != UA_STATUSCODE_GOOD) {
+            UA_ReadRequest_delete(request);
+            return NULL;
+        }
+    }
+    return request;
+}
+
+/* Writes the node of `value`, an answer of a read that holds a scalar `NodeId` by a
+ * number or a name, to `out`, which borrows its name from `value`. Else gives the
+ * status of `shim_value_status` when it is not Good, else `BadTypeMismatch`. */
+UA_StatusCode shim_value_node(const UA_DataValue *value, shim_node *out) {
+    UA_StatusCode status = shim_value_status(value);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    if(!UA_Variant_hasScalarType(&value->value, &UA_TYPES[UA_TYPES_NODEID]))
+        return UA_STATUSCODE_BADTYPEMISMATCH;
+    const UA_NodeId *id = (const UA_NodeId *)value->value.data;
+    out->namespace = id->namespaceIndex;
+    out->number = 0;
+    out->name = NULL;
+    out->length = 0;
+    if(id->identifierType == UA_NODEIDTYPE_NUMERIC) {
+        out->number = id->identifier.numeric;
+        return UA_STATUSCODE_GOOD;
+    }
+    if(id->identifierType != UA_NODEIDTYPE_STRING)
+        return UA_STATUSCODE_BADTYPEMISMATCH;
+    out->name = id->identifier.string.data ? id->identifier.string.data
+                                           : (const UA_Byte *)"";
+    out->length = id->identifier.string.length;
+    return UA_STATUSCODE_GOOD;
+}
+
+/* Writes the `unitId` of `value`, an answer of a read that holds a scalar
+ * `EUInformation`, to `code`, and the text of its display name, which borrows from
+ * `value`, to `text`. Else gives the status of `shim_value_status` when it is not Good,
+ * else `BadTypeMismatch`. */
+UA_StatusCode shim_value_unit(const UA_DataValue *value, UA_Int32 *code,
+                              UA_String *text) {
+    UA_StatusCode status = shim_value_status(value);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    if(!UA_Variant_hasScalarType(&value->value, &UA_TYPES[UA_TYPES_EUINFORMATION]))
+        return UA_STATUSCODE_BADTYPEMISMATCH;
+    const UA_EUInformation *unit = (const UA_EUInformation *)value->value.data;
+    *code = unit->unitId;
+    *text = unit->displayName.text;
+    return UA_STATUSCODE_GOOD;
+}

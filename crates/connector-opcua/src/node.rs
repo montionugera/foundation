@@ -10,21 +10,21 @@ mod tests;
 /// `NamespaceArray`, and a key in that namespace. Its text form is
 /// `ns=<index>;i=<number>` or `ns=<index>;s=<name>`, with no `ns=<index>;` for
 /// namespace 0.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Node {
     pub(crate) namespace: u16,
     pub(crate) key: Key,
 }
 
 /// The key of a [`Node`] in its namespace.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Key {
     Number(u32),
     Name(Name),
 }
 
 /// The name of a node: 1 or more bytes.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Name(String);
 
 impl Name {
