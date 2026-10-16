@@ -2286,7 +2286,8 @@ mod tests {
         cluster.board()
     }
 
-    // Voter 3 applies the last home only after each entry before it.
+    // Voter 3 applies the last home only after each entry before it. A full `Append` of
+    // home changes fits `BYTES_MIN`, so `raft` cuts none.
     #[test]
     fn a_voter_of_the_least_limit_gets_100_home_changes_behind() {
         let changes: Vec<_> = (0..100).map(|at| home_to(1 + at % 3)).collect();
@@ -2298,27 +2299,34 @@ mod tests {
             .map(|(&id, homes)| (id, last(homes)))
             .collect();
         assert_eq!(homes, IDS.map(|id| (id, Some(key(2)))).into());
-        assert_eq!(board.states[&3], board.states[&1]);
     }
 
+    // An `Append` of the backlog holds at most three of these joins.
     #[test]
     fn a_voter_of_the_least_limit_gets_100_joins_behind() {
         let ticket = common::ticket_change(7, common::options("plant", true));
         let joins = (10..110).map(|id| {
-            let card = common::signed(id, &format!("plant.joined{id}"));
-            let status =
-                common::status([(common::name("disk"), common::index(u128::from(id)))]);
-            Change::Join(Box::new(common::join_with(
-                &card,
-                7,
-                common::BEFORE_EXPIRY,
-                status,
-            )))
+            let name = format!("plant.joined{id}");
+            let card = common::signed(id, &name);
+            // The most status channels, each of a name of the most bytes.
+            let width = Name::MAX_BYTES - name.len() - 1;
+            let statuses = (0..crate::status::MAX).map(|at| {
+                let end = format!("s{at}");
+                let channel = common::index(u128::from(id) << 8 | u128::from(at));
+                (common::name(&format!("{end:a>width$}")), channel)
+            });
+            let status = Status::new(statuses.collect()).unwrap();
+            let join = common::join_with(&card, 7, common::BEFORE_EXPIRY, status);
+            Change::Join(Box::new(join))
         });
         let changes: Vec<_> = iter::once(ticket).chain(joins).collect();
+        assert!(encoded(&changes[1]).len() * 4 > message::BYTES_MIN);
         let board = behind(&changes);
+        let homes = |id| (id, board.homes[&id].last().copied().flatten());
+        assert_eq!(IDS.map(homes), IDS.map(|id| (id, Some(key(2)))));
         let joined = (10..110).filter(|&id| board.states[&1].member(key(id)).is_some());
         assert_eq!(joined.count(), 100);
+        // No call of `Mesh` gives the members.
         assert_eq!(board.states[&3], board.states[&1]);
     }
 
