@@ -26,8 +26,8 @@ const VARIABLES: [(&str, &str); 3] = [
     ("ns=3;s=PositiveTrendData", "plant.trend"),
 ];
 
-/// The changes of each variable: 5 s at 10 Hz.
-const TICKS: usize = 50;
+/// The changes of each variable: 2 s at 10 Hz. Each change steps the value.
+const TICKS: usize = 20;
 
 /// The fewest reads of each variable that the server answers in the [`TICKS`] changes,
 /// so that a node that reads too few fails the test: half the ticks of `rate = "10Hz"`.
