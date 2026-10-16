@@ -529,7 +529,7 @@ pub(crate) struct Logs {
     items: Items,
     /// Each item before this number is stale.
     stale: u64,
-    /// An [`carry`](Self::carry) has passed each item before this number.
+    /// A [`carry`](Self::carry) has passed each item before this number.
     scanned: u64,
 }
 
@@ -1033,7 +1033,7 @@ impl Carried {
         self.tails.capacity().min(self.places.capacity())
     }
 
-    /// Room for `tails` tails in all, which grows as a `Vec` grows.
+    /// Makes room for at least `tails` tails in all.
     fn reserve(&mut self, tails: usize) {
         self.tails.reserve(tails.saturating_sub(self.tails.len()));
         self.places.reserve(tails.saturating_sub(self.places.len()));

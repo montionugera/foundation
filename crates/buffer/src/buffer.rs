@@ -2150,7 +2150,7 @@ mod tests {
         fn a_carry_has_no_room_until_it_carries() {
             let mut sim = sim::Sim::new(sim::Config::default());
             let node = sim.node(sim::node::Config::default());
-            let found = Arc::new(Mutex::new(Vec::new()));
+            let found = Arc::new(Mutex::new(None));
             let given = Arc::clone(&found);
             let logs = with_trims(
                 &mut sim,
@@ -2180,23 +2180,24 @@ mod tests {
                     rooms.push(room(&buffer));
                     let last = slots.index(channel::Key::from_u128(paths.into()));
                     let seq = buffer.durable(last, Path::Live).seq;
-                    let last = usize::try_from(last.get()).expect("fits");
-                    rooms.push((usize::try_from(seq).expect("fits"), last));
-                    *given.lock().expect("no panic held the lock") = rooms;
+                    *given.lock().expect("no panic held the lock") =
+                        Some((rooms, seq, last));
                     buffer
                 },
             );
             let tails = carry::count(8000);
-            let found = found.lock().expect("no panic held the lock");
-            assert_eq!(found[0], (0, 0), "no room at open");
+            let (rooms, seq, last) = found
+                .lock()
+                .expect("no panic held the lock")
+                .take()
+                .expect("the write ran");
+            assert_eq!(rooms[0], (0, 0), "no room at open");
             assert!(
-                found[1].0 >= tails,
+                rooms[1].0 >= tails,
                 "room for a full record: {:?}",
-                found[1]
+                rooms[1]
             );
-            let (seq, last) = found[2];
             assert_eq!(seq, 3, "a carry record keeps the tail of the last path");
-            let last = Slot::new(u32::try_from(last).expect("fits"));
             assert_eq!(logs.runs(last, Path::Live).count(), 0, "the trims pass it");
         }
 
