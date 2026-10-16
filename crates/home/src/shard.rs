@@ -234,9 +234,8 @@ pub enum Outcome {
     /// gap in the log: a complete reader gets the next frame, past it. The gap is
     /// durable only when a later live entry of the index, with samples, a handoff,
     /// or the named readers, is on disk: a restart before that gives the next frame
-    /// the same seq. After a
-    /// [`Shard::shed`] and a [`Shard::carry`] of the index, the next frame gets the
-    /// same seq only when no later live entry was appended.
+    /// the same seq. After a [`Shard::shed`] and a [`Shard::carry`] of the index, the
+    /// next frame gets the same seq only when no later live entry was appended.
     Lost {
         /// The slot of the group's index.
         slot: Slot,

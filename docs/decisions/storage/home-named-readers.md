@@ -17,9 +17,8 @@
   https://github.com/synnaxlabs/foundation/pull/1863#issuecomment-6058607367).
   Superseded by Amended (#274 A): `home` appends the position records to the index
   log, and a reopen after a restart resumes at the last recorded ack. Lost: one open
-  that takes a
-  `delivery::Reader`, because only a named open can fail. Decided by `laptop.architect`
-  (2026-10-08T10:01:19Z:
+  that takes a `delivery::Reader`, because only a named open can fail. Decided by
+  `laptop.architect` (2026-10-08T10:01:19Z:
   https://github.com/synnaxlabs/foundation/issues/1742#issuecomment-6057419592). The
   subject in the key and the order of the PRs: `laptop.architect`
   (2026-10-08T10:15:04Z:
