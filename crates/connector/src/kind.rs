@@ -72,8 +72,6 @@ pub trait Kind: Send + Sync + 'static {
     /// of a [`browse::Shape::Point`] that a browse of the kind gave. For each fact
     /// that the blocks need and `facts` does not have, they hold
     /// [`fill`](crate::import::fill).
-    /// The default gives [`Error::Config`] with `connector.no-import`: the kind
-    /// cannot write the block of a point.
     ///
     /// # Errors
     ///
@@ -133,8 +131,8 @@ pub struct Channels {
 /// Why a run or a discovery stopped. One handler for each variant.
 #[derive(Debug)]
 pub enum Error {
-    /// Not retried: a browse or a discover fails, and a run stops until the next spec
-    /// change.
+    /// Not retried: a browse, a discover, or an import fails, and a run stops until
+    /// the next spec change.
     Config(Vec<Diagnostic>),
     /// The device or endpoint is in a bad state. Restarted with backoff.
     Device(Box<dyn std::error::Error + Send + Sync>),
