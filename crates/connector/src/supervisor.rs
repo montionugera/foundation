@@ -548,13 +548,6 @@ mod tests {
             }
         }
 
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
-        }
-
         async fn run(&self, ctx: Context<bool>) -> Result<(), Error> {
             let ctx = Rc::new(ctx);
             assert_eq!(ctx.name().as_str(), "plant.script");
@@ -1257,13 +1250,6 @@ mod tests {
 
         fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
             Ok(Channels::default())
-        }
-
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
         }
 
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
@@ -2135,13 +2121,6 @@ mod tests {
             })
         }
 
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
-        }
-
         fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
             std::future::ready(Ok(()))
         }
@@ -2548,13 +2527,6 @@ mod tests {
             Ok(Channels::default())
         }
 
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
-        }
-
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
             let config = tcp::Config {
                 remote: self.remote,
@@ -2667,13 +2639,6 @@ mod tests {
 
         fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
             Ok(Channels::default())
-        }
-
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
         }
 
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
@@ -2890,13 +2855,6 @@ mod tests {
             })
         }
 
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
-        }
-
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {
             let count = ctx.count(self.count);
             for i in 1..=self.n {
@@ -2941,13 +2899,6 @@ mod tests {
                 reader: self.reader.clone(),
                 ..Channels::default()
             })
-        }
-
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
         }
 
         fn run(&self, ctx: Context<()>) -> impl Future<Output = Result<(), Error>> {
@@ -3818,13 +3769,6 @@ mod tests {
 
         fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
             Ok(Channels::default())
-        }
-
-        fn discover(
-            &self,
-            _: &cancel::Token,
-        ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-            std::future::ready(Ok(Vec::new()))
         }
 
         async fn run(&self, ctx: Context<()>) -> Result<(), Error> {

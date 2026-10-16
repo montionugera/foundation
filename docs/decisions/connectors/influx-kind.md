@@ -1,12 +1,16 @@
 - **INFLUX KIND** `connector_influx::Kind` reads `address` and the reader settings
   (READER SETTINGS). `address` is an `http::Uri`, since a `Name` is a mesh name. `parse`
   reads `address` through `connector::http::uri`, so a plan finds an address that `send`
-  refuses before a run. `discover` gives no documents. Decided by `laptop.architect-2`
-  on #1153
+  refuses before a run. Decided by `laptop.architect-2` on #1153
   (https://github.com/synnaxlabs/foundation/issues/1153#issuecomment-6051297152,
-  2026-10-08 03:02 UTC). The kind also refuses a path other than empty or `/`, and a
-  query, at the value: a path (a proxy prefix) can come later as a compatible change,
-  and a refusal cannot. Each diagnostic of a kind names its document
+  2026-10-08 03:02 UTC). `discover` gives the default `connector.no-discover`
+  (`laptop.architect-2`, 2026-10-16 04:00 UTC:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6207771367; it
+  supersedes
+  https://github.com/synnaxlabs/foundation/issues/1153#issuecomment-6051297152, where
+  `discover` gave no documents). The kind also refuses a path other than empty or `/`,
+  and a query, at the value: a path (a proxy prefix) can come later as a compatible
+  change, and a refusal cannot. Each diagnostic of a kind names its document
   `connector::kind::NOUN` ("the connector"), as `reader::read` does. Decided by
   `laptop.architect-2` on #1794
   (https://github.com/synnaxlabs/foundation/pull/1794#issuecomment-6052684931,

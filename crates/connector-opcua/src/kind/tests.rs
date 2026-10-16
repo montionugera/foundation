@@ -1606,3 +1606,22 @@ fn leaves_out_each_value_that_is_not_good() {
     let left = Why::of(&Err(Fault::of_type(string)), Scalar::F64);
     assert_eq!(left, Some(Why::Mistyped(string)));
 }
+
+#[test]
+fn refuses_to_discover() {
+    let token = connector::cancel::Token::new();
+    let table = connector::kind::Table::new().with("opcua", Kind);
+    let found = std::pin::pin!(table.discover("opcua", &token));
+    let waker = std::task::Waker::noop();
+    let polled = found.poll(&mut std::task::Context::from_waker(waker));
+    let std::task::Poll::Ready(Err(Error::Config(diagnostics))) = polled else {
+        panic!("a config error: {polled:?}");
+    };
+    let expected = Diagnostic::new(
+        document::diagnostic::Code::new("connector.no-discover"),
+        None,
+        "this connector kind cannot find its devices".into(),
+        "Write the connector block by hand".into(),
+    );
+    assert_eq!(diagnostics, [expected]);
+}

@@ -25,10 +25,8 @@ mod send;
 #[cfg(feature = "sim")]
 pub mod sim;
 
-use std::future;
-
 use connector::kind::{self, Channels, Context, Error};
-use connector::{cancel, reader, secret};
+use connector::{reader, secret};
 use document::diagnostic::{Code, Diagnostic};
 use document::value::{self, Value};
 use document::{Document, read};
@@ -162,14 +160,6 @@ impl kind::Kind for Kind {
             counts: vec![count(CONFIRMED), count(LOST)],
             ..Channels::default()
         })
-    }
-
-    /// An InfluxDB has no devices to find.
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        future::ready(Ok(Vec::new()))
     }
 
     /// Writes the samples of its reader to InfluxDB, one line for each sample time with
