@@ -187,8 +187,8 @@ unsafe impl block::Memory for Memory {
         let at = self.at(pages.start);
         let len = pages.len() * self.page;
         // On Linux the pages read zero after it. Huge pages stay off: a change of that
-        // advice on part of the reserve splits its mapping. `Advice::DontNeed` is the
-        // POSIX advice, which glibc makes a no-op.
+        // advice on part of the reserve splits its mapping. `Advice::DontNeed` is
+        // `MADV_NORMAL` in rustix on Linux, a no-op.
         // SAFETY: the pages are in this mapping, and the `block::Memory` contract lets
         // a discard change the bytes in its range.
         #[cfg(target_os = "linux")]
@@ -547,18 +547,18 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
     fn a_pool_that_gives_the_pages_of_free_blocks_to_another_size_splits_no_mapping() {
-        const SMALL: usize = 8192;
         const LARGE: usize = 1 << 20;
-        let count = 4 * LARGE / SMALL;
-        let budget = (count + 1) * block::footprint(SMALL) + block::footprint(LARGE);
+        // Most small blocks hold one whole page.
+        let small = 2 * page_size();
+        let count = 4 * LARGE / small;
+        let budget = (count + 1) * block::footprint(small) + block::footprint(LARGE);
         let config = Config::new(u64::try_from(budget).unwrap()).unwrap();
         let memory = Memory::new(config.reservation()).unwrap();
         let reserve = reserve(&memory);
         let pool = Pool::new(config, memory);
         let mut small: Vec<_> =
-            (0..=count).map(|_| pool.alloc(SMALL).unwrap()).collect();
+            (0..=count).map(|_| pool.alloc(small).unwrap()).collect();
         let held = small.pop();
         drop(small);
         let first = pool.alloc(LARGE).unwrap();
