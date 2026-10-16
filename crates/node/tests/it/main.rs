@@ -480,6 +480,35 @@ fn mcp_shows_status_of_the_node_of_data_across_a_restart() {
     );
 }
 
+/// `foundation mcp` makes its data directory, and a first `foundation start` on that
+/// empty directory runs a node there.
+#[test]
+fn start_runs_on_the_data_directory_that_mcp_made() {
+    let mut rig = Rig::new();
+    let mut mcp = rig.talk(&["mcp", "--data", "plant"]);
+    let status = |id| {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\
+             \"params\":{{\"name\":\"status\"}}}}\n"
+        )
+    };
+    let mut replies = status_reply(1, Err("no node runs in plant".to_owned()));
+    mcp.ask(&status(1), &replies);
+    rig.start_with(&["--name", "edge", "--data", "plant"]);
+    let empty = serde_json::json!({ "connectors": [] });
+    replies.push_str(&status_reply(2, Ok(empty)));
+    mcp.ask(&status(2), &replies);
+    let output = mcp.close();
+    assert_eq!(
+        (
+            output.status.code(),
+            text(&output.stdout),
+            text(&output.stderr)
+        ),
+        (Some(0), replies.as_str(), "")
+    );
+}
+
 #[test]
 fn help_lists_mcp() {
     let output = Rig::new().run(&["--help"], b"");
