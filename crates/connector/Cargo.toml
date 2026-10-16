@@ -14,6 +14,8 @@ http.workspace = true
 http-body.workspace = true
 hyper.workspace = true
 rustls = { workspace = true, features = ["tls12"] }
+tokio.workspace = true
+tokio-rustls.workspace = true
 block = { path = "../block" }
 codec = { path = "../codec" }
 env = { path = "../env" }

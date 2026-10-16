@@ -276,13 +276,9 @@ where
         let tcp = poll_fn(|cx| listener.poll_accept(cx))
             .await
             .expect("a stream");
-        let session = rustls::ServerConnection::new(config).expect("a session");
-        let mut stream = Stream {
-            tcp,
-            tls: Some(Box::new(session.into())),
-            received: Rc::default(),
-        };
-        stream.handshake().await.expect("the handshake ends");
+        let mut stream = Stream::server(tcp, config)
+            .await
+            .expect("the handshake ends");
         let mut head = Vec::new();
         while !head.ends_with(b"\r\n\r\n") {
             let mut bytes = [0; 1024];
@@ -391,7 +387,7 @@ fn fails_the_handshake_with_a_server_that_closes_the_stream() {
     });
     assert_eq!(
         failed(network.send(sim::ca(), "https://influx:8087/ping")),
-        "TLS with influx:8087 failed: the peer closed the stream in the handshake"
+        "TLS with influx:8087 failed: tls handshake eof"
     );
 }
 
@@ -449,14 +445,10 @@ fn fails_a_handshake_whose_first_write_finds_the_stream_reset() {
             let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
             let config = super::client(&provider, &sim::ca(), JUNE_2026);
             let name = "influx".try_into().expect("a DNS name");
-            let session =
-                rustls::ClientConnection::new(config, name).expect("a session");
-            let mut stream = Stream {
-                tcp,
-                tls: Some(Box::new(session.into())),
-                received: Rc::default(),
+            let Err(error) = Stream::client(tcp, config, name, Rc::default()).await
+            else {
+                panic!("the stream is reset")
             };
-            let error = stream.handshake().await.expect_err("the stream is reset");
             *slot.lock().expect("no panic") = Some(error.to_string());
         })
         .expect("the shard starts");
@@ -512,17 +504,12 @@ fn fails_a_download_when_the_server_crashes() {
 fn fails_a_body_that_ends_with_no_close_notify() {
     let mut network = Network::new(16, Certificate::Valid, JUNE_2026);
     network.listen(8087, |mut listener, _| async move {
-        let mut tcp = poll_fn(|cx| listener.poll_accept(cx))
+        let tcp = poll_fn(|cx| listener.poll_accept(cx))
             .await
             .expect("a stream");
-        let session = rustls::ServerConnection::new(sim::server(Certificate::Valid))
-            .expect("a session");
-        let mut stream = Stream {
-            tcp,
-            tls: Some(Box::new(session.into())),
-            received: Rc::default(),
-        };
-        stream.handshake().await.expect("the handshake ends");
+        let mut stream = Stream::server(tcp, sim::server(Certificate::Valid))
+            .await
+            .expect("the handshake ends");
         // A close with unread bytes resets the stream, so it reads the whole head.
         let mut head = Vec::new();
         while !head.ends_with(b"\r\n\r\n") {
@@ -537,8 +524,7 @@ fn fails_a_body_that_ends_with_no_close_notify() {
         poll_fn(|cx| Pin::new(&mut stream).poll_write(cx, answer))
             .await
             .expect("the answer goes");
-        tcp = stream.tcp;
-        poll_fn(|cx| tcp.poll_close(cx))
+        poll_fn(|cx| stream.tcp().poll_close(cx))
             .await
             .expect("the stream closes");
     });

@@ -137,22 +137,16 @@ async fn run(
         };
         let answer = Rc::clone(&answer);
         let service = service_fn(move |request| respond(request, Rc::clone(&answer)));
-        let session = tls.as_ref().map(|config| {
-            let session = rustls::ServerConnection::new(Arc::clone(config)).expect(
-                "invariant: a server config with a certificate makes a session",
-            );
-            Box::new(session.into())
-        });
-        let mut stream = Stream {
-            tcp,
-            tls: session,
-            received: Rc::default(),
-        };
+        let tls = tls.clone();
         // A stream that fails has no one to tell.
         tasks.spawn(async move {
-            if stream.handshake().await.is_err() {
-                return;
-            }
+            let stream = match tls {
+                Some(config) => match Stream::server(tcp, config).await {
+                    Ok(stream) => stream,
+                    Err(_) => return,
+                },
+                None => Stream::plain(tcp, Rc::default()),
+            };
             // The person approved this server on the condition that it gets no timer.
             let served = http1::Builder::new()
                 .auto_date_header(false)

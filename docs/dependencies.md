@@ -14,7 +14,7 @@ approval; pin the version you build against there.
 | --- | --- | --- | --- | --- | --- |
 | `blake3` | `types` (`types::digest`, for `spec` and `blob`) | Hashes of spec chunks and blobs (R4 SETTLED, r7 area 7) | CC0-1.0 or Apache-2.0 | 1.8.7 | 2026-10-04 |
 | `rustix` | `os` | Reserve, commit, and purge pool pages; OS calls behind `env` | Apache-2.0 with LLVM exception, Apache-2.0, or MIT | 1.1.5 | 2026-10-04 |
-| `tokio` | `os`, `transport`, `node`, benchmarks | One `LocalRuntime` per shard (C2), and the I/O driver of the TCP streams and listeners of `env::net` (#120) | MIT | 1.53.2 | 2026-10-04 |
+| `tokio` | `os`, `transport`, `node`, `connector`, benchmarks | One `LocalRuntime` per shard (C2), and the I/O driver of the TCP streams and listeners of `env::net` (#120); in `connector`, only the I/O traits, for `tokio-rustls` (#2702) | MIT | 1.53.2 | 2026-10-04 |
 | `mio` | `os` through Tokio `net` | The readiness loop over epoll and kqueue of the TCP streams and listeners of `env::net` (#120, https://github.com/synnaxlabs/foundation/issues/120#issuecomment-6050971843). The person: "yes" (https://github.com/synnaxlabs/foundation/issues/120#issuecomment-6051868744) | MIT | 1.2.4 | 2026-10-08 |
 | `socket2` | `os` through Tokio `net` | Comes with Tokio `net`; `os` makes its sockets with `rustix` (#120, https://github.com/synnaxlabs/foundation/issues/120#issuecomment-6051868744) | MIT or Apache-2.0 | 0.6.5 | 2026-10-08 |
 | `rustls` | `transport`, `connector`, `bench/carrier` | TLS 1.3 for the TCP and relay carriers (r7 area 7); TLS 1.2 and 1.3 for `https` in `connector::http` (#2702) | Apache-2.0, ISC, or MIT | 0.23.x stable | 2026-10-04 |
@@ -144,4 +144,4 @@ These never ship in the binary.
 | `github.com/zclconf/go-cty` (Go module, required by `hcl/v2`) | `oracles/conformance/hcl/main.go`, run by hand | The type of an HCL literal, to find a number | MIT | 1.19.0 | 2026-10-05 (#460) |
 | `core_affinity` | Benchmarks | Pin benchmark threads to cores on Linux | MIT or Apache-2.0 | 0.8.3 | 2026-10-04 |
 | `noq` | `bench/carrier` only | QUIC endpoint on Tokio for the carrier benchmark (#10). No product crate depends on it. Its `noq-proto` brings `aes-gcm` for Retry tags only; packets use aws-lc-rs | MIT or Apache-2.0 | 1.3.0 | 2026-10-04 |
-| `tokio-rustls` | `bench/carrier` only | TLS over TCP on Tokio for the carrier benchmark (#10) | MIT or Apache-2.0 | 0.26.6 | 2026-10-04 |
+| `tokio-rustls` | `connector`, `bench/carrier` | Drives the rustls session of an `https` stream over `env::net::Tcp` in `connector::http` (#2702), and TLS over TCP on Tokio for the carrier benchmark (#10) | MIT or Apache-2.0 | 0.26.6 | 2026-10-04 |

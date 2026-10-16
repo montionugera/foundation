@@ -110,7 +110,7 @@ exclude_re = [
   'crates/os/src/clock\.rs:.*replace > with >= in combine',
   # A `Tcp` has no write buffer, so a flush is ready at once. `Poll::Ready(Ok(()))` is
   # what the body returns.
-  'crates/connector/src/http/stream\.rs:.*<impl Write for Stream>::poll_flush',
+  'crates/connector/src/http/stream\.rs:.*<impl AsyncWrite for Adapter>::poll_flush',
   # An out connector has no device channel. `Ok(Channels::default())` is what the body
   # returns.
   'crates/connector-influx/src/lib\.rs:.*replace <impl kind::Kind for Kind>::check ->',
@@ -186,6 +186,4 @@ exclude_re = [
   'crates/node/src/status\.rs:.*replace < with (==|>)$',
   # A stub that panics until PR B2 of #432 fills it; B2 removes this line.
   'crates/connector-modbus/src/kind\.rs:.*replace <impl kind::Kind for Kind>::run ->',
-  # rustls writes TLS records only with `write_vectored`, so no caller calls `write`.
-  'crates/connector/src/http/stream\.rs:.*replace <impl io::Write for Io<.*>>::write ->',
 ]

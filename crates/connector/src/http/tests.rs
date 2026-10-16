@@ -784,11 +784,7 @@ fn stream_is_vectored_and_writes_a_whole_plain_write() {
         .shards()
         .start(shard("client"), move |_| async move {
             let tcp = net.connect(&config).await.expect("the server listens");
-            let mut stream = super::Stream {
-                tcp,
-                tls: None,
-                received: std::rc::Rc::default(),
-            };
+            let mut stream = super::Stream::plain(tcp, std::rc::Rc::default());
             assert!(
                 hyper::rt::Write::is_write_vectored(&stream),
                 "hyper copies each body into its buffer unless the stream is vectored"

@@ -231,15 +231,18 @@ impl Client {
         }
         let tcp = self.dial(origin, deadline).await?;
         let received = Rc::default();
-        let mut stream = Stream {
-            tcp,
-            tls: origin.secure.then(|| self.tls(origin)),
-            received: Rc::clone(&received),
+        let stream = if origin.secure {
+            let config = tls::client(&self.provider, &self.roots, self.time.now());
+            let name = name(&origin.host);
+            Stream::client(tcp, config, name, Rc::clone(&received))
+                .await
+                .map_err(|cause| Error::Tls {
+                    origin: origin.to_string(),
+                    cause: Failure(Cause::Io(cause)),
+                })?
+        } else {
+            Stream::plain(tcp, Rc::clone(&received))
         };
-        stream.handshake().await.map_err(|cause| Error::Tls {
-            origin: origin.to_string(),
-            cause: Failure(Cause::Io(cause)),
-        })?;
         let (sender, connection) = http1::handshake(stream).await?;
         // `hyper` gives a connection error to the request in flight, which reports it.
         // An idle connection that fails is closed, and `try_send_request` gives back
@@ -248,14 +251,6 @@ impl Client {
             let _reported: Result<(), hyper::Error> = connection.await;
         });
         Ok(Connection { sender, received })
-    }
-
-    /// A TLS session for `origin`, which checks the certificate at mesh time now.
-    fn tls(&self, origin: &Origin) -> Box<rustls::Connection> {
-        let config = tls::client(&self.provider, &self.roots, self.time.now());
-        let session = rustls::ClientConnection::new(config, name(&origin.host))
-            .expect("invariant: a client config with roots makes a session");
-        Box::new(session.into())
     }
 
     /// Connects to the first address of `origin` that takes the stream. Each

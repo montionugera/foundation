@@ -422,6 +422,8 @@ dependencies = [
  "secret",
  "sim",
  "spec",
+ "tokio",
+ "tokio-rustls",
  "types",
  "wire",
 ]
