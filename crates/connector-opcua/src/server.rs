@@ -8,7 +8,7 @@ use std::mem::ManuallyDrop;
 use std::panic::{self, AssertUnwindSafe};
 use std::pin::pin;
 use std::ptr::NonNull;
-use std::task::Poll;
+use std::task::{Poll, Waker};
 
 use crate::connection::Manager;
 use crate::ffi::{self, Status};
@@ -273,7 +273,9 @@ impl Server {
     /// Starts a server on `manager` with an empty host and room for `sessions`
     /// sessions, as [`Server::start`] does, and gives it to `add`. Then drives
     /// `manager` until `until` completes, closes the server as [`Server::close`] does,
-    /// drops `manager`, and gives the output of `until`.
+    /// drops `manager`, and gives the output of `until`. It does not drive `manager`
+    /// while `stopped` gives true, so the server then answers nothing. `stopped` gets
+    /// the waker of the task, to wake when it changes.
     ///
     /// # Panics
     ///
@@ -284,6 +286,7 @@ impl Server {
         manager: Manager,
         sessions: u16,
         add: impl FnOnce(&mut Self),
+        stopped: impl Fn(&Waker) -> bool,
         until: impl Future<Output = T>,
     ) -> T {
         let manager = ManuallyDrop::new(manager);
@@ -301,7 +304,9 @@ impl Server {
             let mut drive = pin!(manager.drive(|_| Poll::<()>::Pending));
             let mut until = pin!(until);
             poll_fn(|cx| {
-                assert!(drive.as_mut().poll(cx).is_pending(), "a drive never ends");
+                if !stopped(cx.waker()) {
+                    assert!(drive.as_mut().poll(cx).is_pending(), "a drive never ends");
+                }
                 until.as_mut().poll(cx)
             })
             .await

@@ -110,7 +110,8 @@ impl Server {
             server.set_per_read(PER_READ);
         };
         let body = caught(async { body(&this).await });
-        let value = crate::server::Server::serve(manager, SESSIONS, add, body).await;
+        let value =
+            crate::server::Server::serve(manager, SESSIONS, add, |_| false, body).await;
         value.unwrap_or_else(|panic| panic::resume_unwind(panic))
     }
 

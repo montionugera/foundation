@@ -26,6 +26,7 @@ use types::name::{Name, Selector};
 use types::quality::Quality;
 
 use super::*;
+use crate::client::GRACE;
 use crate::sim::{Served, Variables, serve};
 
 const A: &str = "ns=3;s=SpikeData";
@@ -1307,6 +1308,70 @@ fn closes_the_session_at_each_end_with_an_error() {
     let failed = "the read failed with BadTooManyOperations";
     assert_eq!(errors(&outcome.statuses), [(DEVICE, failed.to_owned())]);
     assert_eq!(last(&outcome.statuses, RESTARTS), 5);
+}
+
+/// Supervises [`PLC`] for `span`, then cancels it, and gives how long the supervise
+/// took after the cancel.
+async fn ends_after_the_cancel(scene: &Scene, span: Span) -> Span {
+    let start = scene.node.clock().now();
+    scene
+        .supervise(span)
+        .await
+        .expect("a cancel ends the supervise with Ok");
+    Span::from_nanos((scene.node.clock().now() - start).nanos() - span.nanos())
+}
+
+/// A cancel during the read of `MaxNodesPerRead`, on a server that stops after the
+/// activation, ends the run [`GRACE`] after it: the close waits that long for the
+/// answer to its `CloseSession`. The client sends the read 3.5 ms after the start, and
+/// the server gets it 250 us later.
+#[test]
+fn a_cancel_during_the_read_of_the_limit_on_a_stopped_server_ends_after_the_grace() {
+    let outcome = run(Setup::three(), |scene| async move {
+        let stop = Span::from_nanos(3_600_000);
+        scene.after(stop, |scene| async move { scene.variables.stop() });
+        assert_eq!(ends_after_the_cancel(&scene, ms(500)).await, GRACE);
+        Ok(())
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(errors(&outcome.statuses), []);
+}
+
+/// A cancel while the `CreateSession` is in flight, on a server that stops, ends the
+/// run [`GRACE`] after it. The client sends the request 2.5 ms after the start, and
+/// the server gets it 250 us later.
+#[test]
+fn a_cancel_while_the_create_session_is_in_flight_ends_after_the_grace() {
+    let outcome = run(Setup::three(), |scene| async move {
+        let stop = Span::from_nanos(2_600_000);
+        scene.after(stop, |scene| async move { scene.variables.stop() });
+        assert_eq!(ends_after_the_cancel(&scene, ms(500)).await, GRACE);
+        Ok(())
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(errors(&outcome.statuses), []);
+}
+
+/// A cancel during a read ends the run once the server answers its `CloseSession`,
+/// before [`GRACE`], so the server holds no session: each of five runs connects and
+/// reads, on a server with room for four sessions. In each run, the server stops
+/// before the read of 200 ms and works again 100 ms after the cancel at 250 ms.
+#[test]
+fn a_cancel_during_a_read_ends_the_run_once_the_server_closes_the_session() {
+    let outcome = run(Setup::three(), |scene| async move {
+        let mut ends = Vec::new();
+        for _ in 0..5 {
+            scene.after(ms(150), |scene| async move { scene.variables.stop() });
+            scene.after(ms(350), |scene| async move { scene.variables.resume() });
+            ends.push(ends_after_the_cancel(&scene, ms(250)).await);
+            scene.node.clock().sleep(ms(500)).await;
+        }
+        assert_eq!(ends, [Span::from_nanos(100_250_000); 5]);
+        Ok(())
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(errors(&outcome.statuses), []);
+    assert_eq!(served(&outcome, A).len(), 15);
 }
 
 /// Each refused group is written again after the latest stamp that the home gives,

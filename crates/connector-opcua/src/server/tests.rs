@@ -26,7 +26,7 @@ fn an_add_of_a_node_of_the_number_0_panics_and_frees_the_port() {
         .expect("the port is free");
         let zero: Node = "ns=1;i=0".parse().expect("a node");
         let add = |server: &mut Server| server.add_scalar(&zero, Value::F64(1.0));
-        let panic = caught(Server::serve(manager, 1, add, async {}))
+        let panic = caught(Server::serve(manager, 1, add, |_| false, async {}))
             .await
             .expect_err("the serve panics");
         assert_eq!(
@@ -69,7 +69,7 @@ fn a_source_is_a_variable_of_the_data_type_base_data_type() {
                 .add_source(&source, || (Value::I32(1), types::quality::Quality::GOOD));
             assert_eq!(server.data_type(&source), BASE_DATA_TYPE);
         };
-        Server::serve(manager, 1, add, async {}).await;
+        Server::serve(manager, 1, add, |_| false, async {}).await;
     })
     .expect("the run ends");
 }
