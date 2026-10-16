@@ -7101,3 +7101,73 @@ fn newest_gives_no_entry_that_is_not_durable() {
         assert_eq!(newest(&buffer, Path::Live, 1).await, Ok(second));
     });
 }
+
+/// Writes an entry with no samples of index 1 at seq 0, `between` records of index
+/// 2, and a second entry with no samples of index 1 at seq 0, each its own commit:
+/// no trim lands in the records after the first entry up to the second. Then 200
+/// records of index 2 fill a ring of 32 blocks, with trims. Gives the first of them
+/// that the ring still refuses after 100 commit spans, with its error.
+fn refused_past_a_range_where_no_trim_lands(between: u64) -> Option<(u64, Rejected)> {
+    let (mut sim, node) = create_node(0);
+    let own = node.clone();
+    let found = Arc::new(Mutex::new(None));
+    let given = Arc::clone(&found);
+    drop(on_node(&node, "stall", move |tasks| async move {
+        let config = Config {
+            layout: layout(32 * BLOCK, BODY_MAX),
+            trimmed: true,
+            ..node_config(&own, tasks, DIR)
+        };
+        let pool = Rc::clone(&config.pool);
+        let clock = own.clock();
+        let mut slots = Slots::new();
+        let buffer = Buffer::open(config, &mut slots).await.expect("opens");
+        let one = slots.index(key(1));
+        let two = slots.index(key(2));
+        let empty = || entry(1, one, Path::Live, 0, 0, None, Parts::default());
+        let data = |seq: u64| {
+            let parts = Parts::from(pool.alloc(100).expect("a block").freeze());
+            let last = i64::try_from(seq).expect("a small seq") + 1;
+            entry(2, two, Path::Live, seq, 1, Some(last), parts)
+        };
+        let mut batches = vec![empty()];
+        batches.extend((0..between).map(&data));
+        batches.push(empty());
+        for batch in batches {
+            buffer.append([batch]).expect("the ring has room");
+            buffer.committed().await.expect("commits");
+        }
+        for (n, seq) in (between..between + 200).enumerate() {
+            let mut spans = 0;
+            loop {
+                match buffer.append([data(seq)]) {
+                    Ok(()) => break,
+                    Err(Rejected::Full { .. }) if spans < 100 => {
+                        spans += 1;
+                        clock.sleep(COMMIT).await;
+                    }
+                    Err(error) => {
+                        let n = u64::try_from(n).expect("a small count");
+                        *given.lock().expect("no panic held the lock") =
+                            Some((n, error));
+                        return;
+                    }
+                }
+            }
+            buffer.committed().await.expect("commits");
+        }
+    }));
+    sim.run_for(Span::from_nanos(60_000_000_000))
+        .expect("the run goes on");
+    found.lock().expect("no panic held the lock").take()
+}
+
+/// A trim that would land in the records between two entries with no samples at
+/// one seq passes them, so the ring frees room for each later record.
+#[test]
+fn a_trim_passes_a_range_where_no_trim_lands_so_the_ring_frees_room() {
+    for between in 0..8 {
+        let refused = refused_past_a_range_where_no_trim_lands(between);
+        assert_eq!(refused, None, "with {between} records between the two");
+    }
+}

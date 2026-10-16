@@ -75,7 +75,7 @@ impl Ring {
             let record = Position::new(plan.next, self.chain).expect("aligned");
             self.ends.push(Ends { wrap, record });
         }
-        let tail = self.writer.trimmed(None, |offset| offset);
+        let tail = self.writer.trimmed(None, |_| None);
         self.writer.committed(self.ends.drain(..), tail);
     }
 }
@@ -148,7 +148,7 @@ impl Group {
             .expect("the ring has room");
         let sealed = group.close(&mut self.writer).seal(self.chain);
         self.chain = sealed.ends().record.chain();
-        let tail = self.writer.trimmed(None, |offset| offset);
+        let tail = self.writer.trimmed(None, |_| None);
         self.writer.committed([sealed.ends()], tail);
         self.spare = sealed.clear();
     }
@@ -188,7 +188,7 @@ impl Logs {
             headers,
             offset: BLOCK,
             commits: 0,
-            tails: Carried::default(),
+            tails: Carried::with_capacity(usize::try_from(indexes).expect("fits")),
         }
     }
 
@@ -209,8 +209,9 @@ impl Logs {
     }
 
     /// One commit as `commit(1)`, with an append of each entry, then a carry record
-    /// in the next record that holds the durable tail of each index, so the hide of
-    /// the next commit drops the run of each index.
+    /// in the next record, as a commit that carries: it takes the idle tails before
+    /// the record and makes the record their holder, so the hide of the next commit
+    /// drops the run of each index.
     pub fn carry(&mut self) {
         self.keep_up();
         for (slot, header) in &mut self.headers {
@@ -221,19 +222,10 @@ impl Logs {
             header.first += 1;
         }
         self.offset += BLOCK;
-        for (slot, header) in &self.headers {
-            let durable = self.inner.durable(*slot, header.path);
-            let tail = crate::carry::Tail {
-                index: header.index,
-                path: header.path,
-                seq: durable.seq,
-                given: 0,
-                stamp: durable.stamp,
-            };
-            self.inner
-                .carry(*slot, &tail, self.offset)
-                .expect("the durable tail");
-        }
+        self.tails.clear();
+        self.inner
+            .idle(self.offset, self.headers.len(), &mut self.tails);
+        self.inner.hold(&self.tails, self.offset);
         self.offset += BLOCK;
     }
 
@@ -297,7 +289,7 @@ impl Logs {
         for (tail, (_, header)) in tails.iter().zip(&self.headers) {
             assert_eq!(tail.index, header.index, "a tail of each index, in order");
         }
-        self.inner.carried(&self.tails, self.offset);
+        self.inner.hold(&self.tails, self.offset);
         self.offset += BLOCK;
     }
 
@@ -360,7 +352,7 @@ mod tests {
             for _ in 0..2 * 64 {
                 ring.commit(entries);
             }
-            for commit in 0..10 * 64 {
+            for commit in 0..11 * 64 {
                 let tail = ring.writer.tail();
                 ring.commit(entries);
                 assert!(
