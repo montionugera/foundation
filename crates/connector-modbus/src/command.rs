@@ -7,8 +7,9 @@ use crate::pdu::{Request, Table};
 use crate::poll::{self, Order, Read};
 
 /// Where the values of a command channel go in a device: a coil or the holding
-/// registers from an address, and the type of the values.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// registers from an address, and the type of the values. Two writes are equal when
+/// they write the same place and type in the same order.
+#[derive(Clone, Debug)]
 pub struct Write {
     read: Read,
     order: Order,
@@ -54,6 +55,14 @@ impl Write {
         &self.request
     }
 }
+
+impl PartialEq for Write {
+    fn eq(&self, other: &Self) -> bool {
+        (self.read, self.order) == (other.read, other.order)
+    }
+}
+
+impl Eq for Write {}
 
 #[cfg(test)]
 mod tests;

@@ -153,6 +153,30 @@ mod request {
     }
 }
 
+mod eq {
+    use super::*;
+
+    #[test]
+    fn a_sent_value_does_not_change_the_equality_of_a_write() {
+        let fresh = write(Table::HoldingRegisters, 10, Scalar::U16, Order::Big);
+        let mut used = fresh.clone();
+        used.request(Value::U16(7));
+        assert_eq!(used, fresh, "the same place, table, type, and order");
+    }
+
+    #[test]
+    fn another_place_type_or_order_is_not_equal() {
+        let one = write(Table::HoldingRegisters, 10, Scalar::U32, Order::Big);
+        for other in [
+            write(Table::HoldingRegisters, 11, Scalar::U32, Order::Big),
+            write(Table::HoldingRegisters, 10, Scalar::I32, Order::Big),
+            write(Table::HoldingRegisters, 10, Scalar::U32, Order::Little),
+        ] {
+            assert_ne!(one, other);
+        }
+    }
+}
+
 mod new {
     use super::*;
 
