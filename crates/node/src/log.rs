@@ -29,7 +29,7 @@ pub struct Log {
     /// drops its line, and one that panics ends the log. A line drops when 1024 lines
     /// wait, when it does not fit in 1 MiB with the lines that wait, or after a drop
     /// until the thread `log` takes the lines that wait. The thread writes at most one
-    /// batch beside the lines that wait, so the log holds at most 2048 lines and 2 MiB.
+    /// batch beside the lines that wait, so the log holds at most 2048 lines and 2 MiB, beside the panic lines.
     /// WARN `dropped` with the field `lines`, the count of these lines, comes after the
     /// lines before them.
     pub writer: Box<dyn io::Write + Send>,

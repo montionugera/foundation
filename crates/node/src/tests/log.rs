@@ -642,7 +642,7 @@ fn an_event_never_waits_on_a_stuck_writer() {
     assert_eq!(unstamped(&lines.read()), written);
 }
 
-/// The name of the test whose child runs [`panics`].
+/// A wait ends at once when the writer panics, well before its bound.
 #[test]
 #[expect(clippy::disallowed_methods, reason = "the test waits for an OS thread")]
 fn a_wait_ends_when_the_writer_panics() {
@@ -670,6 +670,7 @@ fn a_wait_ends_when_the_writer_panics() {
     drop(hold);
 }
 
+/// The name of the test whose child runs [`panics`].
 const PANICS: &str = "tests::log::a_panic_writes_the_queued_lines_then_the_panic";
 
 /// Runs [`panics`] in a child process with `CHILD` set to `case`, and gives its

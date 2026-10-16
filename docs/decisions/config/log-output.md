@@ -68,10 +68,7 @@
   to 739 ns and 2 to 6 allocations before the write, and at `trace` a span at 118 ns and
   2 allocations (laptop, M3 Max, load 9, 3 passes). The help of `--log-level` says so.
   #2764 moves each write to the thread `log`, so an event holds the lock of the queue
-  only for its push. That adds about 0.07 to 0.09 µs to each line, about 14 µs to each
-  start of the thread, and at most 48 KiB idle (AWS c7i.metal-24xl, Xeon Platinum 8488C,
-  quiet host, 5 runs of each in turns, at `07933ecc7`,
-  https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6221594837), under P1.
+  only for its push. That adds about 0.4 µs to a line in a burst, about 1 µs to a line that wakes the thread, about 23 µs to each start of the thread, and about 90 KiB to an idle log (laptop, M3 Max, load 12 to 17, 6 passes of each in turns, at `3b29bcf77`, https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6223376242), under P1. With the thread on the CPU of the event, a line adds 0.07 to 0.09 µs and a start 14 µs (AWS c7i.metal-24xl, quiet host, https://github.com/synnaxlabs/foundation/pull/2812#issuecomment-6221594837). #2913 measures it on Linux with the thread on its own CPU.
   #2815 carries the allocations and the span fields that `Line` never prints. #2807
   carries the WARN of `noq-proto` for each Initial packet with an invalid retry token.
   By `laptop.architect-2` (2026-10-16T01:49:38Z,
@@ -92,7 +89,7 @@
   came before the first of them. At λ lines a second, 1024 lines hold a stall of the
   writer of 1024/λ s: 10 ms at 100,000 lines a second, a rate only `debug` and `trace`
   reach (item 8). The thread writes at most one batch beside the lines that wait, so the
-  log holds at most 2048 lines and 2 MiB. The count line reports each loss. The depth of
+  log holds at most 2048 lines and 2 MiB, beside the panic lines. The count line reports each loss. The depth of
   the queue gets a gauge when the node has metrics. A write that fails drops its line. A
   write that panics ends the thread `log`, and no later line reaches the writer; a
   release build, with `panic = "abort"`, ends there. The thread starts with the node,
