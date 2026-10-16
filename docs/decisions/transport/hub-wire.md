@@ -311,3 +311,14 @@
   https://github.com/synnaxlabs/foundation/issues/1749#issuecomment-6206217799; lost:
   a hold of the program reader on #2725 and #2790, and a public variant of `program`
   that no case gives).
+  Amended (#2790): `Behind` is removed: `wire::hub::Reply::Behind`, `FromHome::Behind`,
+  `Step::Behind`, and `Error::Ended`, with `delivery::Next::Behind`,
+  `home::reader::Next::Behind`, and `hub::reader::Ended::Behind`. Reply kind 3 stays
+  retired: where a reply is due, a message of kind 3 gives `Error::Kind { kind: 3 }`,
+  so a reader stops the stream as `MALFORMED` and a program's reader gives
+  `Error::Reply` of it. The home never finishes a reader session, so
+  `wire::hub::Reader::finished` gives the error of each finish, `Unfinished` inside a
+  body and `Finished` at each other point, in place of `Reader::end`
+  (`laptop.architect`,
+  https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6224535856; plan:
+  https://github.com/synnaxlabs/foundation/issues/2790#issuecomment-6224525816).
