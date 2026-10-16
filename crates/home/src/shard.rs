@@ -6101,7 +6101,8 @@ mod tests {
                     let before = async |test: &Test, shard: &mut Shard, w| {
                         acked(test, shard, w).await;
                         let deadline = shard.deadline().expect("a tick");
-                        assert!(deadline <= test.reader.now().monotonic + INTERVAL);
+                        let now = test.reader.now().monotonic;
+                        assert!(now < deadline && deadline <= now + INTERVAL);
                         tick(test, shard).await;
                     };
                     restart(193, before, async |_, shard: &mut Shard| {
