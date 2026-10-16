@@ -184,16 +184,25 @@ unsafe impl block::Memory for Memory {
         if pages.is_empty() {
             return;
         }
+        let at = self.at(pages.start);
         let len = pages.len() * self.page;
         // On Linux the pages read zero after it. Huge pages stay off: a change of that
-        // advice on part of the reserve splits its mapping.
-        #[cfg(target_os = "linux")]
-        let advice = mm::Advice::LinuxDontNeed;
-        #[cfg(not(target_os = "linux"))]
-        let advice = mm::Advice::DontNeed;
+        // advice on part of the reserve splits its mapping. `Advice::DontNeed` is the
+        // POSIX advice, which glibc makes a no-op.
         // SAFETY: the pages are in this mapping, and the `block::Memory` contract lets
         // a discard change the bytes in its range.
-        if let Err(errno) = unsafe { mm::madvise(self.at(pages.start), len, advice) } {
+        #[cfg(target_os = "linux")]
+        let advised = unsafe { mm::madvise(at, len, mm::Advice::LinuxDontNeed) }
+            .map_err(io::Error::from);
+        // The OS takes the pages when it needs memory, so the footprint of the task
+        // can count them until then. Rustix has only the POSIX advice on macOS.
+        // SAFETY: as above.
+        #[cfg(target_os = "macos")]
+        let advised = match unsafe { libc::madvise(at, len, libc::MADV_FREE) } {
+            0 => Ok(()),
+            _ => Err(io::Error::last_os_error()),
+        };
+        if let Err(errno) = advised {
             panic!("discard of {len} bytes failed: {errno}");
         }
     }
@@ -359,6 +368,41 @@ mod tests {
             .count()
     }
 
+    /// How many regions of the task hold a byte of `reserve`.
+    #[cfg(target_os = "macos")]
+    fn mappings(reserve: &Range<usize>) -> usize {
+        use mach2::kern_return::KERN_SUCCESS;
+        use mach2::vm_region::{VM_REGION_BASIC_INFO_64, vm_region_basic_info_64};
+
+        let mut count = 0;
+        let mut address = reserve.start as u64;
+        while address < reserve.end as u64 {
+            let mut size = 0;
+            let mut info = vm_region_basic_info_64::default();
+            let mut len = vm_region_basic_info_64::count();
+            let mut object = 0;
+            // SAFETY: `info` holds `len` integers, the most the call writes.
+            let code = unsafe {
+                mach2::vm::mach_vm_region(
+                    mach2::traps::mach_task_self(),
+                    &raw mut address,
+                    &raw mut size,
+                    VM_REGION_BASIC_INFO_64,
+                    (&raw mut info).cast(),
+                    &raw mut len,
+                    &raw mut object,
+                )
+            };
+            assert_eq!(code, KERN_SUCCESS, "mach_vm_region failed");
+            if address >= reserve.end as u64 {
+                break;
+            }
+            count += 1;
+            address += size;
+        }
+        count
+    }
+
     /// The bytes of `range` of `memory`.
     ///
     /// # Safety
@@ -472,6 +516,8 @@ mod tests {
         // SAFETY: the range is committed.
         unsafe { bytes(&mut memory, 0..4 * page) }.fill(1);
         memory.discard(page / 2, 3 * page);
+        // On macOS the pages leave when the OS needs memory.
+        #[cfg(target_os = "linux")]
         assert_eq!(resident(memory.base(), 0..4), [true, false, false, true]);
         assert_eq!(readable(&memory, 0..4), [true; 4]);
         for kept in [0..page, 3 * page..4 * page] {
@@ -488,7 +534,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
     fn a_discard_between_committed_pages_splits_no_mapping() {
         let page = page_size();
         let memory = Memory::new(8 * page).unwrap();
@@ -548,6 +593,38 @@ mod tests {
         pool.purge();
         assert_eq!(pool.purge(), block::footprint(1 << 19));
         assert_eq!(resident(base, pages.clone()), vec![false; pages.len()]);
+    }
+
+    #[test]
+    fn a_pool_serves_a_free_block_that_gave_its_pages_again() {
+        const LARGE: usize = 40_000;
+        let budget = 2 * block::footprint(LARGE);
+        let config = Config::new(u64::try_from(budget).unwrap()).unwrap();
+        let memory = Memory::new(config.reservation()).unwrap();
+        let base = memory.base();
+        let pool = Pool::new(config, memory);
+        let mut held = pool.alloc(LARGE).unwrap();
+        held.fill(1);
+        let mut free = pool.alloc(LARGE).unwrap();
+        free.fill(2);
+        let at = free.as_ptr();
+        let start = at.addr() - base.as_ptr().addr();
+        let pages = start.div_ceil(page_size())..(start + free.len()) / page_size();
+        drop(free);
+        let mut small = pool.alloc(8000).expect("the free block gives its pages");
+        small.fill(3);
+        // On macOS the pages leave when the OS needs memory.
+        #[cfg(target_os = "linux")]
+        assert_eq!(resident(base, pages.clone()), vec![false; pages.len()]);
+        assert!(!pages.is_empty(), "the free block holds whole pages");
+        assert!(held.iter().all(|&byte| byte == 1));
+        drop(small);
+        let mut cold = pool.alloc(LARGE).expect("the idle small size gives room");
+        assert_eq!(cold.as_ptr(), at, "the block that gave its pages");
+        cold.fill(4);
+        assert!(cold.iter().all(|&byte| byte == 4));
+        assert!(held.iter().all(|&byte| byte == 1));
+        assert_eq!(pool.committed(), budget);
     }
 
     #[test]
