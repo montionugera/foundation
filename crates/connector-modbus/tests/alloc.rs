@@ -1,4 +1,5 @@
-//! The decode of the values in a reply allocates nothing, for each table and type.
+//! The decode of the values in a reply allocates nothing, for each table, each width
+//! of a value, and each order.
 //! The count covers each thread, so this binary has no test harness.
 
 #![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
