@@ -1,22 +1,22 @@
 - **BROWSE (C1, #2705)** Three operations: `discover` finds devices, `browse` looks
-  inside one and changes nothing, and `import` writes the config of chosen tags into
-  the file and only adds. One engine serves every front end: the CLI with `--json` and
-  the MCP tools, both from the operation table, each designed first for an agent. No
-  TUI in C1; a front end holds no device state and no field of a kind, so a TUI later
-  needs no engine change.
-  Every kind gives one tree shape, `connector::browse`: an `Entry` has a `Path`, a
-  `tag` (the address in the device), and a `Shape`: `Folder`, `Point(Facts)`, or
-  `Unreadable(reason)` for a point that the kind cannot read, such as an array.
-  `Facts` holds the sample type, the unit, and read or write, each `None` when the
-  source cannot know it; `import` writes such a fact as `fill("<what>")`, which `plan`
-  refuses. `browse` has two forms: one level, paged by a `Cursor` of the kind, or each
-  entry that is not a folder whose path from the start matches a `Pattern` (`/`
-  splits names, `**` alone matches any number of names, `*` any text in one name, and
-  `\` takes the next character as it is). It is not a `types::name` selector, where
-  `*` is one whole name: a device's names hold any character, a glob looks inside one
-  name, and the walk asks at each folder whether a longer path can match. Values are
-  read only when the `Query` asks, in one call for the points that it gives. A new
-  filter is a new field of `Query`.
+  inside one and changes nothing, and `import` writes the config of chosen tags into the
+  file and only adds. One engine serves every front end: the CLI with `--json` and the
+  MCP tools, both from the operation table, each designed first for an agent. No TUI in
+  C1; a front end holds no device state and no field of a kind, so a TUI later needs no
+  engine change.
+  Every kind gives one tree shape, `connector::browse`: an `Entry` has a `Path`, a `tag`
+  (the address in the device; two entries with the same tag are one entry of the
+  device), and a `Shape`: `Folder`, `Point(Facts)`, or `Unreadable(reason)` for a point
+  that the kind cannot read, such as an array. `Facts` holds the sample type, the unit,
+  and read or write, each `None` when the source cannot know it; `import` writes such a
+  fact as `fill("<what>")`, which `plan` refuses. `browse` has two forms: one level,
+  paged by a `Cursor` of the kind, or each entry that is not a folder whose path from
+  the start matches a `Pattern` (`/` splits names, `**` alone matches any number of
+  names, `*` any text in one name, and `\` takes the next character as it is). It is not
+  a `types::name` selector, where `*` is one whole name: a device's names hold any
+  character, a glob looks inside one name, and the walk asks at each folder whether a
+  longer path can match. Values are read only when the `Query` asks, in one call for the
+  points that it gives. A new filter is a new field of `Query`.
   The walk lives once in `connector` (`browse::walk`). It finds the start from the root,
   one name at a time; a name that is not there or not a folder gives
   `connector.no-folder`. A pattern walks depth first in device order, browses no folder
@@ -57,29 +57,30 @@
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198047489);
   decision 6, 17:33 UTC, "Ok this is good"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198173531). The
-  shape `Unreadable`, the limit, and the PR list: `laptop.architect-2`, 2026-10-15
-  17:32 UTC
-  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198270136).
+  shape `Unreadable`, the limit, and the PR list: `laptop.architect-2`, 2026-10-15 17:32
+  UTC (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198270136).
   `browse::Device`, `level` by entry, the page bound, `sample::Value`, the name
   `Malformed`, and "more than `<limit>`" in place of the count of decision 6:
   `laptop.architect-2`, 2026-10-16 04:00 UTC, on the plan of `box1.builder-3`
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6207771367). One
   session for the whole browse: the person, through `laptop.monitor`, 2026-10-16
   03:54:58 UTC, "As long as thats the industry standard browsing practice I approve"
-  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6207717907). It
-  is: OPC UA Part 4 requires BrowseNext on the session of the Browse that it continues.
-  A page with no entries counts as one visit, not a panic: `laptop.architect-2`,
-  2026-10-16
-  (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208174481).
-  `DEPTH`, the shared names, and the empty name: `laptop.architect-2`, 2026-10-16
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6207717907). It is:
+  OPC UA Part 4 requires BrowseNext on the session of the Browse that it continues. A
+  page with no entries counts as one visit, not a panic: `laptop.architect-2`,
+  2026-10-16 04:36 UTC
+  (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208174481). `DEPTH`,
+  the shared names, and the empty name: `laptop.architect-2`, 2026-10-16 04:42 UTC
   (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208244581). An
   error, not a panic, for a break of `Device`: the person, through `laptop.monitor`,
   2026-10-16 04:54:26 UTC, "Yes", on "Should a browse bug return an error instead of
   crashing the node?"
   (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208381924). The
   shape of the error: `laptop.architect-2`, 2026-10-16 04:56 UTC
-  (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208402982).
-  `VISITS`: the walk's own time, median of 100 on box1 in release, is 1.4 ms over a
-  flat tree of 9 999 points and 4.7 ms over a chain of 63 folders of 150 points each;
-  PR 5 of the PR list measures the cost of the OPC UA sim server. The two triggers
-  come from the ruling of 2026-10-16 04:00 UTC.
+  (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208402982); the
+  private `Broken` and a `Path::child` that cannot fail: `laptop.architect-2`, 04:57 UTC
+  (https://github.com/synnaxlabs/foundation/pull/2823#issuecomment-6208408668).
+  `VISITS`: the walk's own time, median of 100 on box1 in release, is 1.4 ms over a flat
+  tree of 9 999 points and 4.7 ms over a chain of 63 folders of 150 points each; PR 5 of
+  the PR list measures the cost of the OPC UA sim server. The two triggers come from the
+  ruling of 2026-10-16 04:00 UTC.

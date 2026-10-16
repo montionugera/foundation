@@ -699,7 +699,7 @@ pub struct Entry {
     /// Where it is.
     pub path: Path,
     /// Its address in the device, in the form of the kind: an OPC UA node ID, a
-    /// register.
+    /// register. Two entries with the same tag are one entry of the device.
     pub tag: String,
     /// What it is.
     pub shape: Shape,
@@ -820,8 +820,8 @@ pub enum End {
     Next(Cursor),
     /// More than [`LIMIT`] points match.
     Limit,
-    /// It took [`VISITS`] entries from the device before it found its start or saw
-    /// each entry under it, or met a folder deeper than [`DEPTH`] that a match can be
+    /// It looked at [`VISITS`] entries before it found its start or saw each entry
+    /// under it, or met a folder deeper than [`DEPTH`] that a match can be
     /// under, so more may match.
     Budget,
 }
