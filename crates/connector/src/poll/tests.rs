@@ -104,7 +104,7 @@ impl Kind for Polls {
                 return Ok(());
             }
             let ((), stamp) = writer.request(std::future::ready(())).await;
-            writer.write(values, stamp)?;
+            writer.write(values.iter().copied(), stamp)?;
         }
         ctx.cancel().wait().await;
         Ok(())
@@ -647,5 +647,14 @@ fn panics_with_the_channel_whose_value_is_left_out() {
 fn panics_at_values_of_another_length() {
     let mut values = Vec::from(values(1.5, 7, -3, [true; 3]));
     values.push(Some(U16(8)));
+    run_of(CHANNELS, vec![values], (0, 0), |_, _, _| async {});
+}
+
+/// One value less than the channels.
+#[test]
+#[should_panic(expected = "a value of each channel")]
+fn panics_at_fewer_values_than_channels() {
+    let mut values = Vec::from(values(1.5, 7, -3, [true; 3]));
+    values.pop();
     run_of(CHANNELS, vec![values], (0, 0), |_, _, _| async {});
 }

@@ -37,6 +37,8 @@ pub struct Writer {
     all: Shape,
     /// The sample of each entry of the key set.
     fills: Vec<Fill>,
+    /// The value of each channel in the frame of the last write.
+    slots: Vec<Option<Value>>,
     /// The frame of the last write that left out a value.
     kept: Kept,
     /// The series of the groups that a frame writes again.
@@ -153,6 +155,7 @@ impl Writer {
         Ok(Self {
             again: Vec::with_capacity(all.series.len()),
             backwards: Vec::with_capacity(all.samples.len()),
+            slots: vec![None; writer.entries().len()],
             kept: Kept::new(&all, writer.entries().len()),
             all,
             fills,
@@ -182,8 +185,9 @@ impl Writer {
         self.stamps.request(&self.hub, request).await
     }
 
-    /// Writes one frame at `stamp` with the value of each channel, in order, and leaves
-    /// out each `None`. Writes no frame when it keeps none. A group that the home
+    /// Writes one frame at `stamp` with the value of each channel that `values` gives,
+    /// in order, and leaves out each `None`. It takes each value once, before the
+    /// write. Writes no frame when it keeps none. A group that the home
     /// refuses as `Backwards` is written again once, after the stamp that the refusal
     /// gives. A frame for which the pool has no block now loses its samples.
     ///
@@ -194,30 +198,39 @@ impl Writer {
     ///
     /// # Panics
     ///
-    /// When `values` has another length than the channels, a value is not of the
-    /// sample type of its channel (each value of a channel of no fixed width), or the
-    /// home refuses a group as `Backwards` again.
+    /// When `values` gives more or fewer values than the channels, a value is not of
+    /// the sample type of its channel (each value of a channel of no fixed width), or
+    /// the home refuses a group as `Backwards` again.
     pub fn write(
         &mut self,
-        values: &[Option<Value>],
+        values: impl IntoIterator<Item = Option<Value>>,
         stamp: Stamp,
     ) -> Result<(), Error> {
+        let mut slots = self.slots.iter_mut();
+        let put = |value| *slots.next().expect("a value of each channel") = value;
+        // Not a loop of `next`: rustc keeps the `next` of a kind's `map` out of line,
+        // a call per value (6 ns per sample on box1).
+        values.into_iter().for_each(put);
+        assert!(slots.next().is_none(), "a value of each channel");
+        self.send(stamp)
+    }
+
+    /// Writes the frame of `slots` at `stamp`, as [`Writer::write`]. Apart from
+    /// `write`, so that only the fill is built for each iterator.
+    fn send(&mut self, stamp: Stamp) -> Result<(), Error> {
         let Self {
             hub: writer,
             stamps,
             all,
             fills,
+            slots,
             kept,
             again,
             backwards,
             applied,
             lost,
         } = self;
-        assert_eq!(
-            values.len(),
-            writer.entries().len(),
-            "a value of each channel"
-        );
+        let values = &*slots;
         let shape = if values.iter().all(Option::is_some) {
             kept.channels.clear();
             all.borrow()

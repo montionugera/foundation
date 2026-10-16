@@ -213,8 +213,6 @@ struct Frames<'a> {
     /// The sample type of the channel of each read, in order.
     types: Vec<Scalar>,
     left: Left,
-    /// The value of each read that a frame keeps.
-    kept: Vec<Option<sample::Value>>,
 }
 
 /// The counts of the values that a frame leaves out.
@@ -251,7 +249,6 @@ impl<'a> Frames<'a> {
         Ok(Self {
             ctx,
             writer,
-            kept: vec![None; types.len()],
             types,
             left: Left {
                 bad: ctx.count("bad"),
@@ -279,13 +276,11 @@ impl<'a> Frames<'a> {
         values: &[Result<Value, Fault>],
         stamp: Stamp,
     ) -> Result<(), Error> {
-        let invariant = "invariant: a frame has one value for each read";
-        assert_eq!(values.len(), self.kept.len(), "{invariant}");
         let (mut bad, mut uncertain, mut mistyped) = (0, 0, 0);
         let mut first = None;
-        let reads = values.iter().zip(&self.types).zip(&mut self.kept);
-        for (at, ((value, &sample), kept)) in reads.enumerate() {
-            *kept = match Why::of(value, sample) {
+        let kept = values.iter().enumerate().map(|(at, value)| {
+            let sample = self.types[at];
+            match Why::of(value, sample) {
                 Ok(value) => Some(value),
                 Err(Why::Bad) => {
                     bad += 1;
@@ -300,11 +295,12 @@ impl<'a> Frames<'a> {
                     first = first.or(Some((at, value, sample)));
                     None
                 }
-            };
-        }
+            }
+        });
+        let written = self.writer.write(kept, stamp);
         self.left.add(bad, uncertain, mistyped);
         self.left.note(self.ctx, first);
-        self.writer.write(&self.kept, stamp)
+        written
     }
 }
 
