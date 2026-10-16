@@ -42,7 +42,7 @@ pub struct Credentials {
     /// The subject that the program acts as.
     pub subject: Name,
     /// A private key that the spec lists for `subject`.
-    pub key: PrivateKey,
+    pub private_key: PrivateKey,
 }
 
 /// A program's session with one node. It can move to and be shared between threads:
@@ -207,14 +207,14 @@ async fn connect(
         node,
         public_key,
         subject,
-        key,
+        private_key,
     } = credentials;
     let config = program::Config {
         via: node,
         node: public_key,
         addresses: vec![transport::Address::Udp(address)],
         subject,
-        key,
+        key: private_key,
         clock,
         entropy,
         tasks,

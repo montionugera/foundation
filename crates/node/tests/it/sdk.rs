@@ -59,7 +59,7 @@ fn admin(rig: &Rig) -> (SocketAddr, Credentials) {
         node: types::node::Key::from_u128(node),
         public_key: types::ed25519::PublicKey::new(public_key).unwrap(),
         subject: spec::founding::admin(),
-        key: PrivateKey(key[18..50].try_into().unwrap()),
+        private_key: PrivateKey(key[18..50].try_into().unwrap()),
     };
     (SocketAddr::new(ip, port), credentials)
 }
@@ -129,7 +129,7 @@ fn a_client_of_an_address_that_no_node_reads_is_unreachable() {
         node: types::node::Key::from_u128(1),
         public_key: peer,
         subject: spec::founding::admin(),
-        key: PrivateKey([8; 32]),
+        private_key: PrivateKey([8; 32]),
     };
     let error = Client::connect(address, credentials).unwrap_err();
     let unreachable = transport::Error::Unreachable {
