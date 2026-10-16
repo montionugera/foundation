@@ -30,7 +30,7 @@ pub(super) struct Senders {
 
 // Why a message did not go.
 enum Failure {
-    // The pool had no block for the message, or for the header of its stream.
+    // The pool had no room for the message, or for the header of its stream.
     Pool,
     // The group has no record of the member, so no address to dial.
     Unknown,
@@ -38,7 +38,13 @@ enum Failure {
 }
 
 impl From<block::Error> for Failure {
-    fn from(_: block::Error) -> Self {
+    fn from(error: block::Error) -> Self {
+        // `Mesh::open` refuses a pool whose largest block is below `BYTES_MIN`, and
+        // `raft` sends no larger message.
+        assert!(
+            !matches!(error, block::Error::TooLarge { .. }),
+            "invariant: each message of the mesh fits a block of its pool: {error}"
+        );
         Self::Pool
     }
 }
@@ -84,6 +90,8 @@ impl Senders {
             match failure {
                 Failure::Pool | Failure::Unknown => {}
                 Failure::Transport(error) => match error {
+                    // Only a peer that skipped the check of `Mesh::open` takes less
+                    // than `BYTES_MIN`.
                     transport::Error::TooLarge { .. } => {}
                     // Only a voter of this node's own configuration tells it that
                     // it is out.
