@@ -108,17 +108,19 @@ async fn run(ctx: Context<Config>) -> Result<(), Error> {
     };
     let rng = &mut ctx.rng();
     let net = ctx.net().clone();
-    let mut client = Client::new(time, net, rng);
-    let result = match ctx.cancel().race(client.connect(&config.address)).await {
-        None => Ok(()),
-        Some(Err(status)) => Err(device(Failure::Connect {
+    let cancelled = ctx.cancel().wait();
+    match Client::connect(time, net, rng, &config.address, cancelled).await {
+        Ok(None) => Ok(()),
+        Err(status) => Err(device(Failure::Connect {
             address: config.address.to_string_lossy().into_owned(),
             status,
         })),
-        Some(Ok(())) => read(&ctx, &mut client, &mut frames).await,
-    };
-    client.close().await;
-    result
+        Ok(Some(mut client)) => {
+            let result = read(&ctx, &mut client, &mut frames).await;
+            client.close().await;
+            result
+        }
+    }
 }
 
 /// Reads each node once per tick until the cancel, and writes the frame of each tick.

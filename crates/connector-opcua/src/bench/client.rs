@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 use std::ffi::CString;
+use std::future;
 use std::net::{IpAddr, SocketAddr};
 use std::panic;
 
@@ -110,8 +111,7 @@ impl Server {
             server.set_per_read(PER_READ);
         };
         let body = caught(async { body(&this).await });
-        let value =
-            crate::server::Server::serve(manager, SESSIONS, add, |_| false, body).await;
+        let value = crate::server::Server::serve(manager, SESSIONS, add, body).await;
         value.unwrap_or_else(|panic| panic::resume_unwind(panic))
     }
 
@@ -132,10 +132,17 @@ impl Server {
         let rng = &mut Rng::from_seed(self.rng.borrow_mut().next_u64());
         let time = event::Time::monotonic(Clock::clone(&self.clock));
         let net = Net::clone(&self.net);
-        let mut session = crate::client::Client::new(time, net, rng);
-        if let Err(status) = session.connect(&self.url).await {
-            panic!("a connect failed: {status:?}");
-        }
+        let connect = crate::client::Client::connect(
+            time,
+            net,
+            rng,
+            &self.url,
+            future::pending(),
+        );
+        let session = match connect.await {
+            Ok(session) => session.expect("a pending wait never ends"),
+            Err(status) => panic!("a connect failed: {status:?}"),
+        };
         let nodes = |node: Node| {
             let nodes: Vec<Node> = std::iter::repeat_n(node, count).collect();
             session.nodes(&nodes).expect("one copy fits one message")

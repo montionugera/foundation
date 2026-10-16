@@ -4,6 +4,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_void};
+use std::future;
 use std::mem;
 use std::num::NonZeroUsize;
 use std::pin::pin;
@@ -115,14 +116,64 @@ struct Slots {
 }
 
 impl Client {
-    /// Makes a client on its own manager over `time`, `net`, and `rng`, with no
-    /// connection.
+    /// Makes a client on its own manager over `time`, `net`, and `rng`, and connects
+    /// it to the server at the endpoint `url` with the security mode `None` and an
+    /// anonymous session. It gives the client once the session is active and it has
+    /// read the `MaxNodesPerRead` of the server, or `None` when `until` ends first.
+    /// After an error, or when `until` ends first, it closes the session that the
+    /// connect made, as [`Client::close`] does, so it ends within [`GRACE`] of either.
+    /// A drop of the future drops the client.
+    ///
+    /// # Errors
+    ///
+    /// `BadTimeout` when the session is not active after the request timeout of the
+    /// client (5 s), `BadConnectionClosed` when the server closes or resets an open
+    /// stream before the session is active, with no new dial after that close, else the
+    /// status of open62541 when it refuses `url` or the connect fails, else the error
+    /// of [`Client::read`] when the read of `MaxNodesPerRead` fails.
     ///
     /// # Aborts
     ///
     /// When open62541 cannot allocate the loop, the connection manager, or the
     /// client, as [`alloc::exhausted`] says.
-    pub(crate) fn new(time: Time, net: Net, rng: &mut Rng) -> Self {
+    pub(crate) async fn connect(
+        time: Time,
+        net: Net,
+        rng: &mut Rng,
+        url: &CStr,
+        until: impl Future<Output = ()>,
+    ) -> Result<Option<Self>, Status> {
+        let mut client = Self::new(time, net, rng);
+        let opened = {
+            let (mut until, mut open) = (pin!(until), pin!(client.open(url)));
+            future::poll_fn(|cx| {
+                if until.as_mut().poll(cx).is_ready() {
+                    return Poll::Ready(None);
+                }
+                open.as_mut().poll(cx).map(Some)
+            })
+            .await
+        };
+        match opened {
+            Some(Ok(())) => Ok(Some(client)),
+            Some(Err(status)) => {
+                client.close().await;
+                Err(status)
+            }
+            None => {
+                client.close().await;
+                Ok(None)
+            }
+        }
+    }
+
+    /// Makes a client on its own manager over `time`, `net`, and `rng`, with no
+    /// connection.
+    ///
+    /// # Aborts
+    ///
+    /// As [`Client::connect`].
+    fn new(time: Time, net: Net, rng: &mut Rng) -> Self {
         let clock = Clock::clone(&time.clock);
         let connections = Manager::new(time, net, rng);
         // SAFETY: the loop outlives the client, which `drop` deletes first.
@@ -162,29 +213,10 @@ impl Client {
         }
     }
 
-    /// Connects the client to the server at the endpoint `url` with the security mode
-    /// `None` and an anonymous session, and ends once the session is active and it has
-    /// read the `MaxNodesPerRead` of the server. The client holds the state of the
-    /// connect, so the future can drop at any point. After an error or a drop,
-    /// [`Client::close`] closes the session that the connect made, within [`GRACE`].
-    ///
-    /// # Errors
-    ///
-    /// `BadTimeout` when the session is not active after the request timeout of the
-    /// client (5 s), `BadConnectionClosed` when the server closes or resets an open
-    /// stream before the session is active, with no new dial after that close, else the
-    /// status of open62541 when it refuses `url` or the connect fails, else the error
-    /// of [`Client::read`] when the read of `MaxNodesPerRead` fails.
-    ///
-    /// # Panics
-    ///
-    /// If the client has a channel.
-    pub(crate) async fn connect(&mut self, url: &CStr) -> Result<(), Status> {
-        assert_eq!(
-            self.state().channel,
-            ffi::Channel::CLOSED,
-            "a client connects with no channel"
-        );
+    /// Connects the new client to `url`, as [`Client::connect`] does. The client holds
+    /// the state of the connect, so the future can drop at any point, and
+    /// [`Client::close`] then closes the session that it made.
+    async fn open(&mut self, url: &CStr) -> Result<(), Status> {
         let deadline = self.clock.now() + self.timeout;
         // SAFETY: the client lives, and copies the URL. The drive reads the status that
         // it gives from the state of the client.

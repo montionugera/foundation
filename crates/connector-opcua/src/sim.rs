@@ -5,7 +5,6 @@
 use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::task::Waker;
 
 use env::clock::Clock;
 use env::net::{Listener, Net};
@@ -35,10 +34,6 @@ struct State {
     /// The most nodes of a Read that a server answers, set before it starts.
     #[cfg(test)]
     most: Option<u32>,
-    /// Whether the server does no work.
-    stopped: bool,
-    /// The waker of the server while it is stopped.
-    waker: Option<Waker>,
 }
 
 #[derive(Debug)]
@@ -104,8 +99,6 @@ impl Variables {
             quality: Quality::GOOD,
             #[cfg(test)]
             most: None,
-            stopped: false,
-            waker: None,
         })))
     }
 
@@ -163,33 +156,6 @@ impl Variables {
     #[cfg(test)]
     pub(crate) fn refuse_reads_past(&self, most: u32) {
         self.state().most = Some(most);
-    }
-
-    /// Makes the server do no work until [`Variables::resume`]: it answers no request,
-    /// also one that it already got.
-    #[cfg(test)]
-    pub(crate) fn stop(&self) {
-        self.state().stopped = true;
-    }
-
-    /// Makes the server work again after [`Variables::stop`].
-    #[cfg(test)]
-    pub(crate) fn resume(&self) {
-        let mut state = self.state();
-        state.stopped = false;
-        if let Some(waker) = state.waker.take() {
-            waker.wake();
-        }
-    }
-
-    /// Whether the server is stopped. A stopped server keeps `waker` to wake at the
-    /// resume.
-    fn stopped(&self, waker: &Waker) -> bool {
-        let mut state = self.state();
-        if state.stopped {
-            state.waker = Some(waker.clone());
-        }
-        state.stopped
     }
 
     /// The most nodes of a Read of [`Variables::refuse_reads_past`], and the value of
@@ -316,8 +282,7 @@ pub async fn serve(
             server.add_source(node, move || variables.read(index, clock.now()));
         }
     };
-    let stopped = |waker: &Waker| variables.stopped(waker);
-    Server::serve(manager, SESSIONS, add, stopped, until).await;
+    Server::serve(manager, SESSIONS, add, until).await;
 }
 
 #[cfg(test)]
