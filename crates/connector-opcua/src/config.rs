@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::ffi::CString;
 
-use connector::browse::{Access, Facts};
 use connector::kind;
 use document::diagnostic::{Code, Diagnostic, Note};
 use document::value::Value;
@@ -21,7 +20,6 @@ mod tests;
 const BAD_ADDRESS: Code = Code::new("opcua.bad-address");
 const BAD_NODE_ID: Code = Code::new("opcua.bad-node-id");
 const NO_READ: Code = Code::new("opcua.no-read");
-const NO_WRITE: Code = Code::new("opcua.no-write");
 const REPEATED_CHANNEL: Code = Code::new("opcua.repeated-channel");
 
 /// The scheme of each address.
@@ -175,24 +173,15 @@ fn reads(config: &Document, diagnostics: &mut Vec<Diagnostic>) -> Vec<Read> {
 /// The `read` block of the node `tag` as the channel `channel`, as
 /// [`Kind::block`](connector::kind::Kind::block) asks: `read "<channel>" { node_id =
 /// "<tag>" }`.
-pub(crate) fn block(
-    tag: &str,
-    facts: &Facts,
-    channel: &Name,
-) -> Result<Vec<Block>, Vec<Diagnostic>> {
-    if facts.access == Some(Access::Write) {
-        return Err(vec![Diagnostic::new(
-            NO_WRITE,
-            None,
-            format!("the point {tag:?} can only be written, and the kind cannot write"),
-            "Import only points that the connector can read".into(),
-        )]);
-    }
+pub(crate) fn block(tag: &str, channel: &Name) -> Result<Vec<Block>, Vec<Diagnostic>> {
     let value = Value {
         kind: document::value::Kind::String(tag.into()),
         span: None,
     };
-    node(&value).map_err(|error| vec![error])?;
+    node(&value).map_err(|mut error| {
+        error.message = format!("the tag {tag:?}: {}", error.message);
+        vec![error]
+    })?;
     Ok(vec![read_block(channel, value)])
 }
 

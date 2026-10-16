@@ -81,8 +81,8 @@
   https://github.com/synnaxlabs/foundation/pull/2809#issuecomment-6207818990).
   Import: the block of a point is `read "<channel>" { node_id = "<tag>" }`, which
   `parse` reads. A tag that is not a node ID that `parse` reads gives
-  `opcua.bad-node-id`, and a point that a connector can only write gives
-  `opcua.no-write`, since the kind does not write. One table of the built-in types
-  that a read decodes, Boolean (1) to Double (11), gives the decode of a read, so the
-  type of a browse reads the same table (plan of C1 PR 5, approval owed:
-  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6224806107).
+  `opcua.bad-node-id`, with the tag. One table of the built-in types that a read
+  decodes, Boolean (1) to Double (11), gives the decode of a read. PR 5b gives the
+  type of a browse from the same table, so the two cannot disagree
+  (`laptop.architect-2`, 2026-10-16T21:14:25Z, on the plan of C1 PR 5:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6224815609).

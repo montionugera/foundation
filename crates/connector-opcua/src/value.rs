@@ -28,7 +28,8 @@ pub(crate) enum Value {
 }
 
 /// Each built-in type of OPC UA that a read decodes, as its value 1, at its index in
-/// `UA_TYPES`. Its id in namespace 0 is that index plus 1. `shim.c` asserts both.
+/// `UA_TYPES`. Its id in namespace 0 is that index plus 1. `shim.c` asserts the index
+/// and the id of each `ffi` kind, and [`SCALARS`] ties each entry to its kind.
 const BUILT_IN: [Value; 11] = [
     Value::Bool(true),
     Value::I8(1),
@@ -43,13 +44,23 @@ const BUILT_IN: [Value; 11] = [
     Value::F64(1.0),
 ];
 
-/// The sample types of a [`Value`], in the order of their OPC UA types.
+/// The sample types of a [`Value`], in the order of their OPC UA types. It also fails
+/// the build when an entry of `BUILT_IN` is not at its kind, or its decode changes it.
 pub(crate) const SCALARS: [Scalar; 11] = {
     let mut scalars = [Scalar::Bool; 11];
     let mut at = 0;
+    let mut kind = 0;
     while at < BUILT_IN.len() {
+        let (scalar, raw) = BUILT_IN[at].raw();
+        assert!(raw == kind, "each entry of `BUILT_IN` is at its kind");
+        // SAFETY: `raw` gives the field of its kind.
+        match unsafe { Value::from_raw(&scalar, kind) } {
+            Some(value) => assert!(value.raw().1 == kind, "a decode keeps the kind"),
+            None => panic!("a decode reads each kind of `BUILT_IN`"),
+        }
         scalars[at] = BUILT_IN[at].sample().scalar();
         at += 1;
+        kind += 1;
     }
     scalars
 };
@@ -73,46 +84,52 @@ impl Value {
         if status != Status::GOOD {
             return Err(Fault::status(status));
         }
-        let Some(&built_in) = BUILT_IN.get(usize::from(kind)) else {
+        // SAFETY: `shim_value_scalar` wrote the field of `kind` for each kind of
+        // [`Value`].
+        match unsafe { Self::from_raw(&scalar, kind) } {
+            Some(value) => Ok(value),
             // SAFETY: `shim_value_scalar` wrote the type for each other kind.
-            return Err(mistyped(kind, unsafe { scalar.data_type }));
-        };
-        // SAFETY: `shim_value_scalar` wrote the field of the type at `kind` in
-        // `UA_TYPES`, which is the type of `built_in`.
-        Ok(unsafe { built_in.with(scalar) })
+            None => Err(mistyped(kind, unsafe { scalar.data_type })),
+        }
     }
 
-    /// The value of the type of `self` that `scalar` holds.
+    /// The value that `scalar` holds, of the kind `kind`, or `None` when `kind` is not
+    /// one of [`Value`]. It reverses [`Value::raw`].
     ///
     /// # Safety
     ///
-    /// `scalar` holds the field of the type of `self`.
+    /// When `kind` is one of [`Value`], `scalar` holds its field.
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "by value, the decode in `client::answer` rebuilds the fields with shifts"
+    )]
     #[inline]
-    unsafe fn with(self, scalar: ffi::Scalar) -> Self {
-        match self {
-            // SAFETY: `scalar` holds the field of the type of `self`.
-            Self::Bool(_) => Self::Bool(unsafe { scalar.boolean }),
-            // SAFETY: `scalar` holds the field of the type of `self`.
-            Self::I8(_) => Self::I8(unsafe { scalar.sbyte }),
-            // SAFETY: `scalar` holds the field of the type of `self`.
-            Self::U8(_) => Self::U8(unsafe { scalar.byte }),
-            // SAFETY: `scalar` holds the field of the type of `self`.
-            Self::I16(_) => Self::I16(unsafe { scalar.int16 }),
-            // SAFETY: `scalar` holds the field of the type of `self`.
-            Self::U16(_) => Self::U16(unsafe { scalar.uint16 }),
-            // SAFETY: `scalar` holds the field of the type of `self`.
-            Self::I32(_) => Self::I32(unsafe { scalar.int32 }),
-            // SAFETY: `scalar` holds the field of the type of `self`.
-            Self::U32(_) => Self::U32(unsafe { scalar.uint32 }),
-            // SAFETY: `scalar` holds the field of the type of `self`.
-            Self::I64(_) => Self::I64(unsafe { scalar.int64 }),
-            // SAFETY: `scalar` holds the field of the type of `self`.
-            Self::U64(_) => Self::U64(unsafe { scalar.uint64 }),
-            // SAFETY: `scalar` holds the field of the type of `self`.
-            Self::F32(_) => Self::F32(unsafe { scalar.float }),
-            // SAFETY: `scalar` holds the field of the type of `self`.
-            Self::F64(_) => Self::F64(unsafe { scalar.double }),
-        }
+    const unsafe fn from_raw(scalar: &ffi::Scalar, kind: u16) -> Option<Self> {
+        Some(match kind {
+            // SAFETY: `scalar` holds the field of `kind`, as the caller ensures.
+            ffi::BOOLEAN => Self::Bool(unsafe { scalar.boolean }),
+            // SAFETY: `scalar` holds the field of `kind`, as the caller ensures.
+            ffi::SBYTE => Self::I8(unsafe { scalar.sbyte }),
+            // SAFETY: `scalar` holds the field of `kind`, as the caller ensures.
+            ffi::BYTE => Self::U8(unsafe { scalar.byte }),
+            // SAFETY: `scalar` holds the field of `kind`, as the caller ensures.
+            ffi::INT16 => Self::I16(unsafe { scalar.int16 }),
+            // SAFETY: `scalar` holds the field of `kind`, as the caller ensures.
+            ffi::UINT16 => Self::U16(unsafe { scalar.uint16 }),
+            // SAFETY: `scalar` holds the field of `kind`, as the caller ensures.
+            ffi::INT32 => Self::I32(unsafe { scalar.int32 }),
+            // SAFETY: `scalar` holds the field of `kind`, as the caller ensures.
+            ffi::UINT32 => Self::U32(unsafe { scalar.uint32 }),
+            // SAFETY: `scalar` holds the field of `kind`, as the caller ensures.
+            ffi::INT64 => Self::I64(unsafe { scalar.int64 }),
+            // SAFETY: `scalar` holds the field of `kind`, as the caller ensures.
+            ffi::UINT64 => Self::U64(unsafe { scalar.uint64 }),
+            // SAFETY: `scalar` holds the field of `kind`, as the caller ensures.
+            ffi::FLOAT => Self::F32(unsafe { scalar.float }),
+            // SAFETY: `scalar` holds the field of `kind`, as the caller ensures.
+            ffi::DOUBLE => Self::F64(unsafe { scalar.double }),
+            _ => return None,
+        })
     }
 
     /// The sample type of the value.
@@ -141,8 +158,8 @@ impl Value {
 
     /// The OPC UA type of the value.
     pub(crate) fn type_of(self) -> Type {
-        // The kind of a scalar of `Value` is its index in `UA_TYPES`: `shim.c` asserts
-        // both.
+        // The kind of a scalar of `Value` is its index in `UA_TYPES`, as `shim.c`
+        // asserts.
         Type {
             at: self.raw().1,
             array: false,
@@ -163,7 +180,7 @@ impl Value {
     }
 
     /// Gives the C scalar of the value and its kind.
-    pub(crate) fn raw(self) -> (ffi::Scalar, u16) {
+    pub(crate) const fn raw(self) -> (ffi::Scalar, u16) {
         match self {
             Self::Bool(boolean) => (ffi::Scalar { boolean }, ffi::BOOLEAN),
             Self::I8(sbyte) => (ffi::Scalar { sbyte }, ffi::SBYTE),

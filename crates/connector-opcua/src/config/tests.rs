@@ -1,5 +1,6 @@
 #![expect(clippy::arithmetic_side_effects, reason = "a test may panic")]
 
+use connector::browse::{Access, Facts};
 use document::value::Kind as Value;
 use document::{Position, Source, Span};
 use proptest::prelude::*;
@@ -436,28 +437,14 @@ fn gives_a_read_block_for_each_point_that_a_connector_can_read() {
 }
 
 #[test]
-fn refuses_the_block_of_a_point_that_a_connector_can_only_write() {
-    assert_eq!(
-        point("ns=3;i=1001", Some(Access::Write)),
-        Err(vec![Diagnostic::new(
-            Code::new("opcua.no-write"),
-            None,
-            "the point \"ns=3;i=1001\" can only be written, and the kind cannot write"
-                .into(),
-            "Import only points that the connector can read".into(),
-        )])
-    );
-}
-
-#[test]
 fn refuses_the_block_of_a_tag_that_is_not_a_node_id() {
     assert_eq!(
         point("ns=3;g=09087e75-8e5e-499b-954f-f2a9603db28a", None),
         Err(vec![Diagnostic::new(
             Code::new("opcua.bad-node-id"),
             None,
-            "a GUID (g=) or opaque (b=) key is not supported: give a number (i=) or a \
-             name (s=)"
+            "the tag \"ns=3;g=09087e75-8e5e-499b-954f-f2a9603db28a\": a GUID (g=) or \
+             opaque (b=) key is not supported: give a number (i=) or a name (s=)"
                 .into(),
             "Write a node ID such as \"ns=3;s=SpikeData\" or \"ns=3;i=1001\"".into(),
         )])

@@ -97,15 +97,15 @@ impl kind::Kind for Kind {
     ///
     /// # Errors
     ///
-    /// `opcua.bad-node-id` when `tag` is not a node ID that `parse` reads, and
-    /// `opcua.no-write` when `facts.access` is `Write`: the kind does not write.
+    /// `opcua.bad-node-id`, with the tag, when `tag` is not a node ID that `parse`
+    /// reads.
     fn block(
         &self,
         tag: &str,
-        facts: &browse::Facts,
+        _: &browse::Facts,
         channel: &Name,
     ) -> Result<Vec<Block>, Vec<Diagnostic>> {
-        config::block(tag, facts, channel)
+        config::block(tag, channel)
     }
 }
 
