@@ -21,8 +21,8 @@ const HIERARCHICAL: u32 = 33;
 /// `HasSubtype`.
 const HAS_SUBTYPE: u32 = 45;
 
-/// The mask of the node classes Object, Variable, and View.
-const CLASSES: u32 = 1 | 2 | 128;
+/// The mask of the node classes Object (1), Variable (2), and View (128).
+const CLASSES: u32 = 0b1000_0011;
 
 /// The mask of the node class `DataType`.
 const DATA_TYPE: u32 = 64;
@@ -600,16 +600,8 @@ impl Answer {
     ///
     /// `BadUnexpectedError` when it has more or fewer.
     fn has(&self, count: usize) -> Result<(), Status> {
-        let raw = self.raw.as_ptr();
-        let results = match self.service {
-            // SAFETY: the answer lives and is of the service of the arm.
-            Service::TRANSLATE => unsafe { ffi::shim_units_count(raw) },
-            // SAFETY: as above.
-            Service::READ => unsafe { ffi::shim_read_count(raw.cast()) },
-            // SAFETY: as above.
-            _ => unsafe { ffi::shim_browse_count(raw) },
-        };
-        if results == count {
+        // SAFETY: the answer lives.
+        if unsafe { ffi::shim_answer_count(self.raw.as_ptr()) } == count {
             Ok(())
         } else {
             Err(Status::BAD_UNEXPECTED_ERROR)

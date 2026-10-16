@@ -970,6 +970,23 @@ void shim_answer_free(void *answer, size_t service) {
     UA_delete(answer, answer_type(service));
 }
 
+/* `shim_answer_count` reads the count of results of each answer of `SERVICES` at one
+ * place. */
+_Static_assert(offsetof(UA_BrowseResponse, resultsSize) ==
+                   offsetof(UA_BrowseNextResponse, resultsSize),
+               "UA_BrowseNextResponse changed");
+_Static_assert(offsetof(UA_BrowseResponse, resultsSize) ==
+                   offsetof(UA_TranslateBrowsePathsToNodeIdsResponse, resultsSize),
+               "UA_TranslateBrowsePathsToNodeIdsResponse changed");
+_Static_assert(offsetof(UA_BrowseResponse, resultsSize) ==
+                   offsetof(UA_ReadResponse, resultsSize),
+               "UA_ReadResponse changed");
+
+/* Gives the count of results of `answer`, an answer of a service of `SERVICES`. */
+size_t shim_answer_count(const void *answer) {
+    return ((const UA_BrowseResponse *)answer)->resultsSize;
+}
+
 /* Frees `request`, a request of `service`. */
 void shim_request_free(void *request, size_t service) {
     UA_delete(request, request_type(service));
@@ -1044,11 +1061,6 @@ UA_BrowseNextRequest *shim_browse_next_new(const UA_Byte *point, size_t length) 
         return NULL;
     }
     return request;
-}
-
-/* Gives the count of results of `answer`, a Browse or BrowseNext answer. */
-size_t shim_browse_count(const UA_BrowseResponse *answer) {
-    return answer->resultsSize;
 }
 
 /* Gives the status of result `index` of `answer`, a Browse or BrowseNext answer with
@@ -1149,11 +1161,6 @@ UA_TranslateBrowsePathsToNodeIdsRequest *shim_units_new(const shim_node *nodes,
         }
     }
     return request;
-}
-
-/* Gives the count of results of `answer`, a TranslateBrowsePathsToNodeIds answer. */
-size_t shim_units_count(const UA_TranslateBrowsePathsToNodeIdsResponse *answer) {
-    return answer->resultsSize;
 }
 
 /* Writes the node of the first target of result `index` of `answer`, a

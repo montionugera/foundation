@@ -711,6 +711,7 @@ unsafe extern "C" {
         answer: *mut c_void,
         service: Service,
     ) -> *mut c_void;
+    pub(crate) fn shim_answer_count(answer: *const c_void) -> usize;
     pub(crate) fn shim_answer_free(answer: *mut c_void, service: Service);
     pub(crate) fn shim_request_free(request: *mut c_void, service: Service);
     pub(crate) fn shim_request_bytes(
@@ -727,7 +728,6 @@ unsafe extern "C" {
         most: u32,
     ) -> *mut c_void;
     pub(crate) fn shim_browse_next_new(point: *const u8, length: usize) -> *mut c_void;
-    pub(crate) fn shim_browse_count(answer: *const c_void) -> usize;
     pub(crate) fn shim_browse_result(
         answer: *const c_void,
         index: usize,
@@ -741,7 +741,6 @@ unsafe extern "C" {
         out: *mut Reference,
     );
     pub(crate) fn shim_units_new(nodes: *const Node<'_>, count: usize) -> *mut c_void;
-    pub(crate) fn shim_units_count(answer: *const c_void) -> usize;
     pub(crate) fn shim_units_target(
         answer: *const c_void,
         index: usize,
