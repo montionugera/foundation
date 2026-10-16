@@ -62,7 +62,10 @@ impl Status {
     #[cfg(test)]
     pub(crate) const BAD_NODE_ID_UNKNOWN: Self = Self(0x8034_0000);
     #[cfg(test)]
+    pub(crate) const BAD_USER_ACCESS_DENIED: Self = Self(0x801F_0000);
+    #[cfg(test)]
     pub(crate) const BAD_TYPE_MISMATCH: Self = Self(0x8074_0000);
+    #[cfg(test)]
     pub(crate) const BAD_NO_DATA: Self = Self(0x809B_0000);
     pub(crate) const BAD_SESSION_CLOSED: Self = Self(0x8026_0000);
     #[cfg(test)]

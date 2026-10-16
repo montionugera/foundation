@@ -1,6 +1,9 @@
-- **STAMP (#435)** `connector::stamp::Stamps` stamps the frames of one index of a
-  kind that reads by request. The stamp of a frame is the midpoint of the mesh times
-  before and after the requests that read its samples (`laptop.architect-2`,
+- **STAMP (#435)** `connector::stamp::Stamps` stamps the frames of one writer of a kind
+  that reads by request: one stamp goes into each index of the writer
+  (`laptop.architect-2`, 2026-10-16T04:32:46Z, item 3:
+  https://github.com/synnaxlabs/foundation/pull/2817#issuecomment-6208137622). The
+  stamp of a frame is the midpoint of the mesh times before and after the requests that
+  read its samples (`laptop.architect-2`,
   2026-10-14T01:37:20Z,
   https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6158936229), or
   1 ns after the stamp before it when that is later, so no stamp is at or before the

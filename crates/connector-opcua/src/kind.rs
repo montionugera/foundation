@@ -94,9 +94,8 @@ impl kind::Kind for Kind {
     /// sample type is not `bool`, `i8` to `u64`, `f32`, or `f64`, and with
     /// `opcua.large-read` when the Read of one node alone is past one message of the
     /// server. [`Error::Device`] when the connect, a read, or one check fails: a check
-    /// fails on a Bad status other than `BadNoData` or on no answer in 5 s. Also
-    /// [`Error::Device`], at once, when the client loses its channel or its session
-    /// between two ticks.
+    /// fails on a bad service result or on no answer in 5 s. Also [`Error::Device`],
+    /// at once, when the client loses its channel or its session between two ticks.
     fn run(&self, ctx: Context<Config>) -> impl Future<Output = Result<(), Error>> {
         run(ctx)
     }
@@ -214,8 +213,6 @@ struct Frames<'a> {
     /// The sample type of the channel of each read, in order.
     types: Vec<Scalar>,
     left: Left,
-    /// The value of each read that a frame keeps.
-    kept: Vec<Option<sample::Value>>,
 }
 
 /// The counts of the values that a frame leaves out.
@@ -252,7 +249,6 @@ impl<'a> Frames<'a> {
         Ok(Self {
             ctx,
             writer,
-            kept: vec![None; types.len()],
             types,
             left: Left {
                 bad: ctx.count("bad"),
@@ -271,6 +267,10 @@ impl<'a> Frames<'a> {
     /// # Errors
     ///
     /// As [`poll::Writer::write`].
+    ///
+    /// # Panics
+    ///
+    /// When `values` does not have one value for each read.
     fn write(
         &mut self,
         values: &[Result<Value, Fault>],
@@ -278,9 +278,9 @@ impl<'a> Frames<'a> {
     ) -> Result<(), Error> {
         let (mut bad, mut uncertain, mut mistyped) = (0, 0, 0);
         let mut first = None;
-        let reads = values.iter().zip(&self.types).zip(&mut self.kept);
-        for (at, ((value, &sample), kept)) in reads.enumerate() {
-            *kept = match Why::of(value, sample) {
+        let kept = values.iter().enumerate().map(|(at, value)| {
+            let sample = self.types[at];
+            match Why::of(value, sample) {
                 Ok(value) => Some(value),
                 Err(Why::Bad) => {
                     bad += 1;
@@ -295,11 +295,13 @@ impl<'a> Frames<'a> {
                     first = first.or(Some((at, value, sample)));
                     None
                 }
-            };
-        }
+            }
+        });
+        // `write` takes each value before it returns, so the counts are whole after it.
+        let written = self.writer.write(kept, stamp);
         self.left.add(bad, uncertain, mistyped);
         self.left.note(self.ctx, first);
-        self.writer.write(&self.kept, stamp)
+        written
     }
 }
 

@@ -22,7 +22,7 @@ use crate::connection::{CHUNKS, Manager, SENDS};
 use crate::event::Time;
 use crate::ffi::{self, Status};
 use crate::node::{Key, Node};
-use crate::value::{Cause, Fault, Value};
+use crate::value::{Fault, Value};
 
 #[cfg(test)]
 mod tests;
@@ -462,11 +462,11 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// The status of the first failed check: the error of [`Client::read`], or the
-    /// status of the value when it is Bad and not `BadNoData`. The value itself is
-    /// not checked. When the client has no open channel or no active session between
-    /// checks, it gives the status of the connect if it is not Good, else
-    /// `BadConnectionClosed` or `BadSessionClosed`, at once.
+    /// The status of the first failed check, which is the error of [`Client::read`]:
+    /// the status and the value of the answer are not checked. When the client has no
+    /// open channel or no active session between checks, it gives the status of the
+    /// connect if it is not Good, else `BadConnectionClosed` or `BadSessionClosed`, at
+    /// once.
     pub(crate) async fn idle<T>(
         &mut self,
         until: impl Future<Output = T>,
@@ -492,18 +492,7 @@ impl Client {
                 if let Poll::Ready(value) = until.as_mut().poll(cx) {
                     return Poll::Ready(Ok(Some(value)));
                 }
-                check.as_mut().poll(cx).map(|read| match read?[0] {
-                    Err(fault) => match fault.cause() {
-                        // `BadNoData` is also the fault of an empty value.
-                        Cause::Status(status)
-                            if !status.uncertain() && status != Status::BAD_NO_DATA =>
-                        {
-                            Err(status)
-                        }
-                        Cause::Status(_) | Cause::Type(_) => Ok(None),
-                    },
-                    Ok(_) => Ok(None),
-                })
+                check.as_mut().poll(cx).map(|read| read.map(|_| None))
             })
             .await;
             if let Some(value) = checked? {

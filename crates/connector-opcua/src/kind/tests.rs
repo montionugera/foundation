@@ -778,6 +778,24 @@ fn ends_the_run_when_a_check_finds_no_session() {
     assert_eq!(outcome.frames.len(), 2);
 }
 
+/// A check of the connection passes on each status of the state of the server, as
+/// the answer came over the channel and the session: a run at 0.01 Hz whose server
+/// answers each check with `BadUserAccessDenied` or `BadNodeIdUnknown` checks 4 times
+/// in 41 s and goes on.
+#[test]
+fn keeps_the_run_when_a_check_answers_with_a_bad_state() {
+    for status in [Status::BAD_USER_ACCESS_DENIED, Status::BAD_NODE_ID_UNKNOWN] {
+        let outcome = run_at("0.01Hz", Setup::three(), move |scene| async move {
+            scene.variables.answer_states(Quality(status.0));
+            scene.supervise(ms(41_050)).await
+        });
+        assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+        assert_eq!(errors(&outcome.statuses), [], "{}", status.name());
+        assert_eq!(last(&outcome.statuses, RESTARTS), 0);
+        assert_eq!((outcome.frames.len(), outcome.states), (1, 4));
+    }
+}
+
 /// A run at 10 Hz reads more often than each 10 s, so it sends no check of the
 /// connection.
 #[test]
@@ -1074,6 +1092,87 @@ const TYPED_CHANNELS: [&str; 11] = [
     "plant.f32",
     "plant.f64",
 ];
+
+/// The `opcua` kind, whose run writes a frame of one Good value for each read, then a
+/// frame of `count(reads)` values, each Bad.
+struct Count(fn(usize) -> usize);
+
+impl kind::Kind for Count {
+    type Config = Config;
+
+    fn parse(&self, config: &Document) -> Result<Config, Vec<Diagnostic>> {
+        Kind::default().parse(config)
+    }
+
+    fn check(&self, config: &Config) -> Result<Channels, Vec<Diagnostic>> {
+        Kind::default().check(config)
+    }
+
+    fn discover(
+        &self,
+        _: &Token,
+    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
+        future::ready(Ok(Vec::new()))
+    }
+
+    async fn run(&self, ctx: Context<Config>) -> Result<(), Error> {
+        let mut frames = Frames::open(&ctx).await?;
+        let one = |&scalar| Ok(crate::value::Value::one(scalar));
+        let good: Vec<_> = frames.types.iter().map(one).collect();
+        let ((), stamp) = frames.writer.request(future::ready(())).await;
+        frames.write(&good, stamp)?;
+        let ((), stamp) = frames.writer.request(future::ready(())).await;
+        let count = (self.0)(ctx.config().reads.len());
+        let bad = || Err(Fault::status(Status::BAD_NOT_FOUND));
+        let values: Vec<_> = std::iter::repeat_with(bad).take(count).collect();
+        frames.write(&values, stamp)
+    }
+}
+
+/// `Client::read` gives one value for each node of its request, or an error, so no
+/// run of [`Kind`] writes a short frame: only a kind that calls `Frames::write`
+/// itself reaches the check.
+#[test]
+#[should_panic(expected = "invariant: a kind gives 0 values for 3 channels")]
+fn panics_at_a_frame_with_no_value_for_each_read() {
+    write_after_a_full_frame(Count(|_| 0));
+}
+
+/// `Client::read` gives `BadUnexpectedError` for an answer with more values than the
+/// nodes of its request, which the run gives as `Error::Device`, so no run of [`Kind`]
+/// writes a long frame. A `zip` over `types` in `Frames::write` would cut the value and
+/// the writer would see the right count, so only this test sees that loss.
+#[test]
+#[should_panic(expected = "index out of bounds: the len is 3 but the index is 3")]
+fn panics_at_a_frame_with_a_value_more_than_its_reads() {
+    write_after_a_full_frame(Count(|reads| reads + 1));
+}
+
+/// Runs `kind` as `opcua` on the reads of [`Setup::three`] for 1 s: a frame of one Good
+/// value for each read, then the frame of the kind.
+fn write_after_a_full_frame(kind: Count) {
+    let mut sim = Sim::new(::sim::Config::default());
+    let node = sim.node(node::Config::default());
+    let run = sim.run_on(&node, |node, tasks| async move {
+        let env = hub::testing::Env {
+            files: node.files(),
+            clock: node.clock(),
+            wall: node.wall(),
+            entropy: node.entropy(),
+            tasks: tasks.clone(),
+        };
+        let kinds = Table::new().with("opcua", kind);
+        let mut rig = testing::Rig::open(env, node.net(), kinds).await;
+        let setup = Setup::three();
+        let channels = setup.channels.iter();
+        let channels = channels.map(|(text, def)| (name(text), def.clone()));
+        rig.define(channels.collect());
+        let config = config("opc.tcp://plc:4840", "10Hz", &setup.reads);
+        let _connector = rig.supervise("opcua", name(PLC), config).await;
+        node.clock().sleep(Span::SECOND).await;
+    });
+    run.expect("the run ends");
+}
 
 /// One channel of each type of a value (keys 2 to 12) on `plant.time` (key 1), each
 /// reading its node of [`TYPED_NODES`].
