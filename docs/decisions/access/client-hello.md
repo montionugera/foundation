@@ -84,10 +84,14 @@
   index place whose sample type is not `Stamp` with `Error::Unstamped`
   (`laptop.architect`, 2026-10-11T00:45:04Z,
   https://github.com/synnaxlabs/foundation/issues/2332#issuecomment-6103881921). It
-  gives `Error::Finished` for a stream that the node finishes before the last place,
-  and a call of `client::Reader` after that place panics (`laptop.architect`,
-  2026-10-16T07:20:38Z,
-  https://github.com/synnaxlabs/foundation/pull/2839#issuecomment-6210285214).
+  gives `Error::Finished` for a stream that the node finishes before the last place
+  (`laptop.architect`, 2026-10-16T07:20:38Z,
+  https://github.com/synnaxlabs/foundation/pull/2839#issuecomment-6210285214), and a
+  call of `client::Reader` after that place panics (`laptop.architect`,
+  2026-10-11T07:53:39Z,
+  https://github.com/synnaxlabs/foundation/pull/2368#issuecomment-6106869729, and
+  2026-10-16T06:47:02Z,
+  https://github.com/synnaxlabs/foundation/issues/2808#issuecomment-6209795527).
   Supersedes the caller's `Error::Finished` of
   https://github.com/synnaxlabs/foundation/pull/2368#issuecomment-6106869729. Lost:
   one decoder for the whole stream. Its copy of each reply cost the program 6.9 ns for

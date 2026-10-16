@@ -201,8 +201,9 @@ fn index_place(reply: Places, remain: u32, places: &[Place]) -> Option<&Place> {
     at.and_then(|at| places.get(at))
 }
 
-/// When `message` is a valid message of `run`, the least key that its places, with
-/// those before it, name twice if it holds the last place, else `None`.
+/// `None` when `message` is not a valid message of `run`. Else `Some` of the least key
+/// that its places and those before them name twice when it holds the last place, or
+/// `Some(None)`.
 fn refusal(
     run: Option<&(Places, u32, Vec<Place>)>,
     message: &[u8],
