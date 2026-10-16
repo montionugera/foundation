@@ -834,7 +834,7 @@
   order of `Hidden` over `Outside`, 2026-10-16T14:34:56Z,
   https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6217809418; the
   `EEXIST` rule of `os`, the drop of end slashes, the resolve of `<hidden>/..`, `Io` for
-  a hidden folder that is not a directory, the skip of a hidden folder past the limits,
+  a hidden folder that is not a directory or that this user cannot search, the skip of a hidden folder past the limits,
   and the check of a link to nothing by its place, 2026-10-16T15:45:37Z,
   https://github.com/synnaxlabs/foundation/pull/2869#issuecomment-6219155635; the check
   of each path that does not resolve by its own place, 2026-10-16T16:02:28Z,
