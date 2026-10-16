@@ -158,6 +158,7 @@ fn plans_writes_the_plan_file_and_applies_it() {
         let (expected, output) = remote.node.plan(files).await.expect("a plan");
 
         let out = Path::new("plans/site.plan");
+        fixture.sim.make_dir(Path::new("/plans"));
         let files = [PathBuf::from("site.hcl")];
         let planned = remote.plan(&paths, &files, Some(out)).await;
         let planned = planned.expect("a plan");
@@ -190,6 +191,7 @@ fn plan_with_no_out_writes_no_file() {
 fn plan_gives_each_failed_read_by_its_cause_and_reaches_no_node() {
     solo(|fixture, mesh| async move {
         let paths = with_site(&fixture.sim);
+        fixture.sim.make_dir(Path::new("/config"));
         paths
             .write(Path::new("config/a.hcl"), b"")
             .expect("a write");
@@ -331,6 +333,7 @@ fn plan_of_a_file_of_exactly_the_most_reads_it() {
 fn plan_of_a_directory_after_a_large_file_gives_read() {
     solo(|fixture, mesh| async move {
         let paths = fixture.sim.paths();
+        fixture.sim.make_dir(Path::new("/config"));
         for n in 0..10 {
             let path = PathBuf::from(format!("config/f{n}.hcl"));
             paths.write(&path, b"").expect("a write");

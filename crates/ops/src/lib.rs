@@ -33,7 +33,7 @@ pub use front_end::{FrontEnd, FrontEnds};
 pub use node::{Config, Node};
 use operation::Parsed;
 pub use serve::serve;
-pub use start::Start;
+pub use start::{Log, Start};
 
 /// What the process does once [`cli`] returns.
 #[derive(Debug, PartialEq, Eq)]
@@ -64,6 +64,11 @@ pub enum Run {
 ///
 /// Blocks its thread at each read or write of a path, each read of `input`, and each
 /// write of `output` or `errors`, and makes none while a request to the node waits.
+///
+/// # Panics
+///
+/// When `paths` has a limit from [`env::paths::Paths::within`] and a path is outside
+/// it.
 pub async fn cli<C>(
     args: impl IntoIterator<Item = OsString>,
     input: impl BufRead,

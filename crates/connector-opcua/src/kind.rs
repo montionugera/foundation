@@ -4,7 +4,7 @@
 use std::{fmt, future};
 
 use connector::kind::{self, Channels, Context, Error};
-use connector::{cancel, pace, poll, status};
+use connector::{pace, poll, status};
 use document::Document;
 use document::diagnostic::{Code, Diagnostic};
 use types::sample::{self, Scalar, Type};
@@ -62,14 +62,6 @@ impl kind::Kind for Kind {
                 .collect(),
             counts: counts.into(),
         })
-    }
-
-    /// Finds nothing: the kind does not browse a server.
-    fn discover(
-        &self,
-        _: &cancel::Token,
-    ) -> impl Future<Output = Result<Vec<Document>, Error>> {
-        future::ready(Ok(Vec::new()))
     }
 
     /// Connects to the server, and reads each node once per tick of the rate until

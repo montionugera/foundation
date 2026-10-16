@@ -61,7 +61,7 @@ fn applies_with_each_connector_kind_of_the_node() {
             effect: Effect {
                 pointer: Pointer::from(mesh.pointer()),
                 counts: Counts {
-                    added: 27,
+                    added: 28,
                     changed: 0,
                     removed: 0,
                 },
@@ -386,6 +386,7 @@ fn plans_when_each_secret_of_the_node_has_a_value() {
         let files = fixture.sim.files();
         create_secret(&files, &name("plant.pw"), b"pw").await;
         let paths = fixture.sim.paths();
+        fixture.sim.make_dir(Path::new("/run"));
         paths.write(Path::new("/run/ca"), b"ca").expect("writes it");
         let vars = BTreeMap::from([
             (OsString::from("TOKEN"), OsString::from("t")),
@@ -394,7 +395,7 @@ fn plans_when_each_secret_of_the_node_has_a_value() {
         let secrets = secret::Resolver::new(Arc::new(vars), files, Path::new(SECRETS));
         let node = create_node_with(&fixture, mesh, front_ends(), secrets);
         let (_, output) = node.plan(with_sources("edge")).await.expect("a plan");
-        assert_eq!(output["added"], 9, "{output}");
+        assert_eq!(output["added"], 10, "{output}");
     });
 }
 
@@ -406,7 +407,7 @@ fn plans_a_connector_of_another_node_with_no_read_of_its_secrets() {
         |fixture, mesh| async move {
             let node = create_node(&fixture, mesh);
             let (_, output) = node.plan(with_sources("other")).await.expect("a plan");
-            assert_eq!(output["added"], 9, "{output}");
+            assert_eq!(output["added"], 10, "{output}");
         },
     );
 }
@@ -415,6 +416,7 @@ fn plans_a_connector_of_another_node_with_no_read_of_its_secrets() {
 fn refuses_a_secret_with_a_bad_name_or_a_file_of_more_than_64_kib() {
     solo(|fixture, mesh| async move {
         let paths = fixture.sim.paths();
+        fixture.sim.make_dir(Path::new("/run"));
         paths
             .write(Path::new("/run/large"), &vec![b'x'; 70 * 1024])
             .expect("writes it");

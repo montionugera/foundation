@@ -184,11 +184,13 @@ impl Sim {
     ///
     /// # Panics
     ///
-    /// When `config.delay` is negative, or when `host` is an IP literal, which
-    /// [`env::net::Net::resolve`] gives with no lookup.
+    /// When `config.delay` is negative, or when `host` is not a name of
+    /// [`env::net::host::Host`]: an IP address, which [`env::net::Net::resolve`]
+    /// gives with no lookup, or a text outside its grammar.
     pub fn name(&mut self, host: &str, config: name::Config) {
         config.check(host);
-        lock(&self.shared).net().name(host, config);
+        let name = name::parse(host);
+        lock(&self.shared).net().name(&name, config);
     }
 
     /// Sets the line that joins port `a_path` of `a` and port `b_path` of `b`, for the
@@ -522,6 +524,8 @@ const EIO: i32 = 5;
 const NOT_DIRECTORY: i32 = 20;
 /// The Linux code for a file call on a directory (`EISDIR`).
 const DIRECTORY: i32 = 21;
+/// The Linux code for a path through too many symbolic links (`ELOOP`).
+const LOOP: i32 = 40;
 
 /// The Linux code for a failure that may pass (`EAGAIN`).
 const EAGAIN: i32 = 11;

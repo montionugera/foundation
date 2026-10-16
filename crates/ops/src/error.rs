@@ -550,6 +550,9 @@ impl fmt::Display for Error {
                         f,
                         "the write of the plan file {path} failed with OS error {code}"
                     ),
+                    env::paths::Error::Outside => {
+                        unreachable!("invariant: the command line writes with no limit")
+                    }
                 }
             }
             Self::LargeRequest => write!(

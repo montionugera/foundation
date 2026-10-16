@@ -71,7 +71,9 @@ impl Places {
     ///
     /// # Panics
     ///
-    /// If `set` is not the key set of `frame`.
+    /// If the key of `set` is not the key set key of `frame`. Every set from
+    /// [`KeySet::ordered`] has one key, so two such sets pass, and the places keep what
+    /// they learn of the first such set for each later one.
     pub fn lay(&mut self, frame: &Frame, set: &KeySet) -> &[Placed] {
         let held = held(&mut self.held, &self.slots, frame, set);
         lay(held, frame, &mut self.bounds, &mut self.placed);
@@ -84,7 +86,9 @@ impl Places {
     ///
     /// # Panics
     ///
-    /// If `set` is not the key set of `frame`.
+    /// If the key of `set` is not the key set key of `frame`. Every set from
+    /// [`KeySet::ordered`] has one key, so two such sets pass, and the places keep what
+    /// they learn of the first such set for each later one.
     pub fn charge(&mut self, frame: &Frame, set: &KeySet) -> u64 {
         let held = held(&mut self.held, &self.slots, frame, set);
         // Each block payload is a multiple of 8 bytes, so the padding of the last

@@ -82,6 +82,12 @@ disallowed-methods = [
   # and thread gets the log of its node from `env`.
   { path = "tracing::dispatcher::set_global_default", reason = "no mutable globals" },
   { path = "tracing::subscriber::set_global_default", reason = "no mutable globals" },
+  { path = "tracing_subscriber::util::SubscriberInitExt::init", reason = "no mutable globals" },
+  { path = "tracing_subscriber::util::SubscriberInitExt::try_init", reason = "no mutable globals" },
+  { path = "tracing_subscriber::fmt::init", reason = "no mutable globals" },
+  { path = "tracing_subscriber::fmt::try_init", reason = "no mutable globals" },
+  { path = "tracing_subscriber::fmt::SubscriberBuilder::init", reason = "no mutable globals" },
+  { path = "tracing_subscriber::fmt::SubscriberBuilder::try_init", reason = "no mutable globals" },
 ]
 disallowed-types = [
   { path = "std::collections::HashMap", reason = "use types::hash::Map" },

@@ -26,6 +26,7 @@ pub(crate) const TEST_EDGES: &[(&str, &str)] = &[
     ("connector-ni", "daqmx-stub"),
     ("hub", "buffer"),
     ("hub", "blob"),
+    ("program", "codec"),
     ("program", "hub"),
     ("program", "spec"),
     ("access", "document"),

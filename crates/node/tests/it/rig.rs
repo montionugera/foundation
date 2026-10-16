@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, ExitStatus, Output, Stdio};
-use std::sync::{Arc, Mutex};
+use std::process::{Child, ChildStdin, Command, Output, Stdio};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -21,6 +21,9 @@ const PATIENCE: Span = Span::from_nanos(90_000_000_000);
 
 /// The time between two checks of a wait.
 const POLL: Duration = Duration::from_millis(100);
+
+/// The time between two checks of the exit of a command that closed its pipes.
+const EXITING: Duration = Duration::from_millis(1);
 
 /// The pool budget that [`Rig::new`] keeps.
 pub(crate) const POOL: u64 = 1 << 30;
@@ -120,39 +123,28 @@ impl Rig {
         let command = self.starting(&[&["start"], args].concat());
         // The node reads no input.
         let (mut node, _) = Running::new(command);
-        let started = poll(&self.clock, PATIENCE, || match node.ended() {
-            Some(status) => Ok(Some(status)),
-            None if node.stdout.text().contains('\n') => Ok(None),
-            None => Err(node.seen()),
-        });
-        match started {
-            Ok(None) => self.node = Some(node),
-            Ok(Some(status)) => {
-                panic!("the node exited with {status}:\n{}", node.seen())
-            }
-            Err(seen) => {
-                node.process.end();
-                late("the node prints that it runs", PATIENCE, &seen)
-            }
+        let started = |seen: &Seen| seen.ended() || seen.stdout.contains(&b'\n');
+        node.until(
+            &self.clock,
+            PATIENCE,
+            "the node prints that it runs",
+            started,
+        );
+        if node.watch.seen().ended() {
+            let seen = node.watch.seen().text();
+            let output = node.exit(&self.clock, PATIENCE, "the node exits");
+            panic!("the node exited with {}:\n{seen}", output.status)
         }
+        self.node = Some(node);
     }
 
     /// Stops the node of [`Rig::start`] with SIGTERM, and gives its output when it
     /// exits and closes its pipes. Panics when no node runs, or when 90 s pass first.
     #[cfg(unix)]
     pub(crate) fn stop(&mut self) -> Output {
-        let mut node = self.node.take().expect("a node runs");
+        let node = self.node.take().expect("a node runs");
         node.process.term();
-        let ended = poll(&self.clock, PATIENCE, || {
-            node.ended().ok_or_else(|| node.seen())
-        });
-        match ended {
-            Ok(status) => node.output(status),
-            Err(seen) => {
-                node.process.end();
-                late("the node exits at SIGTERM", PATIENCE, &seen)
-            }
-        }
+        node.exit(&self.clock, PATIENCE, "the node exits at SIGTERM")
     }
 
     /// Starts `foundation` with `args` in [`Rig::dir`], with `stdout` as its standard
@@ -425,7 +417,7 @@ pub(crate) fn wait<T>(
     what: &str,
     check: impl FnMut() -> Result<T, String>,
 ) -> T {
-    poll(clock, limit, check).unwrap_or_else(|seen| late(what, limit, &seen))
+    poll(clock, limit, POLL, check).unwrap_or_else(|seen| late(what, limit, &seen))
 }
 
 /// Panics: `what` did not happen within `limit`, and the last check saw `seen`.
@@ -433,10 +425,12 @@ fn late(what: &str, limit: Span, seen: &str) -> ! {
     panic!("{what}: not within {limit}. The last check saw:\n{seen}")
 }
 
-/// Gives the first value of `check`, or what its last check saw once `limit` passes.
+/// Gives the first value of `check`, which runs each `every`, or what its last check
+/// saw once `limit` passes.
 fn poll<T>(
     clock: &Clock,
     limit: Span,
+    every: Duration,
     mut check: impl FnMut() -> Result<T, String>,
 ) -> Result<T, String> {
     let deadline = clock.now() + limit;
@@ -452,7 +446,7 @@ fn poll<T>(
             clippy::disallowed_methods,
             reason = "a process test waits on another process in real time"
         )]
-        std::thread::sleep(POLL);
+        std::thread::sleep(every);
     }
 }
 
@@ -460,35 +454,13 @@ fn poll<T>(
 /// exits and closes its pipes. When `limit` passes first, kills it and panics with the
 /// output so far.
 fn run(clock: &Clock, limit: Span, command: Command, input: &[u8]) -> Output {
-    let (mut running, mut stdin) = Running::new(command);
-    let input = input.to_vec();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "a process test writes to another process while it runs"
-    )]
-    let input = std::thread::spawn(move || match stdin.write_all(&input) {
-        // The command closed its standard input: it reads no more.
-        Err(error) if error.kind() == ErrorKind::BrokenPipe => {}
-        written => written.expect("write the input"),
-    });
-    running.input = Some(input);
-    end(clock, limit, running)
+    let (mut running, stdin) = Running::new(command);
+    running.write(stdin, input.to_vec());
+    running.exit(clock, limit, ENDS)
 }
 
-/// Gives the output of `running` when it exits and closes its pipes. When `limit`
-/// passes first, kills it and panics with the output so far.
-fn end(clock: &Clock, limit: Span, mut running: Running) -> Output {
-    let ended = poll(clock, limit, || {
-        running.ended().ok_or_else(|| running.seen())
-    });
-    match ended {
-        Ok(status) => running.output(status),
-        Err(seen) => {
-            running.process.end();
-            late("the command exits and closes its pipes", limit, &seen)
-        }
-    }
-}
+/// What [`run`] and [`Talk::close`] wait for.
+const ENDS: &str = "the command exits and closes its pipes";
 
 /// A command that a test writes to while it runs: [`Rig::talk`].
 #[derive(Debug)]
@@ -506,14 +478,8 @@ impl Talk {
         self.stdin
             .write_all(line.as_bytes())
             .expect("write the input");
-        wait(&self.clock, PATIENCE, "the command answers", || {
-            let seen = self.running.stdout.text();
-            if seen == output {
-                Ok(())
-            } else {
-                Err(self.running.seen())
-            }
-        });
+        let answered = |seen: &Seen| seen.stdout == output.as_bytes();
+        (self.running).until(&self.clock, PATIENCE, "the command answers", answered);
     }
 
     /// Closes the standard input of the command, and gives its output when it exits
@@ -521,7 +487,7 @@ impl Talk {
     /// so far.
     pub(crate) fn close(self) -> Output {
         drop(self.stdin);
-        end(&self.clock, PATIENCE, self.running)
+        self.running.exit(&self.clock, PATIENCE, ENDS)
     }
 }
 
@@ -530,9 +496,8 @@ impl Talk {
 #[derive(Debug)]
 struct Running {
     process: Process,
-    input: Option<JoinHandle<()>>,
-    stdout: Capture,
-    stderr: Capture,
+    watch: Arc<Watch>,
+    threads: Vec<JoinHandle<()>>,
 }
 
 impl Running {
@@ -546,41 +511,76 @@ impl Running {
             .expect("start the command");
         let mut process = Process(child);
         let stdin = process.0.stdin.take().expect("piped");
+        let watch = Arc::new(Watch::default());
+        let threads = vec![
+            watch.read(process.0.stdout.take().expect("piped"), |seen| {
+                &mut seen.stdout
+            }),
+            watch.read(process.0.stderr.take().expect("piped"), |seen| {
+                &mut seen.stderr
+            }),
+        ];
         let running = Self {
-            input: None,
-            stdout: Capture::new(process.0.stdout.take().expect("piped")),
-            stderr: Capture::new(process.0.stderr.take().expect("piped")),
             process,
+            watch,
+            threads,
         };
         (running, stdin)
     }
 
-    /// The exit status, once the command has exited and each of its pipes has closed.
-    fn ended(&mut self) -> Option<ExitStatus> {
-        let status = self.process.exited()?;
-        let written = self.input.as_ref().is_none_or(JoinHandle::is_finished);
-        let closed = written && self.stdout.ended() && self.stderr.ended();
-        closed.then_some(status)
+    /// Writes `input` to `stdin` on a thread of the command, and closes `stdin` at its
+    /// end.
+    fn write(&mut self, mut stdin: ChildStdin, input: Vec<u8>) {
+        let writer = self.watch.spawn(move |_| match stdin.write_all(&input) {
+            // The command closed its standard input: it reads no more.
+            Err(error) if error.kind() == ErrorKind::BrokenPipe => {}
+            written => written.expect("write the input"),
+        });
+        self.threads.push(writer);
     }
 
-    /// What the command has written so far.
-    fn seen(&self) -> String {
-        format!(
-            "stdout:\n{}\nstderr:\n{}",
-            self.stdout.text(),
-            self.stderr.text()
-        )
-    }
-
-    /// The output of a command that [`Running::ended`] with `status`.
-    fn output(self, status: ExitStatus) -> Output {
-        if let Some(input) = self.input {
-            input.join().expect("write the input");
+    /// Waits until `done` holds for what the command wrote. When `limit` passes
+    /// first, kills the command and panics with `what` and what it wrote.
+    fn until(
+        &mut self,
+        clock: &Clock,
+        limit: Span,
+        what: &str,
+        done: impl FnMut(&Seen) -> bool,
+    ) {
+        if let Err(seen) = self.watch.until(clock, limit, done) {
+            self.late(what, limit, &seen)
         }
+    }
+
+    /// Kills the command, and panics: `what` did not happen within `limit`.
+    fn late(&mut self, what: &str, limit: Span, seen: &str) -> ! {
+        self.process.end();
+        late(what, limit, seen)
+    }
+
+    /// The output of the command once it exits and its threads [`Seen::ended`]. When
+    /// `limit` passes first, kills the command and panics with `what` and what it
+    /// wrote.
+    fn exit(mut self, clock: &Clock, limit: Span, what: &str) -> Output {
+        let deadline = clock.now() + limit;
+        self.until(clock, limit, what, Seen::ended);
+        // A command with no open pipe gives no event at its exit, but one that closed
+        // its pipes is most often in its exit already.
+        let (process, watch) = (&mut self.process, &self.watch);
+        let exited = poll(clock, deadline - clock.now(), EXITING, || {
+            let status = process.0.try_wait().expect("check the command");
+            status.ok_or_else(|| watch.seen().text())
+        });
+        let status = exited.unwrap_or_else(|seen| self.late(what, limit, &seen));
+        for thread in self.threads.drain(..) {
+            thread.join().expect("read or write the command");
+        }
+        let seen = std::mem::take(&mut *self.watch.seen());
         Output {
             status,
-            stdout: self.stdout.end(),
-            stderr: self.stderr.end(),
+            stdout: seen.stdout,
+            stderr: seen.stderr,
         }
     }
 }
@@ -615,7 +615,8 @@ impl Process {
     }
 
     /// The exit status of the command, or `None` while it runs.
-    pub(crate) fn exited(&mut self) -> Option<ExitStatus> {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn exited(&mut self) -> Option<std::process::ExitStatus> {
         self.0.try_wait().expect("check the command")
     }
 
@@ -652,51 +653,122 @@ impl Drop for Process {
     }
 }
 
-/// One output of a command, which a thread reads as the command writes it.
-#[derive(Debug)]
-struct Capture {
-    bytes: Arc<Mutex<Vec<u8>>>,
-    reader: JoinHandle<()>,
+/// What a command wrote so far, and its threads that run.
+#[derive(Debug, Default)]
+struct Seen {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    /// The threads that read its pipes or write its input and did not end.
+    open: usize,
 }
 
-impl Capture {
-    fn new(mut from: impl Read + Send + 'static) -> Self {
-        let bytes = Arc::new(Mutex::new(Vec::new()));
-        let to = Arc::clone(&bytes);
+impl Seen {
+    /// Whether each thread of the command ended: each of its pipes closed.
+    fn ended(&self) -> bool {
+        self.open == 0
+    }
+
+    /// What the command wrote, as text.
+    fn text(&self) -> String {
+        format!(
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&self.stdout),
+            String::from_utf8_lossy(&self.stderr)
+        )
+    }
+}
+
+/// The [`Seen`] of a command, with a condvar that its threads notify at each change.
+#[derive(Debug, Default)]
+struct Watch {
+    seen: Mutex<Seen>,
+    changed: Condvar,
+}
+
+impl Watch {
+    /// Runs `work` on a new thread, which is open until `work` returns or panics.
+    fn spawn(
+        self: &Arc<Self>,
+        work: impl FnOnce(&Self) + Send + 'static,
+    ) -> JoinHandle<()> {
+        self.change(|seen| seen.open += 1);
+        let watch = Arc::clone(self);
         #[expect(
             clippy::disallowed_methods,
-            reason = "a process test reads another process while it runs"
+            reason = "a process test reads and writes another process while it runs"
         )]
-        let reader = std::thread::spawn(move || {
+        std::thread::spawn(move || {
+            let _open = Open(&watch);
+            work(&watch);
+        })
+    }
+
+    /// Reads `from` on a new thread into the bytes that `to` gives, until it ends.
+    fn read(
+        self: &Arc<Self>,
+        mut from: impl Read + Send + 'static,
+        to: fn(&mut Seen) -> &mut Vec<u8>,
+    ) -> JoinHandle<()> {
+        self.spawn(move |watch| {
             let mut chunk = [0; 4096];
             loop {
                 match from.read(&mut chunk) {
                     Ok(0) => return,
                     Ok(n) => {
-                        to.lock().expect("no panic").extend_from_slice(&chunk[..n]);
+                        watch.change(|seen| to(seen).extend_from_slice(&chunk[..n]));
                     }
                     Err(error) if error.kind() == ErrorKind::Interrupted => {}
                     Err(error) => panic!("read the output: {error}"),
                 }
             }
-        });
-        Self { bytes, reader }
+        })
     }
 
-    /// The bytes read so far, as text.
-    fn text(&self) -> String {
-        String::from_utf8_lossy(&self.bytes.lock().expect("no panic")).into_owned()
+    fn seen(&self) -> std::sync::MutexGuard<'_, Seen> {
+        // A thread that panics changes nothing while it holds the lock.
+        self.seen.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Whether the output has ended.
-    fn ended(&self) -> bool {
-        self.reader.is_finished()
+    fn change(&self, change: impl FnOnce(&mut Seen)) {
+        change(&mut self.seen());
+        self.changed.notify_all();
     }
 
-    /// All of the output. Blocks until it ends.
-    fn end(self) -> Vec<u8> {
-        self.reader.join().expect("read the output");
-        std::mem::take(&mut *self.bytes.lock().expect("no panic"))
+    /// Waits until `done` holds, for at most `limit`. Gives what the command wrote
+    /// when `limit` passes first.
+    fn until(
+        &self,
+        clock: &Clock,
+        limit: Span,
+        mut done: impl FnMut(&Seen) -> bool,
+    ) -> Result<(), String> {
+        let deadline = clock.now() + limit;
+        let mut seen = self.seen();
+        loop {
+            if done(&seen) {
+                return Ok(());
+            }
+            let left = deadline - clock.now();
+            if left <= Span::ZERO {
+                return Err(seen.text());
+            }
+            let left = Duration::from_nanos(left.nanos().unsigned_abs());
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "a process test waits on another process in real time"
+            )]
+            let waited = self.changed.wait_timeout(seen, left);
+            seen = waited.unwrap_or_else(PoisonError::into_inner).0;
+        }
+    }
+}
+
+/// Closes a thread of [`Watch::spawn`] at its end, also when it panics.
+struct Open<'a>(&'a Watch);
+
+impl Drop for Open<'_> {
+    fn drop(&mut self) {
+        self.0.change(|seen| seen.open -= 1);
     }
 }
 
@@ -1117,6 +1189,51 @@ fn a_run_ends_at_its_limit_when_a_process_of_the_command_keeps_its_input() {
         "exec 3<&0; sleep 60 <&3 >/dev/null 2>&1 & echo $!",
         &vec![0; 1 << 20],
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_run_ends_at_its_limit_when_the_command_closes_its_pipes_and_runs() {
+    let mut command = Command::new("sh");
+    command.args(["-c", "echo $$; exec sleep 60 <&- >&- 2>&-"]);
+    let clock = os::clock();
+    let started = clock.now();
+    let limited =
+        std::panic::AssertUnwindSafe(|| run(&clock, Span::SECOND, command, &[]));
+    let panic = std::panic::catch_unwind(limited).expect_err("the run panics");
+    let took = clock.now() - started;
+    assert!(
+        took < Span::from_nanos(2_000_000_000),
+        "the kill took {took}"
+    );
+    let message = panic.downcast_ref::<String>().expect("a message");
+    let pid = message.lines().nth(2).expect("the PID");
+    assert_eq!(
+        message,
+        &format!(
+            "the command exits and closes its pipes: not within 1s. The last check \
+             saw:\nstdout:\n{pid}\n\nstderr:\n"
+        )
+    );
+    let alive = Command::new("kill")
+        .args(["-0", pid])
+        .stderr(Stdio::null())
+        .status()
+        .expect("kill -0");
+    assert_eq!(alive.code(), Some(1), "{pid} still runs");
+}
+
+/// Through [`Watch`]: no command makes a read or a write of its pipes fail with an
+/// error other than a closed pipe, so no call of [`run`] or [`Talk`] gets a thread of
+/// the command that panics.
+#[test]
+fn a_wait_ends_when_a_thread_of_the_command_panics() {
+    let watch = Arc::new(Watch::default());
+    let thread = watch.spawn(|_| panic!("the read fails"));
+    let ended = watch.until(&os::clock(), Span::SECOND, Seen::ended);
+    assert_eq!(ended, Ok(()));
+    let panic = thread.join().expect_err("the thread panics");
+    assert_eq!(panic.downcast_ref::<&str>(), Some(&"the read fails"));
 }
 
 #[test]

@@ -15,8 +15,7 @@ use tokio::sync::oneshot;
 /// The lookup blocks an OS thread of its own, which ends with the lookup, also after
 /// the future drops.
 pub(super) async fn lookup(host: &str, port: u16) -> Result<Vec<SocketAddr>, Error> {
-    let name =
-        CString::new(host).map_err(|_nul| Error::NotFound { host: host.into() })?;
+    let name = CString::new(host).expect("invariant: the name of a host has no NUL");
     let (sender, answer) = oneshot::channel();
     #[expect(
         clippy::disallowed_methods,
