@@ -182,11 +182,10 @@ impl Writer {
         let indexes = |groups: &[Indexed]| -> Vec<channel::Key> {
             groups.iter().map(|&(index, _)| index).collect()
         };
-        // An unknown name fails before the wait. Each mesh time reaches the first
-        // stamp, so once the node has mesh time, the wait is ready at once.
+        // An unknown name fails before the wait. Once the node has mesh time, the wait
+        // is ready at once.
         resolve(&mut state.borrow_mut(), &channels)?;
-        let time = state.borrow().time.reach(Stamp::from_nanos(i64::MIN));
-        time.await;
+        crate::time::known(state).await;
         let (mut keys, groups) = loop {
             let (keys, groups) = resolve(&mut state.borrow_mut(), &channels)?;
             let checked = indexes(&groups);

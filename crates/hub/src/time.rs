@@ -18,6 +18,12 @@ impl Time {
     }
 }
 
+/// Waits for the node's first mesh time. Each mesh time reaches the first stamp.
+pub(crate) async fn known(state: &RefCell<State>) {
+    let first = state.borrow().time.reach(Stamp::from_nanos(i64::MIN));
+    first.await;
+}
+
 pub(crate) fn now(state: &RefCell<State>) -> Stamp {
     let now = state.borrow().home.now();
     now.expect("invariant: mesh time stays once known")

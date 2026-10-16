@@ -233,6 +233,14 @@ impl Hub {
         state.define(definitions);
     }
 
+    /// The node's mesh time. Waits for the node's first mesh time, as the open of a
+    /// writer does, so the [`Time`] it gives always has a stamp. Dropping the future
+    /// ends the wait.
+    pub async fn time(&self) -> Time {
+        time::known(&self.0).await;
+        Time(Rc::clone(&self.0))
+    }
+
     /// Opens a writer session on `config.channels` and the index of each. It waits
     /// for the node's first mesh time, and while the mesh names no home for an index,
     /// for one. A later spec in use that removes or changes one of its channels ends
