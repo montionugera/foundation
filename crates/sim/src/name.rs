@@ -72,6 +72,6 @@ pub(crate) fn parse(host: &str) -> String {
 
 /// The key of `name`, a name of [`Host`], in the name table: `name` with no final
 /// dot.
-pub(crate) fn key(name: &str) -> String {
-    name.strip_suffix('.').unwrap_or(name).to_owned()
+pub(crate) fn key(name: &str) -> &str {
+    name.strip_suffix('.').unwrap_or(name)
 }
