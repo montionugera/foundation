@@ -17,7 +17,7 @@ use types::authority::Authority;
 use types::channel;
 use types::frame::{Form, Label, Path};
 use types::name::{Name, Selector};
-use types::sample::{Scalar, Type};
+use types::sample::{Scalar, Sides, Type};
 use types::time::Span;
 
 use super::*;
@@ -30,7 +30,7 @@ const OPTIONS: tcp::Options = tcp::Options {
     delayed: false,
 };
 /// The name, key, and type of each channel of another sample type, on `edge.time`.
-const TYPED: [(&str, u128, Type); 15] = [
+const TYPED: [(&str, u128, Type); 17] = [
     ("edge.bool", 10, Type::Scalar(Scalar::Bool)),
     ("edge.i8", 11, Type::Scalar(Scalar::I8)),
     ("edge.i16", 12, Type::Scalar(Scalar::I16)),
@@ -53,6 +53,25 @@ const TYPED: [(&str, u128, Type); 15] = [
     ),
     ("edge.text", 23, Type::String),
     ("edge.blob", 24, Type::Bytes),
+    (
+        "edge.list",
+        25,
+        Type::List {
+            element: Scalar::F32,
+            max: 4,
+        },
+    ),
+    (
+        "edge.grid",
+        26,
+        Type::Matrix {
+            element: Scalar::F32,
+            sides: Sides {
+                rows: 2,
+                columns: 2,
+            },
+        },
+    ),
 ];
 /// The key of the first status channel of `influx`.
 const STATUS: u128 = 100;
@@ -1309,20 +1328,21 @@ fn counts_no_line_toward_a_full_batch_for_a_sample_time_of_only_nan() {
     );
 }
 
-/// A batch takes no frame once its lines hold 4 MiB, so it stays under the body limit
-/// of InfluxDB 3.
+/// A batch of 63 lines of 64 KiB takes one more frame, and a batch of 64 lines, 4 MiB,
+/// takes none, so it stays under the body limit of InfluxDB 3.
 #[test]
 fn reads_no_frame_into_a_batch_of_4_mib_or_more() {
-    let lines = run(|node, tasks| async move {
+    let bytes = run(|node, tasks| async move {
         let plant = Plant::new(node, tasks).await;
         let failed = (StatusCode::INTERNAL_SERVER_ERROR, "");
         plant.answers.borrow_mut().push_back(failed);
         let run = plant.start(with(plant.config(), "select", &string("edge.*")));
         let mut writer = plant.writer(&["edge.time", "edge.text"]).await;
         plant.clock.sleep(Span::SECOND).await;
-        let text = "x".repeat(60_000);
-        let column = variable(Type::String, &[text.as_bytes()]);
         let first = writer.now().nanos();
+        let stamp = first.to_string().len();
+        let text = "x".repeat((1 << 16) - "telemetry edge.text=\"\" \n".len() - stamp);
+        let column = variable(Type::String, &[text.as_bytes()]);
         for n in 0..=100 {
             let outcomes =
                 write_raw(&mut writer, first + n * 10_000, 1, &[(23, &column)]);
@@ -1338,11 +1358,9 @@ fn reads_no_frame_into_a_batch_of_4_mib_or_more() {
         plant.clock.sleep(Span::from_nanos(5_000_000_000)).await;
         plant.stop(run).await.expect("ok after a cancel");
         let got = plant.got();
-        (got.iter())
-            .map(|(_, body)| body.lines().count())
-            .collect::<Vec<_>>()
+        (got.iter()).map(|(_, body)| body.len()).collect::<Vec<_>>()
     });
-    assert_eq!(lines, [1, 1, 70, 30]);
+    assert_eq!(bytes, [1 << 16, 1 << 16, 64 << 16, 36 << 16]);
 }
 
 /// What one frame gave: the end of the run once it returned, each request, the stamp
@@ -1569,12 +1587,12 @@ fn leaves_out_and_counts_a_string_over_65536_bytes_after_its_escapes() {
 
 #[test]
 fn writes_a_uuid_as_its_lowercase_text() {
-    let uuid = 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef_u128.to_be_bytes();
+    let uuid = 0x0011_2233_4455_6677_8899_aabb_ccdd_eeff_u128.to_be_bytes();
     let columns = vec![("edge.uuid", 21, uuid.to_vec())];
     let frame = one_frame("edge.*", false, 1, columns);
     assert!(frame.end.is_none(), "the run goes on: {:?}", frame.end);
     let body = format!(
-        "telemetry edge.uuid=\"01234567-89ab-cdef-0123-456789abcdef\" {}\n",
+        "telemetry edge.uuid=\"00112233-4455-6677-8899-aabbccddeeff\" {}\n",
         frame.first
     );
     assert_eq!(frame.got, vec![(WRITE.into(), body)]);
@@ -1634,25 +1652,63 @@ fn counts_oversized_bytes_whose_line_is_left_out() {
     assert_eq!(frame.oversized.last(), Some(&1), "{:?}", frame.oversized);
 }
 
+/// A batch adds only the samples that it left out, so a later batch with none leaves
+/// the count as it is.
+#[test]
+fn counts_each_oversized_sample_in_the_batch_that_left_it_out() {
+    let oversized = run(|node, tasks| async move {
+        let plant = Plant::new(node, tasks).await;
+        let run = plant.start(with(plant.config(), "select", &string("edge.*")));
+        let mut writer = plant.writer(&["edge.time", "edge.text"]).await;
+        plant.clock.sleep(Span::SECOND).await;
+        let first = writer.now().nanos();
+        let long = "x".repeat(65_537);
+        let frames: [[&[u8]; 2]; 2] =
+            [[long.as_bytes(), long.as_bytes()], [b"a", b"b"]];
+        for (at, samples) in [first, first + 10].into_iter().zip(frames) {
+            let column = variable(Type::String, &samples);
+            write_raw(&mut writer, at, 2, &[(23, &column)]);
+            plant.clock.sleep(Span::SECOND).await;
+        }
+        plant.stop(run).await.expect("ok after a cancel");
+        assert_eq!(plant.got().len(), 1, "the second batch is sent");
+        plant.oversized.borrow().clone()
+    });
+    assert_eq!(oversized, [0, 2]);
+}
+
 #[test]
 fn stops_with_a_config_error_at_a_channel_of_a_type_it_does_not_write() {
-    let xyz = bytes![1.0_f32, 2.0_f32, 3.0_f32];
-    let frame = one_frame("edge.*", true, 1, vec![("edge.xyz", 22, xyz)]);
-    assert_eq!(frame.got, []);
-    let Some(Err(Error::Config(diagnostics))) = frame.end else {
-        panic!("a config error, not {:?}", frame.end);
-    };
-    assert_eq!(
-        diagnostics,
-        [Diagnostic::new(
-            Code::new("influx.sample-type"),
-            None,
-            "the channel \"edge.xyz\" holds f32[3] samples, which the influx kind \
-             does not write"
-                .into(),
-            "Leave the channel out of `select`".into(),
-        )]
+    let xyz = ("edge.xyz", 22, bytes![1.0_f32, 2.0_f32, 3.0_f32], "f32[3]");
+    let list = variable(
+        Type::List {
+            element: Scalar::F32,
+            max: 4,
+        },
+        &[&bytes![1.0_f32]],
     );
+    let list = ("edge.list", 25, list, "list<f32, 4>");
+    let grid = bytes![1.0_f32, 2.0_f32, 3.0_f32, 4.0_f32];
+    let grid = ("edge.grid", 26, grid, "f32[2][2]");
+    for (channel, key, bytes, data_type) in [xyz, list, grid] {
+        let frame = one_frame("edge.*", true, 1, vec![(channel, key, bytes)]);
+        assert_eq!(frame.got, []);
+        let Some(Err(Error::Config(diagnostics))) = frame.end else {
+            panic!("a config error, not {:?}", frame.end);
+        };
+        assert_eq!(
+            diagnostics,
+            [Diagnostic::new(
+                Code::new("influx.sample-type"),
+                None,
+                format!(
+                    "the channel {channel:?} holds {data_type} samples, which the \
+                     influx kind does not write"
+                ),
+                "Leave the channel out of `select`".into(),
+            )]
+        );
+    }
 }
 
 #[test]
