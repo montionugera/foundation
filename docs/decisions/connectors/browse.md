@@ -56,7 +56,8 @@
   decision 6, 17:33 UTC, "Ok this is good"
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198173531). The
   shape `Unreadable`, the limit, and the PR list: `laptop.architect-2`, 2026-10-15
-  17:32 UTC (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198270136).
+  17:32 UTC
+  (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6198270136).
   `browse::Device`, `level` by entry, the page bound, `sample::Value`, the name
   `Malformed`, and "more than `<limit>`" in place of the count of decision 6:
   `laptop.architect-2`, 2026-10-16 04:00 UTC, on the plan of `box1.builder-3`
