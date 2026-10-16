@@ -2,8 +2,9 @@
 //!
 //! - `node::name` on a data directory with no file `name` and no mesh directory makes
 //!   no pool for the read of a founding, whose reservation is over 2 MiB.
-//! - `node::client::reach` makes one pool for its transport and its
-//!   `program::Session`, which reserves at most 128 MiB.
+//! - `node::client::reach` makes two pools, one for its transport and its
+//!   `program::Session` and one for the frames of the session's reads, which together
+//!   reserve at most 128 MiB.
 //!
 //! The count covers each thread, so this binary has no test harness.
 
