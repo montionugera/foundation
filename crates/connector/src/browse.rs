@@ -540,20 +540,32 @@ enum Segment {
     Name(Glob),
 }
 
-/// The text of one name of a pattern, split at each `*`: a name matches when it
-/// starts with the first piece, ends with the last, and holds the pieces between in
-/// order. Each piece between the first and the last is not empty.
+/// The text of one name of a pattern, split at each `*`. With one piece, a name
+/// matches when it is that piece. Else it matches when it holds at least the bytes of
+/// all pieces, starts with the first, ends with the last, and holds the pieces between
+/// in order. Each piece between the first and the last is not empty.
 #[derive(Clone, PartialEq, Eq)]
-struct Glob(Vec<String>);
+struct Glob {
+    pieces: Vec<String>,
+    /// The bytes of all pieces.
+    len: usize,
+}
 
 impl Glob {
-    /// Whether `name` matches, in time linear in the lengths of both.
+    fn new(pieces: Vec<String>) -> Self {
+        let len = pieces.iter().map(String::len).sum();
+        Self { pieces, len }
+    }
+
+    /// Whether `name` matches, in time linear in the length of `name`.
     fn matches(&self, name: &str) -> bool {
-        let [first, middle @ .., last] = self.0.as_slice() else {
-            return self.0.first().is_some_and(|piece| piece == name);
+        let [first, middle @ .., last] = self.pieces.as_slice() else {
+            return self.pieces.first().is_some_and(|piece| piece == name);
         };
-        // So that the first and the last piece do not overlap in `name`.
-        if name.len() < self.0.iter().map(String::len).sum::<usize>()
+        // So that the first and the last piece do not overlap in `name`, and so that
+        // `middle`, of pieces that are not empty, holds no more pieces than `name` has
+        // bytes.
+        if name.len() < self.len
             || !name.starts_with(first.as_str())
             || !name.ends_with(last.as_str())
         {
@@ -656,7 +668,7 @@ impl fmt::Display for Pattern {
             f.write_str(separator)?;
             match segment {
                 Segment::Any => f.write_str("**")?,
-                Segment::Name(Glob(pieces)) => {
+                Segment::Name(Glob { pieces, .. }) => {
                     let mut star = "";
                     for piece in pieces {
                         f.write_str(star)?;
@@ -715,7 +727,7 @@ fn segment(name: Vec<Char>) -> Segment {
                 .push(c),
         }
     }
-    Segment::Name(Glob(pieces))
+    Segment::Name(Glob::new(pieces))
 }
 
 /// The names of `text`, split on each `/` that no `\` takes.

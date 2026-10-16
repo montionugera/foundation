@@ -902,6 +902,15 @@ mod walk {
     }
 
     #[test]
+    fn finds_the_point_of_a_pattern_of_the_most_names() {
+        let text = format!("{}p", "f/".repeat(DEPTH - 1));
+        let found = now(walk(&mut Chain, &query("", Scope::Match(pattern(&text)))));
+        let found = found.expect("found");
+        assert_eq!(paths(&found), [text]);
+        assert_eq!(found.end, End::Done);
+    }
+
+    #[test]
     fn walks_a_pattern_from_a_start_deeper_than_the_depth() {
         let start = vec!["f"; DEPTH + 1].join("/");
         let query = query(&start, Scope::Match(pattern("*/p")));
