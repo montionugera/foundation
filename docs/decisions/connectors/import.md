@@ -59,19 +59,20 @@
   place of `fill`". `fill("<what>")` gives `config.unfilled`, "the import found no
   value for <what>". A call `fill` of other arguments gives `config.bad-fill`, "`fill`
   takes one string", and the check does not read inside it. `import::unfilled` is the
-  read of `fill`. No kind may give a call `fill` a meaning of its own. `config::import::{channel, index}`
-  writes the `channel` blocks of an import, so the grammar of a `channel` block stays in
-  the crate that parses it, and no kind or `ops` code writes one. A missing sample type
-  is `fill("the sample type")`. The unit is what `spec::unit::Unit::given` gives (A16).
-  An empty text or code counts as none. When `Unit::given` gives none for a text or a
-  code, the unit is `fill("the unit, which the device gives as <what>")`, so nothing
-  drops in silence. `<what>` is `"<unit>"`, `the code "<code>"`, or `"<unit>" with the
-  code "<code>"`. A text that reads is the unit, and a code that does not read drops.
-  A sample type that holds no number gets no unit. Lost: a value kind `document::Kind::Fill`, where each
-  front end writes and reads it and a rule of import goes into the syntax-neutral model;
-  and a refusal of `fill` in the parse of each kind, one rule in each kind, where a
-  `channel` block is no kind's. `unfilled`, `config.unfilled`, `config::import`, the
-  reserved call, and the fix text: `laptop.architect-2`, 2026-10-16 14:58 UTC
+  read of `fill`. No kind may give a call `fill` a meaning of its own.
+  `config::import::{channel, index}` writes the `channel` blocks of an import, so the
+  grammar of a `channel` block stays in the crate that parses it, and no kind or `ops`
+  code writes one. A missing sample type is `fill("the sample type")`. The unit is what
+  `spec::unit::Unit::given` gives (A16). An empty text or code counts as none. When
+  `Unit::given` gives none for a text or a code, the unit is `fill("the unit, which the
+  device gives as <what>")`, so nothing drops in silence. `<what>` is `"<unit>"`, `the
+  code "<code>"`, or `"<unit>" with the code "<code>"`. A text that reads is the unit,
+  and a code that does not read drops. A sample type that holds no number gets no unit.
+  Lost: a value kind `document::Kind::Fill`, where each front end writes and reads it
+  and a rule of import goes into the syntax-neutral model; and a refusal of `fill` in
+  the parse of each kind, one rule in each kind, where a `channel` block is no kind's.
+  `unfilled`, `config.unfilled`, `config::import`, the reserved call, and the fix text:
+  `laptop.architect-2`, 2026-10-16 14:58 UTC
   (https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6218269338). The
   unit map: `laptop.monitor` objected to a `fill` for each unit that is not ASCII ("an
   import of 500 points in `°C` stops 500 times"), and `laptop.architect-2` ruled the
