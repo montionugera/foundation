@@ -1194,6 +1194,7 @@ dependencies = [
  "config-hcl",
  "connector",
  "connector-influx",
+ "connector-modbus",
  "connector-opcua",
  "counting",
  "crc32c",
