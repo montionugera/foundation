@@ -277,8 +277,9 @@
   (`laptop.architect`, 2026-10-15T23:56:49Z:
   https://github.com/synnaxlabs/foundation/pull/2779#issuecomment-6204779426).
   `Frames::open` takes the first message of the session, which is `Opened`, and gives
-  its `live` with the frames (#2553), so a `Frames` is open from its start, `Step` has no opened, and no caller restates the
-  order of the open (`laptop.architect`, 2026-10-16T00:47:46Z:
+  its `live` with the frames (#2553), so a `Frames` is open from its start, `Step` has
+  no opened, and no caller restates the order of the open (`laptop.architect`,
+  2026-10-16T00:47:46Z:
   https://github.com/synnaxlabs/foundation/pull/2779#issuecomment-6205447213; lost: an
   `opened` call on a `Frames` made before the first message, whose state a failed
   attempt can leave open).
