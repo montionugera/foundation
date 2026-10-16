@@ -206,7 +206,7 @@ fn writes_each_field_in_the_order_given_and_twice() {
 }
 
 #[test]
-fn leaves_out_a_field_whose_value_writes_nothing() {
+fn leaves_out_a_float_field_that_is_nan_or_infinite() {
     let measurement = Measurement::new("m", &[("t", "v")]).unwrap();
     let (a, b) = (
         measurement.field("a").unwrap(),
@@ -214,21 +214,18 @@ fn leaves_out_a_field_whose_value_writes_nothing() {
     );
     let mut out = b"x".to_vec();
     let mut line = measurement.begin(&mut out);
-    line.field(&a, |_| false);
-    line.field(&b, |out| {
-        out.push(b'1');
-        true
-    });
-    line.field(&a, |_| false);
-    line.field(&a, |out| {
-        out.push(b'2');
-        true
-    });
-    assert_eq!(line.end(Stamp::from_nanos(5)), 2);
+    line.float(&a, f64::NAN);
+    line.float(&b, 1.0);
+    line.float(&a, f64::INFINITY);
+    line.integer(&a, -2);
+    line.unsigned(&b, 3);
+    line.boolean(&a, false);
+    line.float(&b, f64::NEG_INFINITY);
+    assert_eq!(line.end(Stamp::from_nanos(5)), 4);
     let mut line = measurement.begin(&mut out);
-    line.field(&a, |_| false);
+    line.float(&a, f64::NAN);
     assert_eq!(line.end(Stamp::EPOCH), 0, "no field, so no line");
-    assert_eq!(text(&out), "xm,t=v b=1,a=2 5\n");
+    assert_eq!(text(&out), "xm,t=v b=1e0,a=-2i,b=3u,a=f 5\n");
 }
 
 #[test]

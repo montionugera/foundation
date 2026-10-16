@@ -13,7 +13,7 @@ use types::time::Stamp;
 
 use crate::Target;
 use crate::gap::Gap;
-use crate::line::{self, Float, Measurement};
+use crate::line::{self, Measurement};
 
 const SAMPLE_TYPE: Code = Code::new("influx.sample-type");
 const BAD_CHANNEL: Code = Code::new("influx.bad-channel");
@@ -88,9 +88,8 @@ struct Channel {
     convert: Convert,
 }
 
-/// Appends the field value of the sample at a given index of a raw series, or gives
-/// `false` when InfluxDB cannot store it.
-type Convert = fn(&[u8], usize, &mut Vec<u8>) -> bool;
+/// Appends to a line the field of the sample at a given index of a raw series.
+type Convert = fn(&[u8], usize, &line::Field, &mut line::Line<'_>);
 
 impl Batch {
     /// An empty batch of lines of the measurement `name` to `target`, whose gap lines
@@ -234,7 +233,7 @@ impl Body {
             let mut text = measurement.begin(&mut self.bytes);
             for (&at, raw) in self.entries.iter().zip(&self.raw) {
                 let channel = layout.channel(at);
-                text.field(&channel.field, |out| (channel.convert)(raw, line, out));
+                (channel.convert)(raw, line, &channel.field, &mut text);
             }
             let wrote = text.end(Stamp::from_nanos(i64::from_le_bytes(time)));
             if wrote > 0 {
@@ -314,8 +313,28 @@ fn entry(set: &KeySet, at: usize) -> &key_set::Entry {
     entry.expect("invariant: a view gives entries of its key set")
 }
 
-/// The conversion of a sample of the data channel at `at` of `received`. A `u64`
-/// channel is refused unless `unsigned`.
+/// The conversion of a sample of `Scalar::$scalar`, which gives `$value` to the
+/// `Line` method `$write`.
+macro_rules! read {
+    ($scalar:ident, $write:ident, |$value:ident| $field:expr) => {
+        |series: &[u8], index: usize, field: &line::Field, text: &mut line::Line<'_>| {
+            const WIDTH: usize = Scalar::$scalar.width();
+            let sample = series.as_chunks::<WIDTH>().0.get(index);
+            let sample =
+                sample.expect("invariant: a series has the count of its index");
+            let sample::Value::$scalar($value) =
+                sample::Value::read(Scalar::$scalar, sample)
+            else {
+                unreachable!("invariant: a read gives its scalar")
+            };
+            text.$write(field, $field);
+        }
+    };
+}
+
+/// The conversion of a sample of the data channel at `at` of `received`. A `u64` is
+/// a `u` integer, refused unless `unsigned`; a `timestamp` is its ns since the Unix
+/// epoch, and a `duration` its ns. A NaN or infinite float is left out.
 fn conversion(
     received: &Received<'_>,
     at: usize,
@@ -331,8 +350,30 @@ fn conversion(
         )]))
     };
     let data_type = entry(received.set(), at).data_type;
-    let convert = match data_type {
-        Type::Scalar(Scalar::U64) if !unsigned => {
+    let unwritten = || {
+        refused(
+            SAMPLE_TYPE,
+            format!(
+                "the channel {name:?} holds {data_type} samples, which the influx kind \
+                 does not write"
+            ),
+            "Leave the channel out of `select`",
+        )
+    };
+    let Type::Scalar(scalar) = data_type else {
+        return unwritten();
+    };
+    Ok(match scalar {
+        Scalar::Bool => read!(Bool, boolean, |value| value),
+        Scalar::I8 => read!(I8, integer, |value| value.into()),
+        Scalar::I16 => read!(I16, integer, |value| value.into()),
+        Scalar::I32 => read!(I32, integer, |value| value.into()),
+        Scalar::I64 => read!(I64, integer, |value| value),
+        Scalar::U8 => read!(U8, integer, |value| value.into()),
+        Scalar::U16 => read!(U16, integer, |value| value.into()),
+        Scalar::U32 => read!(U32, integer, |value| value.into()),
+        Scalar::U64 if unsigned => read!(U64, unsigned, |value| value),
+        Scalar::U64 => {
             return refused(
                 UNSIGNED,
                 format!(
@@ -343,87 +384,10 @@ fn conversion(
                  `select`",
             );
         }
-        Type::Scalar(scalar) => convert(scalar),
-        Type::Array { .. }
-        | Type::List { .. }
-        | Type::String
-        | Type::Bytes
-        | Type::Matrix { .. } => None,
-    };
-    convert.map_or_else(
-        || {
-            refused(
-                SAMPLE_TYPE,
-                format!(
-                    "the channel {name:?} holds {data_type} samples, which the influx \
-                     kind does not write"
-                ),
-                "Leave the channel out of `select`",
-            )
-        },
-        Ok,
-    )
-}
-
-/// The conversion of a sample of `scalar`, or `None` for a `uuid`. A `u64` is a `u`
-/// integer, a `timestamp` its ns since the Unix epoch, and a `duration` its ns. A NaN
-/// or infinite float is left out.
-fn convert(scalar: Scalar) -> Option<Convert> {
-    /// The conversion of a sample of `Scalar::$scalar`, which writes `$value` with
-    /// `$write`.
-    macro_rules! read {
-        ($scalar:ident, |$value:ident, $out:ident| $write:expr) => {
-            |series: &[u8], line: usize, $out: &mut Vec<u8>| {
-                const WIDTH: usize = Scalar::$scalar.width();
-                let sample = series.as_chunks::<WIDTH>().0.get(line);
-                let sample =
-                    sample.expect("invariant: a series has the count of its index");
-                let sample::Value::$scalar($value) =
-                    sample::Value::read(Scalar::$scalar, sample)
-                else {
-                    unreachable!("invariant: a read gives its scalar")
-                };
-                $write
-            }
-        };
-    }
-    /// The conversion of a sample whose value `line::integer` writes.
-    macro_rules! integer {
-        ($scalar:ident, |$value:ident| $integer:expr) => {
-            read!($scalar, |$value, out| {
-                line::integer(out, $integer);
-                true
-            })
-        };
-    }
-    Some(match scalar {
-        Scalar::Bool => read!(Bool, |value, out| {
-            line::boolean(out, value);
-            true
-        }),
-        Scalar::I8 => integer!(I8, |value| value.into()),
-        Scalar::I16 => integer!(I16, |value| value.into()),
-        Scalar::I32 => integer!(I32, |value| value.into()),
-        Scalar::I64 => integer!(I64, |value| value),
-        Scalar::U8 => integer!(U8, |value| value.into()),
-        Scalar::U16 => integer!(U16, |value| value.into()),
-        Scalar::U32 => integer!(U32, |value| value.into()),
-        Scalar::U64 => read!(U64, |value, out| {
-            line::unsigned(out, value);
-            true
-        }),
-        Scalar::F32 => read!(F32, |value, out| {
-            Float::new(value.into())
-                .map(|value| line::float(out, value))
-                .is_some()
-        }),
-        Scalar::F64 => read!(F64, |value, out| {
-            Float::new(value)
-                .map(|value| line::float(out, value))
-                .is_some()
-        }),
-        Scalar::Stamp => integer!(Stamp, |value| value.nanos()),
-        Scalar::Span => integer!(Span, |value| value.nanos()),
-        Scalar::Uuid => return None,
+        Scalar::F32 => read!(F32, float, |value| value.into()),
+        Scalar::F64 => read!(F64, float, |value| value),
+        Scalar::Stamp => read!(Stamp, integer, |value| value.nanos()),
+        Scalar::Span => read!(Span, integer, |value| value.nanos()),
+        Scalar::Uuid => return unwritten(),
     })
 }

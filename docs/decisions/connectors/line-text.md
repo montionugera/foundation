@@ -33,8 +33,7 @@
   https://github.com/synnaxlabs/foundation/pull/2855#issuecomment-6212747967 asks. The
   link of a quality field to its data channel waits on
   https://github.com/synnaxlabs/foundation/issues/2510#issuecomment-6212750985. A `u64`
-  sample is a `u` integer (`line::Value::Unsigned`) to a `bucket`, as InfluxDB 2 and 3
-  store it. To a `database`, the kind refuses a `u64` channel with `Error::Config` and
+  sample is a `u` integer to a `bucket`, as InfluxDB 2 and 3 store it. To a `database`, the kind refuses a `u64` channel with `Error::Config` and
   `influx.unsigned` where the run first learns the type, before it writes a line of that
   frame: InfluxDB 1 OSS refuses `u`, and an `i64` holds no value above `i64::MAX`. The
   kind does not know the server version, so the target stands for it: a `database` is
