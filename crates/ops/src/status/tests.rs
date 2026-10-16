@@ -126,7 +126,7 @@ fn kinds() -> Table {
         )
         .with(
             "influx",
-            Scripted::new(&[("confirmed", 1517)], Script::Steady),
+            Scripted::new(&[("confirmed", 1517), ("lost", 0)], Script::Steady),
         )
 }
 

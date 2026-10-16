@@ -93,11 +93,12 @@ fn shows_each_definition_in_file_order_then_the_counts() {
 + channel influx.status.class
 + channel influx.status.confirmed
 + channel influx.status.error
++ channel influx.status.lost
 + channel influx.status.note
 + channel influx.status.restarts
 + channel influx.status.state
 + channel influx.status.time
-24 to add, 0 to change, 0 to remove.
+25 to add, 0 to change, 0 to remove.
 "
     );
 }
@@ -698,12 +699,13 @@ fn shows_a_kind_change_as_an_add_and_a_removal() {
 + channel influx.status.class
 + channel influx.status.confirmed
 + channel influx.status.error
++ channel influx.status.lost
 + channel influx.status.note
 + channel influx.status.restarts
 + channel influx.status.state
 + channel influx.status.time
 - channel plc
-24 to add, 0 to change, 1 to remove.
+25 to add, 0 to change, 1 to remove.
 "
     );
 }
@@ -738,12 +740,13 @@ fn shows_a_channel_that_replaces_a_connector_as_an_add_and_a_removal() {
 + channel influx.status.class
 + channel influx.status.confirmed
 + channel influx.status.error
++ channel influx.status.lost
 + channel influx.status.note
 + channel influx.status.restarts
 + channel influx.status.state
 + channel influx.status.time
 - connector plant.time
-24 to add, 0 to change, 1 to remove.
+25 to add, 0 to change, 1 to remove.
 "
     );
 }

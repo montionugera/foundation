@@ -64,9 +64,10 @@ pub(crate) const OPCUA: Reader = Reader {
     counts: &["in", "lost", "missed"],
 };
 
-/// The stand-in of the `influx` kind, with the count `confirmed` that #1734 gives it.
+/// The stand-in of the `influx` kind, with the count `confirmed` that #1734 gives it
+/// and the count `lost` that #2725 gives it.
 pub(crate) const INFLUX: Reader = Reader {
-    counts: &["confirmed"],
+    counts: &["confirmed", "lost"],
 };
 
 impl kind::Kind for Reader {
