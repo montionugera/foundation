@@ -911,8 +911,8 @@ impl Logs {
     }
 
     /// Moves the durable tail of the header's path past the entry, as
-    /// [`Position::advance`], and adds the record at `offset` to the path's runs when it
-    /// is not the newest. The record becomes the path's holder when the entry gives
+    /// [`Position::advance`], and adds the record at `offset` to the path's runs when
+    /// it is not the newest. The record becomes the path's holder when the entry gives
     /// the durable stamp. A nonzero tag makes `offset` the newest record of its tag
     /// on the path.
     ///
