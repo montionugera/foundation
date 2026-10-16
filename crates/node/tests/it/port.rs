@@ -13,7 +13,7 @@ use transport::{Address, Class, Code};
 use types::ed25519::PrivateKey;
 use types::time::Span;
 
-use crate::common::{PATIENCE, files, free, recv, start, start_node, wait};
+use crate::common::{PATIENCE, config, files, free, recv, start, wait};
 use crate::rig::Rig;
 
 /// The private key of the node.
@@ -41,7 +41,8 @@ fn the_port_binds_at_once_when_the_lock_is_free() {
     let listen = free();
     let region = node::Region::Absent;
     let slow = move |disk| Slow { disk, listen };
-    let node = start_node(&rig, &shards, &threads, &io, listen, region, slow);
+    let config = config(&rig, &shards, &threads, &io, listen, region, slow);
+    let node = node::Node::start(config);
     // A task runs once the node takes sessions.
     let (serves, serving) = mpsc::channel();
     node.spawn(move |_| {
@@ -85,7 +86,9 @@ fn the_port_binds_at_once_when_the_lock_is_free() {
     assert_eq!(wait(&bind), Ok(()));
     let peer_closed = transport::Error::PeerClosed { code: Code(0) };
     assert_eq!(wait(&close), peer_closed);
+    let flush = node.flush();
     assert_eq!(node.join(), Ok(()));
+    assert!(flush.wait(PATIENCE));
     for shard in [peer, probe] {
         shard.join().unwrap();
     }

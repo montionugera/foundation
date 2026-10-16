@@ -193,6 +193,13 @@ exclude_re = [
   # test of `node` opens sessions yet (#2370). The unit test
   # `a_session_whose_hold_drops_leaves_its_place` kills it through `Places::take`.
   'crates/node/src/route\.rs:.*replace <impl Drop for Hold>::drop with \(\)',
+  # Without the join, a thread `log` that has ended its run still ends by itself, only
+  # later. Only a race with the end of that thread sees it.
+  'crates/node/src/log/queue\.rs:.*replace join with \(\)$',
+  # Only the benches drop a `bench::Log`. With `()`, the hold still drops, so the
+  # thread `log` writes each line and ends by itself, only later. Only a race with
+  # that thread sees it.
+  'crates/node/src/bench\.rs:.*replace <impl Drop for Log>::drop with \(\)$',
   # The loop of the constant assertion of the status names: a mutant that skips it
   # still builds, and no test sees a check that runs at compile time.
   'crates/node/src/status\.rs:.*replace < with (==|>)$',

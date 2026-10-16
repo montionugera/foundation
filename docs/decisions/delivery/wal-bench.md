@@ -2,7 +2,7 @@
   (`buffer`'s dev-dependency on itself turns it on for the bench), adds
   `#[doc(hidden)] pub mod bench` with `Ring { new, commit }` over `wal::Writer`, as
   STORED BENCH does for `home`. Only the benches of `buffer` (`test = true`) and its
-  `alloc` test use it.
+  `alloc` and `memory` tests use it.
   `commit` appends its records, takes `trimmed`, syncs each record, and releases to the
   trimmed tail, so a time holds the writer's cost for each commit. The bench runs
   commits of 1 and 8 records, with the bench IDs 64 and 4096: 1 record gives the cost
@@ -74,3 +74,29 @@
   https://github.com/synnaxlabs/foundation/issues/2796#issuecomment-6210474938, with
   the text approved (2026-10-16T07:45:51Z):
   https://github.com/synnaxlabs/foundation/issues/2796#issuecomment-6210673885.
+  `bench` also has `Deadline { new, commit }` over the private `State` of a buffer, from
+  the child module `buffer::bench`, for the cases `deadline` of 1 and 32 indexes and
+  `deadline_carry` of `benches/wal.rs`, on the ring of ID 64. `commit` appends one entry
+  of 100 bytes of each index but the last, which appends one each `period` deadlines.
+  Then it does the work of the append, the fit and take of the group, and then the work
+  of the commit task at a deadline with `trimmed`, in the order of `run`:
+  `State::deadline` (the take, the checkpoint, the carry record, and the seal of the
+  records) and `State::synced`, with no file write. `new` refuses more than 54 indexes,
+  whose group is over a body of two blocks. So a time holds the cost of the commit path
+  of a buffer that trims for each deadline, and `deadline_carry` that of a carry record
+  of 32 tails. `benches/logs.rs` also gets the case `lap_shrink` of 10000 paths, which
+  times only the commit of `lap_end` that ends the lap of 2756 paths, each with a
+  shrink, while the other paths wait. Lost: a sim `Buffer` over a sim file, timed from
+  `append` to the end of the commit, whose file, executor, and clock step cost more than
+  the code under test, while the `wal` benches already time the file write. Lost: a
+  `pub(crate)` `State`, which widens `State` and each method that the bench calls, for
+  one bench. Decided by `laptop.architect`: the surface of `Deadline` (#2909,
+  2026-10-16T19:32:27Z):
+  https://github.com/synnaxlabs/foundation/pull/2909#issuecomment-6223169251, with the
+  refusal of more than 54 indexes and the seal of the records in `State::deadline`
+  (2026-10-16T21:03:09Z):
+  https://github.com/synnaxlabs/foundation/pull/2909#issuecomment-6224646122, and
+  `lap_shrink` as item 6 of #2774, deferred with its OK (#2739, 2026-10-15T22:34:39Z):
+  https://github.com/synnaxlabs/foundation/pull/2739#issuecomment-6203672199. The two
+  lost designs have only the text approval (2026-10-16T20:11:06Z):
+  https://github.com/synnaxlabs/foundation/pull/2909#issuecomment-6223804759.
