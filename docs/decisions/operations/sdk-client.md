@@ -31,4 +31,7 @@
   failure of the session after `connect` stays silent until the next call, and that
   call gives the cause of the failure, never a generic closed error (`laptop.monitor`,
   key choice of kind 9, 2026-10-16,
-  https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225611780).
+  https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225611780). The
+  next call, `close` too, gives the cause: `close` gives `Error::Session` with it
+  when the session ended before the close (`laptop.architect-2`, 2026-10-16,
+  https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225794091).

@@ -75,7 +75,7 @@ fn a_client_connects_to_a_node_and_connects_again_after_its_close() {
     rig.start();
     let (node, subject) = admin(&rig);
     let client = Client::connect(&node, subject.clone()).unwrap();
-    client.close();
+    assert_eq!(client.close(), Ok(()));
     let client = Client::connect(&node, subject).unwrap();
     drop(client);
     rig.stop();
@@ -128,7 +128,7 @@ fn the_close_of_a_client_sends_the_close_to_the_node() {
     };
     let client = Client::connect(&node, subject).unwrap();
     let before = count.load(Ordering::SeqCst);
-    client.close();
+    assert_eq!(client.close(), Ok(()));
     rig.wait("a datagram after the drop", || {
         let after = count.load(Ordering::SeqCst);
         if after > before {
@@ -138,6 +138,29 @@ fn the_close_of_a_client_sends_the_close_to_the_node() {
         }
     });
     rig.stop();
+}
+
+/// The node sends its close before it exits. No call of the client shows that the
+/// client took it, so the test gives the client 1 s on loopback.
+#[test]
+fn the_close_of_a_client_gives_the_cause_when_the_node_closed_the_session() {
+    let mut rig = Rig::new();
+    rig.start();
+    let (node, subject) = admin(&rig);
+    let client = Client::connect(&node, subject).unwrap();
+    rig.stop();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the client takes the close of a node process in real time"
+    )]
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let closed = transport::Error::PeerClosed {
+        code: transport::Code(0),
+    };
+    assert_eq!(
+        client.close(),
+        Err(Error::Session(program::Error::Transport(closed)))
+    );
 }
 
 #[test]
@@ -154,7 +177,7 @@ fn a_client_dials_the_next_address_when_the_first_does_not_answer() {
     };
     let client = Client::connect(&node, subject).unwrap();
     assert_ne!(count.load(Ordering::SeqCst), 0);
-    client.close();
+    assert_eq!(client.close(), Ok(()));
     rig.stop();
 }
 

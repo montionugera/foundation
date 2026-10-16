@@ -39,7 +39,9 @@ fn each_error_names_its_cause() {
 }
 
 /// A thread of a client that runs `body` with the receiver of its end.
-fn thread(body: impl FnOnce(oneshot::Receiver<()>) + Send + 'static) -> Thread {
+fn thread(
+    body: impl FnOnce(oneshot::Receiver<()>) -> Result<(), Error> + Send + 'static,
+) -> Thread {
     let (end, ended) = oneshot::channel();
     #[expect(clippy::disallowed_methods, reason = "a thread of a client")]
     let handle = thread::spawn(move || body(ended));
@@ -52,15 +54,27 @@ fn a_close_ends_the_thread_and_waits_for_it() {
     let client = Client(thread(move |receiver| {
         drop(receiver.blocking_recv());
         ended.send(()).unwrap();
+        Ok(())
     }));
-    client.close();
+    assert_eq!(client.close(), Ok(()));
     assert_eq!(end.try_recv(), Ok(()));
+}
+
+#[test]
+fn a_close_gives_the_error_that_ended_the_session() {
+    let failed = Error::Session(program::Error::Unanswered);
+    let error = failed.clone();
+    let client = Client(thread(move |receiver| {
+        drop(receiver.blocking_recv());
+        Err(error)
+    }));
+    assert_eq!(client.close(), Err(failed));
 }
 
 #[test]
 #[should_panic(expected = "the session failed")]
 fn a_close_resumes_a_panic_of_the_thread() {
-    Client(thread(|_| panic!("the session failed"))).close();
+    drop(Client(thread(|_| panic!("the session failed"))).close());
 }
 
 #[test]
@@ -72,6 +86,7 @@ fn a_drop_ends_the_thread_and_does_not_wait() {
         #[expect(clippy::disallowed_methods, reason = "the thread waits for the test")]
         wait.recv().unwrap();
         ended.send(()).unwrap();
+        Ok(())
     }));
     drop(client);
     go.send(()).unwrap();

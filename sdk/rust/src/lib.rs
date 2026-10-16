@@ -61,7 +61,7 @@ pub struct Client(Thread);
 #[derive(Debug)]
 struct Thread {
     end: oneshot::Sender<()>,
-    handle: JoinHandle<()>,
+    handle: JoinHandle<Result<(), Error>>,
 }
 
 impl Client {
@@ -101,11 +101,11 @@ impl Client {
         match outcome {
             Ok(Ok(())) => Ok(Self(thread)),
             Ok(Err(error)) => {
-                thread.end();
+                drop(thread.end());
                 Err(error)
             }
             Err(_) => {
-                thread.end();
+                drop(thread.end());
                 unreachable!("the thread ended with no answer and no panic")
             }
         }
@@ -116,27 +116,32 @@ impl Client {
     /// Closes the session, and blocks until the close goes out and the client's
     /// thread ends.
     ///
+    /// # Errors
+    ///
+    /// [`Error::Session`] with the cause when the session ended before the close.
+    ///
     /// # Panics
     ///
     /// Resumes a panic of the client's thread.
-    pub fn close(self) {
-        self.0.end();
+    pub fn close(self) -> Result<(), Error> {
+        self.0.end()
     }
 }
 
 impl Thread {
-    /// Ends the thread and waits for it, and resumes its panic.
-    fn end(self) {
+    /// Ends the thread and waits for it, and gives its outcome. Resumes its panic.
+    fn end(self) -> Result<(), Error> {
         drop(self.end);
-        if let Err(payload) = self.handle.join()
-            && !thread::panicking()
-        {
-            panic::resume_unwind(payload);
+        match self.handle.join() {
+            Ok(outcome) => outcome,
+            Err(payload) if !thread::panicking() => panic::resume_unwind(payload),
+            Err(_) => Ok(()),
         }
     }
 }
 
-/// Why [`Client::connect`] gave no client.
+/// Why [`Client::connect`] gave no client, or why the session ended before
+/// [`Client::close`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The OS cannot start the client's thread, or the Tokio runtime of that thread.
@@ -146,7 +151,8 @@ pub enum Error {
     },
     /// The local UDP socket cannot bind.
     Bind(transport::Error),
-    /// The session failed before the node admitted the hello.
+    /// The session failed before the node admitted the hello, or ended before the
+    /// close.
     Session(program::Error),
 }
 
@@ -166,13 +172,14 @@ impl std::error::Error for Error {}
 
 /// The body of the client's thread: connects, sends the outcome on `ready`, and holds
 /// the session until `ended` completes. It then waits for each task, so that the
-/// close of the session goes out.
+/// close of the session goes out. Gives the error that ended the session before
+/// `ended`.
 fn run(
     node: Node,
     subject: Subject,
     ready: mpsc::Sender<Result<(), Error>>,
     ended: oneshot::Receiver<()>,
-) {
+) -> Result<(), Error> {
     let runtime = Builder::new_current_thread()
         .enable_io()
         .enable_time()
@@ -182,24 +189,30 @@ fn run(
         Err(e) => {
             let reason = e.to_string();
             drop(ready.send(Err(Error::Thread { reason })));
-            return;
+            return Ok(());
         }
     };
     runtime.block_on(async move {
         let spawned = Rc::new(Spawned::default());
         let group = Group::new(Tasks::new(Spawner(Rc::clone(&spawned))));
         let tasks = group.tasks().clone();
-        match spawned.guard(connect(node, subject, tasks)).await {
+        let outcome = match spawned.guard(connect(node, subject, tasks)).await {
             Ok(session) => {
                 if ready.send(Ok(())).is_ok() {
                     drop(spawned.guard(ended).await);
                 }
-                drop(session);
+                session
+                    .ended()
+                    .map_or(Ok(()), |error| Err(Error::Session(error)))
             }
-            Err(error) => drop(ready.send(Err(error))),
-        }
+            Err(error) => {
+                drop(ready.send(Err(error)));
+                Ok(())
+            }
+        };
         spawned.guard(group.ended()).await;
-    });
+        outcome
+    })
 }
 
 /// A session with `node` as `subject`, on the env of the calling thread.
