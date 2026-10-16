@@ -264,10 +264,13 @@
   `node.session` of item 1 of
   https://github.com/synnaxlabs/foundation/pull/2517#issuecomment-6136254936. The log
   of the node (LOG OUTPUT) does not yet hold why a session failed, so this fix points
-  to it only when the node writes that event (#2767). The fix of `ops.unknown-operation`
-  with no close name names the list of its carrier: ``Use a name from `foundation
-  --help` `` on the command line, and ``Use a name from `tools/list` `` in MCP, because
-  `foundation docs` lists only the operations of `TABLE`. By `laptop.architect-2`
+  to it only when the node writes that event (#2767), by `laptop.architect-2`
+  (2026-10-15T22:05:27Z,
+  https://github.com/synnaxlabs/foundation/pull/2762#issuecomment-6203245390). The fix
+  of `ops.unknown-operation` with no close name names the list of its carrier: ``Use a
+  name from `foundation --help` `` on the command line, and ``Use a name from
+  `tools/list` `` in MCP, because `foundation docs` lists only the operations of
+  `TABLE`. By `laptop.architect-2`
   (2026-10-13T21:30:55Z,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6155625024; the fix
   of `ops.unknown-operation` at 2026-10-13T21:47:43Z,
