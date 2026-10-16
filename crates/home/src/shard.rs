@@ -170,7 +170,7 @@ pub struct Shard {
     /// carry took yet.
     records: hash::Map<Slot, Vec<Record>>,
     /// When [`advance`](Shard::advance) next restores records, ends holds, and appends
-    /// changed records: armed while an index needs it ([`reader::Set::named`]).
+    /// changed records ([`Shard::arm`]).
     tick: Option<Monotonic>,
 }
 
@@ -382,22 +382,24 @@ impl Shard {
         let records = self.records.remove(&slot).unwrap_or_default();
         let clock::Time { monotonic, mesh } = self.clock.now();
         let mesh = mesh.map(midpoint);
+        let named = !records.is_empty();
         self.readers.carry(place, slot, live.seq, records, mesh);
-        self.record_named(place, mesh);
-        self.arm(monotonic);
+        if named {
+            self.record(place, monotonic, mesh);
+        }
         true
     }
 
     /// Stops carrying the index at `slot`. Each named reader of the index stops holding
     /// its position, and the shard appends an entry that holds no named reader. With no
-    /// mesh time, or no room for that entry, a restart restores the holds. Its frames
-    /// stay in the buffer, so a later [`carry`](Self::carry)
-    /// of `slot` continues each path from its tail in the buffer: the last entry
-    /// appended, on disk or not. The shard also keeps the control gate for that carry
-    /// when the gate holds a restored holder or a handoff that waits, so a shed
-    /// changes no control. A gate that the shard keeps does not change. When its grace
-    /// ends before the next carry of `slot`, the first [`advance`](Self::advance) or
-    /// [`open_writer`](Self::open_writer) after that carry drops the holder. It does
+    /// mesh time, or no room for that entry, a restart restores the holds. A later
+    /// [`carry`](Self::carry) in the same run does not. Its frames stay in the buffer,
+    /// so a later carry of `slot` continues each path from its tail in the buffer: the
+    /// last entry appended, on disk or not. The shard also keeps the control gate for
+    /// that carry when the gate holds a restored holder or a handoff that waits, so a
+    /// shed changes no control. A gate that the shard keeps does not change. When its
+    /// grace ends before the next carry of `slot`, the first [`advance`](Self::advance)
+    /// or [`open_writer`](Self::open_writer) after that carry drops the holder. It does
     /// nothing when the shard does not carry `slot`.
     ///
     /// # Panics
@@ -435,12 +437,13 @@ impl Shard {
 
     /// When the shard next changes with no call, on its monotonic clock: the earliest
     /// end of a holder's control lease or of a restored holder's grace, or the next
-    /// tick of the named readers. While an index has a named reader, open or held,
-    /// or records that wait for mesh time, a tick comes each second. `None` when only
-    /// a call can change the shard. Only [`carry`](Self::carry),
-    /// [`open_writer`](Self::open_writer), [`close_writer`](Self::close_writer), a
-    /// named open, and [`close_reader`](Self::close_reader) can make it earlier. Takes
-    /// O(n) time for n carried indexes.
+    /// tick of the named readers. While a named complete reader is open, or records
+    /// changed or wait for mesh time, a tick comes each second; else a tick comes when
+    /// the next hold ends. `None` when only a call can change the shard. Only
+    /// [`carry`](Self::carry), [`open_writer`](Self::open_writer),
+    /// [`close_writer`](Self::close_writer), a named open, and
+    /// [`close_reader`](Self::close_reader) can make it earlier. Takes O(n) time for n
+    /// carried indexes.
     #[must_use]
     pub fn deadline(&self) -> Option<Monotonic> {
         let gates = self
@@ -463,7 +466,8 @@ impl Shard {
     /// [`deadline`](Self::deadline) is `None` or later than the shard's monotonic time
     /// at the call. Takes O(n) time for n carried indexes. Each holder that loses
     /// control adds O(w) time for the w open writers of its index, and the append of
-    /// its handoff. A tick adds O(r) time for the r named readers of each index.
+    /// its handoff. A tick adds O(r) time for the r named readers of each index with
+    /// named readers or records.
     pub fn advance(&mut self) {
         let clock::Time { monotonic, mesh } = self.clock.now();
         let mesh = mesh.map(midpoint);
@@ -481,12 +485,14 @@ impl Shard {
         }
         self.tick = None;
         if let Some(mesh) = mesh {
-            for place in 0..self.indexes.len() {
+            for at in 0..self.readers.named().len() {
+                let place = self.readers.named()[at];
                 self.readers.advance(place, mesh);
-                self.record_named(place, Some(mesh));
+                self.append_records(place, mesh);
             }
+            self.readers.prune();
         }
-        self.arm(monotonic);
+        self.arm(monotonic, mesh);
     }
 
     /// Mesh time now, as the shard stamps each entry and checks each stamp: the
@@ -732,8 +738,9 @@ impl Shard {
     /// [`reader::Unopened::Full`] when the open adds a record, and the records of the
     /// index with it would pass the most bytes of one entry of the buffer: at least 7
     /// records of the longest subjects and names. An open of a reader that holds a
-    /// record opens also when the records pass it, as on a smaller ring after a
-    /// restart.
+    /// record opens also when the records pass it, as on a smaller pool after a
+    /// restart. [`reader::Unopened::Unrecorded`] when the open adds a record, and the
+    /// buffer has no block or no room for the entry that holds it.
     ///
     /// # Panics
     ///
@@ -749,18 +756,32 @@ impl Shard {
         let place = self.place(slot);
         let (monotonic, now) = self.clocks().ok_or(reader::Unopened::Unsynced)?;
         self.readers.advance(place, now);
-        let limit = self
-            .buffer
-            .block_max()
-            .min(self.buffer.layout().entry_max());
-        self.readers.fits(place, &reader, limit)?;
         let live = self.indexes[place].live_tail();
+        // A first open records its position before it opens: a restart before the
+        // record would lose the frames that the reader got and did not ack.
+        let record = Record {
+            reader: reader.clone(),
+            position: reader::Position {
+                live,
+                backfill: None,
+            },
+            hold,
+            closed: None,
+        };
+        let added = self.readers.adding(place, record, limit(&self.buffer))?;
+        if let Some(records) = &added
+            && !append_named(&self.buffer, &self.indexes[place], records, now)
+        {
+            return Err(reader::Unopened::Unrecorded);
+        }
         let named = Reader::Named { reader, hold };
         let opened =
             self.readers
                 .open_named_complete(place, named, live, limit_bytes, charge);
-        self.record_named(place, Some(now));
-        self.arm(monotonic);
+        if added.is_some() {
+            self.readers.recorded(place, true);
+        }
+        self.record(place, monotonic, Some(now));
         Ok(reader::Opened {
             key: reader::complete::Key {
                 slot,
@@ -802,10 +823,8 @@ impl Shard {
     ) -> Result<reader::Opened<reader::Key>, reader::Unsynced> {
         let place = self.place(slot);
         let (monotonic, now) = self.clocks().ok_or(reader::Unsynced)?;
-        self.readers.advance(place, now);
         let opened = self.readers.open_named_latest(place, reader, now);
-        self.record_named(place, Some(now));
-        self.arm(monotonic);
+        self.record(place, monotonic, Some(now));
         Ok(reader::Opened {
             key: reader::Key {
                 slot,
@@ -913,8 +932,9 @@ impl Shard {
         let clock::Time { monotonic, mesh } = self.clock.now();
         let mesh = mesh.map(midpoint);
         self.readers.close(place, key.session, mesh);
-        self.record_named(place, mesh);
-        self.arm(monotonic);
+        if self.readers.changed(place) {
+            self.record(place, monotonic, mesh);
+        }
     }
 
     /// Replaces `keys` with the readers to wake since the last call, each once, in slot
@@ -953,25 +973,46 @@ impl Shard {
     }
 
     /// Appends the records of the named readers of the index at `place` when they
-    /// changed and the node has mesh time `mesh`, and marks them recorded.
-    fn record_named(&mut self, place: usize, mesh: Option<Stamp>) {
-        let Some(mesh) = mesh else {
+    /// changed and the node has mesh time `mesh`, then arms the tick at monotonic time
+    /// `monotonic`. Call it after each change of the named readers of the index.
+    fn record(&mut self, place: usize, monotonic: Monotonic, mesh: Option<Stamp>) {
+        if let Some(mesh) = mesh {
+            self.append_records(place, mesh);
+        }
+        self.arm(monotonic, mesh);
+    }
+
+    /// Appends the records of the named readers of the index at `place` at mesh time
+    /// `mesh` when they changed, and marks them recorded.
+    fn append_records(&mut self, place: usize, mesh: Stamp) {
+        if !self.readers.changed(place) {
             return;
-        };
-        let Some(records) = self.readers.records(place) else {
-            return;
-        };
+        }
+        let records = self.readers.records(place);
         if append_named(&self.buffer, &self.indexes[place], &records, mesh) {
             self.readers.recorded(place, !records.is_empty());
         }
     }
 
-    /// Arms the tick of the named readers one interval after `now`, unless it is armed
-    /// or no index needs it.
-    fn arm(&mut self, now: Monotonic) {
-        if self.tick.is_none() && self.readers.named() {
-            self.tick = Some(now + INTERVAL);
-        }
+    /// Makes the tick no later than the next one that the named readers need, at
+    /// monotonic time `monotonic` and mesh time `mesh`: one interval later while a
+    /// named complete reader is open, or records changed or wait for mesh time, else
+    /// when the next hold ends.
+    ///
+    /// # Panics
+    ///
+    /// If a named reader holds and `mesh` is `None`: a hold starts only with mesh
+    /// time, which stays once known.
+    fn arm(&mut self, monotonic: Monotonic, mesh: Option<Stamp>) {
+        let next = if self.readers.busy() {
+            Some(monotonic + INTERVAL)
+        } else {
+            self.readers.deadline().map(|end| {
+                let mesh = mesh.expect("invariant: a hold starts with mesh time");
+                monotonic + (end - mesh).max(Span::ZERO)
+            })
+        };
+        self.tick = self.tick.into_iter().chain(next).min();
     }
 
     /// The place in `indexes` of the index at `slot`.
@@ -1070,34 +1111,46 @@ fn record(
     all
 }
 
+/// The most bytes of the body of a named entry in `buffer`: of one block, and of one
+/// entry of its ring.
+fn limit(buffer: &Buffer) -> usize {
+    buffer.block_max().min(buffer.layout().entry_max())
+}
+
 /// Appends `records` as the named entry of `index`, alone, on the live path at mesh
 /// time `mesh`. Returns whether the buffer took it. Records that find no room in the
-/// ring or the pool, or that pass the most bytes of one entry of a ring that is
-/// smaller than at their last append, are not appended. A failed commit, which the
-/// next append reports, appends nothing.
+/// ring or the pool, or that pass [`limit`], as on a pool that is smaller than at
+/// their last append, are not appended. A failed commit, which the next append
+/// reports, appends nothing.
 fn append_named(
     buffer: &Buffer,
     index: &Index,
     records: &[Record],
     mesh: Stamp,
 ) -> bool {
+    if named::len(records) > limit(buffer) {
+        return false;
+    }
     let (key, slot, first) = (index.key, index.slot, index.live_tail());
     let entry = match named::entry(buffer.pool(), records, key, slot, first, mesh) {
         Ok(entry) => entry,
-        Err(
-            block::Error::Exhausted { .. }
-            | block::Error::Refused { .. }
-            | block::Error::TooLarge { .. },
-        ) => return false,
+        Err(block::Error::Exhausted { .. } | block::Error::Refused { .. }) => {
+            return false;
+        }
+        Err(error @ block::Error::TooLarge { .. }) => {
+            panic!("invariant: a block holds the records within the limit: {error}")
+        }
     };
     match buffer.append([entry]) {
         Ok(()) => true,
         Err(
             buffer::Rejected::Full { .. }
             | buffer::Rejected::Pool(_)
-            | buffer::Rejected::Files(_)
-            | buffer::Rejected::Large(_),
+            | buffer::Rejected::Files(_),
         ) => false,
+        Err(buffer::Rejected::Large(limit)) => {
+            panic!("invariant: an entry holds the records within the limit: {limit}")
+        }
     }
 }
 
@@ -6269,69 +6322,98 @@ mod tests {
                             Charge::Whole,
                         )
                     };
+                    let small = |node, tasks| Test {
+                        pool: Rc::new(create_pool(SMALL)),
+                        ..Test::new(node, tasks)
+                    };
                     let (mut sim, node) = create_node(203);
                     sim.run_on(&node, move |node, tasks| async move {
                         let test = Test::new(node, tasks);
                         let buffer = test.create_buffer(AREA, BODY, 4).await;
                         let mut shard = test.over(buffer).await;
                         assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
-                        for n in 0..8 {
-                            let opened = open(&mut shard, n).expect("opens");
-                            close(&mut shard, opened.key.into());
+                        assert!(shard.carry(Slot::new(2), common::key(Slot::new(2))));
+                        let set = two_indexes();
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        let opened: Vec<_> = (0..8)
+                            .map(|n| open(&mut shard, n).expect("opens").key)
+                            .collect();
+                        committed(&test, &mut shard, w, &[10, 20]).await;
+                        for key in opened {
+                            close(&mut shard, key.into());
                         }
                         shard.committed().await.expect("the commit ends");
                     })
                     .expect("the first run ends");
                     sim.crash(&node, sim::Crash::Power);
                     sim.run_on(&node, move |node, tasks| async move {
-                        let test = Test {
-                            pool: Rc::new(create_pool(SMALL)),
-                            ..Test::new(node, tasks)
-                        };
+                        let test = small(node, tasks);
                         let buffer = test.create_buffer(AREA, BODY, 4).await;
                         let limit = buffer.block_max();
-                        assert!(limit < 8 * crate::named::RECORD_MAX);
                         let mut shard = test.over(buffer).await;
                         assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
                         assert_eq!(open(&mut shard, 8), Err(Unopened::Full { limit }));
-                        open(&mut shard, 0).expect("it adds no record");
+                        let a = open(&mut shard, 0).expect("it adds no record").key;
+                        assert_eq!(
+                            caught_up(&mut shard, a, 0).await,
+                            [seq(0, 1), seq(1, 1)]
+                        );
                         shard.committed().await.expect("the commit ends");
-                        let found = crate::named::newest(&shard.buffer).await;
-                        let [(slot, records)] = &found.expect("reads")[..] else {
-                            panic!("one named entry");
-                        };
-                        assert_eq!(*slot, Slot::new(0));
-                        assert_eq!(records.len(), 8);
-                        assert!(records.iter().all(|record| record.closed.is_some()));
                     })
-                    .expect("the run after the cut ends");
+                    .expect("the second run ends");
+                    sim.crash(&node, sim::Crash::Power);
+                    sim.run_on(&node, move |node, tasks| async move {
+                        let test = small(node, tasks);
+                        let buffer = test.create_buffer(AREA, BODY, 4).await;
+                        let mut shard = test.over(buffer).await;
+                        assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
+                        for n in 0..8 {
+                            let key = open(&mut shard, n).expect("opens").key;
+                            assert_eq!(
+                                caught_up(&mut shard, key, 0).await,
+                                [seq(0, 1), seq(1, 1)],
+                                "reader {n}"
+                            );
+                        }
+                    })
+                    .expect("the run after the second cut ends");
                 }
 
                 #[test]
-                fn stops_the_tick_once_each_hold_ended() {
+                fn arms_the_tick_at_the_end_of_the_hold() {
                     run(199, |test| async move {
                         let mut shard = test.shard(AREA).await;
                         assert_eq!(shard.deadline(), None);
+                        let hold = Span::from_nanos(5_500_000_000);
                         let a = shard
                             .open_named_complete(
                                 Slot::new(0),
                                 key("a", "r"),
-                                Span::from_nanos(1_500_000_000),
+                                hold,
                                 CREDIT,
                                 Charge::Whole,
                             )
                             .expect("opens");
                         close(&mut shard, a.key.into());
-                        assert!(shard.deadline().is_some());
+                        let end = test.reader.now().monotonic + hold;
                         tick(&test, &mut shard).await;
-                        assert!(shard.deadline().is_some(), "the hold has not ended");
-                        tick(&test, &mut shard).await;
+                        assert_eq!(shard.deadline(), Some(end));
+                        test.clock.sleep(Span::from_nanos(4_499_999_999)).await;
+                        shard.advance();
+                        assert_eq!(
+                            shard.deadline(),
+                            Some(end),
+                            "the hold has not ended"
+                        );
+                        test.clock.sleep(Span::from_nanos(1)).await;
+                        shard.advance();
                         assert_eq!(shard.deadline(), None);
                     });
                 }
 
                 #[test]
-                fn writes_no_record_for_an_index_with_no_named_reader() {
+                fn arms_no_tick_for_an_index_with_no_named_reader() {
                     run(200, |test| async move {
                         let mut shard = test.shard(AREA).await;
                         let complete = complete(&mut shard, Slot::new(0));
@@ -6341,9 +6423,168 @@ mod tests {
                             .expect("synced");
                         close(&mut shard, latest.key);
                         assert_eq!(shard.deadline(), None);
+                    });
+                }
+
+                #[test]
+                fn writes_the_position_at_a_takeover_by_a_latest_open() {
+                    let before = async |test: &Test, shard: &mut Shard, w| {
+                        acked(test, shard, w).await;
+                        let latest = shard
+                            .open_named_latest(Slot::new(0), key("a", "r"))
+                            .expect("synced");
+                        close(shard, latest.key);
+                    };
+                    restart(204, before, async |_, shard: &mut Shard| {
+                        let a = open(shard, "a");
+                        assert_eq!(caught_up(shard, a, 0).await, [seq(1, 1)]);
+                    });
+                }
+
+                #[test]
+                fn opens_no_reader_whose_record_finds_no_block() {
+                    let before = async |test: &Test, shard: &mut Shard, w| {
+                        let blocks = test.fill();
+                        let refused = shard.open_named_complete(
+                            Slot::new(0),
+                            key("a", "r"),
+                            LONG,
+                            CREDIT,
+                            Charge::Whole,
+                        );
+                        assert_eq!(refused, Err(Unopened::Unrecorded));
+                        assert_eq!(shard.deadline(), None, "nothing changed");
+                        drop(blocks);
+                        let a = shard
+                            .open_named_complete(
+                                Slot::new(0),
+                                key("a", "r"),
+                                LONG,
+                                CREDIT,
+                                Charge::Whole,
+                            )
+                            .expect("opens");
+                        assert_eq!(a.replaced, None);
+                        committed(test, shard, w, &[10, 20]).await;
+                        let taken = taken(shard, a.key.into(), 0);
+                        assert_eq!(taken, [seq(0, 1), seq(1, 1)]);
+                    };
+                    restart(211, before, async |_, shard: &mut Shard| {
+                        let a = open(shard, "a");
+                        assert_eq!(
+                            caught_up(shard, a, 0).await,
+                            [seq(0, 1), seq(1, 1)]
+                        );
+                    });
+                }
+
+                /// Opens of the longest names in a row, on the least pool, take the
+                /// blocks of their entries until the commit.
+                #[test]
+                fn repeats_the_frames_of_opens_in_a_row_on_the_least_pool() {
+                    const SMALL: usize = 62_272;
+                    let open = |shard: &mut Shard, n: usize| {
+                        let subject = format!("{n:03}{}", "s".repeat(252));
+                        shard
+                            .open_named_complete(
+                                Slot::new(0),
+                                key(&subject, &"r".repeat(255)),
+                                LONG,
+                                CREDIT,
+                                Charge::Whole,
+                            )
+                            .map(|opened| opened.key)
+                    };
+                    let (mut sim, node) = create_node(213);
+                    let got = sim.run_on(&node, move |node, tasks| async move {
+                        let test = Test {
+                            pool: Rc::new(create_pool(SMALL)),
+                            ..Test::new(node, tasks)
+                        };
+                        let buffer = test.create_buffer(AREA, 8192, 4).await;
+                        let mut shard = test.over(buffer).await;
+                        assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
+                        assert!(shard.carry(Slot::new(2), common::key(Slot::new(2))));
+                        let set = two_indexes();
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        let opened: Vec<_> =
+                            (0..7).map(|n| open(&mut shard, n)).collect();
+                        let refused = opened.iter().filter(|opened| opened.is_err());
+                        assert!(
+                            refused.clone().all(|e| *e == Err(Unopened::Unrecorded)),
+                            "{opened:?}"
+                        );
+                        assert!(refused.count() > 0, "the pool runs out");
                         shard.committed().await.expect("the commit ends");
-                        let records = crate::named::newest(&shard.buffer).await;
-                        assert_eq!(records.expect("reads"), []);
+                        committed(&test, &mut shard, w, &[10, 20]).await;
+                        let mut got = Vec::new();
+                        for opened in opened {
+                            got.push(opened.map_or(0, |key| {
+                                taken(&mut shard, key.into(), 0).len()
+                            }));
+                        }
+                        got
+                    });
+                    let got = got.expect("the first run ends");
+                    sim.crash(&node, sim::Crash::Power);
+                    sim.run_on(&node, move |node, tasks| async move {
+                        let test = Test {
+                            pool: Rc::new(create_pool(SMALL)),
+                            ..Test::new(node, tasks)
+                        };
+                        let buffer = test.create_buffer(AREA, 8192, 4).await;
+                        let mut shard = test.over(buffer).await;
+                        assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
+                        let mut caught = Vec::new();
+                        for n in 0..7 {
+                            let key = open(&mut shard, n).expect("opens");
+                            shard.committed().await.expect("the commit ends");
+                            caught.push(caught_up(&mut shard, key, 0).await.len());
+                        }
+                        assert_eq!(caught, got, "each opened reader gets them again");
+                    })
+                    .expect("the run after the cut ends");
+                }
+
+                #[test]
+                fn restores_records_of_exactly_the_most_bytes_of_one_entry() {
+                    let readers = || {
+                        let long = |n: usize| {
+                            key(&format!("{n}{}", "s".repeat(254)), &"r".repeat(255))
+                        };
+                        // 5 + 7 * 546 + 36 + 84 + 85 = 4032.
+                        (0..7)
+                            .map(long)
+                            .chain([key(&"x".repeat(84), &"y".repeat(85))])
+                            .collect::<Vec<_>>()
+                    };
+                    let open = |shard: &mut Shard, reader| {
+                        shard
+                            .open_named_complete(
+                                Slot::new(0),
+                                reader,
+                                LONG,
+                                CREDIT,
+                                Charge::Whole,
+                            )
+                            .expect("the records fit")
+                            .key
+                    };
+                    let before = async move |test: &Test, shard: &mut Shard, w| {
+                        for reader in readers() {
+                            open(shard, reader);
+                        }
+                        committed(test, shard, w, &[10, 20]).await;
+                    };
+                    restart(210, before, async move |_, shard: &mut Shard| {
+                        for reader in readers() {
+                            let key = open(shard, reader);
+                            assert_eq!(
+                                caught_up(shard, key, 0).await,
+                                [seq(0, 1), seq(1, 1)]
+                            );
+                        }
                     });
                 }
 

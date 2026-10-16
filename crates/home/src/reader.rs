@@ -62,7 +62,7 @@ impl fmt::Display for Unsynced {
 
 impl std::error::Error for Unsynced {}
 
-/// Why a named complete reader did not open. Nothing changed.
+/// Why a named complete reader did not open. The open opened nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unopened {
     /// As [`Unsynced`].
@@ -75,6 +75,9 @@ pub enum Unopened {
         /// The most bytes of one entry.
         limit: usize,
     },
+    /// The open adds a record, and the buffer had no block or no room for the entry
+    /// that holds it, so a restart would not resume the reader. Open it again later.
+    Unrecorded,
 }
 
 impl fmt::Display for Unopened {
@@ -87,17 +90,16 @@ impl fmt::Display for Unopened {
                  bytes: close a named reader of the index whose hold is zero, wait for \
                  a hold to end, or open this one unnamed"
             ),
+            Self::Unrecorded => write!(
+                f,
+                "the home had no room to record the position of the named reader: \
+                 open it again later"
+            ),
         }
     }
 }
 
 impl std::error::Error for Unopened {}
-
-impl From<Unsynced> for Unopened {
-    fn from(Unsynced: Unsynced) -> Self {
-        Self::Unsynced
-    }
-}
 
 /// A reader that opened, and the session of its name that it took over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,6 +145,12 @@ pub(crate) struct Set {
     /// The place of each index whose readers may be
     /// [pending](delivery::Readers::pending), each once.
     listed: Vec<usize>,
+    /// The place of each index whose records changed, wait for mesh time, or are in
+    /// the buffer, each once: the indexes that a tick visits.
+    named: Vec<usize>,
+    /// The records that the open of the shard restored for each index, until mesh time
+    /// is known.
+    waiting: hash::Map<Slot, Vec<Record>>,
     /// Each reader to wake: one with a frame to take, or a complete reader that missed
     /// a frame with none waiting. A key can repeat.
     keys: Vec<Key>,
@@ -163,12 +171,12 @@ pub(crate) struct Set {
 struct Entry {
     slot: Slot,
     readers: Readers,
-    /// Whether the set lists the index.
+    /// Whether `Set::listed` holds the index.
     listed: bool,
+    /// Whether `Set::named` holds the index.
+    named: bool,
     /// Whether the newest named entry of the index in the buffer holds a record.
-    logged: bool,
-    /// The records that the open of the shard restored, until mesh time is known.
-    waiting: Option<Vec<Record>>,
+    stored: bool,
 }
 
 impl Set {
@@ -193,12 +201,16 @@ impl Set {
             slot,
             readers: Readers::after(live, self.first.remove(&slot).unwrap_or(0)),
             listed: false,
-            logged: !records.is_empty(),
-            waiting: (!records.is_empty()).then_some(records),
+            named: false,
+            stored: !records.is_empty(),
         });
+        if !records.is_empty() {
+            self.waiting.insert(slot, records);
+        }
         if let Some(now) = now {
             self.restore(place, now);
         }
+        self.note(place);
         // Room for every index, so that `applied` never grows the list.
         self.listed.reserve(self.entries.len());
     }
@@ -215,45 +227,96 @@ impl Set {
         let last = self.entries.len() - 1;
         let entry = self.entries.swap_remove(place);
         self.first.insert(entry.slot, entry.readers.end());
-        self.listed.retain(|&listed| listed != place);
-        if let Some(listed) = self.listed.iter_mut().find(|listed| **listed == last) {
-            *listed = place;
+        self.waiting.remove(&entry.slot);
+        for places in [&mut self.listed, &mut self.named] {
+            places.retain(|&listed| listed != place);
+            if let Some(listed) = places.iter_mut().find(|listed| **listed == last) {
+                *listed = place;
+            }
         }
-        entry.logged
+        entry.stored
     }
 
     /// Adds the holds of the records that wait for mesh time on the index at `place`,
     /// as at mesh time `now`.
     fn restore(&mut self, place: usize, now: Stamp) {
         let entry = &mut self.entries[place];
-        if let Some(records) = entry.waiting.take() {
+        if let Some(records) = self.waiting.remove(&entry.slot) {
             entry.readers.restore(records, now);
         }
     }
 
-    /// The record of each named reader of the index at `place`, when one changed since
-    /// the last [`recorded`](Self::recorded), else `None`.
-    pub(crate) fn records(&self, place: usize) -> Option<Vec<Record>> {
-        let readers = &self.entries[place].readers;
-        readers.changed().then(|| readers.records().collect())
+    /// Adds the index at `place` to [`named`](Self::named) when its records changed,
+    /// wait for mesh time, or are in the buffer.
+    fn note(&mut self, place: usize) {
+        let entry = &mut self.entries[place];
+        let named = entry.stored
+            || entry.readers.changed()
+            || self.waiting.contains_key(&entry.slot);
+        if named && !mem::replace(&mut entry.named, true) {
+            self.named.push(place);
+        }
     }
 
-    /// Marks the records of the index at `place` as in the buffer: an entry that holds a
-    /// record when `logged`.
-    pub(crate) fn recorded(&mut self, place: usize, logged: bool) {
+    /// The place of each index whose records changed, wait for mesh time, or are in
+    /// the buffer, where the end of a hold changes them: each index that a tick visits.
+    pub(crate) fn named(&self) -> &[usize] {
+        &self.named
+    }
+
+    /// Drops each index from [`named`](Self::named) whose records did not change, wait
+    /// for no mesh time, and are not in the buffer.
+    pub(crate) fn prune(&mut self) {
+        let (entries, waiting) = (&mut self.entries, &self.waiting);
+        self.named.retain(|&place| {
+            let entry = &mut entries[place];
+            entry.named = entry.stored
+                || entry.readers.changed()
+                || waiting.contains_key(&entry.slot);
+            entry.named
+        });
+    }
+
+    /// Whether the records of an index changed or wait for mesh time, or a named
+    /// complete reader is open, whose acks move its record: the indexes need a tick
+    /// soon. Takes time linear in the named readers of the indexes in
+    /// [`named`](Self::named).
+    pub(crate) fn busy(&self) -> bool {
+        self.named.iter().any(|&place| {
+            let entry = &self.entries[place];
+            let mut records = entry.readers.records();
+            entry.readers.changed()
+                || self.waiting.contains_key(&entry.slot)
+                || records.any(|record| record.closed.is_none())
+        })
+    }
+
+    /// The mesh time at which the next hold of an index ends, or `None` when no named
+    /// reader holds. Takes time linear in the held readers of the indexes in
+    /// [`named`](Self::named).
+    pub(crate) fn deadline(&self) -> Option<Stamp> {
+        let ends = self.named.iter();
+        ends.filter_map(|&place| self.entries[place].readers.deadline())
+            .min()
+    }
+
+    /// Whether the records of the index at `place` changed since the last
+    /// [`recorded`](Self::recorded).
+    pub(crate) fn changed(&self, place: usize) -> bool {
+        self.entries[place].readers.changed()
+    }
+
+    /// The record of each named reader of the index at `place`.
+    pub(crate) fn records(&self, place: usize) -> Vec<Record> {
+        self.entries[place].readers.records().collect()
+    }
+
+    /// Marks the records of the index at `place` as in the buffer: an entry that holds
+    /// a record when `stored`.
+    pub(crate) fn recorded(&mut self, place: usize, stored: bool) {
         let entry = &mut self.entries[place];
         entry.readers.recorded();
-        entry.logged = logged;
-    }
-
-    /// Whether an index needs [`restore`](Self::restore) or an entry of records: its
-    /// records wait for mesh time, changed, or are in the buffer, where the end of a
-    /// hold changes them.
-    pub(crate) fn named(&self) -> bool {
-        let named = |entry: &Entry| {
-            entry.logged || entry.waiting.is_some() || entry.readers.changed()
-        };
-        self.entries.iter().any(named)
+        entry.stored = stored;
     }
 
     /// Opens an unnamed complete reader on the index at `place` at seq `live`, with a
@@ -280,28 +343,31 @@ impl Set {
     pub(crate) fn advance(&mut self, place: usize, now: Stamp) {
         self.restore(place, now);
         self.entries[place].readers.advance(now);
+        self.note(place);
     }
 
-    /// Checks that an open of `reader` on the index at `place` adds no record, or
-    /// that the records with its record fit `limit` bytes in one named entry.
+    /// The records of the index at `place` with `record`, when its reader holds no
+    /// record, so that its open adds it. `None` when the reader holds a record.
     ///
     /// # Errors
     ///
-    /// [`Unopened::Full`] when the open adds a record that does not fit.
-    pub(crate) fn fits(
+    /// [`Unopened::Full`] when the records with `record` do not fit `limit` bytes in
+    /// one named entry.
+    pub(crate) fn adding(
         &self,
         place: usize,
-        reader: &named::Key,
+        record: Record,
         limit: usize,
-    ) -> Result<(), Unopened> {
-        let records: Vec<_> = self.entries[place].readers.records().collect();
-        if records.iter().any(|record| record.reader == *reader) {
-            return Ok(());
+    ) -> Result<Option<Vec<Record>>, Unopened> {
+        let mut records = self.records(place);
+        if records.iter().any(|held| held.reader == record.reader) {
+            return Ok(None);
         }
-        if crate::named::len(&records) + crate::named::record_len(reader) > limit {
+        records.push(record);
+        if crate::named::len(&records) > limit {
             return Err(Unopened::Full { limit });
         }
-        Ok(())
+        Ok(Some(records))
     }
 
     /// Opens `reader`, which is named, on the index at `place` at its held position,
@@ -328,6 +394,7 @@ impl Set {
         let readers = &mut self.entries[place].readers;
         let opened = readers.open(reader, start, limit_bytes, charge);
         self.replaced(place, opened.replaced);
+        self.note(place);
         opened
     }
 
@@ -349,6 +416,7 @@ impl Set {
         let readers = &mut self.entries[place].readers;
         let opened = readers.open_named_latest(reader, now);
         self.replaced(place, opened.replaced);
+        self.note(place);
         opened
     }
 
@@ -487,6 +555,7 @@ impl Set {
         now: Option<Stamp>,
     ) {
         self.entries[place].readers.close(session, now);
+        self.note(place);
         match session {
             delivery::Key::Latest(latest) => self.forget(place, latest),
             delivery::Key::Complete(session) => self.unmark(place, session),
@@ -1031,46 +1100,105 @@ mod tests {
         }
 
         #[test]
-        fn give_the_records_once_until_recorded() {
+        fn change_until_recorded() {
             let mut set = carried(1);
-            assert_eq!(set.records(0), None);
-            assert!(!set.named());
+            assert!(!set.changed(0));
+            assert!(set.named().is_empty());
             let a = open(&mut set, "a");
-            assert_eq!(set.records(0).map(|records| records.len()), Some(1));
-            assert!(set.named());
+            assert!(set.changed(0));
+            assert_eq!(set.records(0).len(), 1);
+            assert_eq!(set.named(), [0]);
             set.recorded(0, true);
-            assert_eq!(set.records(0), None);
-            assert!(set.named(), "the buffer holds a record");
+            assert!(!set.changed(0));
+            set.prune();
+            assert_eq!(set.named(), [0], "the buffer holds a record");
             set.close(0, a.into(), Some(Stamp::from_nanos(1)));
-            let records = set.records(0).expect("the close changed them");
-            assert_eq!(records[0].closed, Some(Stamp::from_nanos(1)));
+            assert!(set.changed(0), "the close changed them");
+            assert_eq!(set.records(0)[0].closed, Some(Stamp::from_nanos(1)));
         }
 
         #[test]
-        fn stop_needing_a_tick_once_an_empty_entry_is_recorded() {
+        fn leave_the_tick_once_an_empty_entry_is_recorded() {
             let mut set = carried(1);
             let a = open(&mut set, "a");
             set.recorded(0, true);
             set.close(0, a.into(), Some(Stamp::from_nanos(1)));
             set.recorded(0, true);
             set.advance(0, Stamp::from_nanos(11));
-            assert_eq!(set.records(0), Some(Vec::new()));
+            assert!(set.changed(0));
+            assert_eq!(set.records(0), []);
             set.recorded(0, false);
-            assert!(!set.named());
+            set.prune();
+            assert!(set.named().is_empty());
+        }
+
+        #[test]
+        fn list_only_the_indexes_with_named_state() {
+            let mut set = carried(3);
+            let _b = open(&mut set, "b");
+            set.recorded(0, true);
+            let latest = set.open_latest(1);
+            set.close(1, latest.into(), None);
+            let _c = open(&mut set, "c");
+            let mut named = set.named().to_vec();
+            named.sort_unstable();
+            assert_eq!(named, [0]);
+            set.carry(3, Slot::new(3), 0, vec![record("a", None)], None);
+            assert_eq!(set.named(), [0, 3]);
+        }
+
+        #[test]
+        fn keep_the_place_of_each_listed_index_at_a_shed() {
+            let mut set = carried(3);
+            set.carry(3, Slot::new(3), 0, vec![record("a", Some(1))], None);
+            set.carry(4, Slot::new(4), 0, vec![record("b", Some(1))], None);
+            assert_eq!(set.named(), [3, 4]);
+            assert!(set.shed(3), "the record is in the buffer");
+            assert_eq!(set.named(), [3], "the index at 4 moved to 3");
+            set.advance(3, Stamp::from_nanos(2));
+            assert_eq!(set.records(3), [record("b", Some(1))]);
+        }
+
+        #[test]
+        fn are_busy_while_records_change_wait_or_move_with_acks() {
+            let mut set = carried(1);
+            assert!(!set.busy());
+            let a = open(&mut set, "a");
+            assert!(set.busy(), "the records changed");
+            set.recorded(0, true);
+            assert!(set.busy(), "an ack can move the record");
+            set.close(0, a.into(), Some(Stamp::from_nanos(1)));
+            set.recorded(0, true);
+            assert!(!set.busy(), "only a hold");
+            set.carry(1, Slot::new(1), 0, vec![record("b", Some(1))], None);
+            assert!(set.busy(), "the records wait");
+        }
+
+        #[test]
+        fn end_at_the_earliest_hold_of_the_listed_indexes() {
+            let mut set = carried(2);
+            assert_eq!(set.deadline(), None);
+            let a = open(&mut set, "a");
+            set.close(0, a.into(), Some(Stamp::from_nanos(5)));
+            let records = vec![record("b", Some(2))];
+            set.carry(2, Slot::new(2), 0, records, Some(Stamp::from_nanos(3)));
+            assert_eq!(set.deadline(), Some(Stamp::from_nanos(12)));
+            set.advance(2, Stamp::from_nanos(12));
+            assert_eq!(set.deadline(), Some(Stamp::from_nanos(15)));
         }
 
         #[test]
         fn wait_for_mesh_time_at_a_carry_with_none() {
             let mut set = Set::default();
             set.carry(0, Slot::new(0), 0, vec![record("a", None)], None);
-            assert!(set.named(), "the records wait");
-            assert_eq!(set.records(0), None);
+            assert_eq!(set.named(), [0], "the records wait");
+            assert!(!set.changed(0));
             set.advance(0, Stamp::from_nanos(4));
-            let restored = set.records(0).expect("the open session closed at 4");
-            assert_eq!(restored, [record("a", Some(4))]);
+            assert!(set.changed(0), "the open session closed at 4");
+            assert_eq!(set.records(0), [record("a", Some(4))]);
             set.recorded(0, true);
             set.advance(0, Stamp::from_nanos(5));
-            assert_eq!(set.records(0), None, "a second advance restores nothing");
+            assert!(!set.changed(0), "a second advance restores nothing");
         }
 
         #[test]
@@ -1078,7 +1206,8 @@ mod tests {
             let mut set = Set::default();
             let records = vec![record("a", None), record("b", Some(1))];
             set.carry(0, Slot::new(0), 0, records, Some(Stamp::from_nanos(4)));
-            let mut restored = set.records(0).expect("the open session closed at 4");
+            assert!(set.changed(0), "the open session closed at 4");
+            let mut restored = set.records(0);
             restored.sort_by(|a, b| a.reader.name.cmp(&b.reader.name));
             assert_eq!(restored, [record("a", Some(4)), record("b", Some(1))]);
         }
@@ -1092,17 +1221,27 @@ mod tests {
         }
 
         #[test]
-        fn fit_up_to_the_limit_or_with_a_record_of_the_reader() {
+        fn add_a_record_up_to_the_limit_unless_the_reader_holds_one() {
             let mut set = carried(1);
             let _a = open(&mut set, "a");
             let _b = open(&mut set, "b");
             let limit = bytes(&["a", "b", "c"]);
-            assert_eq!(set.fits(0, &named("c"), limit), Ok(()));
+            let added = set.adding(0, record("c", None), limit);
+            let mut added = added.expect("it fits").expect("it adds a record");
+            added.sort_by(|a, b| a.reader.name.cmp(&b.reader.name));
+            let open = |name| Record {
+                position: Position {
+                    live: 0,
+                    backfill: None,
+                },
+                ..record(name, None)
+            };
+            assert_eq!(added, [open("a"), open("b"), record("c", None)]);
             assert_eq!(
-                set.fits(0, &named("cd"), limit),
+                set.adding(0, record("cd", None), limit),
                 Err(Unopened::Full { limit })
             );
-            assert_eq!(set.fits(0, &named("a"), 0), Ok(()), "it adds no record");
+            assert_eq!(set.adding(0, record("a", None), 0), Ok(None));
         }
 
         #[test]
