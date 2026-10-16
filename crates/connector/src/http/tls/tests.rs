@@ -339,6 +339,49 @@ fn fails_the_handshake_with_a_server_that_resets_the_stream() {
 }
 
 #[test]
+fn fails_a_handshake_whose_first_write_finds_the_stream_reset() {
+    let mut network = Network::new(17, Certificate::Valid, JUNE_2026);
+    network.listen(8087, |mut listener, _| async move {
+        while let Ok(tcp) = poll_fn(|cx| listener.poll_accept(cx)).await {
+            drop(tcp);
+        }
+    });
+    let remote = SocketAddr::new(network.server.addresses()[0], 8087);
+    let client = network.client.clone();
+    let out = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&out);
+    let handle = network
+        .client
+        .shards()
+        .start(shard("client"), move |_| async move {
+            let config = tcp::Config {
+                remote,
+                options: super::super::OPTIONS,
+            };
+            let tcp = client.net().connect(&config).await.expect("a stream");
+            // The reset comes before the hello goes, so the first write fails.
+            client.clock().sleep(Span::SECOND).await;
+            let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+            let config = super::client(&provider, &sim::ca(), JUNE_2026);
+            let name = "influx".try_into().expect("a DNS name");
+            let session =
+                rustls::ClientConnection::new(config, name).expect("a session");
+            let mut stream = Stream {
+                tcp,
+                tls: Some(Box::new(session.into())),
+                received: Rc::default(),
+            };
+            let error = stream.handshake().await.expect_err("the stream is reset");
+            *slot.lock().expect("no panic") = Some(error.to_string());
+        })
+        .expect("the shard starts");
+    network.handles.push(handle);
+    network.sim.run_for(Span::MINUTE).expect("the run ends");
+    let got = out.lock().expect("no panic").take();
+    assert_eq!(got, Some(format!("{remote} reset the stream")));
+}
+
+#[test]
 fn sends_and_reads_bodies_that_fill_the_stream() {
     let mut network = Network::new(13, Certificate::Valid, JUNE_2026);
     network.slow();
