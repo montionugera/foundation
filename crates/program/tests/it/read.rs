@@ -450,6 +450,41 @@ fn gives_each_series_at_the_entry_of_its_place() {
     );
 }
 
+/// The index place that the node names is the index of the key set, also when it
+/// comes first.
+#[test]
+fn takes_the_index_at_the_place_that_the_node_names() {
+    let places = [
+        place(1, STAMP, "time"),
+        place(10, I64, "a"),
+        place(11, I64, "b"),
+    ];
+    let sent = places.clone();
+    let body: Vec<u8> = (0..8).collect();
+    let stamps = body.clone();
+    by_hand(
+        411,
+        move |session, node| async move {
+            let mut read = opened(&session, &sent, 0).await;
+            let range = Range { seq: 5, count: 1 };
+            send_frame(&mut read, range, &[(0, 8)], &stamps, &[8]).await;
+            node.clock().sleep(QUIET).await;
+        },
+        move |session, _| {
+            Box::pin(async move {
+                let mut reader = session
+                    .reader(select(&["a", "b"]), Mode::Complete)
+                    .await
+                    .expect("opens");
+                assert_eq!(reader.places(), places);
+                assert_eq!(reader.set().groups(), [0]);
+                let frame = reader.next().await.expect("a frame");
+                assert_eq!(frame.iter().collect::<Vec<_>>(), [(0, &body[..])]);
+            })
+        },
+    );
+}
+
 /// A call of `next` that drops while the draft of a frame waits for the pool leaves
 /// the frame to the next call.
 #[test]
