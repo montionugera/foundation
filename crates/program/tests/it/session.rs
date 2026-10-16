@@ -244,7 +244,7 @@ async fn read_request(session: &transport::Session) -> Incoming {
 }
 
 /// A close with a code of `Refusal` gives the refusal, and a close with 0 or another
-/// code gives the transport error.
+/// code gives the transport error, also as the error that ended the session.
 #[test]
 fn gives_the_close_of_a_node_after_admission() {
     let cases = [
@@ -270,8 +270,10 @@ fn gives_the_close_of_a_node_after_admission() {
             },
             move |session, node| {
                 Box::pin(async move {
+                    assert_eq!(session.ended(), None);
                     node.clock().sleep(QUIET).await;
                     node.clock().sleep(QUIET).await;
+                    assert_eq!(session.ended(), Some(error.clone()));
                     assert_eq!(session.request(b"ab").await, Err(error));
                 })
             },
@@ -579,6 +581,7 @@ fn gives_the_error_of_the_renewal_to_each_later_request() {
             let ended = Err(Error::Message(wire::hub::client::Error::Kind {
                 kind: 0xff,
             }));
+            assert_eq!(session.ended(), ended.clone().err());
             assert_eq!(session.request(b"ab").await, ended);
             assert_eq!(session.request(b"cd").await, ended);
         },

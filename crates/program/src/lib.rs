@@ -156,6 +156,14 @@ impl Session {
         Ok(Self(Rc::new(Handle(shared))))
     }
 
+    /// The error that ended the session, or `None` while it runs. The session ends
+    /// when a renewal of the hello fails, also when the node or the transport closes
+    /// it. A call after the end gives this error.
+    #[must_use]
+    pub fn ended(&self) -> Option<Error> {
+        self.0.0.ended.borrow().clone()
+    }
+
     /// Sends `body` as a request signed with the subject's key, and gives the body of
     /// the response. Requests of one session go one at a time, in the order they
     /// began. A request dropped before its response began keeps the turn until the
