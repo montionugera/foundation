@@ -841,6 +841,7 @@ mod tests {
     use std::task::Poll;
 
     use crate::file::CHUNK;
+    use block::testing::Scarce;
     use env::files::Operation;
     use proptest::prelude::*;
     use raft::{Change, Data, Grant, Proof, Signature, Voters};
@@ -3441,21 +3442,25 @@ mod tests {
 
     // The stopped write put two blocks, at bytes 131,072 and 65,536. The record after
     // it ends at byte 65,536, so a header there is in the bytes of the second block.
+    // A free block gives its pages to a block of another size, so the system, not the
+    // budget, refuses the block of the start of the record.
     #[test]
     fn the_zeros_cover_each_block_of_the_stopped_write() {
         let (mut sim, node) = create_node(0);
         sim.run_on(&node, |node, _| async move {
             let config = block::Config::new(140_000).expect("the budget fits");
-            let memory = block::Heap::new(config.reservation());
+            let (memory, switch) = Scarce::new(config.reservation());
             let pool = Rc::new(Pool::new(config, memory));
             let (mut log, _) = Log::open(node.files(), DIR.into(), Rc::clone(&pool))
                 .await
                 .unwrap();
             log.write(None, &[bytes(1, 10_000)]).await.unwrap();
-            let held = pool.alloc(CHUNK).unwrap();
+            drop((pool.alloc(40).unwrap(), pool.alloc(CHUNK).unwrap()));
+            switch.refuse();
             let error = log.write(None, &[bytes(2, 120_992)]).await.unwrap_err();
-            assert_eq!(error, Error::Pool(exhausted(55_476, 8672)));
-            drop(held);
+            let refused = block::Error::Refused { requested: 55_476 };
+            assert_eq!(error, Error::Pool(refused));
+            switch.allow();
             log.write(None, &[bytes(2, 55_416)]).await.unwrap();
         })
         .unwrap();

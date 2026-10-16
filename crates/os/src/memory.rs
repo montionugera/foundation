@@ -173,6 +173,10 @@ unsafe impl block::Memory for Memory {
         #[cfg(target_os = "linux")]
         no_huge_pages(at, len);
     }
+
+    fn page(&self) -> usize {
+        self.page
+    }
 }
 
 impl Drop for Memory {

@@ -12,6 +12,9 @@ use zeroize::Zeroize;
 
 use crate::ALIGN;
 
+/// The page of [`Heap`]: the smallest page of the hosts that Foundation runs on.
+const PAGE: usize = 4096;
+
 /// A reserved range of address space that one [`Pool`](crate::Pool) cuts blocks from.
 ///
 /// The first [`ALIGN`] bytes are usable from the start. The pool calls
@@ -51,14 +54,21 @@ pub unsafe trait Memory: Send {
     /// Lets the system take back the pages that lie fully in `len` bytes at `offset`.
     /// Those pages then stop counting against the memory the system can commit.
     fn purge(&self, offset: usize, len: usize);
+
+    /// The bytes of one page: a power of two of at least [`ALIGN`]. Pages start at
+    /// multiples of it from [`base`](Self::base). [`purge`](Self::purge) gives back
+    /// at least the whole pages in its range, and the pool credits its budget by
+    /// them.
+    fn page(&self) -> usize;
 }
 
 /// The system has no memory to commit a range now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Refused;
 
-/// Memory from the heap, usable in full from the start. It never gives pages back.
-/// It serves tests and simulation, where no OS mapping exists.
+/// Memory from the heap, usable in full from the start. It never gives pages back,
+/// and acts as if its pages were 4096 bytes. It serves tests and simulation, where no
+/// OS mapping exists.
 pub struct Heap {
     /// What the allocator gave. `base` rounds it up to [`ALIGN`].
     allocation: NonNull<u8>,
@@ -122,6 +132,10 @@ unsafe impl Memory for Heap {
     }
 
     fn purge(&self, _offset: usize, _len: usize) {}
+
+    fn page(&self) -> usize {
+        PAGE
+    }
 }
 
 impl fmt::Debug for Heap {
@@ -190,6 +204,10 @@ unsafe impl Memory for Erased {
     }
 
     fn purge(&self, _offset: usize, _len: usize) {}
+
+    fn page(&self) -> usize {
+        self.heap.page()
+    }
 }
 
 impl Drop for Erased {

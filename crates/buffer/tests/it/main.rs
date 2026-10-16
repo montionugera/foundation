@@ -5325,10 +5325,11 @@ fn an_entry_of_block_max_made_from_the_pool_of_the_buffer_appends() {
     });
 }
 
-/// The limit of `block_max`: a free block of a size with a block in use keeps its
-/// budget, so an entry at `block_max` gets `Exhausted` when the pool keeps a second
-/// block of the size of a part. After two purges the pool commits nothing, and the
-/// same entry appends.
+/// The limit of `block_max`: a free block of a size with a block in use keeps the
+/// budget of its payload when the payload holds no whole page, as a payload of 4096
+/// bytes that starts off a page. So an entry at `block_max` gets `Exhausted` when the
+/// pool keeps a second block of the size of a part. After two purges the pool
+/// commits nothing, and the same entry appends.
 #[test]
 fn an_entry_of_block_max_beside_a_free_block_of_its_size_is_exhausted() {
     run(206, |mut shard| async move {

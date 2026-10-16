@@ -1932,9 +1932,12 @@ fn a_complete_reader_whose_pool_has_no_room_for_a_credit_gives_the_frame_that_ar
             let next = reader.next();
             let blocks = fill(&test.pool);
             next.await.expect("the frame that arrived before the end");
-            let ended = reader.next().await.expect_err("the pool has no room");
+            // The frame goes back here, and the pool can give its pages to a credit.
+            let next = reader.next();
+            let more = fill(&test.pool);
+            let ended = next.await.expect_err("the pool has no room");
             let expected = test.pool.alloc(Credit::LEN).expect_err("the pool is full");
-            drop(blocks);
+            drop((blocks, more));
             assert_eq!(ended, Ended::Pool(expected));
             until(&test.clock, &steps.stopped).await;
         },

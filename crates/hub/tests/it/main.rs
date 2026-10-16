@@ -2298,7 +2298,7 @@ fn ends_a_complete_reader_whose_frame_from_disk_finds_no_block_with_the_pool_err
         drop(room);
         let exhausted = Ended::Pool(block::Error::Exhausted {
             requested: 8080,
-            available: 0,
+            available: 64,
         });
         assert_eq!(next.await.err().as_ref(), Some(&exhausted));
         drop(blocks);
