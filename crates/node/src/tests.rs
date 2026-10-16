@@ -98,7 +98,7 @@ fn config<M>(
         vars: std::collections::BTreeMap::new(),
         roots: os::Roots {
             certificates: vec![CA.to_vec()],
-            failures: Vec::new(),
+            ..os::Roots::default()
         },
         log: crate::Log {
             writer: Box::new(std::io::sink()),
@@ -7575,7 +7575,7 @@ pub(crate) mod port {
                 region: Region::Given(region(&[member(OWN, &KEY, &host)])),
                 roots: os::Roots {
                     certificates: vec![b"not DER".to_vec(), CA.to_vec()],
-                    failures: Vec::new(),
+                    ..os::Roots::default()
                 },
                 ..config(&host, Size::MEBIBYTE, Box::new(heap))
             });
