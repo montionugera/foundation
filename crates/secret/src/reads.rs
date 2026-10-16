@@ -43,8 +43,8 @@ impl Reads {
     /// # Errors
     ///
     /// [`Error::Missing`] when the file is not there or the value is empty.
-    /// [`Error::Unavailable`] when the file is more than 64 KiB, or a file call fails,
-    /// with the fix.
+    /// [`Error::Unavailable`] when a file of [`Place::Data`] is exposed, the file is
+    /// more than 64 KiB, or a file call fails, with the fix.
     pub(crate) async fn read(&self, place: Place<'_>) -> Result<Value, Error> {
         let mut turn = self.turn();
         (&mut turn).await;
@@ -69,6 +69,16 @@ impl Reads {
             }
             Err(error) => return Err(unavailable(&error, &path)),
         };
+        if matches!(place, Place::Data(_)) && file.exposed() {
+            file.close().await;
+            let shown = path.display();
+            return Err(Error::Unavailable {
+                detail: format!(
+                    "the group or other users can read the file {shown}. Make it \
+                     readable only by the user that runs the node: chmod 600 {shown}"
+                ),
+            });
+        }
         if file.len() > LEN_MAX {
             return Err(Error::Unavailable {
                 detail: format!(
@@ -114,7 +124,8 @@ impl Reads {
 /// Where a secret file is.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Place<'a> {
-    /// A path relative to the data directory.
+    /// A path relative to the data directory, which the node owns. A file there that
+    /// users other than its owner can read is refused, unread.
     Data(&'a Path),
     /// A path on the host.
     Host(&'a Absolute),

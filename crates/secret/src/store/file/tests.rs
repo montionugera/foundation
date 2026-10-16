@@ -210,6 +210,55 @@ fn gives_a_failed_file_call_as_unavailable() {
     });
 }
 
+fn exposed(path: &str) -> Result<Vec<u8>, Error> {
+    Err(Error::Unavailable {
+        detail: format!(
+            "the group or other users can read the file /data/{path}. Make it readable \
+             only by the user that runs the node: chmod 600 /data/{path}"
+        ),
+    })
+}
+
+#[test]
+fn refuses_a_file_that_the_group_or_other_users_can_read_until_its_mode_is_fixed() {
+    on_sim(|node, files| async move {
+        let store = store(files.clone());
+        let path = Path::new("secrets/plant.token");
+        put(&files, "secrets/plant.token", b"t").await;
+        node.set_file_exposed(path, true);
+        node.fail_file(path, Operation::ReadAt);
+        assert_eq!(
+            get(&store, "plant.token").await,
+            exposed("secrets/plant.token")
+        );
+        node.set_file_exposed(path, false);
+        let unread = Err(Error::Unavailable {
+            detail: "the read_at of the file /data/secrets/plant.token failed with OS \
+                     error 5. Check the path and the file"
+                .into(),
+        });
+        assert_eq!(
+            get(&store, "plant.token").await,
+            unread,
+            "the refused get read no byte, so the fault of the read waits"
+        );
+        assert_eq!(get(&store, "plant.token").await, Ok(b"t".to_vec()));
+    });
+}
+
+#[test]
+fn refuses_an_exposed_file_before_it_checks_the_length() {
+    on_sim(|node, files| async move {
+        let store = store(files.clone());
+        put(&files, "secrets/plant.token", &vec![b't'; (1 << 16) + 1]).await;
+        node.set_file_exposed(Path::new("secrets/plant.token"), true);
+        assert_eq!(
+            get(&store, "plant.token").await,
+            exposed("secrets/plant.token")
+        );
+    });
+}
+
 /// A waker that counts its wakes.
 #[derive(Default)]
 struct Count(AtomicU64);
