@@ -665,8 +665,8 @@ fn refuses_a_host_that_is_not_valid() {
         ("http://influx..local/", host::Error::Part),
         ("http://influx-/", host::Error::Part),
         ("http://[fe80::1%25eth0]/", host::Error::Zone),
-        ("http://[fe80::1%2]/", host::Error::Zone),
-        ("http://[fe80::1%]/", host::Error::Zone),
+        ("http://[fe80::1%2]/", host::Error::Escape),
+        ("http://[fe80::1%]/", host::Error::Escape),
     ] {
         let refused = refused(uri);
         assert!(
@@ -676,6 +676,14 @@ fn refuses_a_host_that_is_not_valid() {
         assert_eq!(refused.to_string(), format!("the URI has {error}"));
         assert_eq!(chain(&refused), error.to_string(), "{uri}");
     }
+}
+
+#[test]
+fn tells_a_zone_with_no_escape_how_to_escape_it() {
+    assert_eq!(
+        refused("http://[fe80::1%2]:8086/").to_string(),
+        "the URI has a zone that does not follow `%25`, as `[fe80::1%252]` for zone 2",
+    );
 }
 
 /// The IPv6 address of the server node.

@@ -95,6 +95,8 @@ pub enum Error {
     Ipv6,
     /// The zone after `%` is not a decimal number that fits in `u32`.
     Zone,
+    /// In a URI, a zone does not follow `%25`, the escape of `%`.
+    Escape,
     /// A name holds a character other than an ASCII letter, a digit, `-`, `.`, or
     /// `_`.
     Character,
@@ -115,6 +117,9 @@ impl fmt::Display for Error {
             Self::Empty => "no host",
             Self::Ipv6 => "a host with `:` or brackets that is not an IPv6 address",
             Self::Zone => "a zone that is not an interface number from 0 to 4294967295",
+            Self::Escape => {
+                "a zone that does not follow `%25`, as `[fe80::1%252]` for zone 2"
+            }
             Self::Character => {
                 "a host with a character other than a letter, a digit, `-`, `.`, or `_`"
             }
@@ -139,12 +144,12 @@ impl std::error::Error for Error {}
 ///
 /// let zoned = host::uri("[fe80::1%252]").expect("an address with zone 2");
 /// assert_eq!(zoned.to_string(), "fe80::1%2");
-/// assert_eq!(host::uri("[fe80::1%2]"), Err(Error::Zone));
+/// assert_eq!(host::uri("[fe80::1%2]"), Err(Error::Escape));
 /// ```
 ///
 /// # Errors
 ///
-/// [`Error::Ipv6`] for a `:` outside brackets, [`Error::Zone`] for a `%` that `25`
+/// [`Error::Ipv6`] for a `:` outside brackets, [`Error::Escape`] for a `%` that `25`
 /// does not follow, and each error of [`Host`] for the text it reads.
 pub fn uri(text: &str) -> Result<Host, Error> {
     let Some(inner) = text.strip_prefix('[').and_then(|t| t.strip_suffix(']')) else {
@@ -154,7 +159,7 @@ pub fn uri(text: &str) -> Result<Host, Error> {
         return text.parse();
     };
     let kind = match inner.split_once('%') {
-        Some((ip, zone)) => v6(ip, Some(zone.strip_prefix("25").ok_or(Error::Zone)?)),
+        Some((ip, zone)) => v6(ip, Some(zone.strip_prefix("25").ok_or(Error::Escape)?)),
         None => v6(inner, None),
     };
     kind.map(Host)
@@ -275,7 +280,8 @@ mod tests {
             ("[fd00::2]", parse("fd00::2")),
             ("10.0.0.2", parse("10.0.0.2")),
             ("Influx", parse("influx")),
-            ("[fe80::1%2]", Err(Error::Zone)),
+            ("[fe80::1%2]", Err(Error::Escape)),
+            ("[fe80::1%]", Err(Error::Escape)),
             ("[fe80::1%25]", Err(Error::Zone)),
             ("[fe80::1%25eth0]", Err(Error::Zone)),
             ("[fe80::1%25+2]", Err(Error::Zone)),
@@ -385,6 +391,10 @@ mod tests {
             (
                 Error::Zone,
                 "a zone that is not an interface number from 0 to 4294967295",
+            ),
+            (
+                Error::Escape,
+                "a zone that does not follow `%25`, as `[fe80::1%252]` for zone 2",
             ),
             (
                 Error::Character,
