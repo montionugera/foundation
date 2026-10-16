@@ -81,12 +81,14 @@ impl Network {
                 ..name::Config::default()
             },
         );
-        let listen = tcp::Listen {
-            local: SocketAddr::new(server.addresses()[0], PORT),
-            backlog: 4,
-            options: super::super::OPTIONS,
-        };
-        let listener = server.net().listen(&listen).expect("the port is free");
+        let [v4, v6] = server.addresses().map(|ip| {
+            let listen = tcp::Listen {
+                local: SocketAddr::new(ip, PORT),
+                backlog: 4,
+                options: super::super::OPTIONS,
+            };
+            server.net().listen(&listen).expect("the port is free")
+        });
         let handle = server
             .shards()
             .start(shard("server"), move |tasks| async move {
@@ -97,7 +99,9 @@ impl Network {
                         path => Bytes::from(path.to_owned()),
                     })
                 };
-                drop(sim::serve_tls(listener, tasks, certificate, answer).await);
+                let serve = sim::serve_tls(v6, tasks.clone(), certificate, answer);
+                tasks.spawn(async move { drop(serve.await) });
+                drop(sim::serve_tls(v4, tasks, certificate, answer).await);
                 // The streams it accepted end when this shard ends.
                 std::future::pending::<()>().await;
             })
@@ -307,6 +311,36 @@ where
 fn exchanges_with_a_server_whose_certificate_the_roots_trust() {
     let mut network = Network::new(1, Certificate::Valid, JUNE_2026);
     let body = network.send(sim::ca(), "https://server:8086/ping");
+    assert_eq!(body.expect("the server answers"), "/ping");
+}
+
+#[test]
+fn exchanges_with_an_ip_host_whose_certificate_names_the_ip() {
+    for uri in [
+        "https://10.0.0.2:8086/ping",
+        "https://[fd00::2]:8086/ping",
+        "https://[fd00::2%252]:8086/ping",
+    ] {
+        let mut network = Network::new(1, Certificate::Ip, JUNE_2026);
+        let body = network.send(sim::ca(), uri);
+        assert_eq!(body.expect("the server answers"), "/ping", "{uri}");
+    }
+}
+
+#[test]
+fn refuses_an_ip_host_whose_certificate_names_only_a_dns_name() {
+    let mut network = Network::new(1, Certificate::Valid, JUNE_2026);
+    assert_eq!(
+        failed(network.send(sim::ca(), "https://[fd00::2]:8086/ping")),
+        "TLS with [fd00::2]:8086 failed: invalid peer certificate: certificate not \
+         valid for name \"fd00::2\"; certificate is only valid for DnsName(\"server\")"
+    );
+}
+
+#[test]
+fn checks_a_name_with_a_final_dot_as_the_name_with_none() {
+    let mut network = Network::new(1, Certificate::Valid, JUNE_2026);
+    let body = network.send(sim::ca(), "https://server.:8086/ping");
     assert_eq!(body.expect("the server answers"), "/ping");
 }
 
