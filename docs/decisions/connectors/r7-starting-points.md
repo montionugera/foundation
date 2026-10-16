@@ -50,8 +50,11 @@
   A refused URI gives one error for each cause: `Scheme`, `UserInfo`, `Host`, and
   `Port`, checked in that order.
   `Host` holds the `env::net::host::Error` of the host, which `env::net::host::uri`
-  reads (ENV SEAMS): a zone in brackets follows `%25`, as `[fe80::1%252]` for zone 2
-  (#1927, https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6207830826).
+  reads (ENV SEAMS), and gives "the URI has <phrase>" with that error as its source.
+  A zone in brackets follows `%25`, as `[fe80::1%252]` for zone 2, and the `Host`
+  header of the request has no zone (RFC 6874). Amended in the review of #2804
+  (https://github.com/synnaxlabs/foundation/pull/2804#issuecomment-6207830826; the
+  move to `host::uri` and the header, approval owed).
   Text after `]` is part of the host up to a `:`, so `http://[fd00::2]8086/` gives
   `Host` (https://github.com/synnaxlabs/foundation/issues/1179#issuecomment-6032542190).
   A `[` in a host that is not in brackets gives `Host`. A built URI with an empty path
