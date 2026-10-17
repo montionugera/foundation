@@ -35,6 +35,7 @@
   https://github.com/synnaxlabs/foundation/pull/2794#issuecomment-6206458946). The
   variants stay until #2790 removes them (`laptop.architect`, 2026-10-16T00:46:53Z:
   https://github.com/synnaxlabs/foundation/issues/2725#issuecomment-6205434126).
+  Amended (#2790): the `Behind` variants are removed (HUB WIRE).
   Amended (#274 A): a home appends the record of each named complete reader of an index,
   open or held, as one entry of tag 2 on its live path, version 1. It appends the entry
   after a named open, a close, and a takeover, and at a tick when a record changed: an

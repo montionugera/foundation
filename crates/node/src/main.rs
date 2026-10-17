@@ -359,7 +359,7 @@ fn node(
         name: known.name.clone(),
         settings: node::Settings::default(),
         vars,
-        roots: os::roots(),
+        roots: os::roots::read(),
         log: node::Log {
             writer: Box::new(io::stderr()),
             format: start.log,

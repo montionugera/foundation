@@ -452,28 +452,28 @@ fn gives_a_frame_whose_draft_waited_at_a_call_that_dropped() {
     );
 }
 
-/// `Behind`, kind 3, which no case gives, ends the reader with the error of an
-/// unknown kind, and each later call gives it again.
+/// Kind 3, which `Behind` once took, ends the reader with the error of an unknown kind,
+/// stops the stream as `MALFORMED`, and each later call gives it again.
 #[test]
-fn refuses_a_behind_at_each_call_after_the_node_sent_it() {
+fn refuses_the_retired_kind_of_behind_at_each_call() {
     by_hand(
         411,
         |session, node| async move {
             let mut read = opened(&session, &around(), 1).await;
-            let sender = read.sender.as_mut().expect("two-way");
-            reply(sender, Reply::Behind).await;
-            sender.finish().expect("finishes");
+            send(read.sender.as_mut().expect("two-way"), &[3]).await;
+            assert_eq!(stopped(&mut read).await, Code(MALFORMED));
             node.clock().sleep(QUIET).await;
         },
-        |session, _| {
+        |session, node| {
             Box::pin(async move {
                 let mut reader = session
                     .reader(select(&["a", "b"]), Mode::Complete)
                     .await
                     .expect("opens");
-                let behind = Error::Reply(wire::hub::Error::Kind { kind: 3 });
-                assert_eq!(reader.next().await.map(drop), Err(behind.clone()));
-                assert_eq!(reader.next().await.map(drop), Err(behind));
+                let retired = Error::Reply(wire::hub::Error::Kind { kind: 3 });
+                assert_eq!(reader.next().await.map(drop), Err(retired.clone()));
+                assert_eq!(reader.next().await.map(drop), Err(retired));
+                node.clock().sleep(QUIET).await;
             })
         },
     );

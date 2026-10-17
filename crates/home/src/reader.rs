@@ -31,8 +31,6 @@ pub enum Next {
     /// of the shard, give the result to [`Shard::fill`](crate::Shard::fill), then
     /// take again.
     Disk(disk::Read),
-    /// No case gives it; #2790 removes it.
-    Behind,
 }
 
 /// An open reader on its shard, in either mode.
@@ -583,7 +581,6 @@ impl Set {
         let from = match entry.readers.take(session) {
             delivery::Next::Frame(frame) => return Next::Frame(frame),
             delivery::Next::Empty => return Next::Empty,
-            delivery::Next::Behind => return Next::Behind,
             delivery::Next::Disk { from } => from,
         };
         let delivery::Key::Complete(session) = session else {
@@ -856,7 +853,9 @@ mod tests {
                     ranges.push(frame.range(0).expect("the index is present"));
                 }
                 delivery::Next::Empty => return ranges,
-                end => panic!("{end:?} after {ranges:?}"),
+                disk @ delivery::Next::Disk { .. } => {
+                    panic!("{disk:?} after {ranges:?}")
+                }
             }
         }
     }
