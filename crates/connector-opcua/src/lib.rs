@@ -7,6 +7,8 @@ mod alloc;
 #[doc(hidden)]
 pub mod bench;
 #[cfg(feature = "open62541")]
+mod browse;
+#[cfg(feature = "open62541")]
 mod client;
 #[cfg(feature = "open62541")]
 mod config;

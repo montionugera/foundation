@@ -108,6 +108,7 @@ impl Status {
     #[cfg(test)]
     pub(crate) const BAD_NOT_SUPPORTED: Self = Self(0x803D_0000);
     pub(crate) const BAD_NODE_ID_UNKNOWN: Self = Self(0x8034_0000);
+    pub(crate) const BAD_CONTINUATION_POINT_INVALID: Self = Self(0x804A_0000);
     #[cfg(test)]
     pub(crate) const BAD_USER_ACCESS_DENIED: Self = Self(0x801F_0000);
     #[cfg(test)]
@@ -288,8 +289,8 @@ const _: () = {
         "shim_reference.class moved"
     );
     assert!(
-        offset_of!(Reference, local) == 84,
-        "shim_reference.local moved"
+        offset_of!(Reference, held) == 84,
+        "shim_reference.held moved"
     );
     assert!(
         offset_of!(Reference, typed) == 85,
@@ -574,11 +575,21 @@ pub(crate) type Served = unsafe extern "C" fn(
     response: *mut c_void,
 );
 
+/// The values of [`Reference::held`], which `shim.c` asserts.
+pub(crate) mod held {
+    /// A node of this server by a number or a name.
+    pub(crate) const NODE: u8 = 0;
+    /// A node of this server by a GUID or opaque key.
+    pub(crate) const KEY: u8 = 1;
+    /// A node of another server, or of a namespace by its URI.
+    pub(crate) const REMOTE: u8 = 2;
+}
+
 /// `shim_reference`: a reference of a browse, which borrows from its answer.
 #[repr(C)]
 #[derive(Default)]
 pub(crate) struct Reference {
-    /// The node, valid only when `local`.
+    /// The node, valid only when `held` is 0.
     pub(crate) node: Node<'static>,
     /// The reference type, valid only when `typed`.
     pub(crate) via: Node<'static>,
@@ -588,8 +599,8 @@ pub(crate) struct Reference {
     pub(crate) display: Bytes,
     /// The `UA_NodeClass`.
     pub(crate) class: u32,
-    /// Whether the node is in this server, by a number or a name.
-    pub(crate) local: bool,
+    /// One of the values of [`held`].
+    pub(crate) held: u8,
     /// Whether the reference type is by a number or a name.
     pub(crate) typed: bool,
 }
@@ -750,6 +761,12 @@ unsafe extern "C" {
         index: usize,
         out: *mut Reference,
     );
+    pub(crate) fn shim_browse_text(
+        answer: *const c_void,
+        result: usize,
+        index: usize,
+        out: *mut Bytes,
+    ) -> u32;
     pub(crate) fn shim_units_new(nodes: *const Node<'_>, count: usize) -> *mut c_void;
     pub(crate) fn shim_units_target(
         answer: *const c_void,

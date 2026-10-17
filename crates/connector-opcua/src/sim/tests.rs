@@ -9,7 +9,9 @@ use types::quality::Quality;
 
 use super::{Served, Variables, serve, tree};
 use crate::client::Client;
-use crate::client::browse::{Class, Description, Page, Reference, Unit};
+use crate::client::browse::{
+    Base, Cause, Class, Description, Foreign, Page, Reference, Unit,
+};
 use crate::event;
 use crate::ffi::Status;
 use crate::node::Node;
@@ -343,7 +345,7 @@ fn named(namespace: u16, name: &str) -> Node {
 /// with the browse and display name `text`.
 fn reference(name: &str, text: &str, class: Class, via: u32) -> Reference {
     Reference {
-        node: Some(named(1, name)),
+        node: Ok(named(1, name)),
         name: text.to_owned(),
         display: text.to_owned(),
         class,
@@ -446,13 +448,16 @@ fn a_client_browses_the_tree_from_objects() {
         references(odd),
         [[
             Reference {
-                node: None,
+                node: Err(Foreign {
+                    text: tree::GUID.as_bytes().to_vec(),
+                    cause: Cause::Key,
+                }),
                 ..reference("guid", "guid", Class::Object, ORGANIZES)
             },
             level(ORGANIZES),
             level(HAS_COMPONENT),
             Reference {
-                node: Some(named(1, "Plant.Odd.Twin")),
+                node: Ok(named(1, "Plant.Odd.Twin")),
                 ..level(HAS_COMPONENT)
             },
         ]]
@@ -476,7 +481,7 @@ fn a_client_describes_each_variable_of_the_tree() {
         .collect();
     let described = with_tree(async move |client| client.describe(&nodes).await);
     let description = |base: Option<u32>, rank: i32, access: u8| Description {
-        base,
+        base: base.map(Base::of),
         rank: Some(rank),
         access: Some(access),
         unit: None,

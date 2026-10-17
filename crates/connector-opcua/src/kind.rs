@@ -1,18 +1,22 @@
 //! The `opcua` kind: reads OPC UA nodes at a fixed rate, and writes at most one frame
 //! per tick.
 
-use std::fmt;
+use std::ffi::CStr;
+use std::{fmt, future};
 
 use connector::kind::{self, Channels, Context, Error};
 use connector::{browse, pace, poll, status};
 use document::diagnostic::{Code, Diagnostic};
 use document::{Block, Document};
+use env::net::Net;
+use env::rng::Rng;
 use types::name::Name;
 use types::sample::{self, Scalar, Type};
 #[cfg(feature = "sim")]
 use types::time::Span;
 use types::time::Stamp;
 
+use crate::browse::Server;
 use crate::client::{Client, Large};
 use crate::config::{self, Config, Read};
 use crate::event;
@@ -109,31 +113,106 @@ impl kind::Kind for Kind {
     ) -> Result<Vec<Block>, Vec<Diagnostic>> {
         config::block(tag, channel)
     }
+
+    /// Reads only `address`, as `parse` does, connects as `run` does, and walks
+    /// `query` over the tree of the server from its Objects folder. An entry is a
+    /// forward hierarchical reference to an Object, a View, or a Variable, with the
+    /// browse name as its name and the node ID as its tag. An Object or a View is a
+    /// folder. A Variable is a point, of the sample type of a built-in type from
+    /// Boolean to Double, or of no type when its data type has no built-in base. It is
+    /// unreadable when the server does not let the user read it, when its value rank
+    /// is that of an array, or when its type is another built-in type. A node whose ID
+    /// is a GUID, opaque, a name that is empty or not UTF-8, or of another server is
+    /// unreadable. Its tag is the text of its ID, with `%` and each byte that is not
+    /// UTF-8 as `%XX`, and `s%=` in place of the `s=` of a name, so `parse` refuses
+    /// it. In one folder, a second reference to a node gives no entry, and a name that
+    /// an earlier entry has gets ` (<tag>)` after it. A cursor of an earlier browse
+    /// skips the references before its page again, so it assumes that the server
+    /// keeps their order. The browse keeps at most 16 MiB of the tags and names of
+    /// the references before its pages. Then it closes the session, as `run` does.
+    /// The header of each request holds the mesh time of the node, which it reads
+    /// before the connect.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] with the diagnostic of `parse` for `address`, and with
+    /// `opcua.bad-cursor` for a cursor that is not a count, or that skips more than
+    /// 100 000 references. [`Error::Retry`] when the node has no mesh time, as
+    /// [`browse::Context::time`] gives it. [`Error::Device`] when the connect, a
+    /// Browse, a `BrowseNext`, or a Read fails, when the tags and names that the browse
+    /// keeps pass 16 MiB, and when a browse for a cursor reads past
+    /// [`browse::VISITS`] pages of the server with no references. The errors of
+    /// [`browse::walk`].
+    fn browse(
+        &self,
+        ctx: &browse::Context<'_>,
+        query: &browse::Query,
+    ) -> impl Future<Output = Result<browse::Found, Error>> {
+        walk(ctx, query)
+    }
+}
+
+async fn walk(
+    ctx: &browse::Context<'_>,
+    query: &browse::Query,
+) -> Result<browse::Found, Error> {
+    let address =
+        config::endpoint(ctx.config()).map_err(|error| Error::Config(vec![error]))?;
+    let time = event::Time::mesh(ctx.clock().clone(), ctx.time().await?);
+    let found = session(
+        time,
+        ctx.net().clone(),
+        &mut ctx.rng(),
+        &address,
+        future::pending(),
+        async |client| browse::walk(&mut Server::new(client), query).await,
+    )
+    .await?;
+    found.expect("invariant: a session with no end gives a result")
 }
 
 async fn run(ctx: Context<Config>) -> Result<(), Error> {
     let mut frames = Frames::open(&ctx).await?;
-    let config = ctx.config();
-    let mesh = frames.writer.time();
-    let time = event::Time {
-        clock: ctx.clock().clone(),
-        wall: Box::new(move || mesh.now()),
-    };
-    let rng = &mut ctx.rng();
-    let net = ctx.net().clone();
-    let cancelled = ctx.cancel().wait();
-    match Client::connect(time, net, rng, &config.address, cancelled).await {
-        Ok(None) => Ok(()),
-        Err(status) => Err(device(Failure::Connect {
-            address: config.address.to_string_lossy().into_owned(),
+    let time = event::Time::mesh(ctx.clock().clone(), frames.writer.time());
+    let ran = session(
+        time,
+        ctx.net().clone(),
+        &mut ctx.rng(),
+        &ctx.config().address,
+        ctx.cancel().wait(),
+        async |client| read(&ctx, client, &mut frames).await,
+    )
+    .await?;
+    ran.unwrap_or(Ok(()))
+}
+
+/// Connects to `address` with `time`, `net`, and `rng`, gives the client to `work`,
+/// and then closes the session. `None` when `until` ends before the connect.
+///
+/// # Errors
+///
+/// [`Error::Device`] with the address when the connect fails.
+async fn session<T>(
+    time: event::Time,
+    net: Net,
+    rng: &mut Rng,
+    address: &CStr,
+    until: impl Future<Output = ()>,
+    work: impl AsyncFnOnce(&mut Client) -> T,
+) -> Result<Option<T>, Error> {
+    let connected = Client::connect(time, net, rng, address, until).await;
+    let connected = connected.map_err(|status| {
+        device(Failure::Connect {
+            address: address.to_string_lossy().into_owned(),
             status,
-        })),
-        Ok(Some(mut client)) => {
-            let result = read(&ctx, &mut client, &mut frames).await;
-            client.close().await;
-            result
-        }
-    }
+        })
+    })?;
+    let Some(mut client) = connected else {
+        return Ok(None);
+    };
+    let done = work(&mut client).await;
+    client.close().await;
+    Ok(Some(done))
 }
 
 /// Reads each node once per tick until the cancel, and writes the frame of each tick.
@@ -144,9 +223,10 @@ async fn read(
 ) -> Result<(), Error> {
     let reads = &ctx.config().reads;
     let nodes: Vec<Node> = reads.iter().map(|read| read.node.clone()).collect();
-    let nodes = client
-        .nodes(&nodes)
-        .map_err(|large| large_read(reads, large))?;
+    let nodes = client.nodes(&nodes);
+    if let Some(large) = nodes.large().first() {
+        return Err(large_read(reads, large));
+    }
     let missed = ctx.count("missed");
     let mut timer = pace::Timer::new(ctx.clock(), ctx.config().rate);
     loop {
@@ -404,7 +484,7 @@ fn sample_type(read: &Read, data_type: Type) -> Diagnostic {
 
 /// The error of a read of `reads` whose node alone needs a Read past one message of the
 /// server.
-fn large_read(reads: &[Read], Large { index, bytes, most }: Large) -> Error {
+fn large_read(reads: &[Read], &Large { index, bytes, most }: &Large) -> Error {
     let read = &reads[index];
     Error::Config(vec![Diagnostic::new(
         LARGE_READ,
@@ -420,10 +500,19 @@ fn large_read(reads: &[Read], Large { index, bytes, most }: Large) -> Error {
 
 /// Why a run ended with [`Error::Device`].
 #[derive(Debug)]
-enum Failure {
-    Connect { address: String, status: Status },
+pub(crate) enum Failure {
+    Connect {
+        address: String,
+        status: Status,
+    },
     Read(Status),
     Check(Status),
+    Browse(Status),
+    /// The tags and names before the pages of a browse pass [`crate::browse::BYTES`].
+    Names,
+    /// A browse again for a cursor reads past [`connector::browse::VISITS`] pages of
+    /// the server with no references.
+    Empty,
 }
 
 impl fmt::Display for Failure {
@@ -436,12 +525,25 @@ impl fmt::Display for Failure {
             Self::Check(status) => {
                 write!(f, "the connectivity check failed with {}", status.name())
             }
+            Self::Browse(status) => {
+                write!(f, "the browse failed with {}", status.name())
+            }
+            Self::Names => write!(
+                f,
+                "the tags and names of the browse pass {} MiB",
+                crate::browse::BYTES >> 20
+            ),
+            Self::Empty => write!(
+                f,
+                "the browse reads past {} pages with no references",
+                connector::browse::VISITS
+            ),
         }
     }
 }
 
 impl std::error::Error for Failure {}
 
-fn device(failure: Failure) -> Error {
+pub(crate) fn device(failure: Failure) -> Error {
     Error::Device(Box::new(failure))
 }

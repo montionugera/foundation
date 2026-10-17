@@ -3,7 +3,7 @@
 use std::ffi::CStr;
 
 use crate::node::ns0::{
-    BASE_DATA_TYPE, BYTE_STRING, DATE_TIME, DOUBLE, ENUMERATION, GUID, HAS_COMPONENT,
+    self, BASE_DATA_TYPE, BYTE_STRING, DATE_TIME, DOUBLE, ENUMERATION, HAS_COMPONENT,
     OBJECTS, ORGANIZES, STRING, STRUCTURE,
 };
 use crate::node::{Key, Name, Node};
@@ -32,6 +32,10 @@ pub(crate) const TWIN: &str = "Plant.Odd.Twin";
 pub(crate) const SPEED_TYPE: &str = "Speed";
 pub(crate) const MODE_TYPE: &str = "Mode";
 pub(crate) const RECIPE_TYPE: &str = "Recipe";
+
+/// The node id of the folder `Plant.Odd.guid`.
+#[cfg(test)]
+pub(crate) const GUID: &str = "ns=1;g=00000001-0002-0003-0400-000000000000";
 
 /// The number in namespace 0 of each type that the tree adds, since the namespace 0
 /// of the build has none of them.
@@ -92,7 +96,7 @@ fn add_types(server: &Server) {
     let others = [
         (c"String", STRING, text),
         (c"DateTime", DATE_TIME, epoch),
-        (c"Guid", GUID, guid),
+        (c"Guid", ns0::GUID, guid),
         (c"ByteString", BYTE_STRING, two_bytes()),
     ]
     .map(|(name, id, encoded)| (name, (id, server::scalar(id, &encoded))));

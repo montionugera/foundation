@@ -10,6 +10,7 @@ use std::ffi::c_void;
 
 use connector_opcua::bench::{Client, client};
 use sim::Sim;
+use types::sample::Scalar;
 
 #[global_allocator]
 static ALLOCATOR: counting::Bytes = counting::Bytes::new();
@@ -183,7 +184,7 @@ fn a_describe_frees_its_requests_and_answers() {
         client::Server::scope(node.clock(), node.net(), address, rng, body).await
     };
     let (bases, held) = sim.run_on(&node, run).expect("the run ends");
-    assert_eq!(bases, [Some(11); 4], "each base is Double");
+    assert_eq!(bases, [Some(Scalar::F64); 4], "each base is Double");
     assert_eq!(
         held[2..],
         [held[1]; 2],
