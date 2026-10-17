@@ -16,8 +16,9 @@
     or a defect that its issue fixes. A test whose value on the OS is known asserts it
     with a `cfg` on its expected value. The PR that closes an issue removes each item
     that names only that issue, and removes the issue from an item that names others.
-    The lists only shrink. The ONE NODE milestone does not close while a list holds a
-    crate or a test.
+    The lists only shrink, other than this: a new crate enters a list only with the
+    open issues of the `os` items that it needs. The ONE NODE milestone does not close
+    while a list holds a crate or a test.
   - A test skips an OS by an attribute only in a case of `docs/claude/testing.md`, "No
     `#[ignore]`": the OS does not have the behavior, no test can fix its value there, or
     its test needs an item of one OS to cause the case. Its reason is `only <OS>`, or
@@ -89,3 +90,7 @@
     (https://github.com/synnaxlabs/foundation/issues/3015#issuecomment-6231310442), on
     the gap that `laptop.monitor` found at 2026-10-17T07:32:46Z
     (https://github.com/synnaxlabs/foundation/issues/2954#issuecomment-6231250077).
+  - A new crate on a list: the person, relayed by `laptop.monitor` at
+    2026-10-17T17:30:12Z
+    (https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237654845):
+    "Yeah fine". So `sdk` is on the Windows lists with #682 and #2955.
