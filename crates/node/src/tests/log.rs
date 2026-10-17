@@ -1776,9 +1776,9 @@ impl connector::kind::Kind for Flaky {
 }
 
 /// The lines of `connector::status` of the connector `plant.a` of [`Flaky`] that
-/// ends its first run with `first` and calls `again` in each later run, over 60 s, at `level` and above, each with no
-/// stamp and no mesh time. When `removed`, the hub removes the status channels at
-/// 11 s, between the shows of `d` and `e`.
+/// ends its first run with `first` and calls `again` in each later run, over 60 s, at
+/// `level` and above, each with no stamp and no mesh time. When `removed`, the hub
+/// removes the status channels at 11 s, between the shows of `d` and `e`.
 fn status_lines(
     level: tracing::Level,
     first: fn() -> KindError,
