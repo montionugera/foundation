@@ -232,9 +232,8 @@ const AWS_LC_KEYS: [(&str, &str, &str, Access); 26] = [
         "X509_cmp_current_time",
         Access::Call,
     ),
-    // With no callback, an encrypted PEM makes aws-lc read a password from the
-    // console. No node loads a key or a certificate: `connector-opcua` adds no
-    // security policy (#3017).
+    // Each call gives a callback of `PASSWORDS`, which `passwords` checks, so it
+    // reads no console.
     (
         "plugins/crypto/openssl/certificategroup.c",
         "UA_CertificateUtils_comparePublicKeys",
@@ -387,16 +386,10 @@ const AWS_LC_KEYS: [(&str, &str, &str, Access); 26] = [
     ),
 ];
 
-/// The functions of aws-lc that the copy calls and that read the clock on each call or,
-/// with no password callback, the console. `ASN1_TIME_to_tm` reads the clock only on a
-/// NULL time, which its key states the copy never gives.
-const AWS_LC_INPUTS: [&str; 5] = [
-    "PEM_read_bio_PrivateKey",
-    "PEM_read_bio_X509",
-    "PEM_read_bio_X509_CRL",
-    "PEM_read_bio_X509_REQ",
-    "X509_cmp_current_time",
-];
+/// The functions of aws-lc that the copy calls and that read the clock on each call.
+/// `ASN1_TIME_to_tm` reads the clock only on a NULL time, which its key states the
+/// copy never gives.
+const AWS_LC_INPUTS: [&str; 1] = ["X509_cmp_current_time"];
 
 /// The release files that the copy holds and the library of our options does not
 /// compile. A `.c` file goes in `sources.txt`, so it builds with `flags.txt`.
@@ -1038,7 +1031,8 @@ fn inspect(
                  caller"
             ));
         }
-        for problem in includes(&preprocessed, copy, &flags, &dirs, &crypto.include) {
+        let found = includes(&preprocessed, copy, &flags, &dirs, &crypto.include);
+        for problem in found.into_iter().chain(passwords(&preprocessed)) {
             problems.push(format!("{source}: {problem}"));
         }
     }
@@ -1212,6 +1206,173 @@ fn includes(
             None => format!("includes {directive}, which no include directory holds"),
         };
         problems.push(problem);
+    }
+    problems
+}
+
+/// The callbacks that a call in the copy may give a function of aws-lc that takes a
+/// `pem_password_cb`. Each gives aws-lc only a password that its caller gives, so no
+/// read waits on the console.
+const PASSWORDS: [&str; 2] =
+    ["UA_OpenSSL_refusePassword", "privateKeyPasswordCallback"];
+
+/// A token of `cc -E` output, with the file and the line that hold it.
+struct Token<'a> {
+    text: &'a str,
+    file: &'a str,
+    line: usize,
+}
+
+/// The tokens of `preprocessed`, the output of `cc -E -dI`, less its directives. A
+/// run of letters, digits, and `_`, or a literal, is one token; each other character
+/// is one token.
+fn tokens(preprocessed: &str) -> Vec<Token<'_>> {
+    let mut tokens = Vec::new();
+    let (mut file, mut line) = ("", 0);
+    for text in preprocessed.lines() {
+        if let Some(marker) = text.strip_prefix("# ")
+            && let Some((number, name)) = marker.split_once(" \"")
+            && let Ok(number) = number.parse()
+        {
+            file = name.rsplit_once('"').map_or(name, |(name, _)| name);
+            line = number;
+            continue;
+        }
+        let mut rest = text;
+        if !rest.trim_start().starts_with('#') {
+            while let Some(start) = rest.find(|c: char| !c.is_whitespace()) {
+                rest = &rest[start..];
+                let length = token_length(rest);
+                tokens.push(Token {
+                    text: &rest[..length],
+                    file,
+                    line,
+                });
+                rest = &rest[length..];
+            }
+        }
+        line += 1;
+    }
+    tokens
+}
+
+/// Whether `c` is a character of a C word: a letter, a digit, or `_`.
+fn word(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// The length in bytes of the token at the start of `text`, which is not empty.
+fn token_length(text: &str) -> usize {
+    let first = text.chars().next().unwrap_or(' ');
+    if word(first) {
+        return text.find(|c: char| !word(c)).unwrap_or(text.len());
+    }
+    if first == '"' || first == '\'' {
+        let mut escaped = false;
+        for (at, c) in text.char_indices().skip(1) {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                _ if c == first => return at + 1,
+                _ => {}
+            }
+        }
+        return text.len();
+    }
+    first.len_utf8()
+}
+
+/// Each function that a declaration outside the copy in `tokens` gives a parameter of
+/// the type `pem_password_cb`, with the index of that parameter.
+fn readers<'a>(tokens: &[Token<'a>]) -> std::collections::BTreeMap<&'a str, usize> {
+    let mut readers = std::collections::BTreeMap::new();
+    // The index of each open parenthesis, with the count of commas after it.
+    let mut open: Vec<(usize, usize)> = Vec::new();
+    for (at, token) in tokens.iter().enumerate() {
+        match token.text {
+            "(" => open.push((at, 0)),
+            ")" => {
+                open.pop();
+            }
+            "," => {
+                if let Some((_, commas)) = open.last_mut() {
+                    *commas += 1;
+                }
+            }
+            "pem_password_cb" if !inside(Path::new(token.file)) => {
+                if let Some(&(paren, commas)) = open.last()
+                    && let Some(name) = paren.checked_sub(1).map(|at| tokens[at].text)
+                    && name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                {
+                    readers.insert(name, commas);
+                }
+            }
+            _ => {}
+        }
+    }
+    readers
+}
+
+/// The text of each argument of the call whose `(` starts `tokens`, or `None` when
+/// `tokens` starts with no `(` or ends before its `)`.
+fn call_arguments(tokens: &[Token<'_>]) -> Option<Vec<String>> {
+    if tokens.first()?.text != "(" {
+        return None;
+    }
+    let mut arguments = vec![String::new()];
+    let mut depth = 0_usize;
+    for token in &tokens[1..] {
+        match token.text {
+            "(" | "[" | "{" => depth += 1,
+            ")" if depth == 0 => return Some(arguments),
+            ")" | "]" | "}" => depth = depth.checked_sub(1)?,
+            "," if depth == 0 => {
+                arguments.push(String::new());
+                continue;
+            }
+            _ => {}
+        }
+        let argument = arguments.last_mut()?;
+        if argument.ends_with(word) && token.text.starts_with(word) {
+            argument.push(' ');
+        }
+        argument.push_str(token.text);
+    }
+    None
+}
+
+/// An error for each name, in a file of the copy in `preprocessed` (the output of
+/// `cc -E -dI`), of a function of [`readers`], other than in a call that gives a
+/// callback of [`PASSWORDS`] as its `pem_password_cb`. With no callback, aws-lc
+/// reads a password from the console.
+fn passwords(preprocessed: &str) -> Vec<String> {
+    let tokens = tokens(preprocessed);
+    let readers = readers(&tokens);
+    let mut problems = Vec::new();
+    for (at, token) in tokens.iter().enumerate() {
+        let Some(&place) = readers.get(token.text) else {
+            continue;
+        };
+        if !inside(Path::new(token.file)) {
+            continue;
+        }
+        let file = files::normalize(Path::new(token.file));
+        let (file, line, name) = (file.display(), token.line, token.text);
+        match call_arguments(&tokens[at + 1..]) {
+            None => problems.push(format!(
+                "{file}:{line}: names `{name}`, which takes a `pem_password_cb`, \
+                 other than in a call, so a call through it escapes PASSWORDS"
+            )),
+            Some(arguments) => {
+                let callback = arguments.get(place).map_or("", String::as_str);
+                if !PASSWORDS.contains(&callback) {
+                    problems.push(format!(
+                        "{file}:{line}: gives `{name}` the callback `{callback}`, \
+                         which PASSWORDS does not list"
+                    ));
+                }
+            }
+        }
     }
     problems
 }
@@ -1477,8 +1638,7 @@ impl Uses {
 
     /// An error for each key of `keys` that `list`, named `name`, does not hold, and
     /// for each key of `list` that `keys` does not hold. The error of a key whose
-    /// symbol is in `inputs`, which read a clock or the console, asks for a check of
-    /// its reason.
+    /// symbol is in `inputs`, which read a clock, asks for a check of its reason.
     fn compare(
         keys: &BTreeSet<(String, String, String, Access)>,
         list: &[(&str, &str, &str, Access)],
@@ -1496,24 +1656,25 @@ impl Uses {
                 )
             })
             .collect();
-        let new = keys.difference(&listed).map(|(file, function, symbol, access)| {
-            let verb = access.verb();
-            if inputs.contains(&symbol.as_str()) {
-                format!(
-                    "{file}: `{function}` {verb} `{symbol}`, which reads a clock or \
-                     the console. Find whether a node runs it; if not, add it to \
-                     {name} with the reason and a check of the reason in \
-                     connector-opcua"
-                )
-            } else {
-                format!(
-                    "{file}: `{function}` {verb} `{symbol}`, which no list admits. \
+        let new = keys
+            .difference(&listed)
+            .map(|(file, function, symbol, access)| {
+                let verb = access.verb();
+                if inputs.contains(&symbol.as_str()) {
+                    format!(
+                        "{file}: `{function}` {verb} `{symbol}`, which reads a clock. \
+                     Find whether a node runs it; if not, add it to {name} with the \
+                     reason and a check of the reason in connector-opcua"
+                    )
+                } else {
+                    format!(
+                        "{file}: `{function}` {verb} `{symbol}`, which no list admits. \
                      Find whether a node runs it; if not, or if it reads no clock, \
                      file, network, randomness, or process state, add it to {name} \
                      with the reason"
-                )
-            }
-        });
+                    )
+                }
+            });
         let gone = listed
             .difference(keys)
             .map(|(file, function, symbol, access)| {
@@ -2225,6 +2386,106 @@ Disassembly of section .text.stamp:
         remove(&root).unwrap();
     }
 
+    /// `cc -E -dI` output of `a.c` of a copy, which includes a header of aws-lc with
+    /// two functions that take a `pem_password_cb`, and a header of the copy.
+    const PREPROCESSED: &str = r#"# 0 "./a.c"
+# 0 "<built-in>"
+# 1 "./a.c"
+#include <openssl/pem.h>
+# 1 "/aws/include/openssl/pem.h" 1
+typedef int pem_password_cb (char *buf, int size, int rwflag, void *userdata);
+extern X *read_x(B *o, X **x, pem_password_cb *cb, void *u); extern int write_x(B *o);
+__attribute__((deprecated("Since " "3.0"))) RSA *read_r(BIO *out,
+                                                        pem_password_cb *cb, void *u);
+int (*pointer)(pem_password_cb *cb);
+extern X *read_q(B *o, int (*f)(void), pem_password_cb *cb, void *u);
+# 2 "./a.c" 2
+x = read_x(b, ((void*)0), UA_OpenSSL_refusePassword, ((void*)0));
+y = read_r(b, privateKeyPasswordCallback, 0);
+z = read_x(b, ((void*)0), ((void*)0), ((void*)0));
+w = read_r(b,
+           other, 0);
+v = read_x(f(a, b), c, g(d, e), 0);
+p = &read_r;
+q = read_x(b, c, "a\", b", 0);
+r = read_x(b, ',', ',', 0);
+s = write_x(b, 0) + pointer(0);
+u = read_q(b, 0, sizeof x, 0);
+#include "copy.h"
+# 1 "include/copy.h" 1
+int wrap(pem_password_cb *cb);
+# 14 "./a.c" 2
+t = wrap(0);
+"#;
+
+    #[test]
+    fn readers_gives_each_function_of_aws_lc_with_the_place_of_its_callback() {
+        assert_eq!(
+            readers(&tokens(PREPROCESSED)),
+            [("read_q", 2), ("read_r", 1), ("read_x", 2)].into()
+        );
+    }
+
+    #[test]
+    fn passwords_names_each_use_of_a_reader_that_gives_no_callback_of_passwords() {
+        let gives = |line: usize, name: &str, callback: &str| {
+            format!(
+                "a.c:{line}: gives `{name}` the callback `{callback}`, which PASSWORDS \
+                 does not list"
+            )
+        };
+        assert_eq!(
+            passwords(PREPROCESSED),
+            [
+                gives(4, "read_x", "((void*)0)"),
+                gives(5, "read_r", "other"),
+                gives(7, "read_x", "g(d,e)"),
+                "a.c:8: names `read_r`, which takes a `pem_password_cb`, other than in \
+                 a call, so a call through it escapes PASSWORDS"
+                    .to_owned(),
+                gives(9, "read_x", r#""a\", b""#),
+                gives(10, "read_x", "','"),
+                gives(12, "read_q", "sizeof x"),
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "needs GCC, GNU objdump, and GNU nm"
+    )]
+    fn check_finds_a_read_of_the_committed_copy_that_gives_aws_lc_no_callback() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let root = temp("passwords");
+        std::fs::create_dir(root.join("patches")).unwrap();
+        let mut cp = Command::new("cp");
+        exec(
+            cp.arg("-R")
+                .arg(workspace.join(DEST))
+                .arg(root.join("patches")),
+        )
+        .unwrap();
+        let file = "plugins/crypto/openssl/securitypolicy_common.c";
+        let path = root.join(DEST).join(file);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let call = "PEM_read_bio_X509(bio, NULL, UA_OpenSSL_refusePassword, NULL);";
+        let line = text.lines().position(|line| line.contains(call)).unwrap() + 1;
+        let changed = call.replace("UA_OpenSSL_refusePassword", "NULL");
+        std::fs::write(&path, text.replacen(call, &changed, 1)).unwrap();
+        let crypto = Crypto::locked(workspace).unwrap();
+        assert_eq!(
+            check(&root, &crypto),
+            Err(vec![format!(
+                "{file}: {file}:{line}: gives `{}PEM_read_bio_X509` the callback \
+                 `((void*)0)`, which PASSWORDS does not list",
+                crypto.prefix
+            )])
+        );
+        remove(&root).unwrap();
+    }
+
     #[test]
     fn line_directives_names_each_line_directive_and_marker() {
         let copy = temp("lines");
@@ -2679,13 +2940,13 @@ End of search list.
         unlisted_input(file, function, "UA_DateTime_now", "FUNCTION_SYMBOLS")
     }
 
-    /// The error of [`Uses::mismatches`] for a call of `symbol`, which reads a clock or
-    /// the console, that `list` does not admit.
+    /// The error of [`Uses::mismatches`] for a call of `symbol`, which reads a clock,
+    /// that `list` does not admit.
     fn unlisted_input(file: &str, function: &str, symbol: &str, list: &str) -> String {
         format!(
-            "{file}: `{function}` calls `{symbol}`, which reads a clock or the \
-             console. Find whether a node runs it; if not, add it to {list} with the \
-             reason and a check of the reason in connector-opcua"
+            "{file}: `{function}` calls `{symbol}`, which reads a clock. Find \
+             whether a node runs it; if not, add it to {list} with the reason and a \
+             check of the reason in connector-opcua"
         )
     }
 
@@ -2738,7 +2999,7 @@ End of search list.
     }
 
     #[test]
-    fn a_test_of_connector_opcua_names_the_function_of_each_clock_and_console_key() {
+    fn a_test_of_connector_opcua_names_the_function_of_each_clock_key() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let link = workspace.join("crates/connector-opcua/src/link.rs");
         let text = std::fs::read_to_string(link).unwrap();
