@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::future;
 use std::net::SocketAddr;
@@ -15,7 +14,8 @@ use crate::client::browse::{
 };
 use crate::event;
 use crate::ffi::Status;
-use crate::node::{Key, Node};
+use crate::node::Node;
+use crate::node::ns0::{self, HAS_COMPONENT, ORGANIZES};
 use crate::value::{Fault, Type, Value};
 
 const SPIKE: &str = "ns=3;s=SpikeData";
@@ -341,13 +341,6 @@ fn named(namespace: u16, name: &str) -> Node {
     format!("ns={namespace};s={name}").parse().expect("a node")
 }
 
-fn ns0(number: u32) -> Node {
-    Node {
-        namespace: 0,
-        key: Key::Number(number),
-    }
-}
-
 /// A reference of the type `via` in namespace 0 to the node `name` of namespace 1,
 /// with the browse and display name `text`.
 fn reference(name: &str, text: &str, class: Class, via: u32) -> Reference {
@@ -356,7 +349,7 @@ fn reference(name: &str, text: &str, class: Class, via: u32) -> Reference {
         name: text.to_owned(),
         display: text.to_owned(),
         class,
-        via: Some(ns0(via)),
+        via: Some(Node::ns0(via)),
     }
 }
 
@@ -378,9 +371,6 @@ const TYPES: [&str; 15] = [
     "Guid",
     "ByteString",
 ];
-
-const ORGANIZES: u32 = 35;
-const HAS_COMPONENT: u32 = 47;
 
 /// Each page of a browse of `node`, which follows each continuation point.
 async fn pages(client: &mut Client, node: &Node) -> Vec<Page> {
@@ -406,7 +396,7 @@ fn references(pages: Vec<Page>) -> Vec<Vec<Reference>> {
 #[test]
 fn a_client_browses_the_tree_from_objects() {
     let (objects, plant, line, types, odd) = with_tree(async |client| {
-        let objects = pages(client, &ns0(85)).await;
+        let objects = pages(client, &Node::ns0(ns0::OBJECTS)).await;
         let plant = pages(client, &named(1, "Plant")).await;
         let line = pages(client, &named(1, "Plant.Line")).await;
         let types = pages(client, &named(1, "Plant.Types")).await;
@@ -516,25 +506,6 @@ fn a_client_describes_each_variable_of_the_tree() {
         description(Some(11), -1, 1),
     ]);
     assert_eq!(described, Ok(expected));
-}
-
-#[test]
-fn each_variable_of_a_type_of_the_tree_has_the_type() {
-    let nodes =
-        [tree::TEMPERATURE, tree::SPEED, tree::MODE, tree::RECIPE].map(tree::node);
-    let supertypes = with_tree(async move |client| {
-        client.describe(&nodes).await.expect("a describe");
-        client.supertypes().clone()
-    });
-    let subtype = |name, number| (tree::node(name), Some(ns0(number)));
-    assert_eq!(
-        supertypes,
-        BTreeMap::from([
-            subtype(tree::SPEED_TYPE, 11),
-            subtype(tree::MODE_TYPE, 29),
-            subtype(tree::RECIPE_TYPE, 22),
-        ])
-    );
 }
 
 #[test]

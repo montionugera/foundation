@@ -16,6 +16,55 @@ pub(crate) struct Node {
     pub(crate) key: Key,
 }
 
+impl Node {
+    /// The node of the number `number` in namespace 0.
+    pub(crate) const fn ns0(number: u32) -> Self {
+        Self {
+            namespace: 0,
+            key: Key::Number(number),
+        }
+    }
+}
+
+/// The number in namespace 0 of each node that the crate names in more than one
+/// module.
+pub(crate) mod ns0 {
+    /// The reference type `HasSubtype`.
+    pub(crate) const HAS_SUBTYPE: u32 = 45;
+    /// The data type `Enumeration`.
+    pub(crate) const ENUMERATION: u32 = 29;
+    /// The Objects folder.
+    #[cfg(any(test, feature = "sim"))]
+    pub(crate) const OBJECTS: u32 = 85;
+    /// The reference type `Organizes`.
+    #[cfg(any(test, feature = "sim"))]
+    pub(crate) const ORGANIZES: u32 = 35;
+    /// The reference type `HasComponent`.
+    #[cfg(any(test, feature = "sim"))]
+    pub(crate) const HAS_COMPONENT: u32 = 47;
+    /// The data type `BaseDataType`.
+    #[cfg(any(test, feature = "sim"))]
+    pub(crate) const BASE_DATA_TYPE: u32 = 24;
+    /// The data type `Double`.
+    #[cfg(any(test, feature = "sim"))]
+    pub(crate) const DOUBLE: u32 = 11;
+    /// The data type `String`.
+    #[cfg(any(test, feature = "sim"))]
+    pub(crate) const STRING: u32 = 12;
+    /// The data type `DateTime`.
+    #[cfg(feature = "sim")]
+    pub(crate) const DATE_TIME: u32 = 13;
+    /// The data type `Guid`.
+    #[cfg(feature = "sim")]
+    pub(crate) const GUID: u32 = 14;
+    /// The data type `ByteString`.
+    #[cfg(any(test, feature = "sim"))]
+    pub(crate) const BYTE_STRING: u32 = 15;
+    /// The data type `Structure`, whose built-in type is `ExtensionObject`.
+    #[cfg(any(test, feature = "sim"))]
+    pub(crate) const STRUCTURE: u32 = 22;
+}
+
 /// The key of a [`Node`] in its namespace.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Key {

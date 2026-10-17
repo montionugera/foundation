@@ -177,18 +177,6 @@ unsafe extern "C" {
         chunks: u32,
     ) -> *mut Server;
     pub(crate) fn UA_Server_run_startup(server: *mut Server) -> u32;
-    pub(crate) fn shim_server_add_value(
-        server: *mut Server,
-        node: Node<'_>,
-        parent: Node<'_>,
-        reference: u32,
-        name: *const std::ffi::c_char,
-        data_type: Node<'_>,
-        kind: u16,
-        encoded: *const u8,
-        size: usize,
-    ) -> u32;
-    pub(crate) fn shim_server_add_doubles(server: *mut Server, node: Node<'_>) -> u32;
     pub(crate) fn shim_server_limits(
         server: *mut Server,
         buffer: u32,
@@ -239,6 +227,8 @@ unsafe extern "C" {
         data_type: Node<'_>,
         rank: i32,
         access: u8,
+        encoded: *const u8,
+        size: usize,
     ) -> u32;
     pub(crate) fn shim_server_add_data_type(
         server: *mut Server,

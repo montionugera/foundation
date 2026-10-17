@@ -12,7 +12,7 @@ use std::task::Poll;
 
 use crate::connection::Manager;
 use crate::ffi::{self, Status};
-use crate::node::{Key, Node};
+use crate::node::{Key, Node, ns0};
 use crate::value::Value;
 #[cfg(test)]
 use types::time::Span;
@@ -125,71 +125,51 @@ impl Server {
     ///
     /// If open62541 refuses the node, or the key of `node` is the number 0.
     pub(crate) fn add_scalar(&self, node: &Node, value: Value) {
-        let (kind, encoded) = encoded(value);
-        self.add_value(
-            node,
-            &OBJECTS,
-            ORGANIZES,
-            c"value",
-            &type_of(kind),
-            kind,
-            &encoded,
-        );
+        let (id, value) = variant(value);
+        self.add_variable(&objects(node, c"value", id, value));
     }
 
-    /// Adds the scalar variable `node` with the browse and display name `name`, the
-    /// `DataType` `data_type`, and the `AccessLevel` and `UserAccessLevel` read, under
-    /// `parent` by the reference type of the number `reference` in namespace 0. Its
-    /// value is `encoded`, the OPC UA binary encoding of a value of the open62541 kind
-    /// `kind`.
+    /// Adds `variable`.
     ///
     /// # Panics
     ///
-    /// If open62541 refuses the node or the decode of `encoded`, or the key of `node`
+    /// If open62541 refuses the node or the decode of its value, or the key of its node
     /// is the number 0.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each is an attribute of the node"
-    )]
-    pub(crate) fn add_value(
-        &self,
-        node: &Node,
-        parent: &Node,
-        reference: u32,
-        name: &CStr,
-        data_type: &Node,
-        kind: u16,
-        encoded: &[u8],
-    ) {
+    pub(crate) fn add_variable(&self, variable: &Variable) {
+        let (value, size) = variable
+            .value
+            .as_ref()
+            .map_or((std::ptr::null(), 0), |value| (value.as_ptr(), value.len()));
         // SAFETY: the server lives, and it copies each name and the decoded value.
         let status = Status(unsafe {
-            ffi::test::shim_server_add_value(
+            ffi::test::shim_server_add_variable(
                 self.raw(),
-                added(node),
-                parent.into(),
-                reference,
-                name.as_ptr(),
-                data_type.into(),
-                kind,
-                encoded.as_ptr(),
-                encoded.len(),
+                added(&variable.node),
+                (&variable.parent).into(),
+                variable.reference,
+                variable.name.as_ptr(),
+                (&variable.data_type).into(),
+                variable.rank,
+                variable.access,
+                value,
+                size,
             )
         });
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
     }
 
-    /// Adds the variable `node` with an array of two Doubles.
+    /// Adds the variable `node` with an array of two Doubles, under the Objects
+    /// folder.
     ///
     /// # Panics
     ///
     /// If open62541 refuses the node, or the key of `node` is the number 0.
     #[cfg(test)]
     pub(crate) fn add_doubles(&self, node: &Node) {
-        // SAFETY: the server lives, and it copies the name of `node`.
-        let status = Status(unsafe {
-            ffi::test::shim_server_add_doubles(self.raw(), added(node))
+        self.add_variable(&Variable {
+            rank: 1,
+            ..objects(node, c"doubles", ns0::DOUBLE, doubles())
         });
-        assert_eq!(status, Status::GOOD, "open62541 refused the node");
     }
 
     /// Adds the scalar variable `node` of the `DataType` `BaseDataType`, and answers
@@ -304,18 +284,9 @@ impl Server {
     /// If open62541 refuses the node, or the key of `node` is the number 0.
     #[cfg(test)]
     pub(crate) fn add_string(&self, node: &Node) {
-        let mut encoded = 4_i32.to_le_bytes().to_vec();
-        encoded.extend(b"text");
-        let kind = STRING;
-        self.add_value(
-            node,
-            &OBJECTS,
-            ORGANIZES,
-            c"string",
-            &type_of(kind),
-            kind,
-            &encoded,
-        );
+        let text = [&4_i32.to_le_bytes()[..], b"text"].concat();
+        let value = scalar(ns0::STRING, &text);
+        self.add_variable(&objects(node, c"string", ns0::STRING, value));
     }
 
     /// Adds the variable `node` with a `ByteString` of `size` zero bytes, under the
@@ -329,18 +300,10 @@ impl Server {
     pub(crate) fn add_bytes(&self, node: &Node, size: usize) {
         let length =
             i32::try_from(size).expect("a ByteString of at most i32::MAX bytes");
-        let mut encoded = length.to_le_bytes().to_vec();
-        encoded.resize(4 + size, 0);
-        let kind = BYTE_STRING;
-        self.add_value(
-            node,
-            &OBJECTS,
-            ORGANIZES,
-            c"bytes",
-            &type_of(kind),
-            kind,
-            &encoded,
-        );
+        let mut bytes = length.to_le_bytes().to_vec();
+        bytes.resize(4 + size, 0);
+        let value = scalar(ns0::BYTE_STRING, &bytes);
+        self.add_variable(&objects(node, c"bytes", ns0::BYTE_STRING, value));
     }
 
     /// Refuses each Read of more than `most` nodes, 0 for none, with
@@ -373,11 +336,7 @@ impl Server {
     /// On a second call, as open62541 refuses the second add of the variable.
     pub(crate) fn set_per_read(&self, most: u32) {
         self.refuse_reads_past(most);
-        let node = Node {
-            namespace: 0,
-            key: Key::Number(ffi::MAX_NODES_PER_READ),
-        };
-        self.add_scalar(&node, Value::U32(most));
+        self.add_scalar(&Node::ns0(ffi::MAX_NODES_PER_READ), Value::U32(most));
     }
 
     /// Sets the `MaxNodesPerBrowse` of the server to `browse` and its
@@ -392,11 +351,7 @@ impl Server {
         // SAFETY: the server lives.
         unsafe { ffi::test::shim_server_browses(self.raw(), browse, translate) };
         for (number, most) in [(11710, browse), (11712, translate)] {
-            let node = Node {
-                namespace: 0,
-                key: Key::Number(number),
-            };
-            self.add_scalar(&node, Value::U32(most));
+            self.add_scalar(&Node::ns0(number), Value::U32(most));
         }
     }
 
@@ -455,44 +410,6 @@ impl Server {
         // SAFETY: the server lives, and it copies the name of `parent`.
         let status = Status(unsafe {
             ffi::test::shim_server_add_guid(self.raw(), parent.into())
-        });
-        assert_eq!(status, Status::GOOD, "open62541 refused the node");
-    }
-
-    /// Adds the variable `node` with no value, the browse and display name `name`,
-    /// the `DataType` `data_type`, the `ValueRank` `rank`, and the `AccessLevel` and
-    /// `UserAccessLevel` `access`, under `parent` by the reference type of the number
-    /// `reference` in namespace 0.
-    ///
-    /// # Panics
-    ///
-    /// If open62541 refuses the node, or the key of `node` is the number 0.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each is an attribute of the node"
-    )]
-    pub(crate) fn add_variable(
-        &self,
-        node: &Node,
-        parent: &Node,
-        reference: u32,
-        name: &CStr,
-        data_type: &Node,
-        rank: i32,
-        access: u8,
-    ) {
-        // SAFETY: the server lives, and it copies each name.
-        let status = Status(unsafe {
-            ffi::test::shim_server_add_variable(
-                self.raw(),
-                added(node),
-                parent.into(),
-                reference,
-                name.as_ptr(),
-                data_type.into(),
-                rank,
-                access,
-            )
         });
         assert_eq!(status, Status::GOOD, "open62541 refused the node");
     }
@@ -738,48 +655,93 @@ impl Browses<'_> {
     }
 }
 
-/// The open62541 kind of each type past [`Value`] that a node of a test can hold, its
-/// index in `UA_TYPES`.
-pub(crate) const STRING: u16 = 11;
-pub(crate) const DATE_TIME: u16 = 12;
-pub(crate) const GUID: u16 = 13;
-pub(crate) const BYTE_STRING: u16 = 14;
-pub(crate) const EXTENSION_OBJECT: u16 = 21;
+/// A variable of [`Server::add_variable`].
+pub(crate) struct Variable {
+    /// Its node, whose key is not the number 0.
+    pub(crate) node: Node,
+    /// The node that it is under, by `reference`.
+    pub(crate) parent: Node,
+    /// Its reference type from `parent`, by its number in namespace 0.
+    pub(crate) reference: u32,
+    /// Its browse and display name.
+    pub(crate) name: &'static CStr,
+    /// Its `DataType`.
+    pub(crate) data_type: Node,
+    /// Its `ValueRank`. The rank 1 also gives it the `ArrayDimensions` 0.
+    pub(crate) rank: i32,
+    /// Its `AccessLevel` and `UserAccessLevel`.
+    pub(crate) access: u8,
+    /// The OPC UA binary encoding of its value, a `Variant`, or `None` for no value.
+    pub(crate) value: Option<Vec<u8>>,
+}
 
-/// The Objects folder.
-const OBJECTS: Node = Node {
-    namespace: 0,
-    key: Key::Number(85),
-};
+/// The `AccessLevel` bit `CurrentRead`.
+pub(crate) const READ: u8 = 1;
 
-/// The reference type `Organizes`.
-const ORGANIZES: u32 = 35;
-
-/// The `DataType` of a scalar of the open62541 kind `kind`, a built-in type: its
-/// number in namespace 0 is `kind + 1`.
-pub(crate) fn type_of(kind: u16) -> Node {
-    Node {
-        namespace: 0,
-        key: Key::Number(u32::from(kind) + 1),
+/// The scalar variable `node` under the Objects folder by `Organizes`, of the browse
+/// name `name`, the `DataType` of the number `data_type` in namespace 0, the access
+/// [`READ`], and the encoded `Variant` `value`.
+fn objects(
+    node: &Node,
+    name: &'static CStr,
+    data_type: u32,
+    value: Vec<u8>,
+) -> Variable {
+    Variable {
+        node: node.clone(),
+        parent: Node::ns0(ns0::OBJECTS),
+        reference: ns0::ORGANIZES,
+        name,
+        data_type: Node::ns0(data_type),
+        rank: -1,
+        access: READ,
+        value: Some(value),
     }
 }
 
-/// The open62541 kind of `value` and its OPC UA binary encoding.
-pub(crate) fn encoded(value: Value) -> (u16, Vec<u8>) {
-    let encoded = match value {
-        Value::Bool(boolean) => vec![u8::from(boolean)],
-        Value::I8(sbyte) => sbyte.to_le_bytes().to_vec(),
-        Value::U8(byte) => vec![byte],
-        Value::I16(int16) => int16.to_le_bytes().to_vec(),
-        Value::U16(uint16) => uint16.to_le_bytes().to_vec(),
-        Value::I32(int32) => int32.to_le_bytes().to_vec(),
-        Value::U32(uint32) => uint32.to_le_bytes().to_vec(),
-        Value::I64(int64) => int64.to_le_bytes().to_vec(),
-        Value::U64(uint64) => uint64.to_le_bytes().to_vec(),
-        Value::F32(float) => float.to_le_bytes().to_vec(),
-        Value::F64(double) => double.to_le_bytes().to_vec(),
+/// The OPC UA binary encoding of a scalar `Variant` of the built-in type of the number
+/// `id` in namespace 0, whose value has the encoding `encoded`.
+///
+/// # Panics
+///
+/// If `id` is past 63, which the mask of a `Variant` cannot hold.
+pub(crate) fn scalar(id: u32, encoded: &[u8]) -> Vec<u8> {
+    let mask = u8::try_from(id)
+        .ok()
+        .filter(|mask| *mask < 64)
+        .expect("a built-in type of at most 63");
+    [&[mask][..], encoded].concat()
+}
+
+/// The OPC UA binary encoding of a `Variant` of the Doubles 1.5 and 2.5.
+pub(crate) fn doubles() -> Vec<u8> {
+    let mask = u8::try_from(ns0::DOUBLE).expect("invariant: Double is 11") | 0x80;
+    [
+        &[mask][..],
+        &2_i32.to_le_bytes(),
+        &1.5_f64.to_le_bytes(),
+        &2.5_f64.to_le_bytes(),
+    ]
+    .concat()
+}
+
+/// The number in namespace 0 of the built-in type of `value`, and the OPC UA binary
+/// encoding of a scalar `Variant` that holds `value`.
+pub(crate) fn variant(value: Value) -> (u32, Vec<u8>) {
+    let (id, encoded) = match value {
+        Value::Bool(boolean) => (1, vec![u8::from(boolean)]),
+        Value::I8(sbyte) => (2, sbyte.to_le_bytes().to_vec()),
+        Value::U8(byte) => (3, vec![byte]),
+        Value::I16(int16) => (4, int16.to_le_bytes().to_vec()),
+        Value::U16(uint16) => (5, uint16.to_le_bytes().to_vec()),
+        Value::I32(int32) => (6, int32.to_le_bytes().to_vec()),
+        Value::U32(uint32) => (7, uint32.to_le_bytes().to_vec()),
+        Value::I64(int64) => (8, int64.to_le_bytes().to_vec()),
+        Value::U64(uint64) => (9, uint64.to_le_bytes().to_vec()),
+        Value::F32(float) => (10, float.to_le_bytes().to_vec()),
+        Value::F64(double) => (11, double.to_le_bytes().to_vec()),
     };
-    (value.raw().1, encoded)
+    (id, scalar(id, &encoded))
 }
 
 /// `node` for an add.
