@@ -8083,6 +8083,45 @@ mod tests {
         check_write_and_read(87, 3, every_type().to_vec());
     }
 
+    /// Quarters, then sixteenths: a new encoder for the second frame would search the
+    /// ALP pairs again and pick another.
+    #[test]
+    fn encodes_the_frames_of_a_writer_with_one_encoder_for_each_series() {
+        run(88, |test| async move {
+            let float = Type::Scalar(Scalar::F64);
+            let set = intern(&[Group {
+                index: key(Slot::new(2)),
+                data: &[(key(Slot::new(3)), float)],
+            }]);
+            let mut shard = test.shard(AREA).await;
+            let reader = complete(&mut shard, Slot::new(2));
+            let a = shard.open_writer(writer("a", 1, &set)).expect("synced");
+            let series = [4.0, 16.0].map(|denominator| {
+                (0..16)
+                    .map(|k| (f64::from(k) / denominator).to_bits().cast_signed())
+                    .collect::<Vec<i64>>()
+            });
+            for (seq, values) in [0, 16].into_iter().zip(&series) {
+                let stamps: Vec<i64> = (1..=16).map(|n| n + seq).collect();
+                let write = frame(&test.pool, &set, &[(0, &stamps), (1, values)]);
+                let applied = applied(2, seq.cast_unsigned(), 16);
+                assert_eq!(shard.write(a, LIVE, write), Ok(&[applied][..]));
+            }
+            shard.committed().await.expect("the commit ends");
+            assert_eq!(woken(&mut shard), [reader]);
+            let (frames, end) = drain(&mut shard, reader);
+            assert_eq!(frames.len(), 2, "{end:?}");
+            let mut encoder = codec::Encoder::new(float);
+            for (frame, values) in frames.iter().zip(&series) {
+                let raw: Vec<u8> =
+                    values.iter().flat_map(|v| v.to_le_bytes()).collect();
+                let mut out = vec![0; codec::max_len(float, raw.len())];
+                let len = encoder.encode(16, &raw, &mut out).expect("floats");
+                assert_eq!(frame.series(1), Some(&out[..len]));
+            }
+        });
+    }
+
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig::with_cases(32))]
 

@@ -30,7 +30,11 @@ fn main() {
     for form in [Form::Raw, Form::Encoded] {
         let case =
             Case::new("long f32", 2, samples, form, &[Type::Scalar(Scalar::F32)]);
-        check(&case, &block::Pool::heap(POOL), &mut Scratch::new(&case.set));
+        check(
+            &case,
+            &block::Pool::heap(POOL),
+            &mut Scratch::new(&case.set),
+        );
     }
     divan::main();
 }
