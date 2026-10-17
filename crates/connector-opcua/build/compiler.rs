@@ -31,7 +31,8 @@ pub(crate) struct Builds {
 
 /// Gives the builds of [`builds`] under the sanitizers of the Rust build, as
 /// [`Builds::sanitize`] does. `env` gives the variables of a build script, and the
-/// shim build holds `src/server.c` when it sets `CARGO_FEATURE_SIM`.
+/// shim build holds `src/server.c`, with the `src` folder of the copy on its include
+/// path, when it sets `CARGO_FEATURE_SIM`.
 ///
 /// # Errors
 ///
@@ -45,6 +46,9 @@ pub(crate) fn configure(
     let mut builds = builds(copy, flags, sources);
     if env("CARGO_FEATURE_SIM").is_some() {
         builds.shim.file(Path::new(SRC).join("server.c"));
+        // The test server reads the continuation points of a session, which have no
+        // public header.
+        builds.shim.include(copy.join("src"));
     }
     builds.sanitize(env)?;
     // After `sanitize`, which can replace the compiler with clang.
@@ -76,9 +80,6 @@ pub(crate) fn builds(copy: &Path, flags: &str, sources: &str) -> Builds {
     }
     // `shim.c` builds its event loop on the copy's timer, which has no public header.
     shim.include(copy.join("arch/common"));
-    // The test server reads the continuation points of a session, which have no public
-    // header.
-    shim.include(copy.join("src"));
     // A test compiles `shim.c` from its standard input, so `shim.h` is on the path.
     shim.include(SRC);
     for source in sources.lines() {
