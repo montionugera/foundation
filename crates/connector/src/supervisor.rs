@@ -453,6 +453,13 @@ mod tests {
     /// the order of tasks ready at one instant or the draws of `entropy`.
     const SEEDS: u64 = 64;
 
+    /// Runs `check` at each of [`SEEDS`] seeds. Panics unless it gives `true` at some
+    /// seeds and `false` at others, so that each outcome occurs.
+    fn each_seed(outcome: &str, mut check: impl FnMut(u64) -> bool) {
+        let n: u64 = (0..SEEDS).map(|seed| u64::from(check(seed))).sum();
+        assert!(0 < n && n < SEEDS, "{n} of {SEEDS} seeds {outcome}");
+    }
+
     /// What one run of [`Script`] does.
     #[derive(Clone, Debug)]
     enum Step {
@@ -1123,8 +1130,7 @@ mod tests {
     /// 500 ms or not.
     #[test]
     fn writes_the_end_of_a_run_in_place_of_the_error_it_showed() {
-        let mut restarted = 0;
-        for seed in 0..SEEDS {
+        each_seed("restart before the cancel", |seed| {
             let steps = vec![Step::ShowEnd];
             let cancel = Cancel::After(ms(500));
             let out = supervise(seed, "script", steps, config(), cancel);
@@ -1134,11 +1140,12 @@ mod tests {
             let wait = errors.get(2).map(|(backoff, _)| *backoff);
             let ended = ["", "no reply", "no reply", "no reply"];
             if wait.is_some_and(|wait| wait < ms(500)) {
-                restarted += 1;
                 assert_eq!(out.runs.len(), 2, "seed {seed}: a restart: {:?}", out.runs);
+                assert_eq!(texts.len(), 6, "seed {seed}: {texts:?}");
                 assert_eq!(texts[..4], ended, "seed {seed}");
                 assert_eq!(texts[4..], ["", ""], "seed {seed}: the cancel clears it");
                 assert_eq!(classes, [0, 2, 2, 2, 0, 0], "seed {seed}");
+                true
             } else {
                 assert_eq!(
                     out.runs.len(),
@@ -1148,12 +1155,9 @@ mod tests {
                 );
                 assert_eq!(texts, ended, "seed {seed}");
                 assert_eq!(classes, [0, 2, 2, 2], "seed {seed}");
+                false
             }
-        }
-        assert!(
-            0 < restarted && restarted < SEEDS,
-            "{restarted} of {SEEDS} seeds restart before the cancel, not each draw"
-        );
+        });
     }
 
     #[test]
@@ -1521,8 +1525,7 @@ mod tests {
 
     #[test]
     fn writes_the_backoff_that_is_left_when_the_home_refused_the_wait() {
-        let mut longer = 0;
-        for seed in 0..SEEDS {
+        each_seed("wait longer than 1 s", |seed| {
             let steps = vec![Step::Device(Span::ZERO), Step::Hold(ms(2_000))];
             let (statuses, runs) = refuse_the_last_wait(seed, steps, Span::ZERO);
             let [_, second, third] = runs[..] else {
@@ -1540,19 +1543,13 @@ mod tests {
                 "seed {seed}: written again 1 s after the refusal at the end"
             );
             let left = Span::from_nanos(samples[3]);
-            if left > Span::ZERO {
-                longer += 1;
-            }
             assert_eq!(
                 left,
                 between(*at, third),
                 "seed {seed}: the wait from the write to the run: {statuses:?}"
             );
-        }
-        assert!(
-            0 < longer && longer < SEEDS,
-            "{longer} of {SEEDS} seeds wait longer than 1 s, not each draw"
-        );
+            left > Span::ZERO
+        });
     }
 
     /// The hub reads the wall up to 1 s late, so the step can show after the write of
@@ -2032,8 +2029,7 @@ mod tests {
     /// the one of 6 s.
     #[test]
     fn writes_a_last_frame_refused_for_5_s_until_the_home_applies_it() {
-        let mut first = 0;
-        for seed in 0..SEEDS {
+        each_seed("close the writer before the write at 5 s", |seed| {
             let steps = vec![Step::Done];
             let (statuses, returned) = refused_until(seed, steps, ms(5_000), None);
             assert_eq!(
@@ -2043,15 +2039,11 @@ mod tests {
                  for it"
             );
             match returned {
-                at if at == ms(5_000) => first += 1,
-                at if at == ms(6_000) => {}
+                at if at == ms(5_000) => true,
+                at if at == ms(6_000) => false,
                 at => panic!("seed {seed}: returns at {at:?}, not at 5 s or 6 s"),
             }
-        }
-        assert!(
-            0 < first && first < SEEDS,
-            "{first} of {SEEDS} seeds close the writer before the write at 5 s"
-        );
+        });
     }
 
     #[test]
@@ -3741,22 +3733,17 @@ mod tests {
     /// starts at that instant. Each order returns at the cancel.
     #[test]
     fn returns_at_a_cancel_with_a_removal_as_the_mesh_time_arrives() {
-        let mut started = 0;
-        for seed in 0..SEEDS {
+        each_seed("start a run", |seed| {
             let (returned, runs, statuses) =
                 unsynced(seed, Span::SECOND, Span::SECOND, true);
             assert_eq!(returned, Span::SECOND, "seed {seed}: returns at the cancel");
             assert_eq!(statuses, [], "seed {seed}: no status channel");
             match runs[..] {
-                [] => {}
-                [at] if at == Span::SECOND => started += 1,
+                [] => false,
+                [at] if at == Span::SECOND => true,
                 _ => panic!("seed {seed}: no run, or one run at the cancel: {runs:?}"),
             }
-        }
-        assert!(
-            0 < started && started < SEEDS,
-            "{started} of {SEEDS} seeds start a run, not each order"
-        );
+        });
     }
 
     #[test]
@@ -4092,8 +4079,9 @@ mod tests {
     }
 
     /// Runs a `Script` connector whose one run gives a device error after 10 ms, after
-    /// a status frame `lead` ahead, in a sim of `seed`. Gives the status and the start
-    /// of the second run, from the first frame.
+    /// a status frame `lead` ahead, in a sim of `seed`. Gives the status, each stamp
+    /// from the first frame, and the start of the second run, from the start of the
+    /// call.
     fn after_a_frame_ahead(seed: u64, lead: Span) -> (Vec<Written>, Span) {
         run_in(seed, move |node, tasks| async move {
             let script = Script {
@@ -4122,7 +4110,7 @@ mod tests {
             clock.sleep(Span::SECOND).await;
             let runs = runs.lock().expect("no panic under the lock").clone();
             let [_, (again, _)] = runs[..] else {
-                panic!("two runs: {runs:?}");
+                panic!("seed {seed}: two runs: {runs:?}");
             };
             (statuses.borrow().clone(), again - start)
         })
@@ -4132,36 +4120,34 @@ mod tests {
     /// or after it.
     #[test]
     fn writes_a_backoff_that_ends_at_the_next_try_after_a_frame_ahead() {
-        let (lead, mut ahead) = (ms(500), 0);
-        for seed in 0..SEEDS {
+        let lead = ms(500);
+        each_seed("try again after the frame's time", |seed| {
             let (statuses, again) = after_a_frame_ahead(seed, lead);
             let (at, samples, ..) = statuses
                 .iter()
                 .find(|(_, samples, ..)| samples[0] == 1)
-                .expect("a frame of state 1");
+                .unwrap_or_else(|| {
+                    panic!("seed {seed}: a frame of state 1: {statuses:?}")
+                });
             // `statuses` gives each stamp from the first frame: the one `lead`
             // ahead.
             let run = Span::from_nanos(again.nanos() - lead.nanos());
             if samples[3] == 0 {
                 assert!(
                     run <= *at,
-                    "seed {seed}: no backoff, so the next try passed by the frame's \
-                     time: {statuses:?}"
+                    "seed {seed}: no backoff, so the next try at {run:?} passed by \
+                     the frame's time: {statuses:?}"
                 );
-                continue;
+                return false;
             }
-            ahead += 1;
             let next = Span::from_nanos(at.nanos() + samples[3]);
             assert_eq!(
                 next, run,
                 "seed {seed}: the frame's time plus `backoff` is the next try: \
                  {statuses:?}"
             );
-        }
-        assert!(
-            0 < ahead && ahead < SEEDS,
-            "{ahead} of {SEEDS} seeds try again after the frame's time, not each draw"
-        );
+            true
+        });
     }
 
     #[test]
@@ -4852,7 +4838,7 @@ mod tests {
                     outcomes.expect("the home takes it");
                 },
             );
-            read.end.expect("ok");
+            assert!(read.end.is_ok(), "seed {seed}: {:?}", read.end);
             let removed = hub::reader::Ended::Removed(channel::Key::from_u128(2));
             let text = removed.to_string();
             assert_eq!(read.got, [Err(removed), Ok(vec![7])], "seed {seed}");
@@ -4873,6 +4859,12 @@ mod tests {
             assert!(
                 wait <= RESTART.first,
                 "seed {seed}: the first wait of `RESTART` is at most 1 s: {wait:?}"
+            );
+            assert_eq!(
+                wait,
+                between(read.statuses[2].0, read.statuses[3].0),
+                "seed {seed}: the wait from its write to the restart: {:?}",
+                read.statuses
             );
             assert_eq!(
                 errors(&read.statuses),
@@ -4926,7 +4918,7 @@ mod tests {
                     define(&hub, 3);
                 },
             );
-            read.end.expect("ok");
+            assert!(read.end.is_ok(), "seed {seed}: {:?}", read.end);
             let removed = hub::writer::Failure::Removed(channel::Key::from_u128(2));
             let text = removed.to_string();
             assert_eq!(read.got, [Err(removed), Ok(true)], "seed {seed}");
@@ -4946,6 +4938,12 @@ mod tests {
             assert!(
                 wait <= RESTART.first,
                 "seed {seed}: the first wait of `RESTART` is at most 1 s: {wait:?}"
+            );
+            assert_eq!(
+                wait,
+                between(read.statuses[2].0, read.statuses[3].0),
+                "seed {seed}: the wait from its write to the restart: {:?}",
+                read.statuses
             );
             assert_eq!(
                 errors(&read.statuses),
