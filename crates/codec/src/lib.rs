@@ -1948,6 +1948,28 @@ mod tests {
             }
         }
 
+        /// The ALP pass runs only when its estimate on the picked samples, at each
+        /// 32nd sample, is under the best exact size. Decimals with a NaN at each
+        /// picked sample stay raw, and with a NaN one sample later they take ALP.
+        #[test]
+        fn skips_alp_when_the_picked_samples_are_exceptions() {
+            let cases = [(0, vector::RAW, 8_200), (1, vector::ALP, 1_616)];
+            for (offset, tag, len) in cases {
+                let values: Vec<f64> = (0..1_024)
+                    .map(|k| {
+                        if k % 32 == offset {
+                            f64::NAN
+                        } else {
+                            f64::from(2_100 + k) / 100.0
+                        }
+                    })
+                    .collect();
+                let mut encoder = Encoder::new(Type::Scalar(Scalar::F64));
+                let out = write(&mut encoder, Scalar::F64, &values);
+                assert_eq!((out[0], out.len()), (tag, len), "{offset}");
+            }
+        }
+
         /// Each float whose integer does not decode to its bits is an exception: NaN,
         /// infinities, -0.0, subnormals, and floats past the integers of the sample
         /// width. Quarters decode exactly under e = 2 and f = 0.
