@@ -148,7 +148,9 @@ pub enum Error {
     /// The session failed before the node admitted the hello, or ended before the
     /// close.
     Session(program::Error),
-    /// The client's thread panicked. The panic hook of the process got its message.
+    /// The client's thread panicked, and the panic hook of the process got its
+    /// message. Only a build where panics unwind gives it: with `panic = "abort"`, the
+    /// panic ends the process.
     Panicked,
 }
 

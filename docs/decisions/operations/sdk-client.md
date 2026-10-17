@@ -27,18 +27,19 @@
   each close (up to 3 s), and the thread ends. Drop only signals the end, and a panic of
   the thread after a drop goes to the panic hook of the process (`laptop.architect-2`,
   2026-10-16T21:46:22Z,
-  https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225303374). A panic
-  of the client's thread gives `Error::Panicked` from `connect` or `close`, and the
-  panic hook of the process gets its message (`laptop.architect-2`,
-  https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237701374). The
-  wheels build with the profile `wheel`, which inherits `release` with
-  `panic = "unwind"`, so a panic of the client never aborts the Python process, and
-  PyO3 gives a `PanicException` for a panic in its calls (`laptop.architect-2`,
-  https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237701374;
-  `laptop.monitor`, key choice of kind 9, 2026-10-17). A failure of the session after
-  `connect` stays silent until the next call, and that call gives the cause of the
-  failure, never a generic closed error (`laptop.monitor`, key choice of kind 9,
-  2026-10-16T22:40:46Z,
+  https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225303374). In a
+  build where panics unwind, a panic of the client's thread gives `Error::Panicked` from
+  `connect` or `close`, and the panic hook of the process gets its message
+  (`laptop.architect-2`,
+  https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237701374). The wheel
+  builds with the profile `wheel`, `release` with `panic = "unwind"`, so a panic in the
+  client gives the Python caller an exception, not an abort (`laptop.architect`,
+  2026-10-17T17:33:46Z,
+  https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237722519;
+  `laptop.monitor`, key choice of kind 9, 2026-10-17). It lands with the wheel build in
+  PR 1b of #2923. A failure of the session after `connect` stays silent until the next
+  call, and that call gives the cause of the failure, never a generic closed error
+  (`laptop.monitor`, key choice of kind 9, 2026-10-16T22:40:46Z,
   https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6226048578). The next
   call, `close` too, gives the cause: `close` gives `Error::Session` with it when the
   session ended before the close (`laptop.architect-2`, 2026-10-16T22:20:16Z,

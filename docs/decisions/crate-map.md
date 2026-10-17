@@ -13,8 +13,9 @@ Rules:
 7. Only `os` touches the real clock, files, network, serial ports, randomness, and
    threads, through the `env` seams it implements. Only `clock` reads wall time
    through `env`; everyone else asks `clock`. Only `node` builds real seams in the
-   binary, and `sdk` builds its own from `os` (SDK CLIENT). Only `sim` builds simulated
-   ones. Below `hub`, only `home` writes channels, and only its companion samples.
+   binary, and `sdk` builds those of a client from `os` (SDK CLIENT). Only `sim`
+   builds simulated ones. Below `hub`, only `home` writes channels, and only its
+   companion samples.
 8. Tests follow the same rules, with these extra dev-dependencies only: any crate may
    take `sim`, `counting`, and `waker` (`laptop.architect`, 2026-10-10 06:25 UTC,
    #2254, https://github.com/synnaxlabs/foundation/issues/2254#issuecomment-6094631943),
@@ -122,6 +123,7 @@ layer 2 `os` -> (`transport`, `buffer`) -> (`clock`, `blob`, `sim`, `program`) -
 | 4 | `ops` | Holds the operation table and handlers, generates the CLI, MCP tools, and docs, and runs each operation on the node that must run it. | `config`, `connector`, `secret`, `hub`, `mesh`, `blob`, `sim`, layer 1 |
 | 4 | `acceptance` | Runs the MVP acceptance scenarios against whole meshes built from `node`. Test-only. | all crates |
 | 4 | `node` | Is the composition root: real seams, pools and shards, all tables (kinds, front ends, time sources, secret stores), the status collector, process lifecycle, and upgrades. | all crates |
+| 4 | `sdk` | Is the Rust client of a program, outside the binary: it runs a `program::Session` on a shard of `os`, and the Python SDK wraps it. | `program`, `transport`, `os`, `env`, `types`, `block` |
 
 `fuzz` holds the fuzz targets, outside the workspace. It is test-only, builds on the
 pinned nightly, may depend on any crate, and no crate depends on it (#252;
@@ -129,8 +131,8 @@ pinned nightly, may depend on any crate, and no crate depends on it (#252;
 https://github.com/synnaxlabs/foundation/pull/2099#issuecomment-6074164278).
 
 Outside the binary: the Rust SDK `sdk` (`sdk/rust`, layer 4, last) builds on `program`,
-`transport`, `env`, `types`, and `block`, takes its clock, entropy, and network from
-`os`, and runs the thread of each client as a shard of `os` (#2923). The Python SDK
+`transport`, `env`, `types`, and `block`, and takes its clock, entropy, network, and
+the shard of its client from `os` (#2923). The Python SDK
 wraps `sdk` with PyO3 (C6, SDK DATA PATH; the crate, `laptop.architect`,
 2026-10-15T17:56:55Z,
 https://github.com/synnaxlabs/foundation/issues/2177#issuecomment-6198730147; its name,
