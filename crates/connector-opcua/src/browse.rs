@@ -89,21 +89,16 @@ impl<'a> Server<'a> {
         cursor: Option<&Cursor>,
         before: usize,
     ) -> Result<Option<(Vec<Reference>, Seen, Option<(Point, usize)>)>, Error> {
-        let held = self.points.remove(&(folder.clone(), before));
-        let ours = held.is_some();
-        let resumed = match held {
+        let resumed = match self.points.remove(&(folder.clone(), before)) {
             Some(held) => match self.client.browse_next(held.point).await {
                 Ok(page) => Some((page, held.seen, held.left)),
-                Err(Status::BAD_CONTINUATION_POINT_INVALID) => None,
+                Err(Status::BAD_CONTINUATION_POINT_INVALID) if before <= SKIP => None,
                 Err(status) => return Err(failed(status)),
             },
             None => None,
         };
         let (mut page, mut seen, mut left) = match resumed {
             Some(resumed) => resumed,
-            None if before > SKIP && ours => {
-                return Err(failed(Status::BAD_CONTINUATION_POINT_INVALID));
-            }
             None if before > SKIP => {
                 return Err(bad_cursor(cursor.expect("a count past 0 has a cursor")));
             }
@@ -132,8 +127,8 @@ impl<'a> Server<'a> {
 
     /// Gives the first page of `folder`, or `None` when the server does not have it.
     /// When this browse holds as many points as the server holds for a session, or
-    /// [`browse::DEPTH`] when the server gives no bound, it first releases one point, as
-    /// [`Server::release`] picks it. On `BadNoContinuationPoints`, it releases each
+    /// [`browse::DEPTH`] when the server gives no bound, it first releases one point,
+    /// as [`Server::release`] picks it. On `BadNoContinuationPoints`, it releases each
     /// point that [`Server::release`] can and browses once more.
     async fn first(&mut self, folder: &Node) -> Result<Option<client::Page>, Error> {
         let most = u32::try_from(browse::LIMIT).ok().and_then(NonZeroU32::new);
@@ -166,7 +161,12 @@ impl<'a> Server<'a> {
         let points: Vec<Point> = held
             .into_iter()
             .take(most)
-            .map(|(_, key)| self.points.remove(&key).expect("a held point").point)
+            .map(|(_, key)| {
+                self.points
+                    .remove(&key)
+                    .expect("invariant: each key of `held` is a key of `points`")
+                    .point
+            })
             .collect();
         self.client.release(&points).await.map_err(failed)
     }

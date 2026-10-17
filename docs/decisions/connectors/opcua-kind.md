@@ -121,17 +121,20 @@
   repeat a reference, and a name with ` (<tag>)` after it can move to another node. A
   skip is at most 100 000 references, and a cursor with no point past that count gives
   `opcua.bad-cursor`. So a browse keeps the key and the name of at most 100 000 +
-  `VISITS` + `LIMIT` nodes of each folder. The browse holds at most as many points as
-  the server holds for a session (`MaxBrowseContinuationPoints`, or `DEPTH` when the
-  server gives 0, no value, or a value that is not a `UInt16`). Before a Browse at that
-  count, it releases the point that it used least lately of those at a count of at most
-  100 000, so a walk holds one point for each open folder down to the bound, and a
-  cursor whose point it released browses again from the start of its folder. When a
-  Browse gives `BadNoContinuationPoints`, it releases each point at a count of at most
-  100 000 and browses once again, and a second one fails with `Error::Device` and that
-  status. A point past that count stays, as its cursor cannot browse its folder again. A
-  page that gives a cursor that the browse holds, as a folder that a walk opens twice
-  does, releases the earlier point. The points of the type walk of `Client::describe`
-  are not in the count: at the bound, a data type with more than one supertype can get
-  no point on a server that keeps its bound, and its variable then has no type (#2969).
+  `VISITS` + `LIMIT` nodes of each folder. The browse holds at most as many points at a
+  count of at most 100 000 as the server holds for a session
+  (`MaxBrowseContinuationPoints`, or `DEPTH` when the server gives 0, no value, or a
+  value that is not a `UInt16`). Before a Browse at that count, it releases the point
+  that it used least lately of those at a count of at most 100 000, so a walk holds one
+  point for each open folder down to the bound, and a cursor whose point it released
+  browses again from the start of its folder. When a Browse gives
+  `BadNoContinuationPoints`, it releases each point at a count of at most 100 000 and
+  browses once again, and a second one fails with `Error::Device` and that status. A
+  point past that count stays, as its cursor cannot browse its folder again. A page that
+  gives a cursor that the browse holds, as a folder that a walk opens twice does,
+  releases the earlier point. The points of the type walk of `Client::describe` are not
+  in the count: at the bound, a data type with more than one supertype can get no point
+  on a server that keeps its bound, and its variable then has no type
+  (`laptop.architect-2`, 2026-10-17T03:23:07Z:
+  https://github.com/synnaxlabs/foundation/pull/2974#issuecomment-6228994877).
   A node whose Read alone does not fit one message of the server gives no value.

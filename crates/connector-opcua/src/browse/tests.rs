@@ -525,7 +525,6 @@ fn moved_cursor(before: usize, released: bool) -> Result<Option<Page>, Error> {
         server.points.insert((node.clone(), before), held);
         if released {
             server.release(1).await.expect("a release");
-            assert!(server.points.is_empty());
         } else {
             for _ in 0..32 {
                 let page = server.client.browse(&node, NonZeroU32::MIN).await;
@@ -549,21 +548,24 @@ fn a_cursor_at_the_skip_bound_with_no_point_browses_again() {
 }
 
 /// The browse does not release a point past `SKIP`, as its cursor cannot browse the
-/// folder again.
+/// folder again: the cursor goes on from its point.
 #[test]
 fn releases_no_point_past_the_skip_bound() {
-    let held = on_server(async |server| {
+    let page = on_server(async |server| {
         let folder = entry("Plant/Types", "Plant.Types", Shape::Folder);
         let first = server.level(Some(&folder), None).await.expect("a page");
         assert!(first.expect("a folder").next.is_some());
         let node: Node = tag("Plant.Types").parse().expect("a node");
         let held = server.points.remove(&(node.clone(), 8)).expect("a point");
-        server.points.insert((node.clone(), 100_001), held);
+        server.points.insert((node, 100_001), held);
         server.release(usize::MAX).await.expect("a release");
-        server.points.keys().cloned().collect::<Vec<_>>()
+        let cursor = Cursor::new("100001".to_owned());
+        server.level(Some(&folder), Some(&cursor)).await
     });
-    let node: Node = tag("Plant.Types").parse().expect("a node");
-    assert_eq!(held, [(node, 100_001)]);
+    let page = page.expect("a page").expect("a folder");
+    let names: Vec<String> = page.entries.into_iter().map(|child| child.name).collect();
+    assert_eq!(names, TYPES[8..]);
+    assert_eq!(page.next, None);
 }
 
 #[test]

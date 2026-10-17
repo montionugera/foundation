@@ -651,7 +651,8 @@ pub(crate) struct Limits {
     pub(crate) chunks: u32,
 }
 
-/// The counts of the Browse requests of a [`Server`], from [`Server::count`].
+/// The count of the Browse requests of a [`Server`], and the most continuation points
+/// that one of its sessions held, from [`Server::count`].
 #[cfg(test)]
 pub(crate) struct Counts<'s> {
     /// Lives until the delete of the server.

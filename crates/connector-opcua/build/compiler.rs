@@ -45,15 +45,21 @@ pub(crate) fn configure(
 ) -> Result<Builds, String> {
     let mut builds = builds(copy, flags, sources);
     if env("CARGO_FEATURE_SIM").is_some() {
-        builds.shim.file(Path::new(SRC).join("server.c"));
-        // The test server reads the continuation points of a session, which have no
-        // public header.
-        builds.shim.include(copy.join("src"));
+        sim(&mut builds.shim, copy);
     }
     builds.sanitize(env)?;
     // After `sanitize`, which can replace the compiler with clang.
     check(&builds.library.get_compiler())?;
     Ok(builds)
+}
+
+/// Adds the test server `src/server.c` to `shim`, the shim build of the copy at
+/// `copy`.
+pub(crate) fn sim(shim: &mut Build, copy: &Path) {
+    shim.file(Path::new(SRC).join("server.c"));
+    // The test server reads the continuation points of a session, which have no public
+    // header.
+    shim.include(copy.join("src"));
 }
 
 /// Gives the builds of the open62541 copy at `copy` and of `src/shim.c`

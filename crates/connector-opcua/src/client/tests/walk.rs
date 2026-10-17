@@ -381,17 +381,30 @@ fn everything() -> Query {
 }
 
 /// What a walk of `query` gives after `setup` when the server gives `most` as its
-/// `MaxBrowseContinuationPoints`, the most points that the session held, and the count
-/// of Browse requests.
+/// `MaxBrowseContinuationPoints`, as [`counted`] gives it.
 fn held(
     setup: fn(&Server),
     query: Query,
     most: u16,
 ) -> (Result<Found, Error>, usize, usize) {
+    counted(
+        move |server| {
+            setup(server);
+            server.report_points(most);
+        },
+        query,
+    )
+}
+
+/// What a walk of `query` gives after `setup`, the most points that the session held,
+/// and the count of Browse requests.
+fn counted(
+    setup: impl FnOnce(&Server) + Send + 'static,
+    query: Query,
+) -> (Result<Found, Error>, usize, usize) {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             setup(peer.server);
-            peer.server.report_points(most);
             let count = peer.server.count();
             let mut client = peer.connected().await;
             let found = browse::walk(&mut Browse::new(&mut client), &query).await;
@@ -561,9 +574,9 @@ fn a_folder_open_twice_in_a_walk_holds_no_more_points_than_the_bound() {
     }
 }
 
-/// A setup with the chain `root/f1/f2/f3/f4/f5`, a variable in each folder of it, and
-/// one reference in each page of the server, so that a walk holds a point for each
-/// folder of the chain and the Objects folder at once.
+/// A setup with the chain `root/f1/f2/f3/f4/f5`, a variable in `root` and in each of
+/// `f1` to `f4`, and one reference in each page of the server, so that a walk holds a
+/// point for the Objects folder, `root`, and `f1` to `f4` at once.
 fn chain(server: &Server) {
     let folder = |number| Node {
         namespace: 1,
@@ -596,6 +609,31 @@ fn a_walk_with_a_bound_of_0_holds_a_point_for_each_open_folder() {
     let (found, points, _) = held(chain, everything(), 0);
     assert_eq!(found.expect("found").entries.len(), 5);
     assert_eq!(points, 6);
+}
+
+/// A server with no `MaxBrowseContinuationPoints`, or with a `UInt32` of 1 as it,
+/// bounds a walk at `DEPTH`, as one that gives 0 does. The variable `ns=1;i=2735` is
+/// not the bound: it gives the Objects folder a second reference, as the other does.
+#[test]
+fn a_walk_with_no_bound_of_the_server_holds_a_point_for_each_open_folder() {
+    let absent = |server: &Server| {
+        chain(server);
+        let node = Node {
+            namespace: 1,
+            key: Key::Number(2735),
+        };
+        server.add_scalar(&node, Value::U32(1));
+    };
+    let wide = |server: &Server| {
+        chain(server);
+        server.add_scalar(&Node::ns0(2735), Value::U32(1));
+    };
+    let setups: [fn(&Server); 2] = [absent, wide];
+    for (index, setup) in setups.into_iter().enumerate() {
+        let (found, points, _) = counted(setup, everything());
+        assert_eq!(found.expect("found").entries.len(), 5, "setup {index}");
+        assert_eq!(points, 6, "setup {index}");
+    }
 }
 
 /// Gives each server message to `rewrite`, and makes the service result of the first
@@ -641,26 +679,74 @@ fn a_walk_whose_read_of_the_bound_fails_fails() {
     internal_error(found);
 }
 
-/// The `BrowseNext` that releases the first point at the bound of 1, whose one result
-/// has no reference, fails, so the walk fails.
-#[test]
-fn a_walk_whose_release_fails_fails() {
+/// Whether the `BrowseNext` response `message` is that of a release: one result with
+/// no reference, which no page of a tree with one reference in each page gives.
+fn released(message: &[u8]) -> bool {
     // The results start at 52: their count, then the status, the point, and the count
     // of the references of the first.
-    let release = |message: &[u8]| {
-        let point = i32::from_le_bytes(message[60..64].try_into().expect("4 bytes"));
-        let at = 64 + usize::try_from(point.max(0)).expect("a size");
-        message[52..56] == 1_i32.to_le_bytes()
-            && i32::from_le_bytes(message[at..at + 4].try_into().expect("4 bytes")) <= 0
-    };
+    let point = i32::from_le_bytes(message[60..64].try_into().expect("4 bytes"));
+    let at = 64 + usize::try_from(point.max(0)).expect("a size");
+    message[52..56] == 1_i32.to_le_bytes()
+        && i32::from_le_bytes(message[at..at + 4].try_into().expect("4 bytes")) <= 0
+}
+
+/// The `BrowseNext` that releases the first point at the bound of 1 fails, so the walk
+/// fails.
+#[test]
+fn a_walk_whose_release_fails_fails() {
     let setup = |server: &Server| {
         nested(server);
         server.report_points(1);
     };
     let found = relayed_browse(
         setup,
-        faulting(BROWSE_NEXT_RESPONSE, release),
+        faulting(BROWSE_NEXT_RESPONSE, released),
         async |server| browse::walk(server, &everything()).await,
     );
+    internal_error(found);
+}
+
+/// With no bound release, the first release of a walk of `*/*/*/*/*` through a loop is
+/// of the earlier point of a folder that it opens twice. It fails, so the walk fails.
+#[test]
+fn a_walk_whose_release_of_a_point_of_a_folder_open_twice_fails_fails() {
+    let setup = |server: &Server| {
+        looped(server);
+        server.report_points(0);
+    };
+    let query = Query {
+        start: "root".parse().expect("a path"),
+        scope: Scope::Match("*/*/*/*/*".parse().expect("a pattern")),
+        values: Values::Skipped,
+    };
+    let found = relayed_browse(
+        setup,
+        faulting(BROWSE_NEXT_RESPONSE, released),
+        async move |server| browse::walk(server, &query).await,
+    );
+    internal_error(found);
+}
+
+/// The release after the refusal of the Browse of `root/a/c`, the first `BrowseNext`
+/// after it, fails, so the walk fails.
+#[test]
+fn a_walk_whose_release_after_a_refusal_fails_fails() {
+    let setup = |server: &Server| {
+        nested(server);
+        server.report_points(0);
+    };
+    let mut browses = 0;
+    let mut refuse = refusing(4);
+    let mut fault = faulting(BROWSE_NEXT_RESPONSE, |_| true);
+    let rewrite = move |message: &mut Vec<u8>| {
+        browses += usize::from(response(message) == Some(BROWSE_RESPONSE));
+        refuse(message);
+        if browses >= 4 {
+            fault(message);
+        }
+    };
+    let found = relayed_browse(setup, rewrite, async |server| {
+        browse::walk(server, &everything()).await
+    });
     internal_error(found);
 }
