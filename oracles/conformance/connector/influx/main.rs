@@ -152,8 +152,8 @@ fn refused() -> Vec<(Document, Vec<Diagnostic>)> {
             vec![diagnostic(
                 "document.missing-attribute",
                 "the connector has no `database` or `bucket`",
-                "Add a `bucket` attribute and an `org` attribute, such as \"plant\", or \
-                 a `database` attribute for InfluxDB 1",
+                "Add a `bucket` attribute and an `org` attribute, such as \"plant\", \
+                 or a `database` attribute for InfluxDB 1",
             )],
         ),
     ]
