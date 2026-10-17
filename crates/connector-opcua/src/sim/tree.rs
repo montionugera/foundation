@@ -3,7 +3,7 @@
 use std::ffi::CStr;
 
 use crate::node::ns0::{
-    BASE_DATA_TYPE, BYTE_STRING, DATE_TIME, DOUBLE, ENUMERATION, GUID, HAS_COMPONENT,
+    self, BASE_DATA_TYPE, BYTE_STRING, DATE_TIME, DOUBLE, ENUMERATION, HAS_COMPONENT,
     OBJECTS, ORGANIZES, STRING, STRUCTURE,
 };
 use crate::node::{Key, Name, Node};
@@ -96,7 +96,7 @@ fn add_types(server: &Server) {
     let others = [
         (c"String", STRING, text),
         (c"DateTime", DATE_TIME, epoch),
-        (c"Guid", GUID, guid),
+        (c"Guid", ns0::GUID, guid),
         (c"ByteString", BYTE_STRING, two_bytes()),
     ]
     .map(|(name, id, encoded)| (name, (id, server::scalar(id, &encoded))));

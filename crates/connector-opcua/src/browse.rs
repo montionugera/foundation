@@ -13,16 +13,13 @@ use crate::client::Client;
 use crate::client::browse::{Cause, Class, Description, Point, Reference};
 use crate::ffi::{self, Status};
 use crate::kind::{Failure, device};
-use crate::node::{Key, Node};
+use crate::node::{Node, ns0};
 use crate::value::SCALARS;
 
 const BAD_CURSOR: Code = Code::new("opcua.bad-cursor");
 
 /// The Objects folder, the root of a browse.
-const OBJECTS: Node = Node {
-    namespace: 0,
-    key: Key::Number(85),
-};
+const OBJECTS: Node = Node::ns0(ns0::OBJECTS);
 
 /// The bit `CurrentRead` of a `UserAccessLevel`.
 const CURRENT_READ: u8 = 1;
