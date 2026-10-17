@@ -170,7 +170,7 @@ pub(crate) fn create_config(
         clock: fixture.sim.clock(),
         name: fixture.name.clone(),
         secrets,
-        roots: crate::Roots::default(),
+        roots: crate::Roots::new(String::new(), Vec::new()),
     }
 }
 

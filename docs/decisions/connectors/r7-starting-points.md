@@ -132,8 +132,12 @@
   of the OS roots was not read" with the `error` of each of the first 16 failures, "OS
   roots that do not parse are skipped" with the count `skipped`, and "the OS roots hold
   no certificate, so an https connect with no CA of its connector fails". It logs them
-  also with `Region::Absent`. The first warning is the one count line: no warning counts
-  the failures after the first 16 (`laptop.architect-2`, 2026-10-17T04:59:46Z, #2945:
+  also with `Region::Absent`, which serves no `status`, so there the first warning is
+  "parts of the OS roots were not read", with no command (`laptop.architect-2`,
+  2026-10-17T05:23:16Z, #2996:
+  https://github.com/synnaxlabs/foundation/pull/2996#issuecomment-6230135838). The
+  first warning is the one count line: no warning counts the failures after the first
+  16 (`laptop.architect-2`, 2026-10-17T04:59:46Z, #2945:
   https://github.com/synnaxlabs/foundation/issues/2945#issuecomment-6229906709, which
   supersedes the `unlisted` warning of
   https://github.com/synnaxlabs/foundation/pull/2963#issuecomment-6228097941).

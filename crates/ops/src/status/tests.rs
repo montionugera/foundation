@@ -276,7 +276,7 @@ fn escapes_a_newline_in_the_text_of_an_error() {
 
 /// The node of `mesh` on `fixture`, with the kinds of [`kinds`].
 fn create_node(fixture: &Fixture, mesh: mesh::Mesh) -> Node {
-    create_node_on(fixture, mesh, Roots::default())
+    create_node_on(fixture, mesh, Roots::new(String::new(), Vec::new()))
 }
 
 /// The node of `mesh` on `fixture`, with the kinds of [`kinds`] and the failures of
@@ -1338,7 +1338,7 @@ OS roots: 4 failures, from SSL_CERT_DIR=/a
 OS roots: error: failure 0
 OS roots: error: failure 1
 OS roots: error: bad\\nline
-OS roots: 1 more failures are left out
+OS roots: left out: 1
 ";
         let paths = fixture.sim.paths();
         let written = cli(&node, &paths, &["status"]).await;

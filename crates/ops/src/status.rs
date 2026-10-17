@@ -42,7 +42,7 @@ pub(crate) struct Output {
 }
 
 /// The failures of the read of the OS roots of a node, which `status` gives.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(from = "Wire")]
 pub struct Roots {
     /// Where the read looked.
@@ -106,9 +106,8 @@ impl Roots {
         let head = format!("OS roots: {failed} failures, from {source}\n");
         let errors = (self.failures.iter())
             .map(|failure| format!("OS roots: error: {}\n", escape_controls(failure)));
-        let unlisted = (self.unlisted > 0).then(|| {
-            format!("OS roots: {} more failures are left out\n", self.unlisted)
-        });
+        let unlisted = (self.unlisted > 0)
+            .then(|| format!("OS roots: left out: {}\n", self.unlisted));
         std::iter::once(head)
             .chain(errors)
             .chain(unlisted)
@@ -404,7 +403,7 @@ impl Output {
     /// that does not tell whether the node places a connector. With `roots` that
     /// hold a failure, then a blank line, a line `OS roots: <count> failures, from
     /// <source>`, a line `OS roots: error: <text>` for each kept failure, and a line
-    /// `OS roots: <count> more failures are left out` when it does not keep each.
+    /// `OS roots: left out: <count>` when it does not keep each.
     pub(crate) fn text(&self) -> String {
         let mut text = self.connectors();
         if let Some(roots) = self.roots.as_ref().filter(|roots| !roots.clean()) {
