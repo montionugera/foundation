@@ -205,7 +205,7 @@ fn held(last: Last, pool: Pool) -> usize {
             tasks: tasks.clone(),
         };
         let kinds = Table::new().with("large", kind);
-        let mut rig = Rig::open(env, node.net(), kinds).await;
+        let rig = Rig::open(env, node.net(), kinds).await;
         let connector: Name = "plant.large".parse().expect("a valid name");
         if let Pool::Full = pool {
             tasks.spawn(hog(rig.hub().clone(), clock.clone(), Arc::clone(&runs)));

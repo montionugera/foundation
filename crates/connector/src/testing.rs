@@ -1,7 +1,7 @@
 //! A rig that runs connectors on a simulated hub, the inputs of a supervisor, and the
 //! status channels of a connector, for the tests of `connector` and of the kinds.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::future::poll_fn;
 use std::path::Path;
@@ -47,9 +47,9 @@ pub struct Rig {
     kinds: Arc<Table>,
     clock: Clock,
     tasks: Tasks,
-    definitions: Vec<(Name, Definition)>,
+    definitions: RefCell<Vec<(Name, Definition)>>,
     /// The first key of the status channels of the next connector.
-    next: u128,
+    next: Cell<u128>,
 }
 
 impl Rig {
@@ -68,8 +68,8 @@ impl Rig {
             clock: config.clock.clone(),
             tasks: config.tasks.clone(),
             supervisor: Supervisor::new(config),
-            definitions: Vec::new(),
-            next: STATUS,
+            definitions: RefCell::default(),
+            next: Cell::new(STATUS),
         }
     }
 
@@ -90,9 +90,29 @@ impl Rig {
     /// or a name that an earlier call used. The rig gives the status channels of each
     /// connector that it opens the next keys from 2^64 on, as [`create_status`] orders
     /// them.
-    pub fn define(&mut self, definitions: Vec<(Name, Definition)>) {
-        self.definitions.extend(definitions);
-        let definitions = self.definitions.iter();
+    pub fn define(&self, definitions: Vec<(Name, Definition)>) {
+        self.definitions.borrow_mut().extend(definitions);
+        self.set();
+    }
+
+    /// Removes `names` from the definitions that the rig holds, and sets the rest on
+    /// the hub, which then removes their channels. A name that the rig does not hold is
+    /// not an error.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::define`].
+    pub fn remove(&self, names: &[Name]) {
+        let mut definitions = self.definitions.borrow_mut();
+        definitions.retain(|(name, _)| !names.contains(name));
+        drop(definitions);
+        self.set();
+    }
+
+    /// Sets each definition that the rig holds on the hub.
+    fn set(&self) {
+        let definitions = self.definitions.borrow();
+        let definitions = definitions.iter();
         self.hub
             .set_definitions(definitions.map(|(name, definition)| (name, definition)));
     }
@@ -124,7 +144,7 @@ impl Rig {
     ///
     /// As [`kind::Table::check`](Table::check) and [`Self::define`], such as a second
     /// connector of one name, and when the status reader does not open.
-    pub async fn supervise(&mut self, kind: &str, name: Name, config: Document) -> Run {
+    pub async fn supervise(&self, kind: &str, name: Name, config: Document) -> Run {
         let reader = match self.define_status(kind, &name, &config) {
             Some(select) => Some(self.status(select).await),
             None => None,
@@ -157,7 +177,7 @@ impl Rig {
     /// As [`kind::Table::check`](Table::check) and [`Self::define`], such as a second
     /// connector of one name.
     pub async fn open_connector<'a>(
-        &'a mut self,
+        &'a self,
         kind: &'a str,
         name: Name,
         config: &'a Document,
@@ -171,16 +191,16 @@ impl Rig {
     /// of the kind's check, with the rig's next keys, and gives a selector of them.
     /// Gives `None`, and defines nothing, when the check fails.
     fn define_status(
-        &mut self,
+        &self,
         kind: &str,
         name: &Name,
         config: &Document,
     ) -> Option<Selector> {
         let counts = self.kinds.check(kind, None, config).ok()?.counts;
-        let first = channel::Key::from_u128(self.next);
+        let first = channel::Key::from_u128(self.next.get());
         let status = create_status(name, &counts, first);
         let used = u128::try_from(status.len()).expect("invariant: a few channels");
-        self.next += used;
+        self.next.set(self.next.get() + used);
         let select = Selector::new(status.iter().map(|(name, _)| name.as_str()));
         self.define(status);
         Some(select.expect("invariant: names select"))
