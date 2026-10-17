@@ -4,15 +4,16 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use connector::cancel::Token;
+use connector::http::sim::Certificate;
 use connector::http::{Client, Config};
-use env::net::tcp;
+use env::net::{self, tcp};
 use env::thread::Handle;
 use http::header::{AUTHORIZATION, CONTENT_ENCODING};
 use http::{HeaderValue, Method, Request, StatusCode};
 use sim::{Sim, node};
 use types::time::Span;
 
-use super::serve;
+use super::{serve, serve_tls};
 use crate::sim::Store;
 
 const PORT: u16 = 8086;
@@ -445,4 +446,49 @@ fn checks_the_token_after_the_method_and_before_the_content_encoding() {
         ]
     );
     assert_eq!(network.times("m"), [0_i64; 0]);
+}
+
+#[test]
+fn serve_and_serve_tls_give_the_error_of_a_failed_listener() {
+    for tls in [false, true] {
+        let mut sim = Sim::new(sim::Config::default());
+        let server = sim.node(node::Config::default());
+        let local = SocketAddr::new(server.addresses()[0], PORT);
+        let listen = tcp::Listen {
+            local,
+            backlog: 4,
+            options: OPTIONS,
+        };
+        let listener = server.net().listen(&listen).expect("the port is free");
+        let ended = Arc::new(Mutex::new(None));
+        let slot = Arc::clone(&ended);
+        let _handle = server
+            .shards()
+            .start(shard("server"), move |tasks| async move {
+                let (until, store, database) = (Token::new(), Arc::default(), "edge");
+                let end = if tls {
+                    let certificate = Certificate::Valid;
+                    let database = database.into();
+                    serve_tls(
+                        listener,
+                        tasks,
+                        until,
+                        store,
+                        database,
+                        None,
+                        certificate,
+                    )
+                    .await
+                } else {
+                    serve(listener, tasks, until, store, database.into(), None).await
+                };
+                *slot.lock().expect("no panic under the lock") = Some(end);
+            })
+            .expect("the shard starts");
+        sim.run_for(Span::SECOND).expect("the run ends");
+        server.fail_listener(local);
+        sim.run_for(Span::SECOND).expect("the run ends");
+        let ended = ended.lock().expect("no panic under the lock").take();
+        assert_eq!(ended, Some(Err(net::Error::Io { code: 5 })), "tls: {tls}");
+    }
 }
