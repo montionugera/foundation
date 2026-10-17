@@ -722,41 +722,28 @@ fn sends_a_batch_again_after_each_other_answer_and_shows_the_error_until_a_204()
     let head = large().chars().take(1 << 16).collect::<String>();
     let head = head.trim();
     assert_eq!(got, vec![(WRITE.to_owned(), true); 12]);
+    let at = |answer: &str| format!("InfluxDB at 10.0.0.1:8086 answered {answer}");
     assert_eq!(
         errors,
         [
             String::new(),
-            "InfluxDB at 10.0.0.1:8086 answered 500 Internal Server Error: the disk is \
-             full".into(),
-            "InfluxDB at 10.0.0.1:8086 answered 503 Service Unavailable: \
-             starting".into(),
-            "InfluxDB at 10.0.0.1:8086 answered 401 Unauthorized: unauthorized \
-             access".into(),
-            format!(
-                "InfluxDB at 10.0.0.1:8086 answered 413 Payload Too Large: request too \
-                 large. {LARGE}"
-            ),
-            "InfluxDB at 10.0.0.1:8086 answered 429 Too Many Requests: slow \
-             down".into(),
-            format!(
-                "InfluxDB at 10.0.0.1:8086 answered 400 Bad Request: field type \
-                 conflict. {REFUSED}"
-            ),
-            format!(
-                "InfluxDB at 10.0.0.1:8086 answered 422 Unprocessable Entity: beyond \
-                 retention policy. {REFUSED}"
-            ),
-            format!(
-                "InfluxDB at 10.0.0.1:8086 answered 404 Not Found: database not found: \
-                 \"plant\". {UNKNOWN}"
-            ),
-            shown(&format!(
-                "InfluxDB at 10.0.0.1:8086 answered 400 Bad Request: {head}. {REFUSED}"
+            at("500 Internal Server Error: the disk is full"),
+            at("503 Service Unavailable: starting"),
+            at("401 Unauthorized: unauthorized access"),
+            at(&format!(
+                "413 Payload Too Large: request too large. {LARGE}"
             )),
-            shown(&format!(
-                "InfluxDB at 10.0.0.1:8086 answered 404 Not Found: {head}. {UNKNOWN}"
+            at("429 Too Many Requests: slow down"),
+            at(&format!("400 Bad Request: field type conflict. {REFUSED}")),
+            at(&format!(
+                "422 Unprocessable Entity: beyond retention policy. {REFUSED}"
             )),
-            "InfluxDB at 10.0.0.1:8086 answered 200 OK: ok".into(),
+            at(&format!(
+                "404 Not Found: database not found: \"plant\". {UNKNOWN}"
+            )),
+            shown(&at(&format!("400 Bad Request: {head}. {REFUSED}"))),
+            shown(&at(&format!("404 Not Found: {head}. {UNKNOWN}"))),
+            at("200 OK: ok"),
             String::new(),
         ]
     );
