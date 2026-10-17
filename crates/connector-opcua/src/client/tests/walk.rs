@@ -409,12 +409,12 @@ fn a_walk_holds_no_more_points_than_the_server_holds_for_a_session() {
     let unbound = unbound.expect("found");
     assert_eq!(unbound.entries.len(), 8, "{:?}", unbound.entries);
     assert_eq!((points, browses), (4, 7));
-    for (most, browses) in [(1, 10), (2, 8)] {
-        let (found, points, browsed) = held(most);
+    for (most, count) in [(1, 10), (2, 8)] {
+        let (found, points, browses) = held(most);
         assert_eq!(found.expect("found").entries, unbound.entries);
         assert_eq!(
-            (points, browsed),
-            (usize::from(most), browses),
+            (points, browses),
+            (usize::from(most), count),
             "bound {most}"
         );
     }
