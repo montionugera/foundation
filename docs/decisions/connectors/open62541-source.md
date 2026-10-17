@@ -7,9 +7,8 @@
   (https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6050922367,
   2026-10-08 02:27 UTC). A test of `connector-opcua` names the function of each clock
   key of `FUNCTION_SYMBOLS` and fails when its reason becomes false. For example,
-  `shim.c` fails the build with `UA_ENABLE_ENCRYPTION`, and a test fails when the Rust
-  or `shim.c` names a security policy, so a client has only the policy `None`, and
-  `encryptUserIdentityTokenEcc` needs an ECC policy. Approved by `laptop.architect`
+  the copy compiles no ECC policy, which `encryptUserIdentityTokenEcc` needs (#2934,
+  below). Approved by `laptop.architect`
   (https://github.com/synnaxlabs/foundation/pull/2246#issuecomment-6094588326,
   2026-10-10 06:19 UTC) and `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2246#issuecomment-6099193878,
@@ -810,3 +809,26 @@
   by `laptop.architect-2` at `8ab776da8`
   (https://github.com/synnaxlabs/foundation/pull/2450#issuecomment-6128818932,
   2026-10-12 16:59 UTC).
+  #2934 builds the copy with `UA_ENABLE_ENCRYPTION_OPENSSL` against the `libcrypto`
+  of the one `aws-lc-sys` of `Cargo.lock`, not a second crypto library. Directed by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6225109838,
+  2026-10-16 21:32 UTC) and approved by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6230838999,
+  2026-10-17 06:46 UTC). The `build.rs` of `connector-opcua` takes the headers from
+  the `include` that the `links` key of `aws-lc-sys` gives, and `cargo xtask
+  open62541` checks the copy against the same headers. The check admits each function
+  of aws-lc in `AWS_LC` by its name after the prefix of that version. `OMITTED` in
+  `cargo xtask open62541` is the closed list of the release files that the library
+  compiles and the copy leaves out, each with its reason: the file stores,
+  `create_certificate.c`, and each policy file other than `Basic256Sha256`,
+  `Aes128_Sha256_RsaOaep`, `Aes256_Sha256_RsaPss`, and their common code. So the copy
+  compiles only the three current policies and `None`, and the production code adds no
+  other. `shim.c` defines each symbol that the rest of the copy names from a left-out
+  file to print its name and abort, and a test calls each one. A test fails on another
+  policy file in `sources.txt`, and a test fails when the production code names another
+  policy. Lost: the about 35 file and clock calls of the left-out files, each keyed in
+  `FUNCTION_SYMBOLS`; and a copy of each deprecated and ECC policy file. Decided by
+  `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6230888200,
+  2026-10-17 06:51 UTC).
