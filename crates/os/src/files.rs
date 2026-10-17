@@ -273,11 +273,11 @@ type Job = Box<dyn FnOnce() + Send>;
 
 /// The queue of one I/O thread, which ends after the last clone drops.
 #[derive(Clone)]
-struct Queue(mpsc::Sender<Job>);
+pub(crate) struct Queue(mpsc::Sender<Job>);
 
 impl Queue {
     /// Starts I/O thread `name` and gives its queue and its handle.
-    fn start(
+    pub(crate) fn start(
         threads: &Threads,
         name: &str,
     ) -> Result<(Self, Handle), env::thread::Error> {
@@ -299,14 +299,14 @@ impl Queue {
     /// # Panics
     ///
     /// When a panic ended the I/O thread.
-    async fn run<T: Send + 'static>(
+    pub(crate) async fn run<T: Send + 'static>(
         &self,
         call: impl FnOnce() -> T + Send + 'static,
     ) -> T {
         let (reply, result) = oneshot::channel();
         // A dropped future does not want the result.
         let job: Job = Box::new(move || drop(reply.send(call())));
-        let ended = "a panic ended the I/O thread of os::files";
+        let ended = "a panic ended an I/O thread of os";
         self.0.send(job).await.expect(ended);
         result.await.expect(ended)
     }
