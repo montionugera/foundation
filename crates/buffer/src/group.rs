@@ -3,6 +3,7 @@
 #![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
 use std::iter;
+use std::ops::Range;
 use std::slice;
 
 use block::{Block, Pool, Unique};
@@ -98,6 +99,9 @@ pub(crate) struct Group {
     /// The bytes of every entry, in order. At close the record header and the
     /// table go in front.
     writes: Vec<Block>,
+    /// The header and the parts in `writes` of each entry with a nonzero tag, in
+    /// order.
+    tagged: Vec<(usize, Range<usize>)>,
     /// The bytes of every entry together.
     bytes: usize,
     meta: Option<Unique>,
@@ -172,6 +176,15 @@ impl Group {
                 max: block_max,
             }));
         }
+        let max = Layout::ENTRY_MAX_MIN;
+        let over = batch
+            .iter()
+            .filter(|entry| entry.tag != 0)
+            .map(|entry| entry.parts.bytes())
+            .find(|&bytes| bytes > max);
+        if let Some(len) = over {
+            return Err(Rejected::Large(Limit::Tagged { len, max }));
+        }
         layout
             .check(
                 start.saturating_add(count),
@@ -203,9 +216,14 @@ impl Group {
     /// Takes `entry` with its header of `kind`, after a [`fit`](Self::fit) of its
     /// batch.
     pub(crate) fn take(&mut self, entry: Entry, kind: Kind) {
+        let (at, start) = (self.headers.len(), self.writes.len());
+        let tagged = entry.tag != 0;
         self.headers.push(entry.header(kind));
         self.slots.push(entry.slot);
         self.writes.extend(entry.parts);
+        if tagged {
+            self.tagged.push((at, start..self.writes.len()));
+        }
     }
 
     /// Places the record with `writer` and writes the entry table at the end of the
@@ -361,12 +379,28 @@ impl Sealed {
         &self.group.slots
     }
 
+    /// Each entry with a nonzero tag, in order: its slot, its header, and its parts.
+    pub(crate) fn tagged(&self) -> impl Iterator<Item = (Slot, &Header, &[Block])> {
+        let group = &self.group;
+        // `seal` put the record header and the table at `writes[0]`.
+        let writes = group.writes.get(1..).unwrap_or_default();
+        group.tagged.iter().map(move |(at, parts)| {
+            let entry = group.slots.get(*at).zip(group.headers.get(*at));
+            let parts = writes.get(parts.clone());
+            let ((&slot, header), parts) = entry
+                .zip(parts)
+                .expect("invariant: a tagged entry is in the group");
+            (slot, header, parts)
+        })
+    }
+
     /// Drops the entries and the blocks and gives the group back with its capacity.
     pub(crate) fn clear(self) -> Group {
         let mut group = self.group;
         group.headers.clear();
         group.slots.clear();
         group.writes.clear();
+        group.tagged.clear();
         group.bytes = 0;
         group
     }
@@ -376,7 +410,6 @@ impl Sealed {
 #[expect(clippy::arithmetic_side_effects, reason = "a test may panic")]
 mod tests {
     use std::num::{NonZeroU32, NonZeroU64};
-    use std::ops::Range;
 
     use super::*;
     use block::{Config, Heap};
@@ -424,7 +457,7 @@ mod tests {
                 len: NonZeroU32::new(2).expect("not 0"),
                 last: Some(Stamp::from_nanos(9)),
             }),
-            tag: 3,
+            tag: 0,
             bytes: 99,
         }
     }
@@ -770,6 +803,19 @@ mod tests {
                 let headers: Vec<Header> = stored.iter().map(|(header, _)| *header).collect();
                 prop_assert_eq!(sealed.headers(), headers.as_slice());
                 prop_assert_eq!(sealed.slots(), slots.as_slice());
+                let tagged: Vec<(Slot, Header, Vec<u8>)> = sealed
+                    .tagged()
+                    .map(|(slot, header, parts)| {
+                        (slot, *header, parts.iter().flat_map(|part| part.to_vec()).collect())
+                    })
+                    .collect();
+                let wanted: Vec<(Slot, Header, Vec<u8>)> = slots
+                    .iter()
+                    .zip(&stored)
+                    .filter(|(_, (header, _))| header.tag != 0)
+                    .map(|(&slot, (header, bytes))| (slot, *header, bytes.clone()))
+                    .collect();
+                prop_assert_eq!(tagged, wanted);
                 group = sealed.clear();
                 prop_assert!(group.is_empty());
                 expected.push(stored);
@@ -1201,6 +1247,44 @@ mod tests {
             &mut batch,
         );
         assert_eq!(pushed, Ok(0..1), "an entry at block_max fits");
+    }
+
+    #[test]
+    fn refuses_a_tagged_entry_over_entry_max_min() {
+        let mut area = Area::with_body_max(60_000);
+        let over = parts(&area.pool, &[&[7; 2_000], &[7; 2_033]]);
+        let at = parts(&area.pool, &[&[7; 4_032]]);
+        area.pool = pool(1 << 16);
+        assert_eq!(area.block_max(), 6_657);
+        let tagged = Header {
+            tag: 3,
+            ..header(1, Path::Live, 0)
+        };
+        let batch = [
+            entry(header(2, Path::Live, 0), Parts::default()),
+            entry(tagged, over.clone()),
+        ];
+        let limit = Limit::Tagged {
+            len: 4_033,
+            max: 4_032,
+        };
+        assert_large(&mut area, &batch, limit);
+        assert_eq!(
+            limit.to_string(),
+            "an entry with a tag has 4033 bytes of parts, and an entry with a tag \
+             holds at most 4032"
+        );
+        let samples = Header { tag: 0, ..tagged };
+        let mut group = Group::default();
+        let mut batch = vec![entry(samples, over), entry(tagged, at)];
+        let pushed = push(
+            &mut group,
+            &area.pool,
+            area.block_max(),
+            &area.writer,
+            &mut batch,
+        );
+        assert_eq!(pushed, Ok(0..2), "tag 0 and a tagged entry at the most fit");
     }
 
     proptest! {

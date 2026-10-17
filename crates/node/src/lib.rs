@@ -871,7 +871,7 @@ impl Open {
                 clock: self.clock,
                 limits: LIMITS,
             };
-            home::Shard::open(config).await
+            home::Shard::open(config)
         };
         match opened.await {
             Ok(shard) => {

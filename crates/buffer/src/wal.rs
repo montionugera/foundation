@@ -342,6 +342,14 @@ pub enum Limit {
         /// [`Buffer::block_max`](crate::Buffer::block_max).
         max: usize,
     },
+    /// An entry with a nonzero tag whose parts, joined, pass
+    /// [`Layout::ENTRY_MAX_MIN`]: a carry record of one block must hold it.
+    Tagged {
+        /// Bytes of the entry's parts.
+        len: usize,
+        /// [`Layout::ENTRY_MAX_MIN`].
+        max: usize,
+    },
 }
 
 impl fmt::Display for Limit {
@@ -365,6 +373,11 @@ impl fmt::Display for Limit {
                 f,
                 "an entry has {len} bytes of parts, and an entry of this buffer holds \
                  at most {max}"
+            ),
+            Self::Tagged { len, max } => write!(
+                f,
+                "an entry with a tag has {len} bytes of parts, and an entry with a tag \
+                 holds at most {max}"
             ),
         }
     }

@@ -120,12 +120,12 @@ impl Parts {
     /// # Panics
     ///
     /// When a named entry does not decode, as [`read`] says, or a key is in two parts.
-    pub(crate) async fn newest(
+    pub(crate) fn newest(
         buffer: &Buffer,
     ) -> Result<hash::Map<Slot, (Self, Vec<Record>)>, buffer::Error> {
         let mut found: hash::Map<Slot, (Self, Vec<Record>)> = hash::Map::default();
         for part in 0..PARTS {
-            let newest = buffer.newest(Path::Live, tag(part)).await?;
+            let newest = buffer.newest(Path::Live, tag(part))?;
             if newest.is_empty() {
                 break;
             }

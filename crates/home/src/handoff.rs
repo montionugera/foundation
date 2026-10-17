@@ -51,10 +51,8 @@ fn body(handoff: Handoff<'_>) -> Option<Vec<u8>> {
 /// # Panics
 ///
 /// When a handoff does not decode, as [`read`] says.
-pub(crate) async fn newest(
-    buffer: &Buffer,
-) -> Result<Vec<(Slot, Writer)>, buffer::Error> {
-    let found = buffer.newest(Path::Live, TAG).await?;
+pub(crate) fn newest(buffer: &Buffer) -> Result<Vec<(Slot, Writer)>, buffer::Error> {
+    let found = buffer.newest(Path::Live, TAG)?;
     let holders = found
         .into_iter()
         .filter_map(|(slot, stored)| Some((slot, read(&stored.bytes)?)));

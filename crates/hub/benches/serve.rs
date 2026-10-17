@@ -671,7 +671,6 @@ async fn create_shard(
             ahead: Span::from_nanos(1_000_000_000),
         },
     })
-    .await
     .expect("opens");
     loop {
         if let Some(now) = mesh.now().mesh {

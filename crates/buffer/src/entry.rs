@@ -109,9 +109,11 @@ pub struct Entry {
     pub samples: Option<Samples>,
     /// Mesh time at which the home stored it. A retention `keep` counts from it.
     pub stored_at: Stamp,
-    /// A tag the caller gives and reads back. The buffer gives it no meaning, apart
-    /// from 0: [`Buffer::newest`](crate::Buffer::newest) never gives an entry of tag
-    /// 0, and compares each other tag with the tag its caller gives.
+    /// A tag the caller gives and reads back. Tag 0 marks samples. Each other tag
+    /// marks a state entry: the buffer keeps the newest entry of each nonzero tag on
+    /// each path of an index past every trim, and
+    /// [`Buffer::newest`](crate::Buffer::newest) gives it. Such an entry holds at
+    /// most [`Layout::ENTRY_MAX_MIN`](crate::Layout::ENTRY_MAX_MIN) bytes.
     pub tag: u8,
     /// The bytes, written in place; see [`Parts`].
     pub parts: Parts,
