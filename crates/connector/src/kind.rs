@@ -315,7 +315,8 @@ impl<C> Context<C> {
 
     /// Shows `error` in the status of the running connector, as an attempt that
     /// failed with the class `retry`. The status gives it within one second. The end
-    /// of the run replaces it, and a call after the run returned shows nothing.
+    /// of the run replaces it, and a call after the run returned shows nothing. Each
+    /// new text that the status gives is also the log line `error` (WARN).
     pub fn error(&self, error: &dyn fmt::Display) {
         self.status.show(error);
     }
@@ -324,7 +325,8 @@ impl<C> Context<C> {
     /// connector, within one second: the one that [`Context::error`] showed, or the
     /// end of the last run. Until the first call of `error` or `clear_error` in a
     /// run, the status keeps the end of the last run. A call after the run returned
-    /// shows nothing.
+    /// shows nothing. Each clear of a text in the status is also the log line
+    /// `cleared` (INFO).
     pub fn clear_error(&self) {
         self.status.clear();
     }
@@ -334,7 +336,8 @@ impl<C> Context<C> {
     /// a mode that the device forces. The status gives it within one second. A note of
     /// more than 1024 bytes keeps its first and last 510 bytes or less at char
     /// boundaries, joined by `…`. An empty `note` shows none. The end of the run
-    /// clears it, and a call after the run returned shows nothing.
+    /// clears it, and a call after the run returned shows nothing. Each new note that
+    /// the status gives is also the log line `note` (INFO).
     pub fn note(&self, note: &dyn fmt::Display) {
         self.status.note(note);
     }
@@ -1182,7 +1185,7 @@ mod tests {
                 3,
                 token.clone(),
                 tasks.clone(),
-                status::Status::new(Vec::new(), tracing::Span::none()),
+                status::Status::new(Vec::new()),
                 None,
                 inputs,
             );
@@ -1211,7 +1214,7 @@ mod tests {
         let (a, b) = run_on(|node, tasks| async move {
             let inputs =
                 Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
-            let status = status::Status::new(Vec::new(), tracing::Span::none());
+            let status = status::Status::new(Vec::new());
             let ctx =
                 Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             (ctx.rng().next_u64(), ctx.rng().next_u64())
@@ -1224,7 +1227,7 @@ mod tests {
         let (missing, read, changed) = run_on(|node, tasks| async move {
             let inputs =
                 Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
-            let status = status::Status::new(Vec::new(), tracing::Span::none());
+            let status = status::Status::new(Vec::new());
             let ctx =
                 Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             let token = name("plant.influx_token");
@@ -1266,7 +1269,7 @@ mod tests {
         let missing = run_on(|node, tasks| async move {
             let inputs =
                 Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
-            let status = status::Status::new(Vec::new(), tracing::Span::none());
+            let status = status::Status::new(Vec::new());
             let ctx =
                 Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             let source = secret::Source::Env("INFLUX_TOKEN".into());
@@ -1287,7 +1290,7 @@ mod tests {
         let bad = run_on(|node, tasks| async move {
             let inputs =
                 Rc::new(create_config(&node, tasks.clone(), Table::new(), "a").await);
-            let status = status::Status::new(Vec::new(), tracing::Span::none());
+            let status = status::Status::new(Vec::new());
             let ctx =
                 Context::new(name("a"), (), Token::new(), tasks, status, None, inputs);
             let source = secret::Source::Secret(name("plant.Token"));

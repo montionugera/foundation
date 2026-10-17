@@ -1599,6 +1599,36 @@ fn a_field_of_an_inner_span_or_of_the_event_replaces_one_of_an_outer_span() {
     );
 }
 
+/// A value whose `Debug` logs an event, as a value that warns on its own read does.
+struct Logs;
+
+impl std::fmt::Debug for Logs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        tracing::warn!(target: "test", "inner");
+        f.write_str("logs")
+    }
+}
+
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a hang fails the test, not the run"
+)]
+fn a_record_whose_value_logs_does_not_hang() {
+    let (sent, got) = mpsc::channel();
+    std::thread::spawn(move || {
+        let line = written(false, || {
+            let span = tracing::error_span!("s", v = tracing::field::Empty);
+            let _entered = span.enter();
+            span.record("v", tracing::field::debug(Logs));
+            tracing::info!(target: "test", "e");
+        });
+        drop(sent.send(line));
+    });
+    let line = got.recv_timeout(Duration::from_secs(20));
+    assert!(line.is_ok(), "the record hangs: {line:?}");
+}
+
 #[test]
 fn a_span_field_named_message_is_a_field_of_an_event_with_no_message() {
     let line = written(false, || {
@@ -1651,8 +1681,8 @@ fn a_text_line_names_mesh_time_once_when_a_span_field_has_that_name() {
     );
 }
 
-/// A kind whose first run shows an error twice, clears it, shows a note, and ends
-/// with `first`. Each later run returns `Ok`.
+/// A kind whose first run changes what it shows, 2 s apart so that the status writer
+/// writes each step, and ends with `first`. Each later run returns `Ok`.
 struct Flaky {
     first: fn() -> KindError,
     failed: AtomicBool,
@@ -1673,14 +1703,34 @@ impl connector::kind::Kind for Flaky {
         &self,
         ctx: connector::kind::Context<()>,
     ) -> impl Future<Output = Result<(), KindError>> {
-        if self.failed.swap(true, Relaxed) {
-            return std::future::ready(Ok(()));
+        let first = (!self.failed.swap(true, Relaxed)).then_some(self.first);
+        async move {
+            let Some(first) = first else {
+                return Ok(());
+            };
+            let steps: [&dyn Fn(); 6] = [
+                &|| ctx.clear_error(),
+                &|| {
+                    ctx.error(&"a b");
+                    ctx.error(&"a b");
+                },
+                &|| {
+                    ctx.error(&"b");
+                    ctx.error(&"c");
+                },
+                &|| ctx.clear_error(),
+                &|| {
+                    ctx.note(&"n");
+                    ctx.note(&"n");
+                },
+                &|| ctx.error(&"d"),
+            ];
+            for step in steps {
+                step();
+                ctx.clock().sleep(Span::from_nanos(2_000_000_000)).await;
+            }
+            Err(first())
         }
-        ctx.error(&"a b");
-        ctx.error(&"a b");
-        ctx.clear_error();
-        ctx.note(&"n");
-        std::future::ready(Err((self.first)()))
     }
 }
 
@@ -1733,13 +1783,17 @@ fn status_lines(level: tracing::Level, first: fn() -> KindError) -> Vec<String> 
 /// The fields of the span of the connector of [`status_lines`].
 const AT: &str = "connector=plant.a kind=flaky";
 
-/// The lines of [`status_lines`] from the first start to the end of the first run.
-fn first_run() -> [String; 4] {
+/// The lines of [`status_lines`] from the first start to the end of the first run:
+/// one for each value that the status channel gets, so none for the clear of no
+/// error, for `b`, or for a value written again.
+fn first_run() -> [String; 6] {
     [
         format!("INFO running {AT} restarts=0"),
         format!(r#"WARN error {AT} error="a b""#),
+        format!("WARN error {AT} error=c"),
         format!("INFO cleared {AT}"),
         format!("INFO note {AT} note=n"),
+        format!("WARN error {AT} error=d"),
     ]
 }
 
@@ -1793,6 +1847,8 @@ fn a_connector_gives_its_name_and_kind_to_each_status_line_at_each_level() {
     let lines = status_lines(tracing::Level::WARN, || KindError::Retry("down".into()));
     let logged = [
         format!(r#"WARN error {AT} error="a b""#),
+        format!("WARN error {AT} error=c"),
+        format!("WARN error {AT} error=d"),
         format!("WARN ended {AT} class=retry error=down"),
     ];
     assert_eq!(lines, logged);
