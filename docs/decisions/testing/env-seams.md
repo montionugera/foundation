@@ -1018,8 +1018,7 @@
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236404985, which
   supersedes the example of item 2 of 6232020329 that `out` and `/target/out` are one
   path when the working directory is a link to `/target`: a link on the way makes them
-  two; the path of the working directory on a move,
-  2026-10-17T16:16:39Z,
+  two; the path of the working directory on a move, 2026-10-17T16:16:39Z,
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236468300, which
   supersedes "`working` becomes its resolved path when it resolves" of 6231322001 and
   "`move_entry` goes back to the rule of 6231322001, and 7c9caa232 goes" of item 2 of
