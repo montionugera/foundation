@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use env::thread::{Error, Handle};
+use env::thread::Error;
 use tracing::Dispatch;
 use tracing_subscriber::fmt::MakeWriter;
 
@@ -95,7 +95,7 @@ impl Flush {
         if !self.resume() {
             return false;
         }
-        self.written(sent, bound) == Waited::Written
+        self.queue.lines.wait(sent, bound) == Waited::Written
     }
 
     /// The panic hook for `main` to set, over `previous`, the hook before it. It
@@ -123,21 +123,10 @@ impl Flush {
         if !lines.runs_elsewhere() {
             return true;
         }
-        match self.written(sent, bound) {
+        match lines.wait(sent, bound) {
             Waited::Written | Waited::Lost => true,
             Waited::Late => !lines.runs_elsewhere(),
         }
-    }
-
-    /// The wait of [`Flush::wait`] for the first `sent` lines, with no start.
-    fn written(&self, sent: u64, bound: Duration) -> Waited {
-        let waited = self.queue.lines.wait(sent, bound);
-        // After a panic of the writer, its thread keeps its handle: that panic has
-        // reached the panic hook.
-        if let Some(ended) = self.queue.lines.ended() {
-            join(ended);
-        }
-        waited
     }
 }
 
@@ -163,17 +152,6 @@ pub(super) struct Queue {
     line: Line,
 }
 
-/// Joins `handle`, a thread `log` that has ended its run.
-///
-/// # Panics
-///
-/// When it panicked after it ended its run, which is a defect.
-fn join(handle: Handle) {
-    handle
-        .join()
-        .expect("invariant: the thread log ends with no panic");
-}
-
 impl Queue {
     /// Starts a thread `log` when none runs, the writer has not panicked, and a
     /// [`Hold`] is left or a line waits. The thread takes the writer from `lines`, so
@@ -191,10 +169,7 @@ impl Queue {
             };
             self.threads.start("log", drain)
         };
-        if let Some(ended) = self.lines.resume(spawn)? {
-            join(ended);
-        }
-        Ok(())
+        self.lines.resume(spawn)
     }
 }
 

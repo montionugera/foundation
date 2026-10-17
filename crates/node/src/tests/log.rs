@@ -1569,7 +1569,9 @@ fn a_wait_beside_a_resume_joins_the_thread_log() {
             let log = log.clone();
             threads.start("resume", move || async move { assert!(log.resume()) })
         };
-        // The resume of the other thread starts the run, so the wait starts none.
+        // The resume of the other thread starts the run, so the wait starts none. Only
+        // `running` shows that it started, and only the empty slot of the handle shows
+        // the join.
         while !format!("{log:?}").contains("running: true") && lines.read().is_empty() {
             std::hint::spin_loop();
         }
@@ -1582,4 +1584,38 @@ fn a_wait_beside_a_resume_joins_the_thread_log() {
         let debug = format!("{log:?}");
         assert!(debug.contains("handle: None"), "round {round}: {debug}");
     }
+}
+
+/// A driver whose start drops its body and panics, as `os` passes the panic of the
+/// build of a thread to its caller.
+struct Unwinds;
+
+impl env::threads::Driver for Unwinds {
+    fn start(
+        &self,
+        name: &str,
+        body: env::threads::Body,
+        _: tracing::Dispatch,
+    ) -> Result<env::thread::Handle, env::thread::Error> {
+        drop(body);
+        panic!("the start of {name} panicked");
+    }
+}
+
+#[test]
+fn a_wait_after_a_start_that_panicked_has_nothing_to_wait_for() {
+    let threads = env::threads::Threads::new(Unwinds);
+    let lines = Lines::default();
+    let (_, mesh) = clock::Clock::new(os::clock());
+    let wall = os::wall().expect("a wall clock");
+    let log = log::open(
+        to(&lines, false, tracing::Level::INFO),
+        &threads,
+        wall,
+        mesh,
+    );
+    let held = panic::catch_unwind(panic::AssertUnwindSafe(|| log.hold()));
+    assert!(held.is_err(), "the start panicked");
+    let debug = format!("{log:?}");
+    assert!(log.wait(Duration::from_secs(1)), "{debug}");
 }
