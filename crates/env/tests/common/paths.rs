@@ -723,10 +723,14 @@ pub(crate) fn within_agrees_with_free_on_each_end_of_a_link_that_does_not_resolv
     let file = Error::Io {
         code: NOT_DIRECTORY,
     };
+    // `ELOOP` of `os` is 62 on macOS.
+    let looped = host.paths.read(&work.join("loop"), 1).unwrap_err();
+    #[cfg(target_os = "linux")]
+    assert_eq!(looped, Error::Io { code: 40 });
     for (name, error) in [
         ("none/..", Error::NotFound),
         ("a.hcl/..", file),
-        ("loop/..", Error::Io { code: 40 }),
+        ("loop/..", looped),
     ] {
         let path = work.join(name);
         let free = host.paths.make_dir(&path);
