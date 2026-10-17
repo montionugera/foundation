@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::collections::vec_deque::Drain;
 use std::fmt;
 use std::num::{NonZeroU8, NonZeroU64};
+use std::ops::Deref;
 
 use types::channel::{self, Slot};
 use types::frame::Path;
@@ -538,8 +539,8 @@ pub(crate) struct Newest {
     /// The offset of the record that holds it.
     pub(crate) offset: u64,
     pub(crate) header: Header,
-    /// The entry's parts, joined.
-    pub(crate) bytes: Box<[u8]>,
+    /// The entry's parts, joined. A later copy of its log and tag reuses it.
+    pub(crate) bytes: Vec<u8>,
 }
 
 /// Every path the buffer holds, by the node's slot of the index and the path.
@@ -675,26 +676,36 @@ impl Logs {
             })
     }
 
-    /// Makes `bytes` the newest durable entry of the tag of `header` on its path of
-    /// the index at `slot`, in the record at `offset`.
+    /// Makes the joined `parts` the newest durable entry of the tag of `header` on
+    /// its path of the index at `slot`, in the record at `offset`. It reuses the
+    /// bytes of the copy that it replaces, so a copy no larger than that one makes no
+    /// heap allocation.
     ///
     /// # Panics
     ///
     /// When the tag of `header` is 0.
-    pub(crate) fn copy(
+    pub(crate) fn copy<P: Deref<Target = [u8]>>(
         &mut self,
         slot: Slot,
         header: &Header,
         offset: u64,
-        bytes: Box<[u8]>,
+        parts: &[P],
     ) {
         let tag = NonZeroU8::new(header.tag).expect("invariant: a copy has a tag");
-        let newest = Newest {
-            offset,
-            header: *header,
-            bytes,
-        };
-        self.tags.insert((slot, header.path, tag), newest);
+        let newest = self
+            .tags
+            .entry((slot, header.path, tag))
+            .or_insert_with(|| Newest {
+                offset,
+                header: *header,
+                bytes: Vec::new(),
+            });
+        newest.offset = offset;
+        newest.header = *header;
+        newest.bytes.clear();
+        for part in parts {
+            newest.bytes.extend_from_slice(part);
+        }
     }
 
     /// Hides the records before the offset `tail` from each later
@@ -1748,12 +1759,37 @@ mod tests {
             tag,
             ..header(index, path, 0, 2, None)
         };
-        let bytes = |bytes: &[u8]| Box::<[u8]>::from(bytes);
-        logs.copy(slot(1), &tagged(1, Path::Live, 2), 4096, bytes(b"old"));
-        logs.copy(slot(1), &tagged(1, Path::Live, 2), 8192, bytes(b"new"));
-        logs.copy(slot(2), &tagged(2, Path::Live, 2), 4096, bytes(b"two"));
-        logs.copy(slot(1), &tagged(1, Path::Live, 3), 4096, bytes(b"tag 3"));
-        logs.copy(slot(1), &tagged(1, Path::Backfill, 2), 4096, bytes(b"back"));
+        let bytes = |bytes: &[u8]| bytes.to_vec();
+        logs.copy(
+            slot(1),
+            &tagged(1, Path::Live, 2),
+            4096,
+            &[b"old".as_slice()],
+        );
+        logs.copy(
+            slot(1),
+            &tagged(1, Path::Live, 2),
+            8192,
+            &[b"ne".as_slice(), b"w"],
+        );
+        logs.copy(
+            slot(2),
+            &tagged(2, Path::Live, 2),
+            4096,
+            &[b"two".as_slice()],
+        );
+        logs.copy(
+            slot(1),
+            &tagged(1, Path::Live, 3),
+            4096,
+            &[b"tag 3".as_slice()],
+        );
+        logs.copy(
+            slot(1),
+            &tagged(1, Path::Backfill, 2),
+            4096,
+            &[b"back".as_slice()],
+        );
         let tag = NonZeroU8::new(2).expect("not 0");
         let newest = |logs: &Logs| {
             let mut newest: Vec<(Slot, Newest)> = logs
@@ -1779,6 +1815,26 @@ mod tests {
     }
 
     #[test]
+    fn copy_reuses_the_bytes_of_the_copy_it_replaces() {
+        let mut logs = Logs::new(AREA);
+        let header = Header {
+            tag: 2,
+            ..header(1, Path::Live, 0, 2, None)
+        };
+        let tag = NonZeroU8::new(2).expect("not 0");
+        logs.copy(slot(1), &header, 4096, &[b"long".as_slice(), b" entry"]);
+        let kept = |logs: &Logs| {
+            let (_, newest) = logs.newest(Path::Live, tag).next().expect("a copy");
+            (newest.bytes.clone(), newest.bytes.as_ptr(), newest.offset)
+        };
+        let (_, before, _) = kept(&logs);
+        logs.copy(slot(1), &header, 8192, &[b"short".as_slice()]);
+        let (bytes, after, offset) = kept(&logs);
+        assert_eq!((bytes.as_slice(), offset), (b"short".as_slice(), 8192));
+        assert_eq!(after, before);
+    }
+
+    #[test]
     fn sync_makes_no_copy() {
         let mut logs = Logs::new(AREA);
         let header = Header {
@@ -1795,7 +1851,7 @@ mod tests {
     fn a_copy_of_tag_0_is_a_broken_invariant() {
         let mut logs = Logs::new(AREA);
         let header = header(1, Path::Live, 0, 2, None);
-        logs.copy(slot(1), &header, 4096, Box::default());
+        logs.copy::<&[u8]>(slot(1), &header, 4096, &[]);
     }
 
     #[test]

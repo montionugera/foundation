@@ -465,13 +465,7 @@ impl State {
                     .expect("invariant: append checked the entry");
             }
             for (slot, header, parts) in record.tagged() {
-                let len = parts.iter().map(|part| part.len()).sum();
-                let mut bytes = Vec::with_capacity(len);
-                for part in parts {
-                    bytes.extend_from_slice(part);
-                }
-                let bytes = bytes.into_boxed_slice();
-                self.logs.copy(slot, header, record.offset(), bytes);
+                self.logs.copy(slot, header, record.offset(), parts);
             }
             self.spares.push(record.clear());
         }
@@ -1109,7 +1103,7 @@ async fn walk(
 
 /// The record offset, the header, and the body offset of the bytes of the newest
 /// entry of each nonzero tag on each path that a walk met.
-type Newest = hash::Map<(Slot, Path, NonZeroU8), (u64, entry::Header, usize)>;
+type Tagged = hash::Map<(Slot, Path, NonZeroU8), (u64, entry::Header, usize)>;
 
 /// Feeds the logs the entries of a record body at `offset`, as appended and
 /// synced, and notes each entry with a nonzero tag in `newest`. Fails when an
