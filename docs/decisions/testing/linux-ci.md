@@ -29,5 +29,8 @@
   - `laptop.architect-2`
     (https://github.com/synnaxlabs/foundation/issues/2954#issuecomment-6226439164):
     `os` has no exception, and each of its `cfg`s names its issue.
-  - Fuzzing and the root tests on Linux only, lists of tests, and the review rule
-    above: `box1.builder-1` in #2960, sent to `laptop.monitor` as key choices.
+  - Fuzzing and the root tests on Linux only, lists of tests, the review rule above,
+    and the ONE NODE condition on tests: `box1.builder-1` in #2960, sent to
+    `laptop.monitor` as key choices, and accepted by `laptop.monitor` in its factory
+    message `a02192a8` at 2026-10-17T03:38:45Z ("ONE NODE does not close while any
+    list holds a crate or a test").
