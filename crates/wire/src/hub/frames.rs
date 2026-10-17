@@ -67,6 +67,7 @@ impl Frames {
         message: Option<&[u8]>,
     ) -> Result<Self, Error> {
         assert_eq!(set.groups().len(), 1, "a session is on one index");
+        assert!(reader.unopened(), "`reader` is past `Opened`");
         match reader.decode(message)? {
             FromHome::Opened { live } => Ok(Self {
                 reader,
@@ -77,9 +78,7 @@ impl Frames {
                 draft: None,
                 gaps: Gaps::new(live),
             }),
-            other => {
-                panic!("a reader before opened gave {other:?} for its first message")
-            }
+            other => unreachable!("invariant: a reader before opened gave {other:?}"),
         }
     }
 
@@ -135,8 +134,8 @@ impl Frames {
     /// # Errors
     ///
     /// Each [`Error`] of [`Reader::decode`], so for `None` the error of a stream that
-    /// the home finished at this point. The caller then stops the stream as
-    /// `MALFORMED`.
+    /// the home finished at this point. The frames stay as they were. The caller then
+    /// stops the stream as `MALFORMED`.
     ///
     /// # Panics
     ///
@@ -144,16 +143,8 @@ impl Frames {
     #[inline]
     pub fn decode(&mut self, message: Option<&[u8]>) -> Result<Step, Error> {
         assert!(!self.drafting, "a draft is due before the next message");
-        let Some(message) = message else {
-            return Err(self.reader.finished());
-        };
-        if let Some(start) = self.reader.body() {
-            let last = last(self.reader.decode(Some(message)))?;
-            let draft = self.draft.as_mut().expect("invariant: a body has a draft");
-            prefix(rest(draft, start), message.len()).copy_from_slice(message);
-            return Ok(self.received_body(last));
-        }
-        match self.reader.decode(Some(message))? {
+        let start = self.reader.body();
+        match self.reader.decode(message)? {
             FromHome::Head(head) => {
                 self.head = Some(head);
                 self.ends.clear();
@@ -168,8 +159,11 @@ impl Frames {
             FromHome::Opened { .. } => {
                 unreachable!("invariant: an open decoder outside a body gave an opened")
             }
-            FromHome::Body { .. } => {
-                unreachable!("invariant: an open decoder outside a body gave a body")
+            FromHome::Body { bytes, last } => {
+                let start = start.expect("invariant: body bytes come inside a body");
+                let draft = self.draft.as_mut().expect("invariant: a body has a draft");
+                prefix(rest(draft, start), bytes.len()).copy_from_slice(bytes);
+                Ok(self.received_body(last))
             }
         }
     }
@@ -248,14 +242,6 @@ fn prefix(rest: &mut [u8], len: usize) -> &mut [u8] {
             "a body message of {len} bytes is over the {room} bytes left of its body"
         )
     })
-}
-
-/// Whether the body message that `decoded` gave is the last of its body.
-fn last(decoded: Result<FromHome<'_>, Error>) -> Result<bool, Error> {
-    match decoded? {
-        FromHome::Body { last, .. } => Ok(last),
-        _ => unreachable!("invariant: inside a body the decoder gives body bytes"),
-    }
 }
 
 fn to_usize(n: u32) -> usize {
@@ -394,11 +380,27 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "a reader before opened gave")]
+    #[should_panic(expected = "`reader` is past `Opened`")]
     fn panics_at_a_reader_past_opened() {
         let mut reader = create_reader(false);
         reader.decode(Some(&opened_at(0))).expect("opened");
         let _frames = Frames::open(reader, create_set(), Some(&head(4, 2, 2)));
+    }
+
+    #[test]
+    #[should_panic(expected = "`reader` is past `Opened`")]
+    fn panics_at_a_reader_past_opened_at_the_end_of_the_stream() {
+        let mut reader = create_reader(false);
+        reader.decode(Some(&opened_at(0))).expect("opened");
+        let _frames = Frames::open(reader, create_set(), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "`reader` is past `Opened`")]
+    fn panics_at_a_reader_past_opened_at_a_refused_message() {
+        let mut reader = create_reader(false);
+        reader.decode(Some(&opened_at(0))).expect("opened");
+        let _frames = Frames::open(reader, create_set(), Some(&[]));
     }
 
     #[test]

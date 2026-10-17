@@ -186,10 +186,14 @@ impl Reader {
         }
     }
 
+    /// Whether the reader has decoded no `Opened` yet.
+    pub(in crate::hub) fn unopened(&self) -> bool {
+        matches!(self.next, Next::Opened)
+    }
+
     /// The error of a stream that the home finished here: [`Error::Unfinished`] inside
     /// a body, else [`Error::Finished`].
-    #[must_use]
-    pub(in crate::hub) fn finished(&self) -> Error {
+    fn finished(&self) -> Error {
         match self.next {
             Next::Body(body) => Error::Unfinished {
                 remain: body.remain(),
