@@ -16,14 +16,14 @@ pub struct Roots {
     pub source: Source,
 }
 
-/// Reads the CA certificates of the OS store: the certificate files on Linux, and the
-/// keychain on macOS. When `SSL_CERT_FILE` is set, or `SSL_CERT_DIR` holds a path that
-/// is not empty, it reads only that file and those paths, on each OS. A path that is
-/// not there, or a `SSL_CERT_DIR` path that is not a directory, gives a failure and no
-/// root of the OS store. On Linux, a `SSL_CERT_DIR` of only `:` characters also reads
-/// the directory of that whole name in the working directory, when it is there. It
-/// blocks on the reads, gives the whole store in memory, and gives which of these it
-/// read.
+/// Reads the CA certificates of the OS store: the certificate files on Linux, the
+/// keychain on macOS, and the ROOT store of the current user on Windows. When
+/// `SSL_CERT_FILE` is set, or `SSL_CERT_DIR` holds a path that is not empty, it reads
+/// only that file and those paths, on each OS. A path that is not there, or a
+/// `SSL_CERT_DIR` path that is not a directory, gives a failure and no root of the OS
+/// store. On Linux, a `SSL_CERT_DIR` of only `:` characters also reads the directory of
+/// that whole name in the working directory, when it is there. It blocks on the reads,
+/// gives the whole store in memory, and gives which of these it read.
 #[must_use]
 pub fn read() -> Roots {
     #[expect(
@@ -44,7 +44,8 @@ pub fn read() -> Roots {
 
 /// Where a read of the roots looks, which `SSL_CERT_FILE` and `SSL_CERT_DIR` pick.
 /// With no file and no directory, it is the store of the OS: the certificate files on
-/// Linux, the keychain on macOS. Its text is `the OS store`, or `SSL_CERT_FILE=<path>` when the file is set and
+/// Linux, the keychain on macOS, and the ROOT store of the current user on Windows. Its
+/// text is `the OS store`, or `SSL_CERT_FILE=<path>` when the file is set and
 /// `SSL_CERT_DIR=<paths>`, the paths joined by the separator of the OS (`:`, or `;` on
 /// Windows), when a directory is, with a space between the two.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

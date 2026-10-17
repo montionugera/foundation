@@ -108,11 +108,12 @@
   that is equal to a root, which is a later step on #2894 when a user's server cannot
   get a new certificate. The influx kind reads its CA from `ca` (INFLUX KIND).
   The roots are `node::Config::roots`, an `os::roots::Roots`, and main gives
-  `os::roots::read()`: the certificate files on Linux and the keychain on macOS. When
-  `SSL_CERT_FILE` is set, or `SSL_CERT_DIR` holds a path that is not empty, it reads
-  only that file and those paths, on each OS. A path that is not there, or a
-  `SSL_CERT_DIR` path that is not a directory, gives a failure and no root of the OS
-  store. The person approved this override (2026-10-16T14:53:55Z:
+  `os::roots::read()`: the certificate files on Linux, the keychain on macOS, and the
+  ROOT store of the current user on Windows. When `SSL_CERT_FILE` is set, or
+  `SSL_CERT_DIR` holds a path that is not empty, it reads only that file and those
+  paths, on each OS. A path that is not there, or a `SSL_CERT_DIR` path that is not a
+  directory, gives a failure and no root of the OS store. The person approved this
+  override (2026-10-16T14:53:55Z:
   https://github.com/synnaxlabs/foundation/pull/2862#issuecomment-6218177938). An
   empty `SSL_CERT_DIR` names no directory, so the node reads the OS store. On Linux, a
   `SSL_CERT_DIR` of only `:` characters also reads the directory of that whole name in
