@@ -135,9 +135,7 @@ impl Deadline {
     pub fn trimming(indexes: NonZeroU32) -> Self {
         let blocks = 4096 + crate::bench::PHASE;
         let mut deadline = Self::new(indexes.get(), blocks);
-        let mut commits = 0..=2 * blocks;
-        while deadline.state.writer.head() <= 2 * blocks * BLOCK {
-            commits.next().expect("each deadline writes a block");
+        for _ in 0..=2 * blocks {
             deadline.commit(1);
         }
         let mut trimmed = || {
@@ -186,7 +184,8 @@ mod tests {
     }
 
     /// The deadline after `trimming` of 1 and of 32 indexes, as the `deadline_trim`
-    /// bench times it, trims a step, carries no tail, and writes a checkpoint. It reads
+    /// bench times it, trims a step, carries no tail, and writes a checkpoint. Each
+    /// deadline of the warm-up writes a block, so the head is past two laps. It reads
     /// the private `state`: `commit` gives only the tails of the carry record.
     #[test]
     fn the_deadline_after_trimming_trims_a_step() {

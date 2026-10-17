@@ -496,7 +496,7 @@ pub(crate) struct Writer {
 
 impl Writer {
     /// The offset where the next record starts.
-    #[cfg(any(test, feature = "sim"))]
+    #[cfg(test)]
     pub(crate) fn head(&self) -> u64 {
         self.head
     }

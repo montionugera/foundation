@@ -120,7 +120,9 @@
   (2026-10-16T21:03:09Z):
   https://github.com/synnaxlabs/foundation/pull/2909#issuecomment-6224646122,
   `trimming` and its text (#2943, 2026-10-16T23:14:08Z, items 1 and 5):
-  https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6226442923, and
+  https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6226442923, its
+  nonzero count of indexes (#2943, 2026-10-17T00:58:41Z, items 2 and 4):
+  https://github.com/synnaxlabs/foundation/pull/2943#issuecomment-6227669597, and
   `lap_shrink` as item 6 of #2774, deferred with its OK (#2739, 2026-10-15T22:34:39Z):
   https://github.com/synnaxlabs/foundation/pull/2739#issuecomment-6203672199. The two
   lost designs have only the text approval (2026-10-16T20:11:06Z):
