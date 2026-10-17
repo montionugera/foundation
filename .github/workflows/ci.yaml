@@ -34,7 +34,7 @@ jobs:
   # push skips every job, because the queue already ran them on the same commit.
   changes:
     if: github.event_name != 'push' || github.actor == 'github-merge-queue[bot]'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: read
@@ -105,7 +105,7 @@ jobs:
   check:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.rust != 'false'"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
@@ -140,9 +140,9 @@ jobs:
       matrix:
         include:
           - name: macos
-            runner: macos-latest
+            runner: macos-15
           - name: windows
-            runner: windows-latest
+            runner: windows-2025
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -159,7 +159,7 @@ jobs:
   features:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.rust != 'false'"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
@@ -172,7 +172,7 @@ jobs:
   deny:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.deps != 'false'"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: taiki-e/install-action@v2
@@ -205,7 +205,7 @@ jobs:
   wait:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.wait != 'false'"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: read
@@ -220,7 +220,7 @@ jobs:
   loom:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.models != 'false'"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
@@ -234,7 +234,7 @@ jobs:
   shuttle:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.models != 'false'"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
@@ -244,7 +244,7 @@ jobs:
   miri:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.models != 'false'"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned nightly
@@ -259,7 +259,7 @@ jobs:
   sanitizers:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.rust != 'false'"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned nightly
@@ -272,7 +272,7 @@ jobs:
   fuzz:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.rust != 'false'"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned nightly
@@ -319,7 +319,7 @@ jobs:
       fail-fast: false
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
       contents: read
@@ -368,7 +368,7 @@ jobs:
     if: >-
       !cancelled() && needs.changes.outputs.rust != 'false' &&
       (github.event_name == 'pull_request' || github.event_name == 'merge_group')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
       contents: read

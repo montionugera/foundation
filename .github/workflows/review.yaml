@@ -27,7 +27,7 @@ jobs:
     concurrency:
       group: review-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
       cancel-in-progress: true
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Under the 120 minutes for which the queue waits on a check.
     timeout-minutes: 30
     env:
