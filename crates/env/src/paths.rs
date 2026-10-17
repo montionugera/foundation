@@ -76,15 +76,16 @@ impl Paths {
     /// [`Error::Vacant`], since a call makes no other name. A prefix short of the whole
     /// path is checked against the folders only when a `..` after it takes the path
     /// above it, nothing is there, or `hidden` holds it, and then also passes when it
-    /// is a directory on the way to a folder. A step meets `hidden` only when it passes
-    /// the folders of each limit. The name of the first prefix that does not resolve
-    /// must pass them too, at its place with no key, as a new name there does. A
-    /// relative path starts at the working directory: the steps of that directory come
-    /// first, and each prefix after them is a prefix of the path as given. A path whose
-    /// steps pass and that does not resolve gives the error of its resolve. The limits
-    /// of `self` hold too, so a handle never reaches more than the one it came from.
-    /// The check and the call are two steps: a symbolic link that another program makes
-    /// between them can lead the call out.
+    /// is a directory on the way to a folder that is there, and else fails with
+    /// [`Error::Replaced`] when its path is on the way to the path of a folder that is
+    /// not. A step meets `hidden` only when it passes the folders of each limit. The
+    /// name of the first prefix that does not resolve must pass them too, at its place
+    /// with no key, as a new name there does. A relative path starts at the working
+    /// directory: the steps of that directory come first, and each prefix after them is
+    /// a prefix of the path as given. A path whose steps pass and that does not resolve
+    /// gives the error of its resolve. The limits of `self` hold too, so a handle never
+    /// reaches more than the one it came from. The check and the call are two steps: a
+    /// symbolic link that another program makes between them can lead the call out.
     ///
     /// # Errors
     ///
@@ -532,7 +533,9 @@ pub enum Error {
     /// folder of that call after it: the folder's path names another file, or nothing,
     /// or the OS refuses its key. The path resolves under that folder, by the path that
     /// the folder resolved to at that call or by the one that it resolves to now, or
-    /// into the directory that the folder was at that call.
+    /// into the directory that the folder was at that call, or the path of a step of it
+    /// short of the whole path that is checked against the folders is on the way to the
+    /// path that the folder resolved to at that call.
     Replaced,
 }
 
