@@ -20,9 +20,10 @@
     https://github.com/synnaxlabs/foundation/pull/2960#issuecomment-6229528745).
   - OS-specific code goes only in `os`. Each `cfg` that leaves an OS out of a module or
     a public item of `os` names the issue that removes it, unless it picks the code of
-    each OS (as `allocate` and `net::unsent` do) or the item serves what only one OS
-    has (as `memory::available_under` reads the cgroups of Linux). A test of a feature
-    that only one OS has follows `docs/claude/testing.md`.
+    each OS (as `allocate` and `net::unsent` do) or the item is a test seam behind
+    `sim` that only the tests of `os` call (as `memory::available_under` reads the
+    cgroups of Linux). A test of a feature that only one OS has follows
+    `docs/claude/testing.md`.
 
   History and sources:
   - The person, 2026-10-05 (#574), so CI ran only on Linux: "As long as our systems
@@ -42,6 +43,10 @@
     (https://github.com/synnaxlabs/foundation/issues/2954#issuecomment-6226439164):
     `os` has no exception, and each `cfg` that leaves an OS out of a module of `os`
     names its issue.
+  - `laptop.architect-2`, the public items of `os` and the two exceptions of the `cfg`
+    rule (https://github.com/synnaxlabs/foundation/pull/2960#issuecomment-6229653306),
+    and the narrowed second exception
+    (https://github.com/synnaxlabs/foundation/pull/2960#issuecomment-6229892713).
   - Fuzzing and the root tests on Linux only, lists of tests, the review rule above,
     and the ONE NODE condition on tests: `box1.builder-1` in #2960, sent to
     `laptop.monitor` as key choices, and accepted by `laptop.monitor` at
