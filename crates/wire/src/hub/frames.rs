@@ -199,8 +199,8 @@ impl Frames {
         }
     }
 
-    /// The error of a stream that the home finished at this point. The home never
-    /// finishes a reader session.
+    /// The error of a stream that the home finished at this point. The home finishes
+    /// its stream only after the reader finished its own.
     #[must_use]
     pub fn finished(&self) -> Error {
         self.reader.finished()

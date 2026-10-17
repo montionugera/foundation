@@ -175,7 +175,8 @@ impl Reader {
     }
 
     /// The error of a stream that the home finished here: [`Error::Unfinished`] inside
-    /// a body, else [`Error::Finished`]. The home never finishes a reader session.
+    /// a body, else [`Error::Finished`]. The home finishes its stream only after the
+    /// reader finished its own.
     #[must_use]
     pub fn finished(&self) -> Error {
         match self.next {
