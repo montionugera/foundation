@@ -130,6 +130,32 @@ jobs:
           cargo clippy -p os --all-features --test root -- -D warnings
           cargo test -p os --all-features --test root
 
+  # The other OSes of LINUX CI. Each skips only what its list names.
+  os:
+    needs: changes
+    if: "!cancelled() && needs.changes.outputs.rust != 'false'"
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos
+            runner: macos-latest
+          - name: windows
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Test
+        if: ${{ !cancelled() }}
+        run: cargo test --workspace --all-features --no-fail-fast
+
   features:
     needs: changes
     if: "!cancelled() && needs.changes.outputs.rust != 'false'"
