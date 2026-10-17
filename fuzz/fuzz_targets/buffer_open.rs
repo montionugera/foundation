@@ -373,8 +373,6 @@ struct Ring {
     /// The kind and blocks of the record that starts at each block of the area, as
     /// last written. A move of the tail can reach a record that a trim freed.
     disk: Vec<Option<(Kind, usize)>>,
-    /// The most tails of a carry record that the pool holds.
-    most: usize,
     logs: [Log; PATH_COUNT],
     /// The number, record offset, and path of each item: the paths of each record,
     /// in ring order.
@@ -401,7 +399,6 @@ impl Ring {
             end: records.back().map_or(tail, |record| record.end),
             records,
             disk: built.disk.clone(),
-            most: built.most,
             logs: [Log::default(); PATH_COUNT],
             items: VecDeque::new(),
             added: 0,
@@ -626,9 +623,8 @@ impl Ring {
         if let Some(tail) = trim {
             self.hide(tail);
         }
-        let limit = self.tails(head).min(self.most);
         let (_, reach) = Self::marks((head + queued).min(OFFSET_LAST), queued);
-        let carried = self.carried(reach, limit);
+        let carried = self.carried(reach, self.tails(head));
         if data.is_none() && trim.is_none() && carried.is_empty() {
             return None;
         }
@@ -748,16 +744,14 @@ impl Ring {
 struct Room(Option<Ring>);
 
 impl Room {
-    /// A new ring, whose carry records hold at most `most` tails: its restart record
-    /// at offset 0.
-    fn new(most: usize) -> Self {
+    /// A new ring: its restart record at offset 0.
+    fn new() -> Self {
         let mut ring = Ring {
             tail: 0,
             data: 0,
             end: 0,
             records: VecDeque::new(),
             disk: vec![None; BLOCKS],
-            most,
             logs: [Log::default(); PATH_COUNT],
             items: VecDeque::new(),
             added: 0,
@@ -936,6 +930,39 @@ struct Append {
 }
 
 impl Append {
+    /// The entry of this append on `slot`, with `tag`, from the next seq of its path
+    /// in `firsts`, which it moves past the entry.
+    fn entry(
+        &self,
+        shard: &Shard,
+        slot: Slot,
+        tag: u8,
+        firsts: &mut [[u64; 2]],
+    ) -> Entry {
+        let path = usize::from(self.path == frame::Path::Backfill);
+        let first = firsts[self.index][path] + self.skip;
+        firsts[self.index][path] = first + u64::from(self.len);
+        let samples = NonZeroU32::new(self.len).map(|len| Samples {
+            len,
+            last: Some(Stamp::from_nanos(i64::try_from(first).expect("small"))),
+        });
+        let mut blocks = self.parts.iter().map(|len| shard.block(*len, tag));
+        let parts = match (blocks.next(), blocks.next()) {
+            (Some(one), Some(two)) => Parts::from([one, two]),
+            (one, _) => Parts::from(one),
+        };
+        Entry {
+            index: key(self.index),
+            slot,
+            path: self.path,
+            first,
+            samples,
+            stored_at: stored_at(tag),
+            tag,
+            parts,
+        }
+    }
+
     /// Small entry `number` of a batch, with at most 72 bytes. The entries differ:
     /// samples or a caller record, no part or two, a skip ahead or none.
     fn small(number: usize) -> Self {
@@ -1201,7 +1228,7 @@ struct Built {
 /// does, or else as the room says, and the build goes on after it.
 async fn build(shard: &Shard, input: &Input) -> Built {
     let (buffer, slots) = shard.open().await.expect("a new ring opens");
-    let mut room = Room::new(tails_in(shard.pool.largest() - record::HEAD));
+    let mut room = Room::new();
     let mut next = vec![[0u64; 2]; INDEXES];
     let mut tags = (BUILD_TAG..CHECK_TAG).cycle();
     let mut written: Vec<[Vec<(u128, Given)>; 2]> =
@@ -1214,28 +1241,8 @@ async fn build(shard: &Shard, input: &Input) -> Built {
         let (mut parts, mut bytes) = (0, 0);
         for (append, tag) in batch.iter().zip(&mut tags) {
             let path = usize::from(append.path == frame::Path::Backfill);
-            let first = firsts[append.index][path] + append.skip;
-            firsts[append.index][path] = first + u64::from(append.len);
-            let samples = NonZeroU32::new(append.len).map(|len| Samples {
-                len,
-                last: Some(Stamp::from_nanos(i64::try_from(first).expect("small"))),
-            });
-            let mut blocks = append.parts.iter().map(|len| shard.block(*len, tag));
-            let blocks = match (blocks.next(), blocks.next()) {
-                (Some(one), Some(two)) => Parts::from([one, two]),
-                (one, _) => Parts::from(one),
-            };
+            let entry = append.entry(shard, slots[append.index], tag, &mut firsts);
             parts += append.parts.len();
-            let entry = Entry {
-                index: key(append.index),
-                slot: slots[append.index],
-                path: append.path,
-                first,
-                samples,
-                stored_at: stored_at(tag),
-                tag,
-                parts: blocks,
-            };
             let given = Given::from(&entry);
             bytes += given.bytes.len();
             appended.push((append.index, path, given));
@@ -1514,60 +1521,12 @@ async fn check(shard: &Shard, input: &Input, built: &Built, mut room: Room) {
     // An edit can change the sizes in the header, and the ring keeps them.
     let body_max = buffer.layout().body_max();
     if input.edits.is_empty() {
-        assert_eq!(body_max, BODY_MAX, "an open lost the sizes the build wrote");
-        assert_eq!(
-            tails(&buffer, &slots),
-            built.tails,
-            "an open lost what the build wrote"
-        );
-        let tail = room
-            .tail()
-            .expect("the target follows a ring with no edits");
-        let kept: Vec<Vec<&Given>> = built
-            .written
-            .iter()
-            .map(|path| {
-                let kept = path.iter().filter(|(start, _)| *start >= tail);
-                kept.map(|(_, entry)| entry).collect()
-            })
-            .collect();
-        let (build, rest) = read.split_at(built.written.len());
-        let build: Vec<Vec<&Given>> =
-            build.iter().map(|path| path.iter().collect()).collect();
-        assert_eq!(build, kept, "a read lost what the build wrote");
-        assert!(
-            rest.iter().all(Vec::is_empty),
-            "a read gave what no build wrote"
-        );
+        check_build(&buffer, &slots, built, &room, &read);
     }
-    let mut entries = Vec::new();
-    let mut kinds = Vec::new();
-    let mut commits = Vec::new();
-    for (index, slot) in slots[..INDEXES].iter().enumerate() {
-        for path in PATHS {
-            let tail = buffer.tail(*slot, path);
-            if tail.seq == u64::MAX {
-                return;
-            }
-            let tag = CHECK_TAG + u8::try_from(commits.len()).expect("few paths");
-            let entry = Entry {
-                index: key(index),
-                slot: *slot,
-                path,
-                first: tail.seq,
-                samples: Some(Samples {
-                    len: NonZeroU32::MIN,
-                    last: Some(CHECK_LAST),
-                }),
-                stored_at: stored_at(tag),
-                tag,
-                parts: Parts::from(shard.block(input.check_part, tag)),
-            };
-            commits.push(Given::from(&entry));
-            kinds.push((path_at(index, path), true));
-            entries.push(entry);
-        }
-    }
+    let Some((entries, kinds, commits)) = commit_entries(shard, &buffer, &slots, input)
+    else {
+        return;
+    };
     let before = tails(&buffer, &slots);
     let count = entries.len();
     let bytes = input.check_part * count;
@@ -1601,6 +1560,100 @@ async fn check(shard: &Shard, input: &Input, built: &Built, mut room: Room) {
         assert_eq!(given.last(), Some(commit), "a read lost the commit");
     }
     drop(buffer);
+    reopen(shard, room, &durable, &stored, &commits).await;
+}
+
+/// Checks an open of the ring that the build wrote, with no edit: it keeps the sizes
+/// and the tails of the build, and `read` gives each entry of the build after the
+/// tail of `room`, and nothing else.
+fn check_build(
+    buffer: &Buffer,
+    slots: &[Slot],
+    built: &Built,
+    room: &Room,
+    read: &[Vec<Given>],
+) {
+    assert_eq!(
+        buffer.layout().body_max(),
+        BODY_MAX,
+        "an open lost the sizes the build wrote"
+    );
+    assert_eq!(
+        tails(buffer, slots),
+        built.tails,
+        "an open lost what the build wrote"
+    );
+    let tail = room
+        .tail()
+        .expect("the target follows a ring with no edits");
+    let kept: Vec<Vec<&Given>> = built
+        .written
+        .iter()
+        .map(|path| {
+            let kept = path.iter().filter(|(start, _)| *start >= tail);
+            kept.map(|(_, entry)| entry).collect()
+        })
+        .collect();
+    let (build, rest) = read.split_at(built.written.len());
+    let build: Vec<Vec<&Given>> =
+        build.iter().map(|path| path.iter().collect()).collect();
+    assert_eq!(build, kept, "a read lost what the build wrote");
+    assert!(
+        rest.iter().all(Vec::is_empty),
+        "a read gave what no build wrote"
+    );
+}
+
+/// The entries of the check commit, one after the tail of each path of the build,
+/// with the kind that the room takes for each and what a read gives of each. `None`
+/// when a tail is at the last seq.
+fn commit_entries(
+    shard: &Shard,
+    buffer: &Buffer,
+    slots: &[Slot],
+    input: &Input,
+) -> Option<(Vec<Entry>, Vec<(usize, bool)>, Vec<Given>)> {
+    let mut entries = Vec::new();
+    let mut kinds = Vec::new();
+    let mut commits = Vec::new();
+    for (index, slot) in slots[..INDEXES].iter().enumerate() {
+        for path in PATHS {
+            let tail = buffer.tail(*slot, path);
+            if tail.seq == u64::MAX {
+                return None;
+            }
+            let tag = CHECK_TAG + u8::try_from(commits.len()).expect("few paths");
+            let entry = Entry {
+                index: key(index),
+                slot: *slot,
+                path,
+                first: tail.seq,
+                samples: Some(Samples {
+                    len: NonZeroU32::MIN,
+                    last: Some(CHECK_LAST),
+                }),
+                stored_at: stored_at(tag),
+                tag,
+                parts: Parts::from(shard.block(input.check_part, tag)),
+            };
+            commits.push(Given::from(&entry));
+            kinds.push((path_at(index, path), true));
+            entries.push(entry);
+        }
+    }
+    Some((entries, kinds, commits))
+}
+
+/// Reopens the ring after the check commit. The reopen recovers the tails `durable`
+/// that the commit gave, and each path gives what `stored` gave past the trim of
+/// the reopen, up to its entry of `commits`.
+async fn reopen(
+    shard: &Shard,
+    mut room: Room,
+    durable: &[Tail],
+    stored: &[Vec<Given>],
+    commits: &[Given],
+) {
     let before = room.clone();
     let fit = room.open();
     let (reopened, slots) = match (shard.open().await, fit) {
@@ -1621,7 +1674,7 @@ async fn check(shard: &Shard, input: &Input, built: &Built, mut room: Room) {
     let reread = read_paths(&reopened, &slots, carried(shard).await).await;
     assert_eq!(reread.len(), stored.len(), "a reopen changed the paths");
     let passed = room.tail().and_then(|tail| before.passed(tail));
-    for (path, (given, kept)) in reread.iter().zip(&stored).enumerate() {
+    for (path, (given, kept)) in reread.iter().zip(stored).enumerate() {
         let Some(passed) = passed else {
             assert!(
                 kept.ends_with(given),
