@@ -257,8 +257,11 @@ impl browse::Device for Server<'_> {
         let entries = entries.map(|((name, tag, _), shape)| Child { name, tag, shape });
         let next = next.map(|(point, left)| {
             self.held += seen.bytes;
-            self.points
-                .insert((folder, after), Held { point, seen, left });
+            let held = Held { point, seen, left };
+            // A folder that a walk opens twice can give a cursor that it holds.
+            if let Some(earlier) = self.points.insert((folder, after), held) {
+                self.held -= earlier.seen.bytes;
+            }
             Cursor::new(after.to_string())
         });
         Ok(Some(Page {

@@ -496,10 +496,10 @@ fn add_folders(server: &Server, parent: &Node, children: Vec<(u32, String)>) {
 
 /// The folders `a` and `b` under `root`, 16 references in each page of the server,
 /// and children of 4096 bytes of tag and name each: 32 in `a`, and 4080 in `b` with
-/// `extra` more bytes in the name of the first. The first page of `a` holds its
-/// point, so the browse keeps 64 KiB for it, and the pages of `b` keep
-/// `BYTES - 64 KiB + extra` at its last page.
-fn budget(extra: usize) -> Result<usize, Error> {
+/// `extra` more bytes in the name of the first. The browse reads the first page of `a`
+/// `opens` times and holds its point, so it keeps 64 KiB for it, and the pages of `b`
+/// keep `BYTES - 64 KiB + extra` at its last page.
+fn budget(extra: usize, opens: usize) -> Result<usize, Error> {
     const A: Node = Node {
         namespace: 1,
         key: Key::Number(7001),
@@ -528,10 +528,12 @@ fn budget(extra: usize) -> Result<usize, Error> {
     relayed_browse(
         setup,
         |_| {},
-        async |server| {
+        async move |server| {
             let a = entry("root/a", &A.to_string(), Shape::Folder);
-            let first = server.level(Some(&a), None).await?.expect("a folder");
-            assert_eq!(first.next, Some(Cursor::new("16".to_owned())));
+            for _ in 0..opens {
+                let first = server.level(Some(&a), None).await?.expect("a folder");
+                assert_eq!(first.next, Some(Cursor::new("16".to_owned())));
+            }
             let b = entry("root/b", &B.to_string(), Shape::Folder);
             let (mut entries, mut cursor) = (0, None);
             loop {
@@ -550,12 +552,12 @@ fn budget(extra: usize) -> Result<usize, Error> {
 #[test]
 fn a_browse_keeps_the_tags_and_names_of_its_budget() {
     assert_eq!(BYTES, 16 * 4096 + 4080 * 4096);
-    assert_eq!(budget(0).expect("the pages of `b`"), 4080);
+    assert_eq!(budget(0, 1).expect("the pages of `b`"), 4080);
 }
 
 #[test]
 fn a_browse_that_keeps_more_than_its_budget_fails() {
-    let found = budget(1);
+    let found = budget(1, 1);
     let Err(Error::Device(source)) = found else {
         panic!("not a device error: {found:?}");
     };
@@ -563,6 +565,13 @@ fn a_browse_that_keeps_more_than_its_budget_fails() {
         source.to_string(),
         "the tags and names of the browse pass 16 MiB"
     );
+}
+
+/// The second page of `a` from its start gives the cursor of the first, so the browse
+/// keeps the 64 KiB of `a` once.
+#[test]
+fn a_folder_open_twice_keeps_its_budget_once() {
+    assert_eq!(budget(0, 2).expect("the pages of `b`"), 4080);
 }
 
 /// The relay frees the point of the first cursor past `SKIP` (100 000) when the browse
