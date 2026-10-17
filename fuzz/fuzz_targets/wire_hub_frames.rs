@@ -2,9 +2,8 @@
 //! `Frames::due`, never panics. Each frame has the path and range of its head, and a
 //! run that receives each body message in place gives the same steps as a run that
 //! gives it whole to `decode`. A reply of the retired kind 3 gives `Error::Kind`. The
-//! lost seqs of each frame of a complete session and
-//! the ranges of its frames with a sample tile the seqs from the open position on, and
-//! a latest session loses none.
+//! lost seqs of each frame of a complete session and the ranges of its frames with a
+//! sample tile the seqs from the open position on, and a latest session loses none.
 //!
 //! Input: one byte, whose low 3 bits are the places of the session less 1 and whose
 //! bit 3 makes the session latest, then the messages from the home (`fuzz::messages`).
@@ -100,17 +99,16 @@ fn run(places: u8, mode: Mode, bytes: &[u8], in_place: bool) -> Vec<Seen> {
     }
     // A head is due after the open and after each frame.
     let mut reply = true;
-    let mut frames =
-        match opened {
-            Ok((frames, live)) => {
-                seen.push(Seen::Opened(live));
-                frames
-            }
-            Err(error) => {
-                seen.push(Seen::Message(error));
-                return seen;
-            }
-        };
+    let mut frames = match opened {
+        Ok((frames, live)) => {
+            seen.push(Seen::Opened(live));
+            frames
+        }
+        Err(error) => {
+            seen.push(Seen::Message(error));
+            return seen;
+        }
+    };
     loop {
         let step = match frames.due() {
             Err(error) => {

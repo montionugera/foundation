@@ -1,7 +1,7 @@
 //! `wire::hub::Reader` never panics, each event encodes to its message and comes in the
 //! order of a session, each head is live, ends at or below `u64::MAX`, and starts at or
 //! after the end of the head before it or, for the first head, the open position of
-//! `Opened`, each refusal is one that the order, the mode, or the heads before it give,
+//! `Opened`, each refusal is one that the order or the heads before it give,
 //! the body starts after the ends run and ends at its last end, a reply of the retired
 //! kind 3 gives `Error::Kind`, each finish of the stream gives the error of its point,
 //! and each valid message that the home writes reads back. A latest and a complete
@@ -150,7 +150,7 @@ fn refused(next: Next, places: u32, end: u64, message: &[u8], error: &Error) -> 
 }
 
 /// Each event of the session in `bytes` must encode to its message and come in the
-/// order of a session, each refusal must be the one that the order or the mode gives,
+/// order of a session, each refusal must be the one that the order or the heads give,
 /// the body must be where [`Reader::body`] says, and [`Reader::finished`] must give the
 /// error of each point.
 fn read(bytes: &[u8]) {
