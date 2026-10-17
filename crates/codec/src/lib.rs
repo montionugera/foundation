@@ -2032,6 +2032,96 @@ mod tests {
             }
         }
 
+        /// A first vector whose 8 search runs, of 128 samples each, win `(e, 0)` for
+        /// each `e` of `runs`.
+        fn runs(runs: [usize; 8]) -> Vec<f64> {
+            runs.iter()
+                .flat_map(|&e| {
+                    (0..128).map(move |k| f64::from(k) + [0.0, 0.5, 0.25, 0.125][e])
+                })
+                .collect()
+        }
+
+        /// The exponent and factor of the ALP vector that an encoder writes for
+        /// `second` after `first`.
+        fn pair_after(scalar: Scalar, first: &[f64], second: &[f64]) -> [u8; 2] {
+            let mut encoder = Encoder::new(Type::Scalar(scalar));
+            write(&mut encoder, scalar, first);
+            let out = write(&mut encoder, scalar, second);
+            assert_eq!(out[0], vector::ALP, "{scalar:?}");
+            fields(scalar.width(), &out)[..2].try_into().unwrap()
+        }
+
+        /// A vector whose picked samples take the same bits under `(0, 0)` and
+        /// `(1, 0)`: the two halves are exceptions under `(0, 0)`, and widen each
+        /// integer of `(1, 0)` by as many bits.
+        fn tie(scalar: Scalar) -> Vec<f64> {
+            let half = if scalar == Scalar::F64 { 5.5 } else { 1.5 };
+            (0..1_024)
+                .map(|k| {
+                    if k < 64 && k % 32 == 0 {
+                        half
+                    } else {
+                        f64::from((k / 32 + k) % 2)
+                    }
+                })
+                .collect()
+        }
+
+        /// The search keeps `(0, 0)`, `(1, 0)`, `(2, 0)`, and `(3, 0)`. On the 32
+        /// picked samples of the second vector, 0, 32, and 8 eighths, `(1, 0)` and
+        /// `(2, 0)` are not smaller than `(0, 0)`, so the encoder stops before the
+        /// smaller `(3, 0)`.
+        #[test]
+        fn stops_after_two_pairs_in_a_row_that_are_not_smaller() {
+            let first = runs([0, 0, 0, 0, 0, 1, 2, 3]);
+            let second: Vec<f64> = (0..1_024)
+                .map(|k| {
+                    if k % 128 == 0 {
+                        0.125
+                    } else {
+                        f64::from(k % 64)
+                    }
+                })
+                .collect();
+            for scalar in FLOATS {
+                assert_eq!(pair_after(scalar, &first, &second), [0, 0], "{scalar:?}");
+            }
+        }
+
+        /// The encoder keeps the first of two pairs of one size, and when each pair
+        /// wins 4 runs, the search puts `(0, 0)` first in either order.
+        #[test]
+        fn keeps_the_first_of_two_pairs_of_one_size() {
+            for scalar in FLOATS {
+                for order in [[0, 0, 0, 0, 1, 1, 1, 1], [1, 1, 1, 1, 0, 0, 0, 0]] {
+                    let pair = pair_after(scalar, &runs(order), &tie(scalar));
+                    assert_eq!(pair, [0, 0], "{scalar:?} {order:?}");
+                }
+            }
+        }
+
+        /// A run of 29 NaNs and 3 halves takes fewer bits as 32 exceptions, with bits
+        /// and reference 0, than under `(1, 0)`. So `(0, 0)` wins it, and 4 runs, as
+        /// `(1, 0)` does. No pair keeps one half alone, which would win the run.
+        #[test]
+        fn a_run_of_exceptions_only_takes_no_bits_for_its_integers() {
+            for scalar in FLOATS {
+                let halves = if scalar == Scalar::F64 {
+                    [-10.5, 10.5, 12.5]
+                } else {
+                    [-0.5, 0.5, 1.5]
+                };
+                let mut first = runs([0, 0, 0, 0, 1, 1, 1, 1]);
+                first[..128].fill(f64::NAN);
+                for (k, half) in halves.into_iter().enumerate() {
+                    first[k * 4] = half;
+                }
+                let pair = pair_after(scalar, &first, &tie(scalar));
+                assert_eq!(pair, [0, 0], "{scalar:?}");
+            }
+        }
+
         /// The bits of a float of `width` bytes of kind `kind`, 0 to 4: a NaN with
         /// payload `payload`, an infinity, -0.0, a subnormal, or a float too large for
         /// the integers of a pair with `e` = 2.
