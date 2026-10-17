@@ -93,8 +93,10 @@
   https://github.com/synnaxlabs/foundation/pull/1448#issuecomment-6045453368, and
   turns on `sim` for the bench.
   `connector_influx::sim::serve(listener, tasks, until, store, database, token)` is its
-  HTTP front, on `connector::http::sim::serve` (HTTP SIM SERVER). `POST /write?db=`
-  (InfluxDB 1) and
+  HTTP front, on `connector::http::sim::serve` (HTTP SIM SERVER). It stops at `until`
+  as HTTP SIM SERVER stops (`laptop.architect-2`, 2026-10-17T16:05:31Z:
+  https://github.com/synnaxlabs/foundation/issues/2641#issuecomment-6236306639, item
+  1). `POST /write?db=` (InfluxDB 1) and
   `POST /api/v2/write?bucket=` (InfluxDB 2 and 3) give 204 when the store takes each
   line, and 400 with the text of the store's error when it refuses one. A missing or
   empty `db` or `bucket`, or on `/api/v2/write` a missing or empty `org` and `orgID`,

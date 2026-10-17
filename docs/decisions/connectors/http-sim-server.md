@@ -22,12 +22,13 @@
   https://github.com/synnaxlabs/foundation/pull/3047#issuecomment-6236993925). Each
   simulator of an HTTP kind follows the same rule, and takes `until` as a
   `cancel::Token`. The opcua simulator moves to it in PR 3 of #2641, with modbus
-  (6237139250, item 2). `hyper`'s server reads OS wall
-  time on each poll (hyper 1.12.0, `common/date.rs`) only for the `date` header, which
-  is off. A timer reads its own `Instant` to arm the header read timeout, which is off
-  too (`header_read_timeout(None)`). The person approved the server on the condition
-  that it gets no timer. Lost: our own server on `httparse`, which the person refused;
-  and a copy of the server in each kind crate.
+  (6237139250, item 2). Supersedes the rule of a dropped future of
+  https://github.com/synnaxlabs/foundation/pull/1473#issuecomment-6042958763.
+  `hyper`'s server reads OS wall time on each poll (hyper 1.12.0, `common/date.rs`)
+  only for the `date` header, which is off. A timer reads its own `Instant` to arm
+  the header read timeout, which is off too (`header_read_timeout(None)`). The person
+  approved the server on the condition that it gets no timer. Lost: our own server on
+  `httparse`, which the person refused; and a copy of the server in each kind crate.
   Decided by architect-2 (2026-10-07T16:33:22Z
   https://github.com/synnaxlabs/foundation/pull/1473#issuecomment-6042291321,
   2026-10-07T16:41:29Z
