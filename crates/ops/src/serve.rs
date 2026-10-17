@@ -505,16 +505,16 @@ async fn status(node: &Node, subject: &Name) -> Result<Body, Error> {
                 .channels()
                 .all(|name| check.allows(Action::Read, name))
     });
-    let node_read = check.allows(Action::Read, &node.name);
+    let readable = check.allows(Action::Read, &node.name);
     let connectors = if placed.is_empty() {
-        if !node_read {
+        if !readable {
             return Err(check.denied(Action::Read, On::Nothing));
         }
         Vec::new()
     } else {
         status::read(node, subject, &placed, asked).await?
     };
-    let shown = node_read && !node.roots.clean();
+    let shown = readable && !node.roots.clean();
     let output = status::Output {
         connectors,
         roots: shown.then(|| node.roots.clone()),
