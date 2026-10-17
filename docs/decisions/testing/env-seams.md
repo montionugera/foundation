@@ -976,4 +976,6 @@
   resolve checks its resolved directory, since no folder is at a name that does not
   resolve" of the amendment of 2026-10-16T17:13:18Z. Decided by `laptop.architect-2`
   (2026-10-17T06:14:25Z,
-  https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230570417).
+  https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230570417; the end in
+  `/` or `/.`, 2026-10-17T06:28:33Z,
+  https://github.com/synnaxlabs/foundation/pull/3000#issuecomment-6230686685).
