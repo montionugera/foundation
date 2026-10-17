@@ -42,3 +42,18 @@ mod n {
         fn p() {}
     }
 }
+#[cfg_attr(all(target_os = "macos", target_arch = "aarch64"), ignore)]
+fn s() {}
+#[cfg_attr(all(windows, target_pointer_width = "64"), ignore = "slow")]
+fn t() {}
+#[cfg_attr(target_vendor = "pc", ignore)]
+fn u() {}
+#[cfg_attr(target_vendor = "unknown", ignore)]
+fn v() {}
+#[cfg_attr(all(debug_assertions, windows), ignore)]
+fn w() {}
+#[cfg_attr(windows, ignore = "only Unix: Windows has no X")]
+#[cfg_attr(not(target_os = "linux"), ignore = "only Linux: only Linux has Y")]
+fn x() {}
+#[cfg_attr(target_os = "macos", ignore = "only Linux and macOS: macOS has no X")]
+fn y() {}

@@ -3,58 +3,118 @@
 //! `docs/claude/testing.md`, "No `#[ignore]`", and its reason says so.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use cfg_expr::targets::get_builtin_target_by_triple;
+use cfg_expr::{Expression, Predicate};
 use syn::parse::ParseStream;
 use syn::punctuated::Punctuated;
 use syn::visit::Visit;
-use syn::{Attribute, Expr, Lit, Meta, Token};
+use syn::{Attribute, Expr, Ident, Lit, Meta, Token};
 
 use crate::{field, files};
 
-/// The values that a `cfg` predicate reads on an OS of the lists.
-struct Os {
-    name: &'static str,
-    family: &'static str,
-    env: &'static str,
-    vendor: &'static str,
+/// A runner of CI that runs the tests of the workspace: its target, and its OS as a
+/// reason names it.
+struct Runner {
+    triple: &'static str,
+    os: &'static str,
 }
 
-/// The OSes of the lists, in the order of each `[bool; 3]` of this module.
-const OSES: [Os; 3] = [
-    Os {
-        name: "linux",
-        family: "unix",
-        env: "gnu",
-        vendor: "unknown",
+/// The runners of CI, in the order in which a reason names their OSes.
+const RUNNERS: [Runner; 4] = [
+    Runner {
+        triple: "x86_64-unknown-linux-gnu",
+        os: "Linux",
     },
-    Os {
-        name: "macos",
-        family: "unix",
-        env: "",
-        vendor: "apple",
+    Runner {
+        triple: "aarch64-unknown-linux-gnu",
+        os: "Linux",
     },
-    Os {
-        name: "windows",
-        family: "windows",
-        env: "msvc",
-        vendor: "pc",
+    Runner {
+        triple: "aarch64-apple-darwin",
+        os: "macOS",
+    },
+    Runner {
+        triple: "x86_64-pc-windows-msvc",
+        os: "Windows",
     },
 ];
 
-/// Each name that a reason may give after `only `, with the OSes that it names.
-const NAMES: [(&str, [bool; 3]); 4] = [
-    ("Linux", [true, false, false]),
-    ("macOS", [false, true, false]),
-    ("Windows", [false, false, true]),
-    ("Unix", [true, true, false]),
-];
+/// A set of the runners of `RUNNERS`, one bit for each by its index.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Runners(u8);
 
-/// Checks that no `.rs` file under the directory of a target of the workspace at
-/// `root` ignores a test on some OSes of the lists, unless its reason starts with
-/// `only <OS>`, where `<OS>` names the OSes that run the test. It does not read the
-/// body of a macro call. It also refuses a file that does not parse, a `cfg` predicate
-/// that is not one of Rust, and an `ignore` reason that is not a string literal.
+impl Runners {
+    const ALL: Self = Self((1 << RUNNERS.len()) - 1);
+    const NONE: Self = Self(0);
+
+    /// The runners on which `predicate`, the predicate of a `cfg`, holds in `cargo test
+    /// --all-features`: `test`, `debug_assertions`, and each `feature` hold, and each
+    /// other name that is not one of a target does not.
+    fn holding(predicate: &Meta) -> Result<Self, String> {
+        let expression =
+            Expression::parse(&text(predicate)?).map_err(|e| e.to_string())?;
+        let mut runners = Self::NONE;
+        for (i, runner) in RUNNERS.iter().enumerate() {
+            let target = get_builtin_target_by_triple(runner.triple)
+                .expect("invariant: rustc knows the target of each runner");
+            let holds = expression.eval(|predicate| match predicate {
+                Predicate::Target(name) => Some(name.matches(target)),
+                Predicate::Test
+                | Predicate::DebugAssertions
+                | Predicate::Feature(_) => Some(true),
+                Predicate::ProcMacro
+                | Predicate::Flag(_)
+                | Predicate::KeyValue { .. } => Some(false),
+                Predicate::TargetFeature(_) => None,
+            });
+            match holds {
+                Some(true) => runners.0 |= 1 << i,
+                Some(false) => {}
+                None => {
+                    return Err(format!(
+                        "a `cfg` predicate with no known value on `{}`",
+                        runner.triple
+                    ));
+                }
+            }
+        }
+        Ok(runners)
+    }
+
+    fn and(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
+    fn or(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    fn without(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
+    /// The OSes of the runners, each once, in the order of `RUNNERS`.
+    fn oses(self) -> Vec<&'static str> {
+        let mut oses: Vec<_> = RUNNERS
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.0 >> i & 1 == 1)
+            .map(|(_, runner)| runner.os)
+            .collect();
+        oses.dedup();
+        oses
+    }
+}
+
+/// Checks each test function in the module tree of each target of the workspace at
+/// `root`, other than in the body of a macro call. A test that its `cfg` builds on an
+/// OS of the lists, but that an `ignore` skips on each runner of that OS, is refused,
+/// unless the reason of each such `ignore` starts with `only <OS>`, where `<OS>` names
+/// the OSes that run the test. It also refuses a file that does not parse or that no
+/// `mod` finds, a `cfg` predicate that is not one of Rust or whose value on a runner is
+/// not known, and an `ignore` reason that is not a string literal.
 pub(crate) fn check(root: &Path) -> Result<(), Vec<String>> {
     let problems = problems(root).map_err(|e| vec![e])?;
     if problems.is_empty() {
@@ -66,105 +126,251 @@ pub(crate) fn check(root: &Path) -> Result<(), Vec<String>> {
 
 fn problems(root: &Path) -> Result<Vec<String>, String> {
     let metadata = crate::metadata(root)?;
-    let mut sources = BTreeSet::new();
+    let mut modules = Vec::new();
     for package in field::list(&metadata, "packages")? {
         for target in field::list(package, "targets")? {
-            let path = files::normalize(Path::new(field::text(target, "src_path")?));
-            let dir = path
+            let file = files::normalize(Path::new(field::text(target, "src_path")?));
+            let dir = file
                 .parent()
-                .ok_or_else(|| format!("{} has no directory", path.display()))?;
-            sources.extend(files::rust(dir)?);
+                .ok_or_else(|| format!("{} has no directory", file.display()))?
+                .to_path_buf();
+            modules.push(Module {
+                file,
+                dir,
+                on: Runners::ALL,
+            });
         }
     }
-    let mut problems = Vec::new();
-    for file in sources {
-        let text = std::fs::read_to_string(&file)
-            .map_err(|e| format!("{}: {e}", file.display()))?;
-        let shown = file
+    let mut seen = BTreeSet::new();
+    let mut problems = BTreeSet::new();
+    while let Some(module) = modules.pop() {
+        if !seen.insert((module.file.clone(), module.on)) {
+            continue;
+        }
+        let shown = module
+            .file
             .strip_prefix(root)
-            .unwrap_or(&file)
+            .unwrap_or(&module.file)
             .display()
             .to_string();
-        problems.extend(refusals(&shown, &text));
+        let text = std::fs::read_to_string(&module.file)
+            .map_err(|e| format!("{}: {e}", module.file.display()))?;
+        let file = match syn::parse_file(&text) {
+            Ok(file) => file,
+            Err(e) => {
+                problems.insert(format!("`{shown}`: {e}"));
+                continue;
+            }
+        };
+        let mut items = Items {
+            shown: &shown,
+            file: &module.file,
+            dir: module.dir,
+            inline: 0,
+            item: Vec::new(),
+            on: module.on,
+            modules: &mut modules,
+            problems: &mut problems,
+        };
+        items.enter(&file.attrs, None, |items, _| items.visit_file(&file));
     }
-    Ok(problems)
+    Ok(problems.into_iter().collect())
 }
 
-/// The problems of `text`, the source of the file shown as `shown`: each refusal, or
-/// source that does not parse, a `cfg` predicate that is not one of Rust, or an `ignore`
-/// reason that is not a string literal.
-fn refusals(shown: &str, text: &str) -> Vec<String> {
-    let file = match syn::parse_file(text) {
-        Ok(file) => file,
-        Err(e) => return vec![format!("`{shown}`: {e}")],
-    };
-    let mut skips = Skips {
-        shown,
-        item: Vec::new(),
-        problems: Vec::new(),
-    };
-    skips.visit_file(&file);
-    skips.problems
+/// A file of a module, the directory of the modules that it declares, and the runners
+/// on which it builds.
+struct Module {
+    file: PathBuf,
+    dir: PathBuf,
+    on: Runners,
 }
 
-/// Walks a file, with the path of the item it is in.
-struct Skips<'a> {
+/// What the attributes of an item do: the runners on which it builds, and each
+/// `ignore`, with the runners on which it applies and its reason.
+struct Effect {
+    builds: Runners,
+    ignores: Vec<Ignore>,
+}
+
+struct Ignore {
+    on: Runners,
+    reason: Option<String>,
+}
+
+/// Walks the items of one file.
+struct Items<'a> {
     shown: &'a str,
+    file: &'a Path,
+    /// The directory of the modules that the item declares, with each inline module.
+    dir: PathBuf,
+    /// How many inline modules hold the item.
+    inline: usize,
     item: Vec<String>,
-    problems: Vec<String>,
+    /// The runners on which the item builds.
+    on: Runners,
+    modules: &'a mut Vec<Module>,
+    problems: &'a mut BTreeSet<String>,
 }
 
-impl Skips<'_> {
-    fn within(&mut self, name: &syn::Ident, visit: impl FnOnce(&mut Self)) {
-        self.item.push(name.to_string());
-        visit(self);
-        self.item.pop();
+impl Items<'_> {
+    /// Visits an item with `attributes`, named `name`, on the runners on which it
+    /// builds, if any.
+    fn enter(
+        &mut self,
+        attributes: &[Attribute],
+        name: Option<&Ident>,
+        visit: impl FnOnce(&mut Self, &[Ignore]),
+    ) {
+        self.item.extend(name.map(ToString::to_string));
+        match effect(attributes) {
+            Ok(effect) => {
+                let on = self.on.and(effect.builds);
+                if on != Runners::NONE {
+                    let outer = std::mem::replace(&mut self.on, on);
+                    visit(self, &effect.ignores);
+                    self.on = outer;
+                }
+            }
+            Err(e) => self.problem(&e),
+        }
+        if name.is_some() {
+            self.item.pop();
+        }
+    }
+
+    fn problem(&mut self, problem: &str) {
+        let item = self.item.join("::");
+        self.problems
+            .insert(format!("`{}`: `{item}`: {problem}", self.shown));
+    }
+
+    /// Refuses each `ignore` of a test that skips an OS outside a case.
+    fn test(&mut self, ignores: &[Ignore]) {
+        let skipped = ignores
+            .iter()
+            .fold(Runners::NONE, |skipped, ignore| skipped.or(ignore.on))
+            .and(self.on);
+        let runs = self.on.without(skipped);
+        let named = runs.oses();
+        let lost: Vec<_> = self
+            .on
+            .oses()
+            .into_iter()
+            .filter(|os| !named.contains(os))
+            .collect();
+        if lost.is_empty() || named.is_empty() {
+            return;
+        }
+        for ignore in ignores {
+            let loses = ignore
+                .on
+                .and(self.on)
+                .oses()
+                .iter()
+                .any(|os| lost.contains(os));
+            if loses && !ignore.reason.as_deref().is_some_and(|r| gives(r, &named)) {
+                self.problems
+                    .insert(refused(self.shown, &self.item.join("::")));
+            }
+        }
+    }
+
+    /// The file of the module `module` declares with no body, and the directory of the
+    /// modules of that file.
+    fn declared(&self, module: &syn::ItemMod) -> Result<(PathBuf, PathBuf), String> {
+        let name = module.ident.to_string();
+        if let Some(path) = path(&module.attrs)? {
+            let base = match self.inline {
+                0 => self.file.parent().unwrap_or(&self.dir),
+                _ => &self.dir,
+            };
+            let file = files::normalize(&base.join(path));
+            let dir = file.parent().unwrap_or(base).to_path_buf();
+            return Ok((file, dir));
+        }
+        let dir = self.dir.join(&name);
+        let flat = self.dir.join(format!("{name}.rs"));
+        if flat.is_file() {
+            Ok((flat, dir))
+        } else if dir.join("mod.rs").is_file() {
+            Ok((dir.join("mod.rs"), dir))
+        } else {
+            Err(format!("no file for the module `{name}`"))
+        }
     }
 }
 
-impl<'ast> Visit<'ast> for Skips<'_> {
+impl<'ast> Visit<'ast> for Items<'_> {
     fn visit_item_mod(&mut self, i: &'ast syn::ItemMod) {
-        self.within(&i.ident, |s| syn::visit::visit_item_mod(s, i));
+        self.enter(&i.attrs, Some(&i.ident), |s, _| {
+            if i.content.is_some() {
+                s.dir.push(i.ident.to_string());
+                s.inline += 1;
+                syn::visit::visit_item_mod(s, i);
+                s.inline -= 1;
+                s.dir.pop();
+                return;
+            }
+            match s.declared(i) {
+                Ok((file, dir)) => s.modules.push(Module {
+                    file,
+                    dir,
+                    on: s.on,
+                }),
+                Err(e) => s.problem(&e),
+            }
+        });
+    }
+
+    fn visit_item_impl(&mut self, i: &'ast syn::ItemImpl) {
+        self.enter(&i.attrs, None, |s, _| syn::visit::visit_item_impl(s, i));
+    }
+
+    fn visit_item_trait(&mut self, i: &'ast syn::ItemTrait) {
+        self.enter(&i.attrs, None, |s, _| syn::visit::visit_item_trait(s, i));
     }
 
     fn visit_item_fn(&mut self, i: &'ast syn::ItemFn) {
-        self.within(&i.sig.ident, |s| syn::visit::visit_item_fn(s, i));
+        self.enter(&i.attrs, Some(&i.sig.ident), |s, ignores| {
+            s.test(ignores);
+            syn::visit::visit_item_fn(s, i);
+        });
     }
 
     fn visit_impl_item_fn(&mut self, i: &'ast syn::ImplItemFn) {
-        self.within(&i.sig.ident, |s| syn::visit::visit_impl_item_fn(s, i));
+        self.enter(&i.attrs, Some(&i.sig.ident), |s, ignores| {
+            s.test(ignores);
+            syn::visit::visit_impl_item_fn(s, i);
+        });
     }
 
     fn visit_trait_item_fn(&mut self, i: &'ast syn::TraitItemFn) {
-        self.within(&i.sig.ident, |s| syn::visit::visit_trait_item_fn(s, i));
-    }
-
-    fn visit_attribute(&mut self, attribute: &'ast Attribute) {
-        let mut found = Vec::new();
-        let item = self.item.join("::");
-        if let Err(e) = ignores([&attribute.meta], [true; 3], &mut found) {
-            self.problems
-                .push(format!("`{}`: `{item}`: {e}", self.shown));
-        }
-        for (skipped, reason) in found {
-            let runs = skipped.map(|s| !s);
-            if skipped == [false; 3]
-                || runs == [false; 3]
-                || reason.is_some_and(|r| gives(&r, runs))
-            {
-                continue;
-            }
-            self.problems.push(refused(self.shown, &item));
-        }
+        self.enter(&i.attrs, Some(&i.sig.ident), |s, ignores| {
+            s.test(ignores);
+            syn::visit::visit_trait_item_fn(s, i);
+        });
     }
 }
 
-/// Adds to `found` each `ignore` of `attributes` that applies on the OSes of `on`, with
-/// the OSes on which it applies and its reason. It reads into each `cfg_attr`.
-fn ignores<'a>(
+/// What `attributes` do. It reads into each `cfg_attr`.
+fn effect(attributes: &[Attribute]) -> Result<Effect, String> {
+    let mut effect = Effect {
+        builds: Runners::ALL,
+        ignores: Vec::new(),
+    };
+    apply(
+        attributes.iter().map(|a| &a.meta),
+        Runners::ALL,
+        &mut effect,
+    )?;
+    Ok(effect)
+}
+
+/// Adds to `effect` what each of `attributes` does on the runners of `on`.
+fn apply<'a>(
     attributes: impl IntoIterator<Item = &'a Meta>,
-    on: [bool; 3],
-    found: &mut Vec<([bool; 3], Option<String>)>,
+    on: Runners,
+    effect: &mut Effect,
 ) -> Result<(), String> {
     for meta in attributes {
         let path = meta.path();
@@ -173,11 +379,14 @@ fn ignores<'a>(
                 .require_list()
                 .and_then(|list| list.parse_args_with(cfg_attr))
                 .map_err(|e| e.to_string())?;
-            let mut held = on;
-            for (held, os) in held.iter_mut().zip(&OSES) {
-                *held = *held && holds(&predicate, os)?;
-            }
-            ignores(&inner, held, found)?;
+            apply(&inner, on.and(Runners::holding(&predicate)?), effect)?;
+        } else if path.is_ident("cfg") {
+            let predicate = meta
+                .require_list()
+                .and_then(syn::MetaList::parse_args::<Meta>)
+                .map_err(|e| e.to_string())?;
+            let fails = on.without(Runners::holding(&predicate)?);
+            effect.builds = effect.builds.without(fails);
         } else if path.is_ident("ignore") {
             let reason = match meta {
                 Meta::Path(_) => None,
@@ -186,7 +395,7 @@ fn ignores<'a>(
                     return Err("`ignore` takes no list".to_string());
                 }
             };
-            found.push((on, reason));
+            effect.ignores.push(Ignore { on, reason });
         }
     }
     Ok(())
@@ -200,44 +409,36 @@ fn cfg_attr(input: ParseStream<'_>) -> syn::Result<(Meta, Vec<Meta>)> {
     Ok((predicate, attributes.into_iter().collect()))
 }
 
-/// Reports whether the `cfg` predicate holds on `os` in `cargo test --all-features`:
-/// `test`, `debug_assertions`, and each `feature` hold, and no other name of no OS.
-fn holds(predicate: &Meta, os: &Os) -> Result<bool, String> {
-    let name = predicate.path().get_ident().map(ToString::to_string);
-    let name = name.as_deref().unwrap_or_default();
-    match predicate {
-        Meta::Path(_) => Ok(match name {
-            "unix" | "windows" => os.family == name,
-            "test" | "debug_assertions" => true,
-            _ => false,
-        }),
-        Meta::NameValue(pair) => {
-            let value = string(&pair.value)?;
-            Ok(match name {
-                "target_os" => os.name == value,
-                "target_family" => os.family == value,
-                "target_env" => os.env == value,
-                "target_vendor" => os.vendor == value,
-                "feature" => true,
-                _ => false,
-            })
-        }
+/// The path of a `#[path]` among `attributes`.
+fn path(attributes: &[Attribute]) -> Result<Option<String>, String> {
+    attributes
+        .iter()
+        .find(|a| a.path().is_ident("path"))
+        .map(|a| match &a.meta {
+            Meta::NameValue(pair) => string(&pair.value),
+            _ => Err("a `path` that is no string".to_string()),
+        })
+        .transpose()
+}
+
+/// The text of a `cfg` predicate, as `cfg-expr` reads it.
+fn text(predicate: &Meta) -> Result<String, String> {
+    let name = predicate
+        .path()
+        .get_ident()
+        .ok_or("a `cfg` name that is no identifier")?
+        .to_string();
+    Ok(match predicate {
+        Meta::Path(_) => name,
+        Meta::NameValue(pair) => format!("{name} = \"{}\"", string(&pair.value)?),
         Meta::List(list) => {
             let nested = list
                 .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
                 .map_err(|e| e.to_string())?;
-            let mut values = Vec::new();
-            for meta in &nested {
-                values.push(holds(meta, os)?);
-            }
-            match (name, &values[..]) {
-                ("any", _) => Ok(values.contains(&true)),
-                ("all", _) => Ok(!values.contains(&false)),
-                ("not", [value]) => Ok(!value),
-                _ => Err("an unknown `cfg` predicate".to_string()),
-            }
+            let nested: Vec<_> = nested.iter().map(text).collect::<Result<_, _>>()?;
+            format!("{name}({})", nested.join(", "))
         }
-    }
+    })
 }
 
 /// The value of a string literal.
@@ -251,26 +452,33 @@ fn string(expr: &Expr) -> Result<String, String> {
     }
 }
 
-/// Reports whether `reason` starts with `only <OS>`, where `<OS>` names the OSes of
-/// `runs` and no more.
-fn gives(reason: &str, runs: [bool; 3]) -> bool {
-    NAMES.iter().any(|(name, named)| {
-        *named == runs
-            && reason
+/// Reports whether `reason` starts with `only <OS>`, where `<OS>` names `oses` and no
+/// more: their names joined by `and`, or Unix for Linux and macOS.
+fn gives(reason: &str, oses: &[&str]) -> bool {
+    let joined = oses.join(" and ");
+    let unix = (oses == ["Linux", "macOS"]).then_some("Unix");
+    [Some(joined.as_str()), unix]
+        .into_iter()
+        .flatten()
+        .any(|name| {
+            reason
                 .strip_prefix("only ")
                 .and_then(|r| r.strip_prefix(name))
-                .is_some_and(|r| !r.starts_with(|c: char| c.is_alphanumeric()))
-    })
+                .is_some_and(|r| {
+                    !r.starts_with(|c: char| c.is_alphanumeric())
+                        && !r.starts_with(" and ")
+                })
+        })
 }
 
 fn refused(shown: &str, item: &str) -> String {
     format!(
-        "`{shown}`: `{item}` ignores a test on an OS outside the lists of LINUX CI. Fix: \
-         remove the `ignore` and add `--skip <path> # #<issue>` to the `tests` list of \
-         each OS in `ci.yaml` where the test fails, or, in a case of \
+        "`{shown}`: `{item}` ignores a test on an OS outside the lists of LINUX CI. \
+         Fix: remove the `ignore` and add `--skip <path> # #<issue>` to the `tests` \
+         list of each OS in `ci.yaml` where the test fails, or, in a case of \
          `docs/claude/testing.md`, \"No `#[ignore]`\", start its reason with `only \
-         <OS>`, where <OS> is Linux, macOS, Windows, or Unix and names each OS that \
-         runs the test."
+         <OS>`, where <OS> names each OS that runs the test: Linux, macOS, or Windows, \
+         two of them joined by `and`, or Unix for Linux and macOS."
     )
 }
 
@@ -280,31 +488,51 @@ mod tests {
 
     #[test]
     fn refuses_each_ignore_on_an_os_outside_its_case_and_names_what_it_cannot_read() {
-        let skips = "crates/a/src/skips";
+        let skips = "crates/a/src";
         let mut expected = vec![
-            "`bench/b/src/skips.rs`: `b` ignores a test on an OS outside the lists of \
-             LINUX CI. Fix: remove the `ignore` and add `--skip <path> # #<issue>` to \
-             the `tests` list of each OS in `ci.yaml` where the test fails, or, in a \
-             case of `docs/claude/testing.md`, \"No `#[ignore]`\", start its reason \
-             with `only <OS>`, where <OS> is Linux, macOS, Windows, or Unix and names \
-             each OS that runs the test."
-                .to_string(),
-            format!("`{skips}/arity.rs`: `a`: an unknown `cfg` predicate"),
+            refused("bench/b/src/lib.rs", "b"),
+            format!(
+                "`{skips}/arity.rs`: `a`: not(unix, windows)\n^^^^^^^^^^^^^^^^^^ not() \
+                 takes 1 predicate, found 2"
+            ),
+            refused("crates/a/src/lib.rs", "a"),
+            "`crates/a/src/lib.rs`: `missing`: no file for the module `missing`".into(),
             format!("`{skips}/list.rs`: `b::a`: `ignore` takes no list"),
             format!("`{skips}/literal.rs`: `a`: a value that is no string literal"),
             format!("`{skips}/parse.rs`: cannot parse string into token stream"),
         ];
         let items = [
-            "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "q", "r",
-            "n::o", "n::p",
+            "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n::o",
+            "n::p", "q", "r", "s", "t", "u", "v", "w", "x", "y",
         ];
         let refused_rs = format!("{skips}/refused.rs");
         expected.extend(items.map(|i| refused(&refused_rs, i)));
         expected.extend([
-            format!("`{skips}/unknown.rs`: `a`: an unknown `cfg` predicate"),
-            refused("crates/a/src/skips.rs", "a"),
+            format!(
+                "`{skips}/target.rs`: `a`: a `cfg` predicate with no known value on \
+                 `x86_64-pc-windows-msvc`"
+            ),
+            refused(&format!("{skips}/unix.rs"), "b"),
+            format!(
+                "`{skips}/unknown.rs`: `a`: nany(unix)\n    ^ expected one of `=`, \
+                 `,`, `)` here"
+            ),
             refused("oracles/a/common.rs", "ready_on_each_os"),
+            refused("outside.rs", "on_each_os"),
         ]);
-        assert_eq!(check(&crate::fixture()), Err(expected));
+        assert_eq!(check(&crate::fixture().join("skips")), Err(expected));
+    }
+
+    #[test]
+    fn names_the_oses_that_run_a_test() {
+        assert!(gives(
+            "only Linux and Windows: a case",
+            &["Linux", "Windows"]
+        ));
+        assert!(gives("only Unix", &["Linux", "macOS"]));
+        assert!(gives("only Linux and macOS, a case", &["Linux", "macOS"]));
+        assert!(!gives("only Linux and Windows: a case", &["Linux"]));
+        assert!(!gives("only Linux: a case", &["Linux", "Windows"]));
+        assert!(!gives("only Linuxes", &["Linux"]));
     }
 }
