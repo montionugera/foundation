@@ -1,6 +1,6 @@
 use std::ffi::CStr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use connector::browse::{
     self, Access, Cursor, Device, End, Entry, Facts, Found, Page, Query, Scope, Shape,
@@ -335,8 +335,8 @@ fn pages_with_no_entries_end_at_the_budget_of_a_walk() {
 /// the point of the Objects folder when it also holds the variable of
 /// `Server::report_points`: the folders `root/a/c`, `root/a/d`, `root/a/e`,
 /// and `root/b`, two variables in each of `b`, `c`, `d`, and `e`, and one reference in
-/// each page of the server. A child folder has a lower number than its parent, so the
-/// order of the keys of the points is not the order of their use.
+/// each page of the server. The folder `a` has a lower number than its parent `root`,
+/// so the order of the keys of the points is not the order of their use.
 fn nested(server: &Server) {
     let folder = |number| Node {
         namespace: 1,
@@ -443,13 +443,42 @@ fn refusing(nth: usize) -> impl FnMut(&mut Vec<u8>) + Send + 'static {
     }
 }
 
-/// The server refuses a point for the Browse of `root/a`, while the walk holds the
-/// point of `root`: the walk releases that point, browses `a` again, and gives each
-/// entry.
+/// The server refuses a point for the Browse of `root/a/c`, while the walk holds the
+/// points of Objects, `root`, and `root/a`: the walk releases each, browses `c` again,
+/// and gives each entry. It then browses `root` and `a` again for their next pages, 10
+/// Browse requests in all, against 7 with no refusal.
 #[test]
-fn a_browse_that_the_server_gives_no_point_releases_one_and_browses_again() {
+fn a_browse_that_the_server_gives_no_point_releases_its_points_and_browses_again() {
     let (unbound, ..) = held(nested, everything(), 0);
-    let found = relayed_browse(nested, refusing(3), async |server| {
+    let browses = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&browses);
+    let mut refuse = refusing(4);
+    let rewrite = move |message: &mut Vec<u8>| {
+        if response(message) == Some(BROWSE_RESPONSE) {
+            counted.fetch_add(1, Ordering::Relaxed);
+        }
+        refuse(message);
+    };
+    let setup = |server: &Server| {
+        nested(server);
+        server.report_points(0);
+    };
+    let found = relayed_browse(setup, rewrite, async |server| {
+        browse::walk(server, &everything()).await
+    });
+    assert_eq!(
+        found.expect("found").entries,
+        unbound.expect("found").entries
+    );
+    assert_eq!(browses.load(Ordering::Relaxed), 10);
+}
+
+/// The server refuses a point for the first Browse, of the Objects folder, when the
+/// walk holds none to release: the walk browses once again.
+#[test]
+fn a_browse_that_the_server_gives_no_point_with_none_held_browses_again() {
+    let (unbound, ..) = held(nested, everything(), 0);
+    let found = relayed_browse(nested, refusing(1), async |server| {
         browse::walk(server, &everything()).await
     });
     assert_eq!(
@@ -458,11 +487,21 @@ fn a_browse_that_the_server_gives_no_point_releases_one_and_browses_again() {
     );
 }
 
-/// The server refuses a point for the first Browse, of the Objects folder, when the
-/// walk holds none to release.
+/// The server refuses a point for the Browse of `root/a/c`, while the walk holds the
+/// points of Objects, `root`, and `root/a`, and again after the walk releases them.
 #[test]
-fn a_browse_that_the_server_gives_no_point_with_none_held_fails() {
-    let found = relayed_browse(nested, refusing(1), async |server| {
+fn a_second_refusal_after_a_release_fails() {
+    let mut first = refusing(4);
+    let mut second = refusing(5);
+    let setup = |server: &Server| {
+        nested(server);
+        server.report_points(0);
+    };
+    let rewrite = move |message: &mut Vec<u8>| {
+        first(message);
+        second(message);
+    };
+    let found = relayed_browse(setup, rewrite, async |server| {
         browse::walk(server, &everything()).await
     });
     let Err(Error::Device(source)) = found else {
@@ -520,4 +559,108 @@ fn a_folder_open_twice_in_a_walk_holds_no_more_points_than_the_bound() {
             assert!(points <= usize::from(most), "{pattern} {most}: {points}");
         }
     }
+}
+
+/// A setup with the chain `root/f1/f2/f3/f4/f5`, a variable in each folder of it, and
+/// one reference in each page of the server, so that a walk holds a point for each
+/// folder of the chain and the Objects folder at once.
+fn chain(server: &Server) {
+    let folder = |number| Node {
+        namespace: 1,
+        key: Key::Number(number),
+    };
+    server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
+    server.add_data_type(&DOUBLE, &BASE_DATA_TYPE, c"Double");
+    let mut parent = ROOT;
+    for (number, name) in (6001..).zip([c"f1", c"f2", c"f3", c"f4", c"f5"]) {
+        server.add_folder(&folder(number), &parent, ORGANIZES, name, name);
+        server.add_variable(&Variable {
+            node: folder(number + 1000),
+            parent: parent.clone(),
+            reference: HAS_COMPONENT,
+            name: c"x",
+            data_type: DOUBLE,
+            rank: -1,
+            access: server::READ,
+            value: None,
+        });
+        parent = folder(number);
+    }
+    server.cap_references(1);
+}
+
+/// A server that gives 0 as its bound bounds a walk at `DEPTH` (64), so a walk holds
+/// the points of the Objects folder, `root`, and `f1` to `f4` at once.
+#[test]
+fn a_walk_with_a_bound_of_0_holds_a_point_for_each_open_folder() {
+    let (found, points, _) = held(chain, everything(), 0);
+    assert_eq!(found.expect("found").entries.len(), 5);
+    assert_eq!(points, 6);
+}
+
+/// Gives each server message to `rewrite`, and makes the service result of the first
+/// message whose response is `kind` and that `pick` accepts `BadInternalError`.
+fn faulting(
+    kind: [u8; 4],
+    mut pick: impl FnMut(&[u8]) -> bool + Send + 'static,
+) -> impl FnMut(&mut Vec<u8>) + Send + 'static {
+    let mut done = false;
+    move |message: &mut Vec<u8>| {
+        let response = message.get(24..28).is_some_and(|got| got == kind);
+        if !done && message.starts_with(b"MSG") && response && pick(message) {
+            done = true;
+            // The type of the response, then its time and request handle.
+            let status = Status::BAD_INTERNAL_ERROR.0.to_le_bytes();
+            message[40..44].copy_from_slice(&status);
+        }
+    }
+}
+
+fn internal_error(found: Result<Found, Error>) {
+    let Err(Error::Device(source)) = found else {
+        panic!("not a device error: {found:?}");
+    };
+    assert_eq!(
+        source.to_string(),
+        "the browse failed with BadInternalError"
+    );
+}
+
+/// The first Read after the connect is of the bound of the server and the limits of a
+/// Browse and a Translate. It fails, so the walk fails.
+#[test]
+fn a_walk_whose_read_of_the_bound_fails_fails() {
+    const READ_RESPONSE: [u8; 4] = [0x01, 0x00, 0x7A, 0x02];
+    let connected = Arc::new(AtomicBool::new(false));
+    let armed = Arc::clone(&connected);
+    let rewrite = faulting(READ_RESPONSE, move |_| armed.load(Ordering::Relaxed));
+    let found = relayed_browse(nested, rewrite, async move |server| {
+        connected.store(true, Ordering::Relaxed);
+        browse::walk(server, &everything()).await
+    });
+    internal_error(found);
+}
+
+/// The `BrowseNext` that releases the first point at the bound of 1, whose one result
+/// has no reference, fails, so the walk fails.
+#[test]
+fn a_walk_whose_release_fails_fails() {
+    // The results start at 52: their count, then the status, the point, and the count
+    // of the references of the first.
+    let release = |message: &[u8]| {
+        let point = i32::from_le_bytes(message[60..64].try_into().expect("4 bytes"));
+        let at = 64 + usize::try_from(point.max(0)).expect("a size");
+        message[52..56] == 1_i32.to_le_bytes()
+            && i32::from_le_bytes(message[at..at + 4].try_into().expect("4 bytes")) <= 0
+    };
+    let setup = |server: &Server| {
+        nested(server);
+        server.report_points(1);
+    };
+    let found = relayed_browse(
+        setup,
+        faulting(BROWSE_NEXT_RESPONSE, release),
+        async |server| browse::walk(server, &everything()).await,
+    );
+    internal_error(found);
 }
