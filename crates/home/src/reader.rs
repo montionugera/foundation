@@ -476,21 +476,9 @@ impl Set {
     /// Forgets the session `replaced` of the index at `place`, which a takeover
     /// closed.
     fn replaced(&mut self, place: usize, replaced: Option<delivery::Key>) {
-        match replaced {
-            Some(delivery::Key::Latest(latest)) => self.forget(place, latest),
-            Some(delivery::Key::Complete(session)) => self.unrecord(place, session),
-            None => {}
+        if let Some(session) = replaced {
+            self.forget(place, session);
         }
-    }
-
-    /// Drops the recording of the closed complete reader `session` of the index at
-    /// `place`.
-    fn unrecord(&mut self, place: usize, session: delivery::complete::Key) {
-        let key = complete::Key {
-            slot: self.entries[place].slot,
-            session,
-        };
-        self.recording.remove(&key);
     }
 
     /// Records that the complete reader `session` on the index at `place` has each
@@ -621,21 +609,23 @@ impl Set {
         now: Option<Stamp>,
     ) {
         self.entries[place].readers.close(session, now);
-        match session {
-            delivery::Key::Latest(latest) => self.forget(place, latest),
-            delivery::Key::Complete(session) => self.unrecord(place, session),
-        }
+        self.forget(place, session);
     }
 
-    /// Drops the closed latest reader `session` of the index at `place` from the
-    /// readers to wake. Only a latest reader waits there between calls of
-    /// [`woken`](Self::woken).
-    fn forget(&mut self, place: usize, session: delivery::latest::Key) {
-        let key = Key {
-            slot: self.entries[place].slot,
-            session: session.into(),
-        };
-        self.keys.retain(|&woken| woken != key);
+    /// Drops the closed reader `session` of the index at `place`: a latest reader from
+    /// the readers to wake, where only a latest reader waits between calls of
+    /// [`woken`](Self::woken), and a complete reader's recording.
+    fn forget(&mut self, place: usize, session: delivery::Key) {
+        let slot = self.entries[place].slot;
+        match session {
+            delivery::Key::Latest(_) => {
+                let key = Key { slot, session };
+                self.keys.retain(|&woken| woken != key);
+            }
+            delivery::Key::Complete(session) => {
+                self.recording.remove(&complete::Key { slot, session });
+            }
+        }
     }
 
     /// Gives `frame`, of key set `set`, stored in the buffer at `seq`, to the readers
