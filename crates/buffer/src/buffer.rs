@@ -1820,9 +1820,10 @@ mod tests {
         );
         // The restart record and 60 records of one block are synced. The headroom
         // is three records of two blocks and the three blocks that each record keeps
-        // free.
+        // free, so the low mark is at 6 blocks, and the high mark is half of the
+        // lead of 55 blocks past it.
         let tail = tail.lock().expect("no panic held the lock");
-        assert_eq!(tail.map(crate::wal::Position::offset), Some(6 * 4096));
+        assert_eq!(tail.map(crate::wal::Position::offset), Some(34 * 4096));
     }
 
     /// Three commits put [0, 3), [3, 6), and [6, 9) of one path in the records at
@@ -2023,7 +2024,8 @@ mod tests {
 
     /// A read from (0, 1) holds the record at 8192, whose entry with no samples at
     /// seq 0 stores its count, so the trim lands at 8192, though 58 more records
-    /// want more room. Once the read drops, the trim goes on to the room they want.
+    /// want more room. Once the read drops, the trim goes on a step past the room
+    /// they want.
     /// The test asks the writer for its trim, or the checkpoint for the tail when
     /// the commits trimmed.
     #[test]
@@ -2072,7 +2074,7 @@ mod tests {
             },
         );
         let tails = tails.lock().expect("no panic held the lock");
-        assert_eq!(*tails, [(Some(8192), 8192), (Some(60 * 4096), 6 * 4096)]);
+        assert_eq!(*tails, [(Some(8192), 8192), (Some(60 * 4096), 34 * 4096)]);
     }
 
     /// The durable end counts the entries with no samples at its seq. A read that
@@ -2179,7 +2181,7 @@ mod tests {
             }
         }
 
-        /// A read waits on the file read of the record at 4096 while 56 commits of
+        /// A read waits on the file read of the record at 4096 while 55 commits of
         /// another path want the room of the ring of 64 blocks. The trims stop before
         /// that record, and the read gives its entries. Once the read drops, the trims
         /// go on, so 100 more commits fit.
@@ -2202,16 +2204,50 @@ mod tests {
                         let first =
                             poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
                         assert!(first.is_pending(), "the read waits on a file read");
-                        commit_each(&buffer, (2, two), &part, 0..56).await;
+                        commit_each(&buffer, (2, two), &part, 0..55).await;
                         read.await
                     };
-                    commit_each(&buffer, (2, two), &part, 56..156).await;
+                    commit_each(&buffer, (2, two), &part, 55..155).await;
                     *given.lock().expect("no panic held the lock") = Some(read);
                     buffer
                 },
             );
             let found = found.lock().expect("no panic held the lock");
             assert_eq!(*found, Some((None, vec![0, 3, 6], Mark::at(9))));
+        }
+
+        /// A read of index 1 from seq 30 waits on the file read of the record at
+        /// block 11. The commit that passes the low mark at block 1 steps toward
+        /// the high mark at block 28.5, but stops at the record that the read holds.
+        #[test]
+        fn a_step_stops_at_a_read_hold() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let node = sim.node(sim::node::Config::default());
+            let found = Arc::new(Mutex::new(None));
+            let given = Arc::clone(&found);
+            with_trims(
+                &mut sim,
+                &node,
+                "write",
+                |buffer, mut slots, pool| async move {
+                    let one = slots.index(channel::Key::from_u128(1));
+                    let part = pool.alloc(100).expect("a block").freeze();
+                    commit_each(&buffer, (1, one), &part, 0..11).await;
+                    let (tail, (gap, firsts, _)) = {
+                        let mut read = pin!(read_from(&buffer, one, 30));
+                        let first =
+                            poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await;
+                        assert!(first.is_pending(), "the read waits on a file read");
+                        commit_each(&buffer, (1, one), &part, 11..55).await;
+                        (room(&buffer).1, read.await)
+                    };
+                    *given.lock().expect("no panic held the lock") =
+                        Some((tail, gap, firsts.first().copied()));
+                    buffer
+                },
+            );
+            let found = found.lock().expect("no panic held the lock").take();
+            assert_eq!(found, Some((11 * 4096, None, Some(30))));
         }
 
         /// The live path of index 1 writes [0, 3) once, then 100 commits of index 2
@@ -2253,7 +2289,7 @@ mod tests {
             assert_eq!(*found, Some(((Some(0..3), vec![], Mark::at(3)), tail)));
         }
 
-        /// One record holds an entry of each of indexes 1 to 100, after 7 records of
+        /// One record holds an entry of each of indexes 1 to 100, after 8 records of
         /// index 101. The commits of index 101 turn the ring of 64 blocks, and the
         /// carry record of the 100 tails takes 2 blocks where the area has one left,
         /// so it wraps, and later trims pass the record of the 100 entries. After a
@@ -2272,7 +2308,7 @@ mod tests {
                     let byte = pool.alloc(1).expect("a block").freeze();
                     let part = pool.alloc(100).expect("a block").freeze();
                     let filler = slots.index(channel::Key::from_u128(101));
-                    commit_each(&buffer, (101, filler), &part, 0..7).await;
+                    commit_each(&buffer, (101, filler), &part, 0..8).await;
                     let batch: Vec<Entry> = (1..=100)
                         .map(|index| {
                             let slot =
@@ -2282,7 +2318,7 @@ mod tests {
                         .collect();
                     buffer.append(batch).expect("the ring has room");
                     buffer.committed().await.expect("commits");
-                    commit_each(&buffer, (101, filler), &part, 7..71).await;
+                    commit_each(&buffer, (101, filler), &part, 8..58).await;
                     let skip = buffer.shared.state.borrow().writer.skip();
                     *given.lock().expect("no panic held the lock") = Some(skip);
                     buffer
@@ -2309,7 +2345,7 @@ mod tests {
                 },
             );
             let mut seqs = vec![3; 100];
-            seqs.push(213);
+            seqs.push(174);
             assert_eq!(*found.lock().expect("no panic held the lock"), seqs);
         }
 
@@ -2359,11 +2395,11 @@ mod tests {
             assert_eq!(*found, Some((tail, read)));
         }
 
-        /// Records 1 and 2 hold an entry with no samples at seq 0, and record 3 holds
-        /// [0, 3). 53 more records want the room of record 1, so the trim lands at
-        /// record 2. After a cut of the power, the open walks from there with the
-        /// count that record 2 stores, and a read from (0, 1) gives its entry, then
-        /// the samples from 0, with no gap.
+        /// Records 1 to 29 hold an entry with no samples at seq 0, and record 30 holds
+        /// [0, 3). 26 more records pass the low mark, so the trim steps to record 29.
+        /// After a cut of the power, the open walks from there with the count that
+        /// record 29 stores, and a read from (0, 1) gives its entry, then the samples
+        /// from 0, with no gap.
         #[test]
         fn a_trim_into_entries_with_no_samples_at_a_seq_lands_on_one() {
             let mut sim = sim::Sim::new(sim::Config::default());
@@ -2381,11 +2417,11 @@ mod tests {
                         samples: None,
                         ..entry(1, one, Path::Live, 0, &part)
                     };
-                    for _ in 0..2 {
+                    for _ in 0..29 {
                         buffer.append([empty.clone()]).expect("the ring has room");
                         buffer.committed().await.expect("commits");
                     }
-                    commit_each(&buffer, (1, one), &part, 0..54).await;
+                    commit_each(&buffer, (1, one), &part, 0..27).await;
                     let mut state = buffer.shared.state.borrow_mut();
                     let kept = state.kept();
                     let want = state.writer.trimmed(kept);
@@ -2422,8 +2458,8 @@ mod tests {
             let wanted = wanted.lock().expect("no panic held the lock");
             assert_eq!(
                 *wanted,
-                Some((None, 2 * 4096)),
-                "the trim landed at record 2, and no trim is due"
+                Some((None, 29 * 4096)),
+                "the trim landed at record 29, and no trim is due"
             );
             let found = found.lock().expect("no panic held the lock");
             assert_eq!(*found, Some((None, vec![0..0, 0..3])));
@@ -2700,15 +2736,15 @@ mod tests {
             );
             assert_eq!(
                 trimmed,
-                (190, 9 * 4096, 64 * 4096, Some(62 * 4096)),
+                (190, 37 * 4096, 64 * 4096, Some(62 * 4096)),
                 "no carry record, and the trim passes the old holder of path 1"
             );
             assert_eq!(refused, Err(FULL), "the trim comes after the refusal");
             assert!(one_commit, "the commit of the trim has no data record");
             assert_eq!(
                 fits,
-                (true, 10 * 4096),
-                "the commit that the refusal woke trims"
+                (true, 37 * 4096),
+                "the commit that the refusal woke trims, and no trim is due after it"
             );
             assert_eq!(
                 durable, 9,
@@ -2835,7 +2871,7 @@ mod tests {
             );
             assert_eq!(
                 rooms[3],
-                (190, 9 * 4096, 64 * 4096, Some(62 * 4096)),
+                (190, 37 * 4096, 64 * 4096, Some(62 * 4096)),
                 "the trim passes the old holder of path 1"
             );
         }
@@ -2978,7 +3014,7 @@ mod tests {
             );
             assert_eq!(
                 rooms[2],
-                (190, 9 * 4096, 64 * 4096, Some(63 * 4096)),
+                (190, 37 * 4096, 64 * 4096, Some(63 * 4096)),
                 "the commit after it trims past the old holder of path 1"
             );
             assert_eq!(durable_after_open(&mut sim, &node), 9);
@@ -3019,9 +3055,9 @@ mod tests {
             assert_eq!(before, after);
         }
 
-        /// 100 commits of one path in the ring of 64 blocks each fit, since each
-        /// commit trims the oldest records. A read from seq 0 gives the trimmed seqs
-        /// as its gap, then the entries that the ring holds.
+        /// 100 commits of one path in the ring of 64 blocks each fit, since a commit
+        /// past the low mark trims the oldest records. A read from seq 0 gives the
+        /// trimmed seqs as its gap, then the entries that the ring holds.
         #[test]
         fn a_full_ring_frees_its_oldest_records_at_the_commit() {
             let mut sim = sim::Sim::new(sim::Config::default());
@@ -3044,9 +3080,9 @@ mod tests {
             );
             let found = found.lock().expect("no panic held the lock").take();
             let ((gap, firsts, next), room) = found.expect("the shard gave the result");
-            assert_eq!(room, (190, 46 * 4096, 101 * 4096, Some(100 * 4096)));
-            assert_eq!(gap, Some(0..135));
-            assert_eq!(firsts, (45..100).map(|n| 3 * n).collect::<Vec<_>>());
+            assert_eq!(room, (190, 58 * 4096, 101 * 4096, Some(100 * 4096)));
+            assert_eq!(gap, Some(0..171));
+            assert_eq!(firsts, (57..100).map(|n| 3 * n).collect::<Vec<_>>());
             assert_eq!(next, Mark::at(300));
         }
 
@@ -3091,11 +3127,11 @@ mod tests {
             let found = found.lock().expect("no panic held the lock").take();
             let (before, refused, queued, fits) =
                 found.expect("the shard gave the result");
-            assert_eq!(before, (190, 16 * 4096, 71 * 4096, Some(70 * 4096)));
-            assert_eq!(refused, (226, FULL));
+            assert_eq!(before, (190, 29 * 4096, 71 * 4096, Some(70 * 4096)));
+            assert_eq!(refused, (565, FULL));
             assert_eq!(
                 queued,
-                (190, 16 * 4096, 77 * 4096, Some(70 * 4096)),
+                (190, 29 * 4096, 90 * 4096, Some(70 * 4096)),
                 "the queued records fill the ring but the three blocks that stay free"
             );
             assert_eq!(fits, Ok(()));
