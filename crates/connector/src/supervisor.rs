@@ -432,7 +432,9 @@ mod tests {
 
     use super::*;
     use crate::cancel::Token;
-    use crate::common::{STATUS, create_config, create_status, env, run_on, run_with};
+    use crate::common::{
+        STATUS, create_config, create_status, env, run_in, run_on, run_with,
+    };
     use crate::kind::{Channels, Kind, Table};
     use crate::testing;
     use hub::home::Refusal;
@@ -888,8 +890,7 @@ mod tests {
         config: Document,
         cancel: Cancel,
     ) -> Outcome {
-        let node = sim::node::Config::default();
-        run_with(seed, node, move |node, tasks| async move {
+        run_in(seed, move |node, tasks| async move {
             let script = Script {
                 steps: Mutex::new(steps.into()),
                 ..Script::default()
@@ -1471,8 +1472,7 @@ mod tests {
         wall: Span,
     ) -> (Vec<Written>, Vec<Span>) {
         let count = steps.len();
-        let node = sim::node::Config::default();
-        run_with(seed, node, move |node, tasks| async move {
+        run_in(seed, move |node, tasks| async move {
             let script = Script {
                 steps: Mutex::new(steps.into()),
                 ..Script::default()
@@ -1877,8 +1877,7 @@ mod tests {
         held: Span,
         cancel: Option<Span>,
     ) -> (Vec<Written>, Span) {
-        let node = sim::node::Config::default();
-        run_with(seed, node, move |node, tasks| async move {
+        run_in(seed, move |node, tasks| async move {
             let script = Script {
                 steps: Mutex::new(steps.into()),
                 ..Script::default()
@@ -2140,7 +2139,7 @@ mod tests {
                 Ok(())
             }
         };
-        timed_due(run, |scene| async move {
+        timed_due(0, run, |scene| async move {
             scene.node.clock().sleep(ms(500)).await;
             scene.remove("samples");
         });
@@ -2174,7 +2173,7 @@ mod tests {
                 Ok(())
             }
         };
-        timed_due(run, |scene| async move {
+        timed_due(0, run, |scene| async move {
             scene.node.clock().sleep(ms(500)).await;
             scene.remove("samples");
         });
@@ -2335,7 +2334,7 @@ mod tests {
                 Ok(())
             }
         };
-        timed_due(run, |scene| async move {
+        timed_due(0, run, |scene| async move {
             scene.node.clock().sleep(ms(1_500)).await;
             scene.remove("samples");
         });
@@ -3347,12 +3346,12 @@ mod tests {
         S: FnOnce(Scene) -> T + Send + 'static,
         T: Future<Output = ()> + 'static,
     {
-        timed_on(sim::node::Config::default(), run, scenario)
+        timed_on(0, sim::node::Config::default(), run, scenario)
     }
 
     /// [`timed`] on a node whose timers wake only when due, so a test can count the
-    /// polls of a sleep.
-    fn timed_due<F, R, S, T>(run: F, scenario: S) -> Span
+    /// polls of a sleep, in a sim of `seed`.
+    fn timed_due<F, R, S, T>(seed: u64, run: F, scenario: S) -> Span
     where
         F: Fn(Context<()>) -> R + Send + Sync + 'static,
         R: Future<Output = Result<(), Error>>,
@@ -3363,18 +3362,23 @@ mod tests {
             arm_max: None,
             ..sim::node::Config::default()
         };
-        timed_on(node, run, scenario)
+        timed_on(seed, node, run, scenario)
     }
 
-    /// [`timed`] on a node of `node`.
-    fn timed_on<F, R, S, T>(node: sim::node::Config, run: F, scenario: S) -> Span
+    /// [`timed`] on a node of `node`, in a sim of `seed`.
+    fn timed_on<F, R, S, T>(
+        seed: u64,
+        node: sim::node::Config,
+        run: F,
+        scenario: S,
+    ) -> Span
     where
         F: Fn(Context<()>) -> R + Send + Sync + 'static,
         R: Future<Output = Result<(), Error>>,
         S: FnOnce(Scene) -> T + Send + 'static,
         T: Future<Output = ()> + 'static,
     {
-        run_with(0, node, |node, tasks| async move {
+        run_with(seed, node, |node, tasks| async move {
             let kinds = Table::new().with("tally", counted(run));
             let inputs =
                 create_config(&node, tasks.clone(), kinds, "plant.tally").await;
@@ -3805,8 +3809,7 @@ mod tests {
         cancel: Span,
         removed: bool,
     ) -> (Span, Vec<Span>, Vec<Written>) {
-        let node = sim::node::Config::default();
-        run_with(seed, node, move |node, tasks| async move {
+        run_in(seed, move |node, tasks| async move {
             let hub =
                 hub::testing::open_unsynced(env(&node, tasks.clone()), delay).await;
             let status = create_status("plant.script");
@@ -4092,8 +4095,7 @@ mod tests {
     /// a status frame `lead` ahead, in a sim of `seed`. Gives the status and the start
     /// of the second run, from the first frame.
     fn after_a_frame_ahead(seed: u64, lead: Span) -> (Vec<Written>, Span) {
-        let node = sim::node::Config::default();
-        run_with(seed, node, move |node, tasks| async move {
+        run_in(seed, move |node, tasks| async move {
             let script = Script {
                 steps: Mutex::new([Step::Device(ms(10))].into()),
                 ..Script::default()
@@ -4237,8 +4239,7 @@ mod tests {
         B: FnOnce(hub::Hub, Clock) -> S + Send + 'static,
         S: Future<Output = ()> + 'static,
     {
-        let node = sim::node::Config::default();
-        run_with(seed, node, move |node, tasks| async move {
+        run_in(seed, move |node, tasks| async move {
             let got = Arc::new(Mutex::new(Vec::new()));
             let into = Arc::clone(&got);
             let kind = Closure {
