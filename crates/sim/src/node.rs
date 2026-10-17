@@ -363,7 +363,8 @@ impl Node {
     /// `from` moves itself. When the node's working directory resolves, it stays on
     /// the directory that it resolves to, as on a host: it moves with it when that
     /// directory is `from` or under it, and a move of a link on its way leaves it
-    /// there.
+    /// there. It keeps its path while that path resolves to that directory, and else
+    /// takes the path of the directory.
     ///
     /// # Panics
     ///

@@ -993,7 +993,9 @@
   the node, with its key, so the common cases move a folder away on both drivers. When
   the node's working directory resolves, it stays on the directory that it resolves
   to, as on a host: it moves with it when that directory is `from` or under it, and a
-  move of a link on its way leaves it there. A call is of the path of a fault of
+  move of a link on its way leaves it there. It keeps its path while that path
+  resolves to that directory, and else takes the path of the directory. A call is of
+  the path of a fault of
   `sim::Node::fail_path` when both give one path from the working directory at that
   call, with `.` and `..` taken as text and no link followed, so a relative path
   follows a later `set_working_dir`. Faults that a call is of fire in the order set.
@@ -1014,7 +1016,9 @@
   https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236248693, which
   withdraws item 1 of 6231727914 and item 1 of 6232020329; the path of a fault,
   2026-10-17T16:12:13Z,
-  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236404985). Lost: a
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236404985; the
+  path of the working directory on a move, 2026-10-17T16:16:39Z,
+  https://github.com/synnaxlabs/foundation/pull/2919#issuecomment-6236468300). Lost: a
   second look in `ops` after a refusal, which puts a `Paths` with no limits in the scope
   that limits `foundation mcp`, states the rule of `within` again, and gives a false
   text when a file changes between the two looks. Lost: the error of the key of a folder
