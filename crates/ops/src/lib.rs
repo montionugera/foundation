@@ -20,6 +20,7 @@ mod node;
 mod operation;
 mod plan;
 mod remote;
+pub mod roots;
 mod serve;
 mod start;
 mod status;
