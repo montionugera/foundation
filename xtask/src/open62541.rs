@@ -512,8 +512,9 @@ pub(crate) struct Crypto {
     include: Vec<PathBuf>,
     /// The prefix of each of its symbols, with the `_` that ends it.
     prefix: String,
-    /// Its `openssl/pem.h`, whose declarations give the readers of [`passwords`].
-    pem: PathBuf,
+    /// The directory of its `openssl/*.h`, whose declarations give the readers of
+    /// [`passwords`].
+    openssl: PathBuf,
 }
 
 impl Crypto {
@@ -544,11 +545,11 @@ impl Crypto {
         let include = vec![dir.join("generated-include"), dir.join("aws-lc/include")];
         // The line that the build script of `connector-opcua` reads.
         let prefix = Self::read_prefix(&include[0].join(PREFIX_HEADER))?;
-        let pem = include[1].join("openssl/pem.h");
+        let openssl = include[1].join("openssl");
         Ok(Self {
             include,
             prefix,
-            pem,
+            openssl,
         })
     }
 
@@ -583,18 +584,33 @@ impl Crypto {
             .flat_map(|dir| ["-isystem".into(), dir.into()])
     }
 
-    /// The [`readers`] of its `openssl/pem.h`, which `cc` preprocesses alone, with no
-    /// flag of the copy, so that no file or header of the copy changes them.
+    /// The [`password_places`] of each of its `openssl/*.h`, which `cc` preprocesses
+    /// together, with no flag of the copy, so that no file or header of the copy
+    /// changes them.
     ///
     /// # Errors
     ///
-    /// A `cc` that fails.
+    /// A directory that cannot be read, and a `cc` that fails.
     fn readers(&self, cc: &Path) -> Result<BTreeMap<String, usize>, String> {
-        let mut pem = Command::new(cc);
-        pem.args(self.flags()).arg("-E").arg(&self.pem);
-        spawn(&mut pem)
+        let mut headers = std::fs::read_dir(&self.openssl)
+            .and_then(|entries| {
+                entries
+                    .map(|entry| entry.map(|entry| entry.path()))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(|e| format!("{}: {e}", self.openssl.display()))?;
+        headers.retain(|path| path.extension().is_some_and(|e| e == "h"));
+        headers.sort();
+        let mut unit = Command::new(cc);
+        unit.args(self.flags()).arg("-E");
+        for header in headers {
+            unit.arg("-include").arg(header);
+        }
+        // An empty unit from the null input of `spawn`.
+        unit.args(["-x", "c", "-"]);
+        spawn(&mut unit)
             .and_then(wait)
-            .map(|(text, _)| readers(&tokens(&text)))
+            .map(|(text, _)| password_places(&tokens(&text)))
     }
 
     /// Whether `symbol` is a function of [`AWS_LC`].
@@ -1110,7 +1126,8 @@ fn marker(line: &str) -> Option<(usize, &str)> {
 /// An error for each `#include_next`, and each `#include` or `#import` in a file of
 /// the copy, as `preprocessed` (the output of `cc -E -dI` in `copy`) shows it, that
 /// finds a header outside both the copy and the system directories `dirs`, or a
-/// header under `openssl/` outside the directories `crypto`. It finds the header as
+/// header under `openssl/` outside the directories `crypto`, other than one of the
+/// copy whose name no directory of `crypto` holds. It finds the header as
 /// `cc` does, through the `-I` directories `flags` gives. Unlike `cc -H`, `-dI` also
 /// shows an `#include` of a header that the unit included before.
 fn includes(
@@ -1163,11 +1180,13 @@ fn includes(
             .chain(system)
             .find(|(path, _)| copy.join(path).is_file())
         {
-            Some((path, true))
+            Some((path, system))
                 if name.starts_with("openssl/")
                     && !crypto
                         .iter()
-                        .any(|dir| path.starts_with(files::normalize(dir))) =>
+                        .any(|dir| path.starts_with(files::normalize(dir)))
+                    && (system
+                        || crypto.iter().any(|dir| dir.join(name).is_file())) =>
             {
                 format!(
                     "includes {}, a header of OpenSSL outside the crypto",
@@ -1254,9 +1273,9 @@ fn token_length(text: &str) -> usize {
     first.len_utf8()
 }
 
-/// Each function that a declaration outside the copy in `tokens` gives a parameter of
-/// the type `pem_password_cb`, with the index of that parameter.
-fn readers(tokens: &[Token<'_>]) -> BTreeMap<String, usize> {
+/// Each function that a declaration in `tokens` gives a parameter of the type
+/// `pem_password_cb`, with the index of that parameter.
+fn password_places(tokens: &[Token<'_>]) -> BTreeMap<String, usize> {
     let mut readers = BTreeMap::new();
     // The index of each open parenthesis, with the count of commas after it.
     let mut open: Vec<(usize, usize)> = Vec::new();
@@ -1271,7 +1290,7 @@ fn readers(tokens: &[Token<'_>]) -> BTreeMap<String, usize> {
                     *commas += 1;
                 }
             }
-            "pem_password_cb" if !inside(Path::new(token.file)) => {
+            "pem_password_cb" => {
                 if let Some(&(paren, commas)) = open.last()
                     && let Some(name) = paren.checked_sub(1).map(|at| tokens[at].text)
                     && name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
@@ -1314,9 +1333,9 @@ fn call_arguments(tokens: &[Token<'_>]) -> Option<Vec<String>> {
 }
 
 /// An error for each name, in a file of the copy in `preprocessed` (the output of
-/// `cc -E -dI`), of a function of `readers` (from [`readers`]), other than in a call
-/// that gives a callback of [`PASSWORDS`] at its place. With no callback, aws-lc
-/// reads a password from the console.
+/// `cc -E -dI`), of a function of `readers` (from [`password_places`]), other than
+/// in a call that gives a callback of [`PASSWORDS`] at its place. With no callback,
+/// aws-lc reads a password from the console.
 fn passwords(preprocessed: &str, readers: &BTreeMap<String, usize>) -> Vec<String> {
     let tokens = tokens(preprocessed);
     let mut problems = Vec::new();
@@ -1397,7 +1416,8 @@ fn build<'a>(
             // response file when it starts with `@`. With no stack protector, a
             // reference to its random canary is one that the C makes. A call with no
             // declaration fails, as on GCC 14, also when its name is a macro of the
-            // prefix header, which GCC does not report with macro tracking.
+            // prefix header: GCC drops a diagnostic in a macro of a system header while
+            // it tracks macro expansion.
             cc.current_dir(copy)
                 .args(flags.lines())
                 .args(crypto.flags())
@@ -2367,8 +2387,47 @@ Disassembly of section .text.stamp:
         remove(&root).unwrap();
     }
 
+    #[test]
+    fn includes_refuses_a_header_of_the_copy_named_as_one_of_the_crypto() {
+        let root = temp("includes-hidden");
+        create_files(
+            &root,
+            &[
+                ("copy/src/openssl/pem.h", ""),
+                ("copy/src/openssl/common.h", ""),
+                ("crypto/openssl/pem.h", ""),
+            ],
+        );
+        let crypto = [root.join("crypto")];
+        let preprocessed = "\
+# 1 \"src/a.c\"
+#include \"openssl/pem.h\"
+#include \"openssl/common.h\"
+#include <openssl/pem.h>
+";
+        assert_eq!(
+            includes(preprocessed, &root.join("copy"), "", &crypto, &crypto),
+            ["includes src/openssl/pem.h, a header of OpenSSL outside the crypto"]
+        );
+        remove(&root).unwrap();
+    }
+
+    /// `cc -E` output of headers of aws-lc with three functions that take a
+    /// `pem_password_cb`.
+    const HEADERS: &str = r#"# 0 "<stdin>"
+# 1 "/aws/include/openssl/pem.h" 1
+typedef int pem_password_cb (char *buf, int size, int rwflag, void *userdata);
+extern X *read_x(B *o, X **x, pem_password_cb *cb, void *u); extern int write_x(B *o);
+__attribute__((deprecated("Since " "3.0"))) RSA *read_r(BIO *out,
+                                                        pem_password_cb *cb, void *u);
+int (*pointer)(pem_password_cb *cb);
+extern X *read_q(B *o, int (*f)(void), pem_password_cb *cb, void *u);
+# 1 "/aws/include/openssl/ssl.h" 1
+pem_password_cb *get_cb(const C *c);
+"#;
+
     /// `cc -E -dI` output of `a.c` of a copy, which includes a header of aws-lc with
-    /// two functions that take a `pem_password_cb`, and a header of the copy.
+    /// the functions of [`HEADERS`] and a header of the copy.
     const PREPROCESSED: &str = r#"# 0 "./a.c"
 # 0 "<built-in>"
 # 1 "./a.c"
@@ -2407,12 +2466,42 @@ n = read_x(b, 0, 0, 0);
 "#;
 
     #[test]
-    fn readers_gives_each_function_of_aws_lc_with_the_place_of_its_callback() {
+    fn password_places_gives_each_function_with_the_place_of_its_callback() {
+        assert_eq!(password_places(&tokens(HEADERS)), readers());
+    }
+
+    /// The readers of [`HEADERS`].
+    fn readers() -> BTreeMap<String, usize> {
+        [("read_q", 2), ("read_r", 1), ("read_x", 2)]
+            .map(|(name, place)| (name.to_owned(), place))
+            .into()
+    }
+
+    #[test]
+    fn crypto_readers_reads_each_header_of_aws_lc() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let crypto = Crypto::locked(workspace).unwrap();
+        let readers = crypto.readers(Path::new("cc")).unwrap();
+        let read = format!("{}PEM_read_bio_X509", crypto.prefix);
+        assert_eq!(readers.get(&read), Some(&2));
+        // aws-lc-sys builds no libssl, so the prefix header has no name of it.
+        assert_eq!(readers.get("SSL_CTX_set_default_passwd_cb"), Some(&1));
+        let empty = Crypto {
+            openssl: temp("no-headers"),
+            ..crypto
+        };
+        assert_eq!(empty.readers(Path::new("cc")), Ok(BTreeMap::new()));
+        remove(&empty.openssl).unwrap();
+        let missing = Crypto {
+            openssl: empty.openssl.join("none"),
+            ..empty
+        };
         assert_eq!(
-            readers(&tokens(PREPROCESSED)),
-            [("read_q", 2), ("read_r", 1), ("read_x", 2)]
-                .map(|(name, place)| (name.to_owned(), place))
-                .into()
+            missing.readers(Path::new("cc")).unwrap_err(),
+            format!(
+                "{}: No such file or directory (os error 2)",
+                missing.openssl.display()
+            )
         );
     }
 
@@ -2425,7 +2514,7 @@ n = read_x(b, 0, 0, 0);
             )
         };
         assert_eq!(
-            passwords(PREPROCESSED, &readers(&tokens(PREPROCESSED))),
+            passwords(PREPROCESSED, &readers()),
             [
                 gives(4, "read_x", "((void*)0)"),
                 gives(5, "read_r", "other"),
@@ -2444,76 +2533,84 @@ n = read_x(b, 0, 0, 0);
     #[test]
     #[cfg(unix)]
     fn check_finds_a_read_of_the_committed_copy_that_gives_aws_lc_no_callback() {
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let root = temp("passwords");
-        std::fs::create_dir(root.join("patches")).unwrap();
-        let mut cp = Command::new("cp");
-        exec(
-            cp.arg("-R")
-                .arg(workspace.join(DEST))
-                .arg(root.join("patches")),
-        )
-        .unwrap();
         let file = "plugins/crypto/openssl/securitypolicy_common.c";
-        let path = root.join(DEST).join(file);
-        let text = std::fs::read_to_string(&path).unwrap();
         let call = "PEM_read_bio_X509(bio, NULL, UA_OpenSSL_refusePassword, NULL);";
-        let line = text.lines().position(|line| line.contains(call)).unwrap() + 1;
-        let changed = call.replace("UA_OpenSSL_refusePassword", "NULL");
-        std::fs::write(&path, text.replacen(call, &changed, 1)).unwrap();
-        let crypto = Crypto::locked(workspace).unwrap();
+        let mut line = 0;
+        let result = check_edited("passwords", &[], file, |text| {
+            line = text.lines().position(|line| line.contains(call)).unwrap() + 1;
+            let changed = call.replace("UA_OpenSSL_refusePassword", "NULL");
+            text.replacen(call, &changed, 1)
+        });
         assert_eq!(
-            check(&root, &crypto),
+            result,
             Err(vec![format!(
                 "{file}: {file}:{line}: gives `{}PEM_read_bio_X509` the callback \
                  `((void*)0)`, which PASSWORDS does not list",
-                crypto.prefix
+                prefix()
             )])
         );
-        remove(&root).unwrap();
     }
 
     /// The result of [`check`] on a copy of the committed copy with each (path, text)
-    /// of `files` and with `text` after the end of `src/util/ua_util.c`, with the
-    /// prefix of aws-lc.
-    fn check_with_util(
+    /// of `files`, and with the text of `file` of the copy that `edit` gives.
+    #[expect(
+        clippy::unwrap_in_result,
+        reason = "a test helper panics on a copy that it cannot make"
+    )]
+    fn check_edited(
         name: &str,
         files: &[(&str, &str)],
-        text: &str,
-    ) -> (Result<(), Vec<String>>, String) {
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        file: &str,
+        edit: impl FnOnce(String) -> String,
+    ) -> Result<(), Vec<String>> {
         let root = temp(name);
         std::fs::create_dir(root.join("patches")).unwrap();
         let mut cp = Command::new("cp");
         exec(
             cp.arg("-R")
-                .arg(workspace.join(DEST))
+                .arg(workspace().join(DEST))
                 .arg(root.join("patches")),
         )
         .unwrap();
         create_files(&root.join(DEST), files);
-        let path = root.join(DEST).join(UTIL);
-        let util = std::fs::read_to_string(&path).unwrap();
-        std::fs::write(&path, util + text).unwrap();
-        let crypto = Crypto::locked(workspace).unwrap();
-        let result = check(&root, &crypto);
+        let path = root.join(DEST).join(file);
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, edit(text)).unwrap();
+        let result = check(&root, &Crypto::locked(workspace()).unwrap());
         remove(&root).unwrap();
-        (result, crypto.prefix.clone())
+        result
+    }
+
+    /// [`check_edited`] with `text` after the end of `src/util/ua_util.c`, and the
+    /// number of the first line of `text`.
+    fn check_with_util(
+        name: &str,
+        files: &[(&str, &str)],
+        text: &str,
+    ) -> (Result<(), Vec<String>>, usize) {
+        let mut end = 0;
+        let result = check_edited(name, files, UTIL, |util| {
+            end = util.lines().count() + 1;
+            util + text
+        });
+        (result, end)
     }
 
     const UTIL: &str = "src/util/ua_util.c";
 
-    /// The number of the line after the last line of `src/util/ua_util.c`.
-    fn util_end() -> usize {
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let util = std::fs::read_to_string(workspace.join(DEST).join(UTIL)).unwrap();
-        util.lines().count() + 1
+    fn workspace() -> &'static Path {
+        Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
+    }
+
+    /// The symbol prefix of the aws-lc of `Cargo.lock`.
+    fn prefix() -> String {
+        Crypto::locked(workspace()).unwrap().prefix
     }
 
     #[test]
     #[cfg(unix)]
     fn check_fails_a_read_of_the_copy_with_no_declaration() {
-        let (result, _) = check_with_util(
+        let (result, line) = check_with_util(
             "undeclared",
             &[],
             "void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n",
@@ -2523,9 +2620,8 @@ n = read_x(b, 0, 0, 0);
         assert!(errors[0].starts_with("cc failed: "), "{errors:?}");
         assert!(
             errors[0].contains(&format!(
-                "./{UTIL}:{}:25: error: implicit declaration of function \
-                 'PEM_read_bio_X509'",
-                util_end()
+                "./{UTIL}:{line}:25: error: implicit declaration of function \
+                 'PEM_read_bio_X509'"
             )),
             "{errors:?}"
         );
@@ -2534,7 +2630,7 @@ n = read_x(b, 0, 0, 0);
     #[test]
     #[cfg(unix)]
     fn check_fails_a_read_of_aws_lc_with_no_declaration() {
-        let (result, prefix) = check_with_util(
+        let (result, line) = check_with_util(
             "undeclared-prefixed",
             &[],
             "#include <openssl/base.h>\n\
@@ -2546,8 +2642,9 @@ n = read_x(b, 0, 0, 0);
         assert!(
             errors[0].contains(&format!(
                 "./{UTIL}:{}:25: error: implicit declaration of function \
-                 '{prefix}PEM_read_bio_X509'",
-                util_end() + 1
+                 '{}PEM_read_bio_X509'",
+                line + 1,
+                prefix()
             )),
             "{errors:?}"
         );
@@ -2556,35 +2653,30 @@ n = read_x(b, 0, 0, 0);
     #[test]
     #[cfg(unix)]
     fn check_finds_a_read_of_the_copy_with_its_own_declaration() {
-        let line = util_end() + 2;
-        let (result, prefix) = check_with_util(
+        let (result, line) = check_with_util(
             "declared",
             &[],
             "#include <openssl/base.h>\n\
              void *PEM_read_bio_X509(void *, void *, void *, void *);\n\
              void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n",
         );
+        let gives = |line: usize, callback: &str| {
+            format!(
+                "{UTIL}: {UTIL}:{line}: gives `{}PEM_read_bio_X509` the callback \
+                 `{callback}`, which PASSWORDS does not list",
+                prefix()
+            )
+        };
         assert_eq!(
             result,
-            Err(vec![
-                format!(
-                    "{UTIL}: {UTIL}:{}: gives `{prefix}PEM_read_bio_X509` the callback \
-                     `void*`, which PASSWORDS does not list",
-                    line - 1
-                ),
-                format!(
-                    "{UTIL}: {UTIL}:{line}: gives `{prefix}PEM_read_bio_X509` the callback \
-                     `0`, which PASSWORDS does not list"
-                ),
-            ])
+            Err(vec![gives(line + 1, "void*"), gives(line + 2, "0")])
         );
     }
 
     #[test]
     #[cfg(unix)]
     fn check_finds_a_read_under_a_macro_of_pem_h() {
-        let line = util_end() + 3;
-        let (result, prefix) = check_with_util(
+        let (result, line) = check_with_util(
             "under-pem",
             &[],
             "#include <openssl/base.h>\n\
@@ -2593,27 +2685,23 @@ n = read_x(b, 0, 0, 0);
              void UA_readPem(void) { PEM_read_bio_X509(0, 0, 0, 0); }\n\
              #endif\n",
         );
+        let gives = |line: usize, callback: &str| {
+            format!(
+                "{UTIL}: {UTIL}:{line}: gives `{}PEM_read_bio_X509` the callback \
+                 `{callback}`, which PASSWORDS does not list",
+                prefix()
+            )
+        };
         assert_eq!(
             result,
-            Err(vec![
-                format!(
-                    "{UTIL}: {UTIL}:{}: gives `{prefix}PEM_read_bio_X509` the \
-                     callback `void*`, which PASSWORDS does not list",
-                    line - 1
-                ),
-                format!(
-                    "{UTIL}: {UTIL}:{line}: gives `{prefix}PEM_read_bio_X509` the \
-                     callback `0`, which PASSWORDS does not list"
-                ),
-            ])
+            Err(vec![gives(line + 2, "void*"), gives(line + 3, "0")])
         );
     }
 
     #[test]
     #[cfg(unix)]
     fn check_finds_a_read_past_a_pem_h_of_the_copy() {
-        let line = util_end() + 1;
-        let (result, prefix) = check_with_util(
+        let (result, line) = check_with_util(
             "pem",
             &[(
                 "src/util/openssl/pem.h",
@@ -2625,15 +2713,20 @@ n = read_x(b, 0, 0, 0);
         );
         let gives = |place: &str, callback: &str| {
             format!(
-                "{UTIL}: {place}: gives `{prefix}PEM_read_bio_X509` the callback \
-                 `{callback}`, which PASSWORDS does not list"
+                "{UTIL}: {place}: gives `{}PEM_read_bio_X509` the callback \
+                 `{callback}`, which PASSWORDS does not list",
+                prefix()
             )
         };
         assert_eq!(
             result,
             Err(vec![
+                format!(
+                    "{UTIL}: includes ./src/util/openssl/pem.h, a header of OpenSSL \
+                     outside the crypto"
+                ),
                 gives("src/util/openssl/pem.h:2", "void*"),
-                gives(&format!("{UTIL}:{line}"), "0"),
+                gives(&format!("{UTIL}:{}", line + 1), "0"),
             ])
         );
     }
@@ -3111,13 +3204,13 @@ End of search list.
     /// The symbol prefix of [`crypto`].
     const PREFIX: &str = "fixture_";
 
-    /// A [`Crypto`] with no include directory, the symbol prefix [`PREFIX`], and an
-    /// empty `pem.h`.
+    /// A [`Crypto`] with no include directory, the symbol prefix [`PREFIX`], and no
+    /// `openssl/*.h`: the directory of xtask holds no `.h` file.
     fn crypto() -> Crypto {
         Crypto {
             include: Vec::new(),
             prefix: PREFIX.to_owned(),
-            pem: PathBuf::from("/dev/null"),
+            openssl: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
         }
     }
 
@@ -3740,7 +3833,7 @@ End of search list.
         let crypto = Crypto {
             include: vec![dir.join("crypto")],
             prefix: PREFIX.to_owned(),
-            pem: PathBuf::from("/dev/null"),
+            openssl: dir.join("crypto/openssl"),
         };
         assert_eq!(
             inspect(
