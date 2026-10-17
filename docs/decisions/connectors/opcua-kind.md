@@ -129,11 +129,13 @@
   cursor and gives no entry. A cursor with no point, or whose point the server freed
   (`BadContinuationPointInvalid`), browses the folder again from its start and skips
   that count when the count is at most 100 000. While it skips, it reads past at most
-  `VISITS` pages with no references, and then gives a page with no entries and the
-  same cursor. Past 100 000, a freed point gives
-  `Error::Device` with `BadContinuationPointInvalid`, and a cursor with no point gives
-  `opcua.bad-cursor`. A skip assumes that the server keeps the order of the references
-  of the folder: when the server changes that order, a skip can drop or repeat a
+  `VISITS` pages with no references, and then gives a page with no entries and the same
+  cursor. A cursor that the same browse gave then reads past the pages with no
+  references that it already gave, so it gives the page that a held cursor gives. Past
+  100 000, a freed point gives `Error::Device` with `BadContinuationPointInvalid`, and a
+  cursor with no point gives `opcua.bad-cursor`. A skip assumes that the server keeps
+  the order of the references of the folder: when the server changes that order, a skip
+  can drop or repeat a
   reference, and a name with ` (<tag>)` after it can move to another node. A browse
   keeps the tag and the name of each node before the page of each cursor, at most 16 MiB
   of them across its cursors, past which the browse gives `Error::Device` (round 2

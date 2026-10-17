@@ -1349,6 +1349,26 @@ fn a_walk_whose_point_the_server_freed_ends_at_its_budget() {
     assert_eq!(found.expect("found").end, End::Budget);
 }
 
+/// 6003 references of `root` in a page each, the pages of places 1 to 6000 with no
+/// references. The relay frees the point of `root` at the page of place 5000, and the
+/// walk does not get the pages before it again, so it ends as a walk with a held point
+/// does.
+#[test]
+fn a_walk_whose_point_the_server_freed_does_not_give_its_empty_pages_again() {
+    let mut freed = false;
+    let rewrite = placed(move |message, _, place| {
+        if place == 5000 && !freed {
+            freed = true;
+            let invalid = Status::BAD_CONTINUATION_POINT_INVALID.0.to_le_bytes();
+            message[56..60].copy_from_slice(&invalid);
+        } else if (1..=6000).contains(&place) {
+            emptied(message);
+        }
+    });
+    let found = walked(numbered(6_003), rewrite, everything());
+    assert_eq!(found.expect("found").end, End::Done);
+}
+
 /// 10 003 references of `root` in a page each, the pages of places 1 to 10 001 with no
 /// references. At the bound of 1, the Browse of `n00000` releases the point of `root`,
 /// and the walk still ends at its budget.

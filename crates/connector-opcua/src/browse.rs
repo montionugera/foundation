@@ -43,8 +43,9 @@ pub(crate) struct Server<'a> {
     uses: u64,
     /// The bytes of the `seen` of each of `points`.
     held: usize,
-    /// The key of each cursor that this browse gave and no page used since.
-    given: BTreeSet<(Node, usize)>,
+    /// The count of pages with no references between the last reference before each
+    /// cursor that this browse gave and no page used since, and its point.
+    given: BTreeMap<(Node, usize), usize>,
 }
 
 /// Where the page of a cursor starts.
@@ -77,18 +78,21 @@ impl<'a> Server<'a> {
             points: BTreeMap::new(),
             uses: 0,
             held: 0,
-            given: BTreeSet::new(),
+            given: BTreeMap::new(),
         }
     }
 
     /// Gives the references of `folder` from the count `before`, what the references
     /// before them gave, and the continuation point after them with the count of its
-    /// references still to skip. A cursor whose point this browse holds goes on with
-    /// `BrowseNext`. Else, or when the server freed its point, it browses `folder`
+    /// references still to skip and the count of pages with no references between the
+    /// last reference before it and it. A cursor whose point this browse holds goes on
+    /// with `BrowseNext`. Else, or when the server freed its point, it browses `folder`
     /// again from its start and skips `before` references. It reads past each page of
     /// the server that gives only references to skip, and past at most
-    /// [`browse::VISITS`] pages with none while it skips or, for a cursor that this
-    /// browse did not give, also after it skips, so that a cursor of a page with no
+    /// [`browse::VISITS`] pages with none while it skips. Then a cursor that this
+    /// browse gave reads past the pages with none that it passed, so it gives the page
+    /// that a held cursor gives. A cursor that this browse did not give reads past at
+    /// most [`browse::VISITS`] pages with none, so that a cursor of a page with no
     /// entries goes on in a new browse. After each other page with none, it gives no
     /// references and a held point. `before` is `None` for the first page, and is a
     /// count past [`SKIP`] only for a cursor that this browse holds. `None` when the
@@ -104,22 +108,28 @@ impl<'a> Server<'a> {
         &mut self,
         folder: &Node,
         before: Option<usize>,
-    ) -> Result<Option<(Vec<Reference>, Seen, Option<(Point, usize)>)>, Error> {
+    ) -> Result<Option<(Vec<Reference>, Seen, Option<(Point, usize, usize)>)>, Error>
+    {
         let key = (folder.clone(), before.unwrap_or(0));
-        let again = before.is_some() && !self.given.remove(&key);
+        let since = self.given.remove(&key);
+        let again = before.is_some() && since.is_none();
         let before = key.1;
         let held = self.points.remove(&key);
         if let Some(held) = &held {
             self.held -= held.seen.bytes;
         }
-        let (mut page, mut seen, mut left, again) = if let Some(held) = held {
+        let (mut page, mut seen, mut left, mut run) = if let Some(held) = held {
             match self.client.browse_next(held.point).await {
-                Ok(page) => (page, held.seen, held.left, false),
+                Ok(page) => {
+                    let run =
+                        since.expect("invariant: this browse gave each held point");
+                    (page, held.seen, held.left, run)
+                }
                 Err(Status::BAD_CONTINUATION_POINT_INVALID) if before <= SKIP => {
                     let Some(page) = self.first(folder).await? else {
                         return Ok(None);
                     };
-                    (page, Seen::default(), before, again)
+                    (page, Seen::default(), before, 0)
                 }
                 Err(status) => return Err(failed(status)),
             }
@@ -127,10 +137,16 @@ impl<'a> Server<'a> {
             let Some(page) = self.first(folder).await? else {
                 return Ok(None);
             };
-            (page, Seen::default(), before, again)
+            (page, Seen::default(), before, 0)
         };
         let mut empty = 0;
         loop {
+            // A page before the last reference to skip is not after the cursor.
+            run = if page.references.is_empty() && left == 0 {
+                run + 1
+            } else {
+                0
+            };
             let skipped = left.min(page.references.len());
             let rest = page.references.split_off(skipped);
             for reference in &page.references {
@@ -140,7 +156,9 @@ impl<'a> Server<'a> {
             }
             self.fits(&seen)?;
             left -= skipped;
-            let past = skipped > 0 || (again || left > 0) && empty < browse::VISITS;
+            let past = skipped > 0
+                || left == 0 && since.is_some_and(|since| run <= since)
+                || (again || left > 0) && empty < browse::VISITS;
             match page.next {
                 Some(point) if rest.is_empty() && past => {
                     empty += usize::from(skipped == 0);
@@ -150,7 +168,10 @@ impl<'a> Server<'a> {
                 Some(_) if rest.is_empty() && again => {
                     return Err(device(Failure::Empty));
                 }
-                next => return Ok(Some((rest, seen, next.map(|point| (point, left))))),
+                next => {
+                    let next = next.map(|point| (point, left, run));
+                    return Ok(Some((rest, seen, next)));
+                }
             }
         }
     }
@@ -328,7 +349,7 @@ impl browse::Device for Server<'_> {
         let entries = kept.into_iter().zip(shapes);
         let entries = entries.map(|((name, tag, _), shape)| Child { name, tag, shape });
         let mut cursor = None;
-        if let Some((point, left)) = next {
+        if let Some((point, left, run)) = next {
             self.uses += 1;
             self.held += seen.bytes;
             let held = Held {
@@ -337,7 +358,7 @@ impl browse::Device for Server<'_> {
                 seen,
                 left,
             };
-            self.given.insert((folder.clone(), after));
+            self.given.insert((folder.clone(), after), run);
             self.points.insert((folder, after), held);
             cursor = Some(Cursor::new(after.to_string()));
         }

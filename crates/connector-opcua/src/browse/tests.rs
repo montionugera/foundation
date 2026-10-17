@@ -579,6 +579,8 @@ fn moved_cursor(before: usize, released: bool) -> Result<Option<Page>, Error> {
         let node: Node = tag("Plant.Types").parse().expect("a node");
         let held = server.points.remove(&(node.clone(), 8)).expect("a point");
         server.points.insert((node.clone(), before), held);
+        let run = server.given.remove(&(node.clone(), 8)).expect("a cursor");
+        server.given.insert((node.clone(), before), run);
         if released {
             server.release(1).await.expect("a release");
         } else {
@@ -613,7 +615,9 @@ fn releases_no_point_past_the_skip_bound() {
         assert!(first.expect("a folder").next.is_some());
         let node: Node = tag("Plant.Types").parse().expect("a node");
         let held = server.points.remove(&(node.clone(), 8)).expect("a point");
-        server.points.insert((node, 100_001), held);
+        server.points.insert((node.clone(), 100_001), held);
+        let run = server.given.remove(&(node.clone(), 8)).expect("a cursor");
+        server.given.insert((node, 100_001), run);
         server.release(usize::MAX).await.expect("a release");
         let cursor = Cursor::new("100001".to_owned());
         server.level(Some(&folder), Some(&cursor)).await
