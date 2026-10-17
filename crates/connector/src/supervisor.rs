@@ -447,8 +447,8 @@ mod tests {
     use types::sample::{Scalar, Type};
 
     const BAD: Code = Code::new("test.bad");
-    /// The sim seeds of a test whose outcome the seed decides, through the order of
-    /// tasks ready at one instant or the draws of `entropy`.
+    /// The least count of sim seeds of a test whose outcome the seed decides, through
+    /// the order of tasks ready at one instant or the draws of `entropy`.
     const SEEDS: u64 = 64;
 
     /// What one run of [`Script`] does.
