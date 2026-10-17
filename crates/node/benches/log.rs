@@ -11,7 +11,7 @@
 //!   had a log.
 //! - `span`: a `trace` span entered and dropped under the level `trace`.
 //! - `entered`: an enter and an exit of the span of a connector under the level
-//!   `info`, as each poll of the run of a connector makes.
+//!   `info`.
 //! - `build`: the build of the dispatch, once for each node.
 //!
 //! The writer is `io::sink`, so no line counts its write to stderr.

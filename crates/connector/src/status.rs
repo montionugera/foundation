@@ -165,9 +165,11 @@ pub(crate) fn check(kind: &str, counts: &[Name]) {
 pub(crate) struct Status(Rc<Values>);
 
 impl Status {
-    /// A status with each of `counts` at 0, that no writer writes yet.
-    pub(crate) fn new(counts: Vec<Name>) -> Self {
+    /// A status with each of `counts` at 0, that no writer writes yet. Each event that
+    /// it logs has `span` as its parent.
+    pub(crate) fn new(counts: Vec<Name>, span: tracing::Span) -> Self {
         Self(Rc::new(Values {
+            span,
             counts: counts.into_iter().map(|n| (n, Cell::new(0))).collect(),
             run: RefCell::default(),
             staged: Cell::new(false),
@@ -219,7 +221,7 @@ impl Status {
             if run.note == note {
                 return false;
             }
-            tracing::info!(note = note.as_str(), "note");
+            tracing::info!(parent: &self.0.span, note = note.as_str(), "note");
             run.note = note;
             true
         });
@@ -234,8 +236,10 @@ impl Status {
             }
             match &new {
                 Shown::Nothing => {}
-                Shown::Cleared => tracing::info!("cleared"),
-                Shown::Error(error) => tracing::warn!(error = error.as_str(), "error"),
+                Shown::Cleared => tracing::info!(parent: &self.0.span, "cleared"),
+                Shown::Error(error) => {
+                    tracing::warn!(parent: &self.0.span, error = error.as_str(), "error");
+                }
             }
             run.error = new;
             true
@@ -386,6 +390,8 @@ impl Class {
 /// The last value of each count, what the run shows, and whether the status waits
 /// for a write.
 struct Values {
+    /// The parent of each event of the status.
+    span: tracing::Span,
     counts: Box<[(Name, Cell<u64>)]>,
     /// `None` while no run runs: what a task of the last run shows is not written.
     run: RefCell<Option<Run>>,
@@ -451,11 +457,13 @@ impl Writer {
     /// Opens the writer of the status channels of `connector`, whose kind named
     /// `counts`, as the connector, and gives the status that it writes. `clock` times
     /// the writes. `cancel` is the token of the call: it ends each wait for the home,
-    /// and after it [`Self::start`] writes nothing.
+    /// and after it [`Self::start`] writes nothing. Each event that the writer and the
+    /// status log has `span` as its parent.
     pub(crate) async fn open(
         hub: &hub::Hub,
         connector: &Name,
         counts: Vec<Name>,
+        span: tracing::Span,
         clock: Clock,
         cancel: cancel::Token,
     ) -> Result<(Self, Status), hub::writer::Error> {
@@ -498,7 +506,7 @@ impl Writer {
         };
         let (error, note) = (text(error), text(note));
         let group = set.entries()[entries[0]].group;
-        let status = Status::new(counts);
+        let status = Status::new(counts, span);
         let session = Session {
             hub: session,
             entries,
@@ -537,7 +545,8 @@ impl Writer {
             }
             session.started = true;
             session.phase = Phase::Running;
-            tracing::info!(restarts = session.restarts, "running");
+            let restarts = session.restarts;
+            tracing::info!(parent: &self.values.span, restarts, "running");
         });
         self.values.run.replace(Some(Run::default()));
         true
@@ -552,13 +561,16 @@ impl Writer {
     ) -> impl Future<Output = ()> + use<'_> {
         self.values.run.take();
         let (class, error) = Class::with_text(end);
+        let span = &self.values.span;
         match class {
-            None => tracing::info!("ended"),
-            Some(Class::Config) => {
-                tracing::error!(class = "config", error = error.as_str(), "ended");
+            None => tracing::info!(parent: span, "ended"),
+            Some(class @ Class::Config) => {
+                let class = class.name();
+                tracing::error!(parent: span, class, error = error.as_str(), "ended");
             }
             Some(class @ (Class::Device | Class::Retry)) => {
-                tracing::warn!(class = class.name(), error = error.as_str(), "ended");
+                let class = class.name();
+                tracing::warn!(parent: span, class, error = error.as_str(), "ended");
             }
         }
         self.set(move |session| {
@@ -575,14 +587,14 @@ impl Writer {
         self.applied().await;
         let next = self.clock.now() + span;
         self.change(|session| session.phase = Phase::Waiting(next));
-        tracing::info!(backoff = %span, "restarting");
+        tracing::info!(parent: &self.values.span, backoff = %span, "restarting");
         next
     }
 
     /// Writes `state` 2.
     pub(crate) async fn stop(&self) {
         self.set(|session| session.phase = Phase::Stopped).await;
-        tracing::info!("stopped");
+        tracing::info!(parent: &self.values.span, "stopped");
     }
 
     /// Writes the change of state that `change` makes, after [`Self::applied`], so
@@ -1159,13 +1171,6 @@ mod tests {
         assert_eq!(text.capacity(), text.len());
     }
 
-    /// The tests of the lines of the status writer are in `node`, which has a log.
-    #[test]
-    fn names_each_class_in_a_line_of_the_log() {
-        let names = [Class::Config, Class::Device, Class::Retry].map(Class::name);
-        assert_eq!(names, ["config", "device", "retry"]);
-    }
-
     /// A constant spare capacity of the value cancels in each difference of held bytes
     /// that a caller can measure, so only this one sees it.
     #[test]
@@ -1182,7 +1187,7 @@ mod tests {
 
     #[test]
     fn debugs_each_value_but_the_waker() {
-        let status = Status::new(vec![name("samples")]);
+        let status = Status::new(vec![name("samples")], tracing::Span::none());
         status.count("samples").set(3);
         let want = "Status(Values { counts: \
                     [(Name(\"samples\"), Cell { value: 3 })], run: None, staged: \

@@ -12,7 +12,6 @@ use env::clock::Clock;
 use env::entropy::Entropy;
 use env::net::Net;
 use env::tasks::{Group, Tasks};
-use tracing::Instrument;
 use types::name::Name;
 use types::time::Span;
 
@@ -183,15 +182,9 @@ impl Opened<'_> {
                     settings,
                     reader,
                 } = *ready;
-                // At ERROR, so that each line of the run has the span at each level.
-                let span = tracing::error_span!(
-                    "connector",
-                    connector = %call.name,
-                    kind = call.kind
-                );
                 let restarts =
                     call.restarts(&writer, &status, settings.as_ref(), reader);
-                writer.during(restarts).instrument(span).await
+                writer.during(restarts).await
             }
         }
     }
@@ -254,10 +247,13 @@ impl Call<'_> {
             Ok(channels) => channels,
             Err(diagnostics) => return Start::Done(Err(Error::Config(diagnostics))),
         };
+        // At ERROR, so that each status line has the span at each level.
+        let span = tracing::error_span!("connector", connector = %name, kind);
         let mut open = pin!(status::Writer::open(
             hub,
             name,
             channels.counts,
+            span,
             clock.clone(),
             (*cancel).clone()
         ));
