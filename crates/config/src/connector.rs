@@ -72,15 +72,15 @@ pub(crate) fn check(
 ///
 /// # Errors
 ///
-/// `config.private-key` at each private key in `documents`, and then no other problem,
-/// as [`check`](crate::check) gives them; `config.no-connector` when no `connector`
-/// block has the label `name`, with the names of the connector blocks in the fix;
-/// `config.long-name` or `config.reserved-name` at a label that is `name` in any ASCII
-/// case and that `check` refuses; `config.duplicate-name` at each later `connector`
-/// block whose label is `name` in any ASCII case; `config.unfilled` or
-/// `config.bad-fill` at each `fill` in the block, and then no other problem; the
-/// problems of `kind` and `node` that `check` gives; `document.too-deep` when the body
-/// nests deeper than `document::encoding::Checked` takes.
+/// `config.private-key` at each private key in `documents`, and then no other problem.
+/// Else the problems that [`check`](crate::check) gives at each `connector` block whose
+/// label is `name` in any ASCII case, other than those of its kind: `config.unfilled`
+/// and `config.bad-fill` in its body, and then no other problem; else
+/// `config.reserved-name` and `config.duplicate-name` at its label; else
+/// `config.no-connector` when no `connector` block has the label `name`, with the
+/// names of the connector blocks that `check` takes in the fix; else the problems of
+/// `kind` and `node` in the block, and `document.too-deep` when its body nests deeper
+/// than `document::encoding::Checked` takes.
 pub fn find(documents: &[Document], name: &Name) -> Result<Connector, Vec<Diagnostic>> {
     let alarms = private_key::alarms(documents);
     if !alarms.is_empty() {
@@ -89,23 +89,19 @@ pub fn find(documents: &[Document], name: &Name) -> Result<Connector, Vec<Diagno
     let blocks = crate::blocks(documents);
     let connector = definition::Kind::Connector;
     let lower = name.as_str().to_ascii_lowercase();
-    let mut labels = duplicate::Labels::new();
-    let mut problems = Vec::new();
-    let mut names = BTreeSet::new();
-    let mut found = None;
-    for (key, label, block) in crate::names(&blocks, connector) {
-        if key.as_str().to_ascii_lowercase() == lower {
-            match crate::key(label, connector) {
-                Ok(key) => {
-                    duplicate::add(&mut labels, &key, label, connector);
-                    found = found.or(Some((key, block)));
-                }
-                Err(problem) => problems.push(problem),
-            }
-        }
-        names.insert(key);
+    let at_name = |key: &Name| key.as_str().to_ascii_lowercase() == lower;
+    let bodies = crate::names(&blocks, connector)
+        .filter(|(key, ..)| at_name(key))
+        .map(|(.., block)| &block.body);
+    let unfilled = unfilled::problems(bodies);
+    if !unfilled.is_empty() {
+        return Err(unfilled);
     }
-    problems.extend(duplicate::in_labels(&labels));
+    let Labels {
+        problems,
+        names,
+        found,
+    } = labels(&blocks, &lower);
     if !problems.is_empty() {
         return Err(problems);
     }
@@ -123,10 +119,6 @@ pub fn find(documents: &[Document], name: &Name) -> Result<Connector, Vec<Diagno
         );
         return Err(vec![Diagnostic::new(NO_CONNECTOR, None, message, fix)]);
     };
-    let unfilled = unfilled::problems([&block.body]);
-    if !unfilled.is_empty() {
-        return Err(unfilled);
-    }
     let kind = crate::required(block, "kind", read::name, KIND_FIX.into());
     let node = crate::required(block, "node", read::name, NODE_FIX.into());
     let config = Checked::new(config(block)).map_err(|error| Diagnostic::from(&error));
@@ -137,6 +129,66 @@ pub fn find(documents: &[Document], name: &Name) -> Result<Connector, Vec<Diagno
             Err(problems.into_iter().flatten().collect())
         }
     }
+}
+
+/// What `check` makes of the labels of `blocks` at one name in ASCII lower case.
+struct Labels<'a> {
+    /// The problems at each `connector` label at the name.
+    problems: Vec<Diagnostic>,
+    /// The key of each `connector` block that `check` takes, at any name.
+    names: BTreeSet<Name>,
+    /// The first `connector` block that `check` takes at the name, with its key.
+    found: Option<(Name, &'a Block)>,
+}
+
+/// The labels of `blocks`, in span order, at the name `lower` in ASCII lower case.
+fn labels<'a>(blocks: &[&'a Block], lower: &str) -> Labels<'a> {
+    let connector = definition::Kind::Connector;
+    let at_name = |key: &Name| key.as_str().to_ascii_lowercase() == lower;
+    let mut at = Vec::new();
+    let mut labels = Labels {
+        problems: Vec::new(),
+        names: BTreeSet::new(),
+        found: None,
+    };
+    for &block in blocks {
+        let (Some(&(kind, _)), [label]) = (
+            crate::KINDS
+                .iter()
+                .find(|(kind, _)| kind.as_str() == &*block.keyword),
+            block.labels.as_slice(),
+        ) else {
+            continue;
+        };
+        match crate::key(label, kind) {
+            Ok(key) => {
+                if kind == connector {
+                    labels.names.insert(key.clone());
+                }
+                if at_name(&key) {
+                    at.push((label, kind));
+                    if kind == connector {
+                        labels.found = labels.found.or(Some((key, block)));
+                    }
+                }
+            }
+            Err(problem) => {
+                if kind == connector
+                    && read::label(label).is_ok_and(|key| at_name(&key))
+                {
+                    labels.problems.push(problem);
+                }
+            }
+        }
+    }
+    // `check` reports a repeat at the later block, so only a later `connector` counts.
+    if let Some((&first, later)) = at.split_first() {
+        let later = later.iter().filter(|(_, kind)| *kind == connector);
+        let at = std::iter::once(first).chain(later.copied()).collect();
+        let at = duplicate::Labels::from([(lower.into(), at)]);
+        labels.problems.extend(duplicate::in_labels(&at));
+    }
+    labels
 }
 
 /// The body of `block` without the keys that `check` reads.

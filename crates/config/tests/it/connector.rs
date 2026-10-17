@@ -540,3 +540,71 @@ fn finds_a_connector_beside_two_other_connector_blocks_of_one_name_in_any_case()
     assert_eq!(found.kind(), &name("opcua"));
     assert_eq!(found.node(), &name("edge"));
 }
+
+#[test]
+fn refuses_what_check_refuses_at_a_connector_of_the_name() {
+    let cases = [
+        (
+            "connector \"plant\" {\n  kind = fill(\"kind\")\n  node = \"edge\"\n}\n\
+             connector \"Plant\" {\n  kind = \"influx\"\n  node = \"edge\"\n}\n",
+            "plant",
+            "config.unfilled",
+        ),
+        (
+            "connector \"@plant\" {\n  kind = fill(\"kind\")\n  node = \"edge\"\n}\n",
+            "@plant",
+            "config.unfilled",
+        ),
+        (
+            "connector \"plant\" {\n  kind = \"influx\"\n  node = \"edge\"\n}\n\
+             connector \"Plant\" {\n  kind = fill(\"kind\")\n  node = \"edge\"\n}\n",
+            "plant",
+            "config.unfilled",
+        ),
+    ];
+    for (text, name, code) in cases {
+        let found = refused(text, name);
+        let codes: Vec<_> = found.iter().map(|(code, ..)| *code).collect();
+        assert_eq!(codes, [code], "{text}");
+        assert_eq!(found, problems(text), "{text}");
+    }
+}
+
+#[test]
+fn refuses_a_connector_at_the_name_of_an_earlier_channel_as_check_does() {
+    let text = "channel \"Plant\" {\n  kind = \"index\"\n}\n\
+                connector \"plant\" {\n  kind = \"influx\"\n  node = \"edge\"\n  \
+                url = \"http://influx:8086\"\n  bucket = \"b\"\n}\n";
+    let duplicate = (
+        "config.duplicate-name",
+        Some(47),
+        "the name \"plant\" repeats the earlier `channel` name \"Plant\"".to_owned(),
+        "Give each `channel` and `connector` block a name that differs by more than case"
+            .to_owned(),
+    );
+    let checked = problems(text);
+    assert!(checked.contains(&duplicate), "{checked:?}");
+    assert_eq!(refused(text, "plant"), [duplicate]);
+}
+
+#[test]
+fn finds_a_connector_before_a_channel_of_its_name() {
+    let text = "connector \"plant\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n\
+                channel \"Plant\" {\n  kind = \"index\"\n}\n";
+    let found = config::connector(&[read(text)], &name("plant")).expect("found");
+    assert_eq!(found.kind(), &name("opcua"));
+}
+
+#[test]
+fn names_no_reserved_connector_in_the_fix_of_a_missing_name() {
+    let text = "connector \"plant.@x\" {\n  kind = \"opcua\"\n  node = \"edge\"\n}\n";
+    assert_eq!(
+        refused(text, "other"),
+        [(
+            "config.no-connector",
+            None,
+            "no `connector` block of the files has the name \"other\"".to_owned(),
+            "Add a `connector` block with the name \"other\"".to_owned(),
+        )]
+    );
+}
