@@ -257,6 +257,36 @@ mod tests {
         assert_eq!(copies(Deadline::new(3, 64 + PHASE)), []);
     }
 
+    /// The copy of an index that appends once moves to each later carry record over
+    /// three laps, and keeps its bytes.
+    #[test]
+    fn a_tagged_deadline_carries_the_copy_of_an_idle_index() {
+        let (tag, slow) = (std::num::NonZeroU8::MIN, Slot::new(2));
+        let blocks = 64 + PHASE;
+        let mut deadline = Deadline::tagged(3, blocks);
+        let mut holders = Vec::new();
+        for _ in 0..3 * blocks {
+            deadline.commit(u32::MAX);
+            let logs = &deadline.state.logs;
+            let holder = logs.holder(slow, Path::Live, tag).expect("a copy");
+            if holders.last() != Some(&holder) {
+                holders.push(holder);
+            }
+            assert!(
+                deadline.state.writer.tail() <= holder,
+                "the trim passed the copy"
+            );
+        }
+        assert!(holders.len() > 3, "carried {} times", holders.len() - 1);
+        let bytes = deadline
+            .state
+            .logs
+            .newest(Path::Live, tag)
+            .find(|&(slot, _)| slot == slow)
+            .map(|(_, newest)| newest.bytes.len());
+        assert_eq!(bytes, Some(PART));
+    }
+
     #[test]
     fn a_deadline_of_no_indexes_takes_no_entry() {
         let mut deadline = Deadline::new(0, 64 + PHASE);
