@@ -138,7 +138,10 @@ fn serve_large(text: &str, code: &'static str) {
             .position(|byte| *byte == b'\n')
             .expect("a line");
         let head: Value = serde_json::from_slice(&reply[..end]).expect("JSON");
-        assert_eq!(head["errors"][0]["code"], code);
+        assert_eq!(
+            head["errors"][0]["code"], code,
+            "the code of the first problem"
+        );
     });
     assert_eq!(ran, Ok(()), "the run ends");
 }
