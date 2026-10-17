@@ -13,7 +13,7 @@
 //! - `status`: the status line `error` of a connector, with the span of the
 //!   connector as its parent, under the level `info`.
 //! - `recorded`: a record of a field of a `trace` span under the level `trace`, as
-//!   noq-proto makes for each frame.
+//!   noq-proto makes for a frame that names a path.
 //! - `build`: the build of the dispatch, once for each node.
 //!
 //! The writer is `io::sink`, so no line counts its write to stderr.
@@ -175,7 +175,9 @@ fn recorded(bencher: Bencher<'_, '_>) {
     let d = dispatch(false, Level::TRACE);
     tracing::dispatcher::with_default(d.dispatch(), || {
         let span = tracing::trace_span!("frame", path = tracing::field::Empty);
-        bencher.bench_local(|| span.record("path", divan::black_box(1_u64)));
+        bencher.bench_local(|| {
+            span.record("path", tracing::field::display(divan::black_box(&1_u64)))
+        });
     });
 }
 
