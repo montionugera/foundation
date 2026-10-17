@@ -171,7 +171,9 @@
   the change in smaller steps`, since `hub::serve::Reply::send` panics on such a body
   (`laptop.architect`, 2026-10-08T11:24:14Z,
   https://github.com/synnaxlabs/foundation/issues/1744#issuecomment-6058791545). The
-  bound holds for the reply of an error too. `serve` stops writing a reply at the bound.
+  bound holds for the reply of an error too. A reply of `browse` over the bound, its
+  output or its error, is `ops.large-browse` in its place (below). `serve` stops writing
+  a reply at the bound.
   The places of the problems of one file share its path (`laptop.architect`,
   2026-10-12T20:11:00Z,
   https://github.com/synnaxlabs/foundation/pull/2468#issuecomment-6131805444;
@@ -402,7 +404,10 @@
   `{"browse":{...}}` with these fields, and `files` as `plan` sends them. The node
   checks, in this order, and stops at the first failure: the files read; the connector
   is a name (`ops.argument`); `config::connector` finds its block; the subject has
-  `apply`, then `admin`, on the name (`ops.denied`, SERVE ACCESS), the access with which
+  `apply`, then `admin`, on the name (`ops.denied`, SERVE ACCESS; `laptop.architect-2`,
+  2026-10-17T23:06:39Z,
+  https://github.com/synnaxlabs/foundation/pull/3079#issuecomment-6242836290), the
+  access with which
   a remote `plan` reads the sources (SECRET SOURCES); the `node` of the block is this
   node; the start is a path; the match is a pattern; and `match` and `cursor` are not
   both given (`ops.argument`, ``a browse takes `match` or `cursor`, not both``; the
@@ -412,8 +417,9 @@
   `ops.bad-start` and `ops.bad-pattern`, status 2: ``the start `<text>` is not a path:
   <cause>`` and ``the match `<text>` is not a pattern: <cause>``, with the cause of
   `connector::browse::Malformed`, and the fixes of `codes.golden`. `ops.large-browse`,
-  status 1, takes the place of `ops.large-reply` for the output of a browse: ``the
-  output of the browse has more than <n> bytes, the most that a reply holds``, fix
+  status 1, takes the place of `ops.large-reply` for a reply of a browse, its output or
+  its error: ``the reply of the browse has more than <n> bytes, the most that a reply
+  holds``, fix
   ``Narrow the start or the match, or browse without `values` ``, since a smaller plan
   does not make it fit. Each problem of an error of `Supervisor::browse` has status 1
   and starts with ``the browse of the connector `<c>` of kind `<k>` failed: ``. A
@@ -446,9 +452,12 @@
   items 2 and 3 replace the one `unit` field and the budget text of the plan, and whose
   last item gives `?`. The type is the text of `types::sample::Type`, which a `type`
   attribute takes, not the `float64` of the plan, so a browse output goes into a config
-  as it is (kind (f), accepted by `laptop.monitor` at 2026-10-17T23:02:43Z, on
-  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6242684265, with
-  `ops.large-browse`). Lost: one `unit` field, which drops the code when the device
+  as it is (kind (f), sent to `laptop.monitor` with `ops.large-browse` at
+  2026-10-17T22:57:51Z,
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6242684265; it goes
+  ahead
+  unless the person objects). Lost: one `unit` field, which drops the code when the
+  device
   gives a text, so an agent cannot tell which it got. `laptop.monitor` accepted kinds
   (e) and (f) with two conditions on (e), which follow the proto3 JSON mapping: an `i64`
   or `u64` is text, since a JSON number past 2^53 loses digits in JavaScript and in many
