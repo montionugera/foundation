@@ -153,7 +153,6 @@ async fn client(ctx: &Context<Config>) -> Result<Client, Error> {
 
 /// What an attempt that failed makes the next attempt read again.
 enum Read {
-    Nothing,
     Token,
     Ca,
 }
@@ -178,7 +177,7 @@ async fn send(
         // A block, so that `answer` does not grow the future across the backoff.
         let read = {
             let sending = Rc::clone(&client.borrow());
-            let mut read = Read::Nothing;
+            let mut read = None;
             let answer = match sending.send(request).await {
                 Ok(answer) if answer.status() == StatusCode::NO_CONTENT => {
                     ctx.clear_error();
@@ -195,7 +194,7 @@ async fn send(
                         ctx.error(&format_args!(
                             "the write to InfluxDB failed: {error}. Check the ca {ca}"
                         ));
-                        read = Read::Ca;
+                        read = Some(Read::Ca);
                     } else {
                         ctx.error(&format_args!(
                             "the write to InfluxDB failed: {error}"
@@ -211,7 +210,7 @@ async fn send(
                     matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
                 let source = ctx.config().token.as_ref().filter(|_| token);
                 if source.is_some() {
-                    read = Read::Token;
+                    read = Some(Read::Token);
                 }
                 match source {
                     Some(source) => ctx.error(&format_args!(
@@ -231,16 +230,15 @@ async fn send(
             if !backoff.wait(ctx.cancel()).await {
                 future::pending::<()>().await;
             }
+            let Some(read) = &read else {
+                break;
+            };
             // Boxed, so each rare read does not grow the future of `send`.
-            let Err(error) = Box::pin(read_again(&read, ctx, client, token)).await
+            let Err(error) = Box::pin(read_again(read, ctx, client, token)).await
             else {
                 break;
             };
-            // The text that the status gives at the end of a run with `error`.
-            match std::error::Error::source(&error) {
-                Some(source) => ctx.error(&source),
-                None => ctx.error(&error),
-            }
+            ctx.error(&error);
         }
     }
 }
@@ -258,7 +256,6 @@ async fn read_again(
     token: &RefCell<Option<Token>>,
 ) -> Result<(), Error> {
     match read {
-        Read::Nothing => {}
         Read::Token => *token.borrow_mut() = Token::read(ctx).await?,
         Read::Ca => *client.borrow_mut() = Rc::new(self::client(ctx).await?),
     }

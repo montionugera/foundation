@@ -21,17 +21,23 @@
   with a new client, before the next attempt of the same batch, as it reads the token
   again after a 401. A run with no `ca` retries a TLS failure in the run. `Error::Tls`
   also covers a server that closes in the handshake, so such a fault shows "Check the
-  ca" too. Only the reads at the start of a run end it. A read of the token or the `ca`
-  after the start that fails, with any error of `Context::secret` or of the `ca` text,
-  shows that error as the status gives it at the end of a run, keeps the batch and the
-  old token or client, and reads again after the next backoff, with no request until
-  the read gives a value. A config that cannot work shows its error until the user
-  fixes it, and loses no sample. Decided by `laptop.architect-2` on #2899
-  (https://github.com/synnaxlabs/foundation/issues/2899), which replaces "a config that
-  cannot work ends it" for a read after the start (2026-10-16T16:46:18Z:
-  https://github.com/synnaxlabs/foundation/pull/2888#issuecomment-6220307355). Lost:
-  the next attempt with the old value, and the read again only after it fails, since
-  the shown error then flips between the read and the answer.
+  ca" too. Approved by `laptop.architect-2` (2026-10-16T16:46:18Z:
+  https://github.com/synnaxlabs/foundation/pull/2888#issuecomment-6220307355). Only the
+  reads at the start of a run end it. A read of the token or the `ca` after the start
+  that fails, with any error of `Context::secret` or of the `ca` text, shows the text of
+  that error, as `Context::error` does, with the class `retry`, keeps the batch and the
+  old token or client, and reads again after the next backoff, with no request until the
+  read gives a value. A config that cannot work shows its error until the user fixes it.
+  It loses no sample at the read, but as in an outage of InfluxDB, the reader stops at a
+  full batch, and the buffer can trim what the reader did not get. Decided by
+  `laptop.architect-2` on 2026-10-16T17:09:47Z
+  (https://github.com/synnaxlabs/foundation/issues/2899) and 2026-10-16T17:09:59Z
+  (https://github.com/synnaxlabs/foundation/pull/2888#issuecomment-6220720459), with the
+  text approved on 2026-10-16T23:14:40Z
+  (https://github.com/synnaxlabs/foundation/issues/2899#issuecomment-6226448986).
+  Supersedes "a config that cannot work ends it" of 6220307355 for a read after the
+  start. Lost: the next attempt with the old value, and the read again only after it
+  fails, since the shown error then flips between the read and the answer.
   Supersedes item 1 of 6219779608: the end of the run at a TLS failure with a `ca`
   (`laptop.architect-2`, 2026-10-16T16:17:47Z:
   https://github.com/synnaxlabs/foundation/pull/2888#issuecomment-6219779608). A `ca`
