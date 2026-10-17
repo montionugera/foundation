@@ -129,15 +129,19 @@ const _: () = assert!(size_of::<Session>() == 64, "a `Session` is not 64 bytes")
 const WAITING: usize = 4;
 
 /// What a complete session got of the live path, and its credit for more.
+///
+/// `repr(C)` puts `waiting` at offset 0 and `credit` at 48, where `release` reads them
+/// for each flow.
 #[derive(Debug)]
+#[repr(C)]
 struct Flow {
-    credit: Credit,
+    /// The frames released to the session and not taken, oldest first.
+    waiting: VecDeque<Frame>,
     /// The end seq of the last frame given to the session, or its position at the
     /// open. It is the end of the last frame taken when `waiting` is empty.
     end: u64,
     cost: complete::Cost,
-    /// The frames released to the session and not taken, oldest first.
-    waiting: VecDeque<Frame>,
+    credit: Credit,
     /// What keeps the session from a later frame.
     lag: Lag,
 }
@@ -170,6 +174,11 @@ enum Lag {
 }
 
 const _: () = assert!(size_of::<Flow>() == 96, "a `Flow` is not 96 bytes");
+const _: () = assert!(
+    std::mem::offset_of!(Flow, waiting) == 0
+        && std::mem::offset_of!(Flow, credit) == 48,
+    "`waiting` or `credit` of a `Flow` moved"
+);
 
 /// A frame held in [`Readers::queue`] that a session waits for a grant on.
 #[derive(Clone, Copy, Debug)]
