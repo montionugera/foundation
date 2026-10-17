@@ -418,7 +418,7 @@ fn the_copy_links_the_timer() {
 /// that they may name in glibc, other than [`PLUGINS`]: on x86-64 with GCC or Clang at
 /// each optimization level, and on 64-bit Arm with Clang at `-O2` and
 /// `-moutline-atomics`.
-const OUTSIDE: [&str; 40] = [
+const OUTSIDE: [&str; 41] = [
     "_GLOBAL_OFFSET_TABLE_",
     "__ctype_b_loc",
     "__errno_location",
@@ -442,6 +442,7 @@ const OUTSIDE: [&str; 40] = [
     "fflush",
     "fprintf",
     "fputs",
+    "fwrite",
     "memcmp",
     "memcpy",
     "memmove",
@@ -462,15 +463,11 @@ const OUTSIDE: [&str; 40] = [
 ];
 
 /// The symbols from outside the copy that only one file of it may name, by that file:
-/// `malloc` and `free` of `UA_CertificateUtils_getThumbprint`, and `fgets`, `fwrite`,
-/// and `stdin` of `readPrivateKeyPassword`.
-const PLUGINS: [(&str, &[&str]); 2] = [
-    (
-        "plugins/crypto/openssl/certificategroup.c",
-        &["free", "malloc"],
-    ),
-    ("plugins/ua_config_default.c", &["fgets", "fwrite", "stdin"]),
-];
+/// `fgets` and `stdin` of `readPrivateKeyPassword`. Each is a call of the source, not
+/// a name that the compiler makes, so the object of its file names it at each
+/// optimization level.
+const PLUGINS: [(&str, &[&str]); 1] =
+    [("plugins/ua_config_default.c", &["fgets", "stdin"])];
 
 /// The names of [`PLUGINS`] that `object` may name.
 fn plugins(object: &str) -> &'static [&'static str] {
@@ -495,18 +492,14 @@ fn stem(path: &str) -> &str {
 #[test]
 fn plugins_admits_each_name_only_in_the_object_of_its_file() {
     assert_eq!(
-        plugins("80e9fda3d50fc3d4-certificategroup.o"),
-        ["free", "malloc"]
-    );
-    assert_eq!(
-        plugins("7-ua_config_default.o"),
-        ["fgets", "fwrite", "stdin"]
+        plugins("80e9fda3d50fc3d4-ua_config_default.o"),
+        ["fgets", "stdin"]
     );
     for object in [
         "80e9fda3d50fc3d4-ua_client.o",
-        "certificategroup.o",
-        "1-ua_certificategroup.o",
-        "2-certificategroup.o.o",
+        "ua_config_default.o",
+        "1-my_ua_config_default.o",
+        "2-ua_config_default.o.o",
         "3-ua_config_default.c",
     ] {
         assert!(plugins(object).is_empty(), "{object}");
@@ -588,7 +581,9 @@ fn objects(
     let mut objects =
         std::collections::BTreeMap::<_, std::collections::BTreeSet<_>>::new();
     for line in text.lines() {
-        let (file, rest) = line.split_once(": ").unwrap_or_else(|| panic!("{line}"));
+        let (file, rest) = line
+            .split_once(": ")
+            .unwrap_or_else(|| panic!("nm gives a line with no \": \": {line}"));
         let object = match file.strip_suffix(']').and_then(|f| f.rsplit_once('[')) {
             Some((_, member)) => member,
             None => file.rsplit('/').next().unwrap(),
@@ -637,7 +632,7 @@ fn unlisted(
         undefined
             .values()
             .any(|names| names.contains("connector_opcua_malloc")),
-        "{undefined:?}"
+        "no object names connector_opcua_malloc: {undefined:?}"
     );
     for (file, names) in PLUGINS {
         let named: Vec<_> = undefined
@@ -661,6 +656,93 @@ fn unlisted(
         })
         .map(|(object, name)| format!("{object}: {name}"))
         .collect()
+}
+
+/// Each object of `objects` with its names, as [`objects`] gives them from `nm`.
+fn undefined(
+    objects: &[(&str, &[&str])],
+) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+    objects
+        .iter()
+        .map(|(object, names)| {
+            let names = names.iter().map(|n| (*n).to_owned()).collect();
+            ((*object).to_owned(), names)
+        })
+        .collect()
+}
+
+#[test]
+fn unlisted_gives_each_name_that_no_list_admits_by_its_object() {
+    let defined = ["UA_Client_new".to_owned()].into();
+    let crypto = format!("{PREFIX}EVP_sha256");
+    let undefined = undefined(&[
+        (
+            "1-ua_config_default.o",
+            &["fgets", "stdin", "UA_Client_new"],
+        ),
+        (
+            "2-ua_client.o",
+            &["fgets", "malloc", "memcpy", "__asan_report"],
+        ),
+        ("3-shim.o", &["connector_opcua_malloc", &crypto, "stdin"]),
+    ]);
+    assert_eq!(
+        unlisted(&defined, &undefined, |name| name.starts_with("__asan")),
+        [
+            "2-ua_client.o: fgets",
+            "2-ua_client.o: malloc",
+            "3-shim.o: stdin"
+        ]
+    );
+}
+
+#[test]
+#[should_panic(expected = "no object names connector_opcua_malloc")]
+fn unlisted_panics_when_no_object_names_the_allocator() {
+    unlisted(
+        &[].into(),
+        &undefined(&[("1-ua_config_default.o", &["fgets", "stdin"])]),
+        |_| false,
+    );
+}
+
+#[test]
+#[should_panic(expected = "plugins/ua_config_default.c has no one object that names")]
+fn unlisted_panics_when_no_object_of_a_file_of_plugins_exists() {
+    unlisted(
+        &[].into(),
+        &undefined(&[("1-ua_client.o", &["connector_opcua_malloc", "fgets"])]),
+        |_| false,
+    );
+}
+
+#[test]
+#[should_panic(expected = "plugins/ua_config_default.c has no one object that names")]
+fn unlisted_panics_when_the_object_of_a_file_of_plugins_lacks_a_name() {
+    unlisted(
+        &[].into(),
+        &undefined(&[(
+            "1-ua_config_default.o",
+            &["connector_opcua_malloc", "fgets"],
+        )]),
+        |_| false,
+    );
+}
+
+#[test]
+#[should_panic(expected = "plugins/ua_config_default.c has no one object that names")]
+fn unlisted_panics_when_two_objects_have_a_file_of_plugins() {
+    unlisted(
+        &[].into(),
+        &undefined(&[
+            (
+                "1-ua_config_default.o",
+                &["connector_opcua_malloc", "fgets", "stdin"],
+            ),
+            ("2-ua_config_default.o", &["fgets", "stdin"]),
+        ]),
+        |_| false,
+    );
 }
 
 #[test]
@@ -713,19 +795,14 @@ fn the_shim_draws_nothing_from_the_generator_of_the_copy() {
 
 /// The symbol checks admit the libcrypto ([`PREFIX`]) in each object, and `cargo xtask
 /// open62541` admits each call of it only in the files of the copy that it keys.
-/// Neither the shim nor the test server names the libcrypto or [`PLUGINS`], so neither
-/// calls aws-lc unseen nor frees a block of `src/alloc.rs` with `free`.
+/// Neither the shim nor the test server names the libcrypto, so neither calls aws-lc
+/// unseen.
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "needs GNU nm")]
-fn the_shim_names_neither_the_libcrypto_nor_the_names_of_the_plugins() {
+fn the_shim_names_no_libcrypto() {
     let named: Vec<_> = shim_undefined()
         .into_iter()
-        .filter(|name| {
-            name.starts_with(PREFIX)
-                || PLUGINS
-                    .iter()
-                    .any(|(_, names)| names.contains(&name.as_str()))
-        })
+        .filter(|name| name.starts_with(PREFIX))
         .collect();
     assert!(named.is_empty(), "the shim names {named:?}");
 }
@@ -1575,7 +1652,7 @@ fn the_c_on_64_bit_arm_names_only_the_listed_symbols_outside_it() {
         "-DUA_ARCH_HEADER=\"{}\"",
         root.join("src/alloc.h").display()
     );
-    let objects: Vec<_> = sources
+    let files: Vec<_> = sources
         .lines()
         .enumerate()
         .map(|(i, source)| {
@@ -1617,7 +1694,7 @@ fn the_c_on_64_bit_arm_names_only_the_listed_symbols_outside_it() {
         })
         .collect();
     let defined = symbols("--defined-only");
-    let undefined = self::objects(&objects, "--undefined-only");
+    let undefined = objects(&files, "--undefined-only");
     let unlisted = unlisted(&defined, &undefined, |_| false);
     assert!(unlisted.is_empty(), "the C names {unlisted:?}");
 }
