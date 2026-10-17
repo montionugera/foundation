@@ -77,13 +77,13 @@ impl<'a> Server<'a> {
     /// before them gave, and the continuation point after them with the count of its
     /// references still to skip. A cursor of this browse goes on with `BrowseNext`.
     /// Else, or when the server no longer holds its point, it browses `folder` again
-    /// from its start and skips `before` references. It reads pages of the server
-    /// while each gives only references to skip, so it gives no references and a
-    /// held point after a page with none. A browse again for a cursor also reads past
-    /// pages with none, so that a cursor of a page with no entries goes on in a new
-    /// browse, at most [`browse::VISITS`] of them. `before` is `None` for the first page,
-    /// and is a count past [`SKIP`] only for a cursor that this browse holds. `None`
-    /// when the server does not have `folder`.
+    /// from its start and skips `before` references. It reads pages of the server while
+    /// each gives only references to skip, so it gives no references and a held point
+    /// after a page with none. A browse again for a cursor also reads past pages with
+    /// none, so that a cursor of a page with no entries goes on in a new browse, at
+    /// most [`browse::VISITS`] of them. `before` is `None` for the first page, and is a
+    /// count past [`SKIP`] only for a cursor that this browse holds. `None` when the
+    /// server does not have `folder`.
     ///
     /// # Errors
     ///
@@ -260,6 +260,12 @@ impl browse::Device for Server<'_> {
                 kept.push((name, tag, reference));
             }
         }
+        // A folder that a walk opens twice can give a cursor that it holds.
+        if next.is_some()
+            && let Some(earlier) = self.points.remove(&(folder.clone(), after))
+        {
+            self.held -= earlier.seen.bytes;
+        }
         self.fits(&seen)?;
         let references: Vec<&Reference> = kept.iter().map(|(_, _, it)| it).collect();
         let shapes = self.shapes(&references).await.map_err(failed)?;
@@ -268,10 +274,7 @@ impl browse::Device for Server<'_> {
         let next = next.map(|(point, left)| {
             self.held += seen.bytes;
             let held = Held { point, seen, left };
-            // A folder that a walk opens twice can give a cursor that it holds.
-            if let Some(earlier) = self.points.insert((folder, after), held) {
-                self.held -= earlier.seen.bytes;
-            }
+            self.points.insert((folder, after), held);
             Cursor::new(after.to_string())
         });
         Ok(Some(Page {

@@ -119,23 +119,22 @@
   count gives `opcua.bad-cursor`. The browse keeps the continuation point of each cursor
   that it gives. A page of the server with no references gives a page with no entries
   and a cursor, so the budget of `browse::walk` counts it. A browse again for a cursor
-  reads past at most `VISITS` pages of the server with no references, so that the
-  cursor of a page with no entries goes on in a new browse. Past them, it gives
-  `Error::Device`. A reference to a node of another class counts in the text of a
-  cursor and gives no entry. A cursor with no point, or
-  whose point the server freed (`BadContinuationPointInvalid`), browses the folder again
-  from its start and skips that count when the count is at most 100 000. Past that
-  count, a freed point gives `Error::Device` with `BadContinuationPointInvalid`, and a
-  cursor with no point gives `opcua.bad-cursor`. A skip assumes that the server keeps
-  the order of the references of the folder: when the server changes that order, a skip
-  can drop or repeat a reference, and a name with ` (<tag>)` after it can move to
-  another node. A browse keeps the tag and the name of each node before the page of
-  each cursor, at most 16 MiB of them across its cursors, past which the browse gives
-  `Error::Device` (round 2 findings 1 and 2, 2026-10-17T03:40:23Z, for this bound and
-  for `VISITS`:
+  reads past at most `VISITS` pages of the server with no references, so that the cursor
+  of a page with no entries goes on in a new browse. Past them, it gives
+  `Error::Device`. A reference to a node of another class counts in the text of a cursor
+  and gives no entry. A cursor with no point, or whose point the server freed
+  (`BadContinuationPointInvalid`), browses the folder again from its start and skips
+  that count when the count is at most 100 000. Past that count, a freed point gives
+  `Error::Device` with `BadContinuationPointInvalid`, and a cursor with no point gives
+  `opcua.bad-cursor`. A skip assumes that the server keeps the order of the references
+  of the folder: when the server changes that order, a skip can drop or repeat a
+  reference, and a name with ` (<tag>)` after it can move to another node. A browse
+  keeps the tag and the name of each node before the page of each cursor, at most 16 MiB
+  of them across its cursors, past which the browse gives `Error::Device` (round 2
+  findings 1 and 2, 2026-10-17T03:40:23Z, for this bound and for `VISITS`:
   https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229156018, approved
   by `laptop.architect-2`, 2026-10-17T04:05:28Z:
-  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229428004). The
-  bound of browses at once is #2981. Until PR 5b2 of #2705 (#2969), a server that gives
-  `BadNoContinuationPoints` fails the browse with `Error::Device` and its status. A
-  node whose Read alone does not fit one message of the server gives no value.
+  https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6229428004). The bound
+  of browses at once is #2981. Until PR 5b2 of #2705 (#2969), a server that gives
+  `BadNoContinuationPoints` fails the browse with `Error::Device` and its status. A node
+  whose Read alone does not fit one message of the server gives no value.

@@ -162,13 +162,13 @@ pub(super) struct Bounds {
 }
 
 impl Client {
-    /// Browses the forward hierarchical references of `node` and their subtypes, to
-    /// the node classes Object, Variable, and View, and gives the first page of at
-    /// most `most` references, in server order, with [`Class::Other`] for a reference
-    /// of another class from a server that does not filter by class. It asks for fewer when an answer of
-    /// `most` references, each with its texts at 256 bytes, would be past one message
-    /// that the client takes, but for at least 1. `None` when the server does not have
-    /// `node`.
+    /// Browses the forward hierarchical references of `node` and their subtypes, to the
+    /// node classes Object, Variable, and View, and gives the first page of at most
+    /// `most` references, in server order, with [`Class::Other`] for a reference of
+    /// another class from a server that does not filter by class. It asks for fewer
+    /// when an answer of `most` references, each with its texts at 256 bytes, would be
+    /// past one message that the client takes, but for at least 1. `None` when the
+    /// server does not have `node`.
     ///
     /// # Errors
     ///
