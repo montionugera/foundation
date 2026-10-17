@@ -7399,6 +7399,37 @@ fn newest_reads_no_file() {
     .expect("the buffer ends");
 }
 
+/// A pool with no block for the copy of an entry gives `Error::Pool`.
+#[test]
+fn newest_with_no_block_for_the_bytes_gives_the_pool_error() {
+    run(172, |shard| async move {
+        let mut slots = Slots::new();
+        let buffer = shard
+            .open(layout(AREA, BODY_MAX), &mut slots)
+            .await
+            .expect("opens");
+        let a = slots.index(key(1));
+        buffer
+            .append([tagged(1, a, Path::Live, 0, 1, shard.block(1))])
+            .expect("queues");
+        buffer.committed().await.expect("commits");
+        let mut held = Vec::new();
+        let mut len = shard.pool.largest();
+        while len > 0 {
+            while let Ok(block) = shard.pool.alloc(len) {
+                held.push(block);
+            }
+            len -= len.div_ceil(16);
+        }
+        let exhausted = block::Error::Exhausted {
+            requested: 1,
+            available: 0,
+        };
+        let found = buffer.newest(Path::Live, NonZeroU8::MIN);
+        assert_eq!(found, Err(Error::Pool(exhausted)));
+    });
+}
+
 /// After a failed sync, `newest` gives the entry that was durable before it.
 #[test]
 fn newest_after_a_failed_sync_gives_the_durable_entry() {
