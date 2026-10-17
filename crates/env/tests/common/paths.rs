@@ -55,6 +55,7 @@ macro_rules! tests {
             a_link_to_a_file_with_a_slash_fails,
             a_resolve_of_a_link_to_nothing_with_a_slash_is_not_found,
             within_refuses_a_new_name_by_a_hidden_folder_that_is_not_there,
+            within_refuses_a_new_name_outside_by_a_hidden_folder_that_is_not_there,
             within_hides_a_hidden_file_that_a_write_replaces,
             within_holds_nothing_in_a_file_that_a_write_replaces,
             within_hides_a_hidden_folder_that_the_limits_refuse,
@@ -500,6 +501,22 @@ pub(crate) fn within_refuses_a_new_name_by_a_hidden_folder_that_is_not_there(
     paths.write(&data.join("admin.key"), b"x").unwrap();
     let key = within.read(&data.join("admin.key"), 1);
     assert_eq!(key, Err(Error::Hidden));
+}
+
+/// A new name that no folder holds is outside, also beside a missing hidden folder.
+pub(crate) fn within_refuses_a_new_name_outside_by_a_hidden_folder_that_is_not_there(
+    host: &Host<'_>,
+) {
+    let (paths, dir) = (host.paths, host.dir);
+    (host.make_dir)(&dir.join("work"));
+    (host.make_dir)(&dir.join("work/sub"));
+    let base = paths.resolve(dir).unwrap();
+    let within = paths
+        .within(&[base.join("work/sub")], &[base.join("work/data")])
+        .unwrap();
+    let written = within.write(&base.join("work/b.hcl"), b"x");
+    assert_eq!(written, Err(Error::Outside));
+    assert_eq!(within.write(&base.join("work/sub/b.hcl"), b"x"), Ok(()));
 }
 
 pub(crate) fn within_hides_a_hidden_file_that_a_write_replaces(host: &Host<'_>) {

@@ -65,11 +65,12 @@ impl Paths {
     /// key of a hidden folder that it removed hides what it holds. While nothing is at
     /// a hidden path, a call that makes a new name in the deepest directory on its way
     /// that is there fails with [`Error::Vacant`], also for a name that does not make
-    /// that path, unless another hidden folder refuses it with [`Error::Hidden`]. A
-    /// folder whose file a call cannot take holds nothing at that call. The limits of
-    /// `self` hold too, so a handle never reaches more than the one it came from. The
-    /// check and the call are two steps: a symbolic link that another program makes
-    /// between them can lead the call out.
+    /// that path, unless the limits refuse it with [`Error::Hidden`],
+    /// [`Error::Outside`], or [`Error::Replaced`]. A folder whose file a call cannot
+    /// take holds nothing at that call. The limits of `self` hold too, so a handle
+    /// never reaches more than the one it came from. The check and the call are two
+    /// steps: a symbolic link that another program makes between them can lead the call
+    /// out.
     ///
     /// # Errors
     ///
@@ -304,10 +305,6 @@ impl Paths {
                 }
             }
         }
-        // `Hidden` of any hidden folder wins over `Vacant`.
-        if vacant {
-            return Err(Error::Vacant);
-        }
         for limit in self.limits.iter() {
             let now = |dir: &PathBuf| self.driver.key(dir).ok();
             let held = |(dir, was): &(PathBuf, Key)| {
@@ -323,6 +320,9 @@ impl Paths {
                     Error::Outside
                 });
             }
+        }
+        if vacant {
+            return Err(Error::Vacant);
         }
         Ok(())
     }

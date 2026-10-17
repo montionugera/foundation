@@ -1376,6 +1376,16 @@ mod serve {
     }
 
     #[test]
+    fn fuzz_inputs_reach_their_codes() {
+        let root = include_str!("../../../oracles/fuzz/ops_mcp/plan-root");
+        let out = run(&["mcp"], root.as_bytes()).stdout;
+        assert!(out.contains("ops.outside"), "{out}");
+        let outside = include_str!("../../../oracles/fuzz/ops_mcp/plan-outside");
+        let out = run(&["mcp"], outside.as_bytes()).stdout;
+        assert!(out.contains("ops.read"), "{out}");
+    }
+
+    #[test]
     fn mcp_answers_each_line_until_input_ends() {
         let note = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n";
         let input = format!("{PING}{note}{PING}");

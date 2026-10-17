@@ -971,8 +971,9 @@
   the call makes a new name in the deepest directory on the way to it that is there.
   It is the refusal of a new name beside a missing hidden folder, which gave `Hidden`.
   A hidden folder that is there, and one that a program moved away, still give
-  `Hidden`, which wins over `Vacant`, and `Vacant` wins over `Outside`. `Replaced`: the
-  path is under the resolved path of a folder of `within`, where a program put another
+  `Hidden`, which wins over `Vacant`. `Outside` and `Replaced` win over `Vacant`.
+  `Replaced`: the path is under the resolved path of a folder of `within`, where a
+  program put another
   file after that call. It is `Outside` for such a path. So a folder that is a file
   gives `Replaced` after a write to it. The common cases pin both on both drivers.
   Decided by `laptop.architect-2` (2026-10-17T05:16:48Z,
