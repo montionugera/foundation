@@ -10,7 +10,7 @@ use types::quality::Quality;
 use super::{Served, Variables, serve, tree};
 use crate::client::Client;
 use crate::client::browse::{
-    Cause, Class, Description, Foreign, Page, Reference, Unit,
+    Base, Cause, Class, Description, Foreign, Page, Reference, Unit,
 };
 use crate::event;
 use crate::ffi::Status;
@@ -449,7 +449,7 @@ fn a_client_browses_the_tree_from_objects() {
         [[
             Reference {
                 node: Err(Foreign {
-                    text: tree::GUID.to_owned(),
+                    text: tree::GUID.as_bytes().to_vec(),
                     cause: Cause::Key,
                 }),
                 ..reference("guid", "guid", Class::Object, ORGANIZES)
@@ -481,7 +481,7 @@ fn a_client_describes_each_variable_of_the_tree() {
         .collect();
     let described = with_tree(async move |client| client.describe(&nodes).await);
     let description = |base: Option<u32>, rank: i32, access: u8| Description {
-        base,
+        base: base.map(Base::of),
         rank: Some(rank),
         access: Some(access),
         unit: None,

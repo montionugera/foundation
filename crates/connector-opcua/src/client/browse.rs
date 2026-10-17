@@ -5,12 +5,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
 use std::num::{NonZeroU32, NonZeroUsize};
 
+use types::sample::Scalar;
+
 use super::service::{self, Answer, Item, Request, Sizes};
 use super::{Client, id_bytes, limit};
 use crate::ffi::{self, Service, Status};
 use crate::node::ns0::{ENUMERATION, HAS_SUBTYPE};
 use crate::node::{Key, Node};
-use crate::value::Value;
+use crate::value::{SCALARS, Value};
 
 /// `HierarchicalReferences`.
 const HIERARCHICAL: u32 = 33;
@@ -72,8 +74,9 @@ pub(crate) struct Reference {
 /// A node of a [`Reference`] that [`Node`] cannot hold.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Foreign {
-    /// Its text in the form of OPC 10000-6, 5.3.1.10, such as `ns=1;g=<guid>`.
-    pub(crate) text: String,
+    /// The bytes of its text in the form of OPC 10000-6, 5.3.1.10, such as
+    /// `ns=1;g=<guid>`, with the bytes of a name as the server gave them.
+    pub(crate) text: Vec<u8>,
     pub(crate) cause: Cause,
 }
 
@@ -99,16 +102,41 @@ pub(crate) enum Class {
 /// What a server says of a variable.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Description {
-    /// The id in namespace 0 of the built-in type of its data type, such as 11 for
-    /// Double, as [`base`] gives it. `None` also when a type on the walk has an id
-    /// that is not a number or a name.
-    pub(crate) base: Option<u32>,
+    /// The built-in type of its data type, as [`base`] gives it. `None` also when a
+    /// type on the walk has an id that is not a number or a name.
+    pub(crate) base: Option<Base>,
     /// Its `ValueRank`: -1 for a scalar.
     pub(crate) rank: Option<i32>,
     /// Its `UserAccessLevel`.
     pub(crate) access: Option<u8>,
     /// Its `EngineeringUnits`.
     pub(crate) unit: Option<Unit>,
+}
+
+/// The built-in type of the data type of a variable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Base {
+    /// A type from Boolean to Double, which a read decodes, as its sample type.
+    Scalar(Scalar),
+    /// Another built-in type, by its name, such as `String`.
+    Other(&'static str),
+}
+
+impl Base {
+    /// Gives the base of the built-in type of the id `id` in namespace 0.
+    ///
+    /// # Panics
+    ///
+    /// If `id` is not of a built-in type, 1 to 25.
+    pub(crate) fn of(id: u32) -> Self {
+        let index = usize::try_from(id - 1).expect("invariant: a u32 fits a usize");
+        // The index of a built-in type in `UA_TYPES` is its id less 1, as `shim.c`
+        // asserts, and `SCALARS` is at the same index.
+        match SCALARS.get(index) {
+            Some(&scalar) => Self::Scalar(scalar),
+            None => Self::Other(ffi::types()[index].name()),
+        }
+    }
 }
 
 /// The `EUInformation` of a variable.
@@ -226,9 +254,7 @@ impl Client {
             return Ok(bounds);
         }
         let nodes = BOUNDS.map(Node::ns0);
-        let nodes = self
-            .nodes(&nodes)
-            .expect("invariant: a read of two nodes by number fits one message");
+        let nodes = self.numbered(&nodes);
         let values = self.read(&nodes).await?;
         let [browse, translate] = values else {
             panic!("invariant: a read gives one value for each node");
@@ -340,7 +366,7 @@ impl Client {
         types: &[Option<Node>],
         most: Option<NonZeroUsize>,
         supertypes: &mut BTreeMap<Node, Option<Node>>,
-    ) -> Result<Vec<Option<u32>>, Status> {
+    ) -> Result<Vec<Option<Base>>, Status> {
         let build = |raw: &[ffi::Node<'_>]| {
             Request::browse(raw, HAS_SUBTYPE, true, DATA_TYPE, NonZeroU32::MIN)
         };
@@ -462,13 +488,13 @@ fn base(
     supertypes: &BTreeMap<Node, Option<Node>>,
     failed: &BTreeSet<Node>,
     data_type: &Node,
-) -> Result<Option<u32>, Node> {
+) -> Result<Option<Base>, Node> {
     let mut at = data_type;
     for _ in 0..=STEPS {
         if let (0, Key::Number(id)) = (at.namespace, &at.key) {
             match *id {
-                1..=21 | 23 | 25 => return Ok(Some(*id)),
-                ENUMERATION => return Ok(Some(INT32)),
+                1..=21 | 23 | 25 => return Ok(Some(Base::of(*id))),
+                ENUMERATION => return Ok(Some(Base::of(INT32))),
                 22 | 24 | 26..=28 => return Ok(None),
                 _ => {}
             }

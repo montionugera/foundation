@@ -10,9 +10,11 @@ use std::panic;
 use env::clock::Clock;
 use env::net::Net;
 use env::rng::Rng;
+use types::sample::Scalar;
 
 use super::PORT;
 use crate::client::Nodes;
+use crate::client::browse::Base;
 use crate::connection;
 use crate::event;
 use crate::node::{Key, Name, Node};
@@ -145,7 +147,9 @@ impl Server {
         };
         let nodes = |node: Node| {
             let nodes: Vec<Node> = std::iter::repeat_n(node, count).collect();
-            session.nodes(&nodes).expect("one copy fits one message")
+            let (nodes, large) = session.nodes(&nodes);
+            assert!(large.is_empty(), "one copy fits one message");
+            nodes
         };
         let (number, name) = (nodes(VALUE), nodes(named()));
         Client {
@@ -205,15 +209,19 @@ impl Client {
         }
     }
 
-    /// Describes the variable of [`Variable::Number`], and gives the id in namespace 0
-    /// of its base type.
+    /// Describes the variable of [`Variable::Number`], and gives the sample type of
+    /// its base type, or `None` when its base is not a type from Boolean to Double.
     ///
     /// # Panics
     ///
     /// If the describe fails, with its status.
-    pub async fn describe(&mut self) -> Option<u32> {
+    pub async fn describe(&mut self) -> Option<Scalar> {
         match self.session.describe(&[VALUE]).await {
-            Ok(descriptions) => descriptions.first().and_then(|found| found.base),
+            Ok(descriptions) => match descriptions.first().and_then(|found| found.base)
+            {
+                Some(Base::Scalar(scalar)) => Some(scalar),
+                _ => None,
+            },
             Err(status) => panic!("a describe failed: {status:?}"),
         }
     }

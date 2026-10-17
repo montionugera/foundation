@@ -575,6 +575,16 @@ pub(crate) type Served = unsafe extern "C" fn(
     response: *mut c_void,
 );
 
+/// The values of [`Reference::held`], which `shim.c` asserts.
+pub(crate) mod held {
+    /// A node of this server by a number or a name.
+    pub(crate) const NODE: u8 = 0;
+    /// A node of this server by a GUID or opaque key.
+    pub(crate) const KEY: u8 = 1;
+    /// A node of another server, or of a namespace by its URI.
+    pub(crate) const REMOTE: u8 = 2;
+}
+
 /// `shim_reference`: a reference of a browse, which borrows from its answer.
 #[repr(C)]
 #[derive(Default)]
@@ -589,9 +599,7 @@ pub(crate) struct Reference {
     pub(crate) display: Bytes,
     /// The `UA_NodeClass`.
     pub(crate) class: u32,
-    /// 0 for a node of this server by a number or a name, 1 for a node of this
-    /// server by a GUID or opaque key, and 2 for a node of another server or of a
-    /// namespace by its URI.
+    /// One of the values of [`held`].
     pub(crate) held: u8,
     /// Whether the reference type is by a number or a name.
     pub(crate) typed: bool,

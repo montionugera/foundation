@@ -14,6 +14,7 @@ use env::net::tcp;
 use types::sample::Scalar;
 
 use super::*;
+use crate::client::browse::Foreign;
 use crate::event::Time;
 use crate::kind::Kind;
 use crate::sim::{Variables, serve, tree};
@@ -395,6 +396,19 @@ fn refuses_a_cursor_that_is_not_a_count() {
 }
 
 #[test]
+fn refuses_a_cursor_with_no_point_past_the_skip_bound() {
+    let error = diagnostic(browse(level(PLANT, Some("100001"))));
+    assert_eq!(error.code, BAD_CURSOR);
+    assert_eq!(
+        error.to_string(),
+        "the cursor \"100001\" is not a cursor of the opcua kind. Browse from the \
+         first page, with no cursor"
+    );
+    let found = browse(level(PLANT, Some("100000"))).expect("found");
+    assert_eq!((found.entries, found.end), (Vec::new(), End::Done));
+}
+
+#[test]
 fn refuses_a_config_with_no_address() {
     let none = |_: &str| Document {
         attributes: Map::new(Vec::new()).expect("no keys"),
@@ -484,4 +498,54 @@ fn browses_a_folder_again_when_the_server_freed_the_point_of_a_cursor() {
     assert_eq!(first.next, Some(Cursor::new("8".to_owned())));
     assert_eq!(names(&second), TYPES[8..]);
     assert_eq!(second.next, None);
+}
+
+#[test]
+fn gives_none_for_a_folder_that_the_server_does_not_have() {
+    let page = on_server(async |server| {
+        let folder = entry("Plant/Gone", "Plant.Gone", Shape::Folder);
+        server.level(Some(&folder), None).await
+    });
+    assert!(matches!(page, Ok(None)), "{page:?}");
+}
+
+fn foreign(text: &[u8], cause: Cause) -> Reference {
+    Reference {
+        node: Err(Foreign {
+            text: text.to_vec(),
+            cause,
+        }),
+        name: String::new(),
+        display: String::new(),
+        class: Class::Variable,
+        via: None,
+    }
+}
+
+#[test]
+fn the_tag_of_a_foreign_node_is_its_escaped_text_that_no_node_reads() {
+    let tags = [
+        (&b"s=a%\xFF"[..], Cause::Name, "s%=a%25%FF"),
+        (b"ns=2;s=", Cause::Name, "ns=2;s%="),
+        (
+            b"ns=1;g=09087e75-8e5e-499b-954f-f2a9603db28a",
+            Cause::Key,
+            "",
+        ),
+        (b"svr=1;ns=1;s=a", Cause::Remote, "svr=1;ns=1;s=a"),
+    ];
+    for (text, cause, expected) in tags {
+        let reference = foreign(text, cause);
+        let expected = if expected.is_empty() {
+            str::from_utf8(text).expect("UTF-8")
+        } else {
+            expected
+        };
+        assert_eq!(super::tag(&reference), expected);
+        assert_eq!(key(&reference), text);
+        assert!(
+            expected.parse::<Node>().is_err(),
+            "{expected} reads as a node"
+        );
+    }
 }

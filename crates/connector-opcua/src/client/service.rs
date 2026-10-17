@@ -384,9 +384,9 @@ impl Answer {
             let node = match out.held {
                 // SAFETY: each text and the name of the node borrow from the answer,
                 // which lives through the copies.
-                0 => unsafe { out.node.owned() }.ok_or(Cause::Name),
-                1 => Err(Cause::Key),
-                2 => Err(Cause::Remote),
+                ffi::held::NODE => unsafe { out.node.owned() }.ok_or(Cause::Name),
+                ffi::held::KEY => Err(Cause::Key),
+                ffi::held::REMOTE => Err(Cause::Remote),
                 held => unreachable!("invariant: the shim gives no `held` of {held}"),
             }
             .map_err(|cause| Foreign {
@@ -413,13 +413,14 @@ impl Answer {
     }
 }
 
-/// Gives the text of the node of reference `reference` of result `index` of `raw`, a
-/// Browse or `BrowseNext` answer, such as `ns=1;g=<guid>`.
+/// Gives the bytes of the text of the node of reference `reference` of result `index`
+/// of `raw`, a Browse or `BrowseNext` answer, such as `ns=1;g=<guid>`, with the bytes
+/// of a name as the server gave them.
 ///
 /// # Aborts
 ///
 /// If open62541 cannot allocate it, as [`alloc::exhausted`] says.
-fn text(raw: *const c_void, index: usize, reference: usize) -> String {
+fn text(raw: *const c_void, index: usize, reference: usize) -> Vec<u8> {
     let mut out = ffi::Bytes::default();
     // SAFETY: the caller gives a live answer with the reference, and `out` is a place
     // to write.
@@ -429,7 +430,7 @@ fn text(raw: *const c_void, index: usize, reference: usize) -> String {
         alloc::exhausted()
     }
     // SAFETY: open62541 wrote `out`, which holds `length` bytes.
-    let text = unsafe { out.lossy() };
+    let text = unsafe { out.to_vec() };
     // SAFETY: open62541 allocated `out`, and nothing else holds it.
     unsafe { ffi::shim_buffer_free(&raw mut out) };
     text

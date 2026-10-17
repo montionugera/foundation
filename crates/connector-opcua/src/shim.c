@@ -1172,6 +1172,15 @@ static UA_Boolean id_of(const UA_NodeId *id, shim_node *out) {
     return true;
 }
 
+/* A node of this server by a number or a name. */
+#define SHIM_HELD_NODE 0
+/* A node of this server by a GUID or opaque key. */
+#define SHIM_HELD_KEY 1
+/* A node of another server, or of a namespace by its URI. */
+#define SHIM_HELD_REMOTE 2
+_Static_assert(SHIM_HELD_NODE == 0 && SHIM_HELD_KEY == 1 && SHIM_HELD_REMOTE == 2,
+               "ffi::held changed");
+
 /* A reference of a browse, as `ffi::Reference` gives it. Each text borrows from the
  * answer. */
 typedef struct {
@@ -1182,9 +1191,7 @@ typedef struct {
     UA_String name;
     UA_String display;
     UA_UInt32 class;
-    /* 0 for a node of this server by a number or a name, 1 for a node of this server
-     * by a GUID or opaque key, and 2 for a node of another server or of a namespace by
-     * its URI. */
+    /* One of the `SHIM_HELD_*` values. */
     UA_Byte held;
     /* Whether the reference type is by a number or a name. */
     UA_Boolean typed;
@@ -1203,9 +1210,11 @@ void shim_browse_reference(const UA_BrowseResponse *answer, size_t result, size_
         &answer->results[result].references[index];
     const UA_ExpandedNodeId *node = &reference->nodeId;
     UA_Boolean keyed = id_of(&node->nodeId, &out->node);
-    out->held = node->serverIndex != 0 || node->namespaceUri.length != 0 ? 2
-                : keyed                                                ? 0
-                                                                       : 1;
+    if(node->serverIndex != 0 || node->namespaceUri.length != 0) {
+        out->held = SHIM_HELD_REMOTE;
+    } else {
+        out->held = keyed ? SHIM_HELD_NODE : SHIM_HELD_KEY;
+    }
     out->typed = id_of(&reference->referenceTypeId, &out->via);
     out->name = reference->browseName.name;
     out->display = reference->displayName.text;

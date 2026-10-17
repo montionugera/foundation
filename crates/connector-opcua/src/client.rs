@@ -297,9 +297,7 @@ impl Client {
             namespace: 0,
             key: Key::Number(ffi::MAX_NODES_PER_READ),
         };
-        let nodes = self
-            .nodes(&[node])
-            .expect("invariant: a read of one node by number fits one message");
+        let nodes = self.numbered(&[node]);
         Ok(limit(&self.read(&nodes).await?[0]))
     }
 
@@ -311,25 +309,39 @@ impl Client {
     /// `MaxChunkCount` of the server, less 7 bytes at the end of each chunk but the
     /// last, or the `MaxMessageSize` of the server when that is smaller.
     ///
-    /// # Errors
-    ///
-    /// [`Large`] for the first node whose request alone, or its answer, does not fit
-    /// one message. The request comes first.
+    /// A node whose request alone, or its answer, does not fit one message is in no
+    /// request, and gives its [`Large`], in order. The request comes first.
     ///
     /// # Aborts
     ///
     /// If open62541 cannot allocate a request, as [`alloc::exhausted`] says.
-    pub(crate) fn nodes(&self, nodes: &[Node]) -> Result<Nodes, Large> {
+    pub(crate) fn nodes(&self, nodes: &[Node]) -> (Nodes, Vec<Large>) {
         let sizes = self.sizes(Request::values, Item::Value.bytes());
-        let mut split = self.split(nodes.len(), self.per_read, &sizes, |index| {
+        let split = self.split(nodes.len(), self.per_read, &sizes, |index| {
             id_bytes(&nodes[index])
         });
-        if !split.large.is_empty() {
-            return Err(split.large.swap_remove(0));
-        }
+        let fit: Vec<Node> = split
+            .ranges
+            .iter()
+            .flat_map(|range| nodes[range.clone()].iter().cloned())
+            .collect();
         let counts: Vec<usize> =
             split.ranges.iter().map(ExactSizeIterator::len).collect();
-        Ok(Nodes::new(nodes, &counts, Rc::clone(&self.key)))
+        (Nodes::new(&fit, &counts, Rc::clone(&self.key)), split.large)
+    }
+
+    /// [`Client::nodes`] of nodes by number, whose read fits one message.
+    ///
+    /// # Panics
+    ///
+    /// If a node does not fit, with its [`Large`].
+    fn numbered(&self, nodes: &[Node]) -> Nodes {
+        let (nodes, large) = self.nodes(nodes);
+        assert!(
+            large.is_empty(),
+            "invariant: a read of nodes by number fits one message: {large:?}"
+        );
+        nodes
     }
 
     /// Splits the `count` items of a list into requests, in order. Each request takes
@@ -530,9 +542,7 @@ impl Client {
             if let Some(waited) = waited {
                 return waited;
             }
-            let nodes = self
-                .nodes(&[STATE])
-                .expect("invariant: a read of one node by number fits one message");
+            let nodes = self.numbered(&[STATE]);
             let mut check = pin!(self.read(&nodes));
             let checked = future::poll_fn(|cx| {
                 if let Poll::Ready(value) = until.as_mut().poll(cx) {

@@ -1,12 +1,15 @@
 //! The `opcua` kind: reads OPC UA nodes at a fixed rate, and writes at most one frame
 //! per tick.
 
+use std::ffi::CStr;
 use std::{fmt, future};
 
 use connector::kind::{self, Channels, Context, Error};
 use connector::{browse, pace, poll, status};
 use document::diagnostic::{Code, Diagnostic};
 use document::{Block, Document};
+use env::net::Net;
+use env::rng::Rng;
 use types::name::Name;
 use types::sample::{self, Scalar, Type};
 #[cfg(feature = "sim")]
@@ -119,16 +122,21 @@ impl kind::Kind for Kind {
     /// Boolean to Double, or of no type when its data type has no built-in base. It is
     /// unreadable when the server does not let the user read it, when its value rank
     /// is that of an array, or when its type is another built-in type. A node whose ID
-    /// is a GUID, opaque, or of another server is unreadable, with the text of its ID
-    /// as its tag. In one folder, a second reference to a node gives no entry, and a
-    /// name that an earlier entry has gets ` (<tag>)` after it. Then it closes the
-    /// session, as `run` does. The header of each request holds the time of the clock
-    /// from the Unix epoch, not the wall time.
+    /// is a GUID, opaque, a name that is empty or not UTF-8, or of another server is
+    /// unreadable. Its tag is the text of its ID, with `%` and each byte that is not
+    /// UTF-8 as `%XX`, and `s%=` in place of the `s=` of a name, so `parse` refuses
+    /// it. In one folder, a second reference to a node gives no entry, and a name that
+    /// an earlier entry has gets ` (<tag>)` after it. A cursor of an earlier browse
+    /// skips the references before its page again, so it assumes that the server
+    /// keeps their order. Then it closes the session, as `run` does. The header of
+    /// each request holds the time of the clock from the Unix epoch, not the wall
+    /// time.
     ///
     /// # Errors
     ///
     /// [`Error::Config`] with the diagnostic of `parse` for `address`, and with
-    /// `opcua.bad-cursor` for a cursor that the kind did not give. [`Error::Device`]
+    /// `opcua.bad-cursor` for a cursor that the kind did not give, or that skips more
+    /// than 100 000 references. [`Error::Device`]
     /// when the connect, a Browse, a `BrowseNext`, or a Read fails. The errors of
     /// [`browse::walk`].
     fn browse(
@@ -147,45 +155,64 @@ async fn walk(
     let address =
         config::endpoint(ctx.config()).map_err(|error| Error::Config(vec![error]))?;
     let time = event::Time::monotonic(ctx.clock().clone());
-    let rng = &mut ctx.rng();
-    let net = ctx.net().clone();
-    let connected = Client::connect(time, net, rng, &address, future::pending()).await;
-    let mut client = connected
-        .map_err(|status| {
-            device(Failure::Connect {
-                address: address.to_string_lossy().into_owned(),
-                status,
-            })
-        })?
-        .expect("invariant: a connect with no end gives a client");
-    let found = browse::walk(&mut Server::new(&mut client), query).await;
-    client.close().await;
-    found
+    let found = session(
+        time,
+        ctx.net().clone(),
+        &mut ctx.rng(),
+        &address,
+        future::pending(),
+        async |client| browse::walk(&mut Server::new(client), query).await,
+    )
+    .await?;
+    found.expect("invariant: a session with no end gives a result")
 }
 
 async fn run(ctx: Context<Config>) -> Result<(), Error> {
     let mut frames = Frames::open(&ctx).await?;
-    let config = ctx.config();
     let mesh = frames.writer.time();
     let time = event::Time {
         clock: ctx.clock().clone(),
         wall: Box::new(move || mesh.now()),
     };
-    let rng = &mut ctx.rng();
-    let net = ctx.net().clone();
-    let cancelled = ctx.cancel().wait();
-    match Client::connect(time, net, rng, &config.address, cancelled).await {
-        Ok(None) => Ok(()),
-        Err(status) => Err(device(Failure::Connect {
-            address: config.address.to_string_lossy().into_owned(),
+    let ran = session(
+        time,
+        ctx.net().clone(),
+        &mut ctx.rng(),
+        &ctx.config().address,
+        ctx.cancel().wait(),
+        async |client| read(&ctx, client, &mut frames).await,
+    )
+    .await?;
+    ran.unwrap_or(Ok(()))
+}
+
+/// Connects to `address` with `time`, `net`, and `rng`, gives the client to `work`,
+/// and then closes the session. `None` when `until` ends before the connect.
+///
+/// # Errors
+///
+/// [`Error::Device`] with the address when the connect fails.
+async fn session<T>(
+    time: event::Time,
+    net: Net,
+    rng: &mut Rng,
+    address: &CStr,
+    until: impl Future<Output = ()>,
+    work: impl AsyncFnOnce(&mut Client) -> T,
+) -> Result<Option<T>, Error> {
+    let connected = Client::connect(time, net, rng, address, until).await;
+    let connected = connected.map_err(|status| {
+        device(Failure::Connect {
+            address: address.to_string_lossy().into_owned(),
             status,
-        })),
-        Ok(Some(mut client)) => {
-            let result = read(&ctx, &mut client, &mut frames).await;
-            client.close().await;
-            result
-        }
-    }
+        })
+    })?;
+    let Some(mut client) = connected else {
+        return Ok(None);
+    };
+    let done = work(&mut client).await;
+    client.close().await;
+    Ok(Some(done))
 }
 
 /// Reads each node once per tick until the cancel, and writes the frame of each tick.
@@ -196,9 +223,10 @@ async fn read(
 ) -> Result<(), Error> {
     let reads = &ctx.config().reads;
     let nodes: Vec<Node> = reads.iter().map(|read| read.node.clone()).collect();
-    let nodes = client
-        .nodes(&nodes)
-        .map_err(|large| large_read(reads, large))?;
+    let (nodes, large) = client.nodes(&nodes);
+    if let Some(large) = large.into_iter().next() {
+        return Err(large_read(reads, large));
+    }
     let missed = ctx.count("missed");
     let mut timer = pace::Timer::new(ctx.clock(), ctx.config().rate);
     loop {
