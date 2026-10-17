@@ -326,8 +326,22 @@ impl Paths {
                 keys.contains(was) && now(dir) == Some(*was)
             };
             if !limit.folders.iter().any(held) {
+                // A folder on the path whose key the OS refuses is not known to be
+                // replaced: its error is the cause.
+                let unread = limit.folders.iter().find_map(|(dir, was)| {
+                    match self.driver.key(dir) {
+                        Err(error @ Error::Io { .. }) if keys.contains(was) => {
+                            Some(error)
+                        }
+                        _ => None,
+                    }
+                });
+                if let Some(error) = unread {
+                    return Err(error);
+                }
                 let replaced = limit.folders.iter().any(|(dir, was)| {
                     keys.contains(was)
+                        || resolved.starts_with(dir)
                         || self
                             .driver
                             .resolve(dir)
@@ -518,7 +532,8 @@ mod tests {
     /// names `/out`. A directory that it makes is the file `dir`. A name in `/none`
     /// resolves only after a directory is made, and `/none/deep`, a link to a directory
     /// that does not resolve, never. The key of a path ignores case, and a last name
-    /// that starts with `new` resolves but has no key yet. The key of a last name that
+    /// that starts with `new` resolves but has no key yet, and the last name `Gone`, in that case,
+    /// gives `Io` 13 for its key after a write of `gone`. The key of a last name that
     /// starts with `swap` in any case takes the bytes of the file after the path, so a
     /// write gives it a new key: after a write of `x`, `/work/swap` has the key that
     /// `/work/swapx` had before it. A last name `io` gives `Io` 5 for its key.
@@ -575,6 +590,9 @@ mod tests {
             // FNV-1a.
             if name == b"io" {
                 return Err(Error::Io { code: 5 });
+            }
+            if name == b"Gone" && *self.0.borrow() == b"gone" {
+                return Err(Error::Io { code: 13 });
             }
             let mut folded = at.as_os_str().as_encoded_bytes().to_ascii_lowercase();
             if name.to_ascii_lowercase().starts_with(b"swap") {
@@ -668,6 +686,15 @@ mod tests {
         assert_eq!(free.within(&empty, &[]).err(), Some(Error::NotFound));
         let folders = ["/work".into()];
         assert_eq!(free.within(&folders, &empty).err(), Some(Error::NotFound));
+    }
+
+    #[test]
+    fn a_folder_whose_key_the_os_refuses_gives_its_error() {
+        let free = Paths::new(One::default());
+        let within = free.within(&["/Gone".into()], &[]).unwrap();
+        free.write(Path::new("/x"), b"gone").unwrap();
+        let read = within.read(Path::new("/gone/a"), 1).map(|_| ());
+        assert_eq!(read, Err(Error::Io { code: 13 }));
     }
 
     #[test]

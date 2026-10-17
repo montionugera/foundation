@@ -84,6 +84,7 @@ macro_rules! tests {
             within_checks_no_hidden_folder_past_its_limits,
             a_directory_through_a_file_fails,
             a_directory_of_the_root_is_ok,
+            within_refuses_make_dir_on_a_folder_that_a_bad_link_replaces,
         );
     };
     (@each $run:ident, $($case:ident),* $(,)?) => {
@@ -607,6 +608,27 @@ pub(crate) fn within_holds_nothing_in_a_folder_that_a_link_replaces(host: &Host<
     let read = within.read(&work.join("a.hcl"), 1);
     let direct = within.read(&base.join("workshop/a.hcl"), 1);
     assert_eq!((read, direct), (Err(Error::Replaced), Err(Error::Replaced)));
+}
+
+/// A program replaces the folder with a link to nothing, or with a loop. `make_dir` at
+/// the folder's path checks its place, which is the path that the folder resolved to
+/// at `within`, so the folder is replaced.
+pub(crate) fn within_refuses_make_dir_on_a_folder_that_a_bad_link_replaces(
+    host: &Host<'_>,
+) {
+    let (_, base) = within_work(host);
+    let work = base.join("work");
+    let made =
+        [("old", base.join("none")), ("old2", work.clone())].map(|(old, target)| {
+            let within = host.paths.within(slice::from_ref(&work), &[]).unwrap();
+            (host.move_path)(&work, &base.join(old));
+            (host.make_link)(&work, &target);
+            let made = within.make_dir(&work);
+            (host.move_path)(&work, &base.join(format!("{old}-link")));
+            (host.make_dir)(&work);
+            made
+        });
+    assert_eq!(made, [Err(Error::Replaced); 2], "link to nothing, loop");
 }
 
 /// A hidden folder that the limits of the handle refuse, but that is there, still
