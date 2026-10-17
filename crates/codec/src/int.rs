@@ -29,7 +29,7 @@ pub(crate) fn encode<const W: usize>(
 }
 
 /// The plan of [`encode`].
-fn plan<const W: usize>(
+pub(crate) fn plan<const W: usize>(
     chunk: &[u8],
     order: Order,
     sortable: impl Fn(u64) -> u64,
@@ -86,7 +86,7 @@ fn plan<const W: usize>(
 }
 
 /// The bits that values up to `range` need.
-fn width(range: u64) -> u8 {
+pub(crate) fn width(range: u64) -> u8 {
     u8::try_from(u64::BITS.strict_sub(range.leading_zeros()))
         .expect("invariant: a u64 needs at most 64 bits")
 }

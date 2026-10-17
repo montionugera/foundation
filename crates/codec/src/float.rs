@@ -1,28 +1,43 @@
-//! Float vectors, which the integer codecs encode as the sortable integers of
-//! their bits.
+//! Float vectors: ALP, or the integer codecs on the sortable integers of their bits.
 
+use crate::alp::{self, Pairs};
 use crate::int::{self, Order};
-use crate::vector::Vector;
+use crate::vector::{self, Plan, Vector};
 use crate::word;
 
 // The float paths stay out of line. Inlined, they cost the integer paths about 60
 // instructions a short decode call and 4% on long encode and decode calls (box2).
 
 /// Writes one vector of floats of `W` bytes into the front of `out` and returns its
-/// length, as [`int::encode`] does for their sortable integers.
+/// length: ALP with a pair of `pairs`, or what [`int::encode`] writes for their
+/// sortable integers, whichever is smaller.
 ///
 /// # Panics
 ///
 /// Panics when `chunk` holds no sample.
 #[inline(never)]
-pub(crate) fn encode<const W: usize>(chunk: &[u8], out: &mut [u8]) -> usize {
-    int::encode::<W>(chunk, Order::Unsigned, sortable::<W>, out)
+pub(crate) fn encode<const W: usize>(
+    chunk: &[u8],
+    pairs: &mut Pairs,
+    out: &mut [u8],
+) -> usize {
+    let plan = int::plan::<W>(chunk, Order::Unsigned, sortable::<W>);
+    let plan = pairs.plan::<W>(chunk, plan);
+    vector::write::<W>(chunk, plan, sortable::<W>, out)
 }
 
 /// Writes the floats of `W` bytes of `vector` into `out`, which holds exactly them.
 #[inline(never)]
 pub(crate) fn decode<const W: usize>(vector: &Vector<'_>, out: &mut [u8]) {
-    vector.decode::<W>(out, bits::<W>);
+    match vector.plan {
+        Plan::Alp {
+            reference,
+            bits,
+            pair,
+            exceptions,
+        } => alp::decode::<W>(reference, bits, pair, exceptions, vector.body, out),
+        _ => vector.decode::<W>(out, self::bits::<W>),
+    }
 }
 
 /// The integer that the codecs see for the bits of a float of `W` bytes. A float with

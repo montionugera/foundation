@@ -9,29 +9,55 @@
 //! | 1 | FFOR | reference | `sample - reference`, packed |
 //! | 2 | delta | first, base | `sample - previous - base` after the first, packed |
 //! | 3 | RLE | run count (`u16`) | the run values, then the run lengths (`u16`) |
+//! | 4 | ALP | reference, exponent (`u8`), factor (`u8`), exception count (`u16`) | `n - reference`, packed, then the exception values, then their positions (`u16`) |
 //!
 //! Fields are samples unless marked. Sample arithmetic is modulo 2^b, where b is the
 //! bit count of a sample. Delta packs one residual for each sample after the first.
 //! Packed values are least significant bit first. A float vector of tag 1 to 3 holds
 //! the sortable integers of its samples, in unsigned order: a float with its sign bit
 //! set has each bit flipped, and any other only its sign bit (`float::sortable`).
+//!
+//! ALP is for `f32` and `f64` only. Its reference and each `n` are signed integers of
+//! the sample width. Sample `i` is `n * P[f] * N[e]` in the sample's float type, two
+//! multiplications from the left, with no fused multiply-add, where `n` is
+//! `reference + residual i`. `P[i]` is `10^i`, and `N[i]` is the float nearest to
+//! `10^-i`. Then each exception value replaces the sample at its position. The
+//! exponent `e` is at most 18 for `f64` and 10 for `f32`, the factor `f` is at most `e`,
+//! the exception count is at most the sample count, and each position is under it.
 
 use std::{iter, mem};
 
-use crate::{Error, Layout, VECTOR_LEN, bits, word};
+use crate::alp::{self, Pair};
+use crate::{Error, Layout, Number, VECTOR_LEN, bits, word};
 
 pub(crate) const RAW: u8 = 0;
 pub(crate) const FFOR: u8 = 1;
 pub(crate) const DELTA: u8 = 2;
 pub(crate) const RLE: u8 = 3;
+pub(crate) const ALP: u8 = 4;
 
 /// The codec of one vector and its header values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Plan {
     Raw,
-    Ffor { reference: u64, bits: u8 },
-    Delta { first: u64, base: u64, bits: u8 },
-    Rle { runs: usize },
+    Ffor {
+        reference: u64,
+        bits: u8,
+    },
+    Delta {
+        first: u64,
+        base: u64,
+        bits: u8,
+    },
+    Rle {
+        runs: usize,
+    },
+    Alp {
+        reference: u64,
+        bits: u8,
+        pair: Pair,
+        exceptions: usize,
+    },
 }
 
 impl Plan {
@@ -47,6 +73,7 @@ impl Plan {
             Self::Ffor { .. } => width,
             Self::Delta { .. } => width.strict_mul(2),
             Self::Rle { .. } => 2,
+            Self::Alp { .. } => width.strict_add(4),
         };
         header_len(fields, width)
     }
@@ -61,6 +88,12 @@ impl Plan {
             Self::Rle { runs } => runs
                 .strict_mul(width)
                 .strict_add(runs.strict_mul(2).next_multiple_of(width)),
+            Self::Alp {
+                bits, exceptions, ..
+            } => bits::len(count, bits)
+                .next_multiple_of(width)
+                .strict_add(exceptions.strict_mul(width))
+                .strict_add(exceptions.strict_mul(2).next_multiple_of(width)),
         }
     }
 
@@ -68,7 +101,9 @@ impl Plan {
     fn max_bits(self, width: usize) -> u8 {
         match self {
             Self::Raw | Self::Rle { .. } => 0,
-            Self::Ffor { .. } | Self::Delta { .. } => word::bits(width),
+            Self::Ffor { .. } | Self::Delta { .. } | Self::Alp { .. } => {
+                word::bits(width)
+            }
         }
     }
 }
@@ -80,7 +115,8 @@ pub(crate) fn header_len(fields: usize, width: usize) -> usize {
 }
 
 /// Writes one vector of `W`-byte samples with `plan` into the front of `out` and
-/// returns its length. Each codec but raw writes the integers that `sortable` gives.
+/// returns its length. Each codec but raw and ALP writes the integers that `sortable`
+/// gives.
 pub(crate) fn write<const W: usize>(
     chunk: &[u8],
     plan: Plan,
@@ -111,11 +147,7 @@ pub(crate) fn write<const W: usize>(
         }
         Plan::Rle { runs } => {
             out.put(&[RLE, 0]);
-            out.put(
-                &u16::try_from(runs)
-                    .expect("invariant: a vector holds under 2^16 runs")
-                    .to_le_bytes(),
-            );
+            out.put(&count16(runs).to_le_bytes());
             out.pad(W);
             let values = out.take(runs.strict_mul(W)).as_chunks_mut::<W>().0;
             let lengths = out.take(runs.strict_mul(2)).as_chunks_mut::<2>().0;
@@ -129,8 +161,20 @@ pub(crate) fn write<const W: usize>(
             }
             out.pad(W);
         }
+        Plan::Alp {
+            reference,
+            bits,
+            pair,
+            exceptions,
+        } => out.alp::<W>(chunk, reference, bits, pair, exceptions),
     }
     out.len
+}
+
+/// `count` as a `u16` field.
+fn count16(count: usize) -> u16 {
+    u16::try_from(count)
+        .expect("invariant: a vector holds under 2^16 runs or exceptions")
 }
 
 /// The runs of equal `samples`: each value and its length.
@@ -191,6 +235,50 @@ impl<'a> Writer<'a> {
         self.pad(W);
     }
 
+    /// Writes an ALP vector of the floats of `chunk`.
+    fn alp<const W: usize>(
+        &mut self,
+        chunk: &[u8],
+        reference: u64,
+        bits: u8,
+        pair: Pair,
+        exceptions: usize,
+    ) {
+        self.put(&[ALP, bits]);
+        self.put(&word::store::<W>(reference));
+        self.put(&[pair.exponent, pair.factor]);
+        self.put(&count16(exceptions).to_le_bytes());
+        self.pad(W);
+        let coder = alp::Coder::<W>::new(pair);
+        let mask = word::mask(W);
+        let mut positions = [0_u16; VECTOR_LEN];
+        let mut len = 0;
+        let residuals = word::samples::<W>(chunk).zip(0..).map(|(sample, index)| {
+            if let Some(n) = coder.exact(sample) {
+                return n.cast_unsigned().wrapping_sub(reference) & mask;
+            }
+            *positions
+                .get_mut(len)
+                .expect("invariant: a vector holds at most 1024 samples") = index;
+            len = len.strict_add(1);
+            0
+        });
+        self.packed::<W>(residuals, chunk.len().div_euclid(W), bits);
+        let positions = positions.split_at(len).0;
+        let samples = chunk.as_chunks::<W>().0;
+        for position in positions {
+            self.put(
+                samples
+                    .get(usize::from(*position))
+                    .expect("invariant: a position is under the count"),
+            );
+        }
+        for position in positions {
+            self.put(&position.to_le_bytes());
+        }
+        self.pad(W);
+    }
+
     fn packed<const W: usize>(
         &mut self,
         values: impl Iterator<Item = u64>,
@@ -205,8 +293,8 @@ impl<'a> Writer<'a> {
 /// One vector read from a series, with its header and length checked.
 #[derive(Debug)]
 pub(crate) struct Vector<'a> {
-    plan: Plan,
-    body: &'a [u8],
+    pub(crate) plan: Plan,
+    pub(crate) body: &'a [u8],
 }
 
 /// Reads vector `index` of a series from the front of `bytes`. The vector holds `count`
@@ -227,6 +315,15 @@ pub(crate) fn read(
     );
     let width = layout.width();
     let plan = header(bytes, layout, index)?;
+    if let Plan::Alp { exceptions, .. } = plan
+        && exceptions > count
+    {
+        return Err(Error::Exceptions {
+            vector: index,
+            exceptions,
+            count,
+        });
+    }
     let len = plan.len(count, width);
     let (vector, rest) = bytes.split_at_checked(len).ok_or(Error::Truncated {
         vector: index,
@@ -251,6 +348,25 @@ pub(crate) fn read(
                 total,
                 count,
             });
+        }
+    }
+    if let Plan::Alp {
+        bits, exceptions, ..
+    } = plan
+    {
+        let packed = bits::len(count, bits).next_multiple_of(width);
+        let positions = body
+            .split_at(packed.strict_add(exceptions.strict_mul(width)))
+            .1;
+        for position in positions.as_chunks::<2>().0.iter().take(exceptions) {
+            let position = usize::from(u16::from_le_bytes(*position));
+            if position >= count {
+                return Err(Error::Position {
+                    vector: index,
+                    position,
+                    count,
+                });
+            }
         }
     }
     Ok((Vector { plan, body }, rest))
@@ -290,6 +406,17 @@ fn header(bytes: &[u8], layout: Layout, index: usize) -> Result<Plan, Error> {
                 runs: u16::from_le_bytes([low, high]).into(),
             }
         }
+        ALP if matches!(
+            layout,
+            Layout::Bits32 {
+                number: Number::Float
+            } | Layout::Bits64 {
+                number: Number::Float
+            }
+        ) =>
+        {
+            alp_header(bytes, width, bits, index)?
+        }
         _ => return Err(Error::Tag { vector: index, tag }),
     };
     let max = plan.max_bits(width);
@@ -301,6 +428,41 @@ fn header(bytes: &[u8], layout: Layout, index: usize) -> Result<Plan, Error> {
         });
     }
     Ok(plan)
+}
+
+/// Reads and checks the fields of an ALP header at the front of `bytes`, for samples
+/// of `width` bytes, with bit width `bits`.
+fn alp_header(
+    bytes: &[u8],
+    width: usize,
+    bits: u8,
+    index: usize,
+) -> Result<Plan, Error> {
+    let len = header_len(width.strict_add(4), width);
+    let fields = bytes.get(width.strict_add(2)..len);
+    let Some(&[exponent, factor, low, high]) = fields.and_then(<[u8]>::first_chunk)
+    else {
+        return Err(Error::Truncated {
+            vector: index,
+            needed: len,
+            available: bytes.len(),
+        });
+    };
+    let max = alp::max_exponent(width);
+    if exponent > max || factor > exponent {
+        return Err(Error::Exponent {
+            vector: index,
+            exponent,
+            factor,
+            max,
+        });
+    }
+    Ok(Plan::Alp {
+        reference: field(bytes, 0, width),
+        bits,
+        pair: Pair { exponent, factor },
+        exceptions: u16::from_le_bytes([low, high]).into(),
+    })
 }
 
 /// Reads header field `index`: `width` little-endian bytes after the tag and the bit
@@ -319,6 +481,10 @@ impl Vector<'_> {
     /// Writes the samples into `out`, which holds exactly them. Each codec but raw
     /// gives the samples of the integers through `sample`, the inverse of the
     /// `sortable` of [`write`].
+    ///
+    /// # Panics
+    ///
+    /// Panics on an ALP vector, which [`alp::decode`] decodes.
     pub(crate) fn decode<const W: usize>(
         &self,
         out: &mut [u8],
@@ -377,6 +543,7 @@ impl Vector<'_> {
                     }
                 }
             }
+            Plan::Alp { .. } => panic!("invariant: float::decode decodes ALP vectors"),
         }
     }
 
