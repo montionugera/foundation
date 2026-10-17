@@ -1,6 +1,7 @@
 - **ENTRY TAGS (#191)** Each entry of an index log has a tag (S4) that says what its
-  bytes hold: `DATA` 0 (STORED BODY), `HANDOFF` 1 (HANDOFF RECORD). A new kind of
-  record takes the next free value here. The buffer gives only tag 0 a meaning:
+  bytes hold: `DATA` 0 (STORED BODY), `HANDOFF` 1 (HANDOFF RECORD), and the named
+  records, 2 to 65: part `p` is tag `2 + p` (HOME NAMED READERS). A new kind of
+  record takes the next free value here, 66. The buffer gives only tag 0 a meaning:
   `Buffer::newest` takes a `NonZeroU8` and never gives an entry of tag 0. It compares
   each other tag with the tag its caller gives. That text supersedes "The buffer does
   not read the tag." (`laptop.architect`, #275,
@@ -46,3 +47,9 @@
   https://github.com/synnaxlabs/foundation/pull/2423#issuecomment-6128077132, amended at
   2026-10-12T16:50:47Z,
   https://github.com/synnaxlabs/foundation/pull/2423#issuecomment-6128684558).
+  The named records cost one pair for each part in use: an index of 7 records or
+  fewer uses part 0 only, and each part past it costs 19.4 to 38.9 B for its log. The
+  open calls `Buffer::newest` once for each tag up to the first that no index has an
+  entry of: the most parts in use of an index, plus one. Decided by
+  `laptop.architect` (2026-10-17T00:37:51Z:
+  https://github.com/synnaxlabs/foundation/issues/2833#issuecomment-6227434486).

@@ -886,32 +886,37 @@ fn resumes_a_named_complete_reader_at_its_ack_after_a_power_cut() {
     assert_eq!(first, [5]);
 }
 
-/// An entry of a ring of records of 4087 bytes holds 4032 bytes: 7 records of 546
-/// bytes, with the head of 5. Each first open appends an entry, so a ring of larger
-/// entries fills before its last open.
+/// Each of the 64 parts of the records holds 7 records of the longest names.
 #[test]
-fn opens_no_named_complete_reader_past_the_records_of_one_entry() {
-    super::run_on(25, (super::AREA, 4087), |test| async move {
+fn opens_no_named_complete_reader_when_no_part_of_the_records_has_room() {
+    run(25, |test| async move {
         let long = |n: usize| format!("{n:03}{}", "s".repeat(252));
         let open = |n| named(&long(n), &"r".repeat(255), Mode::Complete, Span::ZERO);
         let mut opened = Vec::new();
-        for n in 0..7 {
+        for n in 0..448 {
             opened.push(test.hub.reader(open(n)).await.expect("the records fit"));
         }
-        let error = test.hub.reader(open(7)).await.expect_err("one more passes");
-        assert_eq!(error, reader::Error::Full { limit: 4032 });
+        let error = test
+            .hub
+            .reader(open(448))
+            .await
+            .expect_err("no part has room");
+        assert_eq!(error, reader::Error::Full { limit: 257_728 });
         assert_eq!(
             error.to_string(),
-            "the records of the named readers of the index would pass 4032 bytes"
+            "no part of the named records of the index has room for the reader: the \
+             records of an index hold at most 257728 bytes"
         );
-        let latest = named(&long(7), &"r".repeat(255), Mode::Latest, Span::ZERO);
+        let latest = named(&long(448), &"r".repeat(255), Mode::Latest, Span::ZERO);
         assert!(
             test.hub.reader(latest).await.is_ok(),
             "a latest reader opens"
         );
         drop(opened.pop());
+        // A closed record keeps its room until the entry that drops it commits.
+        test.clock.sleep(SETTLE).await;
         assert!(
-            test.hub.reader(open(7)).await.is_ok(),
+            test.hub.reader(open(448)).await.is_ok(),
             "a closed record is gone"
         );
     });

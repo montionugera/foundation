@@ -23,7 +23,7 @@ use crate::index::{Accepted, Index};
 use crate::reader;
 use crate::split::Split;
 use crate::writer::{self, Writer};
-use crate::{handoff, named, order, split, state, stored};
+use crate::{handoff, named, order, split, stored};
 
 /// How long a holder that the open restored keeps control with no connected writer.
 const GRACE: Span = Span::from_nanos(10_000_000_000);
@@ -167,6 +167,10 @@ pub struct Shard {
     /// The gate for the next carry of each index that is not carried: the one that
     /// the open restored, or the one that a shed kept.
     kept: hash::Map<Slot, Gate>,
+    /// The named records of each index in the buffer, by slot, carried or not: a shed
+    /// index keeps them until its removals commit, so that a later carry places each
+    /// record in the part that holds it.
+    named: hash::Map<Slot, named::Parts>,
     /// When [`advance`](Shard::advance) next restores records, ends holds, and appends
     /// changed records ([`Shard::arm`]).
     tick: Option<Monotonic>,
@@ -321,7 +325,11 @@ impl Shard {
             limits,
         } = config;
         let holders = handoff::newest(&buffer).await?;
-        let records = named::newest(&buffer).await?;
+        let (records, named) = named::Parts::newest(&buffer)
+            .await?
+            .into_iter()
+            .map(|(slot, (parts, held))| ((slot, held), (slot, parts)))
+            .unzip();
         let now = clock.now().monotonic;
         let grace = Lease::new(GRACE).expect("invariant: the grace is positive");
         let kept = holders
@@ -338,9 +346,10 @@ impl Shard {
             writers: hash::Map::default(),
             next: 0,
             scratch: Scratch::default(),
-            readers: reader::Set::new(records.into_iter().collect()),
+            readers: reader::Set::new(records),
             decoder: stored::Decoder::default(),
             kept,
+            named,
             tick: None,
         })
     }
@@ -406,10 +415,10 @@ impl Shard {
             claims.all(|claim| claim.place != place),
             "a writer is open on the index at {slot:?}"
         );
-        if self.readers.shed(place)
-            && let Some(mesh) = self.now()
-        {
-            append_named(&self.buffer, &self.indexes[place], &[], mesh);
+        self.readers.shed(place);
+        if let Some(mesh) = self.now() {
+            let appended = self.append_named(place, &[], mesh);
+            appended.expect("invariant: no record needs room");
         }
         let last = self.indexes.len() - 1;
         self.places.remove(&slot);
@@ -488,6 +497,10 @@ impl Shard {
             self.arm(place, monotonic, mesh);
         }
         self.readers.prune();
+        let commits = self.buffer.commits();
+        let places = &self.places;
+        self.named
+            .retain(|slot, parts| places.contains_key(slot) || parts.release(commits));
     }
 
     /// Mesh time now, as the shard stamps each entry and checks each stamp: the
@@ -726,25 +739,20 @@ impl Shard {
     /// holds its position for `hold`, in mesh time. From a position below the live
     /// frames that memory gave readers, the reader reads from disk first, as
     /// [`open_complete`](Self::open_complete) says. The shard appends the record of
-    /// each named reader of the index, open or held, as one entry, which a restart
-    /// restores; an ack moves the recorded position at the next tick
-    /// ([`advance`](Self::advance)). An open that appends the entry takes no frame
+    /// each named reader of the index, open or held, in parts of one entry each, which
+    /// a restart restores; an ack moves the recorded position at the next tick
+    /// ([`advance`](Self::advance)). An open that appends its record takes no frame
     /// until the commit that holds it, which [`woken`](Self::woken) names, and nor
     /// does a takeover with the same hold of a session that waits.
     ///
     /// # Errors
     ///
     /// [`reader::Unopened::Unsynced`] before the node first has mesh time, and
-    /// [`reader::Unopened::Full`] when the open adds a record, and the records of the
-    /// index with it would pass the most bytes of one entry of the buffer: at least 7
-    /// records of the longest subjects and names. An open of a reader that holds a
-    /// record opens also when the records pass it, as on a smaller pool after a
-    /// restart, appends nothing, and writes a warning event that names the index, the
-    /// reader, and the bytes over the limit: a restart after the old hold ends resumes
-    /// it at the live tail, until #2833.
+    /// [`reader::Unopened::Full`] when the open adds a record and no part has room for
+    /// it: at least 448 records of the longest subjects and names.
     /// [`reader::Unopened::Unrecorded`] when the open adds a record, opens a held one,
     /// or takes over an open session with a new hold, and the buffer has no block or no
-    /// room for the entry that holds the records.
+    /// room for the entry of the part that holds its record.
     ///
     /// # Panics
     ///
@@ -764,31 +772,20 @@ impl Shard {
         // An open that changes the records appends them before it opens, and its reader
         // takes no frame until they commit: a restart before then would lose the frames
         // that it got and did not ack.
-        let limit = named::limit(&self.buffer);
-        let records = match self.readers.opening(place, &reader, hold, live, limit)? {
-            reader::Opening::Kept => None,
-            reader::Opening::Records(records) => Some(records),
-            reader::Opening::Over { bytes } => {
-                let index = self.indexes[place].key;
-                let key = format!("{}/{}", reader.subject, reader.name);
-                tracing::warn!(
-                    %index,
-                    reader = %key,
-                    over_bytes = bytes,
-                    "the records of the named readers of index {index} pass {limit} \
-                     bytes, so this open is not recorded: a restart after the old hold \
-                     ends resumes reader {key} at the live tail"
-                );
-                None
+        let records = self.readers.opening(place, &reader, hold, live);
+        let mut recorded_at = None;
+        if let Some(records) = &records {
+            let appended =
+                self.append_named(place, records, now)
+                    .map_err(|named::Full| reader::Unopened::Full {
+                        limit: named::LIMIT,
+                    })?;
+            if !self.named[&slot].recorded(&reader, appended) {
+                return Err(reader::Unopened::Unrecorded);
             }
-        };
-        if let Some(records) = &records
-            && !append_named(&self.buffer, &self.indexes[place], records, now)
-        {
-            return Err(reader::Unopened::Unrecorded);
+            recorded_at = Some(self.buffer.durable_at());
         }
         let named = Reader::Named { reader, hold };
-        let recorded_at = records.is_some().then(|| self.buffer.durable_at());
         let opened = self.readers.open_named_complete(
             place,
             named,
@@ -797,9 +794,6 @@ impl Shard {
             charge,
             recorded_at,
         );
-        if records.is_some() {
-            self.readers.recorded(place, true);
-        }
         self.record_named(place, monotonic, Some(now));
         Ok(reader::Opened {
             key: reader::complete::Key {
@@ -1020,9 +1014,25 @@ impl Shard {
             return;
         }
         let records = self.readers.records(place);
-        if append_named(&self.buffer, &self.indexes[place], &records, mesh) {
+        let appended = self.append_named(place, &records, mesh);
+        let appended = appended.expect("invariant: each record of a tick has a part");
+        if appended.all() {
             self.readers.recorded(place, !records.is_empty());
         }
+    }
+
+    /// Appends the parts of the named records of the index at `place` that `records`
+    /// change, at mesh time `mesh`, as [`named::Parts::append`] does.
+    fn append_named(
+        &mut self,
+        place: usize,
+        records: &[Record],
+        mesh: Stamp,
+    ) -> Result<named::Appended, named::Full> {
+        let index = &self.indexes[place];
+        let (key, slot, first) = (index.key, index.slot, index.live_tail());
+        let parts = self.named.entry(slot).or_default();
+        parts.append(&self.buffer, records, key, slot, first, mesh)
     }
 
     /// Makes the tick no later than the next one that the named readers of the index
@@ -1131,25 +1141,6 @@ fn append_handoffs(
         }
     }
     all
-}
-
-/// Appends `records` as the named entry of `index`, alone, on the live path at mesh
-/// time `mesh`, and returns what [`state::append`] does. Records that pass
-/// [`named::limit`], as on a pool that is smaller than at their last append, are not
-/// appended, and no later append of the index takes them until #2833.
-fn append_named(
-    buffer: &Buffer,
-    index: &Index,
-    records: &[Record],
-    mesh: Stamp,
-) -> bool {
-    if named::len(records) > named::limit(buffer) {
-        return false;
-    }
-    let (key, slot, first) = (index.key, index.slot, index.live_tail());
-    state::append(buffer, |pool| {
-        named::entry(pool, records, key, slot, first, mesh)
-    })
 }
 
 /// Spends the seq of each accepted group of `checks`, and makes the outcome of each
@@ -6116,84 +6107,31 @@ mod tests {
             }
 
             mod records {
-                use std::fmt::Write as _;
-                use std::sync::Mutex;
-
-                use tracing::field::{Field, Visit};
-                use tracing::span::Id;
-
                 use super::*;
 
                 /// A hold that no test reaches.
                 const LONG: Span = Span::from_nanos(3_600_000_000_000);
 
-                /// The level, the message, and the fields of each event that its
-                /// dispatch got, in order.
-                #[derive(Clone, Default)]
-                struct Log(Arc<Mutex<Vec<String>>>);
-
-                impl Log {
-                    /// Runs `f` with this log as the default subscriber.
-                    fn during<T>(&self, f: impl FnOnce() -> T) -> T {
-                        let dispatch = tracing::Dispatch::new(self.clone());
-                        tracing::dispatcher::with_default(&dispatch, f)
-                    }
-
-                    fn events(&self) -> Vec<String> {
-                        self.0.lock().expect("no event panics").clone()
-                    }
+                /// The key of the reader of the longest subject and name, with a
+                /// subject that starts with `n`.
+                fn longest(n: usize) -> named::Key {
+                    let n = n.to_string();
+                    let subject =
+                        format!("{n}{}", "s".repeat(Name::MAX_BYTES - n.len()));
+                    key(&subject, &"r".repeat(Name::MAX_BYTES))
                 }
 
-                impl tracing::Subscriber for Log {
-                    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
-                        true
-                    }
-
-                    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> Id {
-                        Id::from_u64(1)
-                    }
-
-                    fn record(&self, _: &Id, _: &tracing::span::Record<'_>) {}
-
-                    fn record_follows_from(&self, _: &Id, _: &Id) {}
-
-                    fn event(&self, event: &tracing::Event<'_>) {
-                        let mut fields = Fields(String::new(), String::new());
-                        event.record(&mut fields);
-                        let level = event.metadata().level();
-                        let text = format!("{level} {}{}", fields.0, fields.1);
-                        self.0.lock().expect("no event panics").push(text);
-                    }
-
-                    fn enter(&self, _: &Id) {}
-
-                    fn exit(&self, _: &Id) {}
-                }
-
-                /// The message, and each other field as ` <name>=<value>`.
-                struct Fields(String, String);
-
-                impl Visit for Fields {
-                    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-                        if field.name() == "message" {
-                            self.0 = format!("{value:?}");
-                        } else {
-                            write!(self.1, " {}={value:?}", field.name())
-                                .expect("fits");
-                        }
-                    }
-                }
-
-                /// The warning event of an open of `reader` on the index at slot 0
-                /// whose records pass `limit` by `bytes`.
-                fn over(reader: &named::Key, limit: usize, bytes: usize) -> String {
-                    let index = common::key(Slot::new(0));
-                    let key = format!("{}/{}", reader.subject, reader.name);
-                    format!(
-                        "WARN the records of the named readers of index {index} pass \
-                         {limit} bytes, so this open is not recorded: a restart after \
-                         the old hold ends resumes reader {key} at the live tail \
-                         index={index} reader={key} over_bytes={bytes}",
+                /// Opens `reader` on the index at slot 0 with a hold of `LONG`.
+                fn open_longest(
+                    shard: &mut Shard,
+                    reader: named::Key,
+                ) -> Result<reader::Opened<complete::Key>, Unopened> {
+                    shard.open_named_complete(
+                        Slot::new(0),
+                        reader,
+                        LONG,
+                        CREDIT,
+                        Charge::Whole,
                     )
                 }
 
@@ -6767,122 +6705,182 @@ mod tests {
                 }
 
                 #[test]
-                fn refuses_a_named_open_past_the_most_bytes_of_one_entry() {
+                fn refuses_a_named_open_when_no_part_has_room() {
                     run(198, |test| async move {
-                        let mut shard = test.shard(AREA).await;
-                        let long = |n: usize| format!("{n}{}", "s".repeat(254));
-                        let opened: Vec<_> = (0..7)
-                            .map(|n| {
-                                shard
-                                    .open_named_complete(
-                                        Slot::new(0),
-                                        key(&long(n), &"r".repeat(255)),
-                                        LONG,
-                                        CREDIT,
-                                        Charge::Whole,
-                                    )
-                                    .expect("seven records fit")
-                            })
-                            .collect();
-                        let eighth = shard.open_named_complete(
-                            Slot::new(0),
-                            key(&long(7), &"r".repeat(255)),
-                            LONG,
-                            CREDIT,
-                            Charge::Whole,
-                        );
-                        assert_eq!(eighth, Err(Unopened::Full { limit: 4032 }));
-                        let again = shard.open_named_complete(
-                            Slot::new(0),
-                            key(&long(0), &"r".repeat(255)),
-                            LONG,
-                            CREDIT,
-                            Charge::Whole,
-                        );
+                        // A ring with room for the 448 entries that the opens append.
+                        let mut shard = test.shard(1 << 22).await;
+                        let mut opened = Vec::new();
+                        for n in 0..448 {
+                            let reader = open_longest(&mut shard, longest(n));
+                            opened.push(reader.expect("a part has room").key);
+                            shard.committed().await.expect("the commit ends");
+                        }
+                        let full = open_longest(&mut shard, longest(448));
+                        let limit = crate::named::LIMIT;
+                        assert_eq!(full, Err(Unopened::Full { limit }));
+                        let again = open_longest(&mut shard, longest(0));
                         let again = again.expect("its own record is replaced");
-                        assert_eq!(again.replaced, Some(opened[0].key.into()));
-                        let small = open(&mut shard, "b");
-                        close(&mut shard, small.into());
+                        assert_eq!(again.replaced, Some(opened[0].into()));
+                        close(&mut shard, opened[1].into());
+                        let reopened = open_longest(&mut shard, longest(1));
+                        reopened.expect("its record keeps its part");
                     });
                 }
 
-                /// A smaller pool after a restart bounds an entry lower than the
-                /// ring that holds the records. The open of a held reader appends
-                /// nothing, so the readers resume on the first pool.
                 #[test]
-                fn a_held_reader_resumes_when_the_records_are_over_the_limit() {
-                    const BODY: usize = 8192;
-                    /// The least budget of a ring: an entry holds about 4 KiB.
-                    const SMALL: usize = 62_272;
-                    let long = |n: usize| {
-                        key(&format!("{n}{}", "s".repeat(254)), &"r".repeat(255))
-                    };
-                    let open = move |shard: &mut Shard, n| {
-                        shard.open_named_complete(
-                            Slot::new(0),
-                            long(n),
-                            LONG,
-                            CREDIT,
-                            Charge::Whole,
-                        )
-                    };
-                    let small = |node, tasks| Test {
-                        pool: Rc::new(create_pool(SMALL)),
-                        ..Test::new(node, tasks)
-                    };
-                    let (mut sim, node) = create_node(203);
-                    sim.run_on(&node, move |node, tasks| async move {
-                        let test = Test::new(node, tasks);
-                        let buffer = test.create_buffer(AREA, BODY, 4).await;
-                        let mut shard = test.over(buffer).await;
-                        assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
-                        assert!(shard.carry(Slot::new(2), common::key(Slot::new(2))));
-                        let set = two_indexes();
-                        let w =
-                            shard.open_writer(writer("w", 1, &set)).expect("synced");
-                        let opened: Vec<_> = (0..8)
-                            .map(|n| open(&mut shard, n).expect("opens").key)
+                fn restores_each_position_of_more_records_than_one_entry_holds() {
+                    let before = async |test: &Test, shard: &mut Shard, w| {
+                        let opened: Vec<_> = (0..20)
+                            .map(|n| {
+                                open_longest(shard, longest(n)).expect("opens").key
+                            })
                             .collect();
-                        committed(&test, &mut shard, w, &[10, 20]).await;
-                        for key in opened {
-                            close(&mut shard, key.into());
+                        committed(test, shard, w, &[10, 20]).await;
+                        for (n, &reader) in opened.iter().enumerate() {
+                            let read = taken(shard, reader.into(), 0);
+                            assert_eq!(read, [seq(0, 1), seq(1, 1)]);
+                            if n % 2 == 1 {
+                                shard.ack(reader, live(1)).expect("forward");
+                            }
                         }
-                        shard.committed().await.expect("the commit ends");
-                    })
-                    .expect("the first run ends");
-                    sim.crash(&node, sim::Crash::Power);
-                    sim.run_on(&node, move |node, tasks| async move {
-                        let test = small(node, tasks);
-                        let buffer = test.create_buffer(AREA, BODY, 4).await;
-                        let limit = buffer.block_max();
-                        let mut shard = test.over(buffer).await;
-                        assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
-                        assert_eq!(open(&mut shard, 8), Err(Unopened::Full { limit }));
-                        let sink = Log::default();
-                        let a = sink.during(|| open(&mut shard, 0));
-                        let a = a.expect("it adds no record").key;
-                        // Eight records of 546 bytes, and an entry head of 5 bytes.
-                        let warning = over(&long(0), limit, 8 * 546 + 5 - limit);
-                        assert_eq!(sink.events(), [warning]);
-                        let read = caught_up(&mut shard, a, 0).await;
-                        assert_eq!(read, [seq(0, 1), seq(1, 1)]);
-                        shard.committed().await.expect("the commit ends");
-                    })
-                    .expect("the second run ends");
-                    sim.crash(&node, sim::Crash::Power);
-                    sim.run_on(&node, move |node, tasks| async move {
-                        let test = Test::new(node, tasks);
-                        let buffer = test.create_buffer(AREA, BODY, 4).await;
-                        let mut shard = test.over(buffer).await;
-                        assert!(shard.carry(Slot::new(0), common::key(Slot::new(0))));
-                        for n in 0..8 {
-                            let key = open(&mut shard, n).expect("opens").key;
+                        tick(test, shard).await;
+                    };
+                    restart(203, before, async |_, shard: &mut Shard| {
+                        for n in 0..20 {
+                            let reader = open_longest(shard, longest(n));
+                            let reader = reader.expect("opens").key;
                             shard.committed().await.expect("the commit ends");
-                            let read = caught_up(&mut shard, key, 0).await;
-                            assert_eq!(read, [seq(0, 1), seq(1, 1)], "reader {n}");
+                            let read = caught_up(shard, reader, 0).await;
+                            let expected = if n % 2 == 1 {
+                                &[seq(1, 1)][..]
+                            } else {
+                                &[seq(0, 1), seq(1, 1)]
+                            };
+                            assert_eq!(read, expected, "reader {n}");
                         }
+                    });
+                }
+
+                /// The case of the approval of #2833: a close whose removal finds
+                /// no block, an add that fills the part, the reopen and a second
+                /// close, then a crash.
+                #[test]
+                fn keeps_a_closed_key_in_its_part_until_its_removal_commits() {
+                    fn open_k(shard: &mut Shard) -> complete::Key {
+                        shard
+                            .open_named_complete(
+                                Slot::new(0),
+                                longest(0),
+                                Span::ZERO,
+                                CREDIT,
+                                Charge::Whole,
+                            )
+                            .expect("opens")
+                            .key
+                    }
+                    let before = async |test: &Test, shard: &mut Shard, w| {
+                        let k = open_k(shard);
+                        for n in 1..7 {
+                            open_longest(shard, longest(n)).expect("opens");
+                        }
+                        committed(test, shard, w, &[10, 20]).await;
+                        close(shard, k.into());
+                        let blocks = test.fill();
+                        tick(test, shard).await;
+                        drop(blocks);
+                        open_longest(shard, longest(7)).expect("part 1 has room");
+                        let k = open_k(shard);
+                        close(shard, k.into());
+                        tick(test, shard).await;
+                    };
+                    restart(207, before, async |_, shard: &mut Shard| {
+                        let k = open_longest(shard, longest(0)).expect("opens").key;
+                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(caught_up(shard, k, 0).await, [], "k has no record");
+                        for n in 1..8 {
+                            let reader = open_longest(shard, longest(n));
+                            let reader = reader.expect("opens").key;
+                            shard.committed().await.expect("the commit ends");
+                            let read = caught_up(shard, reader, 0).await;
+                            let expected = if n < 7 {
+                                &[seq(0, 1), seq(1, 1)][..]
+                            } else {
+                                &[]
+                            };
+                            assert_eq!(read, expected, "reader {n}");
+                        }
+                    });
+                }
+
+                #[test]
+                fn sheds_each_part() {
+                    let before = async |test: &Test, shard: &mut Shard, w| {
+                        let opened: Vec<_> = (0..8)
+                            .map(|n| {
+                                open_longest(shard, longest(n)).expect("opens").key
+                            })
+                            .collect();
+                        committed(test, shard, w, &[10, 20]).await;
+                        for reader in opened {
+                            shard.ack(reader, live(1)).expect("forward");
+                            close(shard, reader.into());
+                        }
+                        tick(test, shard).await;
+                        shard.close_writer(w);
+                        shard.shed(Slot::new(0));
+                    };
+                    restart(204, before, async |_, shard: &mut Shard| {
+                        for n in [0, 7] {
+                            let reader = open_longest(shard, longest(n));
+                            let reader = reader.expect("opens").key;
+                            shard.committed().await.expect("the commit ends");
+                            assert_eq!(caught_up(shard, reader, 0).await, [], "{n}");
+                        }
+                    });
+                }
+
+                /// Opens a shard over a ring that holds a named entry of each tag of
+                /// `entries`, with its body, for the index at slot 0.
+                fn open_over(
+                    seed: u64,
+                    entries: &[(u8, &'static [u8])],
+                ) -> Result<(), sim::Error> {
+                    let entries = entries.to_vec();
+                    let (mut sim, node) = create_node(seed);
+                    sim.run_on(&node, |node, tasks| async move {
+                        let test = Test::new(node, tasks);
+                        let buffer = test.create_buffer(AREA, BODY_MAX, 4).await;
+                        for (tag, body) in entries {
+                            let body = test.pool.copy(body).expect("a block");
+                            let record = Entry {
+                                index: common::key(Slot::new(0)),
+                                slot: Slot::new(0),
+                                path: Path::Live,
+                                first: 0,
+                                samples: None,
+                                stored_at: Stamp::from_nanos(1),
+                                tag,
+                                parts: Some(body).into(),
+                            };
+                            buffer.append([record]).expect("the ring has room");
+                        }
+                        buffer.committed().await.expect("the commit ends");
+                        test.over(buffer).await;
                     })
-                    .expect("the run after the second cut ends");
+                }
+
+                #[test]
+                fn reads_the_parts_up_to_the_first_tag_with_no_entry() {
+                    const OTHER: &[u8] = &[2, 0, 0, 0, 0];
+                    open_over(205, &[(3, OTHER)]).expect("it reads no part past 0");
+                    let ended = open_over(206, &[(2, &[1, 0, 0, 0, 0]), (3, OTHER)]);
+                    let Err(sim::Error::Panicked { message, .. }) = ended else {
+                        panic!("the open reads part 1: {ended:?}");
+                    };
+                    assert_eq!(
+                        message,
+                        "the named entry has version 2; this build reads version 1"
+                    );
                 }
 
                 #[test]
@@ -7092,7 +7090,7 @@ mod tests {
                 }
 
                 #[test]
-                fn restores_records_of_exactly_the_most_bytes_of_one_entry() {
+                fn restores_a_part_of_exactly_the_most_bytes_of_one_entry() {
                     let readers = || {
                         let long = |n: usize| {
                             key(&format!("{n}{}", "s".repeat(254)), &"r".repeat(255))

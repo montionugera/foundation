@@ -36,35 +36,45 @@
   variants stay until #2790 removes them (`laptop.architect`, 2026-10-16T00:46:53Z:
   https://github.com/synnaxlabs/foundation/issues/2725#issuecomment-6205434126).
   Amended (#274 A): a home appends the record of each named complete reader of an index,
-  open or held, as one entry of tag 2 on its live path, version 1. It appends the entry
-  after a named open, a close, and a takeover, and at a tick when a record changed: an
-  ack that moved a named position, or a hold that ended at the mesh midpoint. The tick
-  comes each second while a named complete reader is open, or records changed or wait
-  for mesh time; else when the next hold ends. `Shard::open` keeps the newest entry of
-  each index, and a carry with mesh time restores it. A session open at the crash counts
-  as closed at the restore, so a carry before mesh time waits for it. A shed appends an
-  entry with no record. With no mesh time or no room for it, a restart restores the
-  holds; a later carry in the same run does not. A named complete open that adds a
-  record, opens a held one, or takes over an open session with a new hold appends its
-  entry before it opens, and its reader takes no frame until the commit that holds the
-  entry. A takeover with the same hold of a session that waits for that commit waits for
-  it too. When the entry finds no block or no room, it opens nothing and gives
-  `Unopened::Unrecorded`, and `hub` gives `reader::Error::Unrecorded`, so a restart
-  never loses the frames of a first open, a reopen, or a takeover whose records fit one
-  entry. After a failed commit, the open opens, and its reader ends with the error of
-  the commit. Another entry that finds no room or no block stays due for the next tick,
-  so a restart before it resumes at an older position: a repeat, not a loss. Trimming
-  must keep the newest named entry of each index (#406). Until it does, a trim (STORE
-  TRIM) can free that entry, and a restart resumes the readers of its index at the live
-  tail, as HANDOFF RECORD states for a handoff. One entry holds every record of its
-  index, at most `min(Buffer::block_max, Layout::entry_max)` bytes: 546 bytes for a
-  record of the longest names, so at least 7 records. A named complete open that adds a
-  record past it gives `Unopened::Full`, and `hub` gives `reader::Error::Full`. An open
-  of a reader that holds a record, by a reopen or by a takeover with a new hold, opens
-  when the records pass it, as on a smaller pool after a restart, appends nothing, and
-  writes a warning event that names the index, the reader, and the bytes over one entry:
-  a restart after the old hold ends resumes the reader at the live tail, until #2833
-  records it. A latest reader adds no record. #2833 holds records past one entry.
+  open or held, in up to 64 parts, version 1. Part `p` is an entry of tag `2 + p` on
+  its live path, of at most `Layout::ENTRY_MAX_MIN` (4032) bytes: 546 bytes for a record
+  of the longest names, so at least 7 records a part and 448 an index. A record stays
+  in one part while it exists, and a new one goes in the lowest part with room for it
+  (first fit). A removed record keeps its key and its room in its part until the commit
+  of the entry that drops it, and an add of that key before then goes back in that
+  part, so a key is in one part only. An append writes only the parts whose bodies
+  changed, in part order, and stops at the first part that finds no block or no room.
+  It appends after a named open, a close, and a takeover, and at a tick when a record
+  changed: an ack that moved a named position, or a hold that ended at the mesh
+  midpoint. The tick comes each second while a named complete reader is open, or
+  records changed or wait for mesh time; else when the next hold ends. `Shard::open`
+  keeps the newest entry of each part of each index, and reads the tags from 2 up to
+  the first tag that no index has an entry of. It panics on a key in two parts. A
+  carry with mesh time restores the records. A session open at the crash counts as
+  closed at the restore, so a carry before mesh time waits for it. A shed appends an
+  entry with no record for each part that holds one. With no mesh time or no room for
+  it, a restart restores the holds; a later carry in the same run does not. A named
+  complete open that adds a record, opens a held one, or takes over an open session
+  with a new hold appends its parts before it opens, and its reader takes no frame
+  until the commit that holds them. A takeover with the same hold of a session that
+  waits for that commit waits for it too. When the part of its record finds no block
+  or no room, it opens nothing and gives `Unopened::Unrecorded`, and `hub` gives
+  `reader::Error::Unrecorded`, so a restart never loses the frames of a first open, a
+  reopen, or a takeover. After a failed commit, the open opens, and its reader ends
+  with the error of the commit. Another entry that finds no room or no block stays due
+  for the next tick, so a restart before it resumes at an older position: a repeat, not
+  a loss. Trimming must keep the newest entry of each part of each index (#406). Until
+  it does, a trim (STORE TRIM) can free such an entry, and a restart resumes the readers
+  of its part at the live tail, and those of each later part when no index keeps an
+  entry of its tag, as HANDOFF RECORD states for a handoff. A named complete open that
+  adds a record that no part has room for gives `Unopened::Full`, with a `limit` of
+  257,728 bytes (64 parts of 4027 bytes of records), and `hub` gives
+  `reader::Error::Full`. A reopen or a takeover never gives it, as a held record keeps
+  its part. A latest reader adds no record. Parts: decided by `laptop.architect`
+  (2026-10-17T00:37:51Z:
+  https://github.com/synnaxlabs/foundation/issues/2833#issuecomment-6227434486), which
+  supersedes one entry for each index, the open of a held reader over the limit, and
+  the warning event of the rulings below.
   Decided by `laptop.architect` (2026-10-16T05:22:26Z:
   https://github.com/synnaxlabs/foundation/issues/274#issuecomment-6208708096;
   `Unrecorded` and the trim gap until #406: 2026-10-16T07:08:03Z:

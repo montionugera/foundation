@@ -1,22 +1,27 @@
-//! The named entry of an index. Its body holds the record of each named reader of the
-//! index, open or held, from the entry's place in the index log. Each entry replaces
-//! the ones before it.
+//! The named entries of an index. Their bodies hold the record of each named reader of
+//! the index, open or held, from the entry's place in the index log, in up to
+//! [`PARTS`] parts. Part `p` is the entry of tag `2 + p`, and the newest entry of a
+//! part replaces the ones before it.
 
+use std::collections::BTreeMap;
 use std::num::NonZeroU8;
 use std::str;
 
-use block::Block;
-use buffer::{Buffer, Entry, Layout};
+use buffer::{Buffer, Layout};
 use delivery::{Position, Record};
 use types::channel::{self, Slot};
 use types::frame::Path;
+use types::hash;
 use types::name::Name;
 use types::time::{Span, Stamp};
 
 use crate::state;
 
-/// The buffer tag of a named entry.
-const TAG: NonZeroU8 = NonZeroU8::new(2).expect("2 is not 0");
+/// The most parts of the named records of one index.
+const PARTS: u8 = 64;
+
+/// The buffer tag of part 0.
+const TAG: u8 = 2;
 
 /// The version of the body that this build writes and reads.
 const VERSION: u8 = 1;
@@ -29,63 +34,294 @@ const FIXED: usize = 1 + 1 + 8 + 1 + 8 + 8 + 1 + 8;
 
 /// The most bytes of one record: the longest subject and name.
 pub(crate) const RECORD_MAX: usize = FIXED + 2 * Name::MAX_BYTES;
-const _: () = assert!(
-    HEAD + 7 * RECORD_MAX <= Layout::ENTRY_MAX_MIN,
-    "7 records fit one entry of any ring"
-);
 
-/// The most bytes of the body of a named entry in `buffer`: of one block, and of one
-/// entry of its ring.
-pub(crate) fn limit(buffer: &Buffer) -> usize {
-    buffer.block_max().min(buffer.layout().entry_max())
+/// The most bytes of the body of one part: one entry of any ring, in one block of any
+/// pool.
+const PART_MAX: usize = Layout::ENTRY_MAX_MIN;
+const _: () = assert!(HEAD + 7 * RECORD_MAX <= PART_MAX, "7 records fit one part");
+
+/// The most bytes of the records of the named readers of one index.
+pub(crate) const LIMIT: usize = PARTS as usize * (PART_MAX - HEAD);
+
+/// The bytes of the record of `reader` in a body.
+fn record_len(reader: &delivery::named::Key) -> usize {
+    FIXED + reader.subject.as_str().len() + reader.name.as_str().len()
+}
+
+/// The buffer tag of `part`.
+fn tag(part: u8) -> NonZeroU8 {
+    NonZeroU8::new(TAG + part).expect("invariant: a tag of a part is not 0")
+}
+
+/// No part has room for a new record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Full;
+
+/// How far an [`append`](Parts::append) went: it appended each part before `until`
+/// whose body changed, and none from `until` on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Appended {
+    until: u8,
+}
+
+impl Appended {
+    /// Whether it appended each part whose body changed.
+    pub(crate) fn all(self) -> bool {
+        self.until == PARTS
+    }
+}
+
+/// The named records of one index in the buffer: the part of each record, and the
+/// body that each part last appended.
+#[derive(Debug, Default)]
+pub(crate) struct Parts {
+    /// The part of each record, and of each removed one until its removal commits, so
+    /// that a key is in one part only.
+    keys: BTreeMap<delivery::named::Key, Placed>,
+    /// The body that each part last appended, by part. Empty for a part with no entry.
+    bodies: Vec<Vec<u8>>,
+}
+
+/// The place of the record of one key.
+#[derive(Clone, Copy, Debug)]
+struct Placed {
+    part: u8,
+    state: Kept,
+}
+
+/// What the parts keep of the record of one key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kept {
+    /// The records of the last [`Parts::append`] hold it.
+    Held,
+    /// The records of the last append do not hold it, and no entry of its part has
+    /// dropped it yet.
+    Removing,
+    /// An entry of its part dropped it, durable at this count of [`Buffer::commits`].
+    Removed(u64),
+}
+
+impl Parts {
+    /// The parts that the newest durable named entries of each index in `buffer` hold,
+    /// with the records of each, by the index's slot. An index with no named entry is
+    /// absent. It reads the tags of the parts from part 0 up, to the first tag that no
+    /// index has an entry of.
+    ///
+    /// # Errors
+    ///
+    /// The error of [`Buffer::newest`].
+    ///
+    /// # Panics
+    ///
+    /// When a named entry does not decode, as [`read`] says, or a key is in two parts.
+    pub(crate) async fn newest(
+        buffer: &Buffer,
+    ) -> Result<hash::Map<Slot, (Self, Vec<Record>)>, buffer::Error> {
+        let mut found: hash::Map<Slot, (Self, Vec<Record>)> = hash::Map::default();
+        for part in 0..PARTS {
+            let newest = buffer.newest(Path::Live, tag(part)).await?;
+            if newest.is_empty() {
+                break;
+            }
+            for (slot, stored) in newest {
+                let (parts, records) = found.entry(slot).or_default();
+                let body = stored.bytes.to_vec();
+                for record in read(&body) {
+                    let placed = Placed {
+                        part,
+                        state: Kept::Held,
+                    };
+                    if let Some(other) =
+                        parts.keys.insert(record.reader.clone(), placed)
+                    {
+                        panic!(
+                            "the named reader {:?} is in parts {} and {part}",
+                            record.reader, other.part
+                        );
+                    }
+                    records.push(record);
+                }
+                parts.keep(part, body);
+            }
+        }
+        Ok(found)
+    }
+
+    /// Appends each part whose body differs from the body it last appended, so that
+    /// the parts hold `records` and no other record, on the live path of the index
+    /// `index` at `slot`, at seq `first` and mesh time `stored_at`. Each part goes
+    /// alone, in part order, and the append stops at the first part that finds no
+    /// block or no room. A record keeps its part. A new one goes in the lowest part
+    /// with room for it. A removed record keeps its room until the commit of the entry
+    /// that drops it, and goes back in its part when it returns before that.
+    ///
+    /// # Errors
+    ///
+    /// [`Full`] when no part has room for a new record of `records`. It then appends
+    /// nothing.
+    ///
+    /// # Panics
+    ///
+    /// If `records` hold a key twice.
+    pub(crate) fn append(
+        &mut self,
+        buffer: &Buffer,
+        records: &[Record],
+        index: channel::Key,
+        slot: Slot,
+        first: u64,
+        stored_at: Stamp,
+    ) -> Result<Appended, Full> {
+        let added = self.place(records, buffer.commits())?;
+        for (part, body) in self.changed(records) {
+            let appended = state::append(buffer, |pool| {
+                let mut block = pool.alloc(body.len())?;
+                block.copy_from_slice(&body);
+                let body = Some(block.freeze());
+                Ok(state::entry(tag(part), body, index, slot, first, stored_at))
+            });
+            if !appended {
+                for key in added {
+                    if self.keys[key].part >= part {
+                        self.keys.remove(key);
+                    }
+                }
+                return Ok(Appended { until: part });
+            }
+            self.appended(part, body, buffer.durable_at());
+        }
+        Ok(Appended { until: PARTS })
+    }
+
+    /// Places each record of `records` in its part, after it drops each removed
+    /// record whose removal is durable by the count of [`Buffer::commits`] `commits`,
+    /// and returns the keys that it added.
+    ///
+    /// # Errors
+    ///
+    /// [`Full`] when no part has room for a new record. It then adds no key.
+    ///
+    /// # Panics
+    ///
+    /// If `records` hold a key twice.
+    fn place<'r>(
+        &mut self,
+        records: &'r [Record],
+        commits: u64,
+    ) -> Result<Vec<&'r delivery::named::Key>, Full> {
+        for placed in self.keys.values_mut() {
+            if placed.state == Kept::Held {
+                placed.state = Kept::Removing;
+            }
+        }
+        let mut added = Vec::new();
+        for record in records {
+            match self.keys.get_mut(&record.reader) {
+                Some(placed) => placed.state = Kept::Held,
+                None => added.push(&record.reader),
+            }
+        }
+        self.release(commits);
+        let mut used = vec![HEAD; usize::from(PARTS)];
+        for (key, placed) in &self.keys {
+            used[usize::from(placed.part)] += record_len(key);
+        }
+        for (at, &key) in added.iter().enumerate() {
+            let len = record_len(key);
+            let room = |part: &u8| used[usize::from(*part)] + len <= PART_MAX;
+            let Some(part) = (0..PARTS).find(room) else {
+                for key in &added[..at] {
+                    self.keys.remove(*key);
+                }
+                return Err(Full);
+            };
+            used[usize::from(part)] += len;
+            let state = Kept::Held;
+            let old = self.keys.insert(key.clone(), Placed { part, state });
+            assert!(old.is_none(), "the records hold {key:?} twice");
+        }
+        Ok(added)
+    }
+
+    /// The body of each part, in part order, that differs from the body it last
+    /// appended, when the parts hold `records`, which [`place`](Self::place) placed.
+    fn changed(&self, records: &[Record]) -> Vec<(u8, Vec<u8>)> {
+        let mut sorted: Vec<(u8, &Record)> = records
+            .iter()
+            .map(|record| (self.keys[&record.reader].part, record))
+            .collect();
+        sorted.sort_unstable_by(|a, b| (a.0, &a.1.reader).cmp(&(b.0, &b.1.reader)));
+        let used = sorted.last().map_or(0, |&(part, _)| usize::from(part) + 1);
+        let mut rest = &sorted[..];
+        let mut changed = Vec::new();
+        for part in 0..used.max(self.bodies.len()) {
+            let (now, after) =
+                rest.split_at(rest.partition_point(|&(at, _)| usize::from(at) == part));
+            rest = after;
+            let last = self.bodies.get(part).map_or(&[][..], Vec::as_slice);
+            if now.is_empty() && last.is_empty() {
+                continue;
+            }
+            let mut body = vec![0; len(now.iter().map(|&(_, record)| record))];
+            write(&mut body, now.iter().map(|&(_, record)| record));
+            if body != last {
+                let part = u8::try_from(part).expect("invariant: a part fits a u8");
+                changed.push((part, body));
+            }
+        }
+        changed
+    }
+
+    /// Keeps `body` as the body that `part` last appended, in an entry durable at the
+    /// count of [`Buffer::commits`] `durable_at`.
+    fn appended(&mut self, part: u8, body: Vec<u8>, durable_at: u64) {
+        for placed in self.keys.values_mut() {
+            if placed.part == part && placed.state == Kept::Removing {
+                placed.state = Kept::Removed(durable_at);
+            }
+        }
+        self.keep(part, body);
+    }
+
+    /// Whether the record of `reader` is in a part before the first that `appended`
+    /// did not append.
+    pub(crate) fn recorded(
+        &self,
+        reader: &delivery::named::Key,
+        appended: Appended,
+    ) -> bool {
+        let placed = self.keys.get(reader);
+        placed.is_some_and(|placed| placed.part < appended.until)
+    }
+
+    /// Drops each removed record whose removal is durable by the count of
+    /// [`Buffer::commits`] `commits`. Returns whether a part may still hold a record.
+    pub(crate) fn release(&mut self, commits: u64) -> bool {
+        self.keys.retain(|_, placed| match placed.state {
+            Kept::Removed(at) => at > commits,
+            Kept::Held | Kept::Removing => true,
+        });
+        !self.keys.is_empty()
+    }
+
+    /// Keeps `body` as the body that `part` last appended.
+    fn keep(&mut self, part: u8, body: Vec<u8>) {
+        let part = usize::from(part);
+        if self.bodies.len() <= part {
+            self.bodies.resize_with(part + 1, Vec::new);
+        }
+        self.bodies[part] = body;
+    }
 }
 
 /// The bytes of the body that holds `records`.
-pub(crate) fn len<'a>(records: impl IntoIterator<Item = &'a Record>) -> usize {
+fn len<'a>(records: impl IntoIterator<Item = &'a Record>) -> usize {
     let records = records.into_iter().map(|record| record_len(&record.reader));
     records.sum::<usize>() + HEAD
 }
 
-/// The bytes of the record of `reader` in a body.
-pub(crate) fn record_len(reader: &delivery::named::Key) -> usize {
-    FIXED + reader.subject.as_str().len() + reader.name.as_str().len()
-}
-
-/// The buffer entry that holds `records` on the live path of the index `index` at
-/// `slot`, at seq `first` and mesh time `stored_at`. Its body is a block from `pool`.
-///
-/// # Errors
-///
-/// [`block::Error`] when `pool` has no block for the bytes.
-///
-/// # Panics
-///
-/// If `records` hold more than `u32::MAX` records.
-pub(crate) fn entry(
-    pool: &block::Pool,
-    records: &[Record],
-    index: channel::Key,
-    slot: Slot,
-    first: u64,
-    stored_at: Stamp,
-) -> Result<Entry, block::Error> {
-    let body = Some(body(pool, records)?);
-    Ok(state::entry(TAG, body, index, slot, first, stored_at))
-}
-
-/// The body that holds `records`, a block from `pool`.
-///
-/// # Errors
-///
-/// [`block::Error`] when `pool` has no block for the bytes.
-fn body(pool: &block::Pool, records: &[Record]) -> Result<Block, block::Error> {
-    let mut block = pool.alloc(len(records))?;
-    write(&mut block, records);
-    Ok(block.freeze())
-}
-
 /// Writes `records` to `out`, which has [`len`] bytes.
-fn write(out: &mut [u8], records: &[Record]) {
+fn write<'a>(out: &mut [u8], records: impl ExactSizeIterator<Item = &'a Record>) {
     let count = u32::try_from(records.len()).expect("at most u32::MAX records");
     let mut at = 0;
     let mut put = |bytes: &[u8]| {
@@ -107,26 +343,6 @@ fn write(out: &mut [u8], records: &[Record]) {
         put(&[u8::from(record.closed.is_some())]);
         put(&record.closed.map_or(0, Stamp::nanos).to_le_bytes());
     }
-}
-
-/// The records that the newest durable named entry of each index in `buffer` holds,
-/// with the index's slot, in no order. An index with no named entry is absent.
-///
-/// # Errors
-///
-/// The error of [`Buffer::newest`].
-///
-/// # Panics
-///
-/// When a named entry does not decode, as [`read`] says.
-pub(crate) async fn newest(
-    buffer: &Buffer,
-) -> Result<Vec<(Slot, Vec<Record>)>, buffer::Error> {
-    let found = buffer.newest(Path::Live, TAG).await?;
-    let records = found
-        .into_iter()
-        .map(|(slot, stored)| (slot, read(&stored.bytes)));
-    Ok(records.collect())
 }
 
 /// The records that `body`, the bytes of a named entry, holds.
@@ -224,7 +440,6 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::common::{create_pool, key};
 
     fn record(
         subject: &str,
@@ -247,40 +462,17 @@ mod tests {
     }
 
     fn encoded(records: &[Record]) -> Vec<u8> {
-        body(&create_pool(1 << 16), records).expect("room").to_vec()
+        let mut body = vec![0; len(records)];
+        write(&mut body, records.iter());
+        body
     }
 
-    mod entry {
-        use super::*;
-
-        #[test]
-        fn holds_the_records_on_the_live_path_with_tag_2() {
-            let records = [record("ops", "r", None, None)];
-            let stored_at = Stamp::from_nanos(9);
-
-            let entry = entry(
-                &create_pool(4096),
-                &records,
-                key(Slot::new(4)),
-                Slot::new(4),
-                12,
-                stored_at,
-            )
-            .expect("room");
-
-            let place = (entry.index, entry.slot, entry.path, entry.first);
-            assert_eq!(place, (key(Slot::new(4)), Slot::new(4), Path::Live, 12));
-            assert_eq!(
-                (entry.samples, entry.stored_at, entry.tag),
-                (None, stored_at, 2)
-            );
-            let parts: Vec<_> =
-                entry.parts.into_iter().map(|part| part.to_vec()).collect();
-            assert_eq!(parts, [encoded(&records)]);
-        }
+    #[test]
+    fn gives_part_p_the_tag_2_plus_p() {
+        assert_eq!((tag(0).get(), tag(PARTS - 1).get()), (2, 65));
     }
 
-    mod body {
+    mod write {
         use super::*;
 
         #[test]
@@ -310,27 +502,195 @@ mod tests {
             let records = [record(&longest, &longest, Some(1), Some(1))];
 
             assert_eq!(encoded(&records).len(), HEAD + RECORD_MAX);
-            assert_eq!((RECORD_MAX, len(&records)), (546, 551));
+            assert_eq!((RECORD_MAX, len(&records), LIMIT), (546, 551, 257_728));
+        }
+    }
+
+    /// A record of the longest subject and name, with a subject that starts with `n`.
+    fn longest(n: usize) -> Record {
+        let n = n.to_string();
+        let subject = format!("{n}{}", "s".repeat(Name::MAX_BYTES - n.len()));
+        record(&subject, &"r".repeat(Name::MAX_BYTES), None, None)
+    }
+
+    fn part(parts: &Parts, record: &Record) -> u8 {
+        parts.keys[&record.reader].part
+    }
+
+    /// The bytes of the records that each part keeps room for, with the head.
+    fn used(parts: &Parts) -> Vec<usize> {
+        let mut used = vec![HEAD; usize::from(PARTS)];
+        for (key, placed) in &parts.keys {
+            used[usize::from(placed.part)] += record_len(key);
+        }
+        used
+    }
+
+    /// Places `records`, and appends each part that changes, durable at `at`.
+    fn append(parts: &mut Parts, records: &[Record], commits: u64, at: u64) {
+        parts.place(records, commits).expect("room");
+        for (part, body) in parts.changed(records) {
+            parts.appended(part, body, at);
+        }
+    }
+
+    mod parts {
+        use super::*;
+
+        #[test]
+        fn places_seven_of_the_longest_records_in_each_part() {
+            let mut records: Vec<_> = (0..448).map(longest).collect();
+            let mut parts = Parts::default();
+
+            assert_eq!(parts.place(&records, 0).expect("room").len(), 448);
+
+            for (n, record) in records.iter().enumerate() {
+                assert_eq!(usize::from(part(&parts, record)), n / 7, "record {n}");
+            }
+            records.push(longest(448));
+            assert_eq!(parts.place(&records, 0), Err(Full));
+            assert!(!parts.keys.contains_key(&longest(448).reader));
         }
 
         #[test]
-        fn returns_the_pool_error_when_the_pool_is_full() {
-            let pool = create_pool(4096);
-            let mut held = Vec::new();
-            while let Ok(block) = pool.alloc(4) {
-                held.push(block);
+        fn adds_no_key_when_a_later_record_has_no_room() {
+            let mut records: Vec<_> = (0..448).map(longest).collect();
+            let mut parts = Parts::default();
+            parts.place(&records, 0).expect("room");
+            let short = record("a", "b", None, None);
+            records.extend([short.clone(), longest(448)]);
+
+            assert_eq!(parts.place(&records, 0), Err(Full));
+
+            assert!(!parts.keys.contains_key(&short.reader));
+            assert_eq!(parts.keys.len(), 448);
+        }
+
+        #[test]
+        #[should_panic(expected = "the records hold")]
+        fn panics_on_records_that_hold_a_key_twice() {
+            let records = [longest(0), longest(0)];
+            Parts::default().place(&records, 0).expect("room");
+        }
+
+        #[test]
+        fn keeps_a_removed_record_in_its_part_until_its_removal_commits() {
+            let records: Vec<_> = (0..7).map(longest).collect();
+            let mut parts = Parts::default();
+            append(&mut parts, &records, 0, 1);
+            append(&mut parts, &records[1..], 1, 5);
+            let mut added = records[1..].to_vec();
+            added.push(longest(7));
+
+            parts.place(&added, 4).expect("room");
+
+            assert_eq!(part(&parts, &longest(7)), 1, "the removal of 0 waits");
+            added.push(longest(0));
+            parts.place(&added, 4).expect("room");
+            assert_eq!(part(&parts, &longest(0)), 0, "it goes back in its part");
+        }
+
+        #[test]
+        fn frees_the_room_of_a_removed_record_when_its_removal_commits() {
+            let records: Vec<_> = (0..7).map(longest).collect();
+            let mut parts = Parts::default();
+            append(&mut parts, &records, 0, 1);
+            append(&mut parts, &records[1..], 1, 5);
+            let mut added = records[1..].to_vec();
+            added.push(longest(7));
+
+            parts.place(&added, 5).expect("room");
+
+            assert_eq!(part(&parts, &longest(7)), 0);
+            assert!(!parts.keys.contains_key(&longest(0).reader));
+        }
+
+        #[test]
+        fn keeps_the_room_of_a_record_whose_removal_found_no_append() {
+            let records: Vec<_> = (0..7).map(longest).collect();
+            let mut parts = Parts::default();
+            append(&mut parts, &records, 0, 1);
+            parts.place(&records[1..], 9).expect("room");
+            let mut added = records[1..].to_vec();
+            added.push(longest(7));
+
+            parts.place(&added, 9).expect("room");
+
+            assert_eq!(part(&parts, &longest(7)), 1);
+        }
+
+        #[test]
+        fn changes_only_the_parts_whose_records_change() {
+            let mut records: Vec<_> = (0..14).map(longest).collect();
+            let mut parts = Parts::default();
+            parts.place(&records, 0).expect("room");
+            let changed: Vec<_> = parts.changed(&records).into_iter().collect();
+            let parts_of = |changed: &[(u8, Vec<u8>)]| {
+                changed.iter().map(|(part, _)| *part).collect::<Vec<_>>()
+            };
+            assert_eq!(parts_of(&changed), [0, 1]);
+            for (part, body) in changed {
+                parts.appended(part, body, 1);
             }
-            let available = 4096 - pool.committed();
+            records[8].position.live = 9;
 
-            let error = body(&pool, &[]).expect_err("full");
+            parts.place(&records, 0).expect("room");
+            let changed = parts.changed(&records);
 
-            assert_eq!(
-                error,
-                block::Error::Exhausted {
-                    requested: 5,
-                    available,
-                }
-            );
+            let mut expected = records[7..].to_vec();
+            expected.sort_by(|a, b| a.reader.cmp(&b.reader));
+            let read: Vec<_> = changed
+                .iter()
+                .map(|(part, body)| (*part, read(body)))
+                .collect();
+            assert_eq!(read, [(1, expected)]);
+        }
+
+        #[test]
+        fn empties_a_part_whose_records_all_go() {
+            let records: Vec<_> = (0..8).map(longest).collect();
+            let mut parts = Parts::default();
+            append(&mut parts, &records, 0, 1);
+            parts.place(&records[..7], 1).expect("room");
+
+            assert_eq!(parts.changed(&records[..7]), [(1, encoded(&[]))]);
+
+            append(&mut parts, &records[..7], 1, 3);
+            parts.place(&records[..7], 3).expect("room");
+            assert_eq!(parts.changed(&records[..7]), []);
+            assert_eq!(parts.keys.len(), 7, "the removal of 7 committed");
+        }
+
+        #[test]
+        fn appends_no_part_that_never_held_a_record() {
+            let mut parts = Parts::default();
+            parts.place(&[], 0).expect("room");
+            assert_eq!(parts.changed(&[]), []);
+        }
+
+        #[test]
+        fn records_a_reader_in_a_part_before_the_first_unappended() {
+            let records: Vec<_> = (0..8).map(longest).collect();
+            let mut parts = Parts::default();
+            parts.place(&records, 0).expect("room");
+            let appended = Appended { until: 1 };
+
+            assert!(parts.recorded(&records[6].reader, appended));
+            assert!(!parts.recorded(&records[7].reader, appended));
+            assert!(!parts.recorded(&longest(8).reader, appended));
+            assert!(!appended.all());
+            assert!(Appended { until: PARTS }.all());
+        }
+
+        #[test]
+        fn says_whether_a_part_may_hold_a_record_at_a_release() {
+            let records = [longest(0)];
+            let mut parts = Parts::default();
+            append(&mut parts, &records, 0, 1);
+            append(&mut parts, &[], 1, 2);
+
+            assert!(parts.release(1), "the removal waits");
+            assert!(!parts.release(2));
         }
     }
 
@@ -447,6 +807,49 @@ mod tests {
 
             prop_assert_eq!(bytes.len(), len(&records));
             prop_assert_eq!(read(&bytes), records);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn places_each_new_record_in_the_lowest_part_with_room(
+            lens in prop::collection::vec(
+                (4..=Name::MAX_BYTES, 1..=Name::MAX_BYTES),
+                1..1200,
+            )
+        ) {
+            let mut parts = Parts::default();
+            let mut records = Vec::new();
+            let mut full = 0;
+            for (n, (subject, name)) in lens.into_iter().enumerate() {
+                let subject = format!("{n:04}{}", "s".repeat(subject - 4));
+                let new = record(&subject, &"r".repeat(name), None, None);
+                let len = record_len(&new.reader);
+                let used = used(&parts);
+                let before: Vec<_> =
+                    records.iter().map(|record| part(&parts, record)).collect();
+                records.push(new.clone());
+                if let Ok(added) = parts.place(&records, 0) {
+                    prop_assert_eq!(added, [&new.reader]);
+                    let at = usize::from(part(&parts, &new));
+                    prop_assert!(used[at] + len <= PART_MAX);
+                    let before = &used[..at];
+                    prop_assert!(before.iter().all(|&used| used + len > PART_MAX));
+                } else {
+                    full += 1;
+                    prop_assert!(used.iter().all(|&used| used + len > PART_MAX));
+                    prop_assert!(!parts.keys.contains_key(&new.reader));
+                    records.pop();
+                }
+                let after: Vec<_> = records[..before.len()]
+                    .iter()
+                    .map(|record| part(&parts, record))
+                    .collect();
+                prop_assert_eq!(after, before, "each record keeps its part");
+            }
+            prop_assert!(full == 0 || records.len() >= 448);
         }
     }
 }
