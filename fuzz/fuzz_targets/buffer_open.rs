@@ -235,6 +235,23 @@ mod record {
         image[block * BLOCK + KIND_AT]
     }
 
+    /// The index, the path byte, and the seq of each tail of the carry record at
+    /// `block`, whose body is `[count: u32]` and tails of `index: u128, path: u8,
+    /// seq: u64` and 17 more bytes.
+    pub(super) fn tails(image: &[u8], block: usize) -> Vec<(u128, u8, u64)> {
+        let body = block * BLOCK + HEAD;
+        let count = usize::try_from(word(image, body)).expect("invariant: a u32 fits");
+        (0..count)
+            .map(|number| {
+                let tail = &image[body + 4 + number * 42..];
+                let index =
+                    u128::from_le_bytes(tail[..16].try_into().expect("16 bytes"));
+                let seq = u64::from_le_bytes(tail[17..25].try_into().expect("8 bytes"));
+                (index, tail[16], seq)
+            })
+            .collect()
+    }
+
     /// The chain value the record leaves: a restart record's body, or its CRC.
     pub(super) fn chain(image: &[u8], block: usize) -> u32 {
         let at = if kind(image, block) == RESTART {
@@ -1477,9 +1494,9 @@ async fn edit(file: &File, pool: &Rc<Pool>, edits: &[Edit], built: &Room) -> Roo
     built.walked(&image, edits)
 }
 
-/// Whether the ring holds a carry record that an open takes ([`taken`]), so a path
-/// may have a tail and no entry.
-async fn carried(shard: &Shard) -> bool {
+/// The index, the path byte, and the seq of each tail of the carry records that an
+/// open takes ([`taken`]). A path that one holds may have a tail and no entry.
+async fn carried(shard: &Shard) -> Vec<(u128, u8, u64)> {
     let file = shard
         .node
         .files()
@@ -1489,7 +1506,9 @@ async fn carried(shard: &Shard) -> bool {
     let image = image(&file, &shard.pool).await;
     taken(&image)
         .into_iter()
-        .any(|(block, _)| record::kind(&image, block) == record::CARRY)
+        .filter(|&(block, _)| record::kind(&image, block) == record::CARRY)
+        .flat_map(|(block, _)| record::tails(&image, block))
+        .collect()
 }
 
 /// Opens the changed ring, which must open or refuse as `room` says. With no edits,
@@ -1517,7 +1536,7 @@ async fn check(shard: &Shard, input: &Input, built: &Built, mut room: Room) {
             panic!("an open gave {opened:?} where the ring gives {fit:?}")
         }
     };
-    let read = read_paths(&buffer, &slots, carried(shard).await).await;
+    let read = read_paths(&buffer, &slots, !carried(shard).await.is_empty()).await;
     // An edit can change the sizes in the header, and the ring keeps them.
     let body_max = buffer.layout().body_max();
     if input.edits.is_empty() {
@@ -1554,7 +1573,7 @@ async fn check(shard: &Shard, input: &Input, built: &Built, mut room: Room) {
     );
     buffer.committed().await.expect("the entries commit");
     let durable = tails(&buffer, &slots);
-    let stored = read_paths(&buffer, &slots, carried(shard).await).await;
+    let stored = read_paths(&buffer, &slots, !carried(shard).await.is_empty()).await;
     // The paths of the build come first.
     for (given, commit) in stored.iter().zip(&commits) {
         assert_eq!(given.last(), Some(commit), "a read lost the commit");
@@ -1646,7 +1665,8 @@ fn commit_entries(
 
 /// Reopens the ring after the check commit. The reopen recovers the tails `durable`
 /// that the commit gave, and each path gives what `stored` gave past the trim of
-/// the reopen, up to its entry of `commits`.
+/// the reopen, up to its entry of `commits`. The trim frees that entry only when a
+/// carry record holds the tail after it.
 async fn reopen(
     shard: &Shard,
     mut room: Room,
@@ -1671,7 +1691,8 @@ async fn reopen(
         .flat_map(|slot| PATHS.map(|path| reopened.tail(*slot, path)))
         .collect();
     assert_eq!(recovered, durable, "a reopen lost what committed reported");
-    let reread = read_paths(&reopened, &slots, carried(shard).await).await;
+    let carry = carried(shard).await;
+    let reread = read_paths(&reopened, &slots, !carry.is_empty()).await;
     assert_eq!(reread.len(), stored.len(), "a reopen changed the paths");
     let passed = room.tail().and_then(|tail| before.passed(tail));
     for (path, (given, kept)) in reread.iter().zip(stored).enumerate() {
@@ -1680,7 +1701,13 @@ async fn reopen(
                 kept.ends_with(given),
                 "a reopen changed what path {path} gives"
             );
-            if let Some(commit) = commits.get(path) {
+            let Some(commit) = commits.get(path) else {
+                continue;
+            };
+            let end = commit.first + u64::from(commit.len());
+            let index = u128::try_from(path / PATHS.len()).expect("few paths");
+            let byte = u8::try_from(path % PATHS.len()).expect("two paths");
+            if !(given.is_empty() && carry.contains(&(index, byte, end))) {
                 assert_eq!(given.last(), Some(commit), "a reopen lost the commit");
             }
             continue;
