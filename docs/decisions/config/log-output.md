@@ -35,8 +35,13 @@
   of the event, outer span first, with no span name. A key appears once in a line: a
   field of an inner span or of the event replaces a field of an outer span with the
   same key, at its own place, so a span field `message` cannot hide the message of
-  the event. By `laptop.architect-2` (item 1 of 2026-10-17T17:22:08Z,
-  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6237505740).
+  the event. In a text line, the key `mesh_time` is the line's: a field of that name
+  is left out, also near mesh time, where the line gives no `mesh_time`, so no field
+  reads as the time of the line. A JSON line keeps the field in `fields`. By
+  `laptop.architect-2` (item 1 of 2026-10-17T17:22:08Z,
+  https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6237505740; item
+  2 of 2026-10-17T18:45:36Z,
+  https://github.com/synnaxlabs/foundation/pull/3053#issuecomment-6238847435).
   (4) `node::log` builds the `fmt` layer of `tracing-subscriber` with a `FormatEvent`
   of its own, which reads `clock::log::Reader::now` once for each line and writes the
   whole line, with `log_internal_errors(false)`, so a failed write drops the line and

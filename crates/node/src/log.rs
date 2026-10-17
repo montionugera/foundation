@@ -294,8 +294,11 @@ impl Entry<'_> {
             }
         }
         // The `mesh_time` of the line comes last, so it replaces a field of that name.
-        let replaced = |name: &str| name == "mesh_time" && time.mesh != Mesh::Near;
-        for (name, field) in fields.others.iter().filter(|(name, _)| !replaced(name)) {
+        for (name, field) in fields
+            .others
+            .iter()
+            .filter(|(name, _)| *name != "mesh_time")
+        {
             write!(w, " {name}=")?;
             field.write(w)?;
         }
