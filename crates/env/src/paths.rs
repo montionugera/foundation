@@ -328,7 +328,6 @@ impl Paths {
             if !limit.folders.iter().any(held) {
                 let replaced = limit.folders.iter().any(|(dir, was)| {
                     keys.contains(was)
-                        || resolved.starts_with(dir)
                         || self
                             .driver
                             .resolve(dir)

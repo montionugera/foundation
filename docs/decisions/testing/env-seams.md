@@ -987,7 +987,8 @@
   was at that call. It replaces `Outside`, which such a path gave. So a folder that is
   a file gives `Replaced` after a write to it, and so does a folder that a program
   makes again in other case or replaces with a link, and a path into a folder that a
-  program moved away. The common cases pin each on both drivers.
+  program moved away. The common cases pin each on both drivers, other than a folder
+  made again in other case, which an `os` test pins on macOS.
   `sim::Node::move_path` renames a file, a link, or a directory of a host from outside
   the node, with its key, so the common cases move a folder away on both drivers. When
   the node's working directory resolves, it stays on the directory that it resolves

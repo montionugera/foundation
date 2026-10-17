@@ -56,8 +56,8 @@ pub(crate) const TABLE: &[Spec] = &[
     },
     Spec {
         name: "status",
-        summary: "Show the state of each connector on the node of `--data`, and the \
-                  failures of its OS roots",
+        summary: "Show the state of each connector and the failed OS roots of the node \
+                  of `--data`",
         read_only: true,
         destructive: false,
     },

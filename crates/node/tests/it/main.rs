@@ -457,6 +457,15 @@ fn mcp_answers_a_line_that_is_not_utf8_and_goes_on() {
     );
 }
 
+/// The status of a node of the rig with no connectors, whose OS roots all read.
+fn no_connectors() -> serde_json::Value {
+    let file = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/it/ca.pem");
+    serde_json::json!({
+        "connectors": [],
+        "roots": { "failures": [], "source": format!("SSL_CERT_FILE={file}"), "unlisted": 0 },
+    })
+}
+
 /// The line of the reply of `foundation mcp` to a tool call with `id`, which
 /// gives `output`, else fails with `error`.
 fn status_reply(
@@ -513,7 +522,7 @@ fn mcp_shows_status_of_the_node_of_data_across_a_restart() {
              \"params\":{{\"name\":\"status\"}}}}\n"
         )
     };
-    let empty = serde_json::json!({ "connectors": [] });
+    let empty = no_connectors();
     let mut replies = status_reply(1, Ok(empty.clone()));
     mcp.ask(&status(1), &replies);
     rig.stop();
@@ -549,7 +558,7 @@ fn start_runs_on_the_data_directory_that_mcp_made() {
     let mut replies = status_reply(1, Err(unreached()));
     mcp.ask(&status(1), &replies);
     rig.start_with(&["--name", "edge", "--data", "plant"]);
-    let empty = serde_json::json!({ "connectors": [] });
+    let empty = no_connectors();
     replies.push_str(&status_reply(2, Ok(empty)));
     mcp.ask(&status(2), &replies);
     let output = mcp.close();
@@ -576,7 +585,7 @@ fn mcp_keeps_its_session_through_a_pause() {
              \"params\":{{\"name\":\"status\"}}}}\n"
         )
     };
-    let empty = serde_json::json!({ "connectors": [] });
+    let empty = no_connectors();
     let mut replies = status_reply(1, Ok(empty.clone()));
     mcp.ask(&status(1), &replies);
     mcp.idle(types::time::Span::from_nanos(
@@ -635,7 +644,7 @@ fn mcp_holds_the_sockets_of_one_session_after_many_calls() {
              \"params\":{{\"name\":\"status\"}}}}\n"
         )
     };
-    let empty = serde_json::json!({ "connectors": [] });
+    let empty = no_connectors();
     let sockets = |pid: u32| {
         let output = std::process::Command::new("lsof")
             .args(["-a", "-p", &pid.to_string(), "-i", "UDP", "-F", "f"])
@@ -671,7 +680,7 @@ fn mcp_reaches_a_node_on_a_data_directory_made_again() {
              \"params\":{{\"name\":\"status\"}}}}\n"
         )
     };
-    let empty = serde_json::json!({ "connectors": [] });
+    let empty = no_connectors();
     let mut replies = status_reply(1, Ok(empty.clone()));
     mcp.ask(&status(1), &replies);
     rig.stop();
