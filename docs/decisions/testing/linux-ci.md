@@ -18,6 +18,22 @@
     that names only that issue, and removes the issue from an item that names others.
     The lists only shrink. The ONE NODE milestone does not close while a list holds a
     crate or a test.
+  - A test skips an OS by an attribute only in a case of `docs/claude/testing.md`, "No
+    `#[ignore]`": the OS does not have the behavior, no test can fix its value there, or
+    its test needs an item of one OS to cause the case. Its reason is `only <OS>`, or
+    starts with `only <OS>:`, where `<OS>` names each OS that runs the test: Linux,
+    macOS, or Windows, two of them joined by `and` in that order, or Unix for Linux and
+    macOS. A skip that keys on several OSes, of which only some have the behavior, is
+    one `cfg_attr` for each OS, each with its own reason. Each other skip of an OS, a
+    `needs <tool>` skip too, is an item of the list of that OS with its issue. The
+    review checks that the reason is true of the behavior, not only of the tool. `cargo
+    xtask skips` reads the module tree of each target of the workspace, other than the
+    body of a macro call, in the job `check` on Linux. For each test, it finds the OSes
+    of the lists on which its `cfg` and those of its modules build it and an `ignore`
+    skips it on the runner of that OS in the job `check`, and checks each reason of
+    those `ignore` attributes. A test that those attributes skip on each OS on which it
+    builds has no OS to name, so each of them is refused, unless a plain `#[ignore]`
+    skips the test on each OS. It also refuses a `path` in a `cfg_attr`.
   - For `/review`, CI does not run an OS for a crate or a test on the list of that OS
     (`laptop.director`,
     https://github.com/synnaxlabs/foundation/pull/2960#issuecomment-6229528745).
@@ -69,3 +85,7 @@
     it is not the slowest job of the run. The times of the three jobs go on #2954, and
     a feature job that becomes the slowest job of the run goes back to `laptop.monitor`
     with its time.
+  - The skips by an attribute: `laptop.director`, 2026-10-17T07:39:56Z, option 2
+    (https://github.com/synnaxlabs/foundation/issues/3015#issuecomment-6231310442), on
+    the gap that `laptop.monitor` found at 2026-10-17T07:32:46Z
+    (https://github.com/synnaxlabs/foundation/issues/2954#issuecomment-6231250077).

@@ -2718,10 +2718,6 @@ n = read_x(b, 0, 0, 0);
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_refuses_a_line_directive_in_the_copy() {
         let (root, repo, result) = run_after("line", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -3617,10 +3613,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_copies_each_compiled_source_and_its_headers() {
         let (root, repo, result) = run_on("copies", |_| {});
         assert_eq!(result, Ok(()));
@@ -3695,10 +3687,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_refuses_a_release_with_no_file_of_extra() {
         let (root, repo, result) = run_on("extra", |repo| {
             std::fs::remove_file(repo.join("arch/common/timer.h")).unwrap();
@@ -3716,10 +3704,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_refuses_a_file_of_extra_that_the_library_holds() {
         let (root, repo, result) = run_on("stale", |repo| {
             let cmake = repo.join("CMakeLists.txt");
@@ -3739,10 +3723,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_refuses_a_file_of_omitted_that_the_library_does_not_compile() {
         let (root, repo, result) = run_on("omitted", |repo| {
             let cmake = repo.join("CMakeLists.txt");
@@ -3765,10 +3745,6 @@ End of search list.
     /// A header of the [`Crypto`] is outside the copy, and the check reads it as a
     /// system header, as the build of `connector-opcua` does.
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_builds_against_the_headers_of_the_crypto() {
         let dir = temp("crypto");
         let source =
@@ -3803,10 +3779,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_refuses_each_problem_of_the_staged_copy() {
         let (root, repo, result) = run_on("refuses", |repo| {
             create_files(
@@ -3869,10 +3841,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_names_a_static_helper_that_calls_a_clock() {
         let (root, repo, result) = run_on("helper", |repo| {
             let log = "#include \"clock.h\"\n\
@@ -3895,10 +3863,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_refuses_a_source_with_other_flags() {
         let (root, repo, result) = run_on("flags", |repo| {
             let cmake = repo.join("CMakeLists.txt");
@@ -3918,10 +3882,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_refuses_a_flag_in_no_list() {
         let (root, repo, result) = run_on("unsorted", |repo| {
             let cmake = repo.join("CMakeLists.txt");
@@ -3943,10 +3903,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_copies_a_source_whose_name_starts_with_a_dash() {
         let (root, repo, result) = run_on("dash-source", |repo| {
             create_files(repo, &[("-gen.c", "int gen;\n")]);
@@ -3961,10 +3917,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_names_a_clock_call_in_a_source_whose_name_starts_with_an_at_sign() {
         let (root, repo, result) = run_on("at-source", |repo| {
             let text = "long long UA_DateTime_now(void);\n\
@@ -3980,10 +3932,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn run_keeps_the_copy_when_a_file_is_missing() {
         let (root, repo, result) = run_on("license", |repo| {
             std::fs::remove_file(repo.join("LICENSE")).unwrap();
@@ -4001,10 +3949,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_a_clock_call_added_to_the_copy() {
         let (root, repo, result) = run_after("check", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -4119,10 +4063,6 @@ End of search list.
 
     #[test]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_a_builtin_and_an_asm_statement_that_read_a_clock() {
         let (root, repo, result) = run_after("instructions", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -4135,10 +4075,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_an_os_call_through_a_header_that_includes_its_own() {
         let (root, repo, result) = run_after("os", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -4177,10 +4113,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_an_os_call_whose_name_another_file_defines_as_static() {
         let (root, repo, result) = run_after("static", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -4212,10 +4144,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_a_read_of_errno_that_no_call_of_the_copy_set() {
         // `errno` holds the error of the last OS call of the thread, also one that
         // code outside the copy made.
@@ -4241,10 +4169,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_a_listed_symbol_at_a_place_that_the_list_does_not_name() {
         let (root, repo, result) = run_after("place", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -4276,10 +4200,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_a_listed_symbol_in_a_nested_function_of_a_new_function() {
         let (root, repo, result) = run_after("nested", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -4329,10 +4249,6 @@ End of search list.
     /// A listed function that stores the address of a symbol that it may only call
     /// lets a new function call the symbol with no reference to it.
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_the_address_of_a_listed_symbol_in_its_function() {
         let (root, repo, result) = run_after("address", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -4375,10 +4291,6 @@ End of search list.
     /// the first name of `nm`, which a trim of its output would cut. `a$b` is plain.
     #[test]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_reads_each_name_to_its_end() {
         let (root, repo, result) = run_after("names", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -4452,10 +4364,6 @@ End of search list.
     /// it hides a mapping symbol.
     #[test]
     #[cfg(target_arch = "aarch64")]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_refuses_an_odd_name_that_looks_like_a_mapping_symbol() {
         let (root, repo, result) = run_after("mapping", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -4490,10 +4398,6 @@ End of search list.
     /// it gives none to a mapping symbol, so its code reads as code of the function
     /// before it.
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_fails_on_a_c_identifier_that_holds_a_dollar() {
         let (root, repo, result) = run_after("dollar", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -4516,10 +4420,6 @@ End of search list.
     /// `-fno-dollars-in-identifiers`, so a build with that flag and a build with no
     /// such flag compile other C from this input.
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_reads_the_symbols_that_a_build_with_the_flags_of_the_copy_gives() {
         let (root, repo, result) = run_after("macro", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -4557,10 +4457,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_passes_an_undefined_symbol_that_no_relocation_names() {
         // As the assembler of x86-64 makes `_GLOBAL_OFFSET_TABLE_` for each object
         // that reads the table.
@@ -4574,10 +4470,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_a_read_of_the_table_of_the_linker_that_the_c_makes() {
         // Its entries are addresses of imported functions, so a call through one
         // names no symbol.
@@ -4604,10 +4496,6 @@ End of search list.
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_finds_a_clock_call_that_a_listed_function_inlines() {
         let (root, repo, result) = run_after("inline", |_| {}, &[]);
         assert_eq!(result, Ok(()));
@@ -4634,10 +4522,6 @@ End of search list.
 
     #[test]
     #[cfg(unix)]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        ignore = "needs GCC, GNU objdump, and GNU nm"
-    )]
     fn check_passes_on_the_committed_copy() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         // A root of its own: `cargo xtask open62541 <tag>` removes `target/open62541/`.
@@ -4651,7 +4535,6 @@ End of search list.
 
     #[test]
     #[cfg(unix)]
-    #[cfg_attr(not(target_os = "linux"), ignore = "needs GCC")]
     fn each_thread_of_the_committed_copy_draws_from_its_own_random_state_or_aborts() {
         use std::os::unix::process::ExitStatusExt;
         /// The signal number of `SIGABRT` on Linux.

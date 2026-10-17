@@ -11,7 +11,6 @@
 mod children;
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "needs glibc")]
 fn no_child_holds_a_socket_of_a_lookup() {
     let baseline = children::Baseline::list();
     let runtime = tokio::runtime::Builder::new_current_thread()

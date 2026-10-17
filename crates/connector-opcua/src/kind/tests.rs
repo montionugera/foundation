@@ -1146,7 +1146,7 @@ fn write_after_a_full_frame(kind: Count) {
             tasks: tasks.clone(),
         };
         let kinds = Table::new().with("opcua", kind);
-        let mut rig = testing::Rig::open(env, node.net(), kinds).await;
+        let rig = testing::Rig::open(env, node.net(), kinds).await;
         let setup = Setup::three();
         let channels = setup.channels.iter();
         let channels = channels.map(|(text, def)| (name(text), def.clone()));

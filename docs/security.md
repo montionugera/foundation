@@ -162,13 +162,12 @@ state on `main`.
 
 ### Agent host and CLI to `ops`
 
-- Caller to `ops`: the CLI and the MCP surface have only `version` and `docs`
-  today. #353: `call` accepts a list as arguments, but the schema says `object`; a
-  text error prints the caller's text raw, so a new line forges a `fix:` line. It
-  does not have the `security` label while no operation takes real arguments.
-- Mesh to agent, to attack when `ops` gets real operations: text from a spec file
-  or a peer that reaches a tool description or a tool result, as an instruction to
-  the agent.
+- Caller to `ops`: the CLI and the MCP surface have `version`, `docs`, `plan`,
+  `apply`, and `status`. The MCP tools read and write files only under their
+  folders, never in the data directory (OPS OUTPUT). `tools/call` takes only an
+  object as arguments (#310), and a text error escapes the caller's text (#377).
+- Mesh to agent: text from a spec file or a peer that reaches a tool description or a
+  tool result (`status`, `plan`), as an instruction to the agent (#2924).
 - A change of each definition other than a channel needs `admin` on its key, because
   a policy governs its whole region, a subject's keys decide who acts as it, a region
   record makes a region, and a connector reaches channels by `select` (SERVE ACCESS).

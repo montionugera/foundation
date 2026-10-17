@@ -1214,7 +1214,7 @@ mod tests {
     use std::time::Instant;
 
     use block::{Pool, Unique};
-    use buffer::{Layout, Mark};
+    use buffer::Layout;
     use env::clock::Clock;
     use env::entropy::Entropy;
     use env::files::{Mode, Operation};
@@ -1224,6 +1224,7 @@ mod tests {
     use types::frame::Form;
     use types::frame::Range;
     use types::frame::key_set::Group;
+    use types::log::Mark;
     use types::name::Name;
     use types::sample::{Scalar, Type};
     use types::time::Span;
@@ -6790,6 +6791,30 @@ mod tests {
                         let a = open_held(&mut shard);
                         assert_eq!(caught_up(&mut shard, a, 0).await, []);
                         shard.close_reader(a.into());
+                        shard.committed().await.expect("the commit ends");
+                        assert_eq!(woken(&mut shard), []);
+                    });
+                }
+
+                #[test]
+                fn wakes_no_session_that_a_takeover_replaced_while_its_entry_waits() {
+                    run(705, |test| async move {
+                        let set = two_indexes();
+                        let mut shard = test.shard(AREA).await;
+                        let w =
+                            shard.open_writer(writer("w", 1, &set)).expect("synced");
+                        let a = open_held(&mut shard);
+                        committed(&test, &mut shard, w, &[10, 20]).await;
+                        assert_eq!(
+                            taken(&mut shard, a.into(), 0),
+                            [seq(0, 1), seq(1, 1)]
+                        );
+                        shard.ack(a, live(1)).expect("forward");
+                        shard.close_reader(a.into());
+                        shard.committed().await.expect("the commit ends");
+                        let replaced = open_held(&mut shard);
+                        assert_eq!(taken(&mut shard, replaced.into(), 0), []);
+                        let _a = open_held(&mut shard);
                         shard.committed().await.expect("the commit ends");
                         assert_eq!(woken(&mut shard), []);
                     });

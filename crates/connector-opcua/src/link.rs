@@ -746,10 +746,6 @@ fn unlisted_panics_when_two_objects_have_a_file_of_plugins() {
 }
 
 #[test]
-#[cfg_attr(
-    not(target_os = "linux"),
-    ignore = "needs GNU nm and the glibc symbols"
-)]
 fn the_c_names_only_the_listed_symbols_outside_it() {
     let defined = symbols("--defined-only");
     assert!(
@@ -783,7 +779,6 @@ fn shim_undefined() -> std::collections::BTreeSet<String> {
 /// copy, which OPEN62541 SOURCE bars for each nonce, key, and session token of
 /// Foundation code.
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "needs GNU nm")]
 fn the_shim_draws_nothing_from_the_generator_of_the_copy() {
     let undefined = shim_undefined();
     let drawn: Vec<_> = ["UA_UInt32_random", "UA_Guid_random"]
@@ -798,7 +793,6 @@ fn the_shim_draws_nothing_from_the_generator_of_the_copy() {
 /// Neither the shim nor the test server names the libcrypto, so neither calls aws-lc
 /// unseen.
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "needs GNU nm")]
 fn the_shim_names_no_libcrypto() {
     let named: Vec<_> = shim_undefined()
         .into_iter()
@@ -1519,7 +1513,6 @@ fn the_production_code_gives_no_client_the_stdout_logger() {
 /// `--gc-sections`, so this test binary keeps only the functions that the tests reach,
 /// and the test server reaches neither.
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "needs GNU nm")]
 fn the_tests_reach_neither_interrupt_server_nor_random_seed() {
     let kept = names(&[std::env::current_exe().unwrap()], "--defined-only");
     assert!(
@@ -1613,7 +1606,6 @@ fn the_production_code_gives_a_client_no_security_policy() {
 /// and `build.rs` sets `cfg(asan)`, so neither the C checks nor the tests of the
 /// poisoning in `alloc` can turn off unseen.
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "needs GNU nm")]
 fn the_c_and_cfg_asan_follow_the_address_sanitizer_of_the_rust() {
     let exe = std::env::current_exe().unwrap();
     let rust = names(&[exe], "--defined-only").contains("__asan_init");
@@ -1633,10 +1625,6 @@ fn the_c_and_cfg_asan_follow_the_address_sanitizer_of_the_rust() {
 /// so the test finds the names that the code generation for Arm adds, not the names of
 /// a branch of the source for Arm only.
 #[test]
-#[cfg_attr(
-    not(target_os = "linux"),
-    ignore = "needs GNU nm, Clang, and the glibc symbols"
-)]
 fn the_c_on_64_bit_arm_names_only_the_listed_symbols_outside_it() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let copy = root.join("../../patches/open62541");
@@ -1701,7 +1689,6 @@ fn the_c_on_64_bit_arm_names_only_the_listed_symbols_outside_it() {
 /// memory. Each system header is empty, so only the predefined macros of the target
 /// decide the float order.
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "needs Clang")]
 fn the_copy_copies_floats_as_they_lie_in_memory_on_little_endian_targets() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let generated = root.join("../../patches/open62541/src_generated");

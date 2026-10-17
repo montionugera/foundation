@@ -147,7 +147,7 @@ fn run_of<F: Future<Output = ()> + 'static>(
     };
     let mut record = run_on(move |node, tasks| async move {
         let kinds = Table::new().with("writes", kind);
-        let mut rig = Rig::open(env(&node, tasks.clone()), node.net(), kinds).await;
+        let rig = Rig::open(env(&node, tasks.clone()), node.net(), kinds).await;
         rig.define(definitions());
         let time =
             record(rig.hub(), &tasks, ["plant.time", "plant.a", "plant.b"]).await;

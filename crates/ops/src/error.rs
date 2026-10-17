@@ -14,6 +14,7 @@ use types::name::Name;
 use wire::hub::client::BODY_BYTES_MAX;
 
 use crate::front_end::File;
+use crate::scope::Limits;
 
 const ARGUMENT: Code = Code::new("ops.argument");
 const UNKNOWN: Code = Code::new("ops.unknown-operation");
@@ -32,6 +33,14 @@ const READ: Code = Code::new("ops.read");
 const WRITE: Code = Code::new("ops.write");
 const LARGE_REQUEST: Code = Code::new("ops.large-request");
 const BAD_REPLY: Code = Code::new("ops.bad-reply");
+const OUTSIDE: Code = Code::new("ops.outside");
+const HIDDEN: Code = Code::new("ops.hidden");
+const NO_DATA: Code = Code::new("ops.no-data");
+const FOLDER_CHANGED: Code = Code::new("ops.folder-changed");
+const PLAN_NAME: Code = Code::new("ops.plan-name");
+const WIDE_FOLDER: Code = Code::new("ops.wide-folder");
+const FOLDER: Code = Code::new("ops.folder");
+const DATA: Code = Code::new("ops.data");
 /// The fix of [`ARGUMENT`].
 const HELP: &str =
     "Match the arguments to `foundation --help` or `foundation <operation> --help`";
@@ -94,16 +103,39 @@ pub(crate) enum Error {
     /// A command line did not read the file at `path`.
     Read { path: PathBuf, cause: Unread },
     /// A command line did not write the plan file at `path`.
-    Write {
-        path: PathBuf,
-        error: env::paths::Error,
-    },
+    Write { path: PathBuf, cause: Unwritten },
     /// The request of a command line has more bytes than one request holds.
     LargeRequest,
     /// The reply of a node to a command line is no reply.
     Reply { message: String },
     /// The errors that a node gave a command line, and the exit status of the reply.
     Remote { problems: Vec<Problem>, status: u8 },
+    /// A path that resolves outside the folders of `foundation mcp`, with them.
+    Outside { path: PathBuf, limits: Limits },
+    /// A path that resolves under the data directory `data` of `foundation mcp`.
+    Hidden { path: PathBuf, data: PathBuf },
+    /// A new name in a directory on the way to the data directory `data` of
+    /// `foundation mcp`, while nothing is at `data`.
+    NoData { path: PathBuf, data: PathBuf },
+    /// A path under a folder of `foundation mcp` that a program replaced after the
+    /// start, with the folders.
+    FolderChanged {
+        path: PathBuf,
+        folders: Vec<PathBuf>,
+    },
+    /// An `out` of a tool of `foundation mcp` that resolves to `resolved`, which does
+    /// not end in `.plan`.
+    PlanName { path: PathBuf, resolved: PathBuf },
+    /// `foundation mcp` with no `--files`, in a working directory that is `/` or the
+    /// home folder.
+    WideFolder { working: PathBuf },
+    /// A folder of `--files` of `foundation mcp` that it cannot use.
+    Folder { path: PathBuf, cause: Unusable },
+    /// The data directory of `foundation mcp`, which it did not make.
+    Data {
+        path: PathBuf,
+        error: env::paths::Error,
+    },
 }
 
 /// Why a command line did not read a file.
@@ -112,6 +144,22 @@ pub(crate) enum Unread {
     NotFound,
     Directory,
     NotUtf8,
+    Io { code: i32 },
+}
+
+/// Why `foundation mcp` cannot use a folder of `--files`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unusable {
+    /// A file is at it.
+    File,
+    /// It did not resolve or read.
+    Failed(env::paths::Error),
+}
+
+/// Why a command line did not write a plan file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unwritten {
+    NotFound,
     Io { code: i32 },
 }
 
@@ -202,13 +250,21 @@ impl Error {
             | Self::LargeReply
             | Self::ChannelRead { .. }
             | Self::Write { .. }
+            | Self::Data { .. }
+            | Self::NoData { .. }
+            | Self::FolderChanged { .. }
             | Self::Reply { .. } => 1,
             Self::Argument { .. }
             | Self::Unknown { .. }
             | Self::Config(_)
             | Self::Plan(_)
             | Self::Read { .. }
-            | Self::LargeRequest => 2,
+            | Self::LargeRequest
+            | Self::Outside { .. }
+            | Self::Hidden { .. }
+            | Self::PlanName { .. }
+            | Self::WideFolder { .. }
+            | Self::Folder { .. } => 2,
         }
     }
 
@@ -284,7 +340,9 @@ impl Error {
             ),
             Self::Write { .. } => (
                 WRITE,
-                "Give `--out` a path in a directory that can be written".to_owned(),
+                "Give `--out`, or `out` of the MCP tool, a path in a directory that can \
+                 be written"
+                    .to_owned(),
             ),
             Self::LargeRequest => {
                 (LARGE_REQUEST, "Make the config files smaller".to_owned())
@@ -292,6 +350,57 @@ impl Error {
             Self::Reply { .. } => (
                 BAD_REPLY,
                 "Use a `foundation` program of the same version as the node".to_owned(),
+            ),
+            Self::Outside { limits, .. } => (
+                OUTSIDE,
+                format!(
+                    "Give a path under one of those folders. A relative path starts at \
+                     the working directory of this MCP server, which was {} at its \
+                     start. To reach another folder, add \
+                     `--files <DIR>` to the command of the MCP server",
+                    limits.working.display()
+                ),
+            ),
+            Self::PlanName { .. } => (
+                PLAN_NAME,
+                "Give `out` a path that ends in `.plan` and is not a link to another \
+                 file"
+                    .to_owned(),
+            ),
+            Self::WideFolder { .. } => (
+                WIDE_FOLDER,
+                "Add `--files <DIR>` for each folder that the tools may read and write"
+                    .to_owned(),
+            ),
+            Self::Hidden { data, .. } => {
+                (HIDDEN, format!("Give a path outside {}", data.display()))
+            }
+            Self::NoData { data, .. } => (
+                NO_DATA,
+                format!(
+                    "Start the node on {} again, or give a path in another directory",
+                    data.display()
+                ),
+            ),
+            Self::FolderChanged { .. } => {
+                (FOLDER_CHANGED, "Start `foundation mcp` again".to_owned())
+            }
+            Self::Folder { .. } => {
+                (FOLDER, "Give `--files` a folder that is there".to_owned())
+            }
+            Self::Data {
+                path,
+                error: env::paths::Error::NotFound,
+            } => (
+                DATA,
+                format!(
+                    "Make {}, or give `--data` a directory whose parent is there",
+                    above(path).display()
+                ),
+            ),
+            Self::Data { .. } => (
+                DATA,
+                "Give `--data` a directory that this user can make".to_owned(),
             ),
         };
         Cow::Owned(vec![Problem {
@@ -540,19 +649,16 @@ impl fmt::Display for Error {
                     }
                 }
             }
-            Self::Write { path, error } => {
+            Self::Write { path, cause } => {
                 let path = path.display();
-                match error {
-                    env::paths::Error::NotFound => {
+                match cause {
+                    Unwritten::NotFound => {
                         write!(f, "the directory of the plan file {path} is not there")
                     }
-                    env::paths::Error::Io { code } => write!(
+                    Unwritten::Io { code } => write!(
                         f,
                         "the write of the plan file {path} failed with OS error {code}"
                     ),
-                    env::paths::Error::Outside | env::paths::Error::Hidden => {
-                        unreachable!("invariant: the command line writes with no limit")
-                    }
                 }
             }
             Self::LargeRequest => write!(
@@ -567,7 +673,102 @@ impl fmt::Display for Error {
                 [one] => f.write_str(&one.message),
                 _ => write!(f, "the node gave {} problems", problems.len()),
             },
+            Self::Outside { path, limits } => write!(
+                f,
+                "`{}` is not under a folder of this MCP server ({})",
+                path.display(),
+                listed(&limits.folders)
+            ),
+            Self::FolderChanged { path, folders } => write!(
+                f,
+                "`{}` is under a folder of this MCP server ({}) that a program \
+                 moved or replaced after it started",
+                path.display(),
+                listed(folders)
+            ),
+            Self::PlanName { path, resolved } => write!(
+                f,
+                "the plan file `{}` resolves to {}, which does not end in `.plan`",
+                path.display(),
+                resolved.display()
+            ),
+            Self::WideFolder { working } => write!(
+                f,
+                "the working directory {} is the root or the home folder, which is too \
+                 wide for the tools of an MCP server",
+                working.display()
+            ),
+            Self::Hidden { path, data } => write!(
+                f,
+                "`{}` is in the data directory {} of this MCP server, which no tool \
+                 reads or writes",
+                path.display(),
+                data.display()
+            ),
+            Self::NoData { path, data } => write!(
+                f,
+                "`{}` is a new name in a directory on the way to the data directory {} \
+                 of this MCP server, and nothing is at {} now",
+                path.display(),
+                data.display(),
+                data.display()
+            ),
+            Self::Folder { path, cause } => {
+                let failed = match cause {
+                    Unusable::File => "is a file".to_owned(),
+                    Unusable::Failed(error) => failed(*error),
+                };
+                write!(f, "the folder `{}` of `--files` {failed}", path.display())
+            }
+            Self::Data {
+                path,
+                error: env::paths::Error::NotFound,
+            } => write!(
+                f,
+                "the directory {} above the data directory `{}` is not there",
+                above(path).display(),
+                path.display()
+            ),
+            Self::Data { path, error } => write!(
+                f,
+                "the data directory `{}` was not made: it {}",
+                path.display(),
+                failed(*error)
+            ),
         }
+    }
+}
+
+/// What a call of `env::paths` at a path did, after the path.
+fn failed(error: env::paths::Error) -> String {
+    match error {
+        env::paths::Error::NotFound => "is not there".to_owned(),
+        env::paths::Error::Io { code } => format!("failed with OS error {code}"),
+        env::paths::Error::Outside => "is outside the folders it may use".to_owned(),
+        env::paths::Error::Hidden => "is in a folder that is hidden".to_owned(),
+        env::paths::Error::Vacant => {
+            "is a new name on the way to a hidden folder that is not there".to_owned()
+        }
+        env::paths::Error::Replaced => {
+            "is under a folder that a program replaced".to_owned()
+        }
+    }
+}
+
+/// The paths of `folders`, joined with `, `.
+fn listed(folders: &[PathBuf]) -> String {
+    let folders: Vec<_> = folders
+        .iter()
+        .map(|folder| folder.display().to_string())
+        .collect();
+    folders.join(", ")
+}
+
+/// The directory above `path`, as given, or `.` for a path of one name.
+fn above(path: &std::path::Path) -> &std::path::Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => std::path::Path::new("."),
     }
 }
 
