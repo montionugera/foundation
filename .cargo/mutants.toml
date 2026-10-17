@@ -124,7 +124,7 @@ exclude_re = [
   # step of the `check` job, which the mutants run does not see.
   'crates/os/src/files\.rs:.*in <impl env::files::Driver for Disk>::free$',
   # macOS only. The mutants run is on Linux and does not build it; its tests run in
-  # the `macos` job.
+  # the `macos` check.
   'crates/os/src/allocate\.rs:',
   # macOS only, as above. `this_host_has_whole_pages_available` and
   # `the_free_inactive_and_purgeable_pages_are_available` catch its mutants.
