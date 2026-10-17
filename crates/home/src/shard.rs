@@ -197,6 +197,8 @@ pub struct Config {
 #[derive(Debug)]
 struct Session {
     set: Arc<KeySet>,
+    /// The encoder of each entry of `set`.
+    encoders: Box<[codec::Encoder]>,
     /// The claim on the index of each group, by group number.
     claims: Vec<Claim>,
 }
@@ -552,7 +554,11 @@ impl Shard {
             let key = self.indexes[place].gate.open(control.clone(), lease, now);
             claims.push(Claim { place, key });
         }
-        let session = Session { set, claims };
+        let session = Session {
+            encoders: split::encoders(&set),
+            set,
+            claims,
+        };
         let places = session.claims.iter().map(|claim| claim.place);
         append_handoffs(&self.buffer, &mut self.indexes, places, mesh);
         let key = writer::Key {
@@ -609,15 +615,17 @@ impl Shard {
         frame: Draft,
     ) -> Result<&[Outcome], Error> {
         let number = key.on(self.number);
-        let Some(session) = self.writers.get(&number) else {
+        let (now, mesh) = self.time();
+        let Some(session) = self.writers.get_mut(&number) else {
             panic!("writer {number} is not open");
         };
         let Label::Path(path) = label else {
             return Err(Error::Resend);
         };
-        let (now, mesh) = self.time();
         let scratch = &mut self.scratch;
-        let mut split = scratch.split.split(&session.set, frame);
+        let mut split = scratch
+            .split
+            .split(&session.set, &mut session.encoders, frame);
         while let Some((group, stamps)) = split.next() {
             let claim = session.claim(group);
             let index = &mut self.indexes[claim.place];
