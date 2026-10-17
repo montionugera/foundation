@@ -78,14 +78,20 @@
   of the node is a name of the check (SERVE ACCESS). The text of the output with no
   connector is the line `You can read no connector on this node.`, which is true in each
   of these cases (`laptop.architect-2`, 2026-10-13T22:11:03Z,
-  https://github.com/synnaxlabs/foundation/pull/2617#issuecomment-6156268301). When #1028 makes the home check each reader open, the check of the status channels moves there. `serve` then leaves out each connector whose reader open the home refuses through the hub. The checks of the label of a connector and of the node stay in `serve`, as they open no reader (`laptop.architect-2`, 2026-10-13T22:33:54Z,
+  https://github.com/synnaxlabs/foundation/pull/2617#issuecomment-6156268301). When
+  #1028 makes the home check each reader open, the check of the status channels moves
+  there. `serve` then leaves out each connector whose reader open the home refuses
+  through the hub. The checks of the label of a connector and of the node stay in
+  `serve`, as they open no reader (`laptop.architect-2`, 2026-10-13T22:33:54Z,
   https://github.com/synnaxlabs/foundation/pull/2617#issuecomment-6156645922, which
   supersedes "and leaves `serve`" of item 5 of
   https://github.com/synnaxlabs/foundation/issues/1735#issuecomment-6135737119; the
   check of the label, `laptop.architect-2`, 2026-10-17T03:32:26Z,
   https://github.com/synnaxlabs/foundation/pull/2979#issuecomment-6229081007, which
   supersedes "and the check on the node stays in `serve`" of
-  https://github.com/synnaxlabs/foundation/pull/2617#issuecomment-6156645922; the form, `laptop.architect`, 2026-10-17T03:45:30Z, https://github.com/synnaxlabs/foundation/pull/2979#issuecomment-6229214071). Deferred
+  https://github.com/synnaxlabs/foundation/pull/2617#issuecomment-6156645922; the form,
+  `laptop.architect`, 2026-10-17T03:45:30Z,
+  https://github.com/synnaxlabs/foundation/pull/2979#issuecomment-6229214071). Deferred
   to https://github.com/synnaxlabs/foundation/issues/2530: the time of the next restart
   and MCP. Lost: `serve` replies with the text, so that `--json` and MCP each need a
   second reply; `status` asks the supervisors, a second source of status with its own
