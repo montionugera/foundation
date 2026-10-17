@@ -47,9 +47,10 @@
   from another. A key of `FUNCTION_SYMBOLS` with no reference fails, so a file that the
   build leaves out loses its keys. A new outside symbol also goes in `OUTSIDE` in
   `connector-opcua`, or in `PLUGINS` when only one file of the copy may name it, which
-  list the outside symbols of the production build. Until #3029, the checks admit a
-  name of `PLUGINS` in each file of the copy. The words "or in `PLUGINS` when only one
-  file of the copy may name it" and this sentence: approved by `laptop.architect-2`
+  list the outside symbols of the production build. A test fails on a name of `PLUGINS`
+  in an object of another file, and when the object of its file does not name it. The
+  words "or in `PLUGINS` when only one file of the copy may name it": approved by
+  `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/3013#issuecomment-6231994142,
   2026-10-17 08:55 UTC). A header list is not a check: a listed header can include
   another (`pthread.h` includes `time.h`). So the check

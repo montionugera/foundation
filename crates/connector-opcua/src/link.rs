@@ -461,11 +461,57 @@ const OUTSIDE: [&str; 40] = [
     "write",
 ];
 
-/// The symbols from outside the copy that only one file of it may name: `fgets`,
-/// `fwrite`, and `stdin` of `readPrivateKeyPassword` in `plugins/ua_config_default.c`,
-/// and `malloc` and `free` of `UA_CertificateUtils_getThumbprint` in
-/// `plugins/crypto/openssl/certificategroup.c`.
-const PLUGINS: [&str; 5] = ["fgets", "free", "fwrite", "malloc", "stdin"];
+/// The symbols from outside the copy that only one file of it may name, by that file:
+/// `malloc` and `free` of `UA_CertificateUtils_getThumbprint`, and `fgets`, `fwrite`,
+/// and `stdin` of `readPrivateKeyPassword`.
+const PLUGINS: [(&str, &[&str]); 2] = [
+    (
+        "plugins/crypto/openssl/certificategroup.c",
+        &["free", "malloc"],
+    ),
+    ("plugins/ua_config_default.c", &["fgets", "fwrite", "stdin"]),
+];
+
+/// The names of [`PLUGINS`] that `object` may name.
+fn plugins(object: &str) -> &'static [&'static str] {
+    PLUGINS
+        .iter()
+        .find(|(file, _)| compiled(object, file))
+        .map_or(&[], |(_, names)| names)
+}
+
+/// Whether `object` is the object of the source `file`: its name ends in `-<stem>.o`,
+/// as `cc` and the Arm test give it.
+fn compiled(object: &str, file: &str) -> bool {
+    object.ends_with(&format!("-{}.o", stem(file)))
+}
+
+/// The name of the file at `path` without its extension.
+fn stem(path: &str) -> &str {
+    let path = std::path::Path::new(path);
+    path.file_stem().unwrap().to_str().unwrap()
+}
+
+#[test]
+fn plugins_admits_each_name_only_in_the_object_of_its_file() {
+    assert_eq!(
+        plugins("80e9fda3d50fc3d4-certificategroup.o"),
+        ["free", "malloc"]
+    );
+    assert_eq!(
+        plugins("7-ua_config_default.o"),
+        ["fgets", "fwrite", "stdin"]
+    );
+    for object in [
+        "80e9fda3d50fc3d4-ua_client.o",
+        "certificategroup.o",
+        "1-ua_certificategroup.o",
+        "2-certificategroup.o.o",
+        "3-ua_config_default.c",
+    ] {
+        assert!(plugins(object).is_empty(), "{object}");
+    }
+}
 
 /// The prefix that the headers of the libcrypto of `aws-lc-sys` give each of its
 /// symbols, with the `_` that ends it. `cargo xtask open62541` lists each that the
@@ -493,7 +539,7 @@ fn the_prefix_names_a_version_of_aws_lc() {
 fn the_list_holds_no_lock_and_no_atomic() {
     let held: Vec<_> = OUTSIDE
         .iter()
-        .chain(&PLUGINS)
+        .chain(PLUGINS.iter().flat_map(|(_, names)| *names))
         .filter(|name| name.starts_with("pthread_") || name.starts_with("__aarch64_"))
         .collect();
     assert!(held.is_empty(), "{held:?}");
@@ -525,33 +571,96 @@ fn sanitizer_names_only_the_runtimes() {
     }
 }
 
-/// The symbols that `nm` with `flag` gives for `files`.
-fn names(
+/// The symbols that `nm` with `flag` gives for each object of `files`, by the name of
+/// the object: its name in an archive, or else the name of its file. No path of
+/// `files` may hold `": "`.
+fn objects(
     files: &[std::path::PathBuf],
     flag: &str,
-) -> std::collections::BTreeSet<String> {
+) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
     let output = std::process::Command::new("nm")
-        .args(["-P", flag])
+        .args(["-A", "-P", flag])
         .args(files)
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
     let text = String::from_utf8(output.stdout).unwrap();
-    // A line that names a file or an object of an archive has one word.
-    text.lines()
-        .filter_map(|line| {
-            let mut words = line.split_whitespace();
-            let name = words.next()?;
-            words.next().map(|_| name.to_owned())
-        })
-        .collect()
+    let mut objects =
+        std::collections::BTreeMap::<_, std::collections::BTreeSet<_>>::new();
+    for line in text.lines() {
+        let (file, rest) = line.split_once(": ").unwrap_or_else(|| panic!("{line}"));
+        let object = match file.strip_suffix(']').and_then(|f| f.rsplit_once('[')) {
+            Some((_, member)) => member,
+            None => file.rsplit('/').next().unwrap(),
+        };
+        let name = rest.split_whitespace().next().unwrap();
+        objects
+            .entry(object.to_owned())
+            .or_default()
+            .insert(name.to_owned());
+    }
+    objects
 }
 
-/// The symbols that `nm` with `flag` gives for the archive of this build, which holds
-/// the copy and the shim.
+/// The symbols that `nm` with `flag` gives for `files`.
+fn names(
+    files: &[std::path::PathBuf],
+    flag: &str,
+) -> std::collections::BTreeSet<String> {
+    objects(files, flag).into_values().flatten().collect()
+}
+
+/// The archive of this build, which holds the copy and the shim.
+fn archive() -> std::path::PathBuf {
+    std::path::Path::new(env!("OUT_DIR")).join("libopen62541.a")
+}
+
+/// The symbols that `nm` with `flag` gives for [`archive`].
 fn symbols(flag: &str) -> std::collections::BTreeSet<String> {
-    let out = std::path::Path::new(env!("OUT_DIR"));
-    names(&[out.join("libopen62541.a")], flag)
+    names(&[archive()], flag)
+}
+
+/// Each name that an object of `undefined` names and that neither `defined`,
+/// [`OUTSIDE`], [`PLUGINS`] for that object, the libcrypto ([`PREFIX`]), nor `admitted`
+/// holds, as `object: name`.
+///
+/// # Panics
+///
+/// When no object names `connector_opcua_malloc`, or a file of [`PLUGINS`] has not one
+/// object that names each name that the list gives it.
+fn unlisted(
+    defined: &std::collections::BTreeSet<String>,
+    undefined: &std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    admitted: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    assert!(
+        undefined
+            .values()
+            .any(|names| names.contains("connector_opcua_malloc")),
+        "{undefined:?}"
+    );
+    for (file, names) in PLUGINS {
+        let named: Vec<_> = undefined
+            .iter()
+            .filter(|(object, _)| compiled(object, file))
+            .collect();
+        assert!(
+            matches!(&named[..], [(_, held)] if names.iter().all(|n| held.contains(*n))),
+            "{file} has no one object that names {names:?}: {named:?}"
+        );
+    }
+    undefined
+        .iter()
+        .flat_map(|(object, names)| names.iter().map(move |name| (object, name)))
+        .filter(|(object, name)| {
+            !(defined.contains(*name)
+                || OUTSIDE.contains(&name.as_str())
+                || plugins(object).contains(&name.as_str())
+                || name.starts_with(PREFIX)
+                || admitted(name))
+        })
+        .map(|(object, name)| format!("{object}: {name}"))
+        .collect()
 }
 
 #[test]
@@ -565,19 +674,8 @@ fn the_c_names_only_the_listed_symbols_outside_it() {
         defined.contains("shim_client_new"),
         "the archive holds no shim"
     );
-    let undefined = symbols("--undefined-only");
-    let outside: Vec<&str> =
-        undefined.difference(&defined).map(String::as_str).collect();
-    assert!(outside.contains(&"connector_opcua_malloc"), "{outside:?}");
-    let unlisted: Vec<&str> = outside
-        .into_iter()
-        .filter(|name| {
-            !(OUTSIDE.contains(name)
-                || PLUGINS.contains(name)
-                || name.starts_with(PREFIX)
-                || (cfg!(asan) && sanitizer(name)))
-        })
-        .collect();
+    let undefined = objects(&[archive()], "--undefined-only");
+    let unlisted = unlisted(&defined, &undefined, |name| cfg!(asan) && sanitizer(name));
     assert!(unlisted.is_empty(), "the C names {unlisted:?}");
 }
 
@@ -613,16 +711,21 @@ fn the_shim_draws_nothing_from_the_generator_of_the_copy() {
     assert!(drawn.is_empty(), "the shim calls {drawn:?}");
 }
 
-/// The symbol checks admit the libcrypto ([`PREFIX`]) and [`PLUGINS`] for the files of
-/// the copy that `cargo xtask open62541` admits them in. Neither the shim nor the
-/// test server names one, so neither calls aws-lc unseen nor frees a block of
-/// `src/alloc.rs` with `free`.
+/// The symbol checks admit the libcrypto ([`PREFIX`]) in each object, and `cargo xtask
+/// open62541` admits each call of it only in the files of the copy that it keys.
+/// Neither the shim nor the test server names the libcrypto or [`PLUGINS`], so neither
+/// calls aws-lc unseen nor frees a block of `src/alloc.rs` with `free`.
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "needs GNU nm")]
 fn the_shim_names_neither_the_libcrypto_nor_the_names_of_the_plugins() {
     let named: Vec<_> = shim_undefined()
         .into_iter()
-        .filter(|name| name.starts_with(PREFIX) || PLUGINS.contains(&name.as_str()))
+        .filter(|name| {
+            name.starts_with(PREFIX)
+                || PLUGINS
+                    .iter()
+                    .any(|(_, names)| names.contains(&name.as_str()))
+        })
         .collect();
     assert!(named.is_empty(), "the shim names {named:?}");
 }
@@ -1477,7 +1580,7 @@ fn the_c_on_64_bit_arm_names_only_the_listed_symbols_outside_it() {
         .enumerate()
         .map(|(i, source)| {
             let text = out.join(format!("{i}.i"));
-            let object = out.join(format!("{i}.o"));
+            let object = out.join(format!("{i}-{}.o", stem(source)));
             let mut preprocess = std::process::Command::new("clang");
             preprocess.arg("-E").arg(&header);
             for flag in flags.lines() {
@@ -1514,20 +1617,8 @@ fn the_c_on_64_bit_arm_names_only_the_listed_symbols_outside_it() {
         })
         .collect();
     let defined = symbols("--defined-only");
-    let undefined = names(&objects, "--undefined-only");
-    assert!(
-        undefined.contains("connector_opcua_malloc"),
-        "{undefined:?}"
-    );
-    let unlisted: Vec<String> = undefined
-        .into_iter()
-        .filter(|name| {
-            !(defined.contains(name)
-                || OUTSIDE.contains(&name.as_str())
-                || PLUGINS.contains(&name.as_str())
-                || name.starts_with(PREFIX))
-        })
-        .collect();
+    let undefined = self::objects(&objects, "--undefined-only");
+    let unlisted = unlisted(&defined, &undefined, |_| false);
     assert!(unlisted.is_empty(), "the C names {unlisted:?}");
 }
 
