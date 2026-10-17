@@ -84,6 +84,10 @@ jobs:
             target: x86_64
           - runner: macos-15
             target: aarch64
+          # The test-only functions of the module, for `tests/test_sim.py`.
+          - runner: ubuntu-24.04
+            target: x86_64
+            sim: true
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -95,23 +99,35 @@ jobs:
           working-directory: sdk/python
           target: ${{ matrix.target }}
           manylinux: '2_28'
-          args: --out dist
+          args: --out dist ${{ matrix.sim && '--features sim' || '' }}
       - run: ls -l sdk/python/dist
       - uses: actions/upload-artifact@v4
         with:
-          name: wheel-${{ matrix.runner }}
+          name: wheel-${{ matrix.runner }}${{ matrix.sim && '-sim' || '' }}
           path: sdk/python/dist/*.whl
           if-no-files-found: error
 
   # Installs the wheel on a runner with only Python, in a new venv, and runs the tests
-  # against the node. Python 3.11 is the oldest that the wheel supports.
+  # against the node. Python 3.11 is the oldest that the wheel supports. The `sim`
+  # wheel also runs `test_sim.py`.
   gate:
     needs: [node, wheel]
     if: "!cancelled() && needs.node.result == 'success' && needs.wheel.result == 'success'"
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-15-intel, macos-15]
+        include:
+          - runner: ubuntu-24.04
+            tests: test_client.py
+          - runner: ubuntu-24.04-arm
+            tests: test_client.py
+          - runner: macos-15-intel
+            tests: test_client.py
+          - runner: macos-15
+            tests: test_client.py
+          - runner: ubuntu-24.04
+            sim: true
+            tests: test_*.py
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -126,7 +142,7 @@ jobs:
           path: node
       - uses: actions/download-artifact@v4
         with:
-          name: wheel-${{ matrix.runner }}
+          name: wheel-${{ matrix.runner }}${{ matrix.sim && '-sim' || '' }}
           path: wheel
       - run: |
           chmod +x node/foundation
@@ -134,4 +150,6 @@ jobs:
           venv/bin/pip install wheel/*.whl
       - env:
           FOUNDATION_NODE: ${{ github.workspace }}/node/foundation
-        run: venv/bin/python -m unittest discover -s sdk/python/tests -v
+        run: |
+          venv/bin/python -m unittest discover -s sdk/python/tests \
+            -p '${{ matrix.tests }}' -v
