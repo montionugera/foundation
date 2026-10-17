@@ -51,12 +51,11 @@
   first reference in the order of the server, and the skip of a cursor assumes that the
   server keeps the order of the references of a folder (OPCUA KIND). `Client::points`
   gives the `MaxBrowseContinuationPoints` of the server, read once with the limits of a
-  Browse and a Translate, and `Client::release` releases one point. The kind bounds the
-  points of a walk with them (OPCUA KIND), tested against the sim server with the bound
-  at 1 and at 2. The bound merges before the CLI or MCP gives browse to a user (the
-  split of PR 5, 2026-10-16T22:54:58Z:
-  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6226218426). The
-  one table of the built-in types that this record asked for became the decode by match
-  of OPCUA KIND (`laptop.architect-2`,
-  2026-10-16T22:17:22Z:
+  Browse and a Translate, and `Client::release` releases points of its session. The kind
+  bounds the points of a walk with them (OPCUA KIND), tested against the sim server with
+  the bound at 1 and at 2. The bound merges before the CLI or MCP gives browse to a user
+  (the split of PR 5, 2026-10-16T22:54:58Z:
+  https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6226218426). The one
+  table of the built-in types that this record asked for became the decode by match of
+  OPCUA KIND (`laptop.architect-2`, 2026-10-16T22:17:22Z:
   https://github.com/synnaxlabs/foundation/pull/2931#issuecomment-6225757093).
