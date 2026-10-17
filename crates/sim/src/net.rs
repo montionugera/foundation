@@ -193,6 +193,11 @@ impl Network {
         }
     }
 
+    /// The count of the TCP streams of `node` that a driver holds.
+    pub(crate) fn streams(&self, node: usize) -> usize {
+        self.tcp.held(node)
+    }
+
     /// Takes the first case met that sim does not simulate yet.
     pub(crate) fn yet(&mut self) -> Option<&'static str> {
         self.tcp.yet()

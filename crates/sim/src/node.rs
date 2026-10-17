@@ -166,6 +166,15 @@ impl Node {
         waker.wake();
     }
 
+    /// The count of TCP streams that a task of the node holds: each connect that has
+    /// not given its stream, and each stream that a connect or an accept gave and that
+    /// has not dropped. A stream that a listener holds before its accept does not
+    /// count, and a crash drops each stream of the node.
+    #[must_use]
+    pub fn streams(&self) -> usize {
+        lock(&self.0.shared).net().streams(self.0.node)
+    }
+
     /// The node's serial ports: one at each end of a line that
     /// [`Sim::line`](crate::Sim::line) joins to the node.
     ///

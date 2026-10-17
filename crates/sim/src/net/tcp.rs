@@ -304,6 +304,17 @@ impl Sockets {
         self.lanes.yet.take()
     }
 
+    /// The count of the ends of `node` that a driver holds.
+    pub(super) fn held(&self, node: usize) -> usize {
+        let own = addresses(node);
+        (self.ends.values())
+            .filter(|end| own.contains(&end.pair.local.ip()))
+            .filter(|end| {
+                matches!(end.phase, Phase::Connecting | Phase::Refused | Phase::Open)
+            })
+            .count()
+    }
+
     /// A key that no end, listener, or stream has had.
     fn key(&mut self) -> u64 {
         self.last += 1;

@@ -1863,3 +1863,30 @@ fn a_fault_on_a_listener_of_another_node_panics() {
     let _b = listen(&b, 4433);
     a.fail_listener(at(&b, 4433));
 }
+
+#[test]
+fn streams_counts_each_connect_and_stream_that_a_task_holds() {
+    let (mut sim, a, b) = pair(0, link::Config::default());
+    let mut listener = listen(&b, 4433);
+    start(&b, "server", move |node| async move {
+        let tcp = accept(&mut listener).await;
+        node.clock().sleep(millis(100)).await;
+        drop(tcp);
+        pending::<()>().await;
+    });
+    let remote = at(&b, 4433);
+    start(&a, "client", move |node| async move {
+        let _first = connect(&node, remote, options()).await.unwrap();
+        let _second = connect(&node, remote, options()).await.unwrap();
+        pending::<()>().await;
+    });
+    sim.run_for(delay()).unwrap();
+    assert_eq!((a.streams(), b.streams()), (1, 0));
+    sim.run_for(millis(50)).unwrap();
+    // The listener holds the second stream before its accept.
+    assert_eq!((a.streams(), b.streams()), (2, 1));
+    sim.run_for(millis(100)).unwrap();
+    assert_eq!((a.streams(), b.streams()), (2, 0));
+    sim.crash(&a, Crash::Power);
+    assert_eq!(a.streams(), 0);
+}
