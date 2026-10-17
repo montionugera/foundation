@@ -123,7 +123,11 @@ pub(crate) const fn body_len(tails: usize, entries: usize, bytes: usize) -> usiz
 ///
 /// When there are over [`TAILS_MAX`] tails or [`ENTRIES_MAX`] entries, an entry's
 /// header names another size than its bytes, or `into` is shorter than the body.
-pub(crate) fn write(tails: &[Tail], entries: &[(Header, &[u8])], into: &mut [u8]) -> usize {
+pub(crate) fn write(
+    tails: &[Tail],
+    entries: &[(Header, &[u8])],
+    into: &mut [u8],
+) -> usize {
     let bytes = entries.iter().map(|(_, bytes)| bytes.len()).sum::<usize>();
     let len = body_len(tails.len(), entries.len(), bytes);
     let Some((body, _)) = into.split_at_mut_checked(len) else {
@@ -209,9 +213,15 @@ impl<'a> Iterator for Entries<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         let body = self.body;
         Some(self.headers.next()?.map(|(header, offset)| {
-            let len = usize::try_from(header.bytes).expect("invariant: a u32 fits usize");
-            let bytes = offset.checked_add(len).and_then(|end| body.get(offset..end));
-            (header, bytes.expect("invariant: the headers check the body holds the bytes"))
+            let len =
+                usize::try_from(header.bytes).expect("invariant: a u32 fits usize");
+            let bytes = offset
+                .checked_add(len)
+                .and_then(|end| body.get(offset..end));
+            (
+                header,
+                bytes.expect("invariant: the headers check the body holds the bytes"),
+            )
         }))
     }
 }
@@ -225,11 +235,15 @@ impl<'a> Iterator for Entries<'a> {
 /// maximum. Each tail checks its path byte and its presence byte, and each entry
 /// checks its header and that the body holds its bytes, as an entry table does.
 pub(crate) fn parse(body: &[u8]) -> Result<Parsed<'_>, Invalid> {
-    let (counts, rest) = body.split_first_chunk::<COUNTS>().ok_or(Invalid::Truncated)?;
+    let (counts, rest) = body
+        .split_first_chunk::<COUNTS>()
+        .ok_or(Invalid::Truncated)?;
     let [a, b, c, d] = *counts;
     let tails = counted(u16::from_le_bytes([a, b]), TAILS_MAX)?;
     let entries = counted(u16::from_le_bytes([c, d]), ENTRIES_MAX)?;
-    let tails_len = tails.checked_mul(LEN).expect("invariant: the tails fit in memory");
+    let tails_len = tails
+        .checked_mul(LEN)
+        .expect("invariant: the tails fit in memory");
     let table_len = entries
         .checked_mul(entry::HEADER_LEN)
         .expect("invariant: the headers fit in memory");
@@ -390,7 +404,8 @@ mod tests {
         assert_eq!(whole(&long), Err(Invalid::Count(1024)));
         let header = header(1, 0);
         let full = vec![(header, &[][..]); ENTRIES_MAX];
-        let entries = whole(&with_entries(&[], &full)).map(|(_, entries)| entries.len());
+        let entries =
+            whole(&with_entries(&[], &full)).map(|(_, entries)| entries.len());
         assert_eq!(entries, Ok(ENTRIES_MAX));
     }
 
@@ -414,7 +429,10 @@ mod tests {
         let headers = 4 + LEN;
         let bytes = headers + 2 * entry::HEADER_LEN;
         let first = header(1, 2).encode();
-        assert_eq!(body.get(headers..headers + entry::HEADER_LEN), Some(&first[..]));
+        assert_eq!(
+            body.get(headers..headers + entry::HEADER_LEN),
+            Some(&first[..])
+        );
         assert_eq!(body.get(bytes..), Some(&[0xA1, 0xA2, 0xB1][..]));
     }
 
