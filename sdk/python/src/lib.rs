@@ -4,37 +4,47 @@
 use std::net::SocketAddr;
 use std::sync::{Mutex, PoisonError};
 
-use pyo3::exceptions::{PyConnectionError, PyValueError};
+use pyo3::exceptions::{
+    PyConnectionError, PyOSError, PyRuntimeError, PyTypeError, PyValueError,
+};
 use pyo3::panic::PanicException;
 use pyo3::prelude::*;
 use types::ed25519::{PrivateKey, PublicKey};
 use types::name::Name;
 
+#[cfg(feature = "sim")]
+mod sim;
+
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(connect, module)?)?;
-    module.add_class::<Client>()
+    module.add_class::<Client>()?;
+    #[cfg(feature = "sim")]
+    sim::add(module)?;
+    Ok(())
 }
 
 /// Dials the node at `address` (`ip:port`, UDP), and blocks until it admits the first
 /// hello of `subject`. The client then renews the hello until it closes.
 ///
-/// `node` is the 128-bit key of the node, `public_key` the 32 bytes of the key that the
-/// node proves, and `key` the 32 bytes of a private key that the spec lists for
-/// `subject`. Other Python threads run while it waits.
+/// `node` is the `uuid.UUID` key of the node, `public_key` the 32 bytes of the key
+/// that the node proves, and `private_key` the 32 bytes of a key that the spec lists
+/// for `subject`. Other Python threads run while it waits.
 ///
-/// Raises `ValueError` for an argument that does not parse, `ConnectionError` when the
-/// client cannot start, bind, or reach the node, or when the node refuses the subject,
-/// and `PanicException` when the client's thread panicked.
+/// Raises `TypeError` for an argument of a wrong type, `ValueError` for an argument
+/// that does not parse, `RuntimeError` when the client's thread cannot start,
+/// `OSError` when the local UDP socket cannot bind, `ConnectionError` when the client
+/// cannot reach the node or the node refuses the subject, and `PanicException` when
+/// the client's thread panicked.
 #[pyfunction]
-#[pyo3(signature = (address, *, node, public_key, subject, key))]
+#[pyo3(signature = (address, *, node, public_key, subject, private_key))]
 fn connect(
     py: Python<'_>,
     address: &str,
-    node: u128,
+    node: &Bound<'_, PyAny>,
     public_key: &[u8],
     subject: &str,
-    key: &[u8],
+    private_key: &[u8],
 ) -> PyResult<Client> {
     let address: SocketAddr = address.parse().map_err(|e| {
         PyValueError::new_err(format!("the address {address:?} is not ip:port: {e}"))
@@ -43,18 +53,18 @@ fn connect(
         .map_err(|e| PyValueError::new_err(format!("public_key: {e}")))?;
     let node = sdk::Node {
         addresses: vec![address],
-        key: types::node::Key::from_u128(node),
+        key: key(node)?,
         public_key,
     };
     let subject = sdk::Subject {
         name: subject
             .parse::<Name>()
             .map_err(|e| PyValueError::new_err(format!("subject: {e}")))?,
-        private_key: PrivateKey(bytes("key", key)?),
+        private_key: PrivateKey(bytes("private_key", private_key)?),
     };
     let client = py
         .detach(|| sdk::Client::connect(&node, subject))
-        .map_err(error)?;
+        .map_err(|e| error(&e))?;
     Ok(Client(Mutex::new(Some(client))))
 }
 
@@ -71,9 +81,11 @@ impl Client {
     /// Raises `ConnectionError` with the cause when the session ended before the close,
     /// and `PanicException` when the client's thread panicked.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
+        // The guard drops before `detach`: a second caller waits for the lock with the
+        // GIL, which the closing thread needs to return.
         let client = self.0.lock().unwrap_or_else(PoisonError::into_inner).take();
         match client {
-            Some(client) => py.detach(|| client.close()).map_err(error),
+            Some(client) => py.detach(|| client.close()).map_err(|e| error(&e)),
             None => Ok(()),
         }
     }
@@ -82,12 +94,37 @@ impl Client {
         this
     }
 
-    /// Closes the client, as `close` does. An error of the close raises, with the
-    /// exception of the block as its context.
-    #[pyo3(signature = (*_exception))]
-    fn __exit__(&self, py: Python<'_>, _exception: &Bound<'_, PyAny>) -> PyResult<()> {
-        self.close(py)
+    /// Closes the client. When the block raised, an error of the close is a note on
+    /// the error of the block; else it raises.
+    #[pyo3(signature = (_kind, raised, _traceback))]
+    fn __exit__(
+        &self,
+        py: Python<'_>,
+        _kind: &Bound<'_, PyAny>,
+        raised: &Bound<'_, PyAny>,
+        _traceback: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        match self.close(py) {
+            Err(close) if !raised.is_none() => {
+                raised
+                    .call_method1("add_note", (format!("the close raised {close}"),))?;
+                Ok(())
+            }
+            closed => closed,
+        }
     }
+}
+
+/// The node key of the `uuid.UUID` `node`.
+fn key(node: &Bound<'_, PyAny>) -> PyResult<types::node::Key> {
+    let uuid = node.py().import("uuid")?.getattr("UUID")?;
+    if !node.is_instance(&uuid)? {
+        let kind = node.get_type().name()?;
+        return Err(PyTypeError::new_err(format!(
+            "node is {kind}, not uuid.UUID"
+        )));
+    }
+    Ok(types::node::Key::from_u128(node.getattr("int")?.extract()?))
 }
 
 /// The 32 bytes of the argument `name`.
@@ -98,9 +135,12 @@ fn bytes(name: &str, value: &[u8]) -> PyResult<[u8; 32]> {
 }
 
 /// The Python exception of `error`.
-fn error(error: sdk::Error) -> PyErr {
+fn error(error: &sdk::Error) -> PyErr {
+    let text = error.to_string();
     match error {
-        sdk::Error::Panicked => PanicException::new_err(error.to_string()),
-        error => PyConnectionError::new_err(error.to_string()),
+        sdk::Error::Thread { .. } => PyRuntimeError::new_err(text),
+        sdk::Error::Bind(_) => PyOSError::new_err(text),
+        sdk::Error::Session(_) => PyConnectionError::new_err(text),
+        sdk::Error::Panicked => PanicException::new_err(text),
     }
 }

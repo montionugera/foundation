@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 
 import foundation
 
@@ -79,7 +80,7 @@ class Node:
             ip = ipaddress.ip_address("127.0.0.1" if family == 4 else "::1")
         port = int.from_bytes(address[85:87], "big")
         self.address = f"{ip}:{port}" if family == 4 else f"[{ip}]:{port}"
-        self.key = int.from_bytes(address[20:36], "big")
+        self.key = uuid.UUID(bytes=address[20:36])
         self.public_key = address[36:68]
         self.admin = admin[18:50]
 
@@ -113,7 +114,7 @@ class Node:
                 "node": self.key,
                 "public_key": self.public_key,
                 "subject": ADMIN,
-                "key": self.admin,
+                "private_key": self.admin,
                 **arguments,
             }
         )
@@ -173,16 +174,29 @@ class ClientTest(unittest.TestCase):
         )
         self.assertIsNone(client.close())
 
-    def test_a_with_block_raises_the_close_error_after_its_own(self) -> None:
+    def test_a_with_block_raises_the_close_error_when_it_did_not_raise(self) -> None:
         with self.assertRaises(ConnectionError) as raised:
             with self.node.connect():
                 self.node.stop()
                 time.sleep(CLOSED)
-                raise KeyError("in the block")
         self.assertEqual(
             str(raised.exception), "the session failed: the peer closed the session (0)"
         )
-        self.assertEqual(repr(raised.exception.__context__), "KeyError('in the block')")
+
+    def test_a_with_block_that_raised_gives_the_close_error_as_a_note(self) -> None:
+        with self.assertRaises(KeyError) as raised:
+            with self.node.connect():
+                self.node.stop()
+                time.sleep(CLOSED)
+                raise KeyError("in the block")
+        self.assertEqual(repr(raised.exception), "KeyError('in the block')")
+        self.assertEqual(
+            raised.exception.__notes__,
+            [
+                "the close raised ConnectionError: the session failed: the peer closed "
+                "the session (0)"
+            ],
+        )
 
 
 class ArgumentTest(unittest.TestCase):
@@ -190,10 +204,10 @@ class ArgumentTest(unittest.TestCase):
         return foundation.connect(
             **{
                 "address": "127.0.0.1:1",
-                "node": 1,
+                "node": uuid.UUID(int=1),
                 "public_key": BASE,
                 "subject": ADMIN,
-                "key": bytes(32),
+                "private_key": bytes(32),
                 **arguments,
             }
         )
@@ -219,10 +233,15 @@ class ArgumentTest(unittest.TestCase):
             "public_key: the public key is a point of small order",
         )
 
-    def test_a_key_that_is_not_32_bytes_is_refused(self) -> None:
+    def test_a_private_key_that_is_not_32_bytes_is_refused(self) -> None:
         with self.assertRaises(ValueError) as raised:
-            self.connect(key=bytes(33))
-        self.assertEqual(str(raised.exception), "key is 33 bytes, not 32")
+            self.connect(private_key=bytes(33))
+        self.assertEqual(str(raised.exception), "private_key is 33 bytes, not 32")
+
+    def test_a_node_that_is_not_a_uuid_is_refused(self) -> None:
+        with self.assertRaises(TypeError) as raised:
+            self.connect(node=1)
+        self.assertEqual(str(raised.exception), "node is int, not uuid.UUID")
 
     def test_a_subject_that_is_not_a_name_is_refused(self) -> None:
         with self.assertRaises(ValueError) as raised:
