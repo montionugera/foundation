@@ -159,26 +159,36 @@ impl Client {
         &self,
         request: Request<Bytes>,
     ) -> Result<Response<Bytes>, Error> {
+        Box::pin(self.timed(request)).await
+    }
+
+    /// The exchange of `request`, up to the timeout.
+    async fn timed(&self, request: Request<Bytes>) -> Result<Response<Bytes>, Error> {
+        let origin = origin(request.uri())?;
         let deadline = self.clock.now().checked_add(self.timeout);
-        let exchange = Box::pin(self.exchange(request, deadline));
+        let exchange = self.exchange(&origin, request, deadline);
         match deadline {
             Some(deadline) => (before(exchange, self.clock.sleep_until(deadline))
                 .await)
-                .unwrap_or(Err(Error::TimedOut)),
+                .unwrap_or_else(|| {
+                    Err(Error::TimedOut {
+                        origin: origin.to_string(),
+                    })
+                }),
             None => exchange.await,
         }
     }
 
     async fn exchange(
         &self,
+        origin: &Origin,
         request: Request<Bytes>,
         deadline: Option<Monotonic>,
     ) -> Result<Response<Bytes>, Error> {
         let (mut parts, body) = request.into_parts();
-        let origin = origin(&parts.uri)?;
         origin_form(&mut parts);
         let request = Request::from_parts(parts, Whole(Some(body)));
-        let request = match self.pool.take(&origin, self.clock.now()) {
+        let request = match self.pool.take(origin, self.clock.now()) {
             Some(mut connection) => {
                 let received = connection.received.get();
                 let spare = request.method().is_idempotent().then(|| copy(&request));
@@ -192,22 +202,23 @@ impl Client {
                         let unanswered = connection.received.get() == received;
                         match error.take_message().or(spare.filter(|_| unanswered)) {
                             Some(request) => request,
-                            None => return Err(error.into_error().into()),
+                            None => return Err(protocol(origin, error.into_error())),
                         }
                     }
                 }
             }
             None => request,
         };
-        let mut connection = self.connect(&origin, deadline).await?;
-        let response = connection.sender.send_request(request).await?;
+        let mut connection = self.connect(origin, deadline).await?;
+        let response = (connection.sender.send_request(request).await)
+            .map_err(|error| protocol(origin, error))?;
         self.read(origin, connection, response).await
     }
 
     /// Reads the whole body of `response`, then keeps `connection` for `origin`.
     async fn read(
         &self,
-        origin: Origin,
+        origin: &Origin,
         connection: Connection,
         response: Response<Incoming>,
     ) -> Result<Response<Bytes>, Error> {
@@ -216,7 +227,8 @@ impl Client {
         while let Some(frame) =
             poll_fn(|cx| Pin::new(&mut incoming).poll_frame(cx)).await
         {
-            if let Ok(data) = frame?.into_data() {
+            let frame = frame.map_err(|error| protocol(origin, error))?;
+            if let Ok(data) = frame.into_data() {
                 let room = self.body_max.saturating_sub(bytes.len());
                 if data.len() > room {
                     bytes.extend_from_slice(&data[..room]);
@@ -229,7 +241,7 @@ impl Client {
                 bytes.extend_from_slice(&data);
             }
         }
-        self.pool.put(origin, connection, self.clock.now());
+        self.pool.put(origin.clone(), connection, self.clock.now());
         Ok(Response::from_parts(parts, Bytes::from(bytes)))
     }
 
@@ -257,7 +269,8 @@ impl Client {
         } else {
             Stream::plain(tcp, Rc::clone(&received))
         };
-        let (sender, connection) = http1::handshake(stream).await?;
+        let (sender, connection) = (http1::handshake(stream).await)
+            .map_err(|error| protocol(origin, error))?;
         // `hyper` gives a connection error to the request in flight, which reports it.
         // An idle connection that fails is closed, and `try_send_request` gives back
         // its request.
@@ -287,7 +300,9 @@ impl Client {
             let left = remotes.len() - i;
             let now = self.clock.now();
             if deadline.is_some_and(|deadline| deadline <= now) {
-                return Err(Error::TimedOut);
+                return Err(Error::TimedOut {
+                    origin: origin.to_string(),
+                });
             }
             let connect = self.net.connect(&config);
             let connect = match deadline.and_then(|deadline| share(now, deadline, left))
@@ -351,7 +366,7 @@ fn share(now: Monotonic, deadline: Monotonic, left: usize) -> Option<Monotonic> 
 }
 
 /// Where requests go: under TLS or not, a host, and a port.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Origin {
     secure: bool,
     host: Host,
@@ -496,7 +511,10 @@ pub enum Error {
         cause: Failure,
     },
     /// The exchange was not done at the timeout.
-    TimedOut,
+    TimedOut {
+        /// The host and port of the URI.
+        origin: String,
+    },
     /// The response body is larger than `max` bytes. `status` is the status of the
     /// response, and `body` holds its first `max` bytes.
     TooLarge {
@@ -508,7 +526,12 @@ pub enum Error {
         max: usize,
     },
     /// The stream failed, the server broke HTTP, or the server closed early.
-    Protocol(Failure),
+    Protocol {
+        /// The host and port of the URI.
+        origin: String,
+        /// What failed. Its sources reach the `env` error when the stream failed.
+        cause: Failure,
+    },
 }
 
 /// What went wrong in a TLS handshake or in an exchange after the connect. Its
@@ -523,9 +546,10 @@ enum Cause {
     Io(io::Error),
 }
 
-impl From<hyper::Error> for Error {
-    fn from(error: hyper::Error) -> Self {
-        Self::Protocol(Failure(Cause::Hyper(error)))
+fn protocol(origin: &Origin, error: hyper::Error) -> Error {
+    Error::Protocol {
+        origin: origin.to_string(),
+        cause: Failure(Cause::Hyper(error)),
     }
 }
 
@@ -549,11 +573,15 @@ impl fmt::Display for Error {
             Self::Tls { origin, cause } => {
                 write!(f, "TLS with {origin} failed: {cause}")
             }
-            Self::TimedOut => write!(f, "the exchange timed out"),
+            Self::TimedOut { origin } => {
+                write!(f, "the exchange with {origin} timed out")
+            }
             Self::TooLarge { max, .. } => {
                 write!(f, "the response body is larger than {max} bytes")
             }
-            Self::Protocol(failure) => write!(f, "the exchange failed: {failure}"),
+            Self::Protocol { origin, cause } => {
+                write!(f, "the exchange with {origin} failed: {cause}")
+            }
         }
     }
 }
@@ -563,12 +591,12 @@ impl std::error::Error for Error {
         match self {
             Self::Host(error) => Some(error),
             Self::Connect(error) => Some(error),
-            Self::Protocol(failure) | Self::Tls { cause: failure, .. } => Some(failure),
+            Self::Protocol { cause, .. } | Self::Tls { cause, .. } => Some(cause),
             Self::NoRoots
             | Self::Scheme
             | Self::UserInfo
             | Self::Port
-            | Self::TimedOut
+            | Self::TimedOut { .. }
             | Self::TooLarge { .. } => None,
         }
     }

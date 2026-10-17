@@ -153,7 +153,7 @@ fn times_out_when_the_lookup_is_slower_than_the_timeout() {
     let error = network
         .send(get(&format!("http://influx:{PORT}/")))
         .expect_err("a slow lookup");
-    assert!(matches!(error, Error::TimedOut), "{error:?}");
+    assert!(matches!(error, Error::TimedOut { .. }), "{error:?}");
     assert_eq!(network.elapsed, Some(TIMEOUT));
 }
 
@@ -246,7 +246,7 @@ fn gives_each_silent_address_at_least_2_s() {
     let error = network
         .send(get(&format!("http://influx:{PORT}/")))
         .expect_err("five silent addresses take the whole timeout");
-    assert!(matches!(error, Error::TimedOut), "{error:?}");
+    assert!(matches!(error, Error::TimedOut { .. }), "{error:?}");
     assert_eq!(network.elapsed, Some(TIMEOUT));
 }
 
@@ -327,7 +327,7 @@ fn makes_no_connect_once_the_timeout_ends() {
         Step::Send(get(&url)),
     ]);
     assert!(
-        matches!(outcomes[0], Err(Error::TimedOut)),
+        matches!(outcomes[0], Err(Error::TimedOut { .. })),
         "{:?}",
         outcomes[0]
     );
@@ -357,7 +357,7 @@ fn makes_no_connect_when_the_lookup_ends_at_the_timeout() {
         Step::Send(get(&url)),
     ]);
     assert!(
-        matches!(outcomes[0], Err(Error::TimedOut)),
+        matches!(outcomes[0], Err(Error::TimedOut { .. })),
         "{:?}",
         outcomes[0]
     );
@@ -384,7 +384,7 @@ fn gives_the_request_time_out_when_the_only_address_is_silent() {
     let error = network
         .send(get(&format!("http://influx:{PORT}/")))
         .expect_err("a silent address");
-    assert!(matches!(error, Error::TimedOut), "{error:?}");
+    assert!(matches!(error, Error::TimedOut { .. }), "{error:?}");
     assert_eq!(network.elapsed, Some(TIMEOUT));
 }
 
@@ -416,7 +416,7 @@ fn makes_no_connect_after_a_refusal_at_the_timeout() {
         Step::Send(get(&url)),
     ]);
     assert!(
-        matches!(outcomes[0], Err(Error::TimedOut)),
+        matches!(outcomes[0], Err(Error::TimedOut { .. })),
         "{:?}",
         outcomes[0]
     );

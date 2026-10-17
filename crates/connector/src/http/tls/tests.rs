@@ -610,7 +610,7 @@ fn fails_an_upload_when_the_server_crashes() {
     assert_eq!(
         texts,
         [
-            "the exchange failed: connection error <- connection error <- \
+            "the exchange with server:8086 failed: connection error <- connection error <- \
              10.0.0.2:8086 reset the stream; the `env` error: \
              Some(\"10.0.0.2:8086 reset the stream\")"
         ]
@@ -626,9 +626,10 @@ fn fails_a_download_when_the_server_crashes() {
     assert_eq!(
         texts,
         [
-            "the exchange failed: error reading a body from connection <- error \
-             reading a body from connection <- 10.0.0.2:8086 reset the stream; the \
-             `env` error: Some(\"10.0.0.2:8086 reset the stream\")"
+            "the exchange with server:8086 failed: error reading a body from \
+             connection <- error reading a body from connection <- 10.0.0.2:8086 \
+             reset the stream; the `env` error: \
+             Some(\"10.0.0.2:8086 reset the stream\")"
         ]
     );
 }
@@ -649,9 +650,9 @@ fn fails_a_body_that_ends_with_no_close_notify() {
             .send(sim::ca(), "https://server:8087/ping")
             .map_err(|error| chain(&error)),
         Err(
-            "the exchange failed: error reading a body from connection <- error \
-             reading a body from connection <- peer closed connection without \
-             sending TLS close_notify: \
+            "the exchange with server:8087 failed: error reading a body from \
+             connection <- error reading a body from connection <- peer closed \
+             connection without sending TLS close_notify: \
              https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html\
              #unexpected-eof"
                 .to_owned()

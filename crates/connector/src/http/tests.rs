@@ -446,8 +446,14 @@ fn closes_the_stream_after_a_timeout() {
     let end = Arc::new(Mutex::new(None));
     network.serve(reply_then_read(b"", &end));
     let error = network.send(get(&network.url("/"))).expect_err("no answer");
-    assert!(matches!(error, Error::TimedOut), "{error:?}");
-    assert_eq!(error.to_string(), "the exchange timed out");
+    assert!(
+        matches!(&error, Error::TimedOut { origin } if *origin == network.remote().to_string()),
+        "{error:?}"
+    );
+    assert_eq!(
+        error.to_string(),
+        format!("the exchange with {} timed out", network.remote())
+    );
     let end = end.lock().expect("no panic under the lock").take();
     assert_eq!(end.as_deref(), Some("Ok(0)"));
 }
@@ -462,8 +468,14 @@ fn times_out_when_the_server_never_answers() {
         })
     });
     let error = network.send(get(&network.url("/"))).expect_err("no answer");
-    assert!(matches!(error, Error::TimedOut), "{error:?}");
-    assert_eq!(error.to_string(), "the exchange timed out");
+    assert!(
+        matches!(&error, Error::TimedOut { origin } if *origin == network.remote().to_string()),
+        "{error:?}"
+    );
+    assert_eq!(
+        error.to_string(),
+        format!("the exchange with {} timed out", network.remote())
+    );
     assert_eq!(network.elapsed, Some(TIMEOUT));
 }
 
@@ -486,10 +498,13 @@ fn fails_when_the_server_closes_before_the_response() {
     let error = network
         .send(get(&network.url("/")))
         .expect_err("an early close");
-    assert!(matches!(error, Error::Protocol(_)), "{error:?}");
+    assert!(matches!(error, Error::Protocol { .. }), "{error:?}");
     assert_eq!(
         error.to_string(),
-        "the exchange failed: error reading a body from connection",
+        format!(
+            "the exchange with {} failed: error reading a body from connection",
+            network.remote()
+        ),
     );
 }
 
@@ -500,10 +515,13 @@ fn fails_when_the_server_breaks_http() {
     let error = network
         .send(get(&network.url("/")))
         .expect_err("a bad status");
-    assert!(matches!(error, Error::Protocol(_)), "{error:?}");
+    assert!(matches!(error, Error::Protocol { .. }), "{error:?}");
     assert_eq!(
         error.to_string(),
-        "the exchange failed: invalid HTTP status-code parsed"
+        format!(
+            "the exchange with {} failed: invalid HTTP status-code parsed",
+            network.remote()
+        )
     );
 }
 
@@ -520,8 +538,11 @@ fn gives_the_stream_error_when_the_server_drops_the_stream() {
     let error = network
         .send(get(&network.url("/")))
         .expect_err("a dropped stream");
-    assert!(matches!(error, Error::Protocol(_)), "{error:?}");
-    assert_eq!(error.to_string(), "the exchange failed: connection error");
+    assert!(matches!(error, Error::Protocol { .. }), "{error:?}");
+    assert_eq!(
+        error.to_string(),
+        format!("the exchange with {remote} failed: connection error")
+    );
     assert_eq!(
         chain(&error),
         format!("connection error <- {remote} reset the stream")
