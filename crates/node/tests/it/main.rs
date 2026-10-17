@@ -695,8 +695,9 @@ fn mcp_refuses_a_new_plan_file_while_the_data_directory_is_gone() {
     assert!(!rig.dir.join("second.plan").exists());
 }
 
-/// The user makes the folder of `--files` again while `foundation mcp` runs. A file
-/// in it is refused with a cause that names the folder and a fix that works.
+/// The user moves the folder of `--files` away and makes it again while `foundation
+/// mcp` runs. A file in it is refused with a cause that names the folder and a fix that
+/// works. The old folder stays, so the host cannot give the new one its key.
 #[test]
 fn mcp_refuses_a_file_in_a_folder_made_again() {
     let rig = Rig::new();
@@ -714,7 +715,7 @@ fn mcp_refuses_a_file_in_a_folder_made_again() {
     };
     let mut replies = status_reply(1, Err(unreached()));
     mcp.ask(&plan(1), &replies);
-    std::fs::remove_dir_all(&folder).expect("a remove");
+    std::fs::rename(&folder, rig.dir.join("cfg.old")).expect("a move");
     std::fs::create_dir(&folder).expect("a make");
     std::fs::write(folder.join("plant.hcl"), "").expect("a write");
     let changed = serde_json::json!({

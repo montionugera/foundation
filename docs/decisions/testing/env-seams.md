@@ -915,7 +915,9 @@
   at `within`. A folder of `folders` keeps the key of what was there at `within`, and
   holds a path only while the file at its resolved path has that key, so a folder that a
   program removes, renames away, replaces with a link, or makes again holds nothing
-  until a new `within`. A write replaces a file, so a folder that is a file holds
+  until a new `within`. A folder that a program removes and makes again holds again
+  when the host gives it the old key, as ext4 can. A write replaces a file, so a
+  folder that is a file holds
   nothing after a write to it, also through this handle. A folder of `hidden` that is
   not there gives no error, also when the limits of the handle refuse it, and one that
   is there gives its key, also when the limits refuse it. That key comes from the path
